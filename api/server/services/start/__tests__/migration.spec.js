@@ -4,6 +4,7 @@ const mockCheckPromptPermissionsMigration = jest.fn();
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn() },
+  runAsSystem: (fn) => fn(),
   warnOnMissingSearchTokens: (...args) => mockWarnOnMissingSearchTokens(...args),
 }));
 jest.mock('@librechat/api', () => ({
@@ -14,6 +15,7 @@ jest.mock('@librechat/api', () => ({
 }));
 jest.mock('~/models', () => ({ findRoleByIdentifier: jest.fn() }));
 
+const { logger } = require('@librechat/data-schemas');
 const { checkMigrations } = require('../migration');
 
 describe('checkMigrations', () => {
@@ -34,4 +36,23 @@ describe('checkMigrations', () => {
     await done;
     expect(mockCheckPromptPermissionsMigration).toHaveBeenCalledTimes(1);
   });
+});
+
+it('labels permission check failures and still awaits the search probe', async () => {
+  const agentError = new Error('Agent check failed');
+  const promptError = new Error('Prompt check failed');
+  mockCheckAgentPermissionsMigration.mockRejectedValueOnce(agentError);
+  mockCheckPromptPermissionsMigration.mockRejectedValueOnce(promptError);
+  mockWarnOnMissingSearchTokens.mockResolvedValueOnce(undefined);
+
+  await expect(checkMigrations()).resolves.toBeUndefined();
+
+  expect(logger.error).toHaveBeenCalledWith(
+    '[checkMigrations] Failed to check agent permissions migration:',
+    agentError,
+  );
+  expect(logger.error).toHaveBeenCalledWith(
+    '[checkMigrations] Failed to check prompt permissions migration:',
+    promptError,
+  );
 });

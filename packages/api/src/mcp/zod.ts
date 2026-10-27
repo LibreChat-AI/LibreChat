@@ -818,6 +818,12 @@ export function sanitizeGeminiSchema<T extends Record<string, unknown>>(schema: 
   return result as T;
 }
 
+/** An optional, nullable field that keeps its description, which Zod 4 does not copy onto wrappers. */
+function toOptionalField(field: z.ZodType): z.ZodType {
+  const wrapped = field.optional().nullable();
+  return field.description ? wrapped.describe(field.description) : wrapped;
+}
+
 /**
  * Converts a JSON Schema to a Zod schema.
  *
@@ -1015,13 +1021,13 @@ export function convertJsonSchemaToZod(
       const partial = Object.fromEntries(
         Object.entries(shape).map(([key, value]) => [
           key,
-          schema.required?.includes(key) === true ? value : value.optional().nullable(),
+          schema.required?.includes(key) === true ? value : toOptionalField(value),
         ]),
       );
       objectSchema = z.object(partial);
     } else {
       const partialNullable = Object.fromEntries(
-        Object.entries(shape).map(([key, value]) => [key, value.optional().nullable()]),
+        Object.entries(shape).map(([key, value]) => [key, toOptionalField(value)]),
       );
       objectSchema = z.object(partialNullable);
     }

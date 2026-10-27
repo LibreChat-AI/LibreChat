@@ -3106,6 +3106,7 @@ class AgentClient extends BaseClient {
         }
         const agentMemoryContext = formatMemoryContext(
           agentHasMemory ? partitionMemories?.withKeys : partitionMemories?.withoutKeys,
+          { announceEmpty: agentHasMemory || memoryAgentEnabled },
         );
         if (agentMemoryContext) {
           agentRunContextParts.push(agentMemoryContext);

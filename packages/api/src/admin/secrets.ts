@@ -5,10 +5,13 @@ import {
   encryptV3,
   decryptV3,
   setAtPath,
+  parseConfigPath,
+  isKeyedConfigPath,
   foldConfigMergeKey,
+  getConfigArrayMergeKey,
   combineFoldedConfigItems,
 } from '@librechat/data-schemas';
-import type { AdminConfigRules, ConfigFieldWrite } from '@librechat/data-schemas';
+import type { AdminConfigRules, ConfigFieldWrite, ConfigLocation } from '@librechat/data-schemas';
 import { isUserProvided } from '~/utils/common';
 
 const ENCRYPTED_PREFIX = 'v3:';
@@ -26,6 +29,11 @@ interface ConfigSecretFieldInput {
    * ({@link isOpaqueSecretInput}, {@link isOpaqueStoredSecret}).
    */
   opaque?: boolean;
+}
+
+/** The key of the masked-preview companion stored beside the secret at `secretKey`. */
+export function getSecretPreviewKey(secretKey: string): string {
+  return `${secretKey}Preview`;
 }
 
 interface ConfigSecretField extends ConfigSecretFieldInput {
@@ -63,7 +71,7 @@ const CONFIG_SECRET_FIELDS: readonly ConfigSecretField[] = (
     { path: 'endpoints.assistants.apiKey', allowEnvPlaceholder: true },
     { path: 'endpoints.azureAssistants.apiKey', allowEnvPlaceholder: true },
   ] satisfies ConfigSecretFieldInput[]
-).map((field) => ({ ...field, previewPath: `${field.path}Preview` }));
+).map((field) => ({ ...field, previewPath: getSecretPreviewKey(field.path) }));
 
 /**
  * Preview companions written under earlier naming conventions. Stripped from
@@ -186,7 +194,7 @@ const RECORD_SECRET_FIELDS: readonly RecordSecretField[] = (
 ).map((field) => ({
   ...field,
   recordSegments: field.recordPath.split('.'),
-  previewKey: `${field.secretPath[field.secretPath.length - 1]}Preview`,
+  previewKey: getSecretPreviewKey(field.secretPath[field.secretPath.length - 1]),
 }));
 
 /** The record secret's location as a pattern, `*` standing for the entry name. */
@@ -777,6 +785,10 @@ export function isConfigSecretKeyRename(
 }
 
 export function getConfigSecretInputError(fieldPath: string, value: unknown): string | null {
+  const entryPath = readEntryPath(fieldPath);
+  if (entryPath) {
+    return getKeyedSecretPathError(entryPath);
+  }
   if (PREVIEW_PATHS.has(fieldPath)) {
     return `Cannot write protected secret preview path: ${fieldPath}`;
   }
@@ -997,7 +1009,50 @@ function isArrayIndexSegment(segment: string): boolean {
   return /^\d+$/.test(segment) || segment.includes('$');
 }
 
+/** The secret key each entry of the array at `arrayPath` holds (`apiKey`), or `undefined`. */
+export function getArraySecretKey(arrayPath: string): string | undefined {
+  return ARRAY_SECRET_FIELDS.find((field) => field.arrayPath === arrayPath)?.secretKey;
+}
+
+/**
+ * A keyed path that names an entry of an array merged by key (`endpoints.custom["Name"].x`, see
+ * `parseConfigPath`), or `null`. Any other path holding `["` (a malformed keyed path, or a record
+ * key such as an MCP server named `a["b` joined from `segments`) is checked as a plain path.
+ */
+function readEntryPath(fieldPath: string): ConfigLocation | null {
+  if (!isKeyedConfigPath(fieldPath)) {
+    return null;
+  }
+  const location = parseConfigPath(fieldPath);
+  return location?.entry && getConfigArrayMergeKey(location.segments) ? location : null;
+}
+
+/**
+ * A keyed path (`endpoints.custom["Name"].apiKey`) naming an entry's registered secret or its
+ * preview: an entry's secret is written, kept and removed with the entry, never by its key, so
+ * the secret pipeline never meets a path it does not encrypt, preserve or redact.
+ */
+function getKeyedSecretPathError(location: ConfigLocation): string | null {
+  const field = location.entry?.rest[0];
+  if (field === undefined) {
+    return null;
+  }
+  const arrayPath = location.segments.join('.');
+  const secret = ARRAY_SECRET_FIELDS.find(
+    (candidate) =>
+      candidate.arrayPath === arrayPath &&
+      (field === candidate.secretKey || field === candidate.previewKey),
+  );
+  return secret
+    ? `Cannot address ${secret.arrayPath}[].${field} by entry key. Write the ${secret.arrayPath} entry instead`
+    : null;
+}
+
 function getArraySecretPathError(fieldPath: string): string | null {
+  const entryPath = readEntryPath(fieldPath);
+  if (entryPath) {
+    return getKeyedSecretPathError(entryPath);
+  }
   for (const field of ARRAY_SECRET_FIELDS) {
     const prefix = `${field.arrayPath}.`;
     if (!fieldPath.startsWith(prefix)) {
@@ -1262,20 +1317,99 @@ function redactRecordSecrets(rootRecord: Record<string, unknown>): void {
   }
 }
 
-/** A secret carried across a server rename: from the stored entry it had, to the new name. */
+/** Where a `renames` hint may name entries: MCP servers by name, custom endpoints by `name`. */
+export const RENAME_HINT_PATHS = ['mcpServers', 'endpoints.custom'] as const;
+
+/**
+ * A secret carried across a rename: from the stored entry it had, to the new name. For
+ * `mcpServers` the name is a server's record key, for `endpoints.custom` an endpoint's `name`.
+ */
 export interface ConfigSecretRename {
-  path: 'mcpServers';
+  path: (typeof RENAME_HINT_PATHS)[number];
   previousName: string;
   name: string;
 }
 
 /**
- * Fills secrets a renamed entry omits from the stored entry it was renamed from. Copy semantics:
- * the stored entry keeps its own secret, so a client that renames by writing the new entry and
- * then deleting the old one loses nothing. Runs after {@link preserveConfigSecrets}, which keeps
- * a secret the entry already has under its own name. A carried credential keeps its stored
- * ciphertext (legacy plaintext is encrypted on the way), so the re-entry rule (`reentry.ts`)
- * finds the server it came from by value.
+ * Copies a stored array entry's secret, with its preview, into an entry that omits it, as
+ * {@link carryStoredRecordSecret} does for a record entry: ciphertext as is, legacy plaintext
+ * encrypted on the way, a reference the read returned not at all.
+ */
+function carryStoredArraySecret(
+  entry: Record<string, unknown>,
+  stored: Record<string, unknown> | null,
+  field: ArraySecretField,
+): void {
+  const storedSecret = normalizeSecretString(stored?.[field.secretKey]);
+  if (!stored || !storedSecret || field.isPassthroughValue(storedSecret)) {
+    return;
+  }
+  if (!isEncryptedConfigSecret(storedSecret)) {
+    entry[field.secretKey] = encryptV3(storedSecret);
+    entry[field.previewKey] = getSecretPreview(storedSecret);
+    return;
+  }
+  entry[field.secretKey] = storedSecret;
+  const storedPreview = stored[field.previewKey];
+  if (typeof storedPreview === 'string') {
+    entry[field.previewKey] = normalizeStoredPreview(storedPreview);
+  } else {
+    delete entry[field.previewKey];
+  }
+}
+
+/** The stored entry of an array secret field whose key has the identity of `name`. */
+function findStoredSecretEntry(
+  existing: unknown,
+  field: ArraySecretField,
+  name: string,
+): Record<string, unknown> | null {
+  const identity = foldConfigMergeKey(field.arrayPath, name);
+  for (const item of getStoredSecretEntries(existing, field) ?? []) {
+    const entry = getPlainRecord(item);
+    if (entry && getEntryIdentity(entry, field) === identity) {
+      return entry;
+    }
+  }
+  return null;
+}
+
+/** Fills the array entries named `name` that omit their secret from the stored entry `previousName`. */
+function carryRenamedArraySecrets(
+  next: unknown,
+  existing: unknown,
+  renames: readonly ConfigSecretRename[],
+  basePath: string,
+): void {
+  for (const field of ARRAY_SECRET_FIELDS) {
+    const entries = getSecretArray(next, field, basePath);
+    if (!entries) {
+      continue;
+    }
+    for (const { previousName, name, path } of renames) {
+      if (path !== field.arrayPath) {
+        continue;
+      }
+      const identity = foldConfigMergeKey(field.arrayPath, name);
+      const stored = findStoredSecretEntry(existing, field, previousName);
+      for (const item of entries) {
+        const entry = getPlainRecord(item);
+        if (entry && !(field.secretKey in entry) && getEntryIdentity(entry, field) === identity) {
+          carryStoredArraySecret(entry, stored, field);
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Fills secrets a renamed entry omits from the stored entry it was renamed from: an MCP server's
+ * credentials (by record key), or a custom endpoint's `apiKey` (by `name`, folded as the merge
+ * folds it). Copy semantics: the stored entry keeps its own secret, so a client that renames by
+ * writing the new entry and then deleting the old one loses nothing. Runs after
+ * {@link preserveConfigSecrets}, which keeps a secret the entry already has under its own name.
+ * A carried credential keeps its stored ciphertext (legacy plaintext is encrypted on the way), so
+ * the re-entry rules (`reentry.ts`) find the server or endpoint it came from by value.
  */
 export function carryRenamedConfigSecrets(
   next: unknown,
@@ -1286,6 +1420,7 @@ export function carryRenamedConfigSecrets(
   if (renames.length === 0) {
     return;
   }
+  carryRenamedArraySecrets(next, existing, renames, basePath);
   for (const field of RECORD_SECRET_FIELDS) {
     const key = getRecordSecretKey(field);
     const parents = collectRecordSecretParents(next, field, basePath, false);

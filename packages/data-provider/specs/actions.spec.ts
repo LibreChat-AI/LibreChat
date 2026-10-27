@@ -1330,7 +1330,7 @@ describe('createURL', () => {
         expect(timeSchema._def.innerType instanceof z.ZodString).toBe(true);
 
         // Check the description
-        expect(shape.locations._def.description).toBe(
+        expect(shape.locations.description).toBe(
           'A list of locations to retrieve the weather for.',
         );
       });

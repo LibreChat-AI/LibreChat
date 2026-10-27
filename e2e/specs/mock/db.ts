@@ -127,6 +127,8 @@ export interface SeedMessage {
   model?: string;
   /** Attachments on the turn, as the client renders them (an image opens the lightbox). */
   files?: Record<string, unknown>[];
+  /** Tool attachments on the turn, such as the web search results behind its sources. */
+  attachments?: Record<string, unknown>[];
 }
 
 /**

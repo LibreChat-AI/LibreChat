@@ -1,4 +1,4 @@
-import { ContentTypes, StepEvents, StepTypes } from 'librechat-data-provider';
+import { ContentTypes, StepEvents, StepTypes, SteerEvents } from 'librechat-data-provider';
 import type {
   SubagentTaskContentSnapshot,
   SubagentTaskContentSuffix,
@@ -466,4 +466,68 @@ it('rejects parent identity changes as well as child identity changes', () => {
     reduceRecoveredContent(before, suffix([], { parentConversationId: 'other-parent' })),
   ).toBeNull();
   expect(reduceRecoveredContent(before, suffix([], { parentMessageId: 'other-user' }))).toBeNull();
+});
+
+it('replays applied steering at its reserved slot before subsequent run steps without mutating the snapshot', () => {
+  const before = reduceRecoveredContent(null, snapshot())!;
+  const part = {
+    type: ContentTypes.STEER as const,
+    steer: 'Continue with citation',
+    steerId: 'control',
+    createdAt: 100,
+  };
+  const next = reduceRecoveredContent(
+    before,
+    suffix(
+      [
+        {
+          sequence: 1,
+          frame: {
+            event: SteerEvents.ON_STEER_APPLIED,
+            data: {
+              index: 1,
+              part,
+              steerId: 'control',
+              responseMessageId: 'task:assistant',
+              conversationId: 'thread',
+            },
+          },
+        },
+        {
+          sequence: 2,
+          frame: {
+            event: StepEvents.ON_RUN_STEP,
+            data: {
+              id: 'after',
+              runId: 'provider-run',
+              index: 2,
+              type: StepTypes.MESSAGE_CREATION,
+              stepDetails: {
+                type: StepTypes.MESSAGE_CREATION,
+                message_creation: { message_id: 'answer' },
+              },
+              usage: null,
+            },
+          },
+        },
+        {
+          sequence: 3,
+          frame: {
+            event: StepEvents.ON_MESSAGE_DELTA,
+            data: {
+              id: 'after',
+              delta: { content: [{ type: ContentTypes.TEXT, text: 'After control.' }] },
+            },
+          },
+        },
+      ],
+      { throughSequence: 3, targetThroughSequence: 3 },
+    ),
+  )!;
+  expect(next.snapshot.content).toMatchObject([
+    { text: 'Opening. ' },
+    part,
+    { text: 'After control.' },
+  ]);
+  expect(before.snapshot.content).toHaveLength(1);
 });

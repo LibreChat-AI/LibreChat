@@ -1,3 +1,4 @@
+import type { TPromptGroupSource } from 'librechat-data-provider';
 import type { Document, Types } from 'mongoose';
 
 export interface IPrompt extends Document {
@@ -16,12 +17,15 @@ export type IPromptRecord = Pick<
   'groupId' | 'author' | 'prompt' | 'type' | 'createdAt' | 'updatedAt' | 'tenantId'
 > & { _id: Types.ObjectId; __v?: number };
 
+export type PromptGroupSource = TPromptGroupSource;
+
 export interface IPromptGroup {
   name: string;
   numberOfGenerations: number;
   oneliner: string;
   category: string;
-  productionId: Types.ObjectId;
+  /** Required for `native` groups; absent for a mirrored group with no production prompt yet. */
+  productionId?: Types.ObjectId;
   author: Types.ObjectId;
   authorName: string;
   command?: string;
@@ -29,6 +33,10 @@ export interface IPromptGroup {
   updatedAt?: Date;
   isPublic?: boolean;
   tenantId?: string;
+  source?: PromptGroupSource;
+  sourcePromptName?: string;
+  sourceProjectId?: string;
+  sourceDestination?: string;
 }
 
 export interface IPromptGroupDocument extends IPromptGroup, Document {}

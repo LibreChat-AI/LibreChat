@@ -9,3 +9,4 @@ export * from './flows';
 export * from './redisUtils';
 export * from './redisTelemetry';
 export * from './audit';
+export * from './lock';
