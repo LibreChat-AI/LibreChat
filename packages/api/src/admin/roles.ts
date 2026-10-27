@@ -3,7 +3,7 @@ import {
   logger,
   RoleConflictError,
   isConfigMoveRefused,
-  RoleMembersReassignmentError,
+  RoleDeletionError,
   isValidObjectIdString,
   BASE_CONFIG_PRINCIPAL_ID,
 } from '@librechat/data-schemas';
@@ -919,9 +919,6 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
        * inheriting the leftovers. Every removal is idempotent.
        */
       const tenantId = req.user?.tenantId;
-      /** Who held the role before the delete: the audit record of a delete whose response is
-       * lost. A delete that responds reports the accounts it actually moved. */
-      const memberIds = await findUserIdsByRole(name);
       /** The grants as they were, so removals are audited even when a removal rejects after committing. */
       const grantSnapshot = findGrantsForPrincipal
         ? await findGrantsForPrincipal(PrincipalType.ROLE, name, { tenantId })
@@ -1066,9 +1063,9 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         /** The delete may have committed before it threw. Restoring dependents for a
          * role that is gone would orphan them for a later role with the same name. */
         const lookup = await lookupRole();
-        /** The role was not deleted, but the members moved before the failure stay moved. */
+        /** Members moved before the failure stay moved, whatever happened to the role. */
         const movedBeforeFailure =
-          error instanceof RoleMembersReassignmentError ? error.reassignedUserIds : [];
+          error instanceof RoleDeletionError ? error.reassignedUserIds : [];
         if (lookup.known && isTargetedRole(lookup.role)) {
           await cascade.compensate();
           await invalidateAccess();
@@ -1085,16 +1082,16 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
           logger.error('[adminRoles] dependents not restored, role state unverifiable:', name);
           return res.status(500).json({ error: 'Failed to delete role' });
         }
-        if (error instanceof RoleMembersReassignmentError) {
+        if (error instanceof RoleDeletionError && error.reason !== 'delete_failed') {
           /** Another request deleted the role; the members this one moved first are audited. */
           await auditRemovedGrants();
           await auditReassignedMembers(movedBeforeFailure);
           await recordOutcome('failure', 'not_found');
           return res.status(404).json({ error: 'Role not found' });
         }
-        /** Confirmed absent: the deletion did commit, so it is audited and reported as one. Its
-         * response is lost, so the members read before it are the best record of who it moved. */
-        deleted = { role: existing, reassignedUserIds: memberIds };
+        /** Confirmed absent after the delete itself rejected: it committed with its
+         * acknowledgement lost, so it is audited and reported as one, with the members it moved. */
+        deleted = { role: existing, reassignedUserIds: movedBeforeFailure };
       }
       await invalidateAccess();
       if (!deleted) {

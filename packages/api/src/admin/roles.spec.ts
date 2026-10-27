@@ -1,5 +1,5 @@
 import { Types } from 'mongoose';
-import { RoleMembersReassignmentError } from '@librechat/data-schemas';
+import { RoleDeletionError } from '@librechat/data-schemas';
 import { PrincipalType, SystemRoles, promptPermissionsSchema } from 'librechat-data-provider';
 import type { IRole, IUser } from '@librechat/data-schemas';
 import type { Response } from 'express';
@@ -1484,8 +1484,6 @@ describe('createAdminRolesHandlers', () => {
       const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
       const deps = deleteDeps({
         recordAuditEntry,
-        /** u3 left the role and u2 joined it between the member read and the delete. */
-        findUserIdsByRole: jest.fn().mockResolvedValue(['u1', 'u3']),
         deleteRoleByName: jest
           .fn()
           .mockResolvedValue({ role: mockRole(), reassignedUserIds: ['u1', 'u2'] }),
@@ -1577,19 +1575,6 @@ describe('createAdminRolesHandlers', () => {
       expect(deps.deleteGrantsForPrincipal).not.toHaveBeenCalled();
     });
 
-    it('fails the delete instead of auditing zero members when the member lookup fails', async () => {
-      const deps = deleteDeps({
-        findUserIdsByRole: jest.fn().mockRejectedValue(new Error('mongo down')),
-      });
-      const handlers = createAdminRolesHandlers(deps);
-      const { req, res, status } = createReqRes({ params: { name: 'editor' } });
-
-      await handlers.deleteRole(req, res);
-
-      expect(status).toHaveBeenCalledWith(500);
-      expect(deps.deleteRoleByName).not.toHaveBeenCalled();
-    });
-
     it('records role.deleted as pending before any removal, then success, in order', async () => {
       const order: string[] = [];
       const recordAuditEntry = jest.fn(async (entry: { action: string; outcome?: string }) => {
@@ -1642,7 +1627,7 @@ describe('createAdminRolesHandlers', () => {
         recordAuditEntry,
         deleteRoleByName: jest
           .fn()
-          .mockRejectedValue(new RoleMembersReassignmentError('members still joining', ['u1'])),
+          .mockRejectedValue(new RoleDeletionError('reassignment_failed', ['u1'])),
         restoreConfig: jest.fn(),
       });
       const handlers = createAdminRolesHandlers(deps);
@@ -1676,7 +1661,7 @@ describe('createAdminRolesHandlers', () => {
         getRoleByName: jest.fn().mockResolvedValueOnce(mockRole()).mockResolvedValue(null),
         deleteRoleByName: jest
           .fn()
-          .mockRejectedValue(new RoleMembersReassignmentError('deleted elsewhere', ['u7'])),
+          .mockRejectedValue(new RoleDeletionError('deleted_elsewhere', ['u7'])),
       });
       const handlers = createAdminRolesHandlers(deps);
       const { req, res, status } = createReqRes({
@@ -1698,12 +1683,45 @@ describe('createAdminRolesHandlers', () => {
       );
     });
 
+    it('audits the members moved when the role delete itself fails and keeps the role', async () => {
+      const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
+      const config = { principalModel: 'Role', overrides: { a: 1 }, priority: 4 };
+      const deps = deleteDeps({
+        recordAuditEntry,
+        deleteConfig: jest.fn().mockResolvedValue(config),
+        restoreConfig: jest.fn().mockResolvedValue(true),
+        deleteRoleByName: jest
+          .fn()
+          .mockRejectedValue(new RoleDeletionError('delete_failed', ['u4', 'u5'])),
+      });
+      const handlers = createAdminRolesHandlers(deps);
+      const { req, res, status } = createReqRes({
+        params: { name: 'editor' },
+        user: { _id: new Types.ObjectId(), role: 'admin' },
+      });
+
+      await handlers.deleteRole(req, res);
+
+      expect(status).toHaveBeenCalledWith(500);
+      expect(deps.restoreConfig).toHaveBeenCalledWith(config);
+      const removed = recordAuditEntry.mock.calls
+        .map(([entry]) => entry)
+        .filter((entry) => entry.action === 'role.member_removed');
+      expect(removed).toHaveLength(1);
+      expect(removed[0].metadata).toMatchObject({ userIds: 'u4,u5', count: 2 });
+      expect(recordAuditEntry).toHaveBeenLastCalledWith(
+        expect.objectContaining({ action: 'role.deleted', outcome: 'failure' }),
+      );
+    });
+
     it('records role.deleted success when the delete committed before it threw', async () => {
       const recordAuditEntry = jest.fn().mockResolvedValue(undefined);
       const deps = deleteDeps({
         recordAuditEntry,
         getRoleByName: jest.fn().mockResolvedValueOnce(mockRole()).mockResolvedValue(null),
-        deleteRoleByName: jest.fn().mockRejectedValue(new Error('response lost')),
+        deleteRoleByName: jest
+          .fn()
+          .mockRejectedValue(new RoleDeletionError('delete_failed', ['uid-1', 'uid-2'])),
       });
       const handlers = createAdminRolesHandlers(deps);
       const { req, res, status } = createReqRes({
@@ -1714,7 +1732,8 @@ describe('createAdminRolesHandlers', () => {
       await handlers.deleteRole(req, res);
 
       expect(status).toHaveBeenCalledWith(200);
-      /** The delete's own report is lost, so the members read before it are audited. */
+      /** The delete's acknowledgement is lost; its error carries the members it moved. */
+      expect(deps.findUserIdsByRole).not.toHaveBeenCalled();
       expect(recordAuditEntry).toHaveBeenCalledWith(
         expect.objectContaining({
           action: 'role.member_removed',

@@ -21,18 +21,27 @@ function isSystemRoleName(name: string): boolean {
 }
 
 /**
- * A role deletion could not move every member off the role, so the role was not deleted. Carries
- * the accounts it had already moved to USER, which stay moved and must still be audited.
+ * Why `deleteRoleByName` failed after it may have moved members to USER:
+ * - `reassignment_failed`: not every member could be moved; the role was not deleted.
+ * - `deleted_elsewhere`: the targeted role vanished while (or after) its members were moved.
+ * - `delete_failed`: every member was moved, then the role delete rejected; it may still have
+ *   committed (its acknowledgement lost), which only a fresh read can tell.
  */
-export class RoleMembersReassignmentError extends Error {
+export type RoleDeletionFailure = 'reassignment_failed' | 'deleted_elsewhere' | 'delete_failed';
+
+/** A role deletion that failed part way. Carries the accounts it already moved to USER, which
+ * stay moved and must still be audited, whatever happened to the role. */
+export class RoleDeletionError extends Error {
+  readonly reason: RoleDeletionFailure;
   readonly reassignedUserIds: string[];
-  /** The failure that stopped the reassignment. */
+  /** The failure that stopped the deletion, if any. */
   readonly cause: unknown;
-  constructor(message: string, reassignedUserIds: string[], cause?: unknown) {
-    super(message);
-    this.cause = cause;
-    this.name = 'RoleMembersReassignmentError';
+  constructor(reason: RoleDeletionFailure, reassignedUserIds: string[], cause?: unknown) {
+    super(`Role deletion failed: ${reason}`);
+    this.name = 'RoleDeletionError';
+    this.reason = reason;
     this.reassignedUserIds = reassignedUserIds;
+    this.cause = cause;
   }
 }
 
@@ -629,17 +638,28 @@ export function createRoleMethods(
    * changed every account it read, those are the ones it moved; when some left in between, the
    * accounts carrying the nonce are, whatever else writes to them afterwards. The tag is then
    * removed. The next pass picks up a member who joined after the read. Throws
-   * `RoleMembersReassignmentError` with the accounts already moved when a write fails or members
-   * are still joining after every pass, so the role is not deleted under a remaining member.
+   * `RoleDeletionError` with the accounts already moved when a write fails, members are still
+   * joining after every pass, or the role is no longer the targeted one, so the role is never
+   * deleted under a remaining member.
    */
-  async function reassignMembersToUser(roleName: string): Promise<string[]> {
+  async function reassignMembersToUser(
+    roleName: string,
+    isStillTargeted: () => Promise<boolean>,
+  ): Promise<string[]> {
     const User = mongoose.models.User as Model<IUser>;
     const members = roleMembersFilter(roleName, 'deleteRoleByName');
     const reassigned: string[] = [];
     /** Every id a write targeted: a write that rejects may still have changed some of them. */
     const written: string[] = [];
+    let reason: RoleDeletionFailure = 'reassignment_failed';
     try {
       for (let pass = 0; ; pass++) {
+        /** Members are read by name, so each pass first confirms the name still holds the
+         * targeted role: never the members of a role recreated under it mid-delete. */
+        if (!(await isStillTargeted())) {
+          reason = 'deleted_elsewhere';
+          throw new Error(`role "${roleName}" changed during its deletion`);
+        }
         const ids = (await User.find(members).select('_id').lean()).map((u) => u._id.toString());
         if (ids.length === 0) {
           return reassigned;
@@ -654,11 +674,7 @@ export function createRoleMethods(
         }
       }
     } catch (error) {
-      throw new RoleMembersReassignmentError(
-        `Could not reassign the members of role "${roleName}"`,
-        reassigned,
-        error,
-      );
+      throw new RoleDeletionError(reason, reassigned, error);
     } finally {
       await invalidateAuthUserDocCache(written);
     }
@@ -725,35 +741,45 @@ export function createRoleMethods(
       throw new Error(`Cannot delete system role: ${roleName}`);
     }
     const Role = mongoose.models.Role;
-    const role = { name: roleName, ...tenantPartitionFilter('deleteRoleByName') };
+    const role = {
+      name: roleName,
+      ...tenantPartitionFilter('deleteRoleByName'),
+      ...(options?.id ? { _id: options.id } : {}),
+    };
     /** A role recreated under this name has another `_id`: leave it and its members alone. */
-    if (options?.id && !(await Role.exists({ ...role, _id: options.id }))) {
+    if (options?.id && !(await Role.exists(role))) {
       return null;
     }
-    const reassignedUserIds = await reassignMembersToUser(roleName);
-    const deleted = await Role.findOneAndDelete({
-      ...role,
-      ...(options?.id ? { _id: options.id } : {}),
-    }).lean<IRole>();
+    const isStillTargeted = async () => !options?.id || (await Role.exists(role)) != null;
     try {
-      const cache = deps.getCache?.(CacheKeys.ROLES);
-      if (cache) {
-        // Setting null evicts the stale document. getRoleByName treats falsy cached
-        // values as a miss and falls through to the DB, so this does not provide
-        // negative caching; it only prevents serving the pre-deletion document.
-        await cache.set(scopedCacheKey(roleName), null);
+      const reassignedUserIds = await reassignMembersToUser(roleName, isStillTargeted);
+      let deleted: IRole | null;
+      try {
+        deleted = await Role.findOneAndDelete(role).lean<IRole>();
+      } catch (error) {
+        throw new RoleDeletionError('delete_failed', reassignedUserIds, error);
       }
-    } catch (cacheError) {
-      logger.error(`[deleteRoleByName] cache invalidation failed for "${roleName}":`, cacheError);
+      if (deleted) {
+        return { role: deleted, reassignedUserIds };
+      }
+      if (reassignedUserIds.length > 0) {
+        /** Another deletion removed the role after this one moved members: they stay moved. */
+        throw new RoleDeletionError('deleted_elsewhere', reassignedUserIds);
+      }
+      return null;
+    } finally {
+      try {
+        const cache = deps.getCache?.(CacheKeys.ROLES);
+        if (cache) {
+          // Setting null evicts the stale document. getRoleByName treats falsy cached
+          // values as a miss and falls through to the DB, so this does not provide
+          // negative caching; it only prevents serving the pre-deletion document.
+          await cache.set(scopedCacheKey(roleName), null);
+        }
+      } catch (cacheError) {
+        logger.error(`[deleteRoleByName] cache invalidation failed for "${roleName}":`, cacheError);
+      }
     }
-    if (!deleted && reassignedUserIds.length > 0) {
-      /** Another deletion removed the role after this one moved members: they are still moved. */
-      throw new RoleMembersReassignmentError(
-        `Role "${roleName}" was deleted by another request`,
-        reassignedUserIds,
-      );
-    }
-    return deleted ? { role: deleted, reassignedUserIds } : null;
   }
 
   /** Moves the members of `oldRole` in the caller's tenant partition to `newRole` (a rename). */

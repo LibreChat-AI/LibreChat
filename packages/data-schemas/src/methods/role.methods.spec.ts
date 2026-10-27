@@ -9,8 +9,8 @@ import {
   CacheKeys,
 } from 'librechat-data-provider';
 import type { IRole, IUser, RolePermissions } from '..';
-import { createRoleMethods, RoleMembersReassignmentError } from './role';
 import { _resetStrictCache } from '../models/plugins/tenantIsolation';
+import { createRoleMethods, RoleDeletionError } from './role';
 import { tenantStorage } from '~/config/tenantContext';
 import { createModels } from '../models';
 
@@ -982,8 +982,8 @@ describe('deleteRoleByName', () => {
       spy.mockRestore();
     }
 
-    expect(caught).toBeInstanceOf(RoleMembersReassignmentError);
-    const moved = (caught as RoleMembersReassignmentError).reassignedUserIds;
+    expect(caught).toBeInstanceOf(RoleDeletionError);
+    const moved = (caught as RoleDeletionError).reassignedUserIds;
     expect(moved).toHaveLength(joined);
     expect(await User.countDocuments({ _id: { $in: moved }, role: SystemRoles.USER })).toBe(
       moved.length,
@@ -1022,10 +1022,8 @@ describe('deleteRoleByName', () => {
       spy.mockRestore();
     }
 
-    expect(caught).toBeInstanceOf(RoleMembersReassignmentError);
-    expect((caught as RoleMembersReassignmentError).reassignedUserIds).toEqual([
-      alice._id.toString(),
-    ]);
+    expect(caught).toBeInstanceOf(RoleDeletionError);
+    expect((caught as RoleDeletionError).reassignedUserIds).toEqual([alice._id.toString()]);
     expect(await Role.exists({ name: 'editor' })).toBeTruthy();
     expect(await User.collection.countDocuments({ _roleReassignment: { $exists: true } })).toBe(0);
   });
@@ -1062,10 +1060,117 @@ describe('deleteRoleByName', () => {
       spy.mockRestore();
     }
 
-    expect(caught).toBeInstanceOf(RoleMembersReassignmentError);
-    expect((caught as RoleMembersReassignmentError).reassignedUserIds).toEqual([
-      alice._id.toString(),
-    ]);
+    expect(caught).toBeInstanceOf(RoleDeletionError);
+    expect((caught as RoleDeletionError).reassignedUserIds).toEqual([alice._id.toString()]);
+  });
+
+  it('never moves the members of a role recreated under the name mid-delete', async () => {
+    const original = await createRoleByName({ name: 'editor' });
+    const alice = await User.create({
+      name: 'Alice',
+      email: 'alice@test.com',
+      role: 'editor',
+      username: 'alice',
+    });
+    let danaId = '';
+    const realUpdateMany = User.updateMany.bind(User);
+    const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
+      filter: mongoose.FilterQuery<IUser>,
+      update: mongoose.UpdateQuery<IUser>,
+      options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
+    ) =>
+      (async () => {
+        const result = await realUpdateMany(filter, update, options);
+        if ((update as { $set?: Record<string, unknown> }).$set?.role === SystemRoles.USER) {
+          /** After the first pass: the role is deleted, recreated, and given a new member. */
+          await Role.deleteOne({ _id: original._id });
+          await createRoleByName({ name: 'editor' });
+          const dana = await User.create({
+            name: 'Dana',
+            email: 'dana@test.com',
+            role: 'editor',
+            username: 'dana',
+          });
+          danaId = dana._id.toString();
+        }
+        return result;
+      })()) as unknown as typeof User.updateMany);
+
+    let caught: unknown;
+    try {
+      await deleteRoleByName('editor', { id: String(original._id) });
+    } catch (error) {
+      caught = error;
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(caught).toBeInstanceOf(RoleDeletionError);
+    expect((caught as RoleDeletionError).reason).toBe('deleted_elsewhere');
+    expect((caught as RoleDeletionError).reassignedUserIds).toEqual([alice._id.toString()]);
+    expect((await User.findById(danaId).lean())!.role).toBe('editor');
+    expect(await Role.exists({ name: 'editor' })).toBeTruthy();
+  });
+
+  it('reports the members it moved and evicts caches when the role delete rejects', async () => {
+    process.env.AUTH_USER_CACHE_MODE = 'on';
+    await createRoleByName({ name: 'editor' });
+    const alice = await User.create({
+      name: 'Alice',
+      email: 'alice@test.com',
+      role: 'editor',
+      username: 'alice',
+    });
+    const aliceIndex = `${AUTH_USER_DOC_BY_ID_PREFIX}:${alice._id.toString()}`;
+    mockCache.get.mockImplementation(async (key: string) =>
+      key === aliceIndex ? ['auth-cache-alice'] : undefined,
+    );
+    mockCache.set.mockClear();
+    const spy = jest.spyOn(Role, 'findOneAndDelete').mockImplementationOnce((() => {
+      throw new Error('acknowledgement lost');
+    }) as unknown as typeof Role.findOneAndDelete);
+
+    let caught: unknown;
+    try {
+      await deleteRoleByName('editor');
+    } catch (error) {
+      caught = error;
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(caught).toBeInstanceOf(RoleDeletionError);
+    expect((caught as RoleDeletionError).reason).toBe('delete_failed');
+    expect((caught as RoleDeletionError).reassignedUserIds).toEqual([alice._id.toString()]);
+    expect(mockCache.delete).toHaveBeenCalledWith('auth-cache-alice');
+    expect(mockCache.set).toHaveBeenCalledWith('editor', null);
+  });
+
+  it('a retry after a failed delete moves and reports only the members still on the role', async () => {
+    await createRoleByName({ name: 'editor' });
+    const alice = await User.create({
+      name: 'Alice',
+      email: 'alice@test.com',
+      role: 'editor',
+      username: 'alice',
+    });
+    const spy = jest.spyOn(Role, 'findOneAndDelete').mockImplementationOnce((() => {
+      throw new Error('db down');
+    }) as unknown as typeof Role.findOneAndDelete);
+    await expect(deleteRoleByName('editor')).rejects.toBeInstanceOf(RoleDeletionError);
+    spy.mockRestore();
+    const bob = await User.create({
+      name: 'Bob',
+      email: 'bob@test.com',
+      role: 'editor',
+      username: 'bob',
+    });
+
+    const retried = await deleteRoleByName('editor');
+
+    expect(retried!.reassignedUserIds).toEqual([bob._id.toString()]);
+    expect((await User.findById(alice._id).lean())!.role).toBe(SystemRoles.USER);
+    expect(await Role.exists({ name: 'editor' })).toBeNull();
   });
 
   it('leaves a role recreated under the same name when the expected id no longer matches', async () => {
