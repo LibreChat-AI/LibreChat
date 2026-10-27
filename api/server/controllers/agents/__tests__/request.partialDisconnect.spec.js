@@ -41,6 +41,7 @@ const mockGenerationJobManager = {
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: mockLogger,
+  redactMessage: jest.requireActual('@librechat/data-schemas').redactMessage,
   tenantStorage: {
     run: (...args) => mockTenantStorageRun(...args),
   },

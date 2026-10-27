@@ -1,3 +1,4 @@
+import { redactMessage } from '@librechat/data-schemas';
 import { ErrorTypes, ViolationTypes } from 'librechat-data-provider';
 import type { FiltersConfig, MessageFilterPiiConfig } from 'librechat-data-provider';
 import type { SafeErrorMetadata } from '../../utils/errors';
@@ -185,7 +186,8 @@ export interface GenerationErrorConfig {
  * the run's content error parts follow. Host-authored outcomes keep their wording: a typed
  * `{"type": ...}` payload, a LangChain-classified provider failure, or a content policy block.
  * Any other exception may echo submitted content, so while a content policy is active the turn
- * carries `fallback`; otherwise it carries the message with URLs and bearer credentials redacted. The exception
+ * carries `fallback`; otherwise it carries the message with URLs, credentials (API keys, tokens, auth headers) and email
+ * addresses redacted. The exception
  * itself reaches the logs only through `getSafeErrorMetadata`.
  */
 export function getUserFacingGenerationError(
@@ -212,5 +214,5 @@ export function getUserFacingGenerationError(
     return fallback;
   }
   const trimmed = message.trim();
-  return trimmed === '' ? fallback : getSafeErrorText(trimmed);
+  return trimmed === '' ? fallback : redactMessage(getSafeErrorText(trimmed));
 }

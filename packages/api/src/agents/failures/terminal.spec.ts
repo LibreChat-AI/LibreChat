@@ -412,6 +412,22 @@ describe('getUserFacingGenerationError', () => {
     );
   });
 
+  it.each([
+    ['an sk- key', 'Incorrect API key provided: sk-proj-PRIVATEKEY123', 'PRIVATEKEY123'],
+    ['an x-api-key header', 'upstream rejected x-api-key: PRIVATEHEADER123', 'PRIVATEHEADER123'],
+    [
+      'a JWT',
+      'token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJQUklWQVRFIn0.PRIVATESIG123 expired',
+      'PRIVATESIG123',
+    ],
+    ['an Authorization header', 'sent Authorization: Basic PRIVATEAUTH123', 'PRIVATEAUTH123'],
+    ['an email address', 'no account for private.user@example.com', 'private.user@example.com'],
+  ])('never returns %s without a content policy', (_label, message, secret) => {
+    const text = getUserFacingGenerationError(new Error(message), {}, 'Generation failed');
+    expect(text).not.toContain(secret);
+    expect(text).not.toBe('Generation failed');
+  });
+
   it('keeps a typed payload the client maps to localized copy under protection', () => {
     const typed = JSON.stringify({ type: ErrorTypes.NO_USER_KEY });
     const violation = JSON.stringify({ type: ViolationTypes.TOKEN_BALANCE, balance: 0 });

@@ -43,4 +43,9 @@ test.describe('generation error text', () => {
     test.setTimeout(300_000);
     runControllerTests('publishes a safe image storage failure during generation');
   });
+
+  test('without a content policy credentials and emails never reach the published or persisted error @scenario:generation-error-secrets-redacted', () => {
+    test.setTimeout(300_000);
+    runControllerTests('redacts credentials and emails from a generation error');
+  });
 });
