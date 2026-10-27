@@ -77,6 +77,9 @@ export function isOAuthAuthenticationError(error: unknown): boolean {
   if (!error || typeof error !== 'object') {
     return false;
   }
+  if (error instanceof UnauthorizedError) {
+    return true;
+  }
 
   const candidate = error as OAuthErrorLike;
   if (

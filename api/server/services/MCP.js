@@ -47,9 +47,7 @@ const {
   createMCPPermissionDeniedError,
   createMCPStructuredTool,
   buildMCPDomainValidationConfig,
-  OpenIDReauthRequiredError,
-  MCPAuthenticationRefreshError,
-  MCPAuthenticationRejectedError,
+  isMCPAuthenticationRecoveryError,
   ScheduledMCPBearerError,
   prepareMCPAuthorizationMutation,
   resolveMCPClientCapabilityProfile,
@@ -1475,9 +1473,7 @@ function createToolInstance({
       if (
         error instanceof ScheduledMCPBearerError ||
         error instanceof ScheduledMCPPolicyError ||
-        error instanceof OpenIDReauthRequiredError ||
-        error instanceof MCPAuthenticationRefreshError ||
-        error instanceof MCPAuthenticationRejectedError
+        isMCPAuthenticationRecoveryError(error)
       ) {
         throw error;
       }

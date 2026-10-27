@@ -545,6 +545,67 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     },
   );
 
+  it('recovers the next request after a refresh connection reset without new consent', async () => {
+    server = await createOAuthMCPServer({ issueRefreshTokens: true, rotateRefreshTokens: true });
+    const initial = await issueTokens(server);
+    await storeTokens(tokenStore, server, { ...initial, expires_at: Date.now() - 1000 });
+    const flowManager = createFlowManager();
+    const oauthStart = jest.fn();
+    const basic = {
+      serverName: SERVER_NAME,
+      serverConfig: { type: 'streamable-http' as const, url: server.url, requiresOAuth: true },
+    };
+    const options = {
+      useOAuth: true as const,
+      user: { id: USER_ID } as IUser,
+      flowManager,
+      tokenMethods: {
+        findToken: tokenStore.findToken,
+        createToken: tokenStore.createToken,
+        updateToken: tokenStore.updateToken,
+        deleteTokens: tokenStore.deleteTokens,
+      },
+      oauthStart,
+      returnOnOAuth: true,
+    };
+    const before = await tokenStore.findToken({
+      userId: USER_ID,
+      type: 'mcp_oauth_refresh',
+      identifier: `mcp:${SERVER_NAME}:refresh`,
+    });
+    // Simulate a reset before the provider receives the refresh, through the real handler.
+    const fetchSpy = jest.spyOn(global, 'fetch').mockRejectedValueOnce(
+      new TypeError('fetch failed', {
+        cause: Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' }),
+      }),
+    );
+    try {
+      await expect(MCPConnectionFactory.create(basic, options)).rejects.toMatchObject({
+        name: 'MCPTokenRefreshUnavailableError',
+      });
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(oauthStart).not.toHaveBeenCalled();
+      expect(
+        await tokenStore.findToken({
+          userId: USER_ID,
+          type: 'mcp_oauth_refresh',
+          identifier: `mcp:${SERVER_NAME}:refresh`,
+        }),
+      ).toEqual(before);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+
+    connection = await MCPConnectionFactory.create(basic, options);
+    expect(await connection.isConnected()).toBe(true);
+    expect((await connection.fetchTools()).some((tool) => tool.name === 'echo')).toBe(true);
+    expect(oauthStart).not.toHaveBeenCalled();
+    expect(server.tokenRequests.filter((r) => r.grantType === 'authorization_code')).toHaveLength(
+      1,
+    );
+    expect(server.tokenRequests.filter((r) => r.grantType === 'refresh_token')).toHaveLength(1);
+  });
+
   it.each(['invalid_client', 'invalid_grant'])(
     'still requests consent for a permanent HTTP 400 %s',
     async (error) => {

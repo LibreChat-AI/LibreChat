@@ -9,6 +9,7 @@ import {
   isMCPTransportAuthenticationError,
   MCPTransportAuthenticationError,
   isMCPInitializationError,
+  isOAuthAuthenticationError,
   createScheduledMCPTransportError,
   ScheduledMCPBearerError,
   MCPAuthenticationRejectedError,
@@ -55,6 +56,16 @@ describe('direct bearer transport rejection classification', () => {
     new StreamableHTTPError(500, 'downstream HTTP 401'),
   ])('does not infer transport rejection from tool codes or messages: %s', (error) => {
     expect(isMCPTransportAuthenticationError(error)).toBe(false);
+  });
+});
+
+describe('OAuth recovery classification', () => {
+  it('recognizes the SDK status-free UnauthorizedError', () => {
+    expect(isOAuthAuthenticationError(new UnauthorizedError())).toBe(true);
+  });
+
+  it('does not treat an unrelated Unauthorized message as a transport challenge', () => {
+    expect(isOAuthAuthenticationError(new Error('Unauthorized'))).toBe(false);
   });
 });
 

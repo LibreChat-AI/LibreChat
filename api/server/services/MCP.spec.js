@@ -2189,8 +2189,12 @@ describe('User parameter passing tests', () => {
       );
     });
 
-    it('preserves OpenIDReauthRequiredError through the OAuth error classification', async () => {
-      const { OpenIDReauthRequiredError } = require('@librechat/api');
+    it.each([
+      'OpenIDReauthRequiredError',
+      'MCPTokenRefreshUnavailableError',
+      'MCPTokenStorageUnavailableError',
+    ])('preserves %s through the OAuth error classification', async (errorName) => {
+      const ErrorClass = require('@librechat/api')[errorName];
       const mockUser = { id: 'reauth-user', role: 'USER' };
       const mockRes = { write: jest.fn(), flush: jest.fn() };
       const { getRoleByName } = require('~/models');
@@ -2201,9 +2205,7 @@ describe('User parameter passing tests', () => {
           },
         },
       });
-      const reauthError = new OpenIDReauthRequiredError(
-        'OpenID token is expired or unavailable; re-authentication is required to resolve {{LIBRECHAT_OPENID_ACCESS_TOKEN}}.',
-      );
+      const reauthError = new ErrorClass('test-server', new TypeError('fetch failed'));
       mockGetMCPManager.mockReturnValue({
         callTool: jest.fn().mockRejectedValue(reauthError),
       });
