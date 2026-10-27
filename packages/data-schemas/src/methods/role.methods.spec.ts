@@ -902,8 +902,8 @@ describe('deleteRoleByName', () => {
     let membershipChange: Promise<void> | undefined;
     const realUpdateOne = User.updateOne.bind(User);
     const spy = jest.spyOn(User, 'updateOne').mockImplementation(((
-      filter: Parameters<typeof User.updateOne>[0],
-      update: Parameters<typeof User.updateOne>[1],
+      filter: mongoose.FilterQuery<IUser>,
+      update: mongoose.UpdateQuery<IUser>,
     ) =>
       (async () => {
         /** Between the member read and the writes: another request moves Bob to USER, and Eve
