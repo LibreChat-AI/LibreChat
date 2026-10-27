@@ -442,6 +442,10 @@ export function useComposerReasoning({
      the level elsewhere (the Parameters panel). It replaces the branch level the way a composer
      pick does; otherwise the inherited level would silently outrank the edit. */
   const configuredScope = `${reasoningStateKey}\u0000${targetFingerprint ?? ''}`;
+  const thinkingKey: string = 'thinking';
+  const thinkingOff =
+    (isAgent && agent != null ? agent.model_parameters?.[thinkingKey] : conversation?.thinking) ===
+    false;
   const previousConfigured = useRef<{ scope: string; value: unknown } | null>(null);
   useEffect(() => {
     /* While the capabilities load the setting is hidden, which says nothing about the configured
@@ -463,21 +467,21 @@ export function useComposerReasoning({
     if (editedValue == null) {
       return;
     }
+    /* A pick turns thinking on; with the switch off, the panel's value stays a parameter. */
+    if (thinkingOff && THINKING_LEVEL_KEYS.has(setting.key)) {
+      return;
+    }
     const edited = reasoningOverrideSchema.safeParse({ key: setting.key, value: editedValue });
     if (edited.success && isReasoningOverrideSupported(edited.data, setting)) {
       setValue(edited.data);
     }
-  }, [configuredScope, configuredValue, setValue, setting]);
+  }, [configuredScope, configuredValue, setValue, setting, thinkingOff]);
 
   if (!available || setting == null) {
     return null;
   }
 
   /* Mirrors the server: thinking switched off wins over a level the next turn would only inherit. */
-  const thinkingKey: string = 'thinking';
-  const thinkingOff =
-    (isAgent && agent != null ? agent.model_parameters?.[thinkingKey] : conversation?.thinking) ===
-    false;
   const inherited =
     branchReasoning != null &&
     isReasoningOverrideSupported(branchReasoning, setting) &&

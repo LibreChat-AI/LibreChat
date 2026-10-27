@@ -569,6 +569,36 @@ describe('useComposerReasoning', () => {
     expect(rendered.result.current?.value?.value).not.toBe('high');
   });
 
+  it('keeps a Parameters effort edit a parameter while thinking is switched off', async () => {
+    const reasoningStore = createStore();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const base = {
+      conversationId: 'thinking-off-edit',
+      endpoint: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      thinking: false,
+    } as TConversation;
+    const rendered = renderHook(
+      ({ conversation }: { conversation: TConversation }) =>
+        useComposerReasoning({ conversation, index: 0, enabled: true }),
+      { initialProps: { conversation: { ...base, effort: 'low' } as TConversation }, wrapper },
+    );
+    await waitFor(() => expect(rendered.result.current?.setting.key).toBe('effort'));
+
+    rendered.rerender({ conversation: { ...base, effort: 'high' } as TConversation });
+
+    await waitFor(() => expect(rendered.result.current?.value?.value).toBe('high'));
+    expect(
+      reasoningStore.get(
+        pendingReasoningOverrideFamily(getReasoningStateKey('thinking-off-edit', 0)),
+      ),
+    ).toBeUndefined();
+  });
+
   it('does not show a branch level the current model does not take', async () => {
     const wrapper = ({ children }: { children: ReactNode }) => (
       <RecoilRoot>
