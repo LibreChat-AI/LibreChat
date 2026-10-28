@@ -199,18 +199,32 @@ const boundary = {
     const loadSafe = new Set(options.loadSafe ?? LOAD_SAFE);
     /** Import specifiers that bind a name to another package, mapped to that package. */
     const externalBindings = new Map();
+    /** Checks each reference to a binding; a `const join = cn` alias is checked the same way. */
     const reportLoadTimeUses = () => {
-      for (const [specifier, source] of externalBindings) {
-        for (const variable of context.sourceCode.getDeclaredVariables(specifier)) {
-          for (const { identifier } of variable.references) {
-            if (identifier === specifier.local || inType(identifier)) continue;
-            if (isInert(identifier) || !runsOnLoad(identifier)) continue;
-            context.report({
-              node: identifier,
-              messageId: 'load',
-              data: { name: identifier.name, source },
-            });
+      const pending = [...externalBindings].flatMap(([specifier, source]) =>
+        context.sourceCode
+          .getDeclaredVariables(specifier)
+          .map((variable) => ({ variable, source })),
+      );
+      const seen = new Set();
+      while (pending.length > 0) {
+        const { variable, source } = pending.pop();
+        if (seen.has(variable)) continue;
+        seen.add(variable);
+        for (const { identifier, init } of variable.references) {
+          if (init || inType(identifier)) continue;
+          const alias = identifier.parent;
+          if (alias.type === 'VariableDeclarator' && alias.init === identifier) {
+            context.sourceCode
+              .getDeclaredVariables(alias)
+              .forEach((aliased) => pending.push({ variable: aliased, source }));
           }
+          if (isInert(identifier) || !runsOnLoad(identifier)) continue;
+          context.report({
+            node: identifier,
+            messageId: 'load',
+            data: { name: identifier.name, source },
+          });
         }
       }
     };

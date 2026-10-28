@@ -204,6 +204,10 @@ tester.run('chat/boundary', chat.rules.boundary, {
       ["import { cn } from '@librechat/client'; export const c = (on ? cn : String)('a');", 'cn'],
       ["import { cn } from '@librechat/client'; export const c = (cn || String)('a');", 'cn'],
       [
+        "import { cn } from '@librechat/client'; const join = cn; export const c = join('a');",
+        'join',
+      ],
+      [
         "import { cn } from '@librechat/client'; export const o = new (class { v = cn('a'); })();",
         'cn',
       ],
