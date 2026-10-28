@@ -5245,6 +5245,11 @@ describe('ResumableAgentController resume metadata', () => {
     const promoted = new Promise((resolve) => {
       signalPromoted = resolve;
     });
+    let signalFinished;
+    const finished = new Promise((resolve) => {
+      signalFinished = resolve;
+    });
+    mockGenerationJobManager.finishTerminalJob.mockImplementation(async () => signalFinished());
     mockSaveMessage.mockImplementation(async (_reqCtx, message) => {
       if (message?.messageId === userMessage.messageId) {
         return {};
@@ -5294,7 +5299,7 @@ describe('ResumableAgentController resume metadata', () => {
       jest.fn().mockResolvedValue({ client }),
       null,
     );
-    const promotedRow = await promoted;
+    const [promotedRow] = await Promise.all([promoted, finished]);
 
     const snapshotWrites = mockSaveMessage.mock.calls
       .map(([, message]) => message)
@@ -5309,6 +5314,14 @@ describe('ResumableAgentController resume metadata', () => {
     expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledWith(
       expect.anything(),
       null,
+    );
+    /** Terminal cleanup releases the content and resume state the plan reads. */
+    const promotedOrder =
+      mockSaveMessage.mock.invocationCallOrder[
+        mockSaveMessage.mock.calls.findIndex(([, message]) => message === promotedRow)
+      ];
+    expect(promotedOrder).toBeLessThan(
+      mockGenerationJobManager.finishTerminalJob.mock.invocationCallOrder[0],
     );
   });
 

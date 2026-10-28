@@ -2242,6 +2242,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         return;
       }
       try {
+        await disconnectSnapshots.settle();
         await GenerationJobManager.finishTerminalJob(terminalClaim);
       } finally {
         terminalClaimFinished = true;
@@ -3446,6 +3447,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                       initialAgentId: verifiedInitialAgentId,
                     }),
                   ),
+                beforeTerminalCleanup: disconnectSnapshots.settle,
               })) === true;
             /** A true completion means this owner won the terminal CAS and
              * the beforeErrorPublication barrier above finished. Only that
@@ -3489,7 +3491,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     };
 
     // Start generation and handle any unhandled errors
-    const generationSettled = startGeneration()
+    void startGeneration()
       .catch(async (err) => {
         logger.error(
           `[ResumableAgentController] Unhandled error in background generation: ${err.message}`,
@@ -3547,7 +3549,6 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           drainError,
         );
       });
-    void generationSettled.then(disconnectSnapshots.settle);
   } catch (error) {
     logGenerationStartFailure(error, {
       streamId,
