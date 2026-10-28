@@ -1903,7 +1903,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
      * actual response messageId isn't available yet. The final response save will
      * overwrite this with the complete response using the same messageId pattern.
      */
-    job.emitter.on('allSubscribersLeft', async (aggregatedContent) => {
+    const persistDisconnectSnapshot = async (aggregatedContent) => {
       /** Empty content is rejected only after the snapshot mode is known: a
        *  reconciled compaction synthesizes its terminal outcome from nothing,
        *  while a live run has nothing persistable. Whether an earlier live
@@ -2024,7 +2024,8 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         // Reset flag so we can try again if subscribers reconnect and leave again
         partialResponseSaved = false;
       }
-    });
+    };
+    job.emitter.on('allSubscribersLeft', persistDisconnectSnapshot);
 
     /** @type {{ client: TAgentClient; userMCPAuthMap?: Record<string, Record<string, string>> }} */
     const result = await initializeClient({
@@ -3475,7 +3476,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     };
 
     // Start generation and handle any unhandled errors
-    void startGeneration()
+    const generationSettled = startGeneration()
       .catch(async (err) => {
         logger.error(
           `[ResumableAgentController] Unhandled error in background generation: ${err.message}`,
@@ -3531,6 +3532,26 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         logger.warn(
           '[ResumableAgentController] Failed to record completed provider drain',
           drainError,
+        );
+      });
+    /** A snapshot saved while the run was live gets no further disconnect once
+     *  every subscriber has left, so a terminal write that then failed would
+     *  leave it unfinished: it is planned once more against the settled job. */
+    void generationSettled
+      .then(async () => {
+        if (!isCompaction || !partialResponseSaved) {
+          return;
+        }
+        const saved = await GenerationJobManager.getJobStore().getContentParts(
+          streamId,
+          jobCreatedAt,
+        );
+        await persistDisconnectSnapshot(saved?.content ?? []);
+      })
+      .catch((error) => {
+        logger.error(
+          '[ResumableAgentController] Error settling the saved partial response:',
+          error,
         );
       });
   } catch (error) {

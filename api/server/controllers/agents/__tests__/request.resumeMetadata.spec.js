@@ -5191,6 +5191,125 @@ describe('ResumableAgentController resume metadata', () => {
     },
   );
 
+  it('promotes a live compaction snapshot once its terminal write settles for reconciliation', async () => {
+    const userMessage = {
+      messageId: 'user-msg',
+      parentMessageId: 'parent-msg',
+      conversationId: 'conversation-123',
+      text: '',
+    };
+    const textPart = { type: 'text', text: 'Partial summary' };
+    let jobRecord = { createdAt: 1000, status: 'running' };
+    let allSubscribersLeftHandler;
+    mockGenerationJobManager.createJob.mockResolvedValue({
+      createdAt: 1000,
+      metadata: { providerExecutionId: 'provider-segment-1', providerDrained: true },
+      readyPromise: Promise.resolve(),
+      abortController: new AbortController(),
+      emitter: {
+        on: jest.fn((event, handler) => {
+          if (event === 'allSubscribersLeft') {
+            allSubscribersLeftHandler = handler;
+          }
+        }),
+      },
+    });
+    mockGenerationJobManager.getJobStore.mockReturnValue({
+      getJob: jest.fn(async () => jobRecord),
+      getContentParts: jest.fn(async () => ({ content: [textPart] })),
+    });
+    mockGenerationJobManager.getResumeState.mockResolvedValue({
+      conversationId: 'conversation-123',
+      responseMessageId: 'response-msg',
+      userMessage: { messageId: userMessage.messageId },
+    });
+    mockGenerationJobManager.publishTerminalClaim.mockImplementation(async (_claim, finalEvent) => {
+      if (finalEvent == null) {
+        jobRecord = {
+          createdAt: 1000,
+          status: 'complete',
+          finalEvent: JSON.stringify({ final: true, reconcile: true }),
+        };
+      }
+      return { finalEvent, persistenceFailed: finalEvent == null };
+    });
+    mockGetMessages.mockImplementation(async ({ messageId }) => {
+      if (messageId === userMessage.messageId) {
+        return [{ _id: 'anchor' }];
+      }
+      return messageId === 'response-msg' ? [{ _id: 'live-row', unfinished: true }] : [];
+    });
+    let signalPromoted;
+    const promoted = new Promise((resolve) => {
+      signalPromoted = resolve;
+    });
+    mockSaveMessage.mockImplementation(async (_reqCtx, message) => {
+      if (message?.messageId === userMessage.messageId) {
+        return {};
+      }
+      if (message?.unfinished === false && message?.error === false) {
+        signalPromoted(message);
+        return {};
+      }
+      /** The live snapshot lands; the completed response write does not. */
+      return message?.unfinished === true ? {} : undefined;
+    });
+    const client = {
+      options: {},
+      savedMessageIds: new Set(['response-msg']),
+      skipSaveUserMessage: false,
+      sendMessage: jest.fn(async (_text, options) => {
+        options.onStart(userMessage, 'response-msg');
+        await allSubscribersLeftHandler([textPart]);
+        return {
+          messageId: 'response-msg',
+          parentMessageId: userMessage.messageId,
+          conversationId: 'conversation-123',
+          content: [textPart],
+          databasePromise: Promise.resolve({
+            conversation: { conversationId: 'conversation-123', title: 'Existing' },
+          }),
+        };
+      }),
+    };
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: '',
+        compact: true,
+        messageId: userMessage.messageId,
+        parentMessageId: userMessage.messageId,
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config: {},
+    };
+
+    await AgentController(
+      req,
+      createResumableResponse(),
+      jest.fn(),
+      jest.fn().mockResolvedValue({ client }),
+      null,
+    );
+    const promotedRow = await promoted;
+
+    const snapshotWrites = mockSaveMessage.mock.calls
+      .map(([, message]) => message)
+      .filter((message) => message.messageId === 'response-msg' && message.unfinished != null);
+    expect(snapshotWrites[0]).toMatchObject({ unfinished: true, error: false });
+    expect(promotedRow).toMatchObject({
+      messageId: 'response-msg',
+      parentMessageId: userMessage.messageId,
+      unfinished: false,
+      error: false,
+    });
+    expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledWith(
+      expect.anything(),
+      null,
+    );
+  });
+
   it('suppresses the completed response write when Stop already won terminal ownership', async () => {
     const userMessage = {
       messageId: 'user-msg',
