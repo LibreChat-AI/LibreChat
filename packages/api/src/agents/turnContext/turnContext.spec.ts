@@ -403,9 +403,9 @@ describe('applyTurnContext', () => {
   it('leaves nothing for the SDK to move when the provider moves the dynamic part', () => {
     const agent = initialized();
     applyTurnContext(agent, { block: 'Anchored block.' });
-    expect(assembleSystemPrompt(agent, { stableContext: true, moveTurnPartsOnly: true })).toEqual({
-      instructions:
-        'Search instructions.\nBase.\n\nOwn guidance.\n\nAgent files.\n\nAnchored block.',
+    expect(assembleSystemPrompt(agent, { stableContext: true, conversationBlock: true })).toEqual({
+      instructions: 'Search instructions.\nBase.',
+      conversation_instructions: 'Own guidance.\n\nAgent files.\n\nAnchored block.',
       additional_instructions: '',
     });
   });

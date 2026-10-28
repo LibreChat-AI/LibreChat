@@ -4,7 +4,7 @@ import {
   ContextPartKeys,
   contributeContext,
   assembleSystemPrompt,
-  sdkMovesDynamicInstructions,
+  sdkCachesConversationBlock,
 } from './systemParts';
 
 describe('contributeContext', () => {
@@ -38,7 +38,7 @@ describe('assembleSystemPrompt', () => {
     });
   });
 
-  it('moves only per-turn parts when asked, keeping the rest with the instructions', () => {
+  it('moves only per-turn parts when asked, keeping the rest in the conversation block', () => {
     const agent: ContextAgent = {
       instructions: 'Base',
       dynamicToolContextMap: { web_search: 'Started at', queued_code_files: 'Queued' },
@@ -47,28 +47,35 @@ describe('assembleSystemPrompt', () => {
     contributeContext(agent, ContextPartKeys.agentFiles, 'Files');
     contributeContext(agent, ContextPartKeys.memory, 'Memory');
     contributeContext(agent, ContextPartKeys.rag, 'Retrieved\n');
-    expect(assembleSystemPrompt(agent, { stableContext, moveTurnPartsOnly: true })).toEqual({
-      instructions: 'Base\n\nArtifacts\n\nFiles\nStarted at',
+    expect(assembleSystemPrompt(agent, { stableContext, conversationBlock: true })).toEqual({
+      instructions: 'Base',
+      conversation_instructions: 'Artifacts\n\nFiles\nStarted at',
       additional_instructions: 'Retrieved\n\n\nMemory\n\nQueued',
     });
     expect(assembleSystemPrompt(agent, { stableContext }).additional_instructions).toBe(
       'Artifacts\n\nRetrieved\n\n\nMemory\n\nFiles\nStarted at\nQueued',
     );
   });
+
+  it('passes an empty conversation block when there is no context', () => {
+    expect(
+      assembleSystemPrompt({ instructions: 'Base' }, { stableContext, conversationBlock: true }),
+    ).toEqual({ instructions: 'Base', conversation_instructions: '', additional_instructions: '' });
+  });
 });
 
-describe('sdkMovesDynamicInstructions', () => {
+describe('sdkCachesConversationBlock', () => {
   it.each([Providers.ANTHROPIC, Providers.OPENROUTER, Providers.BEDROCK])(
     'is true for %s with promptCache enabled',
     (provider) => {
-      expect(sdkMovesDynamicInstructions(provider, { promptCache: true })).toBe(true);
+      expect(sdkCachesConversationBlock(provider, { promptCache: true })).toBe(true);
     },
   );
 
   it.each([Providers.OPENAI, Providers.GOOGLE, Providers.AZURE, 'custom'])(
     'is false for %s even with promptCache',
     (provider) => {
-      expect(sdkMovesDynamicInstructions(provider, { promptCache: true })).toBe(false);
+      expect(sdkCachesConversationBlock(provider, { promptCache: true })).toBe(false);
     },
   );
 });

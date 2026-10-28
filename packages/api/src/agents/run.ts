@@ -119,7 +119,7 @@ import { resolveConfigHeaders, resolveModelHeaders, mergeHeaders } from '~/utils
 import { interruptToolHandler, supportsRunInterruption } from '~/agents/steering/tools';
 import { extractDefaultParams, resolveReasoningParams } from '~/endpoints/openai/llm';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
-import { assembleSystemPrompt, sdkMovesDynamicInstructions } from './systemParts';
+import { assembleSystemPrompt, sdkCachesConversationBlock } from './systemParts';
 import { reportSubagentResolutionFailure } from '~/agents/failures/subagent';
 import { createScheduledMCPRunPolicy } from '~/schedules/authorization/run';
 import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
@@ -2492,16 +2492,15 @@ export async function createRun({
     );
 
     /**
-     * With `stableContext` the SDK moves a non-empty dynamic part into a message before the last
-     * user message, a position that shifts every turn. Only the per-turn parts (memory, RAG, this
-     * turn's queued files) stay there; the rest joins the stable instructions. The SDK also puts
-     * a summary from an earlier run there, so after a compaction the summary is written to the
-     * cache again on every turn until the SDK keeps it as a message of its own (agents#613).
+     * With `stableContext` and a provider that caches the conversation block, only the per-turn
+     * parts (memory, RAG, this turn's queued files) stay dynamic; the rest of the conversation's
+     * context is a cached block right after the instructions, followed by a compaction summary.
+     * The block is passed even when empty: the SDK keeps the summary there only when it is set.
      * Subagent runs are isolated and keep the split.
      */
     const assembled = assembleSystemPrompt(agent, {
       stableContext: isStableContextEnabled(appConfig),
-      moveTurnPartsOnly: !isSubagent && sdkMovesDynamicInstructions(provider, llmConfig),
+      conversationBlock: !isSubagent && sdkCachesConversationBlock(provider, llmConfig),
     });
     const systemContent = assembled.instructions;
     let additionalInstructions = assembled.additional_instructions;
@@ -2644,6 +2643,9 @@ export async function createRun({
       tools,
       clientOptions: llmConfig,
       instructions: systemContent,
+      ...(assembled.conversation_instructions != null && {
+        conversation_instructions: assembled.conversation_instructions,
+      }),
       additional_instructions:
         frameDynamicInstructions({
           instructions: additionalInstructions,

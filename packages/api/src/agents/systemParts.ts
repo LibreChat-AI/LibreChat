@@ -202,15 +202,13 @@ export function setConversationContext(
 const isTurnPart = (part: ContextPart) => part.kind === 'turn';
 
 /**
- * Mirrors the SDK condition under which `additional_instructions` is relocated into a
- * separate message right before the last user message (Anthropic and OpenRouter with
- * `promptCache: true`; Bedrock too since agents#613, earlier releases keep it at the end of
- * the system text, where merging the stable part changes nothing). That position shifts
- * every turn, so no request starts with the bytes of the previous one. The prompt prefix stability tests run the SDK against this
- * predicate for every provider.
- * TODO: drop with the merge once the SDK carries `conversation_instructions`.
+ * Providers whose system message the SDK marks for prompt caching: Anthropic, OpenRouter and
+ * Bedrock with `promptCache: true`. There `conversation_instructions` gets its own breakpoint
+ * after `instructions`, and a summary of the conversation is a stable message of its own, while
+ * a non-empty `additional_instructions` is relocated right before the last user message, a
+ * position that shifts every turn. Elsewhere the SDK appends the block to the system text.
  */
-export function sdkMovesDynamicInstructions(
+export function sdkCachesConversationBlock(
   provider: string | undefined,
   clientOptions?: object,
 ): boolean {
@@ -245,19 +243,21 @@ function currentTail(agent: ContextAgent): string {
  *
  * - Without `stableContext` the prompt is built as before: tool runtime context
  *   ahead of the tail, everything in `additional_instructions`.
- * - With it, the tail comes first and the runtime context last, and with
- *   `moveTurnPartsOnly` every part but the per-turn ones joins `instructions`: the SDK
- *   relocates a non-empty `additional_instructions` next to the newest user message for
- *   some providers, and only text that changes every turn belongs there.
+ * - With it, the tail comes first and the runtime context last. With `conversationBlock`
+ *   every part but the per-turn ones goes to `conversation_instructions`, which the SDK keeps
+ *   right after `instructions` with its own cache breakpoint and never moves; the per-turn
+ *   parts stay in `additional_instructions`, which it relocates next to the newest user
+ *   message for some providers.
  */
 export function assembleSystemPrompt(
   agent: ContextAgent,
   {
     stableContext = false,
-    moveTurnPartsOnly = false,
-  }: { stableContext?: boolean; moveTurnPartsOnly?: boolean } = {},
+    conversationBlock = false,
+  }: { stableContext?: boolean; conversationBlock?: boolean } = {},
 ): {
   instructions: string;
+  conversation_instructions?: string;
   additional_instructions: string;
 } {
   const parts = listContextParts(agent).filter(({ text }) => text !== '');
@@ -278,8 +278,11 @@ export function assembleSystemPrompt(
     };
   }
   const additional = [tail, mapText(ContextPartKeys.runtimePrefix)].join('\n').trim();
-  if (!moveTurnPartsOnly || additional === '') {
+  if (!conversationBlock) {
     return { instructions, additional_instructions: additional };
+  }
+  if (additional === '') {
+    return { instructions, conversation_instructions: '', additional_instructions: '' };
   }
 
   const isStable = (part: ContextPart) => !isTurnPart(part);
@@ -290,7 +293,8 @@ export function assembleSystemPrompt(
     .join('\n')
     .trim();
   return {
-    instructions: joinBlocks([instructions, stable]),
+    instructions,
+    conversation_instructions: stable,
     additional_instructions: joinBlocks([
       assembleAdditionalInstructions(agent, isTurnPart)?.trim() ?? '',
       mapText(ContextPartKeys.runtimePrefix, isTurnPart),

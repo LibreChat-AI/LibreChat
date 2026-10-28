@@ -528,15 +528,36 @@ describe('createRun instructions with prompt caching', () => {
   }
 
   it.each([Providers.ANTHROPIC, Providers.OPENROUTER])(
-    'merges the stable part into instructions for %s and leaves the memory and RAG part',
+    'passes the stable part as the conversation block for %s and leaves the memory and RAG part',
     async (provider) => {
       const input = await agentInput(provider, true, withParts());
-      expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
+      expect(input.instructions).toBe('Base instructions.');
+      expect(input.conversation_instructions).toBe(`${STATIC}\n${RUNTIME}`);
       expect(input.additional_instructions).toBe(
         frameDynamicInstructions({ instructions: VOLATILE, provider, promptCache: true }),
       );
     },
   );
+
+  const memoryOnly = () => {
+    const agent = { dynamicToolContextMap: {} };
+    contributeContext(agent, ContextPartKeys.memory, MEMORY);
+    return agent;
+  };
+
+  it.each([
+    ['no context', () => ({ dynamicToolContextMap: {} })],
+    ['only per-turn context', memoryOnly],
+  ])('passes an empty conversation block with %s, so a summary stays in place', async (_, make) => {
+    expect((await agentInput(Providers.ANTHROPIC, true, make())).conversation_instructions).toBe(
+      '',
+    );
+  });
+
+  it('passes no conversation block without stableContext', async () => {
+    const input = await agentInput(Providers.ANTHROPIC, true, { dynamicToolContextMap: {} }, false);
+    expect(input.conversation_instructions).toBeUndefined();
+  });
 
   it.each([
     [Providers.ANTHROPIC, false],
@@ -577,7 +598,7 @@ describe('createRun instructions with prompt caching', () => {
       ...withParts(),
       ...queuedFiles(),
     });
-    expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
+    expect(input.conversation_instructions).toBe(`${STATIC}\n${RUNTIME}`);
     expect(input.additional_instructions.indexOf(`${VOLATILE}\n\n`)).toBeGreaterThan(0);
     expect(input.additional_instructions.indexOf('report.csv')).toBeGreaterThan(
       input.additional_instructions.indexOf(VOLATILE),
