@@ -57,6 +57,17 @@ describe('independent browser replay opt-in', () => {
     expect(telemetrySchema.safeParse(telemetry).success).toBe(false);
   });
 });
+
+describe('telemetry.stackTraceLimit', () => {
+  it('stays absent unless configured, so the process default applies', () => {
+    expect(telemetrySchema.parse({})).toEqual({});
+    expect(telemetrySchema.parse({ stackTraceLimit: 50 })).toEqual({ stackTraceLimit: 50 });
+  });
+
+  it.each([0, -1, 2.5, 1001, '50'])('rejects %p', (stackTraceLimit) => {
+    expect(telemetrySchema.safeParse({ stackTraceLimit }).success).toBe(false);
+  });
+});
 import { EModelEndpoint, isDocumentSupportedProvider } from './schemas';
 import { getEndpointFileConfig, mergeFileConfig } from './file-config';
 import { DEFAULT_MCP_APP_CSP_LIMITS } from './mcp/csp';

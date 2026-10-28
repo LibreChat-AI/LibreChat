@@ -3521,6 +3521,12 @@ export const RUM_COLLECTOR_ACK_HEADER = 'x-librechat-rum-accepted';
 
 export const telemetrySchema = z
   .object({
+    /**
+     * Frames V8 records per error stack (`Error.stackTraceLimit`), applied when librechat.yaml
+     * loads. Unset keeps the process default: 10, or `--stack-trace-limit` from NODE_OPTIONS.
+     * Deeper stacks cost more on every thrown error.
+     */
+    stackTraceLimit: z.number().int().min(1).max(1000).optional(),
     rum: z
       .object({
         enabled: z.boolean().optional(),
