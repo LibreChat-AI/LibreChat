@@ -38,6 +38,7 @@ jest.mock('@librechat/api', () => ({
       : null,
   ),
   isCodeArtifactToolOutput: jest.requireActual('@librechat/api').isCodeArtifactToolOutput,
+  omitReasoningReplayFromDelta: jest.requireActual('@librechat/api').omitReasoningReplayFromDelta,
   isCodeSessionToolName: jest.requireActual('@librechat/api').isCodeSessionToolName,
   collectToolCallIds: jest.requireActual('@librechat/api').collectToolCallIds,
   captureSubagentIdentity: jest.requireActual('@librechat/api').captureSubagentIdentity,
@@ -1896,5 +1897,87 @@ describe('isStreamWritable', () => {
 
   it('returns true on the happy path: headers sent, not ended, no streamId', () => {
     expect(isStreamWritable({ headersSent: true, writableEnded: false }, null)).toBe(true);
+  });
+});
+
+describe('provider output items', () => {
+  it('stores the items on the tool call parts without emitting them', async () => {
+    const { GenerationJobManager, sendEvent } = require('@librechat/api');
+    const { GraphEvents, createContentAggregator } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const { contentParts, stepMap, aggregateContent } = createContentAggregator();
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent,
+      contentParts,
+      stepMap,
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      streamId: 'conversation-1',
+      jobCreatedAt: 1234,
+    });
+    await handlers[GraphEvents.ON_RUN_STEP].handle(GraphEvents.ON_RUN_STEP, {
+      id: 'step-1',
+      index: 0,
+      stepDetails: {
+        type: 'tool_calls',
+        tool_calls: [{ id: 'call-1', name: 'lookup', args: '{}' }],
+      },
+    });
+    jest.clearAllMocks();
+
+    const providerItems = {
+      origin: 'origin-digest',
+      items: [
+        { id: 'rs_1', type: 'reasoning', summary: [], encrypted_content: 'opaque' },
+        { id: 'fc_1', type: 'function_call', status: 'completed', call_id: 'call-1' },
+      ],
+    };
+    await handlers[GraphEvents.ON_PROVIDER_OUTPUT_ITEMS].handle(
+      GraphEvents.ON_PROVIDER_OUTPUT_ITEMS,
+      { tool_calls: [{ id: 'call-1', providerItems }] },
+    );
+
+    expect(contentParts[0].tool_call.providerItems).toEqual(providerItems);
+    expect(GenerationJobManager.emitChunk).not.toHaveBeenCalled();
+    expect(sendEvent).not.toHaveBeenCalled();
+  });
+});
+
+describe('signed reasoning of a reasoning delta', () => {
+  const replay = {
+    anthropic: { model: 'claude-test', blocks: [{ type: 'thinking', signature: 'SIG_1' }] },
+  };
+
+  it('is kept in the aggregated content and never emitted', async () => {
+    const { GenerationJobManager } = require('@librechat/api');
+    const { GraphEvents, createContentAggregator } = jest.requireActual('@librechat/agents');
+    const { getDefaultHandlers } = require('../callbacks');
+    const { contentParts, stepMap, aggregateContent } = createContentAggregator();
+    const handlers = getDefaultHandlers({
+      res: { write: jest.fn() },
+      aggregateContent,
+      contentParts,
+      stepMap,
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+      streamId: 'conversation-1',
+      jobCreatedAt: 1234,
+    });
+    await handlers[GraphEvents.ON_RUN_STEP].handle(GraphEvents.ON_RUN_STEP, {
+      id: 'step-1',
+      index: 0,
+      stepDetails: { type: 'message_creation', message_creation: { message_id: 'm1' } },
+    });
+    jest.clearAllMocks();
+    await handlers[GraphEvents.ON_REASONING_DELTA].handle(GraphEvents.ON_REASONING_DELTA, {
+      id: 'step-1',
+      delta: { content: [{ type: 'think', think: 'plan', provider_replay: replay }] },
+    });
+    const emitted = GenerationJobManager.emitChunk.mock.calls;
+    expect(contentParts[0].provider_replay).toEqual(replay);
+    expect(emitted).toHaveLength(1);
+    expect(JSON.stringify(emitted)).toContain('plan');
+    expect(JSON.stringify(emitted)).not.toContain('SIG_1');
   });
 });

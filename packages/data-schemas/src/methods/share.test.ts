@@ -104,6 +104,7 @@ describe('Share Methods', () => {
         attachments: [mongoose.Schema.Types.Mixed],
         files: [mongoose.Schema.Types.Mixed],
         content: [mongoose.Schema.Types.Mixed],
+        providerItems: { type: mongoose.Schema.Types.Mixed, select: false },
       },
       { timestamps: true },
     );
@@ -734,6 +735,26 @@ describe('Share Methods', () => {
       expect(result?.messages.find((message) => message.text === 'Hello')).not.toHaveProperty(
         'userSubmittedMessageFieldPaths',
       );
+    });
+
+    test('publishes no provider items of a response', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const conversationId = `conv_${nanoid()}`;
+      await Conversation.create({ conversationId, user: userId, title: 'Shared' });
+      await Message.create({
+        messageId: `msg_${nanoid()}`,
+        conversationId,
+        user: userId,
+        text: '',
+        isCreatedByUser: false,
+        parentMessageId: Constants.NO_PARENT,
+        providerItems: { call_1: { origin: 'digest', items: [{ encrypted_content: 'opaque' }] } },
+      });
+      const { shareId } = await shareMethods.createSharedLink(userId, conversationId);
+
+      const result = await shareMethods.getSharedMessages(shareId);
+      expect(result?.messages).toHaveLength(1);
+      expect(JSON.stringify(result)).not.toContain('opaque');
     });
 
     test('should return null for non-existent share', async () => {

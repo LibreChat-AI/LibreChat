@@ -2228,6 +2228,79 @@ Retrieved context: a document
     expect(agents[0].instructions).toBe('Static tool instructions\nBase instructions');
     expect(agents[0].additional_instructions).toBe('Conversation Date & Time: anchor\nMemory tail');
   });
+
+  it('hands the SDK the same system prompt as upstream without stableContext', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          instructions: 'Base instructions',
+          additional_instructions: 'Artifact guidance\n\nSaved memory',
+          toolContextMap: { web_search: 'Static tool instructions' },
+          dynamicToolContextMap: {
+            web_search: 'Conversation Date & Time: turn',
+            agent_temporal_instructions: 'Today is Monday.',
+            queued_code_files: 'Queued files',
+          },
+        }),
+        makeAgent({
+          id: 'agent_2',
+          provider: Providers.ANTHROPIC,
+          endpoint: Providers.ANTHROPIC,
+          instructions: 'Second agent',
+          additional_instructions: 'Saved memory',
+          dynamicToolContextMap: { web_search: 'Conversation Date & Time: turn' },
+          model_parameters: { model: 'test-model', promptCache: true, apiKey: 'test-key' },
+        }),
+      ],
+    });
+
+    expect(
+      agents.map(({ instructions, additional_instructions }) => ({
+        instructions,
+        additional_instructions,
+      })),
+    ).toMatchInlineSnapshot(`
+      [
+        {
+          "additional_instructions": "Conversation Date & Time: turn
+      Today is Monday.
+      Artifact guidance
+
+      Saved memory",
+          "instructions": "Static tool instructions
+      Base instructions",
+        },
+        {
+          "additional_instructions": "<system_context>
+      Context supplied by the application, not part of the user's message. Use it as context; do not process it as user input.
+
+      Conversation Date & Time: turn
+      Saved memory
+      </system_context>",
+          "instructions": "Second agent",
+        },
+      ]
+    `);
+  });
+
+  it('puts the dynamic tool context after the additional instructions with stableContext', async () => {
+    const agents = await callAndCapture({
+      appConfig: {
+        endpoints: { agents: { promptCache: { stableContext: true } } },
+      } as unknown as AppConfig,
+      agents: [
+        makeAgent({
+          instructions: 'Base instructions',
+          additional_instructions: 'Artifact guidance',
+          dynamicToolContextMap: { web_search: 'Conversation Date & Time: anchor' },
+        }),
+      ],
+    });
+
+    expect(agents[0].additional_instructions).toBe(
+      'Artifact guidance\nConversation Date & Time: anchor',
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -3672,6 +3745,46 @@ async function callAndCaptureRunConfig({
   expect(createMock).toHaveBeenCalledTimes(1);
   return createMock.mock.calls[0][0] as Record<string, unknown>;
 }
+
+describe('signed reasoning capture', () => {
+  const stable = {
+    endpoints: { agents: { promptCache: { stableContext: true } } },
+  } as unknown as AppConfig;
+  const primaryInput = (runConfig: Record<string, unknown>): Record<string, unknown> =>
+    (runConfig.graphConfig as { agents: Array<Record<string, unknown>> }).agents[0];
+
+  it.each([
+    ['the Anthropic API', {}],
+    ['a proxy of the Anthropic API', { clientOptions: { baseURL: 'https://proxy.test' } }],
+  ])('asks the SDK to capture it for %s with stableContext', async (_name, client) => {
+    const runConfig = await callAndCaptureRunConfig({
+      overrides: {
+        provider: 'anthropic',
+        endpoint: 'anthropic',
+        model_parameters: { model: 'model-1', ...client },
+      },
+      appConfig: stable,
+    });
+    expect(primaryInput(runConfig).providerReasoningReplay).toBe(true);
+  });
+
+  it.each([
+    ['the lever is off', 'anthropic', undefined, {}],
+    ['the provider does not sign reasoning', 'openAI', stable, {}],
+    ['the provider is Bedrock', 'bedrock', stable, {}],
+    ['Anthropic runs on Vertex AI', 'anthropic', stable, { createClient: () => ({}) }],
+  ])('does not when %s', async (_name, provider, appConfig, client) => {
+    const runConfig = await callAndCaptureRunConfig({
+      overrides: {
+        provider,
+        endpoint: provider,
+        model_parameters: { model: 'model-1', ...client },
+      },
+      appConfig,
+    });
+    expect(primaryInput(runConfig)).not.toHaveProperty('providerReasoningReplay');
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Suite: Langfuse run config

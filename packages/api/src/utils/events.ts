@@ -1,5 +1,6 @@
 import type { Response as ServerResponse } from 'express';
 import type { ServerSentEvent } from '~/types';
+import { omitProviderItemsFromEvent } from './message';
 
 /** Minimal writable transport; an Express response satisfies it. */
 export interface GuardedWriter {
@@ -29,7 +30,10 @@ export function sendEvent(res: ServerResponse, event: ServerSentEvent): void {
   if ('data' in event && typeof event.data === 'string' && event.data.length === 0) {
     return;
   }
-  writeGuarded(res, `event: message\ndata: ${JSON.stringify(event)}\n\n`);
+  writeGuarded(
+    res,
+    `event: message\ndata: ${JSON.stringify(omitProviderItemsFromEvent(event))}\n\n`,
+  );
 }
 
 /**

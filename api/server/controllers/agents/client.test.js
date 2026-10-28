@@ -3005,6 +3005,85 @@ describe('AgentClient - startup telemetry', () => {
     expect(processStream).toHaveBeenCalledTimes(1);
   });
 
+  describe('signed reasoning replay option', () => {
+    const formatWith = async ({ stableContext, provider, model_parameters }) => {
+      jest.clearAllMocks();
+      mockIsHITLEnabled.mockReturnValue(false);
+      mockFormatAgentMessages.mockReturnValueOnce({
+        messages: [],
+        indexTokenCountMap: {},
+        summary: undefined,
+        boundaryTokenAdjustment: undefined,
+      });
+      mockCreateRun.mockResolvedValueOnce({
+        Graph: null,
+        processStream: jest.fn().mockResolvedValue(),
+        getCalibrationRatio: jest.fn(() => 0),
+        getInterrupt: jest.fn(() => undefined),
+      });
+      const client = new AgentClient({
+        req: {
+          user: { id: 'user-123' },
+          body: {},
+          config: {
+            endpoints: {
+              [EModelEndpoint.agents]: stableContext
+                ? { promptCache: { stableContext: true } }
+                : {},
+            },
+          },
+          _resumableStreamId: 'reasoning-replay-conversation',
+        },
+        res: {},
+        agent: { id: 'agent-primary', endpoint: provider, provider, model_parameters },
+        agentConfigs: new Map(),
+        endpointTokenConfig: {},
+        eventHandlers: {},
+        contentParts: [],
+        collectedUsage: [],
+        artifactPromises: [],
+      });
+      client.conversationId = 'reasoning-replay-conversation';
+      client.responseMessageId = 'reasoning-replay-response';
+      client.parentMessageId = 'reasoning-replay-parent';
+      client.recordCollectedUsage = jest.fn().mockResolvedValue();
+      await client.chatCompletion({ payload: [] });
+      return mockFormatAgentMessages.mock.calls[0][4];
+    };
+
+    it('names the serving model for Anthropic only with stableContext', async () => {
+      expect(
+        await formatWith({
+          stableContext: true,
+          provider: 'anthropic',
+          model_parameters: { model: 'claude-test' },
+        }),
+      ).toMatchObject({ replayProviderReasoning: { provider: 'anthropic', model: 'claude-test' } });
+      expect(
+        await formatWith({
+          stableContext: true,
+          provider: 'bedrock',
+          model_parameters: { modelName: 'bedrock-model' },
+        }),
+      ).not.toHaveProperty('replayProviderReasoning');
+    });
+
+    it('formats the history as upstream without stableContext', async () => {
+      const options = await formatWith({
+        stableContext: false,
+        provider: 'anthropic',
+        model_parameters: { model: 'claude-test' },
+      });
+      expect(options).toMatchInlineSnapshot(`
+        {
+          "compactionSemanticIndex": {
+            "intentToolNames": Set {},
+          },
+        }
+      `);
+    });
+  });
+
   it('preserves provider messages while deriving the full semantic index', () => {
     const { formatAgentMessages } = jest.requireActual('@librechat/agents');
     const { stripActivityLabelParts } = jest.requireActual('@librechat/api');
@@ -7784,6 +7863,161 @@ describe('AgentClient - titleConvo', () => {
       expect(client.memoryPayload).toBeNull();
     });
 
+    describe('context updates', () => {
+      const history = () => [
+        {
+          messageId: 'msg-1',
+          parentMessageId: null,
+          sender: 'User',
+          text: 'First question',
+          isCreatedByUser: true,
+          createdAt: '2026-03-09T20:00:00.000Z',
+          tokenCount: 5,
+        },
+        {
+          messageId: 'msg-2',
+          parentMessageId: 'msg-1',
+          sender: 'Assistant',
+          text: 'First answer',
+          isCreatedByUser: false,
+          createdAt: '2026-03-09T20:00:10.000Z',
+          tokenCount: 5,
+        },
+        {
+          messageId: 'msg-3',
+          parentMessageId: 'msg-2',
+          sender: 'User',
+          text: 'Next question',
+          isCreatedByUser: true,
+        },
+      ];
+
+      beforeEach(() => {
+        mockReq.config.endpoints = {
+          [EModelEndpoint.agents]: { promptCache: { stableContext: true } },
+        };
+        mockReq.conversationCreatedAt = '2026-03-09T20:00:00.000Z';
+        mockReq.turnStartedAt = Date.parse('2026-03-10T09:00:00.000Z');
+        mockReq.body.timezone = 'UTC';
+        mockAgent.dynamicToolContextMap = { web_search: 'Conversation Date & Time: ...' };
+        require('@librechat/api').countFormattedMessageTokens.mockImplementation(({ content }) =>
+          String(content).includes('<context_update>') ? 90 : 10,
+        );
+      });
+
+      it('announces a later date in the prompt copy only, where the prompt states a date', async () => {
+        const result = await client.buildMessages(history(), 'msg-3', {});
+
+        expect(result.prompt[0].content).toBe('First question');
+        expect(result.prompt[2].content).toBe(
+          '<context_update>\nCurrent date changed to: 2026-03-10 (Tuesday)\n</context_update>\n\nNext question',
+        );
+        expect(result.tokenCountMap['msg-3']).toBe(10);
+        expect(client.indexTokenCountMap[2]).toBe(90);
+        expect(client.memoryPayload[2].content).toBe('Next question');
+
+        mockAgent.dynamicToolContextMap = {};
+        const withoutDate = await client.buildMessages(history(), 'msg-3', {});
+        expect(withoutDate.prompt[2].content).toBe('Next question');
+      });
+
+      it('stamps every user message with its send time with promptMessageTimestamps', async () => {
+        mockReq.config.endpoints = { [EModelEndpoint.agents]: { promptMessageTimestamps: true } };
+
+        const result = await client.buildMessages(history(), 'msg-3', {});
+
+        expect(result.prompt[0].content).toBe(
+          '<context_update>\nMessage sent: 2026-03-09 20:00:00 +00:00 (Monday)\n</context_update>\n\nFirst question',
+        );
+        expect(result.prompt[2].content).toBe(
+          '<context_update>\nMessage sent: 2026-03-10 09:00:00 +00:00 (Tuesday)\n</context_update>\n\nNext question',
+        );
+        expect(client.memoryPayload[0].content).toBe('First question');
+      });
+
+      it('builds the prompt exactly as upstream without the settings', async () => {
+        mockReq.config.endpoints = {};
+        client.options.agent.additional_instructions = 'Agent context';
+
+        const result = await client.buildMessages(history(), 'msg-3', {});
+
+        expect({
+          prompt: result.prompt,
+          tokenCountMap: result.tokenCountMap,
+          indexTokenCountMap: client.indexTokenCountMap,
+          memoryPayload: client.memoryPayload,
+          instructions: client.options.agent.instructions,
+          additional_instructions: client.options.agent.additional_instructions,
+        }).toMatchInlineSnapshot(`
+          {
+            "additional_instructions": "Agent context",
+            "indexTokenCountMap": {
+              "0": 5,
+              "1": 5,
+              "2": 10,
+            },
+            "instructions": "Primary instructions",
+            "memoryPayload": null,
+            "prompt": [
+              {
+                "content": "First question",
+                "messageId": "msg-1",
+                "role": "user",
+              },
+              {
+                "content": "First answer",
+                "messageId": "msg-2",
+                "role": "assistant",
+              },
+              {
+                "content": "Next question",
+                "messageId": "msg-3",
+                "role": "user",
+              },
+            ],
+            "tokenCountMap": {
+              "msg-1": 5,
+              "msg-2": 5,
+              "msg-3": 10,
+            },
+          }
+        `);
+      });
+
+      it('compares the first message after a summary with the conversation start date', async () => {
+        const messages = history();
+        messages[1].content = [{ type: ContentTypes.SUMMARY, text: 'Earlier talk' }];
+        messages.splice(
+          1,
+          0,
+          {
+            messageId: 'msg-0a',
+            parentMessageId: 'msg-1',
+            sender: 'Assistant',
+            text: 'Old answer',
+            isCreatedByUser: false,
+            tokenCount: 5,
+          },
+          {
+            messageId: 'msg-0b',
+            parentMessageId: 'msg-0a',
+            sender: 'User',
+            text: 'Morning question',
+            isCreatedByUser: true,
+            createdAt: '2026-03-10T08:00:00.000Z',
+            tokenCount: 5,
+          },
+        );
+        messages[3].parentMessageId = 'msg-0b';
+
+        const result = await client.buildMessages(messages, 'msg-3', {});
+
+        expect(result.prompt[4].content).toBe(
+          '<context_update>\nCurrent date changed to: 2026-03-10 (Tuesday)\n</context_update>\n\nNext question',
+        );
+      });
+    });
+
     it('does not duplicate a file that is both request context and scoped context', async () => {
       const sharedFile = makeTextFile('shared-file', 'shared.txt', 'Shared duplicate context');
 
@@ -7929,6 +8163,115 @@ describe('AgentClient - titleConvo', () => {
       ).rejects.toMatchObject({
         code: 'AGENT_ATTACHMENT_LIMIT_EXCEEDED',
         limitType: 'bytes',
+      });
+    });
+
+    describe('provider items', () => {
+      const toolRound = (extras = {}) => [
+        {
+          messageId: 'msg-1',
+          parentMessageId: null,
+          sender: 'User',
+          text: 'Look it up',
+          isCreatedByUser: true,
+        },
+        {
+          messageId: 'msg-2',
+          parentMessageId: 'msg-1',
+          sender: 'Assistant',
+          text: '',
+          isCreatedByUser: false,
+          content: [
+            { type: ContentTypes.TEXT, text: 'Looking it up.' },
+            {
+              type: ContentTypes.TOOL_CALL,
+              tool_call: { id: 'call_1', name: 'lookup', args: '{}', output: 'ok', progress: 1 },
+            },
+          ],
+          ...extras,
+        },
+        {
+          messageId: 'msg-3',
+          parentMessageId: 'msg-2',
+          sender: 'User',
+          text: 'Thanks',
+          isCreatedByUser: true,
+        },
+      ];
+
+      it('builds the prompt of a tool round as upstream when no provider items are stored', async () => {
+        const result = await client.buildMessages(toolRound(), 'msg-3', {});
+
+        expect(result.prompt).toMatchInlineSnapshot(`
+          [
+            {
+              "content": "Look it up",
+              "messageId": "msg-1",
+              "role": "user",
+            },
+            {
+              "content": [
+                {
+                  "text": "Looking it up.",
+                  "type": "text",
+                },
+                {
+                  "tool_call": {
+                    "args": "{}",
+                    "id": "call_1",
+                    "name": "lookup",
+                    "output": "ok",
+                    "progress": 1,
+                  },
+                  "type": "tool_call",
+                },
+              ],
+              "messageId": "msg-2",
+              "role": "assistant",
+            },
+            {
+              "content": "Thanks",
+              "messageId": "msg-3",
+              "role": "user",
+            },
+          ]
+        `);
+      });
+
+      it('puts the stored provider items back on their tool calls', async () => {
+        const providerItems = { origin: 'digest', items: [{ id: 'rs_1', type: 'reasoning' }] };
+        const history = toolRound({ providerItems: { call_1: providerItems } });
+
+        const result = await client.buildMessages(history, 'msg-3', {});
+
+        const toolCall = result.prompt[1].content.find((part) => part.tool_call)?.tool_call;
+        expect(toolCall.providerItems).toEqual(providerItems);
+        expect(history[1].content[1].tool_call).not.toHaveProperty('providerItems');
+      });
+
+      it('puts the stored signed reasoning back on a think part that still has its text', async () => {
+        const { thinkReplayHash } = require('@librechat/data-schemas');
+        const replay = {
+          anthropic: { model: 'claude-test', blocks: [{ type: 'thinking', signature: 'SIG_1' }] },
+        };
+        const history = toolRound({
+          content: [
+            { type: ContentTypes.THINK, think: 'plan' },
+            { type: ContentTypes.THINK, think: 'edited since' },
+            { type: ContentTypes.TEXT, text: 'First answer' },
+          ],
+          providerItems: {
+            'think:0': { hash: thinkReplayHash('plan'), replay },
+            'think:1': { hash: thinkReplayHash('as saved'), replay },
+          },
+        });
+
+        const result = await client.buildMessages(history, 'msg-3', {});
+
+        const [first, second] = result.prompt[1].content;
+        expect(first.provider_replay).toEqual(replay);
+        expect(second).not.toHaveProperty('provider_replay');
+        expect(history[1].content[0]).not.toHaveProperty('provider_replay');
       });
     });
   });

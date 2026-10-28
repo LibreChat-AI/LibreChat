@@ -825,6 +825,16 @@ endpoints:
   #     create_file: 131072
   #   # (optional) Disable the builder interface for agents
   #   disableBuilder: false
+  #   # (optional) Keep the prompt prefix stable across turns for provider prompt caching:
+  #   # prompt time is anchored to the conversation start, and a later date is announced
+  #   # at the start of the first user message sent on it. Defaults to false.
+  #   # With Anthropic extended thinking it also replays signed thinking blocks; a reverse
+  #   # proxy in front of the Anthropic API must forward the `anthropic-beta` header.
+  #   promptCache:
+  #     stableContext: false
+  #   # (optional) Prefix each user message sent to the model with the time it was sent
+  #   # (user's timezone, to the second). Defaults to false.
+  #   promptMessageTimestamps: false
   #   # (optional) When conversation titles are generated:
   #   #   immediate (default): generate as soon as the request is made, in parallel
   #   #     with the response, from the user's first message (title appears within ~1-2s).
