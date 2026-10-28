@@ -232,6 +232,20 @@ describe('legacy RAG context for files embedded under an agent', () => {
     expect(sentEntities(httpClient.post)).toEqual(['agent_a', 'agent_b']);
   });
 
+  it('raises a failed candidate request when the plain request is empty', async () => {
+    const httpClient = fakeRag(() => 'agent_a');
+    const failure = new Error('Request failed with status code 503');
+    httpClient.post.mockRejectedValueOnce(failure);
+    const { handlers, logAxiosError } = setupWithRag(httpClient);
+    await handlers?.processFile(agentFile);
+    await expect(handlers?.createContext()).rejects.toBe(failure);
+    expect(sentEntities(httpClient.post)).toEqual(['agent_a', undefined]);
+    expect(logAxiosError).toHaveBeenCalledWith({
+      message: 'Error creating context',
+      error: failure,
+    });
+  });
+
   it('ends with the plain request when no candidate returns content', async () => {
     const httpClient = fakeRag(() => 'agent_z');
     const { handlers } = setupWithRag(httpClient);
@@ -251,7 +265,23 @@ describe('legacy RAG context for files embedded under an agent', () => {
     await handlers?.createContext();
     expect(sentEntities(httpClient.post)).toEqual([undefined]);
     expect(logAxiosError).toHaveBeenCalledWith({
-      message: 'Error resolving the RAG namespace of policy.pdf',
+      message: 'Error resolving the RAG namespaces of agent files',
+      error: failure,
+    });
+  });
+
+  it('keeps the recorded agent namespace when the listing lookup fails', async () => {
+    const httpClient = fakeRag(() => 'agent_a');
+    const failure = new Error('lookup failed');
+    const getAgents = jest.fn(async () => {
+      throw failure;
+    });
+    const { handlers, logAxiosError } = setupWithRag(httpClient, { getAgents });
+    await handlers?.processFile(agentFile);
+    expect(await handlers?.createContext()).toContain('Policy excerpt');
+    expect(sentEntities(httpClient.post)).toEqual(['agent_a']);
+    expect(logAxiosError).toHaveBeenCalledWith({
+      message: 'Error resolving the RAG namespaces of agent files',
       error: failure,
     });
   });

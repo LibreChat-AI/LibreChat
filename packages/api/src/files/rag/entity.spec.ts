@@ -5,6 +5,11 @@ import { createMethods, createModels } from '@librechat/data-schemas';
 import type { TGetFileSearchAgents, EntityFile } from './entity';
 import { createEntityResolver } from './entity';
 
+interface PlanStage {
+  stage: string;
+  inputStage?: PlanStage;
+}
+
 let mongo: MongoMemoryServer;
 let methods: ReturnType<typeof createMethods>;
 let getAgents: jest.Mock<ReturnType<TGetFileSearchAgents>, Parameters<TGetFileSearchAgents>>;
@@ -125,5 +130,38 @@ describe('createEntityResolver', () => {
       ['agent_c', 'agent_b'],
     ]);
     expect(getAgents).toHaveBeenCalledTimes(1);
+  });
+
+  it('serves the File Search lookup from an index', async () => {
+    await createAgent('agent_a', ['f1']);
+    await mongoose.models.Agent.syncIndexes();
+    const explained = await mongoose.models.Agent.collection
+      .find(
+        { 'tool_resources.file_search.file_ids': { $in: ['f1'] } },
+        { projection: { id: 1, 'tool_resources.file_search.file_ids': 1 } },
+      )
+      .explain('queryPlanner');
+    const stages: string[] = [];
+    let stage: PlanStage | undefined = explained.queryPlanner.winningPlan;
+    while (stage) {
+      stages.push(stage.stage);
+      stage = stage.inputStage;
+    }
+    expect(stages).toContain('IXSCAN');
+  });
+
+  it('keeps the recorded agents and reports one failed lookup once', async () => {
+    const first = await createFile('f1', FileContext.agents, ['agent_a']);
+    const second = await createFile('f2', FileContext.agents, ['agent_b']);
+    const failure = new Error('lookup failed');
+    getAgents.mockRejectedValueOnce(failure);
+    const onLookupError = jest.fn();
+    const resolve = createEntityResolver({ getAgents, onLookupError });
+    expect(await Promise.all([resolve(first), resolve(second)])).toEqual([
+      ['agent_a'],
+      ['agent_b'],
+    ]);
+    expect(onLookupError).toHaveBeenCalledTimes(1);
+    expect(onLookupError).toHaveBeenCalledWith(failure);
   });
 });

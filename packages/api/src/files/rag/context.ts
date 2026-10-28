@@ -66,7 +66,11 @@ export function createRagContextHandlers({
     typeof userMessageContent === 'string' && userMessageContent.trim().length > 0;
 
   const timeout = getOutboundTimeoutMs(req.config, 'ragMs');
-  const candidatesFor = createEntityResolver({ getAgents });
+  const candidatesFor = createEntityResolver({
+    getAgents,
+    onLookupError: (error) =>
+      logAxiosError({ message: 'Error resolving the RAG namespaces of agent files', error }),
+  });
 
   const request = (file: ContextFile, entity_id?: string): Promise<ContextResponse> => {
     if (useFullContext) {
@@ -102,20 +106,26 @@ export function createRagContextHandlers({
 
   /**
    * RAG refuses a query unless the token's user or `entity_id` owns the top-ranked chunk, so
-   * each candidate namespace is tried with the real request before the plain one.
+   * each candidate namespace is tried with the real request before the plain one. A refusal
+   * is an empty answer; the first failed request is raised if no later request has content.
    */
   const query = async (file: ContextFile): Promise<ContextResponse> => {
-    const candidates = await candidatesFor(file).catch((error) => {
-      logAxiosError({ message: `Error resolving the RAG namespace of ${file.filename}`, error });
-      return [];
-    });
-    for (const entity_id of candidates) {
-      const response = await request(file, entity_id).catch(() => undefined);
-      if (response && hasContent(response)) {
-        return response;
+    let failure: { error: unknown } | undefined;
+    for (const entity_id of await candidatesFor(file)) {
+      try {
+        const response = await request(file, entity_id);
+        if (hasContent(response)) {
+          return response;
+        }
+      } catch (error) {
+        failure ??= { error };
       }
     }
-    return request(file);
+    const response = await request(file);
+    if (failure && !hasContent(response)) {
+      throw failure.error;
+    }
+    return response;
   };
 
   const processFile = async (file: ContextFile): Promise<void> => {
