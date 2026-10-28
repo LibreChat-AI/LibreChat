@@ -1,14 +1,12 @@
 import { useCallback, useRef } from 'react';
 import { useStore } from 'jotai';
-import {
-  reduceStep,
-  flushSummary,
-  flushResponses,
-  resetStreamState,
-  syncStreamMessage,
-  createStreamState,
-  subagentProgressKey,
-} from '@librechat/chat';
+import type {
+  TMessage,
+  EventSubmission,
+  SubagentUpdateEvent,
+  PtcToolCallEvent,
+} from 'librechat-data-provider';
+import type { StepEvent, StepEffect, StepContext, StreamState, AnnounceOptions } from '../../core';
 import {
   activeSubagentPanel,
   closeParentSubagentProgress,
@@ -19,18 +17,19 @@ import {
   subagentParentStreamOpenByToolCallId,
   subagentProgressByToolCallId,
   takeRegisteredSubagentProgressKeys,
-} from '@librechat/chat/react';
-import type {
-  TMessage,
-  EventSubmission,
-  SubagentUpdateEvent,
-  PtcToolCallEvent,
-} from 'librechat-data-provider';
-import type { StepEvent, StepEffect, StepContext, StreamState } from '@librechat/chat';
-import type { AnnounceOptions } from '~/common';
+} from '../subagents/state';
+import {
+  reduceStep,
+  flushSummary,
+  flushResponses,
+  resetStreamState,
+  syncStreamMessage,
+  createStreamState,
+  subagentProgressKey,
+  MESSAGE_UPDATE_INTERVAL,
+} from '../../core';
 import { ptcTraceByToolCallId, EMPTY_PTC_TRACE, PTC_TRACE_MAX_ENTRIES, ptcTraceKey } from './ptc';
 import { sandboxStartingByToolCallId } from './sandbox';
-import { MESSAGE_UPDATE_INTERVAL } from '~/common';
 
 type TUseStepHandler = {
   announcePolite: (options: AnnounceOptions) => void;
@@ -46,14 +45,26 @@ type TUseStepHandler = {
   onSubagentIndexChange?: (conversationId: string) => void;
 };
 
-export default function useStepHandler({
+/** The handlers a pane's stream feeds run steps through, and the resets around a run. */
+export type StepHandlers = {
+  stepHandler: (stepEvent: StepEvent, submission: EventSubmission) => void;
+  clearStepMaps: () => void;
+  resetSubagentAtoms: (options?: { preserveSelectedTask?: boolean }) => void;
+  resetPtcAtoms: () => void;
+  prunePtcTraces: () => void;
+  syncStepMessage: (message: TMessage) => void;
+  cancelPendingDeltaFlush: () => void;
+  flushPendingDeltas: () => void;
+};
+
+export function useStepHandler({
   setMessages,
   getMessages,
   announcePolite,
   lastAnnouncementTimeRef,
   onSkillAuthoringComplete,
   onSubagentIndexChange,
-}: TUseStepHandler) {
+}: TUseStepHandler): StepHandlers {
   const subagentStore = useStore();
   const stream = useRef<StreamState>(createStreamState());
   /** Coalesces rapid-fire summarize delta renders into a single rAF frame */

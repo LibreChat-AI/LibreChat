@@ -2,6 +2,7 @@ import React from 'react';
 import { createHash } from 'crypto';
 import { RecoilRoot } from 'recoil';
 import { createStore, Provider } from 'jotai';
+import { useStepHandler } from '@librechat/chat/react';
 import { renderHook, act } from '@testing-library/react';
 import {
   Constants,
@@ -27,7 +28,6 @@ import type {
 import type { StepEvent } from '@librechat/chat';
 import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
-import useStepHandler from '~/hooks/SSE/useStepHandler';
 
 /**
  * Equivalence table for the step reducer. Each row is an event sequence shaped like a recorded
