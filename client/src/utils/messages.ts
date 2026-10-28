@@ -284,6 +284,8 @@ export function areMessageFieldsEqual(
     prevMsg.iconURL === nextMsg.iconURL &&
     /** Replaces the sender in the row header once the final response lands. */
     getLiteLLMModelName(prevMsg) === getLiteLLMModelName(nextMsg) &&
+    /** Relabels the added-convo columns once the final response lands. */
+    prevMsg.metadata?.litellmAgentModels === nextMsg.metadata?.litellmAgentModels &&
     prevMsg.feedback?.rating === nextMsg.feedback?.rating &&
     areMessageFilesEqual(prevMsg.files, nextMsg.files) &&
     (prevMsg.attachments?.length ?? 0) === (nextMsg.attachments?.length ?? 0) &&

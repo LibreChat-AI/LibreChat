@@ -69,6 +69,24 @@ describe('areMessageFieldsEqual litellmModelName', () => {
   });
 });
 
+describe('areMessageFieldsEqual litellmAgentModels', () => {
+  it("re-renders when an added column's served models arrive", () => {
+    const agentModels = [{ agentId: 'a____1', modelName: 'bedrock/claude', spec: 'router' }];
+    expect(
+      areMessageFieldsEqual(
+        makeFieldsMsg(),
+        makeFieldsMsg({ metadata: { litellmAgentModels: agentModels } }),
+      ),
+    ).toBe(false);
+    expect(
+      areMessageFieldsEqual(
+        makeFieldsMsg({ metadata: { litellmAgentModels: agentModels } }),
+        makeFieldsMsg({ metadata: { usage: {}, litellmAgentModels: agentModels } }),
+      ),
+    ).toBe(true);
+  });
+});
+
 describe('getLiteLLMRoutedModelLabel', () => {
   const modelSpecs = {
     list: [

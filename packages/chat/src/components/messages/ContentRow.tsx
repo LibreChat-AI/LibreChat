@@ -161,6 +161,7 @@ export default function ContentRow({
               setSiblingIdx,
               messageId: message.messageId,
               manualSkills: message.manualSkills,
+              metadata: message.metadata,
               foldLiveActivity: !autoExpandTools,
               conversationId: conversation?.conversationId ?? null,
               content: message.content ?? [],

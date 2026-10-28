@@ -1,5 +1,6 @@
 import type {
   TUser,
+  TMessage,
   TModelSpec,
   RetentionMode,
   TConversation,
@@ -218,13 +219,13 @@ declare module '@librechat/chat/react' {
     /** The messages view's `ask`, or one that does nothing outside a messages view. */
     useMessagesAsk: () => MessagesEditing['ask'];
     /**
-     * The model LiteLLM served one agent's column of a comparison response with, as the
-     * opted-in model spec labels it; `undefined` when nothing was captured.
+     * The model LiteLLM served one agent's column of a comparison response with, read
+     * from that response's metadata and labeled by the opted-in model spec; `undefined`
+     * when nothing was captured.
      */
     useRoutedModelLabel: (target: {
       agentId?: string;
-      messageId?: string;
-      conversationId?: string | null;
+      metadata?: TMessage['metadata'];
     }) => string | undefined;
   }
 }
