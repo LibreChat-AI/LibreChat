@@ -1,5 +1,5 @@
 import { v4 } from 'uuid';
-import { cloneDeep } from 'lodash';
+import cloneDeep from 'lodash/cloneDeep';
 import {
   Constants,
   ContentTypes,
@@ -34,21 +34,22 @@ import type { TAskProps, TOptions, ExtendedFile } from '~/common';
 import { getRouteChatProjectId, logger } from '~/utils';
 
 /**
- * Prompt prefix as sent in the request payload. Only the Assistants routes take
- * the browser's resolution of special variables; the Agents route receives the
- * template and resolves it server-side against the conversation start, so the
- * resolved text is identical on every turn of a conversation.
+ * Prompt prefix as sent in the request payload. With `stableContext` the Agents route
+ * receives the template and resolves it against the conversation start, so the text is
+ * the same on every turn; otherwise, and on the Assistants routes, the browser resolves it.
  */
 export function resolvePayloadPromptPrefix({
   promptPrefix,
   endpoint,
   user,
+  stableContext,
 }: {
   promptPrefix: string;
   endpoint?: string | null;
   user?: TUser | null;
+  stableContext?: boolean;
 }): string {
-  if (!isAssistantsEndpoint(endpoint)) {
+  if (stableContext === true && !isAssistantsEndpoint(endpoint)) {
     return promptPrefix;
   }
   return replaceSpecialVars({ text: promptPrefix, user });
@@ -185,6 +186,7 @@ export function buildTurn({
       promptPrefix: conversation.promptPrefix,
       endpoint,
       user,
+      stableContext: endpointsConfig?.[EModelEndpoint.agents]?.stableContext,
     });
   }
 

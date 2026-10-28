@@ -61,6 +61,7 @@ const {
   savePrivateTextMessage,
   getTurnUserMessageCreatedAt,
   savePrivateTextErrorTurn,
+  getUserFacingGenerationError,
   stampPreliminaryPrivateTextMessage,
   announceReply,
   announceErrorTurn,
@@ -3326,7 +3327,9 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           sendGenerationJson(
             res,
             500,
-            { error: error.message || 'Failed to start generation' },
+            {
+              error: getUserFacingGenerationError(error, req.config, 'Failed to start generation'),
+            },
             generationProtocolVersion,
           );
         }
@@ -3384,7 +3387,11 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           // abortJob already handled emitDone and completeJob
         } else {
           logger.error(`[ResumableAgentController] Generation error for ${streamId}:`, error);
-          const generationError = error.message || 'Generation failed';
+          const generationError = getUserFacingGenerationError(
+            error,
+            req.config,
+            'Generation failed',
+          );
           try {
             // completeJob first wins running -> error and atomically parks
             // steers, then publishes. A competing abort/pause emits nothing.
@@ -3457,22 +3464,24 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           sendGenerationJson(
             res,
             500,
-            { error: err.message || 'Failed to start generation' },
+            { error: getUserFacingGenerationError(err, req.config, 'Failed to start generation') },
             generationProtocolVersion,
           );
         }
         let errorFinalized = false;
         if (!pausePersistenceFailed) {
           errorFinalized =
-            (await GenerationJobManager.completeJob(streamId, err.message, jobCreatedAt).catch(
-              (completeErr) => {
-                logger.warn(
-                  '[ResumableAgentController] completeJob failed during background-error cleanup',
-                  completeErr,
-                );
-                return false;
-              },
-            )) === true;
+            (await GenerationJobManager.completeJob(
+              streamId,
+              getUserFacingGenerationError(err, req.config, 'Generation failed'),
+              jobCreatedAt,
+            ).catch((completeErr) => {
+              logger.warn(
+                '[ResumableAgentController] completeJob failed during background-error cleanup',
+                completeErr,
+              );
+              return false;
+            })) === true;
         }
         if (
           (errorFinalized || (pausePersistenceFailed && pausePersistenceFailureFinalized)) &&
@@ -3573,7 +3582,9 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           sendGenerationJson(
             res,
             500,
-            { error: error.message || 'Failed to start generation' },
+            {
+              error: getUserFacingGenerationError(error, req.config, 'Failed to start generation'),
+            },
             generationProtocolVersion,
           );
         }
@@ -3600,7 +3611,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     if (jobCreatedAt != null) {
       const initializationError = initializationFailure
         ? JSON.stringify(initializationFailure)
-        : error.message || 'Failed to start generation';
+        : getUserFacingGenerationError(error, req.config, 'Failed to start generation');
       const persistInitializationError = shouldPersistCodeWorkspaceInitializationError({
         streamStarted,
         isNewConversation: isNewConvo,

@@ -1,6 +1,6 @@
 /* eslint-disable no-useless-escape */
 const axios = require('axios');
-const { logger } = require('@librechat/data-schemas');
+const { formatToolError, WOLFRAM_STATUS_TEXT } = require('@librechat/api');
 const { Tool } = require('@librechat/agents/langchain/tools');
 
 const wolframJsonSchema = {
@@ -59,13 +59,8 @@ class WolframAlphaAPI extends Tool {
   }
 
   async fetchRawText(url) {
-    try {
-      const response = await axios.get(url, { responseType: 'text' });
-      return response.data;
-    } catch (error) {
-      logger.error('[WolframAlphaAPI] Error fetching raw text:', error);
-      throw error;
-    }
+    const response = await axios.get(url, { responseType: 'text' });
+    return response.data;
   }
 
   getAppId() {
@@ -93,13 +88,7 @@ class WolframAlphaAPI extends Tool {
       const response = await this.fetchRawText(url);
       return response;
     } catch (error) {
-      if (error.response && error.response.data) {
-        logger.error('[WolframAlphaAPI] Error data:', error);
-        return error.response.data;
-      } else {
-        logger.error('[WolframAlphaAPI] Error querying Wolfram Alpha', error);
-        return 'There was an error querying Wolfram Alpha.';
-      }
+      return formatToolError(error, 'Wolfram|Alpha', WOLFRAM_STATUS_TEXT);
     }
   }
 }

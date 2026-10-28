@@ -1,6 +1,6 @@
 {
   "name": "@librechat/api",
-  "version": "1.7.54",
+  "version": "1.7.55",
   "type": "commonjs",
   "description": "MCP services for LibreChat",
   "main": "dist/index.cjs",
@@ -96,7 +96,7 @@
     "winston": "^3.17.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "yauzl": "^3.2.1",
-    "zod-openapi": "^4.2.4"
+    "zod-openapi": "^6.0.2"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
@@ -112,7 +112,7 @@
     "@azure/identity": "^4.14.0",
     "@azure/storage-blob": "^12.30.0",
     "@keyv/redis": "5.1.6",
-    "@librechat/agents": "^4.0.6",
+    "@librechat/agents": "^4.1.1",
     "@librechat/data-schemas": "*",
     "@modelcontextprotocol/sdk": "^1.32.1",
     "@opentelemetry/api": "^1.9.0",
@@ -167,7 +167,8 @@
     "sharp": "^0.35.5",
     "undici": "^7.30.1",
     "yauzl": "^3.2.1",
-    "zod": "^3.22.4"
+    "zod": "^4.6.7",
+    "zod-to-json-schema": "^3.25.1"
   },
   "dependencies": {
     "@langchain/langgraph-checkpoint": "^1.1.2",

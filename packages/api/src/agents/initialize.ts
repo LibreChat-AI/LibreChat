@@ -129,14 +129,14 @@ import { createConfiguredContentInspector, inspectContent } from '../protection/
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
 import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
+import { getPromptTime, isStableContextEnabled } from './promptCache';
 import { isValidInstructionsPromptLink } from './instructions/linked';
 import { PARTIAL_RESOLVED_CONVERSATION } from './conversationSymbols';
 import { registerMemoryTools, memoryToolUsageGuard } from './memory';
 import { isImplicitStatefulCodeRouteAvailable } from '~/code/config';
+import { AGENT_TEMPORAL_INSTRUCTIONS_KEY } from './contextUpdates';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
-import { AGENT_TEMPORAL_INSTRUCTIONS_KEY } from './contextUpdates';
-import { isStableContextEnabled } from './promptCache';
 import { ContentFilterError } from '../middleware/contentFilter';
 import { resolveToolRoleGrants } from '~/tools/rolePermissions';
 import { createRequestAgentExecutionContext } from './runtime';
@@ -2612,21 +2612,17 @@ export async function initializeAgent(
     }
   }
 
-  const stableContext = isStableContextEnabled(appConfig);
   let temporalInstructions: string | undefined;
   if (agent.instructions && agent.instructions !== '') {
     const resolvedInstructions = replaceSpecialVars({
       text: agent.instructions,
       user: user ? (user as unknown as TUser) : null,
-      /** Anchored to the conversation start so the text is the same on every turn. */
-      now: stableContext
-        ? (runtime.conversationCreatedAt ?? runtime.turnStartedAt)
-        : runtime.turnStartedAt,
+      now: getPromptTime(runtime.appConfig, runtime),
       timezone: runtime.requestBody.timezone,
     });
     if (hasTemporalSpecialVars(agent.instructions)) {
       agent.instructions = undefined;
-      if (stableContext) {
+      if (isStableContextEnabled(runtime.appConfig)) {
         temporalInstructions = resolvedInstructions;
       } else {
         appendAdditionalInstructions(agent, resolvedInstructions);

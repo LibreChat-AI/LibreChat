@@ -138,10 +138,11 @@ const {
   filterMalformedContentParts,
   countFormattedMessageTokens,
   prependFileContext,
+  prependContextText,
+  buildHistoryContextUpdates,
   prependQuotes,
   applyAttachmentOnlyText,
   hydrateMissingIndexTokenCounts,
-  createHistoryContextUpdates,
   injectSkillPrimes,
   buildAgentEventActorSkillMessages,
   collectFreshSkillPrimeNames,
@@ -2655,8 +2656,8 @@ class AgentClient extends BaseClient {
     };
     /** Memory copies built for canonical recounts, reused by the memory payload pass. */
     const memoryFormattedMessages = [];
-    /** Date-change and send-time notes, prepended to the prompt copy only. */
-    const historyContext = createHistoryContextUpdates({
+    /** Date-change notes for the prompt copy only, never the stored message. */
+    const historyContextUpdates = buildHistoryContextUpdates({
       req: this.options.req,
       messages: orderedMessages,
       agents: allAgents.map(({ agent }) => agent),
@@ -2709,7 +2710,8 @@ class AgentClient extends BaseClient {
       const turnFiles = this.message_file_map?.[message.messageId] ?? message.files;
       applyAttachmentOnlyText(formattedMessage, turnFiles);
 
-      const contextUpdate = historyContext.apply(formattedMessage, i);
+      const contextUpdate = historyContextUpdates.get(i);
+      prependContextText(formattedMessage, contextUpdate, '\n\n');
 
       /**
        * A summarize round that errored or was cut off never reaches the model:
@@ -2915,7 +2917,7 @@ class AgentClient extends BaseClient {
     }
     /** After the steer stamp, which adds replayed steers' documents of its own. */
     dedupeDocumentNames(payload);
-    const hasPromptOnlyContext = hasFileContext || historyContext.hasUpdates;
+    const hasPromptOnlyContext = hasFileContext || historyContextUpdates.size > 0;
     if (hasPromptOnlyContext) {
       for (let i = 0; i < orderedMessages.length; i++) {
         memoryPayload.push(
@@ -3094,9 +3096,7 @@ class AgentClient extends BaseClient {
       assertLateBoundContent = false,
     ) => {
       normalizeInstructions(agent);
-      /** Volatile parts change between turns without a user action (memory is rewritten by the
-       *  memory agent, RAG follows the query); attachment and file context change only on uploads. */
-      const agentRunContextParts = [{ text: sharedRunContext, volatile: true }];
+      const agentRunContextParts = [sharedRunContext];
       const agentMemoryContexts = [];
       const agentHasMemory = agentHasInlineMemoryTools(agent);
       if (agentId === this.options.agent.id || memoryAgentEnabled || agentHasMemory) {
@@ -3118,14 +3118,15 @@ class AgentClient extends BaseClient {
         }
         const agentMemoryContext = formatMemoryContext(
           agentHasMemory ? partitionMemories?.withKeys : partitionMemories?.withoutKeys,
+          { announceEmpty: agentHasMemory || memoryAgentEnabled },
         );
         if (agentMemoryContext) {
-          agentRunContextParts.push({ text: agentMemoryContext, volatile: true });
+          agentRunContextParts.push(agentMemoryContext);
         }
       }
       if (scopedContext) {
         modelBoundFileContexts.add(scopedContext);
-        agentRunContextParts.push({ text: scopedContext });
+        agentRunContextParts.push(scopedContext);
       }
 
       await applyContextToAgent({
@@ -3135,7 +3136,7 @@ class AgentClient extends BaseClient {
         mcpManager,
         configServers,
         user: this.options.req.user,
-        sharedRunContext: agentRunContextParts,
+        sharedRunContext: agentRunContextParts.filter(Boolean).join('\n\n'),
         ephemeralAgent: agentId === this.options.agent.id ? ephemeralAgent : undefined,
       });
       if (assertLateBoundContent) {

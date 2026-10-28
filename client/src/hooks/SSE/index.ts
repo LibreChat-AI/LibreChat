@@ -1,6 +1,5 @@
 export { default as useSSE } from './useSSE';
-export { default as useResumableSSE } from './useResumableSSE';
-export { default as useAdaptiveSSE } from './useAdaptiveSSE';
+export { useResumableSSE, useAdaptiveSSE } from '@librechat/chat/react';
 export { default as useResumeOnLoad } from './useResumeOnLoad';
 export { default as useStepHandler } from './useStepHandler';
 export { default as useUsageHandler } from './useUsageHandler';

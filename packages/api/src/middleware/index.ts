@@ -11,6 +11,9 @@ export * from './sanitize';
 export * from './capabilities';
 export * from './auth';
 export {
+  TENANT_CONTEXT_REQUIRED,
+  createPreAuthTenantGuard,
+  requirePreAuthTenantContext,
   requestContextMiddleware,
   tenantContextMiddleware,
   restoreTenantContextFromReq,

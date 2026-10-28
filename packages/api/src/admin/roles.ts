@@ -1,4 +1,4 @@
-import { PrincipalType, SystemRoles } from 'librechat-data-provider';
+import { PrincipalType, SystemRoles, partialWithoutDefaults } from 'librechat-data-provider';
 import {
   logger,
   RoleConflictError,
@@ -18,6 +18,7 @@ import type {
 } from '@librechat/data-schemas';
 import type { FilterQuery, Types } from 'mongoose';
 import type { Response } from 'express';
+import type { z } from 'zod';
 import type { ServerRequest } from '~/types/http';
 import type { RecordAuditEntry } from './audit';
 import type { CascadeStep } from './cascade';
@@ -1311,8 +1312,8 @@ export interface RolePermissionsUpdateDeps {
 }
 
 export interface RolePermissionsUpdateConfig {
-  /** Zod object schema for one permission type; parsed as a partial update. */
-  schema: { partial: () => { parse: (value: unknown) => Record<string, boolean | undefined> } };
+  /** Zod object schema for one permission type; parsed as a partial update without its defaults. */
+  schema: z.ZodObject<Record<string, z.ZodType<boolean, boolean | undefined>>>;
   permissionType: string;
   errorMessage: string;
 }
@@ -1335,14 +1336,11 @@ export function createRolePermissionsUpdateHandler(
 
   return async function updateRolePermissions(req, res) {
     const { roleName } = req.params as { roleName: string };
-    let parsedUpdates: Record<string, boolean | undefined>;
-    try {
-      parsedUpdates = config.schema.partial().parse(req.body);
-    } catch (error) {
-      return res
-        .status(400)
-        .send({ message: config.errorMessage, error: (error as { errors?: unknown }).errors });
+    const parsed = partialWithoutDefaults(config.schema).safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).send({ message: config.errorMessage, error: parsed.error.issues });
     }
+    const parsedUpdates: Record<string, boolean | undefined> = parsed.data;
 
     try {
       const role = await getRoleByName(roleName);

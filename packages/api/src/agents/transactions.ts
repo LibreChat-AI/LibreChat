@@ -371,9 +371,13 @@ export async function bulkWriteTransactions(
     return doc;
   });
 
+  /**
+   * Ledger first, then balance (same order as `createTransaction`): a failed insert
+   * must never leave a debit without its transaction records.
+   */
+  await dbOps.insertMany(plainDocs);
+
   if (balanceEnabled) {
     await dbOps.updateBalance({ user, incrementValue: totalTokenValue });
   }
-
-  await dbOps.insertMany(plainDocs);
 }

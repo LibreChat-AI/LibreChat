@@ -42,7 +42,7 @@ const documentedEdgeSchema = z.object({
  * one cast is needed to reach `.extend`.
  */
 function withDocumentedEdges(schema: ZodTypeAny): ZodTypeAny {
-  return (schema as unknown as z.AnyZodObject).extend({
+  return (schema as unknown as z.ZodObject).extend({
     edges: z.array(documentedEdgeSchema).optional(),
   });
 }
@@ -63,7 +63,7 @@ const agentResponseSchema = withDocumentedEdges(agentManagementResponseSchema);
  * The envelope is exported as `ZodType`, so reach `.extend` the same way `withDocumentedEdges` does.
  */
 const agentListResponseSchema = (
-  agentManagementListEnvelopeSchema as unknown as z.AnyZodObject
+  agentManagementListEnvelopeSchema as unknown as z.ZodObject
 ).extend({
   data: z.array(agentResponseSchema),
 });

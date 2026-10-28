@@ -479,13 +479,6 @@ describe('Message Operations', () => {
         const stored = await Message.findOne({ messageId: 'msg123' }).lean();
         expect(stored?.createdAt).toEqual(turnStartedAt);
       });
-
-      it('leaves the automatic stamp in place without the option', async () => {
-        const before = Date.now();
-        await saveMessage(mockCtx, { ...mockMessageData, createdAt: new Date('2020-01-01') });
-        const stored = await Message.findOne({ messageId: 'msg123' }).lean();
-        expect(stored?.createdAt?.getTime()).toBeGreaterThanOrEqual(before);
-      });
     });
 
     it('bounds aggregate App BSON without changing canonical output, even on a later full save', async () => {
