@@ -1,9 +1,28 @@
-import React from 'react';
-import { RecoilRoot } from 'recoil';
+/**
+ * @jest-environment jsdom
+ */
+import fs from 'node:fs';
+import path from 'node:path';
+import i18next from 'i18next';
 import { Provider, createStore } from 'jotai';
+import { initReactI18next } from 'react-i18next';
 import { render, screen, act } from '@testing-library/react';
-import { submissionStartFamily } from '@librechat/chat/react';
-import { Elapsed, shouldShowElapsed } from '@librechat/chat/components';
+import { submissionStartFamily } from '../../../react/generation';
+import Elapsed, { shouldShowElapsed } from '../Elapsed';
+
+/** The app's English bundle, so the readings and their plural forms are the ones users see. */
+const TRANSLATION = path.resolve(
+  __dirname,
+  '../../../../../../client/src/locales/en/translation.json',
+);
+
+beforeAll(async () => {
+  await i18next.use(initReactI18next).init({
+    lng: 'en',
+    resources: { en: { translation: JSON.parse(fs.readFileSync(TRANSLATION, 'utf8')) } },
+    interpolation: { escapeValue: false },
+  });
+});
 
 function storeWithStart(start?: number) {
   const jotaiStore = createStore();
@@ -15,11 +34,9 @@ function storeWithStart(start?: number) {
 
 function renderElapsed(start?: number) {
   return render(
-    <RecoilRoot>
-      <Provider store={storeWithStart(start)}>
-        <Elapsed index={0} />
-      </Provider>
-    </RecoilRoot>,
+    <Provider store={storeWithStart(start)}>
+      <Elapsed index={0} />
+    </Provider>,
   );
 }
 
@@ -89,29 +106,21 @@ describe('Elapsed', () => {
     const start = Date.now() - 30_000;
     const jotaiStore = storeWithStart(start);
     const view = render(
-      <RecoilRoot>
-        <Provider store={jotaiStore}>
-          <Elapsed index={0} />
-        </Provider>
-      </RecoilRoot>,
+      <Provider store={jotaiStore}>
+        <Elapsed index={0} />
+      </Provider>,
     );
 
     expect(screen.getByTestId('stream-elapsed')).toHaveTextContent(/^30s$/);
 
-    view.rerender(
-      <RecoilRoot>
-        <Provider store={jotaiStore}>{null}</Provider>
-      </RecoilRoot>,
-    );
+    view.rerender(<Provider store={jotaiStore}>{null}</Provider>);
     expect(screen.queryByTestId('stream-elapsed')).toBeNull();
 
     advance(5_000);
     view.rerender(
-      <RecoilRoot>
-        <Provider store={jotaiStore}>
-          <Elapsed index={0} />
-        </Provider>
-      </RecoilRoot>,
+      <Provider store={jotaiStore}>
+        <Elapsed index={0} />
+      </Provider>,
     );
     expect(screen.getByTestId('stream-elapsed')).toHaveTextContent(/^35s$/);
   });
@@ -121,7 +130,7 @@ describe('Elapsed', () => {
     const timersWhileMounted = jest.getTimerCount();
     expect(timersWhileMounted).toBeGreaterThanOrEqual(1);
 
-    view.rerender(<RecoilRoot>{null}</RecoilRoot>);
+    view.unmount();
     expect(jest.getTimerCount()).toBe(timersWhileMounted - 1);
   });
 });
