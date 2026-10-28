@@ -549,12 +549,17 @@ export class Chat {
    * The conversation this chat runs under: its id, until the server names the one it created for
    * a chat started under `new`. Every later turn addresses that one.
    */
-  private conversationId: string;
+  private conversation: string;
 
   constructor(init: ChatInit) {
     this.id = init.id;
-    this.conversationId = init.id;
+    this.conversation = init.id;
     this.init = init;
+  }
+
+  /** The conversation this chat runs under: its id, or the one the server created under `new`. */
+  get conversationId(): string {
+    return this.conversation;
   }
 
   get status(): ChatStatus {
@@ -696,7 +701,7 @@ export class Chat {
       const prepared = await untilAborted(
         this.init.prepareRequest({
           ...request,
-          chatId: this.conversationId,
+          chatId: this.conversation,
           messages: this.messages,
         }),
         active.controller.signal,
@@ -734,7 +739,7 @@ export class Chat {
         this.init.transport.sendMessages({
           ...options,
           trigger: request.trigger,
-          chatId: this.conversationId,
+          chatId: this.conversation,
           messageId: request.messageId,
           payload: prepared.payload,
           abortSignal: signal,
@@ -961,9 +966,9 @@ export class Chat {
     if (
       conversationId &&
       conversationId !== Constants.NEW_CONVO &&
-      this.conversationId === Constants.NEW_CONVO
+      this.conversation === Constants.NEW_CONVO
     ) {
-      this.conversationId = conversationId;
+      this.conversation = conversationId;
     }
   }
 

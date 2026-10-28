@@ -4,7 +4,7 @@
 import { ContentTypes } from 'librechat-data-provider';
 import { act, renderHook } from '@testing-library/react';
 import type { TMessage, TPayload, ChatEvent, UIMappingOptions } from 'librechat-data-provider';
-import type { ChatState, ChatStream } from '../../core';
+import type { ChatState, ChatStream, ChatSendResult } from '../../core';
 import { useCoreChat } from '../core';
 import { Chat } from '../../core';
 
@@ -223,6 +223,94 @@ describe('useCoreChat', () => {
       parentMessageId: 'response-1',
     });
     expect(result.current.messages).toHaveLength(4);
+  });
+
+  it('leaves the rows its edit did not touch to the rollback of a replaced start', async () => {
+    const earlier: TMessage = { ...userMessage, messageId: 'earlier-1', text: 'Earlier' };
+    const state = createState();
+    state.replaceMessages([earlier]);
+    let answer: ((result: ChatSendResult) => void) | undefined;
+    const chat = new Chat({
+      id: 'convo-1',
+      state,
+      transport: {
+        sendMessages: jest.fn(
+          () =>
+            new Promise<ChatSendResult>((resolve) => {
+              answer = resolve;
+            }),
+        ),
+        reconnectToStream: jest.fn(async () => {
+          const stream = createStream();
+          stream.push({
+            type: 'final',
+            data: { final: true, requestMessage: null, responseMessage: null },
+          } as ChatEvent);
+          stream.close();
+          return stream;
+        }),
+        abort: jest.fn(async () => ({ success: true })),
+      },
+      prepareRequest: () => ({
+        payload: { endpoint: 'agents' } as TPayload,
+        messages: (current: TMessage[]) => [...current, userMessage, response('')],
+        responseMessageId: 'response-1',
+      }),
+    });
+    const { result } = renderHook(() => useCoreChat({ chat, getMappingOptions: noRules }));
+
+    const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+    await flush();
+    await act(() =>
+      result.current.setMessages((views) =>
+        views.map((view) =>
+          view.id === 'earlier-1' ? { ...view, parts: [{ type: 'text', text: 'Edited' }] } : view,
+        ),
+      ),
+    );
+    answer?.({
+      status: 'replaced',
+      conversationId: 'convo-1',
+      streamId: 'stream-2',
+      generationCreatedAt: 200,
+      generationProtocolVersion: 2,
+    });
+    await act(() => sent);
+
+    expect(chat.messages.map((message) => message.messageId)).toEqual(['earlier-1']);
+    expect(chat.messages[0]).not.toBe(earlier);
+  });
+
+  it('files a message it adds under the conversation the server created for a new chat', async () => {
+    const chat = new Chat({
+      id: 'new',
+      state: createState(),
+      transport: {
+        sendMessages: jest.fn(async () => ({
+          status: 'settled' as const,
+          conversationId: 'convo-9',
+          generationProtocolVersion: 2,
+        })),
+        reconnectToStream: jest.fn(async () => null),
+        abort: jest.fn(async () => ({ success: true })),
+      },
+      prepareRequest: () => ({
+        payload: { endpoint: 'agents' } as TPayload,
+        messages: [{ ...userMessage, conversationId: 'convo-9' }],
+      }),
+    });
+    const { result } = renderHook(() => useCoreChat({ chat, getMappingOptions: noRules }));
+
+    await act(() => chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] }));
+    await act(() =>
+      result.current.setMessages((views) => [
+        ...views,
+        { id: 'note-1', role: 'assistant', parts: [{ type: 'text', text: 'Note' }] },
+      ]),
+    );
+
+    expect(chat.conversationId).toBe('convo-9');
+    expect(chat.messages[1]).toMatchObject({ messageId: 'note-1', conversationId: 'convo-9' });
   });
 
   it('applies the host tool rules to tool parts', async () => {

@@ -85,16 +85,11 @@ export function useCoreChat({
   const setMessages = useCallback<CoreChatHelpers['setMessages']>(
     (update) =>
       chat.setMessages((current) => {
-        const next =
-          typeof update === 'function'
-            ? update(
-                current.map((message) =>
-                  toView(message, liveAttachments[message.messageId], getMappingOptions),
-                ),
-              )
-            : update;
+        const viewOf = (message: TMessage) =>
+          toView(message, liveAttachments[message.messageId], getMappingOptions);
+        const next = typeof update === 'function' ? update(current.map(viewOf)) : update;
         const tail = latestMessageId ?? current[current.length - 1]?.messageId;
-        return toStoredMessages(next, current, tail, chat.id);
+        return toStoredMessages(next, current, tail, chat.conversationId, viewOf);
       }),
     [chat, liveAttachments, getMappingOptions, latestMessageId],
   );
