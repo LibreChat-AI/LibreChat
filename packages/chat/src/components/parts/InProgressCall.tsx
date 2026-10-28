@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import CancelledIcon from './CancelledIcon';
 
 export default function InProgressCall({
@@ -9,8 +10,8 @@ export default function InProgressCall({
   error?: boolean;
   isSubmitting: boolean;
   progress: number;
-  children: React.ReactNode;
-}) {
+  children: ReactNode;
+}): ReactNode {
   if ((!isSubmitting && progress < 1) || error === true) {
     return <CancelledIcon />;
   }

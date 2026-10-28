@@ -49,7 +49,7 @@ jest.mock('~/components/Chat/Messages/Content/ContentParts', () => {
   };
 });
 
-jest.mock('~/components/Chat/Messages/Content/Parts/AuthorHeader', () => ({
+jest.mock('@librechat/chat/components', () => ({
   __esModule: true,
   default: () => <div data-testid="author-header" />,
 }));

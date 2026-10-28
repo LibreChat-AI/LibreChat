@@ -2,6 +2,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { useAtomValue, useStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
+import { FOLD_GLYPH_SELECTOR } from '@librechat/chat/components';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type {
   PartMetadata,
@@ -31,7 +32,6 @@ import SubagentCall, { SUBAGENT_TICKER_THROTTLE_MS } from '../SubagentCall';
 import { MessageContext } from '~/Providers/MessageContext';
 import { FailedRevealContext } from '../../reveal';
 import { ChatSurfaceHarness } from 'test/harness';
-import { FOLD_GLYPH_SELECTOR } from '../../rows';
 import { litFoldPath } from '../../rail';
 
 const mockMCPServerNames: string[] = [];

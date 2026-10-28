@@ -1,6 +1,11 @@
 import { forwardRef } from 'react';
 import { Button } from '@librechat/client';
 import {
+  ARTIFACT_ROW_NAV_SPACING,
+  ROW_GLYPH_SLOT,
+  TOOL_ROW_CLASSES,
+} from '@librechat/chat/components';
+import {
   AppWindow,
   Download,
   FileCode2,
@@ -10,7 +15,6 @@ import {
   Workflow,
 } from 'lucide-react';
 import type { ArtifactGlyph, ArtifactRowKind } from '~/utils/artifacts';
-import { ARTIFACT_ROW_NAV_SPACING, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '../rows';
 import LangIcon, { hasLangIcon } from '~/components/Messages/Content/LangIcon';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';

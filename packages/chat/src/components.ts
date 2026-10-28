@@ -58,3 +58,19 @@ export { default as MessageTimestamp } from './components/messages/MessageTimest
 export { getMessageRowWidthClass } from './components/messages/width';
 export { isValidTimestamp, getMessageTimestamp } from './components/messages/time';
 export type { MessageTimestamp as MessageTimestampParts } from './components/messages/time';
+
+/** Parts: the leaf components and row classes tool cards share. */
+export { default as Stdout } from './components/parts/Stdout';
+export { default as BareStatus } from './components/parts/BareStatus';
+export { default as AuthorHeader } from './components/parts/AuthorHeader';
+export { default as CancelledIcon } from './components/parts/CancelledIcon';
+export { default as InProgressCall } from './components/parts/InProgressCall';
+export {
+  ROW_GLYPH_SLOT,
+  PANE_COPY_REVEAL,
+  FOLD_GLYPH_CLASS,
+  TOOL_ROW_CLASSES,
+  FOLD_RAIL_CLASSES,
+  FOLD_GLYPH_SELECTOR,
+  ARTIFACT_ROW_NAV_SPACING,
+} from './components/parts/rows';

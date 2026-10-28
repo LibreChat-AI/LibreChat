@@ -9,7 +9,7 @@ import { useCallback, useLayoutEffect, useRef } from 'react';
  * node leaves the DOM, which is the last moment `document.activeElement` still
  * says whether the row had focus, and the node can still name its group.
  */
-export default function useRowHandoff(bare: boolean) {
+export default function useRowHandoff(bare: boolean): (node: HTMLElement | null) => void {
   const rowNode = useRef<HTMLElement | null>(null);
   const handoff = useRef<HTMLElement | null>(null);
 

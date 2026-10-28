@@ -1,7 +1,7 @@
 import { Terminal } from 'lucide-react';
+import { useToolExpansion } from '@librechat/chat/react';
 import type { ToolCallPhase } from '~/utils/toolCallPhase';
 import { useProgress, useLocalize } from '~/hooks';
-import { useToolExpansion } from './disclosure';
 import ProgressText from './ProgressText';
 import MarkdownLite from './MarkdownLite';
 import { cn } from '~/utils';

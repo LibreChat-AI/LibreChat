@@ -24,10 +24,10 @@ export const FOLD_GLYPH_CLASS = 'fold-glyph';
  * and would carry a taller slot 2px below the row's center. `fold-glyph` is a
  * hook, not a style: see `FOLD_GLYPH_SELECTOR`.
  */
-export const ROW_GLYPH_SLOT = `${FOLD_GLYPH_CLASS} flex h-5 min-w-6 shrink-0 items-center justify-center`;
+export const ROW_GLYPH_SLOT: string = `${FOLD_GLYPH_CLASS} flex h-5 min-w-6 shrink-0 items-center justify-center`;
 
 /** Shared by normal row slots and custom header glyphs. */
-export const FOLD_GLYPH_SELECTOR = `.${FOLD_GLYPH_CLASS}`;
+export const FOLD_GLYPH_SELECTOR: string = `.${FOLD_GLYPH_CLASS}`;
 
 /**
  * The panel under an open header: its rows step in by one glyph slot and a

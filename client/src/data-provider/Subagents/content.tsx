@@ -4,7 +4,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, dataService, hasToolCallPreview } from 'librechat-data-provider';
 import type { SubagentTaskContentSnapshot, ToolCallPartResponse } from 'librechat-data-provider';
 import type { QueryClient, UseQueryOptions } from '@tanstack/react-query';
-import type { ToolContentQuery } from '~/components/Chat/Messages/Content/disclosure';
+import type { ToolContentQuery } from '@librechat/chat/react';
 import type { RecoveredContent } from '~/components/Chat/Subagents/recovery';
 import { recoverTaskContent, recoveredToolPart } from '~/components/Chat/Subagents/recovery';
 import { isLiveSubagentStatus } from '~/components/Chat/Subagents/status';

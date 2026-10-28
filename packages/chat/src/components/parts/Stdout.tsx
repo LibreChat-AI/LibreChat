@@ -1,10 +1,11 @@
 import { useMemo } from 'react';
+import type { ReactNode } from 'react';
 
 interface StdoutProps {
   output?: string;
 }
 
-export default function Stdout({ output = '' }: StdoutProps) {
+export default function Stdout({ output = '' }: StdoutProps): ReactNode {
   const processedContent = useMemo(() => {
     if (!output) {
       return '';

@@ -1,6 +1,8 @@
 import { useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
 import { useSetAtom } from 'jotai';
 import { ChevronRight, Users } from 'lucide-react';
+import { useToolCallIntent } from '@librechat/chat/react';
+import { FOLD_GLYPH_CLASS } from '@librechat/chat/components';
 import { parseSubagentBackgroundHandle } from '@librechat/chat';
 import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
 import type {
@@ -32,10 +34,8 @@ import { useToolPreparation } from '../preparation';
 import { useAgentsMapContext } from '~/Providers';
 import { useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup } from './Attachment';
-import { useToolCallIntent } from './intent';
 import { useFailedReveal } from '../reveal';
 import { cn, parseToolName } from '~/utils';
-import { FOLD_GLYPH_CLASS } from '../rows';
 import { useLocalize } from '~/hooks';
 
 interface SubagentCallProps {

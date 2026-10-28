@@ -1,4 +1,5 @@
 import React from 'react';
+import { SoleToolContext, useToolAutoExpand } from '@librechat/chat/react';
 import { render, renderHook, screen, fireEvent } from '@testing-library/react';
 import type { TAttachment } from 'librechat-data-provider';
 import type {
@@ -8,7 +9,6 @@ import type {
 } from '~/hooks/Chat/contract';
 import type { Artifact, PtcTrace } from '~/common';
 import { MessagePartsHostProvider, appMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { SoleToolContext, useToolAutoExpand } from '../../disclosure';
 import ToolArtifactCard from '../ToolArtifactCard';
 import { Text as TextPart } from '../index';
 import PtcToolTrace from '../PtcToolTrace';

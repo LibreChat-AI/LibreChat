@@ -142,7 +142,8 @@ jest.mock('../Part', () => {
   const { useMessageContext } = jest.requireActual<typeof import('~/Providers/MessageContext')>(
     '~/Providers/MessageContext',
   );
-  const { SoleToolContext } = jest.requireActual<typeof import('../disclosure')>('../disclosure');
+  const { SoleToolContext } =
+    jest.requireActual<typeof import('@librechat/chat/react')>('@librechat/chat/react');
   const { useContext } = jest.requireActual<typeof import('react')>('react');
   return {
     __esModule: true,

@@ -4,13 +4,13 @@ import { ChevronDown } from 'lucide-react';
 import { Button } from '@librechat/client';
 import { unescapeJsonString } from '@librechat/chat';
 import { EModelEndpoint, Constants } from 'librechat-data-provider';
-import type { TMessage } from 'librechat-data-provider';
-import type { TranslationKeys } from '~/hooks';
 import {
   useToolContentRequest,
   useToolContentPending,
   toolPanelSpacingClassName,
-} from './disclosure';
+} from '@librechat/chat/react';
+import type { TMessage } from 'librechat-data-provider';
+import type { TranslationKeys } from '~/hooks';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import MessageIcon from '~/components/Share/MessageIcon';
 import { useLocalize, useExpandCollapse } from '~/hooks';

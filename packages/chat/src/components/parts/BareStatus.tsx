@@ -1,5 +1,6 @@
 import { useContext } from 'react';
-import { LoneGroupContext, SoleToolContext } from '../disclosure';
+import type { ReactNode } from 'react';
+import { LoneGroupContext, SoleToolContext } from '../../react/parts/disclosure';
 
 /**
  * The settled outcome of a sole call, spoken after its row is gone. The row's
@@ -12,7 +13,7 @@ import { LoneGroupContext, SoleToolContext } from '../disclosure';
  * Only a call that can drop its row renders it, so a card with a row of its
  * own never carries a second, empty live region.
  */
-export default function BareStatus({ active, text }: { active: boolean; text: string }) {
+export default function BareStatus({ active, text }: { active: boolean; text: string }): ReactNode {
   const sole = useContext(SoleToolContext) === true;
   const lone = useContext(LoneGroupContext);
   if (!sole && !lone) {

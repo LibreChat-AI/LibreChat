@@ -1,14 +1,14 @@
 import { memo, useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
 import {
-  getHeaderModelName,
   SubRow,
-  getMessageRowWidthClass,
   MessageRow,
+  AuthorHeader,
+  getHeaderModelName,
+  getMessageRowWidthClass,
 } from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon } from '~/common';
-import AuthorHeader from '~/components/Chat/Messages/Content/Parts/AuthorHeader';
 import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
 import SearchContent, { rendersMarkdownLite } from './Content/SearchContent';

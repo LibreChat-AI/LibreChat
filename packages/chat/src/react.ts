@@ -125,3 +125,29 @@ export {
   setDefaultMessagesHost,
 } from './react/messages/host';
 export type { MessagesHost } from './react/messages/host';
+export {
+  SoleToolContext,
+  LoneGroupContext,
+  useToolExpansion,
+  useToolAutoExpand,
+  useToolDisclosure,
+  reasoningDisclosure,
+  ToolDisclosureContext,
+  useToolContentPending,
+  useToolContentRequest,
+  useReasoningDisclosure,
+  ToolContentQueryContext,
+  ToolDisclosureKeyContext,
+  ToolContentPendingContext,
+  ToolContentRequestContext,
+  toolPanelSpacingClassName,
+  ReasoningDisclosureContext,
+} from './react/parts/disclosure';
+export type {
+  ToolDisclosures,
+  ToolContentQuery,
+  ReasoningDisclosures,
+} from './react/parts/disclosure';
+export { boundIntentLabel, getToolCallIntent, useToolCallIntent } from './react/parts/intent';
+export { default as useFollowScroll } from './react/parts/useFollowScroll';
+export { default as useRowHandoff } from './react/parts/handoff';

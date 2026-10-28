@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useEffect, useContext, useCallback } from 'react';
 import { Button } from '@librechat/client';
 import { hasToolParams } from '@librechat/chat';
+import { TOOL_ROW_CLASSES } from '@librechat/chat/components';
 import {
   Constants,
   dataService,
@@ -8,14 +9,16 @@ import {
   actionDomainSeparator,
   splitToolCallName,
 } from 'librechat-data-provider';
-import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import {
   toolPanelSpacingClassName,
   useToolContentRequest,
   useToolExpansion,
   LoneGroupContext,
   SoleToolContext,
-} from './disclosure';
+  useToolCallIntent,
+  useRowHandoff,
+} from '@librechat/chat/react';
+import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import { useLocalize, useProgress, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { ToolIcon, getToolIconType, isError, hasRenderableOutput } from './ToolOutput';
 import { cn, getToolDisplayLabel, logger, openInNewTab } from '~/utils';
@@ -23,14 +26,11 @@ import { isToolCallPreparing, useToolPreparation } from './preparation';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { MCPAppViews } from '~/components/MCPUIResource';
-import { useToolCallIntent } from './Parts/intent';
 import { AttachmentGroup } from './Parts';
 import ToolCallInfo from './ToolCallInfo';
 import ProgressText from './ProgressText';
-import { TOOL_ROW_CLASSES } from './rows';
 import { ToolAuthWarning } from './auth';
 import { firstErrorLine } from './live';
-import useRowHandoff from './handoff';
 
 export default function ToolCall({
   initialProgress = 0.1,
