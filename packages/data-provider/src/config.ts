@@ -855,6 +855,7 @@ export enum AgentCapabilities {
   web_search = 'web_search',
   artifacts = 'artifacts',
   subagents = 'subagents',
+  subagent_graphs = 'subagent_graphs',
   actions = 'actions',
   context = 'context',
   skills = 'skills',

@@ -106,6 +106,146 @@ describe('useCodeWorkspace', () => {
     },
   );
 
+  it('drops graph-only workspace requirements when the graph capability is removed', () => {
+    const config = mockAgentsConfig().agentsConfig;
+    config.capabilities = [...config.capabilities, 'subagent_graphs'];
+    config.statefulCodeSessions.environments.push({
+      id: 'graph-vm',
+      name: 'Graph VM',
+      type: 'attached',
+    });
+    mockAgentPermissions().agent.subagents = {
+      enabled: false,
+      graphsEnabled: true,
+      graphs: [{ agent_ids: ['graph-member'] }],
+    };
+    mockAgentsMap.mockReturnValue({
+      'graph-member': {
+        id: 'graph-member',
+        stateful_code_sessions: true,
+        tools: [Tools.execute_code],
+        code_environment_id: 'graph-vm',
+      },
+    });
+    mockStatus.mockImplementation((ids: string[]) =>
+      ids.map((id) => ({
+        data: {
+          environmentId: id,
+          status: id === 'graph-vm' ? 'offline' : 'ready',
+          workspaces: [{ id: 'project-a' }],
+        },
+      })),
+    );
+    const selection = [{ environmentId: 'personal-vm', workspaceId: 'project-a' }];
+    const { result, rerender } = renderHook(() => useCodeWorkspace(conversation(selection)));
+    expect(result.current.canSubmit).toBe(false);
+    expect(result.current.environments.map(({ environment }) => environment.id)).toEqual(
+      expect.arrayContaining(['personal-vm', 'graph-vm']),
+    );
+    config.capabilities = config.capabilities.filter(
+      (capability: string) => capability !== 'subagent_graphs',
+    );
+    rerender();
+    expect(result.current.environments.map(({ environment }) => environment.id)).toEqual([
+      'personal-vm',
+    ]);
+    expect(result.current.canSubmit).toBe(true);
+    expect(result.current.resolveSubmission(selection)?.codeWorkspaces).toEqual(selection);
+  });
+
+  it("does not let a terminal graph member's offline descendant block Send", () => {
+    mockAgentsConfig().agentsConfig.capabilities.push('subagent_graphs');
+    mockAgentPermissions().agent.subagents = {
+      enabled: false,
+      graphsEnabled: true,
+      graphs: [{ agent_ids: ['member'] }],
+    };
+    mockAgentsConfig().agentsConfig.statefulCodeSessions.environments.push({
+      id: 'offline-vm',
+      name: 'Offline',
+      type: 'attached',
+    });
+    mockAgentsMap.mockReturnValue({
+      member: {
+        id: 'member',
+        tools: [],
+        subagents: { enabled: true, agent_ids: ['offline'] },
+        edges: [{ from: 'member', to: 'offline', edgeType: 'handoff' }],
+      },
+      offline: {
+        id: 'offline',
+        tools: [Tools.execute_code],
+        stateful_code_sessions: true,
+        code_environment_id: 'offline-vm',
+      },
+    });
+    mockStatus.mockImplementation((ids: string[]) =>
+      ids.map((id) => ({
+        data: {
+          environmentId: id,
+          status: id === 'offline-vm' ? 'offline' : 'ready',
+          workspaces: [{ id: 'project-a' }],
+        },
+      })),
+    );
+    const selection = [{ environmentId: 'personal-vm', workspaceId: 'project-a' }];
+    const { result } = renderHook(() => useCodeWorkspace(conversation(selection)));
+    expect(result.current.canSubmit).toBe(true);
+    expect(result.current.environments.map(({ environment }) => environment.id)).toEqual([
+      'personal-vm',
+    ]);
+    expect(result.current.resolveSubmission(selection)?.codeWorkspaces).toEqual(selection);
+  });
+
+  it('ignores missing disabled graph members without blocking ordinary chat', () => {
+    mockAgentPermissions().agent.subagents = {
+      enabled: false,
+      graphsEnabled: true,
+      graphs: [{ agent_ids: ['unavailable-member'] }],
+    };
+    const selection = [{ environmentId: 'personal-vm', workspaceId: 'project-a' }];
+    const { result } = renderHook(() => useCodeWorkspace(conversation(selection)));
+    expect(result.current.canSubmit).toBe(true);
+    expect(result.current.resolveSubmission(selection)?.codeWorkspaces).toEqual(selection);
+  });
+
+  it('keeps legacy graph workspace requirements under the original subagents capability', () => {
+    mockAgentsConfig().agentsConfig.statefulCodeSessions.environments.push({
+      id: 'graph-vm',
+      name: 'Graph VM',
+      type: 'attached',
+    });
+    mockAgentPermissions().agent.subagents = {
+      enabled: true,
+      allowSelf: false,
+      graphs: [{ agent_ids: ['legacy-member'] }],
+    };
+    mockAgentsMap.mockReturnValue({
+      'legacy-member': {
+        id: 'legacy-member',
+        stateful_code_sessions: true,
+        tools: [Tools.execute_code],
+        code_environment_id: 'graph-vm',
+      },
+    });
+    mockStatus.mockImplementation((ids: string[]) =>
+      ids.map((id) => ({
+        data: {
+          environmentId: id,
+          status: id === 'graph-vm' ? 'offline' : 'ready',
+          workspaces: [{ id: 'project-a' }],
+        },
+      })),
+    );
+    const { result } = renderHook(() =>
+      useCodeWorkspace(conversation([{ environmentId: 'personal-vm', workspaceId: 'project-a' }])),
+    );
+    expect(result.current.canSubmit).toBe(false);
+    expect(result.current.environments.map(({ environment }) => environment.id)).toContain(
+      'graph-vm',
+    );
+  });
+
   describe('per-chat machines', () => {
     function enableChoices() {
       const config = mockAgentsConfig().agentsConfig;
@@ -130,6 +270,75 @@ describe('useCodeWorkspace', () => {
         codeWorkspaceInheritanceVersion: 1,
       });
     }
+
+    it.each([
+      { reverse: false, handoff: false },
+      { reverse: true, handoff: false },
+      { reverse: false, handoff: true },
+      { reverse: true, handoff: true },
+    ])('keeps isolated child handoffs out of workspace roots: %j', ({ reverse, handoff }) => {
+      enableChoices();
+      enableInheritance();
+      const primary = mockAgentPermissions().agent;
+      primary.subagents = {
+        enabled: true,
+        agent_ids: reverse ? ['reviewer', 'child'] : ['child', 'reviewer'],
+      };
+      primary.edges = handoff ? [{ from: primary.id, to: 'reviewer', edgeType: 'handoff' }] : [];
+      mockAgentsMap.mockReturnValue({
+        child: {
+          id: 'child',
+          tools: [],
+          edges: [{ from: 'child', to: 'reviewer', edgeType: 'handoff' }],
+          agent_ids: ['unexecuted-chain'],
+          subagents: { enabled: true, agent_ids: ['leaf'] },
+        },
+        reviewer: {
+          id: 'reviewer',
+          stateful_code_sessions: true,
+          tools: [Tools.execute_code],
+          code_environment_id: 'runtime-vm',
+          code_environment_ids: ['personal-vm'],
+        },
+        leaf: { id: 'leaf', tools: [] },
+      });
+      mockStatus.mockImplementation((ids: string[]) =>
+        ids.map((id) => ({
+          data: {
+            environmentId: id,
+            status: id === 'runtime-vm' ? 'offline' : 'ready',
+            workspaces: [{ id: 'project-a' }],
+          },
+        })),
+      );
+      const selections = [
+        { environmentId: 'personal-vm', workspaceId: 'project-a', agentIds: ['agent_primary'] },
+      ];
+      const { result } = renderHook(() =>
+        useCodeWorkspace({
+          ...conversation(selections),
+          conversationId: 'saved',
+          codeEnvironmentMode: 'attached',
+        }),
+      );
+      expect(result.current.canSubmit).toBe(!handoff);
+      expect(result.current.environments.map(({ environment }) => environment.id)).toEqual(
+        handoff ? ['personal-vm', 'runtime-vm'] : ['personal-vm'],
+      );
+      expect(
+        result.current.environments.find(
+          ({ environment }) => environment.id === (handoff ? 'runtime-vm' : 'personal-vm'),
+        )?.requiredBy,
+      ).toEqual(expect.arrayContaining([{ id: 'reviewer', name: undefined }]));
+      expect(result.current.resolveSubmission(selections)).toEqual(
+        handoff ? undefined : { codeEnvironmentMode: 'attached', codeWorkspaces: selections },
+      );
+      expect(mockStatus).toHaveBeenLastCalledWith(
+        handoff ? ['personal-vm', 'runtime-vm'] : ['personal-vm'],
+        true,
+        { notifyOnChangeProps: ['data', 'isLoading', 'isError'] },
+      );
+    });
 
     it('names the reviewer whose separate machine still needs a workspace', () => {
       enableChoices();
@@ -759,7 +968,7 @@ describe('useCodeWorkspace', () => {
     mockAgentsMap.mockReturnValue({});
     mockAgentsConfig.mockReturnValue({
       agentsConfig: {
-        capabilities: ['execute_code', 'stateful_code_sessions'],
+        capabilities: ['execute_code', 'stateful_code_sessions', 'subagents'],
         statefulCodeSessions: {
           environments: [
             {
@@ -964,7 +1173,7 @@ describe('useCodeWorkspace', () => {
     }));
     mockAgentsConfig.mockReturnValue({
       agentsConfig: {
-        capabilities: ['execute_code', 'stateful_code_sessions'],
+        capabilities: ['execute_code', 'stateful_code_sessions', 'subagents'],
         statefulCodeSessions: {
           environments: [
             { id: 'primary-vm', name: 'Primary VM', type: 'attached' },
@@ -1026,7 +1235,7 @@ describe('useCodeWorkspace', () => {
     }));
     mockAgentsConfig.mockReturnValue({
       agentsConfig: {
-        capabilities: ['execute_code', 'stateful_code_sessions'],
+        capabilities: ['execute_code', 'stateful_code_sessions', 'subagents'],
         statefulCodeSessions: {
           environments: [
             { id: 'primary-vm', type: 'attached' },
@@ -1970,7 +2179,7 @@ describe('useCodeWorkspace', () => {
     );
     mockAgentsConfig.mockReturnValue({
       agentsConfig: {
-        capabilities: ['execute_code', 'stateful_code_sessions'],
+        capabilities: ['execute_code', 'stateful_code_sessions', 'subagents'],
         statefulCodeSessions: {
           environments: [
             { id: 'personal-vm', type: 'attached' },
@@ -2025,7 +2234,7 @@ describe('useCodeWorkspace', () => {
   it('blocks sending when the agent-selected environment is not accessible', () => {
     mockAgentsConfig.mockReturnValue({
       agentsConfig: {
-        capabilities: ['execute_code', 'stateful_code_sessions'],
+        capabilities: ['execute_code', 'stateful_code_sessions', 'subagents'],
         statefulCodeSessions: { environments: [] },
       },
     });
@@ -2113,7 +2322,7 @@ describe('useCodeWorkspace', () => {
     });
     mockAgentsConfig.mockReturnValue({
       agentsConfig: {
-        capabilities: ['execute_code', 'stateful_code_sessions'],
+        capabilities: ['execute_code', 'stateful_code_sessions', 'subagents'],
         statefulCodeSessions: {
           environments: [
             { id: 'personal-vm', type: 'attached', baseURL: 'https://one.example.com' },

@@ -1,5 +1,6 @@
 import '@testing-library/jest-dom/extend-expect';
 import { fireEvent, render, screen } from '@testing-library/react';
+import type { AgentSubagentsConfig } from 'librechat-data-provider';
 import type { SVGProps } from 'react';
 import ToolsMarketplaceDialog from '../ToolsMarketplaceDialog';
 
@@ -9,7 +10,12 @@ let mockWatchedTools: string[] = [];
 let mockExecuteCode = false;
 let mockMcpServersMap = new Map<string, object>();
 let mockIsDesktop = true;
-let mockSubagents = { enabled: false, allowSelf: false, agent_ids: ['reviewer'] };
+let mockCapabilities = ['execute_code', 'tools', 'subagents'];
+let mockSubagents: AgentSubagentsConfig = {
+  enabled: false,
+  allowSelf: false,
+  agent_ids: ['reviewer'],
+};
 let mockEdges: Array<{ from: string; to: string; edgeType?: 'handoff' | 'direct' }> = [];
 
 jest.mock('react-hook-form', () => ({
@@ -38,7 +44,7 @@ jest.mock('react-hook-form', () => ({
 
 jest.mock('~/Providers', () => ({
   useAgentPanelContext: () => ({
-    agentsConfig: { capabilities: ['execute_code', 'tools', 'subagents'] },
+    agentsConfig: { capabilities: mockCapabilities },
     regularTools: [{ pluginKey: 'dalle', name: 'DALL-E', description: 'Images' }],
     mcpServersMap: mockMcpServersMap,
     actions: [],
@@ -120,6 +126,7 @@ jest.mock('../hooks', () => {
         },
         catalog,
         agentActions,
+        agentsConfig?.capabilities ?? [],
       );
       return { catalog, selected, tools };
     },
@@ -178,6 +185,7 @@ describe('ToolsMarketplaceDialog', () => {
     mockToggleFavorite.mockClear();
     mockFavoriteKeys = new Set<string>();
     mockIsDesktop = true;
+    mockCapabilities = ['execute_code', 'tools', 'subagents'];
     mockSubagents = { enabled: false, allowSelf: false, agent_ids: ['reviewer'] };
     mockEdges = [];
     mockFileEntries = { contextFiles: [], knowledgeFiles: [], codeFiles: [] };
@@ -420,6 +428,7 @@ describe('ToolsMarketplaceDialog', () => {
 
 describe('native collaboration tools', () => {
   beforeEach(() => {
+    mockCapabilities = ['execute_code', 'tools', 'subagents'];
     mockSetValue.mockClear();
     mockGetValues.mockReset();
     mockGetValues.mockReturnValue([]);
@@ -460,6 +469,42 @@ describe('native collaboration tools', () => {
       ['subagents', { ...mockSubagents, enabled: true }, { shouldDirty: true }],
     ]);
   });
+
+  test.each([undefined, true])(
+    'graph-only deployments offer configuration for legacy teams and removal after explicit opt-in (%s)',
+    (graphsEnabled) => {
+      mockCapabilities = ['subagent_graphs'];
+      mockSubagents = {
+        enabled: true,
+        graphsEnabled,
+        graphs: [
+          {
+            type: 'team',
+            name: 'Team',
+            description: 'Work',
+            agent_ids: ['reviewer'],
+            entry_agent_id: 'reviewer',
+            result_agent_id: 'reviewer',
+            edges: [],
+          },
+        ],
+      };
+      mockGetValues.mockImplementation(() => mockSubagents);
+      render(<ToolsMarketplaceDialog open onOpenChange={jest.fn()} agentId="a1" />);
+      const card = screen.getByRole('button', { name: /com_ui_agent_graphs/ });
+      expect(card).toHaveAttribute('aria-pressed', String(graphsEnabled === true));
+      fireEvent.click(card);
+      if (graphsEnabled === true) {
+        expect(mockSetValue.mock.calls).toEqual([
+          ['subagents', { ...mockSubagents, graphsEnabled: false }, { shouldDirty: true }],
+        ]);
+        expect(screen.queryByTestId('item-dialog')).not.toBeInTheDocument();
+      } else {
+        expect(screen.getByTestId('item-dialog')).toBeInTheDocument();
+        expect(mockSetValue).not.toHaveBeenCalled();
+      }
+    },
+  );
 
   test('adding handoffs opens only their destination dialog without mutating the form', () => {
     render(<ToolsMarketplaceDialog open onOpenChange={jest.fn()} agentId="a1" />);

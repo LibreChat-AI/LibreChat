@@ -781,14 +781,12 @@ async function assertResumeAgentContentAllowed({
     endpointOption,
     dependencies,
   );
-  const subagentsEnabled = new Set(appConfig?.endpoints?.[EModelEndpoint.agents]?.capabilities).has(
-    AgentCapabilities.subagents,
-  );
+  const capabilities = appConfig?.endpoints?.[EModelEndpoint.agents]?.capabilities ?? [];
   const agents = await getResumeAgentSnapshot({
     primaryAgent,
     additionalRoots,
     primaryModelParameters: endpointOption?.model_parameters,
-    subagentsEnabled,
+    capabilities,
     getAgent: async (filter) => (await dependencies.getAgent(filter)) ?? null,
     canAccessAgent: (agent) => dependencies.canAccessAgent(agent, user),
   });

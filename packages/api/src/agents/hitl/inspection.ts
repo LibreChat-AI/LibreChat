@@ -1,5 +1,6 @@
 import {
   Constants,
+  resolveSubagents,
   HITL_MESSAGE_FILTER_FIELDS,
   MAX_SUBAGENT_GRAPH_NODES,
   STORED_MESSAGE_FILTER_FIELDS,
@@ -18,8 +19,9 @@ import {
   type CanonicalFileInspectionFile,
 } from '~/protection/files';
 import { ContentTraversalLimitError } from '~/protection/adapters/nested';
+import { createEdgeCollector, resolveReachableGraph } from '../edges';
+import { createConcurrencyLimiter } from '~/utils/promise';
 import { collectReachableAgents } from '../traversal';
-import { getEdgeParticipants } from '../edges';
 
 type ResumeMessage = StoredMessageContentInput & {
   id?: string;
@@ -59,7 +61,7 @@ interface ResumeAgentSnapshotInput {
   primaryAgent: Agent;
   additionalRoots?: readonly Agent[];
   primaryModelParameters?: Readonly<Record<string, unknown>>;
-  subagentsEnabled: boolean;
+  capabilities: readonly string[];
   getAgent: (filter: { id: string }) => Promise<Agent | null>;
   canAccessAgent?: (agent: Agent) => Promise<boolean>;
 }
@@ -112,32 +114,24 @@ export function getDynamicToolContexts(agents: readonly DynamicToolContextAgent[
 
 function getReferencedAgentIds(
   agent: Agent,
-  subagentsEnabled: boolean,
-  includeLegacyChain: boolean,
-): string[] {
-  const ids = new Set<string>();
-  const add = (id: unknown) => {
-    if (typeof id === 'string' && id && id !== agent.id) {
-      ids.add(id);
-    }
+  capabilities: readonly string[],
+): Array<{ id: string; terminal: boolean; required: boolean }> {
+  const references = new Map<string, { id: string; terminal: boolean; required: boolean }>();
+  const add = (id: string, terminal = false, required = false) => {
+    if (!id || id === agent.id) return;
+    const existing = references.get(id);
+    references.set(id, {
+      id,
+      terminal: terminal && existing?.terminal !== false,
+      required: required || existing?.required === true,
+    });
   };
-
-  for (const edge of agent.edges ?? []) {
-    for (const id of getEdgeParticipants(edge)) {
-      add(id);
-    }
+  const subagents = resolveSubagents(agent.subagents, capabilities);
+  for (const id of subagents?.agent_ids ?? []) add(id);
+  for (const graph of subagents?.graphs ?? []) {
+    for (const id of graph.agent_ids) add(id, true, true);
   }
-  if (includeLegacyChain) {
-    for (const id of agent.agent_ids ?? []) {
-      add(id);
-    }
-  }
-  if (subagentsEnabled && agent.subagents?.enabled === true) {
-    for (const id of agent.subagents.agent_ids ?? []) {
-      add(id);
-    }
-  }
-  return [...ids];
+  return [...references.values()];
 }
 
 /**
@@ -149,7 +143,7 @@ export async function getResumeAgentSnapshot({
   primaryAgent,
   additionalRoots = [],
   primaryModelParameters,
-  subagentsEnabled,
+  capabilities,
   getAgent,
   canAccessAgent,
 }: ResumeAgentSnapshotInput): Promise<ResumeSnapshotAgent[]> {
@@ -161,7 +155,7 @@ export async function getResumeAgentSnapshot({
     },
     subagentAgentConfigs: [],
   };
-  const roots: ResumeSnapshotAgent[] = [primary];
+  let roots: ResumeSnapshotAgent[] = [primary];
   const byId = new Map<string, ResumeSnapshotAgent>([[primary.id, primary]]);
 
   for (const root of additionalRoots) {
@@ -173,39 +167,95 @@ export async function getResumeAgentSnapshot({
     roots.push(snapshot);
   }
 
-  for (let rootIndex = 0; rootIndex < roots.length; rootIndex++) {
-    const pending: Array<{ agent: ResumeSnapshotAgent; includeLegacyChain: boolean }> = [
-      { agent: roots[rootIndex], includeLegacyChain: rootIndex === 0 },
-    ];
-    for (let index = 0; index < pending.length; index++) {
-      const { agent, includeLegacyChain } = pending[index];
-      const children: ResumeSnapshotAgent[] = [];
-      for (const id of getReferencedAgentIds(agent, subagentsEnabled, includeLegacyChain)) {
-        let child = byId.get(id);
-        if (!child) {
-          let loaded: Agent | null;
-          try {
-            loaded = await getAgent({ id });
-          } catch {
-            throw new ContentTraversalLimitError();
-          }
-          if (!loaded) {
-            continue;
-          }
-          if (canAccessAgent && !(await canAccessAgent(loaded))) {
-            continue;
-          }
-          if (byId.size >= MAX_SUBAGENT_GRAPH_NODES) {
-            throw new ContentTraversalLimitError();
-          }
-          child = { ...loaded, subagentAgentConfigs: [] };
-          byId.set(id, child);
-          pending.push({ agent: child, includeLegacyChain: false });
-        }
-        children.push(child);
+  const unavailable = new Set<string>();
+  const loadAgent = createConcurrencyLimiter(4);
+  const read = async (id: string): Promise<ResumeSnapshotAgent | null> => {
+    const existing = byId.get(id);
+    if (existing) return existing;
+    if (unavailable.has(id)) return null;
+    return loadAgent(async () => {
+      let loaded: Agent | null;
+      try {
+        loaded = await getAgent({ id });
+        if (loaded && canAccessAgent && !(await canAccessAgent(loaded))) loaded = null;
+      } catch {
+        throw new ContentTraversalLimitError();
       }
-      agent.subagentAgentConfigs = children;
+      if (!loaded) {
+        unavailable.add(id);
+        return null;
+      }
+      const snapshot: ResumeSnapshotAgent = { ...loaded, subagentAgentConfigs: [] };
+      byId.set(id, snapshot);
+      return snapshot;
+    });
+  };
+
+  const rootSeeds = new Set([...byId.keys(), ...(primary.agent_ids ?? [])]);
+  const { agentsToProcess, collectEdges, edgeMap } = createEdgeCollector(
+    (id) => byId.has(id),
+    unavailable,
+  );
+  for (const root of roots) collectEdges(root.edges);
+  /** Handoff roots and isolated members have separate bounded owner-scoped read budgets. */
+  let rootReads = 0;
+  while (agentsToProcess.size > 0) {
+    const batch = [...agentsToProcess];
+    agentsToProcess.clear();
+    if (rootReads + batch.length > MAX_SUBAGENT_GRAPH_NODES) throw new ContentTraversalLimitError();
+    rootReads += batch.length;
+    const loaded = await Promise.all(batch.map(read));
+    for (const root of loaded) {
+      if (!root) continue;
+      roots.push(root);
+      collectEdges(root.edges);
     }
+  }
+  const legacyIds = [...new Set(primary.agent_ids ?? [])].filter(
+    (id) => id && !byId.has(id) && !unavailable.has(id),
+  );
+  if (rootReads + legacyIds.length > MAX_SUBAGENT_GRAPH_NODES)
+    throw new ContentTraversalLimitError();
+  for (const root of await Promise.all(legacyIds.map(read))) {
+    if (root) roots.push(root);
+  }
+  const { reachable } = resolveReachableGraph(
+    rootSeeds,
+    byId.keys(),
+    [...edgeMap.values()],
+    unavailable,
+  );
+  roots = roots.filter((root) => reachable.has(root.id));
+  const rootIds = new Set(roots.map((root) => root.id));
+
+  const pending = [...roots];
+  const expanded = new Set<string>();
+  const members = new Set<string>();
+  for (let index = 0; index < pending.length; index++) {
+    const agent = pending[index];
+    if (expanded.has(agent.id)) continue;
+    expanded.add(agent.id);
+    const references = getReferencedAgentIds(agent, capabilities);
+    // Saved configurations already cap unique targets, independently of successful admissions.
+    if (references.length > MAX_SUBAGENT_GRAPH_NODES) throw new ContentTraversalLimitError();
+    const children = await Promise.all(references.map(({ id }) => read(id)));
+    const connected: ResumeSnapshotAgent[] = [];
+    for (let childIndex = 0; childIndex < references.length; childIndex++) {
+      const { id, terminal, required } = references[childIndex];
+      const child = children[childIndex];
+      if (!child) {
+        if (required) throw new ContentTraversalLimitError();
+        continue;
+      }
+      const countsAsMember = !rootIds.has(id) || (!terminal && id !== primary.id);
+      if (countsAsMember && !members.has(id)) {
+        if (members.size >= MAX_SUBAGENT_GRAPH_NODES) throw new ContentTraversalLimitError();
+        members.add(id);
+      }
+      if (!terminal && !expanded.has(id)) pending.push(child);
+      connected.push(child);
+    }
+    agent.subagentAgentConfigs = connected;
   }
 
   return collectReachableAgents(roots);

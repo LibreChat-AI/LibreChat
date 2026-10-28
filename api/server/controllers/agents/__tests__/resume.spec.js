@@ -1719,6 +1719,288 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       expect(mockInitializeClient).not.toHaveBeenCalled();
     });
 
+    it.each([
+      {
+        name: 'graph-only edited member',
+        capabilities: [AgentCapabilities.subagent_graphs],
+        enabled: false,
+        graphsEnabled: true,
+        failure: 'content_filter_block',
+      },
+      {
+        name: 'legacy edited member',
+        capabilities: [AgentCapabilities.subagents],
+        enabled: true,
+        failure: 'content_filter_block',
+      },
+      {
+        name: 'missing active member',
+        capabilities: [AgentCapabilities.subagent_graphs],
+        enabled: false,
+        graphsEnabled: true,
+        missing: true,
+        failure: 'content_filter_uninspectable',
+      },
+      {
+        name: 'revoked VIEW on active member',
+        capabilities: [AgentCapabilities.subagent_graphs],
+        enabled: false,
+        graphsEnabled: true,
+        denied: true,
+        failure: 'content_filter_uninspectable',
+      },
+      {
+        name: 'disabled graph capability',
+        capabilities: [AgentCapabilities.subagents],
+        enabled: false,
+        graphsEnabled: true,
+      },
+      {
+        name: 'explicitly disabled graph',
+        capabilities: [AgentCapabilities.subagent_graphs],
+        enabled: false,
+        graphsEnabled: false,
+      },
+    ])(
+      'checks $name before claiming the pause',
+      async ({ capabilities, enabled, graphsEnabled, missing, denied, failure }) => {
+        requestConfigOverrides = {
+          endpoints: { agents: { checkpointer: { type: 'mongo' }, capabilities } },
+          filters: {
+            agentInstructions: {
+              pii: { fields: ['instructions'], starterPatterns: ['sk_prefix'] },
+            },
+          },
+        };
+        endpointAgent.subagents = {
+          enabled,
+          ...(graphsEnabled == null ? {} : { graphsEnabled }),
+          graphs: [
+            {
+              type: 'team',
+              name: 'Team',
+              description: 'Work',
+              agent_ids: ['member'],
+              edges: [],
+              entry_agent_id: 'member',
+              result_agent_id: 'member',
+            },
+          ],
+        };
+        mockGetAgent.mockResolvedValue(
+          missing
+            ? null
+            : {
+                _id: 'mongo-member',
+                id: 'member',
+                provider: 'openAI',
+                model: 'test',
+                instructions: 'Use sk-current-graph-member-secret',
+                tools: [],
+              },
+        );
+        mockCheckPermission.mockResolvedValue(!denied);
+        mockGenerationJobManager.getJob.mockResolvedValue(makeToolApprovalJob());
+        const res = await post(approveBody());
+        if (failure) {
+          expect(res.status).toBe(400);
+          expect(res.body.error).toBe(failure);
+          expect(mockGetAgent).toHaveBeenCalledTimes(1);
+          expect(mockGetAgent).toHaveBeenCalledWith({ id: 'member' });
+          expect(mockCheckAndIncrementPendingRequest).not.toHaveBeenCalled();
+          expect(mockGenerationJobManager.approvals.resolve).not.toHaveBeenCalled();
+          expect(mockInitializeClient).not.toHaveBeenCalled();
+          expect(mockDeleteAgentCheckpoint).not.toHaveBeenCalled();
+        } else {
+          expect(res.status).toBe(200);
+          await settled;
+          await flush();
+          expect(mockGetAgent).not.toHaveBeenCalled();
+          expect(mockGenerationJobManager.approvals.resolve).toHaveBeenCalledTimes(1);
+        }
+      },
+    );
+
+    it.each(['safe', 'blocked', 'missing', 'revoked', 'over-budget'])(
+      'checks discovered handoffs plus graph members before claiming a parent ask: %s',
+      async (state) => {
+        requestConfigOverrides = {
+          endpoints: {
+            agents: {
+              checkpointer: { type: 'mongo' },
+              capabilities: [AgentCapabilities.subagent_graphs],
+            },
+          },
+          filters: {
+            agentInstructions: {
+              pii: { fields: ['instructions'], starterPatterns: ['sk_prefix'] },
+            },
+          },
+        };
+        const count = 50 + (state === 'over-budget' ? 1 : 0);
+        const ids = Array.from({ length: count }, (_, index) => `member-${index}`);
+        const graphs = [];
+        for (let start = 0; start < count; start += 25) {
+          const members = ids.slice(start, start + 25);
+          graphs.push({
+            type: `team-${start}`,
+            name: 'Team',
+            description: 'Work',
+            agent_ids: members,
+            entry_agent_id: members[0],
+            result_agent_id: members[members.length - 1],
+            edges: members
+              .slice(1)
+              .map((id, index) => ({ from: members[index], to: id, edgeType: 'direct' })),
+          });
+        }
+        endpointAgent.edges = [{ from: AGENT_ID, to: 'handoff', edgeType: 'handoff' }];
+        endpointAgent.subagents = { enabled: false, graphsEnabled: true, graphs };
+        const last = ids[count - 1];
+        mockGetAgent.mockImplementation(async ({ id }) =>
+          id === last && state === 'missing'
+            ? null
+            : {
+                _id: `mongo-${id}`,
+                id,
+                provider: 'openAI',
+                model: 'test',
+                tools: [],
+                instructions:
+                  id === last && state === 'blocked' ? 'Use sk-boundary-member-secret' : '',
+              },
+        );
+        mockCheckPermission.mockImplementation(
+          async ({ resourceId }) => resourceId !== `mongo-${last}` || state !== 'revoked',
+        );
+        mockGenerationJobManager.getJob.mockResolvedValue(makeAskUserJob());
+        const res = await post({
+          conversationId: CONVO_ID,
+          actionId: ACTION_ID,
+          agent_id: AGENT_ID,
+          endpoint: 'agents',
+          answer: 'continue',
+        });
+        if (state === 'safe') {
+          expect(res.status).toBe(200);
+          await settled;
+          await flush();
+          expect(mockGenerationJobManager.approvals.resolve).toHaveBeenCalledTimes(1);
+          expect(mockInitializeClient).toHaveBeenCalledTimes(1);
+        } else {
+          expect(res.status).toBe(400);
+          expect(res.body.error).toBe(
+            state === 'blocked' ? 'content_filter_block' : 'content_filter_uninspectable',
+          );
+          expect(mockCheckAndIncrementPendingRequest).not.toHaveBeenCalled();
+          expect(mockGenerationJobManager.approvals.resolve).not.toHaveBeenCalled();
+          expect(mockInitializeClient).not.toHaveBeenCalled();
+          expect(mockDeleteAgentCheckpoint).not.toHaveBeenCalled();
+        }
+        expect(mockGetAgent).toHaveBeenCalledWith({ id: 'handoff' });
+        expect(mockGetAgent).toHaveBeenCalledTimes(state === 'over-budget' ? 1 : count + 1);
+      },
+    );
+
+    it.each(['missing', 'revoked', 'required-missing', 'required-revoked', 'extra-allowed'])(
+      'counts admitted ordinary members before claiming a parent ask: %s',
+      async (state) => {
+        requestConfigOverrides = {
+          endpoints: {
+            agents: {
+              checkpointer: { type: 'mongo' },
+              capabilities: [AgentCapabilities.subagents, AgentCapabilities.subagent_graphs],
+            },
+          },
+          filters: {
+            agentInstructions: {
+              pii: { fields: ['instructions'], starterPatterns: ['sk_prefix'] },
+            },
+          },
+        };
+        const ids = Array.from({ length: 49 }, (_, index) => `member-c19-${index}`);
+        const graphs = [0, 25].map((start) => {
+          const members = ids.slice(start, start + 25);
+          return {
+            type: `team-${start}`,
+            name: 'Team',
+            description: 'Work',
+            agent_ids: members,
+            entry_agent_id: members[0],
+            result_agent_id: members[members.length - 1],
+            edges: members
+              .slice(1)
+              .map((id, index) => ({ from: members[index], to: id, edgeType: 'direct' })),
+          };
+        });
+        endpointAgent.subagents = {
+          enabled: true,
+          graphsEnabled: true,
+          agent_ids: ['child'],
+          graphs,
+        };
+        const child = {
+          _id: 'mongo-child',
+          id: 'child',
+          provider: 'openAI',
+          model: 'test',
+          tools: [],
+          subagents: {
+            enabled: true,
+            agent_ids: ['stale', ...(state === 'extra-allowed' ? ['extra'] : [])],
+            ...(state.startsWith('required')
+              ? {
+                  graphsEnabled: true,
+                  graphs: [
+                    {
+                      type: 'required',
+                      name: 'Required',
+                      description: 'Work',
+                      agent_ids: ['stale'],
+                      entry_agent_id: 'stale',
+                      result_agent_id: 'stale',
+                      edges: [],
+                    },
+                  ],
+                }
+              : {}),
+          },
+        };
+        mockGetAgent.mockImplementation(async ({ id }) => {
+          if (id === 'stale' && !state.endsWith('revoked')) return null;
+          if (id === 'child') return child;
+          return { _id: `mongo-${id}`, id, provider: 'openAI', model: 'test', tools: [] };
+        });
+        mockCheckPermission.mockImplementation(
+          async ({ resourceId }) => resourceId !== 'mongo-stale',
+        );
+        mockGenerationJobManager.getJob.mockResolvedValue(makeAskUserJob());
+        const res = await post({
+          conversationId: CONVO_ID,
+          actionId: ACTION_ID,
+          agent_id: AGENT_ID,
+          endpoint: 'agents',
+          answer: 'continue',
+        });
+        if (state === 'missing' || state === 'revoked') {
+          expect(res.status).toBe(200);
+          await settled;
+          await flush();
+          expect(mockGenerationJobManager.approvals.resolve).toHaveBeenCalledTimes(1);
+          expect(mockInitializeClient).toHaveBeenCalledTimes(1);
+        } else {
+          expect(res.status).toBe(400);
+          expect(res.body.error).toBe('content_filter_uninspectable');
+          expect(mockCheckAndIncrementPendingRequest).not.toHaveBeenCalled();
+          expect(mockGenerationJobManager.approvals.resolve).not.toHaveBeenCalled();
+          expect(mockInitializeClient).not.toHaveBeenCalled();
+          expect(mockDeleteAgentCheckpoint).not.toHaveBeenCalled();
+        }
+        expect(mockGetAgent).toHaveBeenCalledWith({ id: 'stale' });
+        if (state === 'extra-allowed') expect(mockGetAgent).toHaveBeenCalledWith({ id: 'extra' });
+      },
+    );
+
     it('blocks current action metadata before consuming approval', async () => {
       requestConfigOverrides = {
         filters: {

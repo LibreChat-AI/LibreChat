@@ -112,4 +112,6 @@ export * from './types/scheduleConsent';
 
 export * from './approval';
 
+export * from './subagentGraphs';
+
 export * from './codeSetup';

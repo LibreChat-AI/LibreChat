@@ -1,8 +1,11 @@
 import { Provider } from 'jotai';
 import { renderHook } from '@testing-library/react';
 import { LocalStorageKeys } from 'librechat-data-provider';
-import type { TConversation } from 'librechat-data-provider';
-import useCodeApprovalMode from '../useCodeApprovalMode';
+import type { Agent, TConversation } from 'librechat-data-provider';
+import useCodeApprovalMode, {
+  collectReachableAgents,
+  resolveReachableCodeWorkspaceInheritance,
+} from '../useCodeApprovalMode';
 
 const mockUseGetAgentsConfig = jest.fn();
 const mockUseAgentToolPermissions = jest.fn();
@@ -39,6 +42,7 @@ describe('useCodeApprovalMode', () => {
     });
     mockUseGetAgentsConfig.mockReturnValue({
       agentsConfig: {
+        capabilities: ['subagents', 'subagent_graphs'],
         statefulCodeSessions: {
           approvalsEnabled: true,
           approvalModes: ['ask', 'acceptEdits'],
@@ -336,6 +340,124 @@ describe('useCodeApprovalMode', () => {
     expect(result.current).toEqual({ available: false, modes: [], selected: 'ask' });
   });
 
+  test('removing the graph capability removes graph-member approval requirements', () => {
+    mockUseAgentToolPermissions.mockReturnValue({
+      agent: {
+        id: 'agent_1',
+        tools: [],
+        subagents: {
+          enabled: false,
+          graphsEnabled: true,
+          graphs: [{ agent_ids: ['graph-member'] }],
+        },
+      },
+    });
+    mockUseAgentsMapContext.mockReturnValue({
+      'graph-member': {
+        id: 'graph-member',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+      },
+    });
+    const { result, rerender } = renderHook(() => useCodeApprovalMode(conversation));
+    expect(result.current.available).toBe(true);
+    mockUseGetAgentsConfig().agentsConfig.capabilities = ['subagents'];
+    rerender();
+    expect(result.current.available).toBe(false);
+    expect(result.current.modes).toEqual([]);
+  });
+
+  test.each([true, false])(
+    'workspace inheritance excludes a graph with capability enabled=%s',
+    (enabled) => {
+      const root = {
+        id: 'agent_1',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+        subagents: {
+          enabled: false,
+          graphsEnabled: true,
+          graphs: [{ agent_ids: ['graph-member'] }],
+        },
+      } as Agent;
+      const member = {
+        id: 'graph-member',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'child-machine',
+        code_environment_ids: ['mac'],
+      } as Agent;
+      const inherited = resolveReachableCodeWorkspaceInheritance(
+        [root],
+        { 'graph-member': member },
+        [
+          { id: 'mac', name: 'Mac', type: 'attached' },
+          { id: 'child-machine', name: 'Child', type: 'attached' },
+        ],
+        true,
+        [{ environmentId: 'mac', workspaceId: 'project' }],
+        false,
+        enabled ? ['subagent_graphs'] : ['subagents'],
+      );
+      expect(inherited.has('graph-member')).toBe(enabled);
+      if (enabled) expect(inherited.get('graph-member')).toBe('mac');
+    },
+  );
+
+  test('terminal graph descendants cannot restrict approval modes', () => {
+    mockUseAgentToolPermissions.mockReturnValue({
+      agent: {
+        id: 'agent_1',
+        tools: [],
+        subagents: { enabled: false, graphsEnabled: true, graphs: [{ agent_ids: ['member'] }] },
+      },
+    });
+    mockUseAgentsMapContext.mockReturnValue({
+      member: {
+        id: 'member',
+        tools: [],
+        subagents: { enabled: true, agent_ids: ['attached'] },
+        edges: [{ from: 'member', to: 'attached', edgeType: 'handoff' }],
+      },
+      attached: {
+        id: 'attached',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+      },
+    });
+    const { result } = renderHook(() => useCodeApprovalMode(conversation));
+    expect(result.current.available).toBe(false);
+    expect(result.current.modes).toEqual([]);
+  });
+
+  test('graph-only teams remain reachable in public execution metadata', () => {
+    mockUseAgentToolPermissions.mockReturnValue({
+      agent: {
+        id: 'agent_1',
+        tools: [],
+        subagents: {
+          enabled: false,
+          graphsEnabled: true,
+          graphs: [{ agent_ids: ['graph-member'] }],
+        },
+      },
+    });
+    mockUseAgentsMapContext.mockReturnValue({
+      'graph-member': {
+        id: 'graph-member',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+      },
+    });
+    const { result } = renderHook(() => useCodeApprovalMode(conversation));
+    expect(result.current.available).toBe(true);
+    expect(result.current.modes).toEqual(['ask', 'acceptEdits']);
+  });
+
   test('includes attached subagents while preserving their mandatory asks', () => {
     const primary = {
       id: 'agent_1',
@@ -587,4 +709,157 @@ describe('useCodeApprovalMode remembered pick', () => {
     const { result } = renderHook(() => useCodeApprovalMode(withoutMode), { wrapper: Provider });
     expect(result.current.selected).toBe('ask');
   });
+});
+
+describe('terminal graph traversal', () => {
+  const agent = (id: string, rest: Partial<Agent> = {}): Agent =>
+    ({
+      id,
+      tools: ['execute_code'],
+      stateful_code_sessions: true,
+      code_environment_id: 'mac',
+      code_environment_ids: ['mac'],
+      ...rest,
+    }) as Agent;
+  const graph = (id: string) => ({
+    type: 'team',
+    name: 'Team',
+    description: 'Work',
+    agent_ids: [id],
+    edges: [],
+    entry_agent_id: id,
+    result_agent_id: id,
+  });
+  const capabilities = ['subagents', 'subagent_graphs'];
+  const parent = agent('parent', {
+    subagents: { enabled: false, graphsEnabled: true, graphs: [graph('member')] },
+  });
+  const member = agent('member', {
+    code_environment_id: 'child',
+    subagents: { enabled: true, agent_ids: ['leaf'] },
+    edges: [{ from: 'member', to: 'handoff', edgeType: 'handoff' }],
+  });
+
+  test.each([false, true])(
+    'isolated ordinary children ignore saved handoffs but keep nested spawns, reverse=%s',
+    (reverse) => {
+      const root = agent('root', {
+        subagents: {
+          enabled: true,
+          agent_ids: reverse ? ['member', 'child'] : ['child', 'member'],
+        },
+      });
+      const child = agent('child', {
+        subagents: { enabled: true, agent_ids: ['leaf'] },
+        agent_ids: ['unused-chain'],
+        edges: [
+          { from: 'child', to: 'member', edgeType: 'handoff' },
+          { from: 'child', to: 'unused-handoff', edgeType: 'handoff' },
+        ],
+      });
+      const leaf = agent('leaf', { code_environment_id: 'child' });
+      const isolated = agent('member', { code_environment_id: 'child' });
+      const result = collectReachableAgents(
+        [root],
+        { child, member: isolated, leaf },
+        ['root'],
+        capabilities,
+      );
+      expect(result.complete).toBe(true);
+      expect(new Set(result.agents.map(({ id }) => id))).toEqual(
+        new Set(['root', 'child', 'member', 'leaf']),
+      );
+      const inherited = resolveReachableCodeWorkspaceInheritance(
+        [root],
+        { child, member: isolated, leaf },
+        [
+          { id: 'mac', name: 'Mac', type: 'attached' },
+          { id: 'child', name: 'Child', type: 'attached' },
+        ],
+        true,
+        [{ environmentId: 'mac', workspaceId: 'project', agentIds: ['root'] }],
+        false,
+        capabilities,
+      );
+      expect(inherited.get('member')).toBe('mac');
+      expect(inherited.get('leaf')).toBe('mac');
+    },
+  );
+
+  test('does not load missing graph descendants or lower completeness', () => {
+    expect(collectReachableAgents([parent], { member }, ['parent'], capabilities)).toEqual({
+      agents: [parent, member],
+      complete: true,
+    });
+    expect(collectReachableAgents([parent], {}, ['parent'], ['subagents'])).toEqual({
+      agents: [parent],
+      complete: true,
+    });
+    const inherited = resolveReachableCodeWorkspaceInheritance(
+      [parent],
+      { member },
+      [
+        { id: 'mac', name: 'Mac', type: 'attached' },
+        { id: 'child', name: 'Child', type: 'attached' },
+      ],
+      true,
+      [{ environmentId: 'mac', workspaceId: 'project' }],
+      false,
+      capabilities,
+    );
+    expect([...inherited.keys()]).toEqual(['member']);
+  });
+
+  test.each(['ordinary', 'handoff'] as const)(
+    '%s path upgrades a shared member in either order',
+    (path) => {
+      const ordinary = agent(
+        'ordinary',
+        path === 'ordinary'
+          ? { subagents: { enabled: true, agent_ids: ['member'] } }
+          : { edges: [{ from: 'ordinary', to: 'member', edgeType: 'handoff' }] },
+      );
+      const leaf = agent('leaf', {
+        code_environment_id: 'child',
+        subagents: { enabled: true, agent_ids: ['member', 'handoff'] },
+      });
+      const handoff = agent('handoff', { subagents: { enabled: true, agent_ids: ['leaf'] } });
+      const subagents = jest.fn(() => member.subagents);
+      const shared = { ...member };
+      Object.defineProperty(shared, 'subagents', { get: subagents });
+      for (const roots of [
+        [parent, ordinary],
+        [ordinary, parent],
+      ]) {
+        subagents.mockClear();
+        const result = collectReachableAgents(
+          roots,
+          { member: shared, leaf, handoff },
+          roots.map(({ id }) => id),
+          capabilities,
+        );
+        expect(result.complete).toBe(true);
+        expect(new Set(result.agents.map(({ id }) => id))).toEqual(
+          new Set(['parent', 'ordinary', 'member', 'leaf', 'handoff']),
+        );
+        expect(result.agents).toHaveLength(5);
+        expect(subagents).toHaveBeenCalledTimes(1);
+        if (path === 'ordinary') {
+          const inherited = resolveReachableCodeWorkspaceInheritance(
+            roots,
+            { member: shared, leaf, handoff },
+            [
+              { id: 'mac', name: 'Mac', type: 'attached' },
+              { id: 'child', name: 'Child', type: 'attached' },
+            ],
+            true,
+            [{ environmentId: 'mac', workspaceId: 'project' }],
+            false,
+            capabilities,
+          );
+          expect(inherited.get('leaf')).toBe('mac');
+        }
+      }
+    },
+  );
 });
