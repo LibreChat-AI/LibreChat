@@ -40,24 +40,43 @@ const TRANSPARENT = new Set([
   'TSInstantiationExpression',
 ]);
 
-/** `typeof cn` and every other type position is erased; only runtime references can throw. */
+/** Type positions TypeScript erases: `typeof cn`, `implements`, an interface's `extends`. */
+const TYPE_POSITIONS = new Set([
+  'TSTypeAnnotation',
+  'TSTypeQuery',
+  'TSTypeReference',
+  'TSClassImplements',
+  'TSInterfaceHeritage',
+  'TSInterfaceDeclaration',
+  'TSTypeAliasDeclaration',
+]);
+
+/** Whether a reference sits in a type, where only runtime references can throw. */
 const inType = (node) => {
   for (let parent = node.parent; parent; parent = parent.parent) {
-    if (parent.type === 'TSTypeQuery' || parent.type === 'TSTypeReference') return true;
+    if (TYPE_POSITIONS.has(parent.type)) return true;
   }
   return false;
+};
+
+/** Expressions that pass a value through to whatever consumes them: a wrapper, or a branch. */
+const forwards = (node) => {
+  const { parent } = node;
+  if (TRANSPARENT.has(parent.type) || parent.type === 'LogicalExpression') return true;
+  return parent.type === 'ConditionalExpression' && parent.test !== node;
 };
 
 /**
  * Whether a reference only hands its value on, which cannot throw however a mock defines it: an
  * object property's value, an array element, a call argument, the right side of an assignment, a
- * plain `const x =`, a branch of `?:`, `&&`, `||` or `??`, an export, or a JSX tag. Every other use
+ * plain `const x =`, an export, or a JSX tag, judged through any `?:`, `&&`, `||` or `??` that
+ * carries it there, so `(on ? cn : f)('a')` is a call. Every other use
  * (a call, `new`, a member read, destructuring, a spread, `extends`, `in`, `instanceof`, iteration)
  * reads the import itself.
  */
 const isInert = (reference) => {
   let node = reference;
-  while (TRANSPARENT.has(node.parent.type)) node = node.parent;
+  while (forwards(node)) node = node.parent;
   const { parent } = node;
   switch (parent.type) {
     case 'Property':
@@ -76,10 +95,6 @@ const isInert = (reference) => {
       return parent.right === node;
     case 'VariableDeclarator':
       return parent.init === node && parent.id.type === 'Identifier';
-    case 'ConditionalExpression':
-      return parent.test !== node;
-    case 'LogicalExpression':
-      return true;
     default:
       return false;
   }

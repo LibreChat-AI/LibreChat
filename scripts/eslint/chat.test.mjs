@@ -131,6 +131,8 @@ tester.run('chat/boundary', chat.rules.boundary, {
       "import { A, B } from '@librechat/client'; export const pick = flag ? A : B ?? A;",
       "import { Button } from '@librechat/client'; export const element = <Button />;",
       "import { cn } from '@librechat/client'; export { cn };",
+      "import { Store } from '@librechat/client'; export interface Derived extends Store {} export class Impl implements Store {} export type S = Store;",
+      "import { cn } from '@librechat/client'; export const pick = (on: boolean) => on; export const fn = on ? cn : pick;",
       "import { FileSources } from 'librechat-data-provider'; export const read = () => { const { local } = FileSources; return { ...FileSources, local }; };",
       "import { cn } from '@librechat/client'; export const C = memo((() => cn('a')) as () => string);",
     ].map((code) => ({ code, filename: at('components/Probe.tsx'), options })),
@@ -197,6 +199,13 @@ tester.run('chat/boundary', chat.rules.boundary, {
         'cn',
       ],
       ["import { Store } from '@librechat/client'; export class Derived extends Store {}", 'Store'],
+      ["import { cn } from '@librechat/client'; export const c = (on ? cn : String)('a');", 'cn'],
+      ["import { cn } from '@librechat/client'; export const c = (cn || String)('a');", 'cn'],
+      [
+        "import { FileSources } from 'librechat-data-provider'; export const l = (FileSources ?? {}).local;",
+        'FileSources',
+        'librechat-data-provider',
+      ],
       [
         "import { Store } from '@librechat/client'; export const D = class extends Store {};",
         'Store',
