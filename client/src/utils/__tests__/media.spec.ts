@@ -1,9 +1,13 @@
-import type { TAttachment } from 'librechat-data-provider';
+import type { TAttachment, TMessage } from 'librechat-data-provider';
 import {
   attachmentIdentity,
   attachmentRenderKey,
   buildAttachmentsByName,
+  buildFilesByName,
+  resolveSandboxLink,
+  buildConversationFilesByName,
   resolveInlineMedia,
+  sandboxUrlTransform,
   toAbsoluteFilePath,
 } from '~/utils/media';
 
@@ -276,5 +280,176 @@ describe('attachmentRenderKey', () => {
     expect(
       attachmentRenderKey(attachment({ file_id: undefined, filepath: undefined })),
     ).toBeUndefined();
+  });
+});
+
+describe('buildFilesByName', () => {
+  const deck = attachment({
+    filename: 'deck.pptx',
+    filepath: '/api/files/code/download/s/d/deck.pptx',
+  });
+
+  it('indexes non-image files that the image map leaves out', () => {
+    expect(buildFilesByName([deck]).get('deck.pptx')).toBe(deck);
+    expect(buildAttachmentsByName([deck]).size).toBe(0);
+  });
+
+  it('keeps a basename two stored files claim as unresolved, unlike the image map', () => {
+    const other = attachment({ filename: 'deck.pptx', filepath: '/api/files/other/deck.pptx' });
+    const files = buildFilesByName([deck, other]);
+    expect(files.has('deck.pptx')).toBe(true);
+    expect(files.get('deck.pptx')).toBeUndefined();
+    const a = attachment({ filename: 'a.png', filepath: '/api/files/1/a.png', file_id: '1' });
+    const b = attachment({ filename: 'a.png', filepath: '/api/files/2/a.png', file_id: '2' });
+    expect(buildAttachmentsByName([a, b]).has('a.png')).toBe(false);
+  });
+});
+
+describe('resolveSandboxLink', () => {
+  const deck = attachment({
+    filename: 'deck.pptx',
+    filepath: '/api/files/code/download/s/d/deck.pptx',
+  });
+  const byName = buildFilesByName([deck]);
+
+  it('resolves a sandbox path by case-insensitive basename', () => {
+    expect(resolveSandboxLink('/mnt/data/sub/Deck.PPTX', byName)).toEqual({
+      isSandboxPath: true,
+      attachment: deck,
+    });
+  });
+
+  it.each([
+    '/api/files/x/deck.pptx',
+    'https://example.com/mnt/data/deck.pptx',
+    'deck.pptx',
+    undefined,
+  ])('does not treat %s as a sandbox path', (href) => {
+    expect(resolveSandboxLink(href, byName)).toEqual({ isSandboxPath: false });
+  });
+
+  it('reports an unmatched sandbox path without an attachment', () => {
+    expect(resolveSandboxLink('/mnt/data/missing.pptx', byName)).toEqual({
+      isSandboxPath: true,
+      attachment: undefined,
+    });
+  });
+});
+
+describe('resolveSandboxLink fallback', () => {
+  const mk = (file_id: string) =>
+    ({
+      filename: 'deck.pptx',
+      filepath: `/p/${file_id}/deck.pptx`,
+      file_id,
+    }) as unknown as TAttachment;
+  const own = buildFilesByName([mk('own')]);
+  const other = buildConversationFilesByName([
+    { attachments: [mk('other')] } as unknown as TMessage,
+  ]);
+
+  it('prefers the turn own map over the fallback', () => {
+    expect(resolveSandboxLink('/mnt/data/deck.pptx', own, other).attachment).toBe(
+      own.get('deck.pptx'),
+    );
+  });
+
+  it('uses the fallback when the own map misses', () => {
+    expect(resolveSandboxLink('/mnt/data/deck.pptx', undefined, other).attachment).toBe(
+      other.get('deck.pptx'),
+    );
+  });
+
+  it('does not consult the fallback for a name the turn holds ambiguously', () => {
+    const ambiguous = buildFilesByName([mk('x'), mk('y')]);
+    expect(resolveSandboxLink('/mnt/data/deck.pptx', ambiguous, other)).toEqual({
+      isSandboxPath: true,
+      attachment: undefined,
+    });
+  });
+
+  it('ignores the fallback for a non-sandbox href', () => {
+    expect(resolveSandboxLink('/api/files/deck.pptx', undefined, other)).toEqual({
+      isSandboxPath: false,
+    });
+  });
+});
+
+describe('buildConversationFilesByName', () => {
+  const file = (
+    filename: string,
+    file_id: string,
+    filepath = `/api/files/${file_id}/${filename}`,
+  ) => ({ filename, file_id, filepath }) as unknown as TAttachment;
+  const msg = (messageId: string, attachments?: TAttachment[]) =>
+    ({ messageId, attachments }) as unknown as TMessage;
+
+  it('finds a file from an earlier message', () => {
+    const deck = file('deck.pptx', 'a');
+    const map = buildConversationFilesByName([msg('1', [deck]), msg('2')]);
+    expect(map.get('deck.pptx')).toBe(deck);
+  });
+
+  it('lets the newest message win a basename', () => {
+    const map = buildConversationFilesByName([
+      msg('1', [file('report.csv', 'a', 'out/report.csv')]),
+      msg('3', [file('report.csv', 'b', 'b/report.csv')]),
+    ]);
+    expect((map.get('report.csv') as { file_id?: string }).file_id).toBe('b');
+  });
+
+  it('keeps the later record of the same stored file across messages', () => {
+    const later = file('r.csv', 'a', '/new/r.csv');
+    const map = buildConversationFilesByName([
+      msg('1', [file('r.csv', 'a', '/old/r.csv')]),
+      msg('2', [later]),
+    ]);
+    expect(map.get('r.csv')).toBe(later);
+  });
+
+  it('keeps the later record of the same stored file within one message', () => {
+    const later = file('r.csv', 'a', '/new/r.csv');
+    const map = buildConversationFilesByName([msg('1', [file('r.csv', 'a', '/old/r.csv'), later])]);
+    expect(map.get('r.csv')).toBe(later);
+  });
+
+  it('never holds an undefined value', () => {
+    const map = buildConversationFilesByName([
+      msg('1', [file('x.csv', 'a'), file('x.csv', 'b'), file('ok.csv', 'c')]),
+    ]);
+    expect(map.has('x.csv')).toBe(false);
+    expect([...map.values()].every((v) => v !== undefined)).toBe(true);
+  });
+
+  it('does not let an older message fill a name a newer one left ambiguous', () => {
+    const map = buildConversationFilesByName([
+      msg('1', [file('x.csv', 'a')]),
+      msg('2', [file('x.csv', 'b'), file('x.csv', 'c')]),
+    ]);
+    expect(map.get('x.csv')).toBeUndefined();
+  });
+
+  it('skips attachments without a filepath and shares the empty map', () => {
+    const map = buildConversationFilesByName([
+      msg('1', [{ filename: 'n.csv', file_id: 'a' } as unknown as TAttachment]),
+    ]);
+    expect(map.size).toBe(0);
+    expect(buildConversationFilesByName(undefined)).toBe(buildConversationFilesByName([]));
+    expect(map).toBe(buildConversationFilesByName([]));
+  });
+});
+
+describe('sandboxUrlTransform', () => {
+  it('reduces a sandbox:/mnt/data/ URL to its path', () => {
+    expect(sandboxUrlTransform('sandbox:/mnt/data/deck.pptx')).toBe('/mnt/data/deck.pptx');
+  });
+
+  it.each([
+    ['https://example.com/a', 'https://example.com/a'],
+    ['/mnt/data/deck.pptx', '/mnt/data/deck.pptx'],
+    ['sandbox:/etc/passwd', ''],
+    ['javascript:alert(1)', ''],
+  ])('screens %s like the default transform', (url, expected) => {
+    expect(sandboxUrlTransform(url)).toBe(expected);
   });
 });

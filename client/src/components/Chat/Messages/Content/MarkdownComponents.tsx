@@ -1,20 +1,24 @@
-import React, { memo, useMemo, useRef, useEffect } from 'react';
+import React, { memo, useMemo, useRef, useEffect, useContext } from 'react';
 import { PermissionTypes, Permissions, apiBaseUrl } from 'librechat-data-provider';
+import type { TFile } from 'librechat-data-provider';
 import type { Element, ElementContent } from 'hast';
 import {
   handleDoubleClick,
   triggerDownload,
   resolveInlineMedia,
+  resolveSandboxLink,
   toAbsoluteFilePath,
 } from '~/utils';
 import Mermaid, { MermaidErrorBoundary } from '~/components/Messages/Content/Mermaid';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
+import { ConversationFilesContext } from '~/Providers/MediaContext';
 import { useCodeBlockContext, useMediaContext } from '~/Providers';
 import CodeBlock from '~/components/Messages/Content/CodeBlock';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
 import { strongDirection } from '~/utils/direction';
 import { useFileDownload } from '~/data-provider';
 import { useLocalize } from '~/hooks';
+import LogLink from './Parts/LogLink';
 
 type TCodeProps = {
   inline?: boolean;
@@ -119,6 +123,9 @@ export const a: React.ElementType = memo(function MarkdownAnchor({ href, childre
   const user = useUser();
   const showToast = useToast();
   const localize = useLocalize();
+  const { filesByName } = useMediaContext();
+  const conversationFiles = useContext(ConversationFilesContext);
+  const sandbox = resolveSandboxLink(href, filesByName, conversationFiles);
 
   const {
     file_id = '',
@@ -139,6 +146,28 @@ export const a: React.ElementType = memo(function MarkdownAnchor({ href, childre
 
   const { refetch: downloadFile } = useFileDownload(user?.id ?? '', file_id, { direct: false });
   const props: { target?: string; onClick?: React.MouseEventHandler } = { target: '_blank' };
+
+  /** `/mnt/data/…` exists only inside the sandbox, so the browser would request
+   *  it from this app and land on the SPA's 404. Link the attachment the run
+   *  produced, or leave plain text when there is none. */
+  if (sandbox.isSandboxPath) {
+    const { attachment } = sandbox;
+    if (!attachment?.filepath) {
+      return <span>{children}</span>;
+    }
+    const file = attachment as TFile;
+    return (
+      <LogLink
+        href={attachment.filepath}
+        filename={attachment.filename ?? ''}
+        file_id={file.file_id}
+        user={file.user}
+        source={file.source}
+      >
+        {children}
+      </LogLink>
+    );
+  }
 
   if (!file_id || !filename) {
     return (

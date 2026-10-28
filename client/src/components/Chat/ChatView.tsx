@@ -12,6 +12,7 @@ import { AddedChatContext, ChatFormProvider, useChatContext, useFileMapContext }
 import { useScrollbarGutterSeed, useAddedResponse, useLocalize } from '~/hooks';
 import Footer, { useLandingFooter, useConfiguredFooter } from './Footer';
 import { QueuedTurnPortalProvider } from './Steering/QueuedTurnPortal';
+import { ConversationFilesProvider } from '~/Providers/MediaContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import ApprovalProvider from './Messages/Content/ApprovalContext';
 import ConversationStarters from './Input/ConversationStarters';
@@ -193,7 +194,9 @@ function ChatPane({
                           conversationId={conversationId}
                           isSubmitting={chat.isSubmitting}
                         >
-                          {content}
+                          <ConversationFilesProvider messages={messages}>
+                            {content}
+                          </ConversationFilesProvider>
                         </OwnerTextProvider>
                         {/* Named + opaque so a view transition (the ask_user_question
                         popover ⇄ chat-card morph) paints the whole composer band
