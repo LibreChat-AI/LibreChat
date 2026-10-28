@@ -182,6 +182,16 @@ tester.run('chat/boundary', chat.rules.boundary, {
         'librechat-data-provider',
       ],
       ["import { v4 } from 'uuid'; export const id = v4();", 'v4', 'uuid'],
+      ["import { cn } from '@librechat/client'; export const classes = (() => cn('a'))();", 'cn'],
+      [
+        "import { cn } from '@librechat/client'; export const c = (function () { return cn('a'); })();",
+        'cn',
+      ],
+      [
+        "import { FileSources } from 'librechat-data-provider'; export class A { [FileSources.local] = 1; }",
+        'FileSources',
+        'librechat-data-provider',
+      ],
       [
         "import { atom } from 'jotai'; export const a = atom(0);",
         'atom',

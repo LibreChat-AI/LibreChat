@@ -38,12 +38,26 @@ const rootIdentifier = (node) => {
   return current?.type === 'Identifier' ? current : undefined;
 };
 
-/** Whether `node` runs when its module loads, rather than when a function or instance runs it. */
-const runsOnLoad = (ancestors) =>
-  !ancestors.some(
-    (ancestor) =>
-      FUNCTIONS.has(ancestor.type) || (ancestor.type === 'PropertyDefinition' && !ancestor.static),
-  );
+/**
+ * Whether `node` runs when its module loads: no enclosing function defers it, except one invoked
+ * on the spot, and no instance field initializer does. A computed field key still runs with the
+ * class. A callback handed to another call is taken as deferred, as `memo` and `forwardRef` take
+ * theirs; the rule cannot see whether the callee invokes it right away.
+ */
+const runsOnLoad = (node) => {
+  for (let child = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
+    if (FUNCTIONS.has(parent.type)) {
+      const invoked =
+        (parent.parent.type === 'CallExpression' || parent.parent.type === 'NewExpression') &&
+        parent.parent.callee === parent;
+      if (!invoked) return false;
+    }
+    if (parent.type === 'PropertyDefinition' && !parent.static && child === parent.value) {
+      return false;
+    }
+  }
+  return true;
+};
 
 const packageName = (specifier) => {
   const parts = specifier.split('/');
@@ -118,7 +132,7 @@ const boundary = {
       }
       const source = variable && externalBindings.get(variable.defs[0]?.node);
       if (!source) return;
-      if (!runsOnLoad(context.sourceCode.getAncestors(node))) return;
+      if (!runsOnLoad(node)) return;
       context.report({ node, messageId: 'load', data: { name: identifier.name, source } });
     };
 
