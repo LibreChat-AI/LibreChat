@@ -76,7 +76,9 @@ function readEmbeddedEntities(value: unknown): string[] | undefined {
 export function createDeleteFileWithSecondaryStorage<
   TRequest extends {
     user: { id: string; tenantId?: string };
-    config?: { fileConfig?: { retainedFileCleanup?: boolean } };
+    config?: {
+      fileConfig?: { retainedFileCleanup?: boolean; vectorOwnershipTrackingStart?: string };
+    };
     body?: { assistant_id?: string };
   },
   TFile extends StorageFile,
@@ -160,6 +162,7 @@ export function createDeleteFileWithSecondaryStorage<
               tenantId: file.tenantId,
               updatedAt: file.updatedAt,
               embeddedEntities: readEmbeddedEntities(file.metadata?.embeddedEntities),
+              ownershipTrackingStart: req.config?.fileConfig?.vectorOwnershipTrackingStart,
             }))
           ) {
             throw new Error('Embedding snapshot changed');

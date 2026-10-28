@@ -1,7 +1,7 @@
 import type { ContextEntry, TurnContextAgent } from './registry';
-import { LEDGER_PART_KEYS, compareContextKeys, findContextSource } from './registry';
 import type { ContextAgent } from '../systemParts';
 import { ContextPartKeys, contributeContext, setConversationContext } from '../systemParts';
+import { LEDGER_PART_KEYS, compareContextKeys, findContextSource } from './registry';
 
 /** The fields of a history row the turn context reads. */
 export interface TurnContextMessage {

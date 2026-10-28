@@ -1,5 +1,5 @@
-import { Tools } from 'librechat-data-provider';
 import { Providers } from '@librechat/agents';
+import { Tools } from 'librechat-data-provider';
 import { logger } from '@librechat/data-schemas';
 import { AGENT_TEMPORAL_INSTRUCTIONS_KEY } from './contextUpdates';
 
@@ -49,7 +49,6 @@ export const ContextPartKeys = {
   agentFiles: 'agent_files',
   /** The segment's anchored context (turn context ledger), replacing the parts it owns. */
   conversation: 'conversation',
-  alwaysApplySkills: 'always_apply_skills',
   runtimePrefix: 'runtime:',
 } as const;
 
@@ -59,9 +58,8 @@ export const ContextPartKeys = {
  * - `init` (`initializeAgent`): blank-line separated, untrimmed;
  * - `request` (`applyContextToAgent`): appended to the trimmed `init` block and
  *   trimmed again, also when it adds nothing, so its parts are recorded even empty;
- * - `subagent` (`createRun`, isolated children): appended as is.
  */
-type Stage = 'init' | 'request' | 'subagent';
+type Stage = 'init' | 'request';
 
 interface PartSpec {
   key: string;
@@ -86,7 +84,6 @@ const CONTEXT_PARTS: PartSpec[] = [
   /** Extracted text of the agent's own context files. */
   { key: ContextPartKeys.agentFiles, kind: 'static', stage: 'request' },
   { key: ContextPartKeys.conversation, kind: 'conversation', stage: 'request' },
-  { key: ContextPartKeys.alwaysApplySkills, kind: 'static', stage: 'subagent' },
   { key: ContextPartKeys.runtimePrefix, kind: 'conversation' },
 ];
 
@@ -168,7 +165,7 @@ export function assembleAdditionalInstructions(
   if (request.length > 0) {
     text = joinBlocks([text.trim(), ...request]).trim();
   }
-  return joinBlocks([text, ...stageParts('subagent')]) || undefined;
+  return text || undefined;
 }
 
 /**
@@ -207,8 +204,9 @@ const isTurnPart = (part: ContextPart) => part.kind === 'turn';
 /**
  * Mirrors the SDK condition under which `additional_instructions` is relocated into a
  * separate message right before the last user message (Anthropic and OpenRouter with
- * `promptCache: true`). That position shifts every turn, so no request starts with the
- * bytes of the previous one. The prompt prefix stability tests run the SDK against this
+ * `promptCache: true`; Bedrock too since agents#613, earlier releases keep it at the end of
+ * the system text, where merging the stable part changes nothing). That position shifts
+ * every turn, so no request starts with the bytes of the previous one. The prompt prefix stability tests run the SDK against this
  * predicate for every provider.
  * TODO: drop with the merge once the SDK carries `conversation_instructions`.
  */
@@ -217,7 +215,9 @@ export function sdkMovesDynamicInstructions(
   clientOptions?: object,
 ): boolean {
   return (
-    (provider === Providers.ANTHROPIC || provider === Providers.OPENROUTER) &&
+    (provider === Providers.ANTHROPIC ||
+      provider === Providers.OPENROUTER ||
+      provider === Providers.BEDROCK) &&
     (clientOptions as { promptCache?: unknown } | undefined)?.promptCache === true
   );
 }
@@ -272,19 +272,9 @@ export function assembleSystemPrompt(
     .trim();
   const tail = currentTail(agent);
   if (!stableContext) {
-    /** Isolated children's parts were appended to the finished tail as given, untrimmed. */
-    const isChildPart = (part: ContextPart) => CONTEXT_PARTS[part.order].stage === 'subagent';
-    const childText = assembleAdditionalInstructions(agent, isChildPart) ?? '';
-    const ownTail =
-      childText === '' || agent.contextParts == null
-        ? tail
-        : (assembleAdditionalInstructions(agent, (part) => !isChildPart(part)) ?? '');
     return {
       instructions,
-      additional_instructions: joinBlocks([
-        [mapText(ContextPartKeys.runtimePrefix), ownTail].join('\n').trim(),
-        agent.contextParts == null ? '' : childText,
-      ]),
+      additional_instructions: [mapText(ContextPartKeys.runtimePrefix), tail].join('\n').trim(),
     };
   }
   const additional = [tail, mapText(ContextPartKeys.runtimePrefix)].join('\n').trim();

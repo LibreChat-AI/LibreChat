@@ -12,6 +12,8 @@ import { createMCPServerMethods } from './mcpServer';
 import { createAclEntryMethods } from './aclEntry';
 import mcpServerSchema from '~/schema/mcpServer';
 import aclEntrySchema from '~/schema/aclEntry';
+import groupSchema from '~/schema/group';
+import userSchema from '~/schema/user';
 
 let mongoServer: MongoMemoryServer;
 let MCPServer: mongoose.Model<t.MCPServerDocument>;
@@ -23,6 +25,12 @@ beforeAll(async () => {
   MCPServer = mongoose.models.MCPServer || mongoose.model('MCPServer', mcpServerSchema);
   if (!mongoose.models.AclEntry) {
     mongoose.model('AclEntry', aclEntrySchema);
+  }
+  if (!mongoose.models.Group) {
+    mongoose.model('Group', groupSchema);
+  }
+  if (!mongoose.models.User) {
+    mongoose.model('User', userSchema);
   }
   methods = createMCPServerMethods(mongoose, {
     getSoleOwnedResourceIds: createAclEntryMethods(mongoose).getSoleOwnedResourceIds,
@@ -656,6 +664,36 @@ describe('MCPServer Model Tests', () => {
       await methods.deleteMCPServersWithAcl(found.map((s) => s.id));
       expect(await methods.findMCPServerByServerName(created.serverName)).toBeNull();
       expect(await methods.findUserErasableMCPServers(ownerId.toString())).toEqual([]);
+    });
+  });
+
+  describe('findMCPServerViewerUserIds', () => {
+    test('expands direct and group viewers to user ids, external members by source id', async () => {
+      const directId = new mongoose.Types.ObjectId();
+      const localMemberId = new mongoose.Types.ObjectId();
+      const externalMemberId = new mongoose.Types.ObjectId();
+      const groupId = new mongoose.Types.ObjectId();
+      await mongoose.model('User').collection.insertMany([
+        { _id: localMemberId, email: 'local@example.com' },
+        { _id: externalMemberId, email: 'external@example.com', idOnTheSource: 'entra-7' },
+      ]);
+      await mongoose.model('Group').collection.insertOne({
+        _id: groupId,
+        name: 'Viewers',
+        source: 'local',
+        memberIds: [localMemberId.toString(), 'entra-7', 'entra-unknown'],
+      });
+
+      const userIds = await methods.findMCPServerViewerUserIds([
+        { principalType: PrincipalType.USER, principalId: directId },
+        { principalType: PrincipalType.GROUP, principalId: groupId.toString() },
+        { principalType: PrincipalType.ROLE, principalId: 'USER' },
+        { principalType: PrincipalType.PUBLIC },
+      ]);
+
+      expect(userIds.sort()).toEqual(
+        [directId, localMemberId, externalMemberId].map(String).sort(),
+      );
     });
   });
 

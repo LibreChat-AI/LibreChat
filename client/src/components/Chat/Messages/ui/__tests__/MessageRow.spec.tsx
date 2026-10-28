@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import type { TMessage } from 'librechat-data-provider';
 import MessageRow from '../MessageRow';
 
 jest.mock('../MessageTimestamp', () => ({
@@ -8,10 +9,24 @@ jest.mock('../MessageTimestamp', () => ({
   ),
 }));
 
+jest.mock('../../Content/Files', () => ({
+  __esModule: true,
+  default: () => <button data-testid="attached-file" />,
+}));
+
 const MESSAGE_BODY = 'Message body';
+const attachedMessage = (overrides: Partial<TMessage> = {}) =>
+  ({
+    messageId: 'message-1',
+    isCreatedByUser: true,
+    text: MESSAGE_BODY,
+    files: [{ file_id: 'file-1', filename: 'notes.txt', type: 'text/plain' }],
+    ...overrides,
+  }) as TMessage;
 
 const renderRow = ({
   isCreatedByUser,
+  message,
   hasParallelContent = false,
   fullWidth = false,
   isEditing = false,
@@ -20,6 +35,7 @@ const renderRow = ({
   outlined,
 }: {
   isCreatedByUser: boolean;
+  message?: TMessage;
   hasParallelContent?: boolean;
   fullWidth?: boolean;
   isEditing?: boolean;
@@ -30,6 +46,7 @@ const renderRow = ({
   render(
     <MessageRow
       id="message-1"
+      message={message}
       label={isCreatedByUser ? 'You' : 'Assistant'}
       hoverLabel={isCreatedByUser ? undefined : 'gpt-5.6'}
       icon={<span data-testid="message-icon" />}
@@ -49,6 +66,56 @@ const renderRow = ({
   );
 
 describe('MessageRow', () => {
+  it('places right-aligned attachments before and outside the text bubble', () => {
+    renderRow({ isCreatedByUser: true, message: attachedMessage() });
+
+    const attachments = screen.getByTestId('message-attachments');
+    const body = screen.getByTestId('message-body');
+    expect(attachments).toHaveClass('items-end', 'max-w-full');
+    expect(attachments).toContainElement(screen.getByTestId('attached-file'));
+    expect(body).not.toContainElement(attachments);
+    expect(attachments.nextElementSibling).toBe(body);
+    expect(body).toHaveClass('bg-surface-user-message');
+    expect(screen.getByTestId('message-actions')).toBeInTheDocument();
+  });
+
+  it.each([
+    { text: '' },
+    { text: '  ', content: [{ type: 'text', text: '' }] },
+    { text: '', content: [{ type: 'text', text: { value: '', annotations: [] } }] },
+  ] as Partial<TMessage>[])(
+    'does not leave an empty bubble for attachments-only messages: %j',
+    (overrides) => {
+      renderRow({ isCreatedByUser: true, message: attachedMessage(overrides) });
+
+      expect(screen.getByTestId('attached-file')).toBeInTheDocument();
+      expect(screen.queryByTestId('message-body')).not.toBeInTheDocument();
+      expect(screen.getByTestId('message-actions')).toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    { content: [{ type: 'text', text: { value: 'Assistant prompt', annotations: [] } }] },
+    { quotes: ['Excerpt'] },
+    { manualSkills: ['review'] },
+    { alwaysAppliedSkills: ['review'] },
+    { error: true },
+    { unfinished: true },
+  ] as Partial<TMessage>[])('keeps the bubble for non-text message content: %j', (overrides) => {
+    renderRow({ isCreatedByUser: true, message: attachedMessage({ text: '', ...overrides }) });
+    expect(screen.getByTestId('message-body')).toHaveClass('bg-surface-user-message');
+  });
+
+  it.each([
+    { isCreatedByUser: true, isEditing: true },
+    { isCreatedByUser: false },
+    { isCreatedByUser: true, systemLabel: 'System' },
+  ])('does not add an attachment strip to editors, assistant or system rows: %j', (props) => {
+    renderRow({ ...props, message: attachedMessage() });
+    expect(screen.queryByTestId('attached-file')).not.toBeInTheDocument();
+    expect(screen.getByTestId('message-body')).toBeInTheDocument();
+  });
+
   it('renders a system row in the transcript under a visible heading', () => {
     renderRow({ isCreatedByUser: true, systemLabel: 'System' });
 

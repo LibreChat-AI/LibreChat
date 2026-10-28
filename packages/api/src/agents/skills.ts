@@ -11,8 +11,8 @@ import type { LCToolRegistry, LCTool, InjectedMessage } from '@librechat/agents'
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { Types } from 'mongoose';
 import { getSkillToolDefinition, isSkillToolAvailable, registerCodeExecutionTools } from './tools';
-import { createSkillContentDigest } from './compatibility';
 import { ContextPartKeys, contributeContext } from './systemParts';
+import { createSkillContentDigest } from './compatibility';
 import { logAxiosError } from '~/utils';
 
 /**

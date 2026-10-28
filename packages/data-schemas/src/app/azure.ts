@@ -108,9 +108,8 @@ function getServingGroupName(maps: AzureModelMaps, modelName: unknown): string |
 }
 
 /**
- * Whether the group `modelGroupMap` maps `modelName` to serves it with assistants, as
- * `azureConfigSetup` has always judged it: the group's `assistants`, or an `assistants` flag on
- * an entry the group holds under the model's name.
+ * Whether the group `modelGroupMap` maps `modelName` to serves it with assistants: the group's
+ * `assistants`, or the `assistants` flag of the model's entry under the group's `models`.
  */
 function supportsAzureAssistants(maps: AzureModelMaps, modelName: string): boolean {
   const groupName = maps.modelGroupMap?.[modelName]?.group;
@@ -121,7 +120,11 @@ function supportsAzureAssistants(maps: AzureModelMaps, modelName: string): boole
   if (group.assistants) {
     return true;
   }
-  const named: unknown = Object.getOwnPropertyDescriptor(group, modelName)?.value;
+  const models: unknown = group.models;
+  const named: unknown =
+    models != null && typeof models === 'object'
+      ? Object.getOwnPropertyDescriptor(models, modelName)?.value
+      : undefined;
   return (
     named != null && typeof named === 'object' && 'assistants' in named && Boolean(named.assistants)
   );

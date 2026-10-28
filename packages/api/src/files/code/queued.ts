@@ -172,9 +172,6 @@ export function planCodeFileUploads({
   return uploads;
 }
 
-/** `dynamicToolContextMap` key of the context for files queued by an upload; it lasts one turn. */
-export const QUEUED_CODE_FILES_CONTEXT_KEY = 'queued_code_files';
-
 /** Adds metadata independently of extracted text, using only already-authorized file queues. */
 export function prepareQueuedCodeFileContext(
   agent: CodeFileAgent,
@@ -182,7 +179,7 @@ export function prepareQueuedCodeFileContext(
   userId?: string,
   useAdvertisedNames = false,
 ): void {
-  const key = QUEUED_CODE_FILES_CONTEXT_KEY;
+  const key = 'queued_code_files';
   if (agent.dynamicToolContextMap) delete agent.dynamicToolContextMap[key];
   if (agent.fileConsumers?.executeCode !== true || !agent.provisionState) return;
   const uploads = planCodeFileUploads({

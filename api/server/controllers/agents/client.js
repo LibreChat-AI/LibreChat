@@ -2728,7 +2728,6 @@ class AgentClient extends BaseClient {
        * canonical recount reads an unstripped surface instead.
        */
       const droppedPromptSummary = dropUnusableSummaryParts(formattedMessage);
-      const promptDiffersFromStored = Boolean(message.fileContext) || droppedPromptSummary;
 
       const dbTokenCount = Number(orderedMessages[i].tokenCount);
       const hasDbTokenCount = Number.isFinite(dbTokenCount) && dbTokenCount > 0;
@@ -2751,16 +2750,17 @@ class AgentClient extends BaseClient {
          *  with a dropped summary), the canonical count must be taken from the
          *  message as stored. */
         let countSurface = formattedMessage;
-        if (promptDiffersFromStored) {
+        if (message.fileContext || droppedPromptSummary) {
           memoryFormattedMessages[i] = buildMemoryFormattedMessage(message);
           countSurface = memoryFormattedMessages[i];
         }
         canonicalTokenCount = countFormattedMessageTokens(countSurface, encoding);
       }
 
-      const promptMessageTokenCount = promptDiffersFromStored
-        ? countFormattedMessageTokens(formattedMessage, encoding)
-        : canonicalTokenCount;
+      const promptMessageTokenCount =
+        message.fileContext || droppedPromptSummary
+          ? countFormattedMessageTokens(formattedMessage, encoding)
+          : canonicalTokenCount;
 
       /* If message has files, calculate image token cost */
       if (this.message_file_map && this.message_file_map[message.messageId]) {

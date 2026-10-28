@@ -1,11 +1,11 @@
 import { useRef, useEffect } from 'react';
 import { useAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
+import { resumeRequestsAtom } from '@librechat/chat/react';
 import { Constants, QueryKeys } from 'librechat-data-provider';
 import type { TSubmission } from 'librechat-data-provider';
 import type { MutableRefObject } from 'react';
 import type { OwedSuccessorState } from './successor';
-import { resumeRequestsAtom } from '~/hooks/Chat/resume';
 import { streamStatusQueryKey } from '~/data-provider';
 
 /**

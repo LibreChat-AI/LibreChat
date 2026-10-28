@@ -8,8 +8,8 @@ import {
   compareContextKeys,
   collectLiveContext,
 } from './registry';
-import { createAnchor, reanchor, readEntries } from './anchor';
 import { findSummarySegment, formatContextUpdate } from '../contextUpdates';
+import { createAnchor, reanchor, readEntries } from './anchor';
 
 export interface TurnPlan {
   /** What the model knows from the system prompt in this segment, in system order. */

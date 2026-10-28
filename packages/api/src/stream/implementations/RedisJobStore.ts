@@ -1911,6 +1911,7 @@ export class RedisJobStore implements IJobStoreV2 {
 
   private redis: Redis | Cluster;
   private cleanupInterval: NodeJS.Timeout | null = null;
+  private cleanupRunning = false;
   private cleanupMembershipReady?: Promise<void>;
   private ttl: typeof DEFAULT_TTL;
   /** Coalescable chunk appends awaiting their window flush, per stream */
@@ -1970,9 +1971,17 @@ export class RedisJobStore implements IJobStoreV2 {
 
     // Start periodic cleanup
     this.cleanupInterval = setInterval(() => {
-      this.cleanup().catch((err) => {
-        logger.error('[RedisJobStore] Cleanup error:', err);
-      });
+      if (this.cleanupRunning) {
+        return;
+      }
+      this.cleanupRunning = true;
+      this.cleanup()
+        .catch((err) => {
+          logger.error('[RedisJobStore] Cleanup error:', err);
+        })
+        .finally(() => {
+          this.cleanupRunning = false;
+        });
     }, this.cleanupIntervalMs);
 
     if (this.cleanupInterval.unref) {
@@ -3978,8 +3987,10 @@ export class RedisJobStore implements IJobStoreV2 {
     const activeIds: string[] = [];
     let healed = 0;
 
-    for (const streamId of trackedIds) {
-      const job = await this.getJob(streamId);
+    const trackedJobs = await Promise.all(trackedIds.map((streamId) => this.getJob(streamId)));
+
+    for (const [index, streamId] of trackedIds.entries()) {
+      const job = trackedJobs[index];
       // Include running jobs and jobs paused for human review (e.g. tool approval).
       // A pending-approval job still occupies the user's conversation slot — but
       // only while its prompt is live: a past-`expiresAt` approval no longer

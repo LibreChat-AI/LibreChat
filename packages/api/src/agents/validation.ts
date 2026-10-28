@@ -30,56 +30,52 @@ import { getToolOptionsLimitError } from './options';
  */
 type LooseRequest = Request<unknown, unknown, unknown>;
 
-const agentCodeWorkspaceIdSchema: z.ZodUnion<[z.ZodLiteral<''>, z.ZodString]> = z.union([
+/** A string enum schema over the literal union `T`. */
+type EnumOf<T extends string> = z.ZodEnum<{ [K in T]: K }>;
+
+/** An optional field whose empty string parses as `undefined`. */
+type BlankAsUndefined<T extends z.ZodType> = z.ZodOptional<
+  z.ZodPipe<z.ZodOptional<T>, z.ZodTransform<z.output<T> | undefined, z.output<T> | undefined>>
+>;
+
+const agentCodeWorkspaceIdSchema: z.ZodUnion<readonly [z.ZodLiteral<''>, z.ZodString]> = z.union([
   z.literal(''),
   z.string().regex(CODE_WORKSPACE_ID_PATTERN),
 ]);
 
 /** Avatar schema shared between create and update */
-export const agentAvatarSchema: z.ZodObject<
-  {
-    filepath: z.ZodString;
-    source: z.ZodString;
-  },
-  'strip'
-> = z.object({
+export const agentAvatarSchema: z.ZodObject<{
+  filepath: z.ZodString;
+  source: z.ZodString;
+}> = z.object({
   filepath: z.string(),
   source: z.string(),
 });
 
 /** Persisted resource schema. Full file records are populated only after database authorization. */
-export const agentBaseResourceSchema: z.ZodObject<
-  {
-    file_ids: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
-  },
-  'strip'
-> = z.object({
+export const agentBaseResourceSchema: z.ZodObject<{
+  file_ids: z.ZodOptional<z.ZodArray<z.ZodString>>;
+}> = z.object({
   file_ids: z.array(z.string()).optional(),
 });
 
 /** File resource schema extends base with vector_store_ids. */
-export const agentFileResourceSchema: z.ZodObject<
-  {
-    file_ids: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
-    vector_store_ids: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
-  },
-  'strip'
-> = agentBaseResourceSchema.extend({
+export const agentFileResourceSchema: z.ZodObject<{
+  file_ids: z.ZodOptional<z.ZodArray<z.ZodString>>;
+  vector_store_ids: z.ZodOptional<z.ZodArray<z.ZodString>>;
+}> = agentBaseResourceSchema.extend({
   vector_store_ids: z.array(z.string()).optional(),
 });
 
 /** Persisted tool resources accepted by Agent create and update APIs. */
 export const agentToolResourcesSchema: z.ZodOptional<
-  z.ZodObject<
-    {
-      image_edit: z.ZodOptional<typeof agentBaseResourceSchema>;
-      execute_code: z.ZodOptional<typeof agentBaseResourceSchema>;
-      file_search: z.ZodOptional<typeof agentFileResourceSchema>;
-      context: z.ZodOptional<typeof agentBaseResourceSchema>;
-      ocr: z.ZodOptional<typeof agentBaseResourceSchema>;
-    },
-    'strip'
-  >
+  z.ZodObject<{
+    image_edit: z.ZodOptional<typeof agentBaseResourceSchema>;
+    execute_code: z.ZodOptional<typeof agentBaseResourceSchema>;
+    file_search: z.ZodOptional<typeof agentFileResourceSchema>;
+    context: z.ZodOptional<typeof agentBaseResourceSchema>;
+    ocr: z.ZodOptional<typeof agentBaseResourceSchema>;
+  }>
 > = z
   .object({
     image_edit: agentBaseResourceSchema.optional(),
@@ -93,22 +89,10 @@ export const agentToolResourcesSchema: z.ZodOptional<
 
 /** Support contact schema for agent */
 export const agentSupportContactSchema: z.ZodOptional<
-  z.ZodObject<
-    {
-      name: z.ZodOptional<z.ZodString>;
-      email: z.ZodOptional<z.ZodUnion<[z.ZodLiteral<''>, z.ZodString]>>;
-    },
-    'strip',
-    z.ZodTypeAny,
-    {
-      name?: string | undefined;
-      email?: string | undefined;
-    },
-    {
-      name?: string | undefined;
-      email?: string | undefined;
-    }
-  >
+  z.ZodObject<{
+    name: z.ZodOptional<z.ZodString>;
+    email: z.ZodOptional<z.ZodUnion<readonly [z.ZodLiteral<''>, z.ZodString]>>;
+  }>
 > = z
   .object({
     name: z.string().optional(),
@@ -117,54 +101,45 @@ export const agentSupportContactSchema: z.ZodOptional<
   .optional();
 
 /** Graph edge schema for agent handoffs */
-export const graphEdgeSchema: z.ZodObject<
-  {
-    from: z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString, 'many'>]>;
-    to: z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString, 'many'>]>;
-    description: z.ZodEffects<z.ZodOptional<z.ZodString>, string | undefined, string | undefined>;
-    edgeType: z.ZodOptional<z.ZodEnum<['handoff', 'direct']>>;
-    prompt: z.ZodEffects<
-      z.ZodOptional<
-        z.ZodUnion<[z.ZodString, z.ZodFunction<z.ZodTuple<[], z.ZodUnknown>, z.ZodUnknown>]>
-      >,
-      string | ((...args: unknown[]) => unknown) | undefined,
-      string | ((...args: unknown[]) => unknown) | undefined
-    >;
-    excludeResults: z.ZodOptional<z.ZodBoolean>;
-    promptKey: z.ZodEffects<z.ZodOptional<z.ZodString>, string | undefined, string | undefined>;
-  },
-  'strip'
-> = z.object({
+export const graphEdgeSchema: z.ZodObject<{
+  from: z.ZodUnion<readonly [z.ZodString, z.ZodArray<z.ZodString>]>;
+  to: z.ZodUnion<readonly [z.ZodString, z.ZodArray<z.ZodString>]>;
+  description: BlankAsUndefined<z.ZodString>;
+  edgeType: z.ZodOptional<EnumOf<'handoff' | 'direct'>>;
+  prompt: BlankAsUndefined<z.ZodUnion<readonly [z.ZodString, z.ZodFunction]>>;
+  excludeResults: z.ZodOptional<z.ZodBoolean>;
+  promptKey: BlankAsUndefined<z.ZodString>;
+}> = z.object({
   from: z.union([z.string(), z.array(z.string())]),
   to: z.union([z.string(), z.array(z.string())]),
   description: z
     .string()
     .optional()
-    .transform((v) => (v === '' ? undefined : v)),
+    .transform((v) => (v === '' ? undefined : v))
+    .optional(),
   edgeType: z.enum(['handoff', 'direct']).optional(),
   prompt: z
     .union([z.string(), z.function()])
     .optional()
-    .transform((v) => (v === '' ? undefined : v)),
+    .transform((v) => (v === '' ? undefined : v))
+    .optional(),
   excludeResults: z.boolean().optional(),
   promptKey: z
     .string()
     .optional()
-    .transform((v) => (v === '' ? undefined : v)),
+    .transform((v) => (v === '' ? undefined : v))
+    .optional(),
 });
 
 /** Per-tool options schema (defer_loading, allowed_callers, run_in_background, describe_intent) */
-export const toolOptionsSchema: z.ZodObject<
-  {
-    defer_loading: z.ZodOptional<z.ZodBoolean>;
-    allowed_callers: z.ZodOptional<z.ZodArray<z.ZodEnum<['direct', 'code_execution']>, 'many'>>;
-    run_in_background: z.ZodOptional<z.ZodBoolean>;
-    describe_intent: z.ZodOptional<z.ZodBoolean>;
-    approval_mode: z.ZodOptional<z.ZodEnum<['ask', 'allow', 'chat', 'always']>>;
-    approval_revision: z.ZodOptional<z.ZodString>;
-  },
-  'strip'
-> = z.object({
+export const toolOptionsSchema: z.ZodObject<{
+  defer_loading: z.ZodOptional<z.ZodBoolean>;
+  allowed_callers: z.ZodOptional<z.ZodArray<EnumOf<'direct' | 'code_execution'>>>;
+  run_in_background: z.ZodOptional<z.ZodBoolean>;
+  describe_intent: z.ZodOptional<z.ZodBoolean>;
+  approval_mode: z.ZodOptional<EnumOf<'ask' | 'allow' | 'chat' | 'always'>>;
+  approval_revision: z.ZodOptional<z.ZodString>;
+}> = z.object({
   defer_loading: z.boolean().optional(),
   allowed_callers: z.array(z.enum(['direct', 'code_execution'])).optional(),
   run_in_background: z.boolean().optional(),
@@ -175,7 +150,7 @@ export const toolOptionsSchema: z.ZodObject<
 
 /** Agent tool options - map of tool_id to tool options */
 export const agentToolOptionsSchema: z.ZodOptional<
-  z.ZodEffects<z.ZodRecord<z.ZodString, typeof toolOptionsSchema>>
+  z.ZodRecord<z.ZodString, typeof toolOptionsSchema>
 > = z
   .record(z.string(), toolOptionsSchema)
   .superRefine((options, ctx) => {
@@ -434,134 +409,49 @@ const agentInstructionsPromptFieldSchema: z.ZodOptional<
   z.ZodNullable<typeof agentInstructionsPromptSchema>
 > = agentInstructionsPromptSchema.nullable().optional();
 
-export const agentBaseSchema: z.ZodObject<
-  {
-    name: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-    description: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-    instructions: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-    instructionsPrompt: z.ZodOptional<z.ZodNullable<typeof agentInstructionsPromptSchema>>;
-    avatar: z.ZodOptional<
-      z.ZodNullable<
-        z.ZodObject<
-          {
-            filepath: z.ZodString;
-            source: z.ZodString;
-          },
-          'strip',
-          z.ZodTypeAny,
-          {
-            source: string;
-            filepath: string;
-          },
-          {
-            source: string;
-            filepath: string;
-          }
-        >
-      >
-    >;
-    model_parameters: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
-    tools: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
-    skills: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
-    skills_enabled: z.ZodOptional<z.ZodBoolean>;
-    skill_authoring_enabled: z.ZodOptional<z.ZodBoolean>;
-    skills_scope: z.ZodOptional<z.ZodNativeEnum<typeof SkillsScope>>;
-    memory_scope: z.ZodOptional<z.ZodNativeEnum<typeof MemoryScope>>;
-    /** @deprecated Use edges instead */
-    agent_ids: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
-    edges: z.ZodOptional<
-      z.ZodArray<
-        z.ZodObject<
-          {
-            from: z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString, 'many'>]>;
-            to: z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString, 'many'>]>;
-            description: z.ZodEffects<
-              z.ZodOptional<z.ZodString>,
-              string | undefined,
-              string | undefined
-            >;
-            edgeType: z.ZodOptional<z.ZodEnum<['handoff', 'direct']>>;
-            prompt: z.ZodEffects<
-              z.ZodOptional<
-                z.ZodUnion<[z.ZodString, z.ZodFunction<z.ZodTuple<[], z.ZodUnknown>, z.ZodUnknown>]>
-              >,
-              string | ((...args: unknown[]) => unknown) | undefined,
-              string | ((...args: unknown[]) => unknown) | undefined
-            >;
-            excludeResults: z.ZodOptional<z.ZodBoolean>;
-            promptKey: z.ZodEffects<
-              z.ZodOptional<z.ZodString>,
-              string | undefined,
-              string | undefined
-            >;
-          },
-          'strip',
-          z.ZodTypeAny,
-          {
-            from: string | string[];
-            to: string | string[];
-            description?: string | undefined;
-            prompt?: string | ((...args: unknown[]) => unknown) | undefined;
-            edgeType?: 'direct' | 'handoff' | undefined;
-            excludeResults?: boolean | undefined;
-            promptKey?: string | undefined;
-          },
-          {
-            from: string | string[];
-            to: string | string[];
-            description?: string | undefined;
-            prompt?: string | ((...args: unknown[]) => unknown) | undefined;
-            edgeType?: 'direct' | 'handoff' | undefined;
-            excludeResults?: boolean | undefined;
-            promptKey?: string | undefined;
-          }
-        >,
-        'many'
-      >
-    >;
-    end_after_tools: z.ZodOptional<z.ZodBoolean>;
-    hide_sequential_outputs: z.ZodOptional<z.ZodBoolean>;
-    stateful_code_sessions: z.ZodOptional<z.ZodBoolean>;
-    stateful_code_environment: z.ZodOptional<z.ZodEnum<['user', 'agent-user', 'conversation']>>;
-    code_environment_id: z.ZodOptional<z.ZodString>;
-    code_environment_ids: z.ZodOptional<typeof agentCodeEnvironmentIdsSchema>;
-    code_workspace_id: z.ZodOptional<typeof agentCodeWorkspaceIdSchema>;
-    repositoryInstructions: z.ZodOptional<z.ZodEnum<['prefer', 'defer', 'off']>>;
-    git_identity: typeof agentGitIdentitySchema;
-    artifacts: z.ZodOptional<z.ZodString>;
-    recursion_limit: z.ZodOptional<z.ZodNumber>;
-    conversation_starters: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
-    tool_resources: typeof agentToolResourcesSchema;
-    tool_options: typeof agentToolOptionsSchema;
-    subagents: typeof agentSubagentsSchema;
-    support_contact: z.ZodOptional<
-      z.ZodObject<
-        {
-          name: z.ZodOptional<z.ZodString>;
-          email: z.ZodOptional<z.ZodUnion<[z.ZodLiteral<''>, z.ZodString]>>;
-        },
-        'strip',
-        z.ZodTypeAny,
-        {
-          name?: string | undefined;
-          email?: string | undefined;
-        },
-        {
-          name?: string | undefined;
-          email?: string | undefined;
-        }
-      >
-    >;
-    category: z.ZodOptional<z.ZodString>;
-  },
-  'strip'
-> = z.object({
+/** Fields shared by the agent create and update schemas. */
+type AgentBaseShape = {
+  name: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+  description: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+  instructions: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+  instructionsPrompt: typeof agentInstructionsPromptFieldSchema;
+  avatar: z.ZodOptional<z.ZodNullable<typeof agentAvatarSchema>>;
+  model_parameters: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
+  tools: z.ZodOptional<z.ZodArray<z.ZodString>>;
+  skills: z.ZodOptional<z.ZodArray<z.ZodString>>;
+  skills_enabled: z.ZodOptional<z.ZodBoolean>;
+  skill_authoring_enabled: z.ZodOptional<z.ZodBoolean>;
+  skills_scope: z.ZodOptional<z.ZodEnum<typeof SkillsScope>>;
+  memory_scope: z.ZodOptional<z.ZodEnum<typeof MemoryScope>>;
+  /** @deprecated Use edges instead */
+  agent_ids: z.ZodOptional<z.ZodArray<z.ZodString>>;
+  edges: z.ZodOptional<z.ZodArray<typeof graphEdgeSchema>>;
+  end_after_tools: z.ZodOptional<z.ZodBoolean>;
+  hide_sequential_outputs: z.ZodOptional<z.ZodBoolean>;
+  stateful_code_sessions: z.ZodOptional<z.ZodBoolean>;
+  stateful_code_environment: z.ZodOptional<EnumOf<'user' | 'agent-user' | 'conversation'>>;
+  code_environment_id: z.ZodOptional<z.ZodString>;
+  code_environment_ids: z.ZodOptional<typeof agentCodeEnvironmentIdsSchema>;
+  code_workspace_id: z.ZodOptional<typeof agentCodeWorkspaceIdSchema>;
+  repositoryInstructions: z.ZodOptional<EnumOf<'prefer' | 'defer' | 'off'>>;
+  git_identity: typeof agentGitIdentitySchema;
+  artifacts: z.ZodOptional<z.ZodString>;
+  recursion_limit: z.ZodOptional<z.ZodNumber>;
+  conversation_starters: z.ZodOptional<z.ZodArray<z.ZodString>>;
+  tool_resources: typeof agentToolResourcesSchema;
+  tool_options: typeof agentToolOptionsSchema;
+  subagents: typeof agentSubagentsSchema;
+  support_contact: typeof agentSupportContactSchema;
+  category: z.ZodOptional<z.ZodString>;
+};
+
+export const agentBaseSchema: z.ZodObject<AgentBaseShape> = z.object({
   name: z.string().nullable().optional(),
   description: z.string().nullable().optional(),
   instructions: z.string().nullable().optional(),
   instructionsPrompt: agentInstructionsPromptFieldSchema,
   avatar: agentAvatarSchema.nullable().optional(),
-  model_parameters: z.record(z.unknown()).optional(),
+  model_parameters: z.record(z.string(), z.unknown()).optional(),
   tools: z.array(z.string()).optional(),
   skills: z.array(z.string()).optional(),
   skills_enabled: z.boolean().optional(),
@@ -592,128 +482,11 @@ export const agentBaseSchema: z.ZodObject<
 
 /** Create schema extends base with required fields for creation */
 export const agentCreateSchema: z.ZodObject<
-  {
-    name: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-    description: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-    instructions: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-    instructionsPrompt: z.ZodOptional<z.ZodNullable<typeof agentInstructionsPromptSchema>>;
-    avatar: z.ZodOptional<
-      z.ZodNullable<
-        z.ZodObject<
-          {
-            filepath: z.ZodString;
-            source: z.ZodString;
-          },
-          'strip',
-          z.ZodTypeAny,
-          {
-            source: string;
-            filepath: string;
-          },
-          {
-            source: string;
-            filepath: string;
-          }
-        >
-      >
-    >;
-    model_parameters: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
-    skills: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
-    skills_enabled: z.ZodOptional<z.ZodBoolean>;
-    skill_authoring_enabled: z.ZodOptional<z.ZodBoolean>;
-    skills_scope: z.ZodOptional<z.ZodNativeEnum<typeof SkillsScope>>;
-    memory_scope: z.ZodOptional<z.ZodNativeEnum<typeof MemoryScope>>;
-    agent_ids: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
-    edges: z.ZodOptional<
-      z.ZodArray<
-        z.ZodObject<
-          {
-            from: z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString, 'many'>]>;
-            to: z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString, 'many'>]>;
-            description: z.ZodEffects<
-              z.ZodOptional<z.ZodString>,
-              string | undefined,
-              string | undefined
-            >;
-            edgeType: z.ZodOptional<z.ZodEnum<['handoff', 'direct']>>;
-            prompt: z.ZodEffects<
-              z.ZodOptional<
-                z.ZodUnion<[z.ZodString, z.ZodFunction<z.ZodTuple<[], z.ZodUnknown>, z.ZodUnknown>]>
-              >,
-              string | ((...args: unknown[]) => unknown) | undefined,
-              string | ((...args: unknown[]) => unknown) | undefined
-            >;
-            excludeResults: z.ZodOptional<z.ZodBoolean>;
-            promptKey: z.ZodEffects<
-              z.ZodOptional<z.ZodString>,
-              string | undefined,
-              string | undefined
-            >;
-          },
-          'strip',
-          z.ZodTypeAny,
-          {
-            from: string | string[];
-            to: string | string[];
-            description?: string | undefined;
-            prompt?: string | ((...args: unknown[]) => unknown) | undefined;
-            edgeType?: 'direct' | 'handoff' | undefined;
-            excludeResults?: boolean | undefined;
-            promptKey?: string | undefined;
-          },
-          {
-            from: string | string[];
-            to: string | string[];
-            description?: string | undefined;
-            prompt?: string | ((...args: unknown[]) => unknown) | undefined;
-            edgeType?: 'direct' | 'handoff' | undefined;
-            excludeResults?: boolean | undefined;
-            promptKey?: string | undefined;
-          }
-        >,
-        'many'
-      >
-    >;
-    end_after_tools: z.ZodOptional<z.ZodBoolean>;
-    hide_sequential_outputs: z.ZodOptional<z.ZodBoolean>;
-    stateful_code_sessions: z.ZodOptional<z.ZodBoolean>;
-    stateful_code_environment: z.ZodOptional<z.ZodEnum<['user', 'agent-user', 'conversation']>>;
-    code_environment_id: z.ZodOptional<z.ZodString>;
-    code_environment_ids: z.ZodOptional<typeof agentCodeEnvironmentIdsSchema>;
-    git_identity: typeof agentGitIdentitySchema;
-    code_workspace_id: z.ZodOptional<typeof agentCodeWorkspaceIdSchema>;
-    repositoryInstructions: z.ZodOptional<z.ZodEnum<['prefer', 'defer', 'off']>>;
-    artifacts: z.ZodOptional<z.ZodString>;
-    recursion_limit: z.ZodOptional<z.ZodNumber>;
-    conversation_starters: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
-    tool_resources: typeof agentToolResourcesSchema;
-    tool_options: typeof agentToolOptionsSchema;
-    subagents: typeof agentSubagentsSchema;
-    support_contact: z.ZodOptional<
-      z.ZodObject<
-        {
-          name: z.ZodOptional<z.ZodString>;
-          email: z.ZodOptional<z.ZodUnion<[z.ZodLiteral<''>, z.ZodString]>>;
-        },
-        'strip',
-        z.ZodTypeAny,
-        {
-          name?: string | undefined;
-          email?: string | undefined;
-        },
-        {
-          name?: string | undefined;
-          email?: string | undefined;
-        }
-      >
-    >;
-    category: z.ZodOptional<z.ZodString>;
-  } & {
+  Omit<AgentBaseShape, 'tools'> & {
     provider: z.ZodString;
     model: z.ZodNullable<z.ZodString>;
-    tools: z.ZodDefault<z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>>;
-  },
-  'strip'
+    tools: z.ZodDefault<z.ZodOptional<z.ZodArray<z.ZodString>>>;
+  }
 > = agentBaseSchema.extend({
   provider: z.string(),
   model: z.string().nullable(),
@@ -722,131 +495,13 @@ export const agentCreateSchema: z.ZodObject<
 
 /** Update schema extends base with all fields optional and additional update-only fields */
 export const agentUpdateSchema: z.ZodObject<
-  {
-    name: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-    description: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-    instructions: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-    instructionsPrompt: z.ZodOptional<z.ZodNullable<typeof agentInstructionsPromptSchema>>;
-    model_parameters: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
-    tools: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
-    skills: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
-    skills_enabled: z.ZodOptional<z.ZodBoolean>;
-    skill_authoring_enabled: z.ZodOptional<z.ZodBoolean>;
-    skills_scope: z.ZodOptional<z.ZodNativeEnum<typeof SkillsScope>>;
-    memory_scope: z.ZodOptional<z.ZodNativeEnum<typeof MemoryScope>>;
-    agent_ids: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
-    edges: z.ZodOptional<
-      z.ZodArray<
-        z.ZodObject<
-          {
-            from: z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString, 'many'>]>;
-            to: z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString, 'many'>]>;
-            description: z.ZodEffects<
-              z.ZodOptional<z.ZodString>,
-              string | undefined,
-              string | undefined
-            >;
-            edgeType: z.ZodOptional<z.ZodEnum<['handoff', 'direct']>>;
-            prompt: z.ZodEffects<
-              z.ZodOptional<
-                z.ZodUnion<[z.ZodString, z.ZodFunction<z.ZodTuple<[], z.ZodUnknown>, z.ZodUnknown>]>
-              >,
-              string | ((...args: unknown[]) => unknown) | undefined,
-              string | ((...args: unknown[]) => unknown) | undefined
-            >;
-            excludeResults: z.ZodOptional<z.ZodBoolean>;
-            promptKey: z.ZodEffects<
-              z.ZodOptional<z.ZodString>,
-              string | undefined,
-              string | undefined
-            >;
-          },
-          'strip',
-          z.ZodTypeAny,
-          {
-            from: string | string[];
-            to: string | string[];
-            description?: string | undefined;
-            prompt?: string | ((...args: unknown[]) => unknown) | undefined;
-            edgeType?: 'direct' | 'handoff' | undefined;
-            excludeResults?: boolean | undefined;
-            promptKey?: string | undefined;
-          },
-          {
-            from: string | string[];
-            to: string | string[];
-            description?: string | undefined;
-            prompt?: string | ((...args: unknown[]) => unknown) | undefined;
-            edgeType?: 'direct' | 'handoff' | undefined;
-            excludeResults?: boolean | undefined;
-            promptKey?: string | undefined;
-          }
-        >,
-        'many'
-      >
-    >;
-    end_after_tools: z.ZodOptional<z.ZodBoolean>;
-    hide_sequential_outputs: z.ZodOptional<z.ZodBoolean>;
-    stateful_code_sessions: z.ZodOptional<z.ZodBoolean>;
-    stateful_code_environment: z.ZodOptional<z.ZodEnum<['user', 'agent-user', 'conversation']>>;
+  Omit<AgentBaseShape, 'avatar' | 'code_environment_id' | 'git_identity'> & {
+    avatar: z.ZodOptional<z.ZodUnion<readonly [typeof agentAvatarSchema, z.ZodNull]>>;
     code_environment_id: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-    code_environment_ids: z.ZodOptional<typeof agentCodeEnvironmentIdsSchema>;
-    code_workspace_id: z.ZodOptional<typeof agentCodeWorkspaceIdSchema>;
-    repositoryInstructions: z.ZodOptional<z.ZodEnum<['prefer', 'defer', 'off']>>;
     git_identity: typeof agentGitIdentityUpdateSchema;
-    artifacts: z.ZodOptional<z.ZodString>;
-    recursion_limit: z.ZodOptional<z.ZodNumber>;
-    conversation_starters: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
-    tool_resources: typeof agentToolResourcesSchema;
-    tool_options: typeof agentToolOptionsSchema;
-    subagents: typeof agentSubagentsSchema;
-    support_contact: z.ZodOptional<
-      z.ZodObject<
-        {
-          name: z.ZodOptional<z.ZodString>;
-          email: z.ZodOptional<z.ZodUnion<[z.ZodLiteral<''>, z.ZodString]>>;
-        },
-        'strip',
-        z.ZodTypeAny,
-        {
-          name?: string | undefined;
-          email?: string | undefined;
-        },
-        {
-          name?: string | undefined;
-          email?: string | undefined;
-        }
-      >
-    >;
-    category: z.ZodOptional<z.ZodString>;
-  } & {
-    avatar: z.ZodOptional<
-      z.ZodUnion<
-        [
-          z.ZodObject<
-            {
-              filepath: z.ZodString;
-              source: z.ZodString;
-            },
-            'strip',
-            z.ZodTypeAny,
-            {
-              source: string;
-              filepath: string;
-            },
-            {
-              source: string;
-              filepath: string;
-            }
-          >,
-          z.ZodNull,
-        ]
-      >
-    >;
     provider: z.ZodOptional<z.ZodString>;
     model: z.ZodOptional<z.ZodNullable<z.ZodString>>;
-  },
-  'strip'
+  }
 > = agentBaseSchema.extend({
   avatar: z.union([agentAvatarSchema, z.null()]).optional(),
   code_environment_id: agentCodeEnvironmentIdSchema.nullable().optional(),

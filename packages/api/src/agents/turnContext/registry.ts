@@ -1,9 +1,8 @@
 import { isMemoryAgentEnabled } from '@librechat/data-schemas';
-import { EModelEndpoint, formatPromptTimestamp } from 'librechat-data-provider';
+import { EModelEndpoint, replaceSpecialVars } from 'librechat-data-provider';
 import type { ContextAgent } from '../systemParts';
 import { AGENT_TEMPORAL_INSTRUCTIONS_KEY, hasConversationDateContext } from '../contextUpdates';
 import { agentHasInlineMemoryTools, formatMemoryContext, memoryInstructions } from '../memory';
-import { QUEUED_CODE_FILES_CONTEXT_KEY } from '~/files/code/queued';
 import { generateArtifactsPrompt } from '~/prompts';
 
 type Instant = string | number | Date;
@@ -144,7 +143,7 @@ export const LEDGER_PART_KEYS: readonly string[] = [
 ];
 
 const formatDate = (now: Instant, timezone?: string) =>
-  formatPromptTimestamp({ now, timezone, precision: 'date' });
+  replaceSpecialVars({ text: '{{current_date}}', now, timezone });
 
 function contributedPart(key: string) {
   return ({ agent }: SendSnapshot): Array<[string, string]> => {
@@ -326,7 +325,7 @@ const SOURCES: ContextSource[] = [
     collect: ({ agent }) =>
       Object.entries(agent.dynamicToolContextMap ?? {}).flatMap(
         ([name, text]): Array<[string, string]> =>
-          typeof text === 'string' && text !== '' && name !== QUEUED_CODE_FILES_CONTEXT_KEY
+          typeof text === 'string' && text !== '' && name !== ContextSourceKeys.queuedCodeFiles
             ? [[`${ContextSourceKeys.runtimePrefix}${name}`, text]]
             : [],
       ),
@@ -358,7 +357,7 @@ const SOURCES: ContextSource[] = [
         ? [
             [
               ContextSourceKeys.messageTime,
-              formatPromptTimestamp({ now: turnStartedAt, timezone, precision: 'second' }),
+              replaceSpecialVars({ text: '{{current_datetime}}', now: turnStartedAt, timezone }),
             ],
           ]
         : [],
@@ -390,7 +389,7 @@ const SOURCES: ContextSource[] = [
     key: ContextSourceKeys.queuedCodeFiles,
     kind: 'message',
     collect: ({ agent }) => {
-      const text = agent.dynamicToolContextMap?.[QUEUED_CODE_FILES_CONTEXT_KEY];
+      const text = agent.dynamicToolContextMap?.[ContextSourceKeys.queuedCodeFiles];
       return typeof text === 'string' && text !== ''
         ? [[ContextSourceKeys.queuedCodeFiles, text]]
         : [];

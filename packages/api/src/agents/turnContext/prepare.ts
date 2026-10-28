@@ -1,14 +1,14 @@
-import { Constants } from 'librechat-data-provider';
 import { logger } from '@librechat/data-schemas';
-import type { TurnContextUpdates } from '../contextUpdates';
-import type { FormattedMessageWithContent } from '../client';
+import { Constants } from 'librechat-data-provider';
 import type { ContextEntry, SnapshotRequest, TurnContextAgent } from './registry';
-import type { TurnContextMessage } from './anchor';
+import type { FormattedMessageWithContent } from '../client';
+import type { TurnContextUpdates } from '../contextUpdates';
 import type { PromptCacheConfig } from '../promptCache';
+import type { TurnContextMessage } from './anchor';
 import type { TurnPlan } from './ledger';
-import { createHistoryContextUpdates } from '../contextUpdates';
-import { createSendSnapshot } from './registry';
+import { buildHistoryContextUpdates } from '../contextUpdates';
 import { isStableContextEnabled } from '../promptCache';
+import { createSendSnapshot } from './registry';
 import { prependContextText } from '../client';
 import { planTurnContext } from './ledger';
 
@@ -277,15 +277,13 @@ export async function planSendContext({
   countTokens: (message: FormattedMessageWithContent) => number;
 }): Promise<{ prepared: PreparedTurnContext | null; addedTokens: number; applied: boolean }> {
   const prepared = await prepareTurnContext(turnArgs);
-  const plan =
-    prepared?.plan ??
-    createHistoryContextUpdates({
-      req: turnArgs.req as Parameters<typeof createHistoryContextUpdates>[0]['req'],
-      messages: turnArgs.orderedMessages as Parameters<
-        typeof createHistoryContextUpdates
-      >[0]['messages'],
+  const plan = prepared?.plan ?? {
+    updates: buildHistoryContextUpdates({
+      req: turnArgs.req,
+      messages: turnArgs.orderedMessages,
       agents: turnArgs.allAgents.map(({ agent }) => agent),
-    });
+    }),
+  };
   return {
     prepared,
     ...applyHistoryUpdates({ plan, formattedMessages, indexTokenCountMap, countTokens }),
