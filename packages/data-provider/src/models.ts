@@ -12,6 +12,20 @@ import { getMaxSubagents } from './limits';
 
 type ModelSpecSubagentsConfig = Omit<AgentSubagentsConfig, 'graphs'>;
 
+/** Maps a model LiteLLM reports (`x-litellm-model-name`) to the label shown for it. */
+export type TLiteLLMModelDisplayLabel = {
+  model: string;
+  label?: string;
+};
+
+/** The model LiteLLM routed each response to (`x-litellm-model-name`). */
+export type TLiteLLMRoutedModelConfig = {
+  /** Show the routed model above each response in place of the spec's display label. */
+  showOnResponses?: boolean;
+  /** Labels for the routed models; an unlisted or unlabeled model shows its name as-is. */
+  labels?: TLiteLLMModelDisplayLabel[];
+};
+
 export type TModelSpec = {
   name: string;
   label: string;
@@ -35,6 +49,8 @@ export type TModelSpec = {
   groupIcon?: string | EModelEndpoint;
   showIconInMenu?: boolean;
   showIconInHeader?: boolean;
+  /** Show the model a LiteLLM router actually used on each response. */
+  litellmRoutedModel?: TLiteLLMRoutedModelConfig;
   /** Show this spec's label and description on the chat landing in place of the greeting. */
   showOnLanding?: boolean;
   /** Conversation starter prompts shown on the chat landing while this spec is active. */
@@ -188,6 +204,12 @@ export const tModelSpecSchema = z.object({
   groupIcon: z.union([z.string(), eModelEndpointSchema]).optional(),
   showIconInMenu: z.boolean().optional(),
   showIconInHeader: z.boolean().optional(),
+  litellmRoutedModel: z
+    .object({
+      showOnResponses: z.boolean().optional(),
+      labels: z.array(z.object({ model: z.string(), label: z.string().optional() })).optional(),
+    })
+    .optional(),
   showOnLanding: z.boolean().optional(),
   conversation_starters: z.array(z.string()).optional(),
   showInMenu: z.boolean().optional(),
@@ -215,3 +237,53 @@ export const specsConfigSchema = z.object({
 });
 
 export type TSpecsConfig = z.infer<typeof specsConfigSchema>;
+
+/** What a response was generated with, for matching it to a model spec. */
+export type TLiteLLMModelDisplayTarget = {
+  spec?: string | null;
+  endpoint?: string | null;
+  model?: string | null;
+};
+
+/**
+ * The model spec that opts responses into the LiteLLM model label
+ * (`litellmRoutedModel.showOnResponses`). A chat on a model spec follows that spec;
+ * a chat without one follows the first flagged spec whose preset uses the same
+ * endpoint and model, so picking the model directly behaves like its spec.
+ */
+export function findLiteLLMModelDisplaySpec(
+  modelSpecs: { list?: TModelSpec[] } | null | undefined,
+  { spec, endpoint, model }: TLiteLLMModelDisplayTarget,
+): TModelSpec | undefined {
+  const list = modelSpecs?.list;
+  if (!list?.length) {
+    return undefined;
+  }
+  if (spec != null && spec !== '') {
+    const modelSpec = list.find((candidate) => candidate.name === spec);
+    return modelSpec?.litellmRoutedModel?.showOnResponses === true ? modelSpec : undefined;
+  }
+  if (endpoint == null || endpoint === '' || model == null || model === '') {
+    return undefined;
+  }
+  return list.find(
+    (candidate) =>
+      candidate.litellmRoutedModel?.showOnResponses === true &&
+      candidate.preset?.endpoint === endpoint &&
+      candidate.preset?.model === model,
+  );
+}
+
+/**
+ * The label to show for a model LiteLLM reported: the spec's configured label for
+ * that model, else the reported model name itself.
+ */
+export function getLiteLLMModelDisplayLabel(
+  modelSpec: Pick<TModelSpec, 'litellmRoutedModel'> | null | undefined,
+  modelName: string,
+): string {
+  const label = modelSpec?.litellmRoutedModel?.labels?.find(
+    (entry) => entry?.model === modelName,
+  )?.label;
+  return typeof label === 'string' && label.trim() !== '' ? label : modelName;
+}

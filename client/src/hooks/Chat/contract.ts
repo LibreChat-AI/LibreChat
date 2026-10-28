@@ -217,5 +217,14 @@ declare module '@librechat/chat/react' {
     useMessagesEditing: () => MessagesEditing;
     /** The messages view's `ask`, or one that does nothing outside a messages view. */
     useMessagesAsk: () => MessagesEditing['ask'];
+    /**
+     * The model LiteLLM served one agent's column of a comparison response with, as the
+     * opted-in model spec labels it; `undefined` when nothing was captured.
+     */
+    useRoutedModelLabel: (target: {
+      agentId?: string;
+      messageId?: string;
+      conversationId?: string | null;
+    }) => string | undefined;
   }
 }

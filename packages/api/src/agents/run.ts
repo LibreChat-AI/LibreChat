@@ -57,6 +57,7 @@ import type { TerminalSteerHook, SteerPreemption } from '~/agents/steering/runti
 import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
 import type { ScheduledMCPPolicyError } from '~/schedules/authorization/policy';
 import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
+import type { LiteLLMCaptureAgent, LiteLLMModelSink } from '~/agents/litellm';
 import type { ModelErrorTrackerCallback } from '~/agents/failures/tracker';
 import type { ToolInputValidationError } from '~/agents/toolValidation';
 import type { ResolvedToolApprovalHook } from '~/agents/hitl/hooks';
@@ -136,6 +137,7 @@ import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { createStepBudgetHook } from '~/agents/stepBudget';
 import { buildHITLRunWiring } from '~/agents/hitl/runtime';
 import { buildLangfuseConfig } from '~/langfuse/config';
+import { captureLiteLLMModel } from '~/agents/litellm';
 import { applyTestRunHook } from '~/agents/testHook';
 import { frameDynamicInstructions } from './tail';
 import { isUserProvided } from '~/utils/common';
@@ -2148,6 +2150,7 @@ export async function createRun({
   fadingTiers,
   appConfig,
   subagentUsageSink,
+  getLiteLLMModelSink,
   subagentTasks,
   runFiles,
   steering,
@@ -2254,6 +2257,14 @@ export async function createRun({
    * Switch to the `RunConfig` pick once the dependency is bumped.
    */
   subagentUsageSink?: (event: SubagentUsageEvent) => void;
+  /**
+   * Called once per top-level agent (never subagents) for the sink that receives
+   * the `x-litellm-model-name` response header of that agent's model calls
+   * (OpenAI-compatible clients only); the latest call wins. Each agent gets its own
+   * sink, so one agent cannot overwrite another's model. Returning undefined skips
+   * capture for that agent.
+   */
+  getLiteLLMModelSink?: (agent: LiteLLMCaptureAgent) => LiteLLMModelSink | undefined;
   /** Host-owned detached-subagent task store and trusted parent-thread scope. */
   subagentTasks?: SubagentTaskConfig;
   /** Run-scoped file authorization and child context, supplied by the host. */
@@ -2391,7 +2402,10 @@ export async function createRun({
   }
 
   const preparedCodeFileAgents = new WeakSet(codeFileAgents.values());
-  const buildAgentInput = (agent: RunAgent, opts: { isSubagent?: boolean } = {}): AgentInputs => {
+  const buildAgentInput = (
+    agent: RunAgent,
+    opts: { isSubagent?: boolean; litellmModelSink?: LiteLLMModelSink } = {},
+  ): AgentInputs => {
     if (!preparedCodeFileAgents.has(agent)) {
       if (agent.provisionState) agent.provisionState.codeEnvDestinations = undefined;
       codeFileAgents.set(agent.id, agent);
@@ -2478,6 +2492,11 @@ export async function createRun({
       ) as t.RunLLMConfig,
       modelCallbacks,
     );
+
+    /** Copy, never mutate: `configuration` is shared with `agent.model_parameters`. */
+    if (opts.litellmModelSink != null && isPlainObject(llmConfig.configuration)) {
+      llmConfig.configuration = captureLiteLLMModel(llmConfig.configuration, opts.litellmModelSink);
+    }
 
     const joinInstructionMap = (map?: Record<string, unknown>) =>
       Object.values(map ?? {})
@@ -2712,7 +2731,7 @@ export async function createRun({
     enqueueSubagentChildren(config, pendingConfigs, visitedConfigIds, false, false);
   }
   for (const agent of agents) {
-    const agentInput = buildAgentInput(agent);
+    const agentInput = buildAgentInput(agent, { litellmModelSink: getLiteLLMModelSink?.(agent) });
     if (summarizeOnly && agent === agents[0]) {
       agentInput.summarizeOnly = true;
     }

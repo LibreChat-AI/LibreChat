@@ -2098,6 +2098,7 @@ const initializeClientWithProvider = async ({
     invokedSkillIdentities,
     agent: primaryConfig,
     spec: endpointOption.spec,
+    addedSpec: endpointOption.addedConvo?.spec,
     traceContext: { modelLabel: endpointOption.model_parameters?.modelLabel },
     iconURL: endpointOption.iconURL,
     chatProjectId: endpointOption.chatProjectId,

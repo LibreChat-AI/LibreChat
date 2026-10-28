@@ -36,7 +36,9 @@ export default function SiblingHeader({
 }: SiblingHeaderProps) {
   const agentsMap = useAgentsMapContext();
   const localize = useLocalize();
-  const showToast = useMessagePartsHost().useToast();
+  const host = useMessagePartsHost();
+  const showToast = host.useToast();
+  const routedModelLabel = host.useRoutedModelLabel({ agentId, messageId, conversationId });
 
   const branchMessage = useBranchMessageMutation(conversationId ?? null, {
     onSuccess: () => {
@@ -120,7 +122,9 @@ export default function SiblingHeader({
             agent={agent || undefined}
           />
         </div>
-        <span className="text-text-primary truncate text-sm font-medium">{displayName}</span>
+        <span className="text-text-primary truncate text-sm font-medium">
+          {routedModelLabel ?? displayName}
+        </span>
         <MessageTimestamp value={createdAt} />
       </div>
       <button

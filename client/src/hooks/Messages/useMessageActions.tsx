@@ -20,6 +20,8 @@ import {
 } from './useCopyToClipboard';
 import { useAssistantsMapContext, useAgentsMapContext } from '~/Providers';
 import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
+import { getLiteLLMRoutedModelLabel } from '~/utils/litellm';
+import { useGetStartupConfig } from '~/data-provider';
 import { useAuthContext } from '~/hooks/AuthContext';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
@@ -57,6 +59,7 @@ export default function useMessageActions(props: TMessageActions) {
   } = chatContext;
 
   const getAddedConvo = useGetAddedConvo();
+  const { data: startupConfig } = useGetStartupConfig();
 
   const agentsMap = useAgentsMapContext();
   const assistantMap = useAssistantsMapContext();
@@ -136,6 +139,17 @@ export default function useMessageActions(props: TMessageActions) {
     [clipboardSource, searchResults],
   );
 
+  /** Opt-in per model spec: the model LiteLLM served, shown in place of the sender.
+   *  The spec is resolved from the response's own metadata, never the conversation's
+   *  current spec, so earlier responses keep their label after a spec switch.
+   *  Undefined when the header shows something else (user, agent or assistant rows). */
+  const routedModelLabel = useMemo(() => {
+    if (message?.isCreatedByUser === true || agent || assistant) {
+      return undefined;
+    }
+    return getLiteLLMRoutedModelLabel(startupConfig?.modelSpecs, message);
+  }, [message, agent, assistant, startupConfig?.modelSpecs]);
+
   const messageLabel = useMemo(() => {
     if (message?.isCreatedByUser === true) {
       return UsernameDisplay ? (user?.name ?? '') || user?.username : localize('com_user_message');
@@ -143,10 +157,9 @@ export default function useMessageActions(props: TMessageActions) {
       return agent.name ?? 'Assistant';
     } else if (assistant) {
       return assistant.name ?? 'Assistant';
-    } else {
-      return message?.sender;
     }
-  }, [message, agent, assistant, UsernameDisplay, user, localize]);
+    return routedModelLabel ?? message?.sender;
+  }, [message, agent, assistant, UsernameDisplay, user, localize, routedModelLabel]);
 
   const feedbackMutation = useUpdateFeedbackMutation(
     conversation?.conversationId || '',
@@ -192,14 +205,18 @@ export default function useMessageActions(props: TMessageActions) {
     conversation,
     messageLabel,
     /** Whether `messageLabel` is a configured sender, so the header can withhold the
-     *  model it stands in for. */
-    hasConfiguredSender: isConfiguredSender({
-      sender: message?.sender,
-      endpoint: message?.endpoint ?? conversation?.endpoint,
-      endpointType: conversation?.endpointType,
-      model: message?.model ?? conversation?.model,
-      isCreatedByUser: message?.isCreatedByUser,
-    }),
+     *  model it stands in for. A routed-model label is authoritative the same way:
+     *  revealing the logical model (e.g. the router) on hover or focus, or in the
+     *  screen-reader model text, would contradict the model that served the answer. */
+    hasConfiguredSender:
+      routedModelLabel != null ||
+      isConfiguredSender({
+        sender: message?.sender,
+        endpoint: message?.endpoint ?? conversation?.endpoint,
+        endpointType: conversation?.endpointType,
+        model: message?.model ?? conversation?.model,
+        isCreatedByUser: message?.isCreatedByUser,
+      }),
     /** Withholding the handler removes the controls: `HoverButtons` renders feedback
      *  only when it has somewhere to send it. */
     handleFeedback: feedbackEnabled ? handleFeedback : undefined,
