@@ -183,6 +183,21 @@ tester.run('chat/boundary', chat.rules.boundary, {
       ],
       ["import { v4 } from 'uuid'; export const id = v4();", 'v4', 'uuid'],
       ["import { cn } from '@librechat/client'; export const classes = (() => cn('a'))();", 'cn'],
+      ["import { cn } from '@librechat/client'; export const c = (cn as typeof cn)('a');", 'cn'],
+      ["import { cn } from '@librechat/client'; export const c = cn!('a');", 'cn'],
+      [
+        "import { cn } from '@librechat/client'; export const c = (cn satisfies unknown as typeof cn)('a');",
+        'cn',
+      ],
+      [
+        "import * as Client from '@librechat/client'; export const c = (Client as typeof Client).cn('a');",
+        'Client',
+      ],
+      [
+        "import { FileSources } from 'librechat-data-provider'; export const k = (FileSources as typeof FileSources).local;",
+        'FileSources',
+        'librechat-data-provider',
+      ],
       [
         "import { cn } from '@librechat/client'; export const c = (function () { return cn('a'); })();",
         'cn',

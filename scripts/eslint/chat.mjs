@@ -29,10 +29,19 @@ const ENTRIES = new Set(['react', 'components']);
 const LOAD_SAFE = ['react', 'react-dom', 'jotai', 'jotai/utils'];
 const FUNCTIONS = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
 
-/** `cn`, `Client.cn`, `Client['cn']` and `cn.call` all start at the identifier they call through. */
+/** TypeScript wrappers erased at runtime: `(cn as Fn)` calls `cn` all the same. */
+const TRANSPARENT = new Set([
+  'TSNonNullExpression',
+  'TSAsExpression',
+  'TSSatisfiesExpression',
+  'TSTypeAssertion',
+  'TSInstantiationExpression',
+]);
+
+/** `cn`, `Client.cn`, `Client['cn']`, `cn.call` and `(cn as Fn)` all start at the identifier they call through. */
 const rootIdentifier = (node) => {
   let current = node;
-  while (current?.type === 'MemberExpression' || current?.type === 'TSNonNullExpression') {
+  while (current?.type === 'MemberExpression' || TRANSPARENT.has(current?.type)) {
     current = current.type === 'MemberExpression' ? current.object : current.expression;
   }
   return current?.type === 'Identifier' ? current : undefined;
