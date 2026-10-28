@@ -1,4 +1,8 @@
-import { isEphemeralAgentId, findLiteLLMModelDisplaySpec } from 'librechat-data-provider';
+import {
+  stripAgentIdSuffix,
+  isEphemeralAgentId,
+  findLiteLLMModelDisplaySpec,
+} from 'librechat-data-provider';
 import type { TModelSpec } from 'librechat-data-provider';
 import type * as t from '~/types';
 
@@ -137,4 +141,45 @@ export function createLiteLLMModelCapture({
   };
 
   return { getSink, getMetadata };
+}
+
+/** The routed-model fields a message branched from one comparison column carries. */
+export type LiteLLMBranchMetadata = Required<
+  Pick<LiteLLMModelMetadata, 'litellmModelName' | 'litellmRoutedModelSpec'>
+>;
+
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value !== '';
+
+/**
+ * The served model of the column a message is branched from, promoted to the
+ * message-level fields a single-column message is labeled from. The primary
+ * agent's column (no `____N` suffix: added-convo agents always carry one) reads the
+ * message-level fields; any other column reads its own `litellmAgentModels` entry,
+ * never the primary's, so a branch is not attributed to another column's model.
+ * Undefined when that column has nothing captured.
+ */
+export function getLiteLLMBranchMetadata(
+  metadata: Record<string, unknown> | null | undefined,
+  agentId: string,
+): LiteLLMBranchMetadata | undefined {
+  let modelName: unknown;
+  let spec: unknown;
+  if (stripAgentIdSuffix(agentId) === agentId) {
+    modelName = metadata?.litellmModelName;
+    spec = metadata?.litellmRoutedModelSpec;
+  } else {
+    const agentModels = metadata?.litellmAgentModels;
+    const entry = Array.isArray(agentModels)
+      ? (agentModels as Array<Partial<Record<keyof LiteLLMAgentModel, unknown>> | null>).find(
+          (candidate) => candidate?.agentId === agentId,
+        )
+      : undefined;
+    modelName = entry?.modelName;
+    spec = entry?.spec;
+  }
+  if (!isNonEmptyString(modelName) || !isNonEmptyString(spec)) {
+    return undefined;
+  }
+  return { litellmModelName: modelName, litellmRoutedModelSpec: spec };
 }

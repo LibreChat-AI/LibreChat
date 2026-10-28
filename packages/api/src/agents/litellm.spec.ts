@@ -3,6 +3,7 @@ import type { LiteLLMModelSink } from '~/agents/litellm';
 import type * as t from '~/types';
 import {
   captureLiteLLMModel,
+  getLiteLLMBranchMetadata,
   LITELLM_MODEL_NAME_HEADER,
   createLiteLLMModelCapture,
 } from '~/agents/litellm';
@@ -259,5 +260,48 @@ describe('createLiteLLMModelCapture', () => {
     capture.getSink(agent(ADDED, ROUTER));
 
     expect(capture.getMetadata()).toEqual({});
+  });
+});
+
+describe('getLiteLLMBranchMetadata', () => {
+  const PRIMARY = 'AnthropicClaude__litellm-model-router___Claude';
+  const ADDED = 'AnthropicClaude__litellm-model-router___Claude____1';
+  const metadata = {
+    litellmModelName: 'bedrock/claude-haiku',
+    litellmRoutedModelSpec: 'router-a',
+    litellmAgentModels: [{ agentId: ADDED, modelName: 'bedrock/claude-opus', spec: 'router-b' }],
+    usage: { total: 1 },
+  };
+
+  it("promotes the primary column's message-level fields", () => {
+    expect(getLiteLLMBranchMetadata(metadata, PRIMARY)).toEqual({
+      litellmModelName: 'bedrock/claude-haiku',
+      litellmRoutedModelSpec: 'router-a',
+    });
+  });
+
+  it("promotes an added column's own entry, never the primary's model", () => {
+    expect(getLiteLLMBranchMetadata(metadata, ADDED)).toEqual({
+      litellmModelName: 'bedrock/claude-opus',
+      litellmRoutedModelSpec: 'router-b',
+    });
+  });
+
+  it('returns undefined for an added column with no entry of its own', () => {
+    const { litellmAgentModels: _omitted, ...primaryOnly } = metadata;
+    expect(getLiteLLMBranchMetadata(primaryOnly, ADDED)).toBeUndefined();
+    expect(getLiteLLMBranchMetadata(metadata, 'other____2')).toBeUndefined();
+  });
+
+  it('returns undefined when nothing was captured or the stored fields are malformed', () => {
+    expect(getLiteLLMBranchMetadata(undefined, PRIMARY)).toBeUndefined();
+    expect(getLiteLLMBranchMetadata({ usage: { total: 1 } }, PRIMARY)).toBeUndefined();
+    expect(getLiteLLMBranchMetadata({ litellmModelName: 'x' }, PRIMARY)).toBeUndefined();
+    expect(
+      getLiteLLMBranchMetadata(
+        { litellmAgentModels: [null, { agentId: ADDED, modelName: 7 }] },
+        ADDED,
+      ),
+    ).toBeUndefined();
   });
 });
