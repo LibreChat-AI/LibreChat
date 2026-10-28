@@ -14,127 +14,35 @@ import path from 'node:path';
  *   `@librechat/client`, or any subpath of them) and none of the `/react` or `/components` entries.
  *   A core `import()` or `require()` whose specifier cannot be read statically is reported too,
  *   since the rule could not tell what it loads.
- * - Outside specs: nothing reaches into another package while the module loads. App specs replace
- *   whole packages with mocks (`@librechat/client`, `librechat-data-provider`), so a top-level
- *   `cn(...)`, or a map keyed by `FileSources.local`, throws before a single test runs. Every
- *   load-time use of an import that reads it (a call, `new`, a member read, destructuring, a spread,
- *   `extends`) belongs inside a function; only handing the value on is allowed. A call argument
- *   counts as handing on, so `memo(Search)` passes; what the callee does with it is the callee's.
- *   Packages no spec replaces (React, Jotai) are exempt through the `loadSafe` option.
+ * - Outside specs: no call, `new`, tagged template or member read through another package's import
+ *   at module scope. App specs mock whole packages (`@librechat/client`, `librechat-data-provider`),
+ *   so a top-level `cn(...)` or a map keyed by `FileSources.local` throws on import. This is fast
+ *   feedback for the plain case; `src/__tests__/load.spec.ts` loads every entry with those packages
+ *   mocked and catches the rest (aliases, `require`, invoked functions). React and Jotai, which no
+ *   spec replaces, are exempt through the `loadSafe` option.
  */
 
 const EXTENSION = /\.(?:[cm]?[jt]sx?)$/;
 const UI_PACKAGES = new Set(['react', 'react-dom', 'jotai', '@librechat/client']);
 const UI_SCOPES = ['@tanstack/'];
 const ENTRIES = new Set(['react', 'components']);
-/** Packages whose exports may be used while a module loads: no spec replaces them. */
 const LOAD_SAFE = ['react', 'react-dom', 'jotai', 'jotai/utils'];
 const FUNCTIONS = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
 
-/** TypeScript wrappers erased at runtime: `(cn as Fn)` calls `cn` all the same. */
-const TRANSPARENT = new Set([
-  'TSNonNullExpression',
-  'TSAsExpression',
-  'TSSatisfiesExpression',
-  'TSTypeAssertion',
-  'TSInstantiationExpression',
-]);
-
-/** Type positions TypeScript erases: `typeof cn`, `implements`, an interface's `extends`. */
-const TYPE_POSITIONS = new Set([
-  'TSTypeAnnotation',
-  'TSTypeQuery',
-  'TSTypeReference',
-  'TSClassImplements',
-  'TSInterfaceHeritage',
-  'TSInterfaceDeclaration',
-  'TSTypeAliasDeclaration',
-]);
-
-/** Whether a reference sits in a type, where only runtime references can throw. */
-const inType = (node) => {
-  for (let parent = node.parent; parent; parent = parent.parent) {
-    if (TYPE_POSITIONS.has(parent.type)) return true;
-  }
-  return false;
+/** `cn`, `Client.cn` and `Client['cn']` all start at the identifier they reach through. */
+const rootIdentifier = (node) => {
+  let current = node;
+  while (current.type === 'MemberExpression') current = current.object;
+  return current.type === 'Identifier' ? current : undefined;
 };
 
-/** Expressions that pass a value through to whatever consumes them: a wrapper, or a branch. */
-const forwards = (node) => {
-  const { parent } = node;
-  if (TRANSPARENT.has(parent.type) || parent.type === 'LogicalExpression') return true;
-  return parent.type === 'ConditionalExpression' && parent.test !== node;
-};
-
-/**
- * Whether a reference only hands its value on, which cannot throw however a mock defines it: an
- * object property's value, an array element, a call argument, the right side of an assignment, a
- * plain `const x =`, an export, or a JSX tag, judged through any `?:`, `&&`, `||` or `??` that
- * carries it there, so `(on ? cn : f)('a')` is a call. Every other use
- * (a call, `new`, a member read, destructuring, a spread, `extends`, `in`, `instanceof`, iteration)
- * reads the import itself.
- */
-const isInert = (reference) => {
-  let node = reference;
-  while (forwards(node)) node = node.parent;
-  const { parent } = node;
-  switch (parent.type) {
-    case 'Property':
-      return parent.value === node;
-    case 'ArrayExpression':
-    case 'ExportSpecifier':
-    case 'ExportDefaultDeclaration':
-    case 'JSXOpeningElement':
-    case 'JSXClosingElement':
-    case 'JSXExpressionContainer':
-      return true;
-    case 'CallExpression':
-    case 'NewExpression':
-      return parent.callee !== node;
-    case 'AssignmentExpression':
-      return (
-        parent.right === node &&
-        parent.left.type !== 'ObjectPattern' &&
-        parent.left.type !== 'ArrayPattern'
-      );
-    case 'VariableDeclarator':
-      return parent.init === node && parent.id.type === 'Identifier';
-    default:
-      return false;
-  }
-};
-
-/** Whether a function or class expression is called or constructed where it is written. */
-const invokedInPlace = (node) => {
-  let callee = node;
-  while (forwards(callee)) callee = callee.parent;
-  const { parent } = callee;
-  return (
-    (parent.type === 'CallExpression' || parent.type === 'NewExpression') &&
-    parent.callee === callee
-  );
-};
-
-/**
- * Whether `node` runs when its module loads: no enclosing function defers it, except one invoked
- * on the spot, and no instance field initializer or constructor does, except in a class constructed
- * on the spot.
- * A computed field key still runs with the class. A callback handed to another call is taken as
- * deferred, as `memo` and `forwardRef` take theirs; the rule cannot see whether the callee invokes
- * it right away.
- */
+/** Whether `node` runs when its module loads: no function and no instance field defers it. */
 const runsOnLoad = (node) => {
   for (let child = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
-    /** Calling a generator only creates its iterator; the body waits for the first `next()`. */
-    if (FUNCTIONS.has(parent.type) && parent.generator && child === parent.body) return false;
-    if (FUNCTIONS.has(parent.type)) {
-      const method = parent.parent;
-      const isConstructor = method.type === 'MethodDefinition' && method.kind === 'constructor';
-      if (!invokedInPlace(isConstructor ? method.parent.parent : parent)) return false;
+    if (FUNCTIONS.has(parent.type)) return false;
+    if (parent.type === 'PropertyDefinition' && !parent.static && child === parent.value) {
+      return false;
     }
-    const instanceValue =
-      parent.type === 'PropertyDefinition' && !parent.static && child === parent.value;
-    if (instanceValue && !invokedInPlace(parent.parent.parent)) return false;
   }
   return true;
 };
@@ -199,51 +107,19 @@ const boundary = {
     const segments = relativeFile.split(path.sep);
     const isSpec = segments.includes('__tests__') || /\.(spec|test)\./.test(relativeFile);
     const loadSafe = new Set(options.loadSafe ?? LOAD_SAFE);
-    /** Import specifiers and `require` declarations that bind another package, mapped to it. */
+    /** Import specifiers that bind a name to another package, mapped to that package. */
     const externalBindings = new Map();
-    /** Checks each reference to a binding; an alias (`const join = cn`, `join = cn`) is checked the same way. */
-    const reportLoadTimeUses = () => {
-      const pending = [...externalBindings].flatMap(([specifier, source]) =>
-        context.sourceCode
-          .getDeclaredVariables(specifier)
-          .map((variable) => ({ variable, source })),
-      );
-      const seen = new Set();
-      while (pending.length > 0) {
-        const { variable, source } = pending.pop();
-        if (seen.has(variable)) continue;
-        seen.add(variable);
-        for (const reference of variable.references) {
-          const { identifier } = reference;
-          /** A write such as `join = other` never touches the import. */
-          if (!reference.isRead() || inType(identifier)) continue;
-          let value = identifier;
-          while (forwards(value)) value = value.parent;
-          const alias = value.parent;
-          if (alias.type === 'VariableDeclarator' && alias.init === value) {
-            context.sourceCode
-              .getDeclaredVariables(alias)
-              .forEach((aliased) => pending.push({ variable: aliased, source }));
-          }
-          if (
-            alias.type === 'AssignmentExpression' &&
-            alias.right === value &&
-            alias.left.type === 'Identifier'
-          ) {
-            const target = alias.left;
-            let scope = context.sourceCode.getScope(target);
-            let aliased;
-            for (; scope && !aliased; scope = scope.upper) aliased = scope.set.get(target.name);
-            if (aliased) pending.push({ variable: aliased, source });
-          }
-          if (isInert(identifier) || !runsOnLoad(identifier)) continue;
-          context.report({
-            node: identifier,
-            messageId: 'load',
-            data: { name: identifier.name, source },
-          });
-        }
+    const usesExternalOnLoad = (node, target) => {
+      if (isSpec) return;
+      const identifier = rootIdentifier(target);
+      if (!identifier) return;
+      let variable;
+      for (let scope = context.sourceCode.getScope(node); scope && !variable; scope = scope.upper) {
+        variable = scope.set.get(identifier.name);
       }
+      const source = variable && externalBindings.get(variable.defs[0]?.node);
+      if (!source || !runsOnLoad(node)) return;
+      context.report({ node, messageId: 'load', data: { name: identifier.name, source } });
     };
 
     const isCore =
@@ -297,49 +173,34 @@ const boundary = {
 
     return {
       Program(program) {
-        const external = (source) =>
-          typeof source === 'string' &&
-          !source.startsWith('.') &&
-          !path.isAbsolute(source) &&
-          !source.startsWith('~') &&
-          !loadSafe.has(source);
-        for (const top of program.body) {
-          const statement =
-            top.type === 'ExportNamedDeclaration' && top.declaration ? top.declaration : top;
-          if (statement.type === 'ImportDeclaration' && statement.importKind !== 'type') {
-            if (!external(statement.source.value)) continue;
-            statement.specifiers
-              .filter((specifier) => specifier.importKind !== 'type')
-              .forEach((specifier) => externalBindings.set(specifier, statement.source.value));
-          }
-          /** `const Client = require('x')` and `const { cn } = require('x')` bind the same way. */
-          if (statement.type === 'VariableDeclaration') {
-            for (const declarator of statement.declarations) {
-              const { init } = declarator;
-              const isRequire =
-                init?.type === 'CallExpression' &&
-                init.callee.type === 'Identifier' &&
-                init.callee.name === 'require';
-              const { known, value } = specifierOf(init?.arguments?.[0]);
-              if (isRequire && known && external(value)) externalBindings.set(declarator, value);
-            }
-          }
-          if (statement.type === 'TSImportEqualsDeclaration') {
-            const { known, value } = specifierOf(statement.moduleReference.expression);
-            if (known && external(value)) externalBindings.set(statement, value);
-          }
+        for (const statement of program.body) {
+          if (statement.type !== 'ImportDeclaration' || statement.importKind === 'type') continue;
+          const source = statement.source.value;
+          if (source.startsWith('.') || source.startsWith('~') || loadSafe.has(source)) continue;
+          statement.specifiers
+            .filter((specifier) => specifier.importKind !== 'type')
+            .forEach((specifier) => externalBindings.set(specifier, source));
         }
       },
-      'Program:exit': () => {
-        if (!isSpec) reportLoadTimeUses();
-      },
       ImportDeclaration: (node) => check(node, node.source),
+      NewExpression: (node) => usesExternalOnLoad(node, node.callee),
+      TaggedTemplateExpression: (node) => usesExternalOnLoad(node, node.tag),
+      /** The outermost read only: `A.b.c` is one report, and a call reports its own callee. */
+      MemberExpression(node) {
+        const { parent } = node;
+        if (parent.type === 'MemberExpression' && parent.object === node) return;
+        if (parent.type === 'CallExpression' && parent.callee === node) return;
+        if (parent.type === 'NewExpression' && parent.callee === node) return;
+        if (parent.type === 'TaggedTemplateExpression' && parent.tag === node) return;
+        usesExternalOnLoad(node, node);
+      },
       ExportNamedDeclaration: (node) => node.source && check(node, node.source),
       ExportAllDeclaration: (node) => check(node, node.source),
       ImportExpression: (node) => check(node, node.source),
       TSImportType: (node) => check(node, node.argument),
       TSExternalModuleReference: (node) => check(node, node.expression),
       CallExpression(node) {
+        usesExternalOnLoad(node, node.callee);
         if (node.callee.type !== 'Identifier' || node.callee.name !== 'require') return;
         check(node, node.arguments[0]);
       },
