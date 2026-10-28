@@ -21,6 +21,7 @@ import type { AppConfig } from '@librechat/data-schemas';
 import { createCodeEnvironmentRegistry } from '../environments';
 import { createSameOriginGuard } from '~/middleware/origin';
 import { createCodeSetupRouter } from './router';
+import { createSetupPolicy } from './policy';
 
 const identity = generateKeyPairSync('ed25519');
 const publicKey = identity.publicKey.export({ type: 'spki', format: 'pem' }).toString();
@@ -384,6 +385,25 @@ describe('browser setup HTTP protocol boundary', () => {
       429,
     );
     expect(refreshCount).toBe(admitted);
+  });
+
+  test('deployment policy accepts explicit refresh option and suppresses reload on sweeps', async () => {
+    refreshCount = 0;
+    const policy = createSetupPolicy({
+      getAppConfig: async (options) => {
+        if (options.refresh) refreshCount++;
+        return base;
+      },
+      getUser: async () => null,
+      userIsBanned: async () => false,
+      principalAuthEnabled: () => true,
+      principalAuthReady: () => undefined,
+    });
+    const deployed = await policy.deployment({ refresh: false });
+    expect(deployed.config.instance).toBe(
+      base.endpoints!.agents!.statefulCodeSessions!.principalWorkers!.browserSetup!.instance,
+    );
+    expect(refreshCount).toBe(0);
   });
 
   test('capabilities fail closed when the required unique registration indexes cannot be enforced', async () => {
