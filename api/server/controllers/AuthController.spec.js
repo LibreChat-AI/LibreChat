@@ -3088,14 +3088,13 @@ describe('registrationController - invite consumption', () => {
 
 describe('resetPasswordController', () => {
   let req, res;
-  const serviceResult = { ok: true, tokenConsumed: true };
+  const serviceResult = { ok: true, tokenConsumed: true, credentialsChangedAt: new Date() };
   const successBody = { message: 'Password reset was successful' };
   const incompleteBody = expect.objectContaining({ code: 'CREDENTIAL_RETIREMENT_INCOMPLETE' });
 
   beforeEach(() => {
     jest.clearAllMocks();
     resetPassword.mockReset().mockResolvedValue(serviceResult);
-    getUserById.mockReset().mockResolvedValue({ credentialsChangedAt: new Date() });
     updateUser.mockReset().mockResolvedValue({});
     deleteAllUserSessions.mockReset().mockResolvedValue(undefined);
     deletePasskeysByUser.mockReset().mockResolvedValue(undefined);
@@ -3252,7 +3251,7 @@ describe('resetPasswordController', () => {
   it.each([
     [
       'the link could not be deleted',
-      () => resetPassword.mockResolvedValue({ ok: true, tokenConsumed: false }),
+      () => resetPassword.mockResolvedValue({ ...serviceResult, tokenConsumed: false }),
     ],
     ['the cutoff could not be re-dated', () => updateUser.mockRejectedValue(new Error('down'))],
     [
@@ -3269,6 +3268,17 @@ describe('resetPasswordController', () => {
     expect(updateUser).toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(500);
     expect(res.json).toHaveBeenCalledWith(incompleteBody);
+  });
+
+  it('re-dates the cutoff the committed write returned without reading the user again', async () => {
+    await resetPasswordController(req, res);
+
+    expect(getUserById).not.toHaveBeenCalled();
+    expect(updateUser).toHaveBeenCalledWith(
+      'user-123',
+      { credentialsChangedAt: expect.any(Date) },
+      { credentialsChangedAt: serviceResult.credentialsChangedAt },
+    );
   });
 
   it('does not revoke sessions or passkeys when the reset service throws', async () => {

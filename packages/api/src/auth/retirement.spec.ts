@@ -134,7 +134,6 @@ describe('password reset ordering', () => {
         return { deletedCount: 1 };
       },
       awaitAuthUserDocEviction: async () => failIf('eviction'),
-      getUserById: (id: string, select: string) => methods.getUserById(id, select),
       updateUser: async (
         id: string,
         update: { credentialsChangedAt: Date },

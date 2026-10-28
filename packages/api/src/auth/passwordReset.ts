@@ -2,7 +2,6 @@ import { logger } from '@librechat/data-schemas';
 import { CREDENTIAL_RETIREMENT_INCOMPLETE_CODE } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 import type { PasswordResetUpdate } from './passwordResetUpdate';
-import type { TokenRetirementSignals } from './twoFactor';
 import { createPasswordResetUpdate } from './passwordResetUpdate';
 import { restampRetirementCutoff } from './twoFactor';
 import { clearSessionHintCookie } from '~/oauth/csrf';
@@ -53,8 +52,6 @@ export interface PasswordResetControllerDeps {
   deletePasskeysByUser: (userId: string) => Promise<{ deletedCount?: number }>;
   /** Resolves once no cached auth document from before the reset can be served. */
   awaitAuthUserDocEviction: (userId: string) => Promise<void>;
-  /** Reads and re-dates the cutoff the committed reset stamped. */
-  getUserById: (userId: string, select: string) => Promise<TokenRetirementSignals | null>;
   updateUser: (
     userId: string,
     update: { credentialsChangedAt: Date },
@@ -100,9 +97,10 @@ export function createResetPasswordController(deps: PasswordResetControllerDeps)
   };
 
   /** Re-dates the committed cutoff so a credential minted while the write was in flight retires. */
-  const restampReset = async (userId: string): Promise<void> => {
-    const committed = await deps.getUserById(userId, 'credentialsChangedAt');
-    const stampedAt = committed?.credentialsChangedAt;
+  const restampReset = async (
+    userId: string,
+    stampedAt: PasswordResetUser['credentialsChangedAt'],
+  ): Promise<void> => {
     if (stampedAt == null) {
       throw new Error('Committed reset has no credentialsChangedAt to re-date');
     }
@@ -115,10 +113,13 @@ export function createResetPasswordController(deps: PasswordResetControllerDeps)
   };
 
   /** Never throws: every step runs, and a failed one only marks the retirement incomplete. */
-  const retireCredentials = async (userId: string): Promise<boolean> => {
+  const retireCredentials = async (
+    userId: string,
+    stampedAt: PasswordResetUser['credentialsChangedAt'],
+  ): Promise<boolean> => {
     let complete = true;
     for (const [label, step] of [
-      ['re-date the cutoff', () => restampReset(userId)],
+      ['re-date the cutoff', () => restampReset(userId, stampedAt)],
       ['revoke sessions and passkeys', () => revokeCredentials(userId)],
     ] as const) {
       try {
@@ -149,7 +150,7 @@ export function createResetPasswordController(deps: PasswordResetControllerDeps)
     }
 
     /** From here the password has changed: retirement runs on every path. */
-    const retired = await retireCredentials(userId);
+    const retired = await retireCredentials(userId, result.credentialsChangedAt);
     clearSessionHintCookie(res);
     if (!retired || !result.tokenConsumed) {
       return res.status(500).json({
@@ -161,7 +162,14 @@ export function createResetPasswordController(deps: PasswordResetControllerDeps)
   };
 }
 
-export type PasswordResetResult = { ok: false } | { ok: true; tokenConsumed: boolean };
+export type PasswordResetResult =
+  | { ok: false }
+  | {
+      ok: true;
+      tokenConsumed: boolean;
+      /** The cutoff the committed write stamped, read back from that write. */
+      credentialsChangedAt: PasswordResetUser['credentialsChangedAt'];
+    };
 
 export interface PasswordResetCompletionDeps extends PasswordResetDeps {
   /** Deletes the link that was redeemed. */
@@ -201,7 +209,7 @@ export async function resetPasswordWithToken(
     logger.error(`[resetPassword] Failed to send the reset notice for user ${input.userId}`, error);
   }
   logger.info(`[resetPassword] Password reset successful. [User ID: ${input.userId}]`);
-  return { ok: true, tokenConsumed };
+  return { ok: true, tokenConsumed, credentialsChangedAt: outcome.user.credentialsChangedAt };
 }
 
 /**

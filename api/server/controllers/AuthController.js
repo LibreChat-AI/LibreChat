@@ -221,7 +221,6 @@ const resetPasswordController = createResetPasswordController({
   deleteAllUserSessions,
   deletePasskeysByUser,
   awaitAuthUserDocEviction,
-  getUserById,
   updateUser,
 });
 
