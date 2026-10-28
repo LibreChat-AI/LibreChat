@@ -132,6 +132,7 @@ tester.run('chat/boundary', chat.rules.boundary, {
       "import { Button } from '@librechat/client'; export const element = <Button />;",
       "import { cn } from '@librechat/client'; export { cn };",
       "import { cn } from '@librechat/client'; let fn; fn = cn; export const K = class { v = cn('a'); };",
+      "import { cn } from '@librechat/client'; export class K { constructor() { cn('a'); } method() { return cn('b'); } }",
       "import { Store } from '@librechat/client'; export interface Derived extends Store {} export class Impl implements Store {} export type S = Store;",
       "import { cn } from '@librechat/client'; export const pick = (on: boolean) => on; export const fn = on ? cn : pick;",
       "import { FileSources } from 'librechat-data-provider'; export const read = () => { const { local } = FileSources; return { ...FileSources, local }; };",
@@ -204,6 +205,14 @@ tester.run('chat/boundary', chat.rules.boundary, {
       ["import { cn } from '@librechat/client'; export const c = (cn || String)('a');", 'cn'],
       [
         "import { cn } from '@librechat/client'; export const o = new (class { v = cn('a'); })();",
+        'cn',
+      ],
+      [
+        "import { cn } from '@librechat/client'; export const o = new (class { constructor() { cn('a'); } })();",
+        'cn',
+      ],
+      [
+        "import { cn } from '@librechat/client'; export const v = (on ? () => cn('a') : () => '')();",
         'cn',
       ],
       [
