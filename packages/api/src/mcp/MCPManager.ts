@@ -249,7 +249,7 @@ export class MCPManager extends UserConnectionManager {
   public override getUserConnection(opts: t.UserMCPConnectionOptions): Promise<MCPConnection> {
     const connectionTarget = this.getSuppliedConnectionTarget(opts);
     if (connectionTarget) {
-      return this.getManagedUserConnection(opts, connectionTarget);
+      return this.getVisibleUserConnection(opts, connectionTarget);
     }
     return this.resolveConnectionTarget(opts).then((resolvedTarget) => {
       opts.signal?.throwIfAborted();
@@ -261,6 +261,45 @@ export class MCPManager extends UserConnectionManager {
       }
       return this.getManagedUserConnection(opts, resolvedTarget);
     });
+  }
+
+  /**
+   * Hiding is an access boundary, so a target the caller resolved earlier is checked again here,
+   * where every supplied user connection passes; a registry-resolved target was already filtered.
+   * The check is fenced from the call on, as the creation it precedes would be, so a teardown
+   * that lands while it runs still reaches this connection.
+   */
+  private async getVisibleUserConnection(
+    opts: t.UserMCPConnectionOptions,
+    connectionTarget: t.MCPConnectionTarget,
+  ): Promise<MCPConnection> {
+    const userId = opts.user?.id;
+    const fence = userId
+      ? this.createConnectionMutationFence(
+          userId,
+          opts.serverName,
+          opts.capabilityProfile ?? STANDARD_MCP_CAPABILITY_PROFILE,
+        )
+      : undefined;
+    let connection: Promise<MCPConnection>;
+    try {
+      const hidden = await MCPServersRegistry.getInstance().isHiddenFromPrincipal(
+        opts.serverName,
+        connectionTarget.serverConfig,
+        opts.user,
+      );
+      fence?.assertCurrent();
+      if (hidden) {
+        throw new McpError(
+          ErrorCode.InvalidRequest,
+          `[MCP] Configuration for server "${opts.serverName}" not found.`,
+        );
+      }
+      connection = this.getManagedUserConnection(opts, connectionTarget);
+    } finally {
+      fence?.release();
+    }
+    return connection;
   }
 
   private async getManagedUserConnection(
@@ -456,12 +495,20 @@ export class MCPManager extends UserConnectionManager {
     connectionTarget?: t.MCPConnectionTarget;
     serverConfig?: t.ParsedServerConfig;
   }): Promise<t.MCPConnectionTarget | undefined> {
+    const registry = MCPServersRegistry.getInstance();
+    const suppliedConfig = args.connectionTarget?.serverConfig ?? args.serverConfig;
+    /** A config resolved before a hide took effect must not outlive it: hiding is an access boundary. */
+    if (
+      suppliedConfig &&
+      (await registry.isHiddenFromPrincipal(args.serverName, suppliedConfig, args.user))
+    ) {
+      return undefined;
+    }
     if (args.connectionTarget) {
       return args.connectionTarget;
     }
-    const registry = MCPServersRegistry.getInstance();
     const resolvedConfig =
-      args.serverConfig ?? (await registry.getServerConfig(args.serverName, args.user?.id));
+      suppliedConfig ?? (await this.getPrincipalServerConfig(args.serverName, args.user));
     if (!resolvedConfig) {
       return undefined;
     }
@@ -559,7 +606,7 @@ export class MCPManager extends UserConnectionManager {
     const { serverName, user } = args;
     const capabilityProfile = args.capabilityProfile ?? STANDARD_MCP_CAPABILITY_PROFILE;
     const registry = MCPServersRegistry.getInstance();
-    const serverConfig = await registry.getServerConfig(serverName, user?.id, args.configServers);
+    const serverConfig = await this.getPrincipalServerConfig(serverName, user, args.configServers);
 
     if (!serverConfig) {
       logger.warn('[MCP][Discovery] Server configuration not found');
@@ -881,18 +928,25 @@ export class MCPManager extends UserConnectionManager {
   /**
    * Get instructions for MCP servers
    * @param serverNames Optional array of server names. If not provided or empty, returns all servers.
+   * @param user The acting user: a librechat.yaml server hidden from them contributes nothing,
+   *   whichever caller named it (a model spec can pin one).
    * @returns Object mapping server names to their instructions
    */
   private async getInstructions(
     serverNames?: string[],
     configServers?: Record<string, t.ParsedServerConfig>,
+    user?: t.MCPLookupUser,
   ): Promise<Record<string, string>> {
     const instructions: Record<string, string> = {};
-    const configs = await MCPServersRegistry.getInstance().getAllServerConfigs(
-      undefined,
-      configServers,
-    );
+    const registry = MCPServersRegistry.getInstance();
+    const [configs, hidden] = await Promise.all([
+      registry.getAllServerConfigs(undefined, configServers),
+      registry.getUserHiddenServerNames(user),
+    ]);
     for (const [serverName, config] of Object.entries(configs)) {
+      if (hidden.has(serverName) && !isUserSourced(config)) {
+        continue;
+      }
       const resolved = resolveServerInstructions(config);
       if (resolved != null) {
         instructions[serverName] = resolved;
@@ -905,13 +959,15 @@ export class MCPManager extends UserConnectionManager {
   /**
    * Format MCP server instructions for injection into context
    * @param serverNames Optional array of server names to include. If not provided, includes all servers.
+   * @param user The acting user, whose hidden librechat.yaml servers are left out.
    * @returns Formatted instructions string ready for context injection
    */
   public async formatInstructionsForContext(
     serverNames?: string[],
     configServers?: Record<string, t.ParsedServerConfig>,
+    user?: t.MCPLookupUser,
   ): Promise<string> {
-    const instructionsToInclude = await this.getInstructions(serverNames, configServers);
+    const instructionsToInclude = await this.getInstructions(serverNames, configServers, user);
 
     if (Object.keys(instructionsToInclude).length === 0) {
       return '';
@@ -1601,7 +1657,7 @@ Please follow these instructions when using tools from the respective MCP server
 
         const registry = MCPServersRegistry.getInstance();
         const declaredConfig =
-          providedConfig ?? (await registry.getServerConfig(serverName, userId));
+          providedConfig ?? (await this.getPrincipalServerConfig(serverName, user));
         /** Folded in before scope detection, Graph preprocessing and
          *  direct-bearer resolution, so this pipeline sees the same single
          *  header map the factory does. */

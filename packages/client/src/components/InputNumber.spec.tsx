@@ -31,7 +31,7 @@ describe('InputNumber', () => {
     render(<InputNumber aria-label="count" variant="option" className="w-12" />);
     const wrapper = screen.getByRole('spinbutton').closest('.rc-input-number');
 
-    expect(wrapper).toHaveClass('border-0', 'reset-rc-number-input', 'text-right', 'w-12');
+    expect(wrapper).toHaveClass('border-0', 'reset-rc-number-input', 'text-end', 'w-12');
     expect(wrapper).not.toHaveClass('w-full');
   });
 

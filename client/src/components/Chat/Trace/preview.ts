@@ -218,10 +218,6 @@ export function buildMessagePreview(message: TMessage | undefined): MessagePrevi
   return { steps, finalOnly, parallel, labels };
 }
 
-export function buildStepPreviews(message: TMessage | undefined): StepPreview[] {
-  return buildMessagePreview(message).steps;
-}
-
 /**
  * The one-line preview each ledger row shows beside its record's name, taken
  * from the chat's own message rather than from the tracing backend: the text a

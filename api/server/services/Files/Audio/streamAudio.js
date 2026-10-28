@@ -1,5 +1,5 @@
 const { createSpeechChunkProcessor } = require('@librechat/api');
-const { CacheKeys, SEPARATORS, findLastSeparatorIndex } = require('librechat-data-provider');
+const { CacheKeys, SEPARATORS } = require('librechat-data-provider');
 const { getLogStores } = require('~/cache');
 const { getMessage } = require('~/models');
 
@@ -50,12 +50,13 @@ function getRandomVoiceId(voiceIds) {
  * @param {string} messageId
  * @returns {() => Promise<{ text: string, isFinished: boolean }[] | string>}
  */
-function createChunkProcessor(user, messageId) {
+function createChunkProcessor(user, messageId, maxInputChars) {
   return createSpeechChunkProcessor({
     user,
     messageId,
     cache: getLogStores(CacheKeys.MESSAGES),
     getMessage,
+    maxInputChars,
   });
 }
 
@@ -117,23 +118,8 @@ function splitTextIntoChunks(text, chunkSize = 4000) {
   return chunks;
 }
 
-/**
- *
- * @param {AsyncIterable<string>} llmStream
- */
-async function* llmMessageSource(llmStream) {
-  for await (const chunk of llmStream) {
-    const message = chunk.choices[0].delta.content;
-    if (message) {
-      yield message;
-    }
-  }
-}
-
 module.exports = {
-  findLastSeparatorIndex,
   createChunkProcessor,
   splitTextIntoChunks,
-  llmMessageSource,
   getRandomVoiceId,
 };

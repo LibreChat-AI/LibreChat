@@ -1,4 +1,5 @@
 import { memo } from 'react';
+import { useAtomValue } from 'jotai';
 import { Spinner } from '@librechat/client';
 import { Constants } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
@@ -9,8 +10,9 @@ import { useGetLangfuseSessionLinkQuery, useGetStartupConfig } from '~/data-prov
 import Balance, { Summary as BalanceSummary } from '~/components/Balance';
 import useBalanceSummary from '~/hooks/useBalanceSummary';
 import useTokenUsage from '~/hooks/Chat/useTokenUsage';
+import { contextBreakdownExpandedAtom } from './store';
 import CompactAction from './CompactAction';
-import { formatTokens } from '~/utils';
+import { cn, formatTokens } from '~/utils';
 import { useLocalize } from '~/hooks';
 import UsagePopover from './Popover';
 import Breakdown from './Breakdown';
@@ -96,6 +98,7 @@ function TokenUsageIndicator({
   balanceEnabled: boolean;
 }) {
   const localize = useLocalize();
+  const expanded = useAtomValue(contextBreakdownExpandedAtom);
   const view = useTokenUsage({ index, conversation, isSubmitting });
   /** Owned here, not in the popover: `unmountOnHide` would otherwise lose the
    *  in-flight state the moment the pointer leaves. */
@@ -149,9 +152,13 @@ function TokenUsageIndicator({
         )
       }
     >
-      {/* The popover owns its width, which the breakdown held only while it
-          was the sole child of a shrink-to-fit box. */}
-      <div className="w-72 max-w-full space-y-3">
+      <div
+        className={cn(
+          'max-w-full space-y-3',
+          hasContext && expanded ? 'w-[min(44rem,calc(100vw-2.5rem))]' : 'w-72',
+        )}
+        data-testid="token-usage-card"
+      >
         {hasContext && (
           <ContextCard
             view={view}

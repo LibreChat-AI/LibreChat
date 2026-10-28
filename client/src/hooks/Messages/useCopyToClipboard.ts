@@ -69,12 +69,6 @@ function getMessageParts({ text, content }: Partial<Pick<TMessage, 'text' | 'con
   return parts;
 }
 
-export function serializeMessageForClipboard(
-  source: Partial<Pick<TMessage, 'text' | 'content'>>,
-): string {
-  return getMessageParts(source).join('\n');
-}
-
 type CitationSegment = {
   text: string;
   /**

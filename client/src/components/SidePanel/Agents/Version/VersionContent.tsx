@@ -44,12 +44,12 @@ function VersionListSkeleton() {
       {[0, 1, 2].map((i) => (
         <li key={i} className="relative flex items-stretch">
           <div className="relative flex w-6 shrink-0 justify-center">
-            {i < 2 && <div className="absolute -bottom-3 top-0 w-px bg-border-light" />}
-            <div className="relative z-10 mt-4 size-5 shrink-0 rounded-full border-2 border-border-light bg-surface-secondary" />
+            {i < 2 && <div className="bg-border-light absolute top-0 -bottom-3 w-px" />}
+            <div className="border-border-light bg-surface-secondary relative z-10 mt-4 size-5 shrink-0 rounded-full border-2" />
           </div>
-          <div className="mb-2 ml-2 flex flex-1 flex-col gap-2 rounded-xl border border-border-light bg-transparent p-3">
-            <div className="h-3 w-24 animate-pulse rounded bg-surface-secondary" />
-            <div className="h-3 w-40 animate-pulse rounded bg-surface-secondary" />
+          <div className="border-border-light ms-2 mb-2 flex flex-1 flex-col gap-2 rounded-xl border bg-transparent p-3">
+            <div className="bg-surface-secondary h-3 w-24 animate-pulse rounded" />
+            <div className="bg-surface-secondary h-3 w-40 animate-pulse rounded" />
           </div>
         </li>
       ))}

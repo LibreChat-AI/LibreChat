@@ -1,6 +1,7 @@
 import { memo, useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useParams } from 'react-router-dom';
+import { useIsSubmitting } from '@librechat/chat/react';
 import {
   getConfigDefaults,
   Constants,
@@ -38,7 +39,7 @@ function Header({
 }) {
   const { data: startupConfig } = useGetStartupConfig();
   const navVisible = useRecoilValue(store.sidebarExpanded);
-  const isSubmitting = useRecoilValue(store.isSubmittingFamily(0));
+  const isSubmitting = useIsSubmitting(0);
   const isSmallScreen = useDrawerViewport();
 
   /** The mobile row only offers a new chat when there is one to leave. Read
@@ -102,7 +103,7 @@ function Header({
       <div
         className={cn(
           'flex min-w-0 flex-1 items-center gap-2',
-          !isSmallScreen && 'pl-3 transition-all duration-200 ease-in-out',
+          !isSmallScreen && 'ps-3 transition-all duration-200 ease-in-out',
           hiddenBehindNav,
         )}
       >

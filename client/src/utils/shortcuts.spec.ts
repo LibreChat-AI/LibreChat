@@ -2,6 +2,7 @@ import type { ShortcutBinding, ComposerKeyContext } from './shortcuts';
 import {
   hasModifier,
   isCancelKey,
+  isReboundSubmitChord,
   bindingHash,
   normalizeKey,
   parseBinding,
@@ -219,6 +220,46 @@ describe('resolveSubmitOverrideAction', () => {
       'none',
     );
     expect(resolveSubmitOverrideAction(null, altEnter, true)).toBe('none');
+  });
+});
+
+describe('isReboundSubmitChord', () => {
+  const ctrlJ = makeBinding({ ctrl: true, key: 'J' });
+  const press = (init: KeyboardEventInit) => new KeyboardEvent('keydown', init);
+
+  it('matches a submit chord rebound off Enter', () => {
+    expect(
+      isReboundSubmitChord(press({ key: 'j', ctrlKey: true }), {
+        shortcutsEnabled: true,
+        submitOverride: ctrlJ,
+      }),
+    ).toBe(true);
+  });
+
+  it('leaves Enter chords, other keys, unset or unbound overrides and disabled shortcuts alone', () => {
+    const ctrlEnter = makeBinding({ ctrl: true, key: 'Enter' });
+    const event = press({ key: 'j', ctrlKey: true });
+    expect(
+      isReboundSubmitChord(press({ key: 'Enter', ctrlKey: true }), {
+        shortcutsEnabled: true,
+        submitOverride: ctrlEnter,
+      }),
+    ).toBe(false);
+    expect(
+      isReboundSubmitChord(press({ key: 'k', ctrlKey: true }), {
+        shortcutsEnabled: true,
+        submitOverride: ctrlJ,
+      }),
+    ).toBe(false);
+    expect(isReboundSubmitChord(event, { shortcutsEnabled: true, submitOverride: undefined })).toBe(
+      false,
+    );
+    expect(isReboundSubmitChord(event, { shortcutsEnabled: true, submitOverride: null })).toBe(
+      false,
+    );
+    expect(isReboundSubmitChord(event, { shortcutsEnabled: false, submitOverride: ctrlJ })).toBe(
+      false,
+    );
   });
 });
 

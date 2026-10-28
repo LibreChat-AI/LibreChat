@@ -128,13 +128,11 @@ jest.mock('~/data-provider', () => ({
 // Mock utility functions
 jest.mock('~/utils/agents', () => ({
   renderAgentAvatar: jest.fn(() => <div data-testid="agent-avatar" />),
-  getContactDisplayName: jest.fn((agent) => agent.authorName),
 }));
 
 // Mock SmartLoader
 jest.mock('../SmartLoader', () => ({
   SmartLoader: ({ children, isLoading }: any) => (isLoading ? <div>Loading...</div> : children),
-  useHasData: jest.fn(() => true),
 }));
 
 // Mock AgentDetailContent to avoid testing dialog internals

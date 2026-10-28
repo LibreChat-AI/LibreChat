@@ -3,6 +3,9 @@ import * as Ariakit from '@ariakit/react';
 import { Button, IconButton, TooltipAnchor } from '@librechat/client';
 import { ListTodo, Maximize2, Minimize2, Square, X } from 'lucide-react';
 import type { TaskRow } from './rows';
+import { useParentSubagents } from '~/components/Chat/Subagents/ParentSubagentsProvider';
+import { durableSubagentSelection } from '~/components/Chat/Subagents/eventSelection';
+import { useOpenSubagentPanel } from '~/components/Chat/Subagents/surface';
 import { RECENT_SUBAGENT_WINDOW_MS } from './rows';
 import useBackgroundTasks from './useTasks';
 import { useLocalize } from '~/hooks';
@@ -24,6 +27,8 @@ function BackgroundTasksButton({
   isSubmitting: boolean;
 }) {
   const localize = useLocalize();
+  const openSubagentPanel = useOpenSubagentPanel();
+  const parent = useParentSubagents();
   const popover = Ariakit.usePopoverStore({ placement: 'bottom-end' });
   const open = Ariakit.useStoreState(popover, 'open');
   const disclosureRef = useRef<HTMLButtonElement>(null);
@@ -85,35 +90,23 @@ function BackgroundTasksButton({
     stopAllLabel = localize('com_ui_background_tasks_stop_available');
   }
   const jumpToTool = (row: TaskRow): boolean => {
-    if (row.eventOrigin && row.threadId != null) {
-      const events = Array.from(
-        document.querySelectorAll<HTMLElement>(
-          '[data-event-subagent-conversation] [data-subagent-thread]',
-        ),
-      ).filter(
-        (element) =>
-          element.dataset.subagentThread === row.threadId &&
-          element.dataset.subagentParentMessage === row.messageId &&
-          element.closest<HTMLElement>('[data-event-subagent-conversation]')?.dataset
-            .eventSubagentConversation === conversationId,
-      );
-      if (events.length !== 1) return false;
-      const target = events[0];
-      if (target.matches(':disabled')) return false;
-      const group = target.closest('[data-event-subagent-conversation]');
-      group?.querySelector<HTMLButtonElement>('button[aria-expanded="false"]')?.click();
+    if (row.kind === 'subagent') {
+      if (
+        openSubagentPanel == null ||
+        parent.conversationId !== conversationId ||
+        row.threadId == null ||
+        row.taskId == null
+      ) {
+        return false;
+      }
+      const child = parent.byThreadId.get(row.threadId);
+      if (child == null) return false;
+      const selection = durableSubagentSelection(conversationId, child, row.taskId);
+      if (selection == null) return false;
       finalFocusRef.current = null;
+      disclosureRef.current?.focus({ preventScroll: true });
       popover.hide();
-      window.requestAnimationFrame(() => {
-        if (!target.isConnected || popover.getState().open) return;
-        target.focus({ preventScroll: true });
-        target.scrollIntoView?.({
-          block: 'center',
-          behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-            ? 'instant'
-            : 'smooth',
-        });
-      });
+      openSubagentPanel({ ...selection, isSubmitting: false });
       return true;
     }
     if (row.messageId == null) return false;

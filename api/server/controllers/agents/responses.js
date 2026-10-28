@@ -91,6 +91,9 @@ const {
   createTerminalRunErrorObserver,
   announceReply,
   getConversationWriteContext,
+  isTemporaryTurn,
+  getModelEndUsage,
+  hasEntityEmbeddings,
 } = require('@librechat/api');
 const {
   createResponsesToolEndCallback,
@@ -428,7 +431,9 @@ async function saveResponseOutput(
     }
   }
 
-  const langfuseTraceFields = await getLangfuseTraceMessageFields(req.config, responseId);
+  const langfuseTraceFields = await getLangfuseTraceMessageFields(req.config, responseId, {
+    isTemporary: isTemporaryTurn(req),
+  });
 
   // Save the assistant message
   return db.saveMessage(
@@ -801,6 +806,8 @@ const executeResponse = async (envelope, { req, res }) => {
         getUserCodeFiles: db.getUserCodeFiles,
         getDeferredProvisionFiles: db.getDeferredProvisionFiles,
         checkSessionsAlive,
+        adoptLegacySearchEmbeddings: db.adoptLegacySearchEmbeddings,
+        hasEntityEmbeddings,
         loadCodeApiKey,
         getToolFilesByIds: db.getToolFilesByIds,
         getCodeGeneratedFiles: db.getCodeGeneratedFiles,
@@ -1114,6 +1121,7 @@ const executeResponse = async (envelope, { req, res }) => {
             logger,
             mcpManager,
             configServers,
+            user: req.user,
             sharedRunContext: [memoryContext, agentScopedContext.get(runAgent.id)]
               .filter(Boolean)
               .join('\n\n'),
@@ -1312,7 +1320,7 @@ const executeResponse = async (envelope, { req, res }) => {
           on_chat_model_end: {
             handle: (event, data, metadata, graph) => {
               responsesHandlers.on_chat_model_end.handle(event, data);
-              const usage = data?.output?.usage_metadata;
+              const usage = getModelEndUsage(data?.output);
               if (usage) {
                 const agentContext = graph?.getAgentContext?.(metadata);
                 const taggedUsage = contextualizeModelUsage(usage, metadata, agentContext);
@@ -1357,6 +1365,7 @@ const executeResponse = async (envelope, { req, res }) => {
           user: { ...createSafeUser(req.user), id: userId },
           traceContext: { endpoint: EModelEndpoint.agents },
           tenantId: principal.tenantId,
+          isTemporary: isTemporaryTurn(req),
           modelCallbacks: [terminalRunError.modelCallback],
           clientToolNames: clientTools.clientToolNames,
           /** Bills subagent child-run model calls (reported outside the
@@ -1554,7 +1563,7 @@ const executeResponse = async (envelope, { req, res }) => {
           on_chat_model_end: {
             handle: (event, data, metadata, graph) => {
               aggregatorHandlers.on_chat_model_end.handle(event, data);
-              const usage = data?.output?.usage_metadata;
+              const usage = getModelEndUsage(data?.output);
               if (usage) {
                 const agentContext = graph?.getAgentContext?.(metadata);
                 const taggedUsage = contextualizeModelUsage(usage, metadata, agentContext);
@@ -1596,6 +1605,7 @@ const executeResponse = async (envelope, { req, res }) => {
           user: { ...createSafeUser(req.user), id: userId },
           traceContext: { endpoint: EModelEndpoint.agents },
           tenantId: principal.tenantId,
+          isTemporary: isTemporaryTurn(req),
           modelCallbacks: [terminalRunError.modelCallback],
           clientToolNames: clientTools.clientToolNames,
           /** Bills subagent child-run model calls (reported outside the
@@ -1786,7 +1796,7 @@ const listModels = async (req, res) => {
     // Get the accessible agents
     let agents = [];
     if (accessibleAgentIds.length > 0) {
-      agents = await db.getAgents({ _id: { $in: accessibleAgentIds } });
+      agents = await db.getAgentModelSummaries(accessibleAgentIds);
     }
 
     // Convert to models format

@@ -43,20 +43,20 @@ module.exports = {
           to: { height: 0, opacity: 0 },
         },
         'slide-in-right': {
-          '0%': { transform: 'translateX(100%)' },
+          '0%': { transform: 'translateX(calc(100% * var(--dir-sign, 1)))' },
           '100%': { transform: 'translateX(0)' },
         },
         'slide-in-left': {
-          '0%': { transform: 'translateX(-100%)' },
+          '0%': { transform: 'translateX(calc(-100% * var(--dir-sign, 1)))' },
           '100%': { transform: 'translateX(0)' },
         },
         'slide-out-left': {
           '0%': { transform: 'translateX(0)' },
-          '100%': { transform: 'translateX(-100%)' },
+          '100%': { transform: 'translateX(calc(-100% * var(--dir-sign, 1)))' },
         },
         'slide-out-right': {
           '0%': { transform: 'translateX(0)' },
-          '100%': { transform: 'translateX(100%)' },
+          '100%': { transform: 'translateX(calc(100% * var(--dir-sign, 1)))' },
         },
         'shortcut-shake': {
           '0%, 100%': { transform: 'translateX(0)' },

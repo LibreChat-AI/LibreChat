@@ -78,6 +78,18 @@ export async function persistForcedTemporaryMetadata(
   await store.updateMetadata(streamId, { isTemporary: true }, createdAt);
 }
 
+/**
+ * Whether a turn runs in a temporary chat, counting one the administrator forces temporary
+ * and a legacy conversation that stores only a deadline.
+ */
+export function isTemporaryTurn(req?: TurnConversationRequest): boolean {
+  const { isTemporary, expiredAt, interfaceConfig } = getConversationWriteContext(req);
+  return (
+    isTemporaryRecord({ isTemporary, expiredAt }) ||
+    isForcedTemporaryRetention(interfaceConfig?.retentionMode)
+  );
+}
+
 /** Captures the effective retention policy for a paused turn without re-reading its records. */
 export function resolveResumableRetention(
   req: TurnConversationRequest,

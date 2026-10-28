@@ -126,6 +126,7 @@ jest.mock('@librechat/api', () => ({
   TOKEN_RETIREMENT_FIELDS: jest.requireActual('@librechat/api').TOKEN_RETIREMENT_FIELDS,
 }));
 
+const http = require('node:http');
 const { createHash } = require('node:crypto');
 const openIdClient = require('openid-client');
 const jwt = require('jsonwebtoken');
@@ -380,6 +381,80 @@ describe('graphTokenController', () => {
       key: 'publication-key',
       ownerId: 'publication-owner',
       deliveryId: 'delivery-1',
+    });
+  });
+
+  describe('with a Node HTTP response', () => {
+    let server;
+
+    /** Resolves with the server response once the request arrives, optionally after the client disconnects. */
+    const receiveResponse = ({ disconnect }) =>
+      new Promise((resolve) => {
+        const client = http.request({
+          host: '127.0.0.1',
+          port: server.address().port,
+          method: 'POST',
+        });
+        client.on('error', () => {});
+        server.once('request', (_incoming, response) => {
+          response.json = (body) => response.end(JSON.stringify(body));
+          if (!disconnect) {
+            resolve(response);
+            return;
+          }
+          response.once('close', () => resolve(response));
+          client.destroy();
+        });
+        client.end();
+      });
+
+    beforeEach(async () => {
+      req.user.federatedTokens.access_token = 'session-access-token';
+      req.session = {
+        openidTokens: {
+          accessToken: 'session-access-token',
+          appUserId: 'user-1',
+          tenantId: 'tenant-1',
+          publicationFlightKey: 'publication-key',
+          publicationFlightOwnerId: 'publication-owner',
+          publicationFlightCreatedAt: 1000,
+        },
+      };
+      server = http.createServer();
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    });
+
+    afterEach(async () => {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+    });
+
+    it('releases the delivery lease when the client disconnected before delivery', async () => {
+      const response = await receiveResponse({ disconnect: true });
+
+      await graphTokenController(req, response);
+
+      expect(response.closed).toBe(true);
+      expect(releaseOpenIDRefreshFlightDelivery).toHaveBeenCalledWith({
+        key: 'publication-key',
+        ownerId: 'publication-owner',
+        deliveryId: 'delivery-1',
+      });
+    });
+
+    it('holds the delivery lease until an open response finishes', async () => {
+      const response = await receiveResponse({ disconnect: false });
+      const finished = new Promise((resolve) => response.once('finish', resolve));
+
+      await graphTokenController(req, response);
+      await finished;
+
+      expect(releaseOpenIDRefreshFlightDelivery).toHaveBeenCalledTimes(1);
+      expect(releaseOpenIDRefreshFlightDelivery).toHaveBeenCalledWith({
+        key: 'publication-key',
+        ownerId: 'publication-owner',
+        deliveryId: 'delivery-1',
+      });
     });
   });
 
@@ -3067,7 +3142,7 @@ describe('resetPasswordController', () => {
     expect(deleteAllUserSessions).not.toHaveBeenCalled();
     expect(deletePasskeysByUser).not.toHaveBeenCalled();
     expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith({ message: resetError.message });
+    expect(res.json).toHaveBeenCalledWith({ message: 'Password reset failed' });
     expect(logger.error).toHaveBeenCalledWith('[resetPasswordController]', resetError);
   });
 });

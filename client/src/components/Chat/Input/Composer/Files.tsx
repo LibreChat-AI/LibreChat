@@ -108,7 +108,7 @@ const FileCard = memo(function FileCard({ file, onAttach, onPreview, disabled }:
         type="button"
         onClick={() => onAttach(file)}
         disabled={disabled}
-        className="focus-visible:ring-ring-primary flex h-full w-full cursor-pointer flex-col gap-2 rounded-2xl p-4 text-left focus:outline-hidden focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50"
+        className="focus-visible:ring-ring-primary flex h-full w-full cursor-pointer flex-col gap-2 rounded-2xl p-4 text-start focus:outline-hidden focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50"
       >
         <span className="flex w-full min-w-0 items-start gap-3">
           <Thumbnail file={file} />
@@ -120,7 +120,7 @@ const FileCard = memo(function FileCard({ file, onAttach, onPreview, disabled }:
         <span className="text-text-secondary mt-auto text-xs">{formatDate(file)}</span>
       </button>
       {canPreview && (
-        <span className="absolute right-2 bottom-2">
+        <span className="absolute inset-e-2 bottom-2">
           <IconButton
             size="xs"
             shape="square"

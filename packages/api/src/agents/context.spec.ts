@@ -159,6 +159,7 @@ describe('Agent Context Utilities', () => {
       expect(mockMCPManager.formatInstructionsForContext).toHaveBeenCalledWith(
         ['server1', 'server2'],
         undefined,
+        undefined,
       );
       expect(mockLogger.debug).toHaveBeenCalledWith('[AgentContext] Fetched MCP instructions', {
         serverCount: 2,
@@ -352,17 +353,21 @@ describe('Agent Context Utilities', () => {
 
       mockMCPManager.formatInstructionsForContext.mockResolvedValue('Ephemeral MCP');
 
+      const user = { id: 'user-1', role: 'USER', idOnTheSource: null };
       await applyContextToAgent({
         agent,
         sharedRunContext: 'Context',
         mcpManager: mockMCPManager,
         ephemeralAgent: { mcp: ['ephemeral-server'] },
         logger: mockLogger,
+        user,
       });
 
+      /** The acting user reaches the lookup, which leaves out servers hidden from them. */
       expect(mockMCPManager.formatInstructionsForContext).toHaveBeenCalledWith(
         ['ephemeral-server'],
         undefined,
+        user,
       );
       expect(agent.instructions).toBe('Base instructions\n\nEphemeral MCP');
       expect(agent.additional_instructions).toBe('Context');
@@ -394,6 +399,7 @@ describe('Agent Context Utilities', () => {
 
       expect(mockMCPManager.formatInstructionsForContext).toHaveBeenCalledWith(
         ['agent-server'],
+        undefined,
         undefined,
       );
     });

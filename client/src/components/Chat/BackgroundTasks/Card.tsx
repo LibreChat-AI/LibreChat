@@ -66,6 +66,11 @@ function TaskCard({
       : undefined;
   const stopLabel = localize('com_ui_background_tasks_stop');
   const expandable = row.detail != null;
+  const openLabel = localize(
+    row.kind === 'subagent'
+      ? 'com_ui_background_tasks_open_subagent'
+      : 'com_ui_background_tasks_go_to_tool',
+  );
 
   return (
     <li className="bg-surface-tertiary rounded-lg px-3 py-2" data-testid="background-task-row">
@@ -80,7 +85,7 @@ function TaskCard({
                 setVisited(true);
                 setOpen((value) => !value);
               }}
-              className="text-text-primary focus-visible:ring-focus-control flex max-w-full items-start gap-1 rounded text-left text-sm focus-visible:ring-2 focus-visible:outline-none"
+              className="text-text-primary focus-visible:ring-focus-control flex max-w-full items-start gap-1 rounded text-start text-sm focus-visible:ring-2 focus-visible:outline-none"
             >
               <span className="line-clamp-2 break-words">
                 <span className={cn(active && 'shimmer')}>{title}</span>
@@ -125,14 +130,14 @@ function TaskCard({
           </p>
         </div>
         <TooltipAnchor
-          description={localize('com_ui_background_tasks_go_to_tool')}
+          description={openLabel}
           portalElement={portalElement}
           render={
             <IconButton
               variant="ghost"
               size="xs"
               shape="inset"
-              label={`${localize('com_ui_background_tasks_go_to_tool')}: ${title}`}
+              label={`${openLabel}: ${title}`}
               onClick={() => setJumpUnavailable(!onJump(row))}
             >
               <ArrowUpRight className="size-3.5" aria-hidden="true" />
@@ -174,7 +179,11 @@ function TaskCard({
       )}
       {jumpUnavailable && (
         <p role="status" className="text-text-secondary mt-1 text-xs">
-          {localize('com_ui_background_tasks_tool_unavailable')}
+          {localize(
+            row.kind === 'subagent'
+              ? 'com_ui_background_tasks_subagent_unavailable'
+              : 'com_ui_background_tasks_tool_unavailable',
+          )}
         </p>
       )}
     </li>

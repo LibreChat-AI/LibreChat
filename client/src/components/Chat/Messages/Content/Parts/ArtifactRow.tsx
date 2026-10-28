@@ -10,8 +10,8 @@ import {
   Workflow,
 } from 'lucide-react';
 import type { ArtifactGlyph, ArtifactRowKind } from '~/utils/artifacts';
+import { ARTIFACT_ROW_NAV_SPACING, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '../rows';
 import LangIcon, { hasLangIcon } from '~/components/Messages/Content/LangIcon';
-import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '../rows';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -79,7 +79,7 @@ const ArtifactRow = forwardRef<HTMLButtonElement, ArtifactRowProps>(function Art
   }
 
   return (
-    <div className={cn(TOOL_ROW_CLASSES, 'text-text-secondary text-sm')}>
+    <div className={cn(TOOL_ROW_CLASSES, 'text-text-secondary text-sm', ARTIFACT_ROW_NAV_SPACING)}>
       <Button
         ref={ref}
         type="button"

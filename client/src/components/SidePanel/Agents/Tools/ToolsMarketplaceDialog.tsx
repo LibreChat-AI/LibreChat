@@ -260,10 +260,10 @@ export default function ToolsMarketplaceDialog({
             />
           )}
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
-            {/* md:pl-6, not md:px-6: a responsive variant is emitted after the base
-                utilities, so md:px-6 would reset the pr-12 that keeps the search
+            {/* md:ps-6, not md:px-6: a responsive variant is emitted after the base
+                utilities, so md:px-6 would reset the pe-12 that keeps the search
                 field clear of the dialog's close button. */}
-            <div className="flex items-center gap-2 px-4 py-3 pr-12 md:py-4 md:pl-6">
+            <div className="flex items-center gap-2 px-4 py-3 pe-12 md:py-4 md:ps-6">
               <div className="relative flex-1">
                 <Search
                   className="text-text-tertiary pointer-events-none absolute top-1/2 left-3 z-[1] size-4 -translate-y-1/2"

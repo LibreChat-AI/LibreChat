@@ -46,10 +46,6 @@ type UserIdInput = {
 
 let warnedAuthUserDocCacheRequiresRedis = false;
 
-export function getAuthUserDocCacheTtlMs(): number {
-  return AUTH_USER_DOC_CACHE_TTL_MS;
-}
-
 function isAuthUserDocCacheRedisBacked(): boolean {
   return (
     cacheConfig.USE_REDIS &&

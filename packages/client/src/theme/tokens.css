@@ -236,8 +236,9 @@
 /* The plain radius, font, type scale and shadow utilities read theme-owned properties, so a theme
  * definition reshapes the existing `rounded-*`, `font-sans`, `font-mono`, `text-*` and `shadow-*`
  * call sites without a migration, in the app and in a consumer alike. The defaults in `defaults.css` reproduce the scale
- * the app's utilities resolved to before. Bare `rounded` stays Tailwind's fixed 0.25rem: `sm` keeps
- * its px offset, so the two part at a non-16px root. Bare `shadow` reads `--shadow`, which has
+ * the app's utilities resolved to before. Bare `rounded` stays Tailwind's fixed
+ * 0.25rem and is not used in the package: write `rounded-sm`, which equals it at a 16px root and
+ * follows the theme. Bare `shadow` reads `--shadow`, which has
  * always equalled `sm`, and follows it. A shadow held in a variable cannot be recolored by a
  * `shadow-<color>` modifier; nothing in the app or the package uses one. */
 @theme inline {
@@ -364,5 +365,34 @@
 @custom-variant theme-checkbox-fill {
   @container style(--theme-checkbox-fill-style: fill) {
     @slot;
+  }
+}
+
+/* Mirrors by the element's own direction, so an LTR island inside an RTL page stays unmirrored,
+ * which Tailwind's `rtl:` (it also matches `[dir='rtl'] *`) does not. A browser without `:dir()`
+ * (Chrome and Edge before 120) drops that rule and reads `--dir-fallback` instead: it inherits
+ * from the nearest `dir` attribute, and a container style query reads it off the parent, so the
+ * nearest direction wins at any nesting depth, as `:dir()` resolves it. */
+[dir='rtl'] {
+  --dir-fallback: rtl;
+}
+
+[dir='ltr'] {
+  --dir-fallback: ltr;
+}
+
+@custom-variant dir-rtl {
+  &:dir(rtl) {
+    @slot;
+  }
+  @supports not selector(:dir(rtl)) {
+    &[dir='rtl'] {
+      @slot;
+    }
+    @container style(--dir-fallback: rtl) {
+      &:not([dir='ltr']) {
+        @slot;
+      }
+    }
   }
 }

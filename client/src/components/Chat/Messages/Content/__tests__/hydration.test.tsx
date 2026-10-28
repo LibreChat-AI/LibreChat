@@ -4,9 +4,10 @@ import { ContentTypes, dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { TMessageContentParts, ToolCallPartResponse } from 'librechat-data-provider';
-import type { ToolDisclosures } from '../disclosure';
+import type { ToolContentQuery, ToolDisclosures } from '../disclosure';
 import {
   SoleToolContext,
+  ToolContentQueryContext,
   useToolExpansion,
   useToolContentPending,
   ToolDisclosureContext,
@@ -84,7 +85,12 @@ function Card({ part }: { part: TMessageContentParts }) {
 
 function renderPart(
   part: TMessageContentParts,
-  options: { sole?: boolean; partIndex?: number; queryClient?: QueryClient } = {},
+  options: {
+    sole?: boolean;
+    partIndex?: number;
+    queryClient?: QueryClient;
+    contentQuery?: ToolContentQuery | null;
+  } = {},
 ) {
   const queryClient =
     options.queryClient ?? new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -99,13 +105,15 @@ function renderPart(
           <ToolDisclosureContext.Provider value={disclosures}>
             <ToolDisclosureKeyContext.Provider value="call_1">
               <SoleToolContext.Provider value={options.sole}>
-                {isPreviewedToolCallPart(part) ? (
-                  <PreviewedToolCallPart part={part}>
-                    {(rendered) => <Card part={rendered} />}
-                  </PreviewedToolCallPart>
-                ) : (
-                  <Card part={part} />
-                )}
+                <ToolContentQueryContext.Provider value={options.contentQuery}>
+                  {isPreviewedToolCallPart(part) ? (
+                    <PreviewedToolCallPart part={part}>
+                      {(rendered) => <Card part={rendered} />}
+                    </PreviewedToolCallPart>
+                  ) : (
+                    <Card part={part} />
+                  )}
+                </ToolContentQueryContext.Provider>
               </SoleToolContext.Provider>
             </ToolDisclosureKeyContext.Provider>
           </ToolDisclosureContext.Provider>
@@ -282,5 +290,36 @@ describe('withFullToolCall', () => {
       progress: 1,
       subagent_content: transcript,
     });
+  });
+});
+
+describe('task-authorized tool preview loading', () => {
+  const getToolCallPart = dataService.getToolCallPart as jest.Mock;
+
+  beforeEach(() => getToolCallPart.mockReset());
+
+  it('keeps a view-only nested preview from requesting private child messages', async () => {
+    renderPart(previewPart(), { sole: true, contentQuery: null });
+    expect(await screen.findByRole('alert')).toHaveTextContent('com_ui_tool_content_error');
+    expect(screen.queryByText('com_ui_retry')).not.toBeInTheDocument();
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(getToolCallPart).not.toHaveBeenCalled();
+  });
+
+  it('uses the authorized task query without changing standard preview hydration', async () => {
+    const useAuthorizedQuery = jest.fn().mockReturnValue({
+      data: stored(),
+      isError: false,
+      refetch: jest.fn(),
+    });
+    renderPart(previewPart(), { sole: true, contentQuery: useAuthorizedQuery });
+    expect(screen.getByTestId('output').textContent).toBe(fullOutput);
+    expect(screen.getByTestId('markers')).toHaveTextContent('false');
+    expect(getToolCallPart).not.toHaveBeenCalled();
+    expect(useAuthorizedQuery).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'msg-1', partIndex: 2, toolCallId: 'call_1' }),
+      expect.objectContaining({ enabled: false }),
+      expect.any(String),
+    );
   });
 });

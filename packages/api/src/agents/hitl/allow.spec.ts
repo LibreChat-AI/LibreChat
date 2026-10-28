@@ -13,8 +13,9 @@ import {
   buildEffectiveToolApprovalPolicy,
 } from './allow';
 import { registerToolApprovalHook, clearToolApprovalHooks } from './hooks';
-import { buildToolApprovalPayload, mapToolApprovalPolicy } from './policy';
+import { buildToolApprovalPayload } from './__fixtures__/approval';
 import { resolveToolApprovalResume } from './resume';
+import { mapToolApprovalPolicy } from './policy';
 import { canAgentGraphPause } from './admission';
 import { buildHITLRunWiring } from './runtime';
 

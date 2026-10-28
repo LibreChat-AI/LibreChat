@@ -1,6 +1,7 @@
 const {
   handleError,
   applyModelSpecPreset,
+  restoreAgentTriggerModelSpec,
   resolveModelSpecForEndpoint,
   resolveModelSpecPromptPrefixVariables,
   inspectContent,
@@ -58,6 +59,7 @@ function inspectResolvedCurrentUser(req, promptPrefixTemplate) {
 }
 
 async function buildEndpointOption(req, res, next) {
+  restoreAgentTriggerModelSpec(req);
   const { endpoint, endpointType } = req.body;
   const isAgents =
     isAgentsEndpoint(endpoint) || req.baseUrl.startsWith(EndpointURLs[EModelEndpoint.agents]);

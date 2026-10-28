@@ -356,6 +356,7 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
     workspaces: unknown[],
     statefulWorkspace: boolean = true,
     maxCommandTimeoutMs?: number,
+    operations: string[] = ['read_file', 'list_files', 'execute_command'],
   ): Response {
     return new Response(
       JSON.stringify({
@@ -371,7 +372,7 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
           runtimes: ['bash'],
           workspaceTools: {
             protocolVersion: 1,
-            operations: ['read_file', 'list_files', 'execute_command'],
+            operations,
             workspaces,
           },
         },
@@ -408,6 +409,33 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
         workspaceId: 'docs',
         operations: ['read_file', 'list_files'],
         maxCommandTimeoutMs: 120_000,
+      },
+    });
+  });
+
+  it('selects a workspace from a newer worker with only the operations this build knows', async () => {
+    jest
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(
+        workspaceStatus(
+          [{ id: 'docs', operations: ['read_file', 'stream_logs', 'import_file', 'write_file'] }],
+          true,
+          undefined,
+          ['read_file', 'write_file', 'import_file', 'stream_logs', 'execute_command'],
+        ),
+      );
+
+    await expect(
+      resolveCodeExecutionWorkspaceContext({
+        context,
+        requestedSelections: [{ environmentId: 'personal', workspaceId: 'docs' }],
+        environments,
+        getAppConfig,
+      }),
+    ).resolves.toMatchObject({
+      codeWorkspace: {
+        workspaceId: 'docs',
+        operations: ['read_file', 'import_file', 'write_file'],
       },
     });
   });

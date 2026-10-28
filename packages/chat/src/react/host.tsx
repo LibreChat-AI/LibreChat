@@ -13,6 +13,10 @@ export type MessagePartMessage = {
   isLatestMessage?: boolean;
   /** Content type of the part after this one, when known. */
   nextType?: string;
+  /** Conversation of that message, when it has one. */
+  conversationId?: string | null;
+  /** Position of the part in the message's content, when it renders one part. */
+  partIndex?: number;
 };
 
 /** How the viewer prefers user-authored text to display. */
@@ -26,7 +30,7 @@ export type MessagePartsUserTextPreferences = {
 };
 
 /** The signed-in user as the parts label it; `undefined` on a public share. */
-export type MessagePartsUser = { name?: string; username?: string } | undefined;
+export type MessagePartsUser = { id?: string; name?: string; username?: string } | undefined;
 
 /** Shows a transient notification. */
 export type MessagePartsToast = (toast: TShowToast) => void;
@@ -70,6 +74,10 @@ export interface MessagePartsHost {
   useShowThinking: () => boolean;
   /** Whether the viewer wants tool cards and tool groups expanded by default. */
   useAutoExpandTools: () => boolean;
+  /** Whether the viewer wants LaTeX in markdown rendered as math. */
+  useLaTeXParsing: () => boolean;
+  /** The direction chat text is typed in; `auto` resolves it from the text itself. */
+  useChatDirection: () => 'auto' | 'ltr' | 'rtl';
   /** How the viewer prefers user-authored text to display. */
   useUserTextPreferences: () => MessagePartsUserTextPreferences;
   /** The signed-in user. */

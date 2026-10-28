@@ -3,13 +3,13 @@ import { Button } from '@librechat/client';
 import type { BackgroundTaskStatus, BackgroundTaskView } from './Parts/background';
 import type { TranslationKeys } from '~/hooks';
 import { backgroundTaskMessageKey, backgroundTaskNoteKey } from './Parts/guidance';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { ToolIcon, getToolIconType, OutputRenderer } from './ToolOutput';
 import { useSubagentTaskPanel } from '~/components/Chat/Subagents/task';
 import { formatBackgroundCodeOutput } from './Parts/background';
 import { parseToolName } from '~/utils/toolLabels';
 import { getToolDisplayLabel, cn } from '~/utils';
 import SubagentProgress from './SubagentProgress';
-import { useMessageContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
 
 const STATUS: Record<BackgroundTaskStatus, { label: TranslationKeys; dot: string }> = {
@@ -40,7 +40,7 @@ export default function BackgroundTaskCard({
   mcpServerNames?: readonly string[];
 }) {
   const localize = useLocalize();
-  const { conversationId } = useMessageContext();
+  const { conversationId } = useMessagePartsHost().useMessage();
   const isSubagent = task.toolName === 'subagent';
   const durableTask = useMemo(
     () =>

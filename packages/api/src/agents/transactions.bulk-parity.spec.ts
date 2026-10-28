@@ -412,6 +412,60 @@ describe('Structured token parity', () => {
   });
 });
 
+describe('One-hour cache write parity', () => {
+  test('bulk and legacy paths bill 1-hour writes identically, long-context tier included', async () => {
+    const model = 'claude-haiku-5-5';
+    const { threshold } = premiumTokenValues[model];
+    const tokenUsage = {
+      promptTokens: { input: threshold, write: 3000, write1h: 2000, read: 500 },
+      completionTokens: 40,
+    };
+    const bulkUser = new mongoose.Types.ObjectId().toString();
+    const legacyUser = new mongoose.Types.ObjectId().toString();
+    await Balance.create({ user: bulkUser, tokenCredits: 10000000 });
+    await Balance.create({ user: legacyUser, tokenCredits: 10000000 });
+
+    const entries = prepareStructuredTokenSpend(txMeta(bulkUser, { model }), tokenUsage, pricing);
+    await bulkWriteTransactions({ user: bulkUser, docs: entries }, dbOps());
+    await dbMethods.spendStructuredTokens(
+      {
+        user: legacyUser,
+        conversationId: 'test-convo',
+        context: 'test',
+        model,
+        balance: { enabled: true },
+      },
+      tokenUsage,
+    );
+
+    const inputTokenCount = threshold + 3000 + 500;
+    const promptRate = getMultiplier({ model, tokenType: 'prompt', inputTokenCount });
+    const expectedPrompt =
+      threshold * promptRate +
+      1000 * getCacheMultiplier({ model, cacheType: 'write', inputTokenCount })! +
+      2000 * getCacheMultiplier({ model, cacheType: 'write1h', inputTokenCount })! +
+      500 * getCacheMultiplier({ model, cacheType: 'read', inputTokenCount })!;
+    expect(getCacheMultiplier({ model, cacheType: 'write1h', inputTokenCount })).toBe(
+      premiumTokenValues[model].prompt * 2,
+    );
+
+    const prompts = (await Transaction.find({ tokenType: 'prompt' }).lean()) as Record<
+      string,
+      unknown
+    >[];
+    expect(prompts).toHaveLength(2);
+    for (const tx of prompts) {
+      expect(tx.tokenValue as number).toBeCloseTo(-expectedPrompt);
+      expect(tx.writeTokens).toBe(-3000);
+    }
+    const [bulkBalance, legacyBalance] = (await Promise.all([
+      Balance.findOne({ user: bulkUser }).lean(),
+      Balance.findOne({ user: legacyUser }).lean(),
+    ])) as Record<string, number>[];
+    expect(bulkBalance.tokenCredits).toBeCloseTo(legacyBalance.tokenCredits);
+  });
+});
+
 describe('Premium pricing parity', () => {
   test('standard pricing below threshold — identical to legacy', async () => {
     const userId = new mongoose.Types.ObjectId().toString();

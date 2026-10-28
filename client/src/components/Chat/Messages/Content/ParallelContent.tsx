@@ -8,7 +8,6 @@ import {
 } from '~/utils/activityLabels';
 import { MIN_PARALLEL_LANES, UNATTRIBUTED_LANE, isLaneMarkerPart } from '~/utils/lanes';
 import MemoryArtifacts from './MemoryArtifacts';
-import Sources from '~/components/Web/Sources';
 import { cn, getPartKeyIndex } from '~/utils';
 import { SearchContext } from '~/Providers';
 import SiblingHeader from './SiblingHeader';
@@ -344,9 +343,6 @@ export const ParallelContentRenderer = memo(function ParallelContentRenderer({
   return (
     <SearchContext.Provider value={{ searchResults }}>
       {showDecorations && <MemoryArtifacts attachments={attachments} />}
-      {showDecorations && (
-        <Sources messageId={messageId} conversationId={conversationId || undefined} />
-      )}
 
       {/* Each section preceded by the sequential content that runs up to it */}
       {blocks.map(({ leading, section: { groupId, columns } }) => (

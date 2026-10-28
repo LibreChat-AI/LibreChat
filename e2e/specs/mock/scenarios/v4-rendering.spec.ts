@@ -342,6 +342,7 @@ test.describe('Tailwind v4 rendering', () => {
       await openArtifactPanel(page, conversationId);
 
       const forbidden = await page.evaluate(() => {
+        // Container queries are intentional and covered by usage.spec.ts.
         const tokens = [
           'h-19',
           'w-19',
@@ -350,7 +351,6 @@ test.describe('Tailwind v4 rendering', () => {
           'max-w-11/12',
           'border-1',
           'scrollbar-none',
-          '@container',
         ];
         const selectors: string[] = [];
         const visit = (rules: CSSRuleList) => {

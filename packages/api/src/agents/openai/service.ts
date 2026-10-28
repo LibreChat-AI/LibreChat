@@ -291,7 +291,10 @@ type LoadToolsFn = (params: {
 /**
  * Create run function type
  */
-type CreateRunAppConfig = Pick<AppConfig, 'endpoints' | 'filters' | 'langfuse' | 'messageFilter'>;
+type CreateRunAppConfig = Pick<
+  AppConfig,
+  'endpoints' | 'filters' | 'langfuse' | 'interfaceConfig' | 'messageFilter'
+>;
 
 type CreateRunFn = (params: {
   agents: unknown[];
@@ -321,6 +324,8 @@ interface AppConfig {
   endpoints?: Record<string, unknown>;
   filters?: FiltersConfig;
   langfuse?: Record<string, unknown>;
+  /** Carries `retentionMode`, which keeps forced-temporary runs out of Langfuse. */
+  interfaceConfig?: Record<string, unknown>;
   messageFilter?: MessageFilterConfig;
   [key: string]: unknown;
 }
@@ -335,6 +340,9 @@ function selectCreateRunAppConfig(
     ...(appConfig.endpoints !== undefined && { endpoints: appConfig.endpoints }),
     ...(appConfig.filters !== undefined && { filters: appConfig.filters }),
     ...(appConfig.langfuse !== undefined && { langfuse: appConfig.langfuse }),
+    ...(appConfig.interfaceConfig?.retentionMode !== undefined && {
+      interfaceConfig: { retentionMode: appConfig.interfaceConfig.retentionMode },
+    }),
     ...(appConfig.messageFilter !== undefined && { messageFilter: appConfig.messageFilter }),
   };
 }

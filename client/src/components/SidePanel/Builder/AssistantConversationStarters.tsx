@@ -63,7 +63,7 @@ const AssistantConversationStarters: React.FC<AssistantConversationStartersProps
             ref={(el) => (inputRefs.current[0] = el)}
             value={newStarter}
             maxLength={64}
-            className={`${inputClass} pr-10`}
+            className={`${inputClass} pe-10`}
             type="text"
             placeholder={
               hasReachedMax
@@ -91,7 +91,7 @@ const AssistantConversationStarters: React.FC<AssistantConversationStartersProps
             {(state: string) => (
               <div
                 ref={nodeRef}
-                className={`absolute top-1 right-1 ${
+                className={`absolute inset-e-1 top-1 ${
                   state === 'entering'
                     ? 'transition-none'
                     : 'transition-opacity duration-200 ease-in-out'
@@ -121,7 +121,7 @@ const AssistantConversationStarters: React.FC<AssistantConversationStartersProps
                 newValue[index] = e.target.value;
                 field.onChange(newValue);
               }}
-              className={`${inputClass} pr-10`}
+              className={`${inputClass} pe-10`}
               type="text"
               maxLength={64}
             />
@@ -129,7 +129,7 @@ const AssistantConversationStarters: React.FC<AssistantConversationStartersProps
               side="top"
               description={localize('com_ui_delete')}
               aria-label={localize('com_ui_delete')}
-              className="hover:bg-surface-hover absolute top-1 right-1 flex size-7 items-center justify-center rounded-lg transition-colors duration-200"
+              className="hover:bg-surface-hover absolute inset-e-1 top-1 flex size-7 items-center justify-center rounded-lg transition-colors duration-200"
               onClick={() => handleDeleteStarter(index)}
             >
               <X className="size-4" aria-hidden="true" />

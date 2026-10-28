@@ -1,7 +1,12 @@
 import { useCallback, useContext } from 'react';
 import type { PartMetadata } from 'librechat-data-provider';
 import type { ToolCallPhase } from '~/utils/toolCallPhase';
-import { LoneGroupContext, SoleToolContext, useToolExpansion } from '../disclosure';
+import {
+  SoleToolContext,
+  LoneGroupContext,
+  useToolExpansion,
+  useToolContentRequest,
+} from '../disclosure';
 import { isError } from '~/components/Chat/Messages/Content/ToolOutput';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { useProgress, useExpandCollapse } from '~/hooks';
@@ -102,6 +107,8 @@ export default function useToolCallState({
   const bare = solo && (panelReady ?? hasContent) && phase === 'completed' && !keepRow;
   const [expanded, setExpansionOverride] = useToolExpansion(hasContent);
   const showCode = bare || expanded;
+  /** A bare panel is open without the reader expanding it, so it asks for the stored part too. */
+  useToolContentRequest(bare);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showCode);
   const rowRef = useRowHandoff(bare);
   const toggleCode = useCallback(() => {

@@ -52,6 +52,7 @@ import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/
 import { isAgentFadingTier, isAgentFadingTierEntries } from '~/utils/fading';
 import { isCompactionSemanticIndexProjection } from '~/types/compaction';
 import { withoutMeiliIndexing } from '~/models/plugins/mongoMeili';
+import { prepareSubagentContentDeletion } from './subagentContent';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { decrementTagCounts } from './conversationTag';
@@ -290,10 +291,6 @@ export interface ConversationMethods {
     conversationId: string,
     fieldsToSelect?: string | null,
   ): Promise<IConversation | null>;
-  deleteNullOrEmptyConversations(): Promise<{
-    conversations: { deletedCount?: number };
-    messages: { deletedCount?: number };
-  }>;
   saveConvo(
     ctx: {
       userId: string;
@@ -2315,38 +2312,6 @@ export function createConversationMethods(
   }
 
   /**
-   * Deletes conversations and messages with null or empty IDs.
-   */
-  async function deleteNullOrEmptyConversations() {
-    try {
-      const Conversation = mongoose.models.Conversation as Model<IConversation>;
-      const { deleteMessages } = getMessageMethods();
-      const filter = {
-        $or: [
-          { conversationId: null },
-          { conversationId: '' },
-          { conversationId: { $exists: false } },
-        ],
-      };
-
-      const result = await Conversation.deleteMany(filter);
-      const messageDeleteResult = await deleteMessages(filter);
-
-      logger.info(
-        `[deleteNullOrEmptyConversations] Deleted ${result.deletedCount} conversations and ${messageDeleteResult.deletedCount} messages`,
-      );
-
-      return {
-        conversations: result,
-        messages: messageDeleteResult,
-      };
-    } catch (error) {
-      logger.error('[deleteNullOrEmptyConversations] Error deleting conversations', error);
-      throw new Error('Error deleting conversations with null or empty conversationId');
-    }
-  }
-
-  /**
    * Searches for a conversation by conversationId and returns associated file ids.
    */
   async function getConvoFiles(conversationId: string): Promise<string[]> {
@@ -4176,6 +4141,12 @@ export function createConversationMethods(
         );
         await options?.beforeDelete?.(waveIds);
         await deps?.prepareAgentTriggerConversationResultErasure?.(user, waveIds);
+        await retryCascadeOperation(() =>
+          prepareSubagentContentDeletion(mongoose, {
+            user,
+            conversationId: { $in: waveIds },
+          }),
+        );
         const result = await Conversation.deleteMany({ user, conversationId: { $in: waveIds } });
         if (result.deletedCount > 0) {
           /** Result erasure is irreversible. Keep receipts intact when a
@@ -4574,7 +4545,6 @@ export function createConversationMethods(
   return {
     getConvoFiles,
     searchConversation,
-    deleteNullOrEmptyConversations,
     stampForcedRetention,
     saveConvo,
     setConvoPinned,

@@ -124,11 +124,19 @@ html {
 /* High contrast appearance modes.
  *
  * Every `IThemeRGB` token is delivered by the theme registry as an inline custom
- * property on <html> (see packages/client/src/theme/themes/highContrast.ts), so
+ * property on <html> (see packages/data-provider/src/themes/highContrast.ts), so
  * this block only covers what the token layer cannot reach: the CSS-only
  * variables and hard-coded literals elsewhere in this stylesheet. Every ratio
  * quoted below is measured against the mode's own canvas, pure white or pure
  * black. */
+/* +1 in LTR, -1 in RTL: lets a keyframe mirror its horizontal travel. */
+:root {
+  --dir-sign: 1;
+}
+[dir='rtl'] {
+  --dir-sign: -1;
+}
+
 html.high-contrast {
   /* A 0.5rem bar is a small target to hit and a thin thing to see. */
   --scrollbar-size: 0.75rem;
@@ -334,17 +342,47 @@ html.high-contrast.dark .btn-neutral:hover {
     --tw-shadow: 0 0 transparent;
     -webkit-appearance: none;
     appearance: none;
-    background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 20 20'%3E%3Cpath stroke='%238e8ea0' stroke-linecap='round' stroke-linejoin='round' stroke-width='1.5' d='m6 8 4 4 4-4'/%3E%3C/svg%3E");
-    background-position: right 0.5rem center;
+    background-image:
+      linear-gradient(
+        to top right,
+        transparent calc(50% - 0.056em),
+        currentColor calc(50% - 0.056em),
+        currentColor calc(50% + 0.056em),
+        transparent calc(50% + 0.056em)
+      ),
+      linear-gradient(
+        to bottom right,
+        transparent calc(50% - 0.056em),
+        currentColor calc(50% - 0.056em),
+        currentColor calc(50% + 0.056em),
+        transparent calc(50% + 0.056em)
+      );
+    background-position:
+      right calc(0.5rem + 0.75em) center,
+      right calc(0.5rem + 0.45em) center;
     background-repeat: no-repeat;
-    background-size: 1.5em 1.5em;
-    padding-right: 2.5rem;
+    background-size: 0.3em 0.3em;
+    padding-inline-end: 2.5rem;
     background-color: rgb(var(--select-fill));
     border-color: rgb(var(--select-edge));
     border-radius: 0;
     border-width: 1px;
     font-size: 1rem;
     line-height: 1.5rem;
+  }
+  [dir='rtl'] select {
+    background-position:
+      left calc(0.5rem + 0.45em) center,
+      left calc(0.5rem + 0.75em) center;
+  }
+}
+
+/* Forced colors computes `background-image` to none unless it holds a `url()`, which
+ * removes the gradient arrow; hand the indicator back to the browser. */
+@media (forced-colors: active) {
+  select {
+    -webkit-appearance: menulist;
+    appearance: menulist;
   }
 }
 
@@ -522,15 +560,15 @@ p > small {
   margin-top: 0.8em;
 }
 .prose :where(blockquote):not(:where([class~='not-prose'] *)) {
-  border-left-color: var(--tw-prose-quote-borders);
-  border-left-width: 0.25rem;
+  border-inline-start-color: var(--tw-prose-quote-borders);
+  border-inline-start-width: 0.25rem;
   color: var(--tw-prose-quotes);
   font-style: italic;
   font-style: normal;
   font-weight: 500;
   margin-bottom: 1.6em;
   margin-top: 1.6em;
-  padding-left: 1em;
+  padding-inline-start: 1em;
   quotes: '\201C' '\201D' '\2018' '\2019';
 }
 .prose :where(blockquote p:first-of-type):not(:where([class~='not-prose'] *)):before {
@@ -608,6 +646,14 @@ p > small {
   padding: 0.125rem 0.25rem;
   border-radius: 0.35rem;
 }
+.prose :where(code):not(:where([class~='not-prose'] *, pre *)) {
+  direction: ltr;
+  unicode-bidi: isolate;
+}
+.katex,
+.katex-display {
+  direction: ltr;
+}
 .prose :where(a code):not(:where([class~='not-prose'] *)) {
   color: inherit;
 }
@@ -665,7 +711,7 @@ p > small {
   margin-bottom: 2em;
   margin-top: 2em;
   table-layout: auto;
-  text-align: left;
+  text-align: start;
   width: 100%;
 }
 .prose :where(thead):not(:where([class~='not-prose'] *)) {
@@ -676,8 +722,8 @@ p > small {
   color: var(--tw-prose-headings);
   font-weight: 600;
   padding-bottom: 0.5714286em;
-  padding-left: 0.5714286em;
-  padding-right: 0.5714286em;
+  padding-inline-start: 0.5714286em;
+  padding-inline-end: 0.5714286em;
   vertical-align: bottom;
 }
 .prose :where(tbody tr):not(:where([class~='not-prose'] *)) {
@@ -754,7 +800,7 @@ p > small {
   margin-top: 0.5em;
 }
 .prose :where(ul > li):not(:where([class~='not-prose'] *)) {
-  padding-left: 0.375em;
+  padding-inline-start: 0.375em;
 }
 .prose :where(.prose > ul > li p):not(:where([class~='not-prose'] *)) {
   margin-bottom: 0.75em;
@@ -786,19 +832,19 @@ p > small {
   margin-top: 0.4em;
 }
 .prose :where(thead th:first-child):not(:where([class~='not-prose'] *)) {
-  padding-left: 0;
+  padding-inline-start: 0;
 }
 .prose :where(thead th:last-child):not(:where([class~='not-prose'] *)) {
-  padding-right: 0;
+  padding-inline-end: 0;
 }
 .prose :where(tbody td, tfoot td):not(:where([class~='not-prose'] *)) {
   padding: 0.5714286em;
 }
 .prose :where(tbody td:first-child, tfoot td:first-child):not(:where([class~='not-prose'] *)) {
-  padding-left: 0;
+  padding-inline-start: 0;
 }
 .prose :where(tbody td:last-child, tfoot td:last-child):not(:where([class~='not-prose'] *)) {
-  padding-right: 0;
+  padding-inline-end: 0;
 }
 .prose :where(.prose > :first-child):not(:where([class~='not-prose'] *)) {
   margin-top: 0;
@@ -845,6 +891,8 @@ code.language-md {
 code.hljs,
 code[class*='language-'],
 pre[class*='language-'] {
+  direction: ltr;
+  unicode-bidi: isolate;
   word-wrap: normal;
   background: none;
   color: rgb(var(--syntax-text));
@@ -912,7 +960,7 @@ pre[class*='language-'] {
 /* Tailwind 3 gave every button a pointer cursor and Tailwind 4 leaves the
  * platform default, so this shim is what keeps the affordance. It belongs in
  * `base`: unlayered it would outrank every utility in the sheet, and
- * `cursor-default` on `SelectDropDown` or `disabled:cursor-not-allowed` on a
+ * `cursor-default` on a trigger or `disabled:cursor-not-allowed` on a
  * disabled button would stop meaning anything. */
 @layer base {
   [role='button'],
@@ -1130,9 +1178,9 @@ html[data-drawer-nav] body {
 .markdown blockquote {
   --tw-border-opacity: 1;
   border-color: rgb(var(--prose-quote-bar));
-  border-left-width: 2px;
+  border-inline-start-width: 2px;
   line-height: 1rem;
-  padding-left: 1rem;
+  padding-inline-start: 1rem;
 }
 
 .markdown table {
@@ -1146,37 +1194,37 @@ html[data-drawer-nav] body {
 .markdown th {
   background-color: rgb(var(--table-header-fill));
   border-bottom-width: 1px;
-  border-left-width: 1px;
+  border-inline-start-width: 1px;
   border-top-width: 1px;
   padding: 0.25rem 0.75rem;
 }
 
 .markdown th:first-child {
-  border-top-left-radius: 0.375rem;
+  border-start-start-radius: 0.375rem;
 }
 
 .markdown th:last-child {
-  border-right-width: 1px;
+  border-inline-end-width: 1px;
   border-color: rgb(var(--border-medium));
-  border-top-right-radius: 0.375rem;
+  border-start-end-radius: 0.375rem;
 }
 
 .markdown td {
   border-bottom-width: 1px;
-  border-left-width: 1px;
+  border-inline-start-width: 1px;
   padding: 0.25rem 0.75rem;
 }
 
 .markdown td:last-child {
-  border-right-width: 1px;
+  border-inline-end-width: 1px;
 }
 
 .markdown tbody tr:last-child td:first-child {
-  border-bottom-left-radius: 0.375rem;
+  border-end-start-radius: 0.375rem;
 }
 
 .markdown tbody tr:last-child td:last-child {
-  border-bottom-right-radius: 0.375rem;
+  border-end-end-radius: 0.375rem;
 }
 
 /* The column rules take the inset share of the border-medium edge, so a theme that draws no inset
@@ -1186,10 +1234,10 @@ html[data-drawer-nav] body {
  * edge that is visually outermost with no selector on direction. The selectors outrank the cell
  * rules above, which restate the edge in one declaration, and leave high contrast to its own. */
 html:not(.high-contrast) .markdown :is(th, td) {
-  border-left-color: rgb(
+  border-inline-start-color: rgb(
     var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-inset-alpha, 1))
   );
-  border-right-color: rgb(
+  border-inline-end-color: rgb(
     var(--border-medium) / calc(var(--border-medium-alpha, 1) * var(--theme-border-inset-alpha, 1))
   );
 }
@@ -1283,9 +1331,9 @@ html {
 .markdown blockquote {
   --tw-border-opacity: 1;
   border-color: rgb(var(--prose-quote-bar));
-  border-left-width: 2px;
+  border-inline-start-width: 2px;
   line-height: 1rem;
-  padding-left: 1rem;
+  padding-inline-start: 1rem;
 }
 .markdown table {
   --tw-border-spacing-x: 0px;
@@ -1299,34 +1347,34 @@ html {
   background-color: rgb(var(--table-header-fill));
   color: rgb(var(--table-header-text));
   border-bottom-width: 1px;
-  border-left-width: 1px;
+  border-inline-start-width: 1px;
   border-top-width: 1px;
   border-color: rgb(var(--border-medium));
   padding: 0.25rem 0.75rem;
   font-weight: 600;
 }
 .markdown th:first-child {
-  border-top-left-radius: var(--theme-control-radius, 0.75rem);
+  border-start-start-radius: var(--theme-control-radius, 0.75rem);
 }
 .markdown th:last-child {
-  border-right-width: 1px;
-  border-top-right-radius: var(--theme-control-radius, 0.75rem);
+  border-inline-end-width: 1px;
+  border-start-end-radius: var(--theme-control-radius, 0.75rem);
 }
 .markdown td {
   border-bottom-width: 1px;
-  border-left-width: 1px;
+  border-inline-start-width: 1px;
   border-color: rgb(var(--border-medium));
   padding: 0.25rem 0.75rem;
 }
 .markdown td:last-child {
-  border-right-width: 1px;
+  border-inline-end-width: 1px;
   border-color: rgb(var(--border-medium));
 }
 .markdown tbody tr:last-child td:first-child {
-  border-bottom-left-radius: var(--theme-control-radius, 0.75rem);
+  border-end-start-radius: var(--theme-control-radius, 0.75rem);
 }
 .markdown tbody tr:last-child td:last-child {
-  border-bottom-right-radius: var(--theme-control-radius, 0.75rem);
+  border-end-end-radius: var(--theme-control-radius, 0.75rem);
 }
 .markdown a {
   text-decoration-line: underline;
@@ -1525,7 +1573,7 @@ html {
     Noto Sans,
     sans-serif;
   line-height: normal;
-  margin-left: 0.25rem;
+  margin-inline-start: 0.25rem;
   vertical-align: middle;
   font-size: 0.5rem;
 }
@@ -1545,7 +1593,7 @@ html {
       Noto Sans,
       sans-serif;
     line-height: normal;
-    margin-left: 0.25rem;
+    margin-inline-start: 0.25rem;
     vertical-align: middle;
     font-size: 0.5rem;
     display: inline-block;
@@ -1570,7 +1618,7 @@ html {
       Noto Sans,
       sans-serif;
     line-height: normal;
-    margin-left: 0.25rem;
+    margin-inline-start: 0.25rem;
     vertical-align: middle;
     font-size: 0.5rem;
     display: inline-block;
@@ -1669,7 +1717,7 @@ html {
   list-style-position: outside;
   margin-top: 1em;
   margin-bottom: 1em;
-  padding-left: 1em;
+  padding-inline-start: 1em;
 }
 
 .prose li,
@@ -1687,7 +1735,7 @@ html {
 .prose ol > li,
 .markdown ol > li {
   position: relative;
-  padding-left: 0.375em;
+  padding-inline-start: 0.375em;
 }
 
 .prose ol > li::marker,
@@ -1715,7 +1763,7 @@ html {
 
 .prose ul > li,
 .markdown ul > li {
-  padding-left: 0.375em;
+  padding-inline-start: 0.375em;
 }
 
 .prose ul > li::marker,
@@ -1878,8 +1926,8 @@ html {
   background-color: rgb(var(--surface-tooltip, var(--surface-primary)));
   padding-top: var(--theme-tooltip-padding-y, 0.25rem);
   padding-bottom: var(--theme-tooltip-padding-y, 0.25rem);
-  padding-left: var(--theme-tooltip-padding-x, 0.5rem);
-  padding-right: var(--theme-tooltip-padding-x, 0.5rem);
+  padding-inline-start: var(--theme-tooltip-padding-x, 0.5rem);
+  padding-inline-end: var(--theme-tooltip-padding-x, 0.5rem);
   font-size: var(--theme-tooltip-text-size, 1rem);
   line-height: 1.5;
   color: rgb(var(--text-tooltip, var(--text-primary)));
@@ -1988,7 +2036,7 @@ html[data-input-modality='keyboard']
   transition-duration: 150ms;
   scale: 0.95;
   margin-top: 4px;
-  margin-right: -2px;
+  margin-inline-end: -2px;
 }
 
 .popover-animate {
@@ -2052,6 +2100,15 @@ html[data-input-modality='keyboard']
 .popover-ui.popover-from-left[data-enter] {
   translate: 0 0;
 }
+[dir='rtl'] .popover-ui.popover-from-left,
+.popover-ui.popover-from-left:dir(rtl) {
+  transform-origin: right;
+  translate: 0.5rem 0;
+}
+[dir='rtl'] .popover-ui.popover-from-left[data-enter],
+.popover-ui.popover-from-left[data-enter]:dir(rtl) {
+  translate: 0 0;
+}
 
 .animate-popover-top,
 .animate-popover {
@@ -2081,6 +2138,15 @@ html[data-input-modality='keyboard']
   opacity: 1;
   transform: scale(1) translateX(0);
 }
+[dir='rtl'] .animate-popover-left,
+.animate-popover-left:dir(rtl) {
+  transform-origin: right;
+  transform: scale(0.95) translateX(0.5rem);
+}
+[dir='rtl'] .animate-popover-left[data-enter],
+.animate-popover-left[data-enter]:dir(rtl) {
+  transform: scale(1) translateX(0);
+}
 
 /* Corners */
 .animate-popover-top-left {
@@ -2093,6 +2159,15 @@ html[data-input-modality='keyboard']
 }
 .animate-popover-top-left[data-enter] {
   opacity: 1;
+  transform: scale(1) translate(0, 0);
+}
+[dir='rtl'] .animate-popover-top-left,
+.animate-popover-top-left:dir(rtl) {
+  transform-origin: top right;
+  transform: scale(0.95) translate(0.5rem, -0.5rem);
+}
+[dir='rtl'] .animate-popover-top-left[data-enter],
+.animate-popover-top-left[data-enter]:dir(rtl) {
   transform: scale(1) translate(0, 0);
 }
 
@@ -2400,6 +2475,15 @@ html[data-input-modality='keyboard']
   }
 }
 
+@keyframes shimmer-rtl {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
 /* The sweep every in-flight label shares: a running tool call, streaming
    reasoning, the elapsed timer. Painted from theme roles rather than fixed
    black/white keyed off `.dark`, so a stored or custom theme restates it the
@@ -2424,12 +2508,18 @@ html[data-input-modality='keyboard']
   animation: shimmer 4s linear infinite;
 }
 
+[dir='rtl'] .shimmer,
+.shimmer:dir(rtl) {
+  animation-name: shimmer-rtl;
+}
+
 /* Halting the animation alone is not a fallback: the background would settle
    at position 0 and show only half the sweep, stranding the tail of the label
    in the near-invisible dip. Drop the gradient and hand the glyphs back to the
    color they would have had. */
 @media (prefers-reduced-motion: reduce) {
-  .shimmer {
+  .shimmer,
+  [dir='rtl'] .shimmer {
     background: none;
     animation: none;
     -webkit-text-fill-color: currentcolor;
@@ -2462,4 +2552,9 @@ html[data-input-modality='keyboard']
    question card, so the card travels behind the ChatForm, not over it. */
 ::view-transition-group(chat-form) {
   z-index: 2;
+}
+
+/* react-virtualized writes an inline `direction: ltr` on its scroll container; only !important beats an inline style, and without it every virtualized list stays LTR in an RTL UI. */
+.ReactVirtualized__Grid {
+  direction: inherit !important;
 }

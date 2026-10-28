@@ -1,12 +1,21 @@
+import { RecoilRoot } from 'recoil';
 import { renderHook, act, waitFor } from '@testing-library/react';
-import { RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Provider as JotaiProvider, createStore, useAtomValue } from 'jotai';
-import { Constants, ContentTypes, QueryKeys } from 'librechat-data-provider';
-import type { Agents, TMessage, TConversation, TSubmission } from 'librechat-data-provider';
-import type { MutableSnapshot } from 'recoil';
-import type { ReactNode } from 'react';
-import type { QueuedMessage, PendingSteer, DetachedRun } from '~/hooks/Chat/queue';
+import { Constants, ContentTypes, QueryKeys, RetentionMode } from 'librechat-data-provider';
+import { isSubmittingFamily, resetSubmitting, submissionByIndex } from '@librechat/chat/react';
+import {
+  Provider as JotaiProvider,
+  createStore,
+  useAtomValue,
+  useSetAtom,
+  getDefaultStore,
+} from 'jotai';
+import {
+  revealedQueuedTurnFamily,
+  pendingSteersByConvoId,
+  activeGenerationCreatedAtByConvoId,
+  submissionStartFamily,
+} from '@librechat/chat/react';
 import {
   settledQueuedTurnReceiptsByConvoId,
   queuedMessagesByConvoId,
@@ -14,12 +23,17 @@ import {
   pendingRunEndByConvoId,
   detachedRunByConvoId,
   resetQueueFamilies,
-} from '~/hooks/Chat/queue';
+} from '@librechat/chat/react';
+import type { Agents, TMessage, TConversation, TSubmission } from 'librechat-data-provider';
+import type { QueuedMessage, PendingSteer, DetachedRun } from '@librechat/chat';
+import type { MutableSnapshot } from 'recoil';
+import type { ReactNode } from 'react';
+import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
-import { submissionStartFamily } from '~/store/generation';
-import { revealedQueuedTurnFamily } from '~/store/steer';
+import { usePaneConversation } from '~/routes/ChatSettings';
+import { SteerHostTestProvider } from 'test/steerHost';
 import useResumeOnLoad from '../useResumeOnLoad';
 import store from '~/store';
 
@@ -27,7 +41,7 @@ const mockUseStreamStatus = jest.fn();
 const mockUseActiveJobs = jest.fn();
 const mockUseAgentQueuedTurns = jest.fn();
 const mockExtendActiveJobsGrace = jest.fn();
-let mockStartupConfig: { interface?: { retentionMode?: string } } | undefined;
+let mockStartupConfig: { interface?: { retentionMode?: RetentionMode } } | undefined;
 let mockStartupConfigSettled = true;
 let mockFileMap: Record<string, { llmDeliveryPath?: 'provider' | 'text' | 'none' }> = {};
 
@@ -50,7 +64,6 @@ jest.mock('~/data-provider', () => ({
   ACTIVE_JOBS_SUCCESSOR_GRACE_MS: jest.requireActual('~/data-provider/SSE/queries')
     .ACTIVE_JOBS_SUCCESSOR_GRACE_MS,
   extendActiveJobsGrace: () => mockExtendActiveJobsGrace(),
-  useGetStartupConfig: () => ({ data: mockStartupConfig, isFetched: mockStartupConfigSettled }),
   streamStatusQueryKey: (conversationId: string) => ['streamStatus', conversationId],
 }));
 
@@ -145,6 +158,10 @@ function renderUseResumeOnLoad({
   if (detachedRun != null) {
     jotaiStore.set(detachedRunByConvoId(conversationId), detachedRun);
   }
+  jotaiStore.set(activeGenerationCreatedAtByConvoId(conversationId), attachedGenerationCreatedAt);
+  if (pendingSteers) {
+    jotaiStore.set(pendingSteersByConvoId(conversationId), pendingSteers);
+  }
   seedJotai?.(jotaiStore);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
@@ -155,24 +172,15 @@ function renderUseResumeOnLoad({
   let setAttachedEpochState: ((value: number | null) => void) | undefined;
   const initializeState = (snapshot: MutableSnapshot) => {
     snapshot.set(store.conversationByIndex(0), buildConversation(conversationId));
-    snapshot.set(store.submissionByIndex(0), submission);
-    snapshot.set(store.isSubmittingFamily(0), isSubmitting);
-    snapshot.set(
-      store.activeGenerationCreatedAtByConvoId(conversationId),
-      attachedGenerationCreatedAt,
-    );
-    if (pendingSteers) {
-      snapshot.set(store.pendingSteersByConvoId(conversationId), pendingSteers);
-    }
+    jotaiStore.set(submissionByIndex(0), submission);
+    jotaiStore.set(isSubmittingFamily(0), isSubmitting);
   };
 
   const SubmissionProbe = () => {
-    const currentSubmission = useRecoilValue(store.submissionByIndex(0));
-    setSubmissionState = useSetRecoilState(store.submissionByIndex(0));
-    setIsSubmittingState = useSetRecoilState(store.isSubmittingFamily(0));
-    setAttachedEpochState = useSetRecoilState(
-      store.activeGenerationCreatedAtByConvoId(conversationId),
-    );
+    const currentSubmission = useAtomValue(submissionByIndex(0));
+    setSubmissionState = useSetAtom(submissionByIndex(0));
+    setIsSubmittingState = useSetAtom(isSubmittingFamily(0));
+    setAttachedEpochState = useSetAtom(activeGenerationCreatedAtByConvoId(conversationId));
     onSubmission?.(currentSubmission);
     return null;
   };
@@ -182,7 +190,7 @@ function renderUseResumeOnLoad({
     return null;
   };
   const PendingSteersProbe = () => {
-    const steers = useRecoilValue(store.pendingSteersByConvoId(conversationId));
+    const steers = useAtomValue(pendingSteersByConvoId(conversationId));
     onPendingSteers?.(steers);
     return null;
   };
@@ -203,12 +211,26 @@ function renderUseResumeOnLoad({
     <QueryClientProvider client={queryClient}>
       <JotaiProvider store={jotaiStore}>
         <RecoilRoot initializeState={initializeState}>
-          <SubmissionProbe />
-          <SubmissionStartProbe />
-          <SiblingIndexProbe />
-          <PendingSteersProbe />
-          <QueuedMessagesProbe />
-          {children}
+          <SteerHostTestProvider>
+            <SubmissionProbe />
+            <SubmissionStartProbe />
+            <SiblingIndexProbe />
+            <PendingSteersProbe />
+            <QueuedMessagesProbe />
+            <ChatSettingsContext.Provider
+              value={{
+                ...defaultChatSettings,
+                usePaneConversation,
+                config: {
+                  ...defaultChatSettings.config,
+                  retentionMode: mockStartupConfig?.interface?.retentionMode,
+                  loaded: mockStartupConfigSettled,
+                },
+              }}
+            >
+              {children}
+            </ChatSettingsContext.Provider>
+          </SteerHostTestProvider>
         </RecoilRoot>
       </JotaiProvider>
     </QueryClientProvider>
@@ -230,6 +252,10 @@ function renderUseResumeOnLoad({
 }
 
 beforeEach(() => resetQueueFamilies());
+
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+});
 
 describe('useResumeOnLoad', () => {
   beforeEach(() => {
@@ -453,7 +479,7 @@ describe('useResumeOnLoad', () => {
      *  `isTemporary: false`, but the resume converts it; the rebuilt submission must
      *  already treat it as hidden so it never bumps the chat in the history caches. */
     it('treats a pre-policy run as temporary once retention is forced', async () => {
-      mockStartupConfig = { interface: { retentionMode: 'ephemeral' } };
+      mockStartupConfig = { interface: { retentionMode: RetentionMode.EPHEMERAL } };
       const observedSubmissions: Array<TSubmission | null> = [];
       mockUseStreamStatus.mockReturnValue({
         ...ACTIVE_STATUS,
@@ -496,7 +522,7 @@ describe('useResumeOnLoad', () => {
         });
         expect(observedSubmissions.filter(Boolean)).toHaveLength(0);
 
-        mockStartupConfig = { interface: { retentionMode: 'ephemeral' } };
+        mockStartupConfig = { interface: { retentionMode: RetentionMode.EPHEMERAL } };
         mockStartupConfigSettled = true;
         rerender();
         await act(async () => {

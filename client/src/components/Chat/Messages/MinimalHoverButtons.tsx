@@ -47,7 +47,7 @@ export default function MinimalHoverButtons({ message, searchResults, variant }:
                 ? localize('com_ui_copied_to_clipboard')
                 : localize('com_ui_copy_to_clipboard')
             }
-            className={cn('ml-0 flex items-center gap-1.5 text-xs', revealOnRowHoverClasses)}
+            className={cn('ms-0 flex items-center gap-1.5 text-xs', revealOnRowHoverClasses)}
             disabled={!canCopy}
             onClick={() => copyToClipboard(setIsCopied)}
           >

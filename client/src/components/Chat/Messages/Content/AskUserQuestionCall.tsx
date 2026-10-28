@@ -247,7 +247,7 @@ function QuestionBody({
         </p>
       )}
       {typeof answer === 'string' && (
-        <div className="border-border-medium mt-2.5 border-l-2 pl-3">
+        <div className="border-border-medium mt-2.5 border-s-2 ps-3">
           <p className="text-text-secondary text-xs font-medium">
             {localize('com_ui_you_answered')}
           </p>

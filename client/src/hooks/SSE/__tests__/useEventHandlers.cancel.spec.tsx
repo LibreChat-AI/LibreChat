@@ -8,6 +8,10 @@ import type { ReactNode } from 'react';
 import { useIsReplacingConversationCodeEnvironment } from '~/data-provider/CodeEnvironments';
 import useEventHandlers from '../useEventHandlers';
 
+let mockConversationId = 'saved';
+const mockResetSubagentAtoms = jest.fn();
+const mockResetPtcAtoms = jest.fn();
+
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
   return { ...actual, dataService: { ...actual.dataService, getConversationById: jest.fn() } };
@@ -17,7 +21,7 @@ jest.mock('recoil', () => ({
   useRecoilCallback: () => jest.fn(),
 }));
 jest.mock('react-router-dom', () => ({
-  useParams: () => ({ conversationId: 'saved' }),
+  useParams: () => ({ conversationId: mockConversationId }),
   useNavigate: () => jest.fn(),
   useLocation: () => ({ pathname: '/c/saved' }),
 }));
@@ -37,8 +41,8 @@ jest.mock('../useAttachmentHandler', () => () => jest.fn());
 jest.mock('../useStepHandler', () => () => ({
   stepHandler: jest.fn(),
   clearStepMaps: jest.fn(),
-  resetSubagentAtoms: jest.fn(),
-  resetPtcAtoms: jest.fn(),
+  resetSubagentAtoms: mockResetSubagentAtoms,
+  resetPtcAtoms: mockResetPtcAtoms,
   prunePtcTraces: jest.fn(),
   syncStepMessage: jest.fn(),
   cancelPendingDeltaFlush: jest.fn(),
@@ -102,8 +106,44 @@ const submission = {
 } as EventSubmission;
 
 describe('local cancellation decision reconciliation', () => {
-  beforeEach(() => jest.clearAllMocks());
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockConversationId = 'saved';
+  });
   afterEach(() => jest.restoreAllMocks());
+
+  it('preserves the selected task only for navigation, not host teardown', () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(
+        Provider,
+        null,
+        createElement(QueryClientProvider, { client: queryClient }, children),
+      );
+    const { rerender, unmount } = renderHook(
+      () =>
+        useEventHandlers({
+          getMessages: () => [],
+          setMessages: jest.fn(),
+          setCompleted: jest.fn(),
+          setConversation: jest.fn(),
+          setIsSubmitting: jest.fn(),
+          setShowStopButton: jest.fn(),
+          newConversation: jest.fn(),
+        }),
+      { wrapper },
+    );
+    expect(mockResetSubagentAtoms).not.toHaveBeenCalled();
+    mockConversationId = 'other';
+    rerender();
+    expect(mockResetSubagentAtoms).toHaveBeenCalledTimes(1);
+    expect(mockResetSubagentAtoms).toHaveBeenCalledWith({ preserveSelectedTask: true });
+    expect(mockResetPtcAtoms).toHaveBeenCalledTimes(1);
+    unmount();
+    expect(mockResetSubagentAtoms).toHaveBeenCalledTimes(2);
+    expect(mockResetSubagentAtoms).toHaveBeenLastCalledWith();
+    expect(mockResetPtcAtoms).toHaveBeenCalledTimes(2);
+  });
 
   it.each(['streamed', 'minimal', 'navigated'])(
     'does not use a synthetic %s cancel as evidence that the server settled',

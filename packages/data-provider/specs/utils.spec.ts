@@ -41,15 +41,6 @@ describe('Environment Variable Extraction', () => {
     test('should handle strings without variable format', () => {
       expect(extractEnvVariable('no_var_here')).toBe('no_var_here');
     });
-
-    /** No longer the expected behavior; keeping for reference */
-    test.skip('should not process multiple variable formats', () => {
-      process.env.FIRST_VAR = 'first';
-      process.env.SECOND_VAR = 'second';
-      expect(extractEnvVariable('${FIRST_VAR} and ${SECOND_VAR}')).toBe(
-        '${FIRST_VAR} and ${SECOND_VAR}',
-      );
-    });
   });
 
   describe('extractEnvVariable function', () => {

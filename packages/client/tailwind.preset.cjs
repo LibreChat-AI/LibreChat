@@ -53,14 +53,14 @@ module.exports = {
         'theme-target': '24px',
         /** The narrowest a tab trigger draws. */
         'theme-tab': 'var(--theme-tab-min-width, 100px)',
-        /** The narrowest a Select's list draws. */
+        /** The narrowest a field Dropdown's list draws. */
         'theme-list': 'var(--theme-list-min-width, 8rem)',
       },
       maxHeight: {
-        /** The tallest a Select's list draws before it scrolls, never past the room the popper
-         *  leaves between its trigger and the viewport's edge. */
+        /** The tallest a field Dropdown's list draws before it scrolls, never past the room the
+         *  popover leaves between its trigger and the viewport's edge. */
         'theme-list':
-          'min(var(--theme-list-max-height, 24rem), var(--radix-select-content-available-height, 100dvh))',
+          'min(var(--theme-list-max-height, 24rem), var(--popover-available-height, 100dvh))',
       },
       inset: {
         /** Where a sign-in label rests in its field: centered 2px low, as on the stock 44px field,
@@ -157,6 +157,7 @@ module.exports = {
         'theme-surface': 'var(--theme-surface-radius, 1rem)',
         'theme-popover': 'var(--theme-popover-radius, 1rem)',
         'theme-menu-panel': 'var(--theme-menu-panel-radius, 0.75rem)',
+        'theme-compact-panel': 'var(--theme-compact-panel-radius, 0.5rem)',
         'theme-composer-action': 'var(--theme-composer-action-radius, 9999px)',
         'theme-auth-control': 'var(--theme-auth-control-radius, 1rem)',
         'theme-auth-action': 'var(--theme-auth-action-radius, 0.5rem)',

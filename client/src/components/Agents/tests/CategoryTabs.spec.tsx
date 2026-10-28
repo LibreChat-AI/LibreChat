@@ -1,6 +1,6 @@
 import React from 'react';
 import userEvent from '@testing-library/user-event';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import '@testing-library/jest-dom';
 import type t from 'librechat-data-provider';
 import CategoryTabs from '../CategoryTabs';
@@ -219,5 +219,53 @@ describe('CategoryTabs', () => {
     expect(tabTexts[0]).toBe('Top Picks');
     expect(tabTexts[1]).toBe('All');
     expect(tabTexts.length).toBe(5);
+  });
+
+  describe('arrow key navigation', () => {
+    beforeEach(() => {
+      /** jsdom does not inherit `direction`, so resolve it from the nearest `dir` attribute. */
+      const original = window.getComputedStyle.bind(window);
+      jest.spyOn(window, 'getComputedStyle').mockImplementation((el, pseudo) => {
+        const style = original(el, pseudo);
+        const dir = el.closest('[dir]')?.getAttribute('dir') ?? 'ltr';
+        return new Proxy(style, {
+          get: (target, prop) =>
+            prop === 'direction' ? dir : (Reflect.get(target, prop, target) as unknown),
+        });
+      });
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    const press = (dir: 'ltr' | 'rtl', key: string) => {
+      const { container } = render(
+        <div dir={dir} style={{ direction: dir }}>
+          <CategoryTabs
+            categories={mockCategories}
+            activeTab="all"
+            isLoading={false}
+            onChange={mockOnChange}
+          />
+        </div>,
+      );
+      fireEvent.keyDown(container.querySelector('#category-tab-all') as HTMLElement, { key });
+    };
+
+    it('moves to the next tab on ArrowRight in LTR', () => {
+      press('ltr', 'ArrowRight');
+      expect(mockOnChange).toHaveBeenCalledWith('general');
+    });
+
+    it('moves to the previous tab on ArrowRight in RTL', () => {
+      press('rtl', 'ArrowRight');
+      expect(mockOnChange).toHaveBeenCalledWith('promoted');
+    });
+
+    it('moves to the next tab on ArrowLeft in RTL', () => {
+      press('rtl', 'ArrowLeft');
+      expect(mockOnChange).toHaveBeenCalledWith('general');
+    });
   });
 });

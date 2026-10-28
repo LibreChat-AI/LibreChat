@@ -26,7 +26,7 @@ export default function DecibelSelector() {
           min={0.1}
           max={2}
           step={0.1}
-          className="ml-4 flex h-4 w-24"
+          className="ms-4 flex h-4 w-24"
           disabled={!textToSpeech}
           aria-labelledby="playback-rate-label"
         />

@@ -120,19 +120,6 @@ export const renderAgentAvatar = (
   );
 };
 
-/**
- * Gets the display name for a contact (prioritizes name over email)
- */
-export const getContactDisplayName = (agent: t.Agent | null | undefined): string | null => {
-  if (!agent) return null;
-
-  const supportName = (agent as any).support_contact?.name;
-  const supportEmail = (agent as any).support_contact?.email;
-  const authorName = (agent as any).authorName;
-
-  return supportName || authorName || supportEmail || null;
-};
-
 // All hardcoded category constants removed - now using database-driven categories
 
 /**

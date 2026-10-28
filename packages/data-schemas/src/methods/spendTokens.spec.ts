@@ -665,6 +665,57 @@ describe('spendTokens', () => {
     expect(balance!.tokenCredits).toBeLessThan(10000); // Balance should be reduced
   });
 
+  describe('one-hour cache writes', () => {
+    const model = 'claude-sonnet-5-5';
+    const txData = () => ({
+      user: userId,
+      conversationId: 'convo-1h',
+      model,
+      context: 'message',
+      balance: { enabled: true },
+    });
+
+    beforeEach(async () => {
+      await Balance.create({ user: userId, tokenCredits: 100_000_000 });
+    });
+
+    it('bills the 1-hour share of the writes at the 1-hour rate', async () => {
+      const promptTokens = { input: 100, write: 3000, write1h: 2000, read: 500 };
+      const result = await spendStructuredTokens(txData(), { promptTokens });
+
+      const prompt = tokenValues[model].prompt;
+      const write5m = getCacheMultiplier({ model, cacheType: 'write' })!;
+      const write1h = getCacheMultiplier({ model, cacheType: 'write1h' })!;
+      const read = getCacheMultiplier({ model, cacheType: 'read' })!;
+      const expected = -(100 * prompt + 1000 * write5m + 2000 * write1h + 500 * read);
+      expect(result.prompt?.prompt).toBeCloseTo(expected);
+
+      const [doc] = await Transaction.find({ user: userId, tokenType: 'prompt' }).lean();
+      expect(doc.writeTokens).toBe(-3000);
+      expect(doc.tokenValue).toBeCloseTo(expected);
+    });
+
+    it('keeps 5-minute pricing when no 1-hour writes are reported', async () => {
+      const promptTokens = { input: 100, write: 3000, read: 500 };
+      const result = await spendStructuredTokens(txData(), { promptTokens });
+
+      const expected = -(
+        100 * tokenValues[model].prompt +
+        3000 * getCacheMultiplier({ model, cacheType: 'write' })! +
+        500 * getCacheMultiplier({ model, cacheType: 'read' })!
+      );
+      expect(result.prompt?.prompt).toBeCloseTo(expected);
+    });
+
+    it('never bills more 1-hour writes than writes', async () => {
+      const promptTokens = { input: 0, write: 1000, write1h: 5000, read: 0 };
+      const result = await spendStructuredTokens(txData(), { promptTokens });
+      expect(result.prompt?.prompt).toBeCloseTo(
+        -1000 * getCacheMultiplier({ model, cacheType: 'write1h' })!,
+      );
+    });
+  });
+
   describe('premium token pricing', () => {
     it('should charge standard rates for gemini-3.1 when prompt tokens are below threshold', async () => {
       const initialBalance = 100000000;

@@ -41,7 +41,6 @@ jest.mock('recoil', () => ({ useRecoilValue: () => [] }));
 jest.mock('~/store', () => ({
   __esModule: true,
   default: {
-    allConversationsSelector: 'allConversationsSelector',
     conversationIdByIndex: () => 'conversationIdByIndex',
   },
 }));

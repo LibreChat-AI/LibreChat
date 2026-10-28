@@ -16,14 +16,6 @@ import {
   useUnseenConversations,
 } from '~/hooks';
 import {
-  UnifiedSidebar,
-  SIDEBAR_TRANSITION,
-  MOBILE_DRAWER_WIDTH_VAR,
-  MOBILE_DRAWER_STRIP_WIDTH,
-  MOBILE_DRAWER_FULL_WIDTH,
-  MOBILE_PANE_SHIFT,
-} from '~/components/UnifiedSidebar';
-import {
   PromptGroupsProvider,
   AssistantsMapContext,
   AgentsMapContext,
@@ -32,10 +24,19 @@ import {
   MCPAppsPolicyProvider,
 } from '~/Providers';
 import {
+  UnifiedSidebar,
+  MOBILE_DRAWER_WIDTH_VAR,
+  MOBILE_DRAWER_STRIP_WIDTH,
+  MOBILE_DRAWER_FULL_WIDTH,
+} from '~/components/UnifiedSidebar';
+import {
   CodeHighlightThrottleContext,
   normalizeCodeHighlightThrottleMs,
 } from '~/components/Chat/Messages/Content/Parts/useLazyHighlight';
+import { StreamHostProvider, appStreamHost } from '~/Providers/StreamHostContext';
 import KeyboardShortcutsDialog from '~/components/Nav/KeyboardShortcutsDialog';
+import { SteerHostProvider, appSteerHost } from '~/Providers/SteerHostContext';
+import { ChatHostProvider, appChatHost } from '~/Providers/ChatHostContext';
 import KeyboardDeleteDialog from '~/components/Nav/KeyboardDeleteDialog';
 import { useUserTermsQuery, useGetStartupConfig } from '~/data-provider';
 import { MobileDrawerScrim } from '~/components/UnifiedSidebar/mobile';
@@ -90,7 +91,7 @@ function RootLayout() {
   /** The one path drawer mutations take: it kicks the slide imperatively and
    *  defers the Recoil flip, so a large conversation cannot stall first motion. */
   const { setSidebarOpen } = useSidebarToggle();
-  /** The drawer and pane snap under reduced motion (see kickDrawerAnimation),
+  /** The drawer snaps under reduced motion (see kickDrawerAnimation),
    *  so the scrim must not keep fading on its own. */
   const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
   /** Off by default, matching the drawer that covers the screen and closes by
@@ -187,8 +188,7 @@ function RootLayout() {
                 <div className="flex" style={{ height: `calc(100dvh - ${bannerHeight}px)` }}>
                   <div
                     className="relative z-0 flex h-full w-full overflow-hidden"
-                    /** The drawer and the pane both read this, so their travel
-                     *  cannot disagree about how far the drawer opens. */
+                    /** Drawer width also defines the uncovered dismiss strip. */
                     style={
                       {
                         [MOBILE_DRAWER_WIDTH_VAR]: drawerStrip
@@ -206,16 +206,12 @@ function RootLayout() {
                     />
                     <div
                       ref={paneRef}
+                      data-testid="app-pane"
                       /** Focus target of last resort when the drawer closes on a
                        *  route that renders no opener. Not in the tab order. */
                       tabIndex={-1}
-                      className="relative flex h-full max-w-full flex-1 flex-col overflow-hidden focus:outline-hidden"
-                      style={{
-                        /** A percentage of the pane's own width, so it tracks the
-                         *  drawer without a literal and survives rotation. */
-                        transform: isSmallScreen && sidebarExpanded ? MOBILE_PANE_SHIFT : 'none',
-                        transition: prefersReducedMotion ? undefined : SIDEBAR_TRANSITION,
-                      }}
+                      className="relative isolate flex h-full max-w-full flex-1 flex-col overflow-hidden focus:outline-hidden"
+                      /** Keep the live conversation out of the drawer's compositor animation. */
                       /** Recoil's flip is deferred past the opening frames and
                        *  the closing transition outlives it at the other end, so
                        *  `isSliding` covers the travel `sidebarExpanded` brackets
@@ -274,7 +270,13 @@ function RootLayout() {
 export default function Root() {
   return (
     <ChatSettingsProvider>
-      <RootLayout />
+      <SteerHostProvider host={appSteerHost}>
+        <ChatHostProvider host={appChatHost}>
+          <StreamHostProvider host={appStreamHost}>
+            <RootLayout />
+          </StreamHostProvider>
+        </ChatHostProvider>
+      </SteerHostProvider>
     </ChatSettingsProvider>
   );
 }

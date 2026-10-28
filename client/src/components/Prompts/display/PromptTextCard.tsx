@@ -53,7 +53,7 @@ const PromptTextCard = ({ mainText }: PromptTextCardProps) => {
 
   return (
     <div className="border-border-medium relative flex h-full flex-col rounded-xl border bg-transparent">
-      <div className="absolute top-2 right-2 z-10">
+      <div className="absolute inset-e-2 top-2 z-10">
         <TooltipAnchor
           description={isCopied ? localize('com_ui_copied') : localize('com_ui_copy')}
           render={

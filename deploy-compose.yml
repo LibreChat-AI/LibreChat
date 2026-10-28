@@ -43,7 +43,7 @@ services:
       - librechat-data:/app/data
 
   admin-panel:
-    image: registry.librechat.ai/clickhouse/librechat-admin-panel:latest
+    image: registry.librechat.ai/librechat-ai/librechat-admin-panel:latest
     container_name: admin-panel
     depends_on:
       - api

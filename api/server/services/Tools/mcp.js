@@ -184,7 +184,10 @@ async function reinitMCPServer({
     const resolution = await resolveMCPReinitializeConfig(
       registry,
       serverName,
-      serverConfig ?? (await registry.getServerConfig(serverName, user?.id, configServers)),
+      serverConfig ??
+        (await registry.getServerConfig(serverName, user?.id, configServers, user?.role, {
+          idOnTheSource: user?.idOnTheSource,
+        })),
       user?.id,
     );
     if (resolution.result) {

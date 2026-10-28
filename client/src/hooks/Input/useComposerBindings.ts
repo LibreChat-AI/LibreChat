@@ -28,6 +28,14 @@ export type ComposerBindings = {
   yieldedChords: ReadonlySet<string>;
 };
 
+/** Default bindings for a card rendered without a chat surface host
+ * (Share, search), where the user's custom shortcuts are not in scope. */
+export const NO_HOST_BINDINGS: ComposerBindings = {
+  shortcutsEnabled: true,
+  submitOverride: undefined,
+  yieldedChords: new Set(),
+};
+
 /** The user's effective composer-relevant shortcut bindings, shared by the
  * composer keydown handler and the during-run hovercard hints. */
 export default function useComposerBindings(): ComposerBindings {

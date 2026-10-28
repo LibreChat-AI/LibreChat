@@ -1,4 +1,4 @@
-import { logger, tenantStorage, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
+import { logger, getTenantId, tenantStorage, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
 import {
   SystemRoles,
   Permissions,
@@ -7,7 +7,12 @@ import {
   getConfigDefaults,
 } from 'librechat-data-provider';
 import type { IRole, AppConfig } from '@librechat/data-schemas';
+import type { RecordAuditEntry } from '~/admin/audit';
+import { diffRolePermissions, recordSystemAuditEntry } from '~/admin/audit';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { isMemoryEnabled } from '~/memory/config';
+
+type RolePermissions = Partial<Record<PermissionTypes, Record<string, boolean | undefined>>>;
 
 /**
  * Checks if a permission type has explicit configuration
@@ -100,6 +105,7 @@ export async function updateInterfacePermissions({
   appConfig,
   getRoleByName,
   updateAccessPermissions,
+  recordAuditEntry,
   tenantId,
 }: {
   appConfig: AppConfig;
@@ -110,6 +116,8 @@ export async function updateInterfacePermissions({
 
     roleData?: IRole | null,
   ) => Promise<void>;
+  /** Records a `role.synced` entry for each role whose stored permissions changed. */
+  recordAuditEntry?: RecordAuditEntry;
   /**
    * Optional tenant ID for scoping role updates to a specific tenant.
    * When provided (and not SYSTEM_TENANT_ID), runs inside `tenantStorage.run({ tenantId })`.
@@ -119,7 +127,12 @@ export async function updateInterfacePermissions({
 }): Promise<void> {
   if (tenantId && tenantId !== SYSTEM_TENANT_ID) {
     return tenantStorage.run({ tenantId }, async () =>
-      updateInterfacePermissions({ appConfig, getRoleByName, updateAccessPermissions }),
+      updateInterfacePermissions({
+        appConfig,
+        getRoleByName,
+        updateAccessPermissions,
+        recordAuditEntry,
+      }),
     );
   }
 
@@ -154,6 +167,42 @@ export async function updateInterfacePermissions({
 
   const defaults = getConfigDefaults().interface;
   const webSearchDeniedRoles: string[] = [];
+
+  /**
+   * Re-reads the role so the entry lists what was persisted rather than what was
+   * requested (`updateAccessPermissions` logs and swallows its own failures).
+   */
+  const recordRoleSync = async (roleName: string, before: RolePermissions | undefined) => {
+    let after: IRole | null;
+    let changes: string[];
+    try {
+      after = await getRoleByName(roleName);
+      changes = diffRolePermissions(before, after?.permissions as RolePermissions | undefined);
+    } catch (err) {
+      /** The verification read is part of auditing, which must not fail startup. */
+      logger.error(
+        `[updateInterfacePermissions] could not verify '${roleName}' for audit`,
+        getSafeErrorMetadata(err),
+      );
+      return;
+    }
+    if (!after || changes.length === 0) {
+      return;
+    }
+    const tenantId = getTenantId();
+    await recordSystemAuditEntry(
+      recordAuditEntry,
+      {
+        action: 'role.synced',
+        severity: 'warning',
+        actor: { type: 'system', name: 'librechat.yaml interface sync' },
+        target: { type: 'role', id: roleName, name: roleName },
+        metadata: { changes: changes.join(', '), changeCount: changes.length },
+        tenantId: tenantId && tenantId !== SYSTEM_TENANT_ID ? tenantId : undefined,
+      },
+      '[updateInterfacePermissions]',
+    );
+  };
 
   // Permission precedence order:
   // 1. Explicit user configuration (from librechat.yaml)
@@ -807,6 +856,9 @@ export async function updateInterfacePermissions({
     // Update permissions if any need updating
     if (Object.keys(permissionsToUpdate).length > 0) {
       await updateAccessPermissions(roleName, permissionsToUpdate, existingRole);
+      if (recordAuditEntry) {
+        await recordRoleSync(roleName, existingPermissions);
+      }
     }
   }
 

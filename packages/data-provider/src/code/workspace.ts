@@ -52,6 +52,8 @@ export const CODE_WORKSPACE_OPERATIONS = [
   'preview_edit',
   'edit_file',
   'execute_command',
+  /** Copies a Code API stored object into the workspace; sent only when advertised. */
+  'import_file',
 ] as const;
 export const CODE_WORKSPACE_INSTANCE_TYPES = ['git_worktree'] as const;
 export const CODE_WORKSPACE_CHECKOUT_MODES = ['source', 'isolated'] as const;

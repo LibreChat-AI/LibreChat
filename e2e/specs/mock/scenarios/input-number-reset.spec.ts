@@ -44,7 +44,8 @@ const EXPECTED: Reset = {
   width: '120px',
   borderStyle: 'none',
   background: 'rgba(0, 0, 0, 0)',
-  textAlign: 'right',
+  /** The trailing edge: the right in an LTR page, the left in RTL. */
+  textAlign: 'end',
 };
 
 test.describe('InputNumber option reset', () => {

@@ -1,14 +1,18 @@
 import mongoose from 'mongoose';
-import { FileContext } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import { FileContext, FileSources } from 'librechat-data-provider';
 import { createModels, createMethods } from '@librechat/data-schemas';
 import type { IChatProject, IMongoFile, ProjectFileRecord } from '@librechat/data-schemas';
 import {
   getChatProjectFileAvailability,
   listChatProjectFileViews,
   resolveChatProjectFiles,
+  resolveChatProjectPolicyFiles,
+  toCanonicalProjectResource,
+  toRuntimeFile,
 } from './resources';
 import { getChatProjectContextKey, resolveChatProjectContext } from './context';
+import { filterFilesByEndpointRuntimeConfig } from '../files/filter';
 
 let mongoServer: InstanceType<typeof MongoMemoryServer>;
 let File: mongoose.Model<IMongoFile>;
@@ -69,38 +73,120 @@ const getProjectFiles = async ({
   tenantId?: string | null;
   includeContent?: boolean;
 }): Promise<ProjectFileRecord[]> => {
-  const files = await File.find({
-    file_id: { $in: fileIds },
-    user: userId,
-    embedded: true,
-    context: FileContext.message_attachment,
-    tenantId: tenantId != null && tenantId !== '' ? tenantId : null,
-  })
-    .select(includeContent ? {} : { text: 0 })
-    .lean<IMongoFile[]>();
-  return files.map((file) => ({
-    _id: file._id.toString(),
-    file_id: file.file_id,
-    filename: file.filename,
-    filepath: file.filepath,
-    object: file.object,
-    type: file.type,
-    bytes: file.bytes,
-    usage: file.usage,
-    ...(file.embedded !== undefined ? { embedded: file.embedded } : {}),
-    ...(file.context !== undefined ? { context: file.context } : {}),
-    ...(file.expiredAt !== undefined ? { expiredAt: file.expiredAt } : {}),
-    user: file.user.toString(),
-    ...(file.tenantId !== undefined ? { tenantId: file.tenantId } : {}),
-    ...(file.createdAt !== undefined ? { createdAt: file.createdAt } : {}),
-    ...(file.updatedAt !== undefined ? { updatedAt: file.updatedAt } : {}),
-    ...(file.previewRevision !== undefined ? { previewRevision: file.previewRevision } : {}),
-    ...(file.status !== undefined ? { status: file.status } : {}),
-    ...(file.text !== undefined ? { text: file.text } : {}),
-  }));
+  return createMethods(mongoose).getProjectFiles({ fileIds, userId, tenantId, includeContent });
 };
 
 describe('ChatProject resource hydration', () => {
+  it.each([
+    { searchDestination: true, routingMimeType: 'image/heic' },
+    { routingMimeType: 'image/heic' },
+    { searchDestination: false },
+    undefined,
+  ])('keeps only routing metadata in canonical and runtime files: %p', async (metadata) => {
+    const owner = new mongoose.Types.ObjectId().toString();
+    await File.create(
+      file('converted-project-file', owner, {
+        type: 'image/jpeg',
+        metadata: { ...metadata, destinationChosen: true, embeddedEntities: ['private-agent'] },
+      }),
+    );
+    const params = {
+      project: { file_ids: ['converted-project-file'] },
+      userId: owner,
+      getProjectFiles,
+    };
+    const [record] = await getProjectFiles({ fileIds: params.project.file_ids, userId: owner });
+    const resource = toCanonicalProjectResource(record);
+    if (resource.availability !== 'ready') {
+      throw new Error('Expected a ready converted Project file');
+    }
+    const [runtime] = await resolveChatProjectFiles(params);
+    const [policy] = await resolveChatProjectPolicyFiles(params);
+    const runtimeSource = {
+      ...record,
+      metadata: {
+        ...metadata,
+        routingMimeType: metadata?.routingMimeType,
+        destinationChosen: true,
+        embeddedEntities: ['private-agent'],
+      },
+    };
+    const direct = toRuntimeFile(runtimeSource);
+    for (const result of [resource.file, runtime, policy, direct]) {
+      expect(result.type).toBe('image/jpeg');
+      expect(result.metadata).toEqual(metadata);
+      if (metadata === undefined) {
+        expect(result).not.toHaveProperty('metadata');
+      }
+    }
+    expect(runtime).not.toHaveProperty('text');
+    expect(policy.text).toBe('must never be loaded');
+    for (const allowed of ['image/heic', 'image/jpeg']) {
+      expect(
+        filterFilesByEndpointRuntimeConfig(
+          {
+            config: {},
+            fileStrategy: FileSources.local,
+            imageOutputType: 'png',
+            fileConfig: { endpoints: { openAI: { supportedMimeTypes: [allowed] } } },
+          },
+          { files: [runtime], endpoint: 'openAI' },
+        ),
+      ).toHaveLength((metadata?.routingMimeType ?? 'image/jpeg') === allowed ? 1 : 0);
+    }
+    const withoutRouting = toCanonicalProjectResource({
+      ...record,
+      metadata: {
+        ...(metadata?.searchDestination !== undefined
+          ? { searchDestination: metadata.searchDestination }
+          : {}),
+      },
+    });
+    if (metadata?.routingMimeType !== undefined) {
+      expect(resource.version).not.toBe(withoutRouting.version);
+    } else {
+      expect(resource.version).toBe(withoutRouting.version);
+    }
+  });
+
+  it.each([true, false, undefined])(
+    'preserves vector presence without guessing (%s)',
+    (embedded) => {
+      const runtime = toRuntimeFile({
+        file_id: 'retained-project-file',
+        filename: 'notes.pdf',
+        filepath: '/files/notes.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        bytes: 1024,
+        usage: 0,
+        user: 'owner',
+        embedded,
+        source: 's3',
+        metadata: { searchDestination: true },
+      });
+      expect(runtime.embedded).toBe(embedded === true);
+      expect(runtime.source).toBe('s3');
+      expect(runtime.metadata?.searchDestination).toBe(true);
+    },
+  );
+
+  it('rejects an unrecognized storage source instead of routing it to another store', () => {
+    expect(() =>
+      toRuntimeFile({
+        file_id: 'retained-project-file',
+        filename: 'notes.pdf',
+        filepath: '/files/notes.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        bytes: 1024,
+        usage: 0,
+        user: 'owner',
+        source: 'unrecognized-store',
+      }),
+    ).toThrow('Invalid project file storage source');
+  });
+
   it('preserves Project compatibility when signed file URLs are refreshed', async () => {
     const owner = new mongoose.Types.ObjectId().toString();
     const methods = { ...createMethods(mongoose), getProjectFiles };
@@ -155,6 +241,60 @@ describe('ChatProject resource hydration', () => {
 
     expect(after?.resources).toEqual([expect.objectContaining({ availability: 'ready' })]);
     expect(getChatProjectContextKey(after)).toBe(getChatProjectContextKey(before));
+  });
+
+  it('keeps cleared search destinations visible and honestly repairable', async () => {
+    const owner = new mongoose.Types.ObjectId().toString();
+    const methods = createMethods(mongoose);
+    const stored = await File.create(
+      file('repair', owner, {
+        embeddingOwnersComplete: true,
+        embeddingOwnersTrackedAt: new Date('2026-10-20'),
+        source: 's3',
+        storageKey: 'owner/repair',
+        storageRegion: 'region',
+        metadata: { destinationChosen: true },
+      }),
+    );
+    const options = { fileIds: ['repair'], userId: owner };
+    const [before] = await methods.getProjectFiles(options);
+    const originalVersion = toCanonicalProjectResource(before).version;
+    expect(
+      await methods.clearFileEmbeddings({
+        file_id: 'repair',
+        ownershipTrackingStart: '2026-10-19T00:00:00.000Z',
+        userId: owner,
+        updatedAt: stored.updatedAt,
+      }),
+    ).toBe(true);
+    const [after] = await methods.getProjectFiles(options);
+    const resource = toCanonicalProjectResource(after);
+    expect(resource.availability).toBe('ready');
+    expect(resource.version).not.toBe(originalVersion);
+    const runtime = await resolveChatProjectFiles({
+      project: { file_ids: ['repair'] },
+      userId: owner,
+      getProjectFiles: methods.getProjectFiles,
+    });
+    expect(runtime).toEqual([
+      expect.objectContaining({
+        embedded: false,
+        metadata: { searchDestination: true },
+        source: 's3',
+        storageKey: 'owner/repair',
+        storageRegion: 'region',
+      }),
+    ]);
+    expect(
+      await listChatProjectFileViews({
+        project: { file_ids: ['repair'] },
+        userId: owner,
+        getProjectFiles: methods.getProjectFiles,
+      }),
+    ).toEqual([expect.objectContaining({ file_id: 'repair', availability: 'ready' })]);
+    const withoutIntent = toCanonicalProjectResource({ ...after, metadata: undefined });
+    expect(withoutIntent.availability).toBe('unavailable');
+    expect(withoutIntent.version).not.toBe(resource.version);
   });
 
   it('only marks canonical unscoped message attachments ready', () => {

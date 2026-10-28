@@ -8,7 +8,6 @@ import {
   captureCodeExecutionApprovalBinding,
   codeExecutionAuthHeaders,
   codeExecutionHeaders,
-  getCodeWorkspaceSelections,
   resolveCodeExecutionContext,
   resolveCodeExecutionWorkspaceSelections,
 } from './execution';
@@ -825,31 +824,6 @@ describe('stateful code approval target binding', () => {
       ]),
     ).not.toThrow();
   });
-
-  it('persists only the environment/workspace pair, not live capabilities', () => {
-    expect(getCodeWorkspaceSelections([context()])).toEqual([
-      { environmentId: 'environment-a', workspaceId: 'project-a' },
-    ]);
-  });
-
-  it('retains graph ownership when removing live workspace capabilities', () => {
-    const owned = context();
-    owned.codeWorkspace!.agentIds = ['agent-a'];
-    expect(getCodeWorkspaceSelections([owned])).toEqual([
-      { environmentId: 'environment-a', workspaceId: 'project-a', agentIds: ['agent-a'] },
-    ]);
-  });
-
-  it.each(['source', 'isolated'] as const)(
-    'retains the %s checkout when stripping live capabilities',
-    (checkout) => {
-      const selected = context();
-      selected.codeWorkspace!.checkout = checkout;
-      expect(getCodeWorkspaceSelections([selected])).toEqual([
-        { environmentId: 'environment-a', workspaceId: 'project-a', checkout },
-      ]);
-    },
-  );
 });
 
 describe('codeExecutionAuthHeaders', () => {

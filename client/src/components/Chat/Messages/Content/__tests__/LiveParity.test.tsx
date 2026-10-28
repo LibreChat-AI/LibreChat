@@ -11,8 +11,8 @@ import type {
   TMessageContentParts,
   SearchResultData,
 } from 'librechat-data-provider';
+import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { resolveAskUserQuestionPart } from '~/utils/approval';
-import { sandboxStartingByToolCallId } from '~/store';
 import ContentParts from '../ContentParts';
 import { getLiveActivity } from '../live';
 import * as mcpHooks from '~/hooks/MCP';
@@ -1237,7 +1237,9 @@ describe('live activity hardening transitions', () => {
     expect(screen.getByText('Ran agent').closest('[data-testid="activity-phase-card"]')).toBeNull();
   });
 
-  it.each(['x'.repeat(1199), 'Earlier sentence. ' + 'x'.repeat(1199)])(
+  /** A non-ASCII run: an unbroken ASCII alphanumeric run this long is
+   *  classified as an encoded provider payload and never previewed. */
+  it.each(['é'.repeat(1199), 'Earlier sentence. ' + 'é'.repeat(1199)])(
     'does not repeatedly announce one thought as its bounded preview window moves',
     (initial) => {
       jest.useFakeTimers();
@@ -1255,7 +1257,7 @@ describe('live activity hardening transitions', () => {
       expect(screen.getByTestId('activity-phase-announcer')).toBeEmptyDOMElement();
       /** The finished sentence is the long run itself, clamped to one line;
        *  the sentence after it is still being written. */
-      expect(screen.getByRole('button')).toHaveAccessibleName(`${'x'.repeat(255)}…`);
+      expect(screen.getByRole('button')).toHaveAccessibleName(`${'é'.repeat(255)}…`);
     },
   );
 
@@ -1706,3 +1708,63 @@ it.each(['lookup', 'image_gen_oai'])(
     }
   },
 );
+
+describe('live activity over encrypted reasoning', () => {
+  /** Bedrock `redactedContent`, base64-encoded into THINK text by the SDK. */
+  const encoded = Buffer.from(Array.from({ length: 900 }, (_, i) => (i * 37 + 3) % 256)).toString(
+    'base64',
+  );
+  const think = (text: string, label?: string): TMessageContentParts =>
+    ({
+      type: ContentTypes.THINK,
+      think: text,
+      ...(label != null && { reasoning_label: label }),
+    }) as TMessageContentParts;
+
+  it('names an encrypted thought generically instead of previewing the payload', () => {
+    const activity = getLiveActivity(
+      [think(encoded, 'Inspecting an encoded data snapshot')],
+      (key) => key,
+      [],
+    );
+    expect(activity.text).toBe('com_ui_thinking');
+  });
+
+  it('never titles a span with a label generated from an encrypted thought', () => {
+    const activity = getLiveActivity(
+      [think(encoded, 'Inspecting an encoded data snapshot')],
+      (key) => key,
+      [],
+      undefined,
+      true,
+    );
+    expect(activity.text).toBe('com_ui_running');
+  });
+
+  it('previews the readable text of reasoning mixed with an encrypted payload', () => {
+    const activity = getLiveActivity(
+      [think(`Comparing both lockfiles. ${encoded}`)],
+      (key) => key,
+      [],
+    );
+    expect(activity.text).toBe('Comparing both lockfiles.');
+  });
+
+  it('never previews the undecided start of a streaming payload', () => {
+    const activity = getLiveActivity(
+      [think(`Comparing both lockfiles. ${encoded.slice(0, 100)}`)],
+      (key) => key,
+      [],
+    );
+    expect(activity.text).toBe('Comparing both lockfiles.');
+  });
+
+  it('still previews readable reasoning', () => {
+    const activity = getLiveActivity(
+      [think('Comparing both lockfiles. The resolver pins an older range.')],
+      (key) => key,
+      [],
+    );
+    expect(activity.text).toBe('The resolver pins an older range.');
+  });
+});

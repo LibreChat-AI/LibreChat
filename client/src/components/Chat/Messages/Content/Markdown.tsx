@@ -1,12 +1,10 @@
 import React, { memo, useRef, useEffect } from 'react';
-import { useRecoilValue } from 'recoil';
 import { getRemarkPlugins, getRehypePlugins, getMarkdownComponents } from './markdownConfig';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import MarkdownErrorBoundary from './MarkdownErrorBoundary';
 import { FADE_HYDRATION_THRESHOLD } from './animate';
-import { useMessageContext } from '~/Providers';
 import MarkdownBlocks from './MarkdownBlocks';
-import store from '~/store';
 
 type TContentProps = {
   content: string;
@@ -14,9 +12,10 @@ type TContentProps = {
 };
 
 const Markdown = memo(function Markdown({ content = '', isLatestMessage }: TContentProps) {
-  const { isSubmitting = false } = useMessageContext() ?? {};
+  const { useMessage, useLaTeXParsing } = useMessagePartsHost();
+  const { isSubmitting = false } = useMessage();
   const smoothStreaming = useSmoothStreaming();
-  const LaTeXParsing = useRecoilValue<boolean>(store.LaTeXParsing);
+  const LaTeXParsing = useLaTeXParsing();
   const isInitializing = content === '';
 
   const streaming = isLatestMessage && isSubmitting;

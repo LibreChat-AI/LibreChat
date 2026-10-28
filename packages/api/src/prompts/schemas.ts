@@ -13,16 +13,16 @@ const PROMPT_TYPE_MESSAGE = 'Prompt type must be "text" or "chat"';
 const promptPayloadSchema: z.ZodType<TPromptPayloadSchema> = z.object(
   {
     prompt: z
-      .string({ required_error: PROMPT_TEXT_MESSAGE, invalid_type_error: PROMPT_TEXT_MESSAGE })
+      .string({ error: PROMPT_TEXT_MESSAGE })
       .refine((value) => value.trim().length > 0, { message: PROMPT_TEXT_MESSAGE }),
-    type: z.enum(['text', 'chat'], { errorMap: () => ({ message: PROMPT_TYPE_MESSAGE }) }),
+    type: z.enum(['text', 'chat'], { error: PROMPT_TYPE_MESSAGE }),
   },
-  { invalid_type_error: PROMPT_TEXT_MESSAGE },
+  { error: PROMPT_TEXT_MESSAGE },
 );
 
 export function safeValidatePromptPayload(
   data: unknown,
-): z.SafeParseReturnType<unknown, TPromptPayloadSchema> {
+): z.ZodSafeParseResult<TPromptPayloadSchema> {
   return promptPayloadSchema.safeParse(data);
 }
 
@@ -42,7 +42,7 @@ export const updatePromptGroupSchema: z.ZodObject<
     /** Command shortcut for the prompt group */
     command: z.ZodNullable<z.ZodOptional<z.ZodString>>;
   },
-  'strict'
+  z.core.$strict
 > = z
   .object({
     /** The name of the prompt group */
@@ -66,34 +66,12 @@ export const updatePromptGroupSchema: z.ZodObject<
 export type TUpdatePromptGroupSchema = z.infer<typeof updatePromptGroupSchema>;
 
 /**
- * Validates and sanitizes a prompt group update payload.
- * Returns only the allowed fields, stripping any sensitive fields.
- * @param data - The raw request body to validate
- * @returns The validated and sanitized payload
- * @throws ZodError if validation fails
- */
-export function validatePromptGroupUpdate(data: unknown): TUpdatePromptGroupSchema {
-  return updatePromptGroupSchema.parse(data);
-}
-
-/**
  * Safely validates a prompt group update payload without throwing.
  * @param data - The raw request body to validate
  * @returns A SafeParseResult with either the validated data or validation errors
  */
-export function safeValidatePromptGroupUpdate(data: unknown): z.SafeParseReturnType<
-  {
-    name?: string | undefined;
-    category?: string | undefined;
-    command?: string | null | undefined;
-    oneliner?: string | undefined;
-  },
-  {
-    name?: string | undefined;
-    category?: string | undefined;
-    command?: string | null | undefined;
-    oneliner?: string | undefined;
-  }
-> {
+export function safeValidatePromptGroupUpdate(
+  data: unknown,
+): z.ZodSafeParseResult<TUpdatePromptGroupSchema> {
   return updatePromptGroupSchema.safeParse(data);
 }

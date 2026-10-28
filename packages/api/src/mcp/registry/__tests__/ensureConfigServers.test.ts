@@ -1,3 +1,5 @@
+import { PrincipalType } from 'librechat-data-provider';
+import type { AppConfig, ConfigOverrideLayer } from '@librechat/data-schemas';
 import type * as t from '~/mcp/types';
 import { MCPServersRegistry } from '~/mcp/registry/MCPServersRegistry';
 import { MCPServerInspector } from '~/mcp/registry/MCPServerInspector';
@@ -526,6 +528,165 @@ describe('MCPServersRegistry — ensureConfigServers', () => {
     });
   });
 
+  describe('librechat.yaml values removed by tombstones', () => {
+    const remoteYaml = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/mcp',
+      timeout: 30000,
+      headers: { Authorization: 'Bearer {{PAT}}', 'X-Team': 'core' },
+      customUserVars: { PAT: { title: 'Token', description: 'Personal access token' } },
+    } as t.MCPOptions;
+    const allowlists = { allowedDomains: undefined, allowedAddresses: undefined };
+
+    /** Boot as `MCPServersInitializer.initialize` does: record the raw options, then inspect. */
+    async function loadYamlServer(derived: Partial<t.ParsedServerConfig> = {}): Promise<void> {
+      registry.setYamlServerOptions({ yaml_remote: remoteYaml });
+      inspectSpy.mockImplementationOnce(async (_name: string, rawConfig: t.MCPOptions) =>
+        makeParsedConfig({ ...rawConfig, ...derived } as unknown as Partial<t.ParsedServerConfig>),
+      );
+      await registry.addServer('yaml_remote', remoteYaml, 'CACHE');
+      inspectSpy.mockClear();
+    }
+
+    function without(field: string): t.MCPOptions {
+      return Object.fromEntries(
+        Object.entries(remoteYaml).filter(([key]) => key !== field),
+      ) as t.MCPOptions;
+    }
+
+    it.each(['timeout', 'headers', 'customUserVars'])(
+      'serves the server without a %s field a tombstone removed',
+      async (field) => {
+        await loadYamlServer();
+        const resolved = without(field);
+
+        const configServers = await registry.ensureConfigServers({ yaml_remote: resolved });
+
+        expect(inspectSpy).toHaveBeenCalledTimes(1);
+        expect(configServers.yaml_remote).not.toHaveProperty(field);
+        const effective = await registry.getServerConfig('yaml_remote', 'user-1', configServers);
+        expect(effective).not.toHaveProperty(field);
+        expect(effective?.source).toBe('yaml');
+        await expect(
+          registry.resolveCachedAppServerConfig({
+            serverName: 'yaml_remote',
+            userId: 'user-1',
+            mcpConfig: { yaml_remote: resolved },
+            ...allowlists,
+          }),
+        ).resolves.toEqual(
+          expect.objectContaining({
+            serverConfig: expect.not.objectContaining({ [field]: expect.anything() }),
+          }),
+        );
+      },
+    );
+
+    it('keeps an unchanged server on librechat.yaml, so the App path agrees', async () => {
+      await loadYamlServer();
+
+      await expect(registry.ensureConfigServers({ yaml_remote: remoteYaml })).resolves.toEqual({});
+      expect(inspectSpy).not.toHaveBeenCalled();
+      await expect(
+        registry.resolveCachedAppServerConfig({
+          serverName: 'yaml_remote',
+          userId: 'user-1',
+          mcpConfig: { yaml_remote: remoteYaml },
+          ...allowlists,
+        }),
+      ).resolves.toEqual(
+        expect.objectContaining({ serverConfig: expect.objectContaining({ timeout: 30000 }) }),
+      );
+    });
+
+    it('treats an inspector-derived field librechat.yaml never set as unmodified', async () => {
+      await loadYamlServer({ requiresOAuth: true });
+
+      await expect(registry.ensureConfigServers({ yaml_remote: remoteYaml })).resolves.toEqual({});
+      await expect(
+        registry.ensureConfigServers({ yaml_remote: { ...remoteYaml, requiresOAuth: true } }),
+      ).resolves.toEqual({});
+      expect(inspectSpy).not.toHaveBeenCalled();
+    });
+
+    it('drops one inherited header key and keeps its siblings', async () => {
+      await loadYamlServer();
+      const resolved = { ...remoteYaml, headers: { 'X-Team': 'core' } } as t.MCPOptions;
+
+      const configServers = await registry.ensureConfigServers({ yaml_remote: resolved });
+
+      const effective = await registry.getServerConfig('yaml_remote', 'user-1', configServers);
+      expect(effective).toEqual(expect.objectContaining({ headers: { 'X-Team': 'core' } }));
+    });
+
+    it('counts a record emptied by key tombstones as a modification', async () => {
+      await loadYamlServer();
+      const resolved = { ...remoteYaml, headers: {} } as t.MCPOptions;
+
+      const configServers = await registry.ensureConfigServers({ yaml_remote: resolved });
+
+      expect(inspectSpy).toHaveBeenCalledTimes(1);
+      const effective = await registry.getServerConfig('yaml_remote', 'user-1', configServers);
+      expect(effective).toEqual(expect.objectContaining({ headers: {} }));
+    });
+
+    describe('when inspecting the reduced server fails', () => {
+      const failInspection = () =>
+        inspectSpy.mockRejectedValueOnce(new Error('401 Unauthorized without the header'));
+
+      it.each([
+        ['a removed header key', { ...remoteYaml, headers: { 'X-Team': 'core' } }],
+        ['a removed headers field', without('headers')],
+      ])('keeps %s removed instead of falling back to librechat.yaml', async (_case, resolved) => {
+        await loadYamlServer();
+        failInspection();
+
+        const configServers = await registry.ensureConfigServers({
+          yaml_remote: resolved as t.MCPOptions,
+        });
+
+        expect(configServers.yaml_remote).toEqual(
+          expect.objectContaining({ inspectionFailed: true, source: 'config' }),
+        );
+        const effective = await registry.getServerConfig('yaml_remote', 'user-1', configServers);
+        const listed = (await registry.getAllServerConfigs('user-1', configServers)).yaml_remote;
+        for (const entry of [effective, listed]) {
+          expect(entry).toEqual(
+            expect.objectContaining({ inspectionFailed: true, source: 'config' }),
+          );
+          expect(entry).not.toHaveProperty(['headers', 'Authorization']);
+        }
+        /** A failed config-tier entry waits for its own retry; it never reinspects librechat.yaml. */
+        await expect(
+          registry.recoverServerConfig('yaml_remote', effective!, 'user-1'),
+        ).resolves.toBeUndefined();
+      });
+
+      it('still falls back to librechat.yaml for a change that removes nothing', async () => {
+        await loadYamlServer();
+        failInspection();
+
+        const configServers = await registry.ensureConfigServers({
+          yaml_remote: { ...remoteYaml, timeout: 60000 } as t.MCPOptions,
+        });
+
+        expect(configServers.yaml_remote?.inspectionFailed).toBe(true);
+        const effective = await registry.getServerConfig('yaml_remote', 'user-1', configServers);
+        const listed = (await registry.getAllServerConfigs('user-1', configServers)).yaml_remote;
+        for (const entry of [effective, listed]) {
+          expect(entry).toEqual(
+            expect.objectContaining({
+              source: 'yaml',
+              timeout: 30000,
+              headers: expect.objectContaining({ Authorization: 'Bearer {{PAT}}' }),
+            }),
+          );
+          expect(entry).not.toHaveProperty('inspectionFailed');
+        }
+      });
+    });
+  });
+
   describe('source tagging', () => {
     it('should tag CACHE-stored servers as yaml', async () => {
       await registry.addServer('yaml_srv', yamlConfig, 'CACHE');
@@ -538,6 +699,75 @@ describe('MCPServersRegistry — ensureConfigServers', () => {
       const config = await registry.getServerConfig('stub_srv');
       expect(config?.source).toBe('yaml');
       expect(config?.inspectionFailed).toBe(true);
+    });
+  });
+
+  describe('credentials an admin config override stores', () => {
+    const CREDS_KEY = 'ab'.repeat(32);
+    let previousKey: string | undefined;
+
+    beforeAll(() => {
+      previousKey = process.env.CREDS_KEY;
+      process.env.CREDS_KEY = CREDS_KEY;
+    });
+
+    afterAll(() => {
+      if (previousKey === undefined) {
+        delete process.env.CREDS_KEY;
+      } else {
+        process.env.CREDS_KEY = previousKey;
+      }
+    });
+
+    it('initializes the server with the decrypted key, never the ciphertext', async () => {
+      /** Loaded under `CREDS_KEY`: the encryption key is read when data-schemas loads. */
+      let encryptV3!: typeof import('@librechat/data-schemas').encryptV3;
+      let resolveConfigOverrides!: typeof import('~/app/overrides').resolveConfigOverrides;
+      let createEnvReferencePolicy!: typeof import('~/app/allowlist').createEnvReferencePolicy;
+      await jest.isolateModulesAsync(async () => {
+        ({ encryptV3 } = await import('@librechat/data-schemas'));
+        ({ resolveConfigOverrides } = await import('~/app/overrides'));
+        ({ createEnvReferencePolicy } = await import('~/app/allowlist'));
+      });
+
+      const ciphertext = encryptV3('sk-admin-stored-key');
+      const layer = {
+        principalType: PrincipalType.ROLE,
+        principalId: 'USER',
+        priority: 10,
+        overrides: {
+          mcpServers: {
+            remote: {
+              type: 'streamable-http',
+              url: 'https://mcp.example.com/mcp',
+              apiKey: {
+                source: 'admin',
+                authorization_type: 'bearer',
+                key: ciphertext,
+                keyPreview: '...-key',
+              },
+            },
+          },
+        },
+      } as unknown as ConfigOverrideLayer;
+      const appConfig = resolveConfigOverrides({ config: {} } as AppConfig, [layer], {
+        envPolicy: createEnvReferencePolicy({}),
+      });
+
+      const result = await registry.ensureConfigServers(
+        appConfig.mcpConfig as Record<string, t.MCPOptions>,
+      );
+
+      expect(result).toHaveProperty('remote');
+      expect(inspectSpy).toHaveBeenCalledTimes(1);
+      const [name, rawConfig] = inspectSpy.mock.calls[0] as [string, t.MCPOptions];
+      expect(name).toBe('remote');
+      expect(rawConfig.apiKey).toMatchObject({
+        source: 'admin',
+        authorization_type: 'bearer',
+        key: 'sk-admin-stored-key',
+      });
+      expect(JSON.stringify(inspectSpy.mock.calls)).not.toContain(ciphertext);
     });
   });
 });

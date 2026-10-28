@@ -16,8 +16,8 @@ import type {
 } from '~/types';
 import type { TwoFactorEnrollmentGuard, TwoFactorEnrollmentUpdate } from '~/types';
 import type { CacheStore } from '~/types';
+import { scoreSearchMatch, buildUserSearchFilter } from '~/utils/search';
 import { evictAuthUserDocs } from '~/utils/eviction';
-import { escapeRegExp } from '~/utils/string';
 import { signPayload } from '~/crypto';
 import logger from '~/config/winston';
 
@@ -851,13 +851,7 @@ export function createUserMethods(
   ): Promise<IUser | null> {
     const User = mongoose.models.User;
 
-    // First, ensure the personalization object exists
-    const user = await User.findById(userId);
-    if (!user) {
-      return null;
-    }
-
-    // Use $set to update the nested field, which will create the personalization object if it doesn't exist
+    /** `$set` on the nested path creates `personalization` when missing; a missing user yields null. */
     const updateOperation = {
       $set: {
         'personalization.memories': memoriesEnabled,
@@ -891,7 +885,7 @@ export function createUserMethods(
   }
 
   /**
-   * Search for users by pattern matching on name, email, or username (case-insensitive)
+   * Search for users by word prefix of name, email, or username (see `buildUserSearchFilter`)
    * @param searchPattern - The pattern to search for
    * @param limit - Maximum number of results to return
    * @param fieldsToSelect - The fields to include or exclude in the returned documents
@@ -975,12 +969,13 @@ export function createUserMethods(
     }
 
     const trimmedPattern = searchPattern.trim();
-    const regex = new RegExp(escapeRegExp(trimmedPattern), 'i');
+    const filter = buildUserSearchFilter(trimmedPattern);
+    if (!filter) {
+      return [];
+    }
     const User = mongoose.models.User;
 
-    const query = User.find({
-      $or: [{ email: regex }, { name: regex }, { username: regex }],
-    }).limit(limit * 2); // Get more results to allow for relevance sorting
+    const query = User.find(filter).limit(limit * 2); // Get more results to allow for relevance sorting
 
     if (fieldsToSelect) {
       query.select(fieldsToSelect);
@@ -988,41 +983,10 @@ export function createUserMethods(
 
     const users = await query.lean<IUser[]>();
 
-    // Score results by relevance
-    const startsWithPattern = trimmedPattern.toLowerCase();
-
-    const scoredUsers = users.map((user) => {
-      const searchableFields = [user.name, user.email, user.username].filter(
-        (field): field is string => typeof field === 'string' && field.length > 0,
-      );
-      let maxScore = 0;
-
-      for (const field of searchableFields) {
-        const fieldLower = field.toLowerCase();
-        let score = 0;
-
-        // Exact match gets highest score
-        if (fieldLower === startsWithPattern) {
-          score = 100;
-        }
-        // Starts with query gets high score
-        else if (fieldLower.startsWith(startsWithPattern)) {
-          score = 80;
-        }
-        // Contains query gets medium score
-        else if (fieldLower.includes(startsWithPattern)) {
-          score = 50;
-        }
-        // Default score for database match
-        else {
-          score = 10;
-        }
-
-        maxScore = Math.max(maxScore, score);
-      }
-
-      return { ...user, _searchScore: maxScore };
-    });
+    const scoredUsers = users.map((user) => ({
+      ...user,
+      _searchScore: scoreSearchMatch([user.name, user.email, user.username], trimmedPattern),
+    }));
 
     /** Top results sorted by relevance */
     return scoredUsers
@@ -1035,29 +999,36 @@ export function createUserMethods(
   };
 
   /**
-   * Updates the plugins for a user based on the action specified (install/uninstall).
+   * Installs or uninstalls a plugin with a single atomic array operator, so concurrent
+   * install/uninstall requests cannot overwrite each other.
    * @param userId - The user ID whose plugins are to be updated
-   * @param plugins - The current plugins array
+   * @param _plugins - Ignored; the caller's possibly stale snapshot, kept for signature compatibility
    * @param pluginKey - The key of the plugin to install or uninstall
    * @param action - The action to perform, 'install' or 'uninstall'
-   * @returns The result of the update operation or null if action is invalid
+   * @returns The updated user, or null if the action is invalid or the user is missing
    */
   async function updateUserPlugins(
     userId: string,
-    plugins: string[] | undefined,
+    _plugins: string[] | undefined,
     pluginKey: string,
     action: 'install' | 'uninstall',
   ): Promise<IUser | null> {
-    const userPlugins = plugins ?? [];
+    let arrayOperation: Record<string, { plugins: string }>;
     if (action === 'install') {
-      return updateUser(userId, { plugins: [...userPlugins, pluginKey] });
+      arrayOperation = { $addToSet: { plugins: pluginKey } };
+    } else if (action === 'uninstall') {
+      arrayOperation = { $pull: { plugins: pluginKey } };
+    } else {
+      return null;
     }
-    if (action === 'uninstall') {
-      return updateUser(userId, {
-        plugins: userPlugins.filter((plugin) => plugin !== pluginKey),
-      });
-    }
-    return null;
+    const User = mongoose.models.User;
+    const updated = await User.findByIdAndUpdate(
+      userId,
+      { ...arrayOperation, $unset: { expiresAt: '' } },
+      { new: true, runValidators: true },
+    ).lean<IUser>();
+    await invalidateAuthUserDocCache(userId);
+    return updated;
   }
 
   return {

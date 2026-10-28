@@ -7,12 +7,12 @@ import { Ellipsis, PlusCircle, HatGlasses, Check, ChartNoAxesGantt } from 'lucid
 import type { TStartupConfig } from 'librechat-data-provider';
 import type { TraceControl } from '~/components/Chat/Trace';
 import type * as t from '~/common';
+import useTemporaryChat from '~/hooks/Conversations/useTemporaryChat';
 import { usePullRequestMenu } from '~/components/Chat/PullRequest';
+import useBookmarkItems from '~/hooks/Sharing/useBookmarkItems';
+import useMultiConvo from '~/hooks/Conversations/useMultiConvo';
 import { BookmarkContext } from '~/Providers/BookmarkContext';
-import useBookmarkItems from '~/hooks/Chat/useBookmarkItems';
-import useTemporaryChat from '~/hooks/Chat/useTemporaryChat';
-import useChatOptions from '~/hooks/Chat/useChatOptions';
-import useMultiConvo from '~/hooks/Chat/useMultiConvo';
+import useChatOptions from '~/hooks/Sharing/useChatOptions';
 import { useHasAccess, useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -177,7 +177,7 @@ export default function HeaderMenu({
                 <Ellipsis className="icon-md" aria-hidden="true" />
                 {exportShare.hasSharedLink && (
                   <span
-                    className="bg-status-info ring-presentation absolute -top-0.5 -right-0.5 size-2 rounded-full ring-2"
+                    className="bg-status-info ring-presentation absolute -inset-e-0.5 -top-0.5 size-2 rounded-full ring-2"
                     data-testid="header-menu-shared-link-indicator"
                     aria-hidden="true"
                   />

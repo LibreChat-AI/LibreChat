@@ -1,8 +1,10 @@
+import { Provider, createStore } from 'jotai';
 import userEvent from '@testing-library/user-event';
 import { render, screen, within } from '@testing-library/react';
 import type { TBalanceResponse, TConversation } from 'librechat-data-provider';
 import type { TokenUsageView } from '~/hooks/Chat/useTokenUsage';
 import { TokenCredits, AutoRefill } from '~/components/Nav/Settings/BillingControls';
+import { contextBreakdownExpandedAtom } from './store';
 import TokenUsage from './index';
 
 const mockStartupConfig = jest.fn();
@@ -142,6 +144,30 @@ describe('TokenUsage gauge', () => {
       'max-w-[calc(100vw-1rem)]',
       'overflow-y-auto',
     );
+  });
+
+  it('sizes expanded context relative to the viewport without widening balance-only cards', async () => {
+    mockStartupConfig.mockReturnValue(config());
+    mockTokenUsage.mockReturnValue(usage(83_200));
+    const store = createStore();
+    store.set(contextBreakdownExpandedAtom, true);
+    const { rerender } = render(
+      <Provider store={store}>
+        <TokenUsage index={0} conversation={conversation} isSubmitting={false} />
+      </Provider>,
+    );
+    await openCard();
+    expect(screen.getByTestId('token-usage-card')).toHaveClass(
+      'w-[min(44rem,calc(100vw-2.5rem))]',
+      'max-w-full',
+    );
+    mockTokenUsage.mockReturnValue(usage(0));
+    rerender(
+      <Provider store={store}>
+        <TokenUsage index={0} conversation={{ ...conversation }} isSubmitting={false} />
+      </Provider>,
+    );
+    expect(screen.getByTestId('token-usage-card')).toHaveClass('w-72');
   });
 
   it('tints the balance-only ring with the balance tone, amber until empty', () => {

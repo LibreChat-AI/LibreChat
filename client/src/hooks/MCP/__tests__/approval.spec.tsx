@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen } from '@testing-library/react';
 import { MCPAppApproval, useMCPAppApproval } from '../approval';
 
 jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
@@ -73,24 +73,67 @@ test('discloses conversation tool context before an App-authored chat turn is ap
   view.unmount();
 });
 
-test('rejects simultaneous App requests and lets the user deny the first', async () => {
+test('queues simultaneous App requests and requires separate host approval for each', async () => {
   let approval!: ReturnType<typeof useMCPAppApproval>;
   const view = render(<Harness onReady={(value) => (approval = value)} />);
   let first!: Promise<boolean>;
+  let second!: Promise<boolean>;
   act(() => {
     first = approval.request(action, new AbortController().signal);
-  });
-  await expect(
-    approval.request(
+    second = approval.request(
       { kind: 'message', serverName: 'fixture', text: 'next' },
       new AbortController().signal,
-    ),
-  ).resolves.toBe(false);
-  await act(async () => {
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_cancel' }));
+    );
   });
-  await expect(first).resolves.toBe(false);
+  expect(screen.getByRole('alertdialog')).toHaveTextContent('fixture / remove');
+  await act(async () =>
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_mcp_app_run_tool' })),
+  );
+  await expect(first).resolves.toBe(true);
+  expect(screen.getByRole('alertdialog')).toHaveTextContent('next');
+  await act(async () =>
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_mcp_app_send_message' })),
+  );
+  await expect(second).resolves.toBe(true);
+  expect(screen.queryByRole('alertdialog')).not.toBeInTheDocument();
   view.unmount();
+});
+
+test('cancel settles the entire queue and a queued abort leaves the displayed request intact', async () => {
+  let approval!: ReturnType<typeof useMCPAppApproval>;
+  const view = render(<Harness onReady={(value) => (approval = value)} />);
+  const queuedAbort = new AbortController();
+  let first!: Promise<boolean>;
+  let second!: Promise<boolean>;
+  let third!: Promise<boolean>;
+  act(() => {
+    first = approval.request(action, new AbortController().signal);
+    second = approval.request(action, queuedAbort.signal);
+    third = approval.request(action, new AbortController().signal);
+    queuedAbort.abort();
+  });
+  await expect(second).resolves.toBe(false);
+  expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+  act(() => approval.cancel());
+  await expect(first).resolves.toBe(false);
+  await expect(third).resolves.toBe(false);
+  view.unmount();
+});
+
+test('bounds queued approvals and settles them all on unmount', async () => {
+  const view = renderHook(() => useMCPAppApproval(2));
+  let first!: Promise<boolean>;
+  let second!: Promise<boolean>;
+  act(() => {
+    first = view.result.current.request(action, new AbortController().signal);
+    second = view.result.current.request(action, new AbortController().signal);
+  });
+  await expect(view.result.current.request(action, new AbortController().signal)).resolves.toBe(
+    false,
+  );
+  view.unmount();
+  await expect(first).resolves.toBe(false);
+  await expect(second).resolves.toBe(false);
 });
 
 test('denying once suppresses repeated prompts until the View is reopened', async () => {
@@ -182,4 +225,17 @@ test('an already aborted request does not suspend a fresh View', async () => {
   expect(screen.getByRole('alertdialog')).toBeInTheDocument();
   view.unmount();
   await expect(pending).resolves.toBe(false);
+});
+
+test('an idle bridge cleanup does not suspend later approvals', async () => {
+  const view = renderHook(() => useMCPAppApproval());
+  act(() => view.result.current.cancel());
+  let pending!: Promise<boolean>;
+  act(() => {
+    pending = view.result.current.request(action, new AbortController().signal);
+  });
+  expect(view.result.current.pending).toEqual(action);
+  act(() => view.result.current.approve());
+  await expect(pending).resolves.toBe(true);
+  view.unmount();
 });

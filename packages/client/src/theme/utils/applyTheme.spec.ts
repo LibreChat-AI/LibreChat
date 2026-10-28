@@ -1,4 +1,10 @@
-import type { IThemeRGB, ThemeDefinition } from '../types';
+import {
+  defaultTheme,
+  defaultAppearance,
+  highContrastTheme,
+  resolveTheme,
+} from 'librechat-data-provider';
+import type { IThemeRGB, ThemeDefinition } from 'librechat-data-provider';
 import applyTheme, {
   applyResolvedTheme,
   clearAppliedTheme,
@@ -7,8 +13,6 @@ import applyTheme, {
   THEME_SCOPE_ATTRIBUTE,
   THEME_FIELD_FOCUS_ATTRIBUTE,
 } from './applyTheme';
-import { defaultAppearance, highContrastTheme, resolveTheme } from '../registry';
-import { defaultTheme } from '../themes/default';
 
 const semanticProperties = [
   '--link',

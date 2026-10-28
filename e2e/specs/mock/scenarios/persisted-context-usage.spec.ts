@@ -138,7 +138,7 @@ test.describe('persisted context usage', () => {
       await expect(lastTurn.getByText('Cache write').locator('../..')).toContainText('50');
       await expect(branch.getByText('This branch')).toBeVisible();
       await expect(branch.getByText('Cache read').locator('../..')).toContainText('500');
-      await expect(popover.getByTestId('token-usage-cost')).toContainText('Cost (last turn)');
+      await expect(lastTurn.getByTestId('usage-cost')).toContainText('Cost (last turn)');
       await expect(popover.getByTestId('token-usage-all-branches')).toHaveCount(0);
       await page.keyboard.press('Escape');
     };
@@ -324,7 +324,7 @@ test.describe('persisted context usage', () => {
 
     const estimate = popover.getByTestId('context-estimate');
     await expect(estimate).toBeVisible({ timeout: 10000 });
-    const toolRow = estimate.locator('div.pl-6').getByText('Tool calls', { exact: true });
+    const toolRow = estimate.locator('div.ps-6').getByText('Tool calls', { exact: true });
     await expect(toolRow).toBeVisible();
 
     // Tool traffic is already included in the counted assistant total, so the Tool calls subtotal must be nested rather than a peer that would double-count the meter.

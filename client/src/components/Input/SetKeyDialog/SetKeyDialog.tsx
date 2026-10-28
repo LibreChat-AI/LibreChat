@@ -125,7 +125,7 @@ const RevokeKeysButton = ({
             <OGDialogTitle>{localize('com_ui_revoke_key_endpoint', { 0: endpoint })}</OGDialogTitle>
           </OGDialogHeader>
           <div className="py-4">
-            <Label className="text-left text-sm font-medium">
+            <Label className="text-start text-sm font-medium">
               {localize('com_ui_revoke_key_confirm')}
             </Label>
           </div>

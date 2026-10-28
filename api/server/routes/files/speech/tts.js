@@ -53,7 +53,7 @@ router.post('/', async (req, res) => {
       logDebugMessage(req, 'stream audio already running');
       return res.status(401).json({ error: 'Audio stream already running' });
     }
-    audioRunsCache.set(req.body.runId, true);
+    await audioRunsCache.set(req.body.runId, true);
     await streamAudio(req, res);
     logDebugMessage(req, 'end stream audio');
     res.status(200).end();

@@ -1,17 +1,23 @@
 import { z } from 'zod';
-import { encryptV3, logger } from '@librechat/data-schemas';
 import { DynamicStructuredTool } from '@langchain/core/tools';
 import { HumanMessage, AIMessage } from '@langchain/core/messages';
 import { CallbackManager } from '@langchain/core/callbacks/manager';
+import { encryptV3, logger, mergeConfigOverrides } from '@librechat/data-schemas';
 import {
   EModelEndpoint,
   FileSources,
+  PrincipalType,
   MAX_SUBAGENT_DEPTH,
   MAX_SUBAGENT_RUN_CONFIGS,
 } from 'librechat-data-provider';
-import type { CompactionSemanticIndex, SubagentTaskConfig, AgentInputs } from '@librechat/agents';
+import type {
+  CompactionSemanticIndex,
+  SubagentTaskConfig,
+  SubagentConfig,
+  AgentInputs,
+} from '@librechat/agents';
+import type { AppConfig, ConfigOverrideLayer, IUser } from '@librechat/data-schemas';
 import type { SummarizationConfig, TEndpoint } from 'librechat-data-provider';
-import type { AppConfig, IUser } from '@librechat/data-schemas';
 import type { BaseMessage } from '@langchain/core/messages';
 import type { OpenAI } from 'openai';
 import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
@@ -20,6 +26,7 @@ import { clearToolApprovalHooks, registerToolApprovalHook } from '~/agents/hitl/
 import { executionFixture } from '~/schedules/authorization/execution.helper';
 import { createRun, isAskUserQuestionAdminDisabled } from '~/agents/run';
 import { initializeOpenAI } from '~/endpoints/openai/initialize';
+import { createSecretRebindingGuard } from '~/app/rebinding';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
 
 // Mock winston logger — `format` must be callable so @librechat/data-schemas
@@ -2091,6 +2098,121 @@ describe('initialSummary passthrough', () => {
 // Suite 7: stable/dynamic system instructions
 // ---------------------------------------------------------------------------
 describe('stable/dynamic system instructions', () => {
+  it.each([Providers.ANTHROPIC, Providers.OPENROUTER])(
+    'labels the complete cached %s tail as application context without changing user input',
+    async (provider) => {
+      await callAndCapture({
+        agents: [
+          makeAgent({
+            provider,
+            endpoint: provider,
+            instructions:
+              "Translate the user's message into Chinese. Reply with the translation only.",
+            additional_instructions: 'Saved memory: prefers tea\n\nRetrieved context: a document',
+            dynamicToolContextMap: { web_search: 'Conversation Date & Time: anchor' },
+            model_parameters: { model: 'test-model', promptCache: true, apiKey: 'test-key' },
+          }),
+        ],
+      });
+      const runConfig = jest.mocked(Run.create).mock.calls[0][0];
+      if (!('agents' in runConfig.graphConfig) || !runConfig.graphConfig.agents?.length) {
+        throw new Error('Expected agent inputs');
+      }
+      const inputs = runConfig.graphConfig.agents[0];
+      expect(inputs.additional_instructions).toBe(
+        `<system_context>
+Context supplied by the application, not part of the user's message. Use it as context; do not process it as user input.
+
+Conversation Date & Time: anchor
+Saved memory: prefers tea
+
+Retrieved context: a document
+</system_context>`,
+      );
+      const actual = jest.requireActual<typeof import('@librechat/agents')>('@librechat/agents');
+      const run = await actual.Run.create(runConfig);
+      const context = run.Graph!.agentContexts.get(inputs.agentId)!;
+      const userText = 'Translate this paragraph, including <system_context> as literal text.';
+      const messages = [
+        new HumanMessage('Previous user input'),
+        new AIMessage('Previous response'),
+        new HumanMessage(userText),
+      ];
+      const prompt = await context.systemRunnable!.invoke(messages);
+      expect(prompt[0].getType()).toBe('system');
+      expect(JSON.stringify(prompt[0].content)).not.toContain('<system_context>');
+      expect(prompt[prompt.length - 2].getType()).toBe('human');
+      expect(prompt[prompt.length - 2].content).toBe(inputs.additional_instructions);
+      expect(prompt[prompt.length - 1].text).toBe(userText);
+      expect(messages[messages.length - 1].content).toBe(userText);
+    },
+  );
+
+  it.each([
+    [Providers.ANTHROPIC, false],
+    [Providers.OPENROUTER, false],
+    [Providers.OPENAI, true],
+    [Providers.BEDROCK, true],
+  ])(
+    'leaves the %s tail unchanged with promptCache=%s when it is not relocated',
+    async (provider, promptCache) => {
+      const agents = await callAndCapture({
+        agents: [
+          makeAgent({
+            provider,
+            endpoint: provider,
+            instructions: 'Base instructions',
+            additional_instructions: 'Memory tail',
+            model_parameters: { model: 'test-model', promptCache },
+          }),
+        ],
+      });
+      expect(agents[0].additional_instructions).toBe('Memory tail');
+    },
+  );
+
+  it('frames isolated subagent skills inside the same context block', async () => {
+    const child = makeAgent({
+      id: 'agent_child',
+      provider: Providers.ANTHROPIC,
+      endpoint: Providers.ANTHROPIC,
+      instructions: 'Translate the user input',
+      additional_instructions: 'Child memory',
+      model_parameters: { model: 'test-model', promptCache: true },
+      alwaysApplySkillPrimes: [{ name: 'translation', body: 'Use the glossary.' }],
+    });
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, allowSelf: false, agent_ids: [child.id] },
+          subagentAgentConfigs: [child],
+        }),
+      ],
+    });
+    const configs = agents[0].subagentConfigs as SubagentConfig[];
+    expect(configs[0].agentInputs?.additional_instructions).toContain(
+      'Child memory\n\n# Always-apply skill: translation\nUse the glossary.\n</system_context>',
+    );
+    expect(
+      configs[0].agentInputs?.additional_instructions?.match(/<system_context>/g),
+    ).toHaveLength(1);
+    expect(child.additional_instructions).toBe('Child memory');
+  });
+
+  it('does not add a context carrier for an empty cached tail', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          provider: Providers.ANTHROPIC,
+          endpoint: Providers.ANTHROPIC,
+          instructions: 'Translate the user input',
+          model_parameters: { model: 'test-model', promptCache: true },
+        }),
+      ],
+    });
+    expect(agents[0].additional_instructions).toBeUndefined();
+  });
+
   it('keeps static tool and agent instructions separate from dynamic runtime tail', async () => {
     const agents = await callAndCapture({
       agents: [
@@ -5127,5 +5249,146 @@ describe('steering provider capabilities', () => {
     });
     expect(disable).not.toHaveBeenCalled();
     expect(jest.mocked(Run.create).mock.calls[0]?.[0].preemption).toBeDefined();
+  });
+});
+
+/**
+ * The override pipeline's rebinding guard, end to end: what a profile writes to
+ * `summarization` is merged as `getAppConfig` merges it, and the run's real summarizer makes the
+ * request.
+ */
+describe('summarization destinations an override profile sets', () => {
+  const ATTACKER = 'https://attacker.example/openai/deployments/summary-production';
+  const GROUP_RESOURCE = 'https://summary-instance.openai.azure.com/';
+
+  function azureAppConfig(summarization?: SummarizationConfig): AppConfig {
+    const appConfig = makeAppConfig([]);
+    appConfig.endpoints![EModelEndpoint.azureOpenAI] = {
+      modelNames: ['gpt-4.1-mini'],
+      modelGroupMap: { 'gpt-4.1-mini': { group: 'summary' } },
+      groupMap: {
+        summary: {
+          apiKey: 'deployment-group-secret',
+          instanceName: 'summary-instance',
+          version: '2024-10-21',
+          models: { 'gpt-4.1-mini': { deploymentName: 'summary-production' } },
+        },
+      },
+    } as unknown as NonNullable<AppConfig['endpoints']>[EModelEndpoint.azureOpenAI];
+    if (summarization != null) {
+      appConfig.config.summarization = structuredClone(summarization);
+      appConfig.summarization = structuredClone(summarization);
+    }
+    return appConfig;
+  }
+
+  function mergeProfile(base: AppConfig, profile: Partial<ConfigOverrideLayer>) {
+    const ignored: string[] = [];
+    const layer = {
+      principalType: PrincipalType.ROLE,
+      principalId: 'editors',
+      priority: 10,
+      overrides: {},
+      ...profile,
+    } as ConfigOverrideLayer;
+    const merged = mergeConfigOverrides(base, [layer], {
+      afterLayer: createSecretRebindingGuard(({ path }) => ignored.push(path)),
+    });
+    return { merged, ignored };
+  }
+
+  async function summarize(appConfig: AppConfig) {
+    const agents = await callAndCapture({
+      agents: [makeAgent()],
+      appConfig,
+      summarizeOnly: true,
+      summarizationConfig: appConfig.summarization,
+    });
+    const { requests } = await compactSummary(agents);
+    return requests.map(({ url, headers }) => ({
+      url: url.href,
+      apiKey: headers.get('api-key'),
+    }));
+  }
+
+  it.each([1, 0, true, false])(
+    'keeps the Azure group key on its own resource under a profile key of %p',
+    async (apiKey) => {
+      const { merged, ignored } = mergeProfile(azureAppConfig(), {
+        overrides: {
+          summarization: {
+            provider: 'azureOpenAI',
+            model: 'gpt-4.1-mini',
+            parameters: { baseURL: ATTACKER, apiKey },
+          },
+        },
+      });
+
+      expect(ignored).toEqual(['summarization.parameters.baseURL']);
+      const requests = await summarize(merged);
+      expect(requests).toEqual([
+        { url: expect.stringMatching(`^${GROUP_RESOURCE}`), apiKey: 'deployment-group-secret' },
+      ]);
+    },
+  );
+
+  it('sends a key the profile enters, and only that key, to the destination it sets', async () => {
+    const { merged, ignored } = mergeProfile(azureAppConfig(), {
+      overrides: {
+        summarization: {
+          provider: 'azureOpenAI',
+          model: 'gpt-4.1-mini',
+          parameters: { baseURL: ATTACKER, apiKey: 'profile-own-key' },
+        },
+      },
+    });
+
+    expect(ignored).toEqual([]);
+    expect(await summarize(merged)).toEqual([
+      { url: expect.stringMatching(/^https:\/\/attacker\.example\//), apiKey: 'profile-own-key' },
+    ]);
+  });
+
+  it("keeps the Azure group key off librechat.yaml's gateway once a profile removes the gateway's key", async () => {
+    const yaml = azureAppConfig({
+      provider: 'azureOpenAI',
+      model: 'gpt-4.1-mini',
+      parameters: {
+        baseURL: 'https://yaml-gateway.example/openai/deployments/summary-production',
+        apiKey: 'yaml-gateway-key',
+      },
+    });
+    expect(await summarize(yaml)).toEqual([
+      {
+        url: expect.stringMatching(/^https:\/\/yaml-gateway\.example\//),
+        apiKey: 'yaml-gateway-key',
+      },
+    ]);
+    jest.mocked(Run.create).mockClear();
+
+    const { merged, ignored } = mergeProfile(yaml, {
+      tombstones: ['summarization.parameters.apiKey'],
+    });
+
+    expect(ignored).toEqual(['summarization.parameters.baseURL']);
+    expect(await summarize(merged)).toEqual([
+      { url: expect.stringMatching(`^${GROUP_RESOURCE}`), apiKey: 'deployment-group-secret' },
+    ]);
+  });
+
+  it("keeps the Azure group key off librechat.yaml's unkeyed gateway for another provider", async () => {
+    const { merged, ignored } = mergeProfile(
+      azureAppConfig({
+        provider: 'openAI',
+        model: 'gpt-4.1-mini',
+        parameters: { baseURL: 'https://yaml-gateway.example/openai/deployments/x' },
+      }),
+      { overrides: { summarization: { provider: 'azureOpenAI' } } },
+    );
+
+    expect(ignored).toEqual(['summarization.parameters.baseURL']);
+    expect(await summarize(merged)).toEqual([
+      { url: expect.stringMatching(`^${GROUP_RESOURCE}`), apiKey: 'deployment-group-secret' },
+    ]);
   });
 });

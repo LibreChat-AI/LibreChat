@@ -3,6 +3,7 @@ import type { RecordUsageDeps, RecordUsageParams, SubagentUsageEvent } from './u
 import type { UsageMetadata } from '../stream/interfaces/IJobStore';
 import type { BulkWriteDeps, PricingFns } from './transactions';
 import {
+  getModelEndUsage,
   computeUsageCostUSD,
   aggregateEmittedUsage,
   createDetachedSubagentUsageRecorder,
@@ -684,6 +685,51 @@ describe('recordCollectedUsage', () => {
         },
       );
       expect(result?.input_tokens).toBe(140);
+    });
+  });
+
+  describe('cache token handling - Anthropic 1-hour writes', () => {
+    it('passes the 1-hour share of the writes to spendStructuredTokens', async () => {
+      const collectedUsage: UsageMetadata[] = [
+        {
+          input_tokens: 3600,
+          output_tokens: 50,
+          model: 'claude-sonnet-5-5',
+          provider: 'anthropic',
+          input_token_details: { cache_creation: 3000, cache_creation_1h: 2000, cache_read: 500 },
+        },
+      ];
+
+      await recordCollectedUsage(deps, { ...baseParams, collectedUsage });
+
+      expect(mockSpendStructuredTokens).toHaveBeenCalledWith(
+        expect.objectContaining({ model: 'claude-sonnet-5-5' }),
+        {
+          promptTokens: { input: 100, write: 3000, write1h: 2000, read: 500 },
+          completionTokens: 50,
+        },
+      );
+    });
+
+    it('caps the 1-hour share at the reported writes', async () => {
+      const collectedUsage: UsageMetadata[] = [
+        {
+          input_tokens: 1100,
+          output_tokens: 10,
+          model: 'claude-sonnet-5-5',
+          provider: 'anthropic',
+          input_token_details: { cache_creation: 1000, cache_creation_1h: 4000 },
+        },
+      ];
+
+      await recordCollectedUsage(deps, { ...baseParams, collectedUsage });
+
+      expect(mockSpendStructuredTokens.mock.calls[0][1].promptTokens).toEqual({
+        input: 100,
+        write: 1000,
+        write1h: 1000,
+        read: 0,
+      });
     });
   });
 
@@ -1894,6 +1940,82 @@ describe('computeUsageCostUSD', () => {
       pricing,
     );
     expect(cost).toBeCloseTo((260000 * 8 + 5000 * 3.75 + 15000 * 0.3 + 500 * 40) / 1e6);
+  });
+
+  it('prices the 1-hour share of Anthropic cache writes at the 1-hour rate', () => {
+    /** 13000 = 1000 fresh + 2000 write (1500 of them 1-hour) + 10000 read */
+    const cost = computeUsageCostUSD(
+      {
+        input_tokens: 13000,
+        output_tokens: 500,
+        model: 'claude-sonnet-5-5',
+        provider: 'anthropic',
+        input_token_details: { cache_creation: 2000, cache_creation_1h: 1500, cache_read: 10000 },
+      },
+      {
+        ...pricing,
+        getCacheMultiplier: ({ cacheType }) => ({ write: 3.75, write1h: 6, read: 0.3 })[cacheType],
+      },
+    );
+    expect(cost).toBeCloseTo((1000 * 3 + 500 * 3.75 + 1500 * 6 + 10000 * 0.3 + 500 * 15) / 1e6);
+  });
+});
+
+describe('getModelEndUsage', () => {
+  const usage_metadata: UsageMetadata = {
+    input_tokens: 3510,
+    output_tokens: 40,
+    total_tokens: 3550,
+    input_token_details: { cache_creation: 3000, cache_read: 500 },
+  };
+
+  it('folds the Anthropic 1-hour write count into the usage', () => {
+    const usage = getModelEndUsage({
+      usage_metadata,
+      response_metadata: {
+        usage: {
+          cache_creation: { ephemeral_5m_input_tokens: 1000, ephemeral_1h_input_tokens: 2000 },
+        },
+      },
+    });
+    expect(usage?.input_token_details).toEqual({
+      cache_creation: 3000,
+      cache_creation_1h: 2000,
+      cache_read: 500,
+    });
+    expect(usage_metadata.input_token_details).not.toHaveProperty('cache_creation_1h');
+  });
+
+  it('reads the 1-hour writes from Bedrock cacheDetails, streamed or not', () => {
+    const cacheDetails = [
+      { ttl: '1h', inputTokens: 2000 },
+      { ttl: '5m', inputTokens: 1000 },
+    ];
+    for (const response_metadata of [
+      { usage: { cacheDetails } },
+      { metadata: { usage: { cacheDetails } } },
+    ]) {
+      expect(getModelEndUsage({ usage_metadata, response_metadata })?.input_token_details).toEqual({
+        cache_creation: 3000,
+        cache_creation_1h: 2000,
+        cache_read: 500,
+      });
+    }
+  });
+
+  it('returns the usage unchanged without a 1-hour breakdown', () => {
+    expect(getModelEndUsage({ usage_metadata })).toBe(usage_metadata);
+    expect(
+      getModelEndUsage({
+        usage_metadata,
+        response_metadata: { usage: { cache_creation: { ephemeral_1h_input_tokens: 0 } } },
+      }),
+    ).toBe(usage_metadata);
+  });
+
+  it('returns undefined when the call reported no usage', () => {
+    expect(getModelEndUsage(undefined)).toBeUndefined();
+    expect(getModelEndUsage({ response_metadata: null })).toBeUndefined();
   });
 });
 

@@ -58,7 +58,7 @@ export default function SystemEventHeader({
       {expanded != null && (
         <ChevronDown
           className={cn(
-            'text-text-secondary ml-auto size-4 shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none',
+            'text-text-secondary ms-auto size-4 shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none',
             expanded && 'rotate-180',
           )}
           aria-hidden="true"

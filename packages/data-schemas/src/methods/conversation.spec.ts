@@ -105,9 +105,6 @@ const getConvosByCursor = (...args: Parameters<ConversationMethods['getConvosByC
   methods.getConvosByCursor(...args);
 const getConvosQueried = (...args: Parameters<ConversationMethods['getConvosQueried']>) =>
   methods.getConvosQueried(...args);
-const deleteNullOrEmptyConversations = (
-  ...args: Parameters<ConversationMethods['deleteNullOrEmptyConversations']>
-) => methods.deleteNullOrEmptyConversations(...args);
 const searchConversation = (...args: Parameters<ConversationMethods['searchConversation']>) =>
   methods.searchConversation(...args);
 
@@ -5011,32 +5008,6 @@ describe('Conversation Operations', () => {
     it('returns zero when the user has no conversations', async () => {
       const result = await archiveAllConvos('user123');
       expect(result.archivedCount).toBe(0);
-    });
-  });
-
-  describe('deleteNullOrEmptyConversations', () => {
-    it('should delete conversations with null, empty, or missing conversationIds', async () => {
-      // Since conversationId is required by the schema, we can't create documents with null/missing IDs
-      // This test should verify the function works when such documents exist (e.g., from data corruption)
-
-      // For this test, let's create a valid conversation and verify the function doesn't delete it
-      await Conversation.create({
-        conversationId: mockConversationData.conversationId,
-        user: 'user4',
-        endpoint: EModelEndpoint.openAI,
-      });
-
-      deleteMessages.mockResolvedValue({ deletedCount: 0 });
-
-      const result = await deleteNullOrEmptyConversations();
-
-      expect(result?.conversations.deletedCount).toBe(0); // No invalid conversations to delete
-      expect(result?.messages.deletedCount).toBe(0);
-
-      // Verify valid conversation remains
-      const remainingConvos = await Conversation.find({});
-      expect(remainingConvos).toHaveLength(1);
-      expect(remainingConvos[0].conversationId).toBe(mockConversationData.conversationId);
     });
   });
 

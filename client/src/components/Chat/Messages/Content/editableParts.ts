@@ -1,4 +1,4 @@
-import { ContentTypes } from 'librechat-data-provider';
+import { ContentTypes, stripOpaqueReasoning } from 'librechat-data-provider';
 import type { TMessage, TMessageContentParts, TextData } from 'librechat-data-provider';
 import { splitMarkdownIntoBlocks } from './splitMarkdown';
 
@@ -50,7 +50,16 @@ export const isEditablePart = (part?: TMessageContentParts | null): boolean => {
     return false;
   }
   const text = getPartText(part);
-  return text != null && !containsArtifact(text);
+  if (text == null) {
+    return false;
+  }
+  /** The edit endpoint replaces the whole value, and an encoded provider
+   *  payload is neither readable nor positionable in an edited draft, so
+   *  reasoning that carries one stays read-only rather than losing it. */
+  if (part.type === ContentTypes.THINK && stripOpaqueReasoning(text) !== text) {
+    return false;
+  }
+  return !containsArtifact(text);
 };
 
 /**

@@ -34,8 +34,12 @@ jest.mock('~/hooks', () => ({
   useLocalize:
     () =>
     (key: string, values?: Record<string, unknown>): string => {
-      const template =
-        (jest.requireActual('~/locales/en/translation.json') as Record<string, string>)[key] ?? key;
+      const catalog = jest.requireActual('~/locales/en/translation.json') as Record<string, string>;
+      /** Mirrors i18next's English plural resolution for a base key with a numeric count. */
+      const count = values?.count;
+      const plural =
+        typeof count === 'number' ? catalog[`${key}_${count === 1 ? 'one' : 'other'}`] : undefined;
+      const template = plural ?? catalog[key] ?? key;
       if (!values) {
         return template;
       }
@@ -711,7 +715,7 @@ describe('Error — user key and limits', () => {
     );
 
     expect(
-      screen.getByText(localized('com_error_message_limit', '40', '60 minutes')),
+      screen.getByText(localized('com_error_message_limit_other', '40', '60 minutes')),
     ).toBeInTheDocument();
     expect(screen.queryByText(/You can send another message/)).not.toBeInTheDocument();
   });

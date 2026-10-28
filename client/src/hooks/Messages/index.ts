@@ -1,7 +1,5 @@
 export { default as useProgress } from './useProgress';
 export {
-  MESSAGE_CONTENT_LAYOUT_CHANGE_EVENT,
-  dispatchMessageContentLayoutChange,
   getRenderedContentMaxScrollTop,
   reconcileMessageContentLayout,
   scheduleMessageContentLayoutReconcile,

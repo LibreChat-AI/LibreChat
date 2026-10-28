@@ -1,8 +1,13 @@
 import { join } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 
 const inputRoot = join(__dirname, '..');
-const source = (file: string): string => readFileSync(join(inputRoot, file), 'utf8');
+const packageRoot = join(__dirname, '../../../../../../packages/chat/src/components/composer');
+/** Composer modules live in `@librechat/chat` once they move; the rest are still app-side. */
+const source = (file: string): string => {
+  const moved = join(packageRoot, file);
+  return readFileSync(existsSync(moved) ? moved : join(inputRoot, file), 'utf8');
+};
 
 /** Send and stop take the slot's recipe from IconButton's `submit` variant,
  *  which is built from `composerSubmitClasses()`. */
@@ -13,7 +18,6 @@ const themedControls = [
    *  tap-target floor as well as the geometry. */
   ['DuringRunSendButton.tsx', ['composerSubmitClasses()']],
   ['TokenUsage/Popover.tsx', ['size-theme-control', 'rounded-theme-control-round']],
-  ['Files/AttachFile.tsx', ['size-theme-control', 'rounded-theme-control-round']],
   /** The context rail's pills share one recipe built on the composer control classes. */
   ['chip.ts', ['composerControlClasses()']],
   ['CodeApprovalMenu.tsx', ['chipClasses']],

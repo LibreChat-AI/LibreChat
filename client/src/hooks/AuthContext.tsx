@@ -7,7 +7,7 @@ import {
   useCallback,
   createContext,
 } from 'react';
-import { debounce } from 'lodash';
+import debounce from 'lodash/debounce';
 import { getDefaultStore } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { useRecoilState, useSetRecoilState } from 'recoil';
@@ -41,6 +41,7 @@ import {
   useGetUserQuery,
   endPullRequestSession,
   useLoginUserMutation,
+  clearTitleGenerationState,
   setPullRequestSessionOwner,
   useLogoutUserMutation,
   useRefreshTokenMutation,
@@ -69,8 +70,12 @@ const endSessionClientState = (): void => {
   clearRetainedFileDeletions();
   clearComposerDraftStorage();
   endPullRequestSession();
+  clearTitleGenerationState();
   void clearTTSCache();
 };
+/** `document.prerendering` is not yet part of TypeScript's DOM types. */
+const isPrerendering = (): boolean =>
+  (document as Document & { prerendering?: boolean }).prerendering === true;
 /**
  * Only recognized codes override the HTTP status used by the login error translation.
  */
@@ -89,6 +94,7 @@ const AuthContextProvider = ({
   children: ReactNode;
 }) => {
   const isExternalRedirectRef = useRef(false);
+  const prerenderRefreshDeferredRef = useRef(false);
   const [user, setUser] = useRecoilState(store.user);
   const logoutRedirectRef = useRef<string | undefined>(undefined);
   const [token, setToken] = useState<string | undefined>(undefined);
@@ -175,11 +181,13 @@ const AuthContextProvider = ({
        * setup route finish the previous user's enrollment and take the tab as them.
        */
       clearTwoFactorSetupToken();
-      if (twoFASetupRequired) {
+      if (twoFASetupRequired || twoFAPending) {
         const redirectTo = new URLSearchParams(window.location.search).get('redirect_to');
         if (redirectTo) {
           persistRedirectToSession(redirectTo);
         }
+      }
+      if (twoFASetupRequired) {
         persistTwoFactorSetupToken(tempToken ?? '');
         navigate('/login/2fa/setup', { replace: true });
         return;
@@ -302,6 +310,15 @@ const AuthContextProvider = ({
       return;
     }
     if (isExternalRedirectRef.current) {
+      return;
+    }
+    /** A prerendered page can be discarded without ever being shown. Refreshing from it rotates
+     * the session for a page the user never sees, and the browser aborts the request mid-flight. */
+    if (isPrerendering()) {
+      if (!prerenderRefreshDeferredRef.current) {
+        prerenderRefreshDeferredRef.current = true;
+        document.addEventListener('prerenderingchange', () => silentRefresh(), { once: true });
+      }
       return;
     }
     refreshToken.mutate(undefined, {

@@ -46,6 +46,25 @@ type StoredFilesDraft = {
 };
 
 const newConversationDraftTokens = new Map<number, symbol>();
+const newConversationDraftRevisions = new Map<number, string>();
+const newConversationRevisionKey = (index: number): string => `librechat-new-composer:${index}`;
+
+/** Reload preserves the revision; an explicit reset replaces it before any new work starts. */
+export const getNewConversationDraftRevision = (index = 0): string => {
+  const current = newConversationDraftRevisions.get(index);
+  if (current) return current;
+  let revision: string;
+  try {
+    revision = sessionStorage.getItem(newConversationRevisionKey(index)) || mintTabId();
+    // Verify persistence is writable; a blocked reload must not trust an old reset revision.
+    sessionStorage.setItem(newConversationRevisionKey(index), revision);
+  } catch {
+    revision = mintTabId();
+  }
+  const scopedRevision = `${getBrowserTabId()}:${revision}`;
+  newConversationDraftRevisions.set(index, scopedRevision);
+  return scopedRevision;
+};
 
 /** Per-composer identity so a side-by-side new-chat reset cannot discard another pane's paste recovery. */
 export const getNewConversationDraftToken = (index = 0): symbol => {
@@ -59,7 +78,27 @@ export const getNewConversationDraftToken = (index = 0): symbol => {
 };
 
 export const renewNewConversationDraftToken = (index = 0): void => {
-  newConversationDraftTokens.set(index, Symbol('new-conversation-draft'));
+  const generation = Symbol('new-conversation-draft');
+  newConversationDraftTokens.set(index, generation);
+  const revision = mintTabId();
+  newConversationDraftRevisions.set(index, `${getBrowserTabId()}:${revision}`);
+  try {
+    sessionStorage.setItem(newConversationRevisionKey(index), revision);
+  } catch {
+    // The live revision still fences this document; blocked reloads start a fresh revision.
+  }
+  const scope = composerDraftScopes.get(index);
+  if (scope?.active && scope.conversationId === Constants.NEW_CONVO) {
+    composerDraftScopes.set(index, {
+      ...scope,
+      generation,
+      route: composerRoute(),
+      sourceId: undefined,
+      sourcePropPending: false,
+      assignedRoute: undefined,
+      assignments: new Set(),
+    });
+  }
 };
 
 /** Draft key used while a run is in flight. Extra panes get a suffix so one run cannot migrate another pane's attachments. */
@@ -201,11 +240,6 @@ export const resolvePendingPasteInsertStart = (
   );
 };
 
-export const applyPendingPasteToDraft = (
-  draftText: string,
-  pendingPaste: PendingTextAttachmentDraft,
-): string => applyPendingPastesToDraft(draftText, [pendingPaste]);
-
 /** Replay leftover pre-deletion ranges, then insert paste text at rebased or anchored offsets. */
 export const applyPendingPastesToDraft = (
   draftText: string,
@@ -271,9 +305,315 @@ const getLocalStorageItem = (key: string): string | null => {
   }
 };
 
+const ownershipChanges = new Set<string>();
+const ownershipListeners = new Set<(keys: ReadonlySet<string>) => void>();
+let ownershipNotificationPending = false;
+
+const notifyOwnershipChange = (key: string): void => {
+  ownershipChanges.add(key);
+  if (ownershipNotificationPending) return;
+  ownershipNotificationPending = true;
+  void Promise.resolve().then(() => {
+    ownershipNotificationPending = false;
+    const keys = new Set(ownershipChanges);
+    ownershipChanges.clear();
+    ownershipListeners.forEach((listener) => listener(keys));
+  });
+};
+
+export const subscribeDraftOwnership = (id: string, onChange: () => void): (() => void) => {
+  const draftKey = `${LocalStorageKeys.FILES_DRAFT}${id}`;
+  const relevant = (key: string): boolean =>
+    key === draftKey || key.startsWith(TAB_PRESENCE_KEY_PREFIX);
+  const local = (keys: ReadonlySet<string>) => {
+    for (const key of keys) {
+      if (!relevant(key)) continue;
+      onChange();
+      return;
+    }
+  };
+  const external = (event: StorageEvent) => {
+    if (event.key == null || relevant(event.key)) onChange();
+  };
+  ownershipListeners.add(local);
+  window.addEventListener('storage', external);
+  return () => {
+    ownershipListeners.delete(local);
+    window.removeEventListener('storage', external);
+  };
+};
+
+type ComposerDraftScope = {
+  conversationId: string;
+  draftId: string;
+  host?: object;
+  registration: object;
+  active: boolean;
+  generation: symbol;
+  answerId: string | null;
+  route: string;
+  assignedRoute?: string;
+  sourceId?: string;
+  sourcePropPending?: boolean;
+  assignments: Set<(sourceId: string, targetId: string) => void>;
+};
+const composerDraftMigrations = new Set<(fromId: string, toId: string) => void>();
+const composerDraftScopes = new Map<number, ComposerDraftScope>();
+const composerLaunches = new WeakMap<object, { index: number; scope: ComposerDraftScope }>();
+const composerRoute = () => window.location.pathname + window.location.search;
+
+const matchesComposerRoute = (scope: ComposerDraftScope): boolean => {
+  const route = composerRoute();
+  if (!scope.sourcePropPending && scope.assignedRoute === route) {
+    scope.route = route;
+  }
+  return route === scope.route || route === scope.assignedRoute;
+};
+
+export const registerComposerDraft = (
+  index: number,
+  conversationId: string,
+  draftId: string,
+  host?: object,
+): (() => void) => {
+  const previous = composerDraftScopes.get(index);
+  const generation = getNewConversationDraftToken(index);
+  const answerId = isAskAnswerDraftId(draftId) ? draftId : null;
+  const route = composerRoute();
+  const scope: ComposerDraftScope =
+    host &&
+    previous != null &&
+    (previous.host === host || (!previous.active && previous.sourceId != null)) &&
+    previous.generation === generation &&
+    (previous.conversationId === conversationId ||
+      (previous.sourcePropPending && previous.sourceId === conversationId)) &&
+    previous.answerId === answerId &&
+    (previous.route === route || previous.assignedRoute === route)
+      ? previous
+      : {
+          conversationId,
+          draftId,
+          host,
+          registration: {},
+          generation,
+          answerId,
+          active: true,
+          route,
+          assignments: new Set<(sourceId: string, targetId: string) => void>(),
+        };
+  if (previous && scope !== previous && conversationId === Constants.NEW_CONVO) {
+    renewNewConversationDraftToken(index);
+    scope.generation = getNewConversationDraftToken(index);
+  }
+  const registration = {};
+  scope.registration = registration;
+  scope.host = host;
+  scope.active = true;
+  scope.draftId = draftId;
+  if (scope.conversationId === conversationId) {
+    scope.sourcePropPending = false;
+    if (scope.assignedRoute === route) scope.route = route;
+  }
+  composerDraftScopes.set(index, scope);
+  return () => {
+    const current = composerDraftScopes.get(index);
+    if (current?.registration !== registration) return;
+    current.active = false;
+    void Promise.resolve().then(() => {
+      if (composerDraftScopes.get(index) === current && !current.active) {
+        if (current.conversationId === Constants.NEW_CONVO) {
+          renewNewConversationDraftToken(index);
+        }
+        composerDraftScopes.delete(index);
+      }
+    });
+  };
+};
+
+export const getActiveComposerDraftId = (index: number, conversationId: string): string | null => {
+  const scope = composerDraftScopes.get(index);
+  return scope?.active && scope.conversationId === conversationId ? scope.draftId : null;
+};
+
+const normalizedComposerSearch = (search: string): string => {
+  const params = new URLSearchParams(search);
+  params.sort();
+  return params.toString();
+};
+
+/** Only consumed parameters change here; project and navigation changes keep their fence. */
+export const consumeComposerQuery = (
+  index: number,
+  conversationId: string,
+  pathname: string,
+  previousSearch: string,
+  nextSearch: string,
+): void => {
+  const scope = composerDraftScopes.get(index);
+  if (
+    !scope?.active ||
+    scope.generation !== getNewConversationDraftToken(index) ||
+    (scope.conversationId !== conversationId && scope.sourceId !== conversationId)
+  ) {
+    return;
+  }
+  const previous = new URLSearchParams(previousSearch);
+  const next = new URLSearchParams(nextSearch);
+  if (
+    (previous.get('projectId') || null) !== (next.get('projectId') || null) ||
+    Array.from(next.keys()).some((key) => key !== 'projectId')
+  ) {
+    return;
+  }
+  const expectedSearch = normalizedComposerSearch(previousSearch);
+  const cleanedSearch = next.toString();
+  for (const field of ['route', 'assignedRoute'] as const) {
+    const value = scope[field];
+    if (value == null) continue;
+    const route = new URL(value, window.location.origin);
+    if (route.pathname !== pathname || normalizedComposerSearch(route.search) !== expectedSearch) {
+      continue;
+    }
+    scope[field] = pathname + (cleanedSearch ? `?${cleanedSearch}` : '');
+  }
+};
+
+export const bindComposerLaunch = (
+  conversation: object | null | undefined,
+  index: number,
+): void => {
+  const scope = composerDraftScopes.get(index);
+  if (conversation && scope?.active) composerLaunches.set(conversation, { index, scope });
+};
+
+/** Only an acknowledged submission may rename a composer; assignment effects run once. */
+export const adoptComposerConversation = (
+  conversation: object | null | undefined,
+  targetId: string,
+  index: number,
+  onAssignment?: (sourceId: string, targetId: string) => void,
+): boolean => {
+  const launch = conversation ? composerLaunches.get(conversation) : undefined;
+  const scope = launch?.scope;
+  if (
+    !scope ||
+    launch?.index !== index ||
+    !scope.active ||
+    composerDraftScopes.get(index) !== scope ||
+    scope.generation !== getNewConversationDraftToken(index) ||
+    !targetId ||
+    targetId === Constants.NEW_CONVO
+  )
+    return false;
+  if (scope.sourceId === Constants.NEW_CONVO && scope.conversationId === targetId) {
+    return matchesComposerRoute(scope);
+  }
+  if (scope.conversationId !== Constants.NEW_CONVO || composerRoute() !== scope.route) return false;
+  const sourceId = scope.conversationId;
+  scope.sourceId = sourceId;
+  scope.sourcePropPending = true;
+  scope.conversationId = targetId;
+  const assignedRoute = new URL(scope.route, window.location.origin);
+  assignedRoute.pathname = assignedRoute.pathname.replace(
+    /\/new$/,
+    `/${encodeURIComponent(targetId)}`,
+  );
+  scope.assignedRoute = assignedRoute.pathname + assignedRoute.search;
+  scope.assignments.forEach((listener) => listener(sourceId, targetId));
+  onAssignment?.(sourceId, targetId);
+  return true;
+};
+
+export const resolveComposerConversationId = (conversationId: string): string => {
+  let assignedId: string | undefined;
+  for (const [index, scope] of composerDraftScopes) {
+    if (!scope.active || scope.generation !== getNewConversationDraftToken(index)) continue;
+    if (scope.conversationId === conversationId) return conversationId;
+    if (scope.sourceId !== conversationId) continue;
+    if (assignedId != null) return conversationId;
+    assignedId = scope.conversationId;
+  }
+  return assignedId ?? conversationId;
+};
+
+export type CapturedComposerDraft = (() => boolean) & {
+  registered: boolean;
+  newChatGeneration?: Readonly<{ index: number; revision: string }>;
+  conversationId: () => string;
+  retainsFile: (fileId: string) => boolean;
+  discardFile: (fileId: string) => void;
+  onAssignment: (listener: (sourceId: string, targetId: string) => void) => () => void;
+};
+
+export const captureComposerDraft = (
+  index: number,
+  conversationId: string,
+): CapturedComposerDraft => {
+  const scope = composerDraftScopes.get(index);
+  const generation = getNewConversationDraftToken(index);
+  const route = composerRoute();
+  return Object.assign(
+    () =>
+      (!scope ||
+        (scope.active &&
+          (scope.conversationId === conversationId || scope.sourceId === conversationId))) &&
+      composerDraftScopes.get(index) === scope &&
+      getNewConversationDraftToken(index) === generation &&
+      (scope ? matchesComposerRoute(scope) : composerRoute() === route),
+    {
+      registered: scope != null,
+      newChatGeneration:
+        conversationId === Constants.NEW_CONVO
+          ? { index, revision: getNewConversationDraftRevision(index) }
+          : undefined,
+      conversationId: () => scope?.conversationId ?? conversationId,
+      retainsFile: (fileId: string) => {
+        if (!scope || scope.conversationId === Constants.NEW_CONVO) return false;
+        const draft = getFilesDraft(scope.draftId);
+        return isFilesDraftOwnedByThisTab(draft) && draft.fileIds.includes(fileId);
+      },
+      discardFile: (fileId: string) => {
+        const draftIds = new Set([scope?.draftId ?? getConversationDraftId(index, conversationId)]);
+        if (conversationId === Constants.NEW_CONVO) {
+          draftIds.add(getNewConversationDraftId(index));
+          draftIds.add(getPendingDraftId(index));
+        }
+        for (const id of draftIds) {
+          const draft = getFilesDraft(id);
+          if (isFilesDraftOwnedByThisTab(draft) && draft.fileIds.includes(fileId)) {
+            removePendingTextAttachmentDraft({ id, fileId, removeFile: true });
+          }
+        }
+      },
+      onAssignment: (listener: (sourceId: string, targetId: string) => void) => {
+        const migrate = (fromId: string, toId: string) => {
+          if (
+            scope != null &&
+            scope.draftId === fromId &&
+            isPendingDraftId(fromId) &&
+            scope.conversationId === toId &&
+            toId !== Constants.NEW_CONVO
+          ) {
+            scope.draftId = toId;
+          }
+        };
+        scope?.assignments.add(listener);
+        composerDraftMigrations.add(migrate);
+        return () => {
+          scope?.assignments.delete(listener);
+          composerDraftMigrations.delete(migrate);
+        };
+      },
+    },
+  );
+};
+
 const setLocalStorageItem = (key: string, value: string): void => {
   try {
+    const changed =
+      key.startsWith(LocalStorageKeys.FILES_DRAFT) && localStorage.getItem(key) !== value;
     localStorage.setItem(key, value);
+    if (changed) notifyOwnershipChange(key);
   } catch {
     // Quota or disabled storage must not abort paste/upload recovery.
   }
@@ -281,7 +621,10 @@ const setLocalStorageItem = (key: string, value: string): void => {
 
 const removeLocalStorageItem = (key: string): void => {
   try {
+    const changed =
+      key.startsWith(LocalStorageKeys.FILES_DRAFT) && localStorage.getItem(key) != null;
     localStorage.removeItem(key);
+    if (changed) notifyOwnershipChange(key);
   } catch {
     // Ignore storage failures on cleanup.
   }
@@ -603,6 +946,7 @@ const readLiveTabs = (): Map<string, TabPresence> => {
     }
     for (const key of expired) {
       localStorage.removeItem(key);
+      if (key !== `${TAB_PRESENCE_KEY_PREFIX}${documentTabId}`) notifyOwnershipChange(key);
     }
   } catch {
     // An unreadable store just means no other tab can be proven live.
@@ -1131,7 +1475,13 @@ export const migrateFilesDraft = (fromId: string, toId: string): string => {
 
   removeLocalStorageItem(key);
   try {
-    localStorage.setItem(`${LocalStorageKeys.FILES_DRAFT}${toId}`, record);
+    const destinationKey = `${LocalStorageKeys.FILES_DRAFT}${toId}`;
+    const changed = getLocalStorageItem(destinationKey) !== record;
+    localStorage.setItem(destinationKey, record);
+    if (isFilesDraftOwnedByThisTab(getFilesDraft(toId))) {
+      composerDraftMigrations.forEach((listener) => listener(fromId, toId));
+    }
+    if (changed) notifyOwnershipChange(destinationKey);
     return toId;
   } catch {
     /** Storage cannot hold the record even with the source freed, so put it back rather than

@@ -969,6 +969,7 @@ it.each(['root', 'child'])(
     let pending: Promise<unknown> | undefined;
     const registry = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
       isAppServerConfig: async () => false,
+      isHiddenFromPrincipal: async () => false,
       resolveAllowlists: async () => ({
         allowedDomains: ['127.0.0.1'],
         allowedAddresses: [`127.0.0.1:${server.port}`],
@@ -1494,6 +1495,7 @@ describe.each(['tool', 'App SDK read', 'App budget read'] as const)('%s admissio
       );
       const registry = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
         isAppServerConfig: async () => false,
+        isHiddenFromPrincipal: async () => false,
         resolveAllowlists: async () => ({
           allowedDomains: ['127.0.0.1'],
           allowedAddresses: [`127.0.0.1:${server.port}`],
@@ -1684,6 +1686,7 @@ it.each(['reused caller', 'creating caller', 'SDK deadline'] as const)(
     const record = jest.fn(async () => true);
     const registry = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
       isAppServerConfig: async () => false,
+      isHiddenFromPrincipal: async () => false,
       resolveAllowlists: async () => ({
         allowedDomains: ['127.0.0.1'],
         allowedAddresses: [`127.0.0.1:${server.port}`],
@@ -1897,6 +1900,7 @@ describe.each(['preparation', 'initialization'] as const)('%s ownership', (phase
       const failures = jest.fn(async () => true);
       const registry = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
         isAppServerConfig: async () => false,
+        isHiddenFromPrincipal: async () => false,
         resolveAllowlists: async () => ({
           allowedDomains: ['127.0.0.1'],
           allowedAddresses: [`127.0.0.1:${server.port}`],
@@ -2065,6 +2069,7 @@ describe.each(['authority', 'provider'] as const)('%s observation', (source) => 
       );
       const registry = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
         isAppServerConfig: async () => false,
+        isHiddenFromPrincipal: async () => false,
         resolveAllowlists: async () => ({
           allowedDomains: ['127.0.0.1'],
           allowedAddresses: [`127.0.0.1:${server.port}`],
@@ -2210,6 +2215,7 @@ it('keeps reused checkout ping cancellation local without dispatching after the 
   const failures = jest.fn(async () => true);
   const registry = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
     isAppServerConfig: async () => false,
+    isHiddenFromPrincipal: async () => false,
     resolveAllowlists: async () => ({
       allowedDomains: ['127.0.0.1'],
       allowedAddresses: [`127.0.0.1:${server.port}`],

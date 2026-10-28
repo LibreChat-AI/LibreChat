@@ -1,7 +1,9 @@
 import { RecoilRoot } from 'recoil';
-import { Provider as JotaiProvider, createStore } from 'jotai';
 import { Constants, ReasoningEffort } from 'librechat-data-provider';
+import { submissionByIndex, clearSubmissions } from '@librechat/chat/react';
+import { Provider as JotaiProvider, createStore, getDefaultStore } from 'jotai';
 import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
+import { getReasoningStateKey, pendingReasoningOverrideFamily } from '@librechat/chat/react';
 import type {
   SettingDefinition,
   TConversation,
@@ -10,9 +12,7 @@ import type {
   TReasoningCapabilityMap,
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import { getReasoningStateKey, pendingReasoningOverrideFamily } from '../Composer/state';
 import { ReasoningControl, useComposerReasoning } from '../Reasoning';
-import store from '~/store';
 
 type MockEndpointConfig = {
   type?: string;
@@ -86,6 +86,10 @@ const budgetSetting: SettingDefinition = {
   component: 'input',
   range: { min: -1, positiveMin: 128, max: 32768, step: 128 },
 };
+
+afterEach(() => {
+  clearSubmissions(getDefaultStore());
+});
 
 describe('ReasoningControl', () => {
   it('renders a compact, localized disclosure for the next message', async () => {
@@ -515,10 +519,9 @@ describe('useComposerReasoning', () => {
       conversation: { conversationId: Constants.NEW_CONVO },
       userMessage: { conversationId: Constants.NEW_CONVO },
     } as TSubmission;
+    reasoningStore.set(submissionByIndex(0), submission);
     const wrapper = ({ children }: { children: ReactNode }) => (
-      <RecoilRoot
-        initializeState={(snapshot) => snapshot.set(store.submissionByIndex(0), submission)}
-      >
+      <RecoilRoot>
         <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
       </RecoilRoot>
     );

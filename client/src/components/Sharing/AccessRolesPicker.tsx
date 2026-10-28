@@ -64,7 +64,7 @@ export default function AccessRolesPicker({
       },
       render: (props) => (
         <button {...props}>
-          <div className="flex flex-col items-start gap-0.5 text-left">
+          <div className="flex flex-col items-start gap-0.5 text-start">
             <span className="text-text-primary font-medium">{localizedInfo.name}</span>
             <span className="text-text-secondary text-xs">{localizedInfo.description}</span>
           </div>

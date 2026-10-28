@@ -5,9 +5,10 @@ import {
 } from '~/stream/interfaces/IJobStore';
 import { ApprovalLifecycle, PendingActionExpiredError } from '~/stream/ApprovalLifecycle';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
-import { buildPendingAction, buildToolApprovalPayload } from '~/agents/hitl/policy';
+import { buildToolApprovalPayload } from '~/agents/hitl/__fixtures__/approval';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
+import { buildPendingAction } from '~/agents/hitl/policy';
 
 jest.spyOn(console, 'log').mockImplementation();
 

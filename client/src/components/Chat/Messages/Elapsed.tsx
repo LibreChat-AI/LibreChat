@@ -1,7 +1,7 @@
 import { memo, useEffect, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { useTranslation } from 'react-i18next';
-import { submissionStartFamily } from '~/store/generation';
+import { submissionStartFamily } from '@librechat/chat/react';
 import { getElapsedDurationLabels } from '~/utils';
 import { useLocalize } from '~/hooks';
 

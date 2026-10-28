@@ -179,13 +179,14 @@ export default function OutputRenderer({
     <div>
       <div className="group/copy relative">
         {isJson ? (
-          <pre className="max-h-[18.75rem] overflow-auto rounded text-xs">
+          <pre dir="ltr" className="max-h-[18.75rem] overflow-auto rounded text-xs">
             <code className="hljs language-json !break-words !whitespace-pre-wrap">
               {displayText}
             </code>
           </pre>
         ) : (
           <pre
+            dir="ltr"
             ref={outputRef}
             onScroll={terminal ? handleOutputScroll : undefined}
             className={cn(
@@ -213,7 +214,7 @@ export default function OutputRenderer({
           disabled={contentPending}
           iconOnly
           label={localize('com_ui_copy')}
-          className={cn('bg-presentation absolute right-0 bottom-0 z-[1]', PANE_COPY_REVEAL)}
+          className={cn('bg-presentation absolute inset-e-0 bottom-0 z-[1]', PANE_COPY_REVEAL)}
         />
       </div>
       {error && rawError && rawError !== displayText && (
@@ -227,7 +228,10 @@ export default function OutputRenderer({
         </Button>
       )}
       {showErrorDetails && rawError && (
-        <pre className="text-status-error mt-2 max-h-[12.5rem] overflow-auto font-mono text-xs break-words whitespace-pre-wrap">
+        <pre
+          dir="ltr"
+          className="text-status-error mt-2 max-h-[12.5rem] overflow-auto font-mono text-xs break-words whitespace-pre-wrap"
+        >
           {rawError}
         </pre>
       )}

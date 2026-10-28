@@ -362,7 +362,7 @@ export const MermaidRenderer = memo(function MermaidRenderer({
               data-testid={fillContainer ? 'mermaid-artifact-canvas' : undefined}
               onMouseDown={handleMouseDown}
             >
-              <div className="border-border-light bg-surface-secondary text-text-secondary absolute top-2 left-2 z-10 flex items-center gap-1 rounded border px-2 py-1 text-xs">
+              <div className="border-border-light bg-surface-secondary text-text-secondary absolute inset-s-2 top-2 z-10 flex items-center gap-1 rounded border px-2 py-1 text-xs">
                 <Spinner className="h-3 w-3" />
               </div>
               <div
@@ -388,7 +388,7 @@ export const MermaidRenderer = memo(function MermaidRenderer({
                 onZoomOut={handleZoomOut}
                 onReset={handleResetZoom}
                 className={cn(
-                  'absolute right-2 bottom-2 z-10 transition-opacity duration-200',
+                  'absolute inset-e-2 bottom-2 z-10 transition-opacity duration-200',
                   showControls ? 'opacity-100' : 'pointer-events-none opacity-0',
                 )}
               />
@@ -558,7 +558,7 @@ export const MermaidRenderer = memo(function MermaidRenderer({
             onZoomOut={handleZoomOut}
             onReset={handleResetZoom}
             className={cn(
-              'absolute right-2 bottom-2 z-10 transition-opacity duration-200',
+              'absolute inset-e-2 bottom-2 z-10 transition-opacity duration-200',
               showControls ? 'opacity-100' : 'pointer-events-none opacity-0',
             )}
           />

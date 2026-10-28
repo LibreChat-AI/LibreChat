@@ -39,7 +39,7 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.1'
           cache: npm
 
       - name: Install native prerequisites

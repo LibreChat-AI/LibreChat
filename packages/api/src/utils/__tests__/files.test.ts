@@ -1,7 +1,7 @@
+import { Readable } from 'stream';
 import { createReadStream } from 'fs';
 import { readFile, stat } from 'fs/promises';
-import { Readable } from 'stream';
-import { readFileAsString, readFileAsBuffer, readJsonFile } from '../files';
+import { readFileAsString, readFileAsBuffer } from '../files';
 
 jest.mock('fs');
 jest.mock('fs/promises');
@@ -278,137 +278,6 @@ describe('File utilities', () => {
       (readFile as jest.Mock).mockRejectedValue(error);
 
       await expect(readFileAsBuffer(mockFilePath)).rejects.toThrow('Access denied');
-    });
-  });
-
-  describe('readJsonFile', () => {
-    const validJson = { name: 'test', value: 123, nested: { key: 'value' } };
-    const jsonString = JSON.stringify(validJson);
-
-    it('should parse valid JSON files', async () => {
-      (stat as jest.Mock).mockResolvedValue({ size: jsonString.length });
-      (readFile as jest.Mock).mockResolvedValue(jsonString);
-
-      const result = await readJsonFile(mockFilePath);
-
-      expect(result).toEqual(validJson);
-      expect(readFile).toHaveBeenCalledWith(mockFilePath, 'utf8');
-    });
-
-    it('should parse JSON with provided fileSize', async () => {
-      const fileSize = jsonString.length;
-
-      (readFile as jest.Mock).mockResolvedValue(jsonString);
-
-      const result = await readJsonFile(mockFilePath, { fileSize });
-
-      expect(result).toEqual(validJson);
-      expect(stat).not.toHaveBeenCalled();
-    });
-
-    it('should handle JSON arrays', async () => {
-      const jsonArray = [1, 2, 3, { key: 'value' }];
-      const arrayString = JSON.stringify(jsonArray);
-
-      (stat as jest.Mock).mockResolvedValue({ size: arrayString.length });
-      (readFile as jest.Mock).mockResolvedValue(arrayString);
-
-      const result = await readJsonFile(mockFilePath);
-
-      expect(result).toEqual(jsonArray);
-    });
-
-    it('should throw on invalid JSON', async () => {
-      const invalidJson = '{ invalid json }';
-
-      (stat as jest.Mock).mockResolvedValue({ size: invalidJson.length });
-      (readFile as jest.Mock).mockResolvedValue(invalidJson);
-
-      await expect(readJsonFile(mockFilePath)).rejects.toThrow();
-    });
-
-    it('should throw on empty file', async () => {
-      (stat as jest.Mock).mockResolvedValue({ size: 0 });
-      (readFile as jest.Mock).mockResolvedValue('');
-
-      await expect(readJsonFile(mockFilePath)).rejects.toThrow();
-    });
-
-    it('should handle large JSON files with streaming', async () => {
-      const largeJson = { data: 'x'.repeat(11 * 1024 * 1024) }; // >10MB
-      const largeJsonString = JSON.stringify(largeJson);
-      const fileSize = largeJsonString.length;
-
-      (stat as jest.Mock).mockResolvedValue({ size: fileSize });
-
-      // Create chunks for streaming
-      const chunks: string[] = [];
-      let offset = 0;
-      const chunkSize = 5 * 1024 * 1024; // 5MB chunks
-
-      while (offset < largeJsonString.length) {
-        chunks.push(largeJsonString.slice(offset, offset + chunkSize));
-        offset += chunkSize;
-      }
-
-      const mockStream = new Readable({
-        read() {
-          if (chunks.length > 0) {
-            this.push(chunks.shift());
-          } else {
-            this.push(null);
-          }
-        },
-      });
-
-      (createReadStream as jest.Mock).mockReturnValue(mockStream);
-
-      const result = await readJsonFile(mockFilePath);
-
-      expect(result).toEqual(largeJson);
-      expect(createReadStream).toHaveBeenCalled();
-      expect(readFile).not.toHaveBeenCalled();
-    });
-
-    it('should use custom stream threshold', async () => {
-      const customThreshold = 100;
-      const json = { test: 'x'.repeat(200) };
-      const jsonStr = JSON.stringify(json);
-      const fileSize = jsonStr.length;
-
-      (stat as jest.Mock).mockResolvedValue({ size: fileSize });
-
-      const mockStream = new Readable({
-        read() {
-          this.push(jsonStr);
-          this.push(null);
-        },
-      });
-
-      (createReadStream as jest.Mock).mockReturnValue(mockStream);
-
-      await readJsonFile(mockFilePath, { streamThreshold: customThreshold });
-
-      expect(createReadStream).toHaveBeenCalled();
-    });
-
-    it('should preserve type with generics', async () => {
-      interface TestType {
-        id: number;
-        name: string;
-      }
-
-      const typedJson: TestType = { id: 1, name: 'test' };
-      const jsonString = JSON.stringify(typedJson);
-
-      (stat as jest.Mock).mockResolvedValue({ size: jsonString.length });
-      (readFile as jest.Mock).mockResolvedValue(jsonString);
-
-      const result = await readJsonFile<TestType>(mockFilePath);
-
-      expect(result).toEqual(typedJson);
-      expect(result.id).toBe(1);
-      expect(result.name).toBe('test');
     });
   });
 });

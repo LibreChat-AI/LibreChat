@@ -2,8 +2,8 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Provider, createStore } from 'jotai';
 import { render, screen, act } from '@testing-library/react';
+import { submissionStartFamily } from '@librechat/chat/react';
 import Elapsed, { shouldShowElapsed } from '~/components/Chat/Messages/Elapsed';
-import { submissionStartFamily } from '~/store/generation';
 
 function storeWithStart(start?: number) {
   const jotaiStore = createStore();
