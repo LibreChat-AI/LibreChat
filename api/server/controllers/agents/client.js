@@ -142,7 +142,6 @@ const {
   applyAttachmentOnlyText,
   hydrateMissingIndexTokenCounts,
   planSendContext,
-  getMCPServerInstructions,
   prepareResumedTurnContext,
   readConversationAnchor,
   applyTurnContextToRuntime,
@@ -2729,7 +2728,6 @@ class AgentClient extends BaseClient {
        * canonical recount reads an unstripped surface instead.
        */
       const droppedPromptSummary = dropUnusableSummaryParts(formattedMessage);
-      const promptDiffersFromStored = Boolean(message.fileContext) || droppedPromptSummary;
 
       const dbTokenCount = Number(orderedMessages[i].tokenCount);
       const hasDbTokenCount = Number.isFinite(dbTokenCount) && dbTokenCount > 0;
@@ -2752,16 +2750,17 @@ class AgentClient extends BaseClient {
          *  with a dropped summary), the canonical count must be taken from the
          *  message as stored. */
         let countSurface = formattedMessage;
-        if (promptDiffersFromStored) {
+        if (message.fileContext || droppedPromptSummary) {
           memoryFormattedMessages[i] = buildMemoryFormattedMessage(message);
           countSurface = memoryFormattedMessages[i];
         }
         canonicalTokenCount = countFormattedMessageTokens(countSurface, encoding);
       }
 
-      const promptMessageTokenCount = promptDiffersFromStored
-        ? countFormattedMessageTokens(formattedMessage, encoding)
-        : canonicalTokenCount;
+      const promptMessageTokenCount =
+        message.fileContext || droppedPromptSummary
+          ? countFormattedMessageTokens(formattedMessage, encoding)
+          : canonicalTokenCount;
 
       /* If message has files, calculate image token cost */
       if (this.message_file_map && this.message_file_map[message.messageId]) {
@@ -2957,13 +2956,13 @@ class AgentClient extends BaseClient {
       conversationId: this.conversationId,
       anchorPromise: contextAnchorPromise,
       configServers,
-      getServerInstructions: getMCPServerInstructions,
       formattedMessages,
       indexTokenCountMap,
       countTokens: (message) => countFormattedMessageTokens(message, encoding),
     });
     const turnContext = preparedTurnContext?.plan ?? null;
     this.pendingContextAnchor = preparedTurnContext?.pending;
+    this.promptCacheReset = preparedTurnContext?.promptCacheReset;
     promptTokens += addedTokens;
     const hasPromptOnlyContext = hasFileContext || applied;
     if (hasPromptOnlyContext) {
@@ -3792,6 +3791,7 @@ class AgentClient extends BaseClient {
      *   thoughtSignatures?: Record<string, string>,
      *   contextUsage?: import('librechat-data-provider').TContextUsageEvent,
      *   usage?: import('librechat-data-provider').TResponseUsage,
+     *   promptCacheReset?: string[],
      * }} */
     const metadata = {};
     const signatures = this.collectedThoughtSignatures;
@@ -3858,6 +3858,9 @@ class AgentClient extends BaseClient {
     const usage = aggregateEmittedUsage(usageEvents);
     if (usage) {
       metadata.usage = usage;
+    }
+    if (this.promptCacheReset?.length > 0) {
+      metadata.promptCacheReset = this.promptCacheReset;
     }
     return Object.keys(metadata).length > 0 ? metadata : undefined;
   }
@@ -5695,7 +5698,6 @@ class AgentClient extends BaseClient {
         getBranch: AgentClient.getMessagesForConversation,
         loadMemories: () => AgentClient.prototype.getSharedMemoryContext.call(this),
         configServers: resumeConfigServersPromise,
-        getServerInstructions: getMCPServerInstructions,
       });
       const [resumeScopedContext, resumeConfigServers, resumedTurnContext] = await Promise.all([
         buildAgentScopedContext({

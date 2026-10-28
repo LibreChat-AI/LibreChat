@@ -253,6 +253,7 @@ const mockCleanupMCPRequestContextForReq = jest.fn(async (req) => {
 jest.mock('@librechat/data-schemas', () => ({
   logger: mockLogger,
   createChatExpirationDate: jest.requireActual('@librechat/data-schemas').createChatExpirationDate,
+  redactMessage: jest.requireActual('@librechat/data-schemas').redactMessage,
 }));
 
 jest.mock('@librechat/api', () => ({
@@ -268,6 +269,8 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').isStableContextEnabled(...args),
   savePrivateTextErrorTurn: (...args) =>
     jest.requireActual('@librechat/api').savePrivateTextErrorTurn(...args),
+  getUserFacingGenerationError: (...args) =>
+    jest.requireActual('@librechat/api').getUserFacingGenerationError(...args),
   stampPreliminaryPrivateTextMessage: (_req, message) => message,
   getSteerRecoveryFailure: jest.requireActual(
     '../../../../../packages/api/src/stream/SteerRecovery',
@@ -2805,6 +2808,137 @@ describe('ResumableAgentController resume metadata', () => {
     expect(message).toContain('AccessDenied reading https://minio.example.com/[redacted]');
     expect(message).not.toContain('X-Amz-Signature');
     expect(JSON.stringify(mockLogger.error.mock.calls)).not.toContain(signedUrl);
+  });
+
+  it('publishes and persists the fallback for a raw generation error under a content policy', async () => {
+    const privateValue = 'PRIVATE-PROMPT-ECHO';
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: 'Fail during generation.',
+        messageId: 'user-msg',
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config: {
+        filters: {
+          messages: {
+            pii: {
+              starterPatterns: [],
+              customPatterns: [{ id: 'secret', label: 'secret', regex: 'NEVER-MATCHES-XYZ' }],
+            },
+          },
+        },
+      },
+    };
+    const client = {
+      options: {},
+      sendMessage: jest.fn().mockRejectedValue(new Error(`Provider echoed ${privateValue}`)),
+    };
+    const initializeClient = jest.fn().mockResolvedValue({ client });
+
+    await AgentController(req, createResumableResponse(), jest.fn(), initializeClient, null);
+    await nextTick();
+
+    expect(mockGenerationJobManager.completeJob).toHaveBeenCalledWith(
+      'conversation-123',
+      'Generation failed',
+      1000,
+      expect.objectContaining({ beforeErrorPublication: expect.any(Function) }),
+    );
+    expect(mockSaveMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-123' }),
+      expect.objectContaining({ error: true, text: 'Generation failed' }),
+      expect.any(Object),
+    );
+    expect(JSON.stringify(mockGenerationJobManager.completeJob.mock.calls)).not.toContain(
+      privateValue,
+    );
+    expect(JSON.stringify(mockSaveMessage.mock.calls)).not.toContain(privateValue);
+  });
+
+  it('redacts credentials and emails from a generation error published and persisted without a content policy', async () => {
+    const secrets = [
+      'sk-proj-PRIVATEKEY123',
+      'PRIVATEHEADER123',
+      'PRIVATESIG123',
+      'PRIVATEAUTH123',
+      'private.user@example.com',
+    ];
+    const rawMessage = [
+      'Incorrect API key provided: sk-proj-PRIVATEKEY123;',
+      'x-api-key: PRIVATEHEADER123;',
+      'token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJQUklWQVRFIn0.PRIVATESIG123;',
+      'owner private.user@example.com;',
+      'Authorization: Basic PRIVATEAUTH123',
+    ].join(' ');
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: 'Fail during generation.',
+        messageId: 'user-msg',
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config: {},
+    };
+    const client = {
+      options: {},
+      sendMessage: jest.fn().mockRejectedValue(new Error(rawMessage)),
+    };
+    const initializeClient = jest.fn().mockResolvedValue({ client });
+
+    await AgentController(req, createResumableResponse(), jest.fn(), initializeClient, null);
+    await nextTick();
+
+    const [, published] = mockGenerationJobManager.completeJob.mock.calls[0];
+    expect(published).toContain('Incorrect API key provided');
+    expect(mockSaveMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-123' }),
+      expect.objectContaining({ error: true, text: published }),
+      expect.any(Object),
+    );
+    for (const secret of secrets) {
+      expect(JSON.stringify(mockGenerationJobManager.completeJob.mock.calls)).not.toContain(secret);
+      expect(JSON.stringify(mockSaveMessage.mock.calls)).not.toContain(secret);
+    }
+  });
+
+  it('keeps a typed generation error under a content policy so the client can localize it', async () => {
+    const typedError = JSON.stringify({ type: 'no_user_key' });
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: 'Fail during generation.',
+        messageId: 'user-msg',
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config: {
+        filters: {
+          messages: {
+            pii: {
+              starterPatterns: [],
+              customPatterns: [{ id: 'secret', label: 'secret', regex: 'NEVER-MATCHES-XYZ' }],
+            },
+          },
+        },
+      },
+    };
+    const client = {
+      options: {},
+      sendMessage: jest.fn().mockRejectedValue(new Error(typedError)),
+    };
+    const initializeClient = jest.fn().mockResolvedValue({ client });
+
+    await AgentController(req, createResumableResponse(), jest.fn(), initializeClient, null);
+    await nextTick();
+
+    expect(mockSaveMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-123' }),
+      expect.objectContaining({ error: true, text: typedError }),
+      expect.any(Object),
+    );
   });
 
   it('publishes a safe image storage failure during generation and releases the request', async () => {

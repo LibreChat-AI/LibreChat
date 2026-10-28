@@ -193,7 +193,7 @@ const {
 } = require('../ToolService');
 const { createOnSearchResults } = require('~/server/services/Tools/search');
 const { reinitMCPServer } = require('~/server/services/Tools/mcp');
-const { ContentFilterError, PENDING_STALE_MS } = require('@librechat/api');
+const { ContentFilterError, PENDING_STALE_MS, ToolInputError } = require('@librechat/api');
 
 /** Role document shape `checkAccess` reads; all three role-gated tools granted. */
 function buildRole(overrides = {}) {
@@ -687,6 +687,46 @@ describe('ToolService - Action Capability Gating', () => {
       expect(output).not.toContain(privateOutput);
       expect(output).not.toContain('Bearer token');
       expect(output).not.toContain('bearer_header');
+    });
+
+    it('returns approved tool error text instead of a raw exception message', async () => {
+      const rawMessage =
+        'connect ECONNREFUSED 10.0.0.5:443 for https://api.example.test/?q=PRIVATE';
+      mockLoadToolsUtil.mockResolvedValue({
+        loadedTools: [
+          { name: 'safe_tool', _call: jest.fn().mockRejectedValue(new Error(rawMessage)) },
+        ],
+        toolContextMap: {},
+      });
+
+      const result = await processRequiredActions(buildClient(undefined), [buildAction()]);
+
+      expect(result.tool_outputs).toEqual([
+        {
+          tool_call_id: 'call_1',
+          output: 'Error processing tool safe_tool: The tool request failed.',
+        },
+      ]);
+    });
+
+    it('keeps the message of a tool input error the tool wrote for the model', async () => {
+      mockLoadToolsUtil.mockResolvedValue({
+        loadedTools: [
+          {
+            name: 'safe_tool',
+            _call: jest
+              .fn()
+              .mockRejectedValue(new ToolInputError('Could not find coordinates for city: Rome')),
+          },
+        ],
+        toolContextMap: {},
+      });
+
+      const result = await processRequiredActions(buildClient(undefined), [buildAction()]);
+
+      expect(result.tool_outputs[0].output).toBe(
+        'Error processing tool safe_tool: Could not find coordinates for city: Rome',
+      );
     });
 
     it('blocks persisted Assistant action metadata before required-action execution', async () => {
@@ -1195,6 +1235,46 @@ describe('ToolService - Action Capability Gating', () => {
       const [callArgs] = mockLoadToolDefinitions.mock.calls[0];
       expect(callArgs.tools).toContain(regularTool);
       expect(callArgs.tools).not.toContain(actionToolName);
+    });
+
+    it('dates the web search context by the turn start as upstream without stableContext', async () => {
+      const capabilities = [AgentCapabilities.tools, AgentCapabilities.web_search];
+      const req = createMockReq(capabilities);
+      req.conversationCreatedAt = '2026-08-25T10:00:00.000Z';
+      req.turnStartedAt = Date.parse('2026-08-31T06:20:00.000Z');
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+      const result = await loadAgentTools({
+        req,
+        res: {},
+        agent: { id: 'agent_123', tools: [Tools.web_search] },
+        definitionsOnly: true,
+      });
+
+      expect(result.dynamicToolContextMap).toMatchInlineSnapshot(`
+        {
+          "web_search": "# \`web_search\` Runtime Context
+        Conversation Date & Time: 2026-08-31T06:20:00.000Z",
+        }
+      `);
+    });
+
+    it('dates the web search context by the conversation start with stableContext', async () => {
+      const capabilities = [AgentCapabilities.tools, AgentCapabilities.web_search];
+      const req = createMockReq(capabilities);
+      req.config.endpoints[EModelEndpoint.agents].promptCache = { stableContext: true };
+      req.conversationCreatedAt = '2026-08-25T10:00:00.000Z';
+      req.turnStartedAt = Date.parse('2026-08-31T06:20:00.000Z');
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+      const result = await loadAgentTools({
+        req,
+        res: {},
+        agent: { id: 'agent_123', tools: [Tools.web_search] },
+        definitionsOnly: true,
+      });
+
+      expect(result.dynamicToolContextMap[Tools.web_search]).toContain('2026-08-25T10:00:00.000Z');
     });
 
     it('should include action tools in definitions when actions capability is enabled', async () => {
@@ -3039,12 +3119,6 @@ describe('ToolService - Action Capability Gating', () => {
         parameters: { properties: { order: { type: 'string' } } },
       });
       expect(result.call_with).toContain('call_tool');
-    });
-
-    it('keeps the plain search output without the dispatcher', async () => {
-      const result = await search(false);
-      expect(result.tools[0].name).toBe('lookup_mcp_gamma');
-      expect(result.call_with).toBeUndefined();
     });
   });
 

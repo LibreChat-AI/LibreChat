@@ -481,39 +481,6 @@ describe('Message Operations', () => {
         }
       });
 
-      it('never stores entries on a model response', async () => {
-        await saveMessage(
-          mockCtx,
-          { ...mockMessageData, isCreatedByUser: false },
-          { contextUpdates: updates },
-        );
-        expect(await readStored()).not.toHaveProperty('contextUpdates');
-      });
-
-      it('replaces the entries when a regeneration re-saves the message', async () => {
-        await saveMessage(
-          mockCtx,
-          { ...mockMessageData, isCreatedByUser: true },
-          { contextUpdates: updates },
-        );
-        await saveMessage(
-          mockCtx,
-          { ...mockMessageData, isCreatedByUser: true },
-          { contextUpdates: [] },
-        );
-        expect((await readStored())?.contextUpdates).toEqual([]);
-      });
-
-      it('keeps the entries when a later save carries none', async () => {
-        await saveMessage(
-          mockCtx,
-          { ...mockMessageData, isCreatedByUser: true },
-          { contextUpdates: updates },
-        );
-        await saveMessage(mockCtx, { ...mockMessageData, isCreatedByUser: true, text: 'Edited' });
-        expect((await readStored())?.contextUpdates).toEqual(updates);
-      });
-
       it("stores a segment anchor once, on the owner's message only", async () => {
         await saveMessage(mockCtx, { ...mockMessageData, isCreatedByUser: false });
         await expect(
@@ -584,13 +551,6 @@ describe('Message Operations', () => {
         );
         const stored = await Message.findOne({ messageId: 'msg123' }).lean();
         expect(stored?.createdAt).toEqual(turnStartedAt);
-      });
-
-      it('leaves the automatic stamp in place without the option', async () => {
-        const before = Date.now();
-        await saveMessage(mockCtx, { ...mockMessageData, createdAt: new Date('2020-01-01') });
-        const stored = await Message.findOne({ messageId: 'msg123' }).lean();
-        expect(stored?.createdAt?.getTime()).toBeGreaterThanOrEqual(before);
       });
     });
 

@@ -119,6 +119,7 @@ import { resolveConfigHeaders, resolveModelHeaders, mergeHeaders } from '~/utils
 import { interruptToolHandler, supportsRunInterruption } from '~/agents/steering/tools';
 import { extractDefaultParams, resolveReasoningParams } from '~/endpoints/openai/llm';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
+import { assembleSystemPrompt, sdkMovesDynamicInstructions } from './systemParts';
 import { reportSubagentResolutionFailure } from '~/agents/failures/subagent';
 import { createScheduledMCPRunPolicy } from '~/schedules/authorization/run';
 import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
@@ -127,13 +128,6 @@ import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
 import { buildEffectiveToolApprovalPolicy } from '~/agents/hitl/allow';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
-import {
-  ContextPartKeys,
-  assembleSystemPrompt,
-  contributeContext,
-  sdkMovesDynamicInstructions,
-} from './systemParts';
-import { isStableContextEnabled } from '~/agents/promptCache';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
@@ -143,7 +137,9 @@ import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { createStepBudgetHook } from '~/agents/stepBudget';
 import { buildHITLRunWiring } from '~/agents/hitl/runtime';
 import { buildLangfuseConfig } from '~/langfuse/config';
+import { isStableContextEnabled } from './promptCache';
 import { applyTestRunHook } from '~/agents/testHook';
+import { frameDynamicInstructions } from './tail';
 import { isUserProvided } from '~/utils/common';
 import { createSafeUser } from '~/utils/env';
 
@@ -1889,15 +1885,7 @@ function buildIsolatedAgentInputs(
   child: RunAgent,
   toInput: (agent: RunAgent, opts?: { isSubagent?: boolean }) => AgentInputs,
 ): AgentInputs {
-  const alwaysApplySkillPrimes = child.alwaysApplySkillPrimes;
-  const skillInstructions = alwaysApplySkillPrimes
-    ?.map((prime) => `# Always-apply skill: ${prime.name}\n${prime.body}`)
-    .join('\n\n');
-  const childWithSkill = skillInstructions ? { ...child } : child;
-  if (skillInstructions) {
-    contributeContext(childWithSkill, ContextPartKeys.alwaysApplySkills, skillInstructions);
-  }
-  const childInputs = toInput(childWithSkill, { isSubagent: true });
+  const childInputs = toInput(child, { isSubagent: true });
   if ((child.backgroundToolNames?.length ?? 0) > 0) {
     childInputs.toolDefinitions = stripBackgroundFromToolDefinitions(
       childInputs.toolDefinitions,
@@ -2507,17 +2495,27 @@ export async function createRun({
     );
 
     /**
-     * With `stableContext` the SDK would move a non-empty dynamic part into a message before the
-     * last user message, and that position shifts every turn, which breaks the prefix. Only the
-     * per-turn parts (memory, RAG, this turn's queued files) stay there; the rest joins the
-     * stable instructions. Subagent runs are isolated and keep the split. A compaction summary is
-     * still moved by the SDK.
+     * With `stableContext` the SDK moves a non-empty dynamic part into a message before the last
+     * user message, a position that shifts every turn. Only the per-turn parts (memory, RAG, this
+     * turn's queued files) stay there; the rest joins the stable instructions. The SDK also puts
+     * a summary from an earlier run there, so after a compaction the summary is written to the
+     * cache again on every turn until the SDK keeps it as a message of its own (agents#613).
+     * Subagent runs are isolated and keep the split.
      */
-    const { instructions: systemContent, additional_instructions: additionalInstructions } =
-      assembleSystemPrompt(agent, {
-        stableContext: isStableContextEnabled(appConfig),
-        moveTurnPartsOnly: !isSubagent && sdkMovesDynamicInstructions(provider, llmConfig),
-      });
+    const assembled = assembleSystemPrompt(agent, {
+      stableContext: isStableContextEnabled(appConfig),
+      moveTurnPartsOnly: !isSubagent && sdkMovesDynamicInstructions(provider, llmConfig),
+    });
+    const systemContent = assembled.instructions;
+    let additionalInstructions = assembled.additional_instructions;
+    if (isSubagent && agent.alwaysApplySkillPrimes?.length) {
+      const skillInstructions = agent.alwaysApplySkillPrimes
+        .map((prime) => `# Always-apply skill: ${prime.name}\n${prime.body}`)
+        .join('\n\n');
+      additionalInstructions = [additionalInstructions, skillInstructions]
+        .filter(Boolean)
+        .join('\n\n');
+    }
 
     /** Resolves issues with new OpenAI usage field */
     if (
@@ -2610,6 +2608,8 @@ export async function createRun({
     let tools = agent.tools;
     let graphTools: GenericTool[] | undefined;
     if (agentRequestsAskUserQuestion(agent)) {
+      /** The turn context's plan: a tool it switched off stays bound and refuses calls. */
+      const planned = toolDefinitions.find((def) => def.name === ASK_USER_QUESTION_TOOL_NAME);
       tools = tools?.filter(
         (tool) => (tool as { name?: string } | undefined)?.name !== ASK_USER_QUESTION_TOOL_NAME,
       );
@@ -2618,10 +2618,17 @@ export async function createRun({
         toolRegistry = new Map(toolRegistry);
         toolRegistry.delete(ASK_USER_QUESTION_TOOL_NAME);
       }
-      if (hitlCapable && !isSubagent && !askToolAdminDisabled) {
+      if (hitlCapable && !isSubagent && !askToolAdminDisabled && planned?.defer_loading !== true) {
         graphTools = [
           createAskUserQuestionTool(toolInputValidationErrors) as unknown as GenericTool,
         ];
+        if (planned?.disabled != null) {
+          toolRegistry = new Map(toolRegistry ?? []);
+          toolRegistry.set(ASK_USER_QUESTION_TOOL_NAME, {
+            name: ASK_USER_QUESTION_TOOL_NAME,
+            disabled: planned.disabled,
+          });
+        }
       }
     }
 
@@ -2659,7 +2666,12 @@ export async function createRun({
       tools,
       clientOptions: llmConfig,
       instructions: systemContent,
-      additional_instructions: additionalInstructions || undefined,
+      additional_instructions:
+        frameDynamicInstructions({
+          instructions: additionalInstructions,
+          provider,
+          promptCache: 'promptCache' in llmConfig && llmConfig.promptCache === true,
+        }) || undefined,
       name: agent.name ?? undefined,
       toolRegistry,
       maxContextTokens: effectiveMaxContextTokens,

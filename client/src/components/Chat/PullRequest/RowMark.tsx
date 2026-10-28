@@ -1,14 +1,12 @@
 import { memo, useRef, useEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { Button } from '@librechat/client';
-import { TriangleAlert } from 'lucide-react';
 import type { RefObject } from 'react';
 import type React from 'react';
 import { useRowPullRequestQuery } from '~/data-provider/PullRequest';
 import { TONE_DOT_CLASS, presentPullRequest } from './status';
-import PullRequestPanel, { panelClass } from './Panel';
 import { summarizePullRequest } from './summary';
 import useRowHover from './useRowHover';
+import PullRequestPanel from './Panel';
 import { useLocalize } from '~/hooks';
 import PullRequestIcon from './Icon';
 import { cn } from '~/utils';
@@ -50,7 +48,7 @@ function PullRequestRowMark({
   const open = Ariakit.useStoreState(store, 'open');
   const { data, isError, refetch } = useRowPullRequestQuery(conversationId);
   const pullRequest = data?.pullRequest;
-  const described = pullRequest != null || isError;
+  const described = pullRequest != null;
 
   /* The row is not focusable, so a card it opened hands focus back to the icon on close, and
      focus or a click on the icon makes the icon the anchor again. */
@@ -65,62 +63,7 @@ function PullRequestRowMark({
     return () => onDescribed?.(false);
   }, [described, onDescribed]);
 
-  /* A first lookup that failed is not the same as a chat with no pull request: say so, and
-     offer a retry, instead of leaving the row looking like there is nothing to find. */
-  if (pullRequest == null && isError) {
-    const failed = localize('com_ui_pr_load_failed');
-    return (
-      <Ariakit.HovercardProvider store={store}>
-        <Ariakit.HovercardAnchor
-          render={<Ariakit.Button ref={markRef} />}
-          aria-label={failed}
-          aria-expanded={open}
-          showOnHover={rowRef == null}
-          data-testid="convo-pull-request-failed"
-          onFocus={(event: React.FocusEvent<HTMLElement>) => {
-            anchorToMark(event);
-            store.show();
-          }}
-          onClick={(event: React.MouseEvent<HTMLElement>) => {
-            event.stopPropagation();
-            anchorToMark(event);
-            store.show();
-          }}
-          onKeyDown={(event: React.KeyboardEvent) => {
-            if (event.key === 'Enter' || event.key === ' ') event.stopPropagation();
-          }}
-          className="focus-visible:ring-text-primary text-status-warning relative me-1 flex size-4 shrink-0 items-center justify-center rounded-sm outline-hidden focus-visible:ring-2"
-        >
-          <TriangleAlert aria-hidden="true" className="size-4 shrink-0" />
-        </Ariakit.HovercardAnchor>
-        <span id={labelId} className="sr-only">
-          {failed}
-        </span>
-        <Ariakit.Hovercard
-          store={store}
-          gutter={8}
-          portal
-          unmountOnHide
-          autoFocusOnShow={false}
-          finalFocus={finalFocus}
-          aria-label={localize('com_ui_pull_request')}
-          className={cn(panelClass, 'w-auto')}
-          onClick={(event) => event.stopPropagation()}
-          onDoubleClick={(event) => event.stopPropagation()}
-          onContextMenu={(event) => event.stopPropagation()}
-          onKeyDown={(event) => event.stopPropagation()}
-        >
-          <div role="status" className="text-status-warning flex items-center gap-2 p-3 text-xs">
-            <span>{failed}</span>
-            <Button type="button" variant="outline" size="sm" onClick={() => void refetch()}>
-              {localize('com_ui_retry')}
-            </Button>
-          </div>
-        </Ariakit.Hovercard>
-      </Ariakit.HovercardProvider>
-    );
-  }
-
+  /* Discovery is automatic: only a known pull request can have a refresh warning. */
   if (pullRequest == null) return null;
 
   const view = presentPullRequest(pullRequest);

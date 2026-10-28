@@ -62,7 +62,10 @@ describe('agent Git identity validation', () => {
       const regexCheck = jest.spyOn(RegExp.prototype, 'test');
 
       const result = schema.safeParse({ ...base, git_identity: { name: 'Lia', email } });
-      const regexCheckedEmail = regexCheck.mock.calls.some(([value]) => value === email);
+      const regexCheckedEmail = regexCheck.mock.calls.some(
+        ([value], index) =>
+          value === email && !regexCheck.mock.contexts[index].source.startsWith('[\\uD800'),
+      );
       regexCheck.mockRestore();
 
       expect(result.success).toBe(false);

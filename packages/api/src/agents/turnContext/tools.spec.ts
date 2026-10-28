@@ -4,7 +4,7 @@ import type { ContextEntry, SendSnapshot, TurnContextAgent } from './registry';
 import type { LiveToolGroups } from './tools';
 import type { TurnContextMessage } from './anchor';
 import type { TurnPlan } from './ledger';
-import { collectToolGroups, getToolGroupKey } from './tools';
+import { collectToolGroups, getToolGroupKey, isToolGroupKey } from './tools';
 import { applyTurnContext } from './anchor';
 import { planTurnContext } from './ledger';
 
@@ -22,6 +22,16 @@ const mcpTool = (tool: string, server: string, description = `${tool} on ${serve
 });
 
 const MEMORY: LCTool = { name: 'set_memory', description: 'Saves a memory.' };
+const WEB_SEARCH: LCTool = { name: 'web_search', description: 'Searches the web.' };
+const BASH: LCTool = { name: 'bash_tool', description: 'Runs bash.' };
+const READ_FILE: LCTool = { name: 'read_file', description: 'Reads a file.' };
+const SKILL: LCTool = { name: 'skill', description: 'Runs a skill.' };
+const ASK: LCTool = { name: 'ask_user_question', description: 'Asks the user.' };
+const WEB_SEARCH_GUIDE = 'Cite every web source.';
+const withParameter = (tool: LCTool, name: string): LCTool => ({
+  ...tool,
+  parameters: { type: 'object', properties: { [name]: { type: 'string' } } },
+});
 const ACTION: LCTool = { name: 'getWeather_action_api---example---com', description: 'Weather.' };
 const CALCULATOR: LCTool = { name: 'calculator', description: 'Calculates.' };
 
@@ -33,30 +43,76 @@ interface ToolState {
   calculator?: boolean;
   /** Replaces a server's tool descriptions, as a server-side schema change would. */
   drift?: string;
-  /** The tool names a server offers; `search` and `fetch` by default. */
-  tools?: Record<string, string[]>;
+  /** Leaves out the memory tool, the only tool every other state has. */
+  bare?: boolean;
+  webSearch?: boolean;
+  code?: boolean;
+  skills?: boolean;
+  ask?: boolean;
+  /** Adds the tool intents parameter to the memory tool. */
+  intent?: boolean;
+  /** A provider web search tool in the agent's tools. */
+  providerSearch?: boolean;
+  model?: string;
+  /** Spawn targets of the agent's subagent tool, by description. */
+  subagents?: readonly string[];
+  /** Builds the same setup with its object keys in the opposite order. */
+  flipKeys?: boolean;
   /** Raw names of the servers hidden from the acting user. */
   hidden?: string[];
 }
 
+const flipped = <T extends Record<string, unknown>>(value: T, flip?: boolean): T =>
+  flip ? (Object.fromEntries(Object.entries(value).reverse()) as T) : value;
+
 function buildAgent(state: ToolState): TurnContextAgent {
   const servers = state.mcp ?? [];
   const definitions: LCTool[] = [
-    MEMORY,
+    ...(state.bare ? [] : [state.intent ? withParameter(MEMORY, 'intent') : MEMORY]),
+    ...(state.webSearch ? [WEB_SEARCH] : []),
+    ...(state.code ? [BASH, READ_FILE] : []),
+    ...(state.skills ? [SKILL, ...(state.code ? [] : [READ_FILE])] : []),
+    ...(state.ask ? [ASK] : []),
     ...(state.calculator ? [CALCULATOR] : []),
     ...(state.action ? [ACTION] : []),
     /** Loaded in selection order: the plan orders servers itself. */
     ...servers.flatMap((server) =>
-      (state.tools?.[server] ?? ['search', 'fetch']).map((tool) =>
+      ['search', 'fetch'].map((tool) =>
         mcpTool(tool, server, server === state.drift ? `${tool} v2` : undefined),
       ),
     ),
   ];
   return {
+    provider: 'openAI',
+    model_parameters: { model: state.model ?? 'model-a' },
+    ...(state.subagents && {
+      subagents: flipped({ enabled: true, allowSelf: false }, state.flipKeys),
+      subagentAgentConfigs: new Map(
+        state.subagents.map((description, i) => [
+          `agent_${i}`,
+          flipped({ id: `agent_${i}`, description }, state.flipKeys),
+        ]),
+      ),
+    }),
+    tools: state.providerSearch
+      ? [
+          flipped(
+            {
+              type: 'web_search',
+              user_location: flipped({ country: 'US', city: 'X' }, state.flipKeys),
+            },
+            state.flipKeys,
+          ),
+        ]
+      : [],
+    codeEnvAvailable: state.code === true,
+    toolContextMap: state.webSearch ? { web_search: WEB_SEARCH_GUIDE } : {},
     toolDefinitions: definitions,
     toolRegistry: new Map(definitions.map((definition) => [definition.name, { ...definition }])),
     selectedToolNames: [
-      'memory',
+      ...(state.bare ? [] : ['memory']),
+      ...(state.webSearch ? ['web_search'] : []),
+      ...(state.code ? ['execute_code'] : []),
       ...servers.map((server) => `sys__all__sys_mcp_${server}`),
       ...(state.down ?? []).map((server) => `sys__all__sys_mcp_${server}`),
     ],
@@ -114,17 +170,37 @@ class Conversation {
           ]
         : [{ type: ContentTypes.TEXT, text: 'Answer' }],
     });
+    this.store(plan);
+    const agent = snapshot.agent;
+    applyTurnContext(agent, plan);
+    return { plan, agent, update: plan.updates.get(messages.length - 1) };
+  }
+
+  /** Stores the anchor where the server would: write-once. */
+  store(plan: TurnPlan) {
     if (plan.anchorTarget?.messageId === null) {
       this.anchor ??= plan.anchor;
     } else if (plan.anchorTarget != null) {
       const carrier = this.rows.find(({ messageId }) => messageId === plan.anchorTarget?.messageId);
-      if (carrier != null) {
-        carrier.contextAnchor ??= plan.anchor;
+      if (carrier != null && carrier.contextAnchor == null) {
+        carrier.contextAnchor = plan.anchor;
       }
     }
-    const agent = snapshot.agent;
-    applyTurnContext(agent, plan);
-    return { plan, agent, update: plan.updates.get(messages.length - 1) };
+  }
+
+  /** Regenerates the last turn: the user message is not sent again, so nothing is written. */
+  async regenerate(state: ToolState) {
+    const index = this.rows.length - 2;
+    const messages = this.rows.slice(0, index + 1);
+    const snapshot = await snapshotOf(state);
+    const plan = planTurnContext({
+      messages,
+      conversationAnchor: this.anchor,
+      snapshot,
+    });
+    this.store(plan);
+    applyTurnContext(snapshot.agent, plan);
+    return { plan, agent: snapshot.agent, update: plan.updates.get(index) };
   }
 
   async play(states: ToolState[]) {
@@ -158,15 +234,7 @@ describe('tool groups', () => {
     expect(getToolGroupKey(ACTION)).toBe('tool:action:api---example---com');
     expect(getToolGroupKey(CALCULATOR)).toBe('tool:agent:calculator');
     expect(getToolGroupKey({ name: 'image_edit_oai' })).toBe('tool:agent:image_gen_oai');
-    for (const name of [
-      'web_search',
-      'file_search',
-      'ask_user_question',
-      'set_memory',
-      'bash_tool',
-    ]) {
-      expect(getToolGroupKey({ name })).toBeUndefined();
-    }
+    expect(getToolGroupKey({ name: 'lc_custom_tool' })).toBeUndefined();
   });
 
   it('orders MCP servers and their tools by name, other groups as listed', async () => {
@@ -176,6 +244,7 @@ describe('tool groups', () => {
       calculator: true,
     });
     expect([...(toolGroups as LiveToolGroups).groups.keys()]).toEqual([
+      'tool:builtin:memory',
       'tool:mcp:alpha',
       'tool:mcp:beta',
       'tool:agent:calculator',
@@ -194,34 +263,6 @@ describe('tool groups', () => {
         expect.objectContaining({ value }),
       ]),
     );
-  });
-
-  it('keys the hidden servers like the groups, by normalized name', async () => {
-    const agent = buildAgent({ mcp: ['my_server'] });
-    const { hidden } = await collectToolGroups({
-      agent,
-      getHidden: async () => new Set(['My Server', 'plain']),
-    });
-    expect([...hidden]).toEqual(['tool:mcp:My_Server', 'tool:mcp:plain']);
-    expect(getToolGroupKey({ name: 'x_mcp_My_Server', serverName: 'My Server' })).toBe(
-      'tool:mcp:My_Server',
-    );
-  });
-
-  it('leaves deferred and code-only tools out of a group and reports unavailable selections', async () => {
-    const agent = buildAgent({ mcp: ['alpha'], down: ['gamma'] });
-    agent.toolDefinitions = [
-      ...(agent.toolDefinitions ?? []),
-      { ...mcpTool('lazy', 'alpha'), defer_loading: true },
-      { ...mcpTool('coded', 'alpha'), allowed_callers: ['code_execution'] },
-    ];
-    const { groups, unavailable } = await collectToolGroups({ agent });
-    const alpha = JSON.parse(groups.get('tool:mcp:alpha')?.value as string);
-    expect(alpha.tools.map(({ name }: LCTool) => name)).toEqual([
-      'fetch_mcp_alpha',
-      'search_mcp_alpha',
-    ]);
-    expect([...unavailable]).toEqual(['tool:mcp:gamma']);
   });
 });
 
@@ -295,37 +336,6 @@ describe('planning tools against the anchor', () => {
     expect(turns[1].plan.tools?.mcpInstructions).toContain('Beta');
   });
 
-  it('keeps an anchored server whose name is hidden but that is loaded, a user-sourced one', async () => {
-    const turns = await new Conversation().play([
-      { mcp: ['alpha', 'beta'] },
-      { mcp: ['alpha', 'beta'], hidden: ['alpha'] },
-    ]);
-    expect(boundTools(turns[1].agent)).toBe(boundTools(turns[0].agent));
-    expect(find(turns[1].agent, 'search_mcp_alpha')?.disabled).toBeUndefined();
-    expect(turns[1].plan.tools?.mcpInstructions).toContain('Alpha');
-  });
-
-  it('announces what changed while a server was switched off when it comes back', async () => {
-    const turns = await new Conversation().play([
-      { mcp: ['alpha', 'beta'] },
-      { mcp: ['beta'] },
-      { mcp: ['alpha', 'beta'], drift: 'alpha' },
-    ]);
-    expect(turns[2].update).toContain('Tools of MCP server `alpha` are available again.');
-    expect(turns[2].update).toContain('- search_mcp_alpha: search v2');
-  });
-
-  it('states only that a server is available again when it did not change while off', async () => {
-    const turns = await new Conversation().play([
-      { mcp: ['alpha', 'beta'] },
-      { mcp: ['beta'] },
-      { mcp: ['alpha', 'beta'] },
-    ]);
-    expect(turns[2].update).toBe(
-      '<context_update>\nTools of MCP server `alpha` are available again.\n</context_update>',
-    );
-  });
-
   it('marks an anchored server that cannot be reached unavailable, without an update', async () => {
     const turns = await new Conversation().play([
       { mcp: ['alpha', 'beta'] },
@@ -356,56 +366,19 @@ describe('planning tools against the anchor', () => {
     expect(boundTools(turns[2].agent)).toBe(boundTools(turns[0].agent));
   });
 
-  it('announces a server that adds and removes tools without changing the bound ones', async () => {
-    const turns = await new Conversation().play([
-      { mcp: ['alpha'] },
-      { mcp: ['alpha'], tools: { alpha: ['search', 'fetch', 'export'] } },
-      { mcp: ['alpha'], tools: { alpha: ['search', 'export'] } },
-    ]);
-    expect(boundTools(turns[1].agent)).toBe(boundTools(turns[0].agent));
-    expect(turns[1].update).toContain('New tools.');
-    expect(turns[1].update).toContain('call them with `call_tool`');
-    expect(turns[1].update).toContain('- export_mcp_alpha');
-    expect(turns[2].update).toContain('Removed tools, calls to them will fail: fetch_mcp_alpha.');
-    expect(find(turns[1].agent, 'export_mcp_alpha')?.defer_loading).toBe(true);
-    expect(find(turns[2].agent, 'fetch_mcp_alpha')?.disabled).toBeDefined();
-  });
-
-  it('announces a deferred server switched off and on again without repeating its schemas', async () => {
-    const turns = await new Conversation().play([
-      { mcp: ['alpha'] },
-      { mcp: ['alpha', 'beta'] },
-      { mcp: ['alpha'] },
-      { mcp: ['alpha', 'beta'] },
-    ]);
-    expect(turns[2].update).toContain('Tools of MCP server `beta` were switched off');
-    expect(find(turns[2].agent, 'search_mcp_beta')).toBeUndefined();
-    expect(turns[3].update).toContain('Tools of MCP server `beta` are available again.');
-    expect(turns[3].update).not.toContain('parameters');
-    expect(find(turns[3].agent, 'search_mcp_beta')?.defer_loading).toBe(true);
-  });
-
-  describe('toggles flipped before sending', () => {
-    it('send the untouched tools when a server ends switched off', async () => {
-      const untouched = await new Conversation().play([{ mcp: ['alpha'] }, { mcp: ['alpha'] }]);
-      /** On, off, on, off between the turns: only the state at send time is read. */
-      const flapped = await new Conversation().play([{ mcp: ['alpha'] }, { mcp: ['alpha'] }]);
-      expect(flapped[1].plan.currentEntries).toEqual([]);
-      expect(flapped[1].update).toBeUndefined();
-      expect(JSON.stringify(flapped[1].agent.toolDefinitions)).toBe(
-        JSON.stringify(untouched[1].agent.toolDefinitions),
-      );
-    });
-  });
-
   it('leaves a conversation without groups untouched until it gets its first group', async () => {
-    const turns = await new Conversation().play([{}, {}, { mcp: ['beta'] }, {}]);
+    const turns = await new Conversation().play([
+      { bare: true },
+      { bare: true },
+      { bare: true, mcp: ['beta'] },
+      { bare: true },
+    ]);
     expect(turns[0].agent.toolDispatch).toBeUndefined();
     expect(turns[1].plan.tools).toBeUndefined();
     expect(turns[1].agent.liveTools).toBeUndefined();
-    expect(boundNames(turns[1].agent)).toEqual(['set_memory']);
+    expect(boundNames(turns[1].agent)).toEqual([]);
     expect(turns[2].agent.toolDispatch).toBe(true);
-    expect(boundNames(turns[2].agent)).toEqual(['set_memory']);
+    expect(boundNames(turns[2].agent)).toEqual([]);
     expect(turns[2].update).toContain('Tools of MCP server `beta` are now available.');
     /** Bound from then on, so the tool list does not change back. */
     expect(turns[3].agent.toolDispatch).toBe(true);
@@ -435,7 +408,8 @@ describe('planning tools against the anchor', () => {
         'fetch_mcp_delta',
         'search_mcp_delta',
       ]);
-      expect(before.plan.anchor.map(({ key }) => key)).toEqual([
+      expect(before.plan.anchor.map(({ key }) => key).filter(isToolGroupKey)).toEqual([
+        'tool:builtin:memory',
         'tool:mcp:gamma',
         'tool:agent:calculator',
         'tool:mcp:alpha',
@@ -445,6 +419,149 @@ describe('planning tools against the anchor', () => {
       expect(before.plan.tools?.mcpInstructions).toContain(INSTRUCTIONS.alpha);
       expect(before.agent.toolDispatch).toBe(true);
     });
+  });
+});
+
+describe('built-in capabilities as tool groups', () => {
+  it('binds built-ins first, in a fixed order, with their instructions from the anchor', async () => {
+    const [turn] = await new Conversation().play([
+      { mcp: ['alpha'], skills: true, code: true, webSearch: true },
+    ]);
+    expect(turn.plan.anchor.map(({ key }) => key).filter(isToolGroupKey)).toEqual([
+      'tool:builtin:web_search',
+      'tool:builtin:execute_code',
+      'tool:builtin:skills',
+      'tool:builtin:memory',
+      'tool:mcp:alpha',
+    ]);
+    expect(boundNames(turn.agent)).toEqual([
+      'web_search',
+      'bash_tool',
+      'read_file',
+      'skill',
+      'set_memory',
+      'fetch_mcp_alpha',
+      'search_mcp_alpha',
+    ]);
+    expect(turn.agent.toolContextMap).toEqual({ web_search: WEB_SEARCH_GUIDE });
+  });
+
+  it('defers a built-in enabled mid-segment and keeps its instructions out of the system prompt', async () => {
+    const turns = await new Conversation().play([
+      {},
+      { webSearch: true },
+      { webSearch: true },
+      {},
+      { webSearch: true },
+    ]);
+    for (const turn of turns.slice(1)) {
+      expect(boundTools(turn.agent)).toBe(boundTools(turns[0].agent));
+      expect(turn.agent.toolContextMap).toEqual({});
+    }
+    expect(find(turns[1].agent, 'web_search')?.defer_loading).toBe(true);
+    expect(turns[1].update).toContain(
+      'Tools of built-in capability `web_search` are now available.',
+    );
+    expect(turns[1].update).toContain(WEB_SEARCH_GUIDE);
+    expect(turns[1].update).toContain('- web_search: Searches the web.');
+    expect(turns[2].update).toBeUndefined();
+    expect(turns[3].update).toContain(
+      'Tools of built-in capability `web_search` were switched off',
+    );
+    expect(turns[4].update).toContain('are available again');
+  });
+});
+
+describe('declared resets', () => {
+  const groupKeys = (plan: TurnPlan) => plan.anchor.map(({ key }) => key).filter(isToolGroupKey);
+
+  it('re-anchors on the sent message when the model changes, keeping the tool order', async () => {
+    const convo = new Conversation();
+    const turns = await convo.play([
+      { mcp: ['alpha', 'beta'] },
+      { mcp: ['beta', 'gamma'] },
+      { mcp: ['beta', 'gamma'], model: 'model-b' },
+      { mcp: ['beta', 'gamma'], model: 'model-b' },
+    ]);
+    expect(turns[2].plan.reset).toEqual(['model']);
+    expect(turns[2].plan.anchorTarget).toEqual({ messageId: 'u4' });
+    expect(convo.rows[4].contextAnchor).toEqual(turns[2].plan.anchor);
+    expect(groupKeys(turns[2].plan)).toEqual([
+      'tool:builtin:memory',
+      'tool:mcp:beta',
+      'tool:mcp:gamma',
+    ]);
+    expect(boundNames(turns[2].agent)).toEqual([
+      'set_memory',
+      'fetch_mcp_beta',
+      'search_mcp_beta',
+      'fetch_mcp_gamma',
+      'search_mcp_gamma',
+    ]);
+    /** Earlier announcements are part of the new anchor; the reset turn announces nothing. */
+    expect(turns[2].plan.updates.size).toBe(0);
+    expect(turns[2].plan.currentEntries).toEqual([]);
+    expect(turns[3].plan.reset).toBeUndefined();
+    expect(turns[3].plan.anchorTarget).toBeUndefined();
+    expect(boundTools(turns[3].agent)).toBe(boundTools(turns[2].agent));
+  });
+
+  it.each([
+    ['provider_tools', { providerSearch: true }],
+    ['agent', { subagents: ['Reviews code.'] }],
+    ['tool_profile', { intent: true }],
+    ['tools', { ask: true }],
+  ] as const)('re-anchors for %s', async (reason, change) => {
+    const turns = await new Conversation().play([{}, change]);
+    expect(turns[1].plan.reset).toEqual([reason]);
+  });
+
+  it('re-anchors without an MCP server that became hidden from the user, schemas and instructions', async () => {
+    const convo = new Conversation();
+    const turns = await convo.play([
+      { mcp: ['alpha', 'beta'] },
+      { mcp: ['beta'], hidden: ['alpha'] },
+      { mcp: ['beta'], hidden: ['alpha'] },
+    ]);
+    expect(turns[0].plan.tools?.mcpInstructions).toContain('Alpha');
+    expect(turns[1].plan.reset).toEqual(['mcp_hidden']);
+    expect(turns[1].plan.anchorTarget).toEqual({ messageId: 'u2' });
+    expect(groupKeys(turns[1].plan)).toEqual(['tool:builtin:memory', 'tool:mcp:beta']);
+    expect(boundNames(turns[1].agent).some((name) => name.endsWith('_mcp_alpha'))).toBe(false);
+    expect(turns[1].plan.tools?.mcpInstructions).not.toContain('Alpha');
+    expect(turns[1].plan.tools?.mcpInstructions).toContain('Beta');
+    expect(turns[2].plan.reset).toBeUndefined();
+    expect(boundTools(turns[2].agent)).toBe(boundTools(turns[1].agent));
+  });
+
+  it('keeps the anchor a reset turn stored when its reply is regenerated', async () => {
+    const convo = new Conversation();
+    const turns = await convo.play([{}, { model: 'model-b' }]);
+    const stored = convo.rows[2].contextAnchor;
+    expect(stored).toEqual(turns[1].plan.anchor);
+
+    const regenerated = await convo.regenerate({ model: 'model-c', webSearch: true });
+    expect(regenerated.plan.reset).toBeUndefined();
+    expect(regenerated.plan.anchorTarget).toBeUndefined();
+    expect(regenerated.plan.currentEntries).toBeUndefined();
+    expect(regenerated.update).toBeUndefined();
+    expect(convo.rows[2].contextAnchor).toBe(stored);
+    expect(boundTools(regenerated.agent)).toBe(boundTools(turns[1].agent));
+  });
+
+  it('does not reset when the same setup is built with its keys in another order', async () => {
+    const convo = new Conversation();
+    const setup = (flip: boolean): ToolState => ({
+      providerSearch: true,
+      subagents: ['Reviews code.', 'Writes tests.'],
+      model: 'model-a',
+      flipKeys: flip,
+    });
+    const turns = await convo.play([setup(false), setup(true), setup(false), setup(true)]);
+    for (const turn of turns) {
+      expect(turn.plan.reset).toBeUndefined();
+    }
+    expect(boundTools(turns[3].agent)).toBe(boundTools(turns[0].agent));
   });
 });
 

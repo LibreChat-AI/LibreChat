@@ -27,9 +27,4 @@ describe('dispatcher calls in tool headers', () => {
     });
     expect(getToolMeta(part)).toMatchObject({ name: Tools.web_search, hasOutput: true });
   });
-
-  it('names a streaming call after its target once the arguments parse', () => {
-    expect(getStandardToolCall(dispatcherPart({}))?.name).toBe(Tools.web_search);
-    expect(getStandardToolCall(dispatcherPart({ args: '{"name":"web' }))?.name).toBe('call_tool');
-  });
 });

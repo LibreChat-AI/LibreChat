@@ -3,7 +3,13 @@ import { useAtom } from 'jotai';
 import { supportsConversationTitleOwnership } from 'librechat-data-provider';
 import { useRecoilState, useRecoilValue, useRecoilCallback, useResetRecoilState } from 'recoil';
 import type { ReactNode } from 'react';
-import type { ChatAuth, ChatConfig, ChatSettings, PaneConversation } from '~/hooks/Chat/contract';
+import type {
+  ChatAuth,
+  ChatConfig,
+  ChatSettings,
+  PaneConversation,
+  PaneConversationState,
+} from '~/hooks/Chat/contract';
 import { ChatTransportContext, defaultChatTransport } from '~/Providers/ChatTransportContext';
 import { ChatSettingsContext } from '~/Providers/ChatSettingsContext';
 import { duringRunActionAtom } from '~/store/duringRun';
@@ -32,6 +38,12 @@ export function usePaneConversations(): ChatSettings['getPaneConversations'] {
 /** Subscribes to the conversation a pane shows in the app's pane store. */
 export function usePaneConversation(index: string | number) {
   return useRecoilValue(store.conversationByIndex(index));
+}
+
+/** A pane's conversation and setter in the app's pane store, registering the pane's key. */
+export function usePaneConversationState(index: string | number): PaneConversationState {
+  const { conversation, setConversation } = store.useCreateConversationAtom(index);
+  return useMemo(() => ({ conversation, setConversation }), [conversation, setConversation]);
 }
 
 /** Supplies the chat's app-global preferences from the app's own settings store, the deployment
@@ -80,6 +92,7 @@ export default function ChatSettingsProvider({ children }: { children: ReactNode
       auth,
       getPaneConversations,
       usePaneConversation,
+      usePaneConversationState,
     }),
     [
       duringRunDefaultAction,

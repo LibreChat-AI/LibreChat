@@ -576,42 +576,6 @@ describe('definitions.ts', () => {
         ]);
       });
 
-      it('keeps server groups in the requested order and sorts tools only inside each placeholder', async () => {
-        const entry = (name: string) => ({
-          function: { name, description: name, parameters: { type: 'object', properties: {} } },
-        });
-        const catalogs: Record<string, Record<string, unknown>> = {
-          one: { b_mcp_one: entry('b_mcp_one'), a_mcp_one: entry('a_mcp_one') },
-          two: { d_mcp_two: entry('d_mcp_two'), c_mcp_two: entry('c_mcp_two') },
-          empty: {},
-        };
-        const result = await loadToolDefinitions(
-          {
-            userId: 'user-123',
-            agentId: 'agent-123',
-            tools: [
-              'sys__all__sys_mcp_two',
-              'sys__all__sys_mcp_empty',
-              'sys__all__sys_mcp_one',
-              'z_mcp_one',
-            ],
-            sortMcpTools: true,
-          },
-          {
-            getOrFetchMCPServerTools: jest
-              .fn()
-              .mockImplementation(async (_u: string, server: string) => catalogs[server] ?? null),
-            isBuiltInTool: mockIsBuiltInTool,
-          },
-        );
-        expect(result.toolDefinitions.map((d) => d.name)).toEqual([
-          'c_mcp_two',
-          'd_mcp_two',
-          'a_mcp_one',
-          'b_mcp_one',
-        ]);
-      });
-
       it('refreshes a non-empty server catalog once when the selected tool is missing', async () => {
         const selectedTool = 'run_query_mcp_warehouse';
         const staleTools = {

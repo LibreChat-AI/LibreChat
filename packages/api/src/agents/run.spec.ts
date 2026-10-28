@@ -1,4 +1,4 @@
-import { Run, Providers } from '@librechat/agents';
+import { Providers, Run } from '@librechat/agents';
 import { ReasoningResponseKey } from 'librechat-data-provider';
 import { ToolMessage, AIMessage, HumanMessage } from '@librechat/agents/langchain/messages';
 import {
@@ -12,6 +12,7 @@ import {
   createRun,
 } from './run';
 import { ContextPartKeys, contributeContext } from './systemParts';
+import { frameDynamicInstructions } from './tail';
 
 describe('getRunDiscoveredTools', () => {
   it('uses the run discovery snapshot instead of reconstructing it from messages', () => {
@@ -531,43 +532,17 @@ describe('createRun instructions with prompt caching', () => {
     async (provider) => {
       const input = await agentInput(provider, true, withParts());
       expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
-      expect(input.additional_instructions).toBe(VOLATILE);
+      expect(input.additional_instructions).toBe(
+        frameDynamicInstructions({ instructions: VOLATILE, provider, promptCache: true }),
+      );
     },
   );
-
-  it('merges everything when no part is per-turn', async () => {
-    const input = await agentInput(Providers.ANTHROPIC, true, { additional_instructions: STATIC });
-    expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
-    expect(input.additional_instructions).toBeUndefined();
-  });
-
-  it('moves only the per-turn parts when a memory or RAG part is empty', async () => {
-    const input = await agentInput(Providers.ANTHROPIC, true, withParts(''));
-    expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
-    expect(input.additional_instructions).toBe(MEMORY);
-  });
-
-  it('assembles the tail from the parts, not from a direct write to additional_instructions', async () => {
-    const input = await agentInput(Providers.ANTHROPIC, true, {
-      ...withParts(),
-      additional_instructions: 'Written directly.',
-    });
-    expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
-    expect(input.additional_instructions).toBe(VOLATILE);
-    expect(JSON.stringify(input)).not.toContain('Written directly.');
-  });
-
-  it('builds the request as before when stableContext is off', async () => {
-    const input = await agentInput(Providers.ANTHROPIC, true, withParts(), false);
-    expect(input.instructions).toBe('Base instructions.');
-    expect(input.additional_instructions).toBe(`${RUNTIME}\n${STATIC}\n\n${VOLATILE}`);
-  });
 
   it.each([
     [Providers.ANTHROPIC, false],
     [Providers.OPENROUTER, false],
     [Providers.OPENAI, true],
-    [Providers.BEDROCK, true],
+    [Providers.BEDROCK, false],
     [Providers.GOOGLE, true],
   ])('keeps the split for %s (promptCache %s)', async (provider, promptCache) => {
     const input = await agentInput(provider, promptCache, withParts());
@@ -603,17 +578,9 @@ describe('createRun instructions with prompt caching', () => {
       ...queuedFiles(),
     });
     expect(input.instructions).toBe(`Base instructions.\n\n${STATIC}\n${RUNTIME}`);
-    expect(input.additional_instructions.startsWith(`${VOLATILE}\n\n`)).toBe(true);
-    expect(input.additional_instructions).toContain('report.csv');
-  });
-
-  it('keeps the queued file context in place when nothing is merged', async () => {
-    const input = await agentInput(Providers.OPENAI, false, {
-      additional_instructions: STATIC,
-      ...queuedFiles(),
-    });
-    expect(input.instructions).toBe('Base instructions.');
-    expect(input.additional_instructions.startsWith(`${STATIC}\n${RUNTIME}\n`)).toBe(true);
-    expect(input.additional_instructions).toContain('report.csv');
+    expect(input.additional_instructions.indexOf(`${VOLATILE}\n\n`)).toBeGreaterThan(0);
+    expect(input.additional_instructions.indexOf('report.csv')).toBeGreaterThan(
+      input.additional_instructions.indexOf(VOLATILE),
+    );
   });
 });

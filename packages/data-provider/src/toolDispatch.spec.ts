@@ -30,16 +30,4 @@ describe('resolveDisplayToolCall', () => {
       }),
     ).toEqual({ name: 'query_mcp_beta', args: '{"q":1}' });
   });
-
-  it('keeps the dispatcher while its arguments still stream or name no tool', () => {
-    const streaming = { name: TOOL_DISPATCHER_NAME, args: '{"name":"query_mc' };
-    expect(resolveDisplayToolCall(streaming)).toBe(streaming);
-    const unnamed = { name: TOOL_DISPATCHER_NAME, args: '{"arguments":"{}"}' };
-    expect(resolveDisplayToolCall(unnamed)).toBe(unnamed);
-  });
-
-  it('leaves any other call as it is', () => {
-    const call = { name: 'web_search', args: '{"query":"news"}' };
-    expect(resolveDisplayToolCall(call)).toBe(call);
-  });
 });

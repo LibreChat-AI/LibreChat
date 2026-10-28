@@ -6,6 +6,8 @@ import type {
   IMongoFile,
 } from '~/types/file';
 
+import { fileContentUpdate } from './fileContent';
+
 function claimFilter(data: FileStorageClaim): FilterQuery<IMongoFile> {
   if (
     typeof data.file_id !== 'string' ||
@@ -94,6 +96,11 @@ export function createFileStorageMethods(mongoose: typeof import('mongoose')): {
     }
     if (data.embedded === true) update.embedded = true;
     if (Object.keys(update).length === 0) throw new Error('Missing provisioning result');
+    const content = fileContentUpdate(update);
+    if (data.entityId) {
+      const owners = content.$addToSet?.['metadata.embeddedEntities']?.$each ?? [];
+      content.$addToSet = { 'metadata.embeddedEntities': { $each: [...owners, data.entityId] } };
+    }
     const result = await File.updateOne(
       {
         ...claimFilter(data.claim),
@@ -110,8 +117,7 @@ export function createFileStorageMethods(mongoose: typeof import('mongoose')): {
           : {}),
       },
       {
-        $set: update,
-        ...(data.entityId ? { $addToSet: { 'metadata.embeddedEntities': data.entityId } } : {}),
+        ...content,
         $unset: { expiresAt: '' },
       },
     );

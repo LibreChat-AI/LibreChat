@@ -32,7 +32,7 @@ import { isPromptStoreError } from './errors';
  *  validation instead of silently falling back to `production`. */
 const resolveVersionQuerySchema = z.union([
   z.undefined(),
-  z.string().pipe(z.coerce.number().int().positive().max(Number.MAX_SAFE_INTEGER)),
+  z.string().pipe(z.coerce.number<string>().int().positive().max(Number.MAX_SAFE_INTEGER)),
 ]);
 
 /** A request after the prompt access middleware stored the resolved record. */

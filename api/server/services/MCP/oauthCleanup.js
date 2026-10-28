@@ -7,13 +7,20 @@ const db = require('~/models');
 /** Revocation must still reach a server the owner's profile hides. */
 const INCLUDE_HIDDEN = { includeHidden: true };
 
-const maybeUninstallOAuthMCP = async (userId, pluginKey, appConfig, serverConfigOverride) => {
+const maybeUninstallOAuthMCP = async (
+  userId,
+  pluginKey,
+  appConfig,
+  serverConfigOverride,
+  teardown,
+) => {
   const registry = getMCPServersRegistry();
   return cleanupMCPServerOAuth({
     userId,
     pluginKey,
     appConfig,
     serverConfigOverride,
+    teardown,
     dependencies: {
       flowManager: getFlowStateManager(getLogStores(CacheKeys.FLOWS)),
       oauthHandler: MCPOAuthHandler,

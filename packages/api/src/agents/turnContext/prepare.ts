@@ -1,17 +1,18 @@
-import { Constants } from 'librechat-data-provider';
 import { logger } from '@librechat/data-schemas';
-import type { TurnContextUpdates } from '../contextUpdates';
-import type { FormattedMessageWithContent } from '../client';
+import { Constants } from 'librechat-data-provider';
+import { TOOL_DISPATCHER_NAME } from '@librechat/agents';
 import type { ContextEntry, SnapshotRequest, TurnContextAgent } from './registry';
-import type { TurnContextMessage } from './anchor';
+import type { FormattedMessageWithContent } from '../client';
+import type { TurnContextUpdates } from '../contextUpdates';
 import type { PromptCacheConfig } from '../promptCache';
 import type { MCPLookupUser, ParsedServerConfig } from '~/mcp/types';
+import type { TurnContextMessage } from './anchor';
 import type { LiveToolGroups } from './tools';
 import type { TurnPlan } from './ledger';
-import { createHistoryContextUpdates } from '../contextUpdates';
 import { getHiddenMCPServerNames, getMCPServerInstructions } from '~/mcp/instructions';
+import { hasProviderPromptCache, isStableContextEnabled } from '../promptCache';
+import { buildHistoryContextUpdates } from '../contextUpdates';
 import { createSendSnapshot } from './registry';
-import { isStableContextEnabled } from '../promptCache';
 import { prependContextText } from '../client';
 import { collectToolGroups } from './tools';
 import { planTurnContext } from './ledger';
@@ -38,6 +39,11 @@ export interface PendingContextAnchor {
 export interface PreparedTurnContext {
   plan: TurnPlan;
   pending?: PendingContextAnchor;
+  /**
+   * Why this turn re-anchored a segment, for the notice under the reply. Only when the
+   * provider has a prompt cache the user can lose; elsewhere there is nothing to tell.
+   */
+  promptCacheReset?: string[];
 }
 
 type ConfigServers = Record<string, ParsedServerConfig> | undefined;
@@ -76,14 +82,28 @@ export interface TurnContextDb {
   }) => Promise<boolean>;
 }
 
-/** The primary agent's tool groups, sampled for the turn context. */
+let warnedAboutSdk = false;
+
+/**
+ * The primary agent's tool groups, sampled for the turn context. Groups need the
+ * agents SDK's dispatcher; without it the tools stay as loaded, with one warning.
+ */
 async function sampleToolGroups(
   agent: TurnContextAgent,
   configServers: ConfigServers | Promise<ConfigServers>,
   getServerInstructions: ServerInstructionsReader,
   getHiddenServers: HiddenServersReader,
   user?: MCPLookupUser | null,
-): Promise<LiveToolGroups> {
+): Promise<LiveToolGroups | undefined> {
+  if (typeof TOOL_DISPATCHER_NAME !== 'string') {
+    if (!warnedAboutSdk) {
+      warnedAboutSdk = true;
+      logger.warn(
+        '[turnContext] the installed @librechat/agents has no tool dispatcher; tools are not kept stable until the SDK is updated',
+      );
+    }
+    return undefined;
+  }
   return collectToolGroups({
     agent,
     getHidden: () => getHiddenServers(user),
@@ -214,7 +234,11 @@ export async function prepareTurnContext({
   if (plan.currentEntries != null && plan.currentEntries.length > 0 && current?.messageId) {
     req.turnContextUpdates = { messageId: current.messageId, entries: plan.currentEntries };
   }
-  return { plan, pending: pendingFor(plan, conversationId) };
+  return {
+    plan,
+    pending: pendingFor(plan, conversationId),
+    ...(plan.reset != null && hasProviderPromptCache(agent) && { promptCacheReset: plan.reset }),
+  };
 }
 
 /**
@@ -335,15 +359,13 @@ export async function planSendContext({
   countTokens: (message: FormattedMessageWithContent) => number;
 }): Promise<{ prepared: PreparedTurnContext | null; addedTokens: number; applied: boolean }> {
   const prepared = await prepareTurnContext(turnArgs);
-  const plan =
-    prepared?.plan ??
-    createHistoryContextUpdates({
-      req: turnArgs.req as Parameters<typeof createHistoryContextUpdates>[0]['req'],
-      messages: turnArgs.orderedMessages as Parameters<
-        typeof createHistoryContextUpdates
-      >[0]['messages'],
+  const plan = prepared?.plan ?? {
+    updates: buildHistoryContextUpdates({
+      req: turnArgs.req,
+      messages: turnArgs.orderedMessages,
       agents: turnArgs.allAgents.map(({ agent }) => agent),
-    });
+    }),
+  };
   return {
     prepared,
     ...applyHistoryUpdates({ plan, formattedMessages, indexTokenCountMap, countTokens }),

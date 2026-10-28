@@ -1,4 +1,4 @@
-const { logger, redactMessage, getTenantId } = require('@librechat/data-schemas');
+const { logger, getTenantId } = require('@librechat/data-schemas');
 const { tool: toolFn, DynamicStructuredTool } = require('@librechat/agents/langchain/tools');
 const {
   sleep,
@@ -25,6 +25,7 @@ const {
   getCodeFileLocation,
   getMissingCustomUserVars,
   buildWebSearchDynamicContext,
+  getPromptTime,
   isStableContextEnabled,
   getCodeApiAuthHeaders,
   getReplayablePendingMCPOAuthStart,
@@ -79,6 +80,7 @@ const {
   appendAssistantMCPAppArtifact,
   resolveMCPClientCapabilityProfile,
   getOutboundTimeoutMs,
+  getToolErrorText,
 } = require('@librechat/api');
 const {
   Time,
@@ -734,7 +736,7 @@ async function processRequiredActions(client, requiredActions) {
       const output = getSafeRequiredActionOutput(
         client,
         currentAction,
-        `Error processing tool ${currentAction.tool}: ${redactMessage(error.message, 256)}`,
+        `Error processing tool ${currentAction.tool}: ${getToolErrorText(error)}`,
       );
       return {
         tool_call_id: currentAction.toolCallId,
@@ -1547,14 +1549,10 @@ async function loadToolDefinitionsWrapper({
   const hasExecuteCode = filteredTools.includes(Tools.execute_code);
 
   if (hasWebSearch) {
-    const stableContext = isStableContextEnabled(req.config);
-    toolContextMap[Tools.web_search] = buildWebSearchContext(stableContext);
-    dynamicToolContextMap[Tools.web_search] = buildWebSearchDynamicContext({
-      turnStartedAt: req.turnStartedAt,
-      conversationStartedAt: req.conversationCreatedAt,
-      timezone: req.body?.timezone,
-      stableContext,
-    });
+    toolContextMap[Tools.web_search] = buildWebSearchContext();
+    dynamicToolContextMap[Tools.web_search] = buildWebSearchDynamicContext(
+      getPromptTime(req.config, req),
+    );
   }
 
   /**

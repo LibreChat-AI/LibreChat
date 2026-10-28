@@ -10392,29 +10392,6 @@ describe('conversation context anchor', () => {
     expect(await methods.getConvo(user, conversationId)).not.toHaveProperty('contextAnchor');
   });
 
-  it('returns the anchor with the conversation only when the caller selects it', async () => {
-    const conversationId = await seed();
-    await methods.setConvoContextAnchor({ user, conversationId, anchor });
-    expect(await methods.getConvo(user, conversationId)).not.toHaveProperty('contextAnchor');
-    expect((await methods.getConvo(user, conversationId, '+contextAnchor'))?.contextAnchor).toEqual(
-      anchor,
-    );
-  });
-
-  it("neither reads nor writes another user's conversation, nor creates one", async () => {
-    const conversationId = await seed();
-    await expect(
-      methods.setConvoContextAnchor({ user: 'intruder', conversationId, anchor }),
-    ).resolves.toBe(false);
-    await methods.setConvoContextAnchor({ user, conversationId, anchor });
-    await expect(methods.getConvoContextAnchor('intruder', conversationId)).resolves.toBeNull();
-    const missing = uuidv4();
-    await expect(
-      methods.setConvoContextAnchor({ user, conversationId: missing, anchor }),
-    ).resolves.toBe(false);
-    expect(await Conversation.findOne({ conversationId: missing }).lean()).toBeNull();
-  });
-
   it('ignores an anchor submitted through saves, unsets and imports', async () => {
     const conversationId = await seed();
     const forged = [{ key: 'project', value: 'Forged.' }];

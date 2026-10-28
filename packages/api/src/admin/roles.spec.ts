@@ -1,5 +1,5 @@
 import { Types } from 'mongoose';
-import { PrincipalType, SystemRoles } from 'librechat-data-provider';
+import { PrincipalType, SystemRoles, promptPermissionsSchema } from 'librechat-data-provider';
 import type { IRole, IUser } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type { ServerRequest } from '~/types/http';
@@ -2518,17 +2518,7 @@ describe('admin role audit entries', () => {
 
 describe('createRolePermissionsUpdateHandler', () => {
   const config = {
-    schema: {
-      partial: () => ({
-        parse: (value: unknown) => {
-          const body = value as Record<string, unknown>;
-          if (Object.values(body).some((v) => typeof v !== 'boolean')) {
-            throw Object.assign(new Error('invalid'), { errors: ['bad value'] });
-          }
-          return body as Record<string, boolean>;
-        },
-      }),
-    },
+    schema: promptPermissionsSchema,
     permissionType: 'PROMPTS',
     errorMessage: 'Invalid prompt permissions.',
   };
@@ -2602,7 +2592,7 @@ describe('createRolePermissionsUpdateHandler', () => {
     expect(status).toHaveBeenCalledWith(400);
     expect(send).toHaveBeenCalledWith({
       message: 'Invalid prompt permissions.',
-      error: ['bad value'],
+      error: [expect.objectContaining({ code: 'invalid_type', path: ['USE'] })],
     });
     expect(deps.updateRoleByName).not.toHaveBeenCalled();
   });

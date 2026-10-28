@@ -1,4 +1,4 @@
-import { get } from 'lodash';
+import get from 'lodash/get';
 import { SystemRoles } from 'librechat-data-provider';
 import type { RecordAuditEntry } from '~/admin/audit';
 import { recordSystemAuditEntry } from '~/admin/audit';
