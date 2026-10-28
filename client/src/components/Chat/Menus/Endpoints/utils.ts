@@ -11,8 +11,46 @@ import type { useLocalize } from '~/hooks';
 import SpecIcon from '~/components/Chat/Menus/Endpoints/components/SpecIcon';
 import { resolveProviderIcon } from '~/hooks/Endpoint/useProviderIcon';
 import { createEndpointIcon } from '~/hooks/Endpoint/useEndpoints';
+import { getModelLabel, getSpecAgentAvatarURL } from '~/utils';
 import { Endpoint, SelectedValues } from '~/common';
-import { getSpecAgentAvatarURL } from '~/utils';
+
+type NamedEndpoint = Pick<Endpoint, 'value' | 'agentNames' | 'assistantNames' | 'modelLabels'>;
+
+/**
+ * The name to show for a model, or `undefined` when it has none and should
+ * render its own id — so each caller keeps its own fallback.
+ *
+ * Agents and assistants carry names from their records. Every other endpoint may
+ * declare `modelLabels`, a display-only map from model id to label; the id stays
+ * what is selected, stored and sent upstream.
+ */
+export function getModelName(
+  endpoint: NamedEndpoint | null,
+  modelId: string | null,
+): string | undefined {
+  if (!endpoint || !modelId) {
+    return undefined;
+  }
+
+  let names = endpoint.modelLabels;
+  if (isAgentsEndpoint(endpoint.value)) {
+    names = endpoint.agentNames;
+  } else if (isAssistantsEndpoint(endpoint.value)) {
+    names = endpoint.assistantNames;
+  }
+
+  return getModelLabel(names, modelId);
+}
+
+/**
+ * The strings a model can be found by. A declared label is additive — labelling
+ * a model never makes its id unsearchable — while an agent or assistant name
+ * replaces the id on screen and so is searched in its place.
+ */
+export function modelSearchNames(endpoint: NamedEndpoint, modelId: string): string[] {
+  const label = getModelLabel(endpoint.modelLabels, modelId);
+  return label ? [label, modelId] : [getModelName(endpoint, modelId) ?? modelId];
+}
 
 export function filterItems<
   T extends {
@@ -21,6 +59,7 @@ export function filterItems<
     value?: string;
     hasModels?: boolean;
     models?: Array<{ name: string; isGlobal?: boolean }>;
+    modelLabels?: Record<string, string>;
     searchAliases?: string[];
     showMarketplace?: boolean;
   },
@@ -59,6 +98,12 @@ export function filterItems<
     if (item.models && item.models.length > 0) {
       return item.models.some((modelId) => {
         if (modelId.name.toLowerCase().includes(searchTermLower)) {
+          return true;
+        }
+
+        /* A declared label is additive — the id above stays searchable. */
+        const label = getModelLabel(item.modelLabels, modelId.name);
+        if (label?.toLowerCase().includes(searchTermLower)) {
           return true;
         }
 
@@ -104,6 +149,12 @@ export function filterModels(
   }
 
   return models.filter((modelId) => {
+    /* A declared label is additive — the id below stays searchable. */
+    const label = getModelLabel(endpoint.modelLabels, modelId);
+    if (label?.toLowerCase().includes(searchTermLower)) {
+      return true;
+    }
+
     let modelName = modelId;
 
     if (isAgentsEndpoint(endpoint.value) && agentsMap && agentsMap[modelId]) {
@@ -218,23 +269,13 @@ export const getDisplayValue = ({
       return localize('com_ui_select_model');
     }
 
-    if (
-      isAgentsEndpoint(endpoint.value) &&
-      endpoint.agentNames &&
-      endpoint.agentNames[selectedValues.model]
-    ) {
-      return endpoint.agentNames[selectedValues.model];
-    } else if (isAgentsEndpoint(endpoint.value) && agentsMap) {
-      const agent = agentsMap[selectedValues.model];
-      return agent?.name || selectedValues.model;
+    const name = getModelName(endpoint, selectedValues.model);
+    if (name != null) {
+      return name;
     }
 
-    if (
-      isAssistantsEndpoint(endpoint.value) &&
-      endpoint.assistantNames &&
-      endpoint.assistantNames[selectedValues.model]
-    ) {
-      return endpoint.assistantNames[selectedValues.model];
+    if (isAgentsEndpoint(endpoint.value) && agentsMap) {
+      return agentsMap[selectedValues.model]?.name || selectedValues.model;
     }
 
     return selectedValues.model;

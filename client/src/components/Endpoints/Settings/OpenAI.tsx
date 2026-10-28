@@ -5,11 +5,13 @@ import type { TModelSelectProps } from '~/common';
 import { componentMapping } from '~/components/SidePanel/Parameters/components';
 import { useModelReasoning } from '~/hooks/Endpoint/useModelReasoning';
 import { useGetEndpointsQuery } from '~/data-provider';
+import { getModelLabel } from '~/utils';
 
 export default function OpenAISettings({
   conversation,
   setOption,
   models,
+  modelLabels,
   readonly,
 }: TModelSelectProps) {
   const { data: endpointsConfig } = useGetEndpointsQuery();
@@ -73,7 +75,17 @@ export default function OpenAISettings({
     };
 
     if (key === 'model') {
-      return <Component key={key} {...props} options={models} />;
+      return (
+        <Component
+          key={key}
+          {...props}
+          options={models}
+          items={models.map((model) => ({
+            label: getModelLabel(modelLabels, model) ?? model,
+            value: model,
+          }))}
+        />
+      );
     }
 
     return <Component key={key} {...props} />;

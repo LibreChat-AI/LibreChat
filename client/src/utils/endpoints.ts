@@ -52,6 +52,22 @@ export const getEntityName = ({
   }
 };
 
+export function getModelLabel(
+  modelLabels: Record<string, string> | null | undefined,
+  modelId: string | null | undefined,
+): string | undefined {
+  if (!modelLabels || !modelId || !Object.prototype.hasOwnProperty.call(modelLabels, modelId)) {
+    return undefined;
+  }
+
+  const label = modelLabels[modelId];
+  if (typeof label !== 'string') {
+    return undefined;
+  }
+
+  return label.trim() || undefined;
+}
+
 export const getEndpointsFilter = (endpointsConfig: t.TEndpointsConfig) => {
   const filter: Record<string, boolean> = {};
   if (!endpointsConfig) {

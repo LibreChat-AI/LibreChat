@@ -6,6 +6,7 @@ import {
   Permissions,
   alternateName,
   PermissionTypes,
+  getEndpointField,
   LocalStorageKeys,
   resolveModelCatalogKey,
 } from 'librechat-data-provider';
@@ -19,8 +20,8 @@ import { useModelReasoning } from '~/hooks/Endpoint/useModelReasoning';
 import Sections from '~/components/SidePanel/Parameters/Sections';
 import { useLocalize, useHasAccess } from '~/hooks';
 import { useLiveAnnouncer } from '~/Providers';
+import { cn, getModelLabel } from '~/utils';
 import { Panel } from '~/common';
-import { cn } from '~/utils';
 
 function getModelPlaceholderKey(modelsPending: boolean, provider: string) {
   if (modelsPending) {
@@ -68,6 +69,12 @@ export default function ModelPanel({
   const { data: endpointsConfig = {} } = useGetEndpointsQuery();
   const { data: startupConfig } = useGetStartupConfig();
   const { modelReasoning } = useModelReasoning(endpointsConfig, provider, model ?? '');
+
+  /** Display-only labels; `value` stays the id `ControlCombobox` hands back. */
+  const modelLabels = useMemo(
+    () => getEndpointField(endpointsConfig, provider, 'modelLabels'),
+    [endpointsConfig, provider],
+  );
 
   const bedrockRegions = useMemo(() => {
     return endpointsConfig?.[provider]?.availableRegions ?? [];
@@ -251,6 +258,7 @@ export default function ModelPanel({
                   <ControlCombobox
                     selectId="model"
                     selectedValue={field.value || ''}
+                    displayValue={getModelLabel(modelLabels, field.value)}
                     selectPlaceholder={localize(getModelPlaceholderKey(modelsPending, provider))}
                     searchPlaceholder={localize('com_ui_select_model')}
                     setValue={(value) => {
@@ -263,7 +271,7 @@ export default function ModelPanel({
                       }
                     }}
                     items={models.map((model) => ({
-                      label: model,
+                      label: getModelLabel(modelLabels, model) ?? model,
                       value: model,
                     }))}
                     disabled={!provider || selectionDisabled}

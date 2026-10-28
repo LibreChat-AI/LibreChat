@@ -17,6 +17,7 @@ function DynamicDropdown({
   setOption,
   optionType,
   options,
+  items,
   // type: _type,
   readonly = false,
   showLabel = true,
@@ -60,7 +61,18 @@ function DynamicDropdown({
     preventDelayedUpdate: true,
   });
 
-  if (!options || options.length === 0) {
+  const dropdownOptions = useMemo(
+    () =>
+      items?.map((item) => {
+        const value = String(item.value ?? '');
+        return { value, label: item.label ?? value };
+      }) ??
+      options ??
+      [],
+    [items, options],
+  );
+
+  if (dropdownOptions.length === 0) {
     return null;
   }
 
@@ -95,8 +107,8 @@ function DynamicDropdown({
             disabled={readonly}
             value={selectedValue ?? ''}
             onChange={handleChange}
-            options={options}
-            searchable={options.length > 10}
+            options={dropdownOptions}
+            searchable={dropdownOptions.length > 10}
             searchPlaceholder={localize('com_ui_search')}
             searchEmptyText={localize('com_ui_no_results_found')}
             placeholder={

@@ -158,8 +158,16 @@ export function loadCustomEndpointsConfig(
 
   if (Array.isArray(customEndpoints)) {
     for (const [name, endpoint] of resolveServedCustomEndpoints(customEndpoints)) {
-      const { baseURL, apiKey, iconURL, modelDisplayLabel, customParams, provider, dropParams } =
-        endpoint;
+      const {
+        baseURL,
+        apiKey,
+        iconURL,
+        modelDisplayLabel,
+        modelLabels,
+        customParams,
+        provider,
+        dropParams,
+      } = endpoint;
 
       const resolvedApiKey = extractEnvVariable(apiKey);
       const resolvedBaseURL = extractEnvVariable(baseURL);
@@ -182,6 +190,7 @@ export function loadCustomEndpointsConfig(
         userProvideURL,
         customParams: resolvedCustomParams,
         modelDisplayLabel,
+        modelLabels,
         iconURL,
         providerId: resolveEndpointProviderId({
           name,

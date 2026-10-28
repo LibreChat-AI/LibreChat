@@ -16,6 +16,7 @@ const PLACEHOLDER = 'com_ui_mention';
 
 const mockSetShowPopover = jest.fn();
 const mockShowPopover = { current: true };
+const mockOnSelectMention = jest.fn();
 
 jest.mock('recoil', () => {
   const actual = jest.requireActual('recoil');
@@ -38,7 +39,7 @@ jest.mock('~/hooks/Input/useMentions', () => ({
 
 jest.mock('~/hooks/Input/useSelectMention', () => ({
   __esModule: true,
-  default: () => ({ onSelectMention: jest.fn() }),
+  default: () => ({ onSelectMention: mockOnSelectMention }),
 }));
 
 jest.mock('~/hooks', () => ({
@@ -204,5 +205,30 @@ describe('Mention keyboard navigation', () => {
     expect(notPrevented).toBe(false);
     expect(mockSetShowPopover).toHaveBeenCalledWith(false);
     expect(document.activeElement).toBe(textAreaRef.current);
+  });
+
+  it('displays a model label but selects and searches with the model id', () => {
+    mockUseMentions.mockReturnValue({
+      ...mentionsBundle,
+      options: [makeMention({ type: 'endpoint', label: 'Gateway', value: 'Gateway' })],
+      modelsConfig: { Gateway: ['claude-opus-4-8'] },
+      endpointsConfig: {
+        Gateway: { order: 0, modelLabels: { 'claude-opus-4-8': ' Opus 4.8 ' } },
+      },
+    });
+    renderMention();
+
+    fireEvent.click(screen.getByText('Gateway'));
+    expect(screen.getByText('Opus 4.8')).toBeInTheDocument();
+
+    fireEvent.change(getInput(), { target: { value: 'claude-opus-4-8' } });
+    fireEvent.click(screen.getByText('Opus 4.8'));
+
+    expect(mockOnSelectMention).toHaveBeenCalledWith({
+      value: 'claude-opus-4-8',
+      label: 'Opus 4.8',
+      endpoint: 'Gateway',
+      type: 'model',
+    });
   });
 });
