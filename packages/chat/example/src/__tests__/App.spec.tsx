@@ -52,6 +52,22 @@ describe('example consumer', () => {
     ]);
   });
 
+  it('sends nothing for blank input or for Enter that confirms an IME composition', async () => {
+    renderExample();
+
+    const composer = await screen.findByLabelText('Message');
+    type(composer, '   ');
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+    pressEnter(composer);
+    type(composer, '日本');
+    fireEvent.keyDown(composer, { key: 'Enter', isComposing: true });
+
+    expect(composer).toHaveValue('日本');
+    expect(
+      within(screen.getByRole('list', { name: 'Messages' })).queryAllByRole('listitem'),
+    ).toEqual([]);
+  });
+
   it('renders under the ClickHouse reference theme', async () => {
     renderExample();
     await screen.findByLabelText('Message');

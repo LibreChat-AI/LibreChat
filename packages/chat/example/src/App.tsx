@@ -147,7 +147,7 @@ function Composer({ chat, disabled }: { chat: Chat; disabled: boolean }): ReactE
     void chat.sendMessage({ parts: [{ type: 'text', text: value }] });
   };
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Enter' && !event.shiftKey) {
+    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
       submit(event);
     }
   };
