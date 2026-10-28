@@ -89,13 +89,7 @@ jest.mock('~/hooks', () => ({
     }
     return key;
   },
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: {
-      display: 'grid',
-      gridTemplateRows: isExpanded ? '1fr' : '0fr',
-    },
-    ref: { current: null },
-  }),
+  useExpandCollapse: jest.requireActual('~/hooks/Messages/useExpandCollapse').default,
   scheduleMessageContentLayoutReconcile: jest.fn(() => jest.fn()),
 }));
 
@@ -2052,6 +2046,17 @@ describe('ToolCallGroup sole tool', () => {
       lastContentIdx: ids.length - 1,
       renderPart: (_p: TMessageContentParts, idx: number) => <Probe key={idx} idx={idx} />,
     }) satisfies React.ComponentProps<typeof ToolCallGroup>;
+
+  it('keeps a flattened result interactive rather than inert', () => {
+    render(
+      <RecoilRoot>
+        <GeneratedToolLabelContext.Provider value>
+          <ToolCallGroup {...props(['only'])} />
+        </GeneratedToolLabelContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('probe-0').closest('[inert]')).toBeNull();
+  });
 
   it.each([['only'], ['first', 'second']])(
     'only compresses a generated group containing one call: %j',

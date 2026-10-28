@@ -343,7 +343,7 @@ export default function ToolCallGroup({
   const [shouldRenderBody, setShouldRenderBody] = useState(isExpanded);
   useFoldPath(rootRef, shouldRenderBody);
   const previousIsExpandedRef = useRef(isExpanded);
-  const { style: expandStyle, ref: expandRef } = useExpandCollapse(isExpanded);
+  const { style: expandStyle, ref: expandRef } = useExpandCollapse(flattenGroup || isExpanded);
   const notifyLayoutChange = useCallback(() => {
     cancelLayoutReconcileRef.current?.();
     cancelLayoutReconcileRef.current = scheduleMessageContentLayoutReconcile(rootRef.current);

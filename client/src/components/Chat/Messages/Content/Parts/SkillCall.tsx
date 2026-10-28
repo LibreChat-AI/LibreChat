@@ -42,6 +42,7 @@ export default function SkillCall({
       isSubmitting,
       output,
       hasInput: !!parsedSkillName,
+      panelReady: output.length > 0,
       /** The row is the only place that names the skill that ran. */
       keepLabelRow: true,
       onExpand,
