@@ -1,11 +1,7 @@
 import { createStore } from 'jotai';
 import type { TTokenUsageEvent } from 'librechat-data-provider';
 import type { UsageSubmissionLike } from '../events';
-import {
-  pendingUsageFamily,
-  liveTokensFamily,
-  activeUsageResponseIdFamily,
-} from '~/components/Chat/Input/TokenUsage/store';
+import { pendingUsageFamily, liveTokensFamily, activeUsageResponseIdFamily } from '../../../usage';
 import { createUsageCounters, createUsageHandlers } from '../handlers';
 
 const submission: UsageSubmissionLike = {
