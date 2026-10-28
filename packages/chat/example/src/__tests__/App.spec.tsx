@@ -68,6 +68,19 @@ describe('example consumer', () => {
     ).toEqual([]);
   });
 
+  it('reports a failed turn and gives the text back to retry', async () => {
+    const transport = createMemoryTransport();
+    transport.sendMessages = () => Promise.reject(new Error('offline'));
+    render(<App transport={transport} />);
+
+    const composer = await screen.findByLabelText('Message');
+    type(composer, 'Hello');
+    pressEnter(composer);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('offline');
+    expect(composer).toHaveValue('Hello');
+  });
+
   it('renders under the ClickHouse reference theme', async () => {
     renderExample();
     await screen.findByLabelText('Message');

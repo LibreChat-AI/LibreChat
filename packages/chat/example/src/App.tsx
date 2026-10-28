@@ -68,11 +68,16 @@ function createChat(transport: ChatTransport): Chat {
 }
 
 /** Reads the chat's messages and status, re-rendering on every change. */
-function useChatSnapshot(chat: Chat): { messages: TMessage[]; status: ChatStatus } {
+function useChatSnapshot(chat: Chat): {
+  messages: TMessage[];
+  status: ChatStatus;
+  error: Error | undefined;
+} {
   const subscribe = useMemo(() => chat.subscribe.bind(chat), [chat]);
   const messages = useSyncExternalStore(subscribe, () => chat.messages);
   const status = useSyncExternalStore(subscribe, () => chat.status);
-  return { messages, status };
+  const error = useSyncExternalStore(subscribe, () => chat.error);
+  return { messages, status, error };
 }
 
 const textOf = (part: Extract<TMessageContentParts, { type: ContentTypes.TEXT }>): string =>
@@ -144,7 +149,11 @@ function Composer({ chat, disabled }: { chat: Chat; disabled: boolean }): ReactE
       return;
     }
     setText('');
-    void chat.sendMessage({ parts: [{ type: 'text', text: value }] });
+    void chat.sendMessage({ parts: [{ type: 'text', text: value }] }).finally(() => {
+      if (chat.error) {
+        setText((current) => current || value);
+      }
+    });
   };
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
     if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
@@ -183,7 +192,7 @@ export function App({ transport }: { transport?: ChatTransport }): ReactElement 
 }
 
 function ChatView({ chat }: { chat: Chat }): ReactElement {
-  const { messages, status } = useChatSnapshot(chat);
+  const { messages, status, error } = useChatSnapshot(chat);
   const isSubmitting = status === 'submitted' || status === 'streaming';
   return (
     <MessagePartsHostProvider host={host}>
@@ -202,6 +211,11 @@ function ChatView({ chat }: { chat: Chat }): ReactElement {
         <p role="status" className="sr-only">
           {isSubmitting ? 'Generating' : ''}
         </p>
+        {error ? (
+          <p role="alert" className="text-text-destructive text-sm">
+            {`The message was not sent: ${error.message}`}
+          </p>
+        ) : null}
         <Composer chat={chat} disabled={isSubmitting} />
       </main>
     </MessagePartsHostProvider>
