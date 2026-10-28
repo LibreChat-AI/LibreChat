@@ -1,13 +1,13 @@
-import type { TMessage, TConversation } from 'librechat-data-provider';
-import type { TAskFunction } from '~/common';
+import type { TMessage } from 'librechat-data-provider';
+import type { TAskFunction, TRegenerateFunction } from './types';
 
 /** Builds `regenerate`: replays the user message a response answers, with its skills, quotes and reasoning. */
 export const createRegenerate =
-  (ask: TAskFunction, getMessages: (conversationId?: string | null) => TMessage[] | undefined) =>
   (
-    message: Partial<Pick<TMessage, 'messageId' | 'parentMessageId' | 'isCreatedByUser'>>,
-    options?: { addedConvo?: TConversation | null },
-  ) => {
+    ask: TAskFunction,
+    getMessages: (conversationId?: string | null) => TMessage[] | undefined,
+  ): TRegenerateFunction =>
+  (message, options) => {
     const messages = getMessages();
     const parentMessageId =
       message.isCreatedByUser === true ? message.messageId : message.parentMessageId;

@@ -1,5 +1,4 @@
 import { v4 } from 'uuid';
-import cloneDeep from 'lodash/cloneDeep';
 import {
   Constants,
   ContentTypes,
@@ -11,14 +10,6 @@ import {
   replaceSpecialVars,
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
-import {
-  createDualMessageContent,
-  stripStreamedIndexStamps,
-  getAppendParentMessageId,
-  getRegenerateTargetResponseMessage,
-  getRegenerateSubmissionMessages,
-  getPreliminaryRegenerateResponseMessageId,
-} from '@librechat/chat';
 import type {
   TUser,
   TMessage,
@@ -30,8 +21,15 @@ import type {
   TEndpointsConfig,
   EndpointSchemaKey,
 } from 'librechat-data-provider';
-import type { TAskProps, TOptions, ExtendedFile } from '~/common';
-import { getRouteChatProjectId, logger } from '~/utils';
+import type { TAskProps, TOptions } from './types';
+import type { ExtendedFile } from '../files';
+import {
+  getAppendParentMessageId,
+  getRegenerateTargetResponseMessage,
+  getRegenerateSubmissionMessages,
+  getPreliminaryRegenerateResponseMessageId,
+} from '../regenerate';
+import { createDualMessageContent, stripStreamedIndexStamps } from '../content';
 
 /** What `ask` hands the turn builder once it has decided the send may go ahead. */
 export type BuildTurnInput = {
@@ -40,13 +38,14 @@ export type BuildTurnInput = {
   options: TOptions;
   /** Resolved by the caller: the explicit id, else the conversation's, else `null`. */
   conversationId: string | null;
-  index: number;
   conversation: TConversation | null | undefined;
   latestMessage: TMessage | null;
   cachedMessages?: TMessage[];
   files?: Map<string, ExtendedFile>;
   /** Whether the host supplied a composer file setter, so consumed files can be cleared. */
   canClearFiles: boolean;
+  /** The project the route scopes a new chat to; only read when the send starts one. */
+  routeProjectId: string | null;
   endpointsConfig?: TEndpointsConfig;
   modelSpecs?: TModelSpec[];
   user?: TUser;
@@ -87,19 +86,6 @@ export type BuiltTurn = {
   startsSubmitting: boolean;
 };
 
-const logChatRequest = (request: Record<string, unknown>) => {
-  logger.log('=====================================\nAsk function called with:');
-  logger.dir({
-    conversationId: request.conversationId,
-    messageId: request.messageId,
-    parentMessageId: request.parentMessageId,
-    isEdited: request.isEdited,
-    isContinued: request.isContinued,
-    isRegenerate: request.isRegenerate,
-  });
-  logger.log('=====================================');
-};
-
 /**
  * Builds the turn `ask` submits: the optimistic user message and response placeholder, the
  * message list to render, and the `TSubmission` the stream starts from. Reads nothing from the
@@ -110,12 +96,12 @@ export function buildTurn({
   text,
   params,
   options,
-  index,
   conversation,
   latestMessage,
   cachedMessages,
   files,
   canClearFiles,
+  routeProjectId,
   endpointsConfig,
   modelSpecs,
   user,
@@ -167,9 +153,7 @@ export function buildTurn({
   }
 
   const chatProjectId =
-    conversationId === Constants.NEW_CONVO
-      ? getRouteChatProjectId()
-      : (conversation?.chatProjectId ?? null);
+    conversationId === Constants.NEW_CONVO ? routeProjectId : (conversation?.chatProjectId ?? null);
   const conversationForPayload =
     chatProjectId != null ? { ...(conversation ?? {}), chatProjectId } : (conversation ?? {});
 
@@ -183,16 +167,6 @@ export function buildTurn({
   if (parentMessageId == null) {
     parentMessageId = getAppendParentMessageId({ latestMessage, currentMessages });
   }
-
-  logChatRequest({
-    index,
-    conversation,
-    latestMessage,
-    conversationId,
-    intermediateId,
-    parentMessageId,
-    currentMessages,
-  });
 
   let newChatPath: string | undefined;
   if (conversationId == Constants.NEW_CONVO) {
@@ -394,24 +368,29 @@ export function buildTurn({
       /** Stamps off: the rerun appends provider parts at the prefix LENGTH,
        *  and a retained `streamedIndex` at or above it would collide with an
        *  appended part's render key (see `stripStreamedIndexStamps`). */
-      initialResponse.content = stripStreamedIndexStamps(cloneDeep(latestMessage.content));
+      initialResponse.content = [...stripStreamedIndexStamps(latestMessage.content)];
       /** Captured now, while it is still the retained prefix: a later resume
        *  sync replaces this array with the server's completion-local
        *  snapshot, after which its length no longer describes the offset. */
       editPrefixLength = initialResponse.content.length;
-      const { index, type, ...part } = editedContent;
+      const { index } = editedContent;
       if (initialResponse.content && index >= 0 && index < initialResponse.content.length) {
-        const contentPart = initialResponse.content[index];
-        if (type === ContentTypes.THINK && contentPart.type === ContentTypes.THINK) {
-          contentPart[ContentTypes.THINK] = part[ContentTypes.THINK];
+        /** Copied before the edit lands, so the cached message keeps its own part. */
+        const contentPart = { ...initialResponse.content[index] };
+        initialResponse.content[index] = contentPart;
+        if (editedContent.type === ContentTypes.THINK && contentPart.type === ContentTypes.THINK) {
+          contentPart[ContentTypes.THINK] = editedContent[ContentTypes.THINK];
           delete contentPart.reasoning_label;
           delete contentPart.reasoning_label_step_id;
           delete contentPart.reasoning_label_attempts;
           delete contentPart.reasoning_label_submitted_chars;
           delete contentPart.reasoning_label_revision;
           delete contentPart.reasoning_label_status;
-        } else if (type === ContentTypes.TEXT && contentPart.type === ContentTypes.TEXT) {
-          contentPart[ContentTypes.TEXT] = part[ContentTypes.TEXT];
+        } else if (
+          editedContent.type === ContentTypes.TEXT &&
+          contentPart.type === ContentTypes.TEXT
+        ) {
+          contentPart[ContentTypes.TEXT] = editedContent[ContentTypes.TEXT];
         }
       }
     } else if (addedConvo && conversation) {
@@ -441,7 +420,6 @@ export function buildTurn({
     : currentMessages;
   const regenerateMessages = regenerateShaped ? [...currentMessages] : undefined;
 
-  logger.log('message_state', initialResponse);
   const submission: TSubmission = {
     conversation: {
       ...conversation,

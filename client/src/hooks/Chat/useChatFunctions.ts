@@ -3,7 +3,7 @@ import cloneDeep from 'lodash/cloneDeep';
 import { useStore, useSetAtom } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { hasPendingAssistantParent } from '@librechat/chat';
+import { buildTurn, createRegenerate, hasPendingAssistantParent } from '@librechat/chat';
 import {
   Constants,
   QueryKeys,
@@ -36,6 +36,7 @@ import {
   markPasteSubmitted,
   isSubmittableMessage,
   bindComposerLaunch,
+  getRouteChatProjectId,
 } from '~/utils';
 import {
   withSubmittedCodeDecision,
@@ -52,9 +53,7 @@ import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
 import useGetSender from '~/hooks/Conversations/useGetSender';
 import { resolveSubmittedReasoning } from './ask/reasoning';
 import { isHistoryRevalidating } from './ask/guards';
-import { createRegenerate } from './ask/regenerate';
 import useUserKey from '~/hooks/Input/useUserKey';
-import { buildTurn } from './ask/turn';
 
 export {
   getRegenerateTargetResponseMessage,
@@ -388,12 +387,12 @@ export default function useChatFunctions({
         overrideQueuedMessageOrigin,
       },
       conversationId,
-      index,
       conversation,
       latestMessage,
       cachedMessages,
       files,
       canClearFiles: setFiles != null,
+      routeProjectId: getRouteChatProjectId(),
       endpointsConfig,
       modelSpecs: config.modelSpecs,
       user: auth.user,
@@ -422,6 +421,7 @@ export default function useChatFunctions({
       fileEffects,
     } = turn;
     conversationId = turn.conversationId;
+    logger.log('message_state', initialResponse);
 
     if (newChatPath != null) {
       requestChatFocus();
