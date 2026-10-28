@@ -1902,6 +1902,30 @@ function buildIsolatedAgentInputs(
   return childInputs;
 }
 
+/**
+ * A self-spawned child runs on its parent's inputs, the SDK's shallow copy of them when
+ * the config carries none. A parent whose model calls record LiteLLM's served model
+ * would otherwise hand the child its capturing `fetch`, and the child's calls would
+ * overwrite or clear the parent's served model while the parent's answer streams. Give
+ * the self config that same copy (or its sanitized `agentInputs`) with the parent's
+ * uncaptured client options, which keep any custom `fetch` underneath the capture.
+ * Call once the parent's inputs are final, since the copy is taken here.
+ */
+function releaseSelfSpawnFromLiteLLMCapture(
+  agentInput: AgentInputs,
+  uncapturedClientOptions: NonNullable<AgentInputs['clientOptions']>,
+): void {
+  for (const config of agentInput.subagentConfigs ?? []) {
+    if (!('self' in config) || config.self !== true) {
+      continue;
+    }
+    config.agentInputs = {
+      ...(config.agentInputs ?? agentInput),
+      clientOptions: uncapturedClientOptions,
+    };
+  }
+}
+
 function buildSubagentConfigs(
   agent: RunAgent,
   agentInput: AgentInputs,
@@ -2402,6 +2426,11 @@ export async function createRun({
   }
 
   const preparedCodeFileAgents = new WeakSet(codeFileAgents.values());
+  /** Each LiteLLM-captured agent's client options without the capture, for its self-spawned child. */
+  const uncapturedClientOptions = new WeakMap<
+    AgentInputs,
+    NonNullable<AgentInputs['clientOptions']>
+  >();
   const buildAgentInput = (
     agent: RunAgent,
     opts: { isSubagent?: boolean; litellmModelSink?: LiteLLMModelSink } = {},
@@ -2492,11 +2521,6 @@ export async function createRun({
       ) as t.RunLLMConfig,
       modelCallbacks,
     );
-
-    /** Copy, never mutate: `configuration` is shared with `agent.model_parameters`. */
-    if (opts.litellmModelSink != null && isPlainObject(llmConfig.configuration)) {
-      llmConfig.configuration = captureLiteLLMModel(llmConfig.configuration, opts.litellmModelSink);
-    }
 
     const joinInstructionMap = (map?: Record<string, unknown>) =>
       Object.values(map ?? {})
@@ -2642,6 +2666,14 @@ export async function createRun({
     }
 
     const reasoningKey = getReasoningKey(provider, llmConfig, agent.endpoint, agent.reasoningKey);
+    /** Copy, never mutate: `configuration` is shared with `agent.model_parameters`. */
+    const clientOptions =
+      opts.litellmModelSink != null && isPlainObject(llmConfig.configuration)
+        ? {
+            ...llmConfig,
+            configuration: captureLiteLLMModel(llmConfig.configuration, opts.litellmModelSink),
+          }
+        : llmConfig;
     const agentInput: AgentInputs = {
       provider,
       endpoint: agent.endpoint ?? provider,
@@ -2649,7 +2681,7 @@ export async function createRun({
       toolDefinitions,
       agentId: agent.id,
       tools,
-      clientOptions: llmConfig,
+      clientOptions,
       instructions: systemContent,
       additional_instructions:
         frameDynamicInstructions({
@@ -2683,6 +2715,9 @@ export async function createRun({
        * broken). Inline the field in the literal once the dependency is bumped.
        */
       (agentInput as AgentInputs & { graphTools?: GenericTool[] }).graphTools = graphTools;
+    }
+    if (clientOptions !== llmConfig) {
+      uncapturedClientOptions.set(agentInput, llmConfig);
     }
     return agentInput;
   };
@@ -2761,6 +2796,10 @@ export async function createRun({
           agent.id,
         ),
       }).toolDefinitions;
+    }
+    const uncaptured = uncapturedClientOptions.get(agentInput);
+    if (uncaptured != null) {
+      releaseSelfSpawnFromLiteLLMCapture(agentInput, uncaptured);
     }
     agentInputs.push(agentInput);
   }

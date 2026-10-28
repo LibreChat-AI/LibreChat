@@ -157,6 +157,79 @@ describe('createRun LiteLLM model capture', () => {
     expect(added.fetch).not.toBe(addedFetch);
   });
 
+  describe('self-spawned subagents', () => {
+    type SelfConfig = {
+      self?: boolean;
+      agentInputs?: { agentId?: string; clientOptions: { configuration: { fetch?: Fetch } } };
+    };
+    type ParentInput = {
+      agentId: string;
+      clientOptions: { configuration: { fetch?: Fetch } };
+      subagentConfigs?: SelfConfig[];
+    };
+
+    async function buildParent(
+      sink?: LiteLLMModelSink,
+      baseFetch: Fetch = jest.fn(),
+      overrides: Record<string, unknown> = {},
+    ) {
+      const agent = {
+        ...makeAgent({ baseURL: 'http://litellm:4000', fetch: baseFetch }),
+        subagents: { enabled: true },
+        ...overrides,
+      };
+      await createRun({
+        agents: [agent] as never,
+        signal: new AbortController().signal,
+        getLiteLLMModelSink: sink != null ? () => sink : undefined,
+      });
+      const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as {
+        graphConfig: { agents: ParentInput[] };
+      };
+      const parent = runConfig.graphConfig.agents[0];
+      const self = parent.subagentConfigs?.find((config) => config.self === true);
+      return { parent, self };
+    }
+
+    it("gives the child the parent's own fetch, so its calls cannot touch the parent's sink", async () => {
+      const baseFetch = jest
+        .fn<Promise<Response>, Parameters<Fetch>>()
+        .mockResolvedValue(
+          new Response('{}', { headers: { [LITELLM_MODEL_NAME_HEADER]: 'bedrock/claude-haiku' } }),
+        );
+      const sink: LiteLLMModelSink = { modelName: 'bedrock/claude-opus' };
+      const { parent, self } = await buildParent(sink, baseFetch);
+
+      expect(self?.agentInputs?.agentId).toBe(parent.agentId);
+      const childFetch = self?.agentInputs?.clientOptions.configuration.fetch;
+      expect(childFetch).toBe(baseFetch);
+      await childFetch?.('http://litellm:4000/chat/completions');
+      expect(sink.modelName).toBe('bedrock/claude-opus');
+
+      await parent.clientOptions.configuration.fetch?.('http://litellm:4000/chat/completions');
+      expect(sink.modelName).toBe('bedrock/claude-haiku');
+    });
+
+    it('keeps a sanitized self config and swaps only its client options', async () => {
+      const baseFetch = jest.fn<Promise<Response>, Parameters<Fetch>>();
+      const { parent, self } = await buildParent({}, baseFetch, {
+        intentToolNames: ['web_search'],
+      });
+
+      expect(self?.agentInputs).toBeDefined();
+      expect(self?.agentInputs).not.toBe(parent);
+      expect(self?.agentInputs?.clientOptions.configuration.fetch).toBe(baseFetch);
+      expect(parent.clientOptions.configuration.fetch).not.toBe(baseFetch);
+    });
+
+    it('leaves the self config to the SDK when the parent is not captured', async () => {
+      const { self } = await buildParent();
+
+      expect(self).toBeDefined();
+      expect(self?.agentInputs).toBeUndefined();
+    });
+  });
+
   it('leaves the client configuration as-is without a sink', async () => {
     const baseFetch = jest.fn();
     const clientConfiguration = await captureClientConfiguration(
