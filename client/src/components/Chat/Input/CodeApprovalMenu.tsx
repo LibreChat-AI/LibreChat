@@ -3,16 +3,11 @@ import { TooltipAnchor } from '@librechat/client';
 import { useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, Constants } from 'librechat-data-provider';
 import { Check, ChevronDown, FilePen, FileQuestionMark, FileTerminal } from 'lucide-react';
-import {
-  chipClasses,
-  chipMenuClasses,
-  chipMenuItemClasses,
-  chipMenuHeadingClasses,
-} from '@librechat/chat/components';
 import type { TConversation, CodeApprovalMode, CodeEnvironmentMode } from 'librechat-data-provider';
 import type { LucideIcon } from 'lucide-react';
 import type { SetterOrUpdater } from 'recoil';
 import type { TranslationKeys } from '~/hooks';
+import { chipClasses, chipMenuClasses, chipMenuItemClasses, chipMenuHeadingClasses } from './chip';
 import { useCodeApprovalModePreference } from '~/hooks/Agents/codeApprovalPreference';
 import { useCodeApprovalMode, useLocalize } from '~/hooks';
 import { cn } from '~/utils';

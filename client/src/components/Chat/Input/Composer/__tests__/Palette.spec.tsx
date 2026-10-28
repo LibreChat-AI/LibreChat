@@ -2,7 +2,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { getDefaultStore } from 'jotai';
 import userEvent from '@testing-library/user-event';
-import { composerLiftFamily } from '@librechat/chat/components';
+import { composerLiftFamily } from '@librechat/chat/react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
 import type { PaletteEntry } from '~/hooks/Input/usePaletteEntries';

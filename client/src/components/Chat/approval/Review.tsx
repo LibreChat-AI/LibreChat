@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo } from 'react';
 import { useAtom, useAtomValue } from 'jotai';
 import { Button, TooltipAnchor } from '@librechat/client';
-import { useComposerOverlay } from '@librechat/chat/components';
+import { useComposerOverlay } from '@librechat/chat/react';
 import { ChevronDown, ChevronUp, ShieldQuestion, TriangleAlert } from 'lucide-react';
 import type { Agents } from 'librechat-data-provider';
 import type { KeyboardEvent, RefObject } from 'react';

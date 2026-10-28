@@ -23,22 +23,12 @@ export { default as CollapseChat } from './components/composer/CollapseChat';
 export { default as ComposerChip } from './components/composer/bar/Chip';
 export { default as composerClearance } from './components/composer/clearance';
 export { default as SteerReceipt } from './components/composer/steering/Receipt';
-export { composerLiftFamily } from './components/composer/bar/state';
 export { submitFromComposer } from './components/composer/submit';
-export { showSkillsPopoverFamily } from './components/composer/skillsState';
 export { STEER_DOT, STEER_ICON, QUEUE_ICON } from './components/composer/steering/identity';
-export { useComposerOverlay, composerOverlayCountFamily } from './components/composer/overlay';
 export {
   useQueuedTurnPortal,
   QueuedTurnPortalProvider,
 } from './components/composer/steering/QueuedTurnPortal';
-export {
-  chipClasses,
-  infoChipClasses,
-  chipMenuClasses,
-  chipMenuItemClasses,
-  chipMenuHeadingClasses,
-} from './components/composer/chip';
 export type { ComposerSubmitRoute } from './components/composer/submit';
 export type { MentionItemProps } from './components/composer/MentionItem';
 export type { ChipProps as ComposerChipProps } from './components/composer/bar/Chip';

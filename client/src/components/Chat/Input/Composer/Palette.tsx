@@ -10,8 +10,8 @@ import React, {
 import { useSetAtom } from 'jotai';
 import * as Ariakit from '@ariakit/react';
 import { AutoSizer, List } from 'react-virtualized';
+import { composerLiftFamily } from '@librechat/chat/react';
 import { Star, Plus, Search, ChevronDown } from 'lucide-react';
-import { composerLiftFamily } from '@librechat/chat/components';
 import { Button, FileUpload, IconButton, TooltipAnchor, useMediaQuery } from '@librechat/client';
 import type {
   TFile,

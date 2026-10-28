@@ -2,14 +2,13 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Provider as JotaiProvider, createStore } from 'jotai';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { composerOverlayCountFamily } from '@librechat/chat/components';
+import { composerOverlayCountFamily } from '@librechat/chat/react';
 import type { Agents } from 'librechat-data-provider';
 import { PendingToolApprovalButton, PendingToolApprovalPanel } from '../Review';
 import ApprovalProvider from '../../Messages/Content/ApprovalContext';
 import { pendingApprovalActionFamily } from '../state';
 
 jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
   Button: jest
     .requireActual('react')
     .forwardRef(

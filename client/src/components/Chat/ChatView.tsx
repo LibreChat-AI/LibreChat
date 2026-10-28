@@ -5,8 +5,12 @@ import { useForm } from 'react-hook-form';
 import { Spinner } from '@librechat/client';
 import { useParams } from 'react-router-dom';
 import { Constants, buildTree } from 'librechat-data-provider';
-import { submissionByIndex, ComposerRestoreProvider } from '@librechat/chat/react';
-import { QueuedTurnPortalProvider, composerLiftFamily } from '@librechat/chat/components';
+import { QueuedTurnPortalProvider } from '@librechat/chat/components';
+import {
+  submissionByIndex,
+  ComposerRestoreProvider,
+  composerLiftFamily,
+} from '@librechat/chat/react';
 import type { TChatProject, TMessage } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { AddedChatContext, ChatFormProvider, useChatContext, useFileMapContext } from '~/Providers';

@@ -32,8 +32,8 @@ jest.mock('~/components/Chat/Messages/Content/ApprovalContext', () => ({
   useResumeSubmit: () => ({ submitAskAnswer: jest.fn() }),
 }));
 
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useComposerOverlay: jest.fn(),
 }));
 

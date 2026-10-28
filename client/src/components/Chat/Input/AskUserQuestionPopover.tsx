@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useRef } from 'react';
 import { useWatch } from 'react-hook-form';
 import { Button, TooltipAnchor } from '@librechat/client';
-import { useComposerOverlay } from '@librechat/chat/components';
+import { useComposerOverlay } from '@librechat/chat/react';
 import { ChevronDown, CornerDownLeft, TriangleAlert } from 'lucide-react';
 import AskUserQuestions from '~/components/Chat/Messages/Content/AskUserQuestions';
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';

@@ -1,7 +1,6 @@
 import { useStore } from 'jotai';
 import { useRecoilCallback } from 'recoil';
 import { Constants } from 'librechat-data-provider';
-import { showSkillsPopoverFamily } from '@librechat/chat/components';
 import {
   getReasoningStateKey,
   clearPendingComposerContext,
@@ -14,6 +13,7 @@ import {
   showStopButtonByIndex,
   submissionStartFamily,
   useClearSubmissions,
+  showSkillsPopoverFamily,
 } from '@librechat/chat/react';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { showFilesDialogAtom, filesDialogTriggerAtom } from '~/store/filesDialog';

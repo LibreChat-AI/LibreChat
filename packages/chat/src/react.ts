@@ -111,3 +111,6 @@ export {
 } from './react/steering/useQueuedTurnReveal';
 export { ReactQueryChatState } from './react/state';
 export type { ReactQueryChatStateOptions } from './react/state';
+export { composerLiftFamily } from './react/lift';
+export { showSkillsPopoverFamily } from './react/skills';
+export { useComposerOverlay, composerOverlayCountFamily } from './react/overlay';

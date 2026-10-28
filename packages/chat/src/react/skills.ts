@@ -1,7 +1,7 @@
 import { atom } from 'jotai';
 import { atomFamily } from 'jotai/utils';
 import type { PrimitiveAtom } from 'jotai';
-import type { Family } from '../../react/steer/family';
+import type { Family } from './steer/family';
 
 export const showSkillsPopoverFamily: Family<
   boolean,

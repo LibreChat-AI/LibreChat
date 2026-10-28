@@ -196,6 +196,11 @@
       "count": 10
     }
   },
+  "client/src/components/Chat/Input/chip.ts": {
+    "design/disabled-recipe": {
+      "count": 1
+    }
+  },
   "client/src/components/Chat/Landing.tsx": {
     "shadcn/no-restyle": {
       "count": 14
@@ -1426,11 +1431,6 @@
       "count": 9
     },
     "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
-  "packages/chat/src/components/composer/chip.ts": {
-    "design/disabled-recipe": {
       "count": 1
     }
   },

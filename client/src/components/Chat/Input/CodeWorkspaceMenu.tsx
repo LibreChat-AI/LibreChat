@@ -19,13 +19,6 @@ import {
   WandSparkles,
   GitBranchPlus,
 } from 'lucide-react';
-import {
-  chipClasses,
-  infoChipClasses,
-  chipMenuClasses as menuClasses,
-  chipMenuItemClasses as menuItemClasses,
-  chipMenuHeadingClasses as headingClasses,
-} from '@librechat/chat/components';
 import type { CodeWorkspaceSelection, TConversation } from 'librechat-data-provider';
 import type { LucideIcon } from 'lucide-react';
 import type { SetterOrUpdater } from 'recoil';
@@ -41,6 +34,13 @@ import {
   useReconcileConversationCodeEnvironmentMutation,
   useCodeEnvironmentStatusQueries,
 } from '~/data-provider';
+import {
+  chipClasses,
+  infoChipClasses,
+  chipMenuClasses as menuClasses,
+  chipMenuItemClasses as menuItemClasses,
+  chipMenuHeadingClasses as headingClasses,
+} from './chip';
 import {
   cn,
   codeWorkspaceErrorKeys,

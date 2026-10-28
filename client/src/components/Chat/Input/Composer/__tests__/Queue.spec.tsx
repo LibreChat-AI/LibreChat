@@ -43,7 +43,6 @@ jest.mock('@librechat/client', () => {
   );
   IconButton.displayName = 'IconButton';
   return {
-    ...jest.requireActual('@librechat/client'),
     Button: ({ children, ...props }: { children?: React.ReactNode } & Record<string, unknown>) =>
       ReactActual.createElement('button', { type: 'button', ...props }, children),
     IconButton,

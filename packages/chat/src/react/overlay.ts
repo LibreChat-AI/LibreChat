@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { atomFamily } from 'jotai/utils';
 import { atom, useSetAtom } from 'jotai';
-import type { Family } from '../../react/steer/family';
+import type { Family } from './steer/family';
 
 /**
  * How many composer panels are open over the bottom of a conversation's
