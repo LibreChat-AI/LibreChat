@@ -56,9 +56,11 @@ const rootIdentifier = (node) => {
 const runsOnLoad = (node) => {
   for (let child = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
     if (FUNCTIONS.has(parent.type)) {
+      let callee = parent;
+      while (TRANSPARENT.has(callee.parent.type)) callee = callee.parent;
       const invoked =
-        (parent.parent.type === 'CallExpression' || parent.parent.type === 'NewExpression') &&
-        parent.parent.callee === parent;
+        (callee.parent.type === 'CallExpression' || callee.parent.type === 'NewExpression') &&
+        callee.parent.callee === callee;
       if (!invoked) return false;
     }
     if (parent.type === 'PropertyDefinition' && !parent.static && child === parent.value) {
@@ -210,6 +212,10 @@ const boundary = {
       ImportDeclaration: (node) => check(node, node.source),
       NewExpression: (node) => usesExternalOnLoad(node, node.callee),
       TaggedTemplateExpression: (node) => usesExternalOnLoad(node, node.tag),
+      /** `const { local } = FileSources` and `{ ...FileSources }` read the import like `A.b`. */
+      VariableDeclarator: (node) =>
+        node.id.type !== 'Identifier' && usesExternalOnLoad(node, node.init),
+      SpreadElement: (node) => usesExternalOnLoad(node, node.argument),
       /** The outermost read only: `A.b.c` is one report, and a call reports its own callee. */
       MemberExpression(node) {
         if (node.parent.type === 'MemberExpression' && node.parent.object === node) return;

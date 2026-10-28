@@ -126,6 +126,8 @@ tester.run('chat/boundary', chat.rules.boundary, {
       "import { FileSources } from 'librechat-data-provider'; export const icon = (source: string) => ({ [FileSources.local]: 'x' })[source];",
       "import { FileSources } from 'librechat-data-provider'; export const sources = [FileSources];",
       "import { local } from './sources'; export const icons = { [local.key]: 'x' };",
+      "import { FileSources } from 'librechat-data-provider'; export const read = () => { const { local } = FileSources; return { ...FileSources, local }; };",
+      "import { cn } from '@librechat/client'; export const C = memo((() => cn('a')) as () => string);",
     ].map((code) => ({ code, filename: at('components/Probe.tsx'), options })),
     {
       code: "import { cn } from '@librechat/client'; const classes = cn('a');",
@@ -185,6 +187,25 @@ tester.run('chat/boundary', chat.rules.boundary, {
       ["import { cn } from '@librechat/client'; export const classes = (() => cn('a'))();", 'cn'],
       ["import { cn } from '@librechat/client'; export const c = (cn as typeof cn)('a');", 'cn'],
       ["import { cn } from '@librechat/client'; export const c = cn!('a');", 'cn'],
+      [
+        "import { cn } from '@librechat/client'; export const c = ((() => cn('a')) as () => string)();",
+        'cn',
+      ],
+      [
+        "import { FileSources } from 'librechat-data-provider'; export const { local } = FileSources;",
+        'FileSources',
+        'librechat-data-provider',
+      ],
+      [
+        "import { FileSources } from 'librechat-data-provider'; export const all = { ...FileSources };",
+        'FileSources',
+        'librechat-data-provider',
+      ],
+      [
+        "import { FileSources } from 'librechat-data-provider'; export const all = [...Object.values({}), ...(FileSources as never[])];",
+        'FileSources',
+        'librechat-data-provider',
+      ],
       [
         "import { cn } from '@librechat/client'; export const c = (cn satisfies unknown as typeof cn)('a');",
         'cn',
