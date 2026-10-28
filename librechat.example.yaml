@@ -301,6 +301,9 @@ interface:
   # Allow the artifacts pane to be moved into its own browser window
   # (desktop only; the mobile sheet is unaffected). Default: true.
   artifactUndocking: true
+  # Ask each viewer before loading Google Tag Manager (ANALYTICS_GTM_ID).
+  # Set false when the deployment settles consent itself, e.g. internal use. Default: true.
+  # analyticsConsent: true
   agents:
     use: true
     create: true

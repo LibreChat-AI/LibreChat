@@ -248,7 +248,10 @@ function RootLayout() {
               <KeyboardShortcutsProvider />
               <ReplyNotifications />
               <MessagesRetention />
-              <AnalyticsConsent gtmId={config?.analyticsGtmId} />
+              <AnalyticsConsent
+                gtmId={config?.analyticsGtmId}
+                consentRequired={config?.interface?.analyticsConsent !== false}
+              />
             </AgentsMapContext.Provider>
             {config?.interface?.termsOfService?.modalAcceptance === true && (
               <TermsAndConditionsModal

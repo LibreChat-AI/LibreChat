@@ -3179,6 +3179,11 @@ export const interfaceSchema = z
      *  default; a deployment that cannot use popups can turn it off and keep
      *  the docked pane. */
     artifactUndocking: z.boolean().optional(),
+    /** Asks each viewer for consent before Google Tag Manager (`ANALYTICS_GTM_ID`)
+     *  loads. A deployment that settles consent itself, such as an internal one
+     *  covered by its own policy, can set false to load the container without the
+     *  banner or the Settings toggle. */
+    analyticsConsent: z.boolean().optional(),
     feedback: z.boolean().optional(),
     currency: z
       .object({
@@ -3789,7 +3794,12 @@ export type TStartupConfig = {
 
 export type TSharedLinkStartupInterface = Pick<
   Partial<TInterfaceConfig>,
-  'privacyPolicy' | 'termsOfService' | 'codeHighlightThrottleMs' | 'theme' | 'artifactUndocking'
+  | 'privacyPolicy'
+  | 'termsOfService'
+  | 'codeHighlightThrottleMs'
+  | 'theme'
+  | 'artifactUndocking'
+  | 'analyticsConsent'
 >;
 
 export type TSharedLinkStartupConfig = Pick<TStartupConfig, 'appTitle'> &
