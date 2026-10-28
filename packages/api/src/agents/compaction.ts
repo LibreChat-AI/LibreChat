@@ -423,7 +423,10 @@ function terminalRowIds(anchorMessageId: string, responseMessageId: string): str
     messageId: anchorMessageId,
     liveResponseMessageId: responseMessageId,
   });
-  return errorRowId == null || errorRowId === responseMessageId
+  /** An anchor ending in one underscore derives itself; the failed-turn path
+   *  then redirects its error row to the response id, so the anchor is never a
+   *  terminal identity. */
+  return errorRowId == null || errorRowId === responseMessageId || errorRowId === anchorMessageId
     ? [responseMessageId]
     : [responseMessageId, errorRowId];
 }
@@ -536,7 +539,8 @@ export async function announceDisconnectSnapshot(
 
 /**
  * Runs a turn's disconnect snapshots one at a time and plans the snapshot once
- * more when the turn settles. Once every subscriber has left, no further
+ * more when the turn settles, before its terminal cleanup releases the content
+ * and resume state the plan reads. Once every subscriber has left, no further
  * disconnect arrives, so a terminal write that failed afterwards would leave a
  * compaction's live snapshot (or nothing, when it left before any content)
  * without its terminal outcome. Serializing keeps an earlier live write from

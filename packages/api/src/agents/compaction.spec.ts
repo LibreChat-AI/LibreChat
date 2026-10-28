@@ -1752,6 +1752,33 @@ describe('planDisconnectSnapshot', () => {
     await expect(result).resolves.toMatchObject({ write: true, unfinished: false });
   });
 
+  it('never treats an anchor ending in one underscore as its own terminal row', async () => {
+    const getMessages = jest.fn(async (filter: { messageId: string }) =>
+      filter.messageId === 'anchor_' ? [{ messageId: 'anchor_', unfinished: false }] : [],
+    );
+
+    await expect(
+      planDisconnectSnapshot(true, {
+        content: [text],
+        jobRecord: reconciled,
+        jobCreatedAt: 1000,
+        userId: 'user-1',
+        conversationId: 'convo-1',
+        anchorMessageId: 'anchor_',
+        responseMessageId: 'response',
+        getMessages,
+      }),
+    ).resolves.toMatchObject({ write: true, unfinished: false });
+    expect(getMessages).toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'response' }),
+      '_id unfinished',
+    );
+    expect(getMessages).not.toHaveBeenCalledWith(
+      expect.objectContaining({ messageId: 'anchor_' }),
+      '_id unfinished',
+    );
+  });
+
   it('reads only the response row when a full-length anchor leaves no room for the suffix', async () => {
     const anchorMessageId = 'a'.repeat(MAX_RESPONSE_MESSAGE_ID_LENGTH);
     const getMessages = jest.fn(async (filter: { messageId: string }) =>
