@@ -303,7 +303,9 @@ const boundary = {
           !path.isAbsolute(source) &&
           !source.startsWith('~') &&
           !loadSafe.has(source);
-        for (const statement of program.body) {
+        for (const top of program.body) {
+          const statement =
+            top.type === 'ExportNamedDeclaration' && top.declaration ? top.declaration : top;
           if (statement.type === 'ImportDeclaration' && statement.importKind !== 'type') {
             if (!external(statement.source.value)) continue;
             statement.specifiers

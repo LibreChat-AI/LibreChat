@@ -217,6 +217,7 @@ tester.run('chat/boundary', chat.rules.boundary, {
       ],
       ["const Client = require('@librechat/client'); export const c = Client.cn('a');", 'Client'],
       ["const { cn } = require('@librechat/client'); export const c = cn('a');", 'cn'],
+      ["export const { cn } = require('@librechat/client'); export const c = cn('a');", 'cn'],
       ["import Client = require('@librechat/client'); export const c = Client.cn('a');", 'Client'],
       [
         "import { cn } from '@librechat/client'; export const it = (function* (v = cn('a')) { yield v; })();",
