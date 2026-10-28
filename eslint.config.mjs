@@ -356,6 +356,8 @@ export default [
             'submitting',
             'result-streaming',
             'result-thinking',
+            'shimmer',
+            'tool-status-text',
           ],
         },
       ],
