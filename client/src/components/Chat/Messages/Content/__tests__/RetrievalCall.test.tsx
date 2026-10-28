@@ -1,3 +1,4 @@
+import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { render, screen, fireEvent } from '@testing-library/react';
@@ -332,4 +333,19 @@ describe('RetrievalCall - file preview resolution', () => {
       2,
     );
   });
+});
+
+it('shows file search results directly beneath a generated single-tool title', () => {
+  render(
+    <RecoilRoot>
+      <GeneratedToolLabelContext.Provider value>
+        <RetrievalCall
+          initialProgress={1}
+          isSubmitting={false}
+          output="File: notes.txt\nRelevance: 0.8\nContent: file results here"
+        />
+      </GeneratedToolLabelContext.Provider>
+    </RecoilRoot>,
+  );
+  expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
 });

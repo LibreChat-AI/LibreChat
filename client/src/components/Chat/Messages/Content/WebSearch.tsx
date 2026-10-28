@@ -1,9 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useContext } from 'react';
 import { Tools } from 'librechat-data-provider';
 import { parseJsonField } from '@librechat/chat';
 import { Globe, ChevronDown, Info } from 'lucide-react';
 import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import {
+  useRowHandoff,
+  GeneratedToolLabelContext,
   useToolExpansion,
   useToolContentRequest,
   toolPanelSpacingClassName,
@@ -206,10 +208,15 @@ export default function WebSearch({
   }, [ownTurn, localize, showSources, finalizing, preparationText]);
   const progressText = preparationText ?? intent ?? genericProgressText;
 
+  const generatedLabel = useContext(GeneratedToolLabelContext);
+  const bare = generatedLabel && complete && !error && !cancelled && allSources.length > 0;
+  const rowRef = useRowHandoff(bare);
   const sourceCount = allSources.length;
   const [showDetails, setShowDetails] = useState(false);
   useToolContentRequest(showDetails);
-  const [showSourceList, setShowSourceList] = useToolExpansion(sourceCount > 0);
+  const [expandedSources, setShowSourceList] = useToolExpansion(sourceCount > 0);
+  const showSourceList = bare || expandedSources;
+  useToolContentRequest(bare);
   const { style: sourceExpandStyle, ref: sourceExpandRef } = useExpandCollapse(showSourceList);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showSourceList);
 
@@ -253,41 +260,47 @@ export default function WebSearch({
         <span className="sr-only" aria-live="polite" aria-atomic="true">
           {completedText}
         </span>
-        <div className="relative flex h-5 items-center gap-1.5">
-          <Button
-            variant="disclosure"
-            className={cn(
-              'tool-status-text group/disclosure text-text-secondary h-5 min-w-0 rounded-full font-normal',
-              /** This row is a status line, not a padded control: the shared
-               *  recipe's color transition would turn its hover into a fade,
-               *  and the chevron reveal beside it is deliberately instant. */
-              'transition-none',
-              !hasSourceData && 'pointer-events-none disabled:opacity-100',
-            )}
-            disabled={!hasSourceData}
-            onClick={hasSourceData ? handleToggleSources : undefined}
-            aria-expanded={hasSourceData ? showSourceList : undefined}
-            aria-label={
-              hasSourceData
-                ? `${completedText} - ${localize(sourceCount === 1 ? 'com_ui_web_search_source' : 'com_ui_web_search_sources', { count: sourceCount })}`
-                : completedText
-            }
-          >
-            <span className={ROW_GLYPH_SLOT} aria-hidden="true">
-              {hasSourceData ? (
-                <SourceFaviconStack sources={allSources} />
-              ) : (
-                <Globe className="text-text-secondary size-4 shrink-0" />
+        <div className={cn('relative flex items-center gap-1.5', bare ? 'h-0' : 'h-5')}>
+          {!bare && (
+            <Button
+              ref={rowRef}
+              variant="disclosure"
+              className={cn(
+                'tool-status-text group/disclosure text-text-secondary h-5 min-w-0 rounded-full font-normal',
+                /** This row is a status line, not a padded control: the shared
+                 *  recipe's color transition would turn its hover into a fade,
+                 *  and the chevron reveal beside it is deliberately instant. */
+                'transition-none',
+                !hasSourceData && 'pointer-events-none disabled:opacity-100',
               )}
-            </span>
-            <span className="min-w-0 truncate font-medium">{completedText}</span>
-            {hasSourceData && (
-              <ChevronDown
-                className={cn(disclosureChevronVariants({ expanded: showSourceList }), 'size-3.5')}
-                aria-hidden="true"
-              />
-            )}
-          </Button>
+              disabled={!hasSourceData}
+              onClick={hasSourceData ? handleToggleSources : undefined}
+              aria-expanded={hasSourceData ? showSourceList : undefined}
+              aria-label={
+                hasSourceData
+                  ? `${completedText} - ${localize(sourceCount === 1 ? 'com_ui_web_search_source' : 'com_ui_web_search_sources', { count: sourceCount })}`
+                  : completedText
+              }
+            >
+              <span className={ROW_GLYPH_SLOT} aria-hidden="true">
+                {hasSourceData ? (
+                  <SourceFaviconStack sources={allSources} />
+                ) : (
+                  <Globe className="text-text-secondary size-4 shrink-0" />
+                )}
+              </span>
+              <span className="min-w-0 truncate font-medium">{completedText}</span>
+              {hasSourceData && (
+                <ChevronDown
+                  className={cn(
+                    disclosureChevronVariants({ expanded: showSourceList }),
+                    'size-3.5',
+                  )}
+                  aria-hidden="true"
+                />
+              )}
+            </Button>
+          )}
           {hasDetails && (
             <HoverCard openDelay={50} open={showDetails} onOpenChange={setShowDetails}>
               {/* Composed through `asChild` so the shared Button owns the
@@ -300,6 +313,7 @@ export default function WebSearch({
                   size="icon"
                   className={cn(
                     'ms-auto size-auto cursor-help rounded-md p-1 opacity-0',
+                    bare && 'absolute end-0 top-0 z-[1]',
                     'group-focus-within/websearch:opacity-100 group-hover/websearch:opacity-100',
                     'focus-visible:opacity-100',
                   )}

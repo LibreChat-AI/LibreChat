@@ -209,11 +209,11 @@ export function FoldRail({
       data-centers={centers.join(',')}
     >
       {last == null ? (
-        <span className="bg-border-medium group-hover/rail:bg-text-secondary absolute inset-s-[11px] top-0.5 bottom-1.5 w-px transition-colors duration-150 motion-reduce:transition-none" />
+        <span className="bg-border-medium group-hover/rail:bg-text-secondary absolute inset-s-[11px] top-0.5 bottom-1.5 hidden w-px transition-colors duration-150 motion-reduce:transition-none" />
       ) : (
         <svg
           className={cn(
-            'pointer-events-none absolute inset-0 size-full overflow-visible rtl:-scale-x-100',
+            'pointer-events-none absolute inset-0 hidden size-full overflow-visible rtl:-scale-x-100',
             'transition-opacity motion-reduce:transition-none',
             expanded ? 'opacity-100 delay-100 duration-250' : 'opacity-0 duration-200',
           )}
