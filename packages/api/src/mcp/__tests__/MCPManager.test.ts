@@ -1,16 +1,34 @@
 import { EventEmitter } from 'events';
 import { logger } from '@librechat/data-schemas';
-import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import {
+  CallToolResultSchema,
+  ReadResourceResultSchema,
+  ListResourcesResultSchema,
+  ListResourceTemplatesResultSchema,
+  McpError,
+  ErrorCode,
+} from '@modelcontextprotocol/sdk/types.js';
+import type { TMCPAppsPolicy } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import type { GraphTokenResolver } from '~/utils/graph';
 import type * as t from '~/mcp/types';
+import {
+  getMCPConnectionPoolKey,
+  getMCPUserConnectionPoolKey,
+  MCP_APPS_CAPABILITY_PROFILE,
+  STANDARD_MCP_CAPABILITY_PROFILE,
+} from '~/mcp/capabilities';
 import { OboTokenResolutionError, detectOAuthRequirement, resolveOboToken } from '~/mcp/oauth';
+import { withToolApprovalExecution, withToolApprovalTransport } from '~/tools/approval';
+import { executionFixture, readTool } from '~/schedules/authorization/execution.helper';
 import { createMCPRequestContext, cleanupMCPRequestContext } from '~/mcp/request';
 import { MCPServersInitializer } from '~/mcp/registry/MCPServersInitializer';
 import { MCPServerInspector } from '~/mcp/registry/MCPServerInspector';
 import { ConnectionsRepository } from '~/mcp/ConnectionsRepository';
 import { MCPConnectionFactory } from '~/mcp/MCPConnectionFactory';
+import { attachScheduledMCPBearer } from '~/schedules/bearer';
 import { MCPAuthenticationRejectedError } from '~/mcp/errors';
+import { getMCPToolApprovalAuthKind } from '~/mcp/approval';
 import { OpenIDReauthRequiredError } from '~/utils/oidc';
 import { isMCPDomainAllowed } from '~/auth/domain';
 import * as toolsChanged from '~/mcp/toolsChanged';
@@ -53,23 +71,52 @@ jest.mock('~/auth/domain', () => ({
   isMCPDomainAllowed: jest.fn().mockResolvedValue(true),
 }));
 
+const fakeClient = (
+  request: jest.Mock,
+  capabilities: object | null = { resources: {}, tools: {} },
+) =>
+  ({
+    request,
+    getServerCapabilities: () => capabilities ?? undefined,
+    readResource: (params: unknown, options?: unknown) =>
+      request({ method: 'resources/read', params }, ReadResourceResultSchema, options),
+    listResources: (params: unknown, options?: unknown) =>
+      request(
+        { method: 'resources/list', params: params ?? {} },
+        ListResourcesResultSchema,
+        options,
+      ),
+    listResourceTemplates: (params: unknown, options?: unknown) =>
+      request(
+        { method: 'resources/templates/list', params: params ?? {} },
+        ListResourceTemplatesResultSchema,
+        options,
+      ),
+    callTool: (params: unknown, resultSchema?: unknown, options?: unknown) =>
+      request({ method: 'tools/call', params }, resultSchema ?? CallToolResultSchema, options),
+  }) as unknown as MCPConnection['client'];
+
 const mockShouldEnableSSRFProtection = jest.fn().mockReturnValue(false);
 const mockGetAllowedDomains = jest.fn().mockReturnValue(null);
 const mockGetAllowedAddresses = jest.fn().mockReturnValue(null);
 const mockRegistryInstance = {
   getServerConfig: jest.fn(),
   isAppServerConfig: jest.fn(),
+  isHiddenFromPrincipal: jest.fn(),
+  getUserHiddenServerNames: jest.fn(async (): Promise<ReadonlySet<string>> => new Set()),
   getAllServerConfigs: jest.fn(),
   getOAuthServers: jest.fn(),
   shouldEnableSSRFProtection: mockShouldEnableSSRFProtection,
   getAllowedDomains: mockGetAllowedDomains,
   getAllowedAddresses: mockGetAllowedAddresses,
+  getMCPAppsPolicy: jest.fn().mockReturnValue({ enabled: true, legacyHtmlEnabled: true }),
   // Mirrors the real per-request resolver by reading the base-allowlist mocks above, so
   // existing tests that override getAllowedDomains/shouldEnableSSRFProtection still apply.
   resolveAllowlists: jest.fn(async () => ({
     allowedDomains: mockGetAllowedDomains(),
     allowedAddresses: mockGetAllowedAddresses(),
     useSSRFProtection: mockShouldEnableSSRFProtection(),
+    mcpApps: { enabled: true, legacyHtmlEnabled: true } as TMCPAppsPolicy,
   })),
 };
 
@@ -116,10 +163,12 @@ describe('MCPManager', () => {
       source: 'yaml',
     });
     (mockRegistryInstance.isAppServerConfig as jest.Mock).mockResolvedValue(true);
+    mockRegistryInstance.isHiddenFromPrincipal.mockResolvedValue(false);
     (mockRegistryInstance.shouldEnableSSRFProtection as jest.Mock).mockReturnValue(false);
     (mockRegistryInstance.getAllowedDomains as jest.Mock).mockReturnValue(null);
     (mockRegistryInstance.getAllowedAddresses as jest.Mock).mockReturnValue(null);
     mockProcessMCPEnv.mockImplementation((params) => params.options);
+    jest.mocked(graphUtils.preProcessGraphTokens).mockImplementation(async (config) => config);
     mockIsMCPDomainAllowed.mockResolvedValue(true);
     mockDetectOAuthRequirement.mockResolvedValue({
       requiresOAuth: false,
@@ -133,6 +182,7 @@ describe('MCPManager', () => {
     const mock = {
       has: jest.fn().mockResolvedValue(false),
       get: jest.fn().mockResolvedValue({} as unknown as MCPConnection),
+      getPooledConnection: jest.fn().mockReturnValue(undefined),
       getAll: jest.fn().mockResolvedValue(new Map()),
       getMany: jest.fn().mockResolvedValue(new Map()),
       ...appConnectionsConfig,
@@ -153,6 +203,22 @@ describe('MCPManager', () => {
   }
 
   describe('getAppToolFunctions', () => {
+    it('exposes shared operator sessions only to the standard profile', async () => {
+      const loaded = new Map([['shared', {} as MCPConnection]]);
+      const getLoaded = jest.fn().mockResolvedValue(loaded);
+      mockAppConnections({ getLoaded });
+
+      const manager = await MCPManager.createInstance(newMCPServersConfig());
+
+      await expect(manager.getLoadedAppConnections(STANDARD_MCP_CAPABILITY_PROFILE)).resolves.toBe(
+        loaded,
+      );
+      await expect(manager.getLoadedAppConnections(MCP_APPS_CAPABILITY_PROFILE)).resolves.toEqual(
+        new Map(),
+      );
+      expect(getLoaded).toHaveBeenCalledTimes(1);
+    });
+
     it('should return empty object when no servers have tool functions', async () => {
       (mockRegistryInstance.getAllServerConfigs as jest.Mock).mockResolvedValue({
         server1: { type: 'stdio', command: 'test', args: [] },
@@ -556,7 +622,7 @@ describe('MCPManager', () => {
       );
     });
 
-    it('should catch synchronous errors from getUserConnections', async () => {
+    it('should catch synchronous errors from the profile pool lookup', async () => {
       (MCPServerInspector.getToolCatalog as jest.Mock) = jest.fn().mockResolvedValue({ tools: {} });
 
       mockAppConnections({
@@ -565,7 +631,10 @@ describe('MCPManager', () => {
 
       const manager = await MCPManager.createInstance(newMCPServersConfig());
 
-      const spy = jest.spyOn(manager, 'getUserConnections').mockImplementation(() => {
+      const userConnections = (
+        manager as unknown as { userConnections: Map<string, Map<string, MCPConnection>> }
+      ).userConnections;
+      const spy = jest.spyOn(userConnections, 'get').mockImplementation(() => {
         throw new Error('Failed to get user connections');
       });
 
@@ -625,7 +694,12 @@ describe('MCPManager', () => {
         userConnections: Map<string, Map<string, MCPConnection>>;
         waitForConnectionBorrowersToDrain: (connection: MCPConnection) => Promise<void>;
       };
-      lifecycle.userConnections.set(userId, new Map([[serverName, connection]]));
+      lifecycle.userConnections.set(
+        userId,
+        new Map([
+          [getMCPConnectionPoolKey(serverName, STANDARD_MCP_CAPABILITY_PROFILE), connection],
+        ]),
+      );
 
       const toolsPromise = manager.getServerToolFunctions(userId, serverName);
       await new Promise((resolve) => setImmediate(resolve));
@@ -663,7 +737,12 @@ describe('MCPManager', () => {
         >;
         userConnections: Map<string, Map<string, MCPConnection>>;
       };
-      internals.userConnections.set(userId, new Map([[serverName, staleConnection]]));
+      internals.userConnections.set(
+        userId,
+        new Map([
+          [getMCPConnectionPoolKey(serverName, STANDARD_MCP_CAPABILITY_PROFILE), staleConnection],
+        ]),
+      );
       internals.oauthRecoveries.set(staleConnection, {
         promise: recovery,
         allowsTakeover: true,
@@ -674,7 +753,15 @@ describe('MCPManager', () => {
 
       expect(MCPServerInspector.getToolCatalog).not.toHaveBeenCalled();
 
-      internals.userConnections.set(userId, new Map([[serverName, recoveredConnection]]));
+      internals.userConnections.set(
+        userId,
+        new Map([
+          [
+            getMCPConnectionPoolKey(serverName, STANDARD_MCP_CAPABILITY_PROFILE),
+            recoveredConnection,
+          ],
+        ]),
+      );
       internals.oauthRecoveries.delete(staleConnection);
       resolveRecovery?.();
 
@@ -734,7 +821,12 @@ describe('MCPManager', () => {
       const internals = manager as unknown as {
         userConnections: Map<string, Map<string, MCPConnection>>;
       };
-      internals.userConnections.set(userId, new Map([[serverName, overlayConnection]]));
+      internals.userConnections.set(
+        userId,
+        new Map([
+          [getMCPConnectionPoolKey(serverName, STANDARD_MCP_CAPABILITY_PROFILE), overlayConnection],
+        ]),
+      );
 
       await expect(
         manager.getServerToolFunctionsSnapshot(userId, serverName, overlayConfig),
@@ -754,6 +846,7 @@ describe('MCPManager', () => {
 
     function createConnection(): MCPConnection {
       return {
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
         isConnected: jest.fn().mockResolvedValue(true),
         setRequestHeaders: jest.fn(),
         timeout: 30000,
@@ -787,7 +880,15 @@ describe('MCPManager', () => {
       const activeConnection = createConnection();
       const replacementConnection = createConnection();
       const internals = getManagerInternals(manager);
-      internals.userConnections.set(mockUser.id, new Map([[serverName, replacementConnection]]));
+      internals.userConnections.set(
+        mockUser.id,
+        new Map([
+          [
+            getMCPConnectionPoolKey(serverName, STANDARD_MCP_CAPABILITY_PROFILE),
+            replacementConnection,
+          ],
+        ]),
+      );
       jest.spyOn(manager, 'getConnection').mockResolvedValue(activeConnection);
       const updateActivity = jest.spyOn(internals, 'updateUserLastActivity');
 
@@ -821,6 +922,121 @@ describe('MCPManager', () => {
 
       expect(updateActivity).not.toHaveBeenCalled();
       expect(manager.getConnectionStats().activityEntries).toBe(0);
+    });
+  });
+
+  describe('callTool - scheduled authority boundary', () => {
+    async function setupScheduled(stage: 'invoke' | 'resume' = 'invoke') {
+      const fixture = await executionFixture(stage);
+      const request = jest.fn().mockResolvedValue({ content: [{ type: 'text', text: 'read' }] });
+      const snapshot = jest.fn().mockResolvedValue({ tools: [readTool], complete: true });
+      const connection = {
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+        isConnected: jest.fn().mockResolvedValue(true),
+        setRequestHeaders: jest.fn(),
+        fetchToolsSnapshot: snapshot,
+        timeout: 30_000,
+        client: fakeClient(request, { tools: {} }),
+      } as unknown as MCPConnection;
+      const manager = new MCPManager();
+      jest.spyOn(manager, 'getConnection').mockResolvedValue(connection);
+      (graphUtils.preProcessGraphTokens as jest.Mock).mockImplementation(
+        async (options) => options,
+      );
+      const call = (agentId = 'root') =>
+        manager.callTool({
+          user: fixture.user,
+          serverName: 'warehouse',
+          serverConfig: fixture.config,
+          toolName: 'query',
+          provider: 'openai',
+          flowManager: {} as Parameters<MCPManager['callTool']>[0]['flowManager'],
+          scheduledMCPInvocation: fixture.invocation(agentId),
+        });
+      return { fixture, request, snapshot, call };
+    }
+
+    it.each(['root', 'child'])('dispatches an authorized %s read once', async (agentId) => {
+      const { request, call } = await setupScheduled();
+      await call(agentId);
+      expect(request.mock.calls.filter(([input]) => input.method === 'tools/call')).toHaveLength(1);
+    });
+
+    it.each(['revoke', 'expire', 'deny'] as const)(
+      'never dispatches after %s, including deliberate retries',
+      async (mutation) => {
+        const { fixture, request, call } = await setupScheduled('resume');
+        await fixture[mutation]();
+        await expect(call()).rejects.toMatchObject({ failure: { automaticReplay: false } });
+        await expect(call()).rejects.toMatchObject({ failure: { automaticReplay: false } });
+        expect(request).not.toHaveBeenCalled();
+      },
+    );
+
+    it('rejects misleading mutating metadata and changed definitions without reaching tools/call', async () => {
+      const { request, snapshot, call } = await setupScheduled();
+      snapshot.mockResolvedValue({
+        tools: [
+          {
+            ...readTool,
+            description: 'Read only!',
+            annotations: { readOnlyHint: true },
+            inputSchema: { type: 'object', properties: { write: { type: 'boolean' } } },
+          },
+        ],
+        complete: true,
+      });
+      await expect(call()).rejects.toMatchObject({ failure: { reason: 'tool_policy_denied' } });
+      expect(request).not.toHaveBeenCalled();
+    });
+
+    it('fences consent revoked during live tools/list immediately before dispatch', async () => {
+      const { fixture, request, snapshot, call } = await setupScheduled();
+      snapshot.mockImplementation(async () => {
+        await fixture.revoke();
+        return { tools: [readTool], complete: true };
+      });
+      await expect(call()).rejects.toMatchObject({ failure: { reason: 'consent_revoked' } });
+      expect(request).not.toHaveBeenCalled();
+    });
+
+    it('attributes a protected catalog credential rejection without dispatch or provider text', async () => {
+      const { request, snapshot, call } = await setupScheduled();
+      snapshot.mockResolvedValue({
+        tools: [],
+        complete: false,
+        authenticationError: Object.assign(new Error('Bearer PRIVATE'), { status: 401 }),
+      });
+      let failure: unknown;
+      try {
+        await call('child');
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({
+        failure: {
+          reason: 'credential_rejected',
+          status: 'mcp_reauth_required',
+          automaticReplay: false,
+        },
+        outcomes: [expect.objectContaining({ agentId: 'child' })],
+      });
+      expect(String(failure)).not.toContain('PRIVATE');
+      expect(request).not.toHaveBeenCalled();
+    });
+
+    it('never automatically replays a protected call after resource bearer rejection', async () => {
+      const { request, call } = await setupScheduled();
+      request.mockRejectedValue(Object.assign(new Error('HTTP 401'), { status: 401 }));
+      await expect(call()).rejects.toMatchObject({
+        failure: {
+          reason: 'credential_rejected',
+          status: 'mcp_reauth_required',
+          automaticReplay: false,
+        },
+        outcomes: [expect.objectContaining({ agentId: 'root' })],
+      });
+      expect(request).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -914,6 +1130,344 @@ describe('MCPManager', () => {
         expect.stringContaining('Tool call failed'),
         expect.anything(),
       );
+    });
+  });
+
+  describe('callTool - declared App document acquisition', () => {
+    const user = { id: 'app-user' } as IUser;
+    const flowManager = {} as Parameters<MCPManager['callTool']>[0]['flowManager'];
+    const serverConfig: t.SSEOptions = {
+      type: 'sse',
+      url: 'https://api.example.com',
+    };
+    const resourceUri = 'ui://app';
+    const toolResult = {
+      content: [
+        { type: 'text' as const, text: 'ordinary output' },
+        {
+          type: 'resource' as const,
+          resource: {
+            uri: resourceUri,
+            mimeType: 'text/html;profile=mcp-app',
+            text: '<p>embedded result</p>',
+          },
+        },
+      ],
+      structuredContent: { count: 1 },
+      _meta: { result: 'meta' },
+      isError: false,
+    };
+
+    function connectionFor(request: jest.Mock): MCPConnection {
+      return {
+        createdAt: 1,
+        toolListVersion: 0,
+        isConnected: jest.fn().mockResolvedValue(true),
+        setRequestHeaders: jest.fn(),
+        getMCPAppRuntimeTarget: jest.fn(() => ({ type: 'sse', url: serverConfig.url })),
+        timeout: 1234,
+        fetchOrderedToolsSnapshot: jest.fn().mockResolvedValue({
+          tools: [
+            {
+              name: 'app_tool',
+              inputSchema: { type: 'object' },
+              _meta: { ui: { resourceUri } },
+            },
+          ],
+          complete: true,
+        }),
+        client: fakeClient(request),
+      } as unknown as MCPConnection;
+    }
+
+    async function callWith(
+      connection: MCPConnection,
+      signal?: AbortSignal,
+      mcpApps: Parameters<MCPManager['callTool']>[0]['mcpApps'] | null = {
+        enabled: true,
+        legacyHtmlEnabled: true,
+      },
+    ) {
+      const manager = new MCPManager(undefined, undefined, {
+        create: jest.fn(() => 'binding'),
+        verify: jest.fn(() => true),
+      });
+      jest.spyOn(manager, 'getConnection').mockResolvedValue(connection);
+      return manager.callTool({
+        user,
+        serverName,
+        serverConfig,
+        toolName: 'app_tool',
+        provider: 'openai',
+        flowManager,
+        options: { signal },
+        ...(mcpApps ? { mcpApps } : {}),
+      });
+    }
+
+    it('reads the exact declared document once and preserves the original result separately', async () => {
+      const request = jest.fn(async ({ method }: { method: string }) => {
+        if (method === 'tools/call') {
+          return toolResult;
+        }
+        return {
+          contents: [
+            { uri: 'ui://other', mimeType: 'text/html;profile=mcp-app', text: '<p>other</p>' },
+            { uri: resourceUri, mimeType: 'text/plain', text: 'wrong mime' },
+            {
+              uri: resourceUri,
+              mimeType: 'text/html;profile=mcp-app',
+              text: '<p>resources/read document</p>',
+              _meta: { ui: { csp: { connectDomains: ['https://content.example'] } } },
+            },
+          ],
+        };
+      });
+
+      const [, artifacts] = await callWith(connectionFor(request));
+      const app = artifacts?.ui_resources?.data?.[0];
+      const calls = request.mock.calls as unknown as Array<
+        [{ method: string; params?: unknown }, unknown, { timeout?: number }]
+      >;
+
+      expect(calls.map(([request]) => request.method)).toEqual(['tools/call', 'resources/read']);
+      expect(calls[1][0].params).toEqual({ uri: resourceUri });
+      expect(calls[1][2]).toMatchObject({ timeout: 1234 });
+      expect(app).toMatchObject({
+        uri: resourceUri,
+        text: '<p>resources/read document</p>',
+        csp: { connectDomains: ['https://content.example'] },
+        structuredContent: { count: 1 },
+        resultMeta: { result: 'meta' },
+      });
+      expect(app?.content).toBe(toolResult.content);
+    });
+
+    it('keeps canonical tool output and a bound retryable URI when document reading fails', async () => {
+      const request = jest.fn(async ({ method }: { method: string }) => {
+        if (method === 'tools/call') {
+          return toolResult;
+        }
+        throw new Error('resource unavailable');
+      });
+
+      const [text, artifacts] = await callWith(connectionFor(request));
+
+      expect(text).toContain('ordinary output');
+      expect(artifacts?.ui_resources?.data).toEqual([
+        expect.objectContaining({
+          uri: resourceUri,
+          mimeType: 'text/html;profile=mcp-app',
+          serverBinding: 'binding',
+          content: toolResult.content,
+        }),
+      ]);
+      expect(artifacts?.ui_resources?.data?.[0]).not.toHaveProperty('text');
+      expect(
+        request.mock.calls.filter(([request]) => request.method === 'tools/call'),
+      ).toHaveLength(1);
+    });
+
+    it('retains a bound URI without retrying the tool when the shared App budget is full', async () => {
+      const limits = { maxBytes: 4 * 1024 * 1024, timeoutMs: 30_000, maxActive: 1 };
+      const manager = new MCPManager(undefined, undefined, {
+        create: jest.fn(() => 'binding'),
+        verify: jest.fn(() => true),
+      });
+      const request = jest.fn(async ({ method }: { method: string }) => {
+        if (method === 'tools/call') return toolResult;
+        throw new Error('resource read must not start when capacity is full');
+      });
+      jest.spyOn(manager, 'getConnection').mockResolvedValue(connectionFor(request));
+      let finish!: () => void;
+      const occupied = manager.appOperationBudget.run(
+        new AbortController().signal,
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+        limits,
+      );
+
+      const [text, artifacts] = await manager.callTool({
+        user,
+        serverName,
+        serverConfig,
+        toolName: 'app_tool',
+        provider: 'openai',
+        flowManager,
+        mcpApps: { enabled: true, legacyHtmlEnabled: true, operationLimits: limits },
+      });
+      expect(text).toContain('ordinary output');
+      expect(artifacts?.ui_resources?.data?.[0]).toMatchObject({
+        uri: resourceUri,
+        serverBinding: 'binding',
+        content: toolResult.content,
+      });
+      expect(request.mock.calls.map(([call]) => call.method)).toEqual(['tools/call']);
+      finish();
+      await occupied;
+    });
+
+    it('retains the bound URI if the read returns no usable matching App document', async () => {
+      const request = jest.fn(async ({ method }: { method: string }) =>
+        method === 'tools/call'
+          ? toolResult
+          : { contents: [{ uri: resourceUri, mimeType: 'text/plain', text: 'not an app' }] },
+      );
+      const [text, artifacts] = await callWith(connectionFor(request));
+      expect(text).toContain('ordinary output');
+      expect(artifacts?.ui_resources?.data?.[0]).toMatchObject({
+        uri: resourceUri,
+        serverBinding: 'binding',
+        content: toolResult.content,
+      });
+      expect(artifacts?.ui_resources?.data?.[0]?.text).toBeUndefined();
+      expect(request.mock.calls.filter(([call]) => call.method === 'tools/call')).toHaveLength(1);
+    });
+
+    it('does not read or attach the App when Apps policy denies it', async () => {
+      const request = jest.fn().mockResolvedValue(toolResult);
+      const connection = connectionFor(request);
+      const [, artifacts] = await callWith(connection, undefined, {
+        enabled: false,
+        legacyHtmlEnabled: false,
+      });
+
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(connection.fetchOrderedToolsSnapshot).not.toHaveBeenCalled();
+      expect(artifacts?.ui_resources).toBeUndefined();
+    });
+
+    it('keeps canonical tool output when no Apps policy was admitted', async () => {
+      const request = jest.fn().mockResolvedValue(toolResult);
+      const connection = connectionFor(request);
+
+      const [text, artifacts] = await callWith(connection, undefined, null);
+
+      expect(text).toContain('ordinary output');
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(connection.fetchOrderedToolsSnapshot).not.toHaveBeenCalled();
+      expect(artifacts?.ui_resources).toBeUndefined();
+    });
+
+    it('keeps canonical tool output when the declared resource read is aborted', async () => {
+      let readStarted: (() => void) | undefined;
+      const started = new Promise<void>((resolve) => {
+        readStarted = resolve;
+      });
+      const request = jest.fn(
+        ({ method }: { method: string }, _schema: unknown, options: { signal?: AbortSignal }) => {
+          if (method === 'tools/call') {
+            return Promise.resolve(toolResult);
+          }
+          readStarted?.();
+          return new Promise((_resolve, reject) => {
+            options.signal?.addEventListener('abort', () => reject(options.signal?.reason), {
+              once: true,
+            });
+          });
+        },
+      );
+      const controller = new AbortController();
+      const call = callWith(connectionFor(request), controller.signal);
+      await started;
+      controller.abort(new DOMException('stopped', 'AbortError'));
+
+      await expect(call).resolves.toEqual(
+        expect.arrayContaining([expect.stringContaining('ordinary output')]),
+      );
+      expect(
+        request.mock.calls.filter(([request]) => request.method === 'tools/call'),
+      ).toHaveLength(1);
+    });
+
+    it('keeps canonical tool output when metadata discovery is aborted', async () => {
+      let snapshotStarted: (() => void) | undefined;
+      const started = new Promise<void>((resolve) => {
+        snapshotStarted = resolve;
+      });
+      const request = jest.fn().mockResolvedValue(toolResult);
+      const connection = connectionFor(request);
+      (connection.fetchOrderedToolsSnapshot as jest.Mock).mockImplementation(
+        (_deadline: unknown, signal?: AbortSignal) => {
+          snapshotStarted?.();
+          return new Promise((_resolve, reject) => {
+            signal?.addEventListener('abort', () => reject(signal.reason), { once: true });
+          });
+        },
+      );
+      const controller = new AbortController();
+      const call = callWith(connection, controller.signal);
+      await started;
+      controller.abort(new DOMException('stopped', 'AbortError'));
+
+      await expect(call).resolves.toEqual(
+        expect.arrayContaining([expect.stringContaining('ordinary output')]),
+      );
+      expect(request).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not reuse declared App metadata after an incomplete catalog refresh', async () => {
+      const request = jest.fn(async ({ method }: { method: string }) => {
+        if (method === 'tools/call') {
+          return toolResult;
+        }
+        return {
+          contents: [
+            {
+              uri: resourceUri,
+              mimeType: 'text/html;profile=mcp-app',
+              text: '<p>resources/read document</p>',
+            },
+          ],
+        };
+      });
+      const connection = connectionFor(request);
+      const manager = new MCPManager(undefined, undefined, {
+        create: jest.fn(() => 'binding'),
+        verify: jest.fn(() => true),
+      });
+      jest.spyOn(manager, 'getConnection').mockResolvedValue(connection);
+
+      const first = await manager.callTool({
+        user,
+        serverName,
+        serverConfig,
+        toolName: 'app_tool',
+        provider: 'openai',
+        flowManager,
+        mcpApps: { enabled: true, legacyHtmlEnabled: true },
+      });
+      connection.toolListVersion += 1;
+      (connection.fetchOrderedToolsSnapshot as jest.Mock).mockResolvedValueOnce({
+        tools: [],
+        complete: false,
+      });
+      const second = await manager.callTool({
+        user,
+        serverName,
+        serverConfig,
+        toolName: 'app_tool',
+        provider: 'openai',
+        flowManager,
+        mcpApps: { enabled: true, legacyHtmlEnabled: true },
+      });
+
+      expect(first[1]?.ui_resources?.data).toHaveLength(1);
+      expect(second[1]?.ui_resources).toBeUndefined();
+      expect(request.mock.calls.map(([request]) => (request as { method: string }).method)).toEqual(
+        ['tools/call', 'resources/read', 'tools/call'],
+      );
+    });
+
+    it('uses the admitted policy without a post-call policy read', async () => {
+      const request = jest.fn().mockResolvedValue(toolResult);
+      mockRegistryInstance.resolveAllowlists.mockClear();
+
+      await callWith(connectionFor(request));
+
+      expect(mockRegistryInstance.resolveAllowlists).not.toHaveBeenCalled();
     });
   });
 
@@ -1127,6 +1681,19 @@ describe('MCPManager', () => {
         }),
         connection,
       );
+      const generationSpy = jest
+        .spyOn(toolsChanged, 'getMCPToolsChangedGeneration')
+        .mockResolvedValue('request-peer-generation');
+      try {
+        const oauthOptions = (MCPConnectionFactory.attachRequestOAuthHandler as jest.Mock).mock
+          .calls[0][1];
+        await expect(oauthOptions.onOAuthCredentialsInvalidated()).resolves.toBe(
+          'request-peer-generation',
+        );
+        expect(generationSpy).toHaveBeenCalledWith({ userId: mockUser.id, serverName });
+      } finally {
+        generationSpy.mockRestore();
+      }
       expect(connection.listenerCount('oauthReauthenticationRequired')).toBe(0);
     });
 
@@ -1165,6 +1732,39 @@ describe('MCPManager', () => {
         expect.objectContaining({
           Authorization: 'Bearer {{LIBRECHAT_GRAPH_ACCESS_TOKEN}}',
         }),
+      );
+    });
+
+    it('preserves Graph preprocessing for an unrelated server in a scheduled request', async () => {
+      const config = { ...createServerConfigWithGraphPlaceholder(), source: 'yaml' as const };
+      const context = createMCPRequestContext();
+      attachScheduledMCPBearer(context, {
+        scheduleId: 's1',
+        ownerId: mockUser.id!,
+        tenantId: mockUser.tenantId ?? null,
+        agentId: 'root',
+        invocationMode: 'delegated',
+      });
+      (graphUtils.preProcessGraphTokens as jest.Mock).mockResolvedValue({
+        ...config,
+        headers: { Authorization: 'Bearer fresh-graph' },
+      });
+      mockAppConnections({ get: jest.fn().mockResolvedValue(mockConnection) });
+      (mockRegistryInstance.getServerConfig as jest.Mock).mockResolvedValue(config);
+      const manager = await MCPManager.createInstance(newMCPServersConfig());
+      await manager.callTool({
+        user: mockUser as IUser,
+        serverName,
+        toolName: 'test_tool',
+        provider: 'openai',
+        flowManager: mockFlowManager as unknown as Parameters<
+          typeof manager.callTool
+        >[0]['flowManager'],
+        requestScopedConnections: context,
+        graphTokenResolver: jest.fn(),
+      });
+      expect(mockConnection.setRequestHeaders).toHaveBeenCalledWith(
+        expect.objectContaining({ Authorization: 'Bearer fresh-graph' }),
       );
     });
 
@@ -1446,6 +2046,7 @@ describe('MCPManager', () => {
     function createConnection(request: jest.Mock) {
       const emitter = new EventEmitter();
       return Object.assign(emitter, {
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
         client: { request },
         connect: jest.fn().mockResolvedValue(undefined),
         disconnect: jest.fn().mockResolvedValue(undefined),
@@ -1521,6 +2122,167 @@ describe('MCPManager', () => {
       expect(request).toHaveBeenCalledTimes(2);
       expect(request.mock.calls[1]).toEqual(request.mock.calls[0]);
     });
+
+    it.each([false, true])(
+      'approval transport fencing handles account replacement=%s after a 401',
+      async (replaceAccount) => {
+        let epoch = 'account-a';
+        const request = jest
+          .fn()
+          .mockRejectedValueOnce(new Error('Non-200 status code (401)'))
+          .mockResolvedValueOnce(toolResult);
+        const connection = createConnection(request);
+        connection.getOAuthCredentialSetId = () => epoch;
+        attachOAuthHandler((active) => {
+          if (replaceAccount) epoch = 'account-b';
+          active.emit('oauthHandled');
+        });
+        const manager = await createManager(connection);
+        const guard = jest.fn(async (_serverName: string, currentEpoch: string | null) => {
+          if (currentEpoch !== 'account-a') throw new Error('Approved OAuth epoch changed');
+        });
+        const invoke = () =>
+          withToolApprovalExecution(
+            { validateExecution: async () => {}, validateTransport: guard },
+            () =>
+              withToolApprovalTransport(
+                { toolCall: { id: 'approved-call' }, metadata: { agentId: 'agent-a' } },
+                () => callTool(manager),
+              ),
+          );
+        if (replaceAccount) {
+          await expect(invoke()).rejects.toThrow('Approved OAuth epoch changed');
+          expect(request).toHaveBeenCalledTimes(1);
+        } else {
+          await expect(invoke()).resolves.toBeDefined();
+          expect(request).toHaveBeenCalledTimes(2);
+        }
+        expect(guard).toHaveBeenCalledTimes(2);
+      },
+    );
+
+    it.each([true, false])(
+      'rechecks reviewed OAuth after scheduled authorization for enrolled=%s',
+      async (enrolled) => {
+        let epoch = 'account-a';
+        const request = jest.fn().mockResolvedValue(toolResult);
+        const connection = createConnection(request);
+        connection.getOAuthCredentialSetId = () => epoch;
+        const manager = await createManager(connection);
+        const authorize = jest.fn(async () => {
+          epoch = 'account-b';
+        });
+        const guard = jest.fn(async (_server: string, currentEpoch: string | null) => {
+          if (currentEpoch !== 'account-a') throw new Error('Approved OAuth epoch changed');
+        });
+        const invoke = () =>
+          withToolApprovalExecution(
+            { validateExecution: async () => {}, validateTransport: guard },
+            () =>
+              withToolApprovalTransport(
+                { toolCall: { id: 'approved-call' }, metadata: { agentId: 'root' } },
+                () =>
+                  manager.callTool({
+                    user: mockUser,
+                    serverName,
+                    toolName: 'oauth_tool',
+                    provider: 'openai',
+                    flowManager: mockFlowManager,
+                    scheduledMCPInvocation: {
+                      identity: {
+                        scheduleId: 'schedule',
+                        ownerId: mockUser.id,
+                        tenantId: null,
+                        agentId: 'root',
+                        invocationMode: 'delegated',
+                      },
+                      enrolled,
+                      agentId: 'root',
+                      authorize,
+                    },
+                  }),
+              ),
+          );
+        await expect(invoke()).rejects.toThrow('Approved OAuth epoch changed');
+        expect(authorize).toHaveBeenCalledTimes(1);
+        expect(guard).toHaveBeenCalledWith(serverName, 'account-b', expect.any(Object), true);
+        expect(request).not.toHaveBeenCalled();
+        expect(connection.connect).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([true, false])(
+      'preserves first JSON-RPC failure without stored-OAuth replay for enrolled=%s',
+      async (enrolled) => {
+        const failure = new McpError(ErrorCode.InternalError, 'HTTP 401 invalid_token');
+        const request = jest.fn().mockRejectedValueOnce(failure).mockResolvedValueOnce(toolResult);
+        const connection = createConnection(request);
+        attachOAuthHandler();
+        const manager = await createManager(connection);
+        const authorize = jest.fn(async () => undefined);
+        const identity = {
+          scheduleId: 's',
+          ownerId: mockUser.id,
+          tenantId: null,
+          agentId: 'root',
+          invocationMode: 'delegated' as const,
+        };
+        const result = manager.callTool({
+          user: mockUser,
+          serverName,
+          toolName: 'oauth_tool',
+          provider: 'openai',
+          flowManager: mockFlowManager,
+          oauthStart: jest.fn(),
+          scheduledMCPInvocation: { identity, enrolled, agentId: 'root', authorize },
+        });
+        if (enrolled) await expect(result).rejects.toBe(failure);
+        else await expect(result).resolves.toBeDefined();
+        expect(request).toHaveBeenCalledTimes(enrolled ? 1 : 2);
+        expect(authorize).toHaveBeenCalledTimes(enrolled ? 1 : 2);
+        expect(connection.connect).toHaveBeenCalledTimes(enrolled ? 0 : 1);
+      },
+    );
+
+    it('carries the request credential through a delayed 401 after the connection rotates', async () => {
+      let credential = 'credential-a';
+      const request = jest
+        .fn()
+        .mockImplementationOnce(async () => {
+          credential = 'credential-b';
+          throw new Error('Non-200 status code (401)');
+        })
+        .mockResolvedValueOnce(toolResult);
+      const connection = createConnection(request);
+      connection.getOAuthCredentialSetId = jest.fn(() => credential);
+      const events: unknown[] = [];
+      connection.on('oauthReauthenticationRequired', (event) => events.push(event));
+      attachOAuthHandler();
+      const manager = await createManager(connection);
+      await expect(callTool(manager)).resolves.toBeDefined();
+      expect(events).toEqual([
+        expect.objectContaining({ rejectedCredentialSetId: 'credential-a' }),
+      ]);
+      expect(credential).toBe('credential-b');
+    });
+
+    it.each(['credential-a', null])(
+      'preserves the recorded transport identity %s',
+      async (rejected) => {
+        const connection = createConnection(jest.fn().mockResolvedValue(toolResult));
+        const error = new Error('Non-200 status code (401)');
+        (connection.isConnected as jest.Mock).mockResolvedValueOnce(false);
+        (connection.getLastConnectionCheckError as jest.Mock).mockReturnValue(error);
+        connection.getOAuthCredentialSetId = jest.fn(() => 'credential-b');
+        connection.getLastConnectionCheckCredentialSetId = jest.fn(() => rejected);
+        const events: unknown[] = [];
+        connection.on('oauthReauthenticationRequired', (event) => events.push(event));
+        attachOAuthHandler();
+        const manager = await createManager(connection);
+        await expect(callTool(manager)).resolves.toBeDefined();
+        expect(events).toEqual([expect.objectContaining({ rejectedCredentialSetId: rejected })]);
+      },
+    );
 
     it('joins recovery registered between cached checkout and lease acquisition', async () => {
       const request = jest.fn().mockResolvedValue(toolResult);
@@ -2036,7 +2798,10 @@ describe('MCPManager', () => {
       attachOAuthHandler(() => undefined);
       const manager = await createManager(connection);
       const requestContext = createMCPRequestContext();
-      requestContext.connections.set(`${mockUser.id}:${serverName}`, connection);
+      requestContext.connections.set(
+        getMCPUserConnectionPoolKey(mockUser.id, serverName, STANDARD_MCP_CAPABILITY_PROFILE),
+        connection,
+      );
 
       const toolPromise = callTool(manager, undefined, jest.fn(), requestContext);
       await new Promise((resolve) => setImmediate(resolve));
@@ -2086,7 +2851,12 @@ describe('MCPManager', () => {
       const internals = manager as unknown as {
         userConnections: Map<string, Map<string, MCPConnection>>;
       };
-      internals.userConnections.set(mockUser.id, new Map([[serverName, connection]]));
+      internals.userConnections.set(
+        mockUser.id,
+        new Map([
+          [getMCPConnectionPoolKey(serverName, STANDARD_MCP_CAPABILITY_PROFILE), connection],
+        ]),
+      );
 
       const toolPromise = callTool(manager);
       await new Promise((resolve) => setImmediate(resolve));
@@ -2343,6 +3113,61 @@ describe('MCPManager', () => {
       );
     });
 
+    it('detects direct-bearer mode when the Authorization template lives in requestHeaders', async () => {
+      mockAppConnections({
+        has: jest.fn().mockResolvedValue(false),
+      });
+      const connection = {
+        isConnected: jest.fn().mockResolvedValue(true),
+        refreshToolList: jest.fn().mockResolvedValue({ tools: [] }),
+        on: jest.fn(),
+      } as unknown as MCPConnection;
+      (MCPConnectionFactory.create as jest.Mock).mockResolvedValue(connection);
+      (graphUtils.preProcessGraphTokens as jest.Mock).mockImplementation(async (config) => config);
+      const manager = await MCPManager.createInstance(newMCPServersConfig());
+      const upstreamTokenProvider = jest.fn().mockResolvedValue({ access_token: 'live-token' });
+
+      await manager.getUserConnection({
+        serverName,
+        user: { id: 'direct-user', provider: 'openid', openidId: 'direct-subject' } as IUser,
+        serverConfig: {
+          ...serverConfig,
+          source: 'yaml',
+          requestHeaders: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+        } as t.ParsedServerConfig,
+        flowManager: {} as Parameters<typeof manager.getUserConnection>[0]['flowManager'],
+        upstreamTokenProvider,
+      });
+
+      /** The manager's own bearer decisions read the config directly, so the map
+       *  has to be folded in before them or a 401 never reaches recovery. */
+      expect(upstreamTokenProvider).toHaveBeenCalled();
+      const createCalls = (MCPConnectionFactory.create as jest.Mock).mock.calls;
+      const [basic] = createCalls[createCalls.length - 1];
+      expect(basic.directBearerSourceConfig).toBeDefined();
+      expect(basic.serverConfig.headers).toEqual({ Authorization: 'Bearer live-token' });
+      expect(basic.serverConfig).not.toHaveProperty('requestHeaders');
+      expect(basic.serverDefinition.requestHeaders).toEqual({
+        Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}',
+      });
+      const published = jest.fn();
+      toolsChanged.setMCPToolsChangedHandler(published);
+      try {
+        const listener = (connection.on as jest.Mock).mock.calls.find(
+          ([event]) => event === 'toolsChanged',
+        )?.[1];
+        listener([]);
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(published).toHaveBeenCalledWith(
+          expect.objectContaining({
+            serverConfig: basic.serverDefinition,
+          }),
+        );
+      } finally {
+        toolsChanged.setMCPToolsChangedHandler(null);
+      }
+    });
+
     it('waits for an active recovery before reusing a cached connection', async () => {
       mockAppConnections({
         has: jest.fn().mockResolvedValue(false),
@@ -2362,7 +3187,12 @@ describe('MCPManager', () => {
         >;
         userConnections: Map<string, Map<string, MCPConnection>>;
       };
-      internals.userConnections.set(mockUser.id, new Map([[serverName, connection]]));
+      internals.userConnections.set(
+        mockUser.id,
+        new Map([
+          [getMCPConnectionPoolKey(serverName, STANDARD_MCP_CAPABILITY_PROFILE), connection],
+        ]),
+      );
       internals.oauthRecoveries.set(connection, { promise: recovery, allowsTakeover: true });
 
       const connectionPromise = manager.getUserConnection({
@@ -2409,7 +3239,12 @@ describe('MCPManager', () => {
         >;
         userConnections: Map<string, Map<string, MCPConnection>>;
       };
-      internals.userConnections.set(mockUser.id, new Map([[serverName, connection]]));
+      internals.userConnections.set(
+        mockUser.id,
+        new Map([
+          [getMCPConnectionPoolKey(serverName, STANDARD_MCP_CAPABILITY_PROFILE), connection],
+        ]),
+      );
 
       const connectionPromise = manager.getUserConnection({
         serverName,
@@ -2460,7 +3295,12 @@ describe('MCPManager', () => {
         releaseConnection: (connection: MCPConnection) => Promise<void>;
         userConnections: Map<string, Map<string, MCPConnection>>;
       };
-      internals.userConnections.set(mockUser.id, new Map([[serverName, staleConnection]]));
+      internals.userConnections.set(
+        mockUser.id,
+        new Map([
+          [getMCPConnectionPoolKey(serverName, STANDARD_MCP_CAPABILITY_PROFILE), staleConnection],
+        ]),
+      );
       internals.retainConnection(staleConnection);
       internals.oauthRecoveries.set(staleConnection, {
         promise: recovery,
@@ -2500,7 +3340,12 @@ describe('MCPManager', () => {
         >;
         userConnections: Map<string, Map<string, MCPConnection>>;
       };
-      internals.userConnections.set(mockUser.id, new Map([[serverName, connection]]));
+      internals.userConnections.set(
+        mockUser.id,
+        new Map([
+          [getMCPConnectionPoolKey(serverName, STANDARD_MCP_CAPABILITY_PROFILE), connection],
+        ]),
+      );
       internals.oauthRecoveries.set(connection, { promise: recovery, allowsTakeover: true });
       const controller = new AbortController();
       const abortReason = new Error('request aborted');
@@ -2542,7 +3387,15 @@ describe('MCPManager', () => {
       };
       (
         manager as unknown as { userConnections: Map<string, Map<string, MCPConnection>> }
-      ).userConnections.set(mockUser.id, new Map([[serverName, unusableConnection]]));
+      ).userConnections.set(
+        mockUser.id,
+        new Map([
+          [
+            getMCPConnectionPoolKey(serverName, STANDARD_MCP_CAPABILITY_PROFILE),
+            unusableConnection,
+          ],
+        ]),
+      );
       lifecycle.retainConnection(unusableConnection);
 
       await expect(
@@ -2578,7 +3431,15 @@ describe('MCPManager', () => {
       const manager = await MCPManager.createInstance(newMCPServersConfig());
       (
         manager as unknown as { userConnections: Map<string, Map<string, MCPConnection>> }
-      ).userConnections.set(mockUser.id, new Map([[serverName, unusableConnection]]));
+      ).userConnections.set(
+        mockUser.id,
+        new Map([
+          [
+            getMCPConnectionPoolKey(serverName, STANDARD_MCP_CAPABILITY_PROFILE),
+            unusableConnection,
+          ],
+        ]),
+      );
 
       await expect(
         manager.getUserConnection({
@@ -2604,7 +3465,12 @@ describe('MCPManager', () => {
         refreshToolList: jest.fn().mockResolvedValue(undefined),
       } as unknown as MCPConnection;
       const requestScopedConnections: t.RequestScopedMCPConnectionStore = {
-        connections: new Map([[`${mockUser.id}:${serverName}`, requestConnection]]),
+        connections: new Map([
+          [
+            getMCPUserConnectionPoolKey(mockUser.id, serverName, STANDARD_MCP_CAPABILITY_PROFILE),
+            requestConnection,
+          ],
+        ]),
         pending: new Map(),
       };
       const bodyScopedConfig: t.ParsedServerConfig = {
@@ -2663,7 +3529,12 @@ describe('MCPManager', () => {
         >;
         userConnections: Map<string, Map<string, MCPConnection>>;
       };
-      internals.userConnections.set(mockUser.id, new Map([[serverName, connection]]));
+      internals.userConnections.set(
+        mockUser.id,
+        new Map([
+          [getMCPConnectionPoolKey(serverName, STANDARD_MCP_CAPABILITY_PROFILE), connection],
+        ]),
+      );
       internals.oauthRecoveries.set(connection, { promise: recovery, allowsTakeover: true });
 
       await expect(
@@ -2790,7 +3661,7 @@ describe('MCPManager', () => {
       expect(getUserConnectionSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           serverName,
-          serverConfig,
+          connectionTarget: { serverConfig, connectionOwner: 'operator' },
           user: mockUser,
         }),
       );
@@ -2914,6 +3785,11 @@ describe('MCPManager', () => {
       });
 
       expect(upstreamTokenProviderResolver).toHaveBeenCalledTimes(1);
+      expect(upstreamTokenProviderResolver).toHaveBeenCalledWith(
+        expect.objectContaining({
+          target: { mcpServer: serverName, scopes: serverConfig.obo?.scopes },
+        }),
+      );
       expect(mockResolveOboToken).toHaveBeenCalledWith(
         mockUser,
         serverConfig.obo,
@@ -3111,10 +3987,64 @@ describe('MCPManager', () => {
           /** upstreamTokenProvider intentionally omitted */
         }),
       ).rejects.toMatchObject({
-        message: expect.stringContaining('upstreamTokenProvider not plumbed'),
+        cause: expect.objectContaining({ reason: 'missing_upstream_provider', retryable: false }),
       });
       expect(mockResolveOboToken).not.toHaveBeenCalled();
     });
+
+    it.each([true, false])(
+      'does not replay an enrolled OBO JSON-RPC invalid_token failure, enrolled=%s',
+      async (enrolled) => {
+        const failure = new McpError(ErrorCode.InternalError, 'invalid_token');
+        const request = jest
+          .fn()
+          .mockRejectedValueOnce(failure)
+          .mockResolvedValueOnce({ content: [{ type: 'text', text: 'retried' }] });
+        const connection = {
+          isConnected: jest.fn().mockResolvedValue(true),
+          setRequestHeaders: jest.fn(),
+          setOAuthTokens: jest.fn(),
+          isOAuthAuthenticationError: jest.fn().mockReturnValue(true),
+          timeout: 30000,
+          client: { request },
+        } as unknown as MCPConnection;
+        mockResolveOboToken.mockResolvedValue({
+          access_token: 'current-token',
+          token_type: 'Bearer',
+          obtained_at: Date.now(),
+          expires_at: Date.now() + 3600_000,
+        });
+        mockAppConnections({ get: jest.fn().mockResolvedValue(connection) });
+        (mockRegistryInstance.getServerConfig as jest.Mock).mockResolvedValue(serverConfig);
+        const manager = await MCPManager.createInstance(newMCPServersConfig());
+        jest.spyOn(manager, 'getUserConnection').mockResolvedValue(connection);
+        const authorize = jest.fn(async () => undefined);
+        const identity = {
+          scheduleId: 's',
+          ownerId: String(mockUser.id),
+          tenantId: null,
+          agentId: 'root',
+          invocationMode: 'delegated' as const,
+        };
+        const result = manager.callTool({
+          user: mockUser as IUser,
+          serverName,
+          toolName: 'test_tool',
+          provider: 'openai',
+          flowManager: mockFlowManager as unknown as Parameters<
+            typeof manager.callTool
+          >[0]['flowManager'],
+          oboTokenResolver: mockOboTokenResolver,
+          upstreamTokenProvider: mockUpstreamTokenProvider,
+          scheduledMCPInvocation: { identity, enrolled, agentId: 'root', authorize },
+        });
+        if (enrolled) await expect(result).rejects.toBe(failure);
+        else await expect(result).resolves.toBeDefined();
+        expect(request).toHaveBeenCalledTimes(enrolled ? 1 : 2);
+        expect(authorize).toHaveBeenCalledTimes(enrolled ? 1 : 2);
+        expect(mockResolveOboToken).toHaveBeenCalledTimes(enrolled ? 1 : 2);
+      },
+    );
 
     it('re-exchanges past the token cache when the server rejects the bearer mid-call', async () => {
       const authError = new Error('HTTP 401 Unauthorized');
@@ -3248,63 +4178,80 @@ describe('MCPManager', () => {
       openidId: 'direct-subject',
     } as IUser;
 
-    it('refreshes and replaces the connection without replaying a rejected tool call', async () => {
-      const rejection = Object.assign(new Error('HTTP 401 Unauthorized'), { status: 401 });
-      const connection = {
-        isConnected: jest.fn().mockResolvedValue(true),
-        setRequestHeaders: jest.fn(),
-        stopReconnecting: jest.fn(),
-        isOAuthAuthenticationError: jest.fn().mockReturnValue(true),
-        timeout: 30000,
-        client: { request: jest.fn().mockRejectedValue(rejection) },
-      } as unknown as MCPConnection;
-      const replacement = {
-        isConnected: jest.fn().mockResolvedValue(true),
-      } as unknown as MCPConnection;
-      const upstreamTokenProvider = jest
-        .fn()
-        .mockResolvedValueOnce({ access_token: 'current-token' })
-        .mockResolvedValueOnce({ access_token: 'refreshed-token' });
-
-      (graphUtils.preProcessGraphTokens as jest.Mock).mockImplementation(async (config) => config);
-      (mockRegistryInstance.getServerConfig as jest.Mock).mockResolvedValue(serverConfig);
-      const manager = await MCPManager.createInstance(newMCPServersConfig());
-      const getUserConnection = jest
-        .spyOn(manager, 'getUserConnection')
-        .mockResolvedValueOnce(connection)
-        .mockResolvedValueOnce(replacement);
-
-      await expect(
-        manager.callTool({
-          user,
-          serverName,
-          toolName: 'mutating_tool',
-          provider: 'openai',
-          flowManager: {} as Parameters<typeof manager.callTool>[0]['flowManager'],
-          upstreamTokenProvider,
-        }),
-      ).rejects.toMatchObject({
-        code: 'MCP_AUTHENTICATION_REJECTED',
-        connectionRefreshed: true,
-      } satisfies Partial<MCPAuthenticationRejectedError>);
-
-      expect(connection.client.request).toHaveBeenCalledTimes(1);
-      expect(upstreamTokenProvider).toHaveBeenNthCalledWith(2, {
-        forceRefresh: true,
-        signal: expect.any(AbortSignal),
-      });
-      expect(connection.stopReconnecting).toHaveBeenCalled();
-      expect(getUserConnection).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          forceNew: true,
-          serverConfig,
-          directBearerRecoveryState: expect.objectContaining({ attempted: true }),
-          directBearerResolvedConfig: expect.objectContaining({
-            headers: { Authorization: 'Bearer refreshed-token' },
+    it.each(['headers', 'requestHeaders'] as const)(
+      'refreshes %s without replaying a rejected tool call or losing its declaration',
+      async (headerMap) => {
+        const declared: t.ParsedServerConfig = {
+          ...serverConfig,
+          headers: undefined,
+          [headerMap]: serverConfig.headers,
+          ...(headerMap === 'requestHeaders' && {
+            apiKey: {
+              source: 'admin' as const,
+              authorization_type: 'bearer' as const,
+              key: 'catalog-key',
+            },
           }),
-        }),
-      );
-    });
+        };
+        const rejection = Object.assign(new Error('HTTP 401 Unauthorized'), { status: 401 });
+        const connection = {
+          isConnected: jest.fn().mockResolvedValue(true),
+          setRequestHeaders: jest.fn(),
+          stopReconnecting: jest.fn(),
+          isOAuthAuthenticationError: jest.fn().mockReturnValue(true),
+          timeout: 30000,
+          client: { request: jest.fn().mockRejectedValue(rejection) },
+        } as unknown as MCPConnection;
+        const replacement = {
+          isConnected: jest.fn().mockResolvedValue(true),
+        } as unknown as MCPConnection;
+        const upstreamTokenProvider = jest
+          .fn()
+          .mockResolvedValueOnce({ access_token: 'current-token' })
+          .mockResolvedValueOnce({ access_token: 'refreshed-token' });
+
+        (graphUtils.preProcessGraphTokens as jest.Mock).mockImplementation(
+          async (config) => config,
+        );
+        (mockRegistryInstance.getServerConfig as jest.Mock).mockResolvedValue(declared);
+        const manager = await MCPManager.createInstance(newMCPServersConfig());
+        const getUserConnection = jest
+          .spyOn(manager, 'getUserConnection')
+          .mockResolvedValueOnce(connection)
+          .mockResolvedValueOnce(replacement);
+
+        await expect(
+          manager.callTool({
+            user,
+            serverName,
+            toolName: 'mutating_tool',
+            provider: 'openai',
+            flowManager: {} as Parameters<typeof manager.callTool>[0]['flowManager'],
+            upstreamTokenProvider,
+          }),
+        ).rejects.toMatchObject({
+          code: 'MCP_AUTHENTICATION_REJECTED',
+          connectionRefreshed: true,
+        } satisfies Partial<MCPAuthenticationRejectedError>);
+
+        expect(connection.client.request).toHaveBeenCalledTimes(1);
+        expect(upstreamTokenProvider).toHaveBeenNthCalledWith(2, {
+          forceRefresh: true,
+          signal: expect.any(AbortSignal),
+        });
+        expect(connection.stopReconnecting).toHaveBeenCalled();
+        expect(getUserConnection).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            forceNew: true,
+            serverConfig: declared,
+            directBearerRecoveryState: expect.objectContaining({ attempted: true }),
+            directBearerResolvedConfig: expect.objectContaining({
+              headers: { Authorization: 'Bearer refreshed-token' },
+            }),
+          }),
+        );
+      },
+    );
 
     it('preserves a JSON-RPC tool failure that mentions downstream authentication', async () => {
       const toolError = new McpError(ErrorCode.InternalError, 'downstream HTTP 401 invalid_token');
@@ -3437,6 +4384,7 @@ describe('MCPManager', () => {
         finishConnectionCheck = resolve;
       });
       const connection = {
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
         isConnected: jest.fn().mockReturnValueOnce(connectionCheck).mockResolvedValue(true),
         isStale: jest.fn().mockReturnValue(false),
       } as unknown as MCPConnection;
@@ -3460,7 +4408,12 @@ describe('MCPManager', () => {
           }
         >;
       };
-      internals.userConnections.set(user.id, new Map([[serverName, connection]]));
+      internals.userConnections.set(
+        user.id,
+        new Map([
+          [getMCPConnectionPoolKey(serverName, STANDARD_MCP_CAPABILITY_PROFILE), connection],
+        ]),
+      );
       const directBearerRecoveryState: t.DirectBearerRecoveryState = { attempted: false };
       const sharedState: t.DirectBearerRecoveryState = { attempted: true };
 
@@ -3652,6 +4605,7 @@ describe('MCPManager', () => {
         },
       };
       const connection = {
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
         isConnected: jest.fn().mockResolvedValue(true),
         setRequestHeaders: jest.fn(),
         stopReconnecting: jest.fn(),
@@ -3663,7 +4617,12 @@ describe('MCPManager', () => {
         isConnected: jest.fn().mockResolvedValue(true),
       } as unknown as MCPConnection;
       const requestScopedConnections = {
-        connections: new Map([[`${user.id}:${serverName}`, connection]]),
+        connections: new Map([
+          [
+            getMCPUserConnectionPoolKey(user.id, serverName, STANDARD_MCP_CAPABILITY_PROFILE),
+            connection,
+          ],
+        ]),
         pending: new Map(),
       };
       const upstreamTokenProvider = jest
@@ -3689,7 +4648,10 @@ describe('MCPManager', () => {
         .spyOn(manager, 'getUserConnection')
         .mockResolvedValueOnce(connection)
         .mockImplementationOnce(async () => {
-          requestScopedConnections.connections.set(`${user.id}:${serverName}`, replacement);
+          requestScopedConnections.connections.set(
+            getMCPUserConnectionPoolKey(user.id, serverName, STANDARD_MCP_CAPABILITY_PROFILE),
+            replacement,
+          );
           return replacement;
         });
 
@@ -3713,9 +4675,11 @@ describe('MCPManager', () => {
         connection,
         expect.stringContaining('Request-scoped'),
       );
-      expect(requestScopedConnections.connections.get(`${user.id}:${serverName}`)).toBe(
-        replacement,
-      );
+      expect(
+        requestScopedConnections.connections.get(
+          getMCPUserConnectionPoolKey(user.id, serverName, STANDARD_MCP_CAPABILITY_PROFILE),
+        ),
+      ).toBe(replacement);
       expect(connection.client.request).toHaveBeenCalledTimes(1);
     });
 
@@ -3724,7 +4688,10 @@ describe('MCPManager', () => {
       async (abortAt) => {
         const controller = new AbortController();
         const cancelled = new Error('request stopped');
-        const connection = { stopReconnecting: jest.fn() } as unknown as MCPConnection;
+        const connection = {
+          capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+          stopReconnecting: jest.fn(),
+        } as unknown as MCPConnection;
         const upstreamTokenProvider = jest.fn(async () => {
           if (abortAt === 'refresh') {
             controller.abort(cancelled);
@@ -3791,7 +4758,10 @@ describe('MCPManager', () => {
           entered();
           await gate;
         };
-        const connection = { stopReconnecting: jest.fn() } as unknown as MCPConnection;
+        const connection = {
+          capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+          stopReconnecting: jest.fn(),
+        } as unknown as MCPConnection;
         const replacement = {} as MCPConnection;
         const upstreamTokenProvider = jest.fn(async () => {
           if (stage === 'refresh') {
@@ -3853,7 +4823,10 @@ describe('MCPManager', () => {
       'accounts for a borrower before it can join recovery (joins=%s)',
       async (joins) => {
         const manager = await MCPManager.createInstance(newMCPServersConfig());
-        const connection = { stopReconnecting: jest.fn() } as unknown as MCPConnection;
+        const connection = {
+          capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+          stopReconnecting: jest.fn(),
+        } as unknown as MCPConnection;
         const controller = new AbortController();
         let finish!: () => void;
         let entered!: () => void;
@@ -3902,6 +4875,7 @@ describe('MCPManager', () => {
 
     it('fences a delayed direct-bearer replacement when the server config mutates', async () => {
       const connection = {
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
         stopReconnecting: jest.fn(),
       } as unknown as MCPConnection;
       let finishRefresh: ((tokens: { access_token: string }) => void) | undefined;
@@ -3946,12 +4920,817 @@ describe('MCPManager', () => {
     });
   });
 
+  describe('MCP App operations', () => {
+    const user = { id: 'user-123', role: 'ADMIN' } as IUser & { id: string };
+    const flowManager = {} as Parameters<MCPManager['readResource']>[0]['flowManager'];
+    const appBindingCodec = {
+      create: jest.fn(() => 'binding'),
+      verify: jest.fn(() => true),
+    };
+    const createAppManager = (configs: t.MCPServers) =>
+      MCPManager.createInstance(configs, { appBindingCodec });
+    const defaultOAuthCredentialsChanging = jest.fn(async () => async () => undefined);
+
+    const context = (
+      serverName: string,
+      config: t.ParsedServerConfig,
+      extra: Partial<Parameters<MCPManager['readResource']>[0]> = {},
+    ) => ({
+      serverName,
+      serverBinding: 'binding',
+      user,
+      connectionTarget: {
+        serverConfig: config,
+        connectionOwner: config.requiresOAuth ? ('principal' as const) : ('operator' as const),
+      },
+      allowlists: {
+        allowedDomains: null,
+        allowedAddresses: null,
+        useSSRFProtection: false,
+      },
+      flowManager,
+      onOAuthCredentialsChanging: defaultOAuthCredentialsChanging,
+      ...extra,
+    });
+
+    const connection = (request: jest.Mock, tools = [{ name: 'do_thing', _meta: {} }]) =>
+      ({
+        capabilityProfile: MCP_APPS_CAPABILITY_PROFILE,
+        createdAt: 1,
+        toolListVersion: 1,
+        isConnected: jest.fn().mockResolvedValue(true),
+        getLastConnectionCheckError: jest.fn(),
+        isOAuthAuthenticationError: jest.fn((error: { status?: number }) => error?.status === 401),
+        usesOAuth: jest.fn().mockReturnValue(false),
+        setRequestHeaders: jest.fn(),
+        getMCPAppRuntimeTarget: jest.fn(() => ({
+          type: 'sse',
+          url: 'https://example.com/mcp',
+        })),
+        fetchOrderedToolsSnapshot: jest.fn().mockResolvedValue({ tools, complete: true }),
+        timeout: 30_000,
+        client: fakeClient(request),
+      }) as unknown as MCPConnection;
+
+    const newOAuthConnection = (request: jest.Mock) =>
+      Object.assign(connection(request), {
+        isStale: jest.fn().mockReturnValue(false),
+        refreshToolList: jest.fn().mockResolvedValue(undefined),
+        on: jest.fn(),
+        removeAllListeners: jest.fn(),
+        dispose: jest.fn().mockResolvedValue(undefined),
+      });
+
+    const standardOAuthConfig = {
+      source: 'yaml',
+      type: 'sse',
+      url: 'https://example.com/mcp',
+      requiresOAuth: true,
+      oauth: { client_id: 'client' },
+    } as t.ParsedServerConfig;
+
+    const prepareFreshOAuthAppOperation = ({
+      request,
+      publish,
+      renewalCurrent = true,
+    }: {
+      request: jest.Mock;
+      publish: jest.Mock;
+      renewalCurrent?: boolean;
+    }) => {
+      mockAppConnections({ has: jest.fn().mockResolvedValue(false) });
+      const appConnection = newOAuthConnection(request);
+      const onOAuthCredentialsChanging = jest.fn().mockResolvedValue(publish);
+      const generation = jest
+        .spyOn(toolsChanged, 'getMCPToolsChangedGeneration')
+        .mockResolvedValue('generation-a');
+      const renewal = jest
+        .spyOn(toolsChanged, 'renewMCPToolsChangedGeneration')
+        .mockResolvedValue(renewalCurrent);
+      (MCPConnectionFactory.create as jest.Mock).mockImplementation(
+        async (_basic: t.BasicConnectionOptions, options: t.OAuthConnectionOptions) => {
+          const publishPrepared = await options.onOAuthCredentialsChanging?.({
+            userId: user.id,
+            serverName: 'srv',
+          });
+          await publishPrepared?.();
+          return appConnection;
+        },
+      );
+      return {
+        appConnection,
+        onOAuthCredentialsChanging,
+        renewal,
+        restore: () => {
+          generation.mockRestore();
+          renewal.mockRestore();
+        },
+      };
+    };
+
+    it.each([
+      {
+        name: 'OBO',
+        config: {
+          source: 'yaml',
+          type: 'sse',
+          url: 'https://example.com/mcp',
+          obo: { audience: 'api://mcp' },
+        },
+        message: /OBO token resolution/,
+      },
+      {
+        name: 'Graph',
+        config: {
+          source: 'yaml',
+          type: 'sse',
+          url: 'https://example.com/mcp',
+          headers: { Authorization: 'Bearer {{LIBRECHAT_GRAPH_ACCESS_TOKEN}}' },
+        },
+        message: /Graph API token resolution/,
+      },
+      {
+        name: 'BODY',
+        config: {
+          source: 'yaml',
+          type: 'sse',
+          url: 'https://example.com/{{LIBRECHAT_BODY_CONVERSATIONID}}/mcp',
+        },
+        message: /request body field/,
+      },
+    ])(
+      'rejects unsupported $name configuration before connection checkout',
+      async ({ config, message }) => {
+        const manager = await createAppManager(newMCPServersConfig());
+        const getConnection = jest.spyOn(manager, 'getConnection');
+
+        await expect(
+          manager.readResource({
+            ...context('srv', config as t.ParsedServerConfig),
+            uri: 'data://catalog/42',
+          }),
+        ).rejects.toThrow(message);
+        expect(getConnection).not.toHaveBeenCalled();
+      },
+    );
+
+    it('uses the supplied authorized server config without another registry lookup', async () => {
+      const config = {
+        source: 'yaml',
+        type: 'sse',
+        url: 'https://example.com/mcp',
+      } as t.ParsedServerConfig;
+      const request = jest.fn().mockResolvedValue({ resources: [] });
+      const appConnection = connection(request);
+      const manager = await createAppManager(newMCPServersConfig());
+      const getConnection = jest.spyOn(manager, 'getConnection').mockResolvedValue(appConnection);
+
+      await expect(manager.listResources(context('srv', config))).resolves.toEqual({
+        resources: [],
+      });
+
+      expect(mockRegistryInstance.getAllServerConfigs).not.toHaveBeenCalled();
+      expect(getConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          connectionTarget: { serverConfig: config, connectionOwner: 'operator' },
+        }),
+      );
+    });
+
+    it('validates a binding from the supplied target without checking out a connection', async () => {
+      const config = {
+        source: 'yaml',
+        type: 'sse',
+        url: 'https://example.com/mcp',
+      } as t.ParsedServerConfig;
+      const manager = await createAppManager(newMCPServersConfig());
+      const getConnection = jest.spyOn(manager, 'getConnection');
+
+      await expect(manager.validateAppBinding(context('srv', config))).resolves.toEqual({
+        valid: true,
+      });
+
+      expect(getConnection).not.toHaveBeenCalled();
+      expect(appBindingCodec.verify).toHaveBeenCalledWith(
+        'binding',
+        expect.objectContaining({
+          serverName: 'srv',
+          userId: user.id,
+          connectionTarget: { serverConfig: config, connectionOwner: 'operator' },
+          runtimeTarget: { type: 'sse', url: 'https://example.com/mcp' },
+        }),
+      );
+    });
+
+    it('uses the normal checkout path for an existing standard OAuth connection', async () => {
+      const config = {
+        source: 'yaml',
+        type: 'sse',
+        url: 'https://example.com/mcp',
+        requiresOAuth: true,
+        oauth: { client_id: 'client' },
+      } as t.ParsedServerConfig;
+      const request = jest.fn().mockResolvedValue({ resources: [] });
+      const appConnection = connection(request);
+      const manager = await createAppManager(newMCPServersConfig());
+      const getConnection = jest.spyOn(manager, 'getConnection').mockResolvedValue(appConnection);
+      const onOAuthCredentialsChanging = jest.fn(async () => async () => 'generation-b');
+
+      await manager.listResources(context('srv', config, { onOAuthCredentialsChanging }));
+
+      expect(getConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user,
+          connectionTarget: { serverConfig: config, connectionOwner: 'principal' },
+          flowManager,
+          onOAuthCredentialsChanging,
+        }),
+      );
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({ method: 'resources/list' }),
+        ListResourcesResultSchema,
+        expect.any(Object),
+      );
+    });
+
+    it('uses the shared OAuth recovery owner and retries an App operation once', async () => {
+      const unauthorized = Object.assign(new Error('Unauthorized'), { status: 401 });
+      const request = jest
+        .fn()
+        .mockRejectedValueOnce(unauthorized)
+        .mockResolvedValueOnce({ resources: [] });
+      const appConnection = connection(request);
+      const manager = await createAppManager(newMCPServersConfig());
+      jest.spyOn(manager, 'getConnection').mockResolvedValue(appConnection);
+      const recoverOAuth = jest
+        .spyOn(
+          manager as unknown as {
+            recoverOAuthConnection: (...args: unknown[]) => Promise<void>;
+          },
+          'recoverOAuthConnection',
+        )
+        .mockResolvedValue();
+
+      await expect(manager.listResources(context('srv', standardOAuthConfig))).resolves.toEqual({
+        resources: [],
+      });
+
+      expect(recoverOAuth).toHaveBeenCalledWith(
+        appConnection,
+        unauthorized,
+        'srv',
+        user.id,
+        expect.any(Function),
+        undefined,
+        undefined,
+        flowManager,
+        undefined,
+        true,
+      );
+      expect(request).toHaveBeenCalledTimes(2);
+    });
+
+    it('adopts the authorization generation published by a fresh App OAuth connection', async () => {
+      const request = jest.fn().mockResolvedValue({ resources: [] });
+      const publish = jest.fn().mockResolvedValue('generation-b');
+      const { onOAuthCredentialsChanging, renewal, restore } = prepareFreshOAuthAppOperation({
+        request,
+        publish,
+      });
+
+      try {
+        const manager = await createAppManager(newMCPServersConfig());
+        await expect(
+          manager.listResources(
+            context('srv', standardOAuthConfig, { onOAuthCredentialsChanging }),
+          ),
+        ).resolves.toEqual({ resources: [] });
+
+        expect(onOAuthCredentialsChanging).toHaveBeenCalledWith({
+          userId: user.id,
+          serverName: 'srv',
+        });
+        expect(publish).toHaveBeenCalledTimes(1);
+        expect(renewal).toHaveBeenCalledWith({
+          userId: user.id,
+          serverName: 'srv',
+          publicationGeneration: 'generation-b',
+        });
+        expect(request).toHaveBeenCalledTimes(1);
+      } finally {
+        restore();
+      }
+    });
+
+    it('does not run an App operation after a foreign rotation fences its fresh OAuth connection', async () => {
+      const request = jest.fn();
+      const { appConnection, onOAuthCredentialsChanging, restore } = prepareFreshOAuthAppOperation({
+        request,
+        publish: jest.fn().mockResolvedValue('generation-b'),
+        renewalCurrent: false,
+      });
+
+      try {
+        const manager = await createAppManager(newMCPServersConfig());
+        await expect(
+          manager.listResources(
+            context('srv', standardOAuthConfig, { onOAuthCredentialsChanging }),
+          ),
+        ).rejects.toThrow('Publication lease is no longer current');
+
+        expect(appConnection.dispose).toHaveBeenCalled();
+        expect(request).not.toHaveBeenCalled();
+      } finally {
+        restore();
+      }
+    });
+
+    it('does not run an App operation when OAuth authorization publication fails', async () => {
+      const request = jest.fn();
+      const publicationError = new Error('authorization publication unavailable');
+      const { onOAuthCredentialsChanging, restore } = prepareFreshOAuthAppOperation({
+        request,
+        publish: jest.fn().mockRejectedValue(publicationError),
+      });
+
+      try {
+        const manager = await createAppManager(newMCPServersConfig());
+        await expect(
+          manager.listResources(
+            context('srv', standardOAuthConfig, { onOAuthCredentialsChanging }),
+          ),
+        ).rejects.toBe(publicationError);
+        expect(request).not.toHaveBeenCalled();
+      } finally {
+        restore();
+      }
+    });
+
+    it('forwards an opaque auxiliary URI to the same authenticated server without local template inference', async () => {
+      const config = {
+        source: 'yaml',
+        type: 'sse',
+        url: 'https://example.com/mcp',
+      } as t.ParsedServerConfig;
+      const request = jest.fn().mockResolvedValue({
+        contents: [{ uri: 'data://catalog/part%2Fleaf', text: 'leaf' }],
+      });
+      const appConnection = connection(request);
+      const manager = await createAppManager(newMCPServersConfig());
+      jest.spyOn(manager, 'getConnection').mockResolvedValue(appConnection);
+
+      await manager.readResource({
+        ...context('srv', config),
+        uri: 'data://catalog/part%2Fleaf',
+      });
+
+      expect(request).toHaveBeenCalledTimes(1);
+      expect(request).toHaveBeenCalledWith(
+        {
+          method: 'resources/read',
+          params: { uri: 'data://catalog/part%2Fleaf' },
+        },
+        ReadResourceResultSchema,
+        expect.objectContaining({ timeout: 30_000 }),
+      );
+    });
+
+    it('binds the authenticated user and role, forwards cancellation, and awaits activity renewal', async () => {
+      const config = {
+        source: 'yaml',
+        type: 'sse',
+        url: 'https://example.com/mcp',
+        headers: { 'X-User': '{{LIBRECHAT_USER_ID}}' },
+      } as t.ParsedServerConfig;
+      const request = jest.fn().mockResolvedValue({ resources: [] });
+      const appConnection = connection(request);
+      const manager = await createAppManager(newMCPServersConfig());
+      jest.spyOn(manager, 'getConnection').mockResolvedValue(appConnection);
+      const activity = jest
+        .spyOn(
+          manager as unknown as { updateUserLastActivity: (userId: string) => Promise<void> },
+          'updateUserLastActivity',
+        )
+        .mockResolvedValue();
+      (
+        manager as unknown as {
+          userConnections: Map<string, Map<string, MCPConnection>>;
+        }
+      ).userConnections.set(
+        user.id,
+        new Map([[getMCPConnectionPoolKey('srv', MCP_APPS_CAPABILITY_PROFILE), appConnection]]),
+      );
+      const signal = new AbortController().signal;
+
+      await manager.listResources({ ...context('srv', config, { signal }), cursor: 'next' });
+
+      expect(manager.getConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user,
+          connectionTarget: { serverConfig: config, connectionOwner: 'operator' },
+          signal,
+        }),
+      );
+      expect(request).toHaveBeenCalledWith(
+        expect.objectContaining({ method: 'resources/list', params: { cursor: 'next' } }),
+        ListResourcesResultSchema,
+        expect.objectContaining({ signal }),
+      );
+      expect(activity).toHaveBeenCalledWith(user.id);
+    });
+
+    it('releases the connection lease when an SDK operation fails', async () => {
+      const config = {
+        source: 'yaml',
+        type: 'sse',
+        url: 'https://example.com/mcp',
+      } as t.ParsedServerConfig;
+      const failure = new Error('provider unavailable');
+      const appConnection = connection(jest.fn().mockRejectedValue(failure));
+      const manager = await createAppManager(newMCPServersConfig());
+      jest.spyOn(manager, 'getConnection').mockResolvedValue(appConnection);
+      const retain = jest.spyOn(
+        manager as unknown as { retainConnection: (value: MCPConnection) => void },
+        'retainConnection',
+      );
+      const release = jest.spyOn(
+        manager as unknown as { releaseConnection: (value: MCPConnection) => Promise<void> },
+        'releaseConnection',
+      );
+
+      await expect(
+        manager.readResource({ ...context('srv', config), uri: 'data://catalog/42' }),
+      ).rejects.toBe(failure);
+      expect(retain).toHaveBeenCalledWith(appConnection);
+      expect(release).toHaveBeenCalledWith(appConnection);
+    });
+
+    it('uses the existing direct OpenID recovery coordinator and retries once after releasing', async () => {
+      const config = {
+        source: 'yaml',
+        type: 'sse',
+        url: 'https://example.com/mcp',
+        headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+      } as t.ParsedServerConfig;
+      const request = jest
+        .fn()
+        .mockRejectedValueOnce(Object.assign(new Error('Unauthorized'), { status: 401 }))
+        .mockResolvedValueOnce({ resources: [] });
+      const appConnection = connection(request);
+      const manager = await createAppManager(newMCPServersConfig());
+      jest.spyOn(manager, 'getConnection').mockResolvedValue(appConnection);
+      const release = jest.spyOn(
+        manager as unknown as { releaseConnection: (value: MCPConnection) => Promise<void> },
+        'releaseConnection',
+      );
+      const recover = jest
+        .spyOn(
+          manager as unknown as {
+            recoverDirectOpenIDBearerConnection: (args: object) => Promise<void>;
+          },
+          'recoverDirectOpenIDBearerConnection',
+        )
+        .mockResolvedValue();
+      const upstreamTokenProvider = jest.fn().mockResolvedValue({ access_token: 'current-token' });
+
+      await manager.listResources({
+        ...context('srv', config, { upstreamTokenProvider }),
+      });
+
+      expect(recover).toHaveBeenCalledWith(
+        expect.objectContaining({
+          connection: appConnection,
+          serverName: 'srv',
+          serverConfig: config,
+          user,
+          upstreamTokenProvider,
+        }),
+      );
+      expect(release.mock.invocationCallOrder[0]).toBeLessThan(request.mock.invocationCallOrder[1]);
+      expect(request).toHaveBeenCalledTimes(2);
+    });
+
+    it('reacquires after lifecycle eviction while direct OpenID refresh is in flight', async () => {
+      const config = {
+        source: 'yaml',
+        type: 'sse',
+        url: 'https://example.com/mcp',
+        headers: { Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}' },
+      } as t.ParsedServerConfig;
+      const stale = Object.assign(
+        connection(
+          jest.fn().mockRejectedValue(Object.assign(new Error('Unauthorized'), { status: 401 })),
+        ),
+        {
+          dispose: jest.fn().mockResolvedValue(undefined),
+          removeAllListeners: jest.fn(),
+          stopReconnecting: jest.fn(),
+        },
+      );
+      const replacementRequest = jest.fn().mockResolvedValue({ resources: [] });
+      const replacement = connection(replacementRequest);
+      const manager = await createAppManager(newMCPServersConfig());
+      jest
+        .spyOn(manager, 'getConnection')
+        .mockResolvedValueOnce(stale)
+        .mockResolvedValueOnce(replacement);
+      const createReplacement = jest
+        .spyOn(manager, 'getUserConnection')
+        .mockResolvedValue(replacement);
+      (
+        manager as unknown as {
+          userConnections: Map<string, Map<string, MCPConnection>>;
+        }
+      ).userConnections.set(
+        user.id,
+        new Map([[getMCPConnectionPoolKey('srv', MCP_APPS_CAPABILITY_PROFILE), stale]]),
+      );
+      let refreshStarted!: () => void;
+      const started = new Promise<void>((resolve) => {
+        refreshStarted = resolve;
+      });
+      let finishRefresh!: (tokens: { access_token: string }) => void;
+      const refresh = new Promise<{ access_token: string }>((resolve) => {
+        finishRefresh = resolve;
+      });
+      const upstreamTokenProvider = jest
+        .fn()
+        .mockResolvedValueOnce({ access_token: 'stale-token' })
+        .mockImplementationOnce(() => {
+          refreshStarted();
+          return refresh;
+        });
+
+      const result = manager.listResources({
+        ...context('srv', config, { upstreamTokenProvider }),
+      });
+      await started;
+      await manager.disconnectUserConnection(user.id, 'srv', { reason: 'lifecycle' });
+      expect(stale.dispose).toHaveBeenCalledTimes(1);
+      finishRefresh({ access_token: 'fresh-token' });
+
+      await expect(result).resolves.toEqual({ resources: [] });
+      expect(createReplacement).toHaveBeenCalledWith(
+        expect.objectContaining({ forceNew: true, serverName: 'srv', user }),
+      );
+      expect(replacementRequest).toHaveBeenCalledTimes(1);
+    });
+
+    it('enforces app tool visibility and returns the standard raw call result', async () => {
+      const config = {
+        source: 'yaml',
+        type: 'sse',
+        url: 'https://example.com/mcp',
+      } as t.ParsedServerConfig;
+      const visibleRequest = jest.fn().mockResolvedValue({
+        content: [{ type: 'text', text: 'done' }],
+      });
+      const visibleConnection = connection(visibleRequest);
+      const manager = await createAppManager(newMCPServersConfig());
+      jest.spyOn(manager, 'getConnection').mockResolvedValue(visibleConnection);
+      const signal = new AbortController().signal;
+
+      await expect(
+        manager.appToolCall({
+          ...context('srv', config, { signal }),
+          toolName: 'do_thing',
+          toolArguments: { value: 1 },
+        }),
+      ).resolves.toEqual({ content: [{ type: 'text', text: 'done' }] });
+      expect(visibleConnection.fetchOrderedToolsSnapshot).toHaveBeenCalledWith(undefined, signal);
+
+      (MCPManager as unknown as { instance: null }).instance = null;
+      const hiddenRequest = jest.fn();
+      const hiddenManager = await createAppManager(newMCPServersConfig());
+      jest
+        .spyOn(hiddenManager, 'getConnection')
+        .mockResolvedValue(
+          connection(hiddenRequest, [
+            { name: 'do_thing', _meta: { ui: { visibility: ['model'] } } },
+          ]),
+        );
+
+      await expect(
+        hiddenManager.appToolCall({
+          ...context('srv', config),
+          toolName: 'do_thing',
+          toolArguments: {},
+        }),
+      ).rejects.toMatchObject({ code: ErrorCode.InvalidRequest });
+      expect(hiddenRequest).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { name: 'incomplete', snapshot: { tools: [], complete: false } },
+      { name: 'empty', snapshot: { tools: [], complete: true } },
+    ])(
+      'does not authorize an App tool from stale cache after a $name catalog refresh',
+      async ({ snapshot }) => {
+        const config = {
+          source: 'yaml',
+          type: 'sse',
+          url: 'https://example.com/mcp',
+        } as t.ParsedServerConfig;
+        const request = jest.fn().mockResolvedValue({ content: [{ type: 'text', text: 'done' }] });
+        const appConnection = connection(request);
+        const snapshots = appConnection.fetchOrderedToolsSnapshot as jest.Mock;
+        const manager = await createAppManager(newMCPServersConfig());
+        jest.spyOn(manager, 'getConnection').mockResolvedValue(appConnection);
+
+        await expect(
+          manager.appToolCall({
+            ...context('srv', config),
+            toolName: 'do_thing',
+            toolArguments: {},
+          }),
+        ).resolves.toEqual({ content: [{ type: 'text', text: 'done' }] });
+
+        appConnection.toolListVersion += 1;
+        snapshots.mockResolvedValueOnce(snapshot);
+        await expect(
+          manager.appToolCall({
+            ...context('srv', config),
+            toolName: 'do_thing',
+            toolArguments: {},
+          }),
+        ).rejects.toMatchObject({ code: ErrorCode.InvalidRequest });
+
+        snapshots.mockResolvedValueOnce({
+          tools: [{ name: 'do_thing', _meta: {} }],
+          complete: true,
+        });
+        await expect(
+          manager.appToolCall({
+            ...context('srv', config),
+            toolName: 'do_thing',
+            toolArguments: {},
+          }),
+        ).resolves.toEqual({ content: [{ type: 'text', text: 'done' }] });
+        expect(request).toHaveBeenCalledTimes(2);
+      },
+    );
+  });
+
   describe('getConnection', () => {
     const mockUser: Partial<IUser> = {
       id: 'user-123',
       provider: 'openid',
       openidId: 'oidc-sub-456',
     };
+
+    describe('librechat.yaml servers hidden for the principal', () => {
+      const yamlConfig: t.ParsedServerConfig = {
+        type: 'sse',
+        url: 'https://api.example.com',
+        source: 'yaml',
+      };
+
+      it('refuses a config resolved before the hide, without reaching any connection', async () => {
+        const appConnections = { get: jest.fn() };
+        mockAppConnections(appConnections);
+        mockRegistryInstance.isHiddenFromPrincipal.mockResolvedValue(true);
+        const manager = await MCPManager.createInstance(newMCPServersConfig());
+        const getUserConnectionSpy = jest.spyOn(manager, 'getUserConnection');
+
+        await expect(
+          manager.getConnection({ serverName, user: mockUser as IUser, serverConfig: yamlConfig }),
+        ).rejects.toThrow(`No connection found for server ${serverName}`);
+        expect(mockRegistryInstance.isHiddenFromPrincipal).toHaveBeenCalledWith(
+          serverName,
+          yamlConfig,
+          mockUser,
+        );
+        expect(appConnections.get).not.toHaveBeenCalled();
+        expect(getUserConnectionSpy).not.toHaveBeenCalled();
+        expect(MCPConnectionFactory.create).not.toHaveBeenCalled();
+      });
+
+      it('refuses a pre-resolved connection target the same way', async () => {
+        mockAppConnections({ get: jest.fn() });
+        mockRegistryInstance.isHiddenFromPrincipal.mockResolvedValue(true);
+        const manager = await MCPManager.createInstance(newMCPServersConfig());
+        const getUserConnectionSpy = jest.spyOn(manager, 'getUserConnection');
+
+        await expect(
+          manager.getConnection({
+            serverName,
+            user: mockUser as IUser,
+            connectionTarget: { serverConfig: yamlConfig, connectionOwner: 'principal' },
+          }),
+        ).rejects.toThrow(`No connection found for server ${serverName}`);
+        expect(getUserConnectionSpy).not.toHaveBeenCalled();
+      });
+
+      it('fails a tool call on a hidden server without dispatching it', async () => {
+        mockAppConnections({ get: jest.fn() });
+        mockRegistryInstance.isHiddenFromPrincipal.mockResolvedValue(true);
+        const manager = await MCPManager.createInstance(newMCPServersConfig());
+        const getUserConnectionSpy = jest.spyOn(manager, 'getUserConnection');
+
+        await expect(
+          manager.callTool({
+            user: mockUser as IUser,
+            serverName,
+            serverConfig: yamlConfig,
+            toolName: 'tool',
+            provider: 'openai',
+            toolArguments: {},
+            flowManager: {} as Parameters<MCPManager['callTool']>[0]['flowManager'],
+          }),
+        ).rejects.toThrow();
+        expect(getUserConnectionSpy).not.toHaveBeenCalled();
+        expect(MCPConnectionFactory.create).not.toHaveBeenCalled();
+      });
+
+      it('leaves a registry lookup to the registry, which already withholds hidden servers', async () => {
+        mockAppConnections({ get: jest.fn() });
+        (mockRegistryInstance.getServerConfig as jest.Mock).mockResolvedValue(undefined);
+        const manager = await MCPManager.createInstance(newMCPServersConfig());
+        const user = { ...mockUser, role: 'USER', idOnTheSource: null } as unknown as IUser;
+
+        await expect(manager.getConnection({ serverName, user })).rejects.toThrow(
+          `No connection found for server ${serverName}`,
+        );
+        expect(mockRegistryInstance.getServerConfig).toHaveBeenCalledWith(
+          serverName,
+          'user-123',
+          undefined,
+          'USER',
+          { idOnTheSource: null },
+        );
+        expect(mockRegistryInstance.isHiddenFromPrincipal).not.toHaveBeenCalled();
+      });
+
+      it('refuses a config supplied straight to getUserConnection', async () => {
+        mockAppConnections({ get: jest.fn() });
+        mockRegistryInstance.isHiddenFromPrincipal.mockResolvedValue(true);
+        const manager = await MCPManager.createInstance(newMCPServersConfig());
+
+        await expect(
+          manager.getUserConnection({
+            serverName,
+            user: mockUser as IUser,
+            serverConfig: yamlConfig,
+            flowManager: {} as Parameters<typeof manager.getUserConnection>[0]['flowManager'],
+          }),
+        ).rejects.toThrow(`[MCP] Configuration for server "${serverName}" not found.`);
+        expect(mockRegistryInstance.isHiddenFromPrincipal).toHaveBeenCalledWith(
+          serverName,
+          yamlConfig,
+          mockUser,
+        );
+        expect(MCPConnectionFactory.create).not.toHaveBeenCalled();
+      });
+
+      it('cancels a supplied connection when a mutation lands while hiding is checked', async () => {
+        mockAppConnections({ get: jest.fn() });
+        let settleCheck: (hidden: boolean) => void = () => undefined;
+        mockRegistryInstance.isHiddenFromPrincipal.mockReturnValue(
+          new Promise<boolean>((resolve) => {
+            settleCheck = resolve;
+          }),
+        );
+        const manager = await MCPManager.createInstance(newMCPServersConfig());
+
+        const creation = manager
+          .getUserConnection({
+            serverName,
+            user: mockUser as IUser,
+            serverConfig: yamlConfig,
+            forceNew: true,
+            flowManager: {} as Parameters<typeof manager.getUserConnection>[0]['flowManager'],
+          })
+          .catch((error: Error) => error);
+        await manager.disconnectUserConnection(mockUser.id as string, serverName);
+        settleCheck(false);
+
+        await expect(creation).resolves.toMatchObject({
+          message: expect.stringContaining('cancelled during teardown'),
+        });
+        expect(MCPConnectionFactory.create).not.toHaveBeenCalled();
+      });
+
+      it('refuses a supplied target leased for an operation, without running it', async () => {
+        mockAppConnections({ get: jest.fn() });
+        mockRegistryInstance.isHiddenFromPrincipal.mockResolvedValue(true);
+        const manager = await MCPManager.createInstance(newMCPServersConfig());
+        const operation = jest.fn();
+
+        await expect(
+          manager.withUserConnectionLease(
+            {
+              serverName,
+              user: mockUser as IUser,
+              connectionTarget: { serverConfig: yamlConfig, connectionOwner: 'principal' },
+              flowManager: {} as Parameters<typeof manager.getUserConnection>[0]['flowManager'],
+            },
+            operation,
+          ),
+        ).rejects.toThrow(`[MCP] Configuration for server "${serverName}" not found.`);
+        expect(operation).not.toHaveBeenCalled();
+        expect(MCPConnectionFactory.create).not.toHaveBeenCalled();
+      });
+    });
 
     it('should continue using shared app connections for non-OBO servers', async () => {
       const appConnection = {
@@ -3979,8 +5758,83 @@ describe('MCPManager', () => {
       });
 
       expect(connection).toBe(appConnection);
-      expect(appConnections.get).toHaveBeenCalledWith(serverName);
+      expect(appConnections.get).toHaveBeenCalledWith(serverName, {
+        expectedConfig: nonOboConfig,
+      });
       expect(getUserConnectionSpy).not.toHaveBeenCalled();
+    });
+
+    it('uses a profile-separated user session for Apps on an operator server', async () => {
+      const appConnections = {
+        get: jest.fn().mockResolvedValue({} as MCPConnection),
+      };
+      const userConnection = {} as MCPConnection;
+      const operatorConfig: t.SSEOptions = {
+        type: 'sse',
+        url: 'https://api.example.com',
+      };
+      mockAppConnections(appConnections);
+      (mockRegistryInstance.getServerConfig as jest.Mock).mockResolvedValue(operatorConfig);
+
+      const manager = await MCPManager.createInstance(newMCPServersConfig());
+      const getUserConnectionSpy = jest
+        .spyOn(manager, 'getUserConnection')
+        .mockResolvedValue(userConnection);
+
+      await expect(
+        manager.getConnection({
+          serverName,
+          user: mockUser as IUser,
+          capabilityProfile: MCP_APPS_CAPABILITY_PROFILE,
+        }),
+      ).resolves.toBe(userConnection);
+      expect(appConnections.get).not.toHaveBeenCalled();
+      expect(getUserConnectionSpy).toHaveBeenCalledWith(
+        expect.objectContaining({
+          capabilityProfile: MCP_APPS_CAPABILITY_PROFILE,
+          connectionTarget: {
+            serverConfig: operatorConfig,
+            connectionOwner: 'operator',
+          },
+        }),
+      );
+    });
+
+    it('keeps a static request-header overlay off its same-named shared app connection', async () => {
+      const appConnections = {
+        get: jest.fn(),
+        has: jest.fn().mockResolvedValue(true),
+      };
+      mockAppConnections(appConnections);
+      const candidate = {
+        isConnected: jest.fn().mockResolvedValue(true),
+        refreshToolList: jest.fn().mockResolvedValue({ tools: [], complete: true }),
+        on: jest.fn(),
+      } as unknown as MCPConnection;
+      (MCPConnectionFactory.create as jest.Mock).mockResolvedValue(candidate);
+      const declared: t.ParsedServerConfig = {
+        type: 'streamable-http',
+        url: 'https://api.example.com/mcp',
+        source: 'yaml',
+        requestHeaders: { 'X-Workspace': 'chat-only' },
+      };
+      const manager = await MCPManager.createInstance(newMCPServersConfig());
+      await expect(
+        manager.getConnection({
+          serverName,
+          user: mockUser as IUser,
+          serverConfig: declared,
+        }),
+      ).resolves.toBe(candidate);
+      expect(appConnections.get).not.toHaveBeenCalled();
+      expect(appConnections.has).not.toHaveBeenCalled();
+      expect(MCPConnectionFactory.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          serverDefinition: declared,
+          serverConfig: expect.objectContaining({ headers: { 'X-Workspace': 'chat-only' } }),
+        }),
+        expect.any(Object),
+      );
     });
 
     it('should use user-scoped connections for trusted runtime context placeholders', async () => {
@@ -4020,8 +5874,47 @@ describe('MCPManager', () => {
       expect(getUserConnectionSpy).toHaveBeenCalledWith(
         expect.objectContaining({
           serverName,
-          serverConfig: runtimeHeaderConfig,
+          connectionTarget: {
+            serverConfig: runtimeHeaderConfig,
+            connectionOwner: 'operator',
+          },
           user: mockUser,
+        }),
+      );
+    });
+
+    it('uses the admitted principal target when it shadows an operator server name', async () => {
+      const principalConfig = {
+        type: 'sse',
+        url: 'https://principal.example.com',
+        source: 'config',
+      } as t.ParsedServerConfig;
+      const userConnection = {} as MCPConnection;
+      const appConnections = { get: jest.fn() };
+      mockAppConnections(appConnections);
+      const manager = await MCPManager.createInstance(newMCPServersConfig());
+      const getUserConnection = jest
+        .spyOn(manager, 'getUserConnection')
+        .mockResolvedValue(userConnection);
+
+      await expect(
+        manager.getConnection({
+          serverName,
+          user: mockUser as IUser,
+          connectionTarget: {
+            serverConfig: principalConfig,
+            connectionOwner: 'principal',
+          },
+        }),
+      ).resolves.toBe(userConnection);
+
+      expect(appConnections.get).not.toHaveBeenCalled();
+      expect(getUserConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          connectionTarget: {
+            serverConfig: principalConfig,
+            connectionOwner: 'principal',
+          },
         }),
       );
     });
@@ -4044,6 +5937,94 @@ describe('MCPManager', () => {
 
     beforeEach(() => {
       (MCPConnectionFactory.discoverTools as jest.Mock) = jest.fn();
+    });
+
+    it.each([64, 6 * 1024 * 1024])(
+      'passes the user-scoped %i byte limit to App-profile discovery',
+      async (maxBytes) => {
+        const operationLimits = { maxBytes, timeoutMs: 45_000, maxActive: 8 };
+        mockRegistryInstance.resolveAllowlists.mockResolvedValueOnce({
+          allowedDomains: null,
+          allowedAddresses: null,
+          useSSRFProtection: false,
+          mcpApps: { enabled: true, legacyHtmlEnabled: true, operationLimits },
+        });
+        (MCPConnectionFactory.discoverTools as jest.Mock).mockResolvedValue({
+          tools: mockTools,
+          connection: null,
+          oauthRequired: false,
+          oauthUrl: null,
+        });
+        const manager = await MCPManager.createInstance(newMCPServersConfig());
+        await manager.discoverServerTools({
+          serverName,
+          user: { id: 'discovery-user', role: 'ADMIN' } as IUser,
+          capabilityProfile: MCP_APPS_CAPABILITY_PROFILE,
+        });
+
+        expect(mockRegistryInstance.resolveAllowlists).toHaveBeenCalledWith({
+          userId: 'discovery-user',
+          role: 'ADMIN',
+        });
+        expect(MCPConnectionFactory.discoverTools).toHaveBeenCalledWith(
+          expect.objectContaining({
+            capabilityProfile: MCP_APPS_CAPABILITY_PROFILE,
+            operationLimits,
+          }),
+          expect.any(Object),
+        );
+      },
+    );
+
+    it('does not apply App limits to standard-profile discovery', async () => {
+      const operationLimits = { maxBytes: 64, timeoutMs: 45_000, maxActive: 8 };
+      mockAppConnections({ get: jest.fn().mockResolvedValue(null) });
+      mockRegistryInstance.resolveAllowlists.mockResolvedValueOnce({
+        allowedDomains: null,
+        allowedAddresses: null,
+        useSSRFProtection: false,
+        mcpApps: { enabled: true, legacyHtmlEnabled: true, operationLimits },
+      });
+      (MCPConnectionFactory.discoverTools as jest.Mock).mockResolvedValue({
+        tools: mockTools,
+        connection: null,
+        oauthRequired: false,
+        oauthUrl: null,
+      });
+      const manager = await MCPManager.createInstance(newMCPServersConfig());
+      await manager.discoverServerTools({
+        serverName,
+        capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+      });
+      expect((MCPConnectionFactory.discoverTools as jest.Mock).mock.calls[0][0]).not.toHaveProperty(
+        'operationLimits',
+      );
+    });
+
+    it('keeps the declared OAuth identity while stripping discovery headers', async () => {
+      const declared: t.ParsedServerConfig = {
+        type: 'streamable-http',
+        url: 'https://mcp.example.com',
+        source: 'yaml',
+        requiresOAuth: true,
+        requestHeaders: { 'X-Conversation': '{{LIBRECHAT_BODY_CONVERSATIONID}}' },
+      };
+      mockRegistryInstance.getServerConfig.mockResolvedValue(declared);
+      (MCPConnectionFactory.discoverTools as jest.Mock).mockResolvedValue({
+        tools: mockTools,
+        connection: null,
+        oauthRequired: false,
+        oauthUrl: null,
+      });
+      const manager = await MCPManager.createInstance(newMCPServersConfig());
+      await manager.discoverServerTools({
+        serverName,
+        user: { id: 'oauth-user' } as IUser,
+        flowManager: {} as Parameters<typeof manager.discoverServerTools>[0]['flowManager'],
+      });
+      const [basic] = (MCPConnectionFactory.discoverTools as jest.Mock).mock.calls[0];
+      expect(basic.serverDefinition).toBe(declared);
+      expect(basic.serverConfig).not.toHaveProperty('requestHeaders');
     });
 
     it('should return tools from existing app connection when available', async () => {
@@ -4154,9 +6135,13 @@ describe('MCPManager', () => {
       });
 
       expect(result.tools).toEqual(mockTools);
-      expect(mockRegistryInstance.getServerConfig).toHaveBeenCalledWith(serverName, 'tenant-user', {
-        [serverName]: configOverride,
-      });
+      expect(mockRegistryInstance.getServerConfig).toHaveBeenCalledWith(
+        serverName,
+        'tenant-user',
+        { [serverName]: configOverride },
+        undefined,
+        { idOnTheSource: undefined },
+      );
       expect(appConnections.get).not.toHaveBeenCalled();
       expect(MCPConnectionFactory.discoverTools).toHaveBeenCalledWith(
         expect.objectContaining({ serverConfig: configOverride }),
@@ -4400,6 +6385,7 @@ describe('MCPManager', () => {
       });
 
       const onDiscoveryDetached = jest.fn();
+      const onOAuthCredentialsAdopted = jest.fn();
       const manager = await MCPManager.createInstance(newMCPServersConfig());
       const result = await manager.discoverServerTools({
         serverName,
@@ -4407,6 +6393,7 @@ describe('MCPManager', () => {
         flowManager: mockFlowManager as unknown as t.ToolDiscoveryOptions['flowManager'],
         graphTokenResolver: jest.fn(),
         onDiscoveryDetached,
+        onOAuthCredentialsAdopted,
       });
 
       expect(result.tools).toEqual(mockTools);
@@ -4420,8 +6407,21 @@ describe('MCPManager', () => {
           useOAuth: true,
           graphTokenResolver: expect.any(Function),
           onDiscoveryDetached,
+          onOAuthCredentialsAdopted,
         }),
       );
+      const generationSpy = jest
+        .spyOn(toolsChanged, 'getMCPToolsChangedGeneration')
+        .mockResolvedValue('discovery-peer-generation');
+      try {
+        const oauthOptions = (MCPConnectionFactory.discoverTools as jest.Mock).mock.calls[0][1];
+        await expect(oauthOptions.onOAuthCredentialsInvalidated()).resolves.toBe(
+          'discovery-peer-generation',
+        );
+        expect(generationSpy).toHaveBeenCalledWith({ userId: mockUser.id, serverName });
+      } finally {
+        generationSpy.mockRestore();
+      }
     });
   });
 
@@ -4448,6 +6448,75 @@ describe('MCPManager', () => {
         removeAllListeners: jest.fn(),
         dispose: jest.fn().mockResolvedValue(undefined),
       }) as unknown as MCPConnection;
+
+    it('keeps concurrent standard and Apps sessions distinct and disconnects both', async () => {
+      const serverConfig: t.ParsedServerConfig = {
+        type: 'streamable-http',
+        url: 'https://mcp.example.com/mcp',
+        source: 'yaml',
+        startup: false,
+      };
+      const created = new Map<string, MCPConnection>();
+      mockAppConnections({ has: jest.fn().mockResolvedValue(false) });
+      (mockRegistryInstance.getServerConfig as jest.Mock).mockResolvedValue(serverConfig);
+      (mockRegistryInstance.isAppServerConfig as jest.Mock).mockResolvedValue(false);
+      (MCPConnectionFactory.create as jest.Mock).mockImplementation(
+        async (basic: t.BasicConnectionOptions) => {
+          const capabilityProfile = basic.capabilityProfile ?? STANDARD_MCP_CAPABILITY_PROFILE;
+          const connection = Object.assign(newUserConnection(), {
+            serverName,
+            capabilityProfile,
+          });
+          created.set(capabilityProfile, connection);
+          return connection;
+        },
+      );
+
+      const manager = await MCPManager.createInstance(newMCPServersConfig());
+      const [standard, apps] = await Promise.all([
+        manager.getConnection({
+          serverName,
+          user: mockUser,
+          capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+        }),
+        manager.getConnection({
+          serverName,
+          user: mockUser,
+          capabilityProfile: MCP_APPS_CAPABILITY_PROFILE,
+        }),
+      ]);
+
+      expect(standard).toBe(created.get(STANDARD_MCP_CAPABILITY_PROFILE));
+      expect(apps).toBe(created.get(MCP_APPS_CAPABILITY_PROFILE));
+      expect(standard).not.toBe(apps);
+      expect(MCPConnectionFactory.create).toHaveBeenCalledTimes(2);
+      expect(manager.getUserConnections(userId)?.get(serverName)).toBe(standard);
+      expect(manager.getUserConnections(userId, MCP_APPS_CAPABILITY_PROFILE)?.get(serverName)).toBe(
+        apps,
+      );
+
+      await expect(
+        manager.getConnection({
+          serverName,
+          user: mockUser,
+          capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+        }),
+      ).resolves.toBe(standard);
+      await expect(
+        manager.getConnection({
+          serverName,
+          user: mockUser,
+          capabilityProfile: MCP_APPS_CAPABILITY_PROFILE,
+        }),
+      ).resolves.toBe(apps);
+      expect(MCPConnectionFactory.create).toHaveBeenCalledTimes(2);
+
+      await manager.disconnectUserConnection(userId, serverName);
+
+      expect(standard.dispose).toHaveBeenCalledTimes(1);
+      expect(apps.dispose).toHaveBeenCalledTimes(1);
+      expect(manager.getUserConnections(userId)).toBeUndefined();
+    });
 
     /** An OAuth server whose connection build refreshes credentials, fencing the catalog mid-build. */
     const refreshingOAuthServer = () => {
@@ -4597,6 +6666,7 @@ describe('MCPManager', () => {
           userId,
           serverName,
           serverConfig,
+          capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
         });
       } finally {
         notifySpy.mockRestore();
@@ -4620,77 +6690,92 @@ describe('MCPManager', () => {
       expect(mockConnection.refreshToolList).toHaveBeenCalledTimes(1);
     });
 
-    it('recovers an ephemeral initial tools/list rejection once and fences the replacement', async () => {
-      const authenticationError = Object.assign(new Error('unauthorized'), { status: 401 });
-      const rejectedConnection = newUserConnection();
-      const replacementConnection = newUserConnection();
-      (rejectedConnection.refreshToolList as jest.Mock).mockResolvedValue({
-        tools: [],
-        complete: false,
-        authenticationError,
-      });
-      (replacementConnection.refreshToolList as jest.Mock).mockResolvedValue({
-        tools: [],
-        complete: false,
-        authenticationError,
-      });
-      const directBearerConfig: t.ParsedServerConfig = {
-        type: 'streamable-http',
-        url: 'https://mcp.example.com/mcp',
-        source: 'yaml',
-        headers: {
-          Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}',
-          'X-Conversation': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
-        },
-      };
-      const upstreamTokenProvider = jest
-        .fn()
-        .mockResolvedValueOnce({ access_token: 'stale-token' })
-        .mockResolvedValueOnce({ access_token: 'fresh-token' })
-        .mockResolvedValueOnce({ access_token: 'fresh-token' });
-      mockAppConnections({ has: jest.fn().mockResolvedValue(false) });
-      (mockRegistryInstance.getServerConfig as jest.Mock).mockResolvedValue(directBearerConfig);
-      (MCPConnectionFactory.create as jest.Mock)
-        .mockResolvedValueOnce(rejectedConnection)
-        .mockResolvedValueOnce(replacementConnection);
-
-      const manager = await MCPManager.createInstance(newMCPServersConfig());
-      await expect(
-        manager.getUserConnection({
-          serverName,
-          user: mockUser,
-          requestBody: { conversationId: 'conversation-1' },
-          upstreamTokenProvider,
-        }),
-      ).rejects.toMatchObject({
-        code: 'MCP_AUTHENTICATION_REJECTED',
-        connectionRefreshed: false,
-      } satisfies Partial<MCPAuthenticationRejectedError>);
-
-      expect(rejectedConnection.dispose).toHaveBeenCalledTimes(1);
-      expect(MCPConnectionFactory.create).toHaveBeenCalledTimes(2);
-      expect(MCPConnectionFactory.create).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          ephemeralConnection: true,
-          directBearerRecoveryState: expect.objectContaining({ attempted: true }),
-        }),
-        expect.any(Object),
-      );
-      expect(upstreamTokenProvider.mock.calls).toEqual([
-        [{ forceRefresh: false }],
-        [{ forceRefresh: true }],
-      ]);
-      expect(MCPConnectionFactory.create).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          serverDefinition: directBearerConfig,
-          directBearerSourceConfig: directBearerConfig,
-          serverConfig: expect.objectContaining({
-            headers: expect.objectContaining({ Authorization: 'Bearer fresh-token' }),
+    it.each(['headers', 'requestHeaders'] as const)(
+      'recovers an initial tools/list rejection with %s and preserves the replacement identity',
+      async (headerMap) => {
+        const authenticationError = Object.assign(new Error('unauthorized'), { status: 401 });
+        const rejectedConnection = newUserConnection();
+        const replacementConnection = newUserConnection();
+        (rejectedConnection.refreshToolList as jest.Mock).mockResolvedValue({
+          tools: [],
+          complete: false,
+          authenticationError,
+        });
+        (replacementConnection.refreshToolList as jest.Mock).mockResolvedValue({
+          tools: [],
+          complete: false,
+          authenticationError,
+        });
+        const directBearerConfig: t.ParsedServerConfig = {
+          type: 'streamable-http',
+          url: 'https://mcp.example.com/mcp',
+          source: 'yaml',
+          ...(headerMap === 'requestHeaders' && {
+            apiKey: {
+              source: 'admin' as const,
+              authorization_type: 'bearer' as const,
+              key: 'catalog-key',
+            },
           }),
-        }),
-        expect.any(Object),
-      );
-    });
+          [headerMap]: {
+            Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}',
+            'X-Conversation': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+          },
+        };
+        const upstreamTokenProvider = jest
+          .fn()
+          .mockResolvedValueOnce({ access_token: 'stale-token' })
+          .mockResolvedValueOnce({ access_token: 'fresh-token' })
+          .mockResolvedValueOnce({ access_token: 'fresh-token' });
+        mockAppConnections({ has: jest.fn().mockResolvedValue(false) });
+        (mockRegistryInstance.getServerConfig as jest.Mock).mockResolvedValue(directBearerConfig);
+        (MCPConnectionFactory.create as jest.Mock)
+          .mockResolvedValueOnce(rejectedConnection)
+          .mockResolvedValueOnce(replacementConnection);
+
+        const manager = await MCPManager.createInstance(newMCPServersConfig());
+        await expect(
+          manager.getUserConnection({
+            serverName,
+            user: mockUser,
+            requestBody: { conversationId: 'conversation-1' },
+            upstreamTokenProvider,
+          }),
+        ).rejects.toMatchObject({
+          code: 'MCP_AUTHENTICATION_REJECTED',
+          connectionRefreshed: false,
+        } satisfies Partial<MCPAuthenticationRejectedError>);
+
+        expect(rejectedConnection.dispose).toHaveBeenCalledTimes(1);
+        expect(MCPConnectionFactory.create).toHaveBeenCalledTimes(2);
+        expect(MCPConnectionFactory.create).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            ephemeralConnection: true,
+            directBearerRecoveryState: expect.objectContaining({ attempted: true }),
+          }),
+          expect.any(Object),
+        );
+        expect(upstreamTokenProvider.mock.calls).toEqual([
+          [{ forceRefresh: false }],
+          [{ forceRefresh: true }],
+        ]);
+        expect(MCPConnectionFactory.create).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            serverDefinition: directBearerConfig,
+            directBearerSourceConfig: expect.objectContaining({
+              headers: {
+                Authorization: 'Bearer {{LIBRECHAT_OPENID_ACCESS_TOKEN}}',
+                'X-Conversation': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+              },
+            }),
+            serverConfig: expect.objectContaining({
+              headers: expect.objectContaining({ Authorization: 'Bearer fresh-token' }),
+            }),
+          }),
+          expect.any(Object),
+        );
+      },
+    );
 
     it.each([false, true])(
       'does not publish a cancelled initial catalog (request-scoped=%s)',
@@ -4913,6 +6998,52 @@ describe('MCPManager', () => {
       expect(MCPConnectionFactory.create).toHaveBeenCalledTimes(1);
       expect(connection.dispose).toHaveBeenCalledTimes(1);
     });
+
+    it.each(['serverConfig', 'connectionTarget'] as const)(
+      'registers a forced creation synchronously for a supplied %s',
+      async (targetKind) => {
+        const config: t.ParsedServerConfig = {
+          type: 'streamable-http',
+          url: 'https://mcp.example.com/mcp',
+          source: 'user',
+          dbId: 'server-1',
+        };
+        const connection = newUserConnection();
+        mockAppConnections({ has: jest.fn().mockResolvedValue(false) });
+        (MCPConnectionFactory.create as jest.Mock).mockResolvedValue(connection);
+
+        const manager = await MCPManager.createInstance(newMCPServersConfig());
+        const target =
+          targetKind === 'serverConfig'
+            ? { serverConfig: config }
+            : {
+                connectionTarget: {
+                  serverConfig: config,
+                  connectionOwner: 'principal' as const,
+                },
+              };
+        const creation = manager.getUserConnection({
+          serverName,
+          user: mockUser,
+          forceNew: true,
+          ...target,
+        });
+        const activeCreations = (
+          manager as unknown as {
+            activeConnectionCreations: Map<string, Set<unknown>>;
+          }
+        ).activeConnectionCreations;
+
+        const poolKey = getMCPUserConnectionPoolKey(
+          userId,
+          serverName,
+          STANDARD_MCP_CAPABILITY_PROFILE,
+        );
+        expect(activeCreations.get(poolKey)?.size).toBe(1);
+        await expect(creation).resolves.toBe(connection);
+        expect(activeCreations.has(poolKey)).toBe(false);
+      },
+    );
 
     it.each([false, true])(
       'cancels and disposes a pending connection during mutation teardown (forceNew=%s)',
@@ -5183,7 +7314,17 @@ describe('MCPManager', () => {
 
         /** A creation re-established while disposal is still awaited publishes its own catalog;
          *  a cancellation issued after that point would drop the replacement's pending change. */
-        expect(cancelSpy).toHaveBeenCalledWith({ userId, serverName });
+        expect(cancelSpy).toHaveBeenNthCalledWith(1, {
+          userId,
+          serverName,
+          capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
+        });
+        expect(cancelSpy).toHaveBeenNthCalledWith(2, {
+          userId,
+          serverName,
+          capabilityProfile: MCP_APPS_CAPABILITY_PROFILE,
+        });
+        expect(cancelSpy).toHaveBeenCalledTimes(2);
         expect(cancelSpy.mock.invocationCallOrder[0]).toBeLessThan(
           (connection.dispose as jest.Mock).mock.invocationCallOrder[0],
         );
@@ -5200,7 +7341,28 @@ describe('MCPManager', () => {
       expect(clearRecoveryState).not.toHaveBeenCalled();
 
       await manager.disconnectUserConnection(userId, serverName);
-      expect(clearRecoveryState).toHaveBeenCalledWith(userId, serverName, undefined);
+      expect(clearRecoveryState).toHaveBeenNthCalledWith(
+        1,
+        userId,
+        serverName,
+        undefined,
+        undefined,
+      );
+      expect(clearRecoveryState).toHaveBeenNthCalledWith(
+        2,
+        userId,
+        serverName,
+        undefined,
+        STANDARD_MCP_CAPABILITY_PROFILE,
+      );
+      expect(clearRecoveryState).toHaveBeenNthCalledWith(
+        3,
+        userId,
+        serverName,
+        undefined,
+        MCP_APPS_CAPABILITY_PROFILE,
+      );
+      expect(clearRecoveryState).toHaveBeenCalledTimes(3);
     });
 
     it('fails a creation that a lifecycle teardown keeps cancelling on every attempt', async () => {
@@ -5416,6 +7578,7 @@ describe('MCPManager', () => {
           serverName,
           serverConfig,
           publicationGeneration: 'generation-a',
+          capabilityProfile: STANDARD_MCP_CAPABILITY_PROFILE,
         });
       } finally {
         generationSpy.mockRestore();
@@ -5744,6 +7907,29 @@ describe('MCPManager', () => {
       }
     });
 
+    it('lets an ephemeral flow owner carry the peer generation to persistent waiters', async () => {
+      const generationSpy = jest
+        .spyOn(toolsChanged, 'getMCPToolsChangedGeneration')
+        .mockResolvedValue('peer-generation');
+      let captured: string | void;
+      const { serverConfig, flowManager } = adoptingOAuthServer(async (options) => {
+        captured = await options.onOAuthCredentialsInvalidated?.();
+      });
+      try {
+        const manager = await MCPManager.createInstance(newMCPServersConfig());
+        await manager.getUserConnection({
+          serverName,
+          user: mockUser,
+          flowManager,
+          serverConfig,
+          ephemeralConnection: true,
+        });
+        expect(captured!).toBe('peer-generation');
+      } finally {
+        generationSpy.mockRestore();
+      }
+    });
+
     it('re-captures the generation before re-reading credentials a change invalidated', async () => {
       const generationSpy = jest
         .spyOn(toolsChanged, 'getMCPToolsChangedGeneration')
@@ -5847,6 +8033,7 @@ describe('MCPManager', () => {
       });
       (MCPConnectionFactory.create as jest.Mock).mockResolvedValue(mockConnection);
 
+      expect(getMCPToolApprovalAuthKind(runtimeUrlConfig)).toBeUndefined();
       const manager = await MCPManager.createInstance(newMCPServersConfig());
       await manager.getUserConnection({
         serverName,
@@ -5867,6 +8054,10 @@ describe('MCPManager', () => {
         }),
         expect.objectContaining({ useOAuth: true }),
       );
+      const runtime = (MCPConnectionFactory.create as jest.Mock).mock.calls[0][0];
+      expect(runtime.serverDefinition).toBe(runtimeUrlConfig);
+      expect(getMCPToolApprovalAuthKind(runtime.serverDefinition)).toBeUndefined();
+      expect(getMCPToolApprovalAuthKind(runtime.serverConfig)).toBe('oauth');
     });
 
     it('should reject disallowed runtime URLs before OAuth detection probes them', async () => {
@@ -6120,7 +8311,11 @@ describe('MCPManager', () => {
       ).toBe(probe);
       expect(await manager.getUserConnection({ serverName, user: mockUser })).toBe(live);
       expect(live.disconnect).not.toHaveBeenCalled();
-      expect(requestScopedConnections.connections.get(`${mockUser.id}:${serverName}`)).toBe(probe);
+      expect(
+        requestScopedConnections.connections.get(
+          getMCPUserConnectionPoolKey(mockUser.id, serverName, STANDARD_MCP_CAPABILITY_PROFILE),
+        ),
+      ).toBe(probe);
     });
 
     it('should reuse BODY-scoped connections within a request-scoped connection store', async () => {
@@ -6168,9 +8363,11 @@ describe('MCPManager', () => {
       expect(first).toBe(requestScopedConnection);
       expect(second).toBe(requestScopedConnection);
       expect(MCPConnectionFactory.create).toHaveBeenCalledTimes(1);
-      expect(requestScopedConnections.connections.get(`${mockUser.id}:${serverName}`)).toBe(
-        requestScopedConnection,
-      );
+      expect(
+        requestScopedConnections.connections.get(
+          getMCPUserConnectionPoolKey(mockUser.id, serverName, STANDARD_MCP_CAPABILITY_PROFILE),
+        ),
+      ).toBe(requestScopedConnection);
     });
 
     it('rechecks the request-scoped owner after a late connection replacement', async () => {
@@ -6185,7 +8382,12 @@ describe('MCPManager', () => {
       } as unknown as MCPConnection;
       const replacement = newUserConnection();
       const store = {
-        connections: new Map([[`${mockUser.id}:${serverName}`, oldConnection]]),
+        connections: new Map([
+          [
+            getMCPUserConnectionPoolKey(mockUser.id, serverName, STANDARD_MCP_CAPABILITY_PROFILE),
+            oldConnection,
+          ],
+        ]),
         pending: new Map(),
       };
       const manager = await MCPManager.createInstance(newMCPServersConfig());
@@ -6203,7 +8405,10 @@ describe('MCPManager', () => {
       });
       await new Promise((resolve) => setImmediate(resolve));
       expect(oldConnection.isConnected).toHaveBeenCalledTimes(1);
-      store.connections.set(`${mockUser.id}:${serverName}`, replacement);
+      store.connections.set(
+        getMCPUserConnectionPoolKey(mockUser.id, serverName, STANDARD_MCP_CAPABILITY_PROFILE),
+        replacement,
+      );
       finishProbe?.(true);
       await expect(checkout).resolves.toBe(replacement);
       expect(MCPConnectionFactory.create).not.toHaveBeenCalled();

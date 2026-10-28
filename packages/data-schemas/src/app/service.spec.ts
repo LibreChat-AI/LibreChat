@@ -221,6 +221,31 @@ describe('loadFiltersConfig', () => {
 });
 
 describe('AppService assistants config', () => {
+  it('exposes default Skill deletion worker settings when the block is omitted', async () => {
+    const result = await AppService({ config: {} });
+    expect(result.skillDeletion).toEqual({
+      finalizationEnabled: false,
+      sweepIntervalMs: 60_000,
+      claimLeaseMs: 120_000,
+      batchSize: 100,
+      recheckIntervalMs: 3_600_000,
+    });
+  });
+
+  it('fills omitted Skill deletion settings around an explicit override', async () => {
+    const config = {
+      skillDeletion: { claimLeaseMs: 180_000 },
+    } as unknown as DeepPartial<TCustomConfig>;
+    const result = await AppService({ config });
+    expect(result.skillDeletion).toEqual({
+      finalizationEnabled: false,
+      sweepIntervalMs: 60_000,
+      claimLeaseMs: 180_000,
+      batchSize: 100,
+      recheckIntervalMs: 3_600_000,
+    });
+  });
+
   it('preserves configured Assistants API versions', async () => {
     const config = {
       endpoints: {
@@ -287,6 +312,92 @@ describe('AppService assistants config', () => {
   });
 });
 
+describe('AppService MCP App sandbox configuration', () => {
+  it('preserves deployment-owned MCP App sandbox limits', async () => {
+    const result = await AppService({
+      config: {
+        mcpAppSandbox: {
+          url: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+          maxSourcesPerDirective: 64,
+          maxSerializedLength: 8192,
+          maxAdmissionRequestsPerMinute: 480,
+        },
+      } as DeepPartial<TCustomConfig>,
+    });
+
+    expect(result.mcpAppSandbox).toEqual({
+      url: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+      maxSourcesPerDirective: 64,
+      maxSerializedLength: 8192,
+      maxAdmissionRequestsPerMinute: 480,
+    });
+  });
+});
+
+describe('AppService credential write format', () => {
+  it('defaults stored credential writes to v3', async () => {
+    const result = await AppService({ config: {} as DeepPartial<TCustomConfig> });
+    expect(result.credentials).toEqual({ writeFormat: 'v3' });
+  });
+
+  it('carries a configured legacy write format onto the app config', async () => {
+    const result = await AppService({
+      config: { credentials: { writeFormat: 'legacy' } } as DeepPartial<TCustomConfig>,
+    });
+    expect(result.credentials).toEqual({ writeFormat: 'legacy' });
+  });
+});
+
+describe('AppService admin catalog model-list lifetime', () => {
+  it('carries a configured lifetime onto the app config, zero included', async () => {
+    for (const catalogModelsTtlMs of [0, 600_000]) {
+      const result = await AppService({
+        config: { endpoints: { catalogModelsTtlMs } } as DeepPartial<TCustomConfig>,
+      });
+      expect(result.endpoints?.catalogModelsTtlMs).toBe(catalogModelsTtlMs);
+    }
+  });
+
+  it('leaves it unset when librechat.yaml does not set it', async () => {
+    const result = await AppService({ config: { endpoints: {} } as DeepPartial<TCustomConfig> });
+    expect(result.endpoints).not.toHaveProperty('catalogModelsTtlMs');
+  });
+});
+
+describe('AppService conversation list limits', () => {
+  it('carries the configured filter limits onto the app config', async () => {
+    const result = await AppService({
+      config: {
+        conversationList: { maxEndpointFilters: 200, maxEndpointNameLength: 256 },
+      } as DeepPartial<TCustomConfig>,
+    });
+
+    expect(result.conversationList).toEqual({
+      maxEndpointFilters: 200,
+      maxEndpointNameLength: 256,
+    });
+  });
+
+  it('fills the schema defaults when the deployment configures none', async () => {
+    const result = await AppService({ config: {} as DeepPartial<TCustomConfig> });
+    expect(result.conversationList).toEqual({ maxEndpointFilters: 50, maxEndpointNameLength: 128 });
+  });
+
+  it('keeps the defaults when the configured block is invalid', async () => {
+    const result = await AppService({
+      config: { conversationList: { maxEndpointFilters: 0 } } as DeepPartial<TCustomConfig>,
+    });
+    expect(result.conversationList).toEqual({ maxEndpointFilters: 50, maxEndpointNameLength: 128 });
+  });
+
+  it('keeps the default for a limit the deployment leaves out', async () => {
+    const result = await AppService({
+      config: { conversationList: { maxEndpointFilters: 10 } } as DeepPartial<TCustomConfig>,
+    });
+    expect(result.conversationList).toEqual({ maxEndpointFilters: 10, maxEndpointNameLength: 128 });
+  });
+});
+
 describe('AppService memory capability', () => {
   it('strips the memory capability when no memory config is present', async () => {
     const result = await AppService({ config: {} as DeepPartial<TCustomConfig> });
@@ -319,5 +430,44 @@ describe('AppService memory capability', () => {
     expect(result.endpoints?.[EModelEndpoint.agents]?.capabilities).not.toContain(
       AgentCapabilities.memory,
     );
+  });
+});
+
+describe('AppService custom endpoint parameters', () => {
+  const gateway = {
+    name: 'Gateway',
+    apiKey: 'gateway-key',
+    baseURL: 'https://gateway.example.com/v1',
+    models: { default: ['m1'] },
+    customParams: {
+      defaultParamsEndpoint: 'anthropic',
+      paramDefinitions: [{ key: 'temperature' }],
+    },
+  };
+  const config = { endpoints: { custom: [gateway] } } as DeepPartial<TCustomConfig>;
+
+  it('serves the custom endpoints as librechat.yaml writes them without an expander', async () => {
+    const appConfig = await AppService({ config: structuredClone(config) });
+
+    expect(appConfig.endpoints?.custom).toEqual([gateway]);
+    expect(appConfig.config.endpoints?.custom).toEqual([gateway]);
+  });
+
+  it('serves expanded copies and keeps the config as librechat.yaml writes it', async () => {
+    const written = structuredClone(config);
+    const appConfig = await AppService({
+      config: written,
+      expandCustomEndpoint: (endpoint) => ({
+        ...endpoint,
+        customParams: { defaultParamsEndpoint: 'anthropic', paramDefinitions: [] },
+      }),
+    });
+
+    expect(appConfig.endpoints?.custom?.[0]?.customParams).toEqual({
+      defaultParamsEndpoint: 'anthropic',
+      paramDefinitions: [],
+    });
+    expect(appConfig.config.endpoints?.custom?.[0]).toEqual(gateway);
+    expect(written.endpoints?.custom?.[0]).toEqual(gateway);
   });
 });

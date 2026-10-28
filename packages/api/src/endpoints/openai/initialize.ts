@@ -12,6 +12,8 @@ import {
   checkUserKeyExpiry,
   getAzureCredentials,
 } from '~/utils';
+import { resolveModelTransportTimeouts } from '~/agents/config';
+import { getOpenAIEndpointParameters } from './parameters';
 import { resolveEndpointRuntime } from '~/types';
 import { validateEndpointURL } from '~/auth';
 import { getOpenAIConfig } from './config';
@@ -94,7 +96,9 @@ export async function initializeOpenAI(
     reverseProxyUrl: baseURL || undefined,
     baseURLIsUserProvided: userProvidesURL,
     allowedAddresses: appConfig?.endpoints?.allowedAddresses,
+    transportTimeouts: resolveModelTransportTimeouts(appConfig?.endpoints?.agents),
     streaming: true,
+    ...getOpenAIEndpointParameters(appConfig, endpoint, modelName),
   };
 
   /**
@@ -112,7 +116,6 @@ export async function initializeOpenAI(
   let isServerless = false;
 
   if (isAzureOpenAI && azureConfig && mappedAzureConfig) {
-    const { modelGroupMap, groupMap } = azureConfig;
     const { azureOptions, baseURL: configBaseURL, headers = {}, serverless } = mappedAzureConfig;
     isServerless = serverless === true;
 
@@ -130,12 +133,6 @@ export async function initializeOpenAI(
      *  env-before-user invariant. Azure-managed headers stay authoritative. */
     if (globalHeaders) {
       clientOptions.headers = mergeHeaders(globalHeaders, clientOptions.headers);
-    }
-
-    const groupName = modelGroupMap[modelName || '']?.group;
-    if (groupName && groupMap[groupName]) {
-      clientOptions.addParams = groupMap[groupName]?.addParams;
-      clientOptions.dropParams = groupMap[groupName]?.dropParams;
     }
 
     apiKey = azureOptions.azureOpenAIApiKey;

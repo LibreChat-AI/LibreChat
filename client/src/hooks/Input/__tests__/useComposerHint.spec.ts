@@ -1,0 +1,245 @@
+import type { ComposerHintState } from '../useComposerHint';
+import { composeHint } from '../useComposerHint';
+
+/** Echoes the key so assertions read against the key, not English copy. */
+const localize = ((key: string, options?: Record<string, string | number>) =>
+  options ? `${key}:${options[0] ?? options.count}` : key) as Parameters<typeof composeHint>[1];
+
+const baseState: ComposerHintState = {
+  hasText: false,
+  isSubmitting: false,
+  duringRunActive: false,
+  /** The common case: the epoch has landed, so the run is reachable. The
+   *  pre-epoch window is exercised explicitly below. */
+  canControlGeneration: true,
+  duringRunAction: 'queue' as const,
+  canSteer: true,
+  answerModeActive: false,
+  uploadingCount: 0,
+  enterToSend: true,
+  idleActions: { prompts: true, mentions: true, attach: true },
+};
+
+const hint = (overrides: Partial<ComposerHintState>, isMac = true, altEnterInterrupt = true) =>
+  composeHint({ ...baseState, ...overrides }, localize, isMac, undefined, altEnterInterrupt).text;
+
+const kindOf = (overrides: Partial<ComposerHintState>) =>
+  composeHint({ ...baseState, ...overrides }, localize, true).kind;
+
+describe('composeHint', () => {
+  it('shows discovery affordances on an untouched composer', () => {
+    expect(hint({})).toBe(
+      'com_ui_composer_hint_prompts · com_ui_composer_hint_mentions · com_ui_composer_hint_attach',
+    );
+  });
+
+  /* The hint is also the textarea's description, so an affordance the
+     composer would refuse is named to screen-reader users as if it worked. */
+  it('names only the idle affordances that act', () => {
+    expect(hint({ idleActions: { prompts: false, mentions: true, attach: true } })).toBe(
+      'com_ui_composer_hint_mentions · com_ui_composer_hint_attach',
+    );
+    expect(hint({ idleActions: { prompts: true, mentions: false, attach: false } })).toBe(
+      'com_ui_composer_hint_prompts',
+    );
+    expect(hint({ idleActions: { prompts: false, mentions: false, attach: false } })).toBe('');
+  });
+
+  it('switches to send/newline once there is text', () => {
+    expect(hint({ hasText: true })).toBe('com_ui_composer_hint_typing');
+  });
+
+  /* The stop button sits beside the composer, so a plain running reply names
+     no key; the copy is ambient, shown only to users who keep tips on. */
+  it('names no stop key while generating with an empty composer', () => {
+    expect(hint({ isSubmitting: true })).toBe('com_ui_composer_hint_running');
+    expect(kindOf({ isSubmitting: true })).toBe('tip');
+  });
+
+  describe('during a run with text', () => {
+    it('leads with queue when queue is the default', () => {
+      const result = hint({ duringRunActive: true, hasText: true, isSubmitting: true });
+      expect(result).toContain('com_ui_composer_hint_queue_default');
+      expect(result).toContain('com_ui_composer_hint_send_now');
+      expect(result).toContain('com_ui_composer_hint_interrupt');
+    });
+
+    it('leads with steer when the setting is flipped', () => {
+      const result = hint({
+        duringRunActive: true,
+        hasText: true,
+        isSubmitting: true,
+        duringRunAction: 'steer',
+      });
+      expect(result).toContain('com_ui_composer_hint_steer');
+      expect(result).toContain('com_ui_composer_hint_queue');
+      expect(result).toContain('com_ui_composer_hint_interrupt');
+    });
+
+    it('uses platform-appropriate modifier glyphs', () => {
+      const state = { duringRunActive: true, hasText: true, isSubmitting: true };
+      expect(hint(state, true)).toContain('⌘⏎');
+      expect(hint(state, true)).toContain('⌥⏎');
+      expect(hint(state, false)).toContain('Ctrl+⏎');
+      expect(hint(state, false)).toContain('Alt+⏎');
+    });
+
+    it.each([
+      ['tool approval', true, true],
+      ['staged reasoning', true, false],
+      ['tool approval with Enter inserting a newline', false, false],
+      ['staged reasoning with Enter inserting a newline', false, true],
+    ])('omits unavailable Interrupt during %s', (_reason, enterToSend, isMac) => {
+      const result = hint(
+        {
+          duringRunActive: true,
+          hasText: true,
+          isSubmitting: true,
+          canSteer: false,
+          duringRunAction: 'queue',
+          enterToSend,
+        },
+        isMac,
+      );
+      expect(result).not.toContain('com_ui_composer_hint_interrupt');
+      expect(result).not.toContain('com_ui_composer_hint_send_now');
+      expect(result).not.toContain(isMac ? '⌥⏎' : 'Alt+⏎');
+      expect(result).toContain(
+        enterToSend ? 'com_ui_composer_hint_queue_default' : 'com_ui_composer_hint_queue_verb',
+      );
+    });
+
+    it('falls back to the running copy when the modifiers have no text to act on', () => {
+      expect(hint({ duringRunActive: true, hasText: false, isSubmitting: true })).toBe(
+        'com_ui_composer_hint_running',
+      );
+    });
+
+    /* `isSubmitting` flips the moment the user sends, but the start POST
+       installs the generation epoch a beat later. Through that window every
+       chord that reaches the live run refuses, so naming them would point at
+       keys that do nothing. Queueing is local and keeps working. */
+    describe('before the generation epoch lands', () => {
+      const preEpoch = {
+        duringRunActive: true,
+        hasText: true,
+        isSubmitting: true,
+        canControlGeneration: false,
+      };
+
+      it('promises only the queue, which is the one action that still works', () => {
+        expect(hint(preEpoch)).toBe('com_ui_composer_hint_queue_default');
+      });
+
+      it('names no chord that would refuse', () => {
+        const result = hint(preEpoch);
+        expect(result).not.toContain('com_ui_composer_hint_send_now');
+        expect(result).not.toContain('com_ui_composer_hint_interrupt');
+        expect(result).not.toContain('⌥⏎');
+      });
+
+      it('still names the chord when it IS the queue action', () => {
+        expect(hint({ ...preEpoch, enterToSend: false })).toBe(
+          '⌘⏎ com_ui_composer_hint_queue_verb',
+        );
+      });
+
+      it('restores the full line once the epoch arrives', () => {
+        const result = hint({ ...preEpoch, canControlGeneration: true });
+        expect(result).toContain('com_ui_composer_hint_send_now');
+        expect(result).toContain('com_ui_composer_hint_interrupt');
+      });
+
+      /* A submit rebound to Alt+Enter, a chord yielded to a global shortcut,
+         or disabled shortcuts each make the chord do something else; the hint
+         follows the same verdict the during-run button reads. */
+      it('omits the interrupt chord when the resolver no longer returns it', () => {
+        const result = hint({ ...preEpoch, canControlGeneration: true }, true, false);
+        expect(result).not.toContain('com_ui_composer_hint_interrupt');
+        expect(result).not.toContain('⌥⏎');
+        expect(result).toContain('com_ui_composer_hint_send_now');
+      });
+    });
+  });
+
+  describe('with Enter bound to a newline', () => {
+    it('names the chord as the send key while typing', () => {
+      const result = hint({ hasText: true, enterToSend: false });
+      expect(result).toContain('⌘⏎');
+      expect(result).toContain('com_ui_composer_hint_send');
+      expect(result).toContain('com_ui_composer_hint_newline');
+      expect(result).not.toContain('com_ui_composer_hint_typing');
+    });
+
+    it('names only the newline key once the send binding is cleared', () => {
+      const result = composeHint(
+        { ...baseState, hasText: true, enterToSend: false },
+        localize,
+        true,
+        { customized: true, display: '' },
+      ).text;
+      expect(result).toBe('⏎ com_ui_composer_hint_newline');
+    });
+
+    it('drops the alternate during-run action, which the chord no longer reaches', () => {
+      const result = hint({
+        duringRunActive: true,
+        hasText: true,
+        isSubmitting: true,
+        duringRunAction: 'steer',
+        enterToSend: false,
+      });
+      expect(result).toContain('⌘⏎ com_ui_composer_hint_steer_verb');
+      expect(result).toContain('com_ui_composer_hint_interrupt');
+      expect(result).not.toContain('com_ui_composer_hint_queue');
+    });
+  });
+
+  describe('kind', () => {
+    it('marks the ambient copy as a tip, so a conversation can drop it', () => {
+      expect(kindOf({})).toBe('tip');
+      expect(kindOf({ hasText: true })).toBe('tip');
+    });
+
+    it('marks anything happening right now as state, which always shows', () => {
+      expect(kindOf({ uploadingCount: 1 })).toBe('state');
+      expect(kindOf({ answerModeActive: true })).toBe('state');
+      expect(kindOf({ duringRunActive: true, hasText: true })).toBe('state');
+    });
+  });
+
+  describe('precedence', () => {
+    it('lets a paused question outrank every other state', () => {
+      expect(
+        hint({
+          answerModeActive: true,
+          hasText: true,
+          isSubmitting: true,
+          duringRunActive: true,
+          uploadingCount: 3,
+        }),
+      ).toBe('com_ui_composer_hint_answer');
+    });
+
+    it('reports uploads ahead of the during-run modifiers', () => {
+      expect(hint({ uploadingCount: 2, duringRunActive: true, hasText: true })).toBe(
+        'com_ui_composer_hint_uploading:2',
+      );
+      /* One file is one file, not "1 file(s)". */
+      expect(hint({ uploadingCount: 1, duringRunActive: true, hasText: true })).toBe(
+        'com_ui_composer_hint_uploading_one:1',
+      );
+    });
+
+    it('stops reporting uploads once they settle', () => {
+      expect(hint({ uploadingCount: 0, hasText: true })).toBe('com_ui_composer_hint_typing');
+    });
+  });
+});
+
+it('names Interrupt as the default while leaving Queue as the alternate', () => {
+  const result = hint({ duringRunActive: true, hasText: true, duringRunAction: 'interrupt' });
+  expect(result).toContain('com_ui_interrupt_steer');
+  expect(result).toContain('com_ui_composer_hint_queue');
+  expect(result).not.toContain('com_ui_composer_hint_steer');
+});

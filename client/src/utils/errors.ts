@@ -43,3 +43,11 @@ export const getCodeWorkspaceErrorReason = (
   const reason = data != null && typeof data === 'object' && 'reason' in data ? data.reason : null;
   return isCodeWorkspaceSelectionErrorReason(reason) ? reason : undefined;
 };
+
+export const getResponseErrorCode = <TCode extends string>(error: unknown): TCode | undefined => {
+  if (!axios.isAxiosError<{ code?: string }>(error)) {
+    return undefined;
+  }
+  const code = error.response?.data?.code;
+  return typeof code === 'string' ? (code as TCode) : undefined;
+};

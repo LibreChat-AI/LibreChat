@@ -1,9 +1,9 @@
 import { useMemo } from 'react';
 import { GitBranchPlus } from 'lucide-react';
-import { useToastContext } from '@librechat/client';
 import { EModelEndpoint, parseEphemeralAgentId, stripAgentIdSuffix } from 'librechat-data-provider';
 import type { TMessage, Agent } from 'librechat-data-provider';
 import MessageTimestamp from '~/components/Chat/Messages/ui/MessageTimestamp';
+import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useBranchMessageMutation } from '~/data-provider/Messages';
 import MessageIcon from '~/components/Share/MessageIcon';
 import { useAgentsMapContext } from '~/Providers';
@@ -36,7 +36,7 @@ export default function SiblingHeader({
 }: SiblingHeaderProps) {
   const agentsMap = useAgentsMapContext();
   const localize = useLocalize();
-  const { showToast } = useToastContext();
+  const showToast = useMessagePartsHost().useToast();
 
   const branchMessage = useBranchMessageMutation(conversationId ?? null, {
     onSuccess: () => {
@@ -106,9 +106,9 @@ export default function SiblingHeader({
   }, [agentId, agentsMap]);
 
   return (
-    <div className="mb-2 flex items-center justify-between gap-2 border-b border-border-light pb-2">
+    <div className="border-border-light mb-2 flex items-center justify-between gap-2 border-b pb-2">
       <div className="flex min-w-0 items-center gap-2">
-        <div className="flex h-5 w-5 flex-shrink-0 items-center justify-center overflow-hidden rounded-full">
+        <div className="flex h-5 w-5 shrink-0 items-center justify-center overflow-hidden rounded-full">
           <MessageIcon
             message={
               {
@@ -120,7 +120,7 @@ export default function SiblingHeader({
             agent={agent || undefined}
           />
         </div>
-        <span className="truncate text-sm font-medium text-text-primary">{displayName}</span>
+        <span className="text-text-primary truncate text-sm font-medium">{displayName}</span>
         <MessageTimestamp value={createdAt} />
       </div>
       <button
@@ -128,9 +128,9 @@ export default function SiblingHeader({
         onClick={handleBranch}
         disabled={!messageId || !agentId || isSubmitting || branchMessage.isLoading}
         className={cn(
-          'flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-md',
-          'text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary',
-          'focus:outline-none focus:ring-2 focus:ring-border-medium focus:ring-offset-1',
+          'flex h-6 w-6 shrink-0 items-center justify-center rounded-md',
+          'text-text-secondary hover:bg-surface-hover hover:text-text-primary transition-colors',
+          'focus:ring-border-medium focus:ring-2 focus:ring-offset-1 focus:outline-hidden',
           'disabled:cursor-not-allowed disabled:opacity-50',
           (!messageId || !agentId || isSubmitting) && 'invisible',
         )}

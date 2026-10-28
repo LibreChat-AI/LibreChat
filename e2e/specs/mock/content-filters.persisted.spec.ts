@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { ObjectId } from 'mongodb';
 import { expect, test } from '@playwright/test';
+import { FileContext } from 'librechat-data-provider';
 import type { Document, Filter } from 'mongodb';
 import type { FiltersConfig } from 'librechat-data-provider';
 import { withMongo } from './db';
@@ -2211,6 +2212,226 @@ test.describe('persisted source-aware content filters', () => {
       } finally {
         await cleanupFixtures(request, token, fixtures);
       }
+    }
+  });
+
+  test('rejects filtered and deleted Projects before creating an Agent turn', async ({
+    request,
+  }) => {
+    const token = await loginAdmin(request);
+    const suffix = randomUUID();
+    const marker = `E2E-PROJECT-GUIDANCE-${suffix}`;
+    const fixtures: StoredFixtures = { conversationIds: [], agentIds: [] };
+    let projectId: string | undefined;
+    try {
+      await restoreRuntimeFilters(request, token);
+      const agent = await createAgent(request, token, fixtures, suffix);
+      const agentId = requireString(agent.id, 'Project Agent id');
+      const created = await requestResult(request, {
+        path: '/api/projects',
+        token,
+        method: 'POST',
+        data: { name: `Project admission ${suffix}`, instructions: marker },
+      });
+      expectSuccess(created, 201);
+      projectId = requireString(asObject(created.body)._id, 'Project id');
+      await setRuntimeFilters(request, token, {
+        agentInstructions: {
+          pii: {
+            fields: ['instructions'],
+            starterPatterns: [],
+            customPatterns: [
+              { id: `project-guidance-${suffix}`, label: 'Project guidance', regex: marker },
+            ],
+          },
+        },
+      } as FiltersConfig);
+      const messageId = randomUUID();
+      const sendProjectTurn = () =>
+        requestResult(request, {
+          path: '/api/agents/chat/agents',
+          token,
+          method: 'POST',
+          data: {
+            text: 'Apply the Project instructions.',
+            sender: 'User',
+            clientTimestamp: new Date().toISOString(),
+            isCreatedByUser: true,
+            parentMessageId: NO_PARENT,
+            conversationId: 'new',
+            clientRequestId: suffix,
+            messageId,
+            responseMessageId: `${messageId}_response`,
+            endpoint: 'agents',
+            endpointType: 'agents',
+            agent_id: agentId,
+            chatProjectId: projectId,
+            files: [],
+            isTemporary: false,
+            isRegenerate: false,
+            error: false,
+          },
+        });
+
+      const blocked = await expectNoMongoSideEffects(
+        ['conversations', 'messages'],
+        sendProjectTurn,
+      );
+      expectContentFilterBlock(blocked, {
+        source: 'agent_instruction',
+        field: 'instructions',
+        marker,
+      });
+
+      const deleted = await requestResult(request, {
+        path: `/api/projects/${projectId}`,
+        token,
+        method: 'DELETE',
+      });
+      expectSuccess(deleted, 200);
+      const missing = await expectNoMongoSideEffects(
+        ['conversations', 'messages'],
+        sendProjectTurn,
+      );
+      expect(missing.status, missing.text).toBe(404);
+      expect(missing.body).not.toHaveProperty('streamId');
+    } finally {
+      await restoreRuntimeFilters(request, token);
+      if (projectId) {
+        await requestResult(request, {
+          path: `/api/projects/${projectId}`,
+          token,
+          method: 'DELETE',
+        });
+      }
+      await cleanupFixtures(request, token, fixtures);
+    }
+  });
+
+  test('rechecks canonical Project file text after policy activation', async ({ request }) => {
+    const token = await loginAdmin(request);
+    const suffix = randomUUID();
+    const marker = `E2E-PROJECT-CANONICAL-CONTENT-${suffix}`;
+    const label = 'E2E Project canonical file';
+    const fixtures: StoredFixtures = { conversationIds: [], agentIds: [] };
+    let projectId: string | undefined;
+    try {
+      await restoreRuntimeFilters(request, token);
+      const agent = await createAgent(request, token, fixtures, suffix, {
+        tools: ['file_search'],
+      });
+      const agentId = requireString(agent.id, 'Project file-search Agent id');
+      const uploaded = await requestResult(request, {
+        path: '/api/files',
+        token,
+        method: 'POST',
+        multipart: {
+          endpoint: MOCK_ENDPOINTS[0].label,
+          endpointType: 'custom',
+          message_file: 'true',
+          tool_resource: 'context',
+          file_id: randomUUID(),
+          file: {
+            name: `project-reference-${suffix}.txt`,
+            mimeType: 'text/plain',
+            buffer: Buffer.from(marker),
+          },
+        },
+      });
+      expectSuccess(uploaded, 200);
+      const file = asObject(uploaded.body);
+      fixtures.file = {
+        file_id: requireString(file.file_id, 'Project reference file id'),
+        filepath: requireString(file.filepath, 'Project reference file path'),
+      };
+      /** The external RAG index is not needed to test pre-search admission. */
+      await withMongo(async (db) => {
+        await db
+          .collection('files')
+          .updateOne(
+            { file_id: fixtures.file!.file_id },
+            { $set: { embedded: true, context: FileContext.message_attachment } },
+          );
+      });
+      const created = await requestResult(request, {
+        path: '/api/projects',
+        token,
+        method: 'POST',
+        data: { name: `Project content policy ${suffix}` },
+      });
+      expectSuccess(created, 201);
+      projectId = requireString(asObject(created.body)._id, 'Project id');
+      const attached = await requestResult(request, {
+        path: `/api/projects/${projectId}/files`,
+        token,
+        method: 'POST',
+        data: { file_id: fixtures.file.file_id },
+      });
+      expectSuccess(attached, 200);
+      const selectors: MongoSnapshotSelector[] = [
+        { key: 'file', collection: 'files', filter: { file_id: fixtures.file.file_id } },
+      ];
+      const before = await captureMongoSnapshot(selectors);
+      await setRuntimeFilters(request, token, {
+        files: {
+          pii: {
+            fields: ['extracted_text'],
+            starterPatterns: [],
+            customPatterns: [{ id: `project-file-${suffix}`, label, regex: marker }],
+            uninspectable: 'block',
+          },
+        },
+      } as FiltersConfig);
+      const preview = await requestResult(request, {
+        path: `/api/files/${fixtures.file.file_id}/preview`,
+        token,
+      });
+      expectStoredMarker(preview, marker);
+      const messageId = randomUUID();
+      const started = await requestResult(request, {
+        path: '/api/agents/chat/agents',
+        token,
+        method: 'POST',
+        data: {
+          text: 'Use the Project references for this response.',
+          sender: 'User',
+          clientTimestamp: new Date().toISOString(),
+          isCreatedByUser: true,
+          parentMessageId: NO_PARENT,
+          conversationId: 'new',
+          messageId,
+          responseMessageId: `${messageId}_response`,
+          endpoint: 'agents',
+          endpointType: 'agents',
+          agent_id: agentId,
+          chatProjectId: projectId,
+          files: [],
+          isTemporary: false,
+          isRegenerate: false,
+          error: false,
+        },
+      });
+      fixtures.conversationIds.push(
+        await expectAsyncFilterStreamError(request, token, started, label, marker),
+      );
+      expect(await captureMongoSnapshot(selectors)).toEqual(before);
+    } finally {
+      await restoreRuntimeFilters(request, token);
+      if (projectId) {
+        await requestResult(request, {
+          path: `/api/projects/${projectId}`,
+          token,
+          method: 'DELETE',
+        });
+      }
+      if (fixtures.file) {
+        await withMongo(async (db) => {
+          await db
+            .collection('files')
+            .updateOne({ file_id: fixtures.file!.file_id }, { $unset: { embedded: '' } });
+        });
+      }
+      await cleanupFixtures(request, token, fixtures);
     }
   });
 

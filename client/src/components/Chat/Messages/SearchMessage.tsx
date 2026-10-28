@@ -5,6 +5,7 @@ import type { TMessageProps, TMessageIcon } from '~/common';
 import AuthorHeader from '~/components/Chat/Messages/Content/Parts/AuthorHeader';
 import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
 import { getHeaderModelName } from '~/components/Chat/Messages/ui/HeaderLabel';
+import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/width';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
 import SearchContent, { rendersMarkdownLite } from './Content/SearchContent';
 import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
@@ -12,6 +13,7 @@ import Icon from '~/components/Chat/Messages/MessageIcon';
 import { useAuthContext, useLocalize } from '~/hooks';
 import SearchButtons from './SearchButtons';
 import SubRow from './SubRow';
+import { cn } from '~/utils';
 import store from '~/store';
 
 function searchFilesEqual(prev?: TMessage['files'], next?: TMessage['files']) {
@@ -112,9 +114,15 @@ function SearchMessage({ message }: Pick<TMessageProps, 'message'>) {
   }
 
   return (
-    <div className="w-full bg-transparent text-text-primary">
-      <div className="m-auto px-4 py-3 sm:px-0">
+    <div className="text-text-primary w-full bg-transparent">
+      {/* A hairline where one result ends and the next begins. Results run together
+          otherwise, and a long answer followed by a short question reads as one
+          message. Drawn on the column the message occupies, not the window. */}
+      <div
+        className={cn('border-border-light mx-auto border-b px-4 py-4', getMessageRowWidthClass())}
+      >
         <MessageRow
+          message={message}
           id={message.messageId}
           icon={<Icon iconData={iconData} />}
           label={messageLabel}

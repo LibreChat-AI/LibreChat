@@ -1,0 +1,353 @@
+{
+  "version": 1,
+  "canaries": [
+    "a1.alice@example.invalid",
+    "a1.bob@example.invalid",
+    "A1_SECRET_CANARY_A",
+    "A1_SECRET_CANARY_B"
+  ],
+  "patterns": [
+    {
+      "id": "a1-email",
+      "label": "Synthetic email",
+      "regex": "a1\\.[a-z]+@example\\.invalid",
+      "category": "email"
+    },
+    {
+      "id": "a1-credential",
+      "label": "Synthetic credential",
+      "regex": "A1_SECRET_CANARY_[AB]",
+      "category": "credential"
+    }
+  ],
+  "cases": [
+    {
+      "id": "assistant-email-split",
+      "target": {
+        "source": "message",
+        "field": "text",
+        "provenance": "model"
+      },
+      "chunks": ["Contact a1.ali", "ce@exa", "mple.invalid."],
+      "format": "plain",
+      "treatment": "replaceable",
+      "expected": {
+        "content": "Contact [EMAIL_1].",
+        "categories": [
+          {
+            "category": "EMAIL",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "tool-success-split",
+      "target": {
+        "source": "tool_argument",
+        "field": "output",
+        "provenance": "tool",
+        "outcome": "success"
+      },
+      "chunks": ["Value A1_SECRET_", "CANARY_A."],
+      "format": "plain",
+      "treatment": "replaceable",
+      "expected": {
+        "content": "Value [CREDENTIAL_1].",
+        "categories": [
+          {
+            "category": "CREDENTIAL",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "tool-error-echo",
+      "target": {
+        "source": "tool_argument",
+        "field": "output",
+        "provenance": "tool",
+        "outcome": "error"
+      },
+      "chunks": ["Upstream echoed A1_SECRET_CANARY_A"],
+      "format": "plain",
+      "treatment": "replaceable",
+      "expected": {
+        "content": "Upstream echoed [CREDENTIAL_1]",
+        "categories": [
+          {
+            "category": "CREDENTIAL",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "unicode-prefix",
+      "target": {
+        "source": "message",
+        "field": "text",
+        "provenance": "model"
+      },
+      "chunks": ["😀 café a1.alice@example.invalid"],
+      "format": "plain",
+      "treatment": "replaceable",
+      "expected": {
+        "content": "😀 café [EMAIL_1]",
+        "categories": [
+          {
+            "category": "EMAIL",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "repeated-email",
+      "target": {
+        "source": "message",
+        "field": "text",
+        "provenance": "model"
+      },
+      "chunks": ["a1.alice@example.invalid / a1.alice@example.invalid"],
+      "format": "plain",
+      "treatment": "replaceable",
+      "expected": {
+        "content": "[EMAIL_1] / [EMAIL_1]",
+        "categories": [
+          {
+            "category": "EMAIL",
+            "count": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "two-identities",
+      "target": {
+        "source": "tool_argument",
+        "field": "output",
+        "provenance": "tool",
+        "outcome": "success"
+      },
+      "chunks": ["a1.alice@example.invalid a1.bob@example.invalid"],
+      "format": "plain",
+      "treatment": "replaceable",
+      "expected": {
+        "content": "[EMAIL_1] [EMAIL_2]",
+        "categories": [
+          {
+            "category": "EMAIL",
+            "count": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "mixed-categories",
+      "target": {
+        "source": "message",
+        "field": "text",
+        "provenance": "model"
+      },
+      "chunks": ["a1.alice@example.invalid A1_SECRET_CANARY_A"],
+      "format": "plain",
+      "treatment": "replaceable",
+      "expected": {
+        "content": "[EMAIL_1] [CREDENTIAL_1]",
+        "categories": [
+          {
+            "category": "EMAIL",
+            "count": 1
+          },
+          {
+            "category": "CREDENTIAL",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "literal-placeholder",
+      "target": {
+        "source": "message",
+        "field": "text",
+        "provenance": "model"
+      },
+      "chunks": ["[EMAIL_1] a1.alice@example.invalid"],
+      "format": "plain",
+      "treatment": "replaceable",
+      "expected": {
+        "content": "[EMAIL_1] [EMAIL_2]",
+        "categories": [
+          {
+            "category": "EMAIL",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "credential-placeholder",
+      "target": {
+        "source": "tool_argument",
+        "field": "output",
+        "provenance": "tool",
+        "outcome": "error"
+      },
+      "chunks": ["[CREDENTIAL_1] A1_SECRET_CANARY_B"],
+      "format": "plain",
+      "treatment": "replaceable",
+      "expected": {
+        "content": "[CREDENTIAL_1] [CREDENTIAL_2]",
+        "categories": [
+          {
+            "category": "CREDENTIAL",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "plain-allowed",
+      "target": {
+        "source": "message",
+        "field": "text",
+        "provenance": "model"
+      },
+      "chunks": ["The result is 42."],
+      "format": "plain",
+      "treatment": "replaceable",
+      "expected": {
+        "content": "The result is 42.",
+        "categories": []
+      }
+    },
+    {
+      "id": "markdown-allowed",
+      "target": {
+        "source": "message",
+        "field": "text",
+        "provenance": "model"
+      },
+      "chunks": ["**Result**: 42; `$x + y$`."],
+      "format": "markdown",
+      "treatment": "replaceable",
+      "expected": {
+        "content": "**Result**: 42; `$x + y$`.",
+        "categories": []
+      }
+    },
+    {
+      "id": "tool-control-allowed",
+      "target": {
+        "source": "tool_argument",
+        "field": "output",
+        "provenance": "tool",
+        "outcome": "success"
+      },
+      "chunks": ["tool_call_123 success {\"count\":42}"],
+      "format": "plain",
+      "treatment": "replaceable",
+      "expected": {
+        "content": "tool_call_123 success {\"count\":42}",
+        "categories": []
+      }
+    },
+    {
+      "id": "json-inspect-only",
+      "target": {
+        "source": "tool_argument",
+        "field": "output",
+        "provenance": "tool",
+        "outcome": "success"
+      },
+      "chunks": ["{\"email\":\"a1.alice@example.invalid\",\"id\":\"tool_call_123\"}"],
+      "format": "json",
+      "treatment": "inspect_only",
+      "expected": {
+        "transformError": "unreplaceable"
+      }
+    },
+    {
+      "id": "code-inspect-only",
+      "target": {
+        "source": "message",
+        "field": "text",
+        "provenance": "model"
+      },
+      "chunks": ["const value = \"A1_SECRET_CANARY_A\";"],
+      "format": "plain",
+      "treatment": "inspect_only",
+      "expected": {
+        "transformError": "unreplaceable"
+      }
+    },
+    {
+      "id": "sql-inspect-only",
+      "target": {
+        "source": "tool_argument",
+        "field": "output",
+        "provenance": "tool",
+        "outcome": "success"
+      },
+      "chunks": ["SELECT 'a1.alice@example.invalid' AS email;"],
+      "format": "plain",
+      "treatment": "inspect_only",
+      "expected": {
+        "transformError": "unreplaceable"
+      }
+    },
+    {
+      "id": "uri-inspect-only",
+      "target": {
+        "source": "tool_argument",
+        "field": "output",
+        "provenance": "tool",
+        "outcome": "success"
+      },
+      "chunks": ["https://example.invalid/?key=A1_SECRET_CANARY_A"],
+      "format": "uri",
+      "treatment": "inspect_only",
+      "expected": {
+        "transformError": "unreplaceable"
+      }
+    },
+    {
+      "id": "character-overflow",
+      "target": {
+        "source": "message",
+        "field": "text",
+        "provenance": "model"
+      },
+      "chunks": ["a1.alice@example.invalid"],
+      "format": "plain",
+      "treatment": "replaceable",
+      "limits": {
+        "maxCharacters": 8
+      },
+      "expected": {
+        "transformError": "limit"
+      }
+    },
+    {
+      "id": "match-overflow",
+      "target": {
+        "source": "tool_argument",
+        "field": "output",
+        "provenance": "tool",
+        "outcome": "success"
+      },
+      "chunks": ["a1.alice@example.invalid a1.bob@example.invalid"],
+      "format": "plain",
+      "treatment": "replaceable",
+      "limits": {
+        "maxMatches": 1
+      },
+      "expected": {
+        "transformError": "inspection"
+      }
+    }
+  ]
+}

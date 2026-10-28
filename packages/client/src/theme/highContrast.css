@@ -4,13 +4,13 @@
  * palettes they complete.
  *
  * `ThemeProvider` puts `high-contrast` on <html> and paints the palette as
- * inline custom properties (see `themes/highContrast.ts`). Two of those tokens
+ * inline custom properties (see `packages/data-provider/src/themes/highContrast.ts`). Two of those tokens
  * are not self-sufficient, and the rules below are what make them correct:
  * the selected fills are deliberately light so their label clears AAA, which
  * only works because selection is marked by a perimeter; and `::placeholder`
  * has no token at all, so it falls through to Tailwind preflight's raw
  * `gray-400`. Both defects reach package primitives — `TimePicker`,
- * `SelectDropDown`, `MultiSelect`, `InputWithDropDown`, `Badge`, `DataTable`,
+ * `MultiSelect`, `Badge`, `DataTable`,
  * `Input`, `Textarea` — so shipping the palette without these rules ships a
  * broken palette.
  *
@@ -22,7 +22,7 @@
 /**
  * Selection and navigation are conveyed by a fill alone almost everywhere, and
  * these palettes keep fills light on purpose so the label on them can clear AAA
- * (see the `surface-active` note in `themes/highContrast.ts`). The cue is
+ * (see the `surface-active` note in `packages/data-provider/src/themes/highContrast.ts`). The cue is
  * therefore a perimeter: `text-primary` is 21:1 against either canvas, and it
  * is what discharges WCAG 1.4.11 for the fill.
  *
@@ -39,7 +39,9 @@
 html.high-contrast [data-active-item],
 html.high-contrast .select-item:focus-visible,
 html.high-contrast [data-state='selected'],
-html.high-contrast :is(.bg-surface-active, .bg-surface-active-alt):not(span) {
+html.high-contrast
+  :is(.bg-surface-active, .bg-surface-active-alt, .bg-surface-nav-selected):not(span),
+html.high-contrast [aria-pressed='true'][class*='aria-pressed:bg-surface-nav-selected']:not(span) {
   outline: 3px solid rgb(var(--text-primary)) !important;
   outline-offset: -3px;
 }
@@ -50,7 +52,7 @@ html.high-contrast :is(.bg-surface-active, .bg-surface-active-alt):not(span) {
  * fragment separately. It still needs a cue, so it inverts instead — the same
  * treatment the mode gives `::selection`, 21:1 and with no geometry to wrap.
  */
-html.high-contrast span:is(.bg-surface-active, .bg-surface-active-alt) {
+html.high-contrast span:is(.bg-surface-active, .bg-surface-active-alt, .bg-surface-nav-selected) {
   background-color: rgb(var(--text-primary));
   color: rgb(var(--surface-primary));
 }

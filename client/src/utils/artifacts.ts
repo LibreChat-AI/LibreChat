@@ -6,6 +6,7 @@ import { fromMarkdown } from 'mdast-util-from-markdown';
 import {
   excelMimeTypes,
   shadcnComponents,
+  artifactUIComponents,
   getDocumentFileExtension,
 } from 'librechat-data-provider';
 import type {
@@ -21,9 +22,7 @@ import { getCodeBlockFilename } from './downloadFile';
 
 const artifactFilename = {
   'application/vnd.react': 'App.tsx',
-  'application/vnd.ant.react': 'App.tsx',
   'text/html': 'index.html',
-  'application/vnd.code-html': 'index.html',
   /* Office preview buckets — the backend produces a complete sanitized
    * `index.html` document (head + body) and ships it via `attachment.text`.
    * The Sandpack `static` template loads it as-is. See
@@ -31,6 +30,10 @@ const artifactFilename = {
   'application/vnd.librechat.docx-preview': 'index.html',
   'application/vnd.librechat.spreadsheet-preview': 'index.html',
   'application/vnd.librechat.presentation-preview': 'index.html',
+  /* SVG artifacts are a bare `<svg>` document. The Sandpack `static`
+   * template always loads `index.html`, so `getSvgFiles` ships a
+   * companion HTML shell; the editor/download file stays `index.svg`. */
+  'image/svg+xml': 'index.svg',
   // mermaid and markdown types are handled separately in useArtifactProps.ts
   default: 'index.html',
   // 'css': 'css',
@@ -45,15 +48,12 @@ const artifactTemplate: Record<
   | 'application/vnd.mermaid'
   | 'application/vnd.code'
   | 'text/markdown'
-  | 'text/md'
   | 'text/plain',
   SandpackPredefinedTemplate | undefined
 > = {
   'text/html': 'static',
   'application/vnd.react': 'react-ts',
-  'application/vnd.ant.react': 'react-ts',
   'application/vnd.mermaid': 'react-ts',
-  'application/vnd.code-html': 'static',
   /* CODE bucket reuses the static markdown pipeline — `useArtifactProps`
    * pre-wraps the content in a fenced block and hands it to
    * `getMarkdownFiles`, so the rendered HTML uses the same `marked`
@@ -61,13 +61,13 @@ const artifactTemplate: Record<
    * the panel doesn't pay the sandpack-React boot cost for source files. */
   'application/vnd.code': 'static',
   'text/markdown': 'static',
-  'text/md': 'static',
   'text/plain': 'static',
   /* Office preview buckets ride the same static pipeline — the backend
    * already sanitized the HTML, so we just hand it to Sandpack. */
   'application/vnd.librechat.docx-preview': 'static',
   'application/vnd.librechat.spreadsheet-preview': 'static',
   'application/vnd.librechat.presentation-preview': 'static',
+  'image/svg+xml': 'static',
   default: 'static',
   // 'css': 'css',
   // 'javascript': 'js',
@@ -81,7 +81,7 @@ export function getKey(type: string, language?: string): string {
 }
 
 export function getArtifactFilename(type: string, language?: string): string {
-  const key = getKey(type, language);
+  const key = getKey(normalizeArtifactType(type), language);
   return artifactFilename[key] ?? artifactFilename.default;
 }
 
@@ -131,8 +131,9 @@ export function getArtifactDownloadFilename(
   fileKey: string,
   content = artifact.content,
 ): string {
-  const isCode = artifact.type === TOOL_ARTIFACT_TYPES.CODE;
-  const isMarkdown = artifact.type === TOOL_ARTIFACT_TYPES.MARKDOWN || artifact.type === 'text/md';
+  const type = normalizeArtifactType(artifact.type ?? '');
+  const isCode = type === TOOL_ARTIFACT_TYPES.CODE;
+  const isMarkdown = type === TOOL_ARTIFACT_TYPES.MARKDOWN;
   let fallback = fileKey;
   if (isCode) {
     fallback = getCodeBlockFilename(
@@ -185,8 +186,48 @@ export function getArtifactDownloadFilename(
 }
 
 export function getTemplate(type: string, language?: string): SandpackPredefinedTemplate {
-  const key = getKey(type, language);
+  const key = getKey(normalizeArtifactType(type), language);
   return artifactTemplate[key] ?? (artifactTemplate.default as SandpackPredefinedTemplate);
+}
+
+export function isSvgArtifactType(type: string): boolean {
+  return normalizeArtifactType(type) === 'image/svg+xml';
+}
+
+/**
+ * Files for an `image/svg+xml` (or `image/svg`) artifact. The Sandpack
+ * `static` template always loads `index.html`; a bare SVG in that slot
+ * renders blank. Keep the source on `index.svg` for the code tab and wrap
+ * a copy in a full-viewport HTML shell for the preview. viewBox-only
+ * sources fill the panel via `body > svg { width/height: 100% }`, scoped to
+ * the root because CSS beats presentation attributes: an unscoped `svg` rule
+ * would stretch a nested `<svg>` viewport, such as a sprite or inset diagram,
+ * over its own `width`/`height` and corrupt the artifact's internal layout.
+ *
+ * The shell holds a *copy* of the source, so an edit cannot be applied by
+ * replacing `index.svg` alone — both entries have to be rebuilt from the
+ * new text. `useArtifactProps` exposes this builder as `deriveFiles` for
+ * exactly that.
+ */
+export function getSvgFiles(content: string): Record<string, string> {
+  const svg = content.replace(/^\uFEFF?\s*<\?xml\b[^?]*\?>\s*/i, '');
+  return {
+    'index.svg': content,
+    'index.html': `<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<style>
+html,body{margin:0;height:100%;overflow:hidden}
+body>svg{display:block;width:100%;height:100%}
+</style>
+</head>
+<body>
+${svg}
+</body>
+</html>`,
+  };
 }
 
 const standardDependencies = {
@@ -196,7 +237,7 @@ const standardDependencies = {
   'class-variance-authority': '^0.6.0',
   clsx: '^1.2.1',
   'date-fns': '^3.3.1',
-  'tailwind-merge': '^1.9.1',
+  'tailwind-merge': '^2.6.1',
   'tailwindcss-animate': '^1.0.5',
   recharts: '2.12.7',
   '@radix-ui/react-accordion': '^1.1.2',
@@ -235,7 +276,7 @@ const mermaidDependencies = {
   'react-zoom-pan-pinch': '^3.6.1',
   'class-variance-authority': '^0.6.0',
   clsx: '^1.2.1',
-  'tailwind-merge': '^1.9.1',
+  'tailwind-merge': '^2.6.1',
   '@radix-ui/react-slot': '^1.1.0',
 };
 
@@ -244,32 +285,30 @@ const dependenciesMap: Record<
   | 'application/vnd.mermaid'
   | 'application/vnd.code'
   | 'text/markdown'
-  | 'text/md'
   | 'text/plain',
   Record<string, string>
 > = {
   'application/vnd.mermaid': mermaidDependencies,
   'application/vnd.react': standardDependencies,
-  'application/vnd.ant.react': standardDependencies,
   'text/html': standardDependencies,
-  'application/vnd.code-html': standardDependencies,
   /* CODE renders in the static markdown template; no React or other
    * runtime deps. Empty map skips the sandpack `package.json` install
    * step entirely (same as MARKDOWN/PLAIN_TEXT). */
   'application/vnd.code': {},
   'text/markdown': {},
-  'text/md': {},
   'text/plain': {},
   /* Office preview HTML is fully self-contained (CSS-only sheet tabs, no
    * JS), so no Sandpack-side packages are needed. */
   'application/vnd.librechat.docx-preview': {},
   'application/vnd.librechat.spreadsheet-preview': {},
   'application/vnd.librechat.presentation-preview': {},
+  /* SVG preview is a static HTML shell + the source file; no npm deps. */
+  'image/svg+xml': {},
   default: standardDependencies,
 };
 
 export function getDependencies(type: string): Record<string, string> {
-  return dependenciesMap[type] ?? standardDependencies;
+  return dependenciesMap[normalizeArtifactType(type)] ?? standardDependencies;
 }
 
 export function getProps(type: string): Partial<SandpackProviderProps> {
@@ -442,7 +481,7 @@ export function isPreviewOnlyArtifact(type: string | null | undefined): boolean 
   if (type == null) {
     return false;
   }
-  return PREVIEW_ONLY_ARTIFACT_TYPES.has(type as ToolArtifactType);
+  return PREVIEW_ONLY_ARTIFACT_TYPES.has(normalizeArtifactType(type) as ToolArtifactType);
 }
 
 /**
@@ -450,7 +489,7 @@ export function isPreviewOnlyArtifact(type: string | null | undefined): boolean 
  * They should stay click-to-open and, once opened, expose only the code view.
  */
 export function isCodeOnlyArtifact(type: string | null | undefined): boolean {
-  return type === TOOL_ARTIFACT_TYPES.CODE;
+  return type != null && normalizeArtifactType(type) === TOOL_ARTIFACT_TYPES.CODE;
 }
 
 /**
@@ -506,16 +545,35 @@ type ArtifactFormatKey = Extract<
 >;
 
 /**
- * Legacy and model-authored spellings of the canonical buckets. The
- * markdown `:::artifact` path takes its type straight from the authored
- * attribute, so these arrive alongside the values in
- * `TOOL_ARTIFACT_TYPES`; `artifactTemplate` carries the same aliases.
+ * Every spelling an artifact type arrives in, mapped to its canonical bucket: the
+ * legacy MIME spellings older prompts taught, and the short names a model writes
+ * straight into `:::artifact{type="..."}`. The supported short names are the
+ * rendered buckets a model can author (react, html, markdown, md, mermaid, svg);
+ * anything else passes through unchanged and renders as a generic preview.
  */
 const ARTIFACT_TYPE_ALIASES: Record<string, string> = {
   'application/vnd.ant.react': TOOL_ARTIFACT_TYPES.REACT,
   'application/vnd.code-html': TOOL_ARTIFACT_TYPES.HTML,
   'text/md': TOOL_ARTIFACT_TYPES.MARKDOWN,
+  'image/svg': 'image/svg+xml',
+  react: TOOL_ARTIFACT_TYPES.REACT,
+  html: TOOL_ARTIFACT_TYPES.HTML,
+  markdown: TOOL_ARTIFACT_TYPES.MARKDOWN,
+  md: TOOL_ARTIFACT_TYPES.MARKDOWN,
+  mermaid: TOOL_ARTIFACT_TYPES.MERMAID,
+  svg: 'image/svg+xml',
 };
+
+const CANONICAL_ARTIFACT_TYPES: ReadonlySet<string> = new Set<string>([
+  ...Object.values(TOOL_ARTIFACT_TYPES),
+  'image/svg+xml',
+]);
+
+/** The canonical type for any spelling an artifact arrives in; every type lookup goes through it. */
+export function normalizeArtifactType(type: string): string {
+  const key = type.trim().toLowerCase();
+  return lookupOwn(ARTIFACT_TYPE_ALIASES, key) ?? (CANONICAL_ARTIFACT_TYPES.has(key) ? key : type);
+}
 
 const ARTIFACT_ROW_KINDS: Record<string, ArtifactRowKind> = {
   [TOOL_ARTIFACT_TYPES.HTML]: {
@@ -586,7 +644,7 @@ export function artifactRowKind({
   language?: string | null;
   title?: string | null;
 }): ArtifactRowKind {
-  const resolvedType = (type != null && lookupOwn(ARTIFACT_TYPE_ALIASES, type)) || type;
+  const resolvedType = type != null ? normalizeArtifactType(type) : type;
   if (resolvedType != null) {
     const known = lookupOwn(ARTIFACT_ROW_KINDS, resolvedType);
     if (known != null) {
@@ -1189,45 +1247,17 @@ export function fileToArtifact(
   };
 }
 
+/** A path-pattern key, not `string`, so spreading these after an artifact's own files adds no `string` index. */
+const uiComponentFiles: Record<`/components/ui/${string}.tsx`, string> = Object.fromEntries(
+  Object.entries(artifactUIComponents).map(([name, source]) => [
+    `/components/ui/${name}.tsx`,
+    source,
+  ]),
+);
+
 export const sharedFiles = {
   '/lib/utils.ts': shadcnComponents.utils,
-  '/components/ui/accordion.tsx': shadcnComponents.accordian,
-  '/components/ui/alert-dialog.tsx': shadcnComponents.alertDialog,
-  '/components/ui/alert.tsx': shadcnComponents.alert,
-  '/components/ui/avatar.tsx': shadcnComponents.avatar,
-  '/components/ui/badge.tsx': shadcnComponents.badge,
-  '/components/ui/breadcrumb.tsx': shadcnComponents.breadcrumb,
-  '/components/ui/button.tsx': shadcnComponents.button,
-  '/components/ui/calendar.tsx': shadcnComponents.calendar,
-  '/components/ui/card.tsx': shadcnComponents.card,
-  '/components/ui/carousel.tsx': shadcnComponents.carousel,
-  '/components/ui/checkbox.tsx': shadcnComponents.checkbox,
-  '/components/ui/collapsible.tsx': shadcnComponents.collapsible,
-  '/components/ui/dialog.tsx': shadcnComponents.dialog,
-  '/components/ui/drawer.tsx': shadcnComponents.drawer,
-  '/components/ui/dropdown-menu.tsx': shadcnComponents.dropdownMenu,
-  '/components/ui/input.tsx': shadcnComponents.input,
-  '/components/ui/label.tsx': shadcnComponents.label,
-  '/components/ui/menubar.tsx': shadcnComponents.menuBar,
-  '/components/ui/navigation-menu.tsx': shadcnComponents.navigationMenu,
-  '/components/ui/pagination.tsx': shadcnComponents.pagination,
-  '/components/ui/popover.tsx': shadcnComponents.popover,
-  '/components/ui/progress.tsx': shadcnComponents.progress,
-  '/components/ui/radio-group.tsx': shadcnComponents.radioGroup,
-  '/components/ui/select.tsx': shadcnComponents.select,
-  '/components/ui/separator.tsx': shadcnComponents.separator,
-  '/components/ui/skeleton.tsx': shadcnComponents.skeleton,
-  '/components/ui/slider.tsx': shadcnComponents.slider,
-  '/components/ui/switch.tsx': shadcnComponents.switchComponent,
-  '/components/ui/table.tsx': shadcnComponents.table,
-  '/components/ui/tabs.tsx': shadcnComponents.tabs,
-  '/components/ui/textarea.tsx': shadcnComponents.textarea,
-  '/components/ui/toast.tsx': shadcnComponents.toast,
-  '/components/ui/toaster.tsx': shadcnComponents.toaster,
-  '/components/ui/toggle-group.tsx': shadcnComponents.toggleGroup,
-  '/components/ui/toggle.tsx': shadcnComponents.toggle,
-  '/components/ui/tooltip.tsx': shadcnComponents.tooltip,
-  '/components/ui/use-toast.tsx': shadcnComponents.useToast,
+  ...uiComponentFiles,
   '/public/index.html': dedent`
     <!DOCTYPE html>
     <html lang="en">

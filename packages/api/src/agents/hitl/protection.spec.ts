@@ -717,4 +717,114 @@ describe('assertResumeRuntimeContentAllowed', () => {
     expect(dependencies.getUserMemories).not.toHaveBeenCalled();
     expect(dependencies.decryptMetadata).not.toHaveBeenCalled();
   });
+
+  describe('linked agent instructions', () => {
+    const basePolicyDependencies = (): ResumeContentProtectionDependencies => ({
+      ...createDependencies(),
+      checkAccess: jest.fn().mockResolvedValue(false),
+      getAgent: jest.fn(),
+      getActions: jest.fn().mockResolvedValue([]),
+      getUserMemories: jest.fn().mockResolvedValue([]),
+      getRoleByName: jest.fn(),
+      decryptMetadata: jest.fn(),
+      canAccessAgent: jest.fn().mockResolvedValue(true),
+    });
+    const agentInstructionsPolicy = {
+      filters: {
+        agentInstructions: {
+          pii: {
+            starterPatterns: [],
+            customPatterns: [{ id: 'private', label: 'private', regex: 'PRIVATE-[A-Z]+' }],
+          },
+        },
+      },
+    };
+
+    it('rejects a stored inline instructions field that trips the policy when there is no link', async () => {
+      const input = {
+        appConfig: agentInstructionsPolicy,
+        endpointOption: {
+          agent: Promise.resolve({
+            id: 'agent-1',
+            provider: 'openai',
+            model: 'test-model',
+            instructions: 'Contains PRIVATE-INSTRUCTION marker',
+          }),
+        },
+        conversationId: 'conversation-1',
+        targetMessageId: null,
+        user,
+        storedMessages: [],
+        seedContent: [],
+        liveFiles: [],
+        isTemporary: true,
+      } as unknown as Parameters<typeof assertResumeContentAllowed>[0];
+
+      await expect(
+        assertResumeContentAllowed(input, basePolicyDependencies()),
+      ).rejects.toMatchObject({
+        code: 'content_filter_block',
+        body: { source: 'agent_instruction', field: 'instructions' },
+      });
+    });
+
+    it('excludes the stored inline instructions from the same scan when the agent has a valid instructionsPrompt link', async () => {
+      const input = {
+        appConfig: agentInstructionsPolicy,
+        endpointOption: {
+          agent: Promise.resolve({
+            id: 'agent-1',
+            provider: 'openai',
+            model: 'test-model',
+            instructions: 'Contains PRIVATE-INSTRUCTION marker',
+            instructionsPrompt: {
+              source: 'native',
+              groupId: 'group-1',
+              selection: { type: 'production' },
+            },
+          }),
+        },
+        conversationId: 'conversation-1',
+        targetMessageId: null,
+        user,
+        storedMessages: [],
+        seedContent: [],
+        liveFiles: [],
+        isTemporary: true,
+      } as unknown as Parameters<typeof assertResumeContentAllowed>[0];
+
+      await expect(
+        assertResumeContentAllowed(input, basePolicyDependencies()),
+      ).resolves.toBeUndefined();
+    });
+
+    it('still inspects a restricted-stub link as no link — the stub carries no groupId to trust', async () => {
+      const input = {
+        appConfig: agentInstructionsPolicy,
+        endpointOption: {
+          agent: Promise.resolve({
+            id: 'agent-1',
+            provider: 'openai',
+            model: 'test-model',
+            instructions: 'Contains PRIVATE-INSTRUCTION marker',
+            instructionsPrompt: { source: 'native', restricted: true },
+          }),
+        },
+        conversationId: 'conversation-1',
+        targetMessageId: null,
+        user,
+        storedMessages: [],
+        seedContent: [],
+        liveFiles: [],
+        isTemporary: true,
+      } as unknown as Parameters<typeof assertResumeContentAllowed>[0];
+
+      await expect(
+        assertResumeContentAllowed(input, basePolicyDependencies()),
+      ).rejects.toMatchObject({
+        code: 'content_filter_block',
+        body: { source: 'agent_instruction', field: 'instructions' },
+      });
+    });
+  });
 });

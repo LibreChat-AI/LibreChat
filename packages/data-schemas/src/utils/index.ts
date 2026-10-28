@@ -1,5 +1,6 @@
 export * from './principal';
 export * from './string';
+export * from './search';
 export * from './tempChatRetention';
 export * from './retention';
 export { tenantSafeBulkWrite } from './tenantBulkWrite';
@@ -8,5 +9,7 @@ export * from './objectId';
 export * from './yaml';
 export * from './stripUIResourceMarkers';
 export * from './fading';
+export * from './eviction';
 export { buildIndexWithRetry, createIndexesWithRetry, isIndexBuildInProgress } from './retry';
+export { isFieldNameRejection } from './fields';
 export type { IndexBuildOptions } from './retry';

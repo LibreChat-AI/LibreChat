@@ -187,6 +187,18 @@ describe('attachmentIdentity', () => {
     expect(attachmentIdentity(citation)).toBe('file_search:t1');
   });
 
+  it('keeps non-file artifacts from agents reusing a provider tool id apart', () => {
+    const alpha = {
+      type: 'ui_resources',
+      toolCallId: 'call_0',
+      agentId: 'agent-alpha',
+    } as unknown as TAttachment;
+    const beta = { ...alpha, agentId: 'agent-b' } as TAttachment;
+
+    expect(attachmentIdentity(alpha)).toBe('ui_resources:call_0::agent-alpha');
+    expect(attachmentIdentity(beta)).toBe('ui_resources:call_0::agent-b');
+  });
+
   it('gives no identity to a row that names no stored file', () => {
     // Two rows that cannot be told apart are two rows, not one.
     expect(

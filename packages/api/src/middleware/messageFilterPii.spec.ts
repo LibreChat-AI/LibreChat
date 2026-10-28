@@ -5,11 +5,7 @@ import type { Request, Response, NextFunction } from 'express';
 jest.mock('@librechat/data-schemas', () => ({
   logger: { warn: jest.fn(), error: jest.fn(), info: jest.fn(), debug: jest.fn() },
 }));
-import {
-  createMessageFilterPii,
-  findPiiMatchInMessages,
-  configureMessageFilterRegexValidator,
-} from './messageFilterPii';
+import { createMessageFilterPii, configureMessageFilterRegexValidator } from './messageFilterPii';
 
 type CapturedResponse = { status?: number; body?: unknown };
 
@@ -741,87 +737,6 @@ describe('messageFilterPii middleware', () => {
     expect(capturedRes.status).toBe(400);
     expect(capturedRes.body).toMatchObject({ error: 'message_filter_pii_block' });
   });
-
-  it('findPiiMatchInMessages flags misconfigured on a dropped pattern under default starters', () => {
-    const config: MessageFilterPiiConfig = {
-      customPatterns: [{ id: 'dup', label: 'Duplicate', regex: '(a)\\1' }],
-    };
-    const hit = findPiiMatchInMessages([{ role: 'user', content: 'aa' }], config);
-    expect(hit?.misconfigured).toBe(true);
-  });
-});
-
-describe('findPiiMatchInMessages', () => {
-  it('returns null for missing or empty messages', () => {
-    expect(findPiiMatchInMessages(undefined, {})).toBeNull();
-    expect(findPiiMatchInMessages([], {})).toBeNull();
-  });
-
-  it('returns null when no config is provided', () => {
-    expect(
-      findPiiMatchInMessages([{ role: 'user', content: 'sk-proj-FAKE123' }], undefined),
-    ).toBeNull();
-  });
-
-  it('matches a system-role message (remote APIs accept caller-supplied system roles)', () => {
-    const hit = findPiiMatchInMessages(
-      [{ role: 'system', content: 'system primer with sk-proj-FAKE1234567890ABCDEF embedded' }],
-      {},
-    );
-    expect(hit).toEqual({ id: 'sk_prefix', label: 'sk- prefix token' });
-  });
-
-  it('matches an assistant-role message (callers can include attacker-controlled history)', () => {
-    const hit = findPiiMatchInMessages(
-      [{ role: 'assistant', content: 'sk-proj-FAKE1234567890ABCDEF' }],
-      {},
-    );
-    expect(hit).toEqual({ id: 'sk_prefix', label: 'sk- prefix token' });
-  });
-
-  it('matches a tool-role message', () => {
-    const hit = findPiiMatchInMessages(
-      [{ role: 'tool', content: 'tool reply leaking sk-proj-FAKE1234567890ABCDEF' }],
-      {},
-    );
-    expect(hit).toEqual({ id: 'sk_prefix', label: 'sk- prefix token' });
-  });
-
-  it('matches a string-content user message', () => {
-    const hit = findPiiMatchInMessages(
-      [{ role: 'user', content: 'my key is sk-proj-FAKE1234567890ABCDEF' }],
-      {},
-    );
-    expect(hit).toEqual({ id: 'sk_prefix', label: 'sk- prefix token' });
-  });
-
-  it('matches a content-parts user message (text part)', () => {
-    const hit = findPiiMatchInMessages(
-      [
-        {
-          role: 'user',
-          content: [
-            { type: 'image_url', image_url: { url: 'data:...' } },
-            { type: 'text', text: 'Authorization: Bearer abc.def.ghi' },
-          ],
-        },
-      ],
-      {},
-    );
-    expect(hit).toEqual({ id: 'bearer_header', label: 'Bearer token' });
-  });
-
-  it('returns null when no user message matches', () => {
-    expect(findPiiMatchInMessages([{ role: 'user', content: 'hello world' }], {})).toBeNull();
-  });
-
-  it('honors customPatterns from config', () => {
-    const hit = findPiiMatchInMessages([{ role: 'user', content: 'token ORG-DEADBEEF here' }], {
-      starterPatterns: [],
-      customPatterns: [{ id: 'org', label: 'Org token', regex: '\\bORG-[A-Z0-9]{6,}' }],
-    });
-    expect(hit).toEqual({ id: 'org', label: 'Org token' });
-  });
 });
 
 describe('configureMessageFilterRegexValidator (RE2 config-load validation)', () => {
@@ -889,13 +804,5 @@ describe('configureMessageFilterRegexValidator (RE2 config-load validation)', ()
     expect(nextCalls).toBe(0);
     expect(capturedRes.status).toBe(400);
     expect(capturedRes.body).toMatchObject({ error: 'message_filter_pii_block' });
-  });
-
-  it('findPiiMatchInMessages returns a misconfigured match when every pattern fails to compile', () => {
-    const hit = findPiiMatchInMessages([{ role: 'user', content: 'hello' }], {
-      starterPatterns: [],
-      customPatterns: [{ id: 'backref', label: 'Backref', regex: '(a)\\1' }],
-    });
-    expect(hit?.misconfigured).toBe(true);
   });
 });

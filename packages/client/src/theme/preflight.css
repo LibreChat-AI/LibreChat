@@ -1,0 +1,35 @@
+/**
+ * The one Tailwind 3 preflight default the published primitives depend on and
+ * cannot restore themselves.
+ *
+ * Tailwind 3 gave every `button` `cursor: pointer`; Tailwind 4 leaves the
+ * platform default, which is an arrow. The SPA restores it in its own
+ * stylesheet, but that rule is SPA-only, so a consumer rendering `Button`,
+ * `IconButton`, a `DropdownMenu` item or a dialog close from this package would
+ * lose the affordance the components were designed with — a behaviour change
+ * arriving from a dependency, not from their code.
+ *
+ * `@layer base` is load-bearing twice over. It keeps `cursor-*` utilities
+ * winning, so `disabled:cursor-not-allowed` still reads as not-allowed, and it
+ * keeps a consumer's own base rules in the same layer where the later one wins.
+ * Unlayered, this rule would beat every utility in the sheet.
+ *
+ * The placeholder is the same story: Tailwind 3 painted it `gray-400` and
+ * Tailwind 4 uses the field's own colour at half strength, so a consumer's
+ * `MultiSelect` search field or searchable `Combobox` — neither of which names
+ * a placeholder role — would follow the input's ink. The secondary text role is
+ * what those fields' placeholders are meant to read as, and it themes.
+ *
+ * Uncoloured borders need no rule here: each primitive names a border role.
+ */
+@layer base {
+  button,
+  [role='button'] {
+    cursor: pointer;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: rgb(var(--text-secondary));
+  }
+}

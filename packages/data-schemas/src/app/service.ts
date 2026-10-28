@@ -1,7 +1,11 @@
 import {
   AgentCapabilities,
   EModelEndpoint,
+  chatProjectsConfigSchema,
+  configSchema,
   filtersConfigSchema,
+  conversationListConfigSchema,
+  toolCallPreviewsConfigSchema,
   hasActiveFiltersConfig,
   getConfigDefaults,
   langfuseConfigSchema,
@@ -15,6 +19,7 @@ import type {
   TAgentsEndpoint,
 } from 'librechat-data-provider';
 import type { AppConfig, FunctionTool } from '~/types/app';
+import type { ConfigDerivation } from './derive';
 import { loadMemoryConfig, isMemoryEnabled } from './memory';
 import { loadDefaultInterface } from './interface';
 import { loadTurnstileConfig } from './turnstile';
@@ -91,6 +96,31 @@ export function loadLangfuseConfig(config: DeepPartial<TCustomConfig>): AppConfi
   return parsed.data;
 }
 
+/** Resolves the list filter limits, schema defaults included; an invalid block keeps the
+ *  defaults rather than lifting a bound the operator meant to set. */
+export function loadConversationListConfig(
+  config: DeepPartial<TCustomConfig>,
+): NonNullable<AppConfig['conversationList']> {
+  const parsed = conversationListConfigSchema.safeParse(config.conversationList ?? {});
+  if (parsed.success) {
+    return parsed.data;
+  }
+  logger.warn('[AppService] Invalid conversationList config', parsed.error.flatten());
+  return conversationListConfigSchema.parse({});
+}
+
+/** Resolves the tool-call preview bounds; an invalid block keeps the defaults. */
+export function loadToolCallPreviewsConfig(
+  config: DeepPartial<TCustomConfig>,
+): NonNullable<AppConfig['toolCallPreviews']> {
+  const parsed = toolCallPreviewsConfigSchema.safeParse(config.toolCallPreviews ?? {});
+  if (parsed.success) {
+    return parsed.data;
+  }
+  logger.warn('[AppService] Invalid toolCallPreviews config', parsed.error.flatten());
+  return toolCallPreviewsConfigSchema.parse({});
+}
+
 export function loadFiltersConfig(config: DeepPartial<TCustomConfig>): AppConfig['filters'] {
   const raw = config.filters;
   if (raw === undefined) {
@@ -127,8 +157,13 @@ export const AppService = async (params?: {
   config: DeepPartial<TCustomConfig>;
   paths?: Paths;
   systemTools?: Record<string, FunctionTool>;
+  /**
+   * Expands each custom endpoint's `customParams` for the served `endpoints.custom`; `config`
+   * keeps them as librechat.yaml writes them.
+   */
+  expandCustomEndpoint?: ConfigDerivation['expandCustomEndpoint'];
 }): Promise<AppConfig> => {
-  const { config, paths, systemTools } = params || {};
+  const { config, paths, systemTools, expandCustomEndpoint } = params || {};
   if (!config) {
     throw new Error('Config is required');
   }
@@ -139,6 +174,7 @@ export const AppService = async (params?: {
   const memory = loadMemoryConfig(config.memory);
   const summarization = loadSummarizationConfig(config);
   const skillSync = loadSkillSyncConfig(config);
+  const skillDeletion = configSchema.shape.skillDeletion.parse(config.skillDeletion);
   const filteredTools = config.filteredTools;
   const includedTools = config.includedTools;
   const fileStrategy = (config.fileStrategy ?? configDefaults.fileStrategy) as
@@ -161,9 +197,12 @@ export const AppService = async (params?: {
 
   const mcpServersConfig = config.mcpServers || null;
   const mcpSettings = config.mcpSettings || null;
+  const mcpAppSandbox = config.mcpAppSandbox ?? configDefaults.mcpAppSandbox;
   const actions = config.actions;
   const registration = config.registration ?? configDefaults.registration;
+  const emailChange = config.emailChange;
   const interfaceConfig = await loadDefaultInterface({ config, configDefaults });
+  const projects = chatProjectsConfigSchema.parse(config.projects ?? {});
   const turnstileConfig = loadTurnstileConfig(config, configDefaults);
   const speech = config.speech;
   const filters = loadFiltersConfig(config);
@@ -179,10 +218,19 @@ export const AppService = async (params?: {
     actions,
     balance,
     skillSync,
+    skillDeletion,
     webSearch,
+    githubCompare: config.githubCompare,
+    timeouts: config.timeouts,
+    violationLog: config.violationLog,
+    messages: config.messages,
     mcpSettings,
+    mcpAppSandbox,
     fileStrategy,
+    projects,
     registration,
+    emailChange,
+    passkeys: config.passkeys,
     transactions,
     filteredTools,
     includedTools,
@@ -198,6 +246,9 @@ export const AppService = async (params?: {
     fileStrategies: config.fileStrategies,
     cloudfront: config.cloudfront as AppConfig['cloudfront'],
     secureImageLinks: config.secureImageLinks !== false,
+    credentials: { writeFormat: config.credentials?.writeFormat ?? 'v3' },
+    conversationList: loadConversationListConfig(config),
+    toolCallPreviews: loadToolCallPreviewsConfig(config),
   };
 
   const agentsDefaults = agentsConfigSetup(config);
@@ -230,7 +281,7 @@ export const AppService = async (params?: {
     return appConfig;
   }
 
-  const loadedEndpoints = loadEndpoints(config, agentsDefaults);
+  const loadedEndpoints = loadEndpoints(config, agentsDefaults, expandCustomEndpoint);
   stripInertMemoryCapability(loadedEndpoints[EModelEndpoint.agents]);
 
   const appConfig: AppConfig = {

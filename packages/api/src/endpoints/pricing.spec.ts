@@ -14,6 +14,21 @@ const { getValueKey, getMultiplier, getCacheMultiplier } = createTxMethods(mongo
 const deps = { getValueKey, getMultiplier, getCacheMultiplier };
 
 describe('buildTokenConfigMap', () => {
+  it('exposes Bedrock GPT context windows without changing GPT-OSS', () => {
+    const models = [
+      'us.openai.gpt-6-sol',
+      'global.openai.gpt-6-astra',
+      'us.openai.gpt-5.6-terra',
+      'us.openai.gpt-oss-120b-1:0',
+    ];
+    const map = buildTokenConfigMap({ modelsConfig: { [EModelEndpoint.bedrock]: models } }, deps);
+
+    for (const model of models.slice(0, 3)) {
+      expect(map[EModelEndpoint.bedrock][model].context).toBe(950000);
+    }
+    expect(map[EModelEndpoint.bedrock][models[3]].context).toBe(128000);
+  });
+
   it('resolves context windows without pricing by default', () => {
     const map = buildTokenConfigMap(
       {

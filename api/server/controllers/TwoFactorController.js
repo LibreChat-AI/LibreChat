@@ -1,4 +1,5 @@
 const { encryptV3, logger } = require('@librechat/data-schemas');
+const { clearEnrollmentNonces } = require('@librechat/api');
 const {
   verifyOTPOrBackupCode,
   generateBackupCodes,
@@ -43,10 +44,13 @@ const enable2FA = async (req, res) => {
     const { plainCodes, codeObjects } = await generateBackupCodes();
     const encryptedSecret = encryptV3(secret);
 
-    const user = await updateUser(userId, {
-      pendingTotpSecret: encryptedSecret,
-      pendingBackupCodes: codeObjects,
-    });
+    const user = await updateUser(
+      userId,
+      clearEnrollmentNonces({
+        pendingTotpSecret: encryptedSecret,
+        pendingBackupCodes: codeObjects,
+      }),
+    );
 
     const email = user.email || (existingUser && existingUser.email) || '';
     const otpauthUrl = `otpauth://totp/${safeAppTitle}:${email}?secret=${secret}&issuer=${safeAppTitle}`;
@@ -119,7 +123,7 @@ const confirm2FA = async (req, res) => {
       if (user.pendingBackupCodes?.length) {
         update.backupCodes = user.pendingBackupCodes;
       }
-      await updateUser(userId, update);
+      await updateUser(userId, clearEnrollmentNonces(update));
       return res.status(200).json();
     }
     return res.status(400).json({ message: 'Invalid token.' });
@@ -151,13 +155,16 @@ const disable2FA = async (req, res) => {
         return res.status(result.status ?? 400).json({ message: msg });
       }
     }
-    await updateUser(userId, {
-      totpSecret: null,
-      backupCodes: [],
-      twoFactorEnabled: false,
-      pendingTotpSecret: null,
-      pendingBackupCodes: [],
-    });
+    await updateUser(
+      userId,
+      clearEnrollmentNonces({
+        totpSecret: null,
+        backupCodes: [],
+        twoFactorEnabled: false,
+        pendingTotpSecret: null,
+        pendingBackupCodes: [],
+      }),
+    );
     return res.status(200).json();
   } catch (err) {
     logger.error('[disable2FA]', err);

@@ -1,11 +1,12 @@
 import { Link } from 'lucide-react';
 import { useRecoilValue } from 'recoil';
+import { buttonVariants } from '@librechat/client';
 import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
 import type { TMessage, TConversation } from 'librechat-data-provider';
 import type { InfiniteData } from '@tanstack/react-query';
 import type { ConversationCursorData } from '~/utils';
-import { findConversationInInfinite, setDocumentTitle } from '~/utils';
+import { cn, findConversationInInfinite, setDocumentTitle } from '~/utils';
 import { useLocalize, useNavigateToConvo } from '~/hooks';
 import store from '~/store';
 
@@ -53,15 +54,21 @@ export default function SearchButtons({ message }: { message: TMessage }) {
   }
 
   return (
-    <div className="visible mt-0 flex items-center justify-center gap-1 self-end text-text-secondary lg:justify-start">
+    <div className="text-text-secondary flex min-w-0 items-center">
+      {/* The chat this result came from, and the way back to it: the same quiet chip
+          the rest of the app uses for a secondary action, holding a title that can
+          be any length. */}
       <button
         type="button"
-        className="ml-0 flex cursor-pointer items-center gap-1.5 rounded-md p-1 text-xs hover:text-text-primary hover:underline"
+        className={cn(
+          buttonVariants({ variant: 'ghost', size: 'xs' }),
+          'text-text-secondary hover:text-text-primary max-w-full min-w-0 gap-1.5 font-normal',
+        )}
         onClick={clickHandler}
         title={localize('com_ui_go_to_conversation')}
       >
-        <Link className="icon-sm" aria-hidden="true" />
-        {message.title}
+        <Link className="size-3.5 shrink-0" aria-hidden="true" />
+        <span className="truncate">{message.title}</span>
       </button>
     </div>
   );

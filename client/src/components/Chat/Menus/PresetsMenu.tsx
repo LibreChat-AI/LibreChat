@@ -1,7 +1,8 @@
 import { useRef, useState } from 'react';
+import { useAtomValue } from 'jotai';
 import { Trans } from 'react-i18next';
-import { useRecoilValue } from 'recoil';
 import { BookCopy } from 'lucide-react';
+import { presetFamily } from '@librechat/chat/react';
 import { tConvoUpdateSchema } from 'librechat-data-provider';
 import { Content, Portal, Root, Trigger } from '@radix-ui/react-popover';
 import {
@@ -18,7 +19,6 @@ import { SaveAsPresetDialog } from '~/components/Endpoints';
 import { EditPresetDialog, PresetItems } from './Presets';
 import { useLocalize, usePresets } from '~/hooks';
 import { useChatContext } from '~/Providers';
-import store from '~/store';
 
 const PresetsMenu: FC = () => {
   const localize = useLocalize();
@@ -41,7 +41,7 @@ const PresetsMenu: FC = () => {
     presetToDelete,
     confirmDeletePreset,
   } = usePresets();
-  const presetToEdit = useRecoilValue(store.presetByIndex(0));
+  const presetToEdit = useAtomValue(presetFamily(0));
 
   const openSaveAsDialog = () => {
     if (!conversation) {
@@ -62,7 +62,9 @@ const PresetsMenu: FC = () => {
 
   return (
     <Root>
-      <Trigger asChild>
+      {/* The open state belongs to the trigger, which stamps `data-state` on the
+       *  button it renders through, so its fill is set here rather than on the button. */}
+      <Trigger asChild className="data-[state=open]:bg-surface-active-alt">
         <TooltipAnchor
           ref={presetsMenuTriggerRef}
           description={localize('com_endpoint_examples')}
@@ -70,11 +72,12 @@ const PresetsMenu: FC = () => {
             <Button
               size="icon"
               variant="outline"
+              shape="theme"
               tabIndex={0}
               id="presets-button"
               data-testid="presets-button"
               aria-label={localize('com_endpoint_examples')}
-              className="h-9 w-9 shrink-0 rounded-theme-control bg-presentation duration-0 hover:bg-surface-hover radix-state-open:bg-surface-active-alt"
+              className="bg-presentation h-9 w-9 shrink-0 duration-0"
             >
               <BookCopy className="icon-md" aria-hidden="true" />
             </Button>
@@ -88,7 +91,7 @@ const PresetsMenu: FC = () => {
           sideOffset={8}
           collisionPadding={16}
           aria-label={localize('com_endpoint_examples')}
-          className="z-50 max-h-[495px] overflow-x-hidden rounded-theme-surface border border-border-light bg-presentation text-text-primary shadow-lg md:min-w-[400px]"
+          className="rounded-theme-surface border-border-menu bg-surface-menu text-text-primary z-50 max-h-[min(30.9375rem,80vh)] overflow-x-hidden border shadow-lg md:min-w-[min(25rem,90vw)]"
         >
           <PresetItems
             presets={presetsQuery.data}

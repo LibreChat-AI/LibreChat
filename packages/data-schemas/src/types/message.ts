@@ -1,6 +1,7 @@
 import type {
   TFeedbackRating,
   TFeedbackTag,
+  TReasoningOverride,
   UserSubmittedMessageFieldPath,
 } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
@@ -45,6 +46,8 @@ export interface ISubagentTaskControlReceipt {
 
 // @ts-ignore
 export interface IMessage extends Document {
+  /** Public content capture version and expected terminal watermark; never a transcript. */
+  subagentContent?: { version: 1; throughSequence?: number; deleted?: boolean };
   messageId: string;
   conversationId: string;
   user: string;
@@ -59,6 +62,10 @@ export interface IMessage extends Document {
   sender?: string;
   text?: string;
   summary?: string;
+  /** Authenticated ciphertext, available only through the owner-view read. */
+  privateText?: string;
+  privacyRevision?: string;
+  privateTextTokens?: string[];
   isCreatedByUser: boolean;
   /** True when the complete stored row came from outside the model. */
   isUserSubmitted?: boolean;
@@ -101,7 +108,7 @@ export interface IMessage extends Document {
   /** Server-private bounded rendering projection derived once at child settlement. */
   subagentActivityProjection?: {
     taskId: string;
-    version: 1;
+    version: 1 | 2;
     activityJson: string;
     truncated: boolean;
   };
@@ -135,6 +142,8 @@ export interface IMessage extends Document {
   alwaysAppliedSkills?: string[];
   /** Verbatim excerpts the user quoted to reference on this turn. UI-only metadata for `MessageQuotes`. */
   quotes?: string[];
+  /** Request-scoped reasoning selection that produced this user turn. */
+  reasoningOverride?: TReasoningOverride;
   expiredAt?: Date | null;
   createdAt?: Date;
   updatedAt?: Date;

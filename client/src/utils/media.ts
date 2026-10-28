@@ -47,7 +47,7 @@ function ownerOf(attachment: TAttachment): {
 
 /**
  * Stable identity for an attachment: `file_id ?? filepath` scoped by
- * `toolCallId` and `agentId`, else `type:toolCallId` for unkeyed tool
+ * `toolCallId` and `agentId`, else `type:toolCallId` with the same optional agent scope for unkeyed tool
  * artifacts like file_search citations. `undefined` means the row has no
  * stable identity and must never be compared to another — two entries that
  * cannot be told apart are two entries, not one.
@@ -69,7 +69,7 @@ export function attachmentIdentity(attachment: TAttachment): string | undefined 
     return agentId ? `${fileKey}::${toolCallId}::${agentId}` : `${fileKey}::${toolCallId}`;
   }
   if (type != null && toolCallId != null) {
-    return `${type}:${toolCallId}`;
+    return agentId ? `${type}:${toolCallId}::${agentId}` : `${type}:${toolCallId}`;
   }
   return undefined;
 }

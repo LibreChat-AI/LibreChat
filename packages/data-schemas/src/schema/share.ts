@@ -86,6 +86,10 @@ const shareSchema: Schema<ISharedLink> = new Schema(
 
 shareSchema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
 shareSchema.index({ conversationId: 1, user: 1, targetMessageId: 1, tenantId: 1 });
+/** The sidebar's "shared" filter asks the opposite question of the index above: which
+ * conversations has THIS user shared. That leads with `conversationId`, so a user-scoped
+ * lookup could not use it and would scan every link in the deployment. */
+shareSchema.index({ user: 1, conversationId: 1 });
 shareSchema.index({ updatedAt: -1 });
 
 export default shareSchema;

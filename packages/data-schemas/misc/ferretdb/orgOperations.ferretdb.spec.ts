@@ -1,5 +1,6 @@
 import mongoose, { Schema, type Connection, type Model } from 'mongoose';
-import { initializeOrgCollections, createIndexesWithRetry, retryWithBackoff } from '~/utils/retry';
+import { createIndexesWithRetry, retryWithBackoff } from '~/utils/retry';
+import type { IndexBuildOptions } from '~/utils/retry';
 import { getModelSchemas } from './schemas';
 
 /**
@@ -30,9 +31,33 @@ const MODEL_COUNT = Object.keys(MODEL_SCHEMAS).length;
 const NEW_MODEL = 'OrgEvent';
 const NEW_COLLECTION = 'orgevents';
 
-function registerModels(conn: Connection): Record<string, Model<unknown>> {
+/**
+ * Creates every collection and its indexes for a set of models, sequentially and
+ * with per-model deadlock retry, to keep contention on the catalog low.
+ */
+async function initializeOrgCollections(
+  models: Record<string, Model<unknown>>,
+  options: IndexBuildOptions = {},
+): Promise<{ totalMs: number; perModel: Array<{ name: string; ms: number }> }> {
+  const perModel: Array<{ name: string; ms: number }> = [];
+  const t0 = Date.now();
+
+  for (const model of Object.values(models)) {
+    const modelStart = Date.now();
+    await model.createCollection();
+    await createIndexesWithRetry(model, options);
+    perModel.push({ name: model.modelName, ms: Date.now() - modelStart });
+  }
+
+  return { totalMs: Date.now() - t0, perModel };
+}
+
+function registerModels(
+  conn: Connection,
+  schemas: Record<string, Schema> = MODEL_SCHEMAS,
+): Record<string, Model<unknown>> {
   const models: Record<string, Model<unknown>> = {};
-  for (const [name, schema] of Object.entries(MODEL_SCHEMAS)) {
+  for (const [name, schema] of Object.entries(schemas)) {
     models[name] = conn.models[name] || conn.model(name, schema);
   }
   return models;
@@ -97,7 +122,7 @@ async function migrateOrg(
   schemas: Record<string, Schema>,
 ): Promise<MigrationResult> {
   const t0 = Date.now();
-  const models = registerModels(conn);
+  const models = registerModels(conn, schemas);
   const existingCollections = new Set(
     (await conn.db!.listCollections().toArray()).map((c) => c.name),
   );

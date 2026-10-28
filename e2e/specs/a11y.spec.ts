@@ -94,11 +94,15 @@ test('Conversation list rows should be accessible with their controls revealed',
   expect(accessibilityScanResults.violations).toEqual([]);
 });
 
-test('Tools menu should be accessible when open', async ({ page }) => {
+test('Attach and tools palette should be accessible when open', async ({ page }) => {
   await loadApp(page);
 
-  await page.locator('#tools-dropdown-button').first().click();
-  await expect(page.locator('#tools-dropdown-menu')).toBeVisible({ timeout: 10000 });
+  await page.getByRole('button', { name: 'Attach and tools' }).first().click();
+  const palette = page.getByRole('dialog', { name: 'Attach and tools' });
+  await expect(palette).toBeVisible({ timeout: 10000 });
+  await expect(
+    palette.getByRole('combobox', { name: 'Search tools, skills and servers', exact: true }),
+  ).toBeVisible();
 
   const accessibilityScanResults = await new AxeBuilder({ page }).analyze();
 

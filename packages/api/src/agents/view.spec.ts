@@ -87,6 +87,123 @@ const createRequest = (
   }) as ServerRequest;
 
 describe('subagent thread parent-scoped view', () => {
+  it('preserves every accepted identity and withdrawal target while budgeting Unicode message bodies', async () => {
+    const input = message('task-1:user', 'running', true);
+    input.subagentTask!.controlReceipts = Array.from({ length: 8 }, (_, index) => ({
+      invocationId: `pending-${index}`,
+      fingerprint: 'private',
+      controlId: `withdraw-${index}`,
+      action: 'queue',
+      status: 'accepted',
+      createdAt: new Date('2026-10-23T00:00:00Z'),
+      updatedAt: new Date('2026-10-23T00:00:01Z'),
+      message: '界'.repeat(4096),
+    }));
+    const handler = createSubagentThreadViewHandler({
+      getConvoOwnership: jest.fn().mockResolvedValue(parent),
+      getSubagentThreadForParent: jest.fn().mockResolvedValue(child),
+      getMessagesForSubagentThreadView: jest.fn().mockResolvedValue([input]),
+    });
+    const { response, json } = createResponse();
+    await handler(createRequest({}, { taskId: 'task-1' }), response);
+    const body = json.mock.calls[0][0];
+    expect(body.controlReceipts.map((receipt: { controlId: string }) => receipt.controlId)).toEqual(
+      Array.from({ length: 8 }, (_, index) => `withdraw-${index}`),
+    );
+    expect(
+      body.controlReceipts.some(
+        (receipt: { messageTruncated?: boolean }) => receipt.messageTruncated,
+      ),
+    ).toBe(true);
+    expect(body.controlReceiptsTruncated).not.toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(body), 'utf8')).toBeLessThanOrEqual(
+      SUBAGENT_THREAD_VIEW_LIMITS.responseBytes,
+    );
+  });
+
+  it('keeps complete stored Unicode control messages and omits whole old receipts to fit the budget', async () => {
+    const input = message('task-1:user', 'running', true);
+    input.subagentTask!.controlReceipts = Array.from({ length: 32 }, (_, index) => ({
+      invocationId: `full-${index}`,
+      fingerprint: 'private',
+      controlId: `control-${index}`,
+      action: 'steer',
+      status: 'applied',
+      createdAt: new Date('2026-10-23T00:00:00Z'),
+      updatedAt: new Date('2026-10-23T00:00:01Z'),
+      message: '🧭'.repeat(2048),
+    }));
+    const handler = createSubagentThreadViewHandler({
+      getConvoOwnership: jest.fn().mockResolvedValue(parent),
+      getSubagentThreadForParent: jest.fn().mockResolvedValue(child),
+      getMessagesForSubagentThreadView: jest
+        .fn()
+        .mockResolvedValue([message('task-1:assistant', 'completed'), input]),
+    });
+    const { response, json } = createResponse();
+    await handler(createRequest({}, { taskId: 'task-1' }), response);
+    const body = json.mock.calls[0][0];
+    expect(body.controlReceipts.length).toBeGreaterThan(0);
+    expect(body.controlReceipts.length).toBeLessThan(32);
+    expect(body.controlReceiptsTruncated).toBe(true);
+    expect(body.controlReceipts.at(-1).invocationId).toBe('full-31');
+    for (const receipt of body.controlReceipts) {
+      expect(receipt.message).toBe('🧭'.repeat(2048));
+      expect(receipt.messageTruncated).not.toBe(true);
+    }
+    expect(Buffer.byteLength(JSON.stringify(body), 'utf8')).toBeLessThanOrEqual(
+      SUBAGENT_THREAD_VIEW_LIMITS.responseBytes,
+    );
+  });
+
+  it.each([
+    [false, true, false],
+    [true, false, true],
+    [undefined, true, true],
+    [undefined, false, false],
+  ])(
+    'uses the seed recovery capability %s over assistant capability %s',
+    async (seed, assistant, expected) => {
+      const handler = createSubagentThreadViewHandler({
+        getConvoOwnership: jest.fn().mockResolvedValue(parent),
+        getSubagentThreadForParent: jest.fn().mockResolvedValue(child),
+        getMessagesForSubagentThreadView: jest
+          .fn()
+          .mockResolvedValue([
+            { ...message('task-1:assistant', 'completed'), contentRecoveryAvailable: assistant },
+            ...(seed == null
+              ? []
+              : [{ ...message('task-1:user', 'running', true), contentRecoveryAvailable: seed }]),
+          ]),
+      });
+      const { response, json } = createResponse();
+      await handler(createRequest({}, { taskId: 'task-1' }), response);
+      expect(json.mock.calls[0][0].turns[0].contentRecoveryAvailable).toBe(expected);
+    },
+  );
+
+  it.each([false, true])(
+    'returns task recovery enrollment %s from its loaded seed',
+    async (available) => {
+      const input = {
+        ...message('task-1:user', 'running', true),
+        contentRecoveryAvailable: available,
+      };
+      const getMessages = jest.fn().mockResolvedValue([input]);
+      const handler = createSubagentThreadViewHandler({
+        getConvoOwnership: jest.fn().mockResolvedValue(parent),
+        getSubagentThreadForParent: jest.fn().mockResolvedValue(child),
+        getMessagesForSubagentThreadView: getMessages,
+      });
+      const { response, json } = createResponse();
+      await handler(createRequest({}, { taskId: 'task-1' }), response);
+      expect(json.mock.calls[0][0].turns).toEqual([
+        expect.objectContaining({ taskId: 'task-1', contentRecoveryAvailable: available }),
+      ]);
+      expect(getMessages).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('returns a bounded public child projection through the owning parent', async () => {
     const getConvoOwnership = jest.fn().mockResolvedValue(parent);
     const newest = {
@@ -132,6 +249,7 @@ describe('subagent thread parent-scoped view', () => {
       turns: [
         {
           taskId: 'task-1',
+          contentRecoveryAvailable: false,
           trigger: {
             kind: 'parent_dispatch',
             summary: 'Investigate this.',
@@ -433,7 +551,6 @@ describe('subagent thread parent-scoped view', () => {
           action: 'steer',
           status: 'applied',
           boundary: 'tool',
-          messageTruncated: true,
         }),
       ]),
     );
@@ -441,11 +558,117 @@ describe('subagent thread parent-scoped view', () => {
       (receipt: { invocationId: string }) => receipt.invocationId === 'invocation-1',
     );
     expect(projected).toBeDefined();
-    expect(Buffer.byteLength(projected?.message ?? '', 'utf8')).toBeLessThanOrEqual(512);
+    expect(projected?.message).toBe('x'.repeat(1_000));
+    expect(projected?.messageTruncated).not.toBe(true);
     expect(view.controlReceipts).toHaveLength(32);
     expect(view.controlReceiptsTruncated).toBe(true);
     expect(JSON.stringify(view)).not.toContain('private-reservation');
     expect(JSON.stringify(view)).not.toContain('private-fingerprint');
+  });
+
+  it.each([
+    'truncated input',
+    'missing input',
+    'mismatched boundary',
+    'malformed source',
+    'other task',
+    'earlier steer only',
+  ] as const)(
+    'preserves usable legacy activity with %s instead of an unsafe reconstruction',
+    async (condition) => {
+      const input = message('task-1:user', 'running', true);
+      if (condition === 'truncated input')
+        Object.assign(input, {
+          text: 'Long current task. '.repeat(575).slice(0, 8192),
+          textProjectionTruncated: true,
+        });
+      const activity = [
+        { type: 'reasoning', text: 'Retained current reasoning.' },
+        { type: 'writing', text: 'Retained current activity.' },
+      ];
+      const transcript = [
+        { type: 'human', data: { content: 'Previous task.' } },
+        {
+          type: 'human',
+          data: {
+            content: 'Previous guidance.',
+            additional_kwargs: { injected: true, source: 'steer' },
+          },
+        },
+        { type: 'ai', data: { content: 'Private previous activity.' } },
+        {
+          type: 'human',
+          data: { content: condition === 'mismatched boundary' ? 'Other prompt.' : input.text },
+        },
+        { type: 'ai', data: { content: 'Current reconstructed activity.' } },
+      ];
+      const selected = {
+        ...message('task-1:assistant', 'completed'),
+        subagentActivityProjectionJson: JSON.stringify(activity),
+        subagentTranscript: {
+          taskId: condition === 'other task' ? 'task-other' : 'task-1',
+          mode: 'replace' as const,
+          messagesJson: condition === 'malformed source' ? 'not-json' : JSON.stringify(transcript),
+        },
+      };
+      const handler = createSubagentThreadViewHandler({
+        getConvoOwnership: jest.fn().mockResolvedValue(parent),
+        getSubagentThreadForParent: jest
+          .fn()
+          .mockResolvedValue({ ...child, subagentThreadLease: undefined }),
+        getMessagesForSubagentThreadView: jest
+          .fn()
+          .mockResolvedValue(condition === 'missing input' ? [selected] : [selected, input]),
+      });
+      const { response, json } = createResponse();
+      await handler(createRequest({}, { taskId: 'task-1' }), response);
+      expect(json.mock.calls[0][0]).toMatchObject({ activity, activityTruncated: false });
+      expect(JSON.stringify(json.mock.calls[0][0])).not.toContain('Private previous activity.');
+    },
+  );
+
+  it('reprojects legacy activity only when current-task guidance has a safe transcript boundary', async () => {
+    const selected = {
+      ...message('task-1:assistant', 'completed'),
+      subagentActivityProjectionJson: JSON.stringify([
+        { type: 'writing', text: 'Old projection without guidance.' },
+      ]),
+      subagentTranscript: {
+        taskId: 'task-1',
+        mode: 'replace' as const,
+        messagesJson: JSON.stringify([
+          { type: 'human', data: { content: 'Previous task.' } },
+          { type: 'ai', data: { content: 'Private previous activity.' } },
+          { type: 'human', data: { content: 'Investigate this.' } },
+          { type: 'ai', data: { content: 'Before guidance.' } },
+          {
+            type: 'human',
+            data: {
+              content: 'Current guidance.',
+              additional_kwargs: { injected: true, source: 'steer' },
+            },
+          },
+          { type: 'ai', data: { content: 'After guidance.' } },
+        ]),
+      },
+    };
+    const handler = createSubagentThreadViewHandler({
+      getConvoOwnership: jest.fn().mockResolvedValue(parent),
+      getSubagentThreadForParent: jest
+        .fn()
+        .mockResolvedValue({ ...child, subagentThreadLease: undefined }),
+      getMessagesForSubagentThreadView: jest
+        .fn()
+        .mockResolvedValue([selected, message('task-1:user', 'running', true)]),
+    });
+    const { response, json } = createResponse();
+    await handler(createRequest({}, { taskId: 'task-1' }), response);
+    expect(json.mock.calls[0][0].activity).toEqual([
+      { type: 'writing', text: 'Before guidance.' },
+      { type: 'steer', steer: 'Current guidance.' },
+      { type: 'writing', text: 'After guidance.' },
+    ]);
+    expect(JSON.stringify(json.mock.calls[0][0])).not.toContain('Private previous activity.');
   });
 
   it('fences replacement activity to the exact selected task input', async () => {

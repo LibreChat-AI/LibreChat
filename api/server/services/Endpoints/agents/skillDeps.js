@@ -1,4 +1,3 @@
-const crypto = require('crypto');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { batchUploadCodeEnvFiles } = require('~/server/services/Files/Code/crud');
 const {
@@ -17,17 +16,18 @@ const {
 const {
   checkAccess,
   isMemoryEnabled,
-  getStorageMetadata,
   resolveRequestTenantId,
   enrichWithSkillConfigurable,
   mergeDeploymentSkillIds,
   createDeploymentSkillMethods,
+  createSkillFileSaver,
+  createSkillManagementFileSaver,
+  createSkillStorageResolver,
   isDeploymentSkillFileSource,
   getDeploymentSkillDownloadStream,
 } = require('@librechat/api');
 const {
   Permissions,
-  FileContext,
   ResourceType,
   PermissionBits,
   AccessRoleIds,
@@ -39,6 +39,7 @@ const {
 const { checkPermission, grantPermission } = require('~/server/services/PermissionService');
 const { getFileStrategy } = require('~/server/utils/getFileStrategy');
 const db = require('~/models');
+const { deleteSkillForLegacy } = require('~/server/services/Skills/deletion');
 
 const deploymentSkillMethods = createDeploymentSkillMethods({
   getSkillById: db.getSkillById,
@@ -68,80 +69,25 @@ function getSkillStrategyFunctions(source) {
   return getStrategyFunctions(source);
 }
 
-function resolveSkillStorage(req, { isImage = false } = {}) {
-  const source = getFileStrategy(req.config, { context: FileContext.skill_file, isImage });
-  const strategy = getStrategyFunctions(source);
-  if (!strategy.saveBuffer) {
-    throw new Error(`Storage backend "${source}" does not support file writes`);
-  }
-  return { saveBuffer: strategy.saveBuffer, source };
-}
+const resolveSkillStorageForConfig = createSkillStorageResolver({
+  getFileStrategy,
+  getStrategyFunctions,
+});
+const resolveSkillStorage = (req, options) => resolveSkillStorageForConfig(req.config, options);
 
-function basename(relativePath) {
-  const slash = relativePath.lastIndexOf('/');
-  return slash === -1 ? relativePath : relativePath.slice(slash + 1);
-}
+const skillFileSaveDeps = {
+  getSkillFileByPath: db.getSkillFileByPath,
+  upsertSkillFile: db.upsertSkillFile,
+  resolveStorage: resolveSkillStorage,
+  getStrategyFunctions,
+  reserveSkillUploadIntent: db.reserveSkillUploadIntent,
+  transitionSkillUploadIntent: db.transitionSkillUploadIntent,
+};
+const saveSkillFileContent = createSkillFileSaver(skillFileSaveDeps);
+const saveSkillManagementFileContent = createSkillManagementFileSaver(skillFileSaveDeps);
 
-async function saveSkillFileContent({ req, skillId, relativePath, content, mimeType }) {
-  const existingFile = await db.getSkillFileByPath(skillId, relativePath);
-  const tenantId = resolveRequestTenantId(req);
-  const fileId = crypto.randomUUID();
-  const filename = basename(relativePath);
-  const storageFileName = `${fileId}__${filename}`;
-  const buffer = Buffer.from(content, 'utf8');
-  const storage = resolveSkillStorage(req, { isImage: mimeType.startsWith('image/') });
-  const filepath = await storage.saveBuffer({
-    userId: req.user.id,
-    buffer,
-    fileName: storageFileName,
-    basePath: 'uploads',
-    tenantId,
-  });
-  const storageMetadata = getStorageMetadata({ filepath, source: storage.source });
-
-  let result;
-  try {
-    result = await db.upsertSkillFile({
-      skillId,
-      relativePath,
-      file_id: fileId,
-      filename,
-      filepath,
-      ...storageMetadata,
-      source: storage.source,
-      mimeType,
-      bytes: buffer.length,
-      isExecutable: false,
-      author: req.user._id ?? req.user.id,
-      tenantId,
-    });
-    if (!result) {
-      const error = new Error('Skill file save failed to persist metadata');
-      error.code = 'SKILL_FILE_UPSERT_NOT_FOUND';
-      throw error;
-    }
-  } catch (error) {
-    const { deleteFile } = getStrategyFunctions(storage.source);
-    if (deleteFile) {
-      await deleteFile(req, { filepath, user: req.user.id, tenantId }).catch(() => undefined);
-    }
-    throw error;
-  }
-
-  if (existingFile && existingFile.filepath !== filepath) {
-    const { deleteFile } = getStrategyFunctions(existingFile.source);
-    if (deleteFile) {
-      deleteFile(req, {
-        filepath: existingFile.filepath,
-        storageKey: existingFile.storageKey,
-        storageRegion: existingFile.storageRegion,
-        user: existingFile.author ?? req.user.id,
-        tenantId: existingFile.tenantId ?? tenantId,
-      }).catch(() => undefined);
-    }
-  }
-
-  return { bytes: result.bytes, relativePath: result.relativePath };
+function getSkillManagementFileSaver() {
+  return saveSkillManagementFileContent;
 }
 
 function canCreateSkill({ req }) {
@@ -382,7 +328,7 @@ const skillToolDeps = {
   getAuthorSkillByName,
   createSkill: db.createSkill,
   updateSkill: db.updateSkill,
-  deleteSkill: db.deleteSkill,
+  deleteSkill: deleteSkillForLegacy,
   canCreateSkill,
   canEditSkill,
   grantSkillOwner,
@@ -425,13 +371,11 @@ function getSkillToolDeps() {
 
 module.exports = {
   getSkillToolDeps,
+  getSkillManagementFileSaver,
   canAuthorSkillFiles,
-  isAgentSkillAuthoringEnabledForRun,
   getSkillDbMethods,
   withDeploymentSkillIds,
   getSkillStrategyFunctions,
-  enrichWithSkillConfigurable,
-  buildSkillPrimedIdsByName,
   buildAgentToolContext,
   resolveMemoryAvailability,
   enrichLoadedToolsWithAgentContext,

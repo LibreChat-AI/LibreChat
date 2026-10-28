@@ -6,7 +6,14 @@ import {
   registerFcpAttribution,
   restoreRumEmitter,
   testExports,
+  forwardQueuedAssetEvents,
 } from './diagnostics';
+import {
+  startClientLogs,
+  stopClientLogs,
+  reportBoundaryError,
+  testExports as logTestExports,
+} from './logs';
 
 const mockOnFCP = jest.fn();
 
@@ -237,5 +244,226 @@ describe('rum diagnostics', () => {
     await registerFcpAttribution({ addAction }, () => '/c/new');
 
     expect(mockOnFCP).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('forwardQueuedAssetEvents', () => {
+  const fetchMock = jest.fn((_url: string, _init: RequestInit) => Promise.resolve({ status: 200 }));
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    logTestExports.resetPageState();
+    testExports.resetDiagnosticsState();
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(() => Promise.resolve({ status: 200 }));
+    sessionStorage.clear();
+    window.__lcRumQueue = [
+      {
+        type: 'stale-asset-recovery-start',
+        at: 10,
+        attributes: { clientBuildId: 'index-Old1.js' },
+      },
+      { type: 'pageshow', at: 11, attributes: { persisted: false } },
+    ];
+  });
+
+  afterEach(() => {
+    stopClientLogs();
+    jest.useRealTimers();
+  });
+
+  const loggedEventNames = () =>
+    fetchMock.mock.calls.flatMap(([, init]) =>
+      JSON.parse(String(init.body)).resourceLogs[0].scopeLogs[0].logRecords.map(
+        (record: { body: { stringValue: string } }) => record.body.stringValue,
+      ),
+    );
+
+  it('delivers queued stale-asset events without the RUM SDK and never twice', async () => {
+    startClientLogs({
+      endpoint: '/api/rum/v1/logs',
+      serviceName: 'librechat-web',
+      buildId: 'index-New2.js',
+      getToken: () => 'session-jwt',
+      fetch: fetchMock,
+    });
+
+    forwardQueuedAssetEvents();
+    forwardQueuedAssetEvents();
+    expect(window.__lcRumQueue?.[0]).not.toHaveProperty('logged');
+
+    await jest.advanceTimersByTimeAsync(5_000);
+
+    expect(window.__lcRumQueue?.[0]).toEqual(expect.objectContaining({ logged: true }));
+    expect(window.__lcRumQueue?.[1]).not.toHaveProperty('logged');
+    expect(JSON.parse(sessionStorage.getItem('lc-rum-queue') ?? '[]')[0].logged).toBe(true);
+
+    flushEarlyRumQueue({ addAction: jest.fn() });
+    await jest.advanceTimersByTimeAsync(5_000);
+
+    expect(loggedEventNames()).toEqual(['stale_asset.recovery_start']);
+  });
+
+  it('keeps an event persisted across the RUM SDK flush until its log record is acknowledged', async () => {
+    const addAction = jest.fn();
+    startClientLogs({
+      endpoint: '/api/rum/v1/logs',
+      serviceName: 'librechat-web',
+      buildId: 'index-New2.js',
+      getToken: () => 'session-jwt',
+      fetch: fetchMock,
+    });
+
+    forwardQueuedAssetEvents();
+    flushEarlyRumQueue({ addAction });
+
+    const persisted = JSON.parse(sessionStorage.getItem('lc-rum-queue') ?? '[]');
+    expect(persisted).toEqual([
+      expect.objectContaining({ type: 'stale-asset-recovery-start', actionSent: true }),
+    ]);
+    expect(addAction).toHaveBeenCalledWith('early-stale-asset-recovery-start', expect.any(Object));
+
+    await jest.advanceTimersByTimeAsync(5_000);
+
+    expect(window.__lcRumQueue).toEqual([]);
+    expect(sessionStorage.getItem('lc-rum-queue')).toBeNull();
+    expect(loggedEventNames()).toEqual(['stale_asset.recovery_start']);
+  });
+
+  it('replays a persisted event after reload without repeating its RUM action', () => {
+    const addAction = jest.fn();
+    window.__lcRumQueue = [
+      { type: 'stale-asset-recovery-start', at: 10, attributes: {}, actionSent: true },
+    ];
+
+    flushEarlyRumQueue({ addAction });
+
+    expect(addAction).not.toHaveBeenCalledWith(
+      'early-stale-asset-recovery-start',
+      expect.anything(),
+    );
+  });
+
+  it('keeps an undelivered event eligible for replay on the next page', async () => {
+    fetchMock.mockImplementation(() => Promise.resolve({ status: 503 }));
+    startClientLogs({
+      endpoint: '/api/rum/v1/logs',
+      serviceName: 'librechat-web',
+      buildId: 'index-New2.js',
+      getToken: () => 'session-jwt',
+      fetch: fetchMock,
+    });
+
+    forwardQueuedAssetEvents();
+    await jest.advanceTimersByTimeAsync(5_000);
+    stopClientLogs();
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(window.__lcRumQueue?.[0]).not.toHaveProperty('logged');
+    expect(sessionStorage.getItem('lc-rum-queue')).toBeNull();
+  });
+
+  it.each(['queued', 'sending'])(
+    'retries an unacknowledged %s event after stop/start in the same page',
+    async (state) => {
+      if (state === 'sending') {
+        fetchMock.mockImplementationOnce(() => new Promise(() => undefined));
+      }
+      const config = {
+        endpoint: '/api/rum/v1/logs',
+        serviceName: 'librechat-web',
+        buildId: 'index-New2.js',
+        getToken: () => 'session-jwt',
+        fetch: fetchMock,
+      };
+      startClientLogs(config);
+      forwardQueuedAssetEvents();
+      flushEarlyRumQueue({ addAction: jest.fn() });
+      if (state === 'sending') {
+        await jest.advanceTimersByTimeAsync(5_000);
+      }
+      stopClientLogs();
+      expect(JSON.parse(sessionStorage.getItem('lc-rum-queue') ?? '[]')).toHaveLength(1);
+      fetchMock.mockImplementation(() => Promise.resolve({ status: 200 }));
+      startClientLogs(config);
+      forwardQueuedAssetEvents();
+      await jest.advanceTimersByTimeAsync(5_000);
+      expect(window.__lcRumQueue).toEqual([]);
+      expect(sessionStorage.getItem('lc-rum-queue')).toBeNull();
+    },
+  );
+
+  it('persists live asset events after the SDK emitter has replaced the early queue', async () => {
+    startClientLogs({
+      endpoint: '/api/rum/v1/logs',
+      serviceName: 'librechat-web',
+      buildId: 'index-New2.js',
+      getToken: () => 'session-jwt',
+      fetch: fetchMock,
+    });
+    window.__lcRumQueue = [];
+    restoreRumEmitter({ addAction: jest.fn() });
+    window.__lcRumPush?.('stale-asset-recovery-reload');
+    expect(JSON.parse(sessionStorage.getItem('lc-rum-queue') ?? '[]')).toEqual([
+      expect.objectContaining({ type: 'stale-asset-recovery-reload', actionSent: true }),
+    ]);
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(sessionStorage.getItem('lc-rum-queue')).toBeNull();
+  });
+
+  it('retains budget-rejected asset events across the SDK flush without false in-flight markers', async () => {
+    startClientLogs({
+      endpoint: '/api/rum/v1/logs',
+      serviceName: 'librechat-web',
+      buildId: 'index-New2.js',
+      getToken: () => 'session-jwt',
+      fetch: fetchMock,
+    });
+    for (let i = 0; i < 30; i += 1) {
+      reportBoundaryError(`boundary-${i}`, new Error('failed'));
+    }
+    forwardQueuedAssetEvents();
+    flushEarlyRumQueue({ addAction: jest.fn() });
+    expect(JSON.parse(sessionStorage.getItem('lc-rum-queue') ?? '[]')).toHaveLength(1);
+    await jest.advanceTimersByTimeAsync(60_000);
+    forwardQueuedAssetEvents();
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(loggedEventNames()).toContain('stale_asset.recovery_start');
+    expect(sessionStorage.getItem('lc-rum-queue')).toBeNull();
+  });
+
+  it('keeps an auth-dropped asset event persisted and eligible after token renewal', async () => {
+    fetchMock.mockImplementationOnce(() => Promise.resolve({ status: 204 }));
+    startClientLogs({
+      endpoint: '/api/rum/v1/logs',
+      serviceName: 'librechat-web',
+      buildId: 'index-New2.js',
+      getToken: () => 'expired-jwt',
+      fetch: fetchMock,
+    });
+    forwardQueuedAssetEvents();
+    flushEarlyRumQueue({ addAction: jest.fn() });
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(window.__lcRumQueue?.[0]).not.toHaveProperty('logged');
+    expect(JSON.parse(sessionStorage.getItem('lc-rum-queue') ?? '[]')).toHaveLength(1);
+    stopClientLogs();
+    startClientLogs({
+      endpoint: '/api/rum/v1/logs',
+      serviceName: 'librechat-web',
+      buildId: 'index-New2.js',
+      getToken: () => 'renewed-jwt',
+      fetch: fetchMock,
+    });
+    forwardQueuedAssetEvents();
+    await jest.advanceTimersByTimeAsync(5_000);
+    expect(window.__lcRumQueue).toEqual([]);
+    expect(sessionStorage.getItem('lc-rum-queue')).toBeNull();
+  });
+
+  it('leaves events unmarked when client logs are off', () => {
+    forwardQueuedAssetEvents();
+
+    expect(window.__lcRumQueue?.[0]).not.toHaveProperty('logged');
+    expect(sessionStorage.getItem('lc-rum-queue')).toBeNull();
   });
 });

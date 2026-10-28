@@ -22,7 +22,7 @@ describe('useVisibleTools', () => {
   });
 
   it('resolves an MCP tool id whose raw tool name itself contains the delimiter substring', () => {
-    // Regression test for https://github.com/danny-avila/LibreChat/issues/14440:
+    // Regression test for https://github.com/LibreChat-AI/LibreChat/issues/14440:
     // a raw MCP tool name that already contains "_mcp_" (e.g. one exposed
     // through a gateway that prefixes tool names by server) must still
     // resolve to the real server name - the *last* segment, not

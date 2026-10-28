@@ -1,6 +1,6 @@
 import React, { memo } from 'react';
 import { useRecoilValue } from 'recoil';
-import { UserIcon, useAvatar } from '@librechat/client';
+import { UserIcon, useAvatar, pxToRem } from '@librechat/client';
 import type { IconProps } from '~/common';
 import MessageEndpointIcon from './MessageEndpointIcon';
 import { useLocalize } from '~/hooks';
@@ -71,7 +71,7 @@ const UserAvatar = memo(
     return (
       <div
         title={username}
-        style={{ width: size, height: size }}
+        style={{ width: pxToRem(size), height: pxToRem(size) }}
         className={cn('relative flex items-center justify-center', className ?? '')}
       >
         {resolved.type === 'image' ? (
@@ -84,12 +84,10 @@ const UserAvatar = memo(
         ) : (
           <div
             style={{
-              backgroundColor: 'rgb(121, 137, 255)',
-              width: '20px',
-              height: '20px',
-              boxShadow: 'rgba(240, 246, 252, 0.1) 0px 0px 0px 1px',
+              width: pxToRem(20),
+              height: pxToRem(20),
             }}
-            className="relative flex h-9 w-9 items-center justify-center rounded-sm p-1 text-white"
+            className="bg-avatar-fill text-avatar-text ring-avatar-edge/10 relative flex h-9 w-9 items-center justify-center rounded-sm p-1 ring-1"
           >
             <UserIcon />
           </div>

@@ -114,10 +114,12 @@ async function sendAndExpectReply(page: Page, prompt: string, expectedReply: str
 }
 
 async function uploadProviderFile(page: Page) {
-  await page.getByRole('button', { name: 'Attach File Options' }).click();
-  await expect(page.getByText('Upload to Provider')).toBeVisible();
+  await page.getByRole('button', { name: 'Attach and tools', exact: true }).click();
+  const palette = page.getByRole('dialog', { name: 'Attach and tools', exact: true });
+  const uploadOption = palette.getByRole('button', { name: 'Upload to Provider', exact: true });
+  await expect(uploadOption).toBeVisible();
   const fileChooserPromise = page.waitForEvent('filechooser');
-  await page.getByText('Upload to Provider').click();
+  await uploadOption.click();
   const fileChooser = await fileChooserPromise;
   const uploadResponse = page.waitForResponse(
     (response) =>

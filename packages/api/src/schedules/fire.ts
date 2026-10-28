@@ -448,6 +448,8 @@ export async function fireSchedule(
         Date.now() +
         Math.min(ownerLimits.mcpPreflightTimeoutMs, deploymentLimits.mcpPreflightTimeoutMs);
       mcp = await deps.preflightMCP(schedule.agent_id, user, {
+        scheduleId: schedule.id,
+        ...(options?.manual === true && { manual: true }),
         signal: options?.signal,
         concurrency: Math.min(
           ownerLimits.mcpPreflightConcurrency,

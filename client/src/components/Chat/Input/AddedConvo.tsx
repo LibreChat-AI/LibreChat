@@ -37,24 +37,22 @@ export default function AddedConvo({
     return null;
   }
   return (
-    <div className="flex items-start gap-4 py-2.5 pl-3 pr-1.5 text-sm">
-      <span className="mt-0 flex h-6 w-6 flex-shrink-0 items-center justify-center">
+    <div className="flex items-start gap-4 py-2.5 ps-3 pe-1.5 text-sm">
+      <span className="mt-0 flex h-6 w-6 shrink-0 items-center justify-center">
         <div className="icon-md">
           <EndpointIcon
             conversation={addedConvo}
             endpointsConfig={endpointsConfig}
             agentsMap={agentsMap}
-            containerClassName="shadow-stroke overflow-hidden rounded-full"
+            containerClassName="avatar-stroke overflow-hidden rounded-full"
             context="menu-item"
             size={20}
           />
         </div>
       </span>
-      <span className="text-token-text-secondary line-clamp-3 flex-1 py-0.5 font-semibold">
-        {title}
-      </span>
+      <span className="text-text-secondary line-clamp-3 flex-1 py-0.5 font-semibold">{title}</span>
       <button
-        className="text-token-text-secondary flex-shrink-0"
+        className="text-text-secondary shrink-0"
         type="button"
         aria-label="Close added conversation"
         onClick={() => setAddedConvo(null)}

@@ -465,3 +465,100 @@ describe('getBranchSiblingIndexesForTarget', () => {
     ]);
   });
 });
+
+describe('rendered root branch ownership', () => {
+  it.each(['routed', 'override', 'promoted'] as const)(
+    'uses the rendered root selection for all tail readers during %s navigation',
+    (mode) => {
+      const queryClient = createQueryClient();
+      const jotaiStore = createStore();
+      const owner = mode === 'promoted' ? 'server-conversation' : 'destination';
+      const queryId = mode === 'promoted' ? 'new' : owner;
+      const messages = [
+        { ...userMessage, messageId: 'older-root', conversationId: owner, parentMessageId: null },
+        {
+          ...assistantMessage,
+          messageId: 'older-tail',
+          conversationId: owner,
+          parentMessageId: 'older-root',
+        },
+        { ...userMessage, messageId: 'newer-root', conversationId: owner, parentMessageId: null },
+      ];
+      queryClient.setQueryData([QueryKeys.messages, queryId], messages);
+      jotaiStore.set(siblingIdxFamily(owner), 1);
+      const override = mode === 'override' ? queryId : undefined;
+      const { result } = renderHook(
+        () => ({
+          message: useLatestMessage(0, override),
+          id: useLatestMessageId(0, override),
+          meta: useLatestMessageMeta(0, override),
+          read: useGetLatestMessage(0, override),
+        }),
+        {
+          wrapper: createWrapper(
+            queryClient,
+            ({ set }) => set(store.conversationByIndex(0), conversation),
+            mode === 'override' ? '/c/source' : `/c/${queryId}`,
+            jotaiStore,
+          ),
+        },
+      );
+
+      expect(result.current.message?.messageId).toBe('older-tail');
+      expect(result.current.id).toBe('older-tail');
+      expect(result.current.meta?.messageId).toBe('older-tail');
+      expect(result.current.read()?.messageId).toBe('older-tail');
+    },
+  );
+});
+
+describe('deep conversation branches', () => {
+  const messages = Array.from({ length: 12_000 }, (_, index) => ({
+    ...userMessage,
+    messageId: `deep-${index}`,
+    parentMessageId: index === 0 ? null : `deep-${index - 1}`,
+  }));
+  const olderTail = {
+    ...assistantMessage,
+    messageId: 'older-tail',
+    parentMessageId: 'deep-11999',
+  };
+  const newerTail = { ...olderTail, messageId: 'newer-tail' };
+  const branched = [...messages, olderTail, newerTail];
+
+  it('collects deep branch parents without using the JavaScript call stack', () => {
+    expect(getMessageBranchSiblingParentIds(branched, 'deep')).toEqual(['deep-11999']);
+    expect(getMessageBranchSiblingParentIds([userMessage, assistantMessage], 'small')).toEqual([]);
+  });
+
+  it('restores deep older branches and handles a missing target without overflowing', () => {
+    expect(getBranchSiblingIndexesForTarget(branched, 'older-tail', 'deep')).toEqual([
+      { parentMessageId: 'deep-11999', siblingIdx: 1 },
+    ]);
+    expect(getBranchSiblingIndexesForTarget(branched, 'missing', 'deep')).toEqual([]);
+  });
+
+  it('stops at an ancestor target without descending through its entire history', () => {
+    expect(getBranchSiblingIndexesForTarget(branched, 'deep-0', 'deep')).toEqual([]);
+  });
+
+  it('discards branch choices from an unrelated subtree', () => {
+    const roots = [
+      { ...userMessage, messageId: 'root-old', parentMessageId: null },
+      { ...assistantMessage, messageId: 'old-first', parentMessageId: 'root-old' },
+      { ...assistantMessage, messageId: 'old-second', parentMessageId: 'root-old' },
+      { ...userMessage, messageId: 'root-new', parentMessageId: null },
+      { ...assistantMessage, messageId: 'new-first', parentMessageId: 'root-new' },
+      { ...assistantMessage, messageId: 'new-second', parentMessageId: 'root-new' },
+    ];
+    expect(getMessageBranchSiblingParentIds(roots, 'roots')).toEqual([
+      'roots',
+      'root-old',
+      'root-new',
+    ]);
+    expect(getBranchSiblingIndexesForTarget(roots, 'new-first', 'roots')).toEqual([
+      { parentMessageId: 'roots', siblingIdx: 0 },
+      { parentMessageId: 'root-new', siblingIdx: 1 },
+    ]);
+  });
+});

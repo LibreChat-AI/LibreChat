@@ -10,11 +10,16 @@ jest.mock('openid-client', () => ({
   refreshTokenGrant: jest.fn(),
 }));
 
-jest.mock('librechat-data-provider', () => ({
-  CacheKeys: { ADMIN_OAUTH_EXCHANGE: 'admin-oauth-exchange' },
-}));
+jest.mock('librechat-data-provider', () => {
+  const actual = jest.requireActual('librechat-data-provider');
+  return {
+    ...actual,
+    CacheKeys: { ...actual.CacheKeys, ADMIN_OAUTH_EXCHANGE: 'admin-oauth-exchange' },
+  };
+});
 
 jest.mock('@librechat/data-schemas', () => ({
+  ...jest.requireActual('@librechat/data-schemas'),
   logger: {
     debug: jest.fn(),
     error: jest.fn(),
@@ -37,6 +42,7 @@ jest.mock('@librechat/api', () => {
   }
 
   return {
+    ...jest.requireActual('@librechat/api'),
     isEnabled: jest.fn(),
     getAdminPanelUrl: jest.fn(() => 'http://admin.example.com'),
     exchangeAdminCode: jest.fn(),
@@ -60,8 +66,9 @@ jest.mock('@librechat/api', () => {
   };
 });
 
+const mockAdminLoginController = jest.fn((req, res) => res.status(200).end());
 jest.mock('~/server/controllers/auth/LoginController', () => ({
-  loginController: jest.fn((req, res) => res.status(200).end()),
+  loginController: (...args) => mockAdminLoginController(...args),
 }));
 
 jest.mock('~/server/middleware/roles/capabilities', () => ({
@@ -632,6 +639,27 @@ describe('admin local login route', () => {
     expect(rejected.status).toBe(403);
     expect(middleware.loginLimiter).not.toHaveBeenCalled();
     expect(middleware.requireLocalAuth).not.toHaveBeenCalled();
+  });
+
+  it('preserves the additive required-setup response contract for admin clients', async () => {
+    mockAdminLoginController.mockImplementationOnce((req, res) =>
+      res.status(200).json({
+        twoFAPending: true,
+        twoFASetupRequired: true,
+        tempToken: 'setup-token',
+      }),
+    );
+
+    const response = await request(app).post('/api/admin/login/local').send({
+      email: 'admin@example.com',
+      password: 'password',
+    });
+
+    expect(response.body).toEqual({
+      twoFAPending: true,
+      twoFASetupRequired: true,
+      tempToken: 'setup-token',
+    });
   });
 
   it('stops before local auth when the email login gate rejects the request', async () => {

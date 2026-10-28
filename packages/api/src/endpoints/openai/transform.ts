@@ -1,10 +1,10 @@
-import { EModelEndpoint } from 'librechat-data-provider';
+import { EModelEndpoint, tConversationSchema } from 'librechat-data-provider';
 import type { GoogleAIToolType } from '@librechat/agents/langchain/google-common';
 import type { ClientOptions } from '@librechat/agents';
 import type * as t from '~/types';
 import { knownOpenAIParams } from './llm';
 
-const anthropicExcludeParams = new Set(['anthropicApiUrl']);
+const anthropicExcludeParams = new Set(['anthropicApiUrl', 'outputConfig']);
 const googleExcludeParams = new Set([
   'safetySettings',
   'location',
@@ -32,6 +32,7 @@ export function transformToOpenAIConfig({
   addParams,
   dropParams,
   defaultParams,
+  inferenceParameters,
   llmConfig,
   fromEndpoint,
 }: {
@@ -39,6 +40,7 @@ export function transformToOpenAIConfig({
   addParams?: Record<string, unknown>;
   dropParams?: string[];
   defaultParams?: Record<string, unknown>;
+  inferenceParameters?: Record<string, unknown>;
   llmConfig: ClientOptions;
   fromEndpoint: string;
 }): {
@@ -91,6 +93,20 @@ export function transformToOpenAIConfig({
     }
   }
 
+  if (inferenceParameters != null) {
+    for (const [key, value] of Object.entries(defaultParams ?? {})) {
+      if (
+        !Object.prototype.hasOwnProperty.call(tConversationSchema.shape, key) &&
+        (key === 'seed' || !Object.prototype.hasOwnProperty.call(openAIConfig, key)) &&
+        modelKwargs[key] === undefined
+      ) {
+        modelKwargs[key] = value;
+      }
+    }
+    Object.assign(modelKwargs, inferenceParameters);
+    hasModelKwargs = Object.keys(modelKwargs).length > 0;
+  }
+
   if (addParams && typeof addParams === 'object') {
     for (const [key, value] of Object.entries(addParams)) {
       /** Skip web_search / url_context - handled separately as native tools */
@@ -98,7 +114,13 @@ export function transformToOpenAIConfig({
         continue;
       }
 
-      if (knownOpenAIParams.has(key)) {
+      if (
+        inferenceParameters != null &&
+        (key === 'seed' || Object.prototype.hasOwnProperty.call(inferenceParameters, key))
+      ) {
+        modelKwargs[key] = value;
+        hasModelKwargs = true;
+      } else if (knownOpenAIParams.has(key)) {
         (openAIConfig as Record<string, unknown>)[key] = value;
       } else {
         modelKwargs[key] = value;

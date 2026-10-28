@@ -22,6 +22,7 @@ import type { TokenResult } from './flight';
 import {
   createOpenIDRefreshOwnershipError,
   isOpenIDRefreshOwnershipError,
+  reloadOpenIDSessionIfPersisted,
   toOpenIDLogArgument,
 } from './errors';
 
@@ -800,12 +801,7 @@ export function createOpenIDRefreshRecoveryService(
     if (assertLeaseOwned) {
       await assertLeaseOwned();
     }
-    if (typeof req?.session?.reload === 'function') {
-      const reload = req.session.reload.bind(req.session);
-      await new Promise<void>((resolve, reject) => {
-        reload((error?: Error | null) => (error ? reject(error) : resolve()));
-      });
-    }
+    await reloadOpenIDSessionIfPersisted(req?.session);
     if (discardSessionTokens && req?.session?.openidTokens) {
       delete req.session.openidTokens;
     }

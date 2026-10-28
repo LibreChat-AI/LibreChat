@@ -1,4 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { reasoningOverrideSchema } from 'librechat-data-provider';
+import { Constants, CODE_APPROVAL_MODES } from 'librechat-data-provider';
+import type { TReasoningOverride } from 'librechat-data-provider';
+import type { CodeApprovalMode } from 'librechat-data-provider';
 import type { FilterQuery, Model, Types } from 'mongoose';
 import type {
   AgentQueuedTurnActiveRecord,
@@ -108,6 +112,10 @@ export interface EnqueueAgentQueuedTurnInput extends AgentQueuedTurnConversation
   files?: readonly AgentQueuedTurnFileRef[];
   quotes?: readonly string[];
   manualSkills?: readonly string[];
+  codeApprovalMode?: CodeApprovalMode;
+  /** Internal publication fence, committed with approval-bearing rows. */
+  deliveryReservation?: { queuedTurnId: string; deliveryKey: string };
+  reasoningOverride?: TReasoningOverride;
   expectedPredecessorCreatedAt?: number;
   priority?: boolean;
   availableAt?: Date;
@@ -173,7 +181,7 @@ export interface AgentQueuedTurnPredecessor {
 
 function getRootLineagePredecessorId(parentMessageId: string): string {
   return `${ROOT_LINEAGE_PREDECESSOR_PREFIX}${createHash('sha256')
-    .update(requireBoundedString(parentMessageId, 256))
+    .update(requireBoundedString(parentMessageId, Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH))
     .digest('base64url')}`;
 }
 
@@ -203,9 +211,13 @@ export interface AgentQueuedTurnMethods {
   listAgentQueuedTurnReceipts: (
     input: AgentQueuedTurnConversationScope & { clientRequestIds?: readonly string[] },
   ) => Promise<AgentQueuedTurnActiveRecord[]>;
-  findQueuedTurnsNeedingDelivery: (limit?: number) => Promise<AgentQueuedTurnRecord[]>;
+  findQueuedTurnsNeedingDelivery: (
+    limit?: number,
+    activity?: { found: boolean },
+  ) => Promise<AgentQueuedTurnRecord[]>;
   claimQueuedTurnsForAdmissionReconciliation: (
     input: ClaimAgentQueuedTurnReconciliationInput,
+    activity?: { found: boolean },
   ) => Promise<AgentQueuedTurnRecord[]>;
   deferAgentQueuedTurnAdmissionReconciliation: (
     input: AgentQueuedTurnConversationScope & {
@@ -303,12 +315,6 @@ export interface AgentQueuedTurnMethods {
       allowLegacyPredecessorInference?: boolean;
     },
   ) => Promise<AgentQueuedTurnPredecessor | null>;
-  drainAgentQueuedTurns: (
-    input: AgentQueuedTurnOwnerScope & {
-      conversationId?: string;
-      settledAt?: Date;
-    },
-  ) => Promise<number>;
   deleteAgentQueuedTurns: (
     input: AgentQueuedTurnOwnerScope & { conversationId?: string },
   ) => Promise<number>;
@@ -512,6 +518,15 @@ function normalizeText(text: string): string {
   return normalized;
 }
 
+function normalizeReasoningOverride(
+  reasoningOverride: TReasoningOverride | undefined,
+): TReasoningOverride | undefined {
+  if (reasoningOverride == null) {
+    return undefined;
+  }
+  return reasoningOverrideSchema.parse(reasoningOverride);
+}
+
 function normalizePredecessor(value: number | undefined): number | undefined {
   if (value == null) {
     return undefined;
@@ -522,15 +537,29 @@ function normalizePredecessor(value: number | undefined): number | undefined {
   return value;
 }
 
+function requireCodeApprovalMode(mode: CodeApprovalMode): CodeApprovalMode {
+  if (!CODE_APPROVAL_MODES.includes(mode)) {
+    throw new TypeError('Agent queued turn coding approval mode is invalid');
+  }
+  return mode;
+}
+
 function normalizeEnqueue(input: EnqueueAgentQueuedTurnInput) {
   const normalized = {
     agentId: requireBoundedString(input.agentId, 256),
-    parentMessageId: requireBoundedString(input.parentMessageId, 256),
+    parentMessageId: requireBoundedString(
+      input.parentMessageId,
+      Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH,
+    ),
     clientRequestId: requireBoundedString(input.clientRequestId, 128),
     text: normalizeText(input.text),
     files: normalizeFiles(input.files),
     quotes: normalizeQuotes(input.quotes),
     manualSkills: normalizeManualSkills(input.manualSkills),
+    ...(input.codeApprovalMode != null && {
+      codeApprovalMode: requireCodeApprovalMode(input.codeApprovalMode),
+    }),
+    reasoningOverride: normalizeReasoningOverride(input.reasoningOverride),
     expectedPredecessorCreatedAt: normalizePredecessor(input.expectedPredecessorCreatedAt),
     priority: input.priority === true,
   };
@@ -603,6 +632,8 @@ function toRecord(turn: IAgentQueuedTurn): AgentQueuedTurnRecord {
     ...(turn.files != null && { files: turn.files }),
     ...(turn.quotes != null && { quotes: turn.quotes }),
     ...(turn.manualSkills != null && { manualSkills: turn.manualSkills }),
+    ...(turn.codeApprovalMode != null && { codeApprovalMode: turn.codeApprovalMode }),
+    ...(turn.reasoningOverride != null && { reasoningOverride: turn.reasoningOverride }),
     ...(turn.expectedPredecessorCreatedAt != null && {
       expectedPredecessorCreatedAt: turn.expectedPredecessorCreatedAt,
     }),
@@ -664,6 +695,8 @@ function toActiveRecord(turn: IAgentQueuedTurn): AgentQueuedTurnActiveRecord {
     ...(record.files != null && { files: record.files }),
     ...(record.quotes != null && { quotes: record.quotes }),
     ...(record.manualSkills != null && { manualSkills: record.manualSkills }),
+    ...(record.codeApprovalMode != null && { codeApprovalMode: record.codeApprovalMode }),
+    ...(record.reasoningOverride != null && { reasoningOverride: record.reasoningOverride }),
     ...(record.expectedPredecessorCreatedAt != null && {
       expectedPredecessorCreatedAt: record.expectedPredecessorCreatedAt,
     }),
@@ -1074,6 +1107,9 @@ export function createAgentQueuedTurnMethods(
   ): Promise<{ turn: AgentQueuedTurnRecord; replayed: boolean }> {
     const scope = conversationScope(input);
     const normalized = normalizeEnqueue(input);
+    if (input.codeApprovalMode != null && input.deliveryReservation == null) {
+      throw new TypeError('Approval snapshots require a versioned delivery reservation');
+    }
     const requestFingerprint = fingerprint(normalized);
     const existing = await Turn()
       .findOne({ ...scope, clientRequestId: normalized.clientRequestId })
@@ -1130,7 +1166,11 @@ export function createAgentQueuedTurnMethods(
               status: 'reserving',
               attempts: 0,
               availableAt: input.availableAt ?? new Date(),
-              deliveryState: 'pending',
+              deliveryState: input.deliveryReservation != null ? 'publishing' : 'pending',
+              ...(input.deliveryReservation != null && {
+                _id: requireBoundedString(input.deliveryReservation.queuedTurnId, 128),
+                deliveryKey: requireBoundedString(input.deliveryReservation.deliveryKey, 128),
+              }),
               reservationWriterId: writer.writerId,
             });
             return {
@@ -1381,7 +1421,10 @@ export function createAgentQueuedTurnMethods(
     return { outcome: 'not_cancellable', turn: toRecord(current) };
   }
 
-  async function findQueuedTurnsNeedingDelivery(limit = 100): Promise<AgentQueuedTurnRecord[]> {
+  async function findQueuedTurnsNeedingDelivery(
+    limit = 100,
+    activity?: { found: boolean },
+  ): Promise<AgentQueuedTurnRecord[]> {
     if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 1000) {
       throw new TypeError('Agent queued turn recovery limit must be between 1 and 1000');
     }
@@ -1390,6 +1433,7 @@ export function createAgentQueuedTurnMethods(
       .sort({ createdAt: 1, _id: 1 })
       .limit(limit)
       .lean<IAgentQueuedTurn[]>();
+    if (activity != null && reservations.length > 0) activity.found = true;
     for (const reservation of reservations) {
       const scopeInput: AgentQueuedTurnConversationScope = {
         user: reservation.user,
@@ -1460,6 +1504,7 @@ export function createAgentQueuedTurnMethods(
 
   async function claimQueuedTurnsForAdmissionReconciliation(
     input: ClaimAgentQueuedTurnReconciliationInput,
+    activity?: { found: boolean },
   ): Promise<AgentQueuedTurnRecord[]> {
     const limit = input.limit ?? 100;
     if (!Number.isSafeInteger(limit) || limit <= 0 || limit > 1000) {
@@ -1519,6 +1564,7 @@ export function createAgentQueuedTurnMethods(
     if (candidates.length === 0) {
       return [];
     }
+    if (activity != null) activity.found = true;
     await Turn().updateMany(
       {
         ...eligible,
@@ -2540,7 +2586,10 @@ export function createAgentQueuedTurnMethods(
       throw new TypeError('Agent queued turn sequence must be a positive integer');
     }
     const rootEpoch = normalizePredecessor(input.expectedPredecessorCreatedAt);
-    const rootParentMessageId = requireBoundedString(input.rootParentMessageId, 256);
+    const rootParentMessageId = requireBoundedString(
+      input.rootParentMessageId,
+      Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH,
+    );
     const rootLineagePredecessorId = getRootLineagePredecessorId(rootParentMessageId);
     const predecessors = await Turn()
       .find({
@@ -2629,57 +2678,6 @@ export function createAgentQueuedTurnMethods(
       lineagePredecessorId,
       ...(effectivePredecessorCreatedAt != null && { effectivePredecessorCreatedAt }),
     };
-  }
-
-  async function drainAgentQueuedTurns(
-    input: AgentQueuedTurnOwnerScope & {
-      conversationId?: string;
-      settledAt?: Date;
-    },
-  ): Promise<number> {
-    const settledAt = input.settledAt ?? new Date();
-    const result = await Turn().updateMany(
-      {
-        ...ownerScope(input),
-        ...(input.conversationId != null && {
-          conversationId: requireBoundedString(input.conversationId, 256),
-        }),
-        status: { $in: ['queued', 'claimed'] },
-        admissionStartedAt: { $exists: false },
-      },
-      {
-        $set: {
-          status: 'cancelled',
-          terminalReceipt: {
-            outcome: 'cancelled',
-            settledAt,
-            failure: {
-              code: 'OWNER_DRAINED',
-              message: 'Queued turn owner was drained',
-            },
-          },
-        },
-        $unset: {
-          activeSlot: 1,
-          admissionSlot: 1,
-          claimId: 1,
-          claimBy: 1,
-          claimUntil: 1,
-        },
-      },
-    );
-    await Turn().updateMany(
-      {
-        ...ownerScope(input),
-        ...(input.conversationId != null && {
-          conversationId: requireBoundedString(input.conversationId, 256),
-        }),
-        status: 'cancelled',
-        deliveryKey: { $exists: false },
-      },
-      { $set: { deliveryState: 'retired' } },
-    );
-    return result.modifiedCount;
   }
 
   async function deleteAgentQueuedTurns(
@@ -2773,10 +2771,14 @@ export function createAgentQueuedTurnMethods(
     }
     await Turn().updateMany(
       {
-        ...scope,
-        $or: [
-          { status: { $in: ['reserving', 'queued'] } },
-          { status: 'claimed', admissionStartedAt: { $exists: false } },
+        $and: [
+          scope,
+          {
+            $or: [
+              { status: { $in: ['reserving', 'queued'] } },
+              { status: 'claimed', admissionStartedAt: { $exists: false } },
+            ],
+          },
         ],
       },
       {
@@ -2838,11 +2840,15 @@ export function createAgentQueuedTurnMethods(
   }): Promise<number> {
     const scope = deletionScope(input);
     const blocker = await Turn().exists({
-      ...scope,
-      $or: [
-        { deliveryKey: { $exists: true }, deliveryState: { $ne: 'retired' } },
-        { status: { $in: ['reserving', 'queued', 'claimed'] } },
-        { admissionStartedAt: { $exists: true } },
+      $and: [
+        scope,
+        {
+          $or: [
+            { deliveryKey: { $exists: true }, deliveryState: { $ne: 'retired' } },
+            { status: { $in: ['reserving', 'queued', 'claimed'] } },
+            { admissionStartedAt: { $exists: true } },
+          ],
+        },
       ],
     });
     if (blocker != null) {
@@ -2956,7 +2962,6 @@ export function createAgentQueuedTurnMethods(
     hasAgentQueuedTurnAdmissionReceipt,
     deadLetterAgentQueuedTurn,
     getEffectiveAgentQueuedTurnPredecessor,
-    drainAgentQueuedTurns,
     deleteAgentQueuedTurns,
     prepareAgentQueuedTurnConversationDeletion,
     deletePreparedAgentQueuedTurnConversations,

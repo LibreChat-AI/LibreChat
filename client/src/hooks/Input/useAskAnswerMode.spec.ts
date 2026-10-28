@@ -81,8 +81,14 @@ describe('useAskAnswerMode', () => {
       wrapper: JotaiWrapper,
     });
 
+    expect(mockUseGetMessages).toHaveBeenCalledWith(
+      'conversation-1',
+      expect.objectContaining({ enabled: true, select: findLiveAskUserQuestion }),
+    );
     expect(result.current.liveAsk).toBe(liveAsk);
     expect(result.current.active).toBe(true);
+    expect(result.current.composerAnswers).toBe(true);
+    expect(result.current.composerLocked).toBe(false);
     expect(result.current.popoverVisible).toBe(true);
   });
 
@@ -95,6 +101,8 @@ describe('useAskAnswerMode', () => {
 
     expect(result.current.liveAsk).toBeNull();
     expect(result.current.active).toBe(false);
+    expect(result.current.composerAnswers).toBe(false);
+    expect(result.current.composerLocked).toBe(false);
     expect(result.current.popoverVisible).toBe(false);
   });
 
@@ -107,6 +115,7 @@ describe('useAskAnswerMode', () => {
 
     expect(result.current.active).toBe(true);
     expect(result.current.batchMode).toBe(true);
+    expect(result.current.composerLocked).toBe(true);
     expect(result.current.options).toEqual([]);
     expect(result.current.draftId).toBeNull();
     /** The bounded form owns the answer, so the composer never speaks for it. */
@@ -149,8 +158,27 @@ describe('useAskAnswerMode', () => {
     const { result } = renderHook(() => useAskAnswerMode('new'), {
       wrapper: JotaiWrapper,
     });
+    expect(mockUseGetMessages).toHaveBeenCalledWith(
+      '',
+      expect.objectContaining({ enabled: false, select: findLiveAskUserQuestion }),
+    );
     expect(result.current.liveAsk).toBeNull();
     expect(result.current.active).toBe(false);
+  });
+
+  it('yields typed Enter to the shared composer binding resolver', () => {
+    mockUseGetMessages.mockReturnValue({ data: liveAsk });
+    const { result } = renderHook(() => useAskAnswerMode('conversation-1'));
+
+    const handled = result.current.handleComposerKeyDown({
+      key: 'Enter',
+      keyCode: 13,
+      currentTarget: { value: 'typed answer' },
+      nativeEvent: { isComposing: false },
+    } as never);
+
+    expect(handled).toBe(false);
+    expect(mockSubmitAskAnswer).not.toHaveBeenCalled();
   });
 
   it('forces liveAsk null when there is no conversation id', () => {
@@ -471,6 +499,7 @@ describe('useAskAnswerMode', () => {
     });
 
     expect(result.current.submitText('answer from A')).toBe(true);
+    expect(mockResetComposer).not.toHaveBeenCalled();
     act(() => finishAnswer?.());
 
     expect(mockResetComposer).toHaveBeenCalledTimes(1);

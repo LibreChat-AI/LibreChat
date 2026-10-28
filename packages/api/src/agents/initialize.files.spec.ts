@@ -5,7 +5,7 @@ import {
   readResolvedConversationFiles,
   resolveResendToolResources,
 } from './initialize';
-import { PARTIAL_RESOLVED_CONVERSATION } from './guard';
+import { PARTIAL_RESOLVED_CONVERSATION } from './conversationSymbols';
 
 describe('readResolvedConversationFiles', () => {
   const conversationId = 'conversation-1';

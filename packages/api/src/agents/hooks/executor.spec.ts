@@ -8,6 +8,7 @@ import {
   commandExecutorCapabilities,
   createCommandExecutor,
   getShellHandlerIssue,
+  getCommandShellIssue,
 } from './executor';
 
 let pluginRoot: string;
@@ -423,9 +424,79 @@ describe('createCommandExecutor', () => {
     ).resolves.toEqual({ decision: 'deny', reason: 'unrecognized native' });
   });
 
-  test('ignores non-blocking failures', async () => {
-    const output = await execute({ type: 'command', command: 'echo oops >&2; exit 1' });
+  test.each([1, 127])('ignores a started command exiting with code %i', async (code) => {
+    const output = await execute({ type: 'command', command: `echo oops >&2; exit ${code}` });
     expect(output).toEqual({});
+  });
+
+  test.each<HookEvent>(['PreToolUse', 'UserPromptSubmit', 'SubagentStart', 'Stop', 'StopFinalize'])(
+    'fails closed on %s when the shell is missing',
+    async (event) => {
+      const output = await execute(
+        { type: 'command', command: 'exit 2' },
+        { sourceEvent: event, targetEvent: event },
+        { PATH: pluginData },
+      );
+      expect(output).toEqual({
+        decision: event === 'Stop' || event === 'StopFinalize' ? 'block' : 'deny',
+        reason: 'Plugin hook command could not start',
+      });
+    },
+  );
+
+  test.each<HookEvent>([
+    'RunStart',
+    'PostToolUse',
+    'PostToolUseFailure',
+    'PostToolBatch',
+    'PreemptBoundary',
+    'PermissionDenied',
+    'SubagentStop',
+    'StopFailure',
+    'PreCompact',
+    'PostCompact',
+  ])('keeps %s nonblocking when the shell is missing', async (event) => {
+    const output = await execute(
+      { type: 'command', command: 'exit 2' },
+      { sourceEvent: event, targetEvent: event },
+      { PATH: pluginData },
+    );
+    expect(output).toEqual({});
+  });
+
+  test('fails closed when the shell is not executable', async () => {
+    await fs.promises.writeFile(path.join(pluginData, 'bash'), '#!/bin/sh\nexit 0\n', {
+      mode: 0o600,
+    });
+    await expect(
+      execute({ type: 'command', command: 'exit 2' }, {}, { PATH: pluginData }),
+    ).resolves.toEqual({ decision: 'deny', reason: 'Plugin hook command could not start' });
+  });
+
+  test('fails closed when the command working directory is missing', async () => {
+    await fs.promises.rmdir(pluginRoot);
+    await expect(execute({ type: 'command', command: 'exit 2' })).resolves.toEqual({
+      decision: 'deny',
+      reason: 'Plugin hook command could not start',
+    });
+  });
+
+  test('keeps an already-aborted command nonblocking when the shell is missing', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const executor = createCommandExecutor({
+      pluginRoot,
+      pluginData,
+      env: { PATH: pluginData },
+    });
+    await expect(
+      executor.execute(request({ type: 'command', command: 'exit 2' }), controller.signal),
+    ).resolves.toEqual({});
+  });
+
+  test('reports a missing shell without disabling command capabilities', () => {
+    expect(getCommandShellIssue({ PATH: pluginData })).toContain('could not start');
+    expect(getCommandShellIssue({ PATH: process.env.PATH })).toBeUndefined();
   });
 
   test('runs from the plugin root with PLUGIN_ROOT, PLUGIN_DATA, and only allowlisted vars', async () => {

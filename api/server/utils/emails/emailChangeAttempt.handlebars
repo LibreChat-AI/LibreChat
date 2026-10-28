@@ -1,0 +1,42 @@
+<html lang='en'>
+  <head>
+    <meta charset='utf-8' />
+    <meta name='viewport' content='width=device-width, initial-scale=1' />
+    <title>Email change requested</title>
+  </head>
+  <body style='margin:0;background:#f5f5f5;font-family:Arial,sans-serif;color:#1f2937'>
+    <table role='presentation' width='100%' cellpadding='0' cellspacing='0'>
+      <tr>
+        <td align='center' style='padding:32px 16px'>
+          <table
+            role='presentation'
+            width='100%'
+            cellpadding='0'
+            cellspacing='0'
+            style='max-width:560px;background:#ffffff;border-radius:12px'
+          >
+            <tr>
+              <td style='padding:32px'>
+                <h1 style='margin:0 0 20px;font-size:24px'>Email change requested</h1>
+                <p>Hello {{name}},</p>
+                <p>
+                  A request was made to change the email address on your
+                  {{appName}}
+                  account to
+                  <strong>{{newEmail}}</strong>.
+                </p>
+                <p><strong>Time:</strong>
+                  {{requestedAt}}<br /><strong>IP address:</strong>
+                  {{ip}}</p>
+                <p>
+                  If you did not make this request, change your password immediately and contact
+                  your administrator.
+                </p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

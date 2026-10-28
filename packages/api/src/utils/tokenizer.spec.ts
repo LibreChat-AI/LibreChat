@@ -1,5 +1,6 @@
 import { Tokenizer as AiTokenizer } from 'ai-tokenizer';
-import Tokenizer from './tokenizer';
+import type { EncodingName } from './tokenizer';
+import Tokenizer, { countTokens } from './tokenizer';
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
@@ -32,6 +33,16 @@ describe('Tokenizer', () => {
       expect(count).toBeGreaterThan(0);
     });
 
+    it('keeps the oversized cold-start fallback and loads the encoding for the next count', async () => {
+      await jest.isolateModulesAsync(async () => {
+        const cold = (await import('./tokenizer')).default;
+        const text = 'word '.repeat(4096);
+        expect(cold.getTokenCount(text, 'o200k_base')).toBe(Buffer.byteLength(text, 'utf8'));
+        await cold.initEncoding('o200k_base');
+        expect(cold.getTokenCount(text, 'o200k_base')).toBeLessThan(text.length / 4);
+      });
+    });
+
     it('should deduplicate concurrent init calls', async () => {
       const [, , count] = await Promise.all([
         Tokenizer.initEncoding('o200k_base'),
@@ -60,18 +71,29 @@ describe('Tokenizer', () => {
       expect(count).toBeGreaterThan(0);
     });
 
-    it.each([
-      { label: 'an uninterrupted non-whitespace run', text: '_'.repeat(4 * 1024 + 1) },
-      { label: 'an oversized input', text: 'word '.repeat(1024) },
-      { label: 'multibyte input', text: '界'.repeat(4 * 1024 + 1) },
-    ])('uses a conservative estimate without tokenizing $label', ({ text }) => {
-      const count = jest.spyOn(AiTokenizer.prototype, 'count');
+    it('uses the same bounded count through the asynchronous public helper', async () => {
+      const text = 'word '.repeat(4096);
+      expect(await countTokens(text)).toBe(Tokenizer.getTokenCount(text, 'o200k_base'));
+      expect(await countTokens(text)).toBeLessThan(text.length / 4);
+    });
+
+    it('uses the established fallback for the whole input after a later chunk fails', async () => {
+      const text = 'word '.repeat(4096);
+      const original = AiTokenizer.prototype.count;
+      const count = jest
+        .spyOn(AiTokenizer.prototype, 'count')
+        .mockImplementationOnce(original)
+        .mockImplementationOnce(() => {
+          throw new Error('second chunk failed');
+        });
       try {
         expect(Tokenizer.getTokenCount(text, 'o200k_base')).toBe(Buffer.byteLength(text, 'utf8'));
-        expect(count).not.toHaveBeenCalled();
+        expect(count).toHaveBeenCalledTimes(2);
       } finally {
         count.mockRestore();
+        await Tokenizer.initEncoding('o200k_base');
       }
+      expect(Tokenizer.getTokenCount(text, 'o200k_base')).toBeLessThan(text.length / 4);
     });
   });
 
@@ -89,16 +111,102 @@ describe('Tokenizer', () => {
       }
     });
 
-    it('uses a conservative estimate for unsafe input without invoking the tokenizer', async () => {
+    it('never caches a partial count after a later chunk fails and recovers on retry', async () => {
       const counter = await Tokenizer.createExactTokenCounter('o200k_base');
+      const text = 'word '.repeat(4096);
+      const original = AiTokenizer.prototype.count;
+      const count = jest
+        .spyOn(AiTokenizer.prototype, 'count')
+        .mockImplementationOnce(original)
+        .mockImplementationOnce(() => {
+          throw new Error('second chunk failed');
+        });
+      try {
+        expect(() => counter(text)).toThrow('second chunk failed');
+        expect(count).toHaveBeenCalledTimes(2);
+      } finally {
+        count.mockRestore();
+        await Tokenizer.initEncoding('o200k_base');
+      }
+      const reloaded = await Tokenizer.createExactTokenCounter('o200k_base');
+      expect(counter(text)).toBe(reloaded(text));
+    });
+  });
+
+  const encodings: EncodingName[] = ['o200k_base', 'claude'];
+  describe.each(encodings)('bounded counting with %s', (encoding) => {
+    let counter: (text: string) => number;
+    beforeAll(async () => {
+      counter = await Tokenizer.createExactTokenCounter(encoding);
+    });
+
+    it.each([4095, 4096, 4097, 8192, 8193, 65536])(
+      'counts %i characters without a byte-count cliff',
+      (length) => {
+        const text = 'word '.repeat(Math.ceil(length / 5)).slice(0, length);
+        const exact = Tokenizer.countExactTokens(text, encoding)!;
+        expect(counter(text)).toBeGreaterThanOrEqual(exact * 0.99);
+        expect(counter(text)).toBeLessThanOrEqual(exact * 1.01);
+        expect(Tokenizer.getTokenCount(text, encoding)).toBe(counter(text));
+      },
+    );
+
+    it.each([
+      {
+        label: 'minified JSON',
+        text: JSON.stringify(
+          Array.from({ length: 200 }, (_, id) => ({
+            id,
+            description: 'Search project documents',
+            parameters: { type: 'object', required: ['query'] },
+          })),
+        ),
+      },
+      { label: 'CJK', text: '界'.repeat(4097) },
+      { label: 'emoji', text: '😀'.repeat(4097) },
+      { label: 'mixed density', text: 'word '.repeat(1024) + '界 '.repeat(2048) },
+    ])('measures all of $label rather than extrapolating a prefix', ({ text }) => {
+      const exact = Tokenizer.countExactTokens(text, encoding)!;
+      expect(counter(text)).toBeGreaterThanOrEqual(exact * 0.98);
+      expect(counter(text)).toBeLessThanOrEqual(exact * 1.02);
+      expect(Tokenizer.getTokenCount(text, encoding)).toBe(counter(text));
+    });
+
+    it.each([
+      { label: 'English', text: 'word '.repeat(4096) },
+      { label: 'uninterrupted punctuation', text: '_'.repeat(8193) },
+      { label: 'uninterrupted letters', text: 'a'.repeat(8193) },
+      { label: 'whitespace', text: ' '.repeat(8193) },
+      { label: 'Unicode whitespace', text: '\u2003'.repeat(8193) },
+      { label: 'CJK', text: '界'.repeat(8193) },
+      {
+        label: 'surrogate at input boundary',
+        text: 'word '.repeat(819) + '😀' + 'word '.repeat(819),
+      },
+      { label: 'surrogate at run boundary', text: 'a'.repeat(255) + '😀' + 'b'.repeat(500) },
+    ])('bounds work without dropping or corrupting $label', ({ text }) => {
       const count = jest.spyOn(AiTokenizer.prototype, 'count');
       try {
-        const text = '_'.repeat(4 * 1024 + 1);
-        expect(counter(text)).toBe(Buffer.byteLength(text, 'utf8'));
-        expect(count).not.toHaveBeenCalled();
+        counter(text);
+        const chunks = count.mock.calls.map(([chunk]) => chunk);
+        expect(chunks.join('')).toBe(text);
+        expect(chunks.length).toBeGreaterThan(1);
+        for (const chunk of chunks) {
+          expect(chunk.length).toBeLessThanOrEqual(4096);
+          expect(chunk.length).toBeGreaterThan(0);
+          expect(/^[\uDC00-\uDFFF]|[\uD800-\uDBFF]$/u.test(chunk)).toBe(false);
+          for (const run of chunk.match(/\s+|\S+/gu) ?? []) {
+            expect(run.length).toBeLessThanOrEqual(256);
+          }
+        }
       } finally {
         count.mockRestore();
       }
+    });
+
+    it('keeps empty input empty', () => {
+      expect(counter('')).toBe(0);
+      expect(Tokenizer.getTokenCount('', encoding)).toBe(0);
     });
   });
 
@@ -107,11 +215,8 @@ describe('Tokenizer', () => {
       await Tokenizer.initEncoding('o200k_base');
     });
 
-    it('tokenizes oversized input whole instead of falling back to byte length', () => {
-      /** The fast-path estimate is byte length, several times the real count on
-       *  ordinary text; a figure ADDED to provider accounting cannot carry that.
-       *  Nor can it carry a sum of slices: a BPE merge spanning a seam is charged
-       *  twice, so the whole input is tokenized in one pass. */
+    it("tokenizes oversized input whole without the budgeting counter's seam approximation", () => {
+      /** Provider accounting must not carry a sum of slices: BPE merges can change at seams. */
       const text = 'word '.repeat(4096);
       const exact = Tokenizer.countExactTokens(text, 'o200k_base');
       expect(exact).toBeGreaterThan(0);

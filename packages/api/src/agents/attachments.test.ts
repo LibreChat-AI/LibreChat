@@ -1,5 +1,5 @@
 import { logger } from '@librechat/data-schemas';
-import { EModelEndpoint, FileSources } from 'librechat-data-provider';
+import { EModelEndpoint, FileContext, FileSources } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { ServerRequest } from '~/types';
 
@@ -14,11 +14,16 @@ import {
   createAgentMemoryCallback,
   collectAgentAttachmentStats,
   collectFileIds,
+  collectHistoricalAttachmentIds,
+  admitSteerAttachmentHistory,
+  rollbackSteerAttachmentHistory,
   buildAgentScopedContext,
   getAgentContextAttachments,
   buildAgentContextAttachmentsByAgentId,
   isModelBoundAttachmentFile,
+  isToolOwnedAttachment,
 } from './attachments';
+import { applyTurnDelivery, resolveTurnDeliveryRouting } from './files/delivery';
 
 const makeTextFile = (file_id: string, filename: string, text: string): IMongoFile =>
   ({
@@ -28,6 +33,21 @@ const makeTextFile = (file_id: string, filename: string, text: string): IMongoFi
     bytes: 0,
     source: FileSources.text,
   }) as IMongoFile;
+
+describe('retained search ownership', () => {
+  it('keeps confirmed-deleted code destinations tool-owned without a live pointer', () => {
+    const file = { embedded: false, metadata: { codeDestination: true } } as IMongoFile;
+    expect(isToolOwnedAttachment(file)).toBe(true);
+    expect(isModelBoundAttachmentFile(file)).toBe(false);
+  });
+
+  it('keeps markerless search files tool-owned while vectors await repair', () => {
+    const file = { embedded: false, metadata: { searchDestination: true } } as IMongoFile;
+    expect(isToolOwnedAttachment(file)).toBe(true);
+    expect(isModelBoundAttachmentFile(file)).toBe(false);
+    expect(isToolOwnedAttachment({ embedded: false } as IMongoFile)).toBe(false);
+  });
+});
 
 describe('agent attachment helpers', () => {
   it('excludes tool-only files while retaining extracted text files', () => {
@@ -95,6 +115,86 @@ describe('agent attachment helpers', () => {
       { fileId: 'file-1', mimeType: 'text/plain', bytes: 12, extractedTextChars: 5 },
       { fileId: 'file-2', mimeType: 'application/pdf', bytes: 8, extractedTextChars: 6 },
     ]);
+  });
+
+  it('counts only new files while retaining historical context budgets', () => {
+    const historical = Array.from({ length: 11 }, (_, index) => ({
+      file_id: `history-${index}`,
+      bytes: 10,
+      text: 'context',
+    }));
+    const current = { file_id: 'current', bytes: 5, text: 'new' };
+    const historicalFileIds = collectHistoricalAttachmentIds(historical, [current]);
+    const stats = assertAgentAttachmentLimits({
+      attachments: [...historical, current],
+      historicalFileIds,
+      fileConfig: { endpoints: { agents: { fileLimit: 1 } } },
+    });
+
+    expect(stats).toMatchObject({
+      attachmentCount: 1,
+      totalKnownBytes: 115,
+      extractedTextChars: 80,
+    });
+    expect(() =>
+      assertAgentAttachmentLimits({
+        attachments: historical,
+        historicalFileIds,
+        fileConfig: { fileContextCharLimit: 10 },
+      }),
+    ).toThrow(expect.objectContaining({ limitType: 'extracted_text' }));
+    expect(() =>
+      assertAgentAttachmentLimits({
+        attachments: historical,
+        historicalFileIds,
+        fileConfig: { fileContextSizeLimit: 0.00001 },
+      }),
+    ).toThrow(expect.objectContaining({ limitType: 'bytes' }));
+  });
+
+  it('counts resubmitted historical files and unidentified files as current', () => {
+    const first = { file_id: 'first' };
+    const second = { file_id: 'second' };
+    const historicalFileIds = collectHistoricalAttachmentIds([first, second], [first]);
+    expect(historicalFileIds).toEqual(new Set(['second']));
+    expect(() =>
+      assertAgentAttachmentLimits({
+        attachments: [first, first, second, {}],
+        historicalFileIds,
+        fileConfig: { endpoints: { agents: { fileLimit: 1 } } },
+      }),
+    ).toThrow(expect.objectContaining({ limitType: 'count', observed: 2, limit: 1 }));
+  });
+
+  it('rolls back repeated historical occurrences without excluding a retained current file', () => {
+    const historical = { file_id: 'history' };
+    const current = { file_id: 'current' };
+    const state = admitSteerAttachmentHistory({
+      historicalFileIds: new Set([historical.file_id]),
+      attachments: [historical, historical, current, {}],
+    });
+    expect(state.historicalFileIds).toEqual(new Set());
+    rollbackSteerAttachmentHistory({ state, attachments: [historical] });
+    expect(state.historicalFileIds).toEqual(new Set());
+    const historicalFileIds = rollbackSteerAttachmentHistory({
+      state,
+      attachments: [historical, current, {}, { file_id: 'untracked' }],
+    });
+    expect(historicalFileIds).toEqual(new Set([historical.file_id]));
+    expect(() =>
+      assertAgentAttachmentLimits({
+        attachments: [historical, current, { file_id: 'later' }],
+        historicalFileIds,
+        fileConfig: { endpoints: { agents: { fileLimit: 1 } } },
+      }),
+    ).toThrow(expect.objectContaining({ limitType: 'count', observed: 2 }));
+  });
+
+  it('preserves exclusions when a legacy admission has no history ledger', () => {
+    const historicalFileIds = new Set(['history']);
+    expect(
+      rollbackSteerAttachmentHistory({ historicalFileIds, attachments: [{ file_id: 'history' }] }),
+    ).toBe(historicalFileIds);
   });
 
   it('counts bytes once per repeated model injection when requested', () => {
@@ -553,6 +653,30 @@ describe('agent attachment helpers', () => {
     });
   });
 
+  it('does not count historical shared or scoped files at context extraction', async () => {
+    const historical = Array.from({ length: 11 }, (_, index) =>
+      makeTextFile(`history-${index}`, `history-${index}.txt`, 'history'),
+    );
+    const current = makeTextFile('current', 'current.txt', 'current');
+    const req = {
+      body: { fileTokenLimit: 1000 },
+      config: {},
+    } as ServerRequest;
+    req.config = {
+      ...req.config!,
+      fileConfig: { endpoints: { agents: { fileLimit: 1 } } },
+    };
+    await expect(
+      buildAgentScopedContext({
+        agentIds: ['agent-a'],
+        sharedAttachments: [...historical.slice(0, 8), current],
+        historicalFileIds: collectHistoricalAttachmentIds(historical, [current]),
+        attachmentsByAgentId: new Map([['agent-a', historical.slice(8)]]),
+        req,
+      }),
+    ).resolves.toEqual(new Map([['agent-a', expect.stringContaining('history')]]));
+  });
+
   it('rejects shared attachments incompatible with a receiving agent', async () => {
     const sharedAttachment = {
       ...makeTextFile('shared-pdf', 'shared.pdf', ''),
@@ -668,5 +792,116 @@ describe('agent attachment helpers', () => {
         req,
       }),
     ).resolves.toEqual(new Map());
+  });
+});
+
+describe('files that belong to a tool', () => {
+  const XLSX = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  const sandboxRef = {
+    kind: 'user',
+    id: 'user-1',
+    file_id: 'sandbox-file',
+    storage_session_id: 's1',
+  };
+
+  it('keeps a code output tool-owned after priming clears its expired sandbox references', () => {
+    const output = {
+      file_id: 'rows-json',
+      type: 'application/json',
+      context: FileContext.execute_code,
+      text: '{"rows":[]}',
+      metadata: {},
+    } as unknown as IMongoFile;
+
+    expect(isToolOwnedAttachment(output)).toBe(true);
+    expect(isModelBoundAttachmentFile(output)).toBe(false);
+  });
+
+  it('still treats a route-less user upload without tool references as prompt content', () => {
+    const upload = {
+      file_id: 'legacy-upload',
+      type: 'application/pdf',
+      context: FileContext.message_attachment,
+      metadata: {},
+    } as unknown as IMongoFile;
+
+    expect(isToolOwnedAttachment(upload)).toBe(false);
+    expect(isModelBoundAttachmentFile(upload)).toBe(true);
+  });
+
+  it('admits a Run Code thread shaped like the one the history limit locked', () => {
+    /* Spreadsheets routed to tools with text stored for the fallback, one screenshot, and the
+     * code outputs of an earlier run whose expired sandbox references priming cleared. Counted
+     * as prompt attachments, the outputs and the spreadsheets' fallback text filled the per-turn
+     * count past its default of ten, so every later turn was refused. */
+    const config = {
+      fileConfig: {
+        textFallbackWithoutTools: true,
+        endpoints: {
+          default: { defaultLLMDeliveryPath: { overrides: { [XLSX]: 'none' as const } } },
+        },
+      },
+    };
+    const routing = resolveTurnDeliveryRouting({
+      agent: { provider: EModelEndpoint.bedrock, endpoint: EModelEndpoint.bedrock },
+      config,
+    });
+    const consumers = { executeCode: true, fileSearch: false };
+    const sheet = (file_id: string, extra: object = {}) =>
+      ({
+        file_id,
+        type: XLSX,
+        bytes: 200_000,
+        source: FileSources.local,
+        context: FileContext.message_attachment,
+        llmDeliveryPath: 'none',
+        text: 'x'.repeat(110_000),
+        metadata: { destinationChosen: false },
+        ...extra,
+      }) as unknown as IMongoFile;
+    const olderSheets = ['q3-actuals', 'q3-budget', 'q3-map'].map((id) =>
+      sheet(id, {
+        llmDeliveryPath: 'text',
+        metadata: { destinationChosen: false, codeEnvRef: sandboxRef },
+      }),
+    );
+    const newSheets = ['s1', 's2', 's3', 's4', 's5', 's6'].map((id) => sheet(id));
+    const screenshot = {
+      file_id: 'screenshot',
+      type: 'image/png',
+      bytes: 380_971,
+      source: FileSources.local,
+      context: FileContext.message_attachment,
+      llmDeliveryPath: 'provider',
+      metadata: { destinationChosen: false },
+    } as unknown as IMongoFile;
+    const outputs = Array.from(
+      { length: 8 },
+      (_, index) =>
+        ({
+          file_id: `output-${index}`,
+          type: 'application/json',
+          bytes: 20_000,
+          source: FileSources.local,
+          context: FileContext.execute_code,
+          text: 'y'.repeat(20_000),
+          metadata: {},
+        }) as unknown as IMongoFile,
+    );
+
+    const admitted = applyTurnDelivery([...olderSheets, screenshot, ...newSheets, ...outputs], {
+      routing,
+      consumers,
+    }).filter(isModelBoundAttachmentFile);
+
+    expect(admitted.map((file) => file.file_id)).toEqual(['screenshot']);
+    expect(() =>
+      assertAgentAttachmentLimits({
+        attachments: admitted,
+        fileConfig: config.fileConfig,
+        endpoint: EModelEndpoint.bedrock,
+        countRepeatedExtractedText: true,
+      }),
+    ).not.toThrow();
   });
 });

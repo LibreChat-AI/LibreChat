@@ -1,8 +1,23 @@
-import { getOpenAIConfig } from './config';
+import { AnthropicEffort } from 'librechat-data-provider';
 import { FINE_GRAINED_TOOL_STREAMING_BETA } from '../anthropic/helpers';
+import { getOpenAIConfig } from './config';
 
 describe('getOpenAIConfig - Anthropic Compatibility', () => {
   describe('Anthropic via LiteLLM', () => {
+    it('keeps Opus 5.5 effort in output_config without leaking the native SDK field', () => {
+      const result = getOpenAIConfig('test-key', {
+        modelOptions: { model: 'claude-opus-5-5', thinking: false, effort: AnthropicEffort.max },
+        customParams: { defaultParamsEndpoint: 'anthropic' },
+      });
+
+      expect(result.llmConfig.modelKwargs?.output_config).toEqual({ effort: 'max' });
+      expect(result.llmConfig.modelKwargs).not.toHaveProperty('outputConfig');
+      expect(result.llmConfig.modelKwargs?.thinking).toMatchObject({
+        type: 'adaptive',
+        block_binding: { prefix_mismatch_behavior: 'drop_block' },
+      });
+    });
+
     it('should handle basic Anthropic configuration with defaultParamsEndpoint', () => {
       const apiKey = 'sk-xxxx';
       const endpoint = 'Anthropic (via LiteLLM)';

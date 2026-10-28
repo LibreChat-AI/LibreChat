@@ -3,6 +3,7 @@ import { logger } from '@librechat/data-schemas';
 import type { Redis, Cluster } from 'ioredis';
 import type { IEventTransport, PreemptMessage } from '~/stream/interfaces/IJobStore';
 import type { ChunkPublicationOptions } from '~/stream/internal/chunkPublication';
+import type { ReplayLimits, ReplayPublication } from '../internal/replay';
 import {
   MAX_COALESCED_BYTES,
   MAX_COALESCED_EVENTS,
@@ -15,6 +16,7 @@ import {
 import { registerChunkPublicationCapability } from '~/stream/internal/chunkPublication';
 import { GenerationPublicationFencedError } from '~/stream/interfaces/IJobStore';
 import { instrumentIORedisClient, RedisUseCases } from '~/cache/redisTelemetry';
+import { PUBLISH_REPLAY_LUA, READ_REPLAY_LUA } from '../internal/replay';
 
 /**
  * Redis key prefixes for pub/sub channels
@@ -30,6 +32,9 @@ const CHANNELS = {
 const KEYS = {
   /** Atomic sequence counter: shared across all replicas for a given stream */
   sequence: (streamId: string) => `stream:{${streamId}}:seq`,
+  backlog: (streamId: string) => `stream:{${streamId}}:activity-backlog`,
+  publication: (streamId: string) => `stream:{${streamId}}:activity-publication`,
+  backlogBytes: (streamId: string) => `stream:{${streamId}}:activity-bytes`,
   /** Job metadata, used to keep the sequence counter alive for the full job lifetime */
   job: (streamId: string) => `stream:{${streamId}}:job`,
   /** Latest generation epoch, retained briefly beyond the live job hash. */
@@ -80,7 +85,7 @@ interface PubSubMessage {
 
 /**
  * Producer-side buffer of coalescable chunk publications for one stream.
- * Payloads are pre-serialized at enqueue so a flush only joins strings, and
+ * Payload suffixes are pre-serialized at enqueue so a flush only passes strings, and
  * each resolver settles its caller's receipt with `baseSeq + index`.
  */
 interface PendingChunkBatch {
@@ -147,12 +152,13 @@ interface PreemptRegistration {
  *     allowRetainedEpoch ("0" | "1"),
  *     generationEpochGraceTtl,
  *     requireActiveJob ("0" | "1"),
- *     sequenceCount
+ *     sequenceCount,
+ *     ...chunkSuffixes (optional, one per event for a coalesced publication)
  *   ]
  *   RETURNS: the 0-indexed first seq assigned to this frame, or -1 when the generation
- *   guard fails. A single-event frame passes count 1 and splices the seq; a coalesced
- *   frame passes its event count, reserves that many consecutive sequences in one INCRBY,
- *   and splices the base — event i in the frame owns base + i.
+ *   guard fails. A single frame splices its seq into prefix/suffix. A coalesced
+ *   publication reserves consecutive sequences in one INCRBY and publishes one
+ *   legacy chunk frame per suffix, keeping pre-batching subscribers compatible.
  *
  * During a rolling deployment, a job created by the previous version can expire without
  * leaving a generation marker. A tagged terminal event may claim that absent marker only
@@ -187,7 +193,13 @@ const PUBLISH_SEQ_LUA =
   'redis.call("EXPIRE", KEYS[1], ttl) ' +
   'end ' +
   'local seq = val - count ' +
+  'if #ARGV > 9 then ' +
+  'for i = 1, count do ' +
+  'redis.call("PUBLISH", ARGV[1], ARGV[2] .. string.format("%d", seq + i - 1) .. ARGV[9 + i]) ' +
+  'end ' +
+  'else ' +
   'redis.call("PUBLISH", ARGV[1], ARGV[2] .. string.format("%d", seq) .. ARGV[3]) ' +
+  'end ' +
   'return seq';
 
 /** A normal generation guard correctly rejects events from an old epoch once
@@ -225,6 +237,11 @@ const ABORT_ACK_TTL_SECONDS = 86400;
 const PROVIDER_DRAIN_TTL_SECONDS = 86400;
 const SUBSCRIPTION_ATTACHMENT_TIMEOUT_MS = 3_000;
 
+interface ReplaySnapshot {
+  frontier: number;
+  events: string[];
+}
+
 interface SubscriptionFrontierWaiter {
   streamId: string;
   resolve: () => void;
@@ -248,6 +265,7 @@ interface StreamSubscribers {
     string,
     {
       onChunk: (event: unknown, generationId?: number) => void;
+      onReplayMessage?: (message: PubSubMessage) => void;
       onDone?: (event: unknown, generationId?: number) => void;
       onError?: (error: string, generationId?: number) => void;
     }
@@ -329,7 +347,12 @@ export class RedisEventTransport implements IEventTransport {
     return state;
   }
 
-  private async captureSubscriptionFrontier(streamId: string): Promise<number> {
+  private captureSubscriptionFrontier(streamId: string): Promise<number>;
+  private captureSubscriptionFrontier(streamId: string, replay: true): Promise<ReplaySnapshot>;
+  private async captureSubscriptionFrontier(
+    streamId: string,
+    replay = false,
+  ): Promise<number | ReplaySnapshot> {
     const subscriptionFrontierId = randomUUID();
     let operationTimeout: ReturnType<typeof setTimeout> | undefined;
     const observed = new Promise<void>((resolve, reject) => {
@@ -353,9 +376,10 @@ export class RedisEventTransport implements IEventTransport {
        * admission instead of leaving every surviving local subscriber deferred forever. */
       const operation = Promise.all([
         this.publisher.eval(
-          CAPTURE_SUBSCRIPTION_FRONTIER_LUA,
-          1,
+          replay ? READ_REPLAY_LUA : CAPTURE_SUBSCRIPTION_FRONTIER_LUA,
+          replay ? 2 : 1,
           KEYS.sequence(streamId),
+          ...(replay ? [KEYS.backlog(streamId)] : []),
           CHANNELS.events(streamId),
           JSON.stringify({
             type: EventTypes.SUBSCRIPTION_FRONTIER,
@@ -372,8 +396,10 @@ export class RedisEventTransport implements IEventTransport {
         operationTimeout.unref?.();
       });
       const [raw] = await Promise.race([operation, operationDeadline]);
-      const parsed = raw != null ? parseInt(String(raw), 10) : 0;
-      return Number.isNaN(parsed) ? 0 : parsed;
+      const counter = replay ? (raw as [string, string[]])[0] : raw;
+      const parsed = counter != null ? parseInt(String(counter), 10) : 0;
+      const frontier = Number.isNaN(parsed) ? 0 : parsed;
+      return replay ? { frontier, events: (raw as [string, string[]])[1] } : frontier;
     } catch (error) {
       const waiter = this.subscriptionFrontierWaiters.get(subscriptionFrontierId);
       if (waiter != null) {
@@ -470,6 +496,7 @@ export class RedisEventTransport implements IEventTransport {
     expectedGenerationId?: number,
     allowRetainedEpoch = false,
     requireActiveJob = false,
+    chunkSuffixes: string[] = [],
   ): Promise<number> {
     const seq = await this.publisher.eval(
       PUBLISH_SEQ_LUA,
@@ -486,6 +513,7 @@ export class RedisEventTransport implements IEventTransport {
       String(GENERATION_EPOCH_GRACE_TTL_SECONDS),
       requireActiveJob ? '1' : '0',
       String(count),
+      ...chunkSuffixes,
     );
     return seq as number;
   }
@@ -548,9 +576,19 @@ export class RedisEventTransport implements IEventTransport {
     }
 
     const batch = pending;
-    const encoded = JSON.stringify(event);
-    batch.events.push(encoded);
-    batch.bytes += encoded.length;
+    const payload = JSON.stringify(event);
+    const [, envelopeSuffix] = RedisEventTransport.buildPayloadParts({
+      type: EventTypes.CHUNK,
+      ...(generationId != null && { generationId }),
+    });
+    batch.events.push(
+      payload === undefined ? envelopeSuffix : `,"data":${payload}${envelopeSuffix}`,
+    );
+    /** Match RedisJobStore's raw JSON length, excluding the publication envelope.
+     * Counting its wrapper would flush publications before their durable appends
+     * near the byte cap, letting a remote resume skip not-yet-durable events.
+     * Reuse the serialized payload so size accounting adds no second traversal. */
+    batch.bytes += payload?.length ?? 0;
     const receipt = new Promise<number | false | undefined>((resolve) => {
       batch.resolvers.push(resolve);
     });
@@ -566,12 +604,12 @@ export class RedisEventTransport implements IEventTransport {
   }
 
   /**
-   * Publish the stream's pending coalesced chunks as one CHUNK_BATCH frame.
+   * Publish the pending window in one EVAL using legacy CHUNK frames.
    *
-   * One INCRBY reserves a consecutive sequence per buffered event, so subscribers
-   * unpack the frame into individually sequenced chunks and the reorder buffer is
-   * none the wiser. The events array is spliced from pre-serialized payloads for
-   * the same reason single frames are: no server-side re-encoding.
+   * One INCRBY reserves consecutive sequences and Lua publishes each serialized
+   * suffix with its own sequence. This saves round trips and repeated guard/TTL
+   * work without requiring older subscribers to understand CHUNK_BATCH. Payloads
+   * are spliced, not decoded/re-encoded by Lua, preserving JSON semantics.
    */
   private flushCoalescedChunks(streamId: string): Promise<void> {
     const pending = this.pendingBatches.get(streamId);
@@ -585,19 +623,17 @@ export class RedisEventTransport implements IEventTransport {
     }
 
     const { generationId, events, resolvers } = pending;
-    const prefix = `{"type":${JSON.stringify(EventTypes.CHUNK_BATCH)},"baseSeq":`;
-    const suffix =
-      (generationId != null ? `,"generationId":${generationId}` : '') +
-      `,"events":[${events.join(',')}]}`;
+    const prefix = `{"type":${JSON.stringify(EventTypes.CHUNK)},"seq":`;
 
     return this.evalPublishSequenced(
       streamId,
       prefix,
-      suffix,
+      '',
       events.length,
       generationId,
       false,
       generationId != null,
+      events,
     ).then(
       (baseSeq) => {
         if (baseSeq === -1) {
@@ -882,6 +918,12 @@ export class RedisEventTransport implements IEventTransport {
         }
         return;
       }
+      let replayOnly = streamState.handlers.size > 0;
+      for (const handlers of streamState.handlers.values()) {
+        if (handlers.onReplayMessage == null) replayOnly = false;
+        else handlers.onReplayMessage(parsed);
+      }
+      if (replayOnly) return;
       /** Aborts, preempts, and abort acknowledgements are consumed by
        *  transport-internal waiters (e.g. pending-ack resolution), not SSE
        *  subscribers, so they must flow even with zero local subscribers. */
@@ -1078,6 +1120,7 @@ export class RedisEventTransport implements IEventTransport {
     message: PubSubMessage,
   ): void {
     for (const [, handlers] of streamState.handlers) {
+      if (handlers.onReplayMessage != null) continue;
       switch (message.type) {
         case EventTypes.CHUNK:
           if (message.generationId == null) {
@@ -1191,6 +1234,130 @@ export class RedisEventTransport implements IEventTransport {
     this.channelSubscriptions.delete(channel);
   }
 
+  private async publishReplayable(
+    streamId: string,
+    type: 'chunk' | 'done',
+    event: unknown,
+    limits: ReplayLimits,
+    publication?: ReplayPublication,
+  ): Promise<void> {
+    const [prefix, suffix] = RedisEventTransport.buildPayloadParts({ type, data: event });
+    await this.publisher.eval(
+      PUBLISH_REPLAY_LUA,
+      4,
+      KEYS.sequence(streamId),
+      KEYS.backlog(streamId),
+      KEYS.backlogBytes(streamId),
+      KEYS.publication(streamId),
+      CHANNELS.events(streamId),
+      prefix,
+      suffix,
+      limits.items,
+      limits.bytes,
+      limits.ttlMs,
+      RedisEventTransport.SEQUENCE_TTL_SECONDS,
+      publication?.id ?? '',
+      publication?.sequence ?? '',
+      type === 'done' ? '1' : '0',
+    );
+  }
+
+  emitReplayableChunk(
+    streamId: string,
+    event: unknown,
+    limits: ReplayLimits,
+    publication?: ReplayPublication,
+  ): Promise<void> {
+    return this.publishReplayable(streamId, 'chunk', event, limits, publication);
+  }
+
+  emitReplayableDone(
+    streamId: string,
+    event: unknown,
+    limits: ReplayLimits,
+    publication?: ReplayPublication,
+  ): Promise<void> {
+    return this.publishReplayable(streamId, 'done', event, limits, publication);
+  }
+
+  private subscribeReplayable(
+    streamId: string,
+    handlers: Parameters<IEventTransport['subscribe']>[1],
+    limits: ReplayLimits,
+  ): ReturnType<IEventTransport['subscribe']> {
+    const state = this.getOrCreateStreamState(streamId);
+    const id = `sub_${++this.subscriberIdCounter}`;
+    let closed = false;
+    let frontier: number | undefined;
+    let pendingBytes = 0;
+    const pending: PubSubMessage[] = [];
+    const unsubscribe = () => {
+      if (closed) return;
+      closed = true;
+      pending.length = 0;
+      if (this.streams.get(streamId) !== state || !state.handlers.delete(id)) return;
+      state.count--;
+      if (state.count === 0) this.detachStreamSubscribers(streamId, state);
+    };
+    const deliver = (message: PubSubMessage) => {
+      if (closed || this.streams.get(streamId) !== state) return;
+      if (message.seq != null) {
+        if (frontier != null && message.seq < frontier) return;
+        frontier = message.seq + 1;
+      }
+      if (message.type === EventTypes.CHUNK) handlers.onChunk(message.data);
+      else if (message.type === EventTypes.DONE) handlers.onDone?.(message.data);
+      else if (message.type === EventTypes.ERROR)
+        handlers.onError?.(message.error ?? 'Unknown error');
+    };
+    state.count++;
+    state.handlers.set(id, {
+      ...handlers,
+      onReplayMessage: (message) => {
+        if (closed) return;
+        if (frontier != null) return deliver(message);
+        pendingBytes += Buffer.byteLength(JSON.stringify(message), 'utf8');
+        if (pending.length >= limits.items || pendingBytes > limits.bytes) {
+          unsubscribe();
+          handlers.onError?.('Activity replay buffer overflow; reconnect to replay.');
+          return;
+        }
+        pending.push(message);
+      },
+    });
+    const ready = this.ensureChannelSubscription(streamId)
+      .then(async () => {
+        const snapshot = await this.captureSubscriptionFrontier(streamId, true);
+        if (closed || this.streams.get(streamId) !== state) return;
+        const messages = snapshot.events.map((raw) => JSON.parse(raw) as PubSubMessage);
+        const retained = new Set(messages.map((message) => message.seq));
+        /** The observed marker fences all receivable pre-snapshot frames. Older owners
+         * publish without retaining, so their buffered frames are not replay duplicates. */
+        for (const message of pending) {
+          if (message.seq != null && message.seq < snapshot.frontier && !retained.has(message.seq))
+            messages.push(message);
+        }
+        messages.sort((left, right) => (left.seq ?? 0) - (right.seq ?? 0));
+        const chunks = messages.filter((message) => message.type === EventTypes.CHUNK);
+        if (handlers.onReplay != null) handlers.onReplay(chunks.map((message) => message.data));
+        else for (const message of chunks) handlers.onChunk(message.data);
+        frontier = snapshot.frontier;
+        for (const message of messages) {
+          if (message.type === EventTypes.DONE) handlers.onDone?.(message.data);
+          else if (message.type === EventTypes.ERROR)
+            handlers.onError?.(message.error ?? 'Unknown error');
+        }
+        pending.sort((left, right) => (left.seq ?? 0) - (right.seq ?? 0));
+        for (const message of pending) deliver(message);
+        pending.length = 0;
+      })
+      .catch((error) => {
+        unsubscribe();
+        throw error;
+      });
+    return { unsubscribe, ready };
+  }
+
   /**
    * Subscribe to events for a stream.
    *
@@ -1200,11 +1367,13 @@ export class RedisEventTransport implements IEventTransport {
     streamId: string,
     handlers: {
       onChunk: (event: unknown, generationId?: number) => void;
+      onReplay?: (events: unknown[]) => void;
       onDone?: (event: unknown, generationId?: number) => void;
       onError?: (error: string, generationId?: number) => void;
     },
     options?: {
       deferSequenceDelivery?: boolean;
+      replay?: ReplayLimits;
       captureSequenceFrontier?: boolean;
       /** @deprecated Use deferSequenceDelivery. */
       deferDeliveryUntilSynchronized?: boolean;
@@ -1214,6 +1383,8 @@ export class RedisEventTransport implements IEventTransport {
     ready?: Promise<void>;
     syncReorderBuffer?: () => void | Promise<void>;
   } {
+    if (options?.replay != null)
+      return this.subscribeReplayable(streamId, handlers, options.replay);
     const subscriberId = `sub_${++this.subscriberIdCounter}`;
 
     // Initialize stream state if needed

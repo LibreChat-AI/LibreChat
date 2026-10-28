@@ -11,7 +11,7 @@ import {
   isLocallyStoredSource,
 } from '~/components/Chat/Messages/Content/Parts/LogLink';
 import useArtifactProps from '~/hooks/Artifacts/useArtifactProps';
-import { useCodeState } from '~/Providers/EditorContext';
+import { useArtifactCode } from '~/Providers/EditorContext';
 import useLocalize from '~/hooks/useLocalize';
 
 export interface ArtifactDownload {
@@ -37,7 +37,11 @@ export interface ArtifactDownload {
  * bytes should be.
  */
 export default function useArtifactDownload(artifact: Artifact): ArtifactDownload {
-  const { currentCode } = useCodeState();
+  /* The buffer outlives a pane remount and belongs to whichever artifact last
+   * wrote it, so downloading another artifact must not export those edits; a
+   * copy this artifact left behind when another displaced it is still its own
+   * unsaved text and exports with it. */
+  const editedCode = useArtifactCode(artifact.id);
   const { showToast } = useToastContext();
   const localize = useLocalize();
   const [isDownloaded, setIsDownloaded] = useState(false);
@@ -61,7 +65,7 @@ export default function useArtifactDownload(artifact: Artifact): ArtifactDownloa
     (download?.file_id != null &&
       download?.user != null &&
       isLocallyStoredSource(download?.source));
-  const hasEdits = currentCode != null && currentCode !== artifact.content;
+  const hasEdits = editedCode != null && editedCode !== artifact.content;
   /**
    * Mermaid is no exception, even though the panel renders the diagram
    * straight from `content`: that content is the cached extraction, and
@@ -99,7 +103,7 @@ export default function useArtifactDownload(artifact: Artifact): ArtifactDownloa
           }
           return downloaded;
         }
-        const content = currentCode ?? artifact.content;
+        const content = editedCode ?? artifact.content;
         if (content == null) {
           /* Nothing to serialize and no route to fetch: the press has to
            * say something, or it looks like the download worked. */
@@ -125,9 +129,9 @@ export default function useArtifactDownload(artifact: Artifact): ArtifactDownloa
     },
     [
       artifact,
-      currentCode,
       downloadAttachment,
       downloadOriginalFile,
+      editedCode,
       fileName,
       localize,
       markDownloaded,

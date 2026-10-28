@@ -299,7 +299,7 @@ function replaceValue(node: unknown, target: string, replacement: unknown): unkn
 /** Repairs synthesized arguments from a validation error's own message, so the
  * retry reaches the database instead of being reported `not-driven`. Returns
  * the repaired arguments, or null when the error is not machine-repairable. */
-function adaptArgs(args: unknown[], error: unknown, paramNames: string[] = []): unknown[] | null {
+function adaptArgs(args: unknown[], error: unknown): unknown[] | null {
   const message = String((error as { message?: string })?.message ?? '');
   let match = /Cast to (?:\[)?ObjectId(?:\])? failed for value "+?\[?'?"?([^"'\]]+)/.exec(message);
   if (match != null) {
@@ -642,10 +642,13 @@ describeSweep(`data-schemas method sweep (${BASELINE ? 'MongoDB baseline' : 'Doc
       );
     }
     if (STRICT) {
-      /** Enforced against the FINALIZED rows: the per-test assertion has
+      /** Enforced against the FINALIZED rows: the per-test check has
        * already passed for a row that timed out and only later recorded its
        * engine rejection. */
-      expect(rejected.map((row) => `${row.name}: ${row.engineError}`)).toEqual([]);
+      const rejectionDetails = rejected.map((row) => `${row.name}: ${row.engineError}`);
+      if (rejectionDetails.length > 0) {
+        throw new Error(`DocumentDB method sweep rejected:\n${rejectionDetails.join('\n')}`);
+      }
     }
   }, 120_000);
 

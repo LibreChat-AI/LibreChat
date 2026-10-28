@@ -5,6 +5,7 @@ import {
   enqueueAgentQueuedTurnSchema,
   listAgentQueuedTurnsSchema,
 } from './queuedTurns';
+import { ReasoningEffort } from '../schemas';
 
 const request = {
   conversationId: 'conversation-1',
@@ -14,12 +15,37 @@ const request = {
   files: [{ file_id: 'file-1', filename: 'context.txt', llmDeliveryPath: 'text' }],
   quotes: ['quoted context'],
   manualSkills: ['research'],
+  reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
   expectedPredecessorCreatedAt: 42,
 };
 
 describe('agent queued turn schemas', () => {
+  it('accepts maximum-length response parents and rejects larger ones', () => {
+    for (const parentMessageId of ['a'.repeat(257), 'a'.repeat(256) + '_']) {
+      expect(
+        enqueueAgentQueuedTurnSchema.parse({ ...request, parentMessageId }).parentMessageId,
+      ).toBe(parentMessageId);
+    }
+    expect(
+      enqueueAgentQueuedTurnSchema.safeParse({ ...request, parentMessageId: 'a'.repeat(258) })
+        .success,
+    ).toBe(false);
+  });
+
   it('accepts the complete enqueue contract', () => {
     expect(enqueueAgentQueuedTurnSchema.parse(request)).toEqual(request);
+  });
+
+  it('accepts allowed modes without requiring them on legacy turns', () => {
+    for (const mode of ['ask', 'acceptEdits', 'fullAccess'] as const) {
+      expect(
+        enqueueAgentQueuedTurnSchema.parse({ ...request, codeApprovalMode: mode }).codeApprovalMode,
+      ).toBe(mode);
+    }
+    expect(enqueueAgentQueuedTurnSchema.parse(request).codeApprovalMode).toBeUndefined();
+    expect(() =>
+      enqueueAgentQueuedTurnSchema.parse({ ...request, codeApprovalMode: 'unrestricted' }),
+    ).toThrow();
   });
 
   it('allows attachment-only queued turns', () => {
@@ -45,6 +71,15 @@ describe('agent queued turn schemas', () => {
       enqueueAgentQueuedTurnSchema.parse({
         ...request,
         expectedPredecessorCreatedAt: -1,
+      }),
+    ).toThrow();
+  });
+
+  it('rejects an invalid reasoning override', () => {
+    expect(() =>
+      enqueueAgentQueuedTurnSchema.parse({
+        ...request,
+        reasoningOverride: { key: 'temperature', value: 0.5 },
       }),
     ).toThrow();
   });

@@ -29,7 +29,7 @@ const INTENT_SCAN_CHARS = 2048;
  */
 const INTENT_PREFIX_REGEX = /^\s*\{\s*"intent"\s*:\s*"((?:[^"\\]|\\.)*)(")?/;
 
-function boundIntentLabel(label: string): string | undefined {
+export function boundIntentLabel(label: string): string | undefined {
   const singleLine = label.replace(/\s+/g, ' ').trim();
   if (singleLine === '') {
     return undefined;
@@ -64,25 +64,27 @@ function boundIntentLabel(label: string): string | undefined {
  * state (the shimmer stopping), not a tense change (see `applyOutcome` in
  * `@librechat/agents` for why there is deliberately no rewrite).
  */
+export function getToolCallIntent(args?: string | Record<string, unknown>): string | undefined {
+  if (args == null) {
+    return undefined;
+  }
+  if (typeof args === 'object') {
+    if (Object.keys(args)[0] !== 'intent') {
+      return undefined;
+    }
+    const value = args.intent;
+    return typeof value === 'string' ? boundIntentLabel(value) : undefined;
+  }
+  const match = INTENT_PREFIX_REGEX.exec(args.slice(0, INTENT_SCAN_CHARS));
+  if (!match) {
+    return undefined;
+  }
+  /** A captured closing quote means the value is settled: decode it
+   *  without the stream-edge hold-backs, so a value genuinely ending in
+   *  a lone high surrogate matches its JSON.parse rendering. */
+  return boundIntentLabel(unescapeJsonString(match[1], match[2] !== '"'));
+}
+
 export function useToolCallIntent(args?: string | Record<string, unknown>): string | undefined {
-  return useMemo(() => {
-    if (args == null) {
-      return undefined;
-    }
-    if (typeof args === 'object') {
-      if (Object.keys(args)[0] !== 'intent') {
-        return undefined;
-      }
-      const value = args.intent;
-      return typeof value === 'string' ? boundIntentLabel(value) : undefined;
-    }
-    const match = INTENT_PREFIX_REGEX.exec(args.slice(0, INTENT_SCAN_CHARS));
-    if (!match) {
-      return undefined;
-    }
-    /** A captured closing quote means the value is settled: decode it
-     *  without the stream-edge hold-backs, so a value genuinely ending in
-     *  a lone high surrogate matches its JSON.parse rendering. */
-    return boundIntentLabel(unescapeJsonString(match[1], match[2] !== '"'));
-  }, [args]);
+  return useMemo(() => getToolCallIntent(args), [args]);
 }

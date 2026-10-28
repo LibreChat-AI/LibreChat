@@ -277,25 +277,58 @@ export function ErrorDetails({ label, children }: { label: string; children: Rea
         onClick={() => setOpen((expanded) => !expanded)}
         aria-expanded={open}
         aria-controls={panelId}
-        className="flex items-center gap-1 rounded-md text-xs font-medium text-text-secondary transition-colors hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary"
+        className="text-text-secondary hover:text-text-primary focus-visible:ring-text-primary flex items-center gap-1 rounded-md text-xs font-medium transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
       >
         {label}
         <ChevronRight
           className={cn(
             'size-3.5 transition-transform duration-300 [transition-timing-function:cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none',
-            open && 'rotate-90',
+            open ? 'rotate-90' : 'rtl:-scale-x-100',
           )}
           aria-hidden="true"
         />
       </button>
       <div id={panelId} style={panelStyle} aria-hidden={!open}>
         <div ref={panelRef} className="overflow-hidden">
-          <div className="mt-1 whitespace-pre-wrap break-words text-xs text-text-secondary">
+          <div className="text-text-secondary mt-1 text-xs break-words whitespace-pre-wrap">
             {children}
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+/** Past a sentence's worth of text, or across lines, a detail is a body to open rather than read. */
+const INLINE_DETAIL_LENGTH = 240;
+
+/**
+ * A headline plus the failure's own words, the way every provider-produced error reads: what is
+ * known first, the reported text second. A single sentence stays in place, where a reader gets it
+ * without acting; a body of text collapses under `label`.
+ */
+export function ErrorWithDetail({
+  headline,
+  detail,
+  label,
+}: {
+  headline: string;
+  detail?: string;
+  label: string;
+}) {
+  if (detail == null) {
+    return <>{headline}</>;
+  }
+
+  return (
+    <ErrorBody>
+      <div>{headline}</div>
+      {detail.length <= INLINE_DETAIL_LENGTH && !/[\r\n]/.test(detail) ? (
+        <div className="text-text-secondary">{detail}</div>
+      ) : (
+        <ErrorDetails label={label}>{detail}</ErrorDetails>
+      )}
+    </ErrorBody>
   );
 }
 
@@ -307,24 +340,32 @@ export function ErrorActions({ children }: { children: React.ReactNode }) {
 export function ErrorAction({
   onClick,
   children,
+  variant,
+  disabled = false,
 }: {
   onClick: () => void;
   children: React.ReactNode;
+  /** A second action next to the primary one reads as the alternative, not a peer. */
+  variant?: 'outline';
+  disabled?: boolean;
 }) {
   return (
     /** One step tighter than the button default (8px) so the control reads as nested inside the
      *  error card's 12px corner rather than echoing it. */
-    <Button type="button" size="sm" className="rounded-md" onClick={onClick}>
+    <Button
+      type="button"
+      size="sm"
+      variant={variant}
+      className="rounded-md"
+      onClick={onClick}
+      disabled={disabled}
+    >
       {children}
     </Button>
   );
 }
 
 export const formatNumber = (value: number): string => new Intl.NumberFormat().format(value);
-
-/** Token credits are a float balance; two decimals, matching the balance settings row. */
-export const formatCredits = (value: number): string =>
-  new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(value);
 
 const isoTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
 

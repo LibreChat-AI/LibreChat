@@ -1,16 +1,86 @@
 import { logger } from '@librechat/data-schemas';
 import {
   Constants,
+  Tools,
   buildServerNameAliases,
   normalizeServerName,
   splitMCPToolKey,
 } from 'librechat-data-provider';
-import type { MCPOptions } from 'librechat-data-provider';
-import type { LCAvailableTools, LCFunctionTool, ParsedServerConfig } from '~/mcp/types';
+import type { MCPOptions, UIResource } from 'librechat-data-provider';
+import type { Artifacts, LCAvailableTools, LCFunctionTool, ParsedServerConfig } from '~/mcp/types';
 import { createConcurrencyLimiter } from '~/utils/promise';
 import { findShadowedServerNames } from '~/mcp/utils';
 
 const RECOVERY_CONCURRENCY = 3;
+
+interface AssistantMCPMessage {
+  messageId?: string;
+  conversationId?: string | null;
+  attachments?: unknown[];
+}
+
+interface AssistantMCPArtifactHost {
+  responseMessage?: AssistantMCPMessage;
+  finalMessage?: AssistantMCPMessage;
+  res?: {
+    destroyed?: boolean;
+    writableEnded?: boolean;
+    write(chunk: string): unknown;
+  };
+}
+
+export interface AssistantMCPToolResult {
+  output: unknown;
+  uiResources?: UIResource[];
+}
+
+/** Separates host-only App data from an MCP result before Assistants submits model-bound output. */
+export function splitAssistantMCPToolResult(
+  rawOutput: unknown,
+  isMCPTool: boolean,
+): AssistantMCPToolResult {
+  if (!isMCPTool || !Array.isArray(rawOutput) || rawOutput.length !== 2) {
+    return { output: rawOutput };
+  }
+  const [output, candidateArtifact] = rawOutput as [unknown, Artifacts];
+  const uiResources = candidateArtifact?.[Tools.ui_resources]?.data;
+  return {
+    output,
+    ...(Array.isArray(uiResources) && uiResources.length > 0 ? { uiResources } : {}),
+  };
+}
+
+/** Persists and streams an App attachment through either Assistants runtime's message owner. */
+export function appendAssistantMCPAppArtifact({
+  host,
+  toolCallId,
+  uiResources,
+}: {
+  host: AssistantMCPArtifactHost;
+  toolCallId: string;
+  uiResources: UIResource[];
+}): void {
+  const message = host.responseMessage ?? host.finalMessage;
+  if (
+    !message ||
+    typeof message.messageId !== 'string' ||
+    typeof message.conversationId !== 'string'
+  ) {
+    return;
+  }
+  const attachment = {
+    type: Tools.ui_resources,
+    messageId: message.messageId,
+    toolCallId,
+    conversationId: message.conversationId,
+    [Tools.ui_resources]: uiResources,
+  };
+  message.attachments ??= [];
+  message.attachments.push(attachment);
+  if (host.res && !host.res.destroyed && !host.res.writableEnded) {
+    host.res.write(`event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
+  }
+}
 
 export interface AssistantMCPUser {
   id?: string;

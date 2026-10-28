@@ -1,4 +1,8 @@
-import { LocalStorageKeys, TConversation, isUUID } from 'librechat-data-provider';
+import { LocalStorageKeys } from 'librechat-data-provider';
+import type { TConversation } from 'librechat-data-provider';
+import { FILE_SEARCH_CHOICE_PREFIX, clearFileSearchChoices } from './choices';
+
+export const FILE_SEARCH_UPLOAD_PREFIX = 'file-search-upload:';
 
 export function getLocalStorageItems() {
   const items = {
@@ -31,10 +35,13 @@ export function getLocalStorageItems() {
  * on the way in, because a social sign-in returns through the silent refresh and never passes the
  * login mutation at all. */
 export function clearComposerDraftStorage() {
+  clearFileSearchChoices();
   Object.keys(localStorage).forEach((key) => {
     if (
       key.startsWith(LocalStorageKeys.FILES_DRAFT) ||
-      key.startsWith(LocalStorageKeys.TEXT_DRAFT)
+      key.startsWith(LocalStorageKeys.TEXT_DRAFT) ||
+      key.startsWith(FILE_SEARCH_UPLOAD_PREFIX) ||
+      key.startsWith(FILE_SEARCH_CHOICE_PREFIX)
     ) {
       localStorage.removeItem(key);
     }
@@ -60,30 +67,16 @@ export function clearLocalStorage(skipFirst?: boolean) {
       key === LocalStorageKeys.LAST_SPEC ||
       key === LocalStorageKeys.LAST_TOOLS ||
       key === LocalStorageKeys.LAST_MODEL ||
-      key === LocalStorageKeys.FILES_TO_DELETE
+      key === LocalStorageKeys.FILES_TO_DELETE ||
+      /** A permissive code approval default belongs to the account that chose it, not to
+       * whoever signs in next on a shared browser. */
+      key === LocalStorageKeys.LAST_CODE_APPROVAL_MODE
     ) {
       localStorage.removeItem(key);
     }
   });
 }
 
-export function clearConversationStorage(conversationId?: string | null) {
-  if (!conversationId) {
-    return;
-  }
-  if (!isUUID.safeParse(conversationId)?.success) {
-    console.warn(
-      `Conversation ID ${conversationId} is not a valid UUID. Skipping local storage cleanup.`,
-    );
-    return;
-  }
-  const keys = Object.keys(localStorage);
-  keys.forEach((key) => {
-    if (key.includes(conversationId)) {
-      localStorage.removeItem(key);
-    }
-  });
-}
 export function clearAllConversationStorage() {
   const keys = Object.keys(localStorage);
   keys.forEach((key) => {

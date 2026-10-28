@@ -10,14 +10,13 @@ import {
 } from 'librechat-data-provider';
 import type {
   EmbeddedResource,
-  ListToolsResult,
   ResourceLink,
   ImageContent,
   AudioContent,
   TextContent,
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
-import type { SearchResultData, UIResource, TPlugin } from 'librechat-data-provider';
+import type { SearchResultData, UIResource, TMCPAppOperationLimits } from 'librechat-data-provider';
 import type { TokenMethods, IUser } from '@librechat/data-schemas';
 import type { LCTool } from '@librechat/agents';
 import type {
@@ -65,8 +64,6 @@ export interface LCFunctionTool {
 }
 
 export type LCAvailableTools = Record<string, LCFunctionTool>;
-export type LCManifestTool = TPlugin;
-export type LCToolManifest = TPlugin[];
 export interface MCPPrompt {
   name: string;
   description?: string;
@@ -78,7 +75,6 @@ export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'err
 export type OAuthHandledSource = 'silent-refresh' | 'interactive';
 
 export type MCPTool = Tool;
-export type MCPToolListResponse = ListToolsResult;
 export type ToolContentPart =
   | TextContent
   | ImageContent
@@ -98,6 +94,7 @@ export type MCPToolCallResponse =
       _meta?: Record<string, unknown>;
       content?: Array<ToolContentPart>;
       isError?: boolean;
+      structuredContent?: Record<string, unknown>;
     };
 
 export type Provider =
@@ -228,7 +225,22 @@ export interface DirectBearerRecoveryState {
   resolvedConfig?: MCPOptions;
 }
 
+/** Host-supplied live headers; transport requests cannot reuse a prior allow observation. */
+export type MCPRequestHeaderResolver = ((
+  signal?: AbortSignal,
+  /** Stops this connection's retries at observation, before denial admission awaits. */
+  onDenied?: (error: unknown) => void,
+) => Promise<Record<string, string>>) & {
+  /** Synchronous completion/owner cutoff, checked beside dispatch with no intervening await. */
+  assertOpen?: () => void;
+  /** Records asynchronous transport denials at the owning request boundary. */
+  recordFailure?: (error: unknown) => Promise<void>;
+  /** Pending owner evidence must be admitted before transport disposal completes. */
+  settle?: () => Promise<void>;
+};
+
 export interface BasicConnectionOptions {
+  resolveRequestHeaders?: MCPRequestHeaderResolver;
   serverName: string;
   serverConfig: MCPOptions;
   /** Original unresolved definition retained across asynchronous credential preprocessing. */
@@ -247,6 +259,10 @@ export interface BasicConnectionOptions {
   skipEnvProcessing?: boolean;
   /** When true, the connection is intentionally short-lived for a single request/tool call */
   ephemeralConnection?: boolean;
+  /** Immutable client capabilities negotiated for this connection. */
+  capabilityProfile?: import('../capabilities').MCPClientCapabilityProfile;
+  /** Validated deployment limits captured for App-profile transport parsing. */
+  operationLimits?: TMCPAppOperationLimits;
 }
 
 /** User context for placeholder resolution in MCP connections (non-OAuth and OAuth alike) */
@@ -264,6 +280,8 @@ export interface UserConnectionContext {
   /** Cancels the connection's SDK requests when the caller itself is cancelled; previously only
    *  OAuth connections could carry a signal, leaving non-OAuth discovery uncancellable. */
   signal?: AbortSignal;
+  /** Immutable client capabilities requested by this caller. */
+  capabilityProfile?: import('../capabilities').MCPClientCapabilityProfile;
   /** Absolute epoch-ms bound on the whole connect-and-list operation. `connectionTimeout` bounds
    *  only a single `connect()`, so a caller that must return within a fixed budget sets this to
    *  cap every segment, including `tools/list` pagination and the unauthenticated fallback. */
@@ -297,7 +315,7 @@ export interface UserConnectionContext {
    * invalidated its cached token flow. A caller leasing a generation captured earlier re-captures
    * it here, ahead of the read, so a rotation that follows the read still fences the build.
    */
-  onOAuthCredentialsInvalidated?: () => Promise<void>;
+  onOAuthCredentialsInvalidated?: () => Promise<string | void>;
 }
 
 export interface RequestScopedMCPConnectionStore {
@@ -306,6 +324,8 @@ export interface RequestScopedMCPConnectionStore {
   disposeConnection?: (connectionKey: string, connection: unknown) => Promise<void>;
   /** Set before cleanup snapshots pending work; new connection attempts must fail closed. */
   cleanupStarted?: boolean;
+  /** Completion cutoff: no new occurrence dispatch or connection may begin. */
+  quiesceStarted?: boolean;
 }
 
 export interface OAuthStartOptions {
@@ -327,26 +347,68 @@ export interface OAuthConnectionOptions extends UserConnectionContext {
   oboIdentityContext?: AuthIdentityContext;
 }
 
-/** Options accepted by UserConnectionManager.getUserConnection. OAuth fields are optional. */
-export interface UserMCPConnectionOptions extends UserConnectionContext {
-  serverName: string;
-  forceNew?: boolean;
-  ephemeralConnection?: boolean;
-  serverConfig?: ParsedServerConfig;
-  /** Internal one-shot fence shared across connection initialization and initial tools/list. */
-  directBearerRecoveryState?: DirectBearerRecoveryState;
-  flowManager?: FlowStateManager<o.MCPOAuthTokens | null>;
-  /** Request-local resolved credentials; serverConfig remains the authoritative definition. */
-  directBearerResolvedConfig?: MCPOptions;
-  tokenMethods?: TokenMethods;
-  signal?: AbortSignal;
-  oauthStart?: OAuthStartHandler;
-  oauthEnd?: () => Promise<void>;
-  returnOnOAuth?: boolean;
-  oboTokenResolver?: OboTokenResolver;
-  oboTrustChecker?: OboTrustChecker;
-  oboIdentityContext?: AuthIdentityContext;
+export interface MCPConnectionTarget {
+  serverConfig: ParsedServerConfig;
+  connectionOwner: 'operator' | 'principal';
 }
+
+/** The acting user a principal-scoped MCP decision is made for. */
+export interface MCPPrincipal {
+  userId: string;
+  role?: string;
+  /**
+   * The user's `idOnTheSource` as the request already loaded it, `null` for a local user.
+   * Supplied together with `role`, it lets the principal's config read skip a user lookup.
+   */
+  idOnTheSource?: string | null;
+}
+
+/** The acting user as the request loaded it, for principal-scoped registry lookups and checkout. */
+export interface MCPLookupUser {
+  id?: string;
+  role?: string;
+  idOnTheSource?: string | null;
+}
+
+/**
+ * How a principal-scoped registry lookup (one that names a user) treats the
+ * librechat.yaml servers that principal's resolved config hides.
+ *
+ * Hiding is an access boundary: the registry resolves the hidden set itself from
+ * a strict read of the principal's config, failing closed, and a principal-scoped
+ * lookup never returns a hidden server unless `includeHidden` opts out.
+ */
+export interface MCPServerLookupOptions {
+  /** Skip hiding, for cleanup that must still reach every server, such as token revocation. */
+  includeHidden?: boolean;
+  /** See {@link MCPPrincipal.idOnTheSource}; pass `req.user.idOnTheSource` when the caller has it. */
+  idOnTheSource?: string | null;
+}
+
+type MCPConnectionTargetInput =
+  | { connectionTarget: MCPConnectionTarget; serverConfig?: never }
+  | { connectionTarget?: never; serverConfig?: ParsedServerConfig };
+
+/** Options accepted by UserConnectionManager.getUserConnection. OAuth fields are optional. */
+export type UserMCPConnectionOptions = UserConnectionContext &
+  MCPConnectionTargetInput & {
+    serverName: string;
+    forceNew?: boolean;
+    ephemeralConnection?: boolean;
+    /** Internal one-shot fence shared across connection initialization and initial tools/list. */
+    directBearerRecoveryState?: DirectBearerRecoveryState;
+    flowManager?: FlowStateManager<o.MCPOAuthTokens | null>;
+    /** Request-local resolved credentials; serverConfig remains the authoritative definition. */
+    directBearerResolvedConfig?: MCPOptions;
+    tokenMethods?: TokenMethods;
+    signal?: AbortSignal;
+    oauthStart?: OAuthStartHandler;
+    oauthEnd?: () => Promise<void>;
+    returnOnOAuth?: boolean;
+    oboTokenResolver?: OboTokenResolver;
+    oboTrustChecker?: OboTrustChecker;
+    oboIdentityContext?: AuthIdentityContext;
+  };
 
 export interface ToolDiscoveryOptions {
   serverName: string;
@@ -363,6 +425,8 @@ export interface ToolDiscoveryOptions {
   deadlineMs?: number;
   onOAuthCredentialsChanged?: (scope: { userId: string; serverName: string }) => Promise<void>;
   onOAuthCredentialsChanging?: UserConnectionContext['onOAuthCredentialsChanging'];
+  /** Updates the discovery flight when it adopts credentials published by a peer. */
+  onOAuthCredentialsAdopted?: (generation: string) => Promise<void>;
   onDiscoveryDetached?: UserConnectionContext['onDiscoveryDetached'];
   /** Pre-resolved config-source servers for tenant-scoped lookup */
   configServers?: Record<string, ParsedServerConfig>;
@@ -371,6 +435,8 @@ export interface ToolDiscoveryOptions {
   upstreamTokenProvider?: UpstreamTokenProvider;
   upstreamTokenProviderResolver?: UpstreamTokenProviderResolver;
   oboIdentityContext?: AuthIdentityContext;
+  /** Immutable client capabilities used for this discovery session. */
+  capabilityProfile?: import('../capabilities').MCPClientCapabilityProfile;
 }
 
 export interface ToolDiscoveryResult {

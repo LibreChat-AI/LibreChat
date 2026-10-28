@@ -4,7 +4,7 @@ services:
     #   context: .
     #   dockerfile: Dockerfile.multi
     #   target: api-build
-    image: registry.librechat.ai/danny-avila/librechat-dev-api:latest
+    image: registry.librechat.ai/librechat-ai/librechat-dev-api:latest
     container_name: LibreChat-API
     ports:
       - 3080:3080
@@ -43,7 +43,7 @@ services:
       - librechat-data:/app/data
 
   admin-panel:
-    image: registry.librechat.ai/clickhouse/librechat-admin-panel:latest
+    image: registry.librechat.ai/librechat-ai/librechat-admin-panel:latest
     container_name: admin-panel
     depends_on:
       - api
@@ -101,7 +101,7 @@ services:
     volumes:
       - pgdata2:/var/lib/postgresql/data
   rag_api:
-    image: registry.librechat.ai/danny-avila/librechat-rag-api-dev-lite:latest
+    image: registry.librechat.ai/librechat-ai/librechat-rag-api-dev-lite:latest
     environment:
       - DB_HOST=vectordb
       - RAG_PORT=${RAG_PORT:-8000}

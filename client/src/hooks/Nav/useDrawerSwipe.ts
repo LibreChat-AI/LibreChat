@@ -4,9 +4,8 @@ import {
   MOBILE_DRAWER_ID,
   MOBILE_DRAWER_WIDTH,
   MOBILE_DRAWER_TRANSITION,
-  MOBILE_PANE_SHIFT,
   MOBILE_SCRIM_ID,
-  SIDEBAR_TRANSITION,
+  DRAWER_UNPAINTED,
 } from '~/components/UnifiedSidebar/constants';
 
 /** Horizontal travel before the gesture claims the touch (also the tap filter). */
@@ -25,15 +24,19 @@ const VELOCITY_HOLD_MS = 100;
 const SETTLE_BUFFER_MS = 80;
 
 /**
- * Whether the drawer hides the pane entirely, which is what makes repositioning
- * the pane instantly invisible. A geometric fact rather than a reading of the
- * setting: the reveal is safe exactly when there is nothing uncovered to see it
- * in, however the width was arrived at.
+ * Which physical way "open" points: 1 when the drawer sits on the left (LTR),
+ * -1 when it sits on the right (RTL). Read from the drawer itself, the element
+ * anchored to the inline-start edge, and multiplied into every horizontal
+ * distance, velocity and transform so the gesture logic below reasons in
+ * logical terms (positive = toward open).
  */
-const drawerCoversPane = (drawer: HTMLElement): boolean =>
-  (drawer.clientWidth || window.innerWidth) >= window.innerWidth;
+const drawerSign = (drawer: HTMLElement): 1 | -1 =>
+  window.getComputedStyle(drawer).direction === 'rtl' ? -1 : 1;
 
-/** Same kick as the drawer/pane transforms: the scrim must not wait for the
+/** Fully offscreen past the drawer's inline-start edge. */
+const closedDrawerTransform = (sign: 1 | -1) => `translate3d(${-100 * sign}%, 0, 0)`;
+
+/** Same kick as the drawer transforms: the scrim must not wait for the
  *  Recoil commit, which a large conversation can delay past the slide. */
 const setScrimOpacity = (open: boolean) => {
   const scrim = document.getElementById(MOBILE_SCRIM_ID);
@@ -52,7 +55,7 @@ const setScrimOpacity = (open: boolean) => {
 /**
  * A close whose open never committed — a second toggle retargets the slide
  * inside the deferred flip, or an open drag falls short and snaps back — moves
- * the pane without `expanded` ever changing, so the dismiss guard has no state
+ * the drawer without `expanded` ever changing, so the dismiss guard has no state
  * transition to arm from. The slide reports itself here instead.
  */
 let slideListener: ((next: boolean) => void) | null = null;
@@ -97,7 +100,7 @@ export function getDrawerAnimationStartedAt(): number | null {
 }
 
 /**
- * Starts the drawer/pane slide imperatively and owns WHEN the caller's state
+ * Starts the drawer slide imperatively and owns WHEN the caller's state
  * flip runs. Wrapping the flip in `startTransition` is not enough: Recoil
  * notifies subscribers outside the transition scope, so the commit — which a
  * large conversation stretches to hundreds of ms of context re-renders plus
@@ -159,7 +162,9 @@ export function kickDrawerAnimation(next: boolean, applyState: () => void): Draw
 /**
  * Walks from `start` up to `boundary` looking for a horizontal scroller that
  * can still consume a pan in `direction` (1 = finger moving right, which
- * reveals content to the left, i.e. needs `scrollLeft > 0`). A rightward
+ * reveals content to the left, i.e. needs `scrollLeft > 0`). `direction` is
+ * physical on purpose: what a scroller can consume depends on where its
+ * content sits on screen, not on which way the drawer opens. A rightward
  * swipe inside a code block only defers to the block while it can actually
  * scroll that way — parked at its edge, the drawer may claim the drag.
  */
@@ -194,7 +199,7 @@ export function findHorizontalScrollBlocker(
 }
 
 type DrawerSwipeOptions = {
-  /** The chat pane that mirrors the drawer's motion (Root's Outlet wrapper). */
+  /** The stationary chat pane used as the opening gesture surface. */
   paneRef: React.RefObject<HTMLDivElement | null>;
   enabled: boolean;
   open: boolean;
@@ -210,11 +215,13 @@ type Gesture = {
   touchId: number;
   startX: number;
   startY: number;
+  /** Logical travel: positive toward open, whichever side the drawer is on. */
   dx: number;
+  /** See `drawerSign`; captured at touchstart so one gesture never changes sides. */
+  sign: 1 | -1;
   width: number;
   reducedMotion: boolean;
   drawer: HTMLElement;
-  pane: HTMLElement;
   prevSample: Sample;
   lastSample: Sample;
   raf: number | null;
@@ -223,32 +230,32 @@ type Gesture = {
 };
 
 /**
- * What the two surfaces settle back to. Nothing under reduced motion, where
+ * The drawer's resting transition. Nothing under reduced motion, where
  * every drawer move snaps: handing an animating value back would leave the
  * element ready to ease the next change, and the strip setting changes the
  * drawer's width without passing through the snap path at all.
  */
-const settledTransitions = (): { drawer: string; pane: string } =>
-  window.matchMedia('(prefers-reduced-motion: reduce)').matches
-    ? { drawer: 'none', pane: 'none' }
-    : { drawer: MOBILE_DRAWER_TRANSITION, pane: SIDEBAR_TRANSITION };
+const settledTransition = (): string =>
+  window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'none' : MOBILE_DRAWER_TRANSITION;
 
 /** Returns every transient inline property to what React/classes render for
- * `paneOpen`. The drawer's transform is class-driven so clearing suffices, but
- * the pane's is a React style prop React will NOT re-assert while its value is
- * unchanged — an open pane must get its committed transform back explicitly. */
-const releaseInlineStyles = (drawer: HTMLElement, pane: HTMLElement, paneOpen: boolean) => {
-  const settled = settledTransitions();
+ * `open`. Width and visibility are reasserted because React does not restore
+ * unchanged style props after an imperative write. */
+const releaseInlineStyles = (drawer: HTMLElement, open: boolean) => {
   drawer.style.transform = '';
   drawer.style.willChange = '';
+  /** Re-asserted rather than cleared, for the same reason as the width below:
+   *  a closed drawer is not painted (see DRAWER_UNPAINTED), React has already
+   *  written that value by the time this runs — the travel window closes at
+   *  TRANSITION_MS and this runs a buffer later — and clearing the property
+   *  would drop it while React believes its unchanged prop is still applied.
+   *  The drawer would be painted again, closed, which is the whole artifact. */
+  drawer.style.visibility = open ? '' : DRAWER_UNPAINTED;
   /** The close pins a measured width, and clearing would drop the declarative
    * value with it: React will not re-assert a style prop whose value it has
    * not changed. */
   drawer.style.width = MOBILE_DRAWER_WIDTH;
-  drawer.style.transition = settled.drawer;
-  pane.style.transform = paneOpen ? MOBILE_PANE_SHIFT : '';
-  pane.style.willChange = '';
-  pane.style.transition = settled.pane;
+  drawer.style.transition = settledTransition();
   markDrawerAnimationStart(null);
   const scrim = document.getElementById(MOBILE_SCRIM_ID);
   if (scrim != null) {
@@ -256,23 +263,20 @@ const releaseInlineStyles = (drawer: HTMLElement, pane: HTMLElement, paneOpen: b
   }
 };
 
-const dragTransforms = (gesture: Gesture): { drawer: string; pane: string } => {
+const dragTransform = (gesture: Gesture): string => {
   const progress = gesture.opening
     ? Math.min(Math.max(gesture.dx, 0), gesture.width)
     : Math.min(Math.max(gesture.dx, -gesture.width), 0) + gesture.width;
-  return {
-    drawer: `translate3d(${progress - gesture.width}px, 0, 0)`,
-    pane: `translate3d(${progress}px, 0, 0)`,
-  };
+  return `translate3d(${(progress - gesture.width) * gesture.sign}px, 0, 0)`;
 };
 
 /**
  * Follow-the-finger swipe between the mobile drawer and the chat pane, which
- * move as one object (see SIDEBAR_TRANSITION). Built on touch events with a
+ * stays stationary beneath it. Built on touch events with a
  * selectively non-passive `touchmove` — `touch-action` on the app shell would
  * silently kill every horizontal scroller in the chat (code blocks, tables,
  * carousels), and React's own onTouchMove registers passive, so
- * `preventDefault` there is a no-op. During a drag both elements get direct
+ * `preventDefault` there is a no-op. During a drag the drawer gets direct
  * rAF-coalesced transform writes and no React state changes; release animates
  * to the nearest state and only then flips `useSidebarState`.
  *
@@ -295,7 +299,6 @@ export default function useDrawerSwipe({
     id: ReturnType<typeof setTimeout> | null;
     target: boolean;
     drawer: HTMLElement;
-    pane: HTMLElement;
   } | null>(null);
   const onOpenChangeRef = useRef(onOpenChange);
   onOpenChangeRef.current = onOpenChange;
@@ -304,7 +307,7 @@ export default function useDrawerSwipe({
     /** A settle whose target the world has since contradicted — drawer closed
      * via a button inside its 380ms window, or the breakpoint crossed and
      * disabled the hook — must not fire: its stale write would strand the
-     * pane offscreen with React believing nothing changed. A settle that
+     * drawer offscreen with React believing nothing changed. A settle that
      * AGREES with `open` keeps running so its handoff finishes undisturbed. */
     const pending = settleRef.current;
     if (pending != null && (!enabled || pending.target !== open)) {
@@ -312,7 +315,7 @@ export default function useDrawerSwipe({
         clearTimeout(pending.id);
       }
       settleRef.current = null;
-      releaseInlineStyles(pending.drawer, pending.pane, enabled && open);
+      releaseInlineStyles(pending.drawer, enabled && open);
     }
     /** A gesture surviving into a new effect run was interrupted — its
      * listeners are gone, so its drag styles must resolve to the CURRENT
@@ -320,7 +323,7 @@ export default function useDrawerSwipe({
     const abandoned = gestureRef.current;
     if (abandoned != null) {
       if (abandoned.phase === 'claimed' && !abandoned.reducedMotion) {
-        releaseInlineStyles(abandoned.drawer, abandoned.pane, enabled && open);
+        releaseInlineStyles(abandoned.drawer, enabled && open);
       }
       if (abandoned.raf != null) {
         cancelAnimationFrame(abandoned.raf);
@@ -347,15 +350,15 @@ export default function useDrawerSwipe({
 
     /** Arms the inline-style handoff: after the shared transition has played
      * out, every transient property returns to what React/classes render. */
-    const scheduleRelease = (drawerEl: HTMLElement, paneEl: HTMLElement, next: boolean) => {
+    const scheduleRelease = (drawerEl: HTMLElement, next: boolean) => {
       const id = setTimeout(() => {
         settleRef.current = null;
-        releaseInlineStyles(drawerEl, paneEl, next);
+        releaseInlineStyles(drawerEl, next);
       }, TRANSITION_MS + SETTLE_BUFFER_MS);
-      settleRef.current = { id, target: next, drawer: drawerEl, pane: paneEl };
+      settleRef.current = { id, target: next, drawer: drawerEl };
     };
 
-    /** Animates both elements to `next`, flips state, then returns ownership
+    /** Animates the drawer to `next`, flips state, then returns ownership
      * of every inline property to what React/classes render for that state. */
     const settle = (gesture: Gesture, next: boolean) => {
       clearDrag(gesture);
@@ -364,30 +367,27 @@ export default function useDrawerSwipe({
           /** Snap: suppress the shared 300ms transition for this state flip,
            * then hand it back once the render has committed. */
           gesture.drawer.style.transition = 'none';
-          gesture.pane.style.transition = 'none';
           onOpenChangeRef.current(next);
           const id = setTimeout(() => {
             settleRef.current = null;
-            const settled = settledTransitions();
-            gesture.drawer.style.transition = settled.drawer;
-            gesture.pane.style.transition = settled.pane;
+            gesture.drawer.style.transition = settledTransition();
           }, SETTLE_BUFFER_MS);
-          settleRef.current = { id, target: next, drawer: gesture.drawer, pane: gesture.pane };
+          settleRef.current = { id, target: next, drawer: gesture.drawer };
         }
         return;
       }
-      const { drawer: drawerEl, pane: paneEl } = gesture;
+      const { drawer: drawerEl } = gesture;
       drawerEl.style.transition = MOBILE_DRAWER_TRANSITION;
-      paneEl.style.transition = SIDEBAR_TRANSITION;
-      drawerEl.style.transform = next ? 'translate3d(0, 0, 0)' : 'translate3d(-100%, 0, 0)';
-      paneEl.style.transform = next ? MOBILE_PANE_SHIFT : 'translate3d(0, 0, 0)';
+      drawerEl.style.transform = next
+        ? 'translate3d(0, 0, 0)'
+        : closedDrawerTransform(gesture.sign);
       markDrawerAnimationStart();
       notifyDrawerSlide(next);
       setScrimOpacity(next);
       if (next !== open) {
         onOpenChangeRef.current(next);
       }
-      scheduleRelease(drawerEl, paneEl, next);
+      scheduleRelease(drawerEl, next);
     };
 
     /** Imperative slide for button/keyboard toggles: same transforms and
@@ -415,26 +415,22 @@ export default function useDrawerSwipe({
         /** Snap: suppress the shared transition through the state flip the
          * caller is about to make, then hand it back once committed. */
         drawer.style.transition = 'none';
-        pane.style.transition = 'none';
         const id = setTimeout(() => {
           settleRef.current = null;
-          const settled = settledTransitions();
-          drawer.style.transition = settled.drawer;
-          pane.style.transition = settled.pane;
+          drawer.style.transition = settledTransition();
         }, SETTLE_BUFFER_MS);
-        settleRef.current = { id, target: next, drawer, pane };
+        settleRef.current = { id, target: next, drawer };
         return;
       }
       drawer.style.willChange = 'transform';
-      if (next) {
-        pane.style.willChange = 'transform';
-      }
+      /** Paint before the deferred state flip, including on a retargeted close. */
+      drawer.style.visibility = 'visible';
       /** Armed BEFORE the frame below (id: null — no deadline yet) so the
        * staged write can verify its target is still wanted, and so a
        * touchstart in between defers to the pending settle. A retarget or
        * a reconciliation cancel clears/replaces the settle and thereby
        * voids the write. */
-      settleRef.current = { id: null, target: next, drawer, pane };
+      settleRef.current = { id: null, target: next, drawer };
       /** The transforms are written in a FRESH frame task, not the tap's own
        * task: a transition armed inside the click task is not reliably
        * created for the offscreen drawer (observed via `transitionrun`
@@ -451,41 +447,21 @@ export default function useDrawerSwipe({
           return;
         }
         drawer.style.transition = MOBILE_DRAWER_TRANSITION;
-        /** A width transition still in flight (the strip setting changing, or
-         * a rotation re-resolving the percentage) runs on its own clock, so
-         * the drawer's edge and the pane's would separate for the rest of it.
-         * Pinning the measured width settles the drawer onto this slide's
-         * clock; the opening kick hands the property back. */
+        /** Pin the closing width so rotation or a strip change cannot retarget
+         *  the slide's travel midway. Opening restores the configured width. */
         drawer.style.width = next
           ? MOBILE_DRAWER_WIDTH
           : `${drawer.getBoundingClientRect().width || window.innerWidth}px`;
-        drawer.style.transform = next ? 'translate3d(0, 0, 0)' : 'translate3d(-100%, 0, 0)';
+        drawer.style.transform = next
+          ? 'translate3d(0, 0, 0)'
+          : closedDrawerTransform(drawerSign(drawer));
         markDrawerAnimationStart();
         notifyDrawerSlide(next);
         setScrimOpacity(next);
-        if (next) {
-          pane.style.transition = SIDEBAR_TRANSITION;
-          pane.style.transform = MOBILE_PANE_SHIFT;
-        } else if (drawerCoversPane(drawer)) {
-          /** A programmatic close is a REVEAL while the drawer is full width:
-           * the pane repositions instantly beneath the opaque cover and only
-           * the drawer slides away, uncovering content already in place.
-           * Animating the pane in from the right makes every tap-to-navigate
-           * close visibly shift the chat leftward while the new conversation
-           * commits into the moving layer mid-slide. */
-          pane.style.transition = 'none';
-          pane.style.transform = 'none';
-        } else {
-          /** With the strip enabled that jump would land in the visible slice,
-           * so both surfaces animate together, which is the motion the drag
-           * path already produces in `settle`. */
-          pane.style.transition = SIDEBAR_TRANSITION;
-          pane.style.transform = 'translate3d(0, 0, 0)';
-        }
         void drawer.getBoundingClientRect();
         armed.id = setTimeout(() => {
           settleRef.current = null;
-          releaseInlineStyles(drawer, pane, next);
+          releaseInlineStyles(drawer, next);
         }, TRANSITION_MS + SETTLE_BUFFER_MS);
       });
     };
@@ -508,10 +484,10 @@ export default function useDrawerSwipe({
         startX: touch.clientX,
         startY: touch.clientY,
         dx: 0,
+        sign: drawerSign(drawer),
         width: drawer.clientWidth || window.innerWidth,
         reducedMotion: window.matchMedia('(prefers-reduced-motion: reduce)').matches,
         drawer,
-        pane,
         prevSample: sample,
         lastSample: sample,
         raf: null,
@@ -527,9 +503,7 @@ export default function useDrawerSwipe({
       gesture.raf = requestAnimationFrame(() => {
         gesture.rafScheduled = false;
         gesture.raf = null;
-        const transforms = dragTransforms(gesture);
-        gesture.drawer.style.transform = transforms.drawer;
-        gesture.pane.style.transform = transforms.pane;
+        gesture.drawer.style.transform = dragTransform(gesture);
       });
     };
 
@@ -549,18 +523,24 @@ export default function useDrawerSwipe({
         }
         return;
       }
-      const dx = touch.clientX - gesture.startX;
+      const physicalDx = touch.clientX - gesture.startX;
+      const dx = physicalDx * gesture.sign;
       const dy = touch.clientY - gesture.startY;
 
       if (gesture.phase === 'tracking') {
         const horizontal = Math.abs(dx) >= ACTIVATION_DISTANCE;
         const wins = Math.abs(dx) >= Math.abs(dy) * AXIS_LOCK_RATIO;
         if (horizontal && wins) {
-          const direction = dx > 0 ? 1 : -1;
-          const wrongWay = gesture.opening ? direction !== 1 : direction !== -1;
+          /** Opening travels away from the edge the drawer hides behind (the
+           *  inline start), closing travels back toward it. */
+          const wrongWay = gesture.opening ? dx <= 0 : dx >= 0;
           const blocker = wrongWay
             ? null
-            : findHorizontalScrollBlocker(event.target as Element | null, surface, direction);
+            : findHorizontalScrollBlocker(
+                event.target as Element | null,
+                surface,
+                physicalDx > 0 ? 1 : -1,
+              );
           if (wrongWay || blocker != null) {
             gesture.phase = 'dead';
             return;
@@ -568,13 +548,14 @@ export default function useDrawerSwipe({
           gesture.phase = 'claimed';
           if (!gesture.reducedMotion) {
             gesture.drawer.style.transition = 'none';
-            gesture.pane.style.transition = 'none';
             gesture.drawer.style.willChange = 'transform';
-            gesture.pane.style.willChange = 'transform';
+            /** The drag paints the drawer before any state flip: it follows the
+             *  finger out of a closed state, which is not painted. */
+            gesture.drawer.style.visibility = 'visible';
             /** Dropping the transition lands a width still easing toward the
              *  strip target on that target in this frame, so the touchstart
              *  snapshot is now stale — and the paired transforms below read it
-             *  for both surfaces, which would hold a gap open for the whole
+             *  for the drawer, which would hold a gap open for the whole
              *  drag. */
             gesture.width = gesture.drawer.clientWidth || window.innerWidth;
           }
@@ -622,7 +603,9 @@ export default function useDrawerSwipe({
        * velocity is only trusted when release follows the last move promptly. */
       const held = event.timeStamp - gesture.lastSample.t > VELOCITY_HOLD_MS;
       const velocity =
-        !held && elapsed > 0 ? (gesture.lastSample.x - gesture.prevSample.x) / elapsed : 0;
+        !held && elapsed > 0
+          ? ((gesture.lastSample.x - gesture.prevSample.x) * gesture.sign) / elapsed
+          : 0;
       const towardTarget = gesture.opening ? velocity : -velocity;
       const committed =
         progress >= gesture.width * COMMIT_DISTANCE_RATIO ||

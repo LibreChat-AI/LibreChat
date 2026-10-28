@@ -1,4 +1,4 @@
-import type { AgentToolOptions } from './types/assistants';
+import type { AgentToolOptions } from './types/tools';
 import { normalizeActionToolName, removeCodeExecutionCaller } from './agentToolOptions';
 
 describe('normalizeActionToolName', () => {

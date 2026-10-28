@@ -188,6 +188,7 @@ export type DeploymentSkillBaseMethods = {
     skillId: SkillId,
     relativePath: string,
     update: { content?: string; isBinary?: boolean },
+    expectedFileId?: string,
   ) => Promise<void>;
   updateSkillFileCodeEnvIds?: (
     updates: Array<{ skillId: SkillId; relativePath: string; codeEnvRef: CodeEnvRef }>,
@@ -354,10 +355,6 @@ export class DeploymentSkillRegistry {
 let registry = new DeploymentSkillRegistry(null, []);
 const warnedDeploymentNameCollisions = new Set<string>();
 
-export function getDeploymentSkillRegistry(): DeploymentSkillRegistry {
-  return registry;
-}
-
 export function getDeploymentSkillIds(): Types.ObjectId[] {
   return registry.ids();
 }
@@ -389,10 +386,6 @@ export function getDeploymentSkillById(id: SkillId): DeploymentSkill | null {
   return registry.getById(id);
 }
 
-export function isDeploymentSkillFilePath(filepath: string): boolean {
-  return registry.hasFilePath(filepath);
-}
-
 export async function getDeploymentSkillDownloadStream(
   filepath: string,
 ): Promise<NodeJS.ReadableStream> {
@@ -400,12 +393,6 @@ export async function getDeploymentSkillDownloadStream(
     throw new Error('Deployment skill file is not registered');
   }
   return fs.createReadStream(filepath);
-}
-
-export function updateDeploymentSkillFileCodeEnvRefs(
-  updates: Array<{ skillId: SkillId; relativePath: string; codeEnvRef: CodeEnvRef }>,
-): Array<{ skillId: SkillId; relativePath: string; codeEnvRef: CodeEnvRef }> {
-  return registry.updateFileCodeEnvRefs(updates);
 }
 
 export function resolveDeploymentSkillDirectory(
@@ -604,6 +591,7 @@ export function createDeploymentSkillMethods<T extends DeploymentSkillBaseMethod
       skillId: SkillId,
       relativePath: string,
       update: { content?: string; isBinary?: boolean },
+      expectedFileId?: string,
     ): Promise<void> => {
       const deploymentFile = registry.getFileByPath(skillId, relativePath);
       if (deploymentFile) {
@@ -616,7 +604,7 @@ export function createDeploymentSkillMethods<T extends DeploymentSkillBaseMethod
         return;
       }
       if (base.updateSkillFileContent) {
-        await base.updateSkillFileContent(skillId, relativePath, update);
+        await base.updateSkillFileContent(skillId, relativePath, update, expectedFileId);
       }
     },
     updateSkillFileCodeEnvIds: async (

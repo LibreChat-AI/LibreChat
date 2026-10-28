@@ -1,7 +1,29 @@
+import { logger } from '@librechat/data-schemas';
+import {
+  DEFAULT_AGENT_MODEL_RESPONSE_BODY_TIMEOUT_MS,
+  DEFAULT_AGENT_MODEL_RESPONSE_HEADERS_TIMEOUT_MS,
+} from 'librechat-data-provider';
 import type { TAgentsEndpoint } from 'librechat-data-provider';
 import { CREATE_FILE_TOOL_NAME } from '~/agents/tools';
 
 const DEFAULT_RECURSION_LIMIT = 50;
+
+export interface ModelTransportTimeouts {
+  bodyTimeout: number;
+  headersTimeout: number;
+}
+
+export function resolveModelTransportTimeouts(
+  agentsEConfig: Partial<TAgentsEndpoint> | undefined,
+): ModelTransportTimeouts {
+  return {
+    bodyTimeout:
+      agentsEConfig?.modelResponseBodyTimeoutMs ?? DEFAULT_AGENT_MODEL_RESPONSE_BODY_TIMEOUT_MS,
+    headersTimeout:
+      agentsEConfig?.modelResponseHeadersTimeoutMs ??
+      DEFAULT_AGENT_MODEL_RESPONSE_HEADERS_TIMEOUT_MS,
+  };
+}
 
 /**
  * Mirrors `RECURSION_MULTIPLIER` in `@librechat/agents` `SubagentExecutor`,
@@ -11,28 +33,58 @@ const DEFAULT_RECURSION_LIMIT = 50;
  */
 const SUBAGENT_RECURSION_MULTIPLIER = 3;
 
+/** Whether a recursion limit can bound a run: a whole number of steps, at least one. */
+function isStepLimit(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1;
+}
+
+/** Config fields already warned about, by field and value, so a bad value warns once. */
+const warnedLimits = new Set<string>();
+
+/**
+ * An `endpoints.agents` recursion field as a step limit, or `undefined` when unset or unusable:
+ * 0, a negative or a fractional value would make every run fail at once, so it is treated as
+ * unset (with one warning), as the schema now refuses it.
+ */
+function readConfigStepLimit(
+  agentsEConfig: Partial<TAgentsEndpoint> | undefined,
+  field: 'recursionLimit' | 'maxRecursionLimit',
+): number | undefined {
+  const value = agentsEConfig?.[field];
+  if (value == null || isStepLimit(value)) {
+    return value ?? undefined;
+  }
+  const key = `${field}:${String(value)}`;
+  if (!warnedLimits.has(key)) {
+    warnedLimits.add(key);
+    logger.warn(
+      `[resolveRecursionLimit] Ignoring endpoints.agents.${field}: ${String(value)} is not a whole number of at least 1`,
+    );
+  }
+  return undefined;
+}
+
 /**
  * Resolves the effective recursion limit for an agent run via a 3-step cascade:
  * 1. YAML endpoint config default (falls back to 50)
- * 2. Per-agent DB override (if set and positive)
- * 3. Global max cap from YAML (if set and positive)
+ * 2. Per-agent DB override (if set to a whole number of at least 1)
+ * 3. Global max cap from YAML (if set to a whole number of at least 1)
+ *
+ * A config value that is not a whole number of at least 1 counts as unset.
  */
 export function resolveRecursionLimit(
   agentsEConfig: Partial<TAgentsEndpoint> | undefined,
   agent: { recursion_limit?: number } | undefined,
 ): number {
-  let limit = agentsEConfig?.recursionLimit ?? DEFAULT_RECURSION_LIMIT;
+  let limit = readConfigStepLimit(agentsEConfig, 'recursionLimit') ?? DEFAULT_RECURSION_LIMIT;
 
-  if (typeof agent?.recursion_limit === 'number' && agent.recursion_limit > 0) {
+  if (isStepLimit(agent?.recursion_limit)) {
     limit = agent.recursion_limit;
   }
 
-  if (
-    typeof agentsEConfig?.maxRecursionLimit === 'number' &&
-    agentsEConfig.maxRecursionLimit > 0 &&
-    limit > agentsEConfig.maxRecursionLimit
-  ) {
-    limit = agentsEConfig.maxRecursionLimit;
+  const maxLimit = readConfigStepLimit(agentsEConfig, 'maxRecursionLimit');
+  if (maxLimit != null && limit > maxLimit) {
+    limit = maxLimit;
   }
 
   return limit;

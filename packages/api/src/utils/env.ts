@@ -5,11 +5,13 @@ import type { IUser } from '@librechat/data-schemas';
 import type { RequestBody } from '~/types';
 import {
   OPENID_TOKEN_FIELDS,
+  OPENID_CREDENTIAL_PLACEHOLDER_PATTERN,
   isOpenIDTokenValid,
   extractOpenIDTokenInfo,
   processOpenIDPlaceholders,
   OpenIDReauthRequiredError,
 } from './oidc';
+import { getAdminApiKeyHeader } from '~/mcp/headers';
 
 /**
  * Provenance marker for MCP servers contributed by an Agent Plugins package.
@@ -106,7 +108,10 @@ export function encodeHeaderValue(value: string): string {
  * @returns A new object containing only allowed fields plus federatedTokens if present
  */
 export function createSafeUser(
-  user: IUser | null | undefined,
+  user:
+    | (Partial<SafeUser> & Pick<IUser, 'tenantId'> & { federatedTokens?: IUser['federatedTokens'] })
+    | null
+    | undefined,
 ): Partial<SafeUser> & { federatedTokens?: IUser['federatedTokens'] } {
   if (!user) {
     return {};
@@ -165,17 +170,6 @@ const RESOLVABLE_PLACEHOLDER_PATTERN = new RegExp(
     .join('|'),
   'g',
 );
-
-/**
- * The subset of OpenID placeholders that cannot resolve without a usable token
- * set. Identity metadata (`USER_ID`, `USER_EMAIL`, `USER_NAME`) comes from the
- * user document and `EXPIRES_AT` is only ever a hint, so those must keep their
- * pre-existing literal-then-strip behaviour when the token set is invalid
- * rather than raising re-auth. Non-global so `exec` stays stateless, and
- * unknown names are excluded so a typo stays literal and diagnosable.
- */
-const OPENID_CREDENTIAL_PLACEHOLDER_PATTERN =
-  /\{\{LIBRECHAT_OPENID_(?:ACCESS_TOKEN|ID_TOKEN|TOKEN)\}\}/;
 
 /**
  * The credential placeholders that specifically need a usable *access* token, which is all
@@ -299,6 +293,7 @@ function processSingleValue({
   body = undefined,
   isHeader = false,
   dbSourced = false,
+  beforeCredentialResolution,
 }: {
   originalValue: string;
   customUserVars?: Record<string, string>;
@@ -307,6 +302,7 @@ function processSingleValue({
   isHeader?: boolean;
   /** When true, only resolve customUserVars — skip env vars, user/OpenID/body placeholders */
   dbSourced?: boolean;
+  beforeCredentialResolution?: (value: string) => string;
 }): string {
   // Type guard: ensure we're working with a string
   if (typeof originalValue !== 'string') {
@@ -341,6 +337,7 @@ function processSingleValue({
 
   value = processUserPlaceholders(value, user, isHeader);
 
+  value = beforeCredentialResolution?.(value) ?? value;
   const openidTokenInfo = extractOpenIDTokenInfo(user);
   if (openidTokenInfo && isOpenIDTokenValid(openidTokenInfo)) {
     value = processOpenIDPlaceholders(value, openidTokenInfo);
@@ -392,8 +389,10 @@ export function processMCPEnv(params: {
   body?: RequestBody;
   /** When true, only resolve customUserVars — skip env vars, user/OpenID/body placeholders (for DB-stored servers) */
   dbSourced?: boolean;
+  /** Trusted projection hook, after substitutions and before credential resolution. */
+  beforeCredentialResolution?: (value: string) => string;
 }): MCPOptions {
-  const { options, user, customUserVars, body } = params;
+  const { options, user, body, beforeCredentialResolution } = params;
 
   if (options === null || options === undefined) {
     return options;
@@ -415,38 +414,27 @@ export function processMCPEnv(params: {
   /** Derive dbSourced from explicit param OR from dbId on the options (failsafe for callers that forget the flag) */
   const dbSourced = params.dbSourced ?? !!options.dbId;
 
+  /** A shared-server editor can inject old auth-field names into any template. Only
+   *  server-declared variables may resolve, including destination-bound API key fields. */
+  const userManaged = dbSourced || !!options.dbId || options.source === 'user';
+  const customUserVars =
+    userManaged && params.customUserVars
+      ? Object.fromEntries(
+          Object.entries(params.customUserVars).filter(([name]) =>
+            Object.prototype.hasOwnProperty.call(options.customUserVars ?? {}, name),
+          ),
+        )
+      : params.customUserVars;
+
   const newObj: MCPOptions = structuredClone(options);
 
-  // Apply admin-provided API key to headers at runtime
-  // Note: User-provided keys use {{MCP_API_KEY}} placeholder in headers,
-  // which is processed later via customUserVars replacement
-  if ('apiKey' in newObj && newObj.apiKey) {
-    const apiKeyConfig = newObj.apiKey as {
-      key?: string;
-      source: 'admin' | 'user';
-      authorization_type: 'basic' | 'bearer' | 'custom';
-      custom_header?: string;
+  const adminHeader = getAdminApiKeyHeader(newObj.apiKey);
+  if (adminHeader) {
+    const objWithHeaders = newObj as { headers?: Record<string, string> };
+    objWithHeaders.headers = {
+      ...objWithHeaders.headers,
+      [adminHeader.name]: adminHeader.value,
     };
-
-    if (apiKeyConfig.source === 'admin' && apiKeyConfig.key) {
-      const { key, authorization_type, custom_header } = apiKeyConfig;
-      const headerName =
-        authorization_type === 'custom' ? custom_header || 'X-Api-Key' : 'Authorization';
-
-      let headerValue = key;
-      if (authorization_type === 'basic') {
-        headerValue = `Basic ${key}`;
-      } else if (authorization_type === 'bearer') {
-        headerValue = `Bearer ${key}`;
-      }
-
-      // Initialize headers if needed and add the API key header (overwrites if header already exists)
-      const objWithHeaders = newObj as { headers?: Record<string, string> };
-      if (!objWithHeaders.headers) {
-        objWithHeaders.headers = {};
-      }
-      objWithHeaders.headers[headerName] = headerValue;
-    }
   }
 
   if ('env' in newObj && newObj.env) {
@@ -456,6 +444,7 @@ export function processMCPEnv(params: {
         user,
         body,
         dbSourced,
+        beforeCredentialResolution,
         originalValue,
         customUserVars,
       });
@@ -467,7 +456,14 @@ export function processMCPEnv(params: {
     const processedArgs: string[] = [];
     for (const originalValue of newObj.args) {
       processedArgs.push(
-        processSingleValue({ originalValue, customUserVars, user, body, dbSourced }),
+        processSingleValue({
+          originalValue,
+          customUserVars,
+          user,
+          body,
+          dbSourced,
+          beforeCredentialResolution,
+        }),
       );
     }
     newObj.args = processedArgs;
@@ -482,6 +478,7 @@ export function processMCPEnv(params: {
         user,
         body,
         dbSourced,
+        beforeCredentialResolution,
         originalValue,
         customUserVars,
         isHeader: true, // Important: Enable header encoding
@@ -498,6 +495,7 @@ export function processMCPEnv(params: {
         user,
         body,
         dbSourced,
+        beforeCredentialResolution,
         originalValue,
         customUserVars,
         isHeader: true,
@@ -512,6 +510,7 @@ export function processMCPEnv(params: {
       user,
       body,
       dbSourced,
+      beforeCredentialResolution,
       customUserVars,
       originalValue: newObj.url,
     });
@@ -533,6 +532,7 @@ export function processMCPEnv(params: {
           user,
           body,
           dbSourced,
+          beforeCredentialResolution,
           originalValue,
           customUserVars,
         });
@@ -544,74 +544,6 @@ export function processMCPEnv(params: {
   }
 
   return newObj;
-}
-
-/**
- * Recursively processes a value, replacing placeholders in strings while preserving structure
- * @param value - The value to process (can be string, number, boolean, array, object, etc.)
- * @param options - Processing options
- * @returns The processed value with the same structure
- */
-function processValue(
-  value: unknown,
-  options: {
-    customUserVars?: Record<string, string>;
-    user?: IUser;
-    body?: RequestBody;
-  },
-): unknown {
-  if (typeof value === 'string') {
-    return processSingleValue({
-      originalValue: value,
-      customUserVars: options.customUserVars,
-      user: options.user,
-      body: options.body,
-    });
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((item) => processValue(item, options));
-  }
-
-  if (value !== null && typeof value === 'object') {
-    const processed: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value)) {
-      processed[key] = processValue(val, options);
-    }
-    return processed;
-  }
-
-  return value;
-}
-
-/**
- * Recursively resolves placeholders in a nested object structure while preserving types.
- * Only processes string values - leaves numbers, booleans, arrays, and nested objects intact.
- *
- * @param options - Configuration object
- * @param options.obj - The object to process
- * @param options.user - Optional user object for replacing user field placeholders
- * @param options.body - Optional request body object for replacing body field placeholders
- * @param options.customUserVars - Optional custom user variables to replace placeholders
- * @returns The processed object with placeholders replaced in string values
- */
-export function resolveNestedObject<T = unknown>(options?: {
-  obj: T | undefined;
-  user?: Partial<IUser> | { id: string };
-  body?: RequestBody;
-  customUserVars?: Record<string, string>;
-}): T {
-  const { obj, user, body, customUserVars } = options ?? {};
-
-  if (!obj) {
-    return obj as T;
-  }
-
-  return processValue(obj, {
-    customUserVars,
-    user: user as IUser,
-    body,
-  }) as T;
 }
 
 /**

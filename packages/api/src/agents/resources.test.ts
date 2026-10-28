@@ -10,6 +10,8 @@ import type { TAgentsEndpoint, TFile } from 'librechat-data-provider';
 import type { IUser, AppConfig } from '@librechat/data-schemas';
 import type { Request as ServerRequest } from 'express';
 import type { TGetFiles, TFilterFilesByAgentAccess } from './resources';
+import { createDeleteFileWithSecondaryStorage } from '../files/storage';
+import { createFileProvisionRecovery } from '../files/operations';
 import { primeResources } from './resources';
 
 // Mock logger
@@ -139,10 +141,180 @@ describe('primeResources', () => {
       ]);
     });
 
+    it.each(['primary', 'code'])('re-provisions saved files on %s failure', async (failure) => {
+      const file = sharedContextFile(['agent-a']);
+      file.metadata = {
+        ...file.metadata,
+        codeEnvRef: {
+          kind: 'agent',
+          id: 'agent-a',
+          storage_session_id: 'session',
+          file_id: 'code-copy',
+        },
+      };
+      const providerError = new Error('provider unavailable');
+      const primary = jest.fn().mockResolvedValue(undefined);
+      const code = jest.fn().mockResolvedValue({ deleted: true });
+      (failure === 'primary' ? primary : code).mockRejectedValue(providerError);
+      const clearFileEmbeddings = jest.fn().mockResolvedValue(true);
+      const remove = createDeleteFileWithSecondaryStorage({
+        source: FileSources.local,
+        deleteFile: primary,
+        getDeleteFile: (source) =>
+          source === FileSources.vectordb ? async () => ({ deleted: true }) : code,
+        clearFileEmbeddings,
+        isFileStorageClean: jest.fn().mockResolvedValue(true),
+        fileStorage: {
+          recovery: createFileProvisionRecovery(),
+          acquireFileProvision: jest.fn().mockResolvedValue(true),
+          releaseFileProvision: jest.fn().mockResolvedValue(true),
+          commitFileProvision: jest.fn().mockResolvedValue(true),
+          acquireFileDeletion: jest.fn().mockResolvedValue({ resumed: false }),
+          releaseFileDeletion: jest.fn().mockResolvedValue(true),
+        },
+        logger: { warn: jest.fn() },
+      });
+      await expect(
+        remove(
+          { user: { id: 'user1' }, config: { fileConfig: { retainedFileCleanup: true } } },
+          file,
+        ),
+      ).rejects.toBe(providerError);
+      expect(file.embedded).toBe(false);
+      expect(file.metadata?.embeddedEntities).toBeUndefined();
+      expect(file.metadata?.codeEnvRef?.file_id).toBe('code-copy');
+      mockGetFiles.mockResolvedValue([file]);
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        requestFileSet,
+        attachments: undefined,
+        tool_resources: { [EToolResources.file_search]: { file_ids: [file.file_id] } },
+        agentId: 'agent-a',
+        enabledToolResources: new Set([EToolResources.file_search]),
+      });
+      expect(result.provisionState?.vectorDBFiles.map((candidate) => candidate.file_id)).toContain(
+        file.file_id,
+      );
+      expect(result.tool_resources?.file_search?.file_ids).toContain(file.file_id);
+    });
+
     it('does not re-embed for the agent that already provisioned it', async () => {
       const result = await primeFor('agent-a', sharedContextFile(['agent-a']));
 
       expect(result.provisionState).toBeUndefined();
+    });
+  });
+
+  describe('search destination after confirmed vector cleanup', () => {
+    const chatFile = (destinationChosen?: boolean): TFile => ({
+      user: 'user1',
+      file_id: 'chat-search',
+      filename: 'notes.pdf',
+      filepath: '/uploads/notes.pdf',
+      object: 'file',
+      type: 'application/pdf',
+      bytes: 1024,
+      usage: 0,
+      source: FileSources.local,
+      context: FileContext.message_attachment,
+      llmDeliveryPath: 'none',
+      embedded: true,
+      metadata: {
+        ...(destinationChosen !== undefined ? { destinationChosen } : {}),
+        embeddedEntities: ['user1'],
+      },
+    });
+
+    const primeChat = (file: TFile, enabledToolResources: Set<EToolResources>) =>
+      primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        requestFileSet,
+        attachments: Promise.resolve([file]),
+        tool_resources: {},
+        agentId: 'agent-a',
+        enabledToolResources,
+      });
+
+    it.each([true, undefined, false])(
+      'requeues search after primary failure with chooser marker %s',
+      async (destinationChosen) => {
+        const file = chatFile(destinationChosen);
+        const failure = new Error('primary unavailable');
+        const remove = createDeleteFileWithSecondaryStorage({
+          source: FileSources.local,
+          deleteFile: async () => {
+            throw failure;
+          },
+          getDeleteFile: () => async () => ({ deleted: true }),
+          clearFileEmbeddings: jest.fn().mockResolvedValue(true),
+          isFileStorageClean: jest.fn().mockResolvedValue(true),
+          fileStorage: {
+            recovery: createFileProvisionRecovery(),
+            acquireFileProvision: jest.fn().mockResolvedValue(true),
+            releaseFileProvision: jest.fn().mockResolvedValue(true),
+            commitFileProvision: jest.fn().mockResolvedValue(true),
+            acquireFileDeletion: jest.fn().mockResolvedValue({ resumed: false }),
+            releaseFileDeletion: jest.fn().mockResolvedValue(true),
+          },
+          logger: { warn: jest.fn() },
+        });
+        await expect(
+          remove(
+            { user: { id: 'user1' }, config: { fileConfig: { retainedFileCleanup: true } } },
+            file,
+          ),
+        ).rejects.toBe(failure);
+        expect(file.embedded).toBe(false);
+        expect(file.metadata?.embeddedEntities).toBeUndefined();
+        expect(file.metadata?.searchDestination).toBe(true);
+        expect(file.llmDeliveryPath).toBe('none');
+        const enabled = new Set([EToolResources.file_search, EToolResources.execute_code]);
+        const result = await primeChat(file, enabled);
+        expect(result.provisionState?.vectorDBFiles.map((candidate) => candidate.file_id)).toEqual([
+          file.file_id,
+        ]);
+        expect(result.provisionState?.agentScopedFileIds.has(file.file_id)).toBe(false);
+        expect(file.embedded).toBe(false);
+        if (destinationChosen !== false) {
+          expect(result.provisionState?.codeEnvFiles).toEqual([]);
+        }
+        expect(mockGetFiles).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([true, undefined])(
+      'does not provision a declined search destination (%s)',
+      async (choice) => {
+        const file = chatFile(choice);
+        file.embedded = false;
+        file.metadata = {
+          destinationChosen: choice,
+          codeEnvRef: {
+            kind: 'user',
+            id: 'user1',
+            storage_session_id: 'session',
+            file_id: 'code-copy',
+          },
+        };
+        const result = await primeChat(file, new Set([EToolResources.file_search]));
+        expect(result.provisionState?.vectorDBFiles ?? []).toEqual([]);
+        expect(file.metadata.searchDestination).toBeUndefined();
+      },
+    );
+
+    it('does not enable a tool or provision search when File Search is disabled', async () => {
+      const file = chatFile(true);
+      file.embedded = false;
+      file.metadata = { destinationChosen: true, searchDestination: true };
+      const result = await primeChat(file, new Set([EToolResources.execute_code]));
+      expect(result.provisionState).toBeUndefined();
+      expect(result.tool_resources?.file_search).toBeUndefined();
     });
   });
 
@@ -2184,6 +2356,60 @@ describe('primeResources', () => {
       expect(statefulFile.metadata?.codeEnvRefs?.default).toBeDefined();
     });
 
+    it("authenticates an attached route's probe for its worker without the managed key", async () => {
+      /* The managed key authorizes only the default Code API; an attached route answers
+       * it with a 401, so it is neither loaded nor sent, and the probe carries the
+       * route's profile and worker for a worker-bound bearer instead. */
+      process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
+      const checkSessionsAlive = jest.fn().mockResolvedValue(new Set(['attached-file']));
+      const loadCodeApiKey = jest.fn().mockResolvedValue('managed-key');
+      const attachedFile = makeCodeFile({
+        file_id: 'attached-file',
+        metadata: {
+          codeEnvRefs: {
+            'stateful:env1': {
+              kind: 'user',
+              id: 'user1',
+              storage_session_id: 'sess-attached',
+              file_id: 'remote-attached',
+              executionProfile: 'stateful',
+              executionRouteKey: 'stateful:env1',
+            },
+          },
+        },
+      });
+
+      await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        tool_resources: {},
+        attachments: Promise.resolve([attachedFile]),
+        requestFileSet,
+        agentId: 'agent1',
+        enabledToolResources: new Set([EToolResources.execute_code]),
+        checkSessionsAlive,
+        loadCodeApiKey,
+        codeRouteKey: 'stateful:env1',
+        codeBaseUrl: 'https://code-byom.example.com/v1',
+        codeExecutionProfile: 'stateful',
+        codeBridgeWorkerId: 'worker-1',
+      });
+
+      expect(loadCodeApiKey).not.toHaveBeenCalled();
+      expect(checkSessionsAlive).toHaveBeenCalledWith(
+        expect.objectContaining({
+          req: mockReq,
+          apiKey: undefined,
+          baseURL: 'https://code-byom.example.com/v1',
+          routeKey: 'stateful:env1',
+          executionProfile: 'stateful',
+          bridgeWorkerId: 'worker-1',
+        }),
+      );
+    });
+
     it('keeps alive pre-categorized files out of the provisioning queue', async () => {
       process.env.CODEAPI_AUTH_PROVIDER = 'librechat-jwt';
       const checkSessionsAlive = jest.fn().mockResolvedValue(new Set(['alive-file']));
@@ -2611,6 +2837,214 @@ describe('primeResources', () => {
       expect(result.provisionState?.vectorDBFiles.map((f) => f.file_id)).toEqual([
         'legacy-context',
       ]);
+    });
+
+    describe('legacy File Search files held by the agent', () => {
+      /* Before namespaces were tracked, a file joined an agent's file_search resources only
+       * by being embedded for it. Embedding it again stores a second copy under the same
+       * file_id, and every search returns each passage twice. */
+      const legacySearchFile = (): TFile =>
+        ({
+          user: 'user1',
+          file_id: 'legacy-search',
+          filename: 'handbook.pdf',
+          filepath: '/uploads/handbook.pdf',
+          object: 'file',
+          type: 'application/pdf',
+          bytes: 2048,
+          embedded: true,
+          usage: 0,
+          source: FileSources.local,
+          context: FileContext.agents,
+        }) as TFile;
+
+      const primeLegacy = (
+        hasEntityEmbeddings: jest.Mock,
+        adoptLegacySearchEmbeddings: jest.Mock,
+      ) => {
+        mockGetFiles.mockResolvedValue([legacySearchFile()]);
+        return primeResources({
+          req: mockReq,
+          appConfig: mockAppConfig,
+          getFiles: mockGetFiles,
+          filterFiles: mockFilterFiles,
+          tool_resources: { [EToolResources.file_search]: { file_ids: ['legacy-search'] } },
+          attachments: undefined,
+          requestFileSet,
+          agentId: 'agent1',
+          enabledToolResources: new Set([EToolResources.file_search]),
+          hasEntityEmbeddings,
+          adoptLegacySearchEmbeddings,
+        });
+      };
+
+      it("does not re-embed a file whose vectors are in this agent's namespace", async () => {
+        const probe = jest.fn().mockResolvedValue(true);
+        const adopt = jest.fn().mockResolvedValue(['legacy-search']);
+
+        const result = await primeLegacy(probe, adopt);
+
+        expect(probe).toHaveBeenCalledWith({
+          userId: 'user1',
+          file_id: 'legacy-search',
+          entity_id: 'agent1',
+          query: 'handbook.pdf',
+          timeoutMs: 5000,
+        });
+        expect(adopt).toHaveBeenCalledWith({
+          files: [{ file_id: 'legacy-search', user: 'user1' }],
+          agentId: 'agent1',
+        });
+        expect(result.provisionState).toBeUndefined();
+        expect(result.tool_resources?.[EToolResources.file_search]?.file_ids).toEqual([
+          'legacy-search',
+        ]);
+      });
+
+      it('bounds the check by the configured timeout', async () => {
+        const probe = jest.fn().mockResolvedValue(true);
+        mockGetFiles.mockResolvedValue([legacySearchFile()]);
+
+        await primeResources({
+          req: mockReq,
+          appConfig: {
+            ...mockAppConfig,
+            fileConfig: { ...mockAppConfig.fileConfig, legacySearchProbeTimeoutMs: 1234 },
+          } as AppConfig,
+          getFiles: mockGetFiles,
+          filterFiles: mockFilterFiles,
+          tool_resources: { [EToolResources.file_search]: { file_ids: ['legacy-search'] } },
+          attachments: undefined,
+          requestFileSet,
+          agentId: 'agent1',
+          enabledToolResources: new Set([EToolResources.file_search]),
+          hasEntityEmbeddings: probe,
+          adoptLegacySearchEmbeddings: jest.fn().mockResolvedValue(['legacy-search']),
+        });
+
+        expect(probe).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 1234 }));
+      });
+
+      it('checks a file another agent recorded first before embedding it here', async () => {
+        /* An inheriting agent embedded and recorded it first; this agent's own older vectors
+         * went unrecorded, so embedding again would duplicate them. */
+        const probe = jest.fn().mockResolvedValue(true);
+        const adopt = jest.fn().mockResolvedValue(['legacy-search']);
+        mockGetFiles.mockResolvedValue([
+          { ...legacySearchFile(), metadata: { embeddedEntities: ['agent2'] } } as TFile,
+        ]);
+
+        const result = await primeResources({
+          req: mockReq,
+          appConfig: mockAppConfig,
+          getFiles: mockGetFiles,
+          filterFiles: mockFilterFiles,
+          tool_resources: { [EToolResources.file_search]: { file_ids: ['legacy-search'] } },
+          attachments: undefined,
+          requestFileSet,
+          agentId: 'agent1',
+          enabledToolResources: new Set([EToolResources.file_search]),
+          hasEntityEmbeddings: probe,
+          adoptLegacySearchEmbeddings: adopt,
+        });
+
+        expect(probe).toHaveBeenCalledWith(expect.objectContaining({ entity_id: 'agent1' }));
+        expect(result.provisionState).toBeUndefined();
+      });
+
+      it("embeds a file whose vectors are not in this agent's namespace", async () => {
+        /* Another agent embedded it, so this agent's namespace holds none of its vectors and
+         * search would return nothing. */
+        const probe = jest.fn().mockResolvedValue(false);
+        const adopt = jest.fn();
+
+        const result = await primeLegacy(probe, adopt);
+
+        expect(adopt).not.toHaveBeenCalled();
+        expect(result.provisionState?.vectorDBFiles.map((f) => f.file_id)).toEqual([
+          'legacy-search',
+        ]);
+      });
+
+      it('logs a failed check without the vector store response body', async () => {
+        const error = Object.assign(new Error('Request failed with status code 500'), {
+          response: { status: 500, data: { detail: 'upstream secret text' } },
+        });
+        const probe = jest.fn().mockRejectedValue(error);
+
+        await primeLegacy(probe, jest.fn());
+
+        expect(logger.error).toHaveBeenCalled();
+        expect(JSON.stringify((logger.error as jest.Mock).mock.calls)).not.toContain(
+          'upstream secret text',
+        );
+      });
+
+      it('keeps the file queued when the vector store cannot be asked', async () => {
+        const probe = jest.fn().mockRejectedValue(new Error('connect ECONNREFUSED'));
+        const adopt = jest.fn();
+
+        const result = await primeLegacy(probe, adopt);
+
+        expect(adopt).not.toHaveBeenCalled();
+        expect(result.provisionState?.vectorDBFiles.map((f) => f.file_id)).toEqual([
+          'legacy-search',
+        ]);
+      });
+
+      it('uses confirmed vectors even when recording the namespace fails', async () => {
+        /* The vectors are there; embedding again would store the duplicate copy. */
+        const probe = jest.fn().mockResolvedValue(true);
+        const adopt = jest.fn().mockRejectedValue(new Error('database unavailable'));
+
+        const result = await primeLegacy(probe, adopt);
+
+        expect(result.provisionState).toBeUndefined();
+      });
+
+      it('starts the legacy check before the code liveness probe settles', async () => {
+        const probe = jest.fn().mockResolvedValue(true);
+        const adopt = jest.fn().mockResolvedValue(['legacy-search']);
+        let checkStartedFirst = false;
+        const checkSessionsAlive = jest.fn(async () => {
+          checkStartedFirst = probe.mock.calls.length === 1;
+          return new Set(['legacy-search']);
+        });
+        mockGetFiles.mockResolvedValue([
+          {
+            ...legacySearchFile(),
+            metadata: {
+              codeEnvRef: {
+                kind: 'agent',
+                id: 'agent1',
+                storage_session_id: 'sess',
+                file_id: 'fid',
+              },
+            },
+          } as TFile,
+        ]);
+
+        await primeResources({
+          req: mockReq,
+          appConfig: mockAppConfig,
+          getFiles: mockGetFiles,
+          filterFiles: mockFilterFiles,
+          tool_resources: {
+            [EToolResources.file_search]: { file_ids: ['legacy-search'] },
+            [EToolResources.execute_code]: { file_ids: ['legacy-search'] },
+          },
+          attachments: undefined,
+          requestFileSet,
+          agentId: 'agent1',
+          enabledToolResources: new Set([EToolResources.file_search, EToolResources.execute_code]),
+          checkSessionsAlive,
+          hasEntityEmbeddings: probe,
+          adoptLegacySearchEmbeddings: adopt,
+        });
+
+        expect(checkSessionsAlive).toHaveBeenCalled();
+        expect(checkStartedFirst).toBe(true);
+      });
     });
 
     it('leaves a file alone whose destination came from the legacy chooser', async () => {

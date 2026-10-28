@@ -1,4 +1,7 @@
 import { z } from 'zod';
+import { CODE_APPROVAL_MODES } from '../code/approval';
+import { reasoningOverrideSchema } from '../schemas';
+import { Constants } from '../config';
 
 export const agentQueuedTurnStatuses = [
   'queued',
@@ -24,12 +27,15 @@ export type TAgentQueuedTurnFileRef = z.infer<typeof agentQueuedTurnFileRefSchem
 
 export const enqueueAgentQueuedTurnSchema = z.object({
   conversationId: z.string().trim().min(1),
-  parentMessageId: z.string().trim().min(1),
+  parentMessageId: z.string().trim().min(1).max(Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH),
   clientRequestId: z.string().trim().min(1).max(128),
   text: z.string(),
   files: z.array(agentQueuedTurnFileRefSchema).optional(),
   quotes: z.array(z.string()).optional(),
   manualSkills: z.array(z.string().trim().min(1)).optional(),
+  /** Selected when queued, revalidated against live policy at turn admission. */
+  codeApprovalMode: z.enum(CODE_APPROVAL_MODES).optional(),
+  reasoningOverride: reasoningOverrideSchema.optional(),
   priority: z.boolean().optional(),
   expectedPredecessorCreatedAt: z.number().int().nonnegative().optional(),
 });
@@ -77,6 +83,8 @@ export const agentQueuedTurnCapabilitySchema = z.discriminatedUnion('supported',
   z.object({
     supported: z.literal(true),
     durability: z.enum(agentQueuedTurnDurability),
+    /** v2 preserves approval snapshots through admission and execution. */
+    protocolVersion: z.literal(2).optional(),
   }),
 ]);
 export type TAgentQueuedTurnCapability = z.infer<typeof agentQueuedTurnCapabilitySchema>;

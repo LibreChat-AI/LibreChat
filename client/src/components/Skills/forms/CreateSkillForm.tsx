@@ -169,7 +169,7 @@ export default function CreateSkillForm({
                     {...field}
                     id="skill-name"
                     type="text"
-                    className="peer mr-2 w-full border border-border-medium p-2 text-2xl text-text-primary"
+                    className="peer text-text-primary me-2 w-full p-2 text-2xl"
                     placeholder=" "
                     tabIndex={0}
                     aria-label={localize('com_ui_name')}
@@ -177,16 +177,16 @@ export default function CreateSkillForm({
                     aria-invalid={errors.name ? 'true' : 'false'}
                     aria-describedby={errors.name ? 'skill-name-error' : undefined}
                   />
-                  <Label
+                  <label
                     htmlFor="skill-name"
-                    className="pointer-events-none absolute -top-1 left-3 origin-[0] translate-y-3 scale-100 rounded bg-presentation px-1 text-base text-text-secondary transition-transform duration-200 peer-placeholder-shown:translate-y-3 peer-placeholder-shown:scale-100 peer-focus:-translate-y-2 peer-focus:scale-75 peer-focus:text-text-primary peer-[:not(:placeholder-shown)]:-translate-y-2 peer-[:not(:placeholder-shown)]:scale-75"
+                    className="bg-surface-primary-alt text-text-secondary peer-focus:text-text-primary pointer-events-none absolute inset-s-3 -top-1 origin-[0] translate-y-3 scale-100 rounded px-1 text-base transition-transform duration-200 peer-placeholder-shown:translate-y-3 peer-placeholder-shown:scale-100 peer-focus:-translate-y-2 peer-focus:scale-75 peer-[:not(:placeholder-shown)]:-translate-y-2 peer-[:not(:placeholder-shown)]:scale-75 rtl:origin-right"
                   >
                     {localize('com_ui_name')}*
-                  </Label>
+                  </label>
                   <div
                     id="skill-name-error"
                     className={cn(
-                      'mt-1 w-56 text-sm text-text-destructive',
+                      'text-text-destructive mt-1 w-56 text-sm',
                       errors.name ? 'visible h-auto' : 'invisible h-0',
                     )}
                     role={errors.name ? 'alert' : undefined}
@@ -219,12 +219,15 @@ export default function CreateSkillForm({
               <div className="flex flex-col">
                 <Label
                   htmlFor="skill-description"
-                  className="mb-1 text-sm font-medium text-text-secondary"
+                  variant="secondary"
+                  className="mb-1 text-sm font-medium"
                 >
                   {localize('com_ui_description')}
-                  <span className="ml-0.5 text-text-destructive">*</span>
+                  <span className="text-text-destructive ms-0.5">*</span>
                 </Label>
                 <TextareaAutosize
+                  variant="framed"
+                  focusOutline="hidden"
                   {...field}
                   id="skill-description"
                   minRows={2}
@@ -233,15 +236,15 @@ export default function CreateSkillForm({
                   aria-label={localize('com_ui_description')}
                   aria-invalid={errors.description ? 'true' : 'false'}
                   aria-describedby={errors.description ? 'skill-description-error' : undefined}
-                  className="w-full resize-none rounded-xl border border-border-medium bg-transparent p-3 text-sm text-text-primary placeholder:text-text-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+                  className="w-full resize-none p-3 text-sm"
                 />
-                <p className="mt-1 text-xs text-text-secondary">
+                <p className="text-text-secondary mt-1 text-xs">
                   {localize('com_ui_skill_description_field_hint')}
                 </p>
                 {errors.description && (
                   <p
                     id="skill-description-error"
-                    className="mt-1 text-sm text-text-destructive"
+                    className="text-text-destructive mt-1 text-sm"
                     role="alert"
                   >
                     {errors.description.message}
@@ -260,7 +263,7 @@ export default function CreateSkillForm({
           {createSkill.error != null && (
             <div
               role="alert"
-              className="flex items-start gap-2 rounded-md border border-status-error-border bg-status-error-subtle p-3 text-sm text-text-destructive"
+              className="border-status-error-border bg-status-error-subtle text-text-destructive flex items-start gap-2 rounded-md border p-3 text-sm"
             >
               <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
               <span>{localize('com_ui_skill_create_error')}</span>
@@ -276,7 +279,7 @@ export default function CreateSkillForm({
               type="submit"
               disabled={createDisabled}
               aria-disabled={createDisabled || undefined}
-              className={cn('w-full sm:w-auto', createDisabled && 'opacity-50')}
+              className="w-full sm:w-auto"
             >
               {localize('com_ui_skill_create_title')}
             </Button>

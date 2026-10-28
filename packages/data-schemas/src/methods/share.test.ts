@@ -77,6 +77,7 @@ describe('Share Methods', () => {
         conversationId: { type: String, required: true },
         user: { type: String, required: true },
         text: String,
+        privateTextTokens: { type: [String], select: false, default: undefined },
         isCreatedByUser: Boolean,
         isUserSubmitted: Boolean,
         userSubmittedPaths: {

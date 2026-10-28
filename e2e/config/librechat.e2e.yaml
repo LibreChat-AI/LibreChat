@@ -4,10 +4,28 @@
 version: 1.3.11
 cache: true
 
+# The isolated E2E fleet has only upload-intent-aware writers, so it can
+# exercise whole-Skill finalization instead of the mixed-version rollout gate.
+skillDeletion:
+  finalizationEnabled: true
+  sweepIntervalMs: 1000
+
 interface:
+  # Isolated test fleet contains only ownership-aware replicas.
+  runningChatRename: true
+  # Off the 300 ms default, so highlight-throttle.spec.ts can tell a configured
+  # cadence from the schema default in the served config.
+  codeHighlightThrottleMs: 250
   # Exercises the cost row in the context usage gauge (off by default).
   # Mock models price at the default rate, so synthetic usage yields a value.
   contextCost: true
+  # Enables the model-parameter surface, including the per-turn reasoning
+  # control in the composer. Mock Provider A resolves Anthropic's adaptive
+  # `effort` setting through its custom endpoint configuration below.
+  parameters: true
+  # Opts the shell into the `?theme=` colour-mode handoff (off by default).
+  # color-mode-handoff.spec.ts follows links that carry it.
+  colorModeFromUrl: true
   # Grants MULTI_CONVO.USE so the composer's `+` command opens the added-model
   # popover. agent-skills-added.spec.ts drives that flow; without an explicit
   # value the permission falls through to the seeded role default and
@@ -28,14 +46,28 @@ memory:
   personalize: true
   tokenLimit: 10000
 
+# Budgets that exist only here, not in the environment, so
+# yaml-rate-limits.spec.ts proves librechat.yaml reaches the limiters that route
+# modules build while loading. No other spec calls the speech routes.
+rateLimits:
+  stt:
+    userMax: 2
+  tts:
+    userMax: 2
+# __E2E_MCP_APP_RATE_LIMITS__
+
+# __E2E_MCP_APP_SANDBOX__
+
 mcpSettings:
-  # Deliberately excludes 127.0.0.1, so the URL-based `e2e-http` server below is blocked
+  # __E2E_MCP_APPS_SETTING__
+  # Deliberately excludes the e2e-http origin below, so that server is blocked
   # at boot (stored as inspectionFailed). mcp-allowlist-override.spec.ts adds that origin
   # via an admin-panel config override and asserts the server reinitializes — proving the
   # admin override is honored by inspection/connection. stdio servers skip this check.
   allowedDomains:
     - https://allowed.example.com
     - http://127.0.0.1:8767
+    # __E2E_MCP_APPS_ALLOWED_DOMAIN__
     # __E2E_DYNAMIC_MCP_ALLOWED_DOMAIN__
 
 actions:
@@ -51,6 +83,22 @@ mcpServers:
     # __E2E_DYNAMIC_MCP_STDIO_ENV__
     title: E2E Memory
     description: Local MCP fixture used by mock end-to-end tests.
+    timeout: 30000
+  e2e-user-vars:
+    type: stdio
+    command: node
+    args:
+      - e2e/setup/fake-mcp-server.js
+    startup: false
+    env:
+      E2E_MCP_USER_TOKEN: '{{E2E_MCP_USER_TOKEN}}'
+      E2E_MCP_EXPECTED_USER_TOKEN: e2e-user-token-secret
+    customUserVars:
+      E2E_MCP_USER_TOKEN:
+        title: E2E User Token
+        description: Per-user token the fixture refuses to start without.
+    title: E2E User Vars
+    description: Stdio MCP fixture that starts only with the expected per-user token.
     timeout: 30000
   e2e-http:
     type: streamable-http
@@ -70,7 +118,31 @@ mcpServers:
       authorization_url: http://127.0.0.1:8767/authorize
       token_url: http://127.0.0.1:8767/token
       client_id: e2e-oauth-client
+  e2e-oauth-deferred:
+    type: streamable-http
+    url: http://127.0.0.1:8767/mcp
+    startup: false
+    title: E2E OAuth Deferred
+    description: Protected MCP fixture whose sign-in waits for the first tool call.
+    # Reached through agent tools only; kept out of the composer so palette specs keep their layout.
+    chatMenu: false
+    timeout: 30000
+    requiresOAuth: true
+    oauthPrompt: on_use
+    oauthToolCatalog:
+      - name: echo
+        description: Echo the given text back.
+        inputSchema:
+          type: object
+          properties:
+            text: { type: string }
+          required: [text]
+    oauth:
+      authorization_url: http://127.0.0.1:8767/authorize
+      token_url: http://127.0.0.1:8767/token
+      client_id: e2e-oauth-client
   # __E2E_DYNAMIC_MCP_NETWORK_SERVERS__
+  # __E2E_MCP_APPS_SERVER__
 
 # Per-endpoint file upload config so both upload UXs get e2e coverage:
 # - Mock Provider A keeps the legacy 3-way dropdown (chat.spec.ts exercises
@@ -101,6 +173,8 @@ endpoints:
   # Default capabilities plus run_in_background (off by default upstream) so the
   # background tool-call e2e can opt an MCP tool into detached dispatch.
   agents:
+    subagentActivity:
+      contentRecoveryEnabled: true
     fileSharing:
       enabled: true
       allowSiblingSharing: true
@@ -122,12 +196,24 @@ endpoints:
       - run_in_background
       - stateful_code_sessions
     # __E2E_CODE_BRIDGE_CONFIG__
+    # Pull request lookups reach the fake GitHub Enterprise host
+    # (e2e/setup/fake-git-host-server.js), and only for the repository the pull request
+    # scenarios seed, so no other conversation ever starts a lookup.
+    pullRequests:
+      host: localhost:8793
+      token: '${E2E_GIT_HOST_TOKEN}'
+      allowedRepositories:
+        - e2e-org/e2e-app
     # Keep the shared mock profile non-interactive except for the dedicated
     # approval probe. This exercises real HITL pause/resume without wedging the
     # existing file-authoring, steering, background-tool, or MCP specs.
     toolApproval:
       enabled: true
+      agentModes: true
       mode: bypass
+      # The probe below is an `ask` rule and a hook match, so it is never offered
+      # "Always allow"; the remembered-approval scenarios assert exactly that.
+      allowAlways: true
       ask:
         - approval_probe_mcp_e2e-memory
       reason: E2E approval required before running {tool}.
@@ -135,6 +221,16 @@ endpoints:
         - module: e2e/setup/tool-approval-hook.js
           matcher: ^approval_probe_mcp_e2e-memory$
   custom:
+    - name: 'Mock Retained History'
+      apiKey: 'e2e-mock-history'
+      baseURL: 'http://127.0.0.1:8889/v1'
+      models:
+        default:
+          - 'mock-retained-history'
+        fetch: false
+      maxToolResultChars: 131072
+      titleConvo: false
+      modelDisplayLabel: 'Mock Retained History'
     # Substituted with a REAL provider endpoint only when the mock config runs
     # in model-fixture record mode (E2E_MODEL_FIXTURES=record); a comment
     # otherwise, so the credential-free profile never gains a live endpoint.
@@ -159,7 +255,34 @@ endpoints:
       modelDisplayLabel: 'Mock Provider A'
       customParams:
         defaultParamsEndpoint: anthropic
-
+        # Explicitly advertise the effort control for the mock custom endpoint.
+        # Generic fallback inference is intentionally disabled for custom targets.
+        paramDefinitions:
+          - key: effort
+    - name: 'Mock Titles immediate'
+      apiKey: 'e2e-mock-title-key'
+      baseURL: 'http://127.0.0.1:8889/v1'
+      models:
+        default:
+          - 'mock-titles-immediate'
+        fetch: false
+      titleConvo: true
+      titleModel: 'mock-title-model'
+      titleMethod: completion
+      titleTiming: immediate
+      modelDisplayLabel: 'Mock Titles immediate'
+    - name: 'Mock Titles final'
+      apiKey: 'e2e-mock-title-key'
+      baseURL: 'http://127.0.0.1:8889/v1'
+      models:
+        default:
+          - 'mock-titles-final'
+        fetch: false
+      titleConvo: true
+      titleModel: 'mock-title-model'
+      titleMethod: completion
+      titleTiming: final
+      modelDisplayLabel: 'Mock Titles final'
     - name: 'Mock Provider B'
       apiKey: 'e2e-mock-key-b'
       baseURL: 'http://127.0.0.1:8889/v1'
@@ -232,6 +355,26 @@ endpoints:
       activityPhaseLabel: true
       activityPhaseModel: 'mock-phase-label-model'
 
+    # Gemini-compatible gateway: `defaultParamsEndpoint: google` routes the
+    # request through the Google transform, and `addParams` carries the sampling
+    # params that model-specific rules must strip before they reach the provider.
+    - name: 'Mock Gemini'
+      apiKey: 'e2e-mock-key-gemini'
+      baseURL: 'http://127.0.0.1:8889/v1'
+      models:
+        default:
+          - 'gemini-4-argon'
+          - 'gemini-2.5-pro'
+        fetch: false
+      titleConvo: false
+      modelDisplayLabel: 'Mock Gemini'
+      customParams:
+        defaultParamsEndpoint: google
+      addParams:
+        temperature: 0.8
+        topP: 0.95
+        presencePenalty: 0.5
+
 modelSpecs:
   prioritize: true
   # Enforcement would reject sends from the non-spec paths addedEndpoints
@@ -241,10 +384,13 @@ modelSpecs:
   # set) limited to entries that don't collide with the spec labels above.
   addedEndpoints:
     # __E2E_MODEL_RECORD_ADDED_ENDPOINT__
+    - 'Mock Titles immediate'
+    - 'Mock Titles final'
     - 'Mock Provider C'
     - 'Mock Provider D'
     - 'Mock Provider E'
     - 'Mock Provider F'
+    - 'Mock Gemini'
     - 'agents'
   list:
     - name: 'e2e-mock-provider-a'
@@ -313,3 +459,7 @@ modelSpecs:
       preset:
         endpoint: 'Mock Provider A'
         model: 'mock-model-a'
+
+# Short enough that a stalled fake RAG query fails the tool call well inside a test.
+timeouts:
+  ragMs: 3000

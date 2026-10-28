@@ -17,6 +17,7 @@ const mockTenantStorageRun = jest.fn(async (context, callback) => {
 const mockSaveMessage = jest.fn();
 const mockGetConvo = jest.fn();
 const mockGetMessages = jest.fn();
+const mockStampConvoLastResponse = jest.fn();
 const mockIsAgentTriggerPrincipalActive = jest.fn();
 const mockFilterPersistableAbortContent = jest.fn((content) => content);
 const mockCheckAndIncrementPendingRequest = jest.fn();
@@ -41,13 +42,34 @@ const mockGenerationJobManager = {
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: mockLogger,
+  redactMessage: jest.requireActual('@librechat/data-schemas').redactMessage,
   tenantStorage: {
     run: (...args) => mockTenantStorageRun(...args),
   },
 }));
 
 jest.mock('@librechat/api', () => ({
+  savePrivateTextMessage: (save, _req, ...args) => save(...args),
+  savePrivateTextErrorTurn: (...args) =>
+    jest.requireActual('@librechat/api').savePrivateTextErrorTurn(...args),
+  getUserFacingGenerationError: (...args) =>
+    jest.requireActual('@librechat/api').getUserFacingGenerationError(...args),
+  stampPreliminaryPrivateTextMessage: (_req, message) => message,
+  getAgentErrorMetadata: (...args) =>
+    jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
+  applyForcedTemporaryRequest: jest.fn(),
+  resolveResumableRetention: jest.requireActual('@librechat/api').resolveResumableRetention,
+  planDisconnectSnapshot: (...args) =>
+    jest.requireActual('@librechat/api').planDisconnectSnapshot(...args),
+  createDisconnectSnapshotQueue: (...args) =>
+    jest.requireActual('@librechat/api').createDisconnectSnapshotQueue(...args),
+  announceDisconnectSnapshot: (...args) =>
+    jest.requireActual('@librechat/api').announceDisconnectSnapshot(...args),
+  settleExistingRowsBeforeErrorTurn: (...args) =>
+    jest.requireActual('@librechat/api').settleExistingRowsBeforeErrorTurn(...args),
   sendEvent: jest.fn(),
+  persistedReasoningOverrideFields:
+    jest.requireActual('@librechat/api').persistedReasoningOverrideFields,
   isScheduleFireRequest: jest.fn(() => false),
   exemptFromConcurrencyLimiter: jest.fn(() => false),
   toPendingSteer: jest.fn((item) => item),
@@ -63,12 +85,20 @@ jest.mock('@librechat/api', () => ({
   })),
   buildMessageFiles: jest.fn(() => []),
   resolveTitleTiming: jest.fn(() => 'immediate'),
+  createConvoPersistenceSignal: jest.requireActual('@librechat/api').createConvoPersistenceSignal,
+  recoverTurnMessageReference: jest.requireActual('@librechat/api').recoverTurnMessageReference,
   resolveConversationAnchor: jest.requireActual('@librechat/api').resolveConversationAnchor,
   resolveRunCodeWorkspaces: jest.requireActual('@librechat/api').resolveRunCodeWorkspaces,
   shouldPersistCodeWorkspaceInitializationError:
     jest.requireActual('@librechat/api').shouldPersistCodeWorkspaceInitializationError,
+  resolvePersistableCodeEnvironmentDecision: (...args) =>
+    jest.requireActual('@librechat/api').resolvePersistableCodeEnvironmentDecision(...args),
   getSafeErrorMetadata: jest.requireActual('@librechat/api').getSafeErrorMetadata,
-  getSafeErrorText: jest.requireActual('@librechat/api').getSafeErrorText,
+  logGenerationStartFailure: jest.requireActual('@librechat/api').logGenerationStartFailure,
+  startAgentProjectContextResolution:
+    jest.requireActual('@librechat/api').startAgentProjectContextResolution,
+  assertChatProjectInstructions: jest.requireActual('@librechat/api').assertChatProjectInstructions,
+  getChatProjectTurnFailure: jest.requireActual('@librechat/api').getChatProjectTurnFailure,
   GenerationJobManager: mockGenerationJobManager,
   getReferencedQuotes: jest.fn(() => null),
   cleanupMCPRequestContext: jest.fn(),
@@ -100,10 +130,6 @@ jest.mock('@librechat/api', () => ({
 
 jest.mock('~/server/cleanup', () => ({
   disposeClient: jest.fn(),
-  clientRegistry: null,
-  requestDataMap: {
-    set: jest.fn(),
-  },
 }));
 
 jest.mock('~/server/middleware', () => ({
@@ -118,12 +144,19 @@ jest.mock('~/models', () => ({
   saveMessage: (...args) => mockSaveMessage(...args),
   getMessages: (...args) => mockGetMessages(...args),
   getConvo: (...args) => mockGetConvo(...args),
+  stampConvoLastResponse: (...args) => mockStampConvoLastResponse(...args),
   isAgentTriggerPrincipalActive: (...args) => mockIsAgentTriggerPrincipalActive(...args),
 }));
 
 const AgentController = require('../request');
 
 describe('ResumableAgentController tenant context', () => {
+  /** The anchor is persisted and no response or error row exists yet. */
+  const anchorOnly = () =>
+    mockGetMessages.mockImplementation(async (filter) =>
+      filter.messageId === 'user-message' ? [{ _id: 'existing-anchor' }] : [],
+    );
+
   beforeEach(() => {
     jest.clearAllMocks();
     activeTenantContext = undefined;
@@ -154,10 +187,18 @@ describe('ResumableAgentController tenant context', () => {
     fading: { v: 1, budgetTokens: 50_000, masked: true },
   };
 
+  let lastAllSubscribersLeftHandler;
   const firePartialDisconnect = async (
     user,
     jobRecord = { createdAt: 1000, contextMeta: partialContextMeta },
+    { body = {}, aggregatedContent = [{ type: 'text', text: 'Partial response' }] } = {},
   ) => {
+    mockGetConvo.mockResolvedValue({
+      conversationId: 'conversation-123',
+      user: user.id,
+      tenantId: user.tenantId,
+      createdAt: '2026-07-31T00:00:00.000Z',
+    });
     let allSubscribersLeftHandler;
     mockGenerationJobManager.getJobStore.mockReturnValue({
       getJob: jest.fn().mockResolvedValue(jobRecord),
@@ -174,6 +215,7 @@ describe('ResumableAgentController tenant context', () => {
         on: jest.fn((event, handler) => {
           if (event === 'allSubscribersLeft') {
             allSubscribersLeftHandler = handler;
+            lastAllSubscribersLeftHandler = handler;
           }
         }),
       },
@@ -204,6 +246,7 @@ describe('ResumableAgentController tenant context', () => {
           endpoint: 'agents',
           modelOptions: { model: 'gpt-4.1' },
         },
+        ...body,
       },
       config: {},
     };
@@ -216,12 +259,13 @@ describe('ResumableAgentController tenant context', () => {
     await AgentController(req, res, jest.fn(), initializeClient, null);
     expect(allSubscribersLeftHandler).toEqual(expect.any(Function));
 
-    await allSubscribersLeftHandler([{ type: 'text', text: 'Partial response' }]);
+    await allSubscribersLeftHandler(aggregatedContent);
     return tenantSeenBySave;
   };
 
   it('carries the context meta the run published onto the partial response saved on disconnect', async () => {
     await firePartialDisconnect({ id: 'user-123', tenantId: 'tenant-a' });
+    expect(mockStampConvoLastResponse).not.toHaveBeenCalled();
 
     expect(mockSaveMessage).toHaveBeenCalledWith(
       expect.any(Object),
@@ -261,5 +305,296 @@ describe('ResumableAgentController tenant context', () => {
     expect(mockTenantStorageRun).not.toHaveBeenCalled();
     expect(tenantSeenBySave).toBeUndefined();
     expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+  });
+
+  /** A cancelled compaction's partial row is built here, not by sendCompletion,
+   *  so it carries no marker unless the disconnect path stamps one: without it
+   *  the row reads as an answer to the message it hangs off and keeps that
+   *  message's rerun controls. */
+  it('stamps a partial response saved on disconnect with the compaction identity', async () => {
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      { createdAt: 1000 },
+      {
+        body: { compact: true },
+        aggregatedContent: [
+          {
+            type: 'summary',
+            content: [{ type: 'text', text: 'Half a summary' }],
+            summarizing: true,
+          },
+        ],
+      },
+    );
+
+    const [, savedMessage] = mockSaveMessage.mock.calls[0];
+    expect(savedMessage).toMatchObject({
+      messageId: 'response-message',
+      unfinished: true,
+      error: false,
+      content: [{ type: 'summary', summarizing: true, initiatedBy: 'user' }],
+    });
+  });
+
+  /** The disconnect save runs while the generation is still live and the
+   *  completing run overwrites the row, so it must not report a failure that
+   *  has not happened: no typed failure is invented for a compaction whose
+   *  snapshot carries no summary or error part. */
+  it('saves a non-outcome compaction partial on disconnect without a synthesized failure', async () => {
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      { createdAt: 1000 },
+      {
+        body: { compact: true },
+        aggregatedContent: [{ type: 'think', think: 'Picking what to summarize' }],
+      },
+    );
+
+    const [, savedMessage] = mockSaveMessage.mock.calls[0];
+    expect(savedMessage).toMatchObject({
+      unfinished: true,
+      error: false,
+      content: [{ type: 'think', think: 'Picking what to summarize' }],
+    });
+    expect(savedMessage.content).toHaveLength(1);
+  });
+  /** The settling path (completion, error, abort) owns the compaction's final
+   *  row: a disconnect snapshot landing after it would reopen the settled
+   *  turn as an unfinished response. */
+  it('skips the compaction partial save when the job record has settled', async () => {
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      { createdAt: 1000, status: 'error' },
+      {
+        body: { compact: true },
+        aggregatedContent: [{ type: 'text', text: 'Partial response' }],
+      },
+    );
+
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+  });
+
+  /** An ordinary turn's record cannot prove its response row landed (a
+   *  terminal transition without a write leaves the same record), so its
+   *  snapshot stays the fallback row, in its live shape. */
+  it.each([
+    ['a settled record', {}],
+    ['a pending terminal write', { terminalPersistencePending: true }],
+    ['a reconciliation frame', { finalEvent: JSON.stringify({ final: true, reconcile: true }) }],
+  ])('keeps an ordinary partial save as the fallback behind %s', async (_label, record) => {
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      { createdAt: 1000, status: 'complete', ...record },
+      { aggregatedContent: [{ type: 'text', text: 'Partial response' }] },
+    );
+
+    expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+    const [, savedMessage] = mockSaveMessage.mock.calls[0];
+    expect(savedMessage).toMatchObject({ unfinished: true, error: false });
+  });
+  /** The terminal write failed and settled for a reconciliation frame: the
+   *  snapshot is the turn's only row, so it persists with the terminal
+   *  outcome (the typed failure for content with no summary) and envelope. */
+  it('promotes a reconciled compaction snapshot to the terminal row', async () => {
+    anchorOnly();
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      {
+        createdAt: 1000,
+        status: 'error',
+        finalEvent: JSON.stringify({ final: true, reconcile: true }),
+      },
+      {
+        body: { compact: true },
+        aggregatedContent: [{ type: 'think', think: 'Picking what to summarize' }],
+      },
+    );
+
+    expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+    const [, savedMessage] = mockSaveMessage.mock.calls[0];
+    expect(savedMessage).toMatchObject({ unfinished: false, error: true });
+    expect(savedMessage.content).toEqual([
+      { type: 'think', think: 'Picking what to summarize' },
+      expect.objectContaining({ type: 'error', initiatedBy: 'user' }),
+    ]);
+    expect(mockStampConvoLastResponse).toHaveBeenCalledWith(
+      'user-123',
+      'conversation-123',
+      'response-message',
+    );
+  });
+  /** A reconciliation frame does not prove the row is missing: an error turn
+   *  saved before it is a settled row the promotion must not overwrite. */
+  it('withholds a reconciled snapshot when a settled response row exists', async () => {
+    mockGetMessages.mockImplementation(async (filter) =>
+      filter.messageId === 'response-message'
+        ? [{ _id: 'error-row', unfinished: false }]
+        : [{ _id: 'existing-anchor' }],
+    );
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      {
+        createdAt: 1000,
+        status: 'error',
+        finalEvent: JSON.stringify({ final: true, reconcile: true }),
+      },
+      {
+        body: { compact: true },
+        aggregatedContent: [{ type: 'text', text: 'Partial response' }],
+      },
+    );
+
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+  });
+  it('promotes a compaction snapshot on a later disconnect after a live save', async () => {
+    mockGetMessages.mockImplementation(async (filter) =>
+      filter.messageId === 'user-message' ? [{ _id: 'existing-anchor' }] : [],
+    );
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      { createdAt: 1000, status: 'running' },
+      { body: { compact: true } },
+    );
+    expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+    expect(mockSaveMessage.mock.calls[0][1]).toMatchObject({ unfinished: true });
+
+    mockGenerationJobManager.getJobStore.mockReturnValue({
+      getJob: jest.fn().mockResolvedValue({
+        createdAt: 1000,
+        status: 'error',
+        finalEvent: JSON.stringify({ final: true, reconcile: true }),
+      }),
+    });
+    mockGetMessages.mockImplementation(async (filter) =>
+      filter.messageId === 'user-message'
+        ? [{ _id: 'existing-anchor' }]
+        : [{ _id: 'live-row', unfinished: true }],
+    );
+    await lastAllSubscribersLeftHandler([{ type: 'text', text: 'Partial response' }]);
+
+    expect(mockSaveMessage).toHaveBeenCalledTimes(2);
+    expect(mockSaveMessage.mock.calls[1][1]).toMatchObject({ unfinished: false, error: true });
+  });
+
+  it('logs a failed row read while planning the snapshot instead of rejecting the listener', async () => {
+    const readError = new Error('read failed');
+    mockGetMessages.mockImplementation(async (filter) => {
+      if (filter.messageId === 'user-message') {
+        return [{ _id: 'existing-anchor' }];
+      }
+      throw readError;
+    });
+    await expect(
+      firePartialDisconnect(
+        { id: 'user-123' },
+        {
+          createdAt: 1000,
+          status: 'error',
+          finalEvent: JSON.stringify({ final: true, reconcile: true }),
+        },
+        {
+          body: { compact: true },
+          aggregatedContent: [{ type: 'text', text: 'Partial response' }],
+        },
+      ),
+    ).resolves.not.toThrow();
+
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+    expect(mockLogger.error).toHaveBeenCalledWith(
+      '[ResumableAgentController] Error planning partial response:',
+      readError,
+    );
+  });
+  it('withholds a reconciled snapshot when the error turn saved its anchor-derived row', async () => {
+    mockGetMessages.mockImplementation(
+      async (filter) =>
+        ({
+          'user-message': [{ _id: 'existing-anchor' }],
+          'user-message_': [{ _id: 'error-row', unfinished: false }],
+        })[filter.messageId] ?? [],
+    );
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      {
+        createdAt: 1000,
+        status: 'error',
+        finalEvent: JSON.stringify({ final: true, reconcile: true }),
+      },
+      {
+        body: { compact: true },
+        aggregatedContent: [{ type: 'text', text: 'Partial response' }],
+      },
+    );
+
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+  });
+
+  /** Without a persisted anchor the promotion is withheld: the fallback must
+   *  not recreate the orphan the absent-anchor abort suppressed. */
+  it('withholds a reconciled snapshot whose anchor was never persisted', async () => {
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      {
+        createdAt: 1000,
+        status: 'error',
+        finalEvent: JSON.stringify({ final: true, reconcile: true }),
+      },
+      {
+        body: { compact: true },
+        aggregatedContent: [{ type: 'text', text: 'Partial response' }],
+      },
+    );
+
+    expect(mockSaveMessage).not.toHaveBeenCalled();
+  });
+
+  /** An empty snapshot on a reconciled compaction still records the turn:
+   *  the terminal synthesis appends the typed failure from nothing. */
+  it('synthesizes the terminal outcome for an empty reconciled compaction snapshot', async () => {
+    anchorOnly();
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      {
+        createdAt: 1000,
+        status: 'error',
+        finalEvent: JSON.stringify({ final: true, reconcile: true }),
+      },
+      { body: { compact: true }, aggregatedContent: [] },
+    );
+
+    expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+    const [, savedMessage] = mockSaveMessage.mock.calls[0];
+    expect(savedMessage).toMatchObject({ unfinished: false, error: true });
+    expect(savedMessage.content).toEqual([
+      expect.objectContaining({ type: 'error', initiatedBy: 'user' }),
+    ]);
+  });
+
+  /** A completed claim's promoted snapshot settles as a finished row, not an
+   *  error. */
+  it('settles a completed reconciled snapshot as a finished row', async () => {
+    anchorOnly();
+    await firePartialDisconnect(
+      { id: 'user-123' },
+      {
+        createdAt: 1000,
+        status: 'complete',
+        finalEvent: JSON.stringify({ final: true, reconcile: true }),
+      },
+      {
+        body: { compact: true },
+        aggregatedContent: [
+          {
+            type: 'summary',
+            content: [{ type: 'text', text: 'A finished checkpoint.' }],
+            boundary: { messageId: 'm', contentIndex: 0 },
+          },
+        ],
+      },
+    );
+
+    expect(mockSaveMessage).toHaveBeenCalledTimes(1);
+    const [, savedMessage] = mockSaveMessage.mock.calls[0];
+    expect(savedMessage).toMatchObject({ unfinished: false, error: false });
   });
 });

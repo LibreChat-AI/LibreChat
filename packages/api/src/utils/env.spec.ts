@@ -2,13 +2,8 @@ import { Types } from 'mongoose';
 import { TokenExchangeMethodEnum } from 'librechat-data-provider';
 import type { MCPOptions } from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
-import {
-  createSafeUser,
-  resolveHeaders,
-  resolveNestedObject,
-  processMCPEnv,
-  encodeHeaderValue,
-} from './env';
+import { createSafeUser, resolveHeaders, processMCPEnv, encodeHeaderValue } from './env';
+import { applyRequestHeaders } from '~/mcp/utils';
 
 function isStdioOptions(options: MCPOptions): options is Extract<MCPOptions, { type?: 'stdio' }> {
   return !options.type || options.type === 'stdio';
@@ -715,301 +710,6 @@ describe('resolveHeaders', () => {
   });
 });
 
-describe('resolveNestedObject', () => {
-  beforeEach(() => {
-    process.env.TEST_API_KEY = 'test-api-key-value';
-    process.env.ANOTHER_VALUE = 'another-test-value';
-  });
-
-  afterEach(() => {
-    delete process.env.TEST_API_KEY;
-    delete process.env.ANOTHER_VALUE;
-  });
-
-  it('should preserve nested object structure', () => {
-    const obj = {
-      thinking: {
-        type: 'enabled',
-        budget_tokens: 2000,
-      },
-      anthropic_beta: ['output-128k-2025-02-19'],
-      max_tokens: 4096,
-      temperature: 0.7,
-    };
-
-    const result = resolveNestedObject({ obj });
-
-    expect(result).toEqual({
-      thinking: {
-        type: 'enabled',
-        budget_tokens: 2000,
-      },
-      anthropic_beta: ['output-128k-2025-02-19'],
-      max_tokens: 4096,
-      temperature: 0.7,
-    });
-  });
-
-  it('should process placeholders in string values while preserving structure', () => {
-    const user = { id: 'user-123', email: 'test@example.com' };
-    const obj = {
-      thinking: {
-        type: 'enabled',
-        budget_tokens: 2000,
-        user_context: '{{LIBRECHAT_USER_ID}}',
-      },
-      anthropic_beta: ['output-128k-2025-02-19'],
-      api_key: '${TEST_API_KEY}',
-      max_tokens: 4096,
-    };
-
-    const result = resolveNestedObject({ obj, user });
-
-    expect(result).toEqual({
-      thinking: {
-        type: 'enabled',
-        budget_tokens: 2000,
-        user_context: 'user-123',
-      },
-      anthropic_beta: ['output-128k-2025-02-19'],
-      api_key: 'test-api-key-value',
-      max_tokens: 4096,
-    });
-  });
-
-  it('should process strings in arrays', () => {
-    const user = { id: 'user-123' };
-    const obj = {
-      headers: ['Authorization: Bearer ${TEST_API_KEY}', 'X-User-Id: {{LIBRECHAT_USER_ID}}'],
-      values: [1, 2, 3],
-      mixed: ['string', 42, true, '{{LIBRECHAT_USER_ID}}'],
-    };
-
-    const result = resolveNestedObject({ obj, user });
-
-    expect(result).toEqual({
-      headers: ['Authorization: Bearer test-api-key-value', 'X-User-Id: user-123'],
-      values: [1, 2, 3],
-      mixed: ['string', 42, true, 'user-123'],
-    });
-  });
-
-  it('should handle deeply nested structures', () => {
-    const user = { id: 'user-123' };
-    const obj = {
-      level1: {
-        level2: {
-          level3: {
-            user_id: '{{LIBRECHAT_USER_ID}}',
-            settings: {
-              api_key: '${TEST_API_KEY}',
-              enabled: true,
-            },
-          },
-        },
-      },
-    };
-
-    const result = resolveNestedObject({ obj, user });
-
-    expect(result).toEqual({
-      level1: {
-        level2: {
-          level3: {
-            user_id: 'user-123',
-            settings: {
-              api_key: 'test-api-key-value',
-              enabled: true,
-            },
-          },
-        },
-      },
-    });
-  });
-
-  it('should preserve all primitive types', () => {
-    const obj = {
-      string: 'text',
-      number: 42,
-      float: 3.14,
-      boolean_true: true,
-      boolean_false: false,
-      null_value: null,
-      undefined_value: undefined,
-    };
-
-    const result = resolveNestedObject({ obj });
-
-    expect(result).toEqual(obj);
-  });
-
-  it('should handle empty objects and arrays', () => {
-    const obj = {
-      empty_object: {},
-      empty_array: [],
-      nested: {
-        also_empty: {},
-      },
-    };
-
-    const result = resolveNestedObject({ obj });
-
-    expect(result).toEqual(obj);
-  });
-
-  it('should handle body placeholders in nested objects', () => {
-    const body = {
-      conversationId: 'conv-123',
-      parentMessageId: 'parent-456',
-      messageId: 'msg-789',
-    };
-    const obj = {
-      metadata: {
-        conversation: '{{LIBRECHAT_BODY_CONVERSATIONID}}',
-        parent: '{{LIBRECHAT_BODY_PARENTMESSAGEID}}',
-        count: 5,
-      },
-    };
-
-    const result = resolveNestedObject({ obj, body });
-
-    expect(result).toEqual({
-      metadata: {
-        conversation: 'conv-123',
-        parent: 'parent-456',
-        count: 5,
-      },
-    });
-  });
-
-  it('should handle custom user variables in nested objects', () => {
-    const customUserVars = {
-      CUSTOM_TOKEN: 'secret-token',
-      REGION: 'us-west-1',
-    };
-    const obj = {
-      auth: {
-        token: '{{CUSTOM_TOKEN}}',
-        region: '{{REGION}}',
-        timeout: 3000,
-      },
-    };
-
-    const result = resolveNestedObject({ obj, customUserVars });
-
-    expect(result).toEqual({
-      auth: {
-        token: 'secret-token',
-        region: 'us-west-1',
-        timeout: 3000,
-      },
-    });
-  });
-
-  it('should handle mixed placeholders in nested objects', () => {
-    const user = { id: 'user-123', email: 'test@example.com' };
-    const customUserVars = { CUSTOM_VAR: 'custom-value' };
-    const body = { conversationId: 'conv-456' };
-
-    const obj = {
-      config: {
-        user_id: '{{LIBRECHAT_USER_ID}}',
-        custom: '{{CUSTOM_VAR}}',
-        api_key: '${TEST_API_KEY}',
-        conversation: '{{LIBRECHAT_BODY_CONVERSATIONID}}',
-        nested: {
-          email: '{{LIBRECHAT_USER_EMAIL}}',
-          port: 8080,
-        },
-      },
-    };
-
-    const result = resolveNestedObject({ obj, user, customUserVars, body });
-
-    expect(result).toEqual({
-      config: {
-        user_id: 'user-123',
-        custom: 'custom-value',
-        api_key: 'test-api-key-value',
-        conversation: 'conv-456',
-        nested: {
-          email: 'test@example.com',
-          port: 8080,
-        },
-      },
-    });
-  });
-
-  it('should handle Bedrock additionalModelRequestFields example', () => {
-    const obj = {
-      thinking: {
-        type: 'enabled',
-        budget_tokens: 2000,
-      },
-      anthropic_beta: ['output-128k-2025-02-19'],
-    };
-
-    const result = resolveNestedObject({ obj });
-
-    expect(result).toEqual({
-      thinking: {
-        type: 'enabled',
-        budget_tokens: 2000,
-      },
-      anthropic_beta: ['output-128k-2025-02-19'],
-    });
-
-    expect(typeof result.thinking).toBe('object');
-    expect(Array.isArray(result.anthropic_beta)).toBe(true);
-    expect(result.thinking).not.toBe('[object Object]');
-  });
-
-  it('should return undefined when obj is undefined', () => {
-    const result = resolveNestedObject({ obj: undefined });
-    expect(result).toBeUndefined();
-  });
-
-  it('should return null when obj is null', () => {
-    const result = resolveNestedObject({ obj: null });
-    expect(result).toBeNull();
-  });
-
-  it('should handle arrays of objects', () => {
-    const user = { id: 'user-123' };
-    const obj = {
-      items: [
-        { name: 'item1', user: '{{LIBRECHAT_USER_ID}}', count: 1 },
-        { name: 'item2', user: '{{LIBRECHAT_USER_ID}}', count: 2 },
-      ],
-    };
-
-    const result = resolveNestedObject({ obj, user });
-
-    expect(result).toEqual({
-      items: [
-        { name: 'item1', user: 'user-123', count: 1 },
-        { name: 'item2', user: 'user-123', count: 2 },
-      ],
-    });
-  });
-
-  it('should not modify the original object', () => {
-    const user = { id: 'user-123' };
-    const originalObj = {
-      thinking: {
-        type: 'enabled',
-        budget_tokens: 2000,
-        user_id: '{{LIBRECHAT_USER_ID}}',
-      },
-    };
-
-    const result = resolveNestedObject({ obj: originalObj, user });
-
-    expect(result.thinking.user_id).toBe('user-123');
-    expect(originalObj.thinking.user_id).toBe('{{LIBRECHAT_USER_ID}}');
-  });
-});
-
 describe('processMCPEnv', () => {
   beforeEach(() => {
     process.env.TEST_API_KEY = 'test-api-key-value';
@@ -1186,6 +886,77 @@ describe('processMCPEnv', () => {
 
     expect('oauth_headers' in result! && result.oauth_headers).toEqual({
       'X-User-Id': '{{LIBRECHAT_USER_ID}}',
+    });
+  });
+
+  /**
+   * `applyRequestHeaders` runs at each pipeline entry, ahead of `processMCPEnv`,
+   * so the merged map is what env resolution sees. These exercise that order
+   * rather than either half alone.
+   */
+  it('should resolve merged requestHeaders like any other header', () => {
+    const user = createTestUser({ id: 'user-123' });
+    const options: MCPOptions = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/api',
+      headers: { 'X-User-Id': '{{LIBRECHAT_USER_ID}}' },
+      requestHeaders: {
+        'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+        'X-Static': 'static-value',
+      },
+    };
+
+    const result = processMCPEnv({
+      options: applyRequestHeaders(options),
+      user,
+      body: { conversationId: 'conv-1' },
+    });
+
+    expect('headers' in result! && result.headers).toEqual({
+      'X-User-Id': 'user-123',
+      'X-Conversation-Id': 'conv-1',
+      'X-Static': 'static-value',
+    });
+    expect(result).not.toHaveProperty('requestHeaders');
+  });
+
+  it('should NOT resolve merged requestHeaders when dbSourced', () => {
+    const user = createTestUser({ id: 'user-123' });
+    const options: MCPOptions = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/api',
+      requestHeaders: {
+        'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+      },
+    };
+
+    const result = processMCPEnv({
+      options: applyRequestHeaders(options),
+      user,
+      body: { conversationId: 'conv-1' },
+      dbSourced: true,
+    });
+
+    expect('headers' in result! && result.headers).toEqual({
+      'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
+    });
+  });
+
+  it('should keep plugin-sourced requestHeaders verbatim', () => {
+    const user = createTestUser({ id: 'user-123' });
+    const options = {
+      type: 'streamable-http',
+      url: 'https://mcp.example.com/api',
+      source: 'plugin',
+      headers: { 'X-Keep': 'kept' },
+      requestHeaders: { 'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}' },
+    } as MCPOptions & { source: string };
+
+    const result = processMCPEnv({ options, user, body: { conversationId: 'conv-1' } });
+
+    expect('headers' in result! && result.headers).toEqual({ 'X-Keep': 'kept' });
+    expect((result as { requestHeaders?: Record<string, string> }).requestHeaders).toEqual({
+      'X-Conversation-Id': '{{LIBRECHAT_BODY_CONVERSATIONID}}',
     });
   });
 
@@ -1728,6 +1499,7 @@ describe('processMCPEnv', () => {
           source: 'user',
           authorization_type: 'bearer',
         },
+        customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Per-user key' } },
         headers: {
           Authorization: 'Bearer {{MCP_API_KEY}}',
         },
@@ -1805,6 +1577,7 @@ describe('processMCPEnv', () => {
       const options: MCPOptions = {
         type: 'streamable-http',
         url: 'https://api.example.com',
+        customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Per-user key' } },
         headers: {
           Authorization: 'Bearer {{MCP_API_KEY}}',
         },
@@ -1921,6 +1694,7 @@ describe('processMCPEnv', () => {
       const options: MCPOptions = {
         type: 'streamable-http',
         url: '${DATABASE_URL}',
+        customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Per-user key' } },
         headers: {
           Authorization: 'Bearer {{MCP_API_KEY}}',
           'X-Env-Leak': '${TEST_API_KEY}',
@@ -1953,6 +1727,7 @@ describe('processMCPEnv', () => {
       const options: MCPOptions = {
         type: 'streamable-http',
         url: 'https://api.example.com',
+        customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Per-user key' } },
         headers: {
           Authorization: 'Bearer {{MCP_API_KEY}}',
           'X-Env': '${TEST_API_KEY}',
@@ -1980,6 +1755,7 @@ describe('processMCPEnv', () => {
       const options: MCPOptions = {
         type: 'stdio',
         command: 'mcp-server',
+        customUserVars: { MY_VAR: { title: 'Custom', description: 'Per-user variable' } },
         args: ['--key', '${TEST_API_KEY}', '--custom', '{{MY_VAR}}'],
         env: {
           SECRET: '${DATABASE_URL}',
@@ -2046,6 +1822,10 @@ describe('processMCPEnv', () => {
       const options: MCPOptions = {
         type: 'streamable-http',
         url: 'https://api.example.com',
+        customUserVars: {
+          MY_CLIENT_ID: { title: 'Client ID', description: 'Per-user client' },
+          MY_CLIENT_SECRET: { title: 'Client secret', description: 'Per-user secret' },
+        },
         oauth: {
           client_id: '{{MY_CLIENT_ID}}',
           client_secret: '{{MY_CLIENT_SECRET}}',
@@ -2069,6 +1849,7 @@ describe('processMCPEnv', () => {
       const options: MCPOptions = {
         type: 'streamable-http',
         url: 'https://api.example.com',
+        customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Per-user key' } },
         headers: {
           Authorization: 'Bearer {{MCP_API_KEY}}',
         },
@@ -2088,6 +1869,7 @@ describe('processMCPEnv', () => {
       const options: MCPOptions = {
         type: 'streamable-http',
         url: '${DATABASE_URL}',
+        customUserVars: { MCP_API_KEY: { title: 'API Key', description: 'Per-user key' } },
         headers: {
           Authorization: 'Bearer {{MCP_API_KEY}}',
           'X-Env': '${TEST_API_KEY}',

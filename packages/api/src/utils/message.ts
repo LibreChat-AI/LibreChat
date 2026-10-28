@@ -1,6 +1,58 @@
 import { Constants } from 'librechat-data-provider';
 import type { TFile, TMessage } from 'librechat-data-provider';
 
+/** Shared wire bounds, not deployment settings. */
+export const MAX_MESSAGE_ID_LENGTH: number = Constants.MAX_MESSAGE_ID_LENGTH;
+export const MAX_RESPONSE_MESSAGE_ID_LENGTH: number = Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH;
+
+export function isValidMessageId(
+  messageId: unknown,
+  maxLength: number = MAX_MESSAGE_ID_LENGTH,
+): messageId is string {
+  return (
+    typeof messageId === 'string' &&
+    messageId.length > 0 &&
+    messageId.length <= maxLength &&
+    !/[^A-Za-z0-9_:.-]/.test(messageId)
+  );
+}
+
+export function getPreliminaryResponseMessageId({
+  compact,
+  messageId,
+  responseMessageId,
+  liveResponseMessageId,
+}: {
+  messageId?: unknown;
+  responseMessageId?: unknown;
+  compact?: boolean;
+  liveResponseMessageId?: unknown;
+}): string | null {
+  if (responseMessageId != null) {
+    return isValidMessageId(responseMessageId, MAX_RESPONSE_MESSAGE_ID_LENGTH)
+      ? responseMessageId
+      : null;
+  }
+  /** Compaction uses a persisted response, not a fresh user identity. */
+  const maxLength = compact === true ? MAX_RESPONSE_MESSAGE_ID_LENGTH : MAX_MESSAGE_ID_LENGTH;
+  if (!isValidMessageId(messageId, maxLength)) {
+    return null;
+  }
+
+  let end = messageId.length;
+  while (end > 0 && messageId.charCodeAt(end - 1) === 95) {
+    end--;
+  }
+  /** A full-length compaction anchor leaves no room for the suffix. */
+  if (end >= MAX_RESPONSE_MESSAGE_ID_LENGTH) {
+    return isValidMessageId(liveResponseMessageId, MAX_RESPONSE_MESSAGE_ID_LENGTH) &&
+      liveResponseMessageId !== messageId
+      ? liveResponseMessageId
+      : null;
+  }
+  return `${messageId.slice(0, end)}_`;
+}
+
 /** Minimal shape for request file entries (from `req.body.files`) */
 type RequestFile = { file_id?: string };
 
@@ -12,8 +64,13 @@ type GetMessagesByParentId = (
 /** Fields to strip from files before client transmission */
 const FILE_STRIP_FIELDS = ['text', '_id', '__v'] as const;
 
-/** Fields to strip from messages before client transmission */
-const MESSAGE_STRIP_FIELDS = ['fileContext'] as const;
+/** Fields to strip from messages before client transmission.
+ * Both are prompt-building inputs: `fileContext` is text extracted from
+ * attachments and `image_urls` holds base64 image inputs. Terminal events are
+ * additionally projected centrally by `projectTerminalEvent`; this stays as
+ * defense in depth for the non-terminal senders (`error.js`,
+ * `abortMiddleware.js`). */
+const MESSAGE_STRIP_FIELDS = ['fileContext', 'image_urls'] as const;
 
 /**
  * Strips large/unnecessary fields from a file object before transmitting to client.
@@ -63,7 +120,8 @@ export function buildMessageFiles<T extends Partial<TFile>>(
 
 /**
  * Sanitizes a message object before transmitting to client.
- * Removes large fields like `fileContext` and strips `text` from embedded files.
+ * Removes prompt-building fields (`fileContext`, `image_urls`) and strips
+ * `text` from embedded files.
  *
  * @param message - The message object to sanitize
  * @returns A new message object safe for client transmission

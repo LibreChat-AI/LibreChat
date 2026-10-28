@@ -2,6 +2,82 @@
 
 The mock e2e profile is the safest default for generated tests. It starts LibreChat with `e2e/config/librechat.e2e.yaml`, injects an in-process fake LLM (via `LIBRECHAT_TEST_RUN_HOOK`), creates an authenticated e2e user, and avoids real provider credentials.
 
+## RUM privacy export regressions
+
+Run the real HyperDX/OpenTelemetry SDK export checks without a running LibreChat,
+database, collector, or model provider:
+
+```sh
+npx playwright test --config=e2e/playwright.config.rum.ts
+```
+
+The fixture bundles the production RUM adapter, records a synthetic DOM in Chromium,
+and inspects the actual OTLP requests (including gzip/protobuf replay batches). It
+checks proxy and direct-token modes, metadata/DOM URL redaction, and fresh and
+already-recording transitions to a two-factor URL containing a fake login token.
+Playwright traces are disabled so authentication-shaped test data is not retained in
+HAR/trace artifacts.
+
+## Automatic title regressions
+
+The standard mock profile disables automatic titles. CI runs the title-enabled cases once on the first memory shard. To run them locally after building the app:
+
+```sh
+E2E_TITLE_CONVO=true npx playwright test --config=e2e/playwright.config.mock.ts \
+  conversation-management.spec.ts --grep 'first-turn|final-title polling'
+```
+
+## Deployed-instance smoke test
+
+The deployed profile exercises an existing LibreChat deployment without starting another app or
+database. It uses the deployment's configured model provider and persists a real conversation, so
+run it only with a dedicated test account in an environment where that traffic is expected.
+
+First, create Playwright storage state by signing in through the deployment's normal login flow:
+
+```sh
+npx playwright codegen \
+  --save-storage=e2e/storageState.json \
+  https://librechat.example.com/c/new
+```
+
+Close codegen after sign-in, then run the smoke test:
+
+```sh
+E2E_BASE_URL=https://librechat.example.com \
+  npm run e2e:deployed
+```
+
+The storage-state file contains session credentials. The default path is ignored by Git; do not
+commit it or include it in test artifacts.
+
+Set `E2E_STORAGE_STATE` when the auth file is mounted elsewhere. If the account has no default
+model, set `E2E_DEPLOYED_MODEL` to the exact configured model label. `E2E_DEPLOYED_PROMPT` can
+replace the short default prompt, and `E2E_IGNORE_HTTPS_ERRORS=true` supports deployments using a
+self-signed certificate.
+
+The profile deliberately has no global setup, database access, or web server. It verifies the
+authenticated shell, sends one real prompt, reloads the resulting conversation, and deletes only
+the conversation created by that run through LibreChat's authenticated API. Keep deterministic
+provider behavior and destructive database fixtures in the mock profile instead.
+
+## Email Delivery
+
+The registered-email flow has a dedicated profile because enabling SMTP changes registration into a verification-required workflow. It starts a disposable local SMTP mailbox, verifies the setup account from the delivered message, and then tests the Settings → Account email change, verification link, notifications to both addresses, and login with the new address:
+
+```sh
+npm run e2e:email-change
+```
+
+The disabled-mode profile verifies that `ALLOW_EMAIL_CHANGE=false` hides the Account control,
+rejects both request and confirmation endpoints, and sends no email:
+
+```sh
+npm run e2e:email-change:disabled
+```
+
+Override `E2E_SMTP_PORT` or `E2E_MAILBOX_PORT` if ports 1025 or 8025 are already in use. The mailbox binds only to `127.0.0.1` and is discarded with the test process.
+
 ## Stream Stores and Shards
 
 The mock profile uses the in-memory generation stream store by default. To exercise the same browser scenarios through a real Redis job store and pub/sub transport, start Redis on port 6379 and run:
@@ -12,18 +88,30 @@ npm run e2e:mock:redis
 
 Memory mode explicitly disables Redis. Redis mode defaults to database 15 with a `LibreChatE2E` key prefix, and fails closed: the test server pings Redis and verifies that the generation job manager did not silently fall back to memory. Override `REDIS_URI` or `E2E_REDIS_KEY_PREFIX` when needed.
 
-Pull request CI runs the complete mock suite in memory mode across three shards, plus a
-focused Redis transport suite. The Redis suite covers streaming fidelity, steering,
+Pull request CI runs the complete mock suite in memory mode across ten shards, plus a
+focused Redis transport suite across two. The Redis suite covers streaming fidelity, steering,
 interrupts, resumptions, HITL approvals, completion, thread folding, model icons, and usage:
 
 ```sh
-npx playwright test --config=e2e/playwright.config.mock.ts --shard=1/3
+npx playwright test --config=e2e/playwright.config.mock.ts --shard=1/10
 npm run e2e:mock:redis:transport
 ```
 
 The nightly schedule and manual workflow dispatch run the complete mock suite in both stream
-modes across two shards per mode. Every shard keeps one worker so tests do not contend for its
+modes across ten shards per mode. Every shard keeps one worker so tests do not contend for its
 authenticated user and database.
+
+CI splits the complete suite by recorded duration rather than test count: each shard lists the
+suite, and `.github/scripts/playwright-shards.mjs plan` hands out whole spec files longest-first
+to the least-loaded shard using `e2e/timings.mock.json`. A spec with no recorded time is
+estimated from its test count, so new specs need nothing; refresh the timings when the shards
+drift apart. Each shard's report artifact carries a `results.json`, so download a recent run's
+`playwright-report-memory-*` artifacts and rebuild the file from them:
+
+```sh
+gh run download <run-id> --pattern 'playwright-report-memory-*' --dir /tmp/e2e-reports
+node .github/scripts/playwright-shards.mjs record --out e2e/timings.mock.json /tmp/e2e-reports
+```
 
 ## Property-based browser testing
 
@@ -131,3 +219,37 @@ node e2e/setup/record.js --output=e2e/recordings/settings-draft.spec.ts
 7. Run the finished spec with `npm run e2e:mock -- <spec name>`.
 
 Generated recordings are a draft, not the final test. The committed version should use the shared helpers in `e2e/specs/mock/helpers.ts` where possible, wait on network or visible UI state instead of fixed sleeps, and keep test data deterministic.
+
+## PR screenshot pilot
+
+`e2e/screenshots/playwright.config.ts` is an opt-in evidence capture lane, not a pixel-baseline suite. It runs the real app with the mock profile and a private ephemeral MongoDB, then captures welcome screens at desktop/mobile sizes in both themes. Desktop captures also include temporary chat and the settings dialog. No model request is made. Motion is reduced, so these stills do not prove transitions or streaming behavior.
+
+Build and run each revision in its own clean worktree with its own locked install:
+
+```sh
+npm ci
+npm run frontend
+npx playwright install chromium
+E2E_CAPTURE_SHA=$(git rev-parse HEAD) \
+E2E_CAPTURE_DIR="$PWD/e2e/.generated/evidence-before" \
+E2E_USE_MEMORY_MONGO=true \
+E2E_BASE_URL=http://127.0.0.1:3333 \
+npx playwright test --config=e2e/screenshots/playwright.config.ts
+```
+
+For a historical revision without this lane, copy the two `e2e/screenshots/*.ts` files into its worktree, leaving its application code and lockfile unchanged. Run the same scenario source on both revisions. Use a new output directory for every attempt: existing images are never overwritten. Run revisions sequentially, or give every fixture service its own port using the mock profile's `E2E_*_PORT` settings. Do not reuse a running development server or a real user's database.
+
+Each PNG has a JSON sidecar containing the revision, browser version, viewport, theme, scenario hash, lockfile hash, built HTML hash, and image hash. Visible images must decode, fonts must finish loading, greeting springs must settle, and consecutive captures must match. A passing run and human inspection are both required before treating the pair as reviewed evidence; sidecars from a failed run are not complete evidence. Compare matching filenames between revisions. Pin the browser and font environment as well as the app revisions.
+
+Keep storage state, traces, logs, and session data private. Check that the PNGs contain only intended synthetic test data before uploading with the attachment-capable `gh` described in the PR template, then read back the PR body to verify real asset URLs. Mark any pending visual review explicitly. Do not commit the images. A new surface has no before state; label it accordingly rather than substituting another screen.
+
+## Running-chat rename rollout
+
+`interface.runningChatRename` defaults to `true`. Set it to `false` during rolling upgrades
+from a version without title ownership. After **every API replica** supports title ownership,
+drain all title-generation tasks started on older replicas, then remove the override. The client
+also requires the server's title-ownership capability; an old replica cannot advertise it.
+
+With the fence off, running rows and unowned placeholder titles cannot be renamed.
+Other menu actions remain available. Settled non-placeholder chats retain Rename.
+The isolated mock profile enables the option because it contains no older replicas.

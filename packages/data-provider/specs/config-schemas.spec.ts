@@ -1,13 +1,23 @@
+import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import {
   paramDefinitionSchema,
   agentsEndpointSchema,
   azureEndpointSchema,
   endpointSchema,
   RetentionMode,
+  isAllDataRetention,
+  isForcedTemporaryRetention,
   configSchema,
+  balanceSchema,
   interfaceSchema,
   fileStorageSchema,
   fileStrategiesSchema,
+  normalizeAgentSelectorLimit,
+  getConfigDefaults,
+  MAX_CODE_HIGHLIGHT_THROTTLE_MS,
+  normalizeCodeHighlightThrottleMs,
+  DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS,
   SKILL_SYNC_MAX_INTERVAL_MINUTES,
   summarizationTriggerSchema,
   summarizationConfigSchema,
@@ -17,6 +27,7 @@ import {
   setMaxSubagents,
   traceViewerDefaults,
   resolveTraceViewerConfig,
+  outboundTimeoutsSchema,
 } from '../src/config';
 import {
   tModelSpecPresetSchema,
@@ -374,6 +385,84 @@ describe('endpointSchema addParams validation', () => {
       customParams: {
         reasoningFormat: 'provider_magic',
       },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts a reasoning catalog timeout within bounds', () => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogTimeoutMs: 8000 },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.customParams?.reasoningCatalogTimeoutMs).toBe(8000);
+    }
+  });
+
+  it.each([0, 100, 60000, 1.5])('rejects reasoning catalog timeout %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogTimeoutMs: value },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts a reasoning catalog page limit within bounds', () => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogMaxPages: 50 },
+    });
+
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.customParams?.reasoningCatalogMaxPages).toBe(50);
+    }
+  });
+
+  it.each([0, 201, 1.5])('rejects reasoning catalog page limit %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogMaxPages: value },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it.each([0, 30000, 600000])('accepts a reasoning catalog failure window of %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogFailureTtlMs: value },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it.each([-1, 600001, 1.5])('rejects reasoning catalog failure window %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogFailureTtlMs: value },
+    });
+
+    expect(result.success).toBe(false);
+  });
+
+  it.each([60000, 3600000, 86400000])('accepts a reasoning catalog lifetime of %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogTtlMs: value },
+    });
+
+    expect(result.success).toBe(true);
+  });
+
+  it.each([0, 59999, 86400001, 1.5])('rejects reasoning catalog lifetime %s', (value) => {
+    const result = endpointSchema.safeParse({
+      ...validEndpoint,
+      customParams: { reasoningCatalogTtlMs: value },
     });
 
     expect(result.success).toBe(false);
@@ -1126,6 +1215,25 @@ describe('configSchema fileStrategy', () => {
   });
 });
 
+describe('configSchema fileListLimit', () => {
+  it('defaults fileListLimit to 100 for existing configurations', () => {
+    const result = configSchema.parse({ version: '1.3.7' });
+    expect(result.fileListLimit).toBe(100);
+  });
+
+  it('accepts a positive integer override', () => {
+    const result = configSchema.safeParse({ version: '1.3.7', fileListLimit: 250 });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.fileListLimit).toBe(250);
+    }
+  });
+
+  it.each([0, -1, 1.5])('rejects invalid fileListLimit %p', (fileListLimit) => {
+    expect(configSchema.safeParse({ version: '1.3.7', fileListLimit }).success).toBe(false);
+  });
+});
+
 describe('configSchema skillSync', () => {
   it('accepts a GitHub skill sync source with explicit paths and credential key', () => {
     const result = configSchema.safeParse({
@@ -1414,6 +1522,38 @@ describe('configSchema skillSync', () => {
   });
 });
 
+describe('codeHighlightThrottleMs', () => {
+  it('defaults to the one cadence the schema, the config defaults and the client fallback share', () => {
+    expect(DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS).toBe(300);
+    expect(interfaceSchema.parse({}).codeHighlightThrottleMs).toBe(
+      DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS,
+    );
+    expect(getConfigDefaults().interface?.codeHighlightThrottleMs).toBe(
+      DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS,
+    );
+    expect(normalizeCodeHighlightThrottleMs(undefined)).toBe(DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS);
+  });
+
+  it('accepts and normalizes the same range', () => {
+    for (const value of [0, 1, 300, MAX_CODE_HIGHLIGHT_THROTTLE_MS]) {
+      expect(
+        interfaceSchema.parse({ codeHighlightThrottleMs: value }).codeHighlightThrottleMs,
+      ).toBe(value);
+      expect(normalizeCodeHighlightThrottleMs(value)).toBe(value);
+    }
+    for (const value of [-1, 1.5, MAX_CODE_HIGHLIGHT_THROTTLE_MS + 1, Number.NaN, '300']) {
+      expect(interfaceSchema.safeParse({ codeHighlightThrottleMs: value }).success).toBe(false);
+      expect(normalizeCodeHighlightThrottleMs(value)).toBe(DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS);
+    }
+  });
+
+  it('documents the same default in librechat.example.yaml', () => {
+    const example = readFileSync(join(__dirname, '../../../librechat.example.yaml'), 'utf8');
+    expect(example).toContain(`(default: ${DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS} ms)`);
+    expect(example).toContain(`# codeHighlightThrottleMs: ${DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS}\n`);
+  });
+});
+
 describe('interfaceSchema', () => {
   it('accepts independent retention periods', () => {
     expect(
@@ -1435,6 +1575,15 @@ describe('interfaceSchema', () => {
       expect(interfaceSchema.safeParse({ generalChatRetention }).success).toBe(false);
     },
   );
+
+  it('accepts the welcome screen heading and footer settings', () => {
+    expect(
+      interfaceSchema.parse({ landingHeading: 'greeting', landingFooter: false }),
+    ).toMatchObject({ landingHeading: 'greeting', landingFooter: false });
+    expect(interfaceSchema.parse({})).not.toHaveProperty('landingHeading');
+    expect(interfaceSchema.safeParse({ landingHeading: 'name' }).success).toBe(false);
+    expect(interfaceSchema.safeParse({ landingFooter: 'false' }).success).toBe(false);
+  });
 
   it('silently strips removed legacy fields', () => {
     const result = interfaceSchema.parse({
@@ -1469,6 +1618,24 @@ describe('interfaceSchema', () => {
     const result = interfaceSchema.parse({ modelSelect: true });
 
     expect(result.defaultPinnedTools).toBeUndefined();
+  });
+
+  it('accepts the ephemeral retention mode', () => {
+    const result = interfaceSchema.parse({ retentionMode: RetentionMode.EPHEMERAL });
+    expect(result.retentionMode).toBe(RetentionMode.EPHEMERAL);
+    expect(RetentionMode.EPHEMERAL).toBe('ephemeral');
+  });
+
+  it('classifies ephemeral as forced-temporary, all-data retention', () => {
+    expect(isAllDataRetention(RetentionMode.EPHEMERAL)).toBe(true);
+    expect(isAllDataRetention(RetentionMode.ALL)).toBe(true);
+    expect(isAllDataRetention(RetentionMode.TEMPORARY)).toBe(false);
+    expect(isAllDataRetention(undefined)).toBe(false);
+
+    expect(isForcedTemporaryRetention(RetentionMode.EPHEMERAL)).toBe(true);
+    expect(isForcedTemporaryRetention(RetentionMode.ALL)).toBe(false);
+    expect(isForcedTemporaryRetention(RetentionMode.TEMPORARY)).toBe(false);
+    expect(isForcedTemporaryRetention(undefined)).toBe(false);
   });
 });
 
@@ -1882,12 +2049,14 @@ describe('interface.traceViewer', () => {
       parse({
         enabled: true,
         showInputOutput: true,
+        showToolNames: true,
         maxRecords: 500,
         maxContentLength: 2000,
         requestsPerMinute: 10,
         requestTimeoutMs: 30_000,
       }),
     ).toBe(true);
+    expect(parse({ showToolNames: 'yes' })).toBe(false);
     expect(parse({ requestTimeoutMs: 999 })).toBe(false);
     expect(parse({ requestTimeoutMs: 300_001 })).toBe(false);
     expect(parse({ maxRecords: 0 })).toBe(false);
@@ -1901,11 +2070,19 @@ describe('interface.traceViewer', () => {
     expect(interfaceSchema.parse({}).traceViewer).toBeUndefined();
   });
 
+  it('names tool rounds from the tracing backend only when asked to', () => {
+    expect(resolveTraceViewerConfig({ enabled: true }).showToolNames).toBe(false);
+    expect(resolveTraceViewerConfig({ enabled: true, showToolNames: true }).showToolNames).toBe(
+      true,
+    );
+  });
+
   it('re-validates overrides that bypassed the schema', () => {
     expect(
       resolveTraceViewerConfig({
         enabled: 'true',
         showInputOutput: 1,
+        showToolNames: 'true',
         maxRecords: 50_000,
         maxContentLength: -5,
         requestsPerMinute: Number.NaN,
@@ -1914,10 +2091,92 @@ describe('interface.traceViewer', () => {
     ).toEqual({
       enabled: false,
       showInputOutput: false,
+      showToolNames: false,
       maxRecords: 10_000,
       maxContentLength: traceViewerDefaults.maxContentLength,
       requestsPerMinute: traceViewerDefaults.requestsPerMinute,
       requestTimeoutMs: traceViewerDefaults.requestTimeoutMs,
     });
+  });
+});
+
+describe('interfaceSchema agentSelectorLimit', () => {
+  it('defaults the unsearched agents selector list to ten entries', () => {
+    const result = interfaceSchema.parse({});
+    expect(result.agentSelectorLimit).toBe(10);
+  });
+
+  it('honors a deployment override and rejects out-of-bounds values', () => {
+    expect(interfaceSchema.parse({ agentSelectorLimit: 25 }).agentSelectorLimit).toBe(25);
+    expect(interfaceSchema.safeParse({ agentSelectorLimit: 0 }).success).toBe(false);
+    expect(interfaceSchema.safeParse({ agentSelectorLimit: 101 }).success).toBe(false);
+  });
+
+  it('normalizes runtime values that bypassed the schema back into bounds', () => {
+    expect(normalizeAgentSelectorLimit(25)).toBe(25);
+    expect(normalizeAgentSelectorLimit(undefined)).toBe(10);
+    expect(normalizeAgentSelectorLimit(0)).toBe(10);
+    expect(normalizeAgentSelectorLimit(101)).toBe(10);
+    expect(normalizeAgentSelectorLimit('10')).toBe(10);
+  });
+});
+
+describe('balance refill mode', () => {
+  test('keeps additive refill as the default for existing configurations', () => {
+    expect(balanceSchema.parse({ autoRefillEnabled: true }).refillMode).toBe('add');
+  });
+  test('accepts weekly non-accumulating reset with percentage display', () => {
+    expect(
+      balanceSchema.parse({
+        enabled: true,
+        startBalance: 300000000,
+        autoRefillEnabled: true,
+        refillIntervalValue: 1,
+        refillIntervalUnit: 'weeks',
+        refillAmount: 300000000,
+        refillMode: 'reset',
+        display: 'percent',
+      }),
+    ).toMatchObject({ refillMode: 'reset', display: 'percent' });
+  });
+  test('rejects unsupported refill modes', () => {
+    expect(balanceSchema.safeParse({ refillMode: 'rollover' }).success).toBe(false);
+  });
+});
+
+describe('reset interval validation', () => {
+  test.each([0, -1, 0.5, 1.5])(
+    'rejects reset interval %s while preserving additive settings',
+    (refillIntervalValue) => {
+      expect(balanceSchema.safeParse({ refillMode: 'reset', refillIntervalValue }).success).toBe(
+        false,
+      );
+      expect(balanceSchema.safeParse({ refillMode: 'add', refillIntervalValue }).success).toBe(
+        true,
+      );
+    },
+  );
+});
+
+describe('passwordHashing config', () => {
+  it.each([1, 4, 32])('accepts %s hash workers', (maxWorkers) => {
+    expect(configSchema.shape.passwordHashing.parse({ maxWorkers })).toEqual({ maxWorkers });
+  });
+
+  it.each([0, 33, 1.5])('rejects %s hash workers', (maxWorkers) => {
+    expect(configSchema.shape.passwordHashing.safeParse({ maxWorkers }).success).toBe(false);
+  });
+});
+
+describe('outboundTimeoutsSchema', () => {
+  it('accepts budgets within the Node timer range', () => {
+    expect(outboundTimeoutsSchema.parse({ ragMs: 3_000, ocrMs: 2_147_483_647 })).toEqual({
+      ragMs: 3_000,
+      ocrMs: 2_147_483_647,
+    });
+  });
+
+  it.each([0, -1, 1.5, 2_147_483_648])('rejects %s, which no timer could honor', (value) => {
+    expect(outboundTimeoutsSchema.safeParse({ actionsMs: value }).success).toBe(false);
   });
 });

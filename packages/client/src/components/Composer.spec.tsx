@@ -32,6 +32,24 @@ const Harness = ({
 };
 
 describe('Composer', () => {
+  it('lets the stop glyph inherit the contrasted submit ink', () => {
+    render(
+      <Composer
+        value=""
+        onChange={jest.fn()}
+        onSubmit={jest.fn()}
+        canSubmit={false}
+        submitLabel="Send"
+        ariaLabel="Message input"
+        onStop={jest.fn()}
+        stopLabel="Stop"
+      />,
+    );
+    const button = screen.getByRole('button', { name: 'Stop' });
+    expect(button).toHaveClass('bg-surface-inverted', 'text-text-inverted');
+    expect(button.querySelector('svg')).not.toHaveClass('text-surface-primary');
+  });
+
   it('submits on Enter and keeps Shift+Enter for a newline', () => {
     const onSubmit = jest.fn();
     render(<Harness onSubmit={onSubmit} />);

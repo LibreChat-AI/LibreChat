@@ -1,13 +1,11 @@
+import { createToolPolicyHook } from '@librechat/agents';
+import { ReasoningEffort } from 'librechat-data-provider';
 import type { Agents, TToolApprovalPolicy } from 'librechat-data-provider';
 import {
   resolveToolApprovalPolicy,
   isHITLEnabled,
   healToolApprovalPolicy,
-  collectAliasMatcherNames,
-  buildAliasMatcherPattern,
   mapToolApprovalPolicy,
-  buildToolApprovalPayload,
-  buildAskUserQuestionPayload,
   buildPendingAction,
   isToolApprovalPayloadValid,
   toClientPendingAction,
@@ -17,10 +15,12 @@ import {
   sanitizeResumeModelParameters,
   pickResumeContext,
   applyResumeContext,
+  applyResumeRequest,
   applyResumeModelParameters,
   exemptAskUserQuestionFromApproval,
   isToolApprovalPauseCapable,
   isToolDeniedByApprovalPolicy,
+  isToolBlockedByApprovalPolicy,
 } from './policy';
 
 describe('isToolApprovalPauseCapable', () => {
@@ -202,89 +202,6 @@ describe('mapToolApprovalPolicy', () => {
   });
 });
 
-describe('buildToolApprovalPayload', () => {
-  const calls = [
-    {
-      name: 'shell',
-      arguments: { command: 'ls' },
-      tool_call_id: 'call_abc',
-      description: 'List files',
-    },
-  ];
-
-  test('produces a tool_approval-discriminated payload', () => {
-    const payload = buildToolApprovalPayload(calls);
-    expect(payload.type).toBe('tool_approval');
-    expect(payload.action_requests).toEqual([
-      {
-        name: 'shell',
-        arguments: { command: 'ls' },
-        tool_call_id: 'call_abc',
-        description: 'List files',
-      },
-    ]);
-  });
-
-  test("default decisions exclude 'respond' (reserved for AskUserQuestion semantics)", () => {
-    const payload = buildToolApprovalPayload(calls);
-    expect(payload.review_configs[0].allowed_decisions).toEqual(['approve', 'reject', 'edit']);
-  });
-
-  test('respects per-tool decision overrides', () => {
-    const payload = buildToolApprovalPayload(calls, {
-      shell: ['approve', 'reject'],
-    });
-    expect(payload.review_configs[0].allowed_decisions).toEqual(['approve', 'reject']);
-  });
-
-  test('produces one review_config per call, in order', () => {
-    const payload = buildToolApprovalPayload([
-      { name: 'a', arguments: {}, tool_call_id: '1' },
-      { name: 'b', arguments: {}, tool_call_id: '2' },
-    ]);
-    expect(payload.review_configs.map((r) => r.action_name)).toEqual(['a', 'b']);
-  });
-
-  test('carries tool_call_id on each review_config (join key for duplicate-tool batches)', () => {
-    const payload = buildToolApprovalPayload([
-      { name: 'mcp:server:search', arguments: { q: 'a' }, tool_call_id: 'call_1' },
-      { name: 'mcp:server:search', arguments: { q: 'b' }, tool_call_id: 'call_2' },
-    ]);
-    expect(payload.review_configs).toEqual([
-      {
-        action_name: 'mcp:server:search',
-        tool_call_id: 'call_1',
-        allowed_decisions: ['approve', 'reject', 'edit'],
-      },
-      {
-        action_name: 'mcp:server:search',
-        tool_call_id: 'call_2',
-        allowed_decisions: ['approve', 'reject', 'edit'],
-      },
-    ]);
-  });
-});
-
-describe('buildAskUserQuestionPayload', () => {
-  test('produces an ask_user_question-discriminated payload', () => {
-    const payload = buildAskUserQuestionPayload({
-      question: 'Which environment?',
-      options: [
-        { label: 'Staging', value: 'staging' },
-        { label: 'Production', value: 'production' },
-      ],
-    });
-    expect(payload.type).toBe('ask_user_question');
-    expect(payload.question.question).toBe('Which environment?');
-    expect(payload.question.options).toHaveLength(2);
-  });
-
-  test('options are optional', () => {
-    const payload = buildAskUserQuestionPayload({ question: 'Free-form?' });
-    expect(payload.question.options).toBeUndefined();
-  });
-});
-
 describe('buildPendingAction', () => {
   const ctx = {
     streamId: 'stream-1',
@@ -424,10 +341,11 @@ describe('toClientPendingAction', () => {
     ],
   };
 
-  test('omits server-only replay state, keeping the fields the client renders from', () => {
+  test('omits server-only replay and project context state', () => {
     const full = buildPendingAction(payload, {
       streamId: 'stream-1',
       conversationId: 'conv-1',
+      projectContextKey: 'project:p1:r2',
       requestFingerprint: 'fp-hash',
       requestFingerprintV2: 'fp-v2-hash',
       resumeContext: {
@@ -438,6 +356,7 @@ describe('toClientPendingAction', () => {
         version: 1,
         targets: [{ agentId: 'agent-1', targetHash: 'a'.repeat(64) }],
       },
+      toolApprovalAliases: [{ name: 'shell', aliasName: 'legacy_shell' }],
     });
 
     const clientSafe = toClientPendingAction(full);
@@ -446,6 +365,8 @@ describe('toClientPendingAction', () => {
     expect(clientSafe?.requestFingerprint).toBeUndefined();
     expect(clientSafe?.requestFingerprintV2).toBeUndefined();
     expect(clientSafe?.codeExecutionBinding).toBeUndefined();
+    expect(clientSafe?.toolApprovalAliases).toBeUndefined();
+    expect(clientSafe?.projectContextKey).toBeUndefined();
     expect(clientSafe?.actionId).toBe(full.actionId);
     expect(clientSafe?.streamId).toBe('stream-1');
     expect(clientSafe?.payload).toBe(full.payload);
@@ -457,6 +378,8 @@ describe('toClientPendingAction', () => {
       version: 1,
       targets: [{ agentId: 'agent-1', targetHash: 'a'.repeat(64) }],
     });
+    expect(full.projectContextKey).toBe('project:p1:r2');
+    expect(full.toolApprovalAliases).toEqual([{ name: 'shell', aliasName: 'legacy_shell' }]);
   });
 
   test('passes through nullish input', () => {
@@ -626,6 +549,19 @@ describe('captureResumeModelParameters', () => {
     ).toEqual({ thinking: false, effort: 'low' });
   });
 
+  test('the validated one-shot reasoning selection wins on resume and re-enables thinking', () => {
+    expect(
+      captureResumeModelParameters(
+        {
+          thinking: false,
+          effort: 'low',
+          reasoningOverride: { key: 'effort', value: 'max' },
+        },
+        { thinking: { type: 'adaptive' }, invocationKwargs: { output_config: { effort: 'max' } } },
+      ),
+    ).toEqual({ thinking: true, effort: 'max' });
+  });
+
   test('resolved params still fill gaps the body lacks (normalized to UI form)', () => {
     expect(
       captureResumeModelParameters(
@@ -793,6 +729,14 @@ describe('computeAgentRequestFingerprint', () => {
 });
 
 describe('pickResumeContext / applyResumeContext', () => {
+  it('captures the trusted reasoning snapshot alongside the body fields', () => {
+    const base = { key: 'reasoning_effort' as const, hadValue: true, value: 'low' };
+    const ctx = pickResumeContext({ endpoint: 'agents' }, base);
+    expect(ctx).toEqual({ endpoint: 'agents', reasoningOverrideBase: base });
+    expect(ctx.reasoningOverrideBase).not.toBe(base);
+    expect(pickResumeContext({ endpoint: 'agents' }, null)).toEqual({ endpoint: 'agents' });
+  });
+
   it('picks only the graph-determining fields (incl. addedConvo + timezone), dropping unrelated keys', () => {
     const ctx = pickResumeContext({
       endpoint: 'agents',
@@ -805,6 +749,7 @@ describe('pickResumeContext / applyResumeContext', () => {
       timezone: 'America/New_York',
       // Graph-determining: skill allowed-tools union into the tool set.
       manualSkills: ['code-reviewer'],
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
       // Graph-determining: feeds the ephemeral agent id / checkpoint namespace (#14253).
       modelLabel: 'My Opus',
       codeApprovalMode: 'acceptEdits',
@@ -823,6 +768,7 @@ describe('pickResumeContext / applyResumeContext', () => {
       addedConvo: { agent_id: 'secondary' },
       timezone: 'America/New_York',
       manualSkills: ['code-reviewer'],
+      reasoningOverride: { key: 'reasoning_effort', value: ReasoningEffort.high },
       modelLabel: 'My Opus',
       codeApprovalMode: 'acceptEdits',
       codeEnvironmentMode: 'attached',
@@ -979,6 +925,42 @@ describe('pickResumeContext / applyResumeContext', () => {
   });
 });
 
+describe('applyResumeRequest', () => {
+  it('restores the body, the reasoning snapshot and the generation params together', () => {
+    const reasoningOverrideBase = { key: 'reasoning_effort' as const, hadValue: false };
+    const req: {
+      body: Record<string, unknown>;
+      reasoningOverrideBase?: typeof reasoningOverrideBase;
+      resumeReplayed?: boolean;
+    } = { body: { conversationId: 'c', addedConvo: { endpoint: 'x' } } };
+    applyResumeRequest(req, {
+      endpoint: 'agents',
+      reasoningOverrideBase,
+      model_parameters: { temperature: 0.3, conversationId: 'forged' },
+    });
+    expect(req.body).toEqual({ conversationId: 'c', endpoint: 'agents', temperature: 0.3 });
+    expect(req.reasoningOverrideBase).toEqual(reasoningOverrideBase);
+    expect(req.reasoningOverrideBase).not.toBe(reasoningOverrideBase);
+    /* Marks the request as carrying trusted replayed state, so a replayed
+       override that no longer validates degrades instead of refusing. */
+    expect(req.resumeReplayed).toBe(true);
+  });
+
+  it('leaves the reasoning snapshot unset when the paused turn had none', () => {
+    const req: { body: Record<string, unknown>; reasoningOverrideBase?: undefined } = {
+      body: {},
+    };
+    applyResumeRequest(req, { endpoint: 'agents' });
+    expect(req).not.toHaveProperty('reasoningOverrideBase');
+  });
+
+  it('is a no-op without a persisted context', () => {
+    const req = { body: { ephemeralAgent: null } };
+    applyResumeRequest(req, undefined);
+    expect(req).toEqual({ body: { ephemeralAgent: null } });
+  });
+});
+
 describe('applyResumeModelParameters', () => {
   it('replays generation params without replacing routing or resume identity fields (#14946)', () => {
     const body: Record<string, unknown> = {
@@ -1099,31 +1081,29 @@ describe('healToolApprovalPolicy reverse direction', () => {
   });
 });
 
-describe('collectAliasMatcherNames', () => {
-  const aliases = [
-    { name: 'search_mcp_acme', aliasName: 'acme_search_mcp_acme' },
-    { name: 'acme_list_mcp_acme', aliasName: 'list_mcp_acme' },
-  ];
-
-  it('returns names whose alias matches the regex while the name does not', () => {
-    expect(collectAliasMatcherNames('^acme_search_mcp_acme$', aliases)).toEqual([
-      'search_mcp_acme',
-    ]);
-    expect(collectAliasMatcherNames('^list_mcp_acme$', aliases)).toEqual(['acme_list_mcp_acme']);
-  });
-
-  it('skips names the matcher already matches and invalid patterns', () => {
-    expect(collectAliasMatcherNames('_mcp_acme$', aliases)).toEqual([]);
-    expect(collectAliasMatcherNames('(unclosed', aliases)).toEqual([]);
-    expect(collectAliasMatcherNames(undefined, aliases)).toEqual([]);
-  });
-
-  it('builds an anchored exact-name pattern with escaped names', () => {
-    const pattern = buildAliasMatcherPattern(['a.b_mcp_acme', 'c_mcp_acme']);
-    const regex = new RegExp(pattern);
-    expect(regex.test('a.b_mcp_acme')).toBe(true);
-    expect(regex.test('axb_mcp_acme')).toBe(false);
-    expect(regex.test('c_mcp_acme')).toBe(true);
-    expect(regex.test('xc_mcp_acme')).toBe(false);
-  });
+test.each([
+  { mode: 'dontAsk' as const },
+  { mode: 'dontAsk' as const, allow: ['query*'] },
+  { mode: 'dontAsk' as const, ask: ['query*'] },
+  { mode: 'dontAsk' as const, allow: ['query*'], ask: ['query*'] },
+  { mode: 'dontAsk' as const, allow: ['query*'], deny: ['query*'] },
+  { mode: 'dontAsk' as const, ask: ['other*'] },
+  { mode: 'bypass' as const },
+  { mode: 'default' as const },
+])('concrete fallback denial matches the SDK baseline: %j', async (config) => {
+  const policy = { enabled: true, ...config };
+  const hook = createToolPolicyHook(mapToolApprovalPolicy(policy)!);
+  const result = await hook(
+    {
+      hook_event_name: 'PreToolUse',
+      runId: 'test',
+      toolName: 'query_mcp_db',
+      toolInput: {},
+      toolUseId: 'call',
+    },
+    new AbortController().signal,
+  );
+  expect(isToolBlockedByApprovalPolicy(policy, 'query_mcp_db')).toBe(result.decision === 'deny');
+  if (result.decision === 'deny')
+    expect(isToolApprovalPauseCapable(policy, true, ['query_mcp_db'])).toBe(false);
 });

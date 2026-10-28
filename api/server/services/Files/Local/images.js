@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const sharp = require('sharp');
+const { stripCacheBust, convertImageBuffer } = require('@librechat/api');
 const { resizeImageBuffer } = require('../images/resize');
 const { updateUser, updateFile } = require('~/models');
 
@@ -35,34 +36,22 @@ async function uploadLocalImage({ req, file, file_id, endpoint, resolution = 'hi
     buffer: resizedBuffer,
     width,
     height,
+    type,
   } = await resizeImageBuffer(inputBuffer, resolution, endpoint);
-  const extension = path.extname(inputFilePath);
+  const { buffer: outputBuffer, fileName } = await convertImageBuffer({
+    buffer: resizedBuffer,
+    type,
+    fileName: `${file_id}__${path.basename(inputFilePath)}`,
+    outputType: appConfig.imageOutputType,
+  });
 
   const { imageOutput } = appConfig.paths;
   const userPath = path.join(imageOutput, req.user.id);
-
-  if (!fs.existsSync(userPath)) {
-    fs.mkdirSync(userPath, { recursive: true });
-  }
-
-  const fileName = `${file_id}__${path.basename(inputFilePath)}`;
-  const newPath = path.join(userPath, fileName);
-  const targetExtension = `.${appConfig.imageOutputType}`;
-
-  if (extension.toLowerCase() === targetExtension) {
-    const bytes = Buffer.byteLength(resizedBuffer);
-    await fs.promises.writeFile(newPath, resizedBuffer);
-    const filepath = path.posix.join('/', 'images', req.user.id, path.basename(newPath));
-    return { filepath, bytes, width, height };
-  }
-
-  const outputFilePath = newPath.replace(extension, targetExtension);
-  const data = await sharp(resizedBuffer).toFormat(appConfig.imageOutputType).toBuffer();
-  await fs.promises.writeFile(outputFilePath, data);
-  const bytes = Buffer.byteLength(data);
-  const filepath = path.posix.join('/', 'images', req.user.id, path.basename(outputFilePath));
+  await fs.promises.mkdir(userPath, { recursive: true });
+  await fs.promises.writeFile(path.join(userPath, fileName), outputBuffer);
   await fs.promises.unlink(inputFilePath);
-  return { filepath, bytes, width, height };
+  const filepath = path.posix.join('/', 'images', req.user.id, fileName);
+  return { filepath, bytes: outputBuffer.length, width, height };
 }
 
 /**
@@ -97,7 +86,7 @@ async function prepareImagesLocal(req, file) {
   if (!fs.existsSync(userPath)) {
     fs.mkdirSync(userPath, { recursive: true });
   }
-  const filepath = path.join(publicPath, file.filepath);
+  const filepath = path.join(publicPath, stripCacheBust(file.filepath));
 
   const promises = [];
   promises.push(updateFile({ file_id: file.file_id }));

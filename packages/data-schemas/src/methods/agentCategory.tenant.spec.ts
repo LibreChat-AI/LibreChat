@@ -2,8 +2,8 @@ import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { IAgentCategory } from '..';
 import { createAgentCategoryMethods } from './agentCategory';
-import { createModels } from '../models';
 import { tenantStorage } from '../config/tenantContext';
+import { createModels } from '../models';
 
 jest.mock('~/config/winston', () => ({
   error: jest.fn(),
@@ -46,15 +46,15 @@ beforeEach(async () => {
   await AgentCategory.deleteMany({});
 });
 
-describe('getValidCategoryValues is scoped to the active tenant', () => {
+describe('getActiveCategories is scoped to the active tenant', () => {
   it('returns only the current tenant category values', async () => {
     await seedCategory(TENANT_A, 'alpha');
     await seedCategory(TENANT_B, 'beta');
 
-    const aValues = await runAs(TENANT_A, () => methods.getValidCategoryValues());
-    expect(aValues).toEqual(['alpha']);
+    const aCategories = await runAs(TENANT_A, () => methods.getActiveCategories());
+    expect(aCategories.map((category) => category.value)).toEqual(['alpha']);
 
-    const bValues = await runAs(TENANT_B, () => methods.getValidCategoryValues());
-    expect(bValues).toEqual(['beta']);
+    const bCategories = await runAs(TENANT_B, () => methods.getActiveCategories());
+    expect(bCategories.map((category) => category.value)).toEqual(['beta']);
   });
 });

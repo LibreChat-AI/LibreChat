@@ -5,6 +5,7 @@ import {
   scheduleMCPCardOutcomes,
   scheduleMCPRecoveryOutcomes,
   scheduleMCPNeedsAgentRecovery,
+  scheduleDisabledMCPLabel,
 } from '../errors';
 
 it('shows localized recovery reasons and exact server names', () => {
@@ -72,6 +73,44 @@ it('ignores unrelated and malformed server errors', () => {
     scheduleMCPErrorMessage(new Error('private transport details'), (key) => key),
   ).toBeUndefined();
   expect(readScheduleMCPOutcomes('mcp_reauth_required: [malformed')).toEqual([]);
+});
+
+it('preserves the permanent unattended-auth failure across API errors and saved runs', () => {
+  const outcomes = [
+    {
+      server: 'Company Graph',
+      status: 'mcp_configuration_missing' as const,
+      detail: 'unattended_auth_required' as const,
+    },
+  ];
+  const error = Object.assign(new Error('Internal OBO credentials'), {
+    response: { status: 400, data: { code: 'mcp_configuration_missing', mcp: outcomes } },
+  });
+  expect(scheduleMCPErrorMessage(error, (key) => key)).toBe(
+    'Company Graph: com_ui_schedule_mcp_unattended_auth',
+  );
+  expect(scheduleMCPErrorOutcomes(error)).toEqual(outcomes);
+  expect(
+    scheduleMCPRecoveryOutcomes({
+      enabled: false,
+      disabledReason: 'mcp_configuration_missing',
+      lastRun: {
+        status: 'error',
+        firedAt: new Date().toISOString(),
+        error:
+          'mcp_configuration_missing: [{"server":"Company Graph","status":"mcp_configuration_missing","detail":"unattended_auth_required"}]',
+      },
+    }),
+  ).toEqual(outcomes);
+  expect(scheduleMCPNeedsAgentRecovery(outcomes)).toBe(false);
+  expect(scheduleDisabledMCPLabel('mcp_configuration_missing', outcomes)).toBe(
+    'com_ui_schedule_disabled_mcp_unattended_auth',
+  );
+  expect(
+    scheduleDisabledMCPLabel('mcp_configuration_missing', [
+      { server: 'Graph', status: 'mcp_configuration_missing' },
+    ]),
+  ).toBeUndefined();
 });
 
 it('explains transient MCP infrastructure failures without server outcomes', () => {

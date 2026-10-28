@@ -860,3 +860,78 @@ describe('findActivityLabelMessageIndex', () => {
     expect(findActivityLabelMessageIndex([user, older], event, ['user-1'])).toBe(-1);
   });
 });
+
+describe('groupActivityPhases — live tail', () => {
+  const tool = (id: string, name = 'lookup'): TMessageContentParts =>
+    ({
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: { id, name, args: '{}', output: '' },
+    }) as unknown as TMessageContentParts;
+  const text = (value: string): TMessageContentParts =>
+    ({ type: ContentTypes.TEXT, text: value }) as unknown as TMessageContentParts;
+  const think = { type: ContentTypes.THINK, think: 'hm' } as unknown as TMessageContentParts;
+
+  it('folds the span being written from its first tool call, tail included', () => {
+    const segments = groupActivityPhases([think, tool('t1')], undefined, true);
+    expect(segments).toHaveLength(1);
+    expect(segments?.[0]).toMatchObject({
+      type: 'phase',
+      live: true,
+      synthesized: true,
+      contentIndices: [0, 1],
+    });
+  });
+
+  it('leaves the same content untouched when the message is not live', () => {
+    expect(groupActivityPhases([think, tool('t1')])).toBeUndefined();
+  });
+
+  it('folds a streaming thought before any tool call, so its peek never opens and snaps shut', () => {
+    const segments = groupActivityPhases([think], undefined, true);
+    expect(segments?.[0]).toMatchObject({ type: 'phase', live: true, contentIndices: [0] });
+  });
+
+  it('does not fold a thought that has no text yet', () => {
+    const empty = { type: ContentTypes.THINK, think: '  ' } as unknown as TMessageContentParts;
+    expect(groupActivityPhases([empty], undefined, true)).toBeUndefined();
+  });
+
+  it('leaves a settled thought on its own row', () => {
+    expect(groupActivityPhases([think])).toBeUndefined();
+  });
+
+  it('does not fold a span the stream has already moved past', () => {
+    expect(groupActivityPhases([tool('t1'), text('The answer.')], undefined, true)).toBeUndefined();
+  });
+
+  it('folds only the tail span when an answer separates two runs', () => {
+    const segments = groupActivityPhases(
+      [tool('t1'), text('A first answer.'), tool('t2')],
+      undefined,
+      true,
+    );
+    expect(segments?.map((segment) => segment.type)).toEqual(['content', 'phase']);
+    expect(segments?.[1]).toMatchObject({ live: true, contentIndices: [2] });
+  });
+
+  it('never folds a handoff on its own', () => {
+    const transfer = tool('t1', `${Constants.LC_TRANSFER_TO_}agent_b`);
+    expect(groupActivityPhases([transfer], undefined, true)).toBeUndefined();
+  });
+});
+
+describe('groupActivityPhases — live tail and handoffs', () => {
+  const tool = (id: string, name = 'lookup'): TMessageContentParts =>
+    ({
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: { id, name, args: '{}', output: '' },
+    }) as unknown as TMessageContentParts;
+
+  it('ends the span at a handoff and starts a new live span for the next agent', () => {
+    const transfer = tool('h1', `${Constants.LC_TRANSFER_TO_}agent_b`);
+    const segments = groupActivityPhases([tool('t1'), transfer, tool('t2')], undefined, true);
+    expect(segments?.map((segment) => segment.type)).toEqual(['content', 'phase']);
+    expect(segments?.[0].contentIndices).toEqual([0, 1]);
+    expect(segments?.[1]).toMatchObject({ live: true, contentIndices: [2] });
+  });
+});

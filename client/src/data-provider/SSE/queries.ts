@@ -1,34 +1,18 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueries, useQueryClient } from '@tanstack/react-query';
 import { apiBaseUrl, QueryKeys, request, dataService } from 'librechat-data-provider';
-import type { Agents, TConversation, TPendingSteer } from 'librechat-data-provider';
-import { isNotFoundError, updateConvoInAllQueries, setDocumentTitle } from '~/utils';
+import type { TConversation } from 'librechat-data-provider';
+import type { StreamStatusResponse } from '@librechat/chat';
+import {
+  isNotFoundError,
+  updateConvoInAllQueries,
+  setDocumentTitle,
+  findManualConvoTitleInAllQueries,
+} from '~/utils';
 import { generationProtocolHeaders, withGenerationProtocolQuery } from './protocol';
 import { useGetStartupConfig } from '../Endpoints';
 
-export interface StreamStatusResponse {
-  /** Exact protocol selected by the job. Missing/1 is always legacy. */
-  generationProtocolVersion?: number;
-  active: boolean;
-  /** Client-local cache marker used to force useResumeOnLoad to replace a
-   * stale generation attachment with the newer epoch occupying this stream. */
-  generationHandoff?: boolean;
-  streamId?: string;
-  status?: 'running' | 'complete' | 'error' | 'aborted' | 'requires_action';
-  aggregatedContent?: Array<{ type: string; text?: string }>;
-  createdAt?: number;
-  /** Generation age computed on the server's clock, so a reattaching client
-   *  can rebuild a clock-local elapsed baseline free of cross-machine skew. */
-  elapsedMs?: number;
-  resumeState?: Agents.ResumeState;
-  /** Live pending approval when `status === 'requires_action'`; mirrors
-   *  `resumeState.pendingAction`, surfaced top-level for the resume-on-load path. */
-  pendingAction?: Agents.PendingAction;
-  /** Acknowledged steers a terminal drain parked because no subscriber was
-   *  live for the final/abort event. Reads are replayable until an exact
-   *  recovery turn persists or the user discards the item. */
-  unrecoveredSteers?: TPendingSteer[];
-}
+export type { StreamStatusResponse } from '@librechat/chat';
 
 export const streamStatusQueryKey = (conversationId: string) => ['streamStatus', conversationId];
 
@@ -74,10 +58,22 @@ const queueListeners = new Set<() => void>();
 
 /** Queue a conversation for title generation (call when starting new conversation) */
 export function queueTitleGeneration(conversationId: string) {
-  if (!processedTitles.has(conversationId)) {
+  if (!isTitleGenerationProcessed(conversationId)) {
     titleQueue.add(conversationId);
     queueListeners.forEach((listener) => listener());
   }
+}
+
+/** Drops all module-level title state; called when a session ends so the next account starts clean. */
+export function clearTitleGenerationState() {
+  titleQueue.clear();
+  processedTitles.clear();
+  deferredTitles.clear();
+  queueListeners.forEach((listener) => listener());
+}
+
+export function isTitleGenerationProcessed(conversationId: string): boolean {
+  return processedTitles.has(conversationId);
 }
 
 export function markTitleGenerationProcessed(conversationId: string) {
@@ -174,12 +170,18 @@ export function useTitleGeneration(enabled = true) {
       }
 
       if (titleQuery.isSuccess && titleQuery.data) {
-        const { title } = titleQuery.data;
-        queryClient.setQueryData(
+        const incoming = titleQuery.data;
+        const titleState =
+          findManualConvoTitleInAllQueries(queryClient, conversationId, incoming) ?? incoming;
+        const applyTitle = (convo: TConversation): TConversation => ({ ...convo, ...titleState });
+        queryClient.setQueryData<TConversation>(
           [QueryKeys.conversation, conversationId],
-          (convo: TConversation | undefined) => (convo ? { ...convo, title } : convo),
+          (convo) => (convo ? applyTitle(convo) : convo),
         );
-        updateConvoInAllQueries(queryClient, conversationId, (c) => ({ ...c, title }));
+        updateConvoInAllQueries(queryClient, conversationId, applyTitle);
+        const title =
+          queryClient.getQueryData<TConversation>([QueryKeys.conversation, conversationId])
+            ?.title ?? incoming.title;
         // Only update document title if this conversation is currently active
         if (window.location.pathname.includes(conversationId)) {
           setDocumentTitle(title);

@@ -72,9 +72,20 @@ export interface SetMemoryByIdResult extends MemoryResult {
   memory?: IMemoryEntryLean;
 }
 
-export interface FormattedMemoriesResult {
-  withKeys: string;
-  withoutKeys: string;
-  totalTokens?: number;
-  tokenCountsByKey?: Map<string, number>;
-}
+/** A failed read is not an empty memory partition. Consumers can suppress
+ *  memory guidance and writes without changing the shape of successful reads. */
+export type FormattedMemoriesResult =
+  | {
+      withKeys: string;
+      withoutKeys: string;
+      totalTokens?: number;
+      tokenCountsByKey?: Map<string, number>;
+      readFailed?: false;
+    }
+  | {
+      withKeys: undefined;
+      withoutKeys: undefined;
+      totalTokens?: number;
+      tokenCountsByKey?: Map<string, number>;
+      readFailed: true;
+    };

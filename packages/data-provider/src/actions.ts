@@ -5,9 +5,9 @@ import crypto from 'crypto';
 import { load } from 'js-yaml';
 import type { OpenAPIV3 } from 'openapi-types';
 import type { ActionMetadata, ActionMetadataRuntime } from './types/agents';
-import type { FunctionTool, Schema, Reference } from './types/assistants';
+import type { FunctionTool, Schema, Reference } from './types/tools';
 import { AuthTypeEnum, AuthorizationTypeEnum } from './types/agents';
-import { Tools } from './types/assistants';
+import { Tools } from './types/tools';
 
 export type ParametersSchema = {
   type: string;
@@ -167,6 +167,26 @@ class RequestConfig {
   ) {}
 }
 
+/**
+ * The abort signal for one action call: `timeout` alone only fires on an idle socket, so a
+ * deadline signal caps the whole exchange, combined with the caller's own `signal`.
+ */
+function requestSignal(
+  timeout?: number,
+  signal?: AbortSignal,
+): { signal?: AbortSignal; timeoutErrorMessage?: string } {
+  if (timeout == null) {
+    return signal ? { signal } : {};
+  }
+  /** Same wording as `outboundTimeoutMessage` in `@librechat/api`, which recognizes it. */
+  const message = `Exceeded timeouts.actionsMs (${timeout} ms); raise it in librechat.yaml if this upstream is legitimately slow`;
+  const deadline = AbortSignal.timeout(timeout);
+  return {
+    signal: signal ? AbortSignal.any([signal, deadline]) : deadline,
+    timeoutErrorMessage: message,
+  };
+}
+
 class RequestExecutor {
   path: string;
   params?: Record<string, unknown>;
@@ -283,7 +303,14 @@ class RequestExecutor {
     return this;
   }
 
-  async execute(options?: { httpAgent?: unknown; httpsAgent?: unknown }) {
+  async execute(options?: {
+    httpAgent?: unknown;
+    httpsAgent?: unknown;
+    /** Milliseconds before the request is abandoned; unset waits indefinitely. */
+    timeout?: number;
+    /** Aborts the request, for example when the run that called the action is stopped. */
+    signal?: AbortSignal;
+  }) {
     const url = createURL(this.config.domain, this.path);
     const headers: Record<string, string> = {
       ...this.authHeaders,
@@ -309,6 +336,8 @@ class RequestExecutor {
       validateStatus: (status) => status >= 200 && status < 400,
       ...(options?.httpAgent != null ? { httpAgent: options.httpAgent } : {}),
       ...(options?.httpsAgent != null ? { httpsAgent: options.httpsAgent } : {}),
+      ...(options?.timeout != null ? { timeout: options.timeout } : {}),
+      ...requestSignal(options?.timeout, options?.signal),
     });
 
     // Initialize separate containers for query and body parameters.

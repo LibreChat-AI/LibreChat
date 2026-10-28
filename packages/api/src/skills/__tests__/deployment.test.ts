@@ -394,6 +394,18 @@ describe('createDeploymentSkillMethods', () => {
     const updatedFile = await methods.getSkillFileByPath?.(deploymentId, 'references/guide.txt');
     expect(updatedFile?.content).toBe('updated content');
     expect(base.updateSkillFileContent).not.toHaveBeenCalled();
+    await methods.updateSkillFileContent?.(
+      dbId,
+      'references/db.txt',
+      { content: 'db text' },
+      'db-revision',
+    );
+    expect(base.updateSkillFileContent).toHaveBeenCalledWith(
+      dbId,
+      'references/db.txt',
+      { content: 'db text' },
+      'db-revision',
+    );
 
     const codeEnvRef: CodeEnvRef = {
       kind: 'skill',

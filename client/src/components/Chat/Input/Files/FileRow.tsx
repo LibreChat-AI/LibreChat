@@ -28,7 +28,6 @@ export default function FileRow({
   tool_resource,
   index,
   fileFilter,
-  isRTL = false,
   Wrapper,
   isPastedTextFile,
   isPasteActionPending,
@@ -44,7 +43,6 @@ export default function FileRow({
   agent_id?: string;
   tool_resource?: EToolResources;
   index?: number;
-  isRTL?: boolean;
   Wrapper?: React.FC<{ children: React.ReactNode }>;
   /** Marks chips the composer generated from a long paste. Provenance comes from the caller's
    * marker registry rather than the filename, which a deliberate upload can share. */
@@ -111,25 +109,10 @@ export default function FileRow({
   }
 
   const renderFiles = () => {
-    const rowStyle = isRTL
-      ? {
-          display: 'flex',
-          flexDirection: 'row-reverse',
-          flexWrap: 'wrap',
-          gap: '4px',
-          width: '100%',
-          maxWidth: '100%',
-        }
-      : {
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: '4px',
-          width: '100%',
-          maxWidth: '100%',
-        };
-
     return (
-      <div style={rowStyle as React.CSSProperties}>
+      /* `items-center` so a card and a thumbnail of different heights share
+         one baseline instead of hanging from the top of the tallest row. */
+      <div className="flex w-full max-w-full flex-wrap items-center gap-1.5">
         {files
           .reduce(
             (acc, current) => {
@@ -166,14 +149,14 @@ export default function FileRow({
               !isPasteActionPending?.(file);
 
             return (
-              <div
-                key={fileIndex}
-                style={{
-                  flexBasis: '70px',
-                  flexGrow: 0,
-                  flexShrink: 0,
-                }}
-              >
+              /* Sized by its content, not parked in a fixed 70px slot: a 56px
+                 thumbnail in a 70px slot left 14px of dead space beside it, so
+                 the gap between two images read as far wider than the gap
+                 beside a file card, which overflowed the same slot. */
+              /* `flex`, not the default block: `Image`'s root is inline-block,
+                 which sits on a text baseline and adds descender space under
+                 the thumbnail, floating it above the cards beside it. */
+              <div key={fileIndex} className="flex shrink-0">
                 {isImage ? (
                   <Image
                     url={getCachedPreview(file.file_id) ?? file.preview ?? file.filepath}
@@ -182,9 +165,13 @@ export default function FileRow({
                     source={file.source}
                   />
                 ) : (
+                  /* `ImagePreview`'s `size-14` plus the 1px border its wrapper
+                     adds, so a card and a thumbnail are exactly the same height
+                     in a mixed row. */
                   <FileContainer
                     file={file}
                     onDelete={handleDelete}
+                    buttonClassName="h-[58px]"
                     onClick={isEditablePaste ? () => onEditPastedText(file) : undefined}
                     ariaLabel={
                       isEditablePaste

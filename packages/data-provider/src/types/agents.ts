@@ -1,8 +1,25 @@
 /* eslint-disable @typescript-eslint/no-namespace */
+import { z } from 'zod';
+import type {
+  FunctionTool,
+  ToolResources,
+  AgentToolOptions,
+  ToolApprovalGrantBinding,
+} from './tools';
+import type { TAttachment, TPlugin, AgentProvider, MemoryScope, SkillsScope } from 'src/schemas';
 import type { TTokenUsageEvent, TContextUsageEvent, TPendingSteer } from './runs';
-import type { TAttachment, TPlugin } from 'src/schemas';
-import type { SummaryContentPart } from './assistants';
+import type { StatefulCodeEnvironment } from '../stateful-code';
+import type { SummaryContentPart } from './content';
+import type { TFile } from './files';
 import { StepTypes, ContentTypes, ToolCallTypes } from './runs';
+import { ArtifactModes } from 'src/artifacts';
+import { EToolResources } from './tools';
+export {
+  STATEFUL_CODE_ENVIRONMENTS,
+  resolveStatefulCodeEnvironment,
+  resolveAllowedStatefulCodeEnvironments,
+} from '../stateful-code';
+export type { StatefulCodeEnvironment } from '../stateful-code';
 
 export namespace Agents {
   export type MessageType = 'human' | 'ai' | 'generic' | 'system' | 'function' | 'tool' | 'remove';
@@ -66,6 +83,9 @@ export namespace Agents {
   /**
    * A call to a tool.
    */
+  /** A tool call inside a subagent transcript, with the scope its saved files may carry. */
+  export type SubagentAttachmentCall = { id: string; agentId?: string; stepId?: string };
+
   export type ToolCall = {
     /** Type ("tool_call") according to Assistants Tool Call Structure; optional literal
      *  form included to mirror langchain's ToolCall, whose `type` is optional. */
@@ -104,8 +124,29 @@ export namespace Agents {
         generationId?: string;
       };
     };
+    /** The server sent a bounded preview of `output`; the full value loads on demand. */
+    outputTruncated?: true;
+    /** Length of the full `output` in UTF-16 code units, present with `outputTruncated`. */
+    outputLength?: number;
+    /** The server sent a bounded preview of `args`; the full value loads on demand. */
+    argsTruncated?: true;
+    /** Length of the full serialized `args`, present with `argsTruncated`. */
+    argsLength?: number;
+    /** The server left out `subagent_content`; the full value loads on demand. */
+    subagentContentOmitted?: true;
+    /** Number of top-level parts in the omitted `subagent_content`. */
+    subagentContentParts?: number;
+    /** Tool calls inside the omitted `subagent_content` that the message's attachments were
+     *  saved under, with their scope, so those files still route to this call before the
+     *  transcript loads. */
+    subagentAttachmentCalls?: SubagentAttachmentCall[];
+    /** When the stored message last changed, set on previews so a client cache of the full part
+     *  is keyed to the stored version it came from. */
+    previewRevision?: string;
     /** The tool call was rejected before execution because its input failed schema validation. */
     inputValidationError?: true;
+    /** Server-stamped provenance; see `PartMetadata.executor`. */
+    executor?: 'attached_workspace';
     /** Auth URL */
     auth?: string;
     /** Expiration time */
@@ -119,12 +160,21 @@ export namespace Agents {
       actionId: string;
       allowed_decisions: ToolApprovalDecisionType[];
       description?: string;
+      remember_scope?: 'chat' | 'always';
+      remember_unavailable?: 'connection' | 'disabled' | 'storage' | 'background';
+      /** Server-authored: an `approve` may carry `scope: 'session'` for this call. */
+      allow_always?: boolean;
+      /** The reviewer's decision once submitted; absent while the call still awaits review. */
+      decision?: ToolApprovalDecisionType;
+      /** The reason the reviewer gave with the decision. */
+      reason?: string;
     };
   };
 
   export type ToolEndEvent = {
     /** The Step Id of the Tool Call */
     id: string;
+    completed_at?: number;
     /** The Completed Tool Call */
     tool_call?: ToolCall;
     /** The content index of the tool call */
@@ -246,6 +296,19 @@ export namespace Agents {
    * because the caller aborted — which is the only signal that distinguishes
    * a stopped step from one still in flight.
    */
+  export type ToolPreparationMarker = {
+    id: string;
+    index?: number;
+    toolCallId?: string;
+    observed_at: number;
+  };
+
+  export type ToolCallsDispatchedEvent = {
+    dispatched_at: number;
+    runId?: string;
+    toolCalls: Array<{ id: string; name: string; stepId?: string }>;
+  };
+
   export type RunStepClosedEvent = {
     id: string;
     index: number;
@@ -270,6 +333,8 @@ export namespace Agents {
 
   /** User message metadata for rebuilding submission on reconnect */
   export interface UserMessageMeta {
+    /** Canonical, nonsecret revision used to verify owner-only private text. */
+    privacyRevision?: string;
     messageId: string;
     parentMessageId?: string;
     conversationId?: string;
@@ -349,6 +414,8 @@ export namespace Agents {
      * The delta containing the fields that have changed on the run step.
      */
     delta: ToolCallDelta;
+    /** SDK receipt timestamp before awaited step dispatch, when available. */
+    observed_at?: number;
   }
   export type StepDetails = MessageCreationDetails | ToolCallsDetails;
   export type MessageCreationDetails = {
@@ -438,9 +505,17 @@ export namespace Agents {
    * by `tool_call_id`. `action_name` is retained for display only.
    */
   export interface ToolReviewConfig {
+    remember_scope?: 'chat' | 'always';
+    remember_unavailable?: 'connection' | 'disabled' | 'storage' | 'background';
     action_name: string;
     tool_call_id: string;
     allowed_decisions: ToolApprovalDecisionType[];
+    /**
+     * Server-authored: the user may approve this call for the rest of the conversation
+     * (`scope: 'session'`). Absent when `toolApproval.allowAlways` is off or the tool is
+     * ineligible (admin `deny`/`ask` match, native code tool, wildcard name).
+     */
+    allow_always?: boolean;
   }
 
   /** Interrupt payload for a tool-approval pause. */
@@ -532,6 +607,11 @@ export namespace Agents {
      */
     threadId?: string;
     /**
+     * Stable server-only project context identity captured when this action paused.
+     * This is intentionally omitted from all client-facing projections.
+     */
+    projectContextKey?: string;
+    /**
      * Fingerprint of the request fields that determine the agent/graph + tool set
      * (endpoint, agent_id, model, spec, ephemeralAgent), captured at pause time. The
      * resume route recomputes it from the resume request and rejects a mismatch — the
@@ -554,6 +634,13 @@ export namespace Agents {
      * tool execution so an approval cannot migrate to another VM or workspace.
      */
     codeExecutionBinding?: CodeExecutionApprovalBinding;
+    toolApprovalBindings?: Record<string, ToolApprovalGrantBinding>;
+    /**
+     * Server-only MCP key-spelling pairs the paused run knew for the tools it offered
+     * "Always allow", including pairs lazily resolved subagents reported. Resume rechecks
+     * eligibility against them before remembering a tool.
+     */
+    toolApprovalAliases?: Array<{ name: string; aliasName: string }>;
   }
 
   export interface CodeExecutionApprovalTargetBinding {
@@ -569,9 +656,10 @@ export namespace Agents {
   }
 
   /**
-   * Scope of a tool-approval decision — drives the "remember this" persistence
-   * envelope. Storage of session/always decisions is a Slice B+ concern; the
-   * field is on the wire today so route signatures don't break later.
+   * Scope of a tool-approval decision. `once` (the default) applies to this call only.
+   * `session` on an `approve` auto-approves the same tool for the rest of the
+   * conversation, and is accepted only when the call's review config sets
+   * `allow_always`. `always` is reserved and currently rejected.
    */
   export type DecisionScope = 'once' | 'session' | 'always';
 
@@ -834,4 +922,382 @@ export type GraphEdge = {
    * Only applies when prompt is provided for handoff edges.
    */
   promptKey?: string;
+};
+
+/* Agent types */
+
+export type AgentAvatar = {
+  filepath: string;
+  source: string;
+};
+
+export type AgentParameterValue = number | string | null;
+
+export type AgentModelParameters = {
+  model?: string;
+  temperature: AgentParameterValue;
+  maxContextTokens: AgentParameterValue;
+  max_context_tokens: AgentParameterValue;
+  max_output_tokens: AgentParameterValue;
+  top_p: AgentParameterValue;
+  frequency_penalty: AgentParameterValue;
+  presence_penalty: AgentParameterValue;
+  useResponsesApi?: boolean;
+  web_search?: boolean;
+};
+
+export interface AgentBaseResource {
+  /**
+   * A list of file IDs made available to the tool.
+   */
+  file_ids?: Array<string>;
+  /**
+   * A list of files already fetched.
+   */
+  files?: Array<TFile>;
+}
+
+export interface AgentToolResources {
+  [EToolResources.image_edit]?: AgentBaseResource;
+  [EToolResources.execute_code]?: ExecuteCodeResource;
+  [EToolResources.file_search]?: AgentFileResource;
+  [EToolResources.context]?: AgentBaseResource;
+  /** @deprecated Use context instead */
+  [EToolResources.ocr]?: AgentBaseResource;
+}
+/**
+ * A resource for the execute_code tool.
+ * Contains file IDs made available to the tool (max 20 files) and already fetched files.
+ */
+export type ExecuteCodeResource = AgentBaseResource;
+
+export interface AgentFileResource extends AgentBaseResource {
+  /**
+   * The ID of the vector store attached to this agent. There
+   * can be a maximum of 1 vector store attached to the agent.
+   */
+  vector_store_ids?: Array<string>;
+}
+export type SupportContact = {
+  name?: string;
+  email?: string;
+};
+
+export type AgentOwnerContact = {
+  name?: string;
+};
+
+/**
+ * Configuration for spawning subagents (isolated-context child agents) from an agent.
+ * When `enabled` is true, the agent gets a subagent-spawn tool that can delegate work
+ * to itself, listed single-agent targets, and/or explicit saved-agent teams.
+ */
+export type AgentSubagentGraphEdge = Omit<
+  GraphEdge,
+  'edgeType' | 'condition' | 'prompt' | 'promptKey'
+> & {
+  edgeType: 'direct';
+  condition?: never;
+  prompt?: string;
+  promptKey?: never;
+};
+
+/** A bounded saved-agent team that can be spawned as one isolated child graph. */
+export type AgentSubagentGraph = {
+  /** Stable spawn-tool enum value for the team. */
+  type: string;
+  name: string;
+  description: string;
+  /** Member IDs. In create/update payloads, an empty ID refers to the current agent. */
+  agent_ids: string[];
+  edges: AgentSubagentGraphEdge[];
+  /** Entry member ID. In create/update payloads, an empty ID refers to the current agent. */
+  entry_agent_id: string;
+  /** Result member ID. In create/update payloads, an empty ID refers to the current agent. */
+  result_agent_id: string;
+};
+
+export type AgentSubagentsConfig = {
+  enabled?: boolean;
+  /** When true (default), the agent may spawn itself in an isolated context. */
+  allowSelf?: boolean;
+  /** Share current-turn files with authorized descendants. Off unless explicitly enabled. */
+  shareFiles?: boolean;
+  /** Specific agents that may be spawned as subagents. */
+  agent_ids?: string[];
+  /** Explicit saved-agent teams that may be spawned as bounded child graphs. */
+  graphs?: AgentSubagentGraph[];
+};
+
+export type AgentGitIdentity = {
+  /** Commit author and committer display name. */
+  name: string;
+  /** Commit author and committer email address. */
+  email: string;
+};
+
+// GitHub App bot noreply addresses contain `[bot]`, which Zod's email validator rejects.
+const githubAppBotEmail =
+  /^\d+\+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\[bot\]@users\.noreply\.github\.com$/i;
+const standardGitEmail = z.string().email();
+
+export const agentGitIdentitySchema: z.ZodType<AgentGitIdentity | undefined> = z
+  .object({
+    name: z
+      .string()
+      .trim()
+      .min(1)
+      .max(128)
+      .refine((value) => !/[\0\r\n]/.test(value)),
+    email: z
+      .string()
+      .trim()
+      .max(254)
+      .refine(
+        (value) =>
+          // Zod still runs refinements after .max() fails.
+          value.length <= 254 &&
+          !/[\0\r\n]/.test(value) &&
+          (standardGitEmail.safeParse(value).success || githubAppBotEmail.test(value)),
+      ),
+  })
+  .optional();
+
+/** Selects which revision of a linked prompt group an agent's instructions follow. */
+export type AgentInstructionsPromptSelection =
+  | { type: 'production' }
+  | { type: 'exact'; promptId: string };
+
+/** A link from an agent to a native LibreChat prompt group used as its instructions. */
+export type AgentInstructionsPrompt = {
+  source: 'native';
+  groupId: string;
+  selection: AgentInstructionsPromptSelection;
+};
+
+/** Returned to an editor who lacks VIEW on the linked group. Hides the group identity.
+ *  `matchesCurrent` is set only on a version snapshot's stub (never on the current
+ *  agent's own stub): whether that version's raw link equals the agent's current raw
+ *  link (same `groupId` and selection), without revealing which group either is. */
+export type RestrictedAgentInstructionsPrompt = {
+  source: 'native';
+  restricted: true;
+  matchesCurrent?: boolean;
+};
+
+/** Stable, machine-readable error codes for agent-instructions-prompt link failures. */
+export const InstructionsPromptErrorCode = {
+  /** The selection does not resolve (missing group, missing Production, revision not in
+   *  group) or its content is blocked. */
+  UNAVAILABLE: 'instructions_prompt_unavailable',
+  /** The editor sets or changes a link to a group without PROMPTGROUP `VIEW`. */
+  FORBIDDEN: 'instructions_prompt_forbidden',
+  /** The role, ACL, or prompt-store lookup backing the write check failed unexpectedly
+   *  (not a content-policy rejection). No detail about the failure is disclosed. */
+  VALIDATION_FAILED: 'instructions_prompt_validation_failed',
+} as const;
+
+export type InstructionsPromptErrorCode =
+  (typeof InstructionsPromptErrorCode)[keyof typeof InstructionsPromptErrorCode];
+
+export type Agent = {
+  _id?: string;
+  id: string;
+  name: string | null;
+  author?: string | null;
+  /** The original custom endpoint name, lowercased */
+  endpoint?: string | null;
+  authorName?: string | null;
+  description: string | null;
+  created_at: number;
+  avatar: AgentAvatar | null;
+  instructions?: string | null;
+  additional_instructions?: string | null;
+  /** Links these instructions to a native prompt group revision instead of inline text. */
+  instructionsPrompt?: AgentInstructionsPrompt | RestrictedAgentInstructionsPrompt | null;
+  tools?: string[];
+  tool_kwargs?: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+  provider: AgentProvider;
+  model: string | null;
+  model_parameters: AgentModelParameters;
+  conversation_starters?: string[];
+  tool_resources?: AgentToolResources;
+  /** @deprecated Use edges instead */
+  agent_ids?: string[];
+  edges?: GraphEdge[];
+  end_after_tools?: boolean;
+  hide_sequential_outputs?: boolean;
+  /** Per-agent opt-in for stateful code sessions (requires the app-level capability). */
+  stateful_code_sessions?: boolean;
+  /** Stateful workspace sharing scope. Defaults to one workspace per user. */
+  stateful_code_environment?: StatefulCodeEnvironment;
+  /** Operator-configured managed or attached stateful execution environment. */
+  code_environment_id?: string | null;
+  /** Additional attached machines new chats may choose; the saved ID remains the default.
+   * This allowlist never grants the user access to a machine. */
+  code_environment_ids?: string[];
+  /** Default attached workspace for new chats; empty means no agent default. */
+  code_workspace_id?: string;
+  repositoryInstructions?: 'prefer' | 'defer' | 'off';
+  /** Non-secret Git authorship injected into this agent's sandboxed commands. */
+  git_identity?: AgentGitIdentity | null;
+  artifacts?: ArtifactModes;
+  recursion_limit?: number;
+  isPublic?: boolean;
+  /**
+   * Whether the requesting user holds EDIT on this agent, so a single VIEW-scoped fetch can
+   * serve consumers that only need the editable subset instead of issuing a second full
+   * paginated walk under an EDIT-scoped cache key.
+   *
+   * Set by the list endpoint only; single-agent responses omit it. Treat absence as unknown
+   * and fail open (`isEditable !== false`), never as `false`, since a client on an older
+   * server would otherwise see an empty list rather than too many rows.
+   *
+   * Reflects the caller's ACL grant. The `MANAGE_AGENTS` capability bypasses ACL on write,
+   * so a capability holder can edit agents this flag reports as not editable.
+   */
+  isEditable?: boolean;
+  version?: number;
+  category?: string;
+  support_contact?: SupportContact;
+  owner_contact?: AgentOwnerContact;
+  /** Per-tool configuration options (deferred loading, allowed callers, etc.) */
+  tool_options?: AgentToolOptions;
+  /** Attached action registrations, each `${encodedDomain}${actionDelimiter}${action_id}` */
+  actions?: string[];
+  /** Optional allowlist of skill ObjectIds. Only applies when `skills_enabled`. */
+  skills?: string[];
+  /** Master toggle for skill use on this agent. `true` = active (full catalog unless
+   *  `skills` narrows it). `false`/undefined = inactive (no skills available). */
+  skills_enabled?: boolean;
+  /** Enables runtime skill creation without exposing an existing skill catalog. */
+  skill_authoring_enabled?: boolean;
+  /** Explicit catalog exposure while skills are enabled. Missing preserves legacy semantics. */
+  skills_scope?: SkillsScope;
+  /** Subagent spawning configuration — isolated-context child agents. */
+  subagents?: AgentSubagentsConfig;
+  /** Memory partition: `agent` isolates memories per (user, agent); default shared pool */
+  memory_scope?: MemoryScope;
+};
+
+export type TAgentsMap = Record<string, Agent | undefined>;
+
+export type AgentCreateParams = {
+  git_identity?: AgentGitIdentity;
+  name?: string | null;
+  description?: string | null;
+  avatar?: AgentAvatar | null;
+  file_ids?: string[];
+  instructions?: string | null;
+  /** Links these instructions to a native prompt group revision; `null` keeps inline text. */
+  instructionsPrompt?: AgentInstructionsPrompt | null;
+  tools?: Array<FunctionTool | string>;
+  provider: AgentProvider;
+  model: string | null;
+  model_parameters: AgentModelParameters;
+} & Pick<
+  Agent,
+  | 'agent_ids'
+  | 'edges'
+  | 'end_after_tools'
+  | 'hide_sequential_outputs'
+  | 'stateful_code_sessions'
+  | 'stateful_code_environment'
+  | 'code_environment_id'
+  | 'code_environment_ids'
+  | 'code_workspace_id'
+  | 'repositoryInstructions'
+  | 'artifacts'
+  | 'recursion_limit'
+  | 'category'
+  | 'support_contact'
+  | 'conversation_starters'
+  | 'tool_options'
+  | 'skills'
+  | 'skills_enabled'
+  | 'skill_authoring_enabled'
+  | 'skills_scope'
+  | 'subagents'
+  | 'memory_scope'
+>;
+
+export type AgentUpdateParams = {
+  name?: string | null;
+  description?: string | null;
+  avatar?: AgentAvatar | null;
+  file_ids?: string[];
+  instructions?: string | null;
+  /** Links these instructions to a native prompt group revision; `null` removes the link. */
+  instructionsPrompt?: AgentInstructionsPrompt | null;
+  tools?: Array<FunctionTool | string>;
+  tool_resources?: ToolResources;
+  provider?: AgentProvider;
+  model?: string | null;
+  model_parameters?: AgentModelParameters;
+} & Pick<
+  Agent,
+  | 'agent_ids'
+  | 'edges'
+  | 'end_after_tools'
+  | 'hide_sequential_outputs'
+  | 'stateful_code_sessions'
+  | 'stateful_code_environment'
+  | 'code_environment_id'
+  | 'code_environment_ids'
+  | 'git_identity'
+  | 'code_workspace_id'
+  | 'repositoryInstructions'
+  | 'artifacts'
+  | 'recursion_limit'
+  | 'category'
+  | 'support_contact'
+  | 'conversation_starters'
+  | 'tool_options'
+  | 'skills'
+  | 'skills_enabled'
+  | 'skill_authoring_enabled'
+  | 'skills_scope'
+  | 'subagents'
+  | 'memory_scope'
+>;
+
+/**
+ * Sort modes for the marketplace agent list. `'newest'` is the marketplace's own default and
+ * the client sends it explicitly: a request that names no mode gets the most-recently-edited
+ * order `GET /api/agents` has always served, which the agent selector and the mention menu
+ * rely on and which is not a marketplace mode.
+ */
+export type AgentSortOption = 'newest' | 'oldest' | 'popular' | 'author';
+
+export type AgentListParams = {
+  limit?: number;
+  requiredPermission: number;
+  category?: string;
+  search?: string;
+  cursor?: string;
+  promoted?: 0 | 1;
+  sort?: AgentSortOption;
+  /** When 1, restrict results to agents authored by the requesting user. */
+  mine?: 0 | 1;
+};
+
+export type AgentListResponse = {
+  object: string;
+  data: Agent[];
+  first_id: string;
+  last_id: string;
+  has_more: boolean;
+  after?: string;
+};
+
+export type AgentFile = {
+  file_id: string;
+  id?: string;
+  temp_file_id?: string;
+  bytes: number;
+  created_at: number;
+  filename: string;
+  object: string;
+  purpose: 'fine-tune' | 'fine-tune-results' | 'agents' | 'agents_output';
 };

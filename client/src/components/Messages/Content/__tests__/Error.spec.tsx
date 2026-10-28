@@ -20,7 +20,11 @@ import Error from '../Error';
 let mockEndpointsData: Record<string, Record<string, unknown>> | undefined = {
   openAI: { userProvide: true },
 };
-let mockStartupData: { compactionEnabled: boolean; interface?: { contextUsage?: boolean } } = {
+let mockStartupData: {
+  compactionEnabled: boolean;
+  interface?: { contextUsage?: boolean; currency?: { code: string; rate: number } };
+  balance?: { enabled: boolean; display: string };
+} = {
   compactionEnabled: false,
 };
 let mockAccess: Record<string, boolean> = {};
@@ -30,8 +34,12 @@ jest.mock('~/hooks', () => ({
   useLocalize:
     () =>
     (key: string, values?: Record<string, unknown>): string => {
-      const template =
-        (jest.requireActual('~/locales/en/translation.json') as Record<string, string>)[key] ?? key;
+      const catalog = jest.requireActual('~/locales/en/translation.json') as Record<string, string>;
+      /** Mirrors i18next's English plural resolution for a base key with a numeric count. */
+      const count = values?.count;
+      const plural =
+        typeof count === 'number' ? catalog[`${key}_${count === 1 ? 'one' : 'other'}`] : undefined;
+      const template = plural ?? catalog[key] ?? key;
       if (!values) {
         return template;
       }
@@ -153,6 +161,27 @@ beforeEach(() => {
   mockAccess = {};
 });
 
+describe('LibreChat attachment limits', () => {
+  it('recognizes fractional attachment-size limits', () => {
+    const detail =
+      'This turn exceeds the configured total attachment size limit (128 > 104.8576). Remove some attachments or use smaller files and try again.';
+    renderError(detail, providerMessage);
+    expect(screen.getByText(catalog.com_error_attachment_limit)).toBeInTheDocument();
+    expect(screen.getByText(detail)).toBeVisible();
+  });
+
+  it.each(['attachment count', 'total attachment size', 'extracted document text'])(
+    'does not blame the provider for the local %s limit',
+    (label) => {
+      const detail = `This turn exceeds the configured ${label} limit (11 > 10). Remove some attachments or use smaller files and try again.`;
+      renderError(detail, providerMessage);
+      expect(screen.getByText(catalog.com_error_attachment_limit)).toBeInTheDocument();
+      expect(screen.queryByText('OpenAI could not complete this request.')).not.toBeInTheDocument();
+      expect(screen.getByText(detail)).toBeVisible();
+    },
+  );
+});
+
 describe('Error — every client-facing error type', () => {
   /** The seeded gallery refuses to run while a member lacks a case; this is the renderer's half. */
   it.each([...Object.values(ErrorTypes), ...Object.values(ViolationTypes)])(
@@ -195,6 +224,43 @@ describe('Error — reader-facing provider and fallback copy', () => {
 
     expect(screen.getByText(catalog[key])).toBeInTheDocument();
     expect(screen.queryByText(/langchain\.com/i)).not.toBeInTheDocument();
+    expectReadable();
+  });
+
+  it.each([
+    [
+      ErrorTypes.MODEL_STREAM_CLOSED,
+      'com_error_model_stream_closed',
+      'The model provider closed the connection before the response finished. Try again.',
+    ],
+    [
+      ErrorTypes.MODEL_STREAM_STALLED,
+      'com_error_model_stream_stalled',
+      'The model provider stopped sending the response, and the request timed out. Try again.',
+    ],
+  ])(
+    'localizes a %s error even when it carries older-client fallback prose',
+    (type, key, prose) => {
+      renderError(`${prose}\n${JSON.stringify({ type })}`, providerMessage);
+
+      expect(screen.getByText(catalog[key])).toBeInTheDocument();
+      expect(screen.queryByText(prose)).not.toBeInTheDocument();
+      expect(screen.queryByText(/terminated/i)).not.toBeInTheDocument();
+      expectReadable();
+    },
+  );
+
+  it('keeps fallback prose when an older client cannot recognize the server error type', () => {
+    const prose =
+      'The model provider closed the connection before the response finished. Try again.';
+    renderError(
+      `${prose}\n${JSON.stringify({ type: 'newer_model_stream_failure' })}`,
+      providerMessage,
+    );
+
+    expect(screen.getByText(prose)).toBeInTheDocument();
+    expect(screen.queryByText(catalog.com_error_unknown)).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('{');
     expectReadable();
   });
 
@@ -385,6 +451,59 @@ describe('Error — provider and model identity', () => {
       screen.getByText(localized('com_error_upstream_model_status', '529')),
     ).toBeInTheDocument();
     expect(document.body.textContent).not.toContain('OpenAI');
+  });
+
+  it.each([
+    'Unexpected token } in JSON',
+    'gateway rejected {request',
+    'invalid "quoted }" value',
+    'path \\ {',
+  ])('renders provider punctuation: %s', (explanation) => {
+    renderError(
+      'The model provider could not complete this request.\n' +
+        JSON.stringify({
+          type: ErrorTypes.UPSTREAM_MODEL_ERROR,
+          status: 400,
+          message: explanation,
+        }),
+      providerMessage,
+    );
+    expect(
+      screen.getByText(localized('com_error_upstream_model_status', '400')),
+    ).toBeInTheDocument();
+    expect(screen.getByText(explanation)).toBeInTheDocument();
+    expectReadable();
+  });
+
+  /** What a gateway or privacy proxy rejects a request with is only stated in its own message. */
+  it('reads the provider explanation an upstream failure carries', () => {
+    const explanation = 'Request rejected: this prompt cannot be masked safely';
+    const { unmount } = renderError(
+      { type: ErrorTypes.UPSTREAM_MODEL_ERROR, status: 400, message: explanation },
+      providerMessage,
+    );
+
+    expect(
+      screen.getByText(localized('com_error_upstream_model_status', '400')),
+    ).toBeInTheDocument();
+    expect(screen.getByText(explanation)).toBeInTheDocument();
+    expectReadable();
+    unmount();
+
+    const body = `Upstream rejection\n${JSON.stringify({ reason: 'masking_unavailable' })}`.padEnd(
+      400,
+      '.',
+    );
+    renderError(
+      { type: ErrorTypes.UPSTREAM_MODEL_ERROR, status: 400, message: body },
+      providerMessage,
+    );
+
+    const disclosure = screen.getByRole('button', { name: catalog.com_error_details_provider });
+    expect(disclosure).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(disclosure);
+    expect(disclosure).toHaveAttribute('aria-expanded', 'true');
+    expect(document.body.textContent).toContain(body);
   });
 
   it.each([
@@ -596,7 +715,7 @@ describe('Error — user key and limits', () => {
     );
 
     expect(
-      screen.getByText(localized('com_error_message_limit', '40', '60 minutes')),
+      screen.getByText(localized('com_error_message_limit_other', '40', '60 minutes')),
     ).toBeInTheDocument();
     expect(screen.queryByText(/You can send another message/)).not.toBeInTheDocument();
   });
@@ -695,6 +814,28 @@ describe('Error — token balance and context budget', () => {
         ),
       ),
     ).toBeInTheDocument();
+  });
+
+  it('states the shortfall in money when the deployment shows balance as currency', () => {
+    mockStartupData = {
+      compactionEnabled: false,
+      balance: { enabled: true, display: 'currency' },
+      interface: { currency: { code: 'USD', rate: 1 } },
+    };
+    renderError({ type: ViolationTypes.TOKEN_BALANCE, balance: 1_250_000, tokenCost: 8_400_000 });
+
+    expect(
+      screen.getByText(localized('com_error_token_balance_currency', '$8.40', '$1.25')),
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain('credits');
+  });
+
+  it('shows no credit figures when the deployment shows balance as a percent', () => {
+    mockStartupData = { compactionEnabled: false, balance: { enabled: true, display: 'percent' } };
+    renderError({ type: ViolationTypes.TOKEN_BALANCE, balance: 1250, tokenCost: 8400 });
+
+    expect(screen.getByText(catalog.com_error_token_balance_hidden)).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/1,250|8,400|credits/);
   });
 
   it('lists every generation charge rather than a truncated subset', () => {

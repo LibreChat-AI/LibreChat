@@ -1,5 +1,11 @@
+import { FileContext } from 'librechat-data-provider';
 import type { CodeEnvRef, TFile } from 'librechat-data-provider';
-import { selectCodeFiles } from './priming';
+import {
+  selectCodeFiles,
+  getCodeFileLocation,
+  getCodeFileContextLine,
+  appendCodeFileContextLine,
+} from './priming';
 
 const file = (id: string, name: string, ref: Partial<CodeEnvRef> = {}, time = 1): TFile =>
   ({
@@ -288,5 +294,76 @@ describe('selectCodeFiles', () => {
         },
       }),
     ).rejects.toBe(reason);
+  });
+});
+
+describe('code file context', () => {
+  const upload = {
+    file_id: 'upload',
+    filename: 'photo.png',
+    context: FileContext.message_attachment,
+  };
+  const workspace = {
+    environmentId: 'personal-machine',
+    workspaceId: 'project-a',
+    operations: ['read_file' as const],
+  };
+
+  it('reserves the programmatic location for an attached environment with a selected workspace', () => {
+    expect(getCodeFileLocation(undefined)).toBe('sandbox');
+    expect(getCodeFileLocation({})).toBe('sandbox');
+    expect(getCodeFileLocation({ environmentType: 'attached' })).toBe('sandbox');
+    expect(getCodeFileLocation({ codeWorkspace: workspace })).toBe('sandbox');
+    expect(getCodeFileLocation({ environmentType: 'attached', codeWorkspace: workspace })).toBe(
+      'programmatic',
+    );
+  });
+
+  it('keeps the sandbox mount path and header by default', () => {
+    const line = getCodeFileContextLine(upload, new Set(), 'photo.png');
+    expect(line).toBe('\n\t- /mnt/data/photo.png (attached by user)');
+    expect(appendCodeFileContextLine('', line)).toBe(
+      `- Note: The following files are available in the "execute_code" tool environment:${line}`,
+    );
+  });
+
+  it('points an attached workspace at the per-run data directory instead of the sandbox mount', () => {
+    const line = getCodeFileContextLine(upload, new Set(), 'photo.png', 'programmatic');
+    expect(line).toBe('\n\t- $LIBRECHAT_CODE_DATA_DIR/photo.png (attached by user)');
+
+    const context = appendCodeFileContextLine('', line, 'programmatic');
+    expect(context).toContain('not in the attached workspace, so workspace tools cannot open them');
+    expect(context).toContain('programmatic Bash tool, when it is available');
+    expect(context).not.toContain('/mnt/data');
+    expect(context).not.toContain('tool environment:');
+  });
+
+  it('appends later lines under the first header and ignores empty lines', () => {
+    const first = getCodeFileContextLine(upload, new Set(['upload']), 'photo.png', 'programmatic');
+    const context = appendCodeFileContextLine('', first, 'programmatic');
+    expect(appendCodeFileContextLine(context, '', 'programmatic')).toBe(context);
+
+    const second = getCodeFileContextLine(
+      {
+        ...upload,
+        file_id: 'other',
+        filename: 'data.csv',
+        status: 'failed',
+        previewError: 'timeout',
+      },
+      new Set(),
+      'data.csv',
+      'programmatic',
+    );
+    expect(appendCodeFileContextLine(context, second, 'programmatic')).toBe(`${context}${second}`);
+    expect(second).toContain('(preview unavailable: timeout)');
+  });
+
+  it('omits an undisplaced generated output and names a displaced one', () => {
+    const output = { file_id: 'out', filename: 'chart.png', context: FileContext.execute_code };
+    expect(getCodeFileContextLine(output, new Set(), 'chart.png', 'programmatic')).toBe('');
+    expect(getCodeFileContextLine(output, new Set(), 'chart-1.png', 'programmatic')).toBe(
+      '\n\t- $LIBRECHAT_CODE_DATA_DIR/chart-1.png (written earlier as chart.png)',
+    );
   });
 });

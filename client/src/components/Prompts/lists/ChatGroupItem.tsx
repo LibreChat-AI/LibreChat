@@ -1,8 +1,7 @@
 import { useState, memo, useRef, useCallback, useId, useMemo } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { PermissionBits, ResourceType } from 'librechat-data-provider';
-import { Ellipsis, Eye, SquarePen, Trash, EarthIcon, User } from 'lucide-react';
+import { Ellipsis, Eye, SquarePen, Trash, EarthIcon, Cloud, User } from 'lucide-react';
 import {
   Label,
   Button,
@@ -14,22 +13,33 @@ import {
   useToastContext,
 } from '@librechat/client';
 import type { TPromptGroup } from 'librechat-data-provider';
-import { useLocalize, useAuthContext, useSubmitMessage, useResourcePermissions } from '~/hooks';
+import {
+  cn,
+  detectVariables,
+  getPromptMutationErrorKey,
+  getPromptGroupPermissions,
+  getPromptResolveErrorMessage,
+  rowActionClasses,
+  rowActionSlotClasses,
+} from '~/utils';
+import { useLocalize, useAuthContext, useSubmitMessage, usePromptContentResolver } from '~/hooks';
 import { useRecordPromptUsage, useDeletePromptGroup } from '~/data-provider';
+import useChatScopedRequest from '~/hooks/Prompts/useChatScopedRequest';
+import { useLiveAnnouncer, useChatContext } from '~/Providers';
 import VariableDialog from '../dialogs/VariableDialog';
 import PreviewPrompt from '../dialogs/PreviewPrompt';
 import CategoryIcon from '../utils/CategoryIcon';
-import { useLiveAnnouncer } from '~/Providers';
-import { detectVariables, cn } from '~/utils';
 
 const PROMPT_PATH = '/prompts';
 
 function ChatGroupItem({
   group,
   isChatRoute = true,
+  permissionBits = 0,
 }: {
   group: TPromptGroup;
   isChatRoute?: boolean;
+  permissionBits?: number;
 }) {
   const localize = useLocalize();
   const navigate = useNavigate();
@@ -37,7 +47,9 @@ function ChatGroupItem({
   const { user } = useAuthContext();
   const { submitPrompt } = useSubmitMessage();
   const recordUsage = useRecordPromptUsage();
+  const resolvePromptContent = usePromptContentResolver();
   const { announcePolite } = useLiveAnnouncer();
+  const { index } = useChatContext();
 
   const { showToast } = useToastContext();
   const menuId = useId();
@@ -45,13 +57,22 @@ function ChatGroupItem({
   const [menuOpen, setMenuOpen] = useState(false);
   const [isPreviewDialogOpen, setPreviewDialogOpen] = useState(false);
   const [isVariableDialogOpen, setVariableDialogOpen] = useState(false);
+  const [variablePromptText, setVariablePromptText] = useState<string | undefined>(undefined);
+  const [isResolving, setIsResolving] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
 
-  const groupIsGlobal = group.isPublic === true;
+  /** A resolve that was started for one chat must not land on another; see
+   *  `useChatScopedRequest` for the three cancellation keys. On cancel, the
+   *  row's spinner clears (its own `finally` will not run for a discarded
+   *  request) and a variable dialog opened from the stale read closes rather
+   *  than surviving into the chat the user moved to. */
+  const { begin, isCurrent, isMounted } = useChatScopedRequest(index, () => {
+    setIsResolving(false);
+    setVariableDialogOpen(false);
+  });
 
-  const { hasPermission } = useResourcePermissions(ResourceType.PROMPTGROUP, group._id || '');
-  const canEdit = hasPermission(PermissionBits.EDIT);
-  const canDelete = hasPermission(PermissionBits.DELETE);
+  const groupIsGlobal = group.isPublic === true;
+  const { isExternal, canEdit, canDelete } = getPromptGroupPermissions(group, permissionBits);
 
   const menuButtonRef = useRef<HTMLButtonElement | null>(null);
 
@@ -66,8 +87,11 @@ function ChatGroupItem({
         navigate(PROMPT_PATH, { replace: true });
       }
     },
-    onError: () => {
-      showToast({ status: 'error', message: localize('com_ui_prompt_delete_error') });
+    onError: (error) => {
+      showToast({
+        status: 'error',
+        message: localize(getPromptMutationErrorKey(error, 'com_ui_prompt_delete_error')),
+      });
     },
   });
 
@@ -78,32 +102,76 @@ function ChatGroupItem({
     deleteGroup.mutate({ id: group._id });
   };
 
-  const onCardClick = useCallback(() => {
+  const onCardClick = useCallback(async () => {
     if (!isChatRoute) {
       navigate(`${PROMPT_PATH}/${group._id}`, { replace: true });
       return;
     }
 
-    const text = group.productionPrompt?.prompt;
-    if (!text?.trim()) {
+    if (isResolving) {
       return;
     }
 
-    if (detectVariables(text)) {
-      setVariableDialogOpen(true);
-      return;
+    const token = begin();
+    if (isExternal) {
+      setIsResolving(true);
     }
+    try {
+      const text = await resolvePromptContent(group);
+      /** The row may have unmounted, or the active conversation may have
+       *  changed, while the Langfuse resolve was in flight; a stale
+       *  continuation must not submit, stage, or record for a chat the
+       *  user left. */
+      if (!isMounted() || !isCurrent(token)) {
+        return;
+      }
+      if (!text?.trim()) {
+        return;
+      }
 
-    submitPrompt(text);
-    if (group._id) {
-      recordUsage.mutate(group._id);
+      if (detectVariables(text)) {
+        setVariablePromptText(text);
+        setVariableDialogOpen(true);
+        return;
+      }
+
+      submitPrompt(text);
+      if (group._id) {
+        recordUsage.mutate(group._id);
+      }
+    } catch (error) {
+      if (isMounted() && isCurrent(token)) {
+        showToast({ status: 'error', message: getPromptResolveErrorMessage(error, localize) });
+      }
+    } finally {
+      if (isExternal && isMounted() && isCurrent(token)) {
+        setIsResolving(false);
+      }
     }
-  }, [group, submitPrompt, recordUsage, isChatRoute, navigate]);
+  }, [
+    group,
+    submitPrompt,
+    recordUsage,
+    isChatRoute,
+    navigate,
+    isResolving,
+    isExternal,
+    resolvePromptContent,
+    showToast,
+    localize,
+    begin,
+    isCurrent,
+    isMounted,
+  ]);
 
-  const snippet =
-    typeof group.oneliner === 'string' && group.oneliner.length > 0
-      ? group.oneliner
-      : (group.productionPrompt?.prompt ?? '');
+  const productionText = group.productionPrompt?.prompt ?? '';
+  const hasOneliner = typeof group.oneliner === 'string' && group.oneliner.length > 0;
+  let snippet = '';
+  if (hasOneliner) {
+    snippet = group.oneliner as string;
+  } else if (productionText.length > 0) {
+    snippet = productionText;
+  }
 
   const ariaLabel = group.category
     ? localize('com_ui_prompt_group_button', { name: group.name, category: group.category })
@@ -114,21 +182,21 @@ function ChatGroupItem({
       {
         label: localize('com_ui_preview'),
         onClick: () => setPreviewDialogOpen(true),
-        icon: <Eye className="icon-sm mr-2 text-text-primary" aria-hidden="true" />,
+        icon: <Eye className="icon-sm text-text-primary me-2" aria-hidden="true" />,
       },
     ];
     if (canEdit) {
       items.push({
         label: localize('com_ui_edit'),
         onClick: () => navigate(`${PROMPT_PATH}/${group._id}`),
-        icon: <SquarePen className="icon-sm mr-2 text-text-primary" aria-hidden="true" />,
+        icon: <SquarePen className="icon-sm text-text-primary me-2" aria-hidden="true" />,
       });
     }
     if (canDelete) {
       items.push({
         label: localize('com_ui_delete'),
         onClick: () => setDeleteOpen(true),
-        icon: <Trash className="icon-sm mr-2 text-text-primary" aria-hidden="true" />,
+        icon: <Trash className="icon-sm text-text-primary me-2" aria-hidden="true" />,
       });
     }
     return items;
@@ -138,30 +206,38 @@ function ChatGroupItem({
     <>
       <div
         className={cn(
-          'group/prompt relative mb-1.5 rounded-xl border border-border-light bg-transparent transition-colors hover:bg-surface-secondary',
-          !isChatRoute && params.promptId === group._id && 'bg-surface-hover',
+          'group relative mb-0.5 rounded-lg bg-transparent',
+          !isChatRoute && params.promptId === group._id
+            ? 'bg-surface-nav-selected'
+            : 'hover:bg-surface-nav-hover',
         )}
+        aria-busy={isResolving}
       >
         {/* Clickable overlay for card */}
         <button
           type="button"
-          className="absolute inset-0 z-0 rounded-xl focus:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+          className="focus-visible:ring-ring-primary absolute inset-0 z-0 rounded-xl focus:outline-hidden focus-visible:ring-2"
           onClick={onCardClick}
           aria-label={ariaLabel}
+          disabled={isResolving}
         />
         <div className="flex items-start gap-2.5 px-3 py-2.5">
-          <CategoryIcon
-            category={group.category ?? ''}
-            className="mt-0.5 size-4 shrink-0"
-            aria-hidden="true"
-          />
+          {isResolving ? (
+            <Spinner className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          ) : (
+            <CategoryIcon
+              category={group.category ?? ''}
+              className="mt-0.5 size-4 shrink-0"
+              aria-hidden="true"
+            />
+          )}
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-1.5">
               <TooltipAnchor
                 description={group.name}
                 side="top"
                 render={
-                  <span className="truncate text-sm font-semibold text-text-primary">
+                  <span className="text-text-primary truncate text-sm font-medium">
                     {group.name}
                   </span>
                 }
@@ -177,7 +253,7 @@ function ChatGroupItem({
                       aria-label={localize('com_ui_by_author', { 0: group.authorName })}
                       className="flex shrink-0 items-center"
                     >
-                      <User className="size-3.5 text-text-secondary" aria-hidden="true" />
+                      <User className="text-text-secondary size-3.5" aria-hidden="true" />
                     </span>
                   }
                 />
@@ -193,47 +269,63 @@ function ChatGroupItem({
                       aria-label={localize('com_ui_sr_global_prompt')}
                       className="flex shrink-0 items-center"
                     >
-                      <EarthIcon className="size-3.5 text-accent-primary" aria-hidden="true" />
+                      <EarthIcon className="text-accent-primary size-3.5" aria-hidden="true" />
                     </span>
                   }
                 />
               )}
+              {isExternal && (
+                <TooltipAnchor
+                  description={localize('com_ui_prompt_source_langfuse')}
+                  side="top"
+                  render={
+                    <span
+                      tabIndex={0}
+                      role="img"
+                      aria-label={localize('com_ui_prompt_source_langfuse')}
+                      className="flex shrink-0 items-center"
+                    >
+                      <Cloud className="text-text-secondary size-3.5" aria-hidden="true" />
+                    </span>
+                  }
+                />
+              )}
+              {/* The menu shares the title's line, so only the title gives way to it.
+                  The snippet below keeps the full width of the row either way. */}
+              <div
+                className={cn(rowActionSlotClasses({ open: menuOpen }), 'relative z-10 ms-auto')}
+              >
+                <DropdownPopup
+                  portal={true}
+                  menuId={menuId}
+                  focusLoop={true}
+                  className="z-[125]"
+                  unmountOnHide={true}
+                  isOpen={menuOpen}
+                  setIsOpen={setMenuOpen}
+                  trigger={
+                    <Ariakit.MenuButton
+                      ref={menuButtonRef}
+                      aria-label={localize('com_nav_convo_menu_options')}
+                      className={rowActionClasses({ open: menuOpen })}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <Ellipsis className="size-4" aria-hidden="true" />
+                    </Ariakit.MenuButton>
+                  }
+                  items={dropdownItems}
+                />
+              </div>
             </div>
-            <p className="mt-0.5 line-clamp-2 text-xs leading-relaxed text-text-secondary">
+            <p className="text-text-secondary mt-0.5 line-clamp-2 text-xs leading-relaxed">
               {snippet}
             </p>
-          </div>
-          <div className="relative z-10 shrink-0">
-            <DropdownPopup
-              portal={true}
-              menuId={menuId}
-              focusLoop={true}
-              className="z-[125]"
-              unmountOnHide={true}
-              isOpen={menuOpen}
-              setIsOpen={setMenuOpen}
-              trigger={
-                <Ariakit.MenuButton
-                  ref={menuButtonRef}
-                  aria-label={localize('com_nav_convo_menu_options')}
-                  className={cn(
-                    'flex size-7 items-center justify-center rounded-md text-text-secondary transition-opacity hover:bg-surface-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary',
-                    menuOpen
-                      ? 'opacity-100'
-                      : 'opacity-0 focus-visible:opacity-100 group-hover/prompt:opacity-100',
-                  )}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <Ellipsis className="size-4" aria-hidden="true" />
-                </Ariakit.MenuButton>
-              }
-              items={dropdownItems}
-            />
           </div>
         </div>
       </div>
       <PreviewPrompt
         group={group}
+        chatIndex={index}
         open={isPreviewDialogOpen}
         onOpenChange={setPreviewDialogOpen}
         onCloseAutoFocus={() => {
@@ -247,6 +339,7 @@ function ChatGroupItem({
           open={isVariableDialogOpen}
           onClose={() => setVariableDialogOpen(false)}
           group={group}
+          promptText={variablePromptText}
         />
       )}
       <OGDialog open={deleteOpen} onOpenChange={setDeleteOpen}>

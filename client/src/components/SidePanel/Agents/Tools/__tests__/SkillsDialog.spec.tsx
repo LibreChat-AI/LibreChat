@@ -6,7 +6,6 @@ import SkillsDialog from '../SkillsDialog';
 
 const mockFetchNextPage = jest.fn();
 const mockRefetch = jest.fn();
-const mockUseListSkillsQuery = jest.fn();
 const mockUseSkillsInfiniteQuery = jest.fn();
 
 let mockInfiniteResult: {
@@ -48,7 +47,6 @@ jest.mock('~/hooks', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useListSkillsQuery: (...args: unknown[]) => mockUseListSkillsQuery(...args),
   useSkillsInfiniteQuery: (...args: unknown[]) => mockUseSkillsInfiniteQuery(...args),
 }));
 
@@ -105,6 +103,9 @@ jest.mock('@librechat/client', () => ({
   ),
   OGDialogTitle: ({ children }: { children: React.ReactNode }) => <h2>{children}</h2>,
   OGDialogDescription: ({ children }: { children: React.ReactNode }) => <p>{children}</p>,
+  /** The header renders one DOM order per breakpoint; these cases are about
+   *  pagination, so they run as the desktop one. */
+  useMediaQuery: () => true,
 }));
 
 function makeSkill(id: string, name: string): TSkillSummary {
@@ -134,11 +135,6 @@ beforeEach(() => {
   };
   mockFetchNextPage.mockReset();
   mockRefetch.mockReset();
-  mockUseListSkillsQuery.mockReset();
-  mockUseListSkillsQuery.mockReturnValue({
-    data: { skills: [makeSkill('first', 'first-skill')] },
-    isLoading: false,
-  });
   mockUseSkillsInfiniteQuery.mockReset();
   mockUseSkillsInfiniteQuery.mockImplementation(() => mockInfiniteResult);
 });

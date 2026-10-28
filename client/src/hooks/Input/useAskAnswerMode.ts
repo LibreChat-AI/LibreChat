@@ -229,24 +229,11 @@ export default function useAskAnswerMode(conversationId?: string | null) {
   }, [liveAsk?.actionId, setSelected, setChecked]);
 
   /** Popover ⇄ chat-card handoffs run inside a view transition: both
-   *  surfaces carry the same `view-transition-name`, so the browser morphs
-   *  one into the other instead of swapping. Both are user-event driven,
-   *  which morphTransition's synchronous flush requires.
-   *
-   *  Batches opt out: only the single-question surfaces declare
-   *  `view-transition-name: ask-question`, so wrapping a batch handoff would
-   *  give the browser nothing to pair and it would cross-fade the whole root
-   *  (chat plus composer) instead. */
-  const runHandoff = useCallback(
-    (update: () => void) => {
-      if (batchMode) {
-        update();
-        return;
-      }
-      morphTransition(update);
-    },
-    [batchMode],
-  );
+   *  surfaces carry the same `view-transition-name`, single questions and
+   *  batches alike, so the browser morphs one into the other instead of
+   *  swapping. Both are user-event driven, which morphTransition's
+   *  synchronous flush requires. */
+  const runHandoff = morphTransition;
 
   const collapse = useCallback(() => {
     if (liveAsk) {
@@ -550,15 +537,9 @@ export default function useAskAnswerMode(conversationId?: string | null) {
       }
       const composerText = e.currentTarget.value;
       if (composerText.trim().length > 0) {
-        // The composer IS the free-form answer box: Enter submits the typed
-        // text (before useTextarea's submitting-lock can swallow it). Not for
-        // a batch, which answers in its card — its Enter belongs to the normal
-        // send path, so leave the event untouched rather than preventDefault
-        // an event we are about to decline.
-        if (e.key === 'Enter' && !e.shiftKey && !batchMode) {
-          e.preventDefault();
-          return submitText(composerText);
-        }
+        /* Typed answers follow the shared composer binding resolver. ChatForm
+           keeps that path live during a single-question pause, so Enter-to-send,
+           its inverse modifier, and a customized submit chord stay consistent. */
         return false;
       }
       /**
@@ -611,12 +592,10 @@ export default function useAskAnswerMode(conversationId?: string | null) {
       active,
       options,
       selected,
-      batchMode,
       multiSelect,
       popoverVisible,
       canSubmit,
       submit,
-      submitText,
       toggleChecked,
       collapse,
       setSelected,

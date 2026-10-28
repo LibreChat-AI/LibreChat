@@ -35,7 +35,7 @@ export const providerHosts: ReadonlyArray<readonly [string, ProviderId]> = [
  * Ollama run on operator-defined hosts. They resolve by iconURL, provider or name.
  */
 
-function providerFromBaseURL(baseURL?: string): ProviderId | undefined {
+export function providerFromBaseURL(baseURL?: string): ProviderId | undefined {
   if (!baseURL) {
     return undefined;
   }

@@ -68,14 +68,10 @@ export function getRunStepDurationLabels(
     return {
       key: 'com_ui_duration_seconds',
       values: { 0: formatted },
-      /** The caller picks the plural form explicitly, matching the
-       *  `com_ui_tools_count` / `_one` convention already used across the
-       *  locale files, rather than relying on i18next's plural resolution. */
-      announcedKey:
-        seconds === 1
-          ? 'com_ui_duration_announced_seconds_one'
-          : 'com_ui_duration_announced_seconds',
-      announcedValues: { count: formatted },
+      /** The base key with a numeric `count` lets i18next pick each locale's
+       *  plural form; `value` carries the locale-formatted number. */
+      announcedKey: 'com_ui_duration_announced_seconds',
+      announcedValues: { count: seconds, value: formatted },
     };
   }
 
@@ -89,11 +85,11 @@ export function getRunStepDurationLabels(
       0: formatDurationValue(minutes, language),
       1: formatDurationValue(seconds, language),
     },
-    announcedKey:
-      announcedMinutes === 1
-        ? 'com_ui_duration_announced_minutes_one'
-        : 'com_ui_duration_announced_minutes',
-    announcedValues: { count: formatDurationValue(announcedMinutes, language) },
+    announcedKey: 'com_ui_duration_announced_minutes',
+    announcedValues: {
+      count: announcedMinutes,
+      value: formatDurationValue(announcedMinutes, language),
+    },
   };
 }
 
@@ -116,9 +112,8 @@ export function getElapsedDurationLabels(
     return {
       key,
       values,
-      announcedKey:
-        seconds === 1 ? 'com_ui_elapsed_announced_seconds_one' : 'com_ui_elapsed_announced_seconds',
-      announcedValues: { count: formatDurationValue(seconds, language) },
+      announcedKey: 'com_ui_elapsed_announced_seconds',
+      announcedValues: { count: seconds, value: formatDurationValue(seconds, language) },
     };
   }
 
@@ -126,10 +121,10 @@ export function getElapsedDurationLabels(
   return {
     key,
     values,
-    announcedKey:
-      announcedMinutes === 1
-        ? 'com_ui_elapsed_announced_minutes_one'
-        : 'com_ui_elapsed_announced_minutes',
-    announcedValues: { count: formatDurationValue(announcedMinutes, language) },
+    announcedKey: 'com_ui_elapsed_announced_minutes',
+    announcedValues: {
+      count: announcedMinutes,
+      value: formatDurationValue(announcedMinutes, language),
+    },
   };
 }

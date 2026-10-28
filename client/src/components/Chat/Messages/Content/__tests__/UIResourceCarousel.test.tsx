@@ -22,6 +22,10 @@ jest.mock('~/hooks', () => ({
     key === 'com_ui_scroll_left' ? 'Scroll left' : 'Scroll right',
 }));
 
+jest.mock('~/Providers/MCPAppsPolicyContext', () => ({
+  useMCPAppsPolicy: () => ({ enabled: true, legacyHtmlEnabled: true }),
+}));
+
 // Mock the UIResourceRenderer component
 jest.mock('@mcp-ui/client', () => ({
   UIResourceRenderer: ({ resource, onUIAction }: any) => (
@@ -231,6 +235,28 @@ describe('UIResourceCarousel', () => {
     await waitFor(() => {
       expect(screen.getByLabelText('Scroll left')).toBeInTheDocument();
       expect(screen.queryByLabelText('Scroll right')).not.toBeInTheDocument();
+    });
+  });
+
+  it('normalizes negative scrollLeft in RTL', async () => {
+    const { container } = render(<UIResourceCarousel uiResources={mockUIResources} />);
+    const scrollContainer = container.querySelector<HTMLElement>('.hide-scrollbar');
+
+    scrollContainer!.style.direction = 'rtl';
+    // RTL at its start edge: scrollLeft 0 is the physical right end
+    Object.defineProperty(scrollContainer, 'scrollLeft', { configurable: true, value: 0 });
+    Object.defineProperty(scrollContainer, 'scrollWidth', { configurable: true, value: 1000 });
+    fireEvent.scroll(scrollContainer!);
+    await waitFor(() => {
+      expect(screen.getByLabelText('Scroll left')).toBeInTheDocument();
+    });
+
+    // RTL scrolled to the physical left end: scrollLeft is -(scrollWidth - clientWidth)
+    Object.defineProperty(scrollContainer, 'scrollLeft', { configurable: true, value: -500 });
+    fireEvent.scroll(scrollContainer!);
+    await waitFor(() => {
+      expect(screen.queryByLabelText('Scroll left')).not.toBeInTheDocument();
+      expect(screen.getByLabelText('Scroll right')).toBeInTheDocument();
     });
   });
 

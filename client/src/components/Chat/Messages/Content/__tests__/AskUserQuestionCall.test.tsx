@@ -2,6 +2,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { fireEvent, render, screen } from '@testing-library/react';
 import AskUserQuestionCall from '../AskUserQuestionCall';
+import { FailedRevealContext } from '../reveal';
 import store from '~/store';
 
 const translations: Record<string, string> = {
@@ -108,6 +109,29 @@ describe('AskUserQuestionCall', () => {
     fireEvent.click(header);
 
     expect(header).toHaveAttribute('aria-expanded', 'true');
+  });
+
+  test.each([
+    { failed: true, runStepStatus: 'completed' as const },
+    { failed: false, runStepStatus: 'failed' as const },
+  ])('reveals a terminal question failure from its parent fold (%p)', (failure) => {
+    const call = <AskUserQuestionCall args={args} output="" {...failure} />;
+    const tree = (tick: number) => (
+      <RecoilRoot>
+        <FailedRevealContext.Provider value={{ tick, claimFocus: () => true }}>
+          {call}
+        </FailedRevealContext.Provider>
+      </RecoilRoot>
+    );
+    const { rerender } = render(tree(0));
+    const button = screen.getByRole('button', { name: /Question wasn't shown/ });
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+
+    rerender(tree(1));
+
+    expect(button).toHaveAttribute('aria-expanded', 'true');
+    expect(button).toHaveFocus();
+    expect(button).toHaveTextContent('failed');
   });
 
   test('opens at mount when auto-expand is on', () => {

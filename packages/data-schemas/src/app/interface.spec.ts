@@ -1,6 +1,7 @@
 import { getConfigDefaults, RetentionMode } from 'librechat-data-provider';
 import type { TCustomConfig } from 'librechat-data-provider';
-import { loadDefaultInterface } from './interface';
+import type { AppConfig } from '~/types';
+import { loadDefaultInterface, deriveSpecInterface } from './interface';
 
 describe('loadDefaultInterface', () => {
   it('uses the schema default for URL auto-submit when not configured', async () => {
@@ -10,6 +11,152 @@ describe('loadDefaultInterface', () => {
     });
 
     expect(interfaceConfig?.autoSubmitFromUrl).toBe(true);
+  });
+
+  it('uses the schema default for code highlight throttling when not configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.codeHighlightThrottleMs).toBe(300);
+  });
+
+  it('preserves a configured code highlight throttle interval', async () => {
+    const config: Partial<TCustomConfig> = {
+      interface: {
+        codeHighlightThrottleMs: 100,
+      },
+    };
+
+    const interfaceConfig = await loadDefaultInterface({
+      config,
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.codeHighlightThrottleMs).toBe(100);
+  });
+
+  it('uses the schema default for the agent selector list cap when not configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.agentSelectorLimit).toBe(10);
+  });
+
+  it('forwards a configured agent selector list cap to the served interface', async () => {
+    const config: Partial<TCustomConfig> = {
+      interface: {
+        agentSelectorLimit: 4,
+      },
+    };
+
+    const interfaceConfig = await loadDefaultInterface({
+      config,
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.agentSelectorLimit).toBe(4);
+  });
+
+  it('uses and preserves the schema default for queued-turn reconciliation', async () => {
+    const configDefaults = getConfigDefaults();
+    const defaultInterface = await loadDefaultInterface({
+      config: {},
+      configDefaults,
+    });
+    expect(defaultInterface?.queuedTurnReconciliationTimeoutMs).toBe(60_000);
+
+    const configuredInterface = await loadDefaultInterface({
+      config: { interface: { queuedTurnReconciliationTimeoutMs: 180_000 } },
+      configDefaults,
+    });
+    expect(configuredInterface?.queuedTurnReconciliationTimeoutMs).toBe(180_000);
+  });
+
+  it('allows the mascot by default and preserves an explicit opt-out', async () => {
+    const configDefaults = getConfigDefaults();
+    const defaultInterface = await loadDefaultInterface({ config: {}, configDefaults });
+    expect(defaultInterface?.mascot).toBe(true);
+
+    const disabledInterface = await loadDefaultInterface({
+      config: { interface: { mascot: false } },
+      configDefaults,
+    });
+    expect(disabledInterface?.mascot).toBe(false);
+  });
+
+  it('uses and preserves the schema default for the queued-send lock expiry', async () => {
+    const configDefaults = getConfigDefaults();
+    const defaultInterface = await loadDefaultInterface({
+      config: {},
+      configDefaults,
+    });
+    expect(defaultInterface?.queuedSendLockTimeoutMs).toBe(60_000);
+
+    const configuredInterface = await loadDefaultInterface({
+      config: { interface: { queuedSendLockTimeoutMs: 15_000 } },
+      configDefaults,
+    });
+    expect(configuredInterface?.queuedSendLockTimeoutMs).toBe(15_000);
+  });
+
+  it('uses and preserves the schema default for the composer recent-files limit', async () => {
+    const configDefaults = getConfigDefaults();
+    const defaultInterface = await loadDefaultInterface({
+      config: {},
+      configDefaults,
+    });
+    expect(defaultInterface?.composerRecentFiles).toBe(5);
+
+    const configuredInterface = await loadDefaultInterface({
+      config: { interface: { composerRecentFiles: 10 } },
+      configDefaults,
+    });
+    expect(configuredInterface?.composerRecentFiles).toBe(10);
+  });
+
+  it('uses and preserves the schema defaults for the client history cache', async () => {
+    const configDefaults = getConfigDefaults();
+    const defaultInterface = await loadDefaultInterface({
+      config: {},
+      configDefaults,
+    });
+    expect(defaultInterface?.historyCacheTtlMs).toBe(60_000);
+    expect(defaultInterface?.historyCacheRecent).toBe(1);
+    expect(defaultInterface?.historyCacheMaxBytes).toBe(8 * 1024 * 1024);
+
+    const configuredInterface = await loadDefaultInterface({
+      config: {
+        interface: { historyCacheTtlMs: 0, historyCacheRecent: 3, historyCacheMaxBytes: 0 },
+      },
+      configDefaults,
+    });
+    expect(configuredInterface?.historyCacheTtlMs).toBe(0);
+    expect(configuredInterface?.historyCacheRecent).toBe(3);
+    expect(configuredInterface?.historyCacheMaxBytes).toBe(0);
+  });
+
+  it('uses and preserves the schema default for steer arm confirmation', async () => {
+    const configDefaults = getConfigDefaults();
+    const interfaceDefaults = {
+      ...configDefaults.interface,
+      steerArmConfirmationTimeoutMs: 10_000,
+    };
+    const defaults = { ...configDefaults, interface: interfaceDefaults };
+    const defaultInterface = await loadDefaultInterface({
+      config: {},
+      configDefaults: defaults,
+    });
+    expect(defaultInterface?.steerArmConfirmationTimeoutMs).toBe(10_000);
+
+    const configuredInterface = await loadDefaultInterface({
+      config: { interface: { steerArmConfirmationTimeoutMs: 30_000 } },
+      configDefaults: defaults,
+    });
+    expect(configuredInterface?.steerArmConfirmationTimeoutMs).toBe(30_000);
   });
 
   it('preserves disabled URL auto-submit config', async () => {
@@ -25,6 +172,20 @@ describe('loadDefaultInterface', () => {
     });
 
     expect(interfaceConfig?.autoSubmitFromUrl).toBe(false);
+  });
+
+  it('keeps the colour-mode URL handoff off unless configured', async () => {
+    const unset = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+    const enabled = await loadDefaultInterface({
+      config: { interface: { colorModeFromUrl: true } },
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(unset?.colorModeFromUrl).toBe(false);
+    expect(enabled?.colorModeFromUrl).toBe(true);
   });
 
   it('preserves a disabled build info flag', async () => {
@@ -49,6 +210,30 @@ describe('loadDefaultInterface', () => {
     });
 
     expect(interfaceConfig?.buildInfo).toBe(true);
+  });
+
+  it('carries a disabled artifact undocking flag to the clients', async () => {
+    const config: Partial<TCustomConfig> = {
+      interface: {
+        artifactUndocking: false,
+      },
+    };
+
+    const interfaceConfig = await loadDefaultInterface({
+      config,
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.artifactUndocking).toBe(false);
+  });
+
+  it('uses the schema default for artifact undocking when not configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.artifactUndocking).toBe(true);
   });
 
   it('preserves enabled build info config', async () => {
@@ -253,5 +438,137 @@ describe('loadDefaultInterface', () => {
     });
 
     expect(interfaceConfig?.traceViewer).toBeUndefined();
+  });
+
+  it('passes a bundled theme name through unchanged', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: { theme: 'clickhouse' } },
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.theme).toBe('clickhouse');
+  });
+
+  it('passes an inline theme definition through unchanged', async () => {
+    const theme = {
+      version: 1 as const,
+      name: 'acme',
+      modes: {
+        light: { colors: { 'rgb-surface-primary': '255 255 255' } },
+        dark: { appearance: { controlRadius: '0.25rem' } },
+      },
+    };
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: { theme } },
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig?.theme).toEqual(theme);
+  });
+
+  it('leaves the theme unset when not configured', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+
+    expect(interfaceConfig).not.toHaveProperty('theme');
+  });
+});
+
+describe('running chat rename deployment fence', () => {
+  it.each([
+    [undefined, true],
+    [false, false],
+    [true, true],
+  ])('resolves runningChatRename %s to %s', async (configured, expected) => {
+    const configDefaults = getConfigDefaults();
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: configured === undefined ? {} : { runningChatRename: configured } },
+      configDefaults,
+    });
+    expect(interfaceConfig?.runningChatRename).toBe(expected);
+  });
+});
+
+describe('welcome screen heading and footer', () => {
+  it('keeps the entity heading and the full footer by default', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: {},
+      configDefaults: getConfigDefaults(),
+    });
+    expect(interfaceConfig?.landingHeading).toBe('entity');
+    expect(interfaceConfig?.landingFooter).toBe(true);
+  });
+
+  it('copies the configured settings through', async () => {
+    const interfaceConfig = await loadDefaultInterface({
+      config: { interface: { landingHeading: 'greeting', landingFooter: false } },
+      configDefaults: getConfigDefaults(),
+    });
+    expect(interfaceConfig?.landingHeading).toBe('greeting');
+    expect(interfaceConfig?.landingFooter).toBe(false);
+  });
+});
+
+describe('deriveSpecInterface', () => {
+  const defaults = getConfigDefaults().interface;
+  const specs = (list: unknown[], addedEndpoints?: string[]) =>
+    ({ list, ...(addedEndpoints && { addedEndpoints }) }) as AppConfig['modelSpecs'];
+  const spec = { name: 's', label: 'S', preset: { endpoint: 'openAI' } };
+  const served = { modelSelect: true, parameters: true, presets: true, prompts: true };
+
+  it('turns the spec-dependent controls off for served specs, the selector kept for addedEndpoints', () => {
+    expect(deriveSpecInterface(served, undefined, specs([spec]), { defaults })).toEqual({
+      modelSelect: false,
+      parameters: false,
+      presets: false,
+      prompts: true,
+    });
+    expect(
+      deriveSpecInterface(served, undefined, specs([spec], ['openAI']), { defaults })?.modelSelect,
+    ).toBe(true);
+  });
+
+  it('turns them back on when no spec is served, a control left unset included', () => {
+    const off = { modelSelect: false, parameters: false };
+    const on = {
+      modelSelect: defaults.modelSelect,
+      parameters: defaults.parameters,
+      presets: defaults.presets,
+    };
+    expect(deriveSpecInterface(off, undefined, specs([]), { defaults })).toEqual(on);
+    expect(deriveSpecInterface(off, undefined, undefined, { defaults })).toEqual(on);
+  });
+
+  it('keeps what librechat.yaml or an override sets, and derives only the fields asked for', () => {
+    const explicit = { parameters: true, presets: false };
+    expect(deriveSpecInterface(served, explicit, specs([spec]), { defaults })).toEqual({
+      ...served,
+      modelSelect: false,
+      presets: false,
+    });
+    expect(
+      deriveSpecInterface(served, undefined, specs([spec]), { defaults, fields: ['parameters'] }),
+    ).toEqual({ ...served, parameters: false });
+    const settled = { modelSelect: false, parameters: false, presets: false };
+    expect(deriveSpecInterface(settled, undefined, specs([spec]), { defaults })).toBe(settled);
+  });
+
+  it('derives them into a config whose interface a layer tombstoned, where none would read as off', () => {
+    expect(deriveSpecInterface(undefined, undefined, undefined, { defaults })).toEqual({
+      modelSelect: defaults.modelSelect,
+      parameters: defaults.parameters,
+      presets: defaults.presets,
+    });
+    expect(
+      deriveSpecInterface(undefined, { parameters: true }, specs([spec]), { defaults }),
+    ).toEqual({ modelSelect: false, parameters: true, presets: false });
+    expect(
+      deriveSpecInterface(undefined, undefined, specs([spec]), { defaults, fields: ['presets'] }),
+    ).toEqual({ presets: false });
+    expect(deriveSpecInterface(undefined, undefined, undefined, { defaults, fields: [] })).toBe(
+      undefined,
+    );
   });
 });

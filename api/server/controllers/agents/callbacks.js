@@ -9,6 +9,7 @@ const {
   ErrorTypes,
   UsageEvents,
   getRunStepDurationMs,
+  getRunStepCloseMetadata,
 } = require('librechat-data-provider');
 const {
   GraphEvents,
@@ -18,8 +19,10 @@ const {
 } = require('@librechat/agents');
 const {
   sendEvent,
+  getModelEndUsage,
   computeUsageCostUSD,
   GenerationJobManager,
+  waitForGenerationSettled,
   writeAttachmentEvent,
   createToolExecuteHandler,
   createOwnedToolEndHandler,
@@ -31,7 +34,12 @@ const {
   shouldSignalSandboxStart,
   getToolInputValidationDetails,
   captureSubagentIdentity,
+  feedSubagentAggregator,
+  getAttachmentOwnership,
   collectToolCallIds,
+  createToolTimingAdapter,
+  stampCommandExecutor,
+  writeGuarded,
 } = require('@librechat/api');
 const { processFileCitations } = require('~/server/services/Files/Citations');
 const { processCodeOutput, runPreviewFinalize } = require('~/server/services/Files/Code/process');
@@ -40,15 +48,6 @@ const { saveBase64Image } = require('~/server/services/Files/process');
 
 function isHostFileAuthoringArtifact(artifact) {
   return artifact?.[HOST_FILE_AUTHORING_ARTIFACT_KEY] === true;
-}
-
-function getAttachmentOwnership(metadata) {
-  const agentId = metadata?.executingAgentId ?? metadata?.agentId ?? metadata?.agent_id;
-  const stepId = metadata?.stepId;
-  return {
-    ...(typeof agentId === 'string' && agentId.length > 0 ? { agentId } : {}),
-    ...(typeof stepId === 'string' && stepId.length > 0 ? { stepId } : {}),
-  };
 }
 
 function addStatefulWorkspaceChange(attachment, artifact, executionProfile) {
@@ -155,7 +154,7 @@ class ModelEndHandler {
         });
       }
 
-      const usage = data?.output?.usage_metadata;
+      const usage = getModelEndUsage(data?.output);
       if (!usage) {
         return;
       }
@@ -192,7 +191,11 @@ class ModelEndHandler {
             total_tokens: taggedUsage.total_tokens,
             input_token_details:
               cache_creation != null || cache_read != null
-                ? { cache_creation, cache_read }
+                ? {
+                    cache_creation,
+                    cache_creation_1h: taggedUsage.input_token_details?.cache_creation_1h,
+                    cache_read,
+                  }
                 : undefined,
             model: taggedUsage.model,
             provider: taggedUsage.provider,
@@ -305,65 +308,6 @@ async function maybeEmitSandboxStarting(emitForJob, data, metadata) {
 }
 
 /**
- * Maps a {@link SubagentUpdateEvent} phase to the corresponding
- * {@link GraphEvents} name that the SDK's `createContentAggregator`
- * knows how to consume. Phases that don't carry content (`start`, `stop`,
- * `error`) or whose payload doesn't match a handled event (`run_step`
- * with an `ON_TOOL_EXECUTE`-shaped batch request rather than a RunStep)
- * return `null` so the caller skips them.
- * @param {SubagentUpdateEvent} event
- * @returns {string | null}
- */
-function subagentPhaseToGraphEvent(event) {
-  switch (event?.phase) {
-    case 'run_step':
-      /** `ON_RUN_STEP` and `ON_TOOL_EXECUTE` both forward with phase
-       *  `run_step`; only the former matches the aggregator's RunStep
-       *  schema. Detect by presence of `stepDetails`. */
-      return event.data?.stepDetails ? GraphEvents.ON_RUN_STEP : null;
-    case 'run_step_delta':
-      return GraphEvents.ON_RUN_STEP_DELTA;
-    case 'run_step_completed':
-      return GraphEvents.ON_RUN_STEP_COMPLETED;
-    case 'message_delta':
-      return GraphEvents.ON_MESSAGE_DELTA;
-    case 'reasoning_delta':
-      return GraphEvents.ON_REASONING_DELTA;
-    default:
-      return null;
-  }
-}
-
-/**
- * Folds a single {@link SubagentUpdateEvent} into the given content
- * aggregator. Silent no-op for phases outside the aggregator's domain.
- * @param {{ aggregateContent: Function, contentParts?: Array, stepMap?: Map }} aggregator
- * @param {SubagentUpdateEvent} event
- */
-function feedSubagentAggregator(aggregator, event) {
-  const graphEvent = subagentPhaseToGraphEvent(event);
-  if (!graphEvent) return;
-  aggregator.aggregateContent({ event: graphEvent, data: event.data });
-
-  /** The SDK aggregator intentionally projects run-step tool calls onto its
-   * public content shape, so host-only routing metadata is not copied. Restore
-   * the server-owned identity by call id after that projection; otherwise the
-   * persistence fallback has to parse an ambiguous delimiter-bearing name. */
-  const toolCalls = event.data?.stepDetails?.tool_calls ?? [];
-  const stepIndex = aggregator.stepMap?.get(event.data?.id)?.index;
-  if (!Number.isInteger(stepIndex) || !Array.isArray(aggregator.contentParts)) {
-    return;
-  }
-  for (let index = 0; index < toolCalls.length; index++) {
-    const source = toolCalls[index];
-    const target = aggregator.contentParts[stepIndex + index]?.tool_call;
-    if (target?.id === source?.id && typeof source?.mcpServerName === 'string') {
-      target.mcpServerName = source.mcpServerName;
-    }
-  }
-}
-
-/**
  * @typedef {Object} ToolExecuteOptions
  * @property {(toolNames: string[]) => Promise<{loadedTools: StructuredTool[]}>} loadTools - Function to load tools by name
  * @property {Object} configurable - Configurable context for tool invocation
@@ -414,6 +358,7 @@ function getDefaultHandlers({
   usageEmitSink = null,
   eventChildActivity = null,
   resolveMcpServerName = null,
+  toolTimingReplayEvents = [],
 }) {
   if (!res || !aggregateContent) {
     throw new Error(
@@ -423,6 +368,8 @@ function getDefaultHandlers({
   const eventActivityPhases = {
     [GraphEvents.ON_RUN_STEP]: 'run_step',
     [GraphEvents.ON_RUN_STEP_DELTA]: 'run_step_delta',
+    [StepEvents.ON_TOOL_PREPARATION]: 'tool_preparation',
+    [StepEvents.ON_TOOL_CALLS_DISPATCHED]: 'tool_calls_dispatched',
     [GraphEvents.ON_RUN_STEP_COMPLETED]: 'run_step_completed',
     [GraphEvents.ON_RUN_STEP_CLOSED]: 'run_step_closed',
     [GraphEvents.ON_MESSAGE_DELTA]: 'message_delta',
@@ -512,7 +459,12 @@ function getDefaultHandlers({
     }
     return emitForJob({ event: UsageEvents.ON_TOKEN_USAGE, data: payload });
   };
+  const toolTiming = createToolTimingAdapter({
+    replayEvents: toolTimingReplayEvents,
+    emit: emitForJob,
+  });
   const handlers = {
+    [StepEvents.ON_TOOL_CALLS_DISPATCHED]: toolTiming.dispatch,
     [GraphEvents.CHAT_MODEL_END]: new ModelEndHandler(
       collectedUsage,
       collectedThoughtSignatures,
@@ -593,7 +545,9 @@ function getDefaultHandlers({
           const index = stepMap?.get(stepId)?.index;
           const part = typeof index === 'number' ? contentParts[index] : undefined;
           if (part?.type === ContentTypes.TOOL_CALL && part.tool_call) {
+            toolTiming.close(part.tool_call, stepId);
             part.tool_call.runStepStatus = data.status;
+            Object.assign(part.tool_call, getRunStepCloseMetadata(data));
             /**
              * The raw derivable duration, left unset rather than zeroed when
              * the event cannot support a trustworthy one — no `created_at`,
@@ -619,6 +573,7 @@ function getDefaultHandlers({
        */
       handle: async (event, data, metadata) => {
         aggregateContent({ event, data });
+        await toolTiming.delta(data);
         if (data?.delta.type === StepTypes.TOOL_CALLS) {
           await emitForJob({ event, data });
         } else if (checkIfLastAgent(metadata?.last_agent_id, metadata?.langgraph_node)) {
@@ -654,6 +609,7 @@ function getDefaultHandlers({
             agentId: metadata?.agent_id,
           });
         }
+        toolTiming.completed(data);
         aggregateContent({ event, data });
         const stepId = data?.result?.id;
         const runStep = stepMap?.get(stepId);
@@ -666,6 +622,7 @@ function getDefaultHandlers({
             toolCall.inputValidationError = true;
           }
         }
+        stampCommandExecutor(toolExecuteOptions?.attachedCommandStepIds, data?.result, toolCall);
         if (data?.result != null) {
           await emitForJob({ event, data });
         } else if (checkIfLastAgent(metadata?.last_agent_id, metadata?.langgraph_node)) {
@@ -766,7 +723,7 @@ function getDefaultHandlers({
         }
         try {
           captureSubagentIdentity(aggregator, data);
-          feedSubagentAggregator(aggregator, data);
+          feedSubagentAggregator(aggregator, data, toolTiming.child);
         } catch (err) {
           logger.warn(
             `[ON_SUBAGENT_UPDATE] Failed to aggregate phase "${data?.phase}" for tool_call ${key}: ${err?.message ?? err}`,
@@ -893,7 +850,7 @@ function writeAttachment(res, streamId, attachment, expectedCreatedAt) {
       { expectedCreatedAt },
     );
   } else {
-    res.write(`event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
+    writeGuarded(res, `event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
   }
 }
 
@@ -1002,6 +959,7 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null, jo
         (async () => {
           const attachment = {
             type: Tools.ui_resources,
+            ...getAttachmentOwnership(metadata),
             messageId: metadata.run_id,
             toolCallId: output.tool_call_id,
             conversationId: metadata.thread_id,
@@ -1286,14 +1244,20 @@ function createPtcProgressEmitter({ res, streamId = null, jobCreatedAt }) {
  *   output?: string;
  *   attachments?: Object[];
  * }) => Promise<boolean>} params.updateToolCallResult
+ * @param {number} [params.jobCreatedAt] - Immutable dispatch generation epoch.
+ * @param {string} [params.streamId] - The stream owning that epoch.
  */
-function createBackgroundCodeResultHandler({ req, updateToolCallResult }) {
+function createBackgroundCodeResultHandler({ req, updateToolCallResult, jobCreatedAt, streamId }) {
   return createCodeHarvestHandler({
     req,
     updateToolCallResult,
     preflightCodeOutputBatch,
     processCodeOutput,
     runPreviewFinalize,
+    generationCreatedAt: jobCreatedAt,
+    generationStreamId: streamId,
+    waitForGenerationSettled: (conversationId, options) =>
+      waitForGenerationSettled(GenerationJobManager, conversationId, options),
   });
 }
 
@@ -1369,6 +1333,7 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
           const attachment = {
             type: Tools.ui_resources,
             toolCallId: output.tool_call_id,
+            ...getAttachmentOwnership(metadata),
             [Tools.ui_resources]: output.artifact[Tools.ui_resources].data,
           };
           // For Responses API, always emit attachment during streaming

@@ -1,8 +1,48 @@
 import { expect, test } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 
 const SERVER_NAME = 'e2e-memory';
 const SERVER_TITLE = 'E2E Memory';
 const FLOW_ID = 'e2e-user:e2e-memory';
+
+/** The MCP Builder panel card for the mock server, which owns Connect/Cancel. */
+async function openMcpPanel(page: Page) {
+  const nav = page.getByRole('button', { name: 'MCP Settings' });
+  if ((await nav.getAttribute('aria-pressed')) !== 'true') {
+    await nav.click();
+  }
+}
+const serverCard = (page: Page) => page.getByLabel(new RegExp(`^${SERVER_TITLE} - `));
+/** Row actions reveal on hover on pointer devices, so reach Connect the way a
+ *  pointer does: over the row first. */
+async function connectButton(card: Locator) {
+  await card.hover();
+  return card.getByRole('button', { name: 'Connect', exact: true });
+}
+
+/** Selection state lives in the composer palette; open it fresh per check and
+ *  close with Escape so the panel underneath stays interactable. */
+const paletteOption = (page: Page) =>
+  page
+    .getByRole('dialog', { name: 'Attach and tools' })
+    .getByRole('button', { name: new RegExp(`^${SERVER_TITLE}\\b`) });
+/** Connect opens the OAuth dialog on top of the panel. It is a modal, so while
+ *  it is open the rest of the document is marked `aria-hidden` and the card's
+ *  own Cancel button is not in the accessibility tree at all. Dismiss it before
+ *  asserting on anything underneath. */
+async function dismissOAuthDialog(page: Page) {
+  /* Titled with the server's name, not its display title. */
+  const dialog = page.getByRole('dialog', { name: `Connect ${SERVER_NAME}`, exact: true });
+  await expect(dialog).toBeVisible({ timeout: 10000 });
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+}
+
+async function expectSelected(page: Page, checked: 'true' | 'false') {
+  await page.getByRole('button', { name: 'Attach and tools' }).click();
+  await expect(paletteOption(page)).toHaveAttribute('aria-pressed', checked);
+  await page.keyboard.press('Escape');
+}
 
 test.describe('MCP OAuth readiness', () => {
   test('keeps the server unselected until post-OAuth tool readiness completes', async ({
@@ -105,26 +145,21 @@ test.describe('MCP OAuth readiness', () => {
     });
 
     await page.goto('/c/new', { timeout: 10000 });
-    await page.getByRole('button', { name: 'MCP Servers', exact: true }).click();
-    const serverItem = page.getByRole('menuitemcheckbox', { name: new RegExp(SERVER_TITLE) });
-    await expect(serverItem).toHaveAttribute('aria-checked', 'false');
-    await serverItem.getByRole('button', { name: `Connect ${SERVER_NAME}` }).click();
+    await expectSelected(page, 'false');
 
-    await page.getByRole('button', { name: 'Authenticate', exact: true }).click();
-    await expect(page.getByRole('button', { name: 'Continue with OAuth' })).toBeVisible();
+    await openMcpPanel(page);
+    const card = serverCard(page);
+    await (await connectButton(card)).click();
     await pendingPolled;
+    await dismissOAuthDialog(page);
 
-    await page.keyboard.press('Escape');
-    await page.getByRole('button', { name: 'MCP Servers', exact: true }).click();
-    await expect(serverItem.getByRole('button', { name: 'Cancel' })).toBeVisible();
+    await expect(card.getByRole('button', { name: 'Cancel' })).toBeVisible();
     await expect(page.getByText('Failed to initialize MCP server')).toHaveCount(0);
 
     await readinessStarted;
 
-    await page.keyboard.press('Escape');
-    await page.getByRole('button', { name: 'MCP Servers', exact: true }).click();
-    await expect(serverItem).toHaveAttribute('aria-checked', 'false');
-    await expect(serverItem.getByRole('button', { name: 'Cancel' })).toBeVisible();
+    await expectSelected(page, 'false');
+    await expect(card.getByRole('button', { name: 'Cancel' })).toBeVisible();
     await expect(
       page.getByText(`MCP server '${SERVER_NAME}' authenticated successfully`),
     ).toHaveCount(0);
@@ -134,7 +169,7 @@ test.describe('MCP OAuth readiness', () => {
     await expect(
       page.getByText(`MCP server '${SERVER_NAME}' authenticated successfully`).first(),
     ).toBeVisible();
-    await expect(serverItem).toHaveAttribute('aria-checked', 'true');
+    await expectSelected(page, 'true');
     expect(reinitializeCalls).toBe(2);
   });
 
@@ -184,19 +219,16 @@ test.describe('MCP OAuth readiness', () => {
     });
 
     await page.goto('/c/new', { timeout: 10000 });
-    await page.getByRole('button', { name: 'MCP Servers', exact: true }).click();
-    const serverItem = page.getByRole('menuitemcheckbox', { name: new RegExp(SERVER_TITLE) });
-    await serverItem.getByRole('button', { name: `Connect ${SERVER_NAME}` }).click();
-    await page.getByRole('button', { name: 'Authenticate', exact: true }).click();
+    await openMcpPanel(page);
+    const card = serverCard(page);
+    await (await connectButton(card)).click();
 
     await expect(page.getByText(`OAuth login timed out for ${SERVER_NAME}`).first()).toBeVisible({
       timeout: 15000,
     });
     expect(flowStatusCalls).toBe(2);
 
-    await page.keyboard.press('Escape');
-    await page.getByRole('button', { name: 'MCP Servers', exact: true }).click();
-    await expect(serverItem.getByRole('button', { name: `Connect ${SERVER_NAME}` })).toBeVisible();
+    await expect(await connectButton(card)).toBeVisible();
   });
 
   test('accepts completion found by the final poll after the attempt deadline', async ({
@@ -259,21 +291,15 @@ test.describe('MCP OAuth readiness', () => {
     });
 
     await page.goto('/c/new', { timeout: 10000 });
-    await page.getByRole('button', { name: 'MCP Servers', exact: true }).click();
-    const serverItem = page.getByRole('menuitemcheckbox', { name: new RegExp(SERVER_TITLE) });
-    await serverItem.getByRole('button', { name: `Connect ${SERVER_NAME}` }).click();
-    await page.getByRole('button', { name: 'Authenticate', exact: true }).click();
+    await openMcpPanel(page);
+    const card = serverCard(page);
+    await (await connectButton(card)).click();
 
     await expect(
       page.getByText(`MCP server '${SERVER_NAME}' authenticated successfully`).first(),
     ).toBeVisible({ timeout: 15000 });
     await expect(page.getByText(`OAuth login timed out for ${SERVER_NAME}`)).toHaveCount(0);
-    await expect(
-      page.getByRole('menuitemcheckbox', {
-        name: new RegExp(SERVER_TITLE),
-        includeHidden: true,
-      }),
-    ).toHaveAttribute('aria-checked', 'true');
+    await expectSelected(page, 'true');
     expect(flowStatusCalls).toBe(1);
     expect(reinitializeCalls).toBe(2);
   });
@@ -326,10 +352,9 @@ test.describe('MCP OAuth readiness', () => {
     });
 
     await page.goto('/c/new', { timeout: 10000 });
-    await page.getByRole('button', { name: 'MCP Servers', exact: true }).click();
-    const serverItem = page.getByRole('menuitemcheckbox', { name: new RegExp(SERVER_TITLE) });
-    await serverItem.getByRole('button', { name: `Connect ${SERVER_NAME}` }).click();
-    await page.getByRole('button', { name: 'Authenticate', exact: true }).click();
+    await openMcpPanel(page);
+    const card = serverCard(page);
+    await (await connectButton(card)).click();
 
     await expect(page.getByText(`OAuth login timed out for ${SERVER_NAME}`).first()).toBeVisible({
       timeout: 15000,
@@ -397,21 +422,19 @@ test.describe('MCP OAuth readiness', () => {
     });
 
     await page.goto('/c/new', { timeout: 10000 });
-    await page.getByRole('button', { name: 'MCP Servers', exact: true }).click();
-    const serverItem = page.getByRole('menuitemcheckbox', { name: new RegExp(SERVER_TITLE) });
-    await serverItem.getByRole('button', { name: `Connect ${SERVER_NAME}` }).click();
-    await page.getByRole('button', { name: 'Authenticate', exact: true }).click();
+    await openMcpPanel(page);
+    const card = serverCard(page);
+    await (await connectButton(card)).click();
+    await dismissOAuthDialog(page);
 
-    await page.keyboard.press('Escape');
-    await page.getByRole('button', { name: 'MCP Servers', exact: true }).click();
-    await expect(serverItem.getByRole('button', { name: 'Cancel' })).toBeVisible({
+    await expect(card.getByRole('button', { name: 'Cancel' })).toBeVisible({
       timeout: 8000,
     });
     await expect(page.getByText('Failed to initialize MCP server')).toHaveCount(0);
     await expect(
       page.getByText(`MCP server '${SERVER_NAME}' authenticated successfully`).first(),
     ).toBeVisible({ timeout: 20000 });
-    await expect(serverItem).toHaveAttribute('aria-checked', 'true');
+    await expectSelected(page, 'true');
     expect(flowStatusCalls).toBeGreaterThanOrEqual(2);
   });
 });

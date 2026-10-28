@@ -31,12 +31,6 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
     options: t.UpsertSessionOptions,
   ) => Promise<t.ISession>;
   ensureSessionIndexes: () => Promise<void>;
-  updateExpiration: (
-    session: t.ISession | string,
-    newExpiration?: Date,
-    options?: t.UpdateExpirationOptions,
-  ) => Promise<t.ISession>;
-  countActiveSessions: (userId: string) => Promise<number>;
   generateRefreshToken: (session: t.ISession) => Promise<string>;
   deleteAllUserSessions: (
     userId: string | { userId: string },
@@ -178,32 +172,6 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
   }
 
   /**
-   * Updates session expiration
-   */
-  async function updateExpiration(
-    session: t.ISession | string,
-    newExpiration?: Date,
-    options: t.UpdateExpirationOptions = {},
-  ): Promise<t.ISession> {
-    const expiresIn = options.expiresIn ?? DEFAULT_REFRESH_TOKEN_EXPIRY;
-
-    try {
-      const Session = mongoose.models.Session;
-      const sessionDoc = typeof session === 'string' ? await Session.findById(session) : session;
-
-      if (!sessionDoc) {
-        throw new SessionError('Session not found', 'SESSION_NOT_FOUND');
-      }
-
-      sessionDoc.expiration = newExpiration || new Date(Date.now() + expiresIn);
-      return await sessionDoc.save();
-    } catch (error) {
-      logger.error('[updateExpiration] Error updating session:', error);
-      throw new SessionError('Failed to update session expiration', 'UPDATE_EXPIRATION_FAILED');
-    }
-  }
-
-  /**
    * Deletes a session by refresh token or session ID
    */
   async function deleteSession(params: t.DeleteSessionParams): Promise<{ deletedCount?: number }> {
@@ -301,6 +269,9 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
         payload: {
           id: session.user,
           sessionId: session._id,
+          /** `iat` is whole seconds, too coarse to order this token against a password reset that
+           * lands in the same second. `isTokenRetired` reads this claim to settle that exactly. */
+          issuedAtMs: Date.now(),
         },
         secret: process.env.JWT_REFRESH_SECRET!,
         expirationTime: Math.floor((expiresIn - Date.now()) / 1000),
@@ -316,26 +287,6 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
     }
   }
 
-  /**
-   * Counts active sessions for a user
-   */
-  async function countActiveSessions(userId: string): Promise<number> {
-    try {
-      const Session = mongoose.models.Session;
-      if (!userId) {
-        throw new SessionError('User ID is required', 'INVALID_USER_ID');
-      }
-
-      return await Session.countDocuments({
-        user: userId,
-        expiration: { $gt: new Date() },
-      });
-    } catch (error) {
-      logger.error('[countActiveSessions] Error counting active sessions:', error);
-      throw new SessionError('Failed to count active sessions', 'COUNT_SESSIONS_FAILED');
-    }
-  }
-
   return {
     findSession,
     SessionError,
@@ -343,8 +294,6 @@ export function createSessionMethods(mongoose: typeof import('mongoose')): {
     createSession,
     upsertSession,
     ensureSessionIndexes,
-    updateExpiration,
-    countActiveSessions,
     generateRefreshToken,
     deleteAllUserSessions,
   };

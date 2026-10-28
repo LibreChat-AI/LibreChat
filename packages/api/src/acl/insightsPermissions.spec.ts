@@ -1,10 +1,5 @@
 import { PermissionBits, PrincipalType, ResourceType, SystemRoles } from 'librechat-data-provider';
-import type { ServerRequest } from '~/types';
-import {
-  auditInsightsPermissionChanges,
-  maskAgentInsightsBit,
-  validateInsightsPermissionUpdates,
-} from './insightsPermissions';
+import { maskAgentInsightsBit, validateInsightsPermissionUpdates } from './insightsPermissions';
 
 describe('Insights permissions', () => {
   test('allows only admins to assign a boolean agent Insights grant', () => {
@@ -32,42 +27,5 @@ describe('Insights permissions', () => {
         permBits: PermissionBits.VIEW | PermissionBits.VIEW_INSIGHTS,
       }),
     ).toBe(PermissionBits.VIEW);
-  });
-
-  test('restores unaudited changes when fail-closed audit persistence fails', async () => {
-    const restore = jest.fn().mockResolvedValue(undefined);
-    const record = jest.fn().mockRejectedValue(new Error('audit unavailable'));
-    const change = {
-      action: 'assigned' as const,
-      previousEntry: null,
-      writtenEntry: null,
-      principal: { type: PrincipalType.ROLE, id: SystemRoles.USER },
-    };
-    const req = {
-      user: {
-        _id: { toString: () => 'admin-id' },
-        id: 'admin-id',
-        email: 'admin@example.com',
-        role: SystemRoles.ADMIN,
-        tenantId: 'tenant-a',
-      },
-      headers: {},
-    } as unknown as ServerRequest;
-
-    await expect(
-      auditInsightsPermissionChanges({
-        req,
-        resourceId: 'resource-id',
-        changes: [change],
-        failClosed: true,
-        deps: {
-          getAgent: jest.fn().mockResolvedValue({ id: 'agent-id', name: 'Agent' }),
-          recordAuditEntry: record,
-          restoreInsightsPermissionChanges: restore,
-          logger: { error: jest.fn() },
-        },
-      }),
-    ).rejects.toMatchObject({ statusCode: 500 });
-    expect(restore).toHaveBeenCalledWith([change]);
   });
 });

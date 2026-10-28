@@ -1,6 +1,7 @@
 import { ContentTypes } from 'librechat-data-provider';
 import type { SubagentUpdateEvent } from 'librechat-data-provider';
-import { aggregateSubagentContent, buildSubagentTickerLines } from '../subagentContent';
+import { aggregateSubagentContent, buildSubagentTickerLines } from 'test/subagents';
+import { tailOverflowDirection, textDirection } from '../subagentContent';
 
 const makeEvent = (overrides: Partial<SubagentUpdateEvent>): SubagentUpdateEvent => ({
   runId: 'parent-run',
@@ -75,8 +76,18 @@ describe('aggregateSubagentContent', () => {
     ]);
 
     expect(parts).toEqual([
-      { type: ContentTypes.TEXT, text: 'Commentary.', phase: 'commentary' },
-      { type: ContentTypes.TEXT, text: 'Final answer.', phase: 'final_answer' },
+      {
+        type: ContentTypes.TEXT,
+        text: 'Commentary.',
+        phase: 'commentary',
+        stepId: 'commentary-step',
+      },
+      {
+        type: ContentTypes.TEXT,
+        text: 'Final answer.',
+        phase: 'final_answer',
+        stepId: 'final-step',
+      },
     ]);
   });
 
@@ -117,7 +128,12 @@ describe('aggregateSubagentContent', () => {
     ];
 
     expect(aggregateSubagentContent(events)).toEqual([
-      { type: ContentTypes.TEXT, text: 'Still commentary.', phase: 'commentary' },
+      {
+        type: ContentTypes.TEXT,
+        text: 'Still commentary.',
+        phase: 'commentary',
+        stepId: 'long-lived-step',
+      },
     ]);
   });
 
@@ -158,6 +174,105 @@ describe('aggregateSubagentContent', () => {
       'web_search',
     );
     expect((parts[0] as { tool_call: { progress: number } }).tool_call.progress).toBe(0.1);
+  });
+
+  it('folds a child handoff into its own running tool card and measured call time', () => {
+    const events = [
+      makeEvent({
+        phase: 'run_step',
+        data: {
+          id: 'step-child',
+          stepDetails: {
+            type: 'tool_calls',
+            tool_calls: [{ id: 'call-child', name: 'query', args: '{}' }],
+          },
+        },
+      }),
+      makeEvent({
+        phase: 'tool_preparation',
+        data: {
+          id: 'step-child',
+          toolCallId: 'call-child',
+          observed_at: 100,
+        },
+      }),
+      makeEvent({
+        phase: 'tool_calls_dispatched',
+        data: {
+          dispatched_at: 500,
+          toolCalls: [
+            { id: 'call-child', stepId: 'step-child', name: 'query' },
+            { id: 'other-child', stepId: 'other-step', name: 'query' },
+          ],
+        },
+      }),
+    ];
+    const running = aggregateSubagentContent(events);
+    expect(running[0]).toMatchObject({
+      tool_call: {
+        id: 'call-child',
+        stepId: 'step-child',
+        toolPreparationStartedAt: 100,
+        toolDispatchedAt: 500,
+        progress: 0.1,
+      },
+    });
+    const completed = aggregateSubagentContent([
+      ...events,
+      makeEvent({
+        phase: 'run_step_completed',
+        data: {
+          result: {
+            id: 'step-child',
+            completed_at: 540,
+            type: 'tool_call',
+            tool_call: { id: 'call-child', name: 'query', args: '{}', output: 'ok', progress: 1 },
+          },
+        },
+      }),
+    ]);
+    expect(completed[0]).toMatchObject({
+      tool_call: {
+        id: 'call-child',
+        toolPreparationDurationMs: 400,
+        toolExecutionDurationMs: 40,
+        output: 'ok',
+        progress: 1,
+      },
+    });
+  });
+
+  it('ignores a late handoff for a settled child tool', () => {
+    const completed = aggregateSubagentContent([
+      makeEvent({
+        phase: 'run_step',
+        data: {
+          id: 'step-child',
+          stepDetails: {
+            type: 'tool_calls',
+            tool_calls: [{ id: 'call-child', name: 'query', args: '{}' }],
+          },
+        },
+      }),
+      makeEvent({
+        phase: 'run_step_completed',
+        data: {
+          result: {
+            id: 'step-child',
+            completed_at: 540,
+            tool_call: { id: 'call-child', name: 'query', output: 'ok', progress: 1 },
+          },
+        },
+      }),
+      makeEvent({
+        phase: 'tool_calls_dispatched',
+        data: {
+          dispatched_at: 500,
+          toolCalls: [{ id: 'call-child', stepId: 'step-child' }],
+        },
+      }),
+    ]);
+    expect(completed[0]).not.toHaveProperty('tool_call.toolDispatchedAt');
   });
 
   it('finalizes a TOOL_CALL part on run_step_completed with output and progress=1', () => {
@@ -612,4 +727,64 @@ describe('buildSubagentTickerLines', () => {
     ]);
     expect(lines).toEqual([{ kind: 'error', message: 'recursion limit' }]);
   });
+});
+
+describe('tail ellipsis direction', () => {
+  it('runs the outer box right to left for Latin text', () => {
+    expect(tailOverflowDirection('Writing the report, done.')).toBe('rtl');
+    expect(textDirection('123 hello')).toBe('ltr');
+  });
+
+  it('runs the outer box left to right for Arabic and Hebrew text', () => {
+    expect(tailOverflowDirection('كتابة التقرير.')).toBe('ltr');
+    expect(tailOverflowDirection('12 שלום עולם')).toBe('ltr');
+  });
+
+  it('follows the first strong character of mixed text', () => {
+    expect(textDirection('(foo) مرحبا')).toBe('ltr');
+    expect(textDirection('... مرحبا foo')).toBe('rtl');
+  });
+
+  it('skips Arabic-Indic digits, Arabic separators and marks like dir="auto" does', () => {
+    expect(textDirection('\u0661\u0662\u0663 report done')).toBe('ltr');
+    expect(textDirection('\u06F1\u06F2\u060C step two')).toBe('ltr');
+    expect(tailOverflowDirection('\u0661\u0662 report done')).toBe('rtl');
+    expect(textDirection('\u0661\u0662 \u0645\u0631\u062D\u0628\u0627')).toBe('rtl');
+  });
+});
+
+it('places applied guidance before subsequent live activity and closes the current text buffer', () => {
+  const applied = makeEvent({
+    phase: 'steer_applied',
+    data: {
+      index: 1,
+      steerId: 'control-1',
+      responseMessageId: 'task:assistant',
+      conversationId: 'thread',
+      part: {
+        type: ContentTypes.STEER,
+        steer: 'Continue with a citation.',
+        steerId: 'control-1',
+        clientSteerId: 'invocation-1',
+        createdAt: 100,
+      },
+    },
+  });
+  const parts = aggregateSubagentContent([
+    makeEvent({
+      phase: 'message_delta',
+      data: { id: 'before', delta: { content: [{ type: 'text', text: 'Earlier work.' }] } },
+    }),
+    applied,
+    applied,
+    makeEvent({
+      phase: 'message_delta',
+      data: { id: 'after', delta: { content: [{ type: 'text', text: 'Later work.' }] } },
+    }),
+  ]);
+  expect(parts).toMatchObject([
+    { type: ContentTypes.TEXT, text: 'Earlier work.' },
+    { type: ContentTypes.STEER, steer: 'Continue with a citation.', steerId: 'control-1' },
+    { type: ContentTypes.TEXT, text: 'Later work.' },
+  ]);
 });

@@ -1,9 +1,10 @@
 import { Constants, LocalStorageKeys } from 'librechat-data-provider';
 import {
-  applyPendingPasteToDraft,
   applyPendingPastesToDraft,
   clearAllDrafts,
+  clearDraft,
   clearComposerDrafts,
+  clearFilesDraft,
   decodeBase64,
   encodeBase64,
   resolvePendingPasteInsertStart,
@@ -13,6 +14,7 @@ import {
   getFilesDraft,
   getNewConversationDraftId,
   getNewConversationDraftToken,
+  getNewConversationDraftRevision,
   getPendingDraftId,
   isFilesDraftOwnedByThisTab,
   isNewConversationDraftId,
@@ -25,6 +27,14 @@ import {
   renewNewConversationDraftToken,
   setDraft,
   setFilesDraft,
+  subscribeDraftOwnership,
+  registerComposerDraft,
+  captureComposerDraft,
+  bindComposerLaunch,
+  consumeComposerQuery,
+  adoptComposerConversation,
+  resolveComposerConversationId,
+  getActiveComposerDraftId,
   removePendingTextAttachmentDraft,
   setPendingTextAttachmentDraft,
 } from './drafts';
@@ -78,48 +88,56 @@ describe('getNewConversationDraftId', () => {
   });
 });
 
-describe('applyPendingPasteToDraft', () => {
+describe('applyPendingPastesToDraft with a single paste', () => {
   it('replaces a stale selected range when the original text is still present', () => {
     expect(
-      applyPendingPasteToDraft('before selected after', {
-        text: 'pasted',
-        selectionStart: 7,
-        selectionEnd: 15,
-        replacedText: 'selected',
-      }),
+      applyPendingPastesToDraft('before selected after', [
+        {
+          text: 'pasted',
+          selectionStart: 7,
+          selectionEnd: 15,
+          replacedText: 'selected',
+        },
+      ]),
     ).toBe('before pasted after');
   });
 
   it('inserts at the caret when the selected range is already gone', () => {
     expect(
-      applyPendingPasteToDraft('before  after', {
-        text: 'pasted',
-        selectionStart: 7,
-        selectionEnd: 15,
-        replacedText: 'selected',
-      }),
+      applyPendingPastesToDraft('before  after', [
+        {
+          text: 'pasted',
+          selectionStart: 7,
+          selectionEnd: 15,
+          replacedText: 'selected',
+        },
+      ]),
     ).toBe('before pasted after');
   });
 
   it('inserts at the caret when no replacement range was stored', () => {
     expect(
-      applyPendingPasteToDraft('before  after', {
-        text: 'pasted',
-        selectionStart: 7,
-      }),
+      applyPendingPastesToDraft('before  after', [
+        {
+          text: 'pasted',
+          selectionStart: 7,
+        },
+      ]),
     ).toBe('before pasted after');
   });
 
   it('does not delete remaining identical text after a post-replacement snapshot', () => {
     expect(
-      applyPendingPasteToDraft('abc', {
-        text: 'PASTE',
-        selectionStart: 0,
-        replacedText: 'abc',
-        replacedApplied: true,
-        anchorBefore: '',
-        anchorAfter: 'abc',
-      }),
+      applyPendingPastesToDraft('abc', [
+        {
+          text: 'PASTE',
+          selectionStart: 0,
+          replacedText: 'abc',
+          replacedApplied: true,
+          anchorBefore: '',
+          anchorAfter: 'abc',
+        },
+      ]),
     ).toBe('PASTEabc');
   });
 });
@@ -149,49 +167,57 @@ describe('applyPendingPastesToDraft', () => {
 
   it('rebases an insert after the user edits text before the original caret', () => {
     expect(
-      applyPendingPasteToDraft('Xhello', {
-        text: 'PASTE',
-        selectionStart: 5,
-        replacedApplied: true,
-        anchorBefore: 'hello',
-        anchorAfter: '',
-      }),
+      applyPendingPastesToDraft('Xhello', [
+        {
+          text: 'PASTE',
+          selectionStart: 5,
+          replacedApplied: true,
+          anchorBefore: 'hello',
+          anchorAfter: '',
+        },
+      ]),
     ).toBe('XhelloPASTE');
   });
 
   it('rebases an insert past a prefix the user duplicated', () => {
     expect(
-      applyPendingPasteToDraft('aabc', {
-        text: 'PASTE',
-        selectionStart: 1,
-        replacedApplied: true,
-        anchorBefore: 'a',
-        anchorAfter: 'bc',
-      }),
+      applyPendingPastesToDraft('aabc', [
+        {
+          text: 'PASTE',
+          selectionStart: 1,
+          replacedApplied: true,
+          anchorBefore: 'a',
+          anchorAfter: 'bc',
+        },
+      ]),
     ).toBe('aaPASTEbc');
   });
 
   it('keeps a leading insert ahead of a suffix the user duplicated', () => {
     expect(
-      applyPendingPasteToDraft('abcabc', {
-        text: 'PASTE',
-        selectionStart: 0,
-        replacedApplied: true,
-        anchorBefore: '',
-        anchorAfter: 'abc',
-      }),
+      applyPendingPastesToDraft('abcabc', [
+        {
+          text: 'PASTE',
+          selectionStart: 0,
+          replacedApplied: true,
+          anchorBefore: '',
+          anchorAfter: 'abc',
+        },
+      ]),
     ).toBe('PASTEabcabc');
   });
 
   it('rebases an insert when both sides of the original caret were edited', () => {
     expect(
-      applyPendingPasteToDraft('XhelloWORLDY', {
-        text: 'PASTE',
-        selectionStart: 5,
-        replacedApplied: true,
-        anchorBefore: 'hello',
-        anchorAfter: 'WORLD',
-      }),
+      applyPendingPastesToDraft('XhelloWORLDY', [
+        {
+          text: 'PASTE',
+          selectionStart: 5,
+          replacedApplied: true,
+          anchorBefore: 'hello',
+          anchorAfter: 'WORLD',
+        },
+      ]),
     ).toBe('XhelloPASTEWORLDY');
   });
 
@@ -796,6 +822,73 @@ describe('browser tab ownership of unsaved-chat drafts', () => {
   });
 });
 
+describe('clearFilesDraft', () => {
+  const newChatKey = getNewConversationDraftId();
+
+  beforeEach(() => {
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  it('discards the attachments and keeps the text', () => {
+    setDraft({ id: newChatKey, value: 'half-written message' });
+    setFilesDraft(newChatKey, { fileIds: ['file-1'], pendingPastes: {} });
+
+    clearFilesDraft(newChatKey);
+
+    expect(getFilesDraft(newChatKey).fileIds).toEqual([]);
+    expect(getDraft(newChatKey)).toBe('half-written message');
+  });
+
+  it('keeps this tab claim on the text it left behind', () => {
+    /** `setFilesDraft` drops the whole record once nothing is attached, and that record is the
+     * only ownership stamp the shared text draft has: without it another tab's New Chat would be
+     * free to clear text this tab is still holding. */
+    setDraft({ id: newChatKey, value: 'half-written message' });
+    setFilesDraft(newChatKey, { fileIds: ['file-1'], pendingPastes: {} });
+
+    clearFilesDraft(newChatKey);
+
+    expect(getFilesDraft(newChatKey).tabId).toBe(getBrowserTabId());
+  });
+
+  /** The reset empties the file map, and `useAutoSave`'s attachment effect then writes the draft
+   * with nothing in it. That write used to delete the record this helper had just re-stamped, so
+   * the preserved text sat unowned until the next keystroke and another live tab finishing a
+   * new-chat run could clear it as though nobody were holding it. */
+  it('keeps the claim through the empty-map write the reset triggers', () => {
+    setDraft({ id: newChatKey, value: 'half-written message' });
+    setFilesDraft(newChatKey, { fileIds: ['file-1'], pendingPastes: {} });
+
+    clearFilesDraft(newChatKey);
+    /** What the attachment effect writes once the composer's file map is empty. */
+    setFilesDraft(newChatKey, { fileIds: [], pastedTextIds: [], pendingPastes: {} });
+
+    expect(getFilesDraft(newChatKey).tabId).toBe(getBrowserTabId());
+    expect(getDraft(newChatKey)).toBe('half-written message');
+  });
+
+  it('leaves no claim behind when there was no text to hold', () => {
+    setFilesDraft(newChatKey, { fileIds: ['file-1'], pendingPastes: {} });
+
+    clearFilesDraft(newChatKey);
+
+    expect(localStorage.getItem(`${LocalStorageKeys.FILES_DRAFT}${newChatKey}`)).toBeNull();
+  });
+
+  it('refuses a record another live tab owns', () => {
+    markTabLive('other-tab');
+    localStorage.setItem(
+      `${LocalStorageKeys.FILES_DRAFT}${newChatKey}`,
+      JSON.stringify({ fileIds: ['other-tab-file'], tabId: 'other-tab' }),
+    );
+
+    clearFilesDraft(newChatKey);
+
+    expect(getFilesDraft(newChatKey).fileIds).toEqual(['other-tab-file']);
+  });
+});
+
 describe('migrateFilesDraft', () => {
   beforeEach(() => {
     localStorage.clear();
@@ -877,33 +970,35 @@ describe('migrateTextDraft', () => {
   });
 });
 
-describe('setDraft persistExact', () => {
+describe('setDraft', () => {
   beforeEach(() => {
     localStorage.clear();
   });
 
-  it('drops a one-character value by default', () => {
-    setDraft({ id: 'convo-1', value: 'x' });
-    expect(getDraft('convo-1')).toBe('');
-  });
+  it.each(['x', '字', ' ', '\n', '🙂', 'line one\nline two'])(
+    'preserves the exact draft %j',
+    (value) => {
+      setDraft({ id: 'convo-1', value });
+      expect(getDraft('convo-1')).toBe(value);
+    },
+  );
 
-  it('keeps a one-character snapshot when persistExact is set', () => {
-    setDraft({ id: 'convo-1', value: 'x', persistExact: true });
-    expect(getDraft('convo-1')).toBe('x');
+  it('clears a draft only when its value is empty', () => {
+    setDraft({ id: 'convo-1', value: 'x' });
+    setDraft({ id: 'convo-1', value: '' });
+    expect(getDraft('convo-1')).toBe('');
   });
 
   it('does not throw when localStorage.setItem fails', () => {
     const setItem = jest.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new Error('quota exceeded');
     });
-    expect(() =>
-      setDraft({ id: 'convo-1', value: 'draft text', persistExact: true }),
-    ).not.toThrow();
+    expect(() => setDraft({ id: 'convo-1', value: 'draft text' })).not.toThrow();
     setItem.mockRestore();
   });
 
   it('returns empty drafts when localStorage.getItem throws', () => {
-    setDraft({ id: 'convo-1', value: 'draft text', persistExact: true });
+    setDraft({ id: 'convo-1', value: 'draft text' });
     setFilesDraft('convo-1', {
       fileIds: ['file-1'],
       pendingPastes: { 'file-1': { text: 'paste', selectionStart: 0 } },
@@ -1018,5 +1113,565 @@ describe('resolvePendingPasteInsertStart', () => {
         anchorAfter: '',
       }),
     ).toBe(0);
+  });
+});
+
+describe('clearDraft navigation ordering', () => {
+  beforeEach(() => {
+    localStorage.clear();
+    jest.useFakeTimers();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('cannot delete text written after returning to a cleared conversation', () => {
+    setDraft({ id: 'chat-a', value: 'old draft' });
+    clearDraft('chat-a');
+    expect(getDraft('chat-a')).toBe('');
+    setDraft({ id: 'chat-a', value: 'replacement draft' });
+    jest.advanceTimersByTime(3000);
+    expect(getDraft('chat-a')).toBe('replacement draft');
+  });
+
+  it('clears two different conversations without cancelling either deletion', () => {
+    setDraft({ id: 'chat-a', value: 'alpha' });
+    setDraft({ id: 'chat-b', value: 'beta' });
+    clearDraft('chat-a');
+    clearDraft('chat-b');
+    jest.advanceTimersByTime(3000);
+    expect(getDraft('chat-a')).toBe('');
+    expect(getDraft('chat-b')).toBe('');
+  });
+});
+
+describe('composer draft ownership', () => {
+  it('releases only the registered pane scope and rejects another conversation', () => {
+    const releaseOld = registerComposerDraft(4, 'origin', 'ask-answer:old');
+    const releaseNew = registerComposerDraft(4, 'origin', 'ask-answer:new');
+    releaseOld();
+    expect(getActiveComposerDraftId(4, 'origin')).toBe('ask-answer:new');
+    expect(getActiveComposerDraftId(4, 'other')).toBeNull();
+    expect(getActiveComposerDraftId(5, 'origin')).toBeNull();
+    releaseNew();
+    expect(getActiveComposerDraftId(4, 'origin')).toBeNull();
+  });
+
+  it('coalesces actual local changes and stops notifying after unsubscription', async () => {
+    localStorage.clear();
+    await Promise.resolve();
+    const changed = jest.fn();
+    const unsubscribe = subscribeDraftOwnership('observed', changed);
+    const draft = { fileIds: ['file'], pendingPastes: {} };
+    setFilesDraft('unrelated', draft);
+    setFilesDraft('observed', draft);
+    setFilesDraft('observed', draft);
+    await Promise.resolve();
+    expect(changed).toHaveBeenCalledTimes(1);
+    setFilesDraft('observed', draft);
+    await Promise.resolve();
+    expect(changed).toHaveBeenCalledTimes(1);
+    unsubscribe();
+    clearFilesDraft('observed');
+    await Promise.resolve();
+    expect(changed).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('logical composer lifetime', () => {
+  it('preserves pending storage migration but rejects a new host and answer scope', () => {
+    const host = {};
+    const leavePending = registerComposerDraft(7, 'chat', 'pending:7', host);
+    const captured = captureComposerDraft(7, 'chat');
+    leavePending();
+    const leaveIdle = registerComposerDraft(7, 'chat', 'chat', host);
+    expect(captured()).toBe(true);
+    leaveIdle();
+    const leaveAnswer = registerComposerDraft(7, 'chat', 'ask-answer:question', host);
+    expect(captured()).toBe(false);
+    leaveAnswer();
+  });
+  it('hands an acknowledged scope to a replacement host without accepting stale cleanup', () => {
+    const releaseFirst = registerComposerDraft(9, Constants.NEW_CONVO, 'pending:9', {});
+    const launch = { conversationId: Constants.NEW_CONVO };
+    bindComposerLaunch(launch, 9);
+    const captured = captureComposerDraft(9, Constants.NEW_CONVO);
+    expect(adoptComposerConversation(launch, 'assigned-chat', 9)).toBe(true);
+    releaseFirst();
+    const releaseReplacement = registerComposerDraft(9, 'assigned-chat', 'assigned-chat', {});
+    releaseFirst();
+    expect(captured()).toBe(true);
+    expect(captured.conversationId()).toBe('assigned-chat');
+    releaseReplacement();
+    expect(captured()).toBe(false);
+  });
+
+  it('does not revive an acknowledged scope after genuine teardown', async () => {
+    const release = registerComposerDraft(10, Constants.NEW_CONVO, 'pending:10', {});
+    const launch = { conversationId: Constants.NEW_CONVO };
+    bindComposerLaunch(launch, 10);
+    const captured = captureComposerDraft(10, Constants.NEW_CONVO);
+    expect(adoptComposerConversation(launch, 'closed-chat', 10)).toBe(true);
+    release();
+    await Promise.resolve();
+    const closeNewHost = registerComposerDraft(10, 'closed-chat', 'closed-chat', {});
+    expect(captured()).toBe(false);
+    closeNewHost();
+  });
+
+  it('does not treat a remount without acknowledgement as the same composer', () => {
+    const release = registerComposerDraft(11, 'existing-chat', 'existing-chat', {});
+    const captured = captureComposerDraft(11, 'existing-chat');
+    release();
+    const closeReplacement = registerComposerDraft(11, 'existing-chat', 'existing-chat', {});
+    expect(captured()).toBe(false);
+    closeReplacement();
+  });
+
+  it('keeps side-by-side new-chat choices from targeting an assigned pane', () => {
+    const releaseAssigned = registerComposerDraft(12, Constants.NEW_CONVO, 'pending:12', {});
+    const launch = { conversationId: Constants.NEW_CONVO };
+    bindComposerLaunch(launch, 12);
+    const captured = captureComposerDraft(12, Constants.NEW_CONVO);
+    expect(adoptComposerConversation(launch, 'assigned-pane', 12)).toBe(true);
+    const releaseNew = registerComposerDraft(13, Constants.NEW_CONVO, 'new:13', {});
+    expect(resolveComposerConversationId(Constants.NEW_CONVO)).toBe(Constants.NEW_CONVO);
+    expect(captured()).toBe(true);
+    expect(captured.conversationId()).toBe('assigned-pane');
+    releaseNew();
+    releaseAssigned();
+  });
+
+  it('rejects a stale acknowledgement after navigation before React commits', () => {
+    window.history.replaceState({}, '', '/c/new?prompt=hello');
+    const release = registerComposerDraft(14, Constants.NEW_CONVO, 'pending:14', {});
+    const launch = { conversationId: Constants.NEW_CONVO };
+    bindComposerLaunch(launch, 14);
+    window.history.pushState({}, '', '/c/unrelated');
+    expect(adoptComposerConversation(launch, 'stale-id', 14)).toBe(false);
+    release();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('preserves the query when the server replaces the new-chat URL', () => {
+    window.history.replaceState({}, '', '/c/new?prompt=hello');
+    const release = registerComposerDraft(15, Constants.NEW_CONVO, 'pending:15', {});
+    const launch = { conversationId: Constants.NEW_CONVO };
+    bindComposerLaunch(launch, 15);
+    const captured = captureComposerDraft(15, Constants.NEW_CONVO);
+    expect(adoptComposerConversation(launch, 'assigned-id', 15)).toBe(true);
+    window.history.replaceState({}, '', '/c/assigned-id?prompt=hello');
+    expect(captured()).toBe(true);
+    release();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('binds a new launch immediately after a same-route reset without reviving the old one', () => {
+    const host = {};
+    const release = registerComposerDraft(16, Constants.NEW_CONVO, 'new:16', host);
+    const oldLaunch = { conversationId: Constants.NEW_CONVO };
+    bindComposerLaunch(oldLaunch, 16);
+    const oldOwner = captureComposerDraft(16, Constants.NEW_CONVO);
+    renewNewConversationDraftToken(16);
+    const launch = { conversationId: Constants.NEW_CONVO };
+    bindComposerLaunch(launch, 16);
+    const owner = captureComposerDraft(16, Constants.NEW_CONVO);
+    expect(oldOwner()).toBe(false);
+    expect(adoptComposerConversation(oldLaunch, 'old-reset-chat', 16)).toBe(false);
+    release();
+    const releasePending = registerComposerDraft(16, Constants.NEW_CONVO, 'pending:16', host);
+    expect(owner()).toBe(true);
+    expect(adoptComposerConversation(launch, 'new-reset-chat', 16)).toBe(true);
+    expect(owner.conversationId()).toBe('new-reset-chat');
+    releasePending();
+  });
+
+  it('retires the refreshed registration on unmount and keeps sibling panes unchanged', async () => {
+    const release = registerComposerDraft(17, Constants.NEW_CONVO, 'new:17', {});
+    const releaseSibling = registerComposerDraft(18, Constants.NEW_CONVO, 'new:18', {});
+    const sibling = captureComposerDraft(18, Constants.NEW_CONVO);
+    renewNewConversationDraftToken(17);
+    const owner = captureComposerDraft(17, Constants.NEW_CONVO);
+    expect(owner()).toBe(true);
+    expect(sibling()).toBe(true);
+    release();
+    expect(owner()).toBe(false);
+    await Promise.resolve();
+    expect(getActiveComposerDraftId(17, Constants.NEW_CONVO)).toBeNull();
+    expect(sibling()).toBe(true);
+    releaseSibling();
+  });
+
+  it('keeps captured upload ownership across consumed prompt parameters and acknowledgement', () => {
+    window.history.replaceState({}, '', '/c/new?prompt=hello&submit=true&projectId=project');
+    const release = registerComposerDraft(20, Constants.NEW_CONVO, 'pending:20', {});
+    const captured = captureComposerDraft(20, Constants.NEW_CONVO);
+    const launch = { conversationId: Constants.NEW_CONVO };
+    bindComposerLaunch(launch, 20);
+    consumeComposerQuery(
+      20,
+      Constants.NEW_CONVO,
+      '/c/new',
+      'submit=true&projectId=project&prompt=hello',
+      'projectId=project',
+    );
+    window.history.replaceState({}, '', '/c/new?projectId=project');
+    expect(captured()).toBe(true);
+    expect(adoptComposerConversation(launch, 'cleaned-chat', 20)).toBe(true);
+    window.history.replaceState({}, '', '/c/cleaned-chat?projectId=project');
+    expect(captured()).toBe(true);
+    window.history.pushState({}, '', '/c/another-chat?projectId=project');
+    expect(captured()).toBe(false);
+    release();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('preserves an acknowledged route when its consumed parameters are cleaned afterwards', () => {
+    window.history.replaceState({}, '', '/c/new?prompt=hello');
+    const release = registerComposerDraft(21, Constants.NEW_CONVO, 'pending:21', {});
+    const launch = { conversationId: Constants.NEW_CONVO };
+    bindComposerLaunch(launch, 21);
+    const captured = captureComposerDraft(21, Constants.NEW_CONVO);
+    expect(adoptComposerConversation(launch, 'assigned-cleanup', 21)).toBe(true);
+    window.history.replaceState({}, '', '/c/assigned-cleanup?prompt=hello');
+    consumeComposerQuery(21, 'assigned-cleanup', '/c/assigned-cleanup', 'prompt=hello', '');
+    window.history.replaceState({}, '', '/c/assigned-cleanup');
+    expect(captured()).toBe(true);
+    expect(adoptComposerConversation(launch, 'assigned-cleanup', 21)).toBe(true);
+    release();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it.each([
+    { owner: 'new', path: '/c/new', from: 'prompt=hello&projectId=project', to: '' },
+    { owner: 'new', path: '/c/new', from: 'prompt=hello&projectId=project', to: 'projectId=other' },
+    {
+      owner: 'other',
+      path: '/c/new',
+      from: 'prompt=hello&projectId=project',
+      to: 'projectId=project',
+    },
+    {
+      owner: 'new',
+      path: '/c/new',
+      from: 'prompt=hello&projectId=project',
+      to: 'prompt=another&projectId=project',
+    },
+    {
+      owner: 'new',
+      path: '/c/unrelated',
+      from: 'prompt=hello&projectId=project',
+      to: 'projectId=project',
+    },
+  ])('does not treat a project, owner, prompt, or path change as consumption (%j)', (change) => {
+    window.history.replaceState({}, '', '/c/new?prompt=hello&projectId=project');
+    const release = registerComposerDraft(22, Constants.NEW_CONVO, 'pending:22', {});
+    const captured = captureComposerDraft(22, Constants.NEW_CONVO);
+    consumeComposerQuery(22, change.owner, change.path, change.from, change.to);
+    window.history.replaceState({}, '', change.path + (change.to ? `?${change.to}` : ''));
+    expect(captured()).toBe(false);
+    release();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('retires the old scope when the same host is registered on a changed project route', () => {
+    window.history.replaceState({}, '', '/c/new?projectId=project-a');
+    const host = {};
+    const releaseOld = registerComposerDraft(23, Constants.NEW_CONVO, 'new:23', host);
+    const oldOwner = captureComposerDraft(23, Constants.NEW_CONVO);
+    const oldLaunch = { conversationId: Constants.NEW_CONVO };
+    bindComposerLaunch(oldLaunch, 23);
+    window.history.replaceState({}, '', '/c/new?projectId=project-b');
+    releaseOld();
+    const releaseNew = registerComposerDraft(23, Constants.NEW_CONVO, 'new:23', host);
+    const owner = captureComposerDraft(23, Constants.NEW_CONVO);
+    expect(oldOwner()).toBe(false);
+    expect(owner()).toBe(true);
+    expect(adoptComposerConversation(oldLaunch, 'wrong-project', 23)).toBe(false);
+    releaseNew();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('reuses registered ownership after passive query cleanup and acknowledged route adoption', () => {
+    window.history.replaceState({}, '', '/c/new?prompt=hello&projectId=project');
+    const host = {};
+    const release = registerComposerDraft(24, Constants.NEW_CONVO, 'new:24', host);
+    const owner = captureComposerDraft(24, Constants.NEW_CONVO);
+    consumeComposerQuery(
+      24,
+      Constants.NEW_CONVO,
+      '/c/new',
+      'prompt=hello&projectId=project',
+      'projectId=project',
+    );
+    window.history.replaceState({}, '', '/c/new?projectId=project');
+    release();
+    const releaseCleaned = registerComposerDraft(24, Constants.NEW_CONVO, 'pending:24', host);
+    expect(owner()).toBe(true);
+    const launch = { conversationId: Constants.NEW_CONVO };
+    bindComposerLaunch(launch, 24);
+    expect(adoptComposerConversation(launch, 'assigned-project', 24)).toBe(true);
+    window.history.replaceState({}, '', '/c/assigned-project?projectId=project');
+    releaseCleaned();
+    const releaseAssigned = registerComposerDraft(24, 'assigned-project', 'assigned-project', host);
+    expect(owner()).toBe(true);
+    expect(owner.conversationId()).toBe('assigned-project');
+    releaseAssigned();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('keeps the acknowledged owner while its source prop catches up after the URL', () => {
+    window.history.replaceState({}, '', '/c/new?projectId=project');
+    const host = {};
+    const releaseSource = registerComposerDraft(25, Constants.NEW_CONVO, 'pending:25', host);
+    const captured = captureComposerDraft(25, Constants.NEW_CONVO);
+    const launch = { conversationId: Constants.NEW_CONVO };
+    bindComposerLaunch(launch, 25);
+    expect(adoptComposerConversation(launch, 'acknowledged-url', 25)).toBe(true);
+    window.history.replaceState({}, '', '/c/acknowledged-url?projectId=project');
+    releaseSource();
+    const releaseLagging = registerComposerDraft(25, Constants.NEW_CONVO, 'pending:25', host);
+    expect(captured()).toBe(true);
+    expect(captured.conversationId()).toBe('acknowledged-url');
+    expect(adoptComposerConversation(launch, 'acknowledged-url', 25)).toBe(true);
+    releaseLagging();
+    const releaseSaved = registerComposerDraft(25, 'acknowledged-url', 'acknowledged-url', host);
+    expect(captured()).toBe(true);
+    window.history.replaceState({}, '', '/c/acknowledged-url?projectId=other');
+    releaseSaved();
+    const releaseOther = registerComposerDraft(25, 'acknowledged-url', 'acknowledged-url', host);
+    expect(captured()).toBe(false);
+    releaseOther();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('does not reuse the source alias after the saved conversation prop has arrived', () => {
+    window.history.replaceState({}, '', '/c/new');
+    const host = {};
+    const releaseSource = registerComposerDraft(29, Constants.NEW_CONVO, 'pending:29', host);
+    const owner = captureComposerDraft(29, Constants.NEW_CONVO);
+    const launch = { conversationId: Constants.NEW_CONVO };
+    bindComposerLaunch(launch, 29);
+    expect(adoptComposerConversation(launch, 'saved-before-back', 29)).toBe(true);
+    window.history.replaceState({}, '', '/c/saved-before-back');
+    releaseSource();
+    const releaseSaved = registerComposerDraft(29, 'saved-before-back', 'saved-before-back', host);
+    expect(owner()).toBe(true);
+    window.history.pushState({}, '', '/c/new');
+    releaseSaved();
+    const releaseReturned = registerComposerDraft(29, Constants.NEW_CONVO, 'new:29', host);
+    expect(owner()).toBe(false);
+    expect(captureComposerDraft(29, Constants.NEW_CONVO)()).toBe(true);
+    expect(adoptComposerConversation(launch, 'saved-before-back', 29)).toBe(false);
+    releaseReturned();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('permits origin recovery only when an owned saved draft still references the file', () => {
+    const release = registerComposerDraft(26, 'saved-owner', 'saved-owner', {});
+    const captured = captureComposerDraft(26, 'saved-owner');
+    setFilesDraft('saved-owner', { fileIds: ['kept-file'], pendingPastes: {} });
+    release();
+    expect(captured()).toBe(false);
+    expect(captured.retainsFile('kept-file')).toBe(true);
+    expect(captured.retainsFile('absent-file')).toBe(false);
+    clearFilesDraft('saved-owner');
+    expect(captured.retainsFile('kept-file')).toBe(false);
+  });
+
+  it.each(['owned', 'blocked', 'unrelated', 'foreign', 'unsubscribed'])(
+    'follows a retained pending upload only through its owned migration (%s)',
+    async (mode) => {
+      const conversationId = 'retained-migration';
+      const pendingId = getPendingDraftId(42);
+      const release = registerComposerDraft(42, conversationId, pendingId, {});
+      const captured = captureComposerDraft(42, conversationId);
+      const unsubscribe = captured.onAssignment(jest.fn());
+      if (mode === 'foreign') markTabLive('foreign-migration-owner');
+      setFilesDraft(pendingId, {
+        fileIds: ['migrating-upload'],
+        pendingPastes: {},
+        ...(mode === 'foreign' ? { tabId: 'foreign-migration-owner' } : {}),
+      });
+      release();
+      await Promise.resolve();
+      if (mode === 'unsubscribed') unsubscribe();
+      const setItem = Storage.prototype.setItem;
+      const blocked =
+        mode === 'blocked'
+          ? jest.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+              this: Storage,
+              key: string,
+              value: string,
+            ) {
+              if (key === `${LocalStorageKeys.FILES_DRAFT}${conversationId}`) {
+                throw new Error('Migration destination unavailable');
+              }
+              setItem.call(this, key, value);
+            })
+          : undefined;
+      try {
+        const destination = mode === 'unrelated' ? 'unrelated-migration' : conversationId;
+        expect(migrateFilesDraft(pendingId, destination)).toBe(
+          mode === 'blocked' ? pendingId : destination,
+        );
+        expect(captured()).toBe(false);
+        expect(captured.retainsFile('migrating-upload')).toBe(
+          mode === 'owned' || mode === 'blocked',
+        );
+        if (mode === 'owned') {
+          captured.discardFile('migrating-upload');
+          expect(getFilesDraft(conversationId).fileIds).toEqual([]);
+        }
+      } finally {
+        blocked?.mockRestore();
+        unsubscribe();
+      }
+    },
+  );
+
+  it('never treats a shared new-chat draft as a retained retired project', () => {
+    const release = registerComposerDraft(27, Constants.NEW_CONVO, 'new:27', {});
+    const captured = captureComposerDraft(27, Constants.NEW_CONVO);
+    setFilesDraft('new:27', { fileIds: ['old-project-file'], pendingPastes: {} });
+    release();
+    expect(captured()).toBe(false);
+    expect(captured.retainsFile('old-project-file')).toBe(false);
+    clearFilesDraft('new:27');
+  });
+
+  it.each(['url-first', 'props-first'])(
+    'retires the source URL after both parts of the handoff arrive (%s)',
+    (order) => {
+      window.history.replaceState({}, '', '/c/new?projectId=history-project');
+      const host = {};
+      const release = registerComposerDraft(30, Constants.NEW_CONVO, 'pending:30', host);
+      const owner = captureComposerDraft(30, Constants.NEW_CONVO);
+      const launch = { conversationId: Constants.NEW_CONVO };
+      bindComposerLaunch(launch, 30);
+      expect(adoptComposerConversation(launch, 'saved-terminal-route', 30)).toBe(true);
+      if (order === 'url-first') {
+        window.history.replaceState({}, '', '/c/saved-terminal-route?projectId=history-project');
+        expect(owner()).toBe(true);
+      }
+      release();
+      const releaseSaved = registerComposerDraft(
+        30,
+        'saved-terminal-route',
+        'saved-terminal-route',
+        host,
+      );
+      expect(owner()).toBe(true);
+      window.history.replaceState({}, '', '/c/saved-terminal-route?projectId=history-project');
+      expect(owner()).toBe(true);
+      window.history.pushState({}, '', '/c/new?projectId=history-project');
+      expect(owner()).toBe(false);
+      expect(adoptComposerConversation(launch, 'saved-terminal-route', 30)).toBe(false);
+      releaseSaved();
+      window.history.replaceState({}, '', '/');
+    },
+  );
+
+  it('discards a retired upload only from its pane and leaves fresh attachments intact', () => {
+    const release = registerComposerDraft(35, Constants.NEW_CONVO, 'pending:35', {});
+    const owner = captureComposerDraft(35, Constants.NEW_CONVO);
+    for (const id of ['new:35', 'pending:35', 'new:36', 'saved-unrelated']) {
+      setFilesDraft(id, { fileIds: ['retired-upload', 'fresh-file'], pendingPastes: {} });
+    }
+    renewNewConversationDraftToken(35);
+    owner.discardFile('retired-upload');
+    expect(getFilesDraft('new:35').fileIds).toEqual(['fresh-file']);
+    expect(getFilesDraft('pending:35').fileIds).toEqual(['fresh-file']);
+    expect(getFilesDraft('new:36').fileIds).toEqual(['retired-upload', 'fresh-file']);
+    expect(getFilesDraft('saved-unrelated').fileIds).toEqual(['retired-upload', 'fresh-file']);
+    release();
+  });
+
+  it("never prunes a retired upload from another live tab's draft", () => {
+    const release = registerComposerDraft(37, Constants.NEW_CONVO, 'new:37', {});
+    const owner = captureComposerDraft(37, Constants.NEW_CONVO);
+    markTabLive('foreign-retained-upload');
+    setFilesDraft('new:37', {
+      fileIds: ['foreign-file'],
+      pendingPastes: {},
+      tabId: 'foreign-retained-upload',
+    });
+    renewNewConversationDraftToken(37);
+    owner.discardFile('foreign-file');
+    expect(getFilesDraft('new:37').fileIds).toEqual(['foreign-file']);
+    expect(getFilesDraft('new:37').tabId).toBe('foreign-retained-upload');
+    release();
+  });
+
+  it('notifies the identity assignment once while validating replays and later launches', () => {
+    window.history.replaceState({}, '', '/c/new');
+    const host = {};
+    const release = registerComposerDraft(39, Constants.NEW_CONVO, 'new:39', host);
+    const launch = { conversationId: Constants.NEW_CONVO };
+    bindComposerLaunch(launch, 39);
+    const assigned = jest.fn();
+    expect(adoptComposerConversation(launch, 'once-assigned', 39, assigned)).toBe(true);
+    expect(assigned).toHaveBeenCalledWith(Constants.NEW_CONVO, 'once-assigned');
+    expect(adoptComposerConversation(launch, 'once-assigned', 39, assigned)).toBe(true);
+    window.history.replaceState({}, '', '/c/once-assigned');
+    release();
+    const releaseSaved = registerComposerDraft(39, 'once-assigned', 'once-assigned', host);
+    const nextLaunch = { conversationId: 'once-assigned' };
+    bindComposerLaunch(nextLaunch, 39);
+    expect(adoptComposerConversation(nextLaunch, 'once-assigned', 39, assigned)).toBe(true);
+    expect(assigned).toHaveBeenCalledTimes(1);
+    window.history.replaceState({}, '', '/c/unrelated');
+    expect(adoptComposerConversation(nextLaunch, 'once-assigned', 39, assigned)).toBe(false);
+    expect(assigned).toHaveBeenCalledTimes(1);
+    releaseSaved();
+    window.history.replaceState({}, '', '/');
+  });
+
+  it('keeps reset revisions pane-local and stable until an explicit reset', () => {
+    const first = getNewConversationDraftRevision(31);
+    expect(getNewConversationDraftRevision(31)).toBe(first);
+    const sibling = getNewConversationDraftRevision(32);
+    renewNewConversationDraftToken(31);
+    expect(getNewConversationDraftRevision(31)).not.toBe(first);
+    expect(getNewConversationDraftRevision(32)).toBe(sibling);
+  });
+
+  it('does not trust an old reset revision when session storage is read-only on reload', () => {
+    const revision = getNewConversationDraftRevision(33);
+    const setItem = Storage.prototype.setItem;
+    const blocked = jest.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+      this: Storage,
+      key: string,
+      value: string,
+    ) {
+      if (key === 'librechat-new-composer:33') throw new Error('Session revision unavailable');
+      setItem.call(this, key, value);
+    });
+    const navigation = Object.getOwnPropertyDescriptor(performance, 'getEntriesByType');
+    Object.defineProperty(performance, 'getEntriesByType', {
+      configurable: true,
+      value: () => [{ type: 'reload' }],
+    });
+    try {
+      renewNewConversationDraftToken(33);
+      expect(getNewConversationDraftRevision(33)).not.toBe(revision);
+      jest.isolateModules(() => {
+        const reloaded = jest.requireActual<typeof import('./drafts')>('./drafts');
+        expect(reloaded.getNewConversationDraftRevision(33)).not.toBe(revision);
+      });
+    } finally {
+      blocked.mockRestore();
+      if (navigation) Object.defineProperty(performance, 'getEntriesByType', navigation);
+      else Reflect.deleteProperty(performance, 'getEntriesByType');
+    }
+  });
+
+  it('rejects an acknowledgement from a launch superseded by New Chat', () => {
+    const release = registerComposerDraft(8, Constants.NEW_CONVO, 'pending:8', {});
+    const submissionConversation = { conversationId: Constants.NEW_CONVO };
+    bindComposerLaunch(submissionConversation, 8);
+    renewNewConversationDraftToken(8);
+    expect(adoptComposerConversation(submissionConversation, 'server-id', 8)).toBe(false);
+    release();
   });
 });

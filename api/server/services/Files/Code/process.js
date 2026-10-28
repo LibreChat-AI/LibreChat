@@ -3,6 +3,7 @@ const { logger } = require('@librechat/data-schemas');
 const { getCodeBaseURL } = require('@librechat/agents');
 const {
   withTimeout,
+  withFileProvisioning,
   getBasePath,
   logAxiosError,
   hasOfficeHtmlPath,
@@ -17,6 +18,7 @@ const {
   isMissingSandboxPathError,
   parseSandboxImageChunk,
   readWindowedSandboxImage,
+  createSandboxTextReader,
   createCodeApiRateLimitBudget,
   codeServerHttpAgent,
   codeServerHttpsAgent,
@@ -33,6 +35,8 @@ const {
   executeWorkspaceTool,
   selectCodeFiles,
   getCodeFileInfo,
+  getCodeFileContextLine,
+  appendCodeFileContextLine,
   getUploadedCodeEnvFilename,
   checkCodeFileActive: checkIfActive,
   CODE_OUTPUT_PREFLIGHT_MAX_BYTES,
@@ -42,9 +46,7 @@ const {
   resolveDownloadPath,
 } = require('@librechat/api');
 const {
-  Tools,
   megabyte,
-  FileContext,
   FileSources,
   EToolResources,
   EModelEndpoint,
@@ -56,6 +58,7 @@ const {
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const { getFiles, updateFile, claimCodeFile, commitCodeFile } = require('~/models');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
+const { getFileStorage } = require('~/server/services/Files/operations');
 const { convertImage } = require('~/server/services/Files/images/convert');
 const { getRetentionExpiry } = require('~/server/services/Files/retention');
 const { determineFileType } = require('~/server/utils');
@@ -595,6 +598,7 @@ const processCodeOutput = (params) =>
     determineFileType,
     claimCodeFile,
     commitCodeFile,
+    fileStorage: getFileStorage(),
     finalizePreview,
     hasOfficeHtmlPath,
     sanitizeArtifactPath,
@@ -622,54 +626,6 @@ function getSessionFileInfo(ref, req, route = {}, signal) {
 async function getSessionInfo(ref, req, route = {}, signal) {
   return (await getSessionFileInfo(ref, req, route, signal))?.lastModified ?? null;
 }
-
-const getPreviewContextSuffix = (file) => {
-  if (file.status === 'pending') {
-    return ' (preview not yet generated)';
-  }
-
-  if (file.status !== 'failed') {
-    return '';
-  }
-
-  return file.previewError
-    ? ` (preview unavailable: ${file.previewError})`
-    : ' (preview unavailable)';
-};
-
-/**
- * A generated output is normally left out — the model already knows what it
- * wrote. That only holds while the file is still where it wrote it: once a
- * newer same-named file takes the bare path, the output mounts under a
- * suffixed name the model has never seen, and silence would leave it reading
- * the newcomer or failing to find its own artifact.
- */
-const getVisibleCodeFileContextLine = (file, agentResourceIds, destination) => {
-  const displaced = destination !== file.filename;
-  if (file.context === FileContext.execute_code && !displaced) {
-    return '';
-  }
-
-  const origin =
-    file.context === FileContext.execute_code
-      ? ` (written earlier as ${file.filename})`
-      : `${agentResourceIds.has(file.file_id) ? '' : ' (attached by user)'}${
-          displaced ? ` (uploaded as ${file.filename})` : ''
-        }`;
-  return `\n\t- /mnt/data/${destination}${origin}${getPreviewContextSuffix(file)}`;
-};
-
-const appendVisibleCodeFileContext = (toolContext, contextLine) => {
-  if (!contextLine) {
-    return toolContext;
-  }
-
-  if (toolContext) {
-    return `${toolContext}${contextLine}`;
-  }
-
-  return `- Note: The following files are available in the "${Tools.execute_code}" tool environment:${contextLine}`;
-};
 
 class CodeResourceRecoveryError extends Error {
   constructor({ required, primed, failed }) {
@@ -729,9 +685,11 @@ const getReuploadFailureCategory = (error) => {
  * @param {string} [options.agentId] - The agent ID for file access control
  * @param {string} [options.agentResourceType] - Permission resource type for the authorized agent route
  * @param {AbortSignal} [options.signal] - Effective run cancellation signal
+ * @param {import('@librechat/api').CodeFileLocation} [options.codeFileLocation] - Where the model can open primed files
  * @returns {Promise<{
  * files: Array<{ id: string; session_id: string; name: string }>,
  * toolContext: string,
+ * contextFiles?: import('@librechat/api').CodeContextEntry[],
  * }>}
  */
 const primeFiles = async (options) => {
@@ -744,6 +702,7 @@ const primeFiles = async (options) => {
     executionProfile = 'default',
     executionRouteKey = executionProfile,
     bridgeWorkerId,
+    codeFileLocation,
     signal,
   } = options;
   const codeApiRoute = { baseUrl: codeApiBaseUrl, executionProfile, bridgeWorkerId };
@@ -790,6 +749,8 @@ const primeFiles = async (options) => {
   /** All stale-file reuploads in this prime share one live-turn wait cap. */
   const uploadRateLimitBudget = createCodeApiRateLimitBudget(uploadOptions.retryWaitMs);
   let toolContext = '';
+  /** An attached workspace rebuilds this note once attachments are copied in. */
+  const contextFiles = codeFileLocation === 'programmatic' ? [] : undefined;
 
   const { selected, skippedNoRef, skippedSuperseded } = await selectCodeFiles({
     files: dbFiles,
@@ -827,10 +788,24 @@ const primeFiles = async (options) => {
     const pushFile = (overrideSessionId, overrideId, destination = sandboxName) => {
       /* The sandbox holds the converted name, not the record's, so the mount path has
        * to follow the same rule provisioning uploaded under. */
-      toolContext = appendVisibleCodeFileContext(
-        toolContext,
-        getVisibleCodeFileContextLine(file, agentResourceIds, destination),
+      const contextLine = getCodeFileContextLine(
+        file,
+        agentResourceIds,
+        destination,
+        codeFileLocation,
       );
+      toolContext = appendCodeFileContextLine(toolContext, contextLine, codeFileLocation);
+      if (contextFiles && contextLine) {
+        contextFiles.push({
+          file,
+          destination,
+          agentScoped: agentResourceIds.has(file.file_id),
+          source: {
+            storage_session_id: overrideSessionId ?? session_id,
+            file_id: overrideId ?? id,
+          },
+        });
+      }
       /* `id` is the storage file_id (drives codeapi's upload-key
        * existence check), `resource_id` is the entity that owns
        * the storage session (drives sessionKey re-derivation). For
@@ -849,82 +824,101 @@ const primeFiles = async (options) => {
 
     const reuploadFile = async () => {
       try {
-        const { getDownloadStream } = getStrategyFunctions(file.source);
-        const { handleFileUpload: uploadCodeEnvFile } = getStrategyFunctions(
-          FileSources.execute_code,
-        );
-        /* Reupload preserves the resource identity from the existing
-         * ref so codeapi re-buckets under the same sessionKey shape
-         * (skill stays skill, user stays user). Without this, a
-         * skill-cache-miss reupload would land in the user bucket
-         * and never re-shareable cross-user. */
-        const uploaded = await withCodeApiUploadRecovery({
-          registry: req.app?.locals?.codeApiUploadRegistry,
-          scope: uploadOptions.scope,
-          concurrency: uploadOptions.concurrency,
-          label: `re-uploading file ${file.file_id} to the code environment`,
-          budget: uploadRateLimitBudget,
-          signal,
-          onWait: (waitMs) =>
-            logger.warn(
-              `[primeCodeFiles] Rate-limited reupload requestId=${getPrimingCorrelation(req).requestId} ` +
-                `runId=${getPrimingCorrelation(req).runId}; retrying in ${waitMs}ms`,
-            ),
-          openSource: async () => {
-            signal?.throwIfAborted();
-            return getDownloadStream(options.req, resolveDownloadPath(file), { signal });
-          },
-          upload: (stream) =>
-            uploadCodeEnvFile({
-              req: options.req,
-              stream,
-              filename: sandboxName,
+        const newRef = await withFileProvisioning({
+          file,
+          userId: req.user.id,
+          storage: getFileStorage(),
+          destination: JSON.stringify([
+            'code',
+            executionRouteKey,
+            sourceRef.kind,
+            sourceRef.id,
+            sourceRef.kind === 'skill' ? sourceRef.version : null,
+            sandboxName,
+          ]),
+          operation: async (_claim, onUploadStart) => {
+            const { getDownloadStream } = getStrategyFunctions(file.source);
+            const { handleFileUpload: uploadCodeEnvFile } = getStrategyFunctions(
+              FileSources.execute_code,
+            );
+            /* Reupload preserves the resource identity from the existing
+             * ref so codeapi re-buckets under the same sessionKey shape
+             * (skill stays skill, user stays user). Without this, a
+             * skill-cache-miss reupload would land in the user bucket
+             * and never re-shareable cross-user. */
+            const uploaded = await withCodeApiUploadRecovery({
+              registry: req.app?.locals?.codeApiUploadRegistry,
+              scope: uploadOptions.scope,
+              concurrency: uploadOptions.concurrency,
+              label: `re-uploading file ${file.file_id} to the code environment`,
+              budget: uploadRateLimitBudget,
+              signal,
+              onWait: (waitMs) =>
+                logger.warn(
+                  `[primeCodeFiles] Rate-limited reupload requestId=${getPrimingCorrelation(req).requestId} ` +
+                    `runId=${getPrimingCorrelation(req).runId}; retrying in ${waitMs}ms`,
+                ),
+              openSource: async () => {
+                signal?.throwIfAborted();
+                return getDownloadStream(options.req, resolveDownloadPath(file), { signal });
+              },
+              upload: (stream) =>
+                uploadCodeEnvFile({
+                  req: options.req,
+                  stream,
+                  filename: sandboxName,
+                  kind: sourceRef.kind,
+                  id: sourceRef.id,
+                  ...(sourceRef.kind === 'skill' ? { version: sourceRef.version } : {}),
+                  codeApiBaseUrl,
+                  executionProfile,
+                  bridgeWorkerId,
+                  signal,
+                  onUploadStart,
+                }),
+            });
+
+            /**
+             * Use the FRESH `(storage_session_id, file_id)` from the
+             * reupload response and route it through the persisted record
+             * and the in-memory `files` list. The
+             * original ref captured at the top of this iteration refers
+             * to the old, expired/missing sandbox object — using it here
+             * would silently re-introduce the bug `Graph.sessions`
+             * seeding is supposed to fix.
+             *
+             * `kind`, `id`, `version` survive the round-trip: the
+             * upload preserves the resource identity, only the storage
+             * pointer changes.
+             */
+            const newRef = {
               kind: sourceRef.kind,
               id: sourceRef.id,
-              ...(sourceRef.kind === 'skill' ? { version: sourceRef.version } : {}),
-              codeApiBaseUrl,
+              storage_session_id: uploaded.storage_session_id,
+              file_id: uploaded.file_id,
+              sandboxFilename: getUploadedCodeEnvFilename(uploaded, sandboxName),
               executionProfile,
-              bridgeWorkerId,
-              signal,
-            }),
+              ...(executionRouteKey !== executionProfile ? { executionRouteKey } : {}),
+              ...(sourceRef.kind === 'skill' ? { version: sourceRef.version } : {}),
+            };
+
+            const updatedRefs = mergeCodeEnvRef(file.metadata, newRef);
+
+            return {
+              value: newRef,
+              commit: {
+                code: {
+                  routeKey: executionRouteKey,
+                  ref: newRef,
+                  legacyRef: updatedRefs.codeEnvRef,
+                },
+              },
+            };
+          },
         });
-
-        /**
-         * Use the FRESH `(storage_session_id, file_id)` from the
-         * reupload response and route it through the persisted record
-         * and the in-memory `files` list. The
-         * original ref captured at the top of this iteration refers
-         * to the old, expired/missing sandbox object — using it here
-         * would silently re-introduce the bug `Graph.sessions`
-         * seeding is supposed to fix.
-         *
-         * `kind`, `id`, `version` survive the round-trip: the
-         * upload preserves the resource identity, only the storage
-         * pointer changes.
-         */
-        const newRef = {
-          kind: sourceRef.kind,
-          id: sourceRef.id,
-          storage_session_id: uploaded.storage_session_id,
-          file_id: uploaded.file_id,
-          sandboxFilename: getUploadedCodeEnvFilename(uploaded, sandboxName),
-          executionProfile,
-          ...(executionRouteKey !== executionProfile ? { executionRouteKey } : {}),
-          ...(sourceRef.kind === 'skill' ? { version: sourceRef.version } : {}),
-        };
-
-        const updatedRefs = mergeCodeEnvRef(file.metadata, newRef);
-
-        await updateFile({
-          file_id: file.file_id,
-          'metadata.codeEnvRef': updatedRefs.codeEnvRef,
-          [`metadata.codeEnvRefs.${executionRouteKey}`]: newRef,
-        });
+        file.metadata = { ...file.metadata, ...mergeCodeEnvRef(file.metadata, newRef) };
         pushFile(newRef.storage_session_id, newRef.file_id, newRef.sandboxFilename);
-        logger.debug(
-          `[primeCodeFiles] file=${file.file_id} path=reupload-success ` +
-            `oldSession=${session_id} newSession=${newRef.storage_session_id} newFileId=${newRef.file_id}`,
-        );
+        logger.debug(`[primeCodeFiles] file=${file.file_id} path=reupload-success`);
       } catch (error) {
         /* Cancellation is an operation outcome, not a recoverable per-file
          * miss. Swallowing it here would keep walking and could dispatch more
@@ -1002,7 +996,7 @@ const primeFiles = async (options) => {
     });
   }
 
-  return { files, toolContext };
+  return { files, toolContext, ...(contextFiles?.length ? { contextFiles } : {}) };
 };
 
 /**
@@ -1112,6 +1106,8 @@ async function readSandboxFile({
  * @param {Object} params
  * @param {string} params.file_path
  * @param {string} params.workspace_id
+ * @param {string} [params.workspace_instance_id]
+ * @param {boolean} [params.linked_worktrees]
  * @param {number} params.start_line
  * @param {number} params.max_lines
  * @param {string} params.codeApiBaseUrl
@@ -1123,6 +1119,8 @@ async function readSandboxFile({
 async function readWorkspaceFile({
   file_path,
   workspace_id,
+  workspace_instance_id,
+  linked_worktrees,
   start_line,
   max_lines,
   codeApiBaseUrl,
@@ -1130,18 +1128,31 @@ async function readWorkspaceFile({
   bridgeWorkerId,
   req,
   signal,
+  maxQueueWaitMs,
+  maxRequestTimeoutMs,
+  maxRunTimeoutMs,
+  admission,
+  deadlineAtMs,
 }) {
-  const authHeaders = await getCodeApiAuthHeaders(req, bridgeWorkerId);
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
-    authHeaders: {
-      ...authHeaders,
+    linkedWorktrees: linked_worktrees,
+    maxQueueWaitMs,
+    codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
+    maxRequestTimeoutMs,
+    ...(maxRunTimeoutMs == null ? {} : { maxRunTimeoutMs }),
+    ...(admission == null ? {} : { admission }),
+    deadlineAtMs,
+    /** Minted per admission attempt: a queued call outlives one token TTL. */
+    authHeaders: async () => ({
+      ...(await getCodeApiAuthHeaders(req, bridgeWorkerId)),
       ...codeExecutionHeaders({ executionProfile, bridgeWorkerId }),
-    },
+    }),
     request: {
       protocolVersion: 1,
       operation: 'read_file',
       workspaceId: workspace_id,
+      ...(workspace_instance_id ? { workspaceInstanceId: workspace_instance_id } : {}),
       path: file_path,
       startLine: start_line,
       maxLines: max_lines,
@@ -1156,6 +1167,8 @@ async function readWorkspaceFile({
  * @param {Object} params
  * @param {string} params.query
  * @param {string} params.workspace_id
+ * @param {string} [params.workspace_instance_id]
+ * @param {boolean} [params.linked_worktrees]
  * @param {string} [params.path]
  * @param {number} params.max_results
  * @param {string} params.codeApiBaseUrl
@@ -1167,6 +1180,8 @@ async function readWorkspaceFile({
 async function searchWorkspace({
   query,
   workspace_id,
+  workspace_instance_id,
+  linked_worktrees,
   path,
   max_results,
   codeApiBaseUrl,
@@ -1174,18 +1189,31 @@ async function searchWorkspace({
   bridgeWorkerId,
   req,
   signal,
+  maxQueueWaitMs,
+  maxRequestTimeoutMs,
+  maxRunTimeoutMs,
+  admission,
+  deadlineAtMs,
 }) {
-  const authHeaders = await getCodeApiAuthHeaders(req, bridgeWorkerId);
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
-    authHeaders: {
-      ...authHeaders,
+    linkedWorktrees: linked_worktrees,
+    maxQueueWaitMs,
+    codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
+    maxRequestTimeoutMs,
+    ...(maxRunTimeoutMs == null ? {} : { maxRunTimeoutMs }),
+    ...(admission == null ? {} : { admission }),
+    deadlineAtMs,
+    /** Minted per admission attempt: a queued call outlives one token TTL. */
+    authHeaders: async () => ({
+      ...(await getCodeApiAuthHeaders(req, bridgeWorkerId)),
       ...codeExecutionHeaders({ executionProfile, bridgeWorkerId }),
-    },
+    }),
     request: {
       protocolVersion: 1,
       operation: 'search_text',
       workspaceId: workspace_id,
+      ...(workspace_instance_id ? { workspaceInstanceId: workspace_instance_id } : {}),
       query,
       ...(path ? { path } : {}),
       maxResults: max_results,
@@ -1199,6 +1227,8 @@ async function searchWorkspace({
  *
  * @param {Object} params
  * @param {string} params.workspace_id
+ * @param {string} [params.workspace_instance_id]
+ * @param {boolean} [params.linked_worktrees]
  * @param {string} [params.path]
  * @param {string} [params.after_path]
  * @param {number} params.max_results
@@ -1210,6 +1240,8 @@ async function searchWorkspace({
  */
 async function listWorkspaceFiles({
   workspace_id,
+  workspace_instance_id,
+  linked_worktrees,
   path,
   after_path,
   max_results,
@@ -1218,18 +1250,31 @@ async function listWorkspaceFiles({
   bridgeWorkerId,
   req,
   signal,
+  maxQueueWaitMs,
+  maxRequestTimeoutMs,
+  maxRunTimeoutMs,
+  admission,
+  deadlineAtMs,
 }) {
-  const authHeaders = await getCodeApiAuthHeaders(req, bridgeWorkerId);
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
-    authHeaders: {
-      ...authHeaders,
+    linkedWorktrees: linked_worktrees,
+    maxQueueWaitMs,
+    codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
+    maxRequestTimeoutMs,
+    ...(maxRunTimeoutMs == null ? {} : { maxRunTimeoutMs }),
+    ...(admission == null ? {} : { admission }),
+    deadlineAtMs,
+    /** Minted per admission attempt: a queued call outlives one token TTL. */
+    authHeaders: async () => ({
+      ...(await getCodeApiAuthHeaders(req, bridgeWorkerId)),
       ...codeExecutionHeaders({ executionProfile, bridgeWorkerId }),
-    },
+    }),
     request: {
       protocolVersion: 1,
       operation: 'list_files',
       workspaceId: workspace_id,
+      ...(workspace_instance_id ? { workspaceInstanceId: workspace_instance_id } : {}),
       ...(path ? { path } : {}),
       ...(after_path ? { afterPath: after_path } : {}),
       maxResults: max_results,
@@ -1244,23 +1289,38 @@ async function writeWorkspaceFile({
   content,
   overwrite,
   workspace_id,
+  workspace_instance_id,
+  linked_worktrees,
   codeApiBaseUrl,
   executionProfile,
   bridgeWorkerId,
   req,
   signal,
+  maxQueueWaitMs,
+  maxRequestTimeoutMs,
+  maxRunTimeoutMs,
+  admission,
+  deadlineAtMs,
 }) {
-  const authHeaders = await getCodeApiAuthHeaders(req, bridgeWorkerId);
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
-    authHeaders: {
-      ...authHeaders,
+    linkedWorktrees: linked_worktrees,
+    maxQueueWaitMs,
+    codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
+    maxRequestTimeoutMs,
+    ...(maxRunTimeoutMs == null ? {} : { maxRunTimeoutMs }),
+    ...(admission == null ? {} : { admission }),
+    deadlineAtMs,
+    /** Minted per admission attempt: a queued call outlives one token TTL. */
+    authHeaders: async () => ({
+      ...(await getCodeApiAuthHeaders(req, bridgeWorkerId)),
       ...codeExecutionHeaders({ executionProfile, bridgeWorkerId }),
-    },
+    }),
     request: {
       protocolVersion: 1,
       operation: 'write_file',
       workspaceId: workspace_id,
+      ...(workspace_instance_id ? { workspaceInstanceId: workspace_instance_id } : {}),
       path: file_path,
       content,
       overwrite,
@@ -1274,27 +1334,44 @@ async function editWorkspaceFile({
   file_path,
   edits,
   expected_base_sha256,
+  matching,
   workspace_id,
+  workspace_instance_id,
+  linked_worktrees,
   codeApiBaseUrl,
   executionProfile,
   bridgeWorkerId,
   req,
   signal,
+  maxQueueWaitMs,
+  maxRequestTimeoutMs,
+  maxRunTimeoutMs,
+  admission,
+  deadlineAtMs,
 }) {
-  const authHeaders = await getCodeApiAuthHeaders(req, bridgeWorkerId);
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
-    authHeaders: {
-      ...authHeaders,
+    linkedWorktrees: linked_worktrees,
+    maxQueueWaitMs,
+    codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
+    maxRequestTimeoutMs,
+    ...(maxRunTimeoutMs == null ? {} : { maxRunTimeoutMs }),
+    ...(admission == null ? {} : { admission }),
+    deadlineAtMs,
+    /** Minted per admission attempt: a queued call outlives one token TTL. */
+    authHeaders: async () => ({
+      ...(await getCodeApiAuthHeaders(req, bridgeWorkerId)),
       ...codeExecutionHeaders({ executionProfile, bridgeWorkerId }),
-    },
+    }),
     request: {
       protocolVersion: 1,
       operation: 'edit_file',
       workspaceId: workspace_id,
+      ...(workspace_instance_id ? { workspaceInstanceId: workspace_instance_id } : {}),
       path: file_path,
       edits,
       ...(expected_base_sha256 ? { expectedBaseSha256: expected_base_sha256 } : {}),
+      matching,
     },
     ...(signal ? { signal } : {}),
   });
@@ -1304,26 +1381,43 @@ async function editWorkspaceFile({
 async function previewWorkspaceEdit({
   file_path,
   edits,
+  matching,
   workspace_id,
+  workspace_instance_id,
+  linked_worktrees,
   codeApiBaseUrl,
   executionProfile,
   bridgeWorkerId,
   req,
   signal,
+  maxQueueWaitMs,
+  maxRequestTimeoutMs,
+  maxRunTimeoutMs,
+  admission,
+  deadlineAtMs,
 }) {
-  const authHeaders = await getCodeApiAuthHeaders(req, bridgeWorkerId);
   return executeWorkspaceTool({
     baseURL: codeApiBaseUrl,
-    authHeaders: {
-      ...authHeaders,
+    linkedWorktrees: linked_worktrees,
+    maxQueueWaitMs,
+    codeApiMaxRetryWaitMs: req?.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
+    maxRequestTimeoutMs,
+    ...(maxRunTimeoutMs == null ? {} : { maxRunTimeoutMs }),
+    ...(admission == null ? {} : { admission }),
+    deadlineAtMs,
+    /** Minted per admission attempt: a queued call outlives one token TTL. */
+    authHeaders: async () => ({
+      ...(await getCodeApiAuthHeaders(req, bridgeWorkerId)),
       ...codeExecutionHeaders({ executionProfile, bridgeWorkerId }),
-    },
+    }),
     request: {
       protocolVersion: 1,
       operation: 'preview_edit',
       workspaceId: workspace_id,
+      ...(workspace_instance_id ? { workspaceInstanceId: workspace_instance_id } : {}),
       path: file_path,
       edits,
+      matching,
     },
     ...(signal ? { signal } : {}),
   });
@@ -1610,7 +1704,10 @@ module.exports = {
   writeWorkspaceFile,
   previewWorkspaceEdit,
   editWorkspaceFile,
-  readSandboxFile,
+  readSandboxFile: createSandboxTextReader({
+    readFile: readSandboxFile,
+    readBytes: readSandboxImage,
+  }),
   readSandboxImage,
   writeSandboxFile,
   runPreviewFinalize,

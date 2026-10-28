@@ -1,5 +1,10 @@
 import { Types } from 'mongoose';
-import { PrincipalType, PrincipalModel, PermissionBits } from 'librechat-data-provider';
+import {
+  PrincipalType,
+  PrincipalModel,
+  PermissionBits,
+  permissionWriteAttemptsSchema,
+} from 'librechat-data-provider';
 import type {
   AnyBulkWriteOperation,
   ClientSession,
@@ -8,8 +13,12 @@ import type {
   Model,
 } from 'mongoose';
 import type { IAclEntry } from '~/types';
+import { tenantPartitionFilter } from '~/models/plugins/tenantIsolation';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { MAX_PERM_BITS } from '~/common/permissions';
+import { getSafeErrorFields } from '~/utils/errors';
+import { RoleBits } from '~/common/enum';
+import logger from '~/config/winston';
 
 /**
  * Empty frozen array shared by every rejection path. Returning a single
@@ -76,12 +85,52 @@ export function permissionBitSupersets(requiredBits: number): readonly number[] 
   return frozen;
 }
 
+/**
+ * Attempts for a guarded permission write before it reports failure. Callers
+ * may override per call; a conflict is only ever resolved by retrying, never by
+ * writing over a value the caller did not observe.
+ */
+export const PERM_BITS_WRITE_ATTEMPTS: number = permissionWriteAttemptsSchema.parse(undefined);
+
+/** One principal's role replacement, as requested by the caller. */
+export type RoleBitsWrite = {
+  /** Identity of the principal on the resource; never filters on permissions. */
+  filter: Record<string, unknown>;
+  /** Identity fields used only when the entry has to be created. */
+  insert: Record<string, unknown>;
+  /** The requested role's bits; non-role bits are masked off. */
+  roleBits: number;
+  /** Role metadata that must land in the SAME write as the role bits. */
+  metadata: Record<string, unknown>;
+};
+
+/**
+ * The permission mask a resource's owner holds: every bit, not merely VIEW. Shared so the
+ * marketplace's author sort (`agent.ts`) and the owner-contact lookup below agree on which
+ * ACL entry represents ownership, a disagreement would show two different authors for
+ * one agent.
+ */
+export const OWNER_ACL_PERMISSION_BITS: number =
+  PermissionBits.VIEW | PermissionBits.EDIT | PermissionBits.DELETE | PermissionBits.SHARE;
+
+/**
+ * Every `permBits` value that still means ownership. Granting Agent Insights ORs
+ * `VIEW_INSIGHTS` into an owner's role bits (`packages/api/src/acl/accessControlService.ts`),
+ * so an owner entry is not always exactly {@link OWNER_ACL_PERMISSION_BITS}; matching the
+ * exact value would drop that owner and hand the agent's author back to whoever `author`
+ * still names. Enumerated rather than `$bitsAllSet`, which DocumentDB rejects.
+ */
+export const OWNER_ACL_PERMISSION_BIT_SUPERSETS: readonly number[] =
+  permissionBitSupersets(OWNER_ACL_PERMISSION_BITS);
+
+/**
+ * A stringified ObjectId is always exactly 24 hex characters. Checked explicitly rather
+ * than with `ObjectId.isValid`, which also accepts any 12-character string and would turn
+ * a stray identifier into a garbage query instead of dropping it.
+ */
+const OBJECT_ID_HEX = /^[0-9a-fA-F]{24}$/;
+
 export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
-  findEntriesByPrincipal: (
-    principalType: string,
-    principalId: string | Types.ObjectId,
-    resourceType?: string,
-  ) => Promise<IAclEntry[]>;
   findEntriesByResource: (
     resourceType: string,
     resourceId: string | Types.ObjectId,
@@ -91,6 +140,8 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     principalsList: Array<{ principalType: string; principalId?: string | Types.ObjectId }>,
     resourceType: string,
     resourceId: string | Types.ObjectId,
+    session?: ClientSession,
+    readPrimary?: boolean,
   ) => Promise<IAclEntry[]>;
   hasPermission: (
     principalsList: Array<{ principalType: string; principalId?: string | Types.ObjectId }>,
@@ -119,13 +170,6 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     roleId?: string | Types.ObjectId,
     expiredAt?: Date,
   ) => Promise<IAclEntry | null>;
-  revokePermission: (
-    principalType: string,
-    principalId: string | Types.ObjectId | null,
-    resourceType: string,
-    resourceId: string | Types.ObjectId,
-    session?: ClientSession,
-  ) => Promise<DeleteResult>;
   modifyPermissionBits: (
     principalType: string,
     principalId: string | Types.ObjectId | null,
@@ -134,6 +178,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     addBits?: number | null,
     removeBits?: number | null,
     session?: ClientSession,
+    maxAttempts?: number,
   ) => Promise<IAclEntry | null>;
   findAccessibleResources: (
     principalsList: Array<{ principalType: string; principalId?: string | Types.ObjectId }>,
@@ -146,6 +191,20 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     filter: Record<string, unknown>,
     options?: { session?: ClientSession },
   ) => Promise<DeleteResult>;
+  deletePrincipalAclEntries: (principal: {
+    principalType: PrincipalType;
+    principalId: string | Types.ObjectId;
+  }) => Promise<void>;
+  moveAclEntriesToPrincipal: (
+    principalType: PrincipalType,
+    fromPrincipalId: string,
+    toPrincipalId: string,
+    options?: { ids?: readonly string[] },
+  ) => Promise<string[]>;
+  replaceRoleBits: (
+    writes: RoleBitsWrite[],
+    options?: { session?: ClientSession; maxAttempts?: number },
+  ) => Promise<{ upsertedWrites: Set<number> }>;
   bulkWriteAclEntries: (
     ops: AnyBulkWriteOperation[],
     options?: { session?: ClientSession },
@@ -157,31 +216,15 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     readPrimary?: boolean,
   ) => Promise<Types.ObjectId[]>;
   aggregateAclEntries: (pipeline: PipelineStage[]) => Promise<unknown[]>;
+  getFirstOwnerIdsByResource: (
+    resourceType: string,
+    resourceIds: Array<string | Types.ObjectId>,
+  ) => Promise<Map<string, string>>;
   getSoleOwnedResourceIds: (
     userObjectId: Types.ObjectId,
     resourceTypes: string | string[],
   ) => Promise<Types.ObjectId[]>;
 } {
-  /**
-   * Find ACL entries for a specific principal (user or group)
-   * @param principalType - The type of principal ('user', 'group')
-   * @param principalId - The ID of the principal
-   * @param resourceType - Optional filter by resource type
-   * @returns Array of ACL entries
-   */
-  async function findEntriesByPrincipal(
-    principalType: string,
-    principalId: string | Types.ObjectId,
-    resourceType?: string,
-  ): Promise<IAclEntry[]> {
-    const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
-    const query: Record<string, unknown> = { principalType, principalId };
-    if (resourceType) {
-      query.resourceType = resourceType;
-    }
-    return await AclEntry.find(query).lean<IAclEntry[]>();
-  }
-
   /**
    * Find ACL entries for a specific resource
    * @param resourceType - The type of resource ('agent', 'project', 'file')
@@ -212,6 +255,8 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     principalsList: Array<{ principalType: string; principalId?: string | Types.ObjectId }>,
     resourceType: string,
     resourceId: string | Types.ObjectId,
+    session?: ClientSession,
+    readPrimary?: boolean,
   ): Promise<IAclEntry[]> {
     const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
     const principalsQuery = principalsList.map((p) => ({
@@ -219,11 +264,19 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
       ...(p.principalType !== PrincipalType.PUBLIC && { principalId: p.principalId }),
     }));
 
-    return await AclEntry.find({
+    const query = AclEntry.find({
       $or: principalsQuery,
       resourceType,
       resourceId,
-    }).lean<IAclEntry[]>();
+    });
+    if (session) {
+      query.session(session);
+    }
+    if (readPrimary && !session?.inTransaction()) {
+      /** Mutation snapshots must not come from a lagging secondary; a transaction already reads from the primary. */
+      query.read('primary');
+    }
+    return await query.lean<IAclEntry[]>();
   }
 
   /**
@@ -400,41 +453,6 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
   }
 
   /**
-   * Revoke permissions from a principal for a resource
-   * @param principalType - The type of principal ('user', 'group', 'public')
-   * @param principalId - The ID of the principal (null for 'public')
-   * @param resourceType - The type of resource
-   * @param resourceId - The ID of the resource
-   * @param session - Optional MongoDB session for transactions
-   * @returns The result of the delete operation
-   */
-  async function revokePermission(
-    principalType: string,
-    principalId: string | Types.ObjectId | null,
-    resourceType: string,
-    resourceId: string | Types.ObjectId,
-    session?: ClientSession,
-  ): Promise<DeleteResult> {
-    const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
-    const query: Record<string, unknown> = {
-      principalType,
-      resourceType,
-      resourceId,
-    };
-
-    if (principalType !== PrincipalType.PUBLIC) {
-      query.principalId =
-        typeof principalId === 'string' && principalType !== PrincipalType.ROLE
-          ? new Types.ObjectId(principalId)
-          : principalId;
-    }
-
-    const options = session ? { session } : {};
-
-    return await AclEntry.deleteOne(query, options);
-  }
-
-  /**
    * Modify existing permission bits for a principal on a resource
    * @param principalType - The type of principal ('user', 'group', 'public')
    * @param principalId - The ID of the principal (null for 'public')
@@ -453,6 +471,7 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     addBits?: number | null,
     removeBits?: number | null,
     session?: ClientSession,
+    maxAttempts?: number,
   ): Promise<IAclEntry | null> {
     const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
     const query: Record<string, unknown> = {
@@ -468,26 +487,20 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
           : principalId;
     }
 
-    const update: Record<string, unknown> = {};
-
-    if (addBits) {
-      update.$bit = { permBits: { or: addBits } };
-    }
-
-    if (removeBits) {
-      if (!update.$bit) {
-        update.$bit = {};
-      }
-      const bitUpdate = update.$bit as Record<string, unknown>;
-      bitUpdate.permBits = { ...(bitUpdate.permBits as Record<string, unknown>), and: ~removeBits };
-    }
-
-    const options = {
-      new: true,
-      ...(session ? { session } : {}),
-    };
-
-    return await AclEntry.findOneAndUpdate(query, update, options);
+    const addMask = permissionMask(addBits ?? 0);
+    const removeMask = permissionMask(removeBits ?? 0);
+    const attempts = permissionWriteAttemptsSchema.parse(maxAttempts);
+    const [entry] = await readPermissionEntries(query, session);
+    if (entry == null) return null;
+    if (addMask === 0 && removeMask === 0) return AclEntry.hydrate(entry);
+    return mutatePermissionEntry(
+      entry,
+      query,
+      (bits) => (bits | addMask) & ~removeMask,
+      {},
+      attempts,
+      session,
+    );
   }
 
   /**
@@ -544,6 +557,209 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
   }
 
   /**
+   * Removes every ACL entry a principal holds, as the principal's deletion does. A role is keyed
+   * by a name every tenant reuses, so only its entries in the caller's tenant partition
+   * (`tenantPartitionFilter`) go: that tenant's, or without a tenant only platform-level ones,
+   * never those of each tenant's own role that shares the name (as `moveAclEntriesToPrincipal`
+   * moves them on a rename). A group or user is addressed by id, passed as stored (an ObjectId).
+   */
+  async function deletePrincipalAclEntries(principal: {
+    principalType: PrincipalType;
+    principalId: string | Types.ObjectId;
+  }): Promise<void> {
+    const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
+    const { principalType, principalId } = principal;
+    await AclEntry.deleteMany({
+      principalType,
+      principalId,
+      ...(principalType === PrincipalType.ROLE &&
+        tenantPartitionFilter('deletePrincipalAclEntries')),
+    });
+  }
+
+  /**
+   * Re-keys a role principal's entries to another name (a role rename) and returns the ids it
+   * moved; with `ids`, moves only those (how a caller undoes a move). Entries keep their
+   * identity and bits. A move that fails part-way is undone before it rethrows; an undo that
+   * fails too is logged with the entry ids, so an operator can finish it.
+   *
+   * Only the caller's tenant partition moves (`tenantPartitionFilter`): that tenant's entries,
+   * or without a tenant only platform-level ones. A rename re-keys one role, and must not re-key
+   * the entries of each tenant's own role that happens to share the name.
+   */
+  async function moveAclEntriesToPrincipal(
+    principalType: PrincipalType,
+    fromPrincipalId: string,
+    toPrincipalId: string,
+    options?: { ids?: readonly string[] },
+  ): Promise<string[]> {
+    const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
+    const source = {
+      principalType,
+      principalId: fromPrincipalId,
+      ...tenantPartitionFilter('moveAclEntriesToPrincipal'),
+    };
+    const ids: Types.ObjectId[] = options?.ids
+      ? options.ids.map((id) => new Types.ObjectId(id))
+      : (await AclEntry.find(source).select('_id').lean<Array<{ _id: Types.ObjectId }>>()).map(
+          ({ _id }) => _id,
+        );
+    if (ids.length === 0) {
+      return [];
+    }
+    try {
+      await AclEntry.updateMany(
+        { ...source, _id: { $in: ids } },
+        { $set: { principalId: toPrincipalId } },
+      );
+    } catch (error) {
+      await AclEntry.updateMany(
+        { principalType, principalId: toPrincipalId, _id: { $in: ids } },
+        { $set: { principalId: fromPrincipalId } },
+      ).catch((undoError: unknown) =>
+        logger.error('[moveAclEntriesToPrincipal] undo after a failed move failed', {
+          principalType,
+          fromPrincipalId,
+          toPrincipalId,
+          entryIds: ids.map((id) => id.toString()).join(','),
+          ...getSafeErrorFields(undoError),
+        }),
+      );
+      throw error;
+    }
+    return ids.map((id) => id.toString());
+  }
+
+  /** Reject values JavaScript bit operations would truncate. Missing legacy fields mean zero. */
+  function permissionMask(value: unknown): number {
+    if (value === undefined) return 0;
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0 || value > 0x7fffffff) {
+      throw new Error('Invalid permBits: expected a nonnegative 31-bit integer');
+    }
+    return value;
+  }
+
+  /** Pin nontransactional reads to the write authority, including explicit sessions. */
+  async function readPermissionEntries(filter: Record<string, unknown>, session?: ClientSession) {
+    const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
+    const query = AclEntry.find(filter, null, session ? { session } : {}).sort({ _id: 1 });
+    if (!session?.inTransaction()) query.read('primary');
+    return query.lean();
+  }
+
+  /**
+   * The single permission mutation primitive. One CAS changes bits and metadata
+   * together. Retry only THIS document, never documents that already completed.
+   * Deletion wins over a pending mutation: never retarget it to a replacement ACL.
+   * Transaction conflicts and ambiguous write failures propagate to the caller;
+   * only a definite zero-match result is retried here.
+   */
+  async function mutatePermissionEntry(
+    initial: Awaited<ReturnType<typeof readPermissionEntries>>[number],
+    identity: Record<string, unknown>,
+    transform: (bits: number) => number,
+    metadata: Record<string, unknown>,
+    maxAttempts: number,
+    session?: ClientSession,
+  ): Promise<IAclEntry | null> {
+    const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
+    let current: typeof initial | undefined = initial;
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (current == null) return null;
+      const observed = current.permBits;
+      const permBits = permissionMask(transform(permissionMask(observed)));
+      const guard: Record<string, unknown> = { ...identity, _id: current._id };
+      // Bind the guard to the snapshot's role/audit state as well as its bits.
+      for (const key of ['permBits', 'roleId', 'grantedBy', 'grantedAt']) {
+        const value = (current as unknown as Record<string, unknown>)[key];
+        guard[key] = value === undefined ? { $exists: false } : value;
+      }
+      const result = await bulkWriteAclEntries(
+        [{ updateOne: { filter: guard, update: { $set: { ...metadata, permBits } } } }],
+        session ? { session } : {},
+      );
+      if (result.matchedCount === 1) {
+        return AclEntry.hydrate({ ...current, ...metadata, permBits });
+      }
+      [current] = await readPermissionEntries({ ...identity, _id: initial._id }, session);
+    }
+    if (current == null) return null;
+    throw new Error(
+      `Permission write conflict: permBits guard did not hold after ${maxAttempts} attempts`,
+    );
+  }
+
+  /**
+   * Process each observed ACL once, including duplicates. Completion is tracked
+   * per document; a later failure may leave earlier writes committed on standalone
+   * databases and reports that fact without replaying them. This is not a batch transaction.
+   */
+  async function replaceRoleBits(
+    writes: RoleBitsWrite[],
+    options?: { session?: ClientSession; maxAttempts?: number },
+  ): Promise<{ upsertedWrites: Set<number> }> {
+    const maxAttempts = permissionWriteAttemptsSchema.parse(options?.maxAttempts);
+    const session = options?.session;
+    const upsertedWrites = new Set<number>();
+    let completedEntries = 0;
+    try {
+      for (const [index, write] of writes.entries()) {
+        const roleOnly = permissionMask(write.roleBits) & RoleBits.OWNER;
+        let existing = await readPermissionEntries(write.filter, session);
+        if (existing.length === 0) {
+          const result = await bulkWriteAclEntries(
+            [
+              {
+                updateOne: {
+                  filter: write.filter,
+                  update: {
+                    $setOnInsert: { ...write.insert, ...write.metadata, permBits: roleOnly },
+                  },
+                  upsert: true,
+                },
+              },
+            ],
+            session ? { session } : {},
+          );
+          if (result.upsertedCount === 1) {
+            upsertedWrites.add(index);
+            completedEntries++;
+            continue;
+          }
+          // Another writer created this identity first. Read and mutate that row,
+          // rather than claiming that a no-op identity upsert applied our role.
+          existing = await readPermissionEntries(write.filter, session);
+          if (existing.length === 0) throw new Error('ACL disappeared during role insertion');
+        }
+        for (const entry of existing) {
+          const updated = await mutatePermissionEntry(
+            entry,
+            write.filter,
+            (bits) => (bits & ~RoleBits.OWNER) | roleOnly,
+            write.metadata,
+            maxAttempts,
+            session,
+          );
+          if (updated == null)
+            throw new Error('ACL deleted during role update; permission was not recreated');
+          completedEntries++;
+        }
+      }
+      return { upsertedWrites };
+    } catch (error) {
+      // Preserve MongoDB error labels so the owner can retry/abort its transaction.
+      if (error instanceof Error) {
+        Object.assign(error, {
+          completedEntries,
+          transactional: session?.inTransaction() === true,
+        });
+        error.message += ` (${completedEntries} ACL writes completed before failure; transaction may roll back)`;
+      }
+      throw error;
+    }
+  }
+
+  /**
    * Performs a bulk write operation on ACL entries.
    * @param ops - Array of bulk write operations
    * @param options - Optional query options (e.g., { session })
@@ -591,6 +807,55 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
   async function aggregateAclEntries(pipeline: PipelineStage[]): Promise<unknown[]> {
     const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
     return AclEntry.aggregate(pipeline);
+  }
+
+  /**
+   * The earliest user owner of each resource, keyed by stringified resource id.
+   * An ownership transfer grants a second owner entry before revoking the first, and a
+   * revocation that fails leaves both behind, so the earliest `(grantedAt, createdAt, _id)`
+   * entry is the one that decides the resource's public author — the same tie-break the
+   * marketplace's author sort applies inside its own aggregation (`agent.ts`).
+   */
+  async function getFirstOwnerIdsByResource(
+    resourceType: string,
+    resourceIds: Array<string | Types.ObjectId>,
+  ): Promise<Map<string, string>> {
+    /* `$match` inside an aggregation does no schema casting, so a caller that passes
+       stringified ids — the shape every module outside data-schemas uses — would match
+       nothing at all rather than fail loudly. */
+    const matchIds: Types.ObjectId[] = [];
+    for (const id of resourceIds) {
+      if (typeof id !== 'string') {
+        matchIds.push(id);
+      } else if (OBJECT_ID_HEX.test(id)) {
+        matchIds.push(new Types.ObjectId(id));
+      }
+    }
+    if (matchIds.length === 0) {
+      return new Map();
+    }
+    const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
+    const entries = (await AclEntry.aggregate([
+      {
+        $match: {
+          resourceType,
+          resourceId: { $in: matchIds },
+          principalType: PrincipalType.USER,
+          permBits: { $in: [...OWNER_ACL_PERMISSION_BIT_SUPERSETS] },
+        },
+      },
+      { $sort: { grantedAt: 1, createdAt: 1, _id: 1 } },
+      { $group: { _id: '$resourceId', principalId: { $first: '$principalId' } } },
+    ])) as Array<{ _id?: Types.ObjectId | string; principalId?: Types.ObjectId | string }>;
+    const owners = new Map<string, string>();
+    for (const entry of entries) {
+      const resourceId = entry?._id?.toString();
+      const ownerId = entry?.principalId?.toString();
+      if (resourceId && ownerId) {
+        owners.set(resourceId, ownerId);
+      }
+    }
+    return owners;
   }
 
   /**
@@ -643,21 +908,23 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
   }
 
   return {
-    findEntriesByPrincipal,
     findEntriesByResource,
     findEntriesByPrincipalsAndResource,
     hasPermission,
     getEffectivePermissions,
     getEffectivePermissionsForResources,
     grantPermission,
-    revokePermission,
     modifyPermissionBits,
     findAccessibleResources,
     deleteAclEntries,
+    deletePrincipalAclEntries,
+    replaceRoleBits,
     bulkWriteAclEntries,
     findPublicResourceIds,
     aggregateAclEntries,
+    getFirstOwnerIdsByResource,
     getSoleOwnedResourceIds,
+    moveAclEntriesToPrincipal,
   };
 }
 

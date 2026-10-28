@@ -48,6 +48,42 @@ describe('FlowStateManager', () => {
     jest.clearAllMocks();
   });
 
+  it.each([false, true])(
+    'preserves named failures across serialized stores (guarded: %s)',
+    async (guarded) => {
+      jest.useFakeTimers();
+      const keyv = new Keyv({ serialize: JSON.stringify, deserialize: JSON.parse });
+      const owner = new FlowStateManager<string>(keyv, { ttl: 30000, ci: true });
+      const peer = new FlowStateManager<string>(keyv, { ttl: 30000, ci: true });
+      try {
+        await owner.initFlow('refresh', 'mcp_get_tokens');
+        const flow = await owner.getFlowState('refresh', 'mcp_get_tokens');
+        const waiting = peer.createFlowWithHandler(
+          'refresh',
+          'mcp_get_tokens',
+          async () => 'unexpected',
+        );
+        const result = waiting.catch((error: Error) => error);
+        const expected = {
+          name: 'MCPTokenRefreshUnavailableError',
+          message: 'retry later',
+        };
+        await Promise.resolve();
+        const error = new Error('retry later');
+        error.name = 'MCPTokenRefreshUnavailableError';
+        if (guarded) {
+          await owner.failFlowIfCurrent('refresh', 'mcp_get_tokens', flow!.createdAt, '', error);
+        } else {
+          await owner.failFlow('refresh', 'mcp_get_tokens', error);
+        }
+        await jest.advanceTimersByTimeAsync(2000);
+        expect(await result).toMatchObject(expected);
+      } finally {
+        jest.useRealTimers();
+      }
+    },
+  );
+
   describe('Concurrency Tests', () => {
     it('atomically updates the default in-memory Keyv envelope', async () => {
       const keyv = new Keyv({
@@ -1570,6 +1606,27 @@ describe('FlowStateManager', () => {
       });
       expect(second?.generation).toBe(first?.generation);
       await second?.release();
+    });
+
+    it('renews a held lease and refuses once another owner took it after expiry', async () => {
+      const now = Date.now();
+      const clock = jest.spyOn(Date, 'now').mockReturnValue(now);
+      const held = await flowManager.acquireLease('renewed-owner', {
+        advanceGeneration: true,
+        leaseMs: 1_000,
+      });
+
+      clock.mockReturnValue(now + 900);
+      await expect(held?.renew?.()).resolves.toBe(true);
+      clock.mockReturnValue(now + 1_500);
+      await expect(flowManager.acquireLease('renewed-owner', { waitMs: 0 })).resolves.toBeNull();
+
+      clock.mockReturnValue(now + 3_000);
+      const intruder = await flowManager.acquireLease('renewed-owner', { waitMs: 0 });
+      expect(intruder).not.toBeNull();
+      await intruder?.release();
+      await expect(held?.renew?.()).resolves.toBe(false);
+      clock.mockRestore();
     });
 
     it('expires released in-memory generations after the stale-work horizon', async () => {

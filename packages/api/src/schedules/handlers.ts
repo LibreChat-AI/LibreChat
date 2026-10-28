@@ -5,7 +5,12 @@ import {
   updateSchedulePayloadSchema,
   isCronCadence,
 } from 'librechat-data-provider';
-import type { TScheduleCadence, TCreateSchedule, TUpdateSchedule } from 'librechat-data-provider';
+import type {
+  TScheduleCadence,
+  TCreateSchedule,
+  TUpdateSchedule,
+  TSchedule,
+} from 'librechat-data-provider';
 import type { ScheduleMethods, ISchedule, IScheduleRun } from '@librechat/data-schemas';
 import type { Response } from 'express';
 import type {
@@ -246,10 +251,11 @@ export type WireSchedule = Pick<
   | 'configRevision'
   | 'createdAt'
   | 'updatedAt'
-> & {
-  /** See `TSchedule.inFlight`: the generating occurrences, from their own run rows. */
-  inFlight?: Array<{ conversationId: string }>;
-};
+> &
+  Pick<TSchedule, 'hasMCPConsent'> & {
+    /** See `TSchedule.inFlight`: the generating occurrences, from their own run rows. */
+    inFlight?: Array<{ conversationId: string }>;
+  };
 
 /** Only generating occurrences are read for the list. `ScheduleRun` is indexed by
  *  status, not by user, and `started` rows are bounded globally by the capacity
@@ -297,6 +303,7 @@ export function toWireSchedule(
 ): WireSchedule {
   return {
     id: schedule.id,
+    ...(schedule.mcpConsent && { hasMCPConsent: true }),
     user: schedule.user,
     name: schedule.name,
     prompt: schedule.prompt,
@@ -387,9 +394,12 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     res: Response,
     signal: AbortSignal,
     limits: ScheduleLimits,
+    scheduleId: string,
   ): Promise<boolean> {
     try {
       await deps.preflightMCP(agentId, requestUser(req), {
+        scheduleId,
+        stage: 'activation',
         signal,
         concurrency: limits.mcpPreflightConcurrency,
         deadlineMs: Date.now() + limits.mcpPreflightTimeoutMs,
@@ -581,6 +591,7 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       ),
       limits: {
         maxPerUser: limits.maxPerUser,
+        ...(limits.mcpConsent?.enabled && { mcpConsent: true }),
         // minIntervalMinutes ships with the list so the dialog can refuse a cadence
         // the floor would reject, instead of surfacing it as a 400 after submit.
         minIntervalMinutes: limits.minIntervalMinutes,
@@ -705,9 +716,10 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
       await respondToReplay(replayed);
       return;
     }
+    const id = `sched_${randomUUID()}`;
     if (
       parsed.data.enabled &&
-      !(await validateMCP(parsed.data.agent_id, req, res, mcpSignal, limits))
+      !(await validateMCP(parsed.data.agent_id, req, res, mcpSignal, limits, id))
     )
       return;
     // Project policy applies to a NEW insert only, and is therefore resolved AFTER every
@@ -751,7 +763,6 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     if (!withinIntervalFloor(res, parsed.data.cadence, parsed.data.timezone, limits)) {
       return;
     }
-    const id = `sched_${randomUUID()}`;
     const nextRunAt = parsed.data.enabled
       ? computeNextRunAt({
           cadence: parsed.data.cadence,
@@ -972,7 +983,14 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     }
     if (
       enabled &&
-      !(await validateMCP(parsed.data.agent_id ?? existing.agent_id, req, res, mcpSignal, limits))
+      !(await validateMCP(
+        parsed.data.agent_id ?? existing.agent_id,
+        req,
+        res,
+        mcpSignal,
+        limits,
+        existing.id,
+      ))
     )
       return;
     // The destination is re-resolved on every edit that leaves the schedule ENABLED,
@@ -1096,6 +1114,13 @@ export function createSchedulesHandlers(deps: SchedulesHandlersDeps): SchedulesH
     // loser simply retries against fresh state.
     const schedule = await deps.methods.updateScheduleById(existing.id, user.id, update, unset, {
       expectedConfigRevision: existing.configRevision,
+      ...(existing.mcpConsent &&
+        existing.mcpConsent.scheduleRevision === existing.configRevision &&
+        Object.keys(editedFields).every((key) => key === 'enabled') &&
+        !clearsProject &&
+        (chatProjectId == null || chatProjectId === existing.chatProjectId) && {
+          preserveMCPConsentRevision: existing.mcpConsent.revision,
+        }),
     });
     if (schedule == null) {
       // Either the row is gone, or a concurrent edit moved the revision. Distinguish

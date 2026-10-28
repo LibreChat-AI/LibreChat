@@ -3,60 +3,19 @@ const path = require('path');
 const axios = require('axios');
 const {
   deleteRagFile,
+  createLocalFileDeleter,
+  stripCacheBust,
+  writeLocalFile,
   assertRemoteFileURL,
   getRemoteFileFetchMaxBytes,
   getRemoteFileFetchTimeoutMs,
   assertRemoteFileContentLength,
+  saveLocalBuffer: saveBufferToLocalPath,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
-const { EModelEndpoint } = require('librechat-data-provider');
 const { resizeImageBuffer } = require('~/server/services/Files/images/resize');
 const { getBufferMetadata } = require('~/server/utils');
 const paths = require('~/config/paths');
-
-/**
- * Saves a file to a specified output path with a new filename.
- *
- * @param {Express.Multer.File} file - The file object to be saved. Should contain properties like 'originalname' and 'path'.
- * @param {string} outputPath - The path where the file should be saved.
- * @param {string} outputFilename - The new filename for the saved file (without extension).
- * @returns {Promise<string>} The full path of the saved file.
- * @throws Will throw an error if the file saving process fails.
- */
-async function saveLocalFile(file, outputPath, outputFilename) {
-  try {
-    if (!fs.existsSync(outputPath)) {
-      fs.mkdirSync(outputPath, { recursive: true });
-    }
-
-    const fileExtension = path.extname(file.originalname);
-    const filenameWithExt = outputFilename + fileExtension;
-    const outputFilePath = path.join(outputPath, filenameWithExt);
-    fs.copyFileSync(file.path, outputFilePath);
-    fs.unlinkSync(file.path);
-
-    return outputFilePath;
-  } catch (error) {
-    logger.error('[saveFile] Error while saving the file:', error);
-    throw error;
-  }
-}
-
-/**
- * Saves an uploaded image file to a specified directory based on the user's ID and a filename.
- *
- * @param {ServerRequest} req - The Express request object, containing the user's information and app configuration.
- * @param {Express.Multer.File} file - The uploaded file object.
- * @param {string} filename - The new filename to assign to the saved image (without extension).
- * @returns {Promise<void>}
- * @throws Will throw an error if the image saving process fails.
- */
-const saveLocalImage = async (req, file, filename) => {
-  const appConfig = req.config;
-  const imagePath = appConfig.paths.imageOutput;
-  const outputPath = path.join(imagePath, req.user.id ?? '');
-  await saveLocalFile(file, outputPath, filename);
-};
 
 /**
  * Saves a buffer to a specified directory on the local file system.
@@ -71,30 +30,7 @@ const saveLocalImage = async (req, file, filename) => {
  */
 async function saveLocalBuffer({ userId, buffer, fileName, basePath = 'images' }) {
   try {
-    const { publicPath, uploads } = paths;
-
-    /**
-     * For 'images': save to publicPath/images/userId (images are served statically)
-     * For 'uploads': save to uploads/userId (files downloaded via API)
-     * */
-    const directoryPath =
-      basePath === 'images' ? path.join(publicPath, basePath, userId) : path.join(uploads, userId);
-
-    if (!fs.existsSync(directoryPath)) {
-      fs.mkdirSync(directoryPath, { recursive: true });
-    }
-
-    const resolvedDir = path.resolve(directoryPath);
-    const resolvedPath = path.resolve(resolvedDir, fileName);
-    const rel = path.relative(resolvedDir, resolvedPath);
-    if (rel.startsWith('..') || path.isAbsolute(rel) || rel.includes(`..${path.sep}`)) {
-      throw new Error('Path traversal detected in filename');
-    }
-    fs.writeFileSync(resolvedPath, buffer);
-
-    const filePath = path.posix.join('/', basePath, userId, fileName);
-
-    return filePath;
+    return await saveBufferToLocalPath({ paths, userId, buffer, fileName, basePath });
   } catch (error) {
     logger.error('[saveLocalBuffer] Error while saving the buffer:', error);
     throw error;
@@ -141,11 +77,6 @@ async function saveFileFromURL({ userId, URL, fileName, basePath = 'images' }) {
     // Construct the outputPath based on the basePath and userId
     const outputPath = path.join(paths.publicPath, basePath, userId.toString());
 
-    // Check if the output directory exists, if not, create it
-    if (!fs.existsSync(outputPath)) {
-      fs.mkdirSync(outputPath, { recursive: true });
-    }
-
     // Replace or append the correct extension
     const extRegExp = new RegExp(path.extname(fileName) + '$');
     fileName = fileName.replace(extRegExp, `.${extension}`);
@@ -153,9 +84,7 @@ async function saveFileFromURL({ userId, URL, fileName, basePath = 'images' }) {
       fileName += `.${extension}`;
     }
 
-    // Save the file to the output path
-    const outputFilePath = path.join(outputPath, fileName);
-    fs.writeFileSync(outputFilePath, buffer);
+    await writeLocalFile(outputPath, fileName, buffer);
 
     return {
       bytes,
@@ -185,90 +114,7 @@ async function getLocalFileURL({ fileName, basePath = 'images' }) {
   return path.posix.join('/', basePath, fileName);
 }
 
-/**
- * Validates that a filepath is strictly contained within a subdirectory under a base path,
- * using path.relative to prevent prefix-collision bypasses.
- *
- * @param {ServerRequest} req - The request object from Express. It should contain a `user` property with an `id`.
- * @param {string} base - The base directory path.
- * @param {string} subfolder - The subdirectory under the base path.
- * @param {string} filepath - The complete file path to be validated.
- *
- * @returns {boolean}
- *          Returns true if the filepath is within the specified base and subfolder, false otherwise.
- */
-const isValidPath = (req, base, subfolder, filepath) => {
-  const normalizedBase = path.resolve(base, subfolder, req.user.id);
-  const normalizedFilepath = path.resolve(filepath);
-  const rel = path.relative(normalizedBase, normalizedFilepath);
-  return !rel.startsWith('..') && !path.isAbsolute(rel) && !rel.includes(`..${path.sep}`);
-};
-
-/**
- * @param {string} filepath
- */
-const unlinkFile = async (filepath) => {
-  try {
-    await fs.promises.unlink(filepath);
-  } catch (error) {
-    logger.error('Error deleting file:', error);
-  }
-};
-
-/**
- * Deletes a file from the filesystem. This function takes a file object, constructs the full path, and
- * verifies the path's validity before deleting the file. If the path is invalid, an error is thrown.
- *
- * @param {ServerRequest} req - The request object from Express.
- * @param {MongoFile} file - The file object to be deleted. It should have a `filepath` property that is
- *                           a string representing the path of the file relative to the publicPath.
- *
- * @returns {Promise<void>}
- *          A promise that resolves when the file has been successfully deleted, or throws an error if the
- *          file path is invalid or if there is an error in deletion.
- */
-const deleteLocalFile = async (req, file) => {
-  const appConfig = req.config;
-  const { publicPath, uploads } = appConfig.paths;
-
-  /** Filepath stripped of query parameters (e.g., ?manual=true) */
-  const cleanFilepath = file.filepath.split('?')[0];
-
-  await deleteRagFile({ userId: req.user.id, file });
-
-  if (cleanFilepath.startsWith(`/uploads/${req.user.id}`)) {
-    const userUploadDir = path.join(uploads, req.user.id);
-    const basePath = cleanFilepath.split(`/uploads/${req.user.id}/`)[1];
-
-    if (!basePath) {
-      throw new Error(`Invalid file path: ${cleanFilepath}`);
-    }
-
-    const filepath = path.join(userUploadDir, basePath);
-
-    const rel = path.relative(userUploadDir, filepath);
-    if (rel.startsWith('..') || path.isAbsolute(rel) || rel.includes(`..${path.sep}`)) {
-      throw new Error(`Invalid file path: ${cleanFilepath}`);
-    }
-
-    await unlinkFile(filepath);
-    return;
-  }
-
-  const parts = cleanFilepath.split(path.sep);
-  const subfolder = parts[1];
-  if (!subfolder && parts[0] === EModelEndpoint.agents) {
-    logger.warn(`Agent File ${file.file_id} is missing filepath, may have been deleted already`);
-    return;
-  }
-  const filepath = path.join(publicPath, cleanFilepath);
-
-  if (!isValidPath(req, publicPath, subfolder, filepath)) {
-    throw new Error('Invalid file path');
-  }
-
-  await unlinkFile(filepath);
-};
+const deleteLocalFile = (req, file) => createLocalFileDeleter({ deleteRagFile, logger })(req, file);
 
 /**
  * Uploads a file to the specified upload directory.
@@ -293,14 +139,8 @@ async function uploadLocalFile({ req, file, file_id }) {
   const { uploads } = appConfig.paths;
   const userPath = path.join(uploads, req.user.id);
 
-  if (!fs.existsSync(userPath)) {
-    fs.mkdirSync(userPath, { recursive: true });
-  }
-
   const fileName = `${file_id}__${path.basename(inputFilePath)}`;
-  const newPath = path.join(userPath, fileName);
-
-  await fs.promises.writeFile(newPath, inputBuffer);
+  const newPath = await writeLocalFile(userPath, fileName, inputBuffer);
   const filepath = path.posix.join('/', 'uploads', req.user.id, path.basename(newPath));
 
   let height, width;
@@ -321,12 +161,14 @@ async function uploadLocalFile({ req, file, file_id }) {
  * Retrieves a readable stream for a file from local storage.
  *
  * @param {ServerRequest} req - The request object from Express
- * @param {string} filepath - The filepath.
+ * @param {string} requestedFilepath - The filepath, which may carry a cache-busting query string.
  * @returns {ReadableStream} A readable stream of the file.
  */
-async function getLocalFileStream(req, filepath) {
+async function getLocalFileStream(req, requestedFilepath) {
   try {
     const appConfig = req.config;
+    /** Reused code outputs persist a `?v=<timestamp>` suffix that no file on disk carries */
+    const filepath = stripCacheBust(requestedFilepath);
     if (filepath.includes('/uploads/')) {
       const basePath = filepath.split('/uploads/')[1];
 
@@ -372,8 +214,6 @@ async function getLocalFileStream(req, filepath) {
 }
 
 module.exports = {
-  saveLocalFile,
-  saveLocalImage,
   saveLocalBuffer,
   saveFileFromURL,
   getLocalFileURL,

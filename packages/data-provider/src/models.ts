@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import type { AgentSubagentsConfig } from './types/assistants';
+import type { AgentSubagentsConfig } from './types/agents';
 import type { TModelSpecPreset } from './schemas';
 import {
   EModelEndpoint,

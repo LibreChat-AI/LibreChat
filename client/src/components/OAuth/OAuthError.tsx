@@ -1,12 +1,19 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Button } from '@librechat/client';
 import { useSearchParams } from 'react-router-dom';
+import { announceOAuthSettled } from '~/data-provider';
 import { useLocalize } from '~/hooks';
 
 export default function OAuthError() {
   const localize = useLocalize();
   const [searchParams] = useSearchParams();
   const error = searchParams.get('error') || 'unknown_error';
+  const flowId = searchParams.get('flow') ?? undefined;
+
+  useEffect(() => {
+    /** Ends the watch on this sign-in in the window that started it, which no longer polls. */
+    announceOAuthSettled({ outcome: 'failed', flowId });
+  }, [flowId]);
 
   const getErrorMessage = (error: string): string => {
     switch (error) {
@@ -36,12 +43,12 @@ export default function OAuthError() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-surface-secondary p-8">
-      <div className="w-full max-w-md rounded-lg bg-surface-primary p-8 text-center shadow-lg">
+    <div className="bg-surface-secondary flex min-h-screen items-center justify-center p-8">
+      <div className="bg-surface-primary w-full max-w-md rounded-lg p-8 text-center shadow-lg">
         <div className="mb-4 flex justify-center">
-          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-status-error-subtle">
+          <div className="bg-status-error-subtle flex h-12 w-12 items-center justify-center rounded-full">
             <svg
-              className="h-6 w-6 text-status-error"
+              className="text-status-error h-6 w-6"
               fill="none"
               viewBox="0 0 24 24"
               stroke="currentColor"
@@ -56,10 +63,10 @@ export default function OAuthError() {
             </svg>
           </div>
         </div>
-        <h1 className="mb-4 text-3xl font-bold text-text-primary">
+        <h1 className="text-text-primary mb-4 text-3xl font-bold">
           {localize('com_ui_oauth_error_title') || 'Authentication Failed'}
         </h1>
-        <p className="mb-6 text-sm text-text-secondary">{getErrorMessage(error)}</p>
+        <p className="text-text-secondary mb-6 text-sm">{getErrorMessage(error)}</p>
         <Button
           variant="default"
           onClick={() => window.close()}

@@ -4,15 +4,100 @@ import {
   artifactRowKind,
   buildSandpackOptions,
   getArtifactDownloadFilename,
+  getArtifactFilename,
+  getDependencies,
+  getSvgFiles,
+  getTemplate,
   detectArtifactTypeFromFile,
   fileToArtifact,
   isCodeOnlyArtifact,
   isPreviewOnlyArtifact,
+  isSvgArtifactType,
   languageForFilename,
+  normalizeArtifactType,
   TOOL_ARTIFACT_TYPES,
 } from '../artifacts';
 
 const TAILWIND_CDN = 'https://cdn.tailwindcss.com/3.4.17#tailwind.js';
+
+describe('SVG artifact template mapping (#16087)', () => {
+  /* Bare `<svg>` handed to the static template as `index.html` renders
+   * blank. These types must map to a dedicated SVG file (and empty
+   * Sandpack deps) instead of riding `artifactFilename.default`. */
+  it.each(['image/svg+xml', 'image/svg'])(
+    'maps %s to index.svg on the static template, not default index.html',
+    (type) => {
+      expect(getArtifactFilename(type)).toBe('index.svg');
+      expect(getTemplate(type)).toBe('static');
+      expect(getDependencies(type)).toEqual({});
+    },
+  );
+
+  it('wraps a bare SVG in an HTML document for the static preview entry', () => {
+    const svg =
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 600"><rect width="800" height="600" fill="#0f172a"/></svg>';
+    const files = getSvgFiles(svg);
+    expect(files['index.svg']).toBe(svg);
+    expect(files['index.html']).toMatch(/<!DOCTYPE html>/i);
+    expect(files['index.html']).toContain('<body');
+    expect(files['index.html']).toContain(svg);
+  });
+
+  it('strips an XML declaration so the HTML shell stays a valid HTML document', () => {
+    const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"></svg>';
+    const files = getSvgFiles(`<?xml version="1.0" encoding="UTF-8"?>\n${svg}`);
+    expect(files['index.html']).not.toMatch(/<\?xml/i);
+    expect(files['index.html']).toContain(svg);
+  });
+
+  it('sizes only the root SVG so a nested viewport keeps its own geometry', () => {
+    const originalHead = document.head.innerHTML;
+    const originalBody = document.body.innerHTML;
+    try {
+      const html = getSvgFiles(
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">' +
+          '<svg id="sprite" width="20" height="20" x="5" y="5"><rect width="20" height="20"/></svg>' +
+          '</svg>',
+      )['index.html'];
+      /* Mount the shell's own generated style and body. CSS overrides SVG
+       * presentation attributes, so an unscoped `svg` rule would stretch the
+       * nested viewport to the panel and corrupt the drawing's layout. */
+      const css = html.match(/<style>([\s\S]*?)<\/style>/i)?.[1] ?? '';
+      const markup = html.match(/<body>([\s\S]*?)<\/body>/i)?.[1] ?? '';
+      document.head.innerHTML = `<style>${css}</style>`;
+      document.body.innerHTML = markup;
+
+      const root = document.body.querySelector('svg');
+      const nested = document.getElementById('sprite');
+      if (root == null || nested == null) {
+        throw new Error('expected the mounted shell to hold both SVG viewports');
+      }
+      expect(getComputedStyle(root).width).toBe('100%');
+      expect(getComputedStyle(root).height).toBe('100%');
+      expect(getComputedStyle(nested).width).not.toBe('100%');
+      expect(getComputedStyle(nested).height).not.toBe('100%');
+    } finally {
+      document.head.innerHTML = originalHead;
+      document.body.innerHTML = originalBody;
+    }
+  });
+
+  it('recognizes both SVG artifact types and nothing else', () => {
+    expect(isSvgArtifactType('image/svg+xml')).toBe(true);
+    expect(isSvgArtifactType('image/svg')).toBe(true);
+    expect(isSvgArtifactType('image/png')).toBe(false);
+    expect(isSvgArtifactType('text/html')).toBe(false);
+    expect(isSvgArtifactType('')).toBe(false);
+  });
+
+  it('rebuilds both entries so no original source survives an edit', () => {
+    const edited = '<svg xmlns="http://www.w3.org/2000/svg"><circle cx="5" cy="5" r="4"/></svg>';
+    const files = getSvgFiles(edited);
+    expect(files['index.svg']).toBe(edited);
+    expect(files['index.html']).toContain(edited);
+    expect(files['index.html']).not.toContain('<rect');
+  });
+});
 
 describe('buildSandpackOptions', () => {
   it('includes externalResources with .js fragment hint for static template', () => {
@@ -1218,5 +1303,63 @@ describe('artifactRowKind', () => {
       fallbackGlyph: 'preview',
     });
     expect(artifactRowKind({})).toMatchObject({ rendersPreview: true });
+  });
+});
+
+describe('normalizeArtifactType', () => {
+  const SVG = 'image/svg+xml';
+  /** Every spelling a model or an older prompt writes, with the bucket it renders in. */
+  const spellings: Array<[string, string]> = [
+    ['react', TOOL_ARTIFACT_TYPES.REACT],
+    ['application/vnd.ant.react', TOOL_ARTIFACT_TYPES.REACT],
+    ['html', TOOL_ARTIFACT_TYPES.HTML],
+    ['application/vnd.code-html', TOOL_ARTIFACT_TYPES.HTML],
+    ['markdown', TOOL_ARTIFACT_TYPES.MARKDOWN],
+    ['md', TOOL_ARTIFACT_TYPES.MARKDOWN],
+    ['text/md', TOOL_ARTIFACT_TYPES.MARKDOWN],
+    ['mermaid', TOOL_ARTIFACT_TYPES.MERMAID],
+    ['svg', SVG],
+    ['image/svg', SVG],
+  ];
+
+  it.each(spellings)('maps %s to %s', (spelling, canonical) => {
+    expect(normalizeArtifactType(spelling)).toBe(canonical);
+  });
+
+  it('ignores case and surrounding whitespace in an authored spelling', () => {
+    expect(normalizeArtifactType(' React ')).toBe(TOOL_ARTIFACT_TYPES.REACT);
+    expect(normalizeArtifactType('HTML')).toBe(TOOL_ARTIFACT_TYPES.HTML);
+    expect(normalizeArtifactType('APPLICATION/VND.REACT')).toBe(TOOL_ARTIFACT_TYPES.REACT);
+    expect(normalizeArtifactType(' text/html ')).toBe(TOOL_ARTIFACT_TYPES.HTML);
+    expect(getTemplate('Application/Vnd.React')).toBe('react-ts');
+  });
+
+  it('leaves canonical and unknown types as written', () => {
+    Object.values(TOOL_ARTIFACT_TYPES).forEach((type) => {
+      expect(normalizeArtifactType(type)).toBe(type);
+    });
+    expect(normalizeArtifactType('code')).toBe('code');
+    expect(normalizeArtifactType('application/x-unheard-of')).toBe('application/x-unheard-of');
+    expect(normalizeArtifactType('constructor')).toBe('constructor');
+  });
+
+  it.each(spellings)(
+    'drives every lookup for %s the way its canonical type does',
+    (spelling, canonical) => {
+      expect(getTemplate(spelling)).toBe(getTemplate(canonical));
+      expect(getArtifactFilename(spelling)).toBe(getArtifactFilename(canonical));
+      expect(getDependencies(spelling)).toEqual(getDependencies(canonical));
+      expect(artifactRowKind({ type: spelling })).toEqual(artifactRowKind({ type: canonical }));
+      expect(isSvgArtifactType(spelling)).toBe(isSvgArtifactType(canonical));
+    },
+  );
+
+  it('sends a short react spelling down the React path', () => {
+    expect(getTemplate('react')).toBe('react-ts');
+    expect(getArtifactFilename('react')).toBe('App.tsx');
+    expect(getDependencies('react')).toEqual(getDependencies(TOOL_ARTIFACT_TYPES.REACT));
+    expect(artifactRowKind({ type: 'react' }).label).toEqual({
+      key: 'com_ui_artifact_format_react',
+    });
   });
 });

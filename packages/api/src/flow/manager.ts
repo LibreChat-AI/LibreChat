@@ -11,6 +11,11 @@ type GuardedMutationResult = 'updated' | 'stale' | 'missing';
 export interface FlowLease {
   generation: number;
   release: () => Promise<void>;
+  /**
+   * Extends the lease while this owner still holds it. Resolves false once anyone else acquired
+   * it after expiry, so a holder can tell an unbroken fence from a lapsed one.
+   */
+  renew?: () => Promise<boolean>;
 }
 
 /** The flow a waiter was monitoring disappeared before it settled. */
@@ -61,6 +66,7 @@ if state ~= ARGV[2] then return -1 end
 if flow.status == 'COMPLETED' then return -1 end
 flow.status = 'FAILED'
 flow.error = ARGV[3]
+flow.errorName = ARGV[6]
 flow.failedAt = tonumber(ARGV[4])
 data.expires = tonumber(ARGV[4]) + tonumber(ARGV[5])
 redis.call('SET', KEYS[1], cjson.encode(data), 'PX', ARGV[5])
@@ -141,6 +147,16 @@ data.purpose = ARGV[7]
 data.leaseUntil = now + tonumber(ARGV[5])
 redis.call('SET', KEYS[1], cjson.encode(data), 'PX', ARGV[6])
 return data.generation
+`;
+
+const RENEW_LEASE = `
+local raw = redis.call('GET', KEYS[1])
+if not raw then return -1 end
+local data = cjson.decode(raw)
+if data.owner ~= ARGV[1] then return -1 end
+data.leaseUntil = tonumber(ARGV[2]) + tonumber(ARGV[3])
+redis.call('SET', KEYS[1], cjson.encode(data), 'PX', ARGV[4])
+return 1
 `;
 
 const RELEASE_LEASE = `
@@ -335,6 +351,30 @@ export class FlowStateManager<T = unknown> {
               });
             }
           },
+          renew: async () => {
+            const renewedAt = Date.now();
+            if (redisKey) {
+              const renewed = Number(
+                await this.evalRedisScript(RENEW_LEASE, redisKey, [
+                  owner,
+                  String(renewedAt),
+                  String(leaseMs),
+                  String(retentionMs),
+                ]),
+              );
+              return renewed === 1;
+            }
+            const current = FlowStateManager.inMemoryLeases.get(inMemoryKey);
+            if (current?.owner !== owner) {
+              return false;
+            }
+            FlowStateManager.inMemoryLeases.set(inMemoryKey, {
+              ...current,
+              leaseUntil: renewedAt + leaseMs,
+              expiresAt: renewedAt + retentionMs,
+            });
+            return true;
+          },
         };
       }
       if (Date.now() >= waitUntil) return null;
@@ -457,6 +497,7 @@ export class FlowStateManager<T = unknown> {
   ): Promise<GuardedMutationResult> {
     const flowKey = this.getFlowKey(flowId, type);
     const message = error instanceof Error ? error.message : error;
+    const errorName = error instanceof Error ? error.name : 'Error';
     const failedAt = Date.now();
     const redisKey = this.getRedisKey(flowKey);
     if (redisKey) {
@@ -466,6 +507,7 @@ export class FlowStateManager<T = unknown> {
         message,
         String(failedAt),
         String(this.ttl),
+        errorName,
       ]);
       return FlowStateManager.guardedResult(result);
     }
@@ -483,6 +525,7 @@ export class FlowStateManager<T = unknown> {
         ...current,
         status: 'FAILED',
         error: message,
+        errorName,
         failedAt,
       };
       memoryEntry.envelope.expires = failedAt + this.ttl;
@@ -504,6 +547,7 @@ export class FlowStateManager<T = unknown> {
       ...current,
       status: 'FAILED',
       error: message,
+      errorName,
       failedAt,
     };
     await this.keyv.set(flowKey, updatedState, this.ttl);
@@ -798,7 +842,9 @@ export class FlowStateManager<T = unknown> {
               if (!this.retainedFailureTypes.has(type)) {
                 await this.keyv.delete(flowKey);
               }
-              reject(new Error(flowState.error ?? `${type} flow failed`));
+              const error = new Error(flowState.error ?? `${type} flow failed`);
+              error.name = flowState.errorName ?? 'Error';
+              reject(error);
             }
             return;
           }
@@ -949,6 +995,7 @@ export class FlowStateManager<T = unknown> {
       ...flowState,
       status: 'FAILED',
       error: error instanceof Error ? error.message : error,
+      errorName: error instanceof Error ? error.name : 'Error',
       failedAt: Date.now(),
     };
 

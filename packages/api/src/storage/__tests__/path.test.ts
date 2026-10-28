@@ -1,4 +1,4 @@
-import { resolveDownloadPath } from '../path';
+import { resolveDownloadPath, stripCacheBust } from '../path';
 
 describe('resolveDownloadPath', () => {
   it('prefers the recorded object key over the stored URL', () => {
@@ -26,5 +26,23 @@ describe('resolveDownloadPath', () => {
   it('keeps a remote URL intact for strategies that fetch it directly', () => {
     const url = 'https://firebasestorage.googleapis.com/v0/b/x/o/f.pdf?alt=media&token=t';
     expect(resolveDownloadPath({ filepath: url })).toBe(url);
+  });
+});
+
+describe('stripCacheBust', () => {
+  it('removes the cache-buster a regenerated code output persists', () => {
+    expect(stripCacheBust('/images/u1/chart.png?v=1789460622697')).toBe('/images/u1/chart.png');
+  });
+
+  it('removes everything from the first question mark onward', () => {
+    expect(stripCacheBust('/uploads/u1/doc.pdf?manual=true&v=2')).toBe('/uploads/u1/doc.pdf');
+  });
+
+  it('leaves a path without a query string untouched', () => {
+    expect(stripCacheBust('/images/u1/chart.png')).toBe('/images/u1/chart.png');
+  });
+
+  it('keeps a name whose sanitized form cannot contain a question mark', () => {
+    expect(stripCacheBust('/uploads/u1/what_is_this_.pdf')).toBe('/uploads/u1/what_is_this_.pdf');
   });
 });

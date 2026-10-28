@@ -10,10 +10,14 @@ import type { UseFormReturn } from 'react-hook-form';
 import type { AgentForm } from '~/common';
 import ModelPanel from './ModelPanel';
 
+const mockWebSearchAllowed = jest.fn(() => true);
+
 const mockStartupConfig = jest.fn<Partial<TStartupConfig>, []>(() => ({}));
 
 jest.mock('@librechat/client', () => ({
-  Alert: ({ children }: { children: React.ReactNode }) => <div role="alert">{children}</div>,
+  Alert: ({ children, role = 'alert' }: React.HTMLAttributes<HTMLDivElement>) => (
+    <div role={role}>{children}</div>
+  ),
   Button: ({ children, onClick, type }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
     <button type={type} onClick={onClick}>
       {children}
@@ -57,13 +61,28 @@ jest.mock('@librechat/client', () => ({
   ),
 }));
 
-jest.mock('~/components/SidePanel/Parameters/components', () => ({
-  componentMapping: {},
-}));
+jest.mock('~/components/SidePanel/Parameters/components', () => {
+  const Stub = ({ settingKey }: { settingKey: string }) => (
+    <div data-testid={`param-${settingKey}`} />
+  );
+  return {
+    componentMapping: {
+      slider: Stub,
+      switch: Stub,
+      input: Stub,
+      tags: Stub,
+      textarea: Stub,
+      combobox: Stub,
+      dropdown: Stub,
+      checkbox: Stub,
+    },
+  };
+});
 
 jest.mock('~/data-provider', () => ({
   useGetEndpointsQuery: () => ({ data: {} }),
   useGetStartupConfig: () => ({ data: mockStartupConfig() }),
+  useReasoningCapabilitiesQuery: () => ({ data: undefined }),
 }));
 
 jest.mock('~/Providers', () => ({
@@ -72,7 +91,7 @@ jest.mock('~/Providers', () => ({
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
-  useHasAccess: () => true,
+  useHasAccess: () => mockWebSearchAllowed(),
 }));
 
 jest.mock('~/utils', () => ({
@@ -127,6 +146,61 @@ describe('ModelPanel', () => {
   beforeEach(() => {
     localStorage.clear();
     mockStartupConfig.mockReturnValue({});
+    mockWebSearchAllowed.mockReturnValue(true);
+  });
+
+  it('explains a denied native search control without changing saved model parameters', () => {
+    mockWebSearchAllowed.mockReturnValue(false);
+    const formRef: React.MutableRefObject<UseFormReturn<AgentForm> | null> = { current: null };
+    const parameters = { web_search: true, useResponsesApi: true };
+    const { getByRole, queryByRole, rerender } = render(
+      <TestForm
+        defaultProvider={EModelEndpoint.openAI}
+        defaultModel="gpt-4o"
+        defaultModelParameters={parameters}
+        formRef={formRef}
+        models={{ [EModelEndpoint.openAI]: ['gpt-4o'] }}
+        modelsReady={true}
+      />,
+    );
+
+    expect(getByRole('status')).toHaveTextContent('com_ui_native_web_search_denied');
+    expect(formRef.current?.getValues('model_parameters')).toEqual(parameters);
+
+    mockWebSearchAllowed.mockReturnValue(true);
+    rerender(
+      <TestForm
+        defaultProvider={EModelEndpoint.openAI}
+        defaultModel="gpt-4o"
+        defaultModelParameters={parameters}
+        formRef={formRef}
+        models={{ [EModelEndpoint.openAI]: ['gpt-4o'] }}
+        modelsReady={true}
+      />,
+    );
+    expect(queryByRole('status')).toBeNull();
+    expect(formRef.current?.getValues('model_parameters')).toEqual(parameters);
+  });
+
+  it('explains why native search is unavailable even before the agent requests it', () => {
+    mockWebSearchAllowed.mockReturnValue(false);
+    const { getByRole } = render(
+      <TestForm
+        defaultProvider={EModelEndpoint.openAI}
+        defaultModel="gpt-4o"
+        models={{ [EModelEndpoint.openAI]: ['gpt-4o'] }}
+        modelsReady={true}
+      />,
+    );
+    expect(getByRole('status')).toHaveTextContent('com_ui_native_web_search_denied');
+  });
+
+  it('does not show a search warning for a provider without native search', () => {
+    mockWebSearchAllowed.mockReturnValue(false);
+    const { queryByRole } = render(
+      <TestForm defaultProvider="removed-provider" models={{}} modelsReady={true} />,
+    );
+    expect(queryByRole('status')).toBeNull();
   });
 
   it('disables model selection until the model catalogue is ready', () => {
@@ -276,6 +350,43 @@ describe('ModelPanel', () => {
     expect(container.querySelector('#model')).not.toBeNull();
   });
 
+  it.each([
+    [EModelEndpoint.anthropic, 'claude-opus-5'],
+    [EModelEndpoint.bedrock, 'global.anthropic.claude-opus-5'],
+  ])(
+    'preserves saved %s settings through model switches and a restored form',
+    (provider, previousModel) => {
+      const saved = {
+        thinking: false,
+        thinkingBudget: 4096,
+        temperature: 0.7,
+        topP: 0.9,
+        topK: 40,
+      };
+      const formRef: React.MutableRefObject<UseFormReturn<AgentForm> | null> = { current: null };
+      const renderForm = (model: string, parameters = saved) => (
+        <TestForm
+          defaultProvider={provider}
+          defaultModel={model}
+          defaultModelParameters={parameters}
+          formRef={formRef}
+          models={{ [provider]: [previousModel, `${previousModel}-5`] }}
+          modelsReady={true}
+        />
+      );
+      const { getByTestId, unmount } = render(renderForm(previousModel));
+      fireEvent.click(getByTestId(`com_ui_model-${previousModel}-5`));
+      expect(formRef.current?.getValues('model_parameters')).toEqual(saved);
+      fireEvent.click(getByTestId(`com_ui_model-${previousModel}`));
+      expect(formRef.current?.getValues('model_parameters')).toEqual(saved);
+      fireEvent.click(getByTestId(`com_ui_model-${previousModel}-5`));
+      const restored = JSON.parse(JSON.stringify(formRef.current?.getValues('model_parameters')));
+      unmount();
+      render(renderForm(`${previousModel}-5`, restored));
+      expect(formRef.current?.getValues('model_parameters')).toEqual(saved);
+    },
+  );
+
   it('prunes a saved model_parameters value once its endpoint drops the matching param', async () => {
     mockStartupConfig.mockReturnValue({
       endpointsDropParamsMap: { [EModelEndpoint.openAI]: ['topP'] },
@@ -337,6 +448,58 @@ describe('ModelPanel', () => {
       temperature: 0.5,
       top_p: 0.9,
     });
+  });
+
+  it('gives a numeric parameter one of the two columns', () => {
+    const { getByTestId } = render(
+      <TestForm
+        defaultProvider={EModelEndpoint.openAI}
+        defaultModel="gpt-4o"
+        models={{ [EModelEndpoint.openAI]: ['gpt-4o'] }}
+        modelsReady={true}
+      />,
+    );
+
+    expect(getByTestId('param-maxContextTokens').parentElement).toHaveClass('col-span-1');
+  });
+
+  it('gives a toggle one of the two columns', () => {
+    const { getByTestId } = render(
+      <TestForm
+        defaultProvider={EModelEndpoint.openAI}
+        defaultModel="gpt-4o"
+        models={{ [EModelEndpoint.openAI]: ['gpt-4o'] }}
+        modelsReady={true}
+      />,
+    );
+
+    expect(getByTestId('param-resendFiles').parentElement).toHaveClass('col-span-1');
+  });
+
+  it('gives free text the whole row', () => {
+    const { getByTestId } = render(
+      <TestForm
+        defaultProvider={EModelEndpoint.openAI}
+        defaultModel="gpt-4o"
+        models={{ [EModelEndpoint.openAI]: ['gpt-4o'] }}
+        modelsReady={true}
+      />,
+    );
+
+    expect(getByTestId('param-stop').parentElement).toHaveClass('col-span-2');
+  });
+
+  it('files the parameters under the same headings as the chat panel', () => {
+    const { getByRole } = render(
+      <TestForm
+        defaultProvider={EModelEndpoint.openAI}
+        defaultModel="gpt-4o"
+        models={{ [EModelEndpoint.openAI]: ['gpt-4o'] }}
+        modelsReady={true}
+      />,
+    );
+
+    expect(getByRole('heading', { name: 'com_ui_params_limits' })).toBeInTheDocument();
   });
 
   it('prunes saved model_parameters when every known setting is dropped', async () => {

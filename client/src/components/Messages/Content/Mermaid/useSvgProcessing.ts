@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState, useRef } from 'react';
+import { useRemScale } from '@librechat/client';
 import { processMermaidSvg } from '~/utils/diagram/export';
 import { useDebouncedMermaid } from '~/hooks';
 
+/** Canvas bounds and the p-4 allowance, in baseline pixels. */
 const MIN_CONTAINER_HEIGHT = 200;
 const MAX_CONTAINER_HEIGHT = 500;
+const CONTAINER_PADDING = 32;
 
 interface UseSvgProcessingOptions {
   content: string;
@@ -25,6 +28,9 @@ export default function useSvgProcessing({
     null,
   );
   const [containerWidth, setContainerWidth] = useState(700);
+  /** containerWidth is measured in physical pixels and the surrounding preview is sized
+   *  in rem, so the bounds this height is clamped to have to be read into the same units. */
+  const remScale = useRemScale();
   const lastValidSvgRef = useRef<string | null>(null);
   const lastProcessedSvgRef = useRef<string | null>(null);
 
@@ -91,20 +97,21 @@ export default function useSvgProcessing({
   }, [blobUrl]);
 
   const { initialScale, calculatedHeight } = useMemo(() => {
+    const maxHeight = MAX_CONTAINER_HEIGHT * remScale;
     if (!svgDimensions) {
-      return { initialScale: 1, calculatedHeight: MAX_CONTAINER_HEIGHT };
+      return { initialScale: 1, calculatedHeight: maxHeight };
     }
-    const padding = 32;
+    const padding = CONTAINER_PADDING * remScale;
     const availableWidth = containerWidth - padding;
     const scaleX = availableWidth / svgDimensions.width;
-    const scaleY = MAX_CONTAINER_HEIGHT / svgDimensions.height;
+    const scaleY = maxHeight / svgDimensions.height;
     const scale = Math.min(scaleX, scaleY, 1);
     const height = Math.max(
-      MIN_CONTAINER_HEIGHT,
-      Math.min(MAX_CONTAINER_HEIGHT, svgDimensions.height * scale + padding),
+      MIN_CONTAINER_HEIGHT * remScale,
+      Math.min(maxHeight, svgDimensions.height * scale + padding),
     );
     return { initialScale: scale, calculatedHeight: height };
-  }, [svgDimensions, containerWidth]);
+  }, [svgDimensions, containerWidth, remScale]);
 
   return {
     blobUrl,

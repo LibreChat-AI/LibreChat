@@ -1,10 +1,11 @@
 import { PrincipalType, SystemRoles } from 'librechat-data-provider';
 import type { Types, Model, ClientSession, FilterQuery } from 'mongoose';
+import type { ISystemGrant, SystemGrantMove } from '~/types';
 import type { SystemCapability } from '~/types/admin';
-import type { ISystemGrant } from '~/types';
 import { SystemCapabilities, CapabilityImplications } from '~/admin/capabilities';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { normalizePrincipalId } from '~/utils/principal';
+import { getSafeErrorFields } from '~/utils/errors';
 import logger from '~/config/winston';
 
 /**
@@ -139,7 +140,29 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')): {
     principalId: string | Types.ObjectId,
     options?: { tenantId?: string; session?: ClientSession },
   ) => Promise<ISystemGrant[]>;
+  findGrantsForPrincipal: (
+    principalType: PrincipalType,
+    principalId: string | Types.ObjectId,
+    options?: { tenantId?: string },
+  ) => Promise<ISystemGrant[]>;
+  moveGrantsToPrincipal: (
+    principalType: PrincipalType,
+    fromPrincipalId: string | Types.ObjectId,
+    toPrincipalId: string | Types.ObjectId,
+    options?: { tenantId?: string },
+  ) => Promise<SystemGrantMove>;
+  restoreMovedGrants: (
+    principalType: PrincipalType,
+    fromPrincipalId: string | Types.ObjectId,
+    toPrincipalId: string | Types.ObjectId,
+    move: SystemGrantMove,
+  ) => Promise<void>;
 } {
+  /** The grants of exactly one scope: `tenantId`'s, or the platform-level ones without it. */
+  function grantScope(tenantId?: string): FilterQuery<ISystemGrant> {
+    return tenantId != null ? { tenantId } : { tenantId: { $exists: false } };
+  }
+
   function tenantCondition(tenantId?: string): FilterQuery<ISystemGrant> {
     return tenantId != null
       ? { $and: [{ $or: [{ tenantId }, { tenantId: { $exists: false } }] }] }
@@ -563,11 +586,11 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')): {
    * Delete system grants for a principal.
    * Used for cascade cleanup when a principal (group, role) is deleted.
    *
-   * When `tenantId` is provided, only grants scoped to **exactly** that
-   * tenant are removed — platform-level grants (no tenantId) are left
-   * intact so they continue to serve other tenants.
-   * When `tenantId` is omitted, ALL grants for the principal are removed
-   * regardless of tenant scope.
+   * Only the grants of one scope go, as `moveGrantsToPrincipal` moves them on a rename: with
+   * `tenantId`, those scoped to **exactly** that tenant (platform-level grants, with no
+   * tenantId, are left intact so they continue to serve other tenants); without it, only the
+   * platform-level ones. A role is keyed by a name every tenant reuses, so deleting the
+   * platform's role never removes the grants a tenant's own role of that name holds.
    */
   async function deleteGrantsForPrincipal(
     principalType: PrincipalType,
@@ -580,7 +603,7 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')): {
     const filter: FilterQuery<ISystemGrant> = {
       principalType,
       principalId: normalizedPrincipalId,
-      ...(options?.tenantId != null && { tenantId: options.tenantId }),
+      ...grantScope(options?.tenantId),
     };
     const queryOptions = options?.session ? { session: options.session } : {};
     /** Read the matching grants before deleting so cascade callers (e.g. role
@@ -588,6 +611,176 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')): {
     const removed = await SystemGrant.find(filter, null, queryOptions).lean<ISystemGrant[]>();
     await SystemGrant.deleteMany(filter, queryOptions);
     return removed;
+  }
+
+  /** Reads the grants {@link deleteGrantsForPrincipal} would remove, without removing them. */
+  async function findGrantsForPrincipal(
+    principalType: PrincipalType,
+    principalId: string | Types.ObjectId,
+    options?: { tenantId?: string },
+  ): Promise<ISystemGrant[]> {
+    const SystemGrant = mongoose.models.SystemGrant as Model<ISystemGrant>;
+    return SystemGrant.find({
+      principalType,
+      principalId: normalizePrincipalId(principalId, principalType),
+      ...grantScope(options?.tenantId),
+    }).lean<ISystemGrant[]>();
+  }
+
+  /** One grant per principal, capability and tenant scope (the unique index); platform-level is ''. */
+  function grantScopeKey(grant: Pick<ISystemGrant, 'capability' | 'tenantId'>): string {
+    return `${grant.tenantId ?? ''}\u0000${grant.capability}`;
+  }
+
+  /** The capability scopes (`grantScopeKey`) among `grants` that `principalId` holds now. */
+  async function findHeldScopes(
+    principalType: PrincipalType,
+    principalId: string | Types.ObjectId,
+    grants: readonly Pick<ISystemGrant, 'capability' | 'tenantId'>[],
+  ): Promise<Set<string>> {
+    const SystemGrant = mongoose.models.SystemGrant as Model<ISystemGrant>;
+    const held = await SystemGrant.find({
+      principalType,
+      principalId,
+      capability: { $in: [...new Set(grants.map((grant) => grant.capability))] },
+    })
+      .select('capability tenantId')
+      .lean<Array<Pick<ISystemGrant, 'capability' | 'tenantId'>>>();
+    return new Set(held.map(grantScopeKey));
+  }
+
+  /**
+   * Re-keys a principal's grants to another id of the same type (a role rename), in one tenant
+   * scope: exactly `tenantId` when given, platform-level grants (no `tenantId`) otherwise, as
+   * {@link deleteGrantsForPrincipal} removes them. A rename re-keys one role, so a caller without
+   * a tenant never re-keys the grants of each tenant's own role that shares the name. Each grant
+   * keeps its identity and history. One the target already holds in the same scope is removed
+   * from the source instead, since the unique index allows one.
+   *
+   * Returns what it changed, to audit the move or undo it with {@link restoreMovedGrants}: the
+   * grants it re-keyed, and only the superseded grants whose removal it confirmed (a grant
+   * revoked by someone else meanwhile is not among them). A move that fails part-way is undone
+   * the same way before it rethrows; an undo that fails too, or a removal that cannot be
+   * confirmed, is logged with the grant ids.
+   */
+  async function moveGrantsToPrincipal(
+    principalType: PrincipalType,
+    fromPrincipalId: string | Types.ObjectId,
+    toPrincipalId: string | Types.ObjectId,
+    options?: { tenantId?: string },
+  ): Promise<SystemGrantMove> {
+    const SystemGrant = mongoose.models.SystemGrant as Model<ISystemGrant>;
+    const source = normalizePrincipalId(fromPrincipalId, principalType);
+    const grants = await SystemGrant.find({
+      principalType,
+      principalId: source,
+      ...grantScope(options?.tenantId),
+    }).lean<ISystemGrant[]>();
+    if (grants.length === 0) {
+      return { moved: [], superseded: [] };
+    }
+    const target = normalizePrincipalId(toPrincipalId, principalType);
+    const heldKeys = await findHeldScopes(principalType, target, grants);
+    const moved: ISystemGrant[] = [];
+    const supersedable: ISystemGrant[] = [];
+    for (const grant of grants) {
+      (heldKeys.has(grantScopeKey(grant)) ? supersedable : moved).push(grant);
+    }
+    const superseded: ISystemGrant[] = [];
+    try {
+      const removals = await Promise.allSettled(
+        supersedable.map((grant) =>
+          SystemGrant.findOneAndDelete({ _id: grant._id, principalType, principalId: source })
+            .lean<ISystemGrant>()
+            .exec(),
+        ),
+      );
+      const unconfirmed: string[] = [];
+      let failure: unknown;
+      removals.forEach((removal, index) => {
+        if (removal.status === 'fulfilled') {
+          if (removal.value) {
+            superseded.push(removal.value);
+          }
+          return;
+        }
+        failure ??= removal.reason;
+        unconfirmed.push(supersedable[index]._id.toString());
+      });
+      if (unconfirmed.length > 0) {
+        logger.error('[moveGrantsToPrincipal] removal of superseded grants not confirmed', {
+          principalType,
+          fromPrincipalId: fromPrincipalId.toString(),
+          toPrincipalId: toPrincipalId.toString(),
+          grantIds: unconfirmed.join(','),
+        });
+        throw failure;
+      }
+      if (moved.length > 0) {
+        await SystemGrant.updateMany(
+          { _id: { $in: moved.map((grant) => grant._id) }, principalType, principalId: source },
+          { $set: { principalId: target } },
+        );
+      }
+    } catch (error) {
+      const undo = { moved, superseded };
+      await restoreMovedGrants(principalType, fromPrincipalId, toPrincipalId, undo).catch(
+        (restoreError: unknown) =>
+          logger.error('[moveGrantsToPrincipal] undo after a failed move failed', {
+            principalType,
+            fromPrincipalId: fromPrincipalId.toString(),
+            toPrincipalId: toPrincipalId.toString(),
+            grantIds: [...moved, ...superseded].map((grant) => grant._id.toString()).join(','),
+            ...getSafeErrorFields(restoreError),
+          }),
+      );
+      throw error;
+    }
+    return { moved, superseded };
+  }
+
+  /**
+   * Undoes {@link moveGrantsToPrincipal}, and only what it changed: each grant it re-keyed goes
+   * back to `fromPrincipalId` by identity while it is still at `toPrincipalId`, and each grant
+   * it removed as superseded is re-created as it was while the target still holds the grant
+   * that superseded it. A grant revoked meanwhile, from either name, stays revoked, and a grant
+   * on the target that the move did not bring is left alone.
+   */
+  async function restoreMovedGrants(
+    principalType: PrincipalType,
+    fromPrincipalId: string | Types.ObjectId,
+    toPrincipalId: string | Types.ObjectId,
+    move: SystemGrantMove,
+  ): Promise<void> {
+    const SystemGrant = mongoose.models.SystemGrant as Model<ISystemGrant>;
+    const source = normalizePrincipalId(fromPrincipalId, principalType);
+    const target = normalizePrincipalId(toPrincipalId, principalType);
+    if (move.moved.length > 0) {
+      await SystemGrant.updateMany(
+        { _id: { $in: move.moved.map((grant) => grant._id) }, principalType, principalId: target },
+        { $set: { principalId: source } },
+      );
+    }
+    if (move.superseded.length === 0) {
+      return;
+    }
+    const heldKeys = await findHeldScopes(principalType, target, move.superseded);
+    await Promise.all(
+      move.superseded
+        .filter((grant) => heldKeys.has(grantScopeKey(grant)))
+        .map((grant) =>
+          SystemGrant.updateOne(
+            {
+              principalType,
+              principalId: source,
+              capability: grant.capability,
+              tenantId: grant.tenantId != null ? grant.tenantId : { $exists: false },
+            },
+            { $setOnInsert: { ...grant, principalId: source } },
+            { upsert: true, timestamps: false },
+          ),
+        ),
+    );
   }
 
   return {
@@ -602,6 +795,9 @@ export function createSystemGrantMethods(mongoose: typeof import('mongoose')): {
     getCapabilitiesForPrincipal,
     getCapabilitiesForPrincipals,
     deleteGrantsForPrincipal,
+    findGrantsForPrincipal,
+    moveGrantsToPrincipal,
+    restoreMovedGrants,
   };
 }
 

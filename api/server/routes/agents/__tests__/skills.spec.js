@@ -4,6 +4,7 @@ const request = require('supertest');
 const mockList = jest.fn((_req, res) => res.json({ object: 'list' }));
 const mockWrite = jest.fn((_req, res) => res.json({ saved: true }));
 const mockSync = jest.fn();
+const mockManagementSaveFile = jest.fn();
 const mockIp = jest.fn((_req, _res, next) => next());
 const mockUser = jest.fn((_req, _res, next) => next());
 const mockAuth = jest.fn((_req, _res, next) => next());
@@ -13,11 +14,14 @@ jest.mock('@librechat/api', () => ({
     mockDeps = deps;
     return {
       list: mockList,
+      create: mockWrite,
       get: mockList,
       update: mockWrite,
+      delete: mockWrite,
       listFiles: mockList,
       getFile: mockList,
       updateFile: mockWrite,
+      deleteFile: mockWrite,
     };
   },
   mapAgentManagementError: () => ({ status: 404, body: { error: { code: 'not_found' } } }),
@@ -25,6 +29,7 @@ jest.mock('@librechat/api', () => ({
 jest.mock('../middleware', () => ({ requireAgentManagementAuth: (...args) => mockAuth(...args) }));
 jest.mock('~/server/middleware', () => ({
   checkBan: (_req, _res, next) => next(),
+  requireTermsAcceptance: (_req, _res, next) => next(),
   configMiddleware: (req, _res, next) => {
     req.config = { tenantConfig: true };
     next();
@@ -38,7 +43,7 @@ jest.mock('~/server/services/Skills/sync', () => ({
 }));
 jest.mock('~/server/services/Endpoints/agents/skillDeps', () => ({
   getSkillDbMethods: () => ({}),
-  getSkillToolDeps: () => ({}),
+  getSkillManagementFileSaver: () => mockManagementSaveFile,
 }));
 jest.mock('~/models', () => ({}));
 jest.mock('~/server/middleware/limiters/uploadLimiters', () => ({
@@ -55,6 +60,7 @@ it('wires sync and both upload limiters into the authorized management handlers'
   await mockDeps.beforeList({ config: { tenantConfig: true } });
   expect(mockSync).toHaveBeenCalledWith({ config: { tenantConfig: true } });
   expect(mockDeps.fileWriteLimiters).toHaveLength(2);
+  expect(mockDeps.saveFile).toBe(mockManagementSaveFile);
   const next = jest.fn();
   for (const limiter of mockDeps.fileWriteLimiters) limiter({}, {}, next);
   expect(mockIp).toHaveBeenCalledTimes(1);
@@ -64,4 +70,8 @@ it('keeps authentication ahead of management handlers', async () => {
   mockAuth.mockImplementationOnce((_req, res) => res.sendStatus(401));
   await request(app).get('/skills').expect(401);
   expect(mockList).not.toHaveBeenCalled();
+});
+it('routes whole-Skill deletion through the authorized management handler', async () => {
+  await request(app).delete('/skills/507f1f77bcf86cd799439011').expect(200);
+  expect(mockWrite).toHaveBeenCalledTimes(1);
 });

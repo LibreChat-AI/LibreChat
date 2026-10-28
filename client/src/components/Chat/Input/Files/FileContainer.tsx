@@ -21,6 +21,8 @@ const FileContainer = ({
   buttonClassName,
   containerClassName,
   onDelete,
+  removeLabel,
+  removeDisabled,
   onClick,
 }: {
   file: Partial<ExtendedFile | TFile>;
@@ -56,6 +58,9 @@ const FileContainer = ({
   buttonClassName?: string;
   containerClassName?: string;
   onDelete?: () => void;
+  /** Accessible name for the remove control; defaults to a generic "Remove file". */
+  removeLabel?: string;
+  removeDisabled?: boolean;
   onClick?: React.MouseEventHandler<HTMLButtonElement>;
 }) => {
   const fileType = getFileType(overrideType ?? file.type);
@@ -67,19 +72,19 @@ const FileContainer = ({
     buttonClassName,
   );
   const focusRing =
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-text-primary focus-visible:ring-offset-1 focus-visible:ring-offset-surface-primary';
+    'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-text-primary focus-visible:ring-offset-1 focus-visible:ring-offset-surface-primary';
   /** The full-bleed target sits inside the surface's `overflow-hidden`, so an offset ring
    * would be clipped away entirely; the inset ring draws within the target's own box and the
    * matching radius keeps it inside the surface's rounded corners. */
   const insetFocusRing =
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text-primary';
+    'focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-text-primary';
 
   const details = (
-    <div className="w-56 p-1.5">
+    <div className="w-56 max-w-full p-1.5">
       <div className="flex flex-row items-center gap-2">
         <FilePreview file={file} fileType={fileType} className="relative" />
         <div className="overflow-hidden">
-          <div className="truncate font-medium" title={visibleName}>
+          <div dir="auto" className="truncate font-medium" title={visibleName}>
             {visibleName}
           </div>
           {subtitleAction != null ? (
@@ -98,7 +103,7 @@ const FileContainer = ({
                  * center still opens the editor. The colour shift answers focus as well as
                  * hover: the ring already announces focus, but leaving the two input modes
                  * with different feedback is a difference with no reason behind it. */
-                'pointer-events-auto relative z-10 inline-block max-w-full truncate rounded text-left align-middle leading-4 text-text-secondary underline underline-offset-2 hover:text-text-primary focus-visible:text-text-primary',
+                'text-text-secondary hover:text-text-primary focus-visible:text-text-primary pointer-events-auto relative z-10 inline-block max-w-full truncate rounded text-start align-middle leading-4 underline underline-offset-2',
                 focusRing,
               )}
             >
@@ -106,7 +111,7 @@ const FileContainer = ({
             </button>
           ) : (
             (subtitle ?? (
-              <div className="truncate text-text-secondary" title={fileType.title}>
+              <div className="text-text-secondary truncate" title={fileType.title}>
                 {fileType.title}
               </div>
             ))
@@ -118,7 +123,7 @@ const FileContainer = ({
 
   return (
     <div
-      className={cn('group relative inline-block text-sm text-text-primary', containerClassName)}
+      className={cn('group text-text-primary relative inline-block text-sm', containerClassName)}
     >
       {subtitleAction != null ? (
         <div className={surfaceClassName}>
@@ -144,7 +149,7 @@ const FileContainer = ({
           {details}
         </button>
       )}
-      {onDelete && <RemoveFile onRemove={onDelete} />}
+      {onDelete && <RemoveFile onRemove={onDelete} label={removeLabel} disabled={removeDisabled} />}
     </div>
   );
 };

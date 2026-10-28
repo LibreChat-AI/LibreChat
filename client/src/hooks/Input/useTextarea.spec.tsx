@@ -63,7 +63,6 @@ jest.mock('~/store', () => ({
   __esModule: true,
   default: {
     enterToSend: { key: 'enterToSend' },
-    saveDrafts: { key: 'saveDrafts' },
     pasteLongTextAsFile: { key: 'pasteLongTextAsFile' },
     activePromptByIndex: jest.fn(() => ({ key: 'activePrompt' })),
     pendingComposerTextByConvoId: jest.fn(() => ({ key: 'pendingComposerText' })),
@@ -162,6 +161,7 @@ const renderTextareaHook = (initialAnswerModeActive = false) => {
       submitButtonRef: { current: submitButton },
       setIsScrollable,
       answerModeActive,
+      enterToSend: true,
     }),
   );
   const rerender = (nextAnswerModeActive = answerModeActive) => {
@@ -206,6 +206,7 @@ describe('useTextarea long-paste fallback', () => {
         textAreaRef: { current: textArea },
         submitButtonRef: { current: null },
         setIsScrollable: jest.fn(),
+        enterToSend: true,
       }),
     );
 
@@ -234,6 +235,7 @@ describe('useTextarea long-paste fallback', () => {
         textAreaRef: { current: textArea },
         submitButtonRef: { current: null },
         setIsScrollable: jest.fn(),
+        enterToSend: true,
       }),
     );
 

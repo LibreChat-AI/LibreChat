@@ -15,9 +15,9 @@ import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
  * The trade-off is the LibreOffice binary on the server (~250-350 MB disk,
  * ~2-3 s cold-start per first conversion in a process).
  *
- * Off by default. Operators opt in via the `OFFICE_PREVIEW_LIBREOFFICE`
- * env var AND ensuring `soffice` (or `libreoffice`) is on `$PATH`. The
- * env value is interpreted three ways:
+ * Native LibreOffice previews are temporarily unavailable. The legacy
+ * `OFFICE_PREVIEW_LIBREOFFICE` setting is still parsed for compatibility,
+ * but cannot enable conversion. Its historical values were:
  *   - Truthy (`true`, `1`, `yes`): all formats use LibreOffice
  *   - Falsy (`false`, `0`, `no`, empty, unset): no formats — fall through
  *   - Comma-separated list (`pptx`, `pptx,docx`): only those formats
@@ -69,6 +69,8 @@ import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
  * require operators to re-enumerate their env value.
  */
 type LibreOfficeFormatEnablement = 'all' | ReadonlySet<string> | null;
+
+const IN_PROCESS_LIBREOFFICE_DISABLED: boolean = true;
 
 function parseLibreOfficeEnablement(value: string | undefined): LibreOfficeFormatEnablement {
   if (value == null) {
@@ -229,6 +231,11 @@ export class LibreOfficeConversionError extends Error {
  *     oversized output
  */
 export async function convertOfficeToPdf(buffer: Buffer, extensionHint: string): Promise<Buffer> {
+  if (IN_PROCESS_LIBREOFFICE_DISABLED) {
+    throw new LibreOfficeUnavailableError(
+      'In-process LibreOffice conversion is temporarily disabled',
+    );
+  }
   const probe = await probeLibreOfficeBinary();
   if (!probe.available || !probe.binary) {
     throw new LibreOfficeUnavailableError(probe.reason ?? 'LibreOffice binary unavailable');
@@ -534,6 +541,9 @@ export async function tryLibreOfficePreview(
   extensionHint: string,
   outputCap: number,
 ): Promise<string | null> {
+  if (IN_PROCESS_LIBREOFFICE_DISABLED) {
+    return null;
+  }
   if (!isLibreOfficeEnabledFor(extensionHint)) {
     return null;
   }

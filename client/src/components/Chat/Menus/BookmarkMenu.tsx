@@ -4,8 +4,8 @@ import * as Ariakit from '@ariakit/react';
 import { BookmarkFilledIcon, BookmarkIcon } from '@radix-ui/react-icons';
 import { DropdownPopup, TooltipAnchor, Spinner } from '@librechat/client';
 import type { FC } from 'react';
+import useBookmarkItems from '~/hooks/Sharing/useBookmarkItems';
 import { BookmarkContext } from '~/Providers/BookmarkContext';
-import useBookmarkItems from '~/hooks/Chat/useBookmarkItems';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 import store from '~/store';
@@ -51,7 +51,7 @@ const BookmarkMenu: FC = () => {
                 aria-label={triggerAriaLabel}
                 aria-pressed={hasBookmarks}
                 className={cn(
-                  'mt-text-sm flex size-9 flex-shrink-0 items-center justify-center gap-2 rounded-xl border border-border-light bg-presentation text-sm transition-colors duration-200 hover:bg-surface-hover',
+                  'border-border-chrome bg-presentation hover:bg-surface-hover flex size-9 shrink-0 items-center justify-center gap-2 rounded-xl border text-sm transition-colors duration-200',
                   isMenuOpen ? 'bg-surface-hover' : '',
                 )}
                 data-testid="bookmark-menu"

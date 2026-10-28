@@ -1,3 +1,6 @@
+import type { ResponsesApiRouting, TModelReasoning, TReasoningCapabilityMap } from './types';
+import type { SettingDefinition, SettingsConfiguration } from './generate';
+import type { TReasoningOverride } from './schemas';
 import {
   Verbosity,
   ImageDetail,
@@ -16,8 +19,22 @@ import {
   BedrockProviders,
   anthropicSettings,
 } from './types';
-import { SettingDefinition, SettingsConfiguration } from './generate';
-import { supportsPromptCache } from './bedrock';
+import {
+  hasAlwaysOnThinking,
+  hasAdaptiveHaikuThinking,
+  hasBetweenToolsThinkingFloor,
+  supportsPromptCache,
+  supportsAdaptiveThinking,
+} from './bedrock';
+import {
+  getModelKey,
+  getSettingsKeys,
+  reasoningOverrideSchema,
+  ReasoningParameterFormat,
+} from './schemas';
+import { resolveEffectiveUseResponsesApi } from './file-config';
+import { clampSettingRange } from './generate';
+import { gpt6Tier } from './families';
 
 // Base definitions
 const baseDefinitions: Record<string, SettingDefinition> = {
@@ -550,6 +567,7 @@ const anthropic: Record<string, SettingDefinition> = {
       [ThinkingDisplay.auto]: 'com_ui_auto',
       [ThinkingDisplay.summarized]: 'com_ui_summarized',
       [ThinkingDisplay.omitted]: 'com_ui_omitted',
+      [ThinkingDisplay.updates]: 'com_ui_updates',
     },
     optionType: 'model',
     columnSpan: 4,
@@ -1305,19 +1323,462 @@ export const agentParamSettings: Record<string, SettingsConfiguration | undefine
   return acc;
 }, {});
 
+export const reasoningSettingKeys = [
+  'reasoning_effort',
+  'effort',
+  'thinkingLevel',
+  'thinkingBudget',
+] as const;
+
+export type ReasoningSettingKey = (typeof reasoningSettingKeys)[number];
+
+const findReasoningSetting = (
+  settings: SettingsConfiguration,
+  key: ReasoningSettingKey,
+): SettingDefinition | undefined => settings.find((setting) => setting.key === key);
+
+const knownReasoningProviderEndpoints: Record<string, true> = {
+  [EModelEndpoint.openAI]: true,
+  [EModelEndpoint.azureOpenAI]: true,
+  [EModelEndpoint.anthropic]: true,
+  [EModelEndpoint.bedrock]: true,
+  [`${EModelEndpoint.bedrock}-${BedrockProviders.Anthropic}`]: true,
+  [`${EModelEndpoint.bedrock}-${BedrockProviders.Moonshot}`]: true,
+  [`${EModelEndpoint.bedrock}-${BedrockProviders.MoonshotAI}`]: true,
+  [`${EModelEndpoint.bedrock}-${BedrockProviders.ZAI}`]: true,
+};
+
+const isKnownReasoningProvider = (endpoint?: string | null): boolean =>
+  endpoint != null && knownReasoningProviderEndpoints[endpoint] === true;
+
+const isKnownOpenAIReasoningModel = (model: string): boolean =>
+  /(?:^|[/._-])(?:o[134](?:[-.]|$)|gpt[-.]?(?:[5-9]|\d{2,})(?:[-.]|$)|gpt[-.]?oss(?:[-.]|$))/i.test(
+    model,
+  );
+
+const isManualClaudeThinkingModel = (model: string): boolean =>
+  /claude-3[-.]7|claude-(?:sonnet|opus|haiku)-[4-9]|claude-[4-9](?:[-.][0-9]+)?-(?:sonnet|opus|haiku)/i.test(
+    model,
+  );
+
+/**
+ * Selects the request-scoped reasoning control supported by the active model.
+ * Custom and OpenRouter endpoints remain definition-driven because their model
+ * catalogs are deployment-owned and cannot be inferred safely from a name.
+ */
+export function resolveReasoningSetting({
+  endpoint,
+  model,
+  settings,
+}: {
+  endpoint: string;
+  model?: string | null;
+  settings: SettingsConfiguration;
+}): SettingDefinition | undefined {
+  if (!model) {
+    return undefined;
+  }
+
+  if (endpoint === EModelEndpoint.google) {
+    if (getGoogleThinkingBudgetBounds(model) != null) {
+      return findReasoningSetting(settings, 'thinkingBudget');
+    }
+    if (/gemini-(?:[3-9]|\d{2,})|gemma-(?:[4-9]|\d{2,})/i.test(model)) {
+      return findReasoningSetting(settings, 'thinkingLevel');
+    }
+    return undefined;
+  }
+
+  const isAnthropicEndpoint =
+    endpoint === EModelEndpoint.anthropic ||
+    endpoint === `${EModelEndpoint.bedrock}-${BedrockProviders.Anthropic}` ||
+    (endpoint === EModelEndpoint.bedrock &&
+      getModelKey(endpoint, model) === BedrockProviders.Anthropic);
+  if (isAnthropicEndpoint) {
+    if (supportsAdaptiveThinking(model)) {
+      return findReasoningSetting(settings, 'effort');
+    }
+    if (isManualClaudeThinkingModel(model)) {
+      return findReasoningSetting(settings, 'thinkingBudget');
+    }
+    return undefined;
+  }
+
+  if (endpoint === EModelEndpoint.azureOpenAI) {
+    /* Azure deployment names are administrator-defined and often contain no
+     * model-family signal. An explicit resolved parameter definition is the
+     * capability evidence available to this layer. */
+    return findReasoningSetting(settings, 'reasoning_effort');
+  }
+
+  if (endpoint === EModelEndpoint.openAI) {
+    return isKnownOpenAIReasoningModel(model)
+      ? findReasoningSetting(settings, 'reasoning_effort')
+      : undefined;
+  }
+
+  return reasoningSettingKeys.reduce<SettingDefinition | undefined>(
+    (resolved, key) => resolved ?? findReasoningSetting(settings, key),
+    undefined,
+  );
+}
+
+/** Narrows an enum reasoning setting to the options a request-scoped override
+ * can carry. A deployment may declare provider values the override schema does
+ * not accept; offering them rendered a choice that could never be submitted. */
+const toSubmittableReasoningSetting = (
+  setting: SettingDefinition | undefined,
+): SettingDefinition | undefined => {
+  if (setting?.options == null) {
+    return setting;
+  }
+  const options = setting.options.filter(
+    (option) => reasoningOverrideSchema.safeParse({ key: setting.key, value: option }).success,
+  );
+  if (options.length === setting.options.length) {
+    return setting;
+  }
+  return options.length === 0 ? undefined : { ...setting, options };
+};
+
+/** Builds the effective reasoning definition shared by the composer and the server.
+ * A model-spec lock is part of capability resolution, not a caller-only UI check:
+ * both surfaces must see the same unavailable result before an override is staged. */
+export function resolveReasoningSettingForTarget({
+  endpoint,
+  model,
+  isAgent = false,
+  defaultParamsEndpoint,
+  reasoningFormat,
+  paramDefinitions,
+  blockedReasoningKeys,
+  modelReasoning,
+}: {
+  endpoint: string;
+  model?: string | null;
+  isAgent?: boolean;
+  defaultParamsEndpoint?: string | null;
+  reasoningFormat?: ReasoningParameterFormat | null;
+  paramDefinitions?: Partial<SettingDefinition>[] | null;
+  blockedReasoningKeys?: ReadonlySet<string>;
+  /** Provider-reported efforts for `model`; see {@link applyModelAwareDefaults}. */
+  modelReasoning?: TModelReasoning | null;
+}): SettingDefinition | undefined {
+  if (!model || reasoningFormat === ReasoningParameterFormat.disabled) {
+    return undefined;
+  }
+  const [combinedSettingsKey, endpointSettingsKey] = getSettingsKeys(endpoint, model);
+  const effectiveDefaultParamsEndpoint = defaultParamsEndpoint ?? endpointSettingsKey;
+
+  const hasExplicitCapability =
+    (paramDefinitions?.some((setting) =>
+      reasoningSettingKeys.includes(setting.key as ReasoningSettingKey),
+    ) ??
+      false) ||
+    reasoningFormat != null ||
+    isKnownReasoningProvider(effectiveDefaultParamsEndpoint);
+  const usesGenericSettings =
+    endpoint === EModelEndpoint.custom ||
+    endpoint === Providers.OPENROUTER ||
+    paramSettings[endpoint] == null;
+  if (usesGenericSettings && !hasExplicitCapability) {
+    return undefined;
+  }
+  const baseSettings = isAgent
+    ? (agentParamSettings[combinedSettingsKey] ??
+      agentParamSettings[effectiveDefaultParamsEndpoint] ??
+      agentParamSettings[endpointSettingsKey] ??
+      paramSettings[combinedSettingsKey] ??
+      paramSettings[effectiveDefaultParamsEndpoint] ??
+      paramSettings[endpointSettingsKey] ??
+      [])
+    : (paramSettings[combinedSettingsKey] ??
+      paramSettings[effectiveDefaultParamsEndpoint] ??
+      paramSettings[endpointSettingsKey] ??
+      []);
+
+  const customSettingsByKey = new Map(
+    (paramDefinitions ?? []).flatMap((setting) =>
+      setting.key == null ? [] : ([[setting.key, setting]] as const),
+    ),
+  );
+  const settings = applyModelAwareDefaults(
+    baseSettings,
+    effectiveDefaultParamsEndpoint,
+    model,
+    undefined,
+    effectiveModelReasoning(modelReasoning, paramDefinitions),
+  ).map((setting) => {
+    const override = customSettingsByKey.get(setting.key);
+    return override == null ? setting : { ...setting, ...override };
+  });
+  const declaredReasoningSettings = (paramDefinitions ?? [])
+    .filter((setting) => reasoningSettingKeys.includes(setting.key as ReasoningSettingKey))
+    .filter((setting) => !settings.some((baseSetting) => baseSetting.key === setting.key))
+    .map((setting) => setting as SettingDefinition);
+  const effectiveSettings = [...settings, ...declaredReasoningSettings];
+  const explicitReasoningKey = paramDefinitions?.find((setting) =>
+    reasoningSettingKeys.includes(setting.key as ReasoningSettingKey),
+  )?.key as ReasoningSettingKey | undefined;
+  if (explicitReasoningKey != null) {
+    const explicitSetting = findReasoningSetting(effectiveSettings, explicitReasoningKey);
+    return explicitSetting != null && blockedReasoningKeys?.has(explicitSetting.key)
+      ? undefined
+      : toSubmittableReasoningSetting(explicitSetting);
+  }
+  const resolutionEndpoint = isKnownReasoningProvider(effectiveDefaultParamsEndpoint)
+    ? effectiveDefaultParamsEndpoint
+    : endpoint;
+  if (
+    resolutionEndpoint === EModelEndpoint.azureOpenAI &&
+    !paramDefinitions?.some((setting) =>
+      reasoningSettingKeys.includes(setting.key as ReasoningSettingKey),
+    )
+  ) {
+    return undefined;
+  }
+  const resolvedSetting = resolveReasoningSetting({
+    endpoint: resolutionEndpoint,
+    model,
+    settings: effectiveSettings,
+  });
+  return resolvedSetting != null && blockedReasoningKeys?.has(resolvedSetting.key)
+    ? undefined
+    : toSubmittableReasoningSetting(resolvedSetting);
+}
+
+/** Confirms that a stored one-shot override still belongs to the selected
+ * model and remains inside its advertised enum or numeric range. */
+export function isReasoningOverrideSupported(
+  reasoningOverride: TReasoningOverride,
+  setting: SettingDefinition | undefined,
+): boolean {
+  if (setting?.key !== reasoningOverride.key) {
+    return false;
+  }
+  if (typeof reasoningOverride.value === 'number') {
+    return (
+      setting.range == null ||
+      clampSettingRange(reasoningOverride.value, setting.range) === reasoningOverride.value
+    );
+  }
+  return setting.options == null || setting.options.includes(reasoningOverride.value);
+}
+
+const knownReasoningEfforts: ReadonlySet<string> = new Set(Object.values(ReasoningEffort));
+
+/**
+ * Whether a stored or submitted effort is acceptable for a model, by the same
+ * rules {@link narrowOpenRouterEfforts} uses to build the control: anything is
+ * accepted while the capabilities are unknown, Auto always is (it sends no
+ * effort), and otherwise the effort must be one the provider reports, with
+ * `none` refused for a model whose reasoning is mandatory.
+ */
+export function isOpenRouterEffortSupported(
+  effort: string,
+  modelReasoning: TModelReasoning | null | undefined,
+): boolean {
+  if (modelReasoning === undefined || effort === ReasoningEffort.unset) {
+    return true;
+  }
+  if (modelReasoning === null) {
+    return false;
+  }
+  if (modelReasoning.mandatory === true && effort === ReasoningEffort.none) {
+    return false;
+  }
+  return modelReasoning.efforts.includes(effort);
+}
+
+/** Whether an administrator defined `reasoning_effort` for the endpoint. */
+export function hasExplicitReasoningEffort(
+  paramDefinitions?: Partial<SettingDefinition>[] | null,
+): boolean {
+  return paramDefinitions?.some((setting) => setting.key === 'reasoning_effort') === true;
+}
+
+/**
+ * An administrator-defined `reasoning_effort` is authoritative for its endpoint,
+ * so the provider's per-model efforts must not narrow or remove it.
+ */
+export function effectiveModelReasoning(
+  modelReasoning: TModelReasoning | null | undefined,
+  paramDefinitions?: Partial<SettingDefinition>[] | null,
+): TModelReasoning | null | undefined {
+  return hasExplicitReasoningEffort(paramDefinitions) ? undefined : modelReasoning;
+}
+
+/**
+ * The efforts to offer for one OpenRouter model. Without the endpoint's capabilities, because
+ * the request is still loading or failed, nothing is offered (`null`): a choice made from the
+ * generic list could be refused by the server. Once they are known the model's own efforts
+ * apply, and a model the provider does not list keeps the generic list (`undefined`). An
+ * administrator-defined `reasoning_effort` is never narrowed or hidden.
+ */
+export function resolveModelReasoning({
+  capabilities,
+  endpoint,
+  model,
+  paramDefinitions,
+}: {
+  capabilities: TReasoningCapabilityMap | undefined;
+  endpoint: string;
+  model: string;
+  paramDefinitions?: Partial<SettingDefinition>[] | null;
+}): TModelReasoning | null | undefined {
+  const reported = capabilities == null ? null : getModelReasoning(capabilities, endpoint, model);
+  return effectiveModelReasoning(reported, paramDefinitions);
+}
+
+/**
+ * Looks one model up in an endpoint's provider-reported reasoning efforts, for
+ * {@link applyModelAwareDefaults}. `undefined` means unknown: the endpoint was not resolved,
+ * or the provider does not list the model (an alias such as `~openai/gpt-latest`, or a model
+ * released since the catalog was read), so the generic efforts stay. `null` means the provider
+ * lists the model and exposes no effort selection for it. A routing variant (`model:nitro`) is
+ * matched to its base model.
+ */
+export function getModelReasoning(
+  capabilities: TReasoningCapabilityMap | undefined,
+  endpoint: string,
+  model: string,
+): TModelReasoning | undefined | null {
+  /** Model ids and endpoint names are unrestricted strings, so only own properties count: an id
+   *  such as `constructor` must not resolve to a member of `Object.prototype`. */
+  const own = <T>(record: Record<string, T> | undefined, key: string): T | undefined =>
+    record != null && Object.prototype.hasOwnProperty.call(record, key) ? record[key] : undefined;
+  const models = own(capabilities, endpoint);
+  const listed = own(models, model) ?? own(models, model.split(':')[0]);
+  if (listed == null) {
+    return undefined;
+  }
+  return listed.efforts.length === 0 ? null : listed;
+}
+
+/**
+ * Narrows the effort setting to what one OpenRouter model accepts. A model with
+ * no reasoning metadata, or none this client knows, has no effort control: the
+ * provider says to omit effort selection then, and sending one is rejected.
+ * `none` is dropped when the model's reasoning is mandatory. Auto stays because
+ * it sends no effort at all.
+ */
+function narrowOpenRouterEfforts(
+  settings: SettingsConfiguration,
+  modelReasoning: TModelReasoning | null,
+): SettingsConfiguration {
+  const supported = (modelReasoning?.efforts ?? []).filter(
+    (effort) =>
+      knownReasoningEfforts.has(effort) &&
+      !(modelReasoning?.mandatory === true && effort === ReasoningEffort.none),
+  );
+  return settings.flatMap((setting) => {
+    if (setting.key !== 'reasoning_effort') {
+      return [setting];
+    }
+    if (supported.length === 0) {
+      return [];
+    }
+    const options = setting.options?.filter(
+      (option) => option === ReasoningEffort.unset || supported.includes(String(option)),
+    );
+    return [{ ...setting, options }];
+  });
+}
+
 /**
  * Resolves model-aware defaults for a settings configuration before rendering.
  * Google's `maxOutputTokens` default depends on the selected Gemini model so that
  * current models (2.5 and 3+) surface their 64K output limit instead of the legacy 8K value.
  * Anthropic prompt-cache controls are only surfaced for models that support them.
+ *
+ * `modelReasoning` is the provider-reported effort set for the model on an OpenRouter
+ * endpoint: `undefined` while it is unknown (the generic list is kept), `null` when the
+ * provider reports no reasoning for the model, otherwise the efforts to offer.
  */
 export function applyModelAwareDefaults(
   settings: SettingsConfiguration,
   endpoint: string,
   model?: string,
+  responsesApiRouting?: ResponsesApiRouting,
+  modelReasoning?: TModelReasoning | null,
+): SettingsConfiguration {
+  const resolved = applyModelFamilyDefaults(settings, endpoint, model, responsesApiRouting);
+  return model && endpoint === Providers.OPENROUTER && modelReasoning !== undefined
+    ? narrowOpenRouterEfforts(resolved, modelReasoning)
+    : resolved;
+}
+
+function applyModelFamilyDefaults(
+  settings: SettingsConfiguration,
+  endpoint: string,
+  model?: string,
+  responsesApiRouting?: ResponsesApiRouting,
 ): SettingsConfiguration {
   if (!model) {
     return settings;
+  }
+  if (/^grok-4[.-]7(?:$|[-:])/.test(model.split('/').pop() ?? '')) {
+    return settings.map((setting) =>
+      setting.key === 'reasoning_effort'
+        ? {
+            ...setting,
+            options: [
+              ReasoningEffort.unset,
+              ReasoningEffort.low,
+              ReasoningEffort.medium,
+              ReasoningEffort.high,
+              ReasoningEffort.xhigh,
+            ],
+          }
+        : setting,
+    );
+  }
+  const tier = gpt6Tier(model);
+  if (tier === 'sol' || tier === 'luna') {
+    return settings.map((setting) => {
+      if (setting.key === 'reasoning_effort') {
+        return {
+          ...setting,
+          options: setting.options?.filter((effort) => effort !== ReasoningEffort.minimal),
+        };
+      }
+      /** Match the native backend's unset default without writing into stored
+       * settings. Explicit false still overrides this rendered default. */
+      if (setting.key === 'useResponsesApi') {
+        const route = (value?: boolean) =>
+          resolveEffectiveUseResponsesApi({ endpoint, model, routing: responsesApiRouting, value });
+        return {
+          ...setting,
+          default: route() ?? false,
+          enumMappings: { true: route(true) ?? true, false: route(false) ?? false },
+        };
+      }
+      return setting;
+    });
+  }
+  if (hasAlwaysOnThinking(model)) {
+    return settings.filter(
+      (setting) =>
+        !['thinking', 'thinkingBudget', 'temperature', 'topP', 'topK'].includes(setting.key),
+    );
+  }
+  /** Sonnet 5.5+ keeps the toggle: "off" maps to its `between_tools` floor. */
+  if (hasBetweenToolsThinkingFloor(model)) {
+    return settings
+      .map((setting) =>
+        setting.key === 'thinking'
+          ? { ...setting, description: 'com_endpoint_anthropic_thinking_between_tools' }
+          : setting,
+      )
+      .filter(
+        (setting) => !['thinkingBudget', 'temperature', 'topP', 'topK'].includes(setting.key),
+      );
+  }
+  /** Haiku 5.5+ keeps the toggle ("off" sends `disabled`) but rejects budgets and sampling. */
+  if (hasAdaptiveHaikuThinking(model)) {
+    return settings.filter(
+      (setting) => !['thinkingBudget', 'temperature', 'topP', 'topK'].includes(setting.key),
+    );
   }
   const modelAwareSettings =
     endpoint === EModelEndpoint.google

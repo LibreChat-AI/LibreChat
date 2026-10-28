@@ -1,21 +1,20 @@
 import { memo, useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { ScrollText } from 'lucide-react';
 import { useSetRecoilState } from 'recoil';
-import { useAtomValue, useSetAtom } from 'jotai';
+import { useSetAtom, useAtomValue } from 'jotai';
 import { AutoSizer, List } from 'react-virtualized';
-import { Input, Spinner, useCombobox } from '@librechat/client';
+import { MentionItem } from '@librechat/chat/components';
+import { Input, Spinner, useCombobox, useRemScale } from '@librechat/client';
 import { SkillsScope, resolveAgentSkillsScope } from 'librechat-data-provider';
+import { pendingManualSkillsByConvoId, showSkillsPopoverFamily } from '@librechat/chat/react';
 import type { TSkillSummary } from 'librechat-data-provider';
 import type { MentionOption } from '~/common';
 import useInitPopoverInput from '~/hooks/Input/useInitPopoverInput';
 import { useLocalize, useSkillActiveState } from '~/hooks';
 import { useSkillsInfiniteQuery } from '~/data-provider';
-import { showSkillsPopoverFamily } from './skillsState';
 import { useAgentsMapContext } from '~/Providers';
 import { ephemeralAgentByConvoId } from '~/store';
 import { isEphemeralAgent } from '~/common';
-import MentionItem from './MentionItem';
-import store from '~/store';
 
 const commandChar = '$';
 const ROW_HEIGHT = 44;
@@ -89,11 +88,10 @@ function SkillsCommandContent({
   agentId?: string | null;
 }) {
   const localize = useLocalize();
+  const remScale = useRemScale();
   const setShowSkillsPopover = useSetAtom(showSkillsPopoverFamily(index));
   const setEphemeralAgent = useSetRecoilState(ephemeralAgentByConvoId(conversationId));
-  const setPendingManualSkills = useSetRecoilState(
-    store.pendingManualSkillsByConvoId(conversationId),
-  );
+  const setPendingManualSkills = useSetAtom(pendingManualSkillsByConvoId(conversationId));
 
   const agentsMap = useAgentsMapContext();
   const { isActive } = useSkillActiveState();
@@ -285,11 +283,12 @@ function SkillsCommandContent({
 
   return (
     <div className="absolute bottom-28 z-10 w-full space-y-2">
-      <div className="popover border-token-border-light rounded-2xl border bg-surface-tertiary-alt p-2 shadow-lg">
+      <div className="popover border-border-light bg-surface-tertiary-alt rounded-theme-popover border p-2 shadow-lg">
         <Input
           ref={initInputRef}
           placeholder={localize('com_ui_skills_command_placeholder')}
-          className="mb-1 h-auto w-full rounded-none border-0 bg-surface-tertiary-alt p-2 text-sm text-text-primary focus:outline-none"
+          variant="embedded"
+          className="mb-1"
           autoComplete="off"
           value={searchValue}
           onKeyDown={(e) => {
@@ -337,17 +336,17 @@ function SkillsCommandContent({
           }}
         />
         {open && (isLoading || isFetchingNextPage) && matches.length === 0 && (
-          <div className="flex h-32 items-center justify-center text-text-primary">
+          <div className="text-text-primary flex h-32 items-center justify-center">
             <Spinner />
           </div>
         )}
         {open && isError && (
-          <div className="p-4 text-center text-sm text-text-secondary">
+          <div className="text-text-secondary p-4 text-center text-sm">
             {localize('com_ui_skills_load_error')}
           </div>
         )}
         {open && !isLoading && !isFetchingNextPage && !isError && matches.length === 0 && (
-          <div className="p-4 text-center text-sm text-text-secondary">
+          <div className="text-text-secondary p-4 text-center text-sm">
             {localize(searchValue ? 'com_ui_no_skills_found' : 'com_ui_skills_empty')}
           </div>
         )}
@@ -358,11 +357,11 @@ function SkillsCommandContent({
                 <List
                   width={width}
                   overscanRowCount={5}
-                  rowHeight={ROW_HEIGHT}
+                  rowHeight={ROW_HEIGHT * remScale}
                   rowCount={matches.length}
                   rowRenderer={rowRenderer}
                   scrollToIndex={activeIndex}
-                  height={Math.min(matches.length * ROW_HEIGHT, 160)}
+                  height={Math.min(matches.length * ROW_HEIGHT, 160) * remScale}
                 />
               )}
             </AutoSizer>

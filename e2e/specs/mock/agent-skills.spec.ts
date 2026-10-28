@@ -13,6 +13,8 @@ import { fetchJson, getAccessToken, requestJson, sendMessage } from './helpers';
 const DEPLOYMENT_SKILL_NAME = 'e2e-deployment-skill';
 const SKILL_ASSERTION_MARKER = 'E2E_ASSERT_SKILLS:';
 const SKILL_ASSERTION_FINAL_TEXT = 'E2E skill assertion passed';
+const SKILL_ASSERTION_AUTHORING_ONLY_TEXT = `${SKILL_ASSERTION_FINAL_TEXT}: authoring-only`;
+const SKILL_ASSERTION_NO_SKILLS_TEXT = `${SKILL_ASSERTION_FINAL_TEXT}: none`;
 const MANUAL_SKILL_ASSERTION_MARKER = 'E2E_ASSERT_MANUAL_SKILL:';
 const MANUAL_SKILL_ASSERTION_FINAL_TEXT = 'E2E manual skill assertion passed';
 const SKILL_TOOL_INVOCATION_MARKER = 'E2E_INVOKE_SKILL:';
@@ -387,10 +389,12 @@ test.describe('Agent Builder skills', () => {
       await expectSkillInPicker(page, manualPickerSearch, inlineSkillName);
       await skillPickerOption(page, inlineSkillName).click();
       await expect(manualPickerSearch).toBeHidden();
+      // Manual skill picks stage as tray chips (shared "Staged context" list).
       await expect(
         page
-          .getByRole('list', { name: 'Skills queued for next submission' })
-          .getByText(inlineSkillName, { exact: true }),
+          .getByTestId('composer-tray')
+          .getByTestId('composer-chip-skill')
+          .filter({ hasText: inlineSkillName }),
       ).toBeVisible();
 
       const manualResponse = await sendMessage(
@@ -448,7 +452,10 @@ test.describe('Agent Builder skills', () => {
       /** Emptying the allowlist stays in Selected: the mode is explicit now, so
        *  removing the last skill no longer infers Off. Only `skills` is written,
        *  and an explicit Selected with nothing selected resolves to no skills at
-       *  runtime, which the picker and the run below both confirm. */
+       *  runtime, which the picker and the run below both confirm. Skills stay
+       *  enabled, so that run can still author one: it keeps the `skill` tool in
+       *  its authoring variant with nothing in the catalog, which is what
+       *  separates this from the Off agent below. */
       const emptiedResponsePromise = waitForAgentMutation(page, 'PATCH', createdAgentId);
       await form.getByRole('button', { name: 'Save', exact: true }).click();
       const emptiedResponse = await emptiedResponsePromise;
@@ -477,13 +484,13 @@ test.describe('Agent Builder skills', () => {
       await expectSkillAbsentFromPicker(page, disabledPickerSearch, inlineSkillName);
       await closeSkillPicker(page, disabledPickerSearch);
 
-      const disabledRuntimeResponse = await sendMessage(
+      const emptiedRuntimeResponse = await sendMessage(
         page,
         `${SKILL_ASSERTION_MARKER}!${DEPLOYMENT_SKILL_NAME},!${inlineSkillName}`,
       );
-      expect(disabledRuntimeResponse.ok()).toBeTruthy();
+      expect(emptiedRuntimeResponse.ok()).toBeTruthy();
       await expect(
-        page.getByTestId('messages-view').getByText(`${SKILL_ASSERTION_FINAL_TEXT}: none`),
+        page.getByTestId('messages-view').getByText(SKILL_ASSERTION_AUTHORING_ONLY_TEXT),
       ).toBeVisible({ timeout: 30000 });
     } finally {
       await settleCleanup([
@@ -634,8 +641,10 @@ test.describe('Agent Builder skills', () => {
         ].join('\n'),
       );
       expect(disabledRuntimeResponse.ok()).toBeTruthy();
+      /** Off turns authoring off with invocation, so this run gets no `skill`
+       *  tool at all — unlike the emptied-allowlist run above. */
       await expect(
-        page.getByTestId('messages-view').getByText(`${SKILL_ASSERTION_FINAL_TEXT}: none`),
+        page.getByTestId('messages-view').getByText(SKILL_ASSERTION_NO_SKILLS_TEXT),
       ).toBeVisible({ timeout: 30000 });
     } finally {
       await settleCleanup([
@@ -683,7 +692,7 @@ test.describe('Agent Builder skills', () => {
       await createSkillDialog.getByLabel('Name').fill(skillName);
       await createSkillDialog.getByLabel('Description').fill(INLINE_SKILL_DESCRIPTION);
       await createSkillDialog
-        .getByLabel('Instructions')
+        .getByRole('textbox', { name: 'Instructions', exact: true })
         .fill(`# ${skillName}\n\nCreated inline from Agent Builder.`);
 
       const skillResponsePromise = page.waitForResponse(

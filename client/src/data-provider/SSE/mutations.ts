@@ -1,34 +1,11 @@
 import { useMutation } from '@tanstack/react-query';
 import { apiBaseUrl, EModelEndpoint } from 'librechat-data-provider';
-import type { Agents, TMessage, TEphemeralAgent, TPendingSteer } from 'librechat-data-provider';
+import type { AbortStreamParams, AbortStreamResponse } from '@librechat/chat/react';
+import type { Agents, TMessage, TEphemeralAgent } from 'librechat-data-provider';
+import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { postGenerationRequest } from './protocol';
 
-export interface AbortStreamParams {
-  /** The stream ID to abort (if known) */
-  streamId?: string;
-  /** The conversation ID to abort (backend will look up the job) */
-  conversationId?: string;
-  /** Exact generation epoch returned by start/status. Prevents a stale tab
-   * from aborting a newer turn that reused the conversation-scoped stream id. */
-  generationCreatedAt?: number;
-}
-
-export interface AbortStreamResponse {
-  generationProtocolVersion?: number;
-  success: boolean;
-  aborted?: string;
-  /** Stop lost to an ordinary terminal transition; no abort FINAL was emitted. */
-  settled?: boolean;
-  code?: 'RUN_ALREADY_SETTLED' | string;
-  streamId?: string;
-  terminalStatus?: 'complete' | 'error' | 'aborted';
-  error?: string;
-  /** The worker stopped, but its terminal state could not be made durable.
-   * The client must not infer a safe queue-drain boundary from this ACK. */
-  persistenceFailed?: boolean;
-  /** Steers that never reached an injection boundary; restored as queued chips. */
-  pendingSteers?: TPendingSteer[];
-}
+export type { AbortStreamParams, AbortStreamResponse } from '@librechat/chat/react';
 
 /**
  * Abort an ongoing generation stream.
@@ -48,12 +25,13 @@ export const abortStream = async (params: AbortStreamParams): Promise<AbortStrea
 };
 
 /**
- * React Query mutation hook for aborting a generation stream.
+ * React Query mutation hook for aborting a generation stream, through the host's transport.
  * Use this when the user explicitly clicks the stop button.
  */
 export function useAbortStreamMutation() {
+  const transport = useChatTransport();
   return useMutation({
-    mutationFn: abortStream,
+    mutationFn: transport.abort,
   });
 }
 
@@ -220,10 +198,12 @@ export const steerMessage = async (params: SteerMessageParams): Promise<SteerMes
   );
 };
 
-/** React Query mutation hook for steering; the injection arrives on the SSE. */
+/** React Query mutation hook for steering, through the host's transport; the injection
+ *  arrives on the SSE. */
 export function useSteerMessageMutation() {
+  const transport = useChatTransport();
   return useMutation({
-    mutationFn: steerMessage,
+    mutationFn: transport.steer,
   });
 }
 
@@ -255,8 +235,9 @@ export const cancelSteerMessage = async (
 };
 
 export function useCancelSteerMutation() {
+  const transport = useChatTransport();
   return useMutation({
-    mutationFn: cancelSteerMessage,
+    mutationFn: transport.cancelSteer,
   });
 }
 
@@ -288,7 +269,8 @@ export const armSteerMessage = async (params: ArmSteerParams): Promise<ArmSteerR
 };
 
 export function useArmSteerMutation() {
+  const transport = useChatTransport();
   return useMutation({
-    mutationFn: armSteerMessage,
+    mutationFn: transport.armSteer,
   });
 }

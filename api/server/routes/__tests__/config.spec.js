@@ -10,10 +10,10 @@ jest.mock('~/server/services/Config/ldap', () => ({
 }));
 
 const mockHasCapability = jest.fn();
-const mockHasConfigCapability = jest.fn();
+const mockGetHeldCapabilities = jest.fn();
 jest.mock('~/server/middleware/roles/capabilities', () => ({
   hasCapability: (...args) => mockHasCapability(...args),
-  hasConfigCapability: (...args) => mockHasConfigCapability(...args),
+  getHeldCapabilities: (...args) => mockGetHeldCapabilities(...args),
 }));
 
 const mockGetTenantId = jest.fn(() => undefined);
@@ -37,6 +37,7 @@ jest.mock('@librechat/api', () => ({
 
 const request = require('supertest');
 const express = require('express');
+const { SystemCapabilities, configCapability } = require('@librechat/data-schemas');
 const configRoute = require('../config');
 
 function createApp(user) {
@@ -87,6 +88,7 @@ afterEach(() => {
   delete process.env.ALLOW_REGISTRATION;
   delete process.env.ALLOW_SOCIAL_LOGIN;
   delete process.env.ALLOW_PASSWORD_RESET;
+  delete process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION;
   delete process.env.DOMAIN_SERVER;
   delete process.env.GOOGLE_CLIENT_ID;
   delete process.env.GOOGLE_CLIENT_SECRET;
@@ -103,11 +105,14 @@ afterEach(() => {
   delete process.env.SAML_CERT;
   delete process.env.SAML_SESSION_SECRET;
   delete process.env.ALLOW_ACCOUNT_DELETION;
+  delete process.env.ALLOW_EMAIL_CHANGE;
+  delete process.env.RAG_API_URL;
   delete process.env.ADMIN_PANEL_URL;
   delete process.env.ENABLE_INSIGHTS;
   delete process.env.ANALYTICS_GTM_ID;
   delete process.env.CUSTOM_FOOTER;
   delete process.env.HELP_AND_FAQ_URL;
+  delete process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE;
   delete process.env.LANGFUSE_FANOUT_ENABLED;
   delete process.env.LANGFUSE_FANOUT_COLLECTOR_URL;
   delete process.env.LANGFUSE_FANOUT_TENANT_EXPORT_DISABLED;
@@ -121,31 +126,104 @@ afterEach(() => {
 
 describe('GET /api/config', () => {
   describe('unauthenticated (no req.user)', () => {
-    it('should call getAppConfig with baseOnly when no tenant context', async () => {
+    it('should resolve the __base__ overrides without runtime augmentation when no tenant context', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
       mockGetTenantId.mockReturnValue(undefined);
       const app = createApp(null);
 
       await request(app).get('/api/config');
 
-      expect(mockGetAppConfig).toHaveBeenCalledWith({ baseOnly: true });
+      expect(mockGetAppConfig).toHaveBeenCalledWith({ skipRuntimeAugmentation: true });
+      expect(mockGetAppConfig).not.toHaveBeenCalledWith(
+        expect.objectContaining({ failClosed: true }),
+      );
     });
 
-    it('should call getAppConfig with tenantId when tenant context is present', async () => {
+    it('should serve the pre-login config: __base__ socialLogins and interface, YAML Turnstile', async () => {
+      mockGetTenantId.mockReturnValue(undefined);
+      mockResolveBuildInfo.mockReturnValue({
+        commit: 'abc1234def',
+        commitShort: 'abc1234',
+        branch: 'main',
+        buildDate: '2026-01-01T00:00:00.000Z',
+      });
+      /** What the merge hands back: `turnstile` is base-only, so it is librechat.yaml's. */
+      const preLoginConfig = {
+        registration: { socialLogins: ['google', 'openid'] },
+        interfaceConfig: {
+          privacyPolicy: { externalUrl: 'https://base.example/privacy' },
+          theme: 'clickhouse',
+          buildInfo: false,
+          modelSelect: false,
+        },
+        turnstileConfig: { siteKey: 'yaml-site-key' },
+      };
+      mockGetAppConfig.mockResolvedValue(preLoginConfig);
+      const app = createApp(null);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.statusCode).toBe(200);
+      expect(mockGetAppConfig).toHaveBeenCalledTimes(1);
+      expect(mockGetAppConfig).toHaveBeenCalledWith({ skipRuntimeAugmentation: true });
+      expect(response.body.socialLogins).toEqual(['google', 'openid']);
+      expect(response.body.interface).toEqual({
+        privacyPolicy: { externalUrl: 'https://base.example/privacy' },
+        buildInfo: false,
+        theme: 'clickhouse',
+      });
+      expect(response.body).not.toHaveProperty('buildInfo');
+      expect(response.body.turnstile).toEqual({ siteKey: 'yaml-site-key' });
+    });
+
+    it('publishes configured client timeouts before login and omits invalid ones', async () => {
+      mockGetTenantId.mockReturnValue(undefined);
+      mockGetAppConfig.mockResolvedValue({ config: { clientLimits: { refreshMs: 90000 } } });
+      const configured = await request(createApp(null)).get('/api/config');
+      expect(configured.body.clientLimits).toEqual({ refreshMs: 90000 });
+
+      mockGetAppConfig.mockResolvedValue({ config: { clientLimits: { refreshMs: -1 } } });
+      const invalid = await request(createApp(null)).get('/api/config');
+      expect(invalid.body).not.toHaveProperty('clientLimits');
+    });
+
+    it('should never serve a signed-out visitor a policy link that would run script', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        interfaceConfig: {
+          privacyPolicy: {
+            externalUrl: '\u00a0javascript:alert(document.domain)',
+            openNewTab: true,
+          },
+          termsOfService: { externalUrl: '\u0001data:text/html,<script>alert(1)</script>' },
+        },
+      });
+      const app = createApp(null);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body.interface).toEqual({
+        privacyPolicy: { openNewTab: true },
+        termsOfService: {},
+      });
+    });
+
+    it('should resolve a tenant context in one read without an explicit tenantId', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
       mockGetTenantId.mockReturnValue('tenant-abc');
       const app = createApp(null);
 
       await request(app).get('/api/config');
 
-      expect(mockGetAppConfig).toHaveBeenCalledWith({ tenantId: 'tenant-abc' });
+      expect(mockGetAppConfig).toHaveBeenCalledTimes(1);
+      expect(mockGetAppConfig).toHaveBeenCalledWith({ skipRuntimeAugmentation: true });
     });
 
     it('should map tenant-scoped config fields in unauthenticated response', async () => {
       const tenantConfig = {
         ...baseAppConfig,
         registration: { socialLogins: ['saml'] },
-        turnstileConfig: { siteKey: 'tenant-key' },
       };
       mockGetAppConfig.mockResolvedValue(tenantConfig);
       mockGetTenantId.mockReturnValue('tenant-abc');
@@ -155,7 +233,7 @@ describe('GET /api/config', () => {
 
       expect(response.statusCode).toBe(200);
       expect(response.body.socialLogins).toEqual(['saml']);
-      expect(response.body.turnstile).toEqual({ siteKey: 'tenant-key' });
+      expect(response.body.turnstile).toEqual({ siteKey: 'test-key' });
       expect(response.body).not.toHaveProperty('modelSpecs');
     });
 
@@ -177,6 +255,9 @@ describe('GET /api/config', () => {
       expect(response.body).not.toHaveProperty('sharePointPickerSharePointScope');
       expect(response.body).not.toHaveProperty('conversationImportMaxFileSize');
       expect(response.body).not.toHaveProperty('insightsEnabled');
+      expect(response.body).not.toHaveProperty('pullRequestsEnabled');
+      expect(response.body).not.toHaveProperty('pullRequestsBatchVersion');
+      expect(response.body).not.toHaveProperty('mcpApps');
     });
 
     it('should strip authenticated-only informational fields from unauthenticated response (#12688)', async () => {
@@ -197,6 +278,7 @@ describe('GET /api/config', () => {
       expect(response.body).not.toHaveProperty('analyticsGtmId');
       expect(response.body).not.toHaveProperty('openidReuseTokens');
       expect(response.body).not.toHaveProperty('allowAccountDeletion');
+      expect(response.body).not.toHaveProperty('allowEmailChange');
       expect(response.body).not.toHaveProperty('customFooter');
       expect(response.body).not.toHaveProperty('adminPanelURL');
     });
@@ -219,6 +301,7 @@ describe('GET /api/config', () => {
       expect(response.body).not.toHaveProperty('staticBundlerURL');
       expect(response.body).not.toHaveProperty('helpAndFaqURL');
       expect(response.body).not.toHaveProperty('allowAccountDeletion');
+      expect(response.body).not.toHaveProperty('allowEmailChange');
     });
 
     it('should include socialLogins and turnstile from base config', async () => {
@@ -256,6 +339,49 @@ describe('GET /api/config', () => {
       expect(response.body).not.toHaveProperty('interface');
     });
 
+    it('should include the deployment theme so the login page paints it', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        interfaceConfig: { modelSelect: true, theme: 'clickhouse' },
+      });
+      const app = createApp(null);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body.interface).toEqual({ theme: 'clickhouse' });
+    });
+
+    it('keeps passkeys advertised for management when email login is disabled', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      const previous = {
+        ALLOW_EMAIL_LOGIN: process.env.ALLOW_EMAIL_LOGIN,
+        ALLOW_PASSKEY_LOGIN: process.env.ALLOW_PASSKEY_LOGIN,
+      };
+      process.env.ALLOW_EMAIL_LOGIN = 'false';
+      process.env.ALLOW_PASSKEY_LOGIN = 'true';
+      try {
+        let isolatedRoute;
+        jest.isolateModules(() => {
+          isolatedRoute = require('../config');
+        });
+        const app = express();
+        app.use('/api/config', isolatedRoute);
+
+        const response = await request(app).get('/api/config');
+
+        expect(response.body.emailLoginEnabled).toBe(false);
+        expect(response.body.passkeyLoginEnabled).toBe(true);
+      } finally {
+        for (const [key, value] of Object.entries(previous)) {
+          if (value === undefined) {
+            delete process.env[key];
+          } else {
+            process.env[key] = value;
+          }
+        }
+      }
+    });
+
     it('should include shared env var fields', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
       process.env.APP_TITLE = 'Test App';
@@ -266,6 +392,16 @@ describe('GET /api/config', () => {
       expect(response.body.appTitle).toBe('Test App');
       expect(response.body).toHaveProperty('emailLoginEnabled');
       expect(response.body).toHaveProperty('serverDomain');
+    });
+
+    it('should expose the effective two-factor enforcement policy', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      process.env.ENFORCE_TWO_FACTOR_AUTHENTICATION = 'true';
+      const app = createApp(null);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body.twoFactorAuthenticationRequired).toBe(true);
     });
 
     it('should omit CloudFront cookie refresh from unauthenticated response (#12688)', async () => {
@@ -291,7 +427,7 @@ describe('GET /api/config', () => {
       const response = await request(app).get('/api/config');
 
       expect(response.statusCode).toBe(500);
-      expect(response.body).toHaveProperty('error');
+      expect(response.body).toEqual({ error: 'Failed to load startup config' });
     });
 
     it('should not expose endpointsDropParamsMap to unauthenticated callers', async () => {
@@ -310,6 +446,47 @@ describe('GET /api/config', () => {
   });
 
   describe('authenticated (req.user exists)', () => {
+    it('exposes retrieval availability only after login without exposing the service URL', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      const app = createApp(mockUser);
+      delete process.env.RAG_API_URL;
+
+      const disabled = await request(app).get('/api/config');
+      expect(disabled.statusCode).toBe(200);
+      expect(disabled.body.ragEnabled).toBe(false);
+
+      process.env.RAG_API_URL = 'http://rag.internal:8000';
+      const enabled = await request(app).get('/api/config');
+      expect(enabled.statusCode).toBe(200);
+      expect(enabled.body.ragEnabled).toBe(true);
+      expect(JSON.stringify(enabled.body)).not.toContain(process.env.RAG_API_URL);
+
+      const anonymous = await request(createApp()).get('/api/config');
+      expect(anonymous.statusCode).toBe(200);
+      expect(anonymous.body).not.toHaveProperty('ragEnabled');
+    });
+
+    it('drops a policy link that would run script and keeps the rest of the interface', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        interfaceConfig: {
+          privacyPolicy: { externalUrl: 'https://example.com/privacy' },
+          termsOfService: { externalUrl: 'JavaScript:alert(1)', modalAcceptance: true },
+          modelSelect: true,
+        },
+      });
+      const app = createApp(mockUser);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body.interface).toEqual({
+        privacyPolicy: { externalUrl: 'https://example.com/privacy' },
+        termsOfService: { modalAcceptance: true },
+        modelSelect: true,
+      });
+    });
+
     it('should call getAppConfig with role, userId, and tenantId', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
       mockGetTenantId.mockReturnValue('fallback-tenant');
@@ -322,6 +499,7 @@ describe('GET /api/config', () => {
         userId: 'user123',
         idOnTheSource: undefined,
         tenantId: 'fallback-tenant',
+        failClosed: true,
       });
     });
 
@@ -337,7 +515,87 @@ describe('GET /api/config', () => {
         userId: 'user123',
         idOnTheSource: undefined,
         tenantId: 'user-tenant',
+        failClosed: true,
       });
+    });
+
+    it.each([
+      [undefined, { enabled: false, legacyHtmlEnabled: true }],
+      [true, { enabled: true, legacyHtmlEnabled: true }],
+      [false, { enabled: false, legacyHtmlEnabled: false }],
+    ])('publishes the authenticated MCP Apps policy for raw apps=%s', async (apps, expected) => {
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        mcpSettings: apps === undefined ? {} : { apps },
+      });
+      const app = createApp(mockUser);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body.mcpApps).toEqual({
+        ...expected,
+        cspLimits: { maxSourcesPerDirective: 32, maxSerializedLength: 4096 },
+        maxPersistedAppBytes: 1048576,
+        maxAdmissionRequestsPerMinute: 240,
+        maxActiveViews: 3,
+        maxActionPreviewChars: 16384,
+      });
+    });
+
+    it('publishes deployment-owned MCP App sandbox limits', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        mcpSettings: { apps: true },
+        mcpAppSandbox: {
+          url: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+          maxSourcesPerDirective: 64,
+          maxSerializedLength: 8192,
+          maxAdmissionRequestsPerMinute: 480,
+          maxActiveViews: 7,
+          maxActionPreviewChars: 32768,
+        },
+      });
+      const response = await request(createApp(mockUser)).get('/api/config');
+
+      expect(response.body.mcpApps).toEqual({
+        enabled: true,
+        legacyHtmlEnabled: true,
+        cspLimits: { maxSourcesPerDirective: 64, maxSerializedLength: 8192 },
+        maxPersistedAppBytes: 1048576,
+        maxAdmissionRequestsPerMinute: 480,
+        maxActiveViews: 7,
+        maxActionPreviewChars: 32768,
+        sandboxUrl: 'https://mcp-sandbox.example.com/api/mcp/sandbox',
+      });
+    });
+
+    it('publishes deployment-owned MCP App operation limits over the defaults', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        mcpSettings: { apps: true },
+        mcpAppSandbox: { operationLimits: { timeoutMs: 45000, maxActive: 4 } },
+      });
+      const response = await request(createApp(mockUser)).get('/api/config');
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body.mcpApps.operationLimits).toEqual({
+        maxBytes: 4 * 1024 * 1024,
+        timeoutMs: 45000,
+        maxActive: 4,
+      });
+    });
+
+    it('publishes no operation limits override when the deployment sets none', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        mcpSettings: { apps: true },
+        mcpAppSandbox: { maxActiveViews: 7 },
+      });
+      const response = await request(createApp(mockUser)).get('/api/config');
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body.mcpApps).not.toHaveProperty('operationLimits');
     });
 
     it('should include modelSpecs, balance, and webSearch', async () => {
@@ -351,7 +609,7 @@ describe('GET /api/config', () => {
       expect(response.body.modelSpecs).toEqual({ list: [{ name: 'test-spec' }] });
       expect(response.body.balance).toEqual({ enabled: true, startBalance: 10000 });
       expect(response.body.webSearch).toEqual({ searchProvider: 'tavily' });
-      expect(response.body.codeEnvironmentDecisionVersion).toBeUndefined();
+      expect(response.body.codeEnvironmentDecisionVersion).toBe(1);
     });
 
     it('does not advertise conversation moves unless the effective policy enables them', async () => {
@@ -361,6 +619,7 @@ describe('GET /api/config', () => {
       const response = await request(app).get('/api/config');
 
       expect(response.body.codeEnvironmentMoveVersion).toBeUndefined();
+      expect(response.body.codeWorkspaceRecoveryVersion).toBeUndefined();
     });
 
     it('advertises enabled conversation moves regardless of decision activation', async () => {
@@ -370,29 +629,40 @@ describe('GET /api/config', () => {
           agents: {
             statefulCodeSessions: {
               allowedEnvironments: ['user'],
-              conversationMoves: { enabled: true },
+              conversationMoves: { enabled: true, allowAttachDetach: true },
             },
           },
         },
       });
-      delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
+      process.env.CODE_ENVIRONMENT_DECISION_VERSION = '0';
       const app = createApp(mockUser);
 
       const response = await request(app).get('/api/config');
 
       expect(response.body.codeEnvironmentDecisionVersion).toBeUndefined();
+      // An already-open V1 client compares this value against its compiled literal 1.
       expect(response.body.codeEnvironmentMoveVersion).toBe(1);
+      /** Attach and detach ride the same policy on their own number. */
+      expect(response.body.codeEnvironmentTransitionVersion).toBe(2);
+      expect(response.body.codeWorkspaceRecoveryVersion).toBe(1);
     });
 
-    it('advertises code environment decisions only after deployment-wide activation', async () => {
-      mockGetAppConfig.mockResolvedValue(baseAppConfig);
-      process.env.CODE_ENVIRONMENT_DECISION_VERSION = '1';
-      const app = createApp(mockUser);
+    it.each([undefined, '1'])(
+      'advertises code environment decisions by default and when set to 1 (%p)',
+      async (version) => {
+        mockGetAppConfig.mockResolvedValue(baseAppConfig);
+        if (version === undefined) {
+          delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
+        } else {
+          process.env.CODE_ENVIRONMENT_DECISION_VERSION = version;
+        }
+        const app = createApp(mockUser);
 
-      const response = await request(app).get('/api/config');
+        const response = await request(app).get('/api/config');
 
-      expect(response.body.codeEnvironmentDecisionVersion).toBe(1);
-    });
+        expect(response.body.codeEnvironmentDecisionVersion).toBe(1);
+      },
+    );
 
     it.each(['0', '2', '1.0', 'true'])(
       'does not advertise unsupported code environment decision version %s',
@@ -455,6 +725,22 @@ describe('GET /api/config', () => {
       expect(response.body.interface).toEqual(baseAppConfig.interfaceConfig);
     });
 
+    it('delivers the configured steer arm confirmation timeout to authenticated clients', async () => {
+      mockGetAppConfig.mockResolvedValue({
+        ...baseAppConfig,
+        interfaceConfig: {
+          ...baseAppConfig.interfaceConfig,
+          steerArmConfirmationTimeoutMs: 30_000,
+        },
+      });
+      const app = createApp(mockUser);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.statusCode).toBe(200);
+      expect(response.body.interface.steerArmConfirmationTimeoutMs).toBe(30_000);
+    });
+
     it('should include authenticated-only env var fields', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
       process.env.SANDPACK_BUNDLER_URL = 'https://bundler.test';
@@ -481,10 +767,79 @@ describe('GET /api/config', () => {
       expect(response.body.insightsEnabled).toBe(true);
     });
 
+    describe('pull requests', () => {
+      const savedEnv = { GITHUB_TOKEN: process.env.GITHUB_TOKEN, GH_TOKEN: process.env.GH_TOKEN };
+      beforeEach(() => {
+        delete process.env.GITHUB_TOKEN;
+        delete process.env.GH_TOKEN;
+        delete process.env.GITHUB_PULL_REQUEST_TOKEN;
+      });
+      afterEach(() => {
+        for (const [key, value] of Object.entries(savedEnv)) {
+          if (value === undefined) delete process.env[key];
+          else process.env[key] = value;
+        }
+      });
+
+      it.each([
+        ['unset', undefined, 'tok', false],
+        ['switched off', { enabled: false, allowAllRepositories: true }, 'tok', false],
+        ['scoped but without any token', { allowAllRepositories: true }, undefined, false],
+        ['a token but no repository scope', { enabled: true }, 'tok', false],
+        ['scoped with a token, no enabled switch', { allowAllRepositories: true }, 'tok', true],
+        ['listed repositories with a token', { allowedRepositories: ['o/r'] }, 'tok', true],
+      ])(
+        'should advertise pull requests only when they can work (%s)',
+        async (_label, pullRequests, token, expected) => {
+          if (token) process.env.GITHUB_TOKEN = token;
+          mockGetAppConfig.mockResolvedValue({
+            ...baseAppConfig,
+            endpoints: { agents: pullRequests ? { pullRequests } : {} },
+          });
+          const response = await request(createApp(mockUser)).get('/api/config');
+          expect(response.body.pullRequestsEnabled).toBe(expected);
+          /** The batch route's version rides with the flag, so a client never sees one without the other. */
+          if (expected) {
+            expect(response.body.pullRequestsBatchVersion).toBe(1);
+            expect(response.body.pullRequestsMaxConcurrentLookups).toBe(4);
+          } else {
+            expect(response.body).not.toHaveProperty('pullRequestsBatchVersion');
+            expect(response.body).not.toHaveProperty('pullRequestsMaxConcurrentLookups');
+          }
+        },
+      );
+
+      it('advertises the configured lookup limit so a fallback client can keep to it', async () => {
+        process.env.GITHUB_TOKEN = 'tok';
+        mockGetAppConfig.mockResolvedValue({
+          ...baseAppConfig,
+          endpoints: {
+            agents: { pullRequests: { allowAllRepositories: true, maxConcurrentLookups: 2 } },
+          },
+        });
+        const response = await request(createApp(mockUser)).get('/api/config');
+        expect(response.body.pullRequestsMaxConcurrentLookups).toBe(2);
+      });
+
+      it('should not advertise pull requests for a config with no endpoints', async () => {
+        mockGetAppConfig.mockResolvedValue(baseAppConfig);
+        const response = await request(createApp(mockUser)).get('/api/config');
+        expect(response.body.pullRequestsEnabled).toBe(false);
+      });
+    });
+
+    /** A held-capability set that grants connection access and prompt-sync manage access. */
+    const fullLangfuseAccess = () =>
+      new Set([
+        SystemCapabilities.ACCESS_ADMIN,
+        SystemCapabilities.MANAGE_CONFIGS,
+        configCapability('langfuse'),
+        SystemCapabilities.MANAGE_PROMPTS,
+      ]);
+
     it('should advertise Langfuse fanout only when the toggle and collector URL are configured', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
-      mockHasCapability.mockResolvedValue(true);
-      mockHasConfigCapability.mockResolvedValue(true);
+      mockGetHeldCapabilities.mockResolvedValue(fullLangfuseAccess());
       process.env.LANGFUSE_FANOUT_ENABLED = 'true';
       const app = createApp(mockUser);
 
@@ -505,8 +860,7 @@ describe('GET /api/config', () => {
 
     it('hides Langfuse connection access when tenant export is emergency-disabled', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
-      mockHasCapability.mockResolvedValue(true);
-      mockHasConfigCapability.mockResolvedValue(true);
+      mockGetHeldCapabilities.mockResolvedValue(fullLangfuseAccess());
       process.env.LANGFUSE_FANOUT_ENABLED = 'true';
       process.env.LANGFUSE_FANOUT_COLLECTOR_URL = 'http://langfuse-fanout:4318';
       process.env.LANGFUSE_FANOUT_TENANT_EXPORT_DISABLED = 'true';
@@ -516,8 +870,7 @@ describe('GET /api/config', () => {
 
       expect(response.body.langfuseFanoutEnabled).toBe(true);
       expect(response.body.langfuseConnectionAccess).toBe(false);
-      expect(mockHasCapability).not.toHaveBeenCalled();
-      expect(mockHasConfigCapability).not.toHaveBeenCalled();
+      expect(mockGetHeldCapabilities).not.toHaveBeenCalled();
     });
 
     it('advertises Langfuse connection access from capabilities rather than the user role', async () => {
@@ -527,34 +880,81 @@ describe('GET /api/config', () => {
       process.env.LANGFUSE_FANOUT_COLLECTOR_URL = 'http://langfuse-fanout:4318';
       const app = createApp({ ...mockUser, role: 'DELEGATED_ADMIN' });
 
-      mockHasCapability.mockImplementation(
-        async (_user, capability) => capability === 'access:admin',
+      mockGetHeldCapabilities.mockResolvedValue(
+        new Set([SystemCapabilities.ACCESS_ADMIN, configCapability('langfuse')]),
       );
-      mockHasConfigCapability.mockResolvedValue(true);
       let response = await request(app).get('/api/config');
       expect(response.body.langfuseConnectionAccess).toBe(true);
 
-      mockHasConfigCapability.mockResolvedValue(false);
+      mockGetHeldCapabilities.mockResolvedValue(new Set([SystemCapabilities.ACCESS_ADMIN]));
       response = await request(app).get('/api/config');
       expect(response.body.langfuseFanoutEnabled).toBe(true);
       expect(response.body.langfuseConnectionAccess).toBe(false);
     });
 
-    it('skips the Langfuse management capability check without admin access', async () => {
+    it('advertises prompt-sync manage access alongside connection access when the admin holds manage:prompts', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
-      mockHasCapability.mockResolvedValue(false);
+      mockGetHeldCapabilities.mockResolvedValue(fullLangfuseAccess());
+      process.env.LANGFUSE_FANOUT_ENABLED = 'true';
+      process.env.LANGFUSE_FANOUT_COLLECTOR_URL = 'http://langfuse-fanout:4318';
+      const app = createApp(mockUser);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body.langfuseConnectionAccess).toBe(true);
+      expect(response.body.langfusePromptManageAccess).toBe(true);
+      expect(mockGetHeldCapabilities).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.arrayContaining([SystemCapabilities.MANAGE_PROMPTS]),
+      );
+    });
+
+    it('withholds prompt-sync manage access when the admin lacks manage:prompts', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      process.env.LANGFUSE_FANOUT_ENABLED = 'true';
+      process.env.LANGFUSE_FANOUT_COLLECTOR_URL = 'http://langfuse-fanout:4318';
+      const app = createApp(mockUser);
+
+      mockGetHeldCapabilities.mockResolvedValue(
+        new Set([SystemCapabilities.ACCESS_ADMIN, SystemCapabilities.MANAGE_CONFIGS]),
+      );
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body.langfuseConnectionAccess).toBe(true);
+      expect(response.body.langfusePromptManageAccess).toBe(false);
+    });
+
+    it('withholds prompt-sync manage access when Langfuse connection access itself is unavailable, even if manage:prompts is held', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      process.env.LANGFUSE_FANOUT_ENABLED = 'true';
+      process.env.LANGFUSE_FANOUT_COLLECTOR_URL = 'http://langfuse-fanout:4318';
+      const app = createApp(mockUser);
+
+      mockGetHeldCapabilities.mockResolvedValue(
+        new Set([SystemCapabilities.ACCESS_ADMIN, SystemCapabilities.MANAGE_PROMPTS]),
+      );
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body.langfuseConnectionAccess).toBe(false);
+      expect(response.body.langfusePromptManageAccess).toBe(false);
+      expect(mockGetHeldCapabilities).toHaveBeenCalledTimes(1);
+    });
+
+    it('withholds Langfuse connection access without admin access', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      mockGetHeldCapabilities.mockResolvedValue(new Set());
       const app = createApp(mockUser);
 
       const response = await request(app).get('/api/config');
 
       expect(response.body.langfuseConnectionAccess).toBe(false);
-      expect(mockHasConfigCapability).not.toHaveBeenCalled();
     });
 
     it('advertises Langfuse connection access by default in single-tenant mode', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
-      mockHasCapability.mockResolvedValue(true);
-      mockHasConfigCapability.mockResolvedValue(true);
+      mockGetHeldCapabilities.mockResolvedValue(fullLangfuseAccess());
       const app = createApp(mockUser);
 
       const response = await request(app).get('/api/config');
@@ -565,8 +965,7 @@ describe('GET /api/config', () => {
 
     it('hides single-tenant connection settings when environment credentials are configured', async () => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
-      mockHasCapability.mockResolvedValue(true);
-      mockHasConfigCapability.mockResolvedValue(true);
+      mockGetHeldCapabilities.mockResolvedValue(fullLangfuseAccess());
       process.env.LANGFUSE_PUBLIC_KEY = 'pk-env';
       process.env.LANGFUSE_SECRET_KEY = 'sk-env';
       const app = createApp(mockUser);
@@ -574,8 +973,7 @@ describe('GET /api/config', () => {
       const response = await request(app).get('/api/config');
 
       expect(response.body.langfuseConnectionAccess).toBe(false);
-      expect(mockHasCapability).not.toHaveBeenCalled();
-      expect(mockHasConfigCapability).not.toHaveBeenCalled();
+      expect(mockGetHeldCapabilities).not.toHaveBeenCalled();
     });
 
     it.each([
@@ -583,15 +981,73 @@ describe('GET /api/config', () => {
       ['LANGFUSE_SAMPLE_RATE', '0'],
     ])('hides Langfuse connection settings when %s=%s', async (key, value) => {
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
-      mockHasCapability.mockResolvedValue(true);
-      mockHasConfigCapability.mockResolvedValue(true);
+      mockGetHeldCapabilities.mockResolvedValue(fullLangfuseAccess());
       process.env[key] = value;
       const app = createApp(mockUser);
 
       const response = await request(app).get('/api/config');
 
       expect(response.body.langfuseConnectionAccess).toBe(false);
-      expect(mockHasCapability).not.toHaveBeenCalled();
+      expect(mockGetHeldCapabilities).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['environment credentials', { LANGFUSE_PUBLIC_KEY: 'pk-env', LANGFUSE_SECRET_KEY: 'sk-env' }],
+      ['tracing disabled', { LANGFUSE_TRACING_ENABLED: 'false' }],
+      ['zero sampling', { LANGFUSE_SAMPLE_RATE: '0' }],
+      ['strict tenants without fanout', { TENANT_ISOLATION_STRICT: 'true' }],
+      [
+        'tenant export disabled',
+        {
+          LANGFUSE_FANOUT_ENABLED: 'true',
+          LANGFUSE_FANOUT_COLLECTOR_URL: 'http://collector:4318',
+          LANGFUSE_FANOUT_TENANT_EXPORT_DISABLED: 'true',
+        },
+      ],
+    ])('advertises prompt access with %s without advertising trace access', async (_mode, env) => {
+      Object.assign(process.env, env, { LANGFUSE_PROMPT_SYNC_AVAILABLE: 'true' });
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      mockGetHeldCapabilities.mockResolvedValue(fullLangfuseAccess());
+      const response = await request(createApp(mockUser)).get('/api/config');
+      expect(response.status).toBe(200);
+      expect(response.body.langfusePromptSyncAccess).toBe(true);
+      expect(response.body.langfuseConnectionAccess).toBe(false);
+      expect(response.body.langfusePromptManageAccess).toBe(true);
+      expect(mockGetHeldCapabilities).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+      [false, true],
+      [true, false],
+    ])('requires admin=%s and Langfuse manage=%s for prompt access', async (admin, manage) => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      process.env.LANGFUSE_TRACING_ENABLED = 'false';
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      mockGetHeldCapabilities.mockResolvedValue(
+        new Set([
+          ...(admin ? [SystemCapabilities.ACCESS_ADMIN] : []),
+          ...(manage ? [configCapability('langfuse')] : []),
+          SystemCapabilities.MANAGE_PROMPTS,
+        ]),
+      );
+      const response = await request(createApp(mockUser)).get('/api/config');
+      expect(response.body.langfusePromptSyncAccess).toBe(false);
+      expect(response.body.langfuseConnectionAccess).toBe(false);
+    });
+
+    it('shows prompt settings without sync permission when tracing is disabled', async () => {
+      process.env.LANGFUSE_PROMPT_SYNC_AVAILABLE = 'true';
+      process.env.LANGFUSE_TRACING_ENABLED = 'false';
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      mockGetHeldCapabilities.mockResolvedValue(
+        new Set([SystemCapabilities.ACCESS_ADMIN, configCapability('langfuse')]),
+      );
+
+      const response = await request(createApp(mockUser)).get('/api/config');
+
+      expect(response.body.langfusePromptSyncAccess).toBe(true);
+      expect(response.body.langfuseConnectionAccess).toBe(false);
+      expect(response.body.langfusePromptManageAccess).toBe(false);
     });
 
     it('should include post-login informational fields', async () => {
@@ -690,6 +1146,25 @@ describe('GET /api/config', () => {
       expect(mockHasCapability).toHaveBeenCalled();
     });
 
+    it('should enable email changes by default for authenticated users', async () => {
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      const app = createApp(mockUser);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body.allowEmailChange).toBe(true);
+    });
+
+    it('should disable email changes when ALLOW_EMAIL_CHANGE is false', async () => {
+      process.env.ALLOW_EMAIL_CHANGE = 'false';
+      mockGetAppConfig.mockResolvedValue(baseAppConfig);
+      const app = createApp(mockUser);
+
+      const response = await request(app).get('/api/config');
+
+      expect(response.body.allowEmailChange).toBe(false);
+    });
+
     it('should override allowAccountDeletion to true for users with ACCESS_ADMIN capability', async () => {
       process.env.ALLOW_ACCOUNT_DELETION = 'false';
       mockGetAppConfig.mockResolvedValue(baseAppConfig);
@@ -755,6 +1230,9 @@ describe('GET /api/config', () => {
 
       expect(response.statusCode).toBe(500);
       expect(response.body).toHaveProperty('error');
+      expect(mockGetAppConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ userId: 'user123', failClosed: true }),
+      );
     });
   });
 
@@ -952,6 +1430,74 @@ describe('GET /api/config', () => {
       const response = await request(app).get('/api/config');
 
       expect(response.body.interface).toEqual({ buildInfo: false });
+    });
+  });
+});
+
+describe('passkey enrollment cap', () => {
+  it('publishes the cap normalized from YAML only after authentication', async () => {
+    const { AppService } = require('@librechat/data-schemas');
+    const appConfig = await AppService({ config: { passkeys: { perUserMax: 2 } } });
+    mockGetAppConfig.mockResolvedValue(appConfig);
+
+    const authenticated = await request(createApp(mockUser)).get('/api/config');
+    expect(authenticated.status).toBe(200);
+    expect(authenticated.body.maxPasskeysPerUser).toBe(2);
+    expect(mockGetAppConfig).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: mockUser.id, role: mockUser.role }),
+    );
+
+    const anonymous = await request(createApp()).get('/api/config');
+    expect(anonymous.status).toBe(200);
+    expect(anonymous.body).not.toHaveProperty('maxPasskeysPerUser');
+  });
+});
+
+describe('chat list endpoint filter limit', () => {
+  it('publishes the base config limits only after authentication', async () => {
+    const { AppService } = require('@librechat/data-schemas');
+    const baseConfig = await AppService({
+      config: { conversationList: { maxEndpointFilters: 3, maxEndpointNameLength: 40 } },
+    });
+    mockGetAppConfig.mockResolvedValue(baseConfig);
+
+    const authenticated = await request(createApp(mockUser)).get('/api/config');
+    expect(authenticated.status).toBe(200);
+    expect(authenticated.body.conversationListLimits).toEqual({
+      maxEndpointFilters: 3,
+      maxEndpointNameLength: 40,
+    });
+    expect(mockGetAppConfig).toHaveBeenCalledWith({ baseOnly: true });
+
+    const anonymous = await request(createApp()).get('/api/config');
+    expect(anonymous.status).toBe(200);
+    expect(anonymous.body).not.toHaveProperty('conversationListLimits');
+  });
+
+  it('publishes the limits the list route enforces, not a principal override', async () => {
+    const { AppService } = require('@librechat/data-schemas');
+    const baseConfig = await AppService({
+      config: { conversationList: { maxEndpointFilters: 2 } },
+    });
+    const mergedConfig = await AppService({
+      config: { conversationList: { maxEndpointFilters: 9 } },
+    });
+    mockGetAppConfig.mockImplementation(async (options) =>
+      options?.baseOnly === true ? baseConfig : mergedConfig,
+    );
+
+    const response = await request(createApp(mockUser)).get('/api/config');
+    expect(response.body.conversationListLimits.maxEndpointFilters).toBe(2);
+  });
+
+  it('publishes the schema defaults for a deployment that sets none', async () => {
+    const { AppService } = require('@librechat/data-schemas');
+    mockGetAppConfig.mockResolvedValue(await AppService({ config: {} }));
+
+    const response = await request(createApp(mockUser)).get('/api/config');
+    expect(response.body.conversationListLimits).toEqual({
+      maxEndpointFilters: 50,
+      maxEndpointNameLength: 128,
     });
   });
 });

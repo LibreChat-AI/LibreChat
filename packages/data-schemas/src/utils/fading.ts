@@ -1,7 +1,7 @@
 import type { IAgentFadingTier, IAgentFadingTierEntry } from '~/types/convo';
 
-/** Version of the persisted context-fading tier shape; must match `@librechat/agents`. */
-export const AGENT_FADING_TIER_VERSION = 1;
+/** Current context-fading tier version; version 1 remains readable but is not seeded. */
+export const AGENT_FADING_TIER_VERSION = 2;
 
 /** Whether a persisted value is a well-formed context-fading tier. */
 export function isAgentFadingTier(value: unknown): value is IAgentFadingTier {
@@ -10,12 +10,17 @@ export function isAgentFadingTier(value: unknown): value is IAgentFadingTier {
   }
   const { v, budgetTokens, masked } = value as Partial<Record<keyof IAgentFadingTier, unknown>>;
   return (
-    v === AGENT_FADING_TIER_VERSION &&
+    (v === 1 || v === AGENT_FADING_TIER_VERSION) &&
     typeof budgetTokens === 'number' &&
     Number.isFinite(budgetTokens) &&
     budgetTokens > 0 &&
     typeof masked === 'boolean'
   );
+}
+
+/** Whether a tier can seed the current SDK instead of being re-derived from history. */
+export function isCurrentAgentFadingTier(value: unknown): value is IAgentFadingTier & { v: 2 } {
+  return isAgentFadingTier(value) && value.v === AGENT_FADING_TIER_VERSION;
 }
 
 /**

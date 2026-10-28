@@ -7,12 +7,16 @@ import type {
   SubagentThreadTurn,
   SubagentThreadStatus,
   SubagentThreadView,
+  SubagentThreadMessage,
   TMessageContentParts,
+  TAttachment,
+  FullToolCall,
 } from 'librechat-data-provider';
 import type { SubagentProgress } from './state';
 import { REDACTED_REASONING_MARKER } from './state';
 
 export type ChildActivityItem =
+  | Extract<SubagentActivityItem, { type: 'steer' }>
   | {
       type: 'writing';
       text: string;
@@ -32,6 +36,10 @@ export type ChildActivityItem =
       input?: string | Record<string, unknown>;
       output?: string;
       status: 'running' | 'completed' | 'failed' | 'cancelled';
+      toolPreparationStartedAt?: number;
+      toolDispatchedAt?: number;
+      toolPreparationDurationMs?: number;
+      toolExecutionDurationMs?: number;
       inputValidationError?: true;
       approval?: Agents.ToolCall['approval'];
       inputTruncated?: boolean;
@@ -56,6 +64,10 @@ export type ChildActivity = {
   prompt?: string;
   status: SubagentThreadStatus;
   items: ChildActivityItem[];
+  /** Standard parts bypass the legacy activity projection. */
+  content?: TMessageContentParts[];
+  messageId?: string;
+  attachments?: TAttachment[];
   controls?: Array<
     Omit<SubagentControlReceipt, 'status'> & {
       status: SubagentControlReceipt['status'] | 'submitted';
@@ -67,6 +79,8 @@ export type ChildActivity = {
 
 export type ChildConversationTurn = {
   taskId: string;
+  outcome?: SubagentThreadMessage;
+  contentRecoveryAvailable?: boolean;
   trigger: SubagentThreadTurn['trigger'];
   activity: ChildActivity;
 };
@@ -78,6 +92,10 @@ type ContentToolCall = {
   name?: string;
   progress?: number;
   runStepStatus?: PartMetadata['runStepStatus'];
+  toolPreparationStartedAt?: number;
+  toolDispatchedAt?: number;
+  toolPreparationDurationMs?: number;
+  toolExecutionDurationMs?: number;
   inputValidationError?: true;
   approval?: Agents.ToolCall['approval'];
 };
@@ -87,6 +105,18 @@ const contentPartsToActivity = (
   approvalVisibility: 'visible' | 'hidden',
 ): ChildActivityItem[] =>
   parts.flatMap((part, index): ChildActivityItem[] => {
+    if (part == null) return [];
+    if (part.type === ContentTypes.STEER) {
+      return [
+        {
+          type: 'steer',
+          steer: part.steer,
+          steerId: part.steerId,
+          clientSteerId: part.clientSteerId,
+          createdAt: part.createdAt,
+        },
+      ];
+    }
     if (part.type === ContentTypes.TEXT) {
       const textPart = part as {
         text: string;
@@ -163,6 +193,16 @@ const contentPartsToActivity = (
         ...(tool.args == null ? {} : { input: tool.args }),
         ...(tool.output == null ? {} : { output: tool.output }),
         status: runStepStatus ?? (completed ? 'completed' : 'running'),
+        ...(tool.toolPreparationStartedAt == null
+          ? {}
+          : { toolPreparationStartedAt: tool.toolPreparationStartedAt }),
+        ...(tool.toolDispatchedAt == null ? {} : { toolDispatchedAt: tool.toolDispatchedAt }),
+        ...(tool.toolPreparationDurationMs == null
+          ? {}
+          : { toolPreparationDurationMs: tool.toolPreparationDurationMs }),
+        ...(tool.toolExecutionDurationMs == null
+          ? {}
+          : { toolExecutionDurationMs: tool.toolExecutionDurationMs }),
         ...(tool.inputValidationError === true ? { inputValidationError: true } : {}),
         ...(tool.approval == null || approvalVisibility === 'hidden'
           ? {}
@@ -218,7 +258,7 @@ const mergePersistedAndLiveActivity = (
       merged.push(item);
       continue;
     }
-    if (item.type === 'activity_label') {
+    if (item.type === 'activity_label' || item.type === 'steer') {
       merged.push(item);
       continue;
     }
@@ -270,12 +310,68 @@ const liveStatus = ({
   return isSubmitting ? 'running' : 'cancelled';
 };
 
+/** Keep standard metadata and sharing; public nested transcripts must not expose approvals. */
+export const standardContent = (
+  content: TMessageContentParts[],
+  approvalVisibility: 'visible' | 'hidden',
+): TMessageContentParts[] => {
+  type Frame = {
+    source: TMessageContentParts[];
+    result: TMessageContentParts[];
+    index: number;
+  };
+  const stack: Frame[] = [{ source: content, result: content, index: 0 }];
+  const replace = (frame: Frame, index: number, part: TMessageContentParts) => {
+    if (frame.result === frame.source) frame.result = frame.source.slice();
+    frame.result[index] = part;
+  };
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    if (frame.index === frame.source.length) {
+      stack.pop();
+      const parent = stack[stack.length - 1];
+      if (parent == null) return frame.result;
+      if (frame.result !== frame.source) {
+        const index = parent.index - 1;
+        const part = parent.result[index];
+        if (part.type === ContentTypes.TOOL_CALL) {
+          const toolCall: FullToolCall = {
+            ...(part.tool_call as FullToolCall),
+            subagent_content: frame.result,
+          };
+          replace(parent, index, { ...part, tool_call: toolCall });
+        }
+      }
+      continue;
+    }
+    const index = frame.index++;
+    const part = frame.source[index];
+    if (part == null) continue;
+    if (part.type === ContentTypes.THINK && part.think === REDACTED_REASONING_MARKER) {
+      replace(frame, index, { ...part, think: '', reasoning_unavailable: true });
+      continue;
+    }
+    if (part.type !== ContentTypes.TOOL_CALL || approvalVisibility !== 'hidden') continue;
+    const tool = part.tool_call as FullToolCall;
+    if (tool == null) continue;
+    if (tool.approval != null) {
+      const { approval: _approval, ...visibleTool } = tool;
+      replace(frame, index, { ...part, tool_call: visibleTool } as TMessageContentParts);
+    }
+    if (tool.subagent_content != null) {
+      stack.push({ source: tool.subagent_content, result: tool.subagent_content, index: 0 });
+    }
+  }
+  return content;
+};
+
 /** Adapts live SSE state, parent persistence, and legacy output at one seam. */
 export function adaptLivePersistedActivity(input: {
   title: string;
   prompt?: string;
   progress: SubagentProgress | null;
   persistedContent?: TMessageContentParts[];
+  attachments?: TAttachment[];
   legacyOutput?: string | null;
   initialProgress: number;
   isSubmitting: boolean;
@@ -289,10 +385,14 @@ export function adaptLivePersistedActivity(input: {
   const persistedItems = contentPartsToActivity(persisted, approvalVisibility);
   const liveItems = contentPartsToActivity(live, approvalVisibility);
   let items = persistedItems.length > 0 ? persistedItems : liveItems;
+  let content = persisted.length > 0 ? persisted : live;
   if (input.isDetached === true && input.progress?.coverage === 'suffix') {
     items = mergePersistedAndLiveActivity(persistedItems, liveItems);
-  } else if (input.isDetached === true && liveItems.length > 0) {
+    // A suffix without sequence-aligned standard recovery still needs the legacy bridge.
+    content = [];
+  } else if (input.isDetached === true && live.length > 0) {
     items = liveItems;
+    content = live;
   }
   if (items.length === 0 && input.legacyOutput != null && input.legacyOutput !== '') {
     items.push({ type: 'writing', text: input.legacyOutput });
@@ -302,7 +402,12 @@ export function adaptLivePersistedActivity(input: {
     ...(input.prompt == null ? {} : { prompt: input.prompt }),
     status: liveStatus(input),
     items,
+    ...(content.length === 0 ? {} : { content: standardContent(content, approvalVisibility) }),
     controls: [],
+    ...(input.progress?.coverage === 'suffix' || (input.progress?.droppedCount ?? 0) > 0
+      ? { activityTruncated: true }
+      : {}),
+    ...(input.attachments == null ? {} : { attachments: input.attachments }),
   };
 }
 
@@ -351,6 +456,10 @@ const adaptDurableTurn = (turn: SubagentThreadTurn, title: string): ChildConvers
   }
   return {
     taskId: turn.taskId,
+    ...(response == null ? {} : { outcome: response }),
+    ...(turn.contentRecoveryAvailable == null
+      ? {}
+      : { contentRecoveryAvailable: turn.contentRecoveryAvailable }),
     trigger: turn.trigger,
     activity: {
       title,
@@ -402,8 +511,14 @@ export function mergeChildConversationTurns(
     const trigger =
       triggerDetailScore(turn) > triggerDetailScore(older) ? turn.trigger : older.trigger;
     const controls = mergeTurnControls(older.activity.controls, turn.activity.controls);
+    const contentRecoveryAvailable =
+      turn.contentRecoveryAvailable ?? older.contentRecoveryAvailable;
     merged[existingIndex] = {
       taskId: turn.taskId,
+      ...(turn.outcome == null && older.outcome == null
+        ? {}
+        : { outcome: turn.outcome ?? older.outcome }),
+      ...(contentRecoveryAvailable == null ? {} : { contentRecoveryAvailable }),
       trigger,
       activity: {
         ...older.activity,

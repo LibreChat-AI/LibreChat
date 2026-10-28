@@ -1,8 +1,8 @@
-const { isEnabled } = require('@librechat/api');
+const { isEnabled, publishConversationTitle, raceWithTimeout } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
 const { CacheKeys } = require('librechat-data-provider');
 const getLogStores = require('~/cache/getLogStores');
-const { saveConvo } = require('~/models');
+const { saveConvo, getConvo } = require('~/models');
 const { resolveConversationTitle } = require('../titlePolicy');
 
 /**
@@ -30,8 +30,7 @@ const { resolveConversationTitle } = require('../titlePolicy');
  *   clobber the conversation now owned by the newer run. A plain user Stop does
  *   NOT abort this — its generated title is kept.
  * @param {(params: { conversationId: string, title: string }) => Promise<void>|void} [params.onTitleGenerated]
- *   Called after the title is cached and before persistence waits for the
- *   conversation row. Used by live streams to push the title immediately.
+ *   Called after caching the title for the live stream.
  */
 const addTitle = async (
   req,
@@ -69,15 +68,7 @@ const addTitle = async (
 
   const titleCache = getLogStores(CacheKeys.GEN_TITLE);
   const key = `${req.user.id}-${convoId}`;
-  /** @type {NodeJS.Timeout} */
-  let timeoutId;
   try {
-    const timeoutPromise = new Promise((_, reject) => {
-      timeoutId = setTimeout(() => reject(new Error('Title generation timeout')), 45000);
-    }).catch((error) => {
-      logger.error('Title error:', error);
-    });
-
     let titlePromise;
     let abortController = new AbortController();
     /** Propagate a request abort (Stop) to the title generation so a cancelled
@@ -90,7 +81,7 @@ const addTitle = async (
       }
     }
     if (client && typeof client.titleConvo === 'function') {
-      titlePromise = Promise.race([
+      titlePromise = raceWithTimeout(
         client
           .titleConvo({
             text,
@@ -100,8 +91,10 @@ const addTitle = async (
           .catch((error) => {
             logger.error('Client title error:', error);
           }),
-        timeoutPromise,
-      ]);
+        45000,
+        logger,
+        'Title generation',
+      );
     } else {
       return;
     }
@@ -109,9 +102,6 @@ const addTitle = async (
     const generatedTitle = await titlePromise;
     if (!abortController.signal.aborted) {
       abortController.abort();
-    }
-    if (timeoutId) {
-      clearTimeout(timeoutId);
     }
 
     if (!generatedTitle) {
@@ -124,52 +114,22 @@ const addTitle = async (
       return;
     }
 
-    await titleCache.set(key, title, 120000);
-
-    if (!signal?.aborted && typeof onTitleGenerated === 'function') {
-      try {
-        await onTitleGenerated({ conversationId: convoId, title });
-      } catch (error) {
-        logger.error('Error emitting generated title:', error);
-      }
-    }
-
-    /** In immediate mode the title is generated in parallel with the response,
-     *  so the conversation row may not exist yet. `saveConvo` with `noUpsert`
-     *  is a silent no-op when the row is missing, which would drop the title
-     *  from the database (the cache above still serves the live UI). Wait for
-     *  the controller to signal the conversation has been persisted. */
-    if (convoReady) {
-      await convoReady;
-    }
-
-    if (discardSignal?.aborted) {
-      // This stream was superseded by a newer run (or the turn failed) after the
-      // title had already been generated — discard it so a stale title does not
-      // clobber the conversation now owned by the newer run. A plain user Stop is
-      // not a discard: its generated title falls through and is persisted below.
-      // Only clear the cache if it still holds THIS task's title: a replacement
-      // stream shares the `userId-conversationId` key and may have already cached
-      // its own (valid) title that we must not remove.
-      const cached = await titleCache.get(key);
-      if (cached === title) {
-        await titleCache.delete(key);
-      }
-      return;
-    }
-
-    await saveConvo(
+    await publishConversationTitle(
+      { saveConvo, getConvo, titleCache },
       {
-        userId: req?.user?.id,
-        isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
-        expiredAt: req?.resolvedConversation?.expiredAt,
-        interfaceConfig: req?.config?.interfaceConfig,
-      },
-      {
+        ctx: {
+          userId: req?.user?.id,
+          isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
+          expiredAt: req?.resolvedConversation?.expiredAt,
+          interfaceConfig: req?.config?.interfaceConfig,
+        },
         conversationId: convoId,
         title,
+        convoReady,
+        discardSignal,
+        signal,
+        onTitleGenerated,
       },
-      { context: 'api/server/services/Endpoints/agents/title.js', noUpsert: true },
     );
   } catch (error) {
     logger.error('Error generating title:', error);

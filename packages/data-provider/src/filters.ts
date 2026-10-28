@@ -162,7 +162,10 @@ export const fileFilterFieldSchema = z.enum(FILE_FILTER_FIELDS);
 export const toolArgumentFilterFieldSchema = z.enum(TOOL_ARGUMENT_FILTER_FIELDS);
 export const modelParameterFilterFieldSchema = z.enum(MODEL_PARAMETER_FILTER_FIELDS);
 export const filterPiiStarterPatternSchema = z.enum(FILTER_PII_STARTER_PATTERNS);
-export const filterPiiActionSchema = z.enum(['block', 'audit']);
+export const filterPiiActionSchema = z.enum(['block', 'audit', 'redact']);
+export const filterPiiCategorySchema = z.enum(['email', 'phone', 'name', 'credential', 'custom']);
+export const DEFAULT_PII_REDACTION_MAX_CHARACTERS = 65_536;
+export const DEFAULT_PII_REDACTION_MAX_MATCHES = 256;
 export const actionMetadataFilterFieldSchema = z.enum(ACTION_METADATA_FILTER_FIELDS);
 export const unattributedAssistantContentSchema = z.enum(['model_output', 'inspect']);
 export type UnattributedAssistantContent = z.infer<typeof unattributedAssistantContentSchema>;
@@ -180,6 +183,7 @@ export type ToolArgumentFilterField = z.infer<typeof toolArgumentFilterFieldSche
 export type ModelParameterFilterField = z.infer<typeof modelParameterFilterFieldSchema>;
 export type ActionMetadataFilterField = z.infer<typeof actionMetadataFilterFieldSchema>;
 export type FilterPiiAction = z.infer<typeof filterPiiActionSchema>;
+export type FilterPiiCategory = z.infer<typeof filterPiiCategorySchema>;
 
 export const userSubmittedMessageFieldPathSchema = z
   .object({
@@ -279,6 +283,7 @@ export const filterPiiCustomPatternSchema = z
     id: z.string().min(1).max(MAX_PII_PATTERN_ID_LENGTH),
     label: z.string().min(1).max(MAX_PII_PATTERN_LABEL_LENGTH),
     regex: filterPiiRegexSchema,
+    category: filterPiiCategorySchema.optional(),
   })
   .strict();
 
@@ -288,6 +293,8 @@ function createPiiFilterSchema<Field extends z.ZodTypeAny>(fieldSchema: Field) {
   return z
     .object({
       action: filterPiiActionSchema.optional(),
+      maxCharacters: z.number().int().positive().max(262_144).optional(),
+      maxMatches: z.number().int().positive().max(4_096).optional(),
       fields: z.array(fieldSchema).min(1).max(MAX_PII_PATTERNS_PER_SOURCE).optional(),
       starterPatterns: z
         .array(filterPiiStarterPatternSchema)

@@ -87,13 +87,10 @@ describe('Agent execution enrollment', () => {
 
     expect(beginProviderExecution).not.toHaveBeenCalled();
     await expect(manager.getCleanupBlockingJobIdsForUser('user-1')).resolves.toEqual([]);
-    await expect(manager.getJobStore().getJob('chatcmpl-deleting')).resolves.toMatchObject({
-      status: 'error',
-      providerDrained: true,
-    });
+    await expect(manager.getJobStore().getJob('chatcmpl-deleting')).resolves.toBeNull();
   });
 
-  it('preserves principal-check infrastructure failures after retiring the run', async () => {
+  it('reports principal-check infrastructure failures with a sanitized error after retiring the run', async () => {
     const infrastructureError = new Error('principal store unavailable');
 
     await expect(
@@ -104,7 +101,7 @@ describe('Agent execution enrollment', () => {
         },
         { manager },
       ),
-    ).rejects.toBe(infrastructureError);
+    ).rejects.toMatchObject({ code: 'GENERATION_ADMISSION_UNAVAILABLE' });
 
     await expect(manager.getCleanupBlockingJobIdsForUser('user-1')).resolves.toEqual([]);
   });

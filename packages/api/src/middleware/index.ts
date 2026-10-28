@@ -5,10 +5,15 @@ export * from './email';
 export * from './notFound';
 export * from './origin';
 export * from './balance';
+export * from './ban';
 export * from './json';
+export * from './sanitize';
 export * from './capabilities';
 export * from './auth';
 export {
+  TENANT_CONTEXT_REQUIRED,
+  createPreAuthTenantGuard,
+  requirePreAuthTenantContext,
   requestContextMiddleware,
   tenantContextMiddleware,
   restoreTenantContextFromReq,
@@ -19,11 +24,16 @@ export * from './concurrency';
 export * from './checkBalance';
 export * from './remoteAgentAuth';
 export * from './share';
+export * from './terms';
 export * from './contentFilter';
 export * from './modelBoundContent';
 export * from './messageFilterPii';
 export * from './messageValidation';
 export * from './feedback';
+export * from './forwarded';
 export * from './generationRetry';
 export * from './code';
 export * from './management';
+export * from './twoFactor';
+export * from './messageIds';
+export * from './promptResolveLimiter';

@@ -65,14 +65,14 @@ export default function BasicInfoSection() {
     <div className="space-y-3">
       {/* Icon + Name row */}
       <div className="flex flex-col gap-4 sm:flex-row sm:items-start">
-        <div className="flex-shrink-0 space-y-1.5">
+        <div className="shrink-0 space-y-1.5">
           <MCPIcon
             icon={iconValue}
             onIconChange={handleIconChange}
             errorId={iconRejected ? 'mcp-icon-error' : undefined}
           />
           {iconRejected && (
-            <p id="mcp-icon-error" role="alert" className="text-xs text-text-destructive">
+            <p id="mcp-icon-error" role="alert" className="text-text-destructive text-xs">
               {localize('com_ui_icon_too_large', { 0: MAX_ICON_FILE_KB })}
             </p>
           )}
@@ -101,7 +101,7 @@ export default function BasicInfoSection() {
             className={cn(errors.title && 'border-border-destructive')}
           />
           {errors.title && (
-            <p id="mcp-title-error" role="alert" className="text-xs text-text-destructive">
+            <p id="mcp-title-error" role="alert" className="text-text-destructive text-xs">
               {errors.title.message}
             </p>
           )}
@@ -112,7 +112,7 @@ export default function BasicInfoSection() {
       <div className="space-y-1.5">
         <Label htmlFor="mcp-description" className="text-sm font-medium">
           {localize('com_ui_description')}{' '}
-          <span className="text-xs text-text-secondary">{localize('com_ui_optional')}</span>
+          <span className="text-text-secondary text-xs">{localize('com_ui_optional')}</span>
         </Label>
         <Textarea
           id="mcp-description"

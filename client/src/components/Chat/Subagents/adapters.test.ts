@@ -3,22 +3,101 @@ import type {
   SubagentThreadView,
   SubagentUpdateEvent,
   TMessageContentParts,
+  FullToolCall,
 } from 'librechat-data-provider';
 import type { ChildConversationTurn } from './adapters';
 import {
   adaptDurableThreadActivity,
+  adaptDurableThreadConversation,
   adaptLivePersistedActivity,
   MAX_RETAINED_MOVING_WINDOW_TURNS,
   mergeChildConversationTurns,
   retainBoundedMovingWindowTurns,
 } from './adapters';
-import {
-  aggregateSubagentContent,
-  initSubagentAggregatorState,
-  initSubagentTickerState,
-} from '~/utils/subagentContent';
+import { initSubagentAggregatorState, initSubagentTickerState } from '~/utils/subagentContent';
+import { aggregateSubagentContent } from 'test/subagents';
 
 describe('child activity adapters', () => {
+  it('passes child dispatch and completed durations to the generic tool card', () => {
+    const progress = {
+      subagentRunId: 'child',
+      subagentType: 'researcher',
+      status: 'tool_calls_dispatched' as const,
+      contentParts: aggregateSubagentContent([
+        {
+          runId: 'parent',
+          subagentRunId: 'child',
+          subagentType: 'researcher',
+          subagentAgentId: 'agent',
+          timestamp: '2026-09-28T00:00:00Z',
+          phase: 'run_step',
+          data: {
+            id: 'step-child',
+            stepDetails: {
+              type: 'tool_calls',
+              tool_calls: [{ id: 'call-child', name: 'query', args: '{}' }],
+            },
+          },
+        },
+        {
+          runId: 'parent',
+          subagentRunId: 'child',
+          subagentType: 'researcher',
+          subagentAgentId: 'agent',
+          timestamp: '2026-09-28T00:00:00Z',
+          phase: 'tool_calls_dispatched',
+          data: {
+            dispatched_at: 500,
+            toolCalls: [{ id: 'call-child', stepId: 'step-child' }],
+          },
+        },
+      ]),
+      aggregatorState: initSubagentAggregatorState(),
+      tickerState: initSubagentTickerState(),
+      coverage: 'complete' as const,
+    };
+    expect(
+      adaptLivePersistedActivity({
+        title: 'researcher',
+        progress,
+        persistedContent: undefined,
+        initialProgress: 0.1,
+        isSubmitting: true,
+      }).items[0],
+    ).toMatchObject({
+      type: 'tool',
+      toolCallId: 'call-child',
+      toolDispatchedAt: 500,
+      status: 'running',
+    });
+    const persisted = adaptLivePersistedActivity({
+      title: 'researcher',
+      progress: null,
+      persistedContent: [
+        {
+          type: ContentTypes.TOOL_CALL,
+          tool_call: {
+            id: 'call-child',
+            name: 'query',
+            args: '{}',
+            output: 'ok',
+            progress: 1,
+            toolPreparationDurationMs: 400,
+            toolExecutionDurationMs: 40,
+          },
+        },
+      ] as TMessageContentParts[],
+      initialProgress: 1,
+      isSubmitting: false,
+    });
+    expect(persisted.items[0]).toMatchObject({
+      type: 'tool',
+      toolCallId: 'call-child',
+      toolPreparationDurationMs: 400,
+      toolExecutionDurationMs: 40,
+      status: 'completed',
+    });
+  });
   it('prefers authoritative parent persistence over a partial live foreground trace', () => {
     const activity = adaptLivePersistedActivity({
       title: 'researcher',
@@ -610,4 +689,221 @@ describe('child activity adapters', () => {
       turns.slice(-MAX_RETAINED_MOVING_WINDOW_TURNS).map((turn) => turn.taskId),
     );
   });
+});
+
+describe('standard content compatibility', () => {
+  const content = [
+    { type: ContentTypes.TEXT, text: 'Answer', phase: 'final_answer', agentId: 'child' },
+    {
+      type: ContentTypes.THINK,
+      think: 'Reasoning',
+      reasoning_label: 'Checked constraints',
+      reasoning_label_revision: 3,
+    },
+    {
+      type: ContentTypes.TOOL_CALL,
+      agentId: 'child',
+      tool_call: {
+        id: 'tool',
+        name: 'bash',
+        args: '{}',
+        output: 'ok',
+        progress: 1,
+        stepId: 'step',
+        outputTruncated: true,
+        previewRevision: 'r2',
+        subagent_content: [{ type: ContentTypes.TEXT, text: 'Nested answer' }],
+      },
+    },
+    { type: ContentTypes.ERROR, error: 'Failure', agentId: 'child' },
+  ] as TMessageContentParts[];
+
+  it('preserves standard parts, including non-projected parts and nested metadata', () => {
+    const result = adaptLivePersistedActivity({
+      title: 'Child',
+      progress: null,
+      persistedContent: content,
+      initialProgress: 1,
+      isSubmitting: false,
+    });
+    expect(result.content).toBe(content);
+    expect(result.items).toHaveLength(3);
+  });
+
+  it('retains old text-only records as a compatibility fallback', () => {
+    const result = adaptLivePersistedActivity({
+      title: 'Child',
+      progress: null,
+      legacyOutput: 'Stored answer',
+      initialProgress: 1,
+      isSubmitting: false,
+    });
+    expect(result.content).toBeUndefined();
+    expect(result.items).toEqual([{ type: 'writing', text: 'Stored answer' }]);
+  });
+
+  it('removes public approval payloads without dropping other standard metadata', () => {
+    const nested: FullToolCall = {
+      id: 'nested',
+      name: 'bash',
+      args: '{}',
+      output: '',
+      approval: { actionId: 'private-nested-action', allowed_decisions: ['approve', 'reject'] },
+    };
+    const tool: FullToolCall = {
+      id: 'tool',
+      name: 'bash',
+      args: '{}',
+      output: '',
+      stepId: 'step',
+      approval: { actionId: 'private-action', allowed_decisions: ['approve', 'reject'] },
+      subagent_content: [{ type: ContentTypes.TOOL_CALL, tool_call: nested }],
+    };
+    const withApproval: TMessageContentParts[] = [
+      {
+        type: ContentTypes.TOOL_CALL,
+        agentId: 'child',
+        tool_call: tool,
+      },
+    ];
+    const result = adaptLivePersistedActivity({
+      title: 'Child',
+      progress: null,
+      persistedContent: withApproval,
+      initialProgress: 1,
+      isSubmitting: false,
+      approvalVisibility: 'hidden',
+    });
+    expect(JSON.stringify(result.content)).not.toContain('private-action');
+    expect(JSON.stringify(result.content)).not.toContain('private-nested-action');
+    expect(result.content?.[0]).toMatchObject({ agentId: 'child', tool_call: { stepId: 'step' } });
+    expect(JSON.stringify(withApproval)).toContain('private-action');
+  });
+});
+
+it('keeps sparse public content positions while removing nested approval data', () => {
+  const sparse = new Array<TMessageContentParts>(2);
+  sparse[1] = { type: ContentTypes.TEXT, text: 'Retained text' };
+  const content: TMessageContentParts[] = JSON.parse(JSON.stringify(sparse));
+  const activity = adaptLivePersistedActivity({
+    title: 'Child',
+    progress: null,
+    persistedContent: content,
+    initialProgress: 1,
+    isSubmitting: false,
+    approvalVisibility: 'hidden',
+  });
+  expect(activity.content).toBe(content);
+  expect(activity.content?.[0]).toBeNull();
+  expect(activity.content?.[1]).toMatchObject({ text: 'Retained text' });
+});
+
+it.each([false, true, undefined])('preserves split-page recovery enrollment %s', (available) => {
+  const base: ChildConversationTurn = {
+    taskId: 'split',
+    trigger: { kind: 'parent_dispatch', summary: '' },
+    activity: { title: 'Child', status: 'running', items: [] },
+  };
+  const enrolled = { ...base, contentRecoveryAvailable: available };
+  for (const pages of [
+    [[enrolled], [base]],
+    [[base], [enrolled]],
+  ]) {
+    expect(mergeChildConversationTurns(...pages)[0].contentRecoveryAvailable).toBe(available);
+  }
+});
+
+it.each([
+  [true, false],
+  [false, true],
+  [true, true],
+  [false, false],
+  [undefined, false],
+  [undefined, true],
+  [true, undefined],
+  [false, undefined],
+  [undefined, undefined],
+])(
+  'prefers explicit refreshed recovery capability over retained %s -> %s',
+  (retained, refreshed) => {
+    const base: ChildConversationTurn = {
+      taskId: 'task',
+      trigger: { kind: 'parent_dispatch', summary: 'Investigate' },
+      activity: { title: 'Child', status: 'completed', items: [] },
+    };
+    const history = { ...base, contentRecoveryAvailable: retained };
+    const latest = { ...base, contentRecoveryAvailable: refreshed };
+    expect(
+      mergeChildConversationTurns([history], [latest], [base])[0].contentRecoveryAvailable,
+    ).toBe(refreshed ?? retained);
+    expect(history.contentRecoveryAvailable).toBe(retained);
+    expect(latest.contentRecoveryAvailable).toBe(refreshed);
+  },
+);
+
+it('keeps foreground approval payloads and clean content references intact', () => {
+  const content: TMessageContentParts[] = [
+    {
+      type: ContentTypes.TOOL_CALL,
+      tool_call: {
+        id: 'foreground',
+        name: 'protected_tool',
+        args: '{}',
+        output: '',
+        progress: 0,
+        approval: { actionId: 'foreground-approval', allowed_decisions: ['approve', 'reject'] },
+      },
+    },
+  ];
+  const activity = adaptLivePersistedActivity({
+    title: 'Foreground',
+    progress: null,
+    persistedContent: content,
+    initialProgress: 0,
+    isSubmitting: true,
+    approvalVisibility: 'visible',
+  });
+  expect(activity.content).toBe(content);
+  expect(JSON.stringify(activity.content)).toContain('foreground-approval');
+});
+
+it('keeps the durable terminal outcome independently of the activity projection across pages', () => {
+  const outcome = {
+    messageId: 'task:assistant',
+    parentMessageId: 'task:user',
+    role: 'assistant' as const,
+    text: 'Final result',
+  };
+  const base: ChildConversationTurn = {
+    taskId: 'task',
+    trigger: { kind: 'parent_dispatch', summary: '' },
+    activity: { title: 'Worker', status: 'completed', items: [] },
+  };
+  const view: SubagentThreadView = {
+    threadId: 'thread',
+    parentConversationId: 'parent',
+    parentMessageId: 'message',
+    parentToolCallId: 'call',
+    subagentType: 'worker',
+    subagentKind: 'agent',
+    status: 'completed',
+    activity: [],
+    activityTruncated: false,
+    messages: [],
+    historyTruncated: false,
+    title: 'Worker',
+    turns: [
+      {
+        taskId: 'task',
+        trigger: base.trigger,
+        status: 'completed',
+        activity: [],
+        activityTruncated: false,
+        messages: [outcome],
+      },
+    ],
+  };
+  const [turn] = adaptDurableThreadConversation(view);
+  expect(turn.outcome).toBe(outcome);
+  expect(mergeChildConversationTurns([turn], [base])[0].outcome).toBe(outcome);
 });

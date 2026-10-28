@@ -1,7 +1,7 @@
 import jwt from 'jsonwebtoken';
 import jwksRsa from 'jwks-rsa';
 import { fetch as undiciFetch } from 'undici';
-import type { JwtPayload } from 'jsonwebtoken';
+import type { JwtPayload, VerifyOptions } from 'jsonwebtoken';
 import { clearOidcAccessTokenCache, verifyOidcAccessToken } from './oidc';
 
 const mockGetSigningKey = jest.fn();
@@ -62,6 +62,12 @@ it('does not use the interactive OpenID JWKS override unless explicitly enabled'
       jwksRequestsPerMinute: 10,
     }),
   );
+  expect(mockVerify).toHaveBeenCalledWith(
+    'access-token',
+    'public-key',
+    expect.objectContaining({ audience: 'agent-management' }),
+    expect.any(Function),
+  );
 });
 
 it('does not reuse an interactive OpenID JWKS override for a machine-token caller', async () => {
@@ -92,4 +98,57 @@ it('does not reuse an interactive OpenID JWKS override for a machine-token calle
     2,
     expect.objectContaining({ jwksUri: discoveredJwksUri }),
   );
+});
+
+it('validates a Cognito access token without requiring an aud claim', async () => {
+  const issuer = 'https://cognito-idp.us-west-2.amazonaws.com/us-west-2_example';
+  mockFetch.mockResolvedValue({
+    ok: true,
+    json: async () => ({ jwks_uri: `${issuer}/.well-known/jwks.json` }),
+  });
+  mockDecode.mockReturnValue({ header: { kid: 'cognito-key' } });
+  mockGetSigningKey.mockResolvedValue({ getPublicKey: () => 'public-key' });
+  mockVerify.mockImplementation(
+    (_token: string, _key: string, options: VerifyOptions, callback: JwtVerifyCallback) => {
+      expect(options).not.toHaveProperty('audience');
+      callback(null, {
+        client_id: 'machine-client',
+        token_use: 'access',
+        scope: 'agents-api/manage another-scope',
+      } satisfies JwtPayload);
+    },
+  );
+
+  await expect(
+    verifyOidcAccessToken('cognito-access-token', {
+      issuer,
+      tokenUse: 'access',
+      requiredScopes: ['agents-api/manage'],
+    }),
+  ).resolves.toMatchObject({ client_id: 'machine-client' });
+});
+
+it.each([
+  ['the token type is wrong', { token_use: 'id', scope: 'agents-api/manage' }],
+  ['a required scope is missing', { token_use: 'access', scope: 'another-scope' }],
+])('rejects a Cognito token when %s', async (_case, claims) => {
+  const issuer = 'https://cognito-idp.us-west-2.amazonaws.com/us-west-2_example';
+  mockFetch.mockResolvedValue({
+    ok: true,
+    json: async () => ({ jwks_uri: `${issuer}/.well-known/jwks.json` }),
+  });
+  mockDecode.mockReturnValue({ header: { kid: 'cognito-key' } });
+  mockGetSigningKey.mockResolvedValue({ getPublicKey: () => 'public-key' });
+  mockVerify.mockImplementation(
+    (_token: string, _key: string, _options: VerifyOptions, callback: JwtVerifyCallback) =>
+      callback(null, claims satisfies JwtPayload),
+  );
+
+  await expect(
+    verifyOidcAccessToken('cognito-access-token', {
+      issuer,
+      tokenUse: 'access',
+      requiredScopes: ['agents-api/manage'],
+    }),
+  ).rejects.toThrow();
 });

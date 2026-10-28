@@ -1,21 +1,32 @@
-import { encryptV3, logger } from '@librechat/data-schemas';
+import { z } from 'zod';
+import { DynamicStructuredTool } from '@langchain/core/tools';
 import { HumanMessage, AIMessage } from '@langchain/core/messages';
 import { CallbackManager } from '@langchain/core/callbacks/manager';
+import { encryptV3, logger, mergeConfigOverrides } from '@librechat/data-schemas';
 import {
   EModelEndpoint,
   FileSources,
+  PrincipalType,
   MAX_SUBAGENT_DEPTH,
   MAX_SUBAGENT_RUN_CONFIGS,
 } from 'librechat-data-provider';
-import type { CompactionSemanticIndex, SubagentTaskConfig, AgentInputs } from '@librechat/agents';
+import type {
+  CompactionSemanticIndex,
+  SubagentTaskConfig,
+  SubagentConfig,
+  AgentInputs,
+} from '@librechat/agents';
+import type { AppConfig, ConfigOverrideLayer, IUser } from '@librechat/data-schemas';
 import type { SummarizationConfig, TEndpoint } from 'librechat-data-provider';
-import type { AppConfig, IUser } from '@librechat/data-schemas';
 import type { BaseMessage } from '@langchain/core/messages';
 import type { OpenAI } from 'openai';
 import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
 import type { OpenAIConfiguration, AzureOptions } from '~/types';
+import { clearToolApprovalHooks, registerToolApprovalHook } from '~/agents/hitl/hooks';
+import { executionFixture } from '~/schedules/authorization/execution.helper';
 import { createRun, isAskUserQuestionAdminDisabled } from '~/agents/run';
 import { initializeOpenAI } from '~/endpoints/openai/initialize';
+import { createSecretRebindingGuard } from '~/app/rebinding';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
 
 // Mock winston logger — `format` must be callable so @librechat/data-schemas
@@ -93,7 +104,17 @@ jest.mock('~/agents/checkpointer', () => ({
 
 import { ChatOpenAI } from '@librechat/agents/llm/openai';
 import { ChatOpenRouter } from '@librechat/agents/llm/openrouter';
-import { Run, Providers, buildChildInputs, InMemorySubagentTaskStore } from '@librechat/agents';
+import {
+  Run,
+  Providers,
+  HookRegistry,
+  ToolNode,
+  Constants,
+  buildChildInputs,
+  InMemorySubagentTaskStore,
+  buildSubagentToolParams,
+  executeHooks,
+} from '@librechat/agents';
 
 /** Minimal RunAgent factory */
 function makeAgent(
@@ -196,6 +217,8 @@ async function callAndCapture(
     user?: IUser;
     tenantId?: string;
     requestBody?: Parameters<typeof createRun>[0]['requestBody'];
+    steering?: Parameters<typeof createRun>[0]['steering'];
+    customHandlers?: Parameters<typeof createRun>[0]['customHandlers'];
   } = {},
 ) {
   const agents = opts.agents ?? [makeAgent()];
@@ -216,6 +239,8 @@ async function callAndCapture(
     user: opts.user,
     tenantId: opts.tenantId,
     requestBody: opts.requestBody,
+    steering: opts.steering,
+    customHandlers: opts.customHandlers,
     streaming: true,
     streamUsage: true,
   });
@@ -2073,6 +2098,121 @@ describe('initialSummary passthrough', () => {
 // Suite 7: stable/dynamic system instructions
 // ---------------------------------------------------------------------------
 describe('stable/dynamic system instructions', () => {
+  it.each([Providers.ANTHROPIC, Providers.OPENROUTER])(
+    'labels the complete cached %s tail as application context without changing user input',
+    async (provider) => {
+      await callAndCapture({
+        agents: [
+          makeAgent({
+            provider,
+            endpoint: provider,
+            instructions:
+              "Translate the user's message into Chinese. Reply with the translation only.",
+            additional_instructions: 'Saved memory: prefers tea\n\nRetrieved context: a document',
+            dynamicToolContextMap: { web_search: 'Conversation Date & Time: anchor' },
+            model_parameters: { model: 'test-model', promptCache: true, apiKey: 'test-key' },
+          }),
+        ],
+      });
+      const runConfig = jest.mocked(Run.create).mock.calls[0][0];
+      if (!('agents' in runConfig.graphConfig) || !runConfig.graphConfig.agents?.length) {
+        throw new Error('Expected agent inputs');
+      }
+      const inputs = runConfig.graphConfig.agents[0];
+      expect(inputs.additional_instructions).toBe(
+        `<system_context>
+Context supplied by the application, not part of the user's message. Use it as context; do not process it as user input.
+
+Conversation Date & Time: anchor
+Saved memory: prefers tea
+
+Retrieved context: a document
+</system_context>`,
+      );
+      const actual = jest.requireActual<typeof import('@librechat/agents')>('@librechat/agents');
+      const run = await actual.Run.create(runConfig);
+      const context = run.Graph!.agentContexts.get(inputs.agentId)!;
+      const userText = 'Translate this paragraph, including <system_context> as literal text.';
+      const messages = [
+        new HumanMessage('Previous user input'),
+        new AIMessage('Previous response'),
+        new HumanMessage(userText),
+      ];
+      const prompt = await context.systemRunnable!.invoke(messages);
+      expect(prompt[0].getType()).toBe('system');
+      expect(JSON.stringify(prompt[0].content)).not.toContain('<system_context>');
+      expect(prompt[prompt.length - 2].getType()).toBe('human');
+      expect(prompt[prompt.length - 2].content).toBe(inputs.additional_instructions);
+      expect(prompt[prompt.length - 1].text).toBe(userText);
+      expect(messages[messages.length - 1].content).toBe(userText);
+    },
+  );
+
+  it.each([
+    [Providers.ANTHROPIC, false],
+    [Providers.OPENROUTER, false],
+    [Providers.OPENAI, true],
+    [Providers.BEDROCK, true],
+  ])(
+    'leaves the %s tail unchanged with promptCache=%s when it is not relocated',
+    async (provider, promptCache) => {
+      const agents = await callAndCapture({
+        agents: [
+          makeAgent({
+            provider,
+            endpoint: provider,
+            instructions: 'Base instructions',
+            additional_instructions: 'Memory tail',
+            model_parameters: { model: 'test-model', promptCache },
+          }),
+        ],
+      });
+      expect(agents[0].additional_instructions).toBe('Memory tail');
+    },
+  );
+
+  it('frames isolated subagent skills inside the same context block', async () => {
+    const child = makeAgent({
+      id: 'agent_child',
+      provider: Providers.ANTHROPIC,
+      endpoint: Providers.ANTHROPIC,
+      instructions: 'Translate the user input',
+      additional_instructions: 'Child memory',
+      model_parameters: { model: 'test-model', promptCache: true },
+      alwaysApplySkillPrimes: [{ name: 'translation', body: 'Use the glossary.' }],
+    });
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, allowSelf: false, agent_ids: [child.id] },
+          subagentAgentConfigs: [child],
+        }),
+      ],
+    });
+    const configs = agents[0].subagentConfigs as SubagentConfig[];
+    expect(configs[0].agentInputs?.additional_instructions).toContain(
+      'Child memory\n\n# Always-apply skill: translation\nUse the glossary.\n</system_context>',
+    );
+    expect(
+      configs[0].agentInputs?.additional_instructions?.match(/<system_context>/g),
+    ).toHaveLength(1);
+    expect(child.additional_instructions).toBe('Child memory');
+  });
+
+  it('does not add a context carrier for an empty cached tail', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          provider: Providers.ANTHROPIC,
+          endpoint: Providers.ANTHROPIC,
+          instructions: 'Translate the user input',
+          model_parameters: { model: 'test-model', promptCache: true },
+        }),
+      ],
+    });
+    expect(agents[0].additional_instructions).toBeUndefined();
+  });
+
   it('keeps static tool and agent instructions separate from dynamic runtime tail', async () => {
     const agents = await callAndCapture({
       agents: [
@@ -2583,10 +2723,11 @@ describe('built-in provider request shaping', () => {
   const summarizeWith = async (
     parameters?: Record<string, unknown>,
     model = 'gpt-6-astra',
+    appConfig = makeAppConfig([]),
   ): Promise<Record<string, unknown>> => {
     const agents = await callAndCapture({
       agents: [anthropicAgent()],
-      appConfig: makeAppConfig([]),
+      appConfig,
       summarizationConfig: {
         provider: 'openAI',
         model,
@@ -2621,24 +2762,50 @@ describe('built-in provider request shaping', () => {
   });
 
   it('does not claim a first-party endpoint behind a user configuration.baseURL', async () => {
-    expect(
-      await summarizeWith({ configuration: { baseURL: 'https://gateway.internal/v1' } }),
-    ).toEqual({ configuration: { baseURL: 'https://gateway.internal/v1' } });
+    const parameters = await summarizeWith({
+      configuration: { baseURL: 'https://gateway.internal/v1' },
+    });
+    expect(parameters.firstPartyEndpoint).toBeUndefined();
+    expect(parameters.configuration).toMatchObject({
+      baseURL: 'https://gateway.internal/v1',
+      fetchOptions: { dispatcher: expect.any(Object) },
+    });
   });
 
   it('does not claim a first-party endpoint behind a user baseURL', async () => {
     expect(await summarizeWith({ baseURL: 'https://gateway.internal/v1' })).toEqual({
       baseURL: 'https://gateway.internal/v1',
+      configuration: { fetchOptions: { dispatcher: expect.any(Object) } },
     });
   });
 
-  it('leaves credentials and transport to the client', async () => {
+  it('adds only transport policy while leaving credentials and model selection to the client', async () => {
     const parameters = await summarizeWith();
     expect(parameters.apiKey).toBeUndefined();
     expect(parameters.model).toBeUndefined();
     expect(parameters.modelName).toBeUndefined();
     expect(parameters.streaming).toBeUndefined();
-    expect(parameters.configuration).toBeUndefined();
+    expect(parameters.configuration).toEqual({
+      fetchOptions: { dispatcher: expect.any(Object) },
+    });
+  });
+
+  it.each([
+    { bodyTimeout: 900_000, headersTimeout: 300_000 },
+    { bodyTimeout: 1_800_000, headersTimeout: 120_000 },
+    { bodyTimeout: 0, headersTimeout: 0 },
+  ])('forwards the cross-provider timeout policy %j', async (transportTimeouts) => {
+    const appConfig = makeAppConfig([]);
+    appConfig.endpoints!.agents = {
+      modelResponseBodyTimeoutMs: transportTimeouts.bodyTimeout,
+      modelResponseHeadersTimeoutMs: transportTimeouts.headersTimeout,
+    };
+    const parameters = await summarizeWith(undefined, 'gpt-4o', appConfig);
+    const expected = getOpenAIConfig('unused', { transportTimeouts });
+    const configuration = parameters.configuration as NonNullable<OpenAIConfiguration>;
+    expect(configuration.fetchOptions?.dispatcher).toBe(
+      expected.configOptions?.fetchOptions?.dispatcher,
+    );
   });
 
   it('leaves a same-endpoint summarizer on the agent client options', async () => {
@@ -2663,7 +2830,9 @@ describe('built-in provider request shaping', () => {
   it('withholds the declaration when a reverse proxy serves the built-in endpoint', async () => {
     process.env.OPENAI_REVERSE_PROXY = 'https://gateway.internal/v1';
     try {
-      expect(await summarizeWith()).toBeUndefined();
+      expect(await summarizeWith()).toEqual({
+        configuration: { fetchOptions: { dispatcher: expect.any(Object) } },
+      });
     } finally {
       delete process.env.OPENAI_REVERSE_PROXY;
     }
@@ -2672,7 +2841,9 @@ describe('built-in provider request shaping', () => {
   it('withholds the declaration when the base URL is user-provided', async () => {
     process.env.OPENAI_REVERSE_PROXY = 'user_provided';
     try {
-      expect(await summarizeWith()).toBeUndefined();
+      expect(await summarizeWith()).toEqual({
+        configuration: { fetchOptions: { dispatcher: expect.any(Object) } },
+      });
     } finally {
       delete process.env.OPENAI_REVERSE_PROXY;
     }
@@ -4376,10 +4547,8 @@ describe('createRun deferred-tool replay (HITL resume)', () => {
 // ---------------------------------------------------------------------------
 // Suite: HITL wiring gated to resumable callers (Codex J3)
 //
-// The tool-approval wiring (humanInTheLoop switch + PreToolUse hook) must engage ONLY for
-// callers that implement the pause/resume lifecycle. AgentClient passes hitlCapable: true;
-// the OpenAI-compatible + Responses controllers don't, so an approval-gated tool can't
-// pause on a route with no approval surface or resume endpoint.
+// Tool-approval policy must apply to every caller, while only an interactive
+// caller may pause for an 'ask' decision. API-key endpoints have no resume surface.
 // ---------------------------------------------------------------------------
 describe('HITL wiring is gated on hitlCapable', () => {
   const hitlAppConfig = {
@@ -4410,15 +4579,309 @@ describe('HITL wiring is gated on hitlCapable', () => {
     expect(config.hooks).toBeDefined();
   });
 
-  it('does NOT attach HITL for a non-resumable caller even when approval is enabled', async () => {
-    const config = await runAndGetConfig({ hitlCapable: false });
+  it.each([
+    [
+      { enabled: true, mode: 'bypass', deny: ['delete_*'], allow: ['delete_file'] },
+      'delete_file',
+      'deny',
+    ],
+    [{ enabled: true, mode: 'dontAsk', allow: ['read_*'] }, 'read_file', 'allow'],
+    [{ enabled: true, mode: 'dontAsk', allow: ['read_*'] }, 'write_file', 'deny'],
+    [{ enabled: true, mode: 'default' }, 'write_file', 'ask'],
+  ] as const)('evaluates headless tool policy for %s on %s', async (policy, toolName, decision) => {
+    const appConfig = {
+      ...hitlAppConfig,
+      endpoints: { [EModelEndpoint.agents]: { toolApproval: policy } },
+    } as unknown as AppConfig;
+    const config = await runAndGetConfig({ hitlCapable: false, appConfig });
     expect(config).not.toHaveProperty('humanInTheLoop');
-    expect(config.graphConfig).toBeDefined();
-    // No checkpointer either — the run is identical to the no-HITL path.
     expect(
       (config.graphConfig as { compileOptions?: { checkpointer?: unknown } }).compileOptions
         ?.checkpointer,
     ).toBeUndefined();
+    const result = await executeHooks({
+      registry: config.hooks as HookRegistry,
+      input: {
+        hook_event_name: 'PreToolUse',
+        runId: 'headless-test',
+        toolName,
+        toolInput: {},
+        toolUseId: 'call-1',
+      },
+      matchQuery: toolName,
+    });
+    expect(result.decision).toBe(decision);
+  });
+
+  it.each([
+    { policy: { enabled: true, mode: 'bypass', deny: ['delete_record'] }, name: 'delete_record' },
+    { policy: { enabled: true, mode: 'default' }, name: 'read_record' },
+  ] as const)(
+    'blocks a real SDK direct tool before execution for $name',
+    async ({ policy, name }) => {
+      const config = await runAndGetConfig({
+        appConfig: {
+          ...hitlAppConfig,
+          endpoints: { [EModelEndpoint.agents]: { toolApproval: policy } },
+        } as unknown as AppConfig,
+      });
+      const body = jest.fn(async () => 'executed');
+      const tool = new DynamicStructuredTool({
+        name,
+        description: 'A test-only tool',
+        schema: z.object({}),
+        func: body,
+      });
+      const node = new ToolNode({
+        tools: [tool],
+        agentId: 'agent_1',
+        hookRegistry: config.hooks as HookRegistry,
+      });
+      const result = await node.invoke(
+        {
+          messages: [
+            new AIMessage({ content: '', tool_calls: [{ id: 'call-1', name, args: {} }] }),
+          ],
+        },
+        { configurable: { run_id: 'headless-test', thread_id: 'thread-1' } },
+      );
+      expect(body).not.toHaveBeenCalled();
+      expect(JSON.stringify(result)).toContain('Blocked:');
+    },
+  );
+
+  it.each([false, true])(
+    'enforces the enrolled ceiling in a real SDK ToolNode with approval enabled=%s',
+    async (enabled) => {
+      const f = await executionFixture();
+      const agent = makeAgent({
+        id: 'root',
+        toolRegistry: new Map([
+          [
+            'query_mcp_warehouse',
+            { name: 'query_mcp_warehouse', toolType: 'mcp', serverName: 'warehouse' },
+          ],
+        ]),
+      });
+      await createRun({
+        agents: [agent] as never,
+        signal: new AbortController().signal,
+        scheduledMCPExecution: f.execution,
+        appConfig: {
+          ...hitlAppConfig,
+          endpoints: {
+            agents: { toolApproval: { enabled, mode: 'bypass', deny: ['query_mcp_warehouse'] } },
+          },
+        } as unknown as AppConfig,
+      });
+      const config = (Run.create as jest.Mock).mock.calls[0][0];
+      expect(config).not.toHaveProperty('humanInTheLoop');
+      for (const name of ['action_write', 'execute_code', 'query_mcp_warehouse']) {
+        const body = jest.fn(async () => 'executed');
+        const tool = new DynamicStructuredTool({
+          name,
+          description: 'Boundary regression',
+          schema: z.object({}),
+          func: body,
+        });
+        const node = new ToolNode({ tools: [tool], agentId: 'root', hookRegistry: config.hooks });
+        const result = await node.invoke(
+          {
+            messages: [
+              new AIMessage({ content: '', tool_calls: [{ id: 'call-1', name, args: {} }] }),
+            ],
+          },
+          { configurable: { run_id: 'scheduled', thread_id: 'thread' } },
+        );
+        if (name === 'query_mcp_warehouse' && !enabled) expect(body).toHaveBeenCalledTimes(1);
+        else {
+          expect(body).not.toHaveBeenCalled();
+          expect(JSON.stringify(result)).toContain('Blocked:');
+        }
+      }
+    },
+  );
+
+  it.each([true, false])(
+    'withholds detached task/wakeup capabilities only for enrolled=%s',
+    async (enrolled) => {
+      const f = await executionFixture();
+      if (!enrolled) f.snapshot.enrollment = null;
+      const execution = (await f.factory.resolve(f.identity, 'invoke'))!;
+      const tasks = {
+        store: new InMemorySubagentTaskStore(),
+        scopeId: 'scheduled-tasks',
+        completionDelivery: 'wakeup' as const,
+      };
+      const root = makeAgent({
+        id: 'root',
+        subagents: { enabled: true, allowSelf: false, agent_ids: ['child'] },
+        subagentAgentConfigs: [makeAgent({ id: 'child' })],
+      });
+      await createRun({
+        agents: [root] as never,
+        signal: new AbortController().signal,
+        scheduledMCPExecution: execution,
+        subagentTasks: tasks,
+        appConfig: {
+          ...hitlAppConfig,
+          endpoints: { agents: { toolApproval: { enabled: false } } },
+        } as unknown as AppConfig,
+      });
+      const config = (Run.create as jest.Mock).mock.calls[0][0];
+      expect(config.subagentTasks).toBe(enrolled ? undefined : tasks);
+      const params = buildSubagentToolParams(config.graphConfig.agents[0].subagentConfigs, {
+        background: config.subagentTasks != null,
+        threadContinuation: true,
+      });
+      expect(
+        Object.prototype.hasOwnProperty.call(params.schema.properties ?? {}, 'run_in_background'),
+      ).toBe(!enrolled);
+      expect(
+        Object.prototype.hasOwnProperty.call(params.schema.properties ?? {}, 'subagent_thread_id'),
+      ).toBe(!enrolled);
+      const agent = config.graphConfig.agents[0];
+      expect(agent.subagentConfigs).toEqual([
+        expect.objectContaining({ type: 'child', allowNested: true }),
+      ]);
+      const names = (agent.toolDefinitions ?? []).map((tool: { name: string }) => tool.name);
+      expect(names.includes('check_background_task')).toBe(!enrolled);
+    },
+  );
+
+  it.each([false, true])(
+    'retains mandatory denial receipts with remembered conversation approval=%s',
+    async (remembered) => {
+      const f = await executionFixture();
+      const recorder = jest.fn(async () => true);
+      await createRun({
+        agents: [makeAgent({ id: 'root' })] as never,
+        signal: new AbortController().signal,
+        scheduledMCPExecution: f.execution,
+        recordScheduledMCPDenial: recorder,
+        toolApprovalAllows: remembered ? ['write_action_api'] : undefined,
+        appConfig: {
+          ...hitlAppConfig,
+          endpoints: {
+            agents: {
+              toolApproval: { enabled: remembered, mode: 'default', allowAlways: remembered },
+            },
+          },
+        } as unknown as AppConfig,
+      });
+      const config = (Run.create as jest.Mock).mock.calls[0][0];
+      const body = jest.fn(async () => 'side effect');
+      const action = new DynamicStructuredTool({
+        name: 'write_action_api',
+        description: 'Late action',
+        schema: z.object({}),
+        func: body,
+      });
+      const node = new ToolNode({ tools: [action], agentId: 'root', hookRegistry: config.hooks });
+      await node.invoke(
+        {
+          messages: [
+            new AIMessage({
+              content: '',
+              tool_calls: [{ id: 'call', name: action.name, args: {} }],
+            }),
+          ],
+        },
+        { configurable: { run_id: 'scheduled', thread_id: 'thread' } },
+      );
+      expect(body).not.toHaveBeenCalled();
+      expect(recorder).toHaveBeenCalledWith(
+        expect.objectContaining({
+          failure: {
+            reason: 'tool_policy_denied',
+            status: 'mcp_permission_denied',
+            recovery: 'configure',
+            automaticReplay: false,
+          },
+        }),
+      );
+    },
+  );
+
+  it('passes only admitted root graph handoffs into the mandatory scheduled hook', async () => {
+    const f = await executionFixture();
+    const agents = [
+      makeAgent({ id: 'root', edges: [{ from: 'root', to: 'child', edgeType: 'handoff' }] }),
+      makeAgent({ id: 'child' }),
+      makeAgent({ id: 'peer' }),
+    ];
+    await createRun({
+      agents: agents as never,
+      signal: new AbortController().signal,
+      scheduledMCPExecution: f.execution,
+      appConfig: {
+        ...hitlAppConfig,
+        endpoints: { agents: { toolApproval: { enabled: false } } },
+      } as unknown as AppConfig,
+    });
+    const config = (Run.create as jest.Mock).mock.calls[0][0];
+    for (const [toolName, expected] of [
+      [`${Constants.LC_TRANSFER_TO_}child`, undefined],
+      [`${Constants.LC_TRANSFER_TO_}peer`, 'deny'],
+    ]) {
+      const result = await executeHooks({
+        registry: config.hooks,
+        input: {
+          hook_event_name: 'PreToolUse',
+          runId: 'run',
+          toolName: toolName!,
+          toolInput: {},
+          toolUseId: 'transfer',
+          executingAgentId: 'root',
+        },
+        matchQuery: toolName!,
+      });
+      expect(result.decision).toBe(expected);
+    }
+  });
+
+  it('registers trusted per-run hooks on headless calls without prompting', async () => {
+    const factory = jest.fn(() => async () => ({ decision: 'deny' as const }));
+    const unregister = registerToolApprovalHook(factory, { matcher: '^write_file$' });
+    try {
+      const config = await runAndGetConfig({
+        user: { id: 'user-1' },
+        appConfig: {
+          ...hitlAppConfig,
+          endpoints: {
+            [EModelEndpoint.agents]: { toolApproval: { enabled: true, mode: 'bypass' } },
+          },
+        } as AppConfig,
+      });
+      expect(factory).toHaveBeenCalledWith(expect.objectContaining({ userId: 'user-1' }));
+      expect(config).not.toHaveProperty('humanInTheLoop');
+      const result = await executeHooks({
+        registry: config.hooks as HookRegistry,
+        input: {
+          hook_event_name: 'PreToolUse',
+          runId: 'headless-test',
+          toolName: 'write_file',
+          toolInput: {},
+          toolUseId: 'call-1',
+        },
+        matchQuery: 'write_file',
+      });
+      expect(result.decision).toBe('deny');
+    } finally {
+      unregister();
+      clearToolApprovalHooks();
+    }
+  });
+
+  it('keeps approval fully off when the endpoint disables it', async () => {
+    const config = await runAndGetConfig({
+      appConfig: {
+        ...hitlAppConfig,
+        endpoints: { [EModelEndpoint.agents]: { toolApproval: { enabled: false, deny: ['*'] } } },
+      } as AppConfig,
+    });
+    expect((config.hooks as HookRegistry).hasHookFor('PreToolUse')).toBe(false);
+    expect(config).not.toHaveProperty('humanInTheLoop');
   });
 
   it('defaults to non-HITL when hitlCapable is omitted', async () => {
@@ -4426,48 +4889,68 @@ describe('HITL wiring is gated on hitlCapable', () => {
     expect(config).not.toHaveProperty('humanInTheLoop');
   });
 
-  it('heals aliases discovered when a lazy subagent resolves', async () => {
-    const alias = { name: 'delete_mcp_acme', aliasName: 'acme_delete_mcp_acme' };
-    const resolvedChild = makeAgent({ id: 'lazy-child', mcpToolAliases: [alias] });
-    const lazyChild = {
-      ...makeAgent({ id: 'lazy-child' }),
-      configId: 'lazy-child:v1',
-      resolve: jest.fn().mockResolvedValue(resolvedChild),
-    };
-    const parent = makeAgent({
-      subagents: { enabled: true, allowSelf: false },
-      lazySubagentConfigs: [lazyChild],
-    });
-    const appConfig = {
-      ...hitlAppConfig,
-      endpoints: {
-        [EModelEndpoint.agents]: {
-          toolApproval: { enabled: true, mode: 'bypass', deny: [alias.aliasName] },
+  it.each([true, false])(
+    'heals aliases discovered in lazy subagents (HITL=%s)',
+    async (hitlCapable) => {
+      const alias = { name: 'delete_mcp_acme', aliasName: 'acme_delete_mcp_acme' };
+      const resolvedChild = makeAgent({ id: 'lazy-child', mcpToolAliases: [alias] });
+      const lazyChild = {
+        ...makeAgent({ id: 'lazy-child' }),
+        configId: 'lazy-child:v1',
+        resolve: jest.fn().mockResolvedValue(resolvedChild),
+      };
+      const parent = makeAgent({
+        subagents: { enabled: true, allowSelf: false },
+        lazySubagentConfigs: [lazyChild],
+      });
+      const appConfig = {
+        ...hitlAppConfig,
+        endpoints: {
+          [EModelEndpoint.agents]: {
+            toolApproval: { enabled: true, mode: 'bypass', deny: [alias.aliasName] },
+          },
         },
-      },
-    } as unknown as AppConfig;
+      } as unknown as AppConfig;
 
-    await createRun({
-      agents: [parent] as never,
-      signal: new AbortController().signal,
-      appConfig,
-      streaming: true,
-      streamUsage: true,
-      hitlCapable: true,
-    });
-    const config = (Run.create as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
-    const hooks = config.hooks as { getMatchers: (event: string) => unknown[] };
-    const lazyConfig = (
-      (config.graphConfig as { agents: Array<Record<string, unknown>> }).agents[0]
-        .subagentConfigs as Array<Record<string, unknown>>
-    ).find((entry) => entry.configId === lazyChild.configId);
+      await createRun({
+        agents: [parent] as never,
+        signal: new AbortController().signal,
+        appConfig,
+        streaming: true,
+        streamUsage: true,
+        hitlCapable,
+      });
+      const config = (Run.create as jest.Mock).mock.calls[0][0] as Record<string, unknown>;
+      const hooks = config.hooks as { getMatchers: (event: string) => unknown[] };
+      const lazyConfig = (
+        (config.graphConfig as { agents: Array<Record<string, unknown>> }).agents[0]
+          .subagentConfigs as Array<Record<string, unknown>>
+      ).find((entry) => entry.configId === lazyChild.configId);
 
-    expect(hooks.getMatchers('PreToolUse')).toHaveLength(1);
-    await (lazyConfig?.resolveAgentInputs as (context: never) => Promise<unknown>)({
-      signal: new AbortController().signal,
-    } as never);
-    expect(hooks.getMatchers('PreToolUse')).toHaveLength(1);
-  });
+      const decisionForAlias = async () =>
+        (
+          await executeHooks({
+            registry: config.hooks as HookRegistry,
+            input: {
+              hook_event_name: 'PreToolUse',
+              runId: 'alias-test',
+              toolName: alias.name,
+              toolInput: {},
+              toolUseId: 'call-1',
+            },
+            matchQuery: alias.name,
+          })
+        ).decision;
+      const initialMatcherCount = hooks.getMatchers('PreToolUse').length;
+      expect(initialMatcherCount).toBeGreaterThan(0);
+      expect(await decisionForAlias()).toBe('allow');
+      await (lazyConfig?.resolveAgentInputs as (context: never) => Promise<unknown>)({
+        signal: new AbortController().signal,
+      } as never);
+      expect(hooks.getMatchers('PreToolUse')).toHaveLength(initialMatcherCount);
+      expect(await decisionForAlias()).toBe('deny');
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -4729,5 +5212,183 @@ describe('summarizeOnly resolution', () => {
     });
     expect(agents[0].summarizeOnly).toBe(true);
     expect(agents[1].summarizeOnly).toBeUndefined();
+  });
+});
+
+describe('steering provider capabilities', () => {
+  it.each([
+    ['Anthropic search', { type: 'web_search_20250305', name: 'web_search' }],
+    ['Google search', { googleSearch: {} }],
+    ['OpenAI search', { type: 'web_search' }],
+    ['Google URL context', { urlContext: {} }],
+  ])('disables interruption before constructing a run with %s', async (_name, tool) => {
+    const disable = jest.fn(async () => undefined);
+    const handler = { handle: jest.fn() };
+    await callAndCapture({
+      agents: [makeAgent({ tools: [tool] })],
+      customHandlers: { on_tool_execute: handler },
+      steering: { hook: async () => ({}), preemption: { shouldPreempt: () => true, disable } },
+    });
+    expect(disable).toHaveBeenCalledTimes(1);
+    const config = jest.mocked(Run.create).mock.calls[0]?.[0];
+    expect(config?.preemption).toBeUndefined();
+    expect(config?.customHandlers?.on_tool_execute).toBe(handler);
+  });
+
+  it('keeps interruption for host-executed tools', async () => {
+    const disable = jest.fn(async () => undefined);
+    const tool = new DynamicStructuredTool({
+      name: 'web_search',
+      description: 'Host search',
+      schema: z.object({}),
+      func: async () => 'found it',
+    });
+    await callAndCapture({
+      agents: [makeAgent({ tools: [tool] })],
+      steering: { hook: async () => ({}), preemption: { shouldPreempt: () => true, disable } },
+    });
+    expect(disable).not.toHaveBeenCalled();
+    expect(jest.mocked(Run.create).mock.calls[0]?.[0].preemption).toBeDefined();
+  });
+});
+
+/**
+ * The override pipeline's rebinding guard, end to end: what a profile writes to
+ * `summarization` is merged as `getAppConfig` merges it, and the run's real summarizer makes the
+ * request.
+ */
+describe('summarization destinations an override profile sets', () => {
+  const ATTACKER = 'https://attacker.example/openai/deployments/summary-production';
+  const GROUP_RESOURCE = 'https://summary-instance.openai.azure.com/';
+
+  function azureAppConfig(summarization?: SummarizationConfig): AppConfig {
+    const appConfig = makeAppConfig([]);
+    appConfig.endpoints![EModelEndpoint.azureOpenAI] = {
+      modelNames: ['gpt-4.1-mini'],
+      modelGroupMap: { 'gpt-4.1-mini': { group: 'summary' } },
+      groupMap: {
+        summary: {
+          apiKey: 'deployment-group-secret',
+          instanceName: 'summary-instance',
+          version: '2024-10-21',
+          models: { 'gpt-4.1-mini': { deploymentName: 'summary-production' } },
+        },
+      },
+    } as unknown as NonNullable<AppConfig['endpoints']>[EModelEndpoint.azureOpenAI];
+    if (summarization != null) {
+      appConfig.config.summarization = structuredClone(summarization);
+      appConfig.summarization = structuredClone(summarization);
+    }
+    return appConfig;
+  }
+
+  function mergeProfile(base: AppConfig, profile: Partial<ConfigOverrideLayer>) {
+    const ignored: string[] = [];
+    const layer = {
+      principalType: PrincipalType.ROLE,
+      principalId: 'editors',
+      priority: 10,
+      overrides: {},
+      ...profile,
+    } as ConfigOverrideLayer;
+    const merged = mergeConfigOverrides(base, [layer], {
+      afterLayer: createSecretRebindingGuard(({ path }) => ignored.push(path)),
+    });
+    return { merged, ignored };
+  }
+
+  async function summarize(appConfig: AppConfig) {
+    const agents = await callAndCapture({
+      agents: [makeAgent()],
+      appConfig,
+      summarizeOnly: true,
+      summarizationConfig: appConfig.summarization,
+    });
+    const { requests } = await compactSummary(agents);
+    return requests.map(({ url, headers }) => ({
+      url: url.href,
+      apiKey: headers.get('api-key'),
+    }));
+  }
+
+  it.each([1, 0, true, false])(
+    'keeps the Azure group key on its own resource under a profile key of %p',
+    async (apiKey) => {
+      const { merged, ignored } = mergeProfile(azureAppConfig(), {
+        overrides: {
+          summarization: {
+            provider: 'azureOpenAI',
+            model: 'gpt-4.1-mini',
+            parameters: { baseURL: ATTACKER, apiKey },
+          },
+        },
+      });
+
+      expect(ignored).toEqual(['summarization.parameters.baseURL']);
+      const requests = await summarize(merged);
+      expect(requests).toEqual([
+        { url: expect.stringMatching(`^${GROUP_RESOURCE}`), apiKey: 'deployment-group-secret' },
+      ]);
+    },
+  );
+
+  it('sends a key the profile enters, and only that key, to the destination it sets', async () => {
+    const { merged, ignored } = mergeProfile(azureAppConfig(), {
+      overrides: {
+        summarization: {
+          provider: 'azureOpenAI',
+          model: 'gpt-4.1-mini',
+          parameters: { baseURL: ATTACKER, apiKey: 'profile-own-key' },
+        },
+      },
+    });
+
+    expect(ignored).toEqual([]);
+    expect(await summarize(merged)).toEqual([
+      { url: expect.stringMatching(/^https:\/\/attacker\.example\//), apiKey: 'profile-own-key' },
+    ]);
+  });
+
+  it("keeps the Azure group key off librechat.yaml's gateway once a profile removes the gateway's key", async () => {
+    const yaml = azureAppConfig({
+      provider: 'azureOpenAI',
+      model: 'gpt-4.1-mini',
+      parameters: {
+        baseURL: 'https://yaml-gateway.example/openai/deployments/summary-production',
+        apiKey: 'yaml-gateway-key',
+      },
+    });
+    expect(await summarize(yaml)).toEqual([
+      {
+        url: expect.stringMatching(/^https:\/\/yaml-gateway\.example\//),
+        apiKey: 'yaml-gateway-key',
+      },
+    ]);
+    jest.mocked(Run.create).mockClear();
+
+    const { merged, ignored } = mergeProfile(yaml, {
+      tombstones: ['summarization.parameters.apiKey'],
+    });
+
+    expect(ignored).toEqual(['summarization.parameters.baseURL']);
+    expect(await summarize(merged)).toEqual([
+      { url: expect.stringMatching(`^${GROUP_RESOURCE}`), apiKey: 'deployment-group-secret' },
+    ]);
+  });
+
+  it("keeps the Azure group key off librechat.yaml's unkeyed gateway for another provider", async () => {
+    const { merged, ignored } = mergeProfile(
+      azureAppConfig({
+        provider: 'openAI',
+        model: 'gpt-4.1-mini',
+        parameters: { baseURL: 'https://yaml-gateway.example/openai/deployments/x' },
+      }),
+      { overrides: { summarization: { provider: 'azureOpenAI' } } },
+    );
+
+    expect(ignored).toEqual(['summarization.parameters.baseURL']);
+    expect(await summarize(merged)).toEqual([
+      { url: expect.stringMatching(`^${GROUP_RESOURCE}`), apiKey: 'deployment-group-secret' },
+    ]);
   });
 });

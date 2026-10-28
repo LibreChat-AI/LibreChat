@@ -168,9 +168,12 @@ export type GenerationStreamAttachmentOutcome =
 export type RumProxyEndpoint = 'traces' | 'logs' | 'unknown';
 export type RumProxyResult =
   | 'success'
+  | 'replay_disabled'
   | 'auth_drop'
   | 'auth_error'
   | 'bad_request'
+  | 'rate_limited'
+  | 'unsupported_media_type'
   | 'not_configured'
   | 'collector_4xx'
   | 'collector_5xx'

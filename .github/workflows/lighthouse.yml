@@ -27,16 +27,25 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
-      E2E_CHROMIUM_CHANNEL: chrome
+      E2E_CHROMIUM_CHANNEL: chromium
+      LIGHTHOUSE_CHROME_FLAGS: --no-sandbox
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.1'
           cache: npm
+      - name: Test Lighthouse failure reporting
+        run: node --test e2e/lighthouse.test.mts
       - run: npm ci
+      - name: Install lockfile-pinned Chromium
+        run: npx playwright install --with-deps --no-shell chromium
+      - name: Select Lighthouse browser
+        run: |
+          chrome=$(node -p "require('@playwright/test').chromium.executablePath()")
+          "$chrome" --version
+          echo "CHROME_PATH=$chrome" >> "$GITHUB_ENV"
       - run: npm run e2e:prepare
-      - run: google-chrome --version
       - name: Audit serial database latency
         id: audit
         shell: bash

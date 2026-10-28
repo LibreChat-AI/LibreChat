@@ -1,4 +1,6 @@
 const fs = require('fs');
+const { formatMessage } = require('@librechat/agents');
+const { dedupeDocumentNames, ContentTraversalLimitError } = require('@librechat/api');
 const path = require('path');
 const {
   EModelEndpoint,
@@ -36,6 +38,63 @@ jest.mock('~/models', () => ({
 
 afterEach(() => {
   jest.clearAllMocks();
+});
+
+it('strips server-private owner metadata from untrusted LibreChat imports', async () => {
+  const jsonData = {
+    conversationId: 'imported',
+    title: 'Imported',
+    messages: [
+      {
+        messageId: 'source',
+        parentMessageId: Constants.NO_PARENT,
+        text: '[EMAIL_1]',
+        isCreatedByUser: true,
+        privateText: 'v1:forged',
+        privacyRevision: 'forged',
+      },
+    ],
+  };
+  const importBatchBuilder = new ImportBatchBuilder('owner');
+  await getImporter(jsonData)(jsonData, 'owner', () => importBatchBuilder);
+  expect(importBatchBuilder.messages[0].text).toBe('[EMAIL_1]');
+  expect(importBatchBuilder.messages[0]).not.toHaveProperty('privateText');
+  expect(importBatchBuilder.messages[0]).not.toHaveProperty('privacyRevision');
+});
+
+it.each([2000, 8000])('bounds replay of %i imported inline document blocks', async (count) => {
+  const content = Array.from({ length: count / 2 }, (_, index) => {
+    const name = 'a'.repeat(196) + index.toString(36).padStart(4, '0');
+    const document = { type: 'document', document: { name } };
+    return [document, structuredClone(document)];
+  }).flat();
+  const jsonData = {
+    conversationId: 'imported-documents',
+    title: 'Imported documents',
+    endpoint: EModelEndpoint.agents,
+    messages: [
+      {
+        messageId: 'source',
+        parentMessageId: Constants.NO_PARENT,
+        isCreatedByUser: false,
+        content,
+      },
+    ],
+  };
+  const builder = new ImportBatchBuilder('owner');
+  await getImporter(jsonData)(jsonData, 'owner', () => builder);
+  const imported = builder.messages[0];
+  expect(imported.content).toEqual(content);
+  const payload = [formatMessage({ message: imported })];
+
+  if (count === 8000) {
+    expect(() => dedupeDocumentNames(payload)).toThrow(ContentTraversalLimitError);
+  } else {
+    dedupeDocumentNames(payload);
+    const names = payload[0].content.map((part) => part.document.name.toLowerCase());
+    expect(new Set(names).size).toBe(count);
+  }
+  expect(imported.content).toEqual(content);
 });
 
 describe('importChatGptConvo', () => {
@@ -1355,6 +1414,23 @@ describe('importLibreChatConvo', () => {
         expect(message.expiredAt.getTime()).toBeLessThan(now + hours * 3600000 + 1000);
       },
     );
+
+    it('marks imported conversations and messages temporary under ephemeral retention', () => {
+      const requestUserId = 'user-123';
+      const builder = new ImportBatchBuilder(requestUserId, {
+        retentionMode: RetentionMode.EPHEMERAL,
+        temporaryChatRetention: 24,
+      });
+      builder.startConversation(EModelEndpoint.openAI);
+      const message = builder.addUserMessage('Ephemeral import');
+      const result = builder.finishConversation('Imported ephemeral chat');
+
+      expect(message.isTemporary).toBe(true);
+      expect(message.expiredAt).toBeInstanceOf(Date);
+      expect(result.conversation.isTemporary).toBe(true);
+      expect(result.conversation.expiredAt).toBeInstanceOf(Date);
+      expect(result.conversation.expiredAt).toBe(message.expiredAt);
+    });
   });
 });
 

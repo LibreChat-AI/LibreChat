@@ -1,5 +1,10 @@
 export enum QueryKeys {
   messages = 'messages',
+  /* Full content of one tool-call part, fetched when its preview is not enough */
+  toolCallPart = 'toolCallPart',
+  /* Child calls of a message's subagent transcripts that files reaching it late belong to */
+  subagentAttachmentCalls = 'subagentAttachmentCalls',
+  ownerMessageTexts = 'ownerMessageTexts',
   sharedMessages = 'sharedMessages',
   sharedStartupConfig = 'sharedStartupConfig',
   sharedLinks = 'sharedLinks',
@@ -11,19 +16,21 @@ export enum QueryKeys {
   searchEnabled = 'searchEnabled',
   langfuseConnection = 'langfuseConnection',
   langfuseSessionLink = 'langfuseSessionLink',
+  langfusePrompts = 'langfusePrompts',
+  langfusePrompt = 'langfusePrompt',
   conversationTraceAvailability = 'conversationTraceAvailability',
   conversationTraceRecords = 'conversationTraceRecords',
   conversationTraceRecord = 'conversationTraceRecord',
   user = 'user',
+  passkeys = 'passkeys',
   name = 'name', // user key name
   models = 'models',
   balance = 'balance',
   endpoints = 'endpoints',
   tokenConfig = 'tokenConfig',
+  reasoningCapabilities = 'reasoningCapabilities',
   presets = 'presets',
   searchResults = 'searchResults',
-  tokenCount = 'tokenCount',
-  availablePlugins = 'availablePlugins',
   startupConfig = 'startupConfig',
   insights = 'insights',
   insightsAccess = 'insightsAccess',
@@ -39,6 +46,7 @@ export enum QueryKeys {
   mcpTools = 'mcpTools',
   mcpConnectionStatus = 'mcpConnectionStatus',
   mcpAuthValues = 'mcpAuthValues',
+  mcpAppResourceHtml = 'mcpAppResourceHtml',
   agentTools = 'agentTools',
   actions = 'actions',
   assistantDocs = 'assistantDocs',
@@ -52,8 +60,11 @@ export enum QueryKeys {
   promptGroups = 'promptGroups',
   allPromptGroups = 'allPromptGroups',
   promptGroup = 'promptGroup',
+  promptGroupContent = 'promptGroupContent',
   projects = 'projects',
   project = 'project',
+  projectFiles = 'projectFiles',
+  projectAvailableFiles = 'projectAvailableFiles',
   projectConversations = 'projectConversations',
   categories = 'categories',
   randomPrompts = 'randomPrompts',
@@ -77,6 +88,8 @@ export enum QueryKeys {
   mcpServer = 'mcpServer',
   /* Active Jobs */
   activeJobs = 'activeJobs',
+  /** A running chat's sidebar row, for chats no loaded conversation list holds. */
+  runningConversation = 'runningConversation',
   /* Agent API Keys */
   agentApiKeys = 'agentApiKeys',
   /* Skills */
@@ -95,10 +108,17 @@ export enum QueryKeys {
   favorites = 'favorites',
   /* Scheduled chats */
   schedules = 'schedules',
+  scheduleMCPConsent = 'scheduleMCPConsent',
   schedule = 'schedule',
   parentSubagents = 'parentSubagents',
   subagentThread = 'subagentThread',
+  subagentTaskContent = 'subagentTaskContent',
+  subagentControlReceipt = 'subagentControlReceipt',
+  backgroundTasks = 'backgroundTasks',
+  conversationPullRequest = 'conversationPullRequest',
+  pullRequestConnection = 'pullRequestConnection',
   codeEnvironments = 'codeEnvironments',
+  codeSetupAttempt = 'codeSetupAttempt',
   agentQueuedTurns = 'agentQueuedTurns',
   /* Combined Pinned-section display order (favorites + pinned chats) */
   pinnedOrder = 'pinnedOrder',
@@ -106,12 +126,21 @@ export enum QueryKeys {
 
 // Dynamic query keys that require parameters
 export const DynamicQueryKeys = {
+  codeSetupAttempt: (attemptId: string, userId: string) =>
+    [QueryKeys.codeSetupAttempt, userId, attemptId] as const,
   agentFiles: (agentId: string) => ['agentFiles', agentId] as const,
+  projectFiles: (projectId: string) => [QueryKeys.projectFiles, projectId] as const,
+  projectAvailableFiles: (projectId: string) =>
+    [QueryKeys.projectAvailableFiles, projectId] as const,
   codeEnvironmentStatus: (id: string) => [QueryKeys.codeEnvironments, id, 'status'] as const,
 } as const;
 
 export enum MutationKeys {
+  approveCodeSetup = 'approveCodeSetup',
+  denyCodeSetup = 'denyCodeSetup',
+  resetToolApprovalGrants = 'resetToolApprovalGrants',
   subagentControl = 'subagentControl',
+  cancelBackgroundTasks = 'cancelBackgroundTasks',
   enqueueAgentQueuedTurn = 'enqueueAgentQueuedTurn',
   cancelAgentQueuedTurn = 'cancelAgentQueuedTurn',
   /** Whole-array favorites write, keyed so every hook instance's write is
@@ -121,6 +150,8 @@ export enum MutationKeys {
   updatePinnedOrder = 'updatePinnedOrder',
   updateLangfuseConnection = 'updateLangfuseConnection',
   testLangfuseConnection = 'testLangfuseConnection',
+  updateLangfusePromptSync = 'updateLangfusePromptSync',
+  syncLangfusePrompts = 'syncLangfusePrompts',
   createAgentApiKey = 'createAgentApiKey',
   deleteAgentApiKey = 'deleteAgentApiKey',
   fileUpload = 'fileUpload',
@@ -146,25 +177,40 @@ export enum MutationKeys {
   updateRole = 'updateRole',
   enableTwoFactor = 'enableTwoFactor',
   verifyTwoFactor = 'verifyTwoFactor',
+  registerPasskey = 'registerPasskey',
+  renamePasskey = 'renamePasskey',
+  deletePasskey = 'deletePasskey',
+  passkeyLogin = 'passkeyLogin',
   updateMemoryPreferences = 'updateMemoryPreferences',
   createProject = 'createProject',
   updateProject = 'updateProject',
   deleteProject = 'deleteProject',
   assignConversationToProject = 'assignConversationToProject',
+  addProjectFile = 'addProjectFile',
+  removeProjectFile = 'removeProjectFile',
   /* Skill mutations from the original UI PR — tree/node operations are
    * phase 2 and currently stubbed in the data-service layer. */
   createSkillNode = 'createSkillNode',
   updateSkillNode = 'updateSkillNode',
   deleteSkillNode = 'deleteSkillNode',
   updateSkillNodeContent = 'updateSkillNodeContent',
+  /** Artifact code save, keyed so the editor pane can see a save started by
+   *  another instance of itself — the pane is remounted when it changes hosts. */
+  editArtifact = 'editArtifact',
   convoPin = 'convoPin',
   archiveAllConversations = 'archiveAllConversations',
   createSchedule = 'createSchedule',
   updateSchedule = 'updateSchedule',
   deleteSchedule = 'deleteSchedule',
   runSchedule = 'runSchedule',
+  confirmScheduleMCPConsent = 'confirmScheduleMCPConsent',
+  revokeScheduleMCPConsent = 'revokeScheduleMCPConsent',
   pairCodeEnvironment = 'pairCodeEnvironment',
   updateCodeEnvironmentSettings = 'updateCodeEnvironmentSettings',
   deleteCodeEnvironment = 'deleteCodeEnvironment',
   moveConversationCodeEnvironment = 'moveConversationCodeEnvironment',
+  convoSeen = 'convoSeen',
+  convoUnread = 'convoUnread',
+  connectPullRequestAccount = 'connectPullRequestAccount',
+  disconnectPullRequestAccount = 'disconnectPullRequestAccount',
 }

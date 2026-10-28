@@ -15,7 +15,6 @@ const {
   AZURE_ASSISTANTS_BASE_URL,
 } = process.env ?? {};
 
-const userProvidedOpenAI = isUserProvided(openAIApiKey);
 const anthropicUsesVertex = isEnabled(process.env.ANTHROPIC_USE_VERTEX);
 const firstNonEmpty = (...values) => values.find((value) => value != null && value !== '');
 const bedrockUserProvidedCredential = [
@@ -28,9 +27,6 @@ const bedrockUserProvidedCredential = [
 module.exports = {
   config: {
     googleKey,
-    openAIApiKey,
-    azureOpenAIApiKey,
-    userProvidedOpenAI,
     [EModelEndpoint.anthropic]: generateConfig(anthropicUsesVertex ? 'true' : anthropicApiKey),
     [EModelEndpoint.openAI]: generateConfig(openAIApiKey, OPENAI_REVERSE_PROXY),
     [EModelEndpoint.azureOpenAI]: generateConfig(azureOpenAIApiKey, AZURE_OPENAI_BASEURL),

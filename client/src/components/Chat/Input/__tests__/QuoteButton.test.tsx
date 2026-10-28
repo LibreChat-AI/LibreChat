@@ -1,14 +1,14 @@
-import React, { Profiler } from 'react';
-import { RecoilRoot, useRecoilValue } from 'recoil';
+import React, { Profiler, useState } from 'react';
 import { act, render, screen, fireEvent } from '@testing-library/react';
+import { Provider as JotaiProvider, createStore, useAtomValue } from 'jotai';
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
 import QuoteButton from '../QuoteButton';
-import store from '~/store';
 import { mainTextareaId } from '~/common';
+import { pendingQuotesByConvoId } from '@librechat/chat/react';
 
 const CONVO_ID = 'convo-1';
 const SELECTED_TEXT = 'Selected assistant text';
@@ -37,8 +37,14 @@ const rect = ({
   }) as DOMRect;
 
 function Quotes() {
-  const quotes = useRecoilValue(store.pendingQuotesByConvoId(CONVO_ID));
+  const quotes = useAtomValue(pendingQuotesByConvoId(CONVO_ID));
   return <output data-testid="quotes">{JSON.stringify(quotes)}</output>;
+}
+
+/** A fresh Jotai store per mount, so a quote committed by one test never reaches the next. */
+function JotaiRoot({ children }: { children: React.ReactNode }) {
+  const [jotaiStore] = useState(createStore);
+  return <JotaiProvider store={jotaiStore}>{children}</JotaiProvider>;
 }
 
 function pointer(target: Document | HTMLElement, type: string) {
@@ -72,14 +78,14 @@ describe('QuoteButton', () => {
     try {
       const onRender = jest.fn();
       render(
-        <RecoilRoot>
+        <JotaiRoot>
           <div className="message-render">{SELECTED_TEXT}</div>
           <textarea id={mainTextareaId} />
           <Quotes />
           <Profiler id="quote-button" onRender={onRender}>
             <QuoteButton conversationId={CONVO_ID} />
           </Profiler>
-        </RecoilRoot>,
+        </JotaiRoot>,
       );
 
       onRender.mockClear();
@@ -150,6 +156,196 @@ describe('QuoteButton', () => {
       }
     }
   });
+
+  it.each([true, false])(
+    'anchors a selection crossing code and prose when code comes first: %s',
+    (codeFirst) => {
+      jest.useFakeTimers();
+      const codeText = 'wide code '.repeat(30);
+      const proseText = 'Selected prose remains visible';
+      let codeLeft = 140;
+      const originalRangeRect = Range.prototype.getBoundingClientRect;
+      const elementRect = jest
+        .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+        .mockImplementation(function (this: HTMLElement) {
+          if (this instanceof HTMLButtonElement) {
+            return rect({ top: 0, bottom: 30, left: 0, right: 100 });
+          }
+          if (this.tagName === 'PRE') {
+            return rect({ top: codeFirst ? 95 : 195, bottom: 260, left: 100, right: 400 });
+          }
+          return rect({ top: 80, bottom: 500, left: 90, right: 650 });
+        });
+
+      try {
+        render(
+          <JotaiRoot>
+            <div className="message-render" style={{ overflow: 'auto' }}>
+              {codeFirst ? (
+                <>
+                  <pre style={{ overflowX: 'auto' }}>
+                    <code>{codeText}</code>
+                  </pre>
+                  <p>{proseText}</p>
+                </>
+              ) : (
+                <>
+                  <p>{proseText}</p>
+                  <pre style={{ overflowX: 'auto' }}>
+                    <code>{codeText}</code>
+                  </pre>
+                </>
+              )}
+            </div>
+            <textarea id={mainTextareaId} />
+            <Quotes />
+            <QuoteButton conversationId={CONVO_ID} />
+          </JotaiRoot>,
+        );
+        const code = document.querySelector('.message-render code')?.firstChild;
+        const prose = screen.getByText(proseText).firstChild;
+        if (!code || !prose) {
+          throw new Error('Selection text nodes were not rendered');
+        }
+        const range = document.createRange();
+        const first = codeFirst ? code : prose;
+        const last = codeFirst ? prose : code;
+        range.setStart(first, 0);
+        range.setEnd(last, last.textContent?.length ?? 0);
+        Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+          configurable: true,
+          value: function (this: Range) {
+            if (this.startContainer === code && this.endContainer === code) {
+              return rect({
+                top: codeFirst ? 100 : 200,
+                bottom: codeFirst ? 120 : 220,
+                left: codeLeft,
+                right: codeLeft + 100,
+              });
+            }
+            if (this.startContainer === prose && this.endContainer === prose) {
+              return rect({
+                top: codeFirst ? 200 : 100,
+                bottom: codeFirst ? 220 : 120,
+                left: 460,
+                right: 480,
+              });
+            }
+            return rect({ top: 100, bottom: 220, left: codeLeft, right: 480 });
+          },
+        });
+        window.getSelection()?.removeAllRanges();
+        window.getSelection()?.addRange(range);
+        const quote = window.getSelection()?.toString().trim();
+        expect(quote).toContain(codeText.trim());
+        expect(quote).toContain(proseText);
+
+        fireEvent.mouseUp(document);
+        const button = screen.getByTestId('add-to-chat-button');
+        expect(button).toHaveStyle({ left: '260px', top: '62px' });
+
+        codeLeft = -400;
+        const scroller = code.parentElement?.closest('pre');
+        if (!scroller) {
+          throw new Error('Code scroller was not rendered');
+        }
+        fireEvent.scroll(scroller);
+        act(() => jest.advanceTimersByTime(20));
+        expect(button).toHaveStyle({ left: '420px', top: codeFirst ? '162px' : '62px' });
+        fireEvent.click(button);
+        expect(JSON.parse(screen.getByTestId('quotes').textContent ?? '[]')).toEqual([quote]);
+      } finally {
+        jest.useRealTimers();
+        elementRect.mockRestore();
+        if (originalRangeRect) {
+          Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+            configurable: true,
+            value: originalRangeRect,
+          });
+        } else {
+          delete (Range.prototype as Partial<Range>).getBoundingClientRect;
+        }
+      }
+    },
+  );
+
+  it('anchors a long code selection to its visible portion inside nested scrollers', () => {
+    jest.useFakeTimers();
+    const codeLine = 'set -e; git fetch '.repeat(40);
+    let rangeRect = rect({ top: 100, bottom: 120, left: 140, right: 2200 });
+    const originalRangeRect = Range.prototype.getBoundingClientRect;
+    const elementRect = jest
+      .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
+      .mockImplementation(function (this: HTMLElement) {
+        if (this instanceof HTMLButtonElement) {
+          return rect({ top: 0, bottom: 30, left: 0, right: 100 });
+        }
+        if (this.tagName === 'PRE') {
+          return rect({ top: 95, bottom: 180, left: 100, right: 400 });
+        }
+        return rect({ top: 80, bottom: 500, left: 90, right: 500 });
+      });
+    Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => rangeRect,
+    });
+
+    try {
+      render(
+        <JotaiRoot>
+          <div className="message-render" style={{ overflow: 'auto' }}>
+            <pre style={{ overflowX: 'auto' }}>
+              <code>{codeLine}</code>
+            </pre>
+          </div>
+          <textarea id={mainTextareaId} />
+          <Quotes />
+          <QuoteButton conversationId={CONVO_ID} />
+        </JotaiRoot>,
+      );
+      const code = document.querySelector('.message-render code');
+      if (!code) {
+        throw new Error('Code selection target was not rendered');
+      }
+      const range = document.createRange();
+      range.selectNodeContents(code);
+      window.getSelection()?.removeAllRanges();
+      window.getSelection()?.addRange(range);
+
+      fireEvent.mouseUp(document);
+      const button = screen.getByTestId('add-to-chat-button');
+      expect(button).toHaveStyle({ top: '62px', left: '220px' });
+
+      rangeRect = rect({ top: 100, bottom: 120, left: -200, right: 1860 });
+      fireEvent.scroll(code.closest('pre')!);
+      act(() => jest.advanceTimersByTime(20));
+      expect(button).toHaveStyle({ left: '200px' });
+
+      rangeRect = rect({ top: 100, bottom: 120, left: -2200, right: -140 });
+      fireEvent.scroll(code.closest('pre')!);
+      act(() => jest.advanceTimersByTime(20));
+      expect(button).not.toBeVisible();
+
+      rangeRect = rect({ top: 140, bottom: 240, left: 310, right: 2200 });
+      fireEvent.mouseUp(document);
+      expect(button).toHaveStyle({ top: '102px', left: '305px' });
+      fireEvent.click(button);
+      expect(JSON.parse(screen.getByTestId('quotes').textContent ?? '[]')).toEqual([
+        codeLine.trim(),
+      ]);
+    } finally {
+      jest.useRealTimers();
+      elementRect.mockRestore();
+      if (originalRangeRect) {
+        Object.defineProperty(Range.prototype, 'getBoundingClientRect', {
+          configurable: true,
+          value: originalRangeRect,
+        });
+      } else {
+        delete (Range.prototype as Partial<Range>).getBoundingClientRect;
+      }
+    }
+  });
 });
 
 describe('QuoteButton lifecycle', () => {
@@ -178,12 +374,12 @@ describe('QuoteButton lifecycle', () => {
 
   function setup() {
     const content = (conversationId: string) => (
-      <RecoilRoot>
+      <JotaiRoot>
         <div className="message-render">{SELECTED_TEXT}</div>
         <textarea id={mainTextareaId} />
         <Quotes />
         <QuoteButton conversationId={conversationId} />
-      </RecoilRoot>
+      </JotaiRoot>
     );
     const view = render(content(CONVO_ID));
     const range = document.createRange();

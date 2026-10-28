@@ -1,8 +1,32 @@
 import {
+  getRunStepClosedAt,
+  getRunStepCloseMetadata,
   getRunStepDurationMs,
   isReportableRunStepDuration,
   MIN_REPORTABLE_RUN_STEP_DURATION_MS,
 } from './runSteps';
+
+describe('getRunStepClosedAt', () => {
+  it('accepts a close time even if the emitter did not report when the step opened', () => {
+    expect(getRunStepClosedAt({ closed_at: 1_750_000_000_000 })).toBe(1_750_000_000_000);
+  });
+
+  it('only stamps validated close times on saved content', () => {
+    expect(getRunStepCloseMetadata({ closed_at: 1_750_000_000_000 })).toEqual({
+      runStepClosedAt: 1_750_000_000_000,
+    });
+    expect(getRunStepCloseMetadata({ closed_at: NaN })).toEqual({});
+  });
+
+  it('rejects absent, non-date, and clock-skewed stamps', () => {
+    expect(getRunStepClosedAt({})).toBeUndefined();
+    expect(getRunStepClosedAt({ closed_at: NaN })).toBeUndefined();
+    expect(getRunStepClosedAt({ closed_at: Infinity })).toBeUndefined();
+    expect(getRunStepClosedAt({ closed_at: 0 })).toBeUndefined();
+    expect(getRunStepClosedAt({ closed_at: 1e20 })).toBeUndefined();
+    expect(getRunStepClosedAt({ created_at: 2000, closed_at: 1000 })).toBeUndefined();
+  });
+});
 
 describe('getRunStepDurationMs', () => {
   it('returns the elapsed time between the two stamps', () => {

@@ -1,4 +1,9 @@
-import { webSearchAuth, webSearchKeys, webSearchSelectionFields } from '@librechat/data-schemas';
+import {
+  webSearchAuth,
+  webSearchKeys,
+  webSearchUrlApiKeys,
+  webSearchSelectionFields,
+} from '@librechat/data-schemas';
 import {
   AuthType,
   RerankerTypes,
@@ -6,20 +11,14 @@ import {
   SearchCategories,
   SearchProviders,
   ScraperProviders,
+  webSearchSchema,
   extractVariableName,
 } from 'librechat-data-provider';
 import type { TWebSearchKeys, TWebSearchCategories } from '@librechat/data-schemas';
 import type { TCustomConfig, TWebSearchConfig } from 'librechat-data-provider';
+import type { KeenableScraperConfig } from '@librechat/agents';
 import { isSSRFTarget, resolveHostnameSSRF, getEffectivePort } from '../auth';
-
-/**
- * User-provided URL keys that may pass through after SSRF preflight.
- */
-const USER_PROVIDED_URL_KEYS = new Set<TWebSearchKeys>([
-  'searxngInstanceUrl',
-  'firecrawlApiUrl',
-  'jinaApiUrl',
-]);
+import { resolveStoredConfigSecret } from '~/admin/secrets';
 
 /**
  * URL keys that require explicit admin opt-in before user-provided values may pass through.
@@ -29,9 +28,61 @@ const USER_PROVIDED_OPT_IN_URL_KEYS = new Set<TWebSearchKeys>([
   'tavilyExtractUrl',
 ]);
 
+/**
+ * Where a configured credential is read from. A `${VAR}` reference resolves
+ * through the server environment or, when that is unset, the user's saved
+ * value; any other value is stored in config itself, as a librechat.yaml
+ * literal or a value the admin config API encrypted at rest.
+ */
+type CredentialSource = { kind: 'env'; field: string } | { kind: 'config'; value: string };
+
+/** `env` and `config` values are the deployment's; `user` values are the requesting user's. */
+type CredentialOrigin = 'env' | 'user' | 'config';
+
+interface ServiceCredential {
+  key: TWebSearchKeys;
+  required: boolean;
+  source: CredentialSource;
+}
+
+interface ResolvedCredential {
+  key: TWebSearchKeys;
+  required: boolean;
+  origin: CredentialOrigin;
+  value?: string;
+  /** Environment or plugin-auth field the value was looked up under; absent for config values. */
+  field?: string;
+}
+
+type WebSearchOptionBlock =
+  | 'firecrawlOptions'
+  | 'searxngSearchOptions'
+  | 'tavilySearchOptions'
+  | 'tavilyScraperOptions'
+  | 'keenableSearchOptions'
+  | 'keenableScraperOptions';
+
+const WEB_SEARCH_OPTION_BLOCKS: readonly WebSearchOptionBlock[] = [
+  'firecrawlOptions',
+  'searxngSearchOptions',
+  'tavilySearchOptions',
+  'tavilyScraperOptions',
+  'keenableSearchOptions',
+  'keenableScraperOptions',
+];
+
+/** The fields `webSearchSchema` defines for each provider option block. */
+const WEB_SEARCH_OPTION_FIELDS = new Map<WebSearchOptionBlock, ReadonlySet<string>>(
+  WEB_SEARCH_OPTION_BLOCKS.map((block) => [
+    block,
+    new Set(Object.keys(webSearchSchema.shape[block].unwrap().shape)),
+  ]),
+);
+
 const SEARCH_PROVIDER_VALUES = new Set<string>(Object.values(SearchProviders));
 const SCRAPER_PROVIDER_VALUES = new Set<string>(Object.values(ScraperProviders));
 const RERANKER_VALUES = new Set<string>(Object.values(RerankerTypes));
+const DEFAULT_JINA_API_URL = 'https://api.jina.ai/v1/rerank';
 
 function isUserProvidedEnabled(field: string): boolean {
   return process.env[field] === AuthType.USER_PROVIDED;
@@ -85,6 +136,172 @@ export function extractWebSearchEnvVars({
   }
 
   return authFields;
+}
+
+/** Classifies a configured credential; blank, `user_provided` and undecryptable values yield nothing. */
+function getCredentialSource(value?: string): CredentialSource | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const field = extractVariableName(value);
+  if (field) {
+    return { kind: 'env', field };
+  }
+  const resolved = resolveStoredConfigSecret(value.trim());
+  if (!resolved || resolved === AuthType.USER_PROVIDED) {
+    return undefined;
+  }
+  return { kind: 'config', value: resolved };
+}
+
+/**
+ * Whether a key config did not store would travel to a URL stored in config.
+ * An environment key belongs to the operator's own endpoint and a user's saved
+ * key to the endpoint the user saved it for, so a config write must not be
+ * able to redirect either to another host.
+ */
+function isOutsideKeyForConfigUrl(url?: ResolvedCredential, apiKey?: ResolvedCredential): boolean {
+  return (
+    url?.origin === 'config' &&
+    !!url.value &&
+    apiKey != null &&
+    apiKey.origin !== 'config' &&
+    !!apiKey.value
+  );
+}
+
+/**
+ * Gives every URL the environment did not supply an explicit API key. The
+ * search library reads its default environment key (`SEARXNG_API_KEY`,
+ * `KEENABLE_API_KEY`) whenever the key it receives is undefined, so a withheld
+ * or unset key becomes an empty string that it sends as no key at all.
+ */
+function blockEnvironmentKeyFallback(
+  authResult: Partial<TWebSearchConfig>,
+  entries: Iterable<{ key: TWebSearchKeys; origin: CredentialOrigin }>,
+): void {
+  for (const { key, origin } of entries) {
+    const apiKey = webSearchUrlApiKeys.get(key);
+    if (apiKey != null && origin !== 'env' && authResult[key] && authResult[apiKey] == null) {
+      authResult[apiKey] = '';
+    }
+  }
+}
+
+/**
+ * Keeps only the fields the schema defines in a provider option block. The
+ * search library spreads these blocks into its clients, where an `apiUrl` or
+ * `apiKey` would replace the destination or credential resolved here, and a
+ * config override can store keys the schema does not define.
+ */
+function pickOptionFields<B extends WebSearchOptionBlock>(
+  block: B,
+  value: Partial<TWebSearchConfig>[B],
+): Partial<TWebSearchConfig>[B] {
+  const fields = WEB_SEARCH_OPTION_FIELDS.get(block);
+  if (value == null || fields == null) {
+    return undefined;
+  }
+  return Object.fromEntries(
+    Object.entries(value).filter(([field]) => fields.has(field)),
+  ) as Partial<TWebSearchConfig>[B];
+}
+
+/**
+ * Whether a resolved credential may be sent. A user-supplied URL must pass the
+ * SSRF preflight and never receives a key the deployment supplied, except a
+ * Tavily URL, which needs the operator's `user_provided` opt-in and then
+ * receives the environment key by design; a key stored in config never goes
+ * to a user-supplied URL. Neither an environment key nor a user's saved key
+ * reaches a URL stored in config: an optional key is withheld, otherwise the
+ * URL is dropped so the provider's default endpoint is used. A key stored in
+ * config reaches a URL stored in config only when one config document set
+ * both: `mergeConfigOverrides` drops a stored key whose stored URL another
+ * layer set, or whose URL a later layer changed, blanked or removed, and the
+ * admin config API asks for the key again when a write changes or removes the
+ * URL beside it.
+ */
+async function isCredentialUsable(
+  credential: ResolvedCredential,
+  credentials: ReadonlyMap<TWebSearchKeys, ResolvedCredential>,
+  allowedAddresses?: string[] | null,
+): Promise<boolean> {
+  const { key, field, value, origin } = credential;
+  const apiKeyName = webSearchUrlApiKeys.get(key);
+  if (apiKeyName == null) {
+    if (origin === 'config' || credential.required) {
+      return true;
+    }
+    for (const candidate of credentials.values()) {
+      if (
+        webSearchUrlApiKeys.get(candidate.key) === key &&
+        isOutsideKeyForConfigUrl(candidate, credential)
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  const apiKey = credentials.get(apiKeyName);
+  if (origin === 'config') {
+    return !(apiKey?.required && isOutsideKeyForConfigUrl(credential, apiKey));
+  }
+  if (origin !== 'user' || value == null) {
+    return true;
+  }
+  const isOptIn = USER_PROVIDED_OPT_IN_URL_KEYS.has(key);
+  if (isOptIn && (field == null || !isUserProvidedEnabled(field))) {
+    return false;
+  }
+  if (await isSSRFUrl(value, allowedAddresses)) {
+    return false;
+  }
+  if (!apiKey?.value || apiKey.origin === 'user') {
+    return true;
+  }
+  return isOptIn && apiKey.origin === 'env';
+}
+
+/** A service's configured credentials, required first, or undefined when a required one is unset. */
+function getServiceCredentials(
+  requiredKeys: TWebSearchKeys[],
+  optionalKeys: TWebSearchKeys[],
+  config: TCustomConfig['webSearch'] | undefined,
+): ServiceCredential[] | undefined {
+  const credentials: ServiceCredential[] = [];
+  for (const key of requiredKeys) {
+    const source = getCredentialSource(config?.[key]);
+    if (!source) {
+      return undefined;
+    }
+    credentials.push({ key, required: true, source });
+  }
+  for (const key of optionalKeys) {
+    const source = getCredentialSource(config?.[key]);
+    if (source) {
+      credentials.push({ key, required: false, source });
+    }
+  }
+  return credentials;
+}
+
+/** Attaches each credential's value; a looked-up value that differs from the environment is the user's. */
+function resolveCredentials(
+  credentials: ServiceCredential[],
+  authValues: Record<string, string>,
+): Map<TWebSearchKeys, ResolvedCredential> {
+  const resolved = new Map<TWebSearchKeys, ResolvedCredential>();
+  for (const { key, required, source } of credentials) {
+    if (source.kind === 'config') {
+      resolved.set(key, { key, required, origin: 'config', value: source.value });
+      continue;
+    }
+    const value = authValues[source.field];
+    const origin = value != null && process.env[source.field] !== value ? 'user' : 'env';
+    resolved.set(key, { key, required, origin, value, field: source.field });
+  }
+  return resolved;
 }
 
 function mapWebSearchSelection(key: string, value: string): [string, string] | undefined {
@@ -141,6 +358,15 @@ export function getWebSearchUninstallFields(config: TCustomConfig['webSearch']):
 }
 
 /**
+ * Settings for the search tool. The Keenable scraper option block may carry a
+ * deployment key withheld from the Keenable search URL.
+ */
+export type WebSearchAuthValues = Omit<Partial<TWebSearchConfig>, 'keenableScraperOptions'> & {
+  keenableScraperOptions?: Partial<TWebSearchConfig>['keenableScraperOptions'] &
+    Pick<KeenableScraperConfig, 'apiKey'>;
+};
+
+/**
  * Type for web search authentication result
  */
 export interface WebSearchAuthResult {
@@ -149,7 +375,7 @@ export interface WebSearchAuthResult {
   /** Authentication type (user_provided or system_defined) by category */
   authTypes: [TWebSearchCategories, AuthType][];
   /** Original authentication values mapped to their respective keys */
-  authResult: Partial<TWebSearchConfig>;
+  authResult: WebSearchAuthValues;
 }
 
 interface KeenableAuthResolution {
@@ -157,6 +383,22 @@ interface KeenableAuthResolution {
   hasSystemApiKey: boolean;
   rejectedUserApiUrl: boolean;
   lookupFailed: boolean;
+}
+
+/**
+ * The Keenable scraper option block, carrying a deployment key kept from a
+ * search URL the user supplied. The scraper fetches from `KEENABLE_FETCH_URL`
+ * or Keenable's own host, never a URL from config or the user (the option block
+ * holds only schema fields), so the key may still go there.
+ */
+function getKeenableScraperOptions(
+  options: Partial<TWebSearchConfig>['keenableScraperOptions'],
+  withheldApiKey?: string,
+): WebSearchAuthValues['keenableScraperOptions'] {
+  if (!withheldApiKey) {
+    return options;
+  }
+  return { ...options, apiKey: withheldApiKey };
 }
 
 /**
@@ -182,7 +424,9 @@ export async function loadWebSearchAuth({
   throwError?: boolean;
 }): Promise<WebSearchAuthResult> {
   let authenticated = true;
-  const authResult: Partial<TWebSearchConfig> = {};
+  const authResult: WebSearchAuthValues = {};
+  /** A deployment Keenable key kept from a user's search URL, still usable by the Keenable scraper. */
+  let keenableScraperApiKey: string | undefined;
 
   /**
    * Keenable is keyless by default: both its search and its page fetch work
@@ -205,14 +449,18 @@ export async function loadWebSearchAuth({
         ? ['keenableApiKey', 'keenableApiUrl']
         : ['keenableApiKey'];
       const authEntries: Array<{ key: TWebSearchKeys; field: string }> = [];
+      const resolvedEntries: Array<{
+        key: TWebSearchKeys;
+        value: string;
+        origin: CredentialOrigin;
+      }> = [];
 
       for (const originalKey of keenableKeys) {
-        const [field] = extractWebSearchEnvVars({
-          keys: [originalKey],
-          config: webSearchConfig,
-        });
-        if (field) {
-          authEntries.push({ key: originalKey, field });
+        const source = getCredentialSource(webSearchConfig?.[originalKey]);
+        if (source?.kind === 'env') {
+          authEntries.push({ key: originalKey, field: source.field });
+        } else if (source?.kind === 'config') {
+          resolvedEntries.push({ key: originalKey, value: source.value, origin: 'config' });
         }
       }
 
@@ -235,11 +483,6 @@ export async function loadWebSearchAuth({
         };
       }
 
-      const resolvedEntries: Array<{
-        key: TWebSearchKeys;
-        value: string;
-        isFieldUserProvided: boolean;
-      }> = [];
       for (const { key: originalKey, field } of authEntries) {
         const value = authValues[field];
         const envValue = process.env[field];
@@ -264,7 +507,11 @@ export async function loadWebSearchAuth({
           rejectedUserApiUrl = true;
           continue;
         }
-        resolvedEntries.push({ key: originalKey, value, isFieldUserProvided });
+        resolvedEntries.push({
+          key: originalKey,
+          value,
+          origin: isFieldUserProvided ? 'user' : 'env',
+        });
       }
 
       if (rejectedUserApiUrl) {
@@ -276,20 +523,32 @@ export async function loadWebSearchAuth({
         };
       }
 
-      const hasUserProvidedApiUrl = resolvedEntries.some(
-        ({ key, isFieldUserProvided }) => key === 'keenableApiUrl' && isFieldUserProvided,
-      );
-      for (const { key: originalKey, value, isFieldUserProvided } of resolvedEntries) {
-        // Never forward an administrator's secret to an endpoint controlled by
-        // the user. Keenable remains functional without the key at that URL.
-        if (originalKey === 'keenableApiKey' && !isFieldUserProvided && hasUserProvidedApiUrl) {
+      const apiUrlOrigin = resolvedEntries.find(({ key }) => key === 'keenableApiUrl')?.origin;
+      const apiKeyOrigin = resolvedEntries.find(({ key }) => key === 'keenableApiKey')?.origin;
+      for (const { key: originalKey, value, origin } of resolvedEntries) {
+        // An environment key or the user's own key never goes to a URL stored in
+        // config. The URL is ignored instead, so the key reaches `KEENABLE_API_URL`
+        // or Keenable's own endpoint, as it did before stored URLs were read.
+        if (
+          originalKey === 'keenableApiUrl' &&
+          origin === 'config' &&
+          apiKeyOrigin != null &&
+          apiKeyOrigin !== 'config'
+        ) {
+          continue;
+        }
+        // Never forward a deployment key to an endpoint the user controls. Keenable
+        // stays functional without the key at that URL.
+        if (originalKey === 'keenableApiKey' && origin !== 'user' && apiUrlOrigin === 'user') {
+          keenableScraperApiKey = value;
           continue;
         }
         authResult[originalKey] = value;
-        if (originalKey === 'keenableApiKey' && !isFieldUserProvided) {
+        if (originalKey === 'keenableApiKey' && origin !== 'user') {
           hasSystemApiKey = true;
         }
       }
+      blockEnvironmentKeyFallback(authResult, resolvedEntries);
 
       return {
         isUserProvided: keenableUserProvided,
@@ -458,75 +717,52 @@ export async function loadWebSearchAuth({
 
       if (requiredKeys.length === 0) continue;
 
-      const requiredAuthFields = extractWebSearchEnvVars({
-        keys: requiredKeys,
-        config: webSearchConfig,
-      });
-      const optionalAuthFields = extractWebSearchEnvVars({
-        keys: optionalKeys,
-        config: webSearchConfig,
-      });
-      if (requiredAuthFields.length !== requiredKeys.length) continue;
+      const credentials = getServiceCredentials(requiredKeys, optionalKeys, webSearchConfig);
+      if (!credentials) continue;
 
-      const allKeys = [...requiredKeys, ...optionalKeys];
-      const allAuthFields = [...requiredAuthFields, ...optionalAuthFields];
-      const optionalSet = new Set(optionalAuthFields);
+      const authFields: string[] = [];
+      const optionalFields = new Set<string>();
+      for (const { required, source } of credentials) {
+        if (source.kind !== 'env') {
+          continue;
+        }
+        authFields.push(source.field);
+        if (!required) {
+          optionalFields.add(source.field);
+        }
+      }
 
       try {
-        const authValues = await loadAuthValues({
-          userId,
-          authFields: allAuthFields,
-          optional: optionalSet,
-          throwError,
-        });
+        const authValues =
+          authFields.length > 0
+            ? await loadAuthValues({ userId, authFields, optional: optionalFields, throwError })
+            : {};
+        const resolved = resolveCredentials(credentials, authValues);
 
         let allFieldsAuthenticated = true;
-        for (let j = 0; j < allAuthFields.length; j++) {
-          const field = allAuthFields[j];
-          const value = authValues[field];
-          const originalKey = allKeys[j];
-
-          if (!optionalSet.has(field) && !value) {
+        for (const credential of resolved.values()) {
+          if (credential.required && !credential.value) {
             allFieldsAuthenticated = false;
             break;
           }
-
-          const isFieldUserProvided = value != null && process.env[field] !== value;
-          const isUserProvidedUrlKey =
-            originalKey != null && USER_PROVIDED_URL_KEYS.has(originalKey);
-          const isUserProvidedOptInUrlKey =
-            originalKey != null && USER_PROVIDED_OPT_IN_URL_KEYS.has(originalKey);
-          const isUserProvidedUrlEnabled =
-            isUserProvidedUrlKey || (isUserProvidedOptInUrlKey && isUserProvidedEnabled(field));
-          let contributed = false;
-
-          if (isUserProvidedOptInUrlKey && isFieldUserProvided && !isUserProvidedUrlEnabled) {
-            if (!optionalSet.has(field)) {
-              allFieldsAuthenticated = false;
-              break;
-            }
-            continue;
-          }
-
           if (
-            isUserProvidedUrlEnabled &&
-            isFieldUserProvided &&
-            (await isSSRFUrl(value, webSearchConfig?.allowedAddresses))
+            !(await isCredentialUsable(credential, resolved, webSearchConfig?.allowedAddresses))
           ) {
-            if (!optionalSet.has(field)) {
+            if (credential.required) {
               allFieldsAuthenticated = false;
               break;
             }
             continue;
           }
-          if (originalKey) {
-            authResult[originalKey] = value;
-            contributed = true;
-          }
-
-          if (!isUserProvided && isFieldUserProvided && contributed) {
+          authResult[credential.key] = credential.value;
+          if (credential.origin === 'user') {
             isUserProvided = true;
           }
+        }
+        blockEnvironmentKeyFallback(authResult, resolved.values());
+
+        if (resolved.get('jinaApiKey')?.value && authResult.jinaApiUrl == null) {
+          authResult.jinaApiUrl = DEFAULT_JINA_API_URL;
         }
 
         if (!allFieldsAuthenticated) {
@@ -634,12 +870,30 @@ export async function loadWebSearchAuth({
     authResult.safeSearch = webSearchConfig?.safeSearch ?? SafeSearchTypes.MODERATE;
   }
   authResult.scraperTimeout = webSearchConfig?.scraperTimeout ?? scraperOptionsTimeout ?? 7500;
-  authResult.firecrawlOptions = webSearchConfig?.firecrawlOptions;
-  authResult.searxngSearchOptions = webSearchConfig?.searxngSearchOptions;
-  authResult.tavilySearchOptions = webSearchConfig?.tavilySearchOptions;
-  authResult.tavilyScraperOptions = webSearchConfig?.tavilyScraperOptions;
-  authResult.keenableSearchOptions = webSearchConfig?.keenableSearchOptions;
-  authResult.keenableScraperOptions = webSearchConfig?.keenableScraperOptions;
+  authResult.firecrawlOptions = pickOptionFields(
+    'firecrawlOptions',
+    webSearchConfig?.firecrawlOptions,
+  );
+  authResult.searxngSearchOptions = pickOptionFields(
+    'searxngSearchOptions',
+    webSearchConfig?.searxngSearchOptions,
+  );
+  authResult.tavilySearchOptions = pickOptionFields(
+    'tavilySearchOptions',
+    webSearchConfig?.tavilySearchOptions,
+  );
+  authResult.tavilyScraperOptions = pickOptionFields(
+    'tavilyScraperOptions',
+    webSearchConfig?.tavilyScraperOptions,
+  );
+  authResult.keenableSearchOptions = pickOptionFields(
+    'keenableSearchOptions',
+    webSearchConfig?.keenableSearchOptions,
+  );
+  authResult.keenableScraperOptions = getKeenableScraperOptions(
+    pickOptionFields('keenableScraperOptions', webSearchConfig?.keenableScraperOptions),
+    scraperProvider === ScraperProviders.KEENABLE ? keenableScraperApiKey : undefined,
+  );
 
   return {
     authTypes,

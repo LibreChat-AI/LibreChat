@@ -1,13 +1,17 @@
 import { logger } from '@librechat/data-schemas';
-import { ErrorTypes, isCodeWorkspaceSelections } from 'librechat-data-provider';
-import type {
-  CodeWorkspaceSelection,
-  CodeWorkspaceSelectionErrorReason,
+import {
+  isCodeWorkspaceSelections,
+  isLinkedWorktreeRoutingAllowed,
+  canonicalizeCodeWorkspaceSelections,
+  isCodeWorkspaceCheckoutAvailable,
 } from 'librechat-data-provider';
+import type { CodeWorkspaceSelection } from 'librechat-data-provider';
 import type { CodeEnvironmentConfig, CodeExecutionContext } from '~/agents/execution';
 import type { createAppConfigService } from '~/app/service';
 import type { CodeBridgeWorkerStatus } from './bridge';
 export type { CodeWorkspaceSelectionErrorReason } from 'librechat-data-provider';
+export { CodeWorkspaceSelectionError } from './errors';
+import { CodeWorkspaceSelectionError } from './errors';
 import {
   CodeBridgeStatusError,
   createCodeBridgeStatusPoller,
@@ -18,44 +22,24 @@ export type CodeCapabilityConfigLoader = ReturnType<typeof createAppConfigServic
 
 const pollWorkerStatus = createCodeBridgeStatusPoller();
 
-function codeWorkspaceSelectionErrorMessage(reason: CodeWorkspaceSelectionErrorReason): string {
-  switch (reason) {
-    case 'required':
-      return 'Choose an attached workspace before using this agent.';
-    case 'invalid':
-      return 'The selected attached workspace is invalid.';
-    case 'worker_unavailable':
-      return 'The attached code environment is unavailable. Reconnect the machine and try again.';
-    case 'unsupported':
-      return 'The attached code environment does not advertise selectable workspaces. Update the LibreChat Code worker and try again.';
-    case 'missing':
-      return 'The selected workspace is no longer registered on this machine. Restore the previous registration or start a new conversation.';
-    case 'locked':
-      return 'This conversation already has a different code environment decision.';
-  }
-}
+/** The worker's default label for native SRT workspace commands, optionally `:<command-policy-preset>`. */
+const NATIVE_SANDBOX_PROFILE = 'anthropic-srt';
 
-export class CodeWorkspaceSelectionError extends Error {
-  readonly code: ErrorTypes.CODE_WORKSPACE_UNAVAILABLE = ErrorTypes.CODE_WORKSPACE_UNAVAILABLE;
-  readonly status: number = 409;
-  readonly statusCode: number = 409;
-
-  constructor(public readonly reason: CodeWorkspaceSelectionErrorReason) {
-    super(codeWorkspaceSelectionErrorMessage(reason));
-    this.name = 'CodeWorkspaceSelectionError';
-  }
+/**
+ * Whether the worker reports the native SRT command sandbox, whose filesystem is
+ * read-only outside the workspace and a private `$TMPDIR`. A custom operator
+ * label is not recognized, so its description omits the claim.
+ */
+export function isNativeSandboxProfile(profile: string | undefined): boolean {
+  return (
+    profile === NATIVE_SANDBOX_PROFILE || profile?.startsWith(`${NATIVE_SANDBOX_PROFILE}:`) === true
+  );
 }
 
 function canonicalWorkspaceSelections(
   selections: CodeWorkspaceSelection[],
 ): CodeWorkspaceSelection[] {
-  return [...selections].sort((left, right) => {
-    if (left.environmentId < right.environmentId) return -1;
-    if (left.environmentId > right.environmentId) return 1;
-    if (left.workspaceId < right.workspaceId) return -1;
-    if (left.workspaceId > right.workspaceId) return 1;
-    return 0;
-  });
+  return canonicalizeCodeWorkspaceSelections(selections);
 }
 
 function sameWorkspaceSelections(
@@ -173,29 +157,66 @@ export async function resolveCodeExecutionWorkspaceContext({
   if (!workspace) {
     throw new CodeWorkspaceSelectionError('missing');
   }
+  const supportsIsolation = workspace.workspaceInstances?.includes('git_worktree') === true;
+  if (
+    !isCodeWorkspaceCheckoutAvailable(
+      selection,
+      workspace,
+      context.codeEnvironmentConfigSchema?.workspaces?.allowCheckoutSelection === true,
+    ) ||
+    (selection.checkout === 'isolated' && !context.conversationWorkspaceInstanceId)
+  ) {
+    throw new CodeWorkspaceSelectionError('unsupported');
+  }
+  const usesIsolation =
+    selection.checkout !== 'source' && supportsIsolation && context.conversationWorkspaceInstanceId;
   return {
     ...context,
     codeWorkspace: {
       ...selection,
       operations: [...(workspace.operations ?? status.operations)],
+      ...(usesIsolation ? { workspaceInstanceId: context.conversationWorkspaceInstanceId } : {}),
+      ...(isLinkedWorktreeRoutingAllowed(
+        context.codeEnvironmentConfigSchema?.workspaces?.linkedWorktrees,
+      ) &&
+      workspace.workspaceScopes?.includes('git_linked_worktree') &&
+      !usesIsolation
+        ? { linkedWorktrees: true }
+        : {}),
+      ...(isNativeSandboxProfile(status.sandboxProfile) ? { nativeSandbox: true } : {}),
+      ...(status.maxCommandTimeoutMs == null
+        ? {}
+        : { maxCommandTimeoutMs: status.maxCommandTimeoutMs }),
+      ...(status.editFileFeatures?.length
+        ? { editFileFeatures: [...status.editFileFeatures] }
+        : {}),
+      ...(workspace.instructions ? { instructions: workspace.instructions } : {}),
       ...(workspace.environment ? { environment: workspace.environment } : {}),
     },
   };
 }
 
-/** Attached workers must confirm both a stateful workspace and the Bash runtime. */
+/** Require explicit capability support for the selected execution route. */
 export async function supportsProgrammaticCodeExecution(
   context?: CodeExecutionContext,
   environments?: readonly CodeEnvironmentConfig[],
   getAppConfig?: CodeCapabilityConfigLoader,
 ): Promise<boolean> {
   if (context?.environmentType !== 'attached') return true;
-  /** Programmatic Bash uses Code API's generic exec endpoint, which has no
-   * workspace identifier. A fully resolved attached context therefore cannot
-   * use it until that protocol can preserve the selected-root boundary. */
-  if (context.codeWorkspace != null) return false;
   try {
     const status = await readAuthorizedAttachedWorkerStatus(context, environments, getAppConfig);
+    if (context.codeWorkspace != null) {
+      const selected = context.codeWorkspace;
+      const workspace = status.workspaces?.find(({ id }) => id === selected.workspaceId);
+      return (
+        status.status === 'ready' &&
+        selected.environmentId === context.environmentId &&
+        selected.operations.includes('execute_command') &&
+        workspace != null &&
+        (workspace.operations ?? status.operations)?.includes('execute_command') === true &&
+        status.programmaticLanguages?.includes('bash') === true
+      );
+    }
     return (
       status.status === 'ready' &&
       status.statefulWorkspace === true &&

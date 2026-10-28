@@ -331,6 +331,8 @@ export interface GetOpenAIModelsOptions {
   headers?: Record<string, string> | null;
   /** User object for resolving header placeholders */
   userObject?: Partial<IUser>;
+  /** A model list configured for the endpoint; when set, it is returned without discovery. */
+  configuredModels?: string[];
 }
 
 function resolveOpenAIApiKey(opts: GetOpenAIModelsOptions): string | undefined {
@@ -398,6 +400,9 @@ export async function fetchOpenAIModels(
  * @returns Promise resolving to array of model IDs
  */
 export async function getOpenAIModels(opts: GetOpenAIModelsOptions = {}): Promise<string[]> {
+  if (opts.configuredModels) {
+    return opts.configuredModels;
+  }
   let models = defaultModels[EModelEndpoint.openAI];
 
   if (opts.assistants) {
@@ -486,8 +491,13 @@ export async function getAnthropicModels(
     vertexModels?: string[];
     headers?: Record<string, string> | null;
     userObject?: Partial<IUser>;
+    /** A model list configured for the endpoint; when set, it is returned without discovery. */
+    configuredModels?: string[];
   } = {},
 ): Promise<string[]> {
+  if (opts.configuredModels) {
+    return opts.configuredModels;
+  }
   const models = defaultModels[EModelEndpoint.anthropic];
 
   // Vertex AI models from YAML config take priority

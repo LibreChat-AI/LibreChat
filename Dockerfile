@@ -1,14 +1,16 @@
-# v0.8.8-rc3
+# v0.8.9-rc1
 
 # Base node image
-FROM node:24.16.0-alpine AS node
+FROM node:24.22.1-alpine AS node
 
 RUN apk upgrade --no-cache
-RUN apk add --no-cache jemalloc
+RUN apk add --no-cache bash jemalloc
 RUN apk add --no-cache python3 py3-pip uv
 
 # Set environment variable to use jemalloc
 ENV LD_PRELOAD=/usr/lib/libjemalloc.so.2
+# Disable dependency installation analytics before any npm lifecycle scripts run.
+ENV SCARF_ANALYTICS=false
 
 # Add `uv` for extended MCP support
 COPY --from=ghcr.io/astral-sh/uv:0.9.5-python3.12-alpine /usr/local/bin/uv /usr/local/bin/uvx /bin/
@@ -30,6 +32,8 @@ COPY --chown=node:node client/package.json ./client/package.json
 COPY --chown=node:node packages/data-provider/package.json ./packages/data-provider/package.json
 COPY --chown=node:node packages/data-schemas/package.json ./packages/data-schemas/package.json
 COPY --chown=node:node packages/api/package.json ./packages/api/package.json
+COPY --chown=node:node vendor/code ./vendor/code
+COPY --chown=node:node packages/chat/package.json ./packages/chat/package.json
 
 RUN \
     # Allow mounting of these files, which have no default
@@ -54,10 +58,11 @@ RUN \
 
 COPY --chown=node:node . .
 
+ARG VITE_MCP_SANDBOX_URL=
 RUN \
     # React client build with configurable memory
-    NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_SIZE}" npm run frontend; \
-    npm prune --production; \
+    NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_SIZE}" npm run frontend && \
+    npm prune --production && \
     npm cache clean --force
 
 # Optional build metadata surfaced in Settings -> About for support triage.

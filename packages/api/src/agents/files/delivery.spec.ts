@@ -36,6 +36,21 @@ const config = {
 const noReader: TurnFileConsumers = { executeCode: false, fileSearch: false };
 const runsCode: TurnFileConsumers = { executeCode: true, fileSearch: false };
 
+/** A tool serves a file only once it holds it, so a record left to the sandbox needs the
+ *  reference provisioning writes for that tool to count as its reader. */
+const inSandbox = <T extends { metadata?: Record<string, unknown> }>(file: T): T => ({
+  ...file,
+  metadata: {
+    ...file.metadata,
+    codeEnvRef: {
+      kind: 'user' as const,
+      id: 'user_1',
+      storage_session_id: 'session_1',
+      file_id: 'sandbox_file_1',
+    },
+  },
+});
+
 describe('resolveTurnDeliveryRouting', () => {
   it('routes under the endpoint an agent names before its provider', () => {
     expect(resolveTurnDeliveryRouting({ agent: { provider: 'openAI' }, config }).endpoint).toBe(
@@ -97,9 +112,26 @@ describe('applyTurnDelivery', () => {
     expect(csv.llmDeliveryPath).toBe('none');
   });
 
-  it('returns the same array when a tool this turn runs can read every file', () => {
-    const files = [csv, pdf];
+  it('returns the same array when a tool this turn runs holds every file', () => {
+    const files = [inSandbox(csv), pdf];
 
+    expect(applyTurnDelivery(files, { agent, config, consumers: runsCode })).toBe(files);
+  });
+
+  it('delivers text for a file File Search has yet to receive', () => {
+    /* An upload that named no destination is filed under no tool, so an enabled search tool
+     * alone is not what serves it: withholding the text on that basis left it readable by
+     * nothing. */
+    const searchesFiles: TurnFileConsumers = { executeCode: false, fileSearch: true };
+    expect(applyTurnDelivery([csv], { agent, config, consumers: searchesFiles })).toEqual([
+      { ...csv, llmDeliveryPath: 'text' },
+    ]);
+  });
+
+  it('leaves a file Run Code can read with Run Code before the sandbox holds it', () => {
+    /* Run Code uploads the file on its first call. Delivering the text instead would count it
+     * toward the turn's limits until that call, and a refused turn never makes it. */
+    const files = [csv];
     expect(applyTurnDelivery(files, { agent, config, consumers: runsCode })).toBe(files);
   });
 
@@ -199,10 +231,11 @@ describe('applyTurnDelivery', () => {
 
   it('removes a record this turn leaves to tools from model admission', () => {
     /* Over-admitting cannot pass a limit; dropping a record the client still sends would. */
-    const files = [{ ...csv, llmDeliveryPath: 'text' }];
+    const held = inSandbox(csv);
+    const files = [{ ...held, llmDeliveryPath: 'text' }];
 
     expect(applyTurnDelivery(files, { agent, config, consumers: runsCode })).toEqual([
-      { ...csv, llmDeliveryPath: 'none' },
+      { ...held, llmDeliveryPath: 'none' },
     ]);
   });
 

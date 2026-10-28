@@ -1,8 +1,9 @@
 import React from 'react';
+import { getDefaultStore } from 'jotai';
 import { DndProvider } from 'react-dnd';
 import { BrowserRouter } from 'react-router-dom';
-import { render, act } from '@testing-library/react';
 import { HTML5Backend } from 'react-dnd-html5-backend';
+import { render, act, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { atom, RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
 import type { SetterOrUpdater } from 'recoil';
@@ -26,6 +27,20 @@ const mockUseFavorites = jest.fn(() => ({
 }));
 const mockUseGetConversationTags = jest.fn(() => ({ data: [] as unknown[] }));
 const mockConversationsRender = jest.fn();
+/** The projects the section reads to word an empty Chats list; none, loaded, by default. */
+type ProjectsResult = {
+  data?: { pages: { projects: unknown[]; nextCursor: null }[]; pageParams: undefined[] };
+  isSuccess: boolean;
+  isError?: boolean;
+};
+const mockUseProjectsInfiniteQuery = jest.fn(
+  (): ProjectsResult => ({
+    data: { pages: [{ projects: [], nextCursor: null }], pageParams: [undefined] },
+    isSuccess: true,
+  }),
+);
+/** What the chats list asks the server for, captured per render. */
+const mockListParams = jest.fn();
 const mockSetChatsExpanded = jest.fn();
 const mockMoveToTop = jest.fn();
 const mockUseTitleGeneration = jest.fn(() => {
@@ -37,12 +52,15 @@ const mockUseTitleGeneration = jest.fn(() => {
  *  keeps referential stability mid-stream, which is what the memoized-children
  *  guarantee below depends on. */
 const mockConversationsResult = {
-  data: { pages: [{ conversations: [] as unknown[], nextCursor: null }] },
+  data: { pages: [{ conversations: [] as unknown[], nextCursor: null }] } as
+    | { pages: Array<{ conversations: unknown[]; nextCursor: string | null }> }
+    | undefined,
   fetchNextPage: jest.fn(),
   refetch: jest.fn(),
   isFetchingNextPage: false,
   isLoading: false,
   isFetching: false,
+  isPreviousData: false,
   isError: false,
 };
 
@@ -71,6 +89,7 @@ jest.mock('~/hooks', () => ({
   useAuthContext: () => ({ isAuthenticated: true }),
   useLocalStorage: () => [true, mockSetChatsExpanded],
   useNavScrolling: () => ({ moveToTop: mockMoveToTop }),
+  useScrollFade: () => ({ attach: jest.fn(), hasMore: false }),
   useFavorites: () => mockUseFavorites(),
   useShowMarketplace: () => false,
   useNewConvo: () => ({ newConversation: jest.fn() }),
@@ -79,8 +98,14 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/data-provider', () => ({
   __esModule: true,
-  useConversationsInfiniteQuery: () => mockConversationsResult,
+  useConversationsInfiniteQuery: (params: Record<string, unknown>) => {
+    mockListParams(params);
+    return mockConversationsResult;
+  },
   usePinnedConversationsQuery: () => mockPinnedResult,
+  /** The section reads the same projects ProjectsSection does, to tell an empty
+   *  unassigned list from an empty account; these specs carry no projects. */
+  useProjectsInfiniteQuery: () => mockUseProjectsInfiniteQuery(),
   useTitleGeneration: () => mockUseTitleGeneration(),
   useGetEndpointsQuery: () => ({ data: {}, isLoading: false }),
   useGetStartupConfig: () => ({ data: { modelSpecs: { list: [] } } }),
@@ -100,9 +125,30 @@ jest.mock('~/hooks/Input/useSelectMention', () => ({
 
 jest.mock('~/components/Conversations', () => {
   const { memo } = jest.requireActual('react');
-  const ConversationsStub = memo(function ConversationsStub() {
-    mockConversationsRender();
-    return <div data-testid="conversations-stub" />;
+  const ConversationsStub = memo(function ConversationsStub(props: {
+    accountHasProjects?: boolean;
+    conversations: Array<{ conversationId: string; title: string }>;
+    isSearchLoading: boolean;
+    isError: boolean;
+    onRetry: () => void;
+  }) {
+    const { conversations, isSearchLoading, isError, onRetry } = props;
+    mockConversationsRender(props);
+    const localize: (key: string) => string = jest.requireMock('~/hooks').useLocalize();
+    let body: React.ReactNode = conversations.map((convo) => (
+      <span key={convo.conversationId}>{convo.title}</span>
+    ));
+    if (isError && conversations.length === 0) {
+      body = (
+        <button type="button" onClick={onRetry}>
+          {localize('com_ui_retry')}
+        </button>
+      );
+    }
+    if (isSearchLoading) {
+      body = <div data-testid="search-spinner" />;
+    }
+    return <div data-testid="conversations-stub">{body}</div>;
   });
   return { __esModule: true, Conversations: ConversationsStub };
 });
@@ -135,13 +181,16 @@ jest.mock('~/components/Nav/Favorites/FavoriteItem', () => ({
   default: () => <div data-testid="favorite-item-stub" />,
 }));
 
+import { showProjectChatsAtom } from '~/components/Conversations/chatFilters';
 import ConversationsSection from '../ConversationsSection';
 import store from '~/store';
 
 let setStreamTick: SetterOrUpdater<number>;
+let setSearchState: SetterOrUpdater<SearchState>;
 
 function TickController() {
   setStreamTick = useSetRecoilState(streamTickAtom);
+  setSearchState = useSetRecoilState(store.search);
   return null;
 }
 
@@ -169,10 +218,22 @@ const settleRenders = async () => {
   }
 };
 
-const renderSection = () =>
+const renderSection = (searchQuery = '') =>
   render(
     <QueryClientProvider client={createQueryClient()}>
-      <RecoilRoot>
+      <RecoilRoot
+        initializeState={({ set }) => {
+          if (searchQuery) {
+            set(store.search, {
+              query: searchQuery,
+              debouncedQuery: searchQuery,
+              enabled: true,
+              isTyping: false,
+              isSearching: false,
+            });
+          }
+        }}
+      >
         <BrowserRouter>
           <DndProvider backend={HTML5Backend}>
             <TickController />
@@ -241,6 +302,271 @@ describe('ConversationsSection streaming re-renders', () => {
     },
     TEST_TIMEOUT,
   );
+});
+
+describe('ConversationsSection project chats', () => {
+  beforeEach(() => {
+    mockListParams.mockClear();
+  });
+
+  afterEach(() => {
+    act(() => getDefaultStore().set(showProjectChatsAtom, false));
+  });
+
+  /** A project chat is shown only under its project, not twice, unless the user opts in. */
+  it('asks only for chats that belong to no project by default', async () => {
+    renderSection();
+    await settleRenders();
+
+    expect(mockListParams).toHaveBeenCalled();
+    expect(mockListParams.mock.calls.at(-1)?.[0]).toMatchObject({ projectId: 'unassigned' });
+  });
+
+  /** Turned on, a chat filed in a project is listed under Chats too, with its folder badge. */
+  it('lists project chats under Chats once they are shown', async () => {
+    act(() => getDefaultStore().set(showProjectChatsAtom, true));
+    renderSection();
+    await settleRenders();
+
+    expect(mockListParams.mock.calls.at(-1)?.[0]).toMatchObject({ projectId: undefined });
+  });
+
+  /** Searching is how a chat is found, and Projects is not rendered while a search
+   *  is on: excluding project chats there would make them unreachable. */
+  it('searches across every chat, project or not', async () => {
+    let setSearch: SetterOrUpdater<SearchState>;
+
+    function SearchController() {
+      setSearch = useSetRecoilState(store.search);
+      return null;
+    }
+
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <RecoilRoot>
+          <BrowserRouter>
+            <DndProvider backend={HTML5Backend}>
+              <SearchController />
+              <ConversationsSection />
+            </DndProvider>
+          </BrowserRouter>
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+    await settleRenders();
+
+    act(() => {
+      setSearch({
+        query: 'draft',
+        debouncedQuery: 'draft',
+        enabled: true,
+        isTyping: false,
+        isSearching: true,
+      });
+    });
+
+    expect(mockListParams.mock.calls.at(-1)?.[0]).toMatchObject({
+      search: 'draft',
+      projectId: undefined,
+    });
+  });
+});
+
+describe('ConversationsSection empty Chats wording', () => {
+  const lastAccountHasProjects = () =>
+    (mockConversationsRender.mock.calls.at(-1)?.[0] as { accountHasProjects?: boolean })
+      .accountHasProjects;
+
+  /** The empty wording only distinguishes an empty account while Chats leaves project
+   *  chats to their projects. */
+  beforeEach(() => {
+    mockConversationsRender.mockClear();
+    mockUseProjectsInfiniteQuery.mockReset();
+    act(() => getDefaultStore().set(showProjectChatsAtom, false));
+  });
+
+  afterEach(() => {
+    act(() => getDefaultStore().set(showProjectChatsAtom, false));
+  });
+
+  it('calls the account empty only once its projects have loaded and there are none', async () => {
+    mockUseProjectsInfiniteQuery.mockReturnValue({
+      data: { pages: [{ projects: [], nextCursor: null }], pageParams: [undefined] },
+      isSuccess: true,
+    });
+    renderSection();
+    await settleRenders();
+    expect(lastAccountHasProjects()).toBe(false);
+  });
+
+  it('does not call the account empty while its projects are still loading', async () => {
+    mockUseProjectsInfiniteQuery.mockReturnValue({ data: undefined, isSuccess: false });
+    renderSection();
+    await settleRenders();
+    expect(lastAccountHasProjects()).toBe(true);
+  });
+
+  it('lists every chat when the projects failed to load, so project chats keep a way back', async () => {
+    mockUseProjectsInfiniteQuery.mockReturnValue({
+      data: undefined,
+      isSuccess: false,
+      isError: true,
+    });
+    mockListParams.mockClear();
+    renderSection();
+    await settleRenders();
+    expect(mockListParams.mock.calls.at(-1)?.[0]).toEqual(
+      expect.objectContaining({ projectId: undefined }),
+    );
+    expect(lastAccountHasProjects()).toBe(false);
+  });
+});
+
+describe('ConversationsSection search refetch', () => {
+  it('does not display old matches as unfiltered chats while clearing the search', async () => {
+    const previousData = mockConversationsResult.data;
+    mockConversationsResult.data = {
+      pages: [
+        {
+          conversations: [{ conversationId: 'chat-1', title: 'Old search match' }],
+          nextCursor: null,
+        },
+      ],
+    };
+
+    try {
+      renderSection('draft');
+      await settleRenders();
+      expect(screen.getByText('Old search match')).toBeInTheDocument();
+
+      act(() => {
+        setSearchState({
+          query: '',
+          debouncedQuery: 'draft',
+          enabled: true,
+          isTyping: true,
+          isSearching: false,
+        });
+      });
+
+      expect(screen.getByTestId('projects-stub')).toBeInTheDocument();
+      expect(screen.queryByText('Old search match')).not.toBeInTheDocument();
+      expect(screen.getByTestId('search-spinner')).toBeInTheDocument();
+    } finally {
+      mockConversationsResult.data = previousData;
+    }
+  });
+
+  it('shows progress while retrying a failed cached search with no results', async () => {
+    const previousData = mockConversationsResult.data;
+    mockConversationsResult.isError = true;
+
+    try {
+      renderSection('draft');
+      await settleRenders();
+      expect(screen.getByRole('button', { name: 'com_ui_retry' })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+      expect(mockConversationsResult.refetch).toHaveBeenCalledTimes(1);
+
+      act(() => {
+        mockConversationsResult.isFetching = true;
+        setStreamTick((prev) => prev + 1);
+      });
+
+      expect(screen.getByTestId('search-spinner')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'com_ui_retry' })).not.toBeInTheDocument();
+
+      act(() => {
+        mockConversationsResult.isFetching = false;
+        mockConversationsResult.isError = false;
+        mockConversationsResult.data = {
+          pages: [
+            {
+              conversations: [{ conversationId: 'chat-1', title: 'Found match' }],
+              nextCursor: null,
+            },
+          ],
+        };
+        setStreamTick((prev) => prev + 1);
+      });
+
+      expect(screen.getByText('Found match')).toBeInTheDocument();
+      expect(screen.queryByTestId('search-spinner')).not.toBeInTheDocument();
+    } finally {
+      mockConversationsResult.data = previousData;
+      mockConversationsResult.isError = false;
+      mockConversationsResult.isFetching = false;
+      mockConversationsResult.refetch.mockClear();
+    }
+  });
+
+  it('shows loading for an uncached search', async () => {
+    const previousData = mockConversationsResult.data;
+    mockConversationsResult.data = undefined;
+    mockConversationsResult.isLoading = true;
+
+    try {
+      renderSection('draft');
+      await settleRenders();
+      expect(screen.getByTestId('search-spinner')).toBeInTheDocument();
+    } finally {
+      mockConversationsResult.data = previousData;
+      mockConversationsResult.isLoading = false;
+    }
+  });
+
+  it('does not show results from the previous search while the next one loads', async () => {
+    const previousData = mockConversationsResult.data;
+    mockConversationsResult.data = {
+      pages: [
+        {
+          conversations: [{ conversationId: 'chat-1', title: 'Previous match' }],
+          nextCursor: null,
+        },
+      ],
+    };
+    mockConversationsResult.isPreviousData = true;
+
+    try {
+      renderSection('new term');
+      await settleRenders();
+      expect(screen.getByTestId('search-spinner')).toBeInTheDocument();
+      expect(screen.queryByText('Previous match')).not.toBeInTheDocument();
+    } finally {
+      mockConversationsResult.data = previousData;
+      mockConversationsResult.isPreviousData = false;
+    }
+  });
+
+  it('keeps cached results visible when a message triggers a background list refetch', async () => {
+    const previousData = mockConversationsResult.data;
+    mockConversationsResult.data = {
+      pages: [
+        {
+          conversations: [{ conversationId: 'chat-1', title: 'Matching chat' }],
+          nextCursor: null,
+        },
+      ],
+    };
+
+    try {
+      renderSection('draft');
+      await settleRenders();
+      expect(screen.getByText('Matching chat')).toBeInTheDocument();
+
+      act(() => {
+        mockConversationsResult.isFetching = true;
+        setStreamTick((prev) => prev + 1);
+      });
+
+      expect(screen.getByText('Matching chat')).toBeInTheDocument();
+      expect(screen.queryByTestId('search-spinner')).not.toBeInTheDocument();
+    } finally {
+      mockConversationsResult.isFetching = false;
+      mockConversationsResult.data = previousData;
+    }
+  });
 });
 
 describe('ConversationsSection shared scroll surface', () => {

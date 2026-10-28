@@ -189,6 +189,21 @@ describe('standardCache', () => {
       expect(cacheWithOpts.opts.ttl).toBe(5000);
     });
 
+    test('rejects failed operations only for a cache created with throwOnErrors', async () => {
+      const cacheFactory = await import('../../cacheFactory');
+      const { ioredisClient } = await import('../../redisClients');
+      if (!ioredisClient) throw new Error('ioredisClient is null');
+      const strict = cacheFactory.standardCache('strict-namespace', undefined, undefined, {
+        throwOnErrors: true,
+      });
+      const lenient = cacheFactory.standardCache('lenient-namespace');
+      await ioredisClient.hset('strict-namespace:wrong-type', 'f', 'v');
+      await ioredisClient.hset('lenient-namespace:wrong-type', 'f', 'v');
+
+      await expect(strict.get('wrong-type')).rejects.toThrow(/WRONGTYPE/);
+      await expect(lenient.get('wrong-type')).resolves.toBeUndefined();
+    });
+
     test('should handle TTL correctly', async () => {
       const cacheFactory = await import('../../cacheFactory');
       testCache = cacheFactory.standardCache('ttl-test', 1000); // 1 second TTL

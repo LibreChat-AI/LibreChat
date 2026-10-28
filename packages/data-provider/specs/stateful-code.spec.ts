@@ -2,7 +2,7 @@ import {
   STATEFUL_CODE_ENVIRONMENTS,
   resolveStatefulCodeEnvironment,
   resolveAllowedStatefulCodeEnvironments,
-} from '../src/types/assistants';
+} from '../src/types/agents';
 
 describe('stateful code environment policy', () => {
   it('allows every environment when deployment configuration is omitted', () => {

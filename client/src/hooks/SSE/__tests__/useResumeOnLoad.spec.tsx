@@ -1,16 +1,39 @@
-import { renderHook, act } from '@testing-library/react';
-import { RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
+import { RecoilRoot } from 'recoil';
+import { renderHook, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Provider as JotaiProvider, createStore, useAtomValue } from 'jotai';
-import { Constants, ContentTypes, QueryKeys } from 'librechat-data-provider';
+import { Constants, ContentTypes, QueryKeys, RetentionMode } from 'librechat-data-provider';
+import { isSubmittingFamily, resetSubmitting, submissionByIndex } from '@librechat/chat/react';
+import {
+  Provider as JotaiProvider,
+  createStore,
+  useAtomValue,
+  useSetAtom,
+  getDefaultStore,
+} from 'jotai';
+import {
+  revealedQueuedTurnFamily,
+  pendingSteersByConvoId,
+  activeGenerationCreatedAtByConvoId,
+  submissionStartFamily,
+} from '@librechat/chat/react';
+import {
+  settledQueuedTurnReceiptsByConvoId,
+  queuedMessagesByConvoId,
+  stopRequestedByConvoId,
+  pendingRunEndByConvoId,
+  detachedRunByConvoId,
+  resetQueueFamilies,
+} from '@librechat/chat/react';
 import type { Agents, TMessage, TConversation, TSubmission } from 'librechat-data-provider';
+import type { QueuedMessage, PendingSteer, DetachedRun } from '@librechat/chat';
 import type { MutableSnapshot } from 'recoil';
 import type { ReactNode } from 'react';
-import type { PendingSteer, QueuedMessage } from '~/store/families';
+import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
-import { revealedQueuedTurnFamily } from '~/store/steer';
+import { usePaneConversation } from '~/routes/ChatSettings';
+import { SteerHostTestProvider } from 'test/steerHost';
 import useResumeOnLoad from '../useResumeOnLoad';
 import store from '~/store';
 
@@ -18,6 +41,8 @@ const mockUseStreamStatus = jest.fn();
 const mockUseActiveJobs = jest.fn();
 const mockUseAgentQueuedTurns = jest.fn();
 const mockExtendActiveJobsGrace = jest.fn();
+let mockStartupConfig: { interface?: { retentionMode?: RetentionMode } } | undefined;
+let mockStartupConfigSettled = true;
 let mockFileMap: Record<string, { llmDeliveryPath?: 'provider' | 'text' | 'none' }> = {};
 
 jest.mock('~/Providers', () => ({
@@ -102,6 +127,9 @@ function renderUseResumeOnLoad({
   onQueuedMessages,
   submissionStart,
   onSubmissionStart,
+  detachedRun,
+  seedJotai,
+  seedQueryClient,
 }: {
   messages?: TMessage[];
   getMessages?: () => TMessage[] | undefined;
@@ -118,53 +146,56 @@ function renderUseResumeOnLoad({
   onQueuedMessages?: (queued: QueuedMessage[]) => void;
   submissionStart?: number;
   onSubmissionStart?: (submissionStart: number | null) => void;
+  detachedRun?: DetachedRun;
+  seedJotai?: (store: ReturnType<typeof createStore>) => void;
+  seedQueryClient?: (client: QueryClient) => void;
 }) {
   const getMessages = jest.fn(getMessagesOverride ?? (() => messages));
   const jotaiStore = createStore();
+  if (submissionStart != null) {
+    jotaiStore.set(submissionStartFamily(0), submissionStart);
+  }
+  if (detachedRun != null) {
+    jotaiStore.set(detachedRunByConvoId(conversationId), detachedRun);
+  }
+  jotaiStore.set(activeGenerationCreatedAtByConvoId(conversationId), attachedGenerationCreatedAt);
+  if (pendingSteers) {
+    jotaiStore.set(pendingSteersByConvoId(conversationId), pendingSteers);
+  }
+  seedJotai?.(jotaiStore);
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
+  seedQueryClient?.(queryClient);
   let setSubmissionState: ((submission: TSubmission | null) => void) | undefined;
   let setIsSubmittingState: ((value: boolean) => void) | undefined;
   let setAttachedEpochState: ((value: number | null) => void) | undefined;
   const initializeState = (snapshot: MutableSnapshot) => {
     snapshot.set(store.conversationByIndex(0), buildConversation(conversationId));
-    snapshot.set(store.submissionByIndex(0), submission);
-    snapshot.set(store.isSubmittingFamily(0), isSubmitting);
-    snapshot.set(
-      store.activeGenerationCreatedAtByConvoId(conversationId),
-      attachedGenerationCreatedAt,
-    );
-    if (submissionStart != null) {
-      snapshot.set(store.submissionStartFamily(0), submissionStart);
-    }
-    if (pendingSteers) {
-      snapshot.set(store.pendingSteersByConvoId(conversationId), pendingSteers);
-    }
+    jotaiStore.set(submissionByIndex(0), submission);
+    jotaiStore.set(isSubmittingFamily(0), isSubmitting);
   };
 
   const SubmissionProbe = () => {
-    const currentSubmission = useRecoilValue(store.submissionByIndex(0));
-    setSubmissionState = useSetRecoilState(store.submissionByIndex(0));
-    setIsSubmittingState = useSetRecoilState(store.isSubmittingFamily(0));
-    setAttachedEpochState = useSetRecoilState(
-      store.activeGenerationCreatedAtByConvoId(conversationId),
-    );
+    const currentSubmission = useAtomValue(submissionByIndex(0));
+    setSubmissionState = useSetAtom(submissionByIndex(0));
+    setIsSubmittingState = useSetAtom(isSubmittingFamily(0));
+    setAttachedEpochState = useSetAtom(activeGenerationCreatedAtByConvoId(conversationId));
     onSubmission?.(currentSubmission);
     return null;
   };
   const SubmissionStartProbe = () => {
-    const currentStart = useRecoilValue(store.submissionStartFamily(0));
+    const currentStart = useAtomValue(submissionStartFamily(0));
     onSubmissionStart?.(currentStart);
     return null;
   };
   const PendingSteersProbe = () => {
-    const steers = useRecoilValue(store.pendingSteersByConvoId(conversationId));
+    const steers = useAtomValue(pendingSteersByConvoId(conversationId));
     onPendingSteers?.(steers);
     return null;
   };
   const QueuedMessagesProbe = () => {
-    const queued = useRecoilValue(store.queuedMessagesByConvoId(conversationId));
+    const queued = useAtomValue(queuedMessagesByConvoId(conversationId));
     onQueuedMessages?.(queued);
     return null;
   };
@@ -180,12 +211,26 @@ function renderUseResumeOnLoad({
     <QueryClientProvider client={queryClient}>
       <JotaiProvider store={jotaiStore}>
         <RecoilRoot initializeState={initializeState}>
-          <SubmissionProbe />
-          <SubmissionStartProbe />
-          <SiblingIndexProbe />
-          <PendingSteersProbe />
-          <QueuedMessagesProbe />
-          {children}
+          <SteerHostTestProvider>
+            <SubmissionProbe />
+            <SubmissionStartProbe />
+            <SiblingIndexProbe />
+            <PendingSteersProbe />
+            <QueuedMessagesProbe />
+            <ChatSettingsContext.Provider
+              value={{
+                ...defaultChatSettings,
+                usePaneConversation,
+                config: {
+                  ...defaultChatSettings.config,
+                  retentionMode: mockStartupConfig?.interface?.retentionMode,
+                  loaded: mockStartupConfigSettled,
+                },
+              }}
+            >
+              {children}
+            </ChatSettingsContext.Provider>
+          </SteerHostTestProvider>
         </RecoilRoot>
       </JotaiProvider>
     </QueryClientProvider>
@@ -205,6 +250,12 @@ function renderUseResumeOnLoad({
     ),
   };
 }
+
+beforeEach(() => resetQueueFamilies());
+
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+});
 
 describe('useResumeOnLoad', () => {
   beforeEach(() => {
@@ -398,6 +449,91 @@ describe('useResumeOnLoad', () => {
       });
 
       expect(jotaiStore.get(pendingApprovalActionFamily(CONVERSATION_ID))).toEqual(pendingAction);
+    });
+
+    /** A reloaded forced-temporary run has no conversation row to read yet, so only the
+     *  status snapshot knows the run is hidden; a hard-coded `false` would send it into
+     *  history caches and request a title the server never creates. */
+    it.each([true, false])(
+      'rebuilds the submission with the server-recorded temporary state %s',
+      async (isTemporary) => {
+        const observedSubmissions: Array<TSubmission | null> = [];
+        mockUseStreamStatus.mockReturnValue({
+          ...ACTIVE_STATUS,
+          data: { ...ACTIVE_STATUS.data, isTemporary },
+        });
+
+        renderUseResumeOnLoad({
+          messages: [buildUserMessage(CONVERSATION_ID)],
+          onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        expect(observedSubmissions.at(-1)?.isTemporary).toBe(isTemporary);
+      },
+    );
+
+    /** A run admitted before the administrator forced ephemeral retention recorded
+     *  `isTemporary: false`, but the resume converts it; the rebuilt submission must
+     *  already treat it as hidden so it never bumps the chat in the history caches. */
+    it('treats a pre-policy run as temporary once retention is forced', async () => {
+      mockStartupConfig = { interface: { retentionMode: RetentionMode.EPHEMERAL } };
+      const observedSubmissions: Array<TSubmission | null> = [];
+      mockUseStreamStatus.mockReturnValue({
+        ...ACTIVE_STATUS,
+        data: { ...ACTIVE_STATUS.data, isTemporary: false },
+      });
+
+      try {
+        renderUseResumeOnLoad({
+          messages: [buildUserMessage(CONVERSATION_ID)],
+          onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        expect(observedSubmissions.at(-1)?.isTemporary).toBe(true);
+      } finally {
+        mockStartupConfig = undefined;
+      }
+    });
+
+    /** A status snapshot that lands before the startup config would otherwise be
+     *  rebuilt without knowing the retention mode, and the conversation would then
+     *  be marked processed so the arriving config could never correct it. */
+    it('waits for the startup config before rebuilding the submission', async () => {
+      mockStartupConfigSettled = false;
+      const observedSubmissions: Array<TSubmission | null> = [];
+      mockUseStreamStatus.mockReturnValue({
+        ...ACTIVE_STATUS,
+        data: { ...ACTIVE_STATUS.data, isTemporary: false },
+      });
+
+      try {
+        const { rerender } = renderUseResumeOnLoad({
+          messages: [buildUserMessage(CONVERSATION_ID)],
+          onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+        });
+        await act(async () => {
+          await Promise.resolve();
+        });
+        expect(observedSubmissions.filter(Boolean)).toHaveLength(0);
+
+        mockStartupConfig = { interface: { retentionMode: RetentionMode.EPHEMERAL } };
+        mockStartupConfigSettled = true;
+        rerender();
+        await act(async () => {
+          await Promise.resolve();
+        });
+
+        expect(observedSubmissions.at(-1)?.isTemporary).toBe(true);
+      } finally {
+        mockStartupConfig = undefined;
+        mockStartupConfigSettled = true;
+      }
     });
 
     /** The elapsed indicator's baseline must be the generation's real start:
@@ -2118,6 +2254,220 @@ describe('useResumeOnLoad', () => {
     expect(observedSiblingIndexes[observedSiblingIndexes.length - 1]).toBe(1);
   });
 
+  /**
+   * A manual compaction submits no user turn: the server projects the LEAF it
+   * summarizes up to into the job's user-message slot, identity only
+   * (`projectCompactionAnchor`). Resuming one must adopt that leaf, not
+   * synthesize an empty root-parented USER row over it — the row it names is
+   * usually the assistant answer, and rewriting it detaches every turn above it.
+   */
+  it('resumes a compaction against the anchor it summarizes up to', async () => {
+    const rootUser = buildUserMessage(CONVERSATION_ID, 'root-user');
+    const anchor = {
+      messageId: 'branch-one-answer',
+      parentMessageId: rootUser.messageId,
+      conversationId: CONVERSATION_ID,
+      text: 'Branch one answer',
+      isCreatedByUser: false,
+    } as TMessage;
+    const newerSibling = {
+      messageId: 'branch-two-answer',
+      parentMessageId: rootUser.messageId,
+      conversationId: CONVERSATION_ID,
+      text: 'Branch two answer',
+      isCreatedByUser: false,
+    } as TMessage;
+    const observedSiblingIndexes: number[] = [];
+    const observedSubmissions: Array<TSubmission | null> = [];
+
+    mockUseStreamStatus.mockReturnValue({
+      isSuccess: true,
+      isFetching: false,
+      data: {
+        active: true,
+        status: 'running',
+        streamId: CONVERSATION_ID,
+        resumeState: {
+          runSteps: [],
+          aggregatedContent: [],
+          replayEvents: [],
+          responseMessageId: `${anchor.messageId}_`,
+          conversationId: CONVERSATION_ID,
+          isRegenerate: true,
+          userMessage: {
+            messageId: anchor.messageId,
+            conversationId: CONVERSATION_ID,
+            text: '',
+          },
+        },
+      },
+    });
+
+    renderUseResumeOnLoad({
+      messages: [rootUser, anchor, newerSibling],
+      siblingIndexParentId: rootUser.messageId,
+      onSiblingIndex: (siblingIndex) => observedSiblingIndexes.push(siblingIndex),
+      onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const submission = observedSubmissions[observedSubmissions.length - 1];
+    /** The slot keeps the anchor's own identity. */
+    expect(submission?.userMessage).toEqual(
+      expect.objectContaining({
+        messageId: anchor.messageId,
+        parentMessageId: rootUser.messageId,
+        text: anchor.text,
+        isCreatedByUser: false,
+      }),
+    );
+    /** ...is marked as the anchored run it is, so no handler writes it as a row, */
+    expect(submission?.compact).toBe(true);
+    /** ...stays in the history the run replays, */
+    expect((submission?.messages ?? []).map((message) => message.messageId)).toEqual([
+      rootUser.messageId,
+      anchor.messageId,
+      newerSibling.messageId,
+    ]);
+    /** ...and the summary hangs off it. */
+    expect(submission?.initialResponse?.parentMessageId).toBe(anchor.messageId);
+    /** The compaction runs on the branch it was started from, not the newest. */
+    expect(observedSiblingIndexes[observedSiblingIndexes.length - 1]).toBe(1);
+  });
+
+  /**
+   * Compact runs on whatever leaf the branch ends with and `canCompact` does not
+   * restrict that leaf's author, so the anchor is a USER message whenever the
+   * branch ends in one (the `compaction-on-user-turn` scenarios cover the
+   * rendered form). Recognizing the anchor by "not user-created" saw only the
+   * assistant-leaf kind: this one was rebuilt as an ordinary turn, and the sync
+   * path then merged the identity-only projection over the stored row, blanking
+   * the prompt the user is still looking at.
+   */
+  it('resumes a compaction anchored on a user leaf', async () => {
+    const rootUser = buildUserMessage(CONVERSATION_ID, 'root-user');
+    const answer = {
+      messageId: 'answer',
+      parentMessageId: rootUser.messageId,
+      conversationId: CONVERSATION_ID,
+      text: 'The long answer',
+      isCreatedByUser: false,
+    } as TMessage;
+    const userLeaf = buildUserMessage(CONVERSATION_ID, 'user-leaf');
+    userLeaf.parentMessageId = answer.messageId;
+    userLeaf.text = 'Compact this before I continue';
+    const observedSubmissions: Array<TSubmission | null> = [];
+
+    mockUseStreamStatus.mockReturnValue({
+      isSuccess: true,
+      isFetching: false,
+      data: {
+        active: true,
+        status: 'running',
+        streamId: CONVERSATION_ID,
+        resumeState: {
+          runSteps: [],
+          aggregatedContent: [],
+          replayEvents: [],
+          responseMessageId: `${userLeaf.messageId}_`,
+          conversationId: CONVERSATION_ID,
+          isRegenerate: true,
+          /** `projectCompactionAnchor`: identity only, whoever wrote the leaf. */
+          userMessage: {
+            messageId: userLeaf.messageId,
+            conversationId: CONVERSATION_ID,
+            text: '',
+          },
+        },
+      },
+    });
+
+    renderUseResumeOnLoad({
+      messages: [rootUser, answer, userLeaf],
+      onSubmission: (currentSubmission) => observedSubmissions.push(currentSubmission),
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    const submission = observedSubmissions[observedSubmissions.length - 1];
+    /** Marked, so no handler writes the anchor as a row... */
+    expect(submission?.compact).toBe(true);
+    /** ...and the leaf keeps the prompt the user actually sent. */
+    expect(submission?.userMessage).toEqual(
+      expect.objectContaining({
+        messageId: userLeaf.messageId,
+        parentMessageId: answer.messageId,
+        text: 'Compact this before I continue',
+        isCreatedByUser: true,
+      }),
+    );
+    expect(submission?.initialResponse?.parentMessageId).toBe(userLeaf.messageId);
+    expect((submission?.messages ?? []).map((message) => message.messageId)).toEqual([
+      rootUser.messageId,
+      answer.messageId,
+      userLeaf.messageId,
+    ]);
+  });
+
+  it('restores a compacting branch from the anchor when no response id is published yet', async () => {
+    const rootUser = buildUserMessage(CONVERSATION_ID, 'root-user');
+    const anchor = {
+      messageId: 'branch-one-answer',
+      parentMessageId: rootUser.messageId,
+      conversationId: CONVERSATION_ID,
+      text: 'Branch one answer',
+      isCreatedByUser: false,
+    } as TMessage;
+    const newerSibling = {
+      messageId: 'branch-two-answer',
+      parentMessageId: rootUser.messageId,
+      conversationId: CONVERSATION_ID,
+      text: 'Branch two answer',
+      isCreatedByUser: false,
+    } as TMessage;
+    const observedSiblingIndexes: number[] = [];
+
+    mockUseStreamStatus.mockReturnValue({
+      isSuccess: true,
+      isFetching: false,
+      data: {
+        active: true,
+        status: 'running',
+        streamId: CONVERSATION_ID,
+        resumeState: {
+          runSteps: [],
+          aggregatedContent: [],
+          replayEvents: [],
+          conversationId: CONVERSATION_ID,
+          isRegenerate: true,
+          /** The anchor carries no parent, so it has to name the branch itself. */
+          userMessage: {
+            messageId: anchor.messageId,
+            conversationId: CONVERSATION_ID,
+            text: '',
+          },
+        },
+      },
+    });
+
+    renderUseResumeOnLoad({
+      messages: [rootUser, anchor, newerSibling],
+      siblingIndexParentId: rootUser.messageId,
+      onSiblingIndex: (siblingIndex) => observedSiblingIndexes.push(siblingIndex),
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(observedSiblingIndexes[observedSiblingIndexes.length - 1]).toBe(1);
+  });
+
   it('restores the regenerate branch without claiming its older response', async () => {
     const rootUser = buildUserMessage(CONVERSATION_ID, 'root-user');
     const olderResponse = {
@@ -2423,6 +2773,277 @@ describe('useResumeOnLoad', () => {
       });
 
       expect(observedSteers[observedSteers.length - 1]).toEqual([failedChip]);
+    });
+
+    it('parks the end of a run that finished after the user left, so its queue drains', async () => {
+      mockUseStreamStatus.mockReturnValue({
+        isSuccess: true,
+        isFetching: false,
+        data: { active: false },
+      });
+      const completedResponse = {
+        messageId: 'response-detached',
+        parentMessageId: USER_MESSAGE_ID,
+        conversationId: CONVERSATION_ID,
+        isCreatedByUser: false,
+        text: 'finished while away',
+        updatedAt: new Date(42).toISOString(),
+      } as TMessage;
+
+      const { jotaiStore } = renderUseResumeOnLoad({
+        messages: [buildUserMessage(CONVERSATION_ID), completedResponse],
+        detachedRun: { userMessageId: USER_MESSAGE_ID, generationCreatedAt: 41 },
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(jotaiStore.get(pendingRunEndByConvoId(CONVERSATION_ID))).toEqual(
+        expect.objectContaining({
+          conversationId: CONVERSATION_ID,
+          outcome: 'completed',
+          responseMessageId: 'response-detached',
+        }),
+      );
+      expect(jotaiStore.get(detachedRunByConvoId(CONVERSATION_ID))).toBeNull();
+    });
+
+    it('keeps the detached run until a history refetch shows its response', async () => {
+      mockUseStreamStatus.mockReturnValue({
+        isSuccess: true,
+        isFetching: false,
+        data: { active: false },
+      });
+      let history: TMessage[] = [buildUserMessage(CONVERSATION_ID)];
+      const { jotaiStore } = renderUseResumeOnLoad({
+        getMessages: () => history,
+        detachedRun: { userMessageId: USER_MESSAGE_ID, generationCreatedAt: 41 },
+      });
+      /** The first read found no response; it is saved before the history refetch settles. */
+      expect(jotaiStore.get(pendingRunEndByConvoId(CONVERSATION_ID))).toBeNull();
+      expect(jotaiStore.get(detachedRunByConvoId(CONVERSATION_ID))).not.toBeNull();
+      history = [
+        ...history,
+        {
+          messageId: 'response-late',
+          parentMessageId: USER_MESSAGE_ID,
+          conversationId: CONVERSATION_ID,
+          isCreatedByUser: false,
+          text: 'saved after the first read',
+          updatedAt: new Date(42).toISOString(),
+        } as TMessage,
+      ];
+
+      await waitFor(() =>
+        expect(jotaiStore.get(pendingRunEndByConvoId(CONVERSATION_ID))).toEqual(
+          expect.objectContaining({ outcome: 'completed', responseMessageId: 'response-late' }),
+        ),
+      );
+      expect(jotaiStore.get(detachedRunByConvoId(CONVERSATION_ID))).toBeNull();
+    });
+
+    it('resolves a detached run from refetched history, not the response it left cached', async () => {
+      mockUseStreamStatus.mockReturnValue({
+        isSuccess: true,
+        isFetching: false,
+        data: { active: false },
+      });
+      const historyKey = [QueryKeys.messages, CONVERSATION_ID];
+      const leftResponse = {
+        messageId: 'response-detached',
+        parentMessageId: USER_MESSAGE_ID,
+        conversationId: CONVERSATION_ID,
+        isCreatedByUser: false,
+        text: 'streamed before leaving',
+        updatedAt: new Date(42).toISOString(),
+      } as TMessage;
+      let client: QueryClient | undefined;
+      const { jotaiStore } = renderUseResumeOnLoad({
+        getMessages: () => client?.getQueryData<TMessage[]>(historyKey),
+        detachedRun: {
+          userMessageId: USER_MESSAGE_ID,
+          responseMessageId: 'response-detached',
+          generationCreatedAt: 41,
+        },
+        seedQueryClient: (queryClient) => {
+          client = queryClient;
+          queryClient.setQueryDefaults(historyKey, {
+            queryFn: async () => [
+              buildUserMessage(CONVERSATION_ID),
+              { ...leftResponse, unfinished: true },
+            ],
+          });
+          queryClient.setQueryData(historyKey, [buildUserMessage(CONVERSATION_ID), leftResponse]);
+        },
+      });
+
+      await waitFor(() =>
+        expect(jotaiStore.get(pendingRunEndByConvoId(CONVERSATION_ID))).toEqual(
+          expect.objectContaining({ outcome: 'aborted' }),
+        ),
+      );
+      expect(jotaiStore.get(detachedRunByConvoId(CONVERSATION_ID))).toBeNull();
+    });
+
+    it('keeps the detached run for the next visit when the history refetch fails', async () => {
+      mockUseStreamStatus.mockReturnValue({
+        isSuccess: true,
+        isFetching: false,
+        data: { active: false },
+      });
+      const historyKey = [QueryKeys.messages, CONVERSATION_ID];
+      const queryFn = jest.fn(async (): Promise<TMessage[]> => {
+        throw new Error('history unavailable');
+      });
+      let client: QueryClient | undefined;
+      const { jotaiStore } = renderUseResumeOnLoad({
+        getMessages: () => client?.getQueryData<TMessage[]>(historyKey),
+        detachedRun: {
+          userMessageId: USER_MESSAGE_ID,
+          responseMessageId: 'response-detached',
+          generationCreatedAt: 41,
+        },
+        seedQueryClient: (queryClient) => {
+          client = queryClient;
+          queryClient.setQueryDefaults(historyKey, { queryFn });
+          queryClient.setQueryData(historyKey, [
+            buildUserMessage(CONVERSATION_ID),
+            {
+              messageId: 'response-detached',
+              parentMessageId: USER_MESSAGE_ID,
+              conversationId: CONVERSATION_ID,
+              isCreatedByUser: false,
+              text: 'streamed before leaving',
+              updatedAt: new Date(42).toISOString(),
+            } as TMessage,
+          ]);
+        },
+      });
+
+      await waitFor(() => expect(queryFn).toHaveBeenCalled());
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(jotaiStore.get(pendingRunEndByConvoId(CONVERSATION_ID))).toBeNull();
+      expect(jotaiStore.get(detachedRunByConvoId(CONVERSATION_ID))).not.toBeNull();
+    });
+
+    it('retires a retained marker for a run the user stopped on a later visit', async () => {
+      mockUseStreamStatus.mockReturnValue({
+        isSuccess: true,
+        isFetching: false,
+        data: { active: false },
+      });
+      const { jotaiStore } = renderUseResumeOnLoad({
+        messages: [
+          buildUserMessage(CONVERSATION_ID),
+          {
+            messageId: 'response-detached',
+            parentMessageId: USER_MESSAGE_ID,
+            conversationId: CONVERSATION_ID,
+            isCreatedByUser: false,
+            text: 'stopped compaction settles as finished',
+            unfinished: false,
+            updatedAt: new Date(42).toISOString(),
+          } as TMessage,
+        ],
+        detachedRun: { userMessageId: USER_MESSAGE_ID, generationCreatedAt: 41 },
+        seedJotai: (store) =>
+          store.set(stopRequestedByConvoId(CONVERSATION_ID), { generationCreatedAt: 41 }),
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(jotaiStore.get(pendingRunEndByConvoId(CONVERSATION_ID))).toBeNull();
+      expect(jotaiStore.get(detachedRunByConvoId(CONVERSATION_ID))).toBeNull();
+    });
+
+    it('parks a shared-queue run end with its epoch, so its admission receipt is matched', async () => {
+      mockUseStreamStatus.mockReturnValue({
+        isSuccess: true,
+        isFetching: false,
+        data: { active: false },
+      });
+      const { jotaiStore } = renderUseResumeOnLoad({
+        messages: [
+          buildUserMessage(CONVERSATION_ID),
+          {
+            messageId: 'response-detached',
+            parentMessageId: USER_MESSAGE_ID,
+            conversationId: CONVERSATION_ID,
+            isCreatedByUser: false,
+            text: 'finished while away',
+            updatedAt: new Date(42).toISOString(),
+          } as TMessage,
+        ],
+        detachedRun: { userMessageId: USER_MESSAGE_ID, generationCreatedAt: 41 },
+        seedJotai: (store) =>
+          store.set(settledQueuedTurnReceiptsByConvoId(CONVERSATION_ID), [
+            { clientRequestId: 'queued-1', status: 'admitted', effectivePredecessorCreatedAt: 41 },
+          ]),
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(jotaiStore.get(pendingRunEndByConvoId(CONVERSATION_ID))).toEqual(
+        expect.objectContaining({ outcome: 'completed', generationCreatedAt: 41 }),
+      );
+    });
+
+    it('parks nothing for a conversation this pane never left mid-run', async () => {
+      mockUseStreamStatus.mockReturnValue({
+        isSuccess: true,
+        isFetching: false,
+        data: { active: false },
+      });
+      const { jotaiStore } = renderUseResumeOnLoad({
+        messages: [
+          buildUserMessage(CONVERSATION_ID),
+          {
+            messageId: 'response-old',
+            parentMessageId: USER_MESSAGE_ID,
+            conversationId: CONVERSATION_ID,
+            isCreatedByUser: false,
+            text: 'history',
+          } as TMessage,
+        ],
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(jotaiStore.get(pendingRunEndByConvoId(CONVERSATION_ID))).toBeNull();
+    });
+
+    it('keeps the detached run while its job is active, so a job gone before the attach still resolves', async () => {
+      mockUseStreamStatus.mockReturnValue({
+        isSuccess: true,
+        isFetching: false,
+        data: {
+          active: true,
+          status: 'running',
+          createdAt: 4242,
+          streamId: CONVERSATION_ID,
+          resumeState: {
+            aggregatedContent: [{ type: ContentTypes.TEXT, text: 'partial' }],
+            responseMessageId: RESPONSE_MESSAGE_ID,
+            userMessage: { messageId: USER_MESSAGE_ID, conversationId: CONVERSATION_ID },
+          },
+        },
+      });
+      const detachedRun = { userMessageId: USER_MESSAGE_ID, generationCreatedAt: 4242 };
+      const { jotaiStore } = renderUseResumeOnLoad({
+        messages: [buildUserMessage(CONVERSATION_ID)],
+        detachedRun,
+      });
+      await act(async () => {
+        await Promise.resolve();
+      });
+
+      expect(jotaiStore.get(detachedRunByConvoId(CONVERSATION_ID))).toEqual(detachedRun);
+      expect(jotaiStore.get(pendingRunEndByConvoId(CONVERSATION_ID))).toBeNull();
     });
 
     it('converts resumeState.pendingSteers to queued when inactive (expired action, unparked queue)', async () => {

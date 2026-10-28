@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import type { TMessage } from 'librechat-data-provider';
 import MessageRow from '../MessageRow';
 
 jest.mock('../MessageTimestamp', () => ({
@@ -8,24 +9,44 @@ jest.mock('../MessageTimestamp', () => ({
   ),
 }));
 
+jest.mock('../../Content/Files', () => ({
+  __esModule: true,
+  default: () => <button data-testid="attached-file" />,
+}));
+
 const MESSAGE_BODY = 'Message body';
+const attachedMessage = (overrides: Partial<TMessage> = {}) =>
+  ({
+    messageId: 'message-1',
+    isCreatedByUser: true,
+    text: MESSAGE_BODY,
+    files: [{ file_id: 'file-1', filename: 'notes.txt', type: 'text/plain' }],
+    ...overrides,
+  }) as TMessage;
 
 const renderRow = ({
   isCreatedByUser,
+  message,
   hasParallelContent = false,
   fullWidth = false,
   isEditing = false,
-  plain = false,
+  systemLabel,
+  showAuthor,
+  outlined,
 }: {
   isCreatedByUser: boolean;
+  message?: TMessage;
   hasParallelContent?: boolean;
   fullWidth?: boolean;
   isEditing?: boolean;
-  plain?: boolean;
+  systemLabel?: string;
+  showAuthor?: boolean;
+  outlined?: boolean;
 }) =>
   render(
     <MessageRow
       id="message-1"
+      message={message}
       label={isCreatedByUser ? 'You' : 'Assistant'}
       hoverLabel={isCreatedByUser ? undefined : 'gpt-5.6'}
       icon={<span data-testid="message-icon" />}
@@ -36,24 +57,123 @@ const renderRow = ({
       hasParallelContent={hasParallelContent}
       fullWidth={fullWidth}
       isEditing={isEditing}
-      plain={plain}
+      systemLabel={systemLabel}
+      showAuthor={showAuthor}
+      outlined={outlined}
     >
       <p>{MESSAGE_BODY}</p>
     </MessageRow>,
   );
 
 describe('MessageRow', () => {
-  it('renders a plain user row as a full-width block without header or bubble', () => {
-    renderRow({ isCreatedByUser: true, plain: true });
+  it('places right-aligned attachments before and outside the text bubble', () => {
+    renderRow({ isCreatedByUser: true, message: attachedMessage() });
+
+    const attachments = screen.getByTestId('message-attachments');
+    const body = screen.getByTestId('message-body');
+    expect(attachments).toHaveClass('items-end', 'max-w-full');
+    expect(attachments).toContainElement(screen.getByTestId('attached-file'));
+    expect(body).not.toContainElement(attachments);
+    expect(attachments.nextElementSibling).toBe(body);
+    expect(body).toHaveClass('bg-surface-user-message');
+    expect(screen.getByTestId('message-actions')).toBeInTheDocument();
+  });
+
+  it.each([
+    { text: '' },
+    { text: '  ', content: [{ type: 'text', text: '' }] },
+    { text: '', content: [{ type: 'text', text: { value: '', annotations: [] } }] },
+  ] as Partial<TMessage>[])(
+    'does not leave an empty bubble for attachments-only messages: %j',
+    (overrides) => {
+      renderRow({ isCreatedByUser: true, message: attachedMessage(overrides) });
+
+      expect(screen.getByTestId('attached-file')).toBeInTheDocument();
+      expect(screen.queryByTestId('message-body')).not.toBeInTheDocument();
+      expect(screen.getByTestId('message-actions')).toBeInTheDocument();
+    },
+  );
+
+  it.each([
+    { content: [{ type: 'text', text: { value: 'Assistant prompt', annotations: [] } }] },
+    { quotes: ['Excerpt'] },
+    { manualSkills: ['review'] },
+    { alwaysAppliedSkills: ['review'] },
+    { error: true },
+    { unfinished: true },
+  ] as Partial<TMessage>[])('keeps the bubble for non-text message content: %j', (overrides) => {
+    renderRow({ isCreatedByUser: true, message: attachedMessage({ text: '', ...overrides }) });
+    expect(screen.getByTestId('message-body')).toHaveClass('bg-surface-user-message');
+  });
+
+  it.each([
+    { isCreatedByUser: true, isEditing: true },
+    { isCreatedByUser: false },
+    { isCreatedByUser: true, systemLabel: 'System' },
+  ])('does not add an attachment strip to editors, assistant or system rows: %j', (props) => {
+    renderRow({ ...props, message: attachedMessage() });
+    expect(screen.queryByTestId('attached-file')).not.toBeInTheDocument();
+    expect(screen.getByTestId('message-body')).toBeInTheDocument();
+  });
+
+  it('renders a system row in the transcript under a visible heading', () => {
+    renderRow({ isCreatedByUser: true, systemLabel: 'System' });
 
     const row = screen.getByLabelText('User message');
     const messageSurface = screen.getByText(MESSAGE_BODY).parentElement;
+    const heading = screen.getByRole('heading', { name: 'System' });
 
-    expect(row).not.toHaveClass('justify-end');
-    expect(messageSurface).not.toHaveClass('bg-surface-tertiary');
+    expect(row).toHaveClass('items-start');
+    expect(row.querySelector('[data-system-turn]')).not.toHaveClass('items-end');
     expect(messageSurface).toHaveClass('w-full');
-    expect(screen.queryByRole('heading', { hidden: true })).not.toBeInTheDocument();
+    expect(messageSurface).not.toHaveClass('bg-surface-user-message');
+    expect(heading).not.toHaveClass('sr-only');
+    expect(screen.queryByText('You')).not.toBeInTheDocument();
     expect(screen.getByTestId('message-actions')).toBeInTheDocument();
+  });
+
+  it('excludes System output from the assistant code shortcut selector', () => {
+    renderRow({ isCreatedByUser: true, systemLabel: 'System' });
+    expect(screen.getByLabelText('User message').querySelector('.agent-turn')).toBeNull();
+  });
+
+  it('keeps System events on the transcript side', () => {
+    renderRow({ isCreatedByUser: true, systemLabel: 'System' });
+    expect(screen.getByLabelText('User message')).not.toHaveClass('justify-end');
+  });
+
+  it('does not wrap System content in a user bubble', () => {
+    renderRow({ isCreatedByUser: true, systemLabel: 'System' });
+    expect(screen.getByTestId('message-body')).not.toHaveClass('border');
+  });
+
+  it('names another author of a user-side turn with the agent header, mirrored', () => {
+    renderRow({ isCreatedByUser: true, showAuthor: true });
+
+    const row = screen.getByLabelText('User message');
+    const heading = screen.getByRole('heading', { name: 'Message from You' });
+    const messageSurface = screen.getByText(MESSAGE_BODY).parentElement;
+
+    /** The user's position and filled bubble, under the same visible
+     *  avatar-and-name line an agent turn carries — closed toward the bubble. */
+    expect(row).toHaveClass('justify-end');
+    expect(heading).not.toHaveClass('sr-only');
+    expect(heading).toHaveClass('justify-end', 'text-sm', 'font-semibold');
+    expect(heading).toContainElement(screen.getByTestId('message-icon'));
+    expect(screen.getByTestId('message-icon').parentElement).toHaveClass('size-6');
+    expect(heading.lastElementChild).toHaveTextContent('You');
+    expect(messageSurface).toHaveClass('bg-surface-user-message');
+    expect(messageSurface).not.toHaveClass('border');
+  });
+
+  it('outlines a delivered user-side turn without a system heading', () => {
+    renderRow({ isCreatedByUser: true, showAuthor: true, outlined: true });
+
+    const messageSurface = screen.getByText(MESSAGE_BODY).parentElement;
+
+    expect(messageSurface).toHaveClass('border', 'border-border-medium');
+    expect(messageSurface).not.toHaveClass('bg-surface-user-message');
+    expect(screen.getByRole('heading', { name: 'Message from You' })).toBeVisible();
   });
 
   it('renders user content as a right-aligned semantic surface without a visible avatar', () => {
@@ -66,7 +186,7 @@ describe('MessageRow', () => {
     expect(row).toHaveAttribute('role', 'group');
     expect(row).toHaveClass('justify-end');
     expect(userTurn).toHaveClass('items-end');
-    expect(messageSurface).toHaveClass('bg-surface-tertiary', 'rounded-theme-surface');
+    expect(messageSurface).toHaveClass('bg-surface-user-message', 'rounded-theme-surface');
     expect(screen.queryByTestId('message-icon')).not.toBeInTheDocument();
     expect(screen.getByRole('heading', { hidden: true })).toHaveClass('sr-only');
   });
@@ -101,7 +221,7 @@ describe('MessageRow', () => {
     const row = screen.getByLabelText('Assistant message');
     const agentTurn = row.querySelector('.agent-turn');
 
-    expect(agentTurn).not.toHaveClass('md:pl-9', 'pl-9');
+    expect(agentTurn).not.toHaveClass('md:ps-9', 'ps-9');
     expect(row).not.toHaveClass('gap-3');
     expect(row.children).toHaveLength(1);
     expect(screen.getAllByTestId('message-icon')).toHaveLength(1);
@@ -113,7 +233,7 @@ describe('MessageRow', () => {
     const heading = screen.getByRole('heading', { name: 'Message from Assistant Model: gpt-5.6' });
 
     expect(heading).toHaveClass('w-full', 'gap-2');
-    expect(screen.getByTestId('message-timestamp')).toHaveClass('ml-auto');
+    expect(screen.getByTestId('message-timestamp')).toHaveClass('ms-auto');
   });
 
   it('keeps the model name ready to replace the provider on hover', () => {
@@ -151,7 +271,7 @@ describe('MessageRow', () => {
 
     expect(row.querySelector('.user-turn')).toHaveClass('w-full');
     expect(messageSurface).toHaveClass('w-full');
-    expect(messageSurface).not.toHaveClass('bg-surface-tertiary');
+    expect(messageSurface).not.toHaveClass('bg-surface-user-message');
   });
 
   it('expands an edited assistant message to full width', () => {
@@ -161,7 +281,7 @@ describe('MessageRow', () => {
     const messageSurface = screen.getByTestId('message-body');
 
     expect(row.querySelector('.agent-turn')).toHaveClass('w-full');
-    expect(row.querySelector('.agent-turn')).not.toHaveClass('md:pl-9');
+    expect(row.querySelector('.agent-turn')).not.toHaveClass('md:ps-9');
     expect(messageSurface).toHaveClass('w-full');
   });
 

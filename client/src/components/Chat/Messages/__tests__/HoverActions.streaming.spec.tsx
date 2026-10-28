@@ -1,8 +1,10 @@
 import React, { useMemo } from 'react';
+import { getDefaultStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import { RecoilRoot, type MutableSnapshot } from 'recoil';
 import { render, screen, act } from '@testing-library/react';
+import { isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import { QueryKeys, type TConversation, type TMessage } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
 import { useLatestMessage, useLatestMessageId } from '~/hooks/Messages/useLatestMessage';
@@ -234,7 +236,7 @@ function renderStreamingRow(
 
   const initializeState = ({ set }: MutableSnapshot) => {
     set(store.conversationByIndex(0), conversation);
-    set(store.isSubmittingFamily(0), submitting);
+    getDefaultStore().set(isSubmittingFamily(0), submitting);
   };
 
   render(
@@ -254,6 +256,10 @@ function renderStreamingRow(
 
   return queryClient;
 }
+
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+});
 
 describe('streaming hover actions', () => {
   beforeEach(() => {
@@ -311,7 +317,7 @@ describe('streaming hover actions', () => {
     renderStreamingRow(structured);
 
     expect(screen.getByRole('navigation', { name: 'com_ui_sibling_navigation' })).toHaveClass(
-      '[@media(hover:hover)]:opacity-0',
+      'no-touch:opacity-0',
     );
   });
 
@@ -326,7 +332,7 @@ describe('streaming hover actions', () => {
   ])('holds the footer height while %s response streams', (_label, structured) => {
     renderStreamingRow(structured);
 
-    expect(screen.getByTestId('hover-buttons').parentElement).toHaveClass('min-h-[31px]');
+    expect(screen.getByTestId('hover-buttons').parentElement).toHaveClass('min-h-[1.9375rem]');
   });
 
   /**

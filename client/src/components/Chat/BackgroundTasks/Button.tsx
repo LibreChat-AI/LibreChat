@@ -1,0 +1,308 @@
+import { memo, useEffect, useRef, useState } from 'react';
+import * as Ariakit from '@ariakit/react';
+import { Button, IconButton, TooltipAnchor } from '@librechat/client';
+import { ListTodo, Maximize2, Minimize2, Square, X } from 'lucide-react';
+import type { TaskRow } from './rows';
+import { useParentSubagents } from '~/components/Chat/Subagents/ParentSubagentsProvider';
+import { durableSubagentSelection } from '~/components/Chat/Subagents/eventSelection';
+import { useOpenSubagentPanel } from '~/components/Chat/Subagents/surface';
+import { RECENT_SUBAGENT_WINDOW_MS } from './rows';
+import useBackgroundTasks from './useTasks';
+import { useLocalize } from '~/hooks';
+import Section from './Section';
+import TaskCard from './Card';
+import { cn } from '~/utils';
+
+const TICK_MS = 1_000;
+
+const iconButtonClass =
+  'flex size-7 shrink-0 items-center justify-center rounded-md text-text-secondary hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-focus-control disabled:pointer-events-none disabled:opacity-50';
+
+/** Header control listing the conversation's background tools and subagents. */
+function BackgroundTasksButton({
+  conversationId,
+  isSubmitting,
+}: {
+  conversationId: string;
+  isSubmitting: boolean;
+}) {
+  const localize = useLocalize();
+  const openSubagentPanel = useOpenSubagentPanel();
+  const parent = useParentSubagents();
+  const popover = Ariakit.usePopoverStore({ placement: 'bottom-end' });
+  const open = Ariakit.useStoreState(popover, 'open');
+  const disclosureRef = useRef<HTMLButtonElement>(null);
+  const finalFocusRef = useRef<HTMLElement | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const [wide, setWide] = useState(false);
+  const [popoverElement, setPopoverElement] = useState<HTMLDivElement | null>(null);
+  const view = useBackgroundTasks({ conversationId, isSubmitting, now });
+  const { rows, activeCount, awaitingCount, failedCount, incomplete } = view;
+
+  useEffect(() => {
+    setNow(Date.now());
+    if (open) finalFocusRef.current = disclosureRef.current;
+    if (!open || activeCount === 0) return;
+    const timer = setInterval(() => setNow(Date.now()), TICK_MS);
+    return () => clearInterval(timer);
+  }, [open, activeCount]);
+
+  const nextExpiry = rows.reduce(
+    (next, row) =>
+      row.settledAt != null &&
+      row.delivery == null &&
+      row.status !== 'running' &&
+      row.status !== 'stopping'
+        ? Math.min(next, row.settledAt + RECENT_SUBAGENT_WINDOW_MS + 1)
+        : next,
+    Infinity,
+  );
+  useEffect(() => {
+    if (!Number.isFinite(nextExpiry)) return;
+    const timer = setTimeout(() => setNow(Date.now()), Math.max(0, nextExpiry - Date.now()));
+    return () => clearTimeout(timer);
+  }, [nextExpiry]);
+
+  if (rows.length === 0 && !view.loadFailed && !incomplete) {
+    return null;
+  }
+
+  const title = localize('com_ui_background_tasks');
+  const triggerLabel =
+    [
+      ...(activeCount > 0 ? [localize('com_ui_background_tasks_label', { 0: activeCount })] : []),
+      ...(awaitingCount > 0
+        ? [localize('com_ui_background_tasks_pending_label', { 0: awaitingCount })]
+        : []),
+      ...(failedCount > 0
+        ? [localize('com_ui_background_tasks_failed_label', { 0: failedCount })]
+        : []),
+      ...(incomplete ? [localize('com_ui_background_tasks_incomplete')] : []),
+    ].join('; ') || title;
+  const running = rows.filter((row) => row.status === 'running' || row.status === 'stopping');
+  const finished = rows.filter((row) => row.status !== 'running' && row.status !== 'stopping');
+  const anyStoppable = running.some(view.canStop);
+  const partiallyStoppable = running.some((row) => row.status === 'running' && !view.canStop(row));
+  let stopAllLabel = localize('com_ui_background_tasks_stop_all');
+  if (!anyStoppable) {
+    stopAllLabel = localize('com_ui_background_tasks_cancel_disabled');
+  } else if (partiallyStoppable) {
+    stopAllLabel = localize('com_ui_background_tasks_stop_available');
+  }
+  const jumpToTool = (row: TaskRow): boolean => {
+    if (row.kind === 'subagent') {
+      if (
+        openSubagentPanel == null ||
+        parent.conversationId !== conversationId ||
+        row.threadId == null ||
+        row.taskId == null
+      ) {
+        return false;
+      }
+      const child = parent.byThreadId.get(row.threadId);
+      if (child == null) return false;
+      const selection = durableSubagentSelection(conversationId, child, row.taskId);
+      if (selection == null) return false;
+      finalFocusRef.current = null;
+      disclosureRef.current?.focus({ preventScroll: true });
+      popover.hide();
+      openSubagentPanel({ ...selection, isSubmitting: false });
+      return true;
+    }
+    if (row.messageId == null) return false;
+    const message = document.getElementById(row.messageId);
+    if (message == null) return false;
+    const scope = message;
+    const destinations = Array.from(
+      scope.querySelectorAll<HTMLElement>('[data-task-tool-call]'),
+    ).filter(
+      (element) =>
+        element.dataset.taskToolCall === row.toolCallId &&
+        (row.stepId == null || element.dataset.taskStep === row.stepId),
+    );
+    const targets = Array.from(
+      scope.querySelectorAll<HTMLElement>(
+        '[data-tool-call-id], [data-subagent-tool-call], [data-subagent-thread]',
+      ),
+    ).filter(
+      (element) =>
+        (row.threadId != null && element.dataset.subagentThread === row.threadId) ||
+        (row.toolCallId != null &&
+          (element.dataset.toolCallId === row.toolCallId ||
+            element.dataset.subagentToolCall === row.toolCallId)),
+    );
+    // Legacy call ids are only usable when they identify one rendered call.
+    const threads =
+      row.threadId == null
+        ? []
+        : targets.filter((element) => element.dataset.subagentThread === row.threadId);
+    let target = message;
+    if (threads.length === 1) target = threads[0];
+    else if (destinations.length === 1) target = destinations[0];
+    else if (destinations.length === 0 && targets.length === 1) target = targets[0];
+    if (target == null || target.closest('[inert], [hidden], [aria-hidden="true"]') != null)
+      return false;
+    if (!target.hasAttribute('tabindex') && !target.matches('button')) {
+      target.tabIndex = -1;
+      target.addEventListener('blur', () => target.removeAttribute('tabindex'), { once: true });
+    }
+    finalFocusRef.current = null;
+    target.focus({ preventScroll: true });
+    popover.hide();
+    target.scrollIntoView?.({
+      block: 'center',
+      behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+        ? 'instant'
+        : 'smooth',
+    });
+    return true;
+  };
+  const card = (row: (typeof rows)[number]) => (
+    <TaskCard
+      key={row.id}
+      row={row}
+      now={now}
+      canStop={view.canStop(row)}
+      isStopping={view.isStopping}
+      onStop={view.stop}
+      portalElement={popoverElement}
+      onJump={jumpToTool}
+    />
+  );
+
+  return (
+    <>
+      <TooltipAnchor
+        description={triggerLabel}
+        render={
+          <Ariakit.PopoverDisclosure
+            ref={disclosureRef}
+            store={popover}
+            aria-label={triggerLabel}
+            data-testid="header-background-tasks-button"
+            className="border-border-chrome bg-presentation text-text-primary hover:bg-surface-tertiary aria-expanded:bg-surface-tertiary relative inline-flex size-9 flex-shrink-0 items-center justify-center rounded-xl border transition-all ease-in-out"
+          >
+            <ListTodo className="icon-md" aria-hidden="true" />
+            {(activeCount > 0 || awaitingCount > 0 || failedCount > 0 || incomplete) && (
+              <span
+                aria-hidden="true"
+                data-testid="background-tasks-indicator"
+                className={cn(
+                  'ring-presentation absolute -top-0.5 -right-0.5 size-2 rounded-full ring-2',
+                  failedCount > 0 || incomplete ? 'bg-status-warning' : 'bg-status-info',
+                  activeCount > 0 && 'animate-pulse motion-reduce:animate-none',
+                )}
+              />
+            )}
+          </Ariakit.PopoverDisclosure>
+        }
+      />
+      <Ariakit.Popover
+        ref={setPopoverElement}
+        store={popover}
+        gutter={8}
+        portal
+        unmountOnHide
+        finalFocus={finalFocusRef}
+        autoFocusOnHide={() => finalFocusRef.current != null}
+        aria-label={title}
+        className={cn(
+          'animate-composer-popover border-border-medium bg-surface-secondary text-text-primary rounded-theme-menu-panel animate-composer-popover-resize z-[200] flex max-w-[calc(100vw-2rem)] flex-col border shadow-lg focus:outline-none motion-reduce:transition-none',
+          wide
+            ? 'max-h-[calc(100dvh-5rem)] w-[min(56rem,calc(100vw-2rem))]'
+            : 'max-h-[min(36rem,calc(100dvh-5rem))] w-80',
+        )}
+      >
+        <div className="flex items-center gap-1 px-3 pt-3 pb-2">
+          <Ariakit.PopoverHeading className="flex-1 text-sm font-semibold">
+            {title}
+          </Ariakit.PopoverHeading>
+          <Button
+            variant="quiet"
+            size="icon-xs"
+            type="button"
+            aria-label={localize(wide ? 'com_ui_collapse' : 'com_ui_expand')}
+            aria-pressed={wide}
+            onClick={() => setWide((value) => !value)}
+            className="max-sm:hidden"
+          >
+            {wide ? (
+              <Minimize2 className="size-4" aria-hidden="true" />
+            ) : (
+              <Maximize2 className="size-4" aria-hidden="true" />
+            )}
+          </Button>
+          <Ariakit.PopoverDismiss aria-label={localize('com_ui_close')} className={iconButtonClass}>
+            <X className="size-4" aria-hidden="true" />
+          </Ariakit.PopoverDismiss>
+        </div>
+        <div className="space-y-4 overflow-y-auto px-3 pb-3">
+          {incomplete && (
+            <p role="status" className="text-status-warning text-sm">
+              {localize('com_ui_background_tasks_incomplete')}
+            </p>
+          )}
+          {view.loadFailed && (
+            <div role="alert" className="text-status-error text-sm">
+              <p>{localize('com_ui_background_tasks_load_failed')}</p>
+              <button
+                type="button"
+                className="text-text-primary focus-visible:ring-focus-control rounded px-2 py-1 underline focus-visible:ring-2"
+                onClick={() => void view.retry()}
+              >
+                {localize('com_ui_retry')}
+              </button>
+            </div>
+          )}
+          {running.length > 0 && (
+            <Section
+              label={localize('com_ui_background_tasks_running')}
+              count={running.length}
+              action={
+                <TooltipAnchor
+                  description={stopAllLabel}
+                  portalElement={popoverElement}
+                  render={
+                    <span
+                      role={!anyStoppable ? 'group' : undefined}
+                      aria-label={!anyStoppable ? stopAllLabel : undefined}
+                      tabIndex={!anyStoppable ? 0 : undefined}
+                      className="inline-flex"
+                    >
+                      <IconButton
+                        type="button"
+                        variant="primary"
+                        size="sm"
+                        shape="inset"
+                        label={stopAllLabel}
+                        disabled={!anyStoppable || view.isStopping}
+                        onClick={() => void view.stopAll()}
+                        data-testid="background-tasks-stop-all"
+                      >
+                        <Square className="size-3 fill-current" aria-hidden="true" />
+                      </IconButton>
+                    </span>
+                  }
+                />
+              }
+            >
+              {running.map(card)}
+            </Section>
+          )}
+          {finished.length > 0 && (
+            <Section label={localize('com_ui_background_tasks_finished')} count={finished.length}>
+              {finished.map(card)}
+            </Section>
+          )}
+          {view.stopFailed && (
+            <p role="alert" className="text-status-error px-3 pb-3 text-sm">
+              {localize('com_ui_background_tasks_stop_failed')}
+            </p>
+          )}
+        </div>
+      </Ariakit.Popover>
+    </>
+  );
+}
+
+export default memo(BackgroundTasksButton);

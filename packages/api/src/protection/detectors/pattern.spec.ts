@@ -72,6 +72,32 @@ describe('pattern content inspector', () => {
     ).toMatchObject({ ruleId: 'bearer_header' });
   });
 
+  it.each([
+    { config: { starterPatterns: ['bearer_header'] }, text: 'Bearer contract-token' },
+    {
+      config: {
+        starterPatterns: [],
+        customPatterns: [{ id: 'custom', label: 'Custom', regex: 'ORG-[A-Z]+' }],
+      },
+      text: 'ORG-SECRET',
+    },
+  ])('enforces a zero remaining allowance when locating $text', ({ config, text }) => {
+    const inspector = createPatternContentInspector(config, { linearTime: true });
+
+    expect(inspector.locate('clean text', 0)).toEqual([]);
+    expect(inspector.locate('', 0)).toEqual([]);
+    expect(() => inspector.locate(text, 0)).toThrow(PatternConfigurationError);
+    expect(inspector.locate(text, 1)).toHaveLength(1);
+  });
+
+  it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])(
+    'rejects invalid remaining match allowance %s before inspecting',
+    (allowance) => {
+      const inspector = createPatternContentInspector({}, { linearTime: true });
+      expect(() => inspector.locate('clean text', allowance)).toThrow(PatternConfigurationError);
+    },
+  );
+
   it('memoizes a compiled set by config identity and memory limit', () => {
     const compile = jest.spyOn(RE2Set.prototype, 'compile');
     const config: MessageFilterPiiConfig = {

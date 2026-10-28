@@ -7,7 +7,7 @@
  * - GenerationJobManager aborts the in-flight generation when its job is reaped
  *   or replaced, so client/graph references can be garbage collected.
  *
- * @see https://github.com/danny-avila/LibreChat/issues/13391
+ * @see https://github.com/LibreChat-AI/LibreChat/issues/13391
  */
 
 /** Suppress winston Console transport output (survives jest.resetModules) */

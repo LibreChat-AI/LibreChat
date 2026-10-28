@@ -105,7 +105,7 @@ new message. Audit events record inheritance, publication, and expiry without fi
 
 The dependency manifests require `@librechat/agents` 3.8.6 or later, and the lockfile installs 3.8.6.
 This release includes the host-owned execution context from
-[agents #539](https://github.com/danny-avila/agents/pull/539), exposing
+[agents #539](https://github.com/LibreChat-AI/agents/pull/539), exposing
 `SUBAGENT_CONTEXT_VERSION = 1` and the `RunConfig.subagentContext` prepare/complete adapter.
 A normal locked install includes the required SDK; no local SDK build is needed. The runtime
 capability check rejects enabled sharing if an incompatible SDK is loaded.

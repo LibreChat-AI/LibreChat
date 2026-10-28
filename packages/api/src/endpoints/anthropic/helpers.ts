@@ -4,10 +4,13 @@ import {
   ThinkingDisplay,
   AnthropicEffort,
   anthropicSettings,
+  bindsThinkingBlocks,
+  supportsPromptCache,
+  hasAlwaysOnThinking,
+  THINKING_BLOCK_BINDING,
   resolveThinkingDisplay,
   supportsAdaptiveThinking,
-  supportsPromptCache,
-  requiresExplicitThinkingDisabled,
+  resolveThinkingOffConfig,
 } from 'librechat-data-provider';
 
 const FINE_GRAINED_TOOL_STREAMING_BETA = 'fine-grained-tool-streaming-2025-05-14';
@@ -85,16 +88,24 @@ function configureReasoning(
   /**
    * Sonnet 5 and Opus 5 run adaptive thinking by default when the `thinking`
    * field is omitted, so honoring a user who turns thinking off requires
-   * sending an explicit disabled config rather than leaving the field unset.
-   * This returns before effort is applied, which is why the Opus 5 effort cap
-   * is enforced by the caller.
+   * sending an explicit disabled config rather than leaving the field unset;
+   * Sonnet 5.5+ rejects `disabled` and takes `between_tools` instead. This
+   * returns before effort is applied, which is why the effort cap for these
+   * configs is enforced by the caller. Always-on models (Opus 5.5+, Fable)
+   * ignore a stored "off" and always send the adaptive config.
    */
-  if (!extendedOptions.thinking && modelName && requiresExplicitThinkingDisabled(modelName)) {
-    updatedOptions.thinking = { type: 'disabled' } as AnthropicClientOptions['thinking'];
+  const thinkingOffConfig =
+    !extendedOptions.thinking && modelName ? resolveThinkingOffConfig(modelName) : undefined;
+  if (thinkingOffConfig) {
+    updatedOptions.thinking = thinkingOffConfig as AnthropicClientOptions['thinking'];
     return updatedOptions;
   }
 
-  if (extendedOptions.thinking && modelName && supportsAdaptiveThinking(modelName)) {
+  if (
+    (extendedOptions.thinking || hasAlwaysOnThinking(modelName)) &&
+    modelName &&
+    supportsAdaptiveThinking(modelName)
+  ) {
     /**
      * For Opus 4.7+, Anthropic omits thinking content from responses by
      * default. Resolver returns `'summarized'` for those models (so the
@@ -104,9 +115,11 @@ function configureReasoning(
      * https://platform.claude.com/docs/en/about-claude/models/whats-new-claude-4-7#thinking-content-omitted-by-default
      */
     const display = resolveThinkingDisplay(modelName, extendedOptions.thinkingDisplay);
-    const adaptive = display
-      ? { type: 'adaptive' as const, display }
-      : { type: 'adaptive' as const };
+    const adaptive = {
+      type: 'adaptive' as const,
+      ...(display ? { display } : {}),
+      ...(bindsThinkingBlocks(modelName) ? { block_binding: { ...THINKING_BLOCK_BINDING } } : {}),
+    };
     /**
      * TODO: Remove the cast once `@librechat/agents` updates its
      * `ChatAnthropicMessages['thinking']` type to include the `display` field

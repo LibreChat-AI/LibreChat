@@ -1,4 +1,6 @@
+import { Provider } from 'jotai';
 import { renderHook } from '@testing-library/react';
+import { LocalStorageKeys } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import useCodeApprovalMode from '../useCodeApprovalMode';
 
@@ -66,6 +68,98 @@ describe('useCodeApprovalMode', () => {
       modes: ['ask', 'acceptEdits'],
       selected: 'acceptEdits',
     });
+  });
+
+  test('offers no attached mode once the chat runs without a workspace, and submits ask', () => {
+    const { result, rerender } = renderHook(
+      ({ codeEnvironmentMode }: Pick<TConversation, 'codeEnvironmentMode'>) =>
+        useCodeApprovalMode({ ...conversation, codeEnvironmentMode }),
+      { initialProps: { codeEnvironmentMode: 'without_attached' } },
+    );
+
+    expect(result.current).toEqual({ available: false, modes: [], selected: 'ask' });
+    rerender({ codeEnvironmentMode: 'attached' });
+    expect(result.current).toEqual({
+      available: true,
+      modes: ['ask', 'acceptEdits'],
+      selected: 'acceptEdits',
+    });
+  });
+
+  test('follows the composer-resolved mode for a chat that records no decision', () => {
+    const { result, rerender } = renderHook(
+      ({ resolved }: { resolved?: TConversation['codeEnvironmentMode'] }) =>
+        useCodeApprovalMode(conversation, undefined, resolved),
+      { initialProps: { resolved: 'without_attached' } },
+    );
+
+    expect(result.current).toEqual({ available: false, modes: [], selected: 'ask' });
+    rerender({ resolved: 'attached' });
+    expect(result.current).toEqual({
+      available: true,
+      modes: ['ask', 'acceptEdits'],
+      selected: 'acceptEdits',
+    });
+  });
+
+  test('uses the chosen machine policy without inheriting full access from the default', () => {
+    mockUseAgentToolPermissions.mockReturnValue({
+      agent: {
+        id: 'agent_1',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+        code_environment_ids: ['runtime'],
+      },
+    });
+    mockUseGetAgentsConfig.mockReturnValue({
+      agentsConfig: {
+        statefulCodeSessions: {
+          allowEnvironmentSelection: true,
+          approvalsEnabled: true,
+          approvalModes: ['ask', 'acceptEdits', 'fullAccess'],
+          environments: [
+            {
+              id: 'mac',
+              type: 'attached',
+              configSchema: {
+                permissions: {
+                  fileWrite: { allowed: ['ask', 'allow'], default: 'ask' },
+                  commandExecution: { allowed: ['ask', 'allow'], default: 'ask' },
+                },
+              },
+            },
+            {
+              id: 'runtime',
+              type: 'attached',
+              configSchema: {
+                permissions: {
+                  fileWrite: { allowed: ['ask'], default: 'ask' },
+                  commandExecution: { allowed: ['ask'], default: 'ask' },
+                },
+              },
+            },
+          ],
+        },
+      },
+    });
+    const runtime = renderHook(() =>
+      useCodeApprovalMode({
+        ...conversation,
+        codeApprovalMode: 'fullAccess',
+        codeWorkspaces: [{ environmentId: 'runtime', workspaceId: 'primary' }],
+      }),
+    );
+    expect(runtime.result.current.modes).toEqual(['ask']);
+    expect(runtime.result.current.selected).toBe('ask');
+    const application = renderHook(() =>
+      useCodeApprovalMode({
+        ...conversation,
+        codeApprovalMode: 'fullAccess',
+        codeWorkspaces: undefined,
+      }),
+    );
+    expect(application.result.current.selected).toBe('fullAccess');
   });
 
   test.each(['permitted', 'restricted', 'missing'])(
@@ -297,6 +391,62 @@ describe('useCodeApprovalMode', () => {
     expect(result.current.modes).toEqual(['ask', 'acceptEdits']);
   });
 
+  test.each(['restricted', 'missing'])(
+    'downgrades saved Full Access for a %s added agent',
+    (kind) => {
+      const primary = {
+        id: 'agent_1',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'open',
+      };
+      const added = { ...primary, id: 'agent_2', code_environment_id: 'restricted' };
+      mockUseAgentToolPermissions.mockImplementation((id?: string) => {
+        if (id === 'agent_1') {
+          return { agent: primary };
+        }
+        return { agent: id === 'agent_2' && kind !== 'missing' ? added : undefined };
+      });
+      mockUseGetAgentsConfig.mockReturnValue({
+        agentsConfig: {
+          statefulCodeSessions: {
+            approvalsEnabled: true,
+            approvalModes: ['ask', 'fullAccess'],
+            environments: [
+              {
+                id: 'open',
+                type: 'attached',
+                configSchema: {
+                  permissions: {
+                    fileWrite: { allowed: ['ask', 'allow'], default: 'ask' },
+                    commandExecution: { allowed: ['ask', 'allow'], default: 'ask' },
+                  },
+                },
+              },
+              {
+                id: 'restricted',
+                type: 'attached',
+                configSchema: {
+                  permissions: {
+                    commandExecution: { allowed: ['ask'], default: 'ask' },
+                  },
+                },
+              },
+            ],
+          },
+        },
+      });
+      const primaryConversation = { ...conversation, codeApprovalMode: 'fullAccess' as const };
+      const primaryOnly = renderHook(() => useCodeApprovalMode(primaryConversation));
+      expect(primaryOnly.result.current.selected).toBe('fullAccess');
+      const combined = renderHook(() =>
+        useCodeApprovalMode(primaryConversation, { ...conversation, agent_id: 'agent_2' }),
+      );
+      expect(combined.result.current.selected).toBe('ask');
+      expect(combined.result.current.modes).not.toContain('fullAccess');
+    },
+  );
+
   test('includes the active parallel conversation agent', () => {
     const primary = {
       id: 'agent_1',
@@ -368,6 +518,73 @@ describe('useCodeApprovalMode', () => {
     const { result } = renderHook(() => useCodeApprovalMode(conversation));
 
     expect(result.current.modes).toEqual(['ask']);
+    expect(result.current.selected).toBe('ask');
+  });
+});
+
+describe('useCodeApprovalMode remembered pick', () => {
+  const withoutMode = { ...conversation, codeApprovalMode: undefined } as TConversation;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    localStorage.clear();
+    mockUseAgentsMapContext.mockReturnValue({});
+    mockUseAgentToolPermissions.mockReturnValue({
+      agent: {
+        id: 'agent_1',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+      },
+    });
+    mockUseGetAgentsConfig.mockReturnValue({
+      agentsConfig: {
+        statefulCodeSessions: {
+          approvalsEnabled: true,
+          approvalModes: ['ask', 'acceptEdits'],
+          environments: [
+            {
+              id: 'mac',
+              name: 'Mac',
+              type: 'attached',
+              configSchema: {
+                permissions: {
+                  fileWrite: { allowed: ['ask', 'allow'], default: 'ask' },
+                  commandExecution: { allowed: ['ask'], default: 'ask' },
+                },
+              },
+            },
+          ],
+        },
+      },
+    });
+  });
+
+  test('opens a conversation with no stored mode on the last pick', () => {
+    localStorage.setItem(LocalStorageKeys.LAST_CODE_APPROVAL_MODE, JSON.stringify('acceptEdits'));
+    const { result } = renderHook(() => useCodeApprovalMode(withoutMode), { wrapper: Provider });
+    expect(result.current.selected).toBe('acceptEdits');
+  });
+
+  test('a stored conversation mode still wins over the remembered pick', () => {
+    localStorage.setItem(LocalStorageKeys.LAST_CODE_APPROVAL_MODE, JSON.stringify('acceptEdits'));
+    const { result } = renderHook(
+      () => useCodeApprovalMode({ ...conversation, codeApprovalMode: 'ask' } as TConversation),
+      { wrapper: Provider },
+    );
+    expect(result.current.selected).toBe('ask');
+  });
+
+  test('falls back to ask when policy no longer allows the remembered pick', () => {
+    localStorage.setItem(LocalStorageKeys.LAST_CODE_APPROVAL_MODE, JSON.stringify('fullAccess'));
+    const { result } = renderHook(() => useCodeApprovalMode(withoutMode), { wrapper: Provider });
+    expect(result.current.modes).not.toContain('fullAccess');
+    expect(result.current.selected).toBe('ask');
+  });
+
+  test('ignores a corrupted remembered value', () => {
+    localStorage.setItem(LocalStorageKeys.LAST_CODE_APPROVAL_MODE, JSON.stringify('nonsense'));
+    const { result } = renderHook(() => useCodeApprovalMode(withoutMode), { wrapper: Provider });
     expect(result.current.selected).toBe('ask');
   });
 });

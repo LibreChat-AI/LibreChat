@@ -4,7 +4,7 @@ import {
   isActionTool,
   type AgentToolOptions,
   type AllowedCaller,
-} from './types/assistants';
+} from './types/tools';
 
 const actionDomainSeparatorRegex = new RegExp(actionDomainSeparator, 'g');
 

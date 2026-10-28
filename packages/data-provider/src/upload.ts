@@ -1,4 +1,4 @@
-import type { EToolResources } from './types/assistants';
+import type { EToolResources } from './types/tools';
 import type { TFileUpload } from './types/files';
 import request from './request';
 
@@ -23,7 +23,7 @@ class FileUploadError extends Error {
   public file_id: string;
   public tool_resource?: EToolResources;
   public display_to_user: boolean;
-  public response: { data: { message: string } };
+  public response: { data: { message: string; code?: string } };
 
   constructor(
     message: string,
@@ -31,6 +31,7 @@ class FileUploadError extends Error {
     toolResource?: EToolResources,
     displayToUser = false,
     code = 0,
+    responseCode?: string,
   ) {
     super(message);
     this.name = 'CustomAppError';
@@ -38,7 +39,12 @@ class FileUploadError extends Error {
     this.file_id = fileId;
     this.tool_resource = toolResource;
     this.display_to_user = displayToUser;
-    this.response = { data: { message: displayToUser ? message : '' } };
+    this.response = {
+      data: {
+        message: displayToUser ? message : '',
+        ...(responseCode != null && { code: responseCode }),
+      },
+    };
   }
 }
 
@@ -70,9 +76,11 @@ const parseEvent = (message: string): ParsedEvent => {
 
 const createHttpError = async (response: Response, formData: FormData) => {
   let message = `Server responded with status: ${response.status}`;
+  let responseCode: string | undefined;
   try {
-    const data = (await response.json()) as { message?: string };
+    const data = (await response.json()) as { message?: string; code?: unknown };
     message = data.message || message;
+    responseCode = typeof data.code === 'string' ? data.code : undefined;
   } catch {
     // Preserve the status-based fallback for non-JSON responses.
   }
@@ -83,6 +91,7 @@ const createHttpError = async (response: Response, formData: FormData) => {
     getToolResource(formData),
     true,
     response.status,
+    responseCode,
   );
 };
 

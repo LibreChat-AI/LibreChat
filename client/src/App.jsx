@@ -2,16 +2,18 @@ import { useEffect } from 'react';
 import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
 import { RouterProvider } from 'react-router-dom';
-import * as RadixToast from '@radix-ui/react-toast';
 import { HTML5Backend } from 'react-dnd-html5-backend';
-import { QueryClient, QueryClientProvider, QueryCache } from '@tanstack/react-query';
-import { Toast, ThemeProvider, ToastProvider, useInputModality } from '@librechat/client';
+import { Toast, ToastViewport, ToastProvider, useInputModality } from '@librechat/client';
+import { QueryClient, QueryClientProvider, QueryCache, MutationCache } from '@tanstack/react-query';
+import Direction, { ToastSwipeProvider } from '~/Providers/Direction';
 import { ScreenshotProvider, useApiErrorBoundary } from './hooks';
 import WakeLockManager from '~/components/System/WakeLockManager';
 import QueryDevtoolsGate from '~/components/QueryDevtoolsGate';
 import LanguageSync from '~/components/System/LanguageSync';
-import { getThemeFromEnv } from './utils/getThemeFromEnv';
+import DeploymentTheme from '~/Providers/DeploymentTheme';
+import UiScaleSync from '~/components/System/UiScaleSync';
 import { initializeFontSize } from '~/store/fontSize';
+import { reopenTermsOnRefusal } from '~/utils/terms';
 import { LiveAnnouncer } from '~/a11y';
 import { router } from './routes';
 
@@ -37,34 +39,29 @@ const App = () => {
         }
       },
     }),
+    mutationCache: new MutationCache({
+      onError: (error) => {
+        reopenTermsOnRefusal(queryClient, error?.response?.data);
+      },
+    }),
   });
 
   useEffect(() => {
     initializeFontSize();
   }, []);
 
-  // Load theme from environment variables if available
-  const envTheme = getThemeFromEnv();
-
   return (
     <QueryClientProvider client={queryClient}>
       <RecoilRoot>
         <LanguageSync />
-        <LiveAnnouncer>
-          <ThemeProvider
-            // Only pass initialTheme and themeRGB if environment theme exists
-            // This allows localStorage values to persist when no env theme is set
-            {...(envTheme && { initialTheme: 'system', themeRGB: envTheme })}
-          >
-            {/* The ThemeProvider will automatically:
-                1. Apply dark/light mode classes
-                2. Apply custom theme colors if envTheme is provided
-                3. Otherwise use stored theme preferences from localStorage
-                4. Fall back to default theme colors if nothing is stored */}
-            <RadixToast.Provider>
-              <ToastProvider>
-                <DndProvider backend={HTML5Backend}>
-                  {/* Location updates commit in the caller's own task instead
+        <UiScaleSync />
+        <Direction>
+          <LiveAnnouncer>
+            <DeploymentTheme>
+              <ToastSwipeProvider>
+                <ToastProvider>
+                  <DndProvider backend={HTML5Backend}>
+                    {/* Location updates commit in the caller's own task instead
                       of React's transition lane. A transition keeps the
                       OUTGOING route painted until the incoming one finishes
                       rendering, so switching conversations left the previous
@@ -83,16 +80,17 @@ const App = () => {
                       transition-safe reads are gated behind
                       `_TRANSITION_SUPPORT_UNSTABLE` hooks this app does not use.
                       Worth revisiting once that state has moved to Jotai. */}
-                  <RouterProvider router={router} useTransitions={false} />
-                  <WakeLockManager />
-                  <QueryDevtoolsGate />
-                  <Toast />
-                  <RadixToast.Viewport className="pointer-events-none fixed inset-x-0 top-0 z-[1000] mx-auto my-2 flex max-w-[560px] flex-col items-stretch justify-start" />
-                </DndProvider>
-              </ToastProvider>
-            </RadixToast.Provider>
-          </ThemeProvider>
-        </LiveAnnouncer>
+                    <RouterProvider router={router} useTransitions={false} />
+                    <WakeLockManager />
+                    <QueryDevtoolsGate />
+                    <Toast />
+                    <ToastViewport />
+                  </DndProvider>
+                </ToastProvider>
+              </ToastSwipeProvider>
+            </DeploymentTheme>
+          </LiveAnnouncer>
+        </Direction>
       </RecoilRoot>
     </QueryClientProvider>
   );
@@ -106,9 +104,7 @@ export default () => (
       allow="autoplay"
       id="audio"
       title="audio-silence"
-      style={{
-        display: 'none',
-      }}
+      className="hidden"
     />
   </ScreenshotProvider>
 );

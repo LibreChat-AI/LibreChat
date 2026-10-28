@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { v4 } from 'uuid';
-import { useAtom, useSetAtom, useStore } from 'jotai';
-import { Clock, OctagonPause, X, Zap } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { dataService, ForkOptions } from 'librechat-data-provider';
+import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
+import { ArrowUpRight, Clock, OctagonPause, X, Zap } from 'lucide-react';
 import {
   Alert,
   Button,
@@ -23,6 +24,14 @@ import type { ActiveSubagentPanel, SubagentControlUiState } from './state';
 import type { ComposerKeyAction } from '~/utils/shortcuts';
 import type { OptionWithIcon } from '~/common';
 import {
+  ACTIVE_THREAD_REFRESH_MS,
+  subagentThreadHasTaskEvidence,
+  useForkConvoMutation,
+  useToolCallPartQuery,
+  useSubagentControlMutation,
+  useSubagentThreadQuery,
+} from '~/data-provider';
+import {
   adaptDurableThreadActivity,
   adaptDurableThreadConversation,
   adaptLivePersistedActivity,
@@ -30,32 +39,38 @@ import {
   retainBoundedMovingWindowTurns,
 } from './adapters';
 import {
-  ACTIVE_THREAD_REFRESH_MS,
-  subagentThreadHasTaskEvidence,
-  useForkConvoMutation,
-  useSubagentControlMutation,
-  useSubagentThreadQuery,
-} from '~/data-provider';
-import {
   activeSubagentPanel,
+  subagentPanelFocusRequest,
   subagentControlStateByTask,
   subagentControlStateKey,
   subagentProgressKey,
   useSubagentProgress,
 } from './state';
+import {
+  agentAuthor,
+  resolveSubagentAuthor,
+  isSelfSpawn as isSelfSpawnType,
+  resolveChildAgent,
+  readableSubagentType,
+  useParentAuthor,
+} from './author';
 import useSubagentActivityStream from '~/data-provider/Subagents/useSubagentActivityStream';
 import SubagentActivity, { SubagentActivityScrollSurface } from './SubagentActivity';
 import ApprovalProvider from '~/components/Chat/Messages/Content/ApprovalContext';
+import { TaskContentScopeContext } from '~/data-provider/Subagents/content';
 import { isMacPlatform, resolveComposerKeyDown } from '~/utils/shortcuts';
 import { useFocusTrap, useLocalize, useNavigateToConvo } from '~/hooks';
+import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import { useConfiguredFooter } from '~/components/Chat/Footer';
 import { useParentSubagents } from './ParentSubagentsProvider';
+import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import SubagentConversation from './SubagentConversation';
 import { eventSubagentSelection } from './eventSelection';
 import { resolveSubagentAgentId } from './identity';
 import { useAgentsMapContext } from '~/Providers';
 import { isLiveSubagentStatus } from './status';
 import { cn, renderAgentAvatar } from '~/utils';
+import { getSubagentPrompt } from './prompt';
 import { useChatSurface } from './surface';
 
 const EVENT_TASK_PAGE_SIZE = 3;
@@ -115,10 +130,13 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   const clearsFooter = useConfiguredFooter();
   const localize = useLocalize();
   const panelStore = useStore();
+  const focusRequest = useAtomValue(subagentPanelFocusRequest);
   const { showToast } = useToastContext();
   const { navigateToConvo } = useNavigateToConvo();
+  const navigate = useNavigate();
   const panelRef = useRef<HTMLDivElement>(null);
-  const isMobile = useMediaQuery('(max-width: 767px)');
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  const isMobile = useScaledMaxWidth(ARTIFACTS_SHEET_MAX_WIDTH);
   /** Two reasons the send control's action list cannot be used where it hangs.
    *  Without hover, a tap on its anchor submits instead of opening it. And
    *  while the panel is a focus-trapped modal, the list is portaled outside the
@@ -149,16 +167,23 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       selection.partIndex,
     ),
   );
-  const foregroundAgentId = resolveSubagentAgentId(progress, selection.subagentIdentity);
-  const foregroundAgent = foregroundAgentId == null ? undefined : agentsMap?.[foregroundAgentId];
-  const foregroundTitle =
-    selection.subagentType === 'self'
-      ? localize('com_ui_subagent_dialog_title_self')
-      : localize('com_ui_subagent_dialog_title', {
-          0: foregroundAgent?.name || selection.subagentType,
-        });
+  const parentAuthor = useParentAuthor(
+    selection.parentConversationId,
+    selection.parentMessageId,
+    localize('com_ui_subagent_parent_agent'),
+    selection.toolCallId,
+    selection.partIndex,
+    selection.durable?.threadId,
+  );
   const threadId = selection.durable?.threadId ?? '';
   const taskId = selection.durable?.taskId ?? '';
+  const receiptScope = useMemo(
+    () =>
+      selection.host === 'conversation' && threadId !== '' && taskId !== ''
+        ? { parentConversationId: selection.parentConversationId, threadId, taskId }
+        : null,
+    [selection.host, selection.parentConversationId, threadId, taskId],
+  );
   const controlIdentity = subagentControlStateKey(selection.parentConversationId, threadId, taskId);
   const [controlState, setControlState] = useAtom(subagentControlStateByTask(controlIdentity));
   const setControlStateForIdentity = useCallback(
@@ -211,13 +236,6 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       });
   }, [byMessageId, selection.event, selection.parentMessageId]);
   const selectedEventActor = eventSiblings.find((child) => child.threadId === threadId);
-  const selectedEventActorName =
-    (selectedEventActor?.agentId == null
-      ? undefined
-      : agentsMap?.[selectedEventActor.agentId]?.name) ??
-    selectedEventActor?.actorId ??
-    eventSummary?.actorId ??
-    foregroundTitle;
   const { data, isLoading, isError, isPreviousData, isReadinessPending, refetch } =
     useSubagentThreadQuery(selection.parentConversationId, threadId, taskId, {
       /** A new delivery re-keys this query to its task. Keeping the previous
@@ -232,6 +250,34 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
    *  task-scoped fields (selected activity, status, control receipts) must not
    *  be attributed to the newly selected task. */
   const threadView = data?.threadId === threadId ? data : undefined;
+  const childKind =
+    threadView?.subagentKind ??
+    progress?.subagentKind ??
+    selection.subagentIdentity?.subagentKind ??
+    byThreadId.get(threadId)?.subagentKind;
+  const isSelfSpawn = isSelfSpawnType(selection.subagentType, childKind);
+  const foregroundAgentId =
+    childKind === 'graph'
+      ? undefined
+      : (resolveSubagentAgentId(progress, selection.subagentIdentity) ??
+        byThreadId.get(threadId)?.agentId);
+  const foregroundAgent = foregroundAgentId == null ? undefined : agentsMap?.[foregroundAgentId];
+  /** Named the way main chat names an agent turn — never by its id. A
+   *  self-spawn is the parent agent working on its own behalf. */
+  const foregroundTitle =
+    foregroundAgent?.name ||
+    (isSelfSpawn
+      ? parentAuthor.name
+      : readableSubagentType(selection.subagentType, foregroundAgentId, childKind)) ||
+    localize('com_ui_subagent_actor');
+  const selectedEventActorName =
+    (selectedEventActor?.agentId == null
+      ? undefined
+      : agentsMap?.[selectedEventActor.agentId]?.name) ??
+    selectedEventActor?.actorId ??
+    eventSummary?.actorId ??
+    selection.event?.actorId ??
+    foregroundTitle;
   const taskView = isPreviousData ? undefined : threadView;
   const latestHistoryGeneration = JSON.stringify([
     threadView?.nextCursor ?? null,
@@ -246,7 +292,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       taskView?.status === 'interrupted' ||
       taskView?.status === 'cancelled');
   const priorTerminalRef = useRef(false);
-  useSubagentActivityStream(selection, !durableTerminal || eventTaskRunning);
+  const contentStream = useSubagentActivityStream(selection, !durableTerminal || eventTaskRunning);
 
   useEffect(() => {
     if (selection.event == null) return;
@@ -742,17 +788,41 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   const close = useCallback(() => {
     resetSelection();
     requestAnimationFrame(() => {
+      const available = (element: HTMLElement | null | undefined) =>
+        element != null &&
+        element.isConnected &&
+        !element.matches(':disabled, [aria-disabled="true"]') &&
+        element.closest('[hidden], [inert], [aria-hidden="true"]') == null;
       const trigger = Array.from(
         document.querySelectorAll<HTMLElement>('[data-subagent-tool-call]'),
       ).find(
         (element) =>
           element.dataset.subagentToolCall === selection.toolCallId &&
           element.dataset.subagentParentMessage === selection.parentMessageId &&
-          element.dataset.subagentPartIndex === String(selection.partIndex),
+          element.dataset.subagentPartIndex === String(selection.partIndex) &&
+          available(element),
       );
-      trigger?.focus();
+      const disclosure = document.querySelector<HTMLElement>(
+        '[data-testid="header-background-tasks-button"]',
+      );
+      const destination =
+        (available(returnFocusRef.current) ? returnFocusRef.current : null) ??
+        trigger ??
+        (available(disclosure) ? disclosure : null);
+      destination?.focus({ preventScroll: true });
     });
   }, [resetSelection, selection.parentMessageId, selection.partIndex, selection.toolCallId]);
+
+  useEffect(() => {
+    const activeElement = document.activeElement;
+    if (
+      activeElement instanceof HTMLElement &&
+      activeElement !== document.body &&
+      !panelRef.current?.contains(activeElement)
+    ) {
+      returnFocusRef.current = activeElement;
+    }
+  }, [focusRequest]);
 
   /** Escape is handled on the element rather than through the trap's own
    *  native listener: that listener sits on this `aside`, so it runs BEFORE any
@@ -760,6 +830,9 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
    *  nested popover that meant to dismiss only itself. As a React handler it
    *  bubbles in DOM order, so an inner control can stop it or mark it handled. */
   useFocusTrap(panelRef, isMobile);
+  useEffect(() => {
+    if (!isMobile) panelRef.current?.focus({ preventScroll: true });
+  }, [focusRequest, isMobile]);
   const handlePanelKeyDown = useCallback(
     (event: ReactKeyboardEvent<HTMLElement>) => {
       if (!isMobile || event.key !== 'Escape' || event.defaultPrevented) return;
@@ -777,22 +850,56 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     };
   }, [isMobile]);
 
+  /** A previewed call renders nothing until its stored part arrives: the preview's output is a
+   *  shortened copy and its transcript is absent, so neither may stand in for the activity. */
+  const awaitsStoredPart = selection.contentPreview != null;
+  const storedPart = useToolCallPartQuery(
+    {
+      conversationId: selection.parentConversationId,
+      messageId: selection.parentMessageId,
+      partIndex: selection.partIndex,
+      toolCallId: selection.toolCallId || undefined,
+      stepId: selection.contentPreview?.stepId,
+      agentId: selection.contentPreview?.agentId,
+    },
+    { enabled: awaitsStoredPart },
+    selection.contentPreview?.revision,
+  );
+  const storedToolCall = awaitsStoredPart ? storedPart.data?.tool_call : undefined;
+  const persistedContent = storedToolCall?.subagent_content ?? selection.persistedContent;
+  const prompt =
+    (storedToolCall == null ? undefined : getSubagentPrompt(storedToolCall.args)) ??
+    selection.prompt;
+  let legacyOutput = selection.legacyOutput;
+  if (awaitsStoredPart && legacyOutput != null) {
+    legacyOutput = storedToolCall?.output;
+  }
+
   const liveActivity = useMemo(
     () =>
       adaptLivePersistedActivity({
         title: foregroundTitle,
-        prompt: selection.prompt,
+        prompt,
         progress,
-        persistedContent: selection.persistedContent,
+        persistedContent,
+        attachments: selection.attachments,
         isDetached: selection.durable != null,
-        legacyOutput: selection.legacyOutput,
+        legacyOutput,
         // A detached parent tool step closes as soon as dispatch succeeds;
         // its terminal status does not describe the still-running child.
         initialProgress: selection.durable == null ? selection.initialProgress : 0,
         isSubmitting: selection.durable == null ? selection.isSubmitting : detachedLiveSubmitting,
         runStepStatus: selection.durable == null ? selection.runStepStatus : undefined,
       }),
-    [detachedLiveSubmitting, foregroundTitle, progress, selection],
+    [
+      detachedLiveSubmitting,
+      foregroundTitle,
+      legacyOutput,
+      persistedContent,
+      progress,
+      prompt,
+      selection,
+    ],
   );
   const activity = useMemo(() => {
     if (selection.durable == null) return liveActivity;
@@ -806,13 +913,15 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     const durable = adaptDurableThreadActivity(taskView, selection.durable.taskId);
     const useLiveItems =
       (durable.status === 'running' || durable.status === 'dispatched') &&
-      liveActivity.items.length > 0;
+      (liveActivity.content?.length ?? liveActivity.items.length) > 0;
     const mergedItems =
       !useLiveItems && durable.items.length > 0 ? durable.items : liveActivity.items;
     const merged = {
       ...durable,
       prompt: durable.prompt ?? liveActivity.prompt,
       items: mergedItems,
+      attachments: durable.attachments ?? liveActivity.attachments,
+      content: !useLiveItems && durable.items.length > 0 ? durable.content : liveActivity.content,
     };
     if (
       transientControl == null ||
@@ -824,7 +933,48 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     }
     return { ...merged, controls: [...(merged.controls ?? []), transientControl] };
   }, [liveActivity, progress, selection.durable, taskView, transientControl]);
-  const panelTitle = selection.event == null ? activity.title : selectedEventActorName;
+  const selectedActorAgentId =
+    selectedEventActor?.agentId ?? threadView?.agentId ?? foregroundAgentId;
+  const selectedActorAgent = resolveChildAgent(
+    selectedActorAgentId,
+    selection.subagentType,
+    parentAuthor.agent,
+    agentsMap,
+    childKind,
+  );
+  /** One author for the header, the composer and every child turn, so the three
+   *  can never name the child differently. */
+  const childAuthor = useMemo(
+    () =>
+      selection.event != null
+        ? agentAuthor(selectedActorAgent, selectedEventActorName)
+        : resolveSubagentAuthor(
+            {
+              agentId: selectedActorAgentId,
+              subagentType: selection.subagentType,
+              subagentKind: childKind,
+              title: threadView?.title ?? byThreadId.get(threadId)?.title,
+            },
+            parentAuthor,
+            agentsMap,
+            localize('com_ui_subagent_actor'),
+          ),
+    [
+      agentsMap,
+      byThreadId,
+      childKind,
+      localize,
+      parentAuthor,
+      selectedActorAgent,
+      selectedActorAgentId,
+      selectedEventActorName,
+      selection.event,
+      selection.subagentType,
+      threadId,
+      threadView?.title,
+    ],
+  );
+  const panelTitle = childAuthor.name;
   const actorOptions = useMemo<OptionWithIcon[]>(() => {
     if (selection.event == null) return [];
     return (
@@ -835,7 +985,11 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         .filter((child) => child.latestTaskId != null || child.threadId === threadId)
         .map((child) => {
           const agent = child.agentId == null ? undefined : agentsMap?.[child.agentId];
-          const name = agent?.name || child.actorId || child.title;
+          const name =
+            agent?.name ||
+            child.actorId ||
+            readableSubagentType(child.subagentType, child.agentId, child.subagentKind) ||
+            localize('com_ui_subagent_actor');
           return {
             value: child.threadId,
             label:
@@ -844,15 +998,14 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
           };
         })
     );
-  }, [agentsMap, eventSiblings, selection.event, threadId]);
+  }, [agentsMap, eventSiblings, localize, selection.event, threadId]);
   const selectedActorLabel =
     actorOptions.find((option) => option.value === threadId)?.label ?? panelTitle;
-  const selectedActorAgentId =
-    selectedEventActor?.agentId ?? threadView?.agentId ?? foregroundAgentId;
-  const selectedActorIcon = renderAgentAvatar(
-    selectedActorAgentId == null ? undefined : agentsMap?.[selectedActorAgentId],
-    { size: 'icon', showBorder: false },
-  );
+  /** The picker's own glyph, matching the rows it lists. */
+  const selectedActorIcon = renderAgentAvatar(selectedActorAgent, {
+    size: 'icon',
+    showBorder: false,
+  });
   const latestConversationTurns = useMemo(
     () => (threadView == null ? [] : adaptDurableThreadConversation(threadView)),
     [threadView],
@@ -885,6 +1038,13 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     };
   }, [historyRebaseActive, latestConversationTurns, latestHistoryGeneration, threadId, threadView]);
   const retainedTurnsValid = retainedTurnsGenerationRef.current === selectionGenerationRef.current;
+  const selectedOutcome = useMemo(
+    () =>
+      taskView?.messages.find(
+        (message) => message.messageId === `${taskId}:assistant` && message.role === 'assistant',
+      ),
+    [taskView, taskId],
+  );
   const conversationTurns = useMemo(() => {
     const durableTurns = retainedTurnsValid
       ? mergeChildConversationTurns(
@@ -899,7 +1059,10 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       const selectedTurnIndex = durableTurns.findIndex((turn) => turn.taskId === taskId);
       if (selectedTurnIndex >= 0) {
         return durableTurns.map((turn, index) => {
-          const selected = index === selectedTurnIndex ? { ...turn, activity } : turn;
+          const selected =
+            index === selectedTurnIndex
+              ? { ...turn, activity, outcome: selectedOutcome ?? turn.outcome }
+              : turn;
           const override = turnDetailOverrides.get(turn.taskId);
           return override == null ? selected : { ...selected, activity: override };
         });
@@ -915,12 +1078,13 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       )?.createdAt;
       const synthesizedTurn = {
         taskId: taskId || `${selection.parentMessageId}:${selection.toolCallId}`,
+        ...(selectedOutcome == null ? {} : { outcome: selectedOutcome }),
         trigger: {
           kind:
             selection.event == null
               ? ('parent_continuation' as const)
               : ('external_event' as const),
-          summary: selection.prompt ?? activity.prompt ?? '',
+          summary: prompt ?? activity.prompt ?? '',
           ...(selectedTaskCreatedAt == null ? {} : { createdAt: selectedTaskCreatedAt }),
         },
         activity,
@@ -944,10 +1108,11 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     return [
       {
         taskId: taskId || `${selection.parentMessageId}:${selection.toolCallId}`,
+        ...(selectedOutcome == null ? {} : { outcome: selectedOutcome }),
         trigger: {
           kind:
             selection.event == null ? ('parent_dispatch' as const) : ('external_event' as const),
-          summary: selection.prompt ?? activity.prompt ?? '',
+          summary: prompt ?? activity.prompt ?? '',
         },
         activity,
       },
@@ -959,10 +1124,12 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     movingWindowTurns,
     olderTurns,
     postRebaseTurns,
+    prompt,
     rebaseTurns,
     retainedTurnsValid,
     threadId,
     selection,
+    selectedOutcome,
     taskId,
     turnDetailOverrides,
   ]);
@@ -1128,7 +1295,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         key: 'steer',
         label: localize('com_ui_steer'),
         kbd: steerKbd,
-        icon: <Zap className="h-4 w-4 text-status-warning" aria-hidden="true" />,
+        icon: <Zap className="text-status-warning h-4 w-4" aria-hidden="true" />,
         disabled: blocked,
         onClick: () => submitControl('steer'),
       },
@@ -1136,7 +1303,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         key: 'queue',
         label: localize('com_ui_queue'),
         kbd: modEnter === 'other' ? modSymbol : undefined,
-        icon: <Clock className="h-4 w-4 text-status-info" aria-hidden="true" />,
+        icon: <Clock className="text-status-info h-4 w-4" aria-hidden="true" />,
         disabled: blocked,
         onClick: () => submitControl('queue'),
       },
@@ -1144,7 +1311,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         key: 'interrupt',
         label: localize('com_ui_subagent_interrupt'),
         kbd: altEnter === 'interrupt' ? altSymbol : undefined,
-        icon: <OctagonPause className="h-4 w-4 text-status-error" aria-hidden="true" />,
+        icon: <OctagonPause className="text-status-error h-4 w-4" aria-hidden="true" />,
         disabled: blocked,
         onClick: () => submitControl('interrupt'),
       },
@@ -1228,13 +1395,19 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     ],
   );
   let panelState: 'ready' | 'loading' | 'error' = 'ready';
-  if (
+  if (awaitsStoredPart && selection.durable == null && storedToolCall == null) {
+    panelState = storedPart.isError ? 'error' : 'loading';
+  } else if (
     selection.durable != null &&
-    liveActivity.items.length === 0 &&
+    (liveActivity.content?.length ?? liveActivity.items.length) === 0 &&
     (isLoading || isReadinessPending)
   ) {
     panelState = 'loading';
-  } else if (selection.durable != null && liveActivity.items.length === 0 && isError) {
+  } else if (
+    selection.durable != null &&
+    (liveActivity.content?.length ?? liveActivity.items.length) === 0 &&
+    isError
+  ) {
     panelState = 'error';
   }
   const renderEventTask = (task: ParentSubagentTaskSummary) => {
@@ -1273,7 +1446,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   let timelinePrefix: ReactNode = null;
   if (hasEarlierRetainedTasks) {
     timelinePrefix = (
-      <div className="flex justify-center border-b border-border-light px-4 py-2">
+      <div className="border-border-light flex justify-center border-b px-4 py-2">
         <Button type="button" variant="ghost" size="sm" onClick={loadEarlierEventTasks}>
           {localize('com_ui_load_more')}
         </Button>
@@ -1284,7 +1457,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       <div
         role="status"
         aria-label={localize('com_ui_subagent_thread_history_truncated')}
-        className="flex h-7 items-center justify-center border-b border-border-light text-text-tertiary"
+        className="border-border-light text-text-tertiary flex h-7 items-center justify-center border-b"
       >
         <span aria-hidden>•••</span>
       </div>
@@ -1295,21 +1468,49 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     [conversationTurns, panelState, taskId],
   );
 
+  const droppedNotice =
+    (progress?.droppedCount ?? 0) > 0 ? (
+      <div role="status" className="text-text-secondary px-4 py-2 text-sm">
+        {localize(
+          progress!.droppedCount === 1
+            ? 'com_ui_subagent_activity_dropped_one'
+            : 'com_ui_subagent_activity_dropped',
+          { count: progress!.droppedCount! },
+        )}
+      </div>
+    ) : null;
+  const storedPartRetry =
+    awaitsStoredPart && storedToolCall == null && storedPart.isError ? (
+      <div role="alert" className="flex items-center justify-center gap-2 px-4 py-2 text-sm">
+        <span className="text-text-secondary">{localize('com_ui_tool_content_error')}</span>
+        <Button type="button" variant="ghost" size="sm" onClick={() => void storedPart.refetch()}>
+          {localize('com_ui_retry')}
+        </Button>
+      </div>
+    ) : null;
+  const activityNotice =
+    droppedNotice == null && storedPartRetry == null ? null : (
+      <>
+        {droppedNotice}
+        {storedPartRetry}
+      </>
+    );
   let activityPanel: ReactNode;
   if (hasConversationProjection) {
     activityPanel = (
       <SubagentActivityScrollSurface padded={false} headerInset>
+        {activityNotice}
         {showUnavailableHistoryBoundary && (
           <div
             role="status"
             aria-label={localize('com_ui_subagent_thread_history_truncated')}
-            className="flex h-7 items-center justify-center border-b border-border-light text-text-tertiary"
+            className="border-border-light text-text-tertiary flex h-7 items-center justify-center border-b"
           >
             <span aria-hidden>•••</span>
           </div>
         )}
         {effectiveHistoryCursor != null && historyState !== 'error' && (
-          <div className="flex justify-center border-b border-border-light px-4 py-2">
+          <div className="border-border-light flex justify-center border-b px-4 py-2">
             <Button
               type="button"
               variant="ghost"
@@ -1319,12 +1520,12 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
             >
               {historyState === 'loading'
                 ? localize('com_ui_loading')
-                : localize('com_ui_subagent_load_earlier_activity')}
+                : localize('com_ui_load_more')}
             </Button>
           </div>
         )}
         {historyState === 'error' && (
-          <div className="flex justify-center border-b border-border-light px-4 py-2">
+          <div className="border-border-light flex justify-center border-b px-4 py-2">
             <Button
               type="button"
               variant="ghost"
@@ -1337,8 +1538,20 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         )}
         <SubagentConversation
           turns={conversationTurns}
-          agentId={threadView?.agentId}
+          author={childAuthor}
+          parentAuthor={isSelfSpawn && selection.event == null ? childAuthor : parentAuthor}
           conversationId={threadId || selection.parentConversationId}
+          interactive={selection.host === 'conversation' && selection.durable == null}
+          recovery={
+            selection.durable == null
+              ? undefined
+              : {
+                  parentConversationId: selection.parentConversationId,
+                  threadId,
+                  selectedTaskId: taskId,
+                  ready: contentStream?.isReady === true,
+                }
+          }
           stateByTask={conversationStateByTask}
           controllableTaskId={
             controlAvailable && !controlPending ? selection.durable?.taskId : undefined
@@ -1357,6 +1570,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   ) {
     activityPanel = (
       <SubagentActivityScrollSurface padded={false} headerInset>
+        {activityNotice}
         <div data-subagent-thread-timeline>
           {timelinePrefix}
           {visibleEventTasks.map(renderEventTask)}
@@ -1372,6 +1586,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         state={panelState}
         showPrompt={false}
         headerInset
+        notice={activityNotice}
         onCancelControl={
           controlAvailable && !controlPending
             ? (controlId) => submitControl('cancel_message', controlId)
@@ -1384,17 +1599,18 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   return (
     <aside
       ref={panelRef}
+      tabIndex={-1}
       role={isMobile ? 'dialog' : 'region'}
       aria-modal={isMobile || undefined}
       aria-label={localize('com_ui_subagent_thread_panel')}
       onKeyDown={handlePanelKeyDown}
-      className="relative flex h-full w-full flex-col overflow-hidden bg-surface-primary-alt text-text-primary"
+      className="bg-surface-primary-alt text-text-primary relative flex h-full w-full flex-col overflow-hidden"
     >
-      {/* The main chat header's own shape: a 52px bar that floats over the
+      {/* The main chat header's own shape: a 3.25rem bar that floats over the
           thread and fades into it, so the conversation scrolls under it and
           more of it is on screen. Gradient stops track THIS surface rather
           than the chat's, since the panel sits on its own background. */}
-      <header className="absolute top-0 z-10 flex h-[52px] w-full items-center gap-2 bg-gradient-to-b from-surface-primary-alt via-surface-primary-alt/70 to-transparent p-2 font-semibold text-text-primary">
+      <header className="from-surface-primary-alt via-surface-primary-alt/70 text-text-primary absolute top-0 z-10 flex h-[3.25rem] w-full items-center gap-2 bg-gradient-to-b to-transparent p-2 font-semibold">
         {actorOptions.length > 1 ? (
           /* The agent builder's picker, so switching actors here reads as the
              same control as every other agent selection in the app — avatar,
@@ -1427,16 +1643,16 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
               portal={false}
               onOpenChange={setActorPickerOpen}
               containerClassName="min-w-0 flex-1 px-0"
-              className="h-9 w-full border-transparent bg-transparent font-semibold hover:bg-surface-hover"
+              className="hover:bg-surface-hover h-9 w-full border-transparent bg-transparent font-semibold"
               showCarat
             />
           </div>
         ) : (
           <>
-            {/* The `MessageRow` author-glyph slot, one size up: no plate
-                behind it, so an agent avatar reads as the avatar it is. */}
+            {/* The `MessageRow` author glyph, one size up: the same face the
+                child's turns below carry. */}
             <div className="flex h-8 w-8 shrink-0 items-center justify-center overflow-hidden rounded-full">
-              {selectedActorIcon}
+              {childAuthor.icon}
             </div>
             <h2 className="min-w-0 flex-1 truncate text-sm font-semibold" title={panelTitle}>
               {panelTitle}
@@ -1447,11 +1663,22 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
           type="button"
           variant="ghost"
           size="icon"
+          onClick={() => navigate(`/c/${encodeURIComponent(selection.parentConversationId)}`)}
+          aria-label={localize('com_ui_subagent_go_to_parent')}
+          title={localize('com_ui_subagent_go_to_parent')}
+          className="h-8 w-8 shrink-0"
+        >
+          <ArrowUpRight className="size-[1.0625rem]" aria-hidden="true" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon"
           onClick={close}
           aria-label={localize('com_ui_close')}
           className="h-8 w-8 shrink-0"
         >
-          <X size={17} aria-hidden="true" />
+          <X className="size-[1.0625rem]" aria-hidden="true" />
         </Button>
       </header>
 
@@ -1461,7 +1688,9 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       <ApprovalProvider
         key={`${selection.parentMessageId}\u0000${selection.toolCallId}\u0000${selection.partIndex}`}
       >
-        {activityPanel}
+        <TaskContentScopeContext.Provider value={receiptScope}>
+          {activityPanel}
+        </TaskContentScopeContext.Provider>
       </ApprovalProvider>
       {(showControlFooter || composerMode != null) && (
         /* The main chat form's own bottom rhythm, read from the same answer it
@@ -1522,11 +1751,11 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
                           key={action.key}
                           type="button"
                           size="icon"
-                          variant="ghost"
+                          variant="quiet"
                           aria-label={action.label}
                           disabled={action.disabled}
                           onClick={action.onClick}
-                          className="size-9 rounded-full text-text-secondary hover:text-text-primary"
+                          className="size-9 rounded-full"
                         >
                           {action.icon}
                         </Button>
@@ -1551,6 +1780,13 @@ function HistoricalEventTaskActivity({
   title: string;
 }) {
   const threadId = selection.durable?.threadId ?? '';
+  const receiptScope = useMemo(
+    () =>
+      selection.host === 'conversation' && threadId !== ''
+        ? { parentConversationId: selection.parentConversationId, threadId, taskId: task.taskId }
+        : null,
+    [selection.host, selection.parentConversationId, threadId, task.taskId],
+  );
   const { data, isLoading, isError, isReadinessPending } = useSubagentThreadQuery(
     selection.parentConversationId,
     threadId,
@@ -1571,12 +1807,14 @@ function HistoricalEventTaskActivity({
   }
 
   return (
-    <SubagentActivity
-      activityId={`${selection.parentMessageId}\u0000${selection.toolCallId}\u0000${task.taskId}`}
-      activity={activity}
-      state={state}
-      showPrompt={false}
-      embedded
-    />
+    <TaskContentScopeContext.Provider value={receiptScope}>
+      <SubagentActivity
+        activityId={`${selection.parentMessageId}\u0000${selection.toolCallId}\u0000${task.taskId}`}
+        activity={activity}
+        state={state}
+        showPrompt={false}
+        embedded
+      />
+    </TaskContentScopeContext.Provider>
   );
 }

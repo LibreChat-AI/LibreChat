@@ -1,23 +1,15 @@
 import { Constants } from '@librechat/agents';
 import { logger } from '@librechat/data-schemas';
-import {
-  EToolResources,
-  getCodeEnvRefForProfile,
-  resolveSandboxFilename,
-} from 'librechat-data-provider';
-import type { AgentToolResources, TFile } from 'librechat-data-provider';
-import type { CodeEnvFile } from '@librechat/agents';
-import type { CodeEnvRefUpdate, CodeExecutionRoute, ProvisionService } from './service';
-import type { ProvisionState } from '~/agents/resources';
+import { EToolResources, mergeCodeEnvRef } from 'librechat-data-provider';
+import type { CodeEnvFile, SubagentExecutionContext } from '@librechat/agents';
+import type { TFile } from 'librechat-data-provider';
+import type { CodeEnvRefUpdate, ProvisionService } from './service';
+import type { ProvisionToolContext } from '../code/queued';
+import type { FileProvisionStorage } from '../operations';
 import type { ServerRequest } from '~/types';
-import {
-  claimCodeDestination,
-  createCodeDestinationSet,
-  reserveCodeDestination,
-  sortCodeFilesByDestinationPriority,
-} from '~/files/code/destinations';
 import { createCodeApiRateLimitBudget, isCodeApiRateLimitError } from '~/utils';
-import { getCodeEnvUploadFilename } from '../code/form';
+import { withFileProvisioning } from '../operations';
+import { planCodeFileUploads } from '../code/queued';
 import { isCodeFileToolName } from '~/agents/tools';
 
 /** Deferred database write produced by a successful provisioning call. */
@@ -27,39 +19,18 @@ interface FileUpdate {
   embedded?: boolean;
 }
 
-/** One attempt plus one retry: a transient write failure would otherwise leave the record
- *  unprovisioned while the queue is cleared. */
-async function persistWithRetry(
-  write: () => Promise<unknown>,
-  onFailure: (error: unknown) => void,
-): Promise<boolean> {
-  for (let attempt = 0; attempt < 2; attempt++) {
-    try {
-      await write();
-      return true;
-    } catch (error) {
-      if (attempt === 1) {
-        onFailure(error);
-      }
-    }
-  }
-  return false;
-}
-
-/** The slice of a per-agent tool context this callback reads and updates. */
-export interface ProvisionToolContext {
-  provisionState?: ProvisionState;
-  tool_resources?: AgentToolResources;
-  /** Code API deployment this agent resolved, so uploads land where it will execute. */
-  codeExecutionContext?: CodeExecutionRoute;
-  /** Successful refs retained while another file in the same batch awaits retry. */
-  pendingProvisionedCodeFiles?: CodeEnvFile[];
-}
+export type { ProvisionToolContext } from '../code/queued';
 
 export interface ProvisionCallbackDeps {
   req: ServerRequest;
+  fileStorage: FileProvisionStorage;
   agentToolContexts: Map<string, ProvisionToolContext>;
   resolvePrimaryAgentId?: () => string | undefined;
+  /** A child routed per call keeps its own context, keyed by its execution. */
+  resolveExecutionContext?: (
+    agentId: string | undefined,
+    executionContext: SubagentExecutionContext | undefined,
+  ) => ProvisionToolContext | undefined;
   provisionToCodeEnv: ProvisionService['provisionToCodeEnv'];
   provisionToVectorDB: ProvisionService['provisionToVectorDB'];
   updateFile: (update: FileUpdate) => Promise<unknown>;
@@ -106,17 +77,17 @@ function resolveProvisionContext({
  */
 export function createProvisionFilesCallback({
   req,
+  fileStorage,
   agentToolContexts,
   resolvePrimaryAgentId,
+  resolveExecutionContext,
   provisionToCodeEnv,
   provisionToVectorDB,
-  updateFile,
-  updateCodeEnvRef,
-  addEmbeddedEntity,
 }: ProvisionCallbackDeps): (
   toolNames: string[],
   agentId?: string,
   signal?: AbortSignal,
+  executionContext?: SubagentExecutionContext,
 ) => Promise<CodeEnvFile[]> {
   /* Agents in a handoff or parallel graph are initialized independently over the same
    * request attachments, so each holds its own ProvisionState for the same file. Keyed
@@ -150,6 +121,7 @@ export function createProvisionFilesCallback({
     toolNames: string[],
     agentId?: string,
     signal?: AbortSignal,
+    executionContext?: SubagentExecutionContext,
   ): Promise<CodeEnvFile[]> {
     signal?.throwIfAborted();
     /* agentId is optional on this callback and a batch for the primary agent may omit
@@ -159,11 +131,15 @@ export function createProvisionFilesCallback({
      * while reading state from a fallback context would upload them as user-scoped,
      * then reconstruct them as agent-scoped on the next turn, and the entity id used to
      * query those vectors would no longer match the one they were stored under. */
-    const { ctx, resolvedAgentId } = resolveProvisionContext({
-      agentId,
-      agentToolContexts,
-      primaryAgentId: resolvePrimaryAgentId?.(),
-    });
+    const placedCtx = resolveExecutionContext?.(agentId, executionContext);
+    const { ctx, resolvedAgentId } =
+      placedCtx != null
+        ? { ctx: placedCtx, resolvedAgentId: agentId }
+        : resolveProvisionContext({
+            agentId,
+            agentToolContexts,
+            primaryAgentId: resolvePrimaryAgentId?.(),
+          });
     if (!ctx?.provisionState) {
       return [];
     }
@@ -183,6 +159,9 @@ export function createProvisionFilesCallback({
     if (!needsCode && !needsSearch) {
       return [];
     }
+
+    const userId = req.user?.id;
+    if (!userId) throw new Error('File provisioning requires an authenticated user');
 
     /** Chat attachments and generated code outputs stay in the user's sandbox and unscoped
      *  vector index; only this agent's own setup files are scoped to it. Membership decides
@@ -259,133 +238,62 @@ export function createProvisionFilesCallback({
       ? [...(ctx.pendingProvisionedCodeFiles ?? [])]
       : [];
     if (needsCode && provisionState.codeEnvFiles.length > 0) {
-      const queuedFileIds = new Set(provisionState.codeEnvFiles.map((file) => file.file_id));
-      const liveFiles =
-        (ctx.tool_resources as Record<string, { files?: TFile[] } | undefined>)[
-          EToolResources.execute_code
-        ]?.files ?? [];
-      const routePrivateFileIds = new Set<string>();
-      for (const candidate of agentToolContexts.values()) {
-        const route =
-          candidate.codeExecutionContext?.executionRouteKey ??
-          candidate.codeExecutionContext?.executionProfile ??
-          'default';
-        if (route !== codeRouteKey) continue;
-        for (const id of candidate.provisionState?.agentScopedFileIds ?? [])
-          routePrivateFileIds.add(id);
+      const uploads = planCodeFileUploads({
+        context: ctx,
+        contexts: agentToolContexts.values(),
+        agentId: resolvedAgentId,
+        userId: req.user?.id,
+        useAdvertisedNames: true,
+      });
+      provisionState.codeEnvDestinations ??= new Map();
+      for (const { file, destination } of uploads) {
+        provisionState.codeEnvDestinations.set(file.file_id, destination);
       }
-      const confirmedDestinations = new Set<string>();
-      const queuedCodeFiles = sortCodeFilesByDestinationPriority(
-        [
-          ...provisionState.codeEnvFiles,
-          ...liveFiles.filter((file) => !queuedFileIds.has(file.file_id)),
-        ],
-        routePrivateFileIds,
-      )
-        .filter((file): file is TFile => {
-          if (!file) return false;
-          const ref = getCodeEnvRefForProfile(file.metadata, codeRouteKey);
-          const recovery = provisionState.codeEnvRecoveryNames?.get(file.file_id);
-          const entityId = entityIdForFile(file);
-          const isTargetScope =
-            ref != null &&
-            ref.kind === (entityId ? 'agent' : 'user') &&
-            ref.id === (entityId ?? req.user?.id);
-          let storedName = recovery?.isTargetScope ? recovery.name : undefined;
-          if (isTargetScope) storedName = ref?.sandboxFilename;
-          // Prefix conflicts are independent recoverable inputs; only equal stored paths
-          // identify superseded content. Foreign-scope refs are claimable hints too.
-          if (storedName == null) return true;
-          if (confirmedDestinations.has(storedName)) return false;
-          confirmedDestinations.add(storedName);
-          return true;
-        })
-        .filter((file) => queuedFileIds.has(file.file_id));
-      /** Every file in this tool-load batch shares one wait allowance. This
-       *  prevents a large recovery set from multiplying the live-turn delay. */
+      const queuedCodeFiles = uploads.map(({ file }) => file);
+      /** Every file in this tool-load batch shares one wait allowance. */
       const codeApiRateLimitBudget = createCodeApiRateLimitBudget(
         req.config?.endpoints?.agents?.codeApiMaxRetryWaitMs,
       );
-      const destinations = createCodeDestinationSet();
-      // Live storage paths are immutable. Reserve the same route-wide set for every
-      // agent so private live resources cannot give a shared recovery divergent names.
-      for (const candidateContext of agentToolContexts.values()) {
-        const candidateRoute =
-          candidateContext.codeExecutionContext?.executionRouteKey ??
-          candidateContext.codeExecutionContext?.executionProfile ??
-          'default';
-        if (candidateRoute !== codeRouteKey) continue;
-        const existingCodeFiles = (
-          candidateContext.tool_resources as
-            | Record<string, { files?: TFile[] } | undefined>
-            | undefined
-        )?.[EToolResources.execute_code]?.files;
-        for (const existing of existingCodeFiles ?? []) {
-          if (queuedFileIds.has(existing.file_id)) continue;
-          reserveCodeDestination(
-            destinations,
-            getCodeEnvRefForProfile(existing.metadata, codeRouteKey)?.sandboxFilename ??
-              resolveSandboxFilename(existing.filename, existing.type),
-          );
-        }
-      }
-      for (const existing of provisionedCodeFiles) {
-        claimCodeDestination(destinations, existing.name, existing.id);
-      }
       const results = await Promise.allSettled(
-        queuedCodeFiles.map(async (file) => {
-          const sandboxFilename = claimCodeDestination(
-            destinations,
-            getCodeEnvUploadFilename(
-              resolveSandboxFilename(
-                getCodeEnvRefForProfile(file.metadata, codeRouteKey)?.sandboxFilename ??
-                  provisionState.codeEnvRecoveryNames?.get(file.file_id)?.name ??
-                  file.filename,
-                file.type,
-              ),
-            ),
-            file.file_id,
-          );
+        uploads.map(async ({ file, destination: sandboxFilename }) => {
           const provisioned = await shareProvisioning(
             shareKey(`code:${codeRouteKey}`, file, sandboxFilename),
-            async () => {
-              const {
-                referenceSet: refs,
-                refUpdate,
-                sandboxFilename: storedSandboxFilename,
-              } = await provisionToCodeEnv({
-                req,
+            () =>
+              withFileProvisioning({
                 file,
-                entity_id: entityIdForFile(file),
-                route: ctx.codeExecutionContext,
-                sandboxFilename,
-                signal,
-                rateLimitBudget: codeApiRateLimitBudget,
-              });
-              signal?.throwIfAborted();
-              /* primeCodeFiles re-reads the database and skips files without a stored
-               * reference, so a tool loaded after an unpersisted upload would run against
-               * an attachment it cannot see. Fail instead of answering from missing input. */
-              const persisted = await persistWithRetry(
-                () => updateCodeEnvRef(refUpdate),
-                (error) =>
-                  logger.error(
-                    `[provisionFiles] Failed to persist code environment reference for file ${refUpdate.file_id}`,
-                    error,
-                  ),
-              );
-              if (!persisted) {
-                throw new Error(
-                  `Failed to persist the code environment reference for file ${refUpdate.file_id}`,
-                );
-              }
-              return { refs, sandboxFilename: storedSandboxFilename };
-            },
+                userId,
+                storage: fileStorage,
+                destination: JSON.stringify([
+                  'code',
+                  codeRouteKey,
+                  entityIdForFile(file) ? 'agent' : 'user',
+                  entityIdForFile(file) ?? userId,
+                  null,
+                  sandboxFilename,
+                ]),
+                operation: async (_claim, onUploadStart) => {
+                  const { refUpdate, sandboxFilename: storedSandboxFilename } =
+                    await provisionToCodeEnv({
+                      req,
+                      file,
+                      entity_id: entityIdForFile(file),
+                      route: ctx.codeExecutionContext,
+                      sandboxFilename,
+                      signal,
+                      rateLimitBudget: codeApiRateLimitBudget,
+                      onUploadStart,
+                    });
+                  const ref = { ...refUpdate.ref, sandboxFilename: storedSandboxFilename };
+                  return {
+                    value: ref,
+                    commit: { code: { ...refUpdate, ref } },
+                  };
+                },
+              }),
           );
-          const { refs: referenceSet, sandboxFilename: returnedSandboxFilename } = provisioned;
-          file.metadata = { ...file.metadata, ...referenceSet };
+          file.metadata = { ...file.metadata, ...mergeCodeEnvRef(file.metadata, provisioned) };
           addProvisionedFile(file, EToolResources.execute_code);
-          const ref = referenceSet.codeEnvRefs?.[codeRouteKey];
+          const ref = provisioned;
           if (ref?.storage_session_id && ref.file_id) {
             const codeFile = {
               id: ref.file_id,
@@ -394,7 +302,7 @@ export function createProvisionFilesCallback({
               /* The name the sandbox stored it under: a converted image is renamed on
                * upload, and telling the model the record's name sends it to a path that
                * does not exist. */
-              name: returnedSandboxFilename,
+              name: ref.sandboxFilename ?? file.filename,
               kind: ref.kind,
             } as CodeEnvFile;
             const existingIndex = provisionedCodeFiles.findIndex(
@@ -429,37 +337,30 @@ export function createProvisionFilesCallback({
       const queuedVectorFiles = provisionState.vectorDBFiles;
       const results = await Promise.allSettled(
         queuedVectorFiles.map(async (file) => {
-          const result = await shareProvisioning(shareKey('search', file), async () => {
-            const provisioned = await provisionToVectorDB({
-              req,
+          const result = await shareProvisioning(shareKey('search', file), () =>
+            withFileProvisioning({
               file,
-              entity_id: entityIdForFile(file),
-              signal,
-            });
-            signal?.throwIfAborted();
-            /* The vectors are already stored, so a failed flag write costs a re-embed next
-             * turn rather than this turn's results. Logged, not fatal. */
-            if (provisioned.embedded && provisioned.fileUpdate) {
-              const update = provisioned.fileUpdate;
-              /* Vectors live under the entity that provisioned them, so the namespace is
-               * recorded alongside the flag. Agents sharing a record, as a duplicate does
-               * with its source, each need their own embedding, and an unscoped upload
-               * lands in the user's namespace rather than in none. */
-              const namespace = namespaceForFile(file);
-              await persistWithRetry(
-                () =>
-                  namespace != null
-                    ? addEmbeddedEntity({ file_id: update.file_id, entityId: namespace })
-                    : updateFile(update),
-                (error) =>
-                  logger.error(
-                    `[provisionFiles] Failed to persist embedding state for file ${update.file_id}`,
-                    error,
-                  ),
-              );
-            }
-            return provisioned;
-          });
+              userId,
+              storage: fileStorage,
+              destination: JSON.stringify(['search', namespaceForFile(file)]),
+              operation: async (_claim, onUploadStart) => {
+                const provisioned = await provisionToVectorDB({
+                  req,
+                  file,
+                  entity_id: entityIdForFile(file),
+                  signal,
+                  onUploadStart,
+                });
+                if (!provisioned.embedded || !provisioned.fileUpdate) {
+                  throw new Error('Vector store did not confirm file provisioning');
+                }
+                return {
+                  value: provisioned,
+                  commit: { embedded: true, entityId: namespaceForFile(file) },
+                };
+              },
+            }),
+          );
           if (result.embedded) {
             file.embedded = true;
             const namespace = namespaceForFile(file);

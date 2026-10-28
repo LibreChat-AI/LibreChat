@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import { Keyv } from 'keyv';
 import { logger } from '@librechat/data-schemas';
 import type { IUser } from '@librechat/data-schemas';
+import { consumeCacheEntry } from '../cache/consume';
 
 /** Default admin panel URL for local development */
 const DEFAULT_ADMIN_PANEL_URL = 'http://localhost:3000';
@@ -131,14 +132,14 @@ export async function generateAdminExchangeCode(
 
   await cache.set(exchangeCode, data);
 
-  logger.info(`[adminExchange] Generated exchange code for user: ${user.email}`);
+  logger.info(`[adminExchange] Generated exchange code for user: ${user._id}`);
 
   return exchangeCode;
 }
 
 /**
  * Exchanges an authorization code for tokens and user data.
- * The code is deleted immediately after retrieval (one-time use).
+ * The code is atomically removed before validation (one-time use).
  * @param cache - The Keyv cache instance for retrieving exchange data
  * @param code - The authorization code to exchange
  * @param requestOrigin - The origin of the requesting client for origin binding
@@ -151,10 +152,7 @@ export async function exchangeAdminCode(
   requestOrigin?: string,
   codeVerifier?: string,
 ): Promise<AdminExchangeResponse | null> {
-  const data = (await cache.get(code)) as AdminExchangeData | undefined;
-
-  /** Delete before validation — ensures one-time use even if subsequent checks throw */
-  await cache.delete(code);
+  const data = await consumeCacheEntry<AdminExchangeData>(cache, code);
 
   if (!data) {
     logger.warn('[adminExchange] Invalid or expired authorization code');
@@ -173,7 +171,7 @@ export async function exchangeAdminCode(
     }
   }
 
-  logger.info(`[adminExchange] Exchanged code for user: ${data.user?.email}`);
+  logger.info(`[adminExchange] Exchanged code for user: ${data.user?.id}`);
 
   return {
     token: data.token,

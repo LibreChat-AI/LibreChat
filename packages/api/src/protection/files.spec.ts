@@ -2,9 +2,7 @@ import { EToolResources, mergeFileConfig } from 'librechat-data-provider';
 import type { FiltersConfig } from 'librechat-data-provider';
 import {
   canInspectUploadExtractedTextAfterProcessing,
-  canInspectUploadTranscriptAfterProcessing,
   getBlockedUploadTranscriptField,
-  isFileFilterFieldEnabled,
   contentFilterUninspectableResponse,
   getBlockedOpaqueFileField,
   getBlockedUninspectableFileField,
@@ -151,49 +149,6 @@ describe('file content inspection policy', () => {
         ocrConfigured: true,
       }),
     ).toBe(true);
-  });
-
-  it('defers transcript fail-close only to STT-supported non-assistant context uploads', () => {
-    expect(
-      canInspectUploadTranscriptAfterProcessing({
-        endpoint: 'agents',
-        toolResource: EToolResources.context,
-        mimeType: 'audio/webm',
-        sttSupported: true,
-      }),
-    ).toBe(true);
-    expect(
-      canInspectUploadTranscriptAfterProcessing({
-        endpoint: 'assistants',
-        toolResource: EToolResources.context,
-        mimeType: 'audio/webm',
-        sttSupported: true,
-      }),
-    ).toBe(false);
-    expect(
-      canInspectUploadTranscriptAfterProcessing({
-        endpoint: 'agents',
-        toolResource: EToolResources.file_search,
-        mimeType: 'audio/webm',
-        sttSupported: true,
-      }),
-    ).toBe(false);
-    expect(
-      canInspectUploadTranscriptAfterProcessing({
-        endpoint: 'agents',
-        toolResource: EToolResources.context,
-        mimeType: 'audio/webm',
-        sttSupported: false,
-      }),
-    ).toBe(false);
-    expect(
-      canInspectUploadTranscriptAfterProcessing({
-        endpoint: 'agents',
-        toolResource: EToolResources.context,
-        mimeType: 'text/plain',
-        sttSupported: true,
-      }),
-    ).toBe(false);
   });
 
   it('treats a text-delivery audio file as carrying its own transcript', () => {
@@ -371,7 +326,6 @@ describe('file content inspection policy', () => {
       files: { pii: { uninspectable: 'block' } },
     } as FiltersConfig;
 
-    expect(isFileFilterFieldEnabled(filters, 'content')).toBe(true);
     expect(getBlockedUninspectableFileField(filters, ['content', 'extracted_text'])).toBe(
       'content',
     );
@@ -387,8 +341,6 @@ describe('file content inspection policy', () => {
       },
     } as FiltersConfig;
 
-    expect(isFileFilterFieldEnabled(filters, 'name')).toBe(true);
-    expect(isFileFilterFieldEnabled(filters, 'content')).toBe(false);
     expect(getBlockedUninspectableFileField(filters, ['content', 'transcript'])).toBeNull();
     expect(
       getBlockedUninspectableFileField(

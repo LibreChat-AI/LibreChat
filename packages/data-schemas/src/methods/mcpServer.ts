@@ -1,8 +1,14 @@
 import { nanoid } from 'nanoid';
-import { normalizeServerName } from 'librechat-data-provider';
+import {
+  ResourceType,
+  PrincipalType,
+  PermissionBits,
+  normalizeServerName,
+} from 'librechat-data-provider';
 import type { Model, RootFilterQuery, Types } from 'mongoose';
 import type { MCPOptions } from 'librechat-data-provider';
 import type { MCPServerDocument } from '../types';
+import { permissionBitSupersets } from './aclEntry';
 import logger from '~/config/winston';
 
 const NORMALIZED_LIMIT_DEFAULT = 20;
@@ -45,7 +51,37 @@ function generateServerNameFromTitle(title: string): string {
   return slug || 'mcp-server'; // Fallback if empty
 }
 
-export function createMCPServerMethods(mongoose: typeof import('mongoose')): {
+export interface MCPServerDeps {
+  /** Returns resource IDs solely owned by the given user. From createAclEntryMethods. */
+  getSoleOwnedResourceIds: (
+    userObjectId: Types.ObjectId,
+    resourceTypes: string | string[],
+  ) => Promise<Types.ObjectId[]>;
+}
+
+/** An MCP server removed with its owner's account. */
+export interface MCPServerViewerEntry {
+  principalType: string;
+  principalId?: string;
+}
+
+/** A view-ACL principal as stored or as already read by a caller. */
+export interface MCPServerViewerPrincipal {
+  principalType: string;
+  principalId?: { toString(): string } | string | null;
+}
+
+const OBJECT_ID_PATTERN = /^[a-f\d]{24}$/i;
+
+export interface ErasableMCPServer {
+  id: string;
+  serverName: string;
+}
+
+export function createMCPServerMethods(
+  mongoose: typeof import('mongoose'),
+  deps: MCPServerDeps,
+): {
   createMCPServer: (data: {
     config: MCPOptions;
     author: string | Types.ObjectId;
@@ -53,7 +89,6 @@ export function createMCPServerMethods(mongoose: typeof import('mongoose')): {
   }) => Promise<MCPServerDocument>;
   findMCPServerByServerName: (serverName: string) => Promise<MCPServerDocument | null>;
   findMCPServerByObjectId: (_id: string | Types.ObjectId) => Promise<MCPServerDocument | null>;
-  findMCPServersByAuthor: (authorId: string | Types.ObjectId) => Promise<MCPServerDocument[]>;
   getListMCPServersByIds: ({
     ids,
     otherParams,
@@ -77,6 +112,11 @@ export function createMCPServerMethods(mongoose: typeof import('mongoose')): {
     updateData: { config?: MCPOptions },
   ) => Promise<MCPServerDocument | null>;
   deleteMCPServer: (serverName: string) => Promise<MCPServerDocument | null>;
+  findUserErasableMCPServers: (userId: string) => Promise<ErasableMCPServer[]>;
+  deleteMCPServersWithAcl: (ids: string[]) => Promise<number>;
+  findMCPServerOAuthTokenUserIds: (serverName: string, tenantId?: string) => Promise<string[]>;
+  findMCPServerViewerEntries: (serverId: string) => Promise<MCPServerViewerEntry[]>;
+  findMCPServerViewerUserIds: (entries: MCPServerViewerPrincipal[]) => Promise<string[]>;
 } {
   /**
    * Finds the next available server name by checking DB and reserved-name collisions.
@@ -199,20 +239,6 @@ export function createMCPServerMethods(mongoose: typeof import('mongoose')): {
   ): Promise<MCPServerDocument | null> {
     const MCPServer = mongoose.models.MCPServer as Model<MCPServerDocument>;
     return await MCPServer.findById(_id).lean<MCPServerDocument>();
-  }
-
-  /**
-   * Find MCP servers by author
-   * @param authorId - The author's ObjectId or string
-   * @returns Array of MCP server documents
-   */
-  async function findMCPServersByAuthor(
-    authorId: string | Types.ObjectId,
-  ): Promise<MCPServerDocument[]> {
-    const MCPServer = mongoose.models.MCPServer as Model<MCPServerDocument>;
-    return await MCPServer.find({ author: authorId })
-      .sort({ updatedAt: -1 })
-      .lean<MCPServerDocument[]>();
   }
 
   /**
@@ -362,11 +388,164 @@ export function createMCPServerMethods(mongoose: typeof import('mongoose')): {
     return { data: servers };
   }
 
+  /**
+   * Account erasure: servers solely owned by the user, plus legacy (pre-ACL) servers that only
+   * carry the author field. Servers shared with another owner are not returned.
+   */
+  async function findUserErasableMCPServers(userId: string): Promise<ErasableMCPServer[]> {
+    const MCPServer = mongoose.models.MCPServer as Model<MCPServerDocument> | undefined;
+    const AclEntry = mongoose.models.AclEntry;
+    if (!MCPServer || !AclEntry) {
+      return [];
+    }
+
+    const userObjectId = new mongoose.Types.ObjectId(userId);
+    const soleOwnedIds = await deps.getSoleOwnedResourceIds(userObjectId, ResourceType.MCPSERVER);
+    const authoredServers = await MCPServer.find({ author: userObjectId })
+      .select('_id serverName')
+      .lean<Array<{ _id: Types.ObjectId; serverName: string }>>();
+    const migratedEntries =
+      authoredServers.length > 0
+        ? await AclEntry.find({
+            resourceType: ResourceType.MCPSERVER,
+            resourceId: { $in: authoredServers.map((s) => s._id) },
+          })
+            .select('resourceId')
+            .lean<Array<{ resourceId: Types.ObjectId }>>()
+        : [];
+    const migratedIds = new Set(migratedEntries.map((e) => e.resourceId.toString()));
+    const legacyServers = authoredServers.filter((s) => !migratedIds.has(s._id.toString()));
+    const aclOwnedServers =
+      soleOwnedIds.length > 0
+        ? await MCPServer.find({ _id: { $in: soleOwnedIds } })
+            .select('_id serverName')
+            .lean<Array<{ _id: Types.ObjectId; serverName: string }>>()
+        : [];
+    const found = new Set(aclOwnedServers.map((s) => s._id.toString()));
+    /** Sole-owned ids whose server is already gone keep an empty name so the ACLs still get cleaned. */
+    const residual = soleOwnedIds
+      .filter((id) => !found.has(id.toString()))
+      .map((id) => ({ id: id.toString(), serverName: '' }));
+    return [
+      ...[...aclOwnedServers, ...legacyServers].map((s) => ({
+        id: s._id.toString(),
+        serverName: s.serverName,
+      })),
+      ...residual,
+    ];
+  }
+
+  /** Users holding an OAuth credential record for the server, used to fence them on removal. */
+  async function findMCPServerOAuthTokenUserIds(
+    serverName: string,
+    tenantId?: string,
+  ): Promise<string[]> {
+    const Token = mongoose.models.Token;
+    if (!Token) {
+      return [];
+    }
+    const identifier = `mcp:${serverName}`;
+    /** Server names are unique per tenant, so a tenantless owner only matches tenantless tokens. */
+    const userIds = await Token.distinct('userId', {
+      tenantId: tenantId ?? null,
+      identifier: { $in: [identifier, `${identifier}:client`, `${identifier}:refresh`] },
+    });
+    return userIds.map(String);
+  }
+
+  /** Principals holding view access on the server, used to find users it was shared with. */
+  async function findMCPServerViewerEntries(serverId: string): Promise<MCPServerViewerEntry[]> {
+    const entries = await mongoose.models.AclEntry.find({
+      resourceType: ResourceType.MCPSERVER,
+      resourceId: new mongoose.Types.ObjectId(serverId),
+      permBits: { $in: permissionBitSupersets(PermissionBits.VIEW) },
+    })
+      .select('principalType principalId')
+      .lean<Array<{ principalType: string; principalId?: Types.ObjectId | string }>>();
+    return entries.map((entry) => ({
+      principalType: entry.principalType,
+      principalId: entry.principalId?.toString(),
+    }));
+  }
+
+  /**
+   * Users a server's view ACL names directly or through a group, so its removal can fence viewers
+   * who hold no OAuth credential. Role and public principals are not enumerated.
+   */
+  async function findMCPServerViewerUserIds(
+    entries: MCPServerViewerPrincipal[],
+  ): Promise<string[]> {
+    const userIds = new Set<string>();
+    const groupIds = new Set<string>();
+    for (const entry of entries) {
+      const principalId = entry.principalId?.toString();
+      if (!principalId) {
+        continue;
+      }
+      if (entry.principalType === PrincipalType.USER) {
+        userIds.add(principalId);
+      } else if (
+        entry.principalType === PrincipalType.GROUP &&
+        OBJECT_ID_PATTERN.test(principalId)
+      ) {
+        groupIds.add(principalId);
+      }
+    }
+    if (groupIds.size === 0) {
+      return [...userIds];
+    }
+    const groups = await mongoose.models.Group.find({
+      _id: { $in: [...groupIds].map((id) => new mongoose.Types.ObjectId(id)) },
+    })
+      .select('memberIds')
+      .lean<Array<{ memberIds?: string[] }>>();
+    /** `memberIds` holds `idOnTheSource` for external users and the user id otherwise. */
+    const memberIds = [...new Set(groups.flatMap((group) => group.memberIds ?? []))];
+    if (memberIds.length === 0) {
+      return [...userIds];
+    }
+    const objectIds = memberIds
+      .filter((id) => OBJECT_ID_PATTERN.test(id))
+      .map((id) => new mongoose.Types.ObjectId(id));
+    const members = await mongoose.models.User.find({
+      $or: [
+        { idOnTheSource: { $in: memberIds } },
+        ...(objectIds.length > 0 ? [{ _id: { $in: objectIds } }] : []),
+      ],
+    })
+      .select('_id')
+      .lean<Array<{ _id: Types.ObjectId }>>();
+    for (const member of members) {
+      userIds.add(member._id.toString());
+    }
+    return [...userIds];
+  }
+
+  /** Deletes MCP servers by id together with every ACL entry on them. */
+  async function deleteMCPServersWithAcl(ids: string[]): Promise<number> {
+    if (ids.length === 0) {
+      return 0;
+    }
+    const MCPServer = mongoose.models.MCPServer as Model<MCPServerDocument>;
+    const objectIds = ids.map((id) => new mongoose.Types.ObjectId(id));
+    const result = await MCPServer.deleteMany({ _id: { $in: objectIds } });
+    /** ACL entries are the retry discovery key for sole-owned servers, so they go last. */
+    await mongoose.models.AclEntry.deleteMany({
+      resourceType: ResourceType.MCPSERVER,
+      resourceId: { $in: objectIds },
+    });
+    return result.deletedCount ?? 0;
+  }
+
   return {
+    findUserErasableMCPServers,
+    deleteMCPServersWithAcl,
+    findMCPServerOAuthTokenUserIds,
+    findMCPServerViewerEntries,
+    findMCPServerViewerUserIds,
     createMCPServer,
     findMCPServerByServerName,
     findMCPServerByObjectId,
-    findMCPServersByAuthor,
     getListMCPServersByIds,
     getListMCPServersByNames,
     updateMCPServer,

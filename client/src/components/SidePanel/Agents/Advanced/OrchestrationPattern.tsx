@@ -35,21 +35,19 @@ export default function OrchestrationPattern({
       <section aria-label={title} className="flex flex-col gap-3 py-4">
         <div className="flex items-start justify-between gap-3">
           <div className="flex min-w-0 items-start gap-2.5">
-            <span className="mt-0.5 flex-shrink-0 text-text-secondary" aria-hidden="true">
+            <span className="text-text-secondary mt-0.5 shrink-0" aria-hidden="true">
               {icon}
             </span>
             <div className="flex min-w-0 flex-col gap-0.5">
               <div className="flex items-center gap-1.5">
-                <span className="text-sm font-medium text-text-primary">{title}</span>
+                <span className="text-text-primary text-sm font-medium">{title}</span>
                 {beta && <BetaPill />}
                 <InfoTrigger />
               </div>
-              <p className="text-xs text-text-secondary">{subtitle}</p>
+              <p className="text-text-secondary text-xs">{subtitle}</p>
             </div>
           </div>
-          {trailing != null && (
-            <div className="flex flex-shrink-0 items-center gap-2">{trailing}</div>
-          )}
+          {trailing != null && <div className="flex shrink-0 items-center gap-2">{trailing}</div>}
         </div>
         {children != null && <div className="flex flex-col gap-3">{children}</div>}
       </section>

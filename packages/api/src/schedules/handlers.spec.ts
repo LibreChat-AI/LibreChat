@@ -93,6 +93,20 @@ describe('toWireSchedule', () => {
     }
   });
 
+  it('projects typed consent availability without exposing the enrollment record', () => {
+    const enrollment = {
+      version: 1 as const,
+      revision: 'grant',
+      scheduleRevision: 0,
+      consents: [],
+    };
+    const wire = toWireSchedule(fullScheduleDoc({ mcpConsent: enrollment }));
+    const available: boolean | undefined = wire.hasMCPConsent;
+    expect(available).toBe(true);
+    expect(wire).not.toHaveProperty('mcpConsent');
+    expect(toWireSchedule(fullScheduleDoc()).hasMCPConsent).toBeUndefined();
+  });
+
   it('preserves the public field values', () => {
     const wire = toWireSchedule(fullScheduleDoc());
     expect(wire.id).toBe('sched-1');
@@ -165,7 +179,6 @@ function makeCreateDeps(over: Partial<SchedulesHandlersDeps> = {}): SchedulesHan
     createScheduleWithSlot: jest.fn(async (data: Partial<ISchedule>) => data as ISchedule),
     getScheduleByClientRequestId: jest.fn(async () => null),
     getScheduleById: jest.fn(async () => null),
-    deleteScheduleById: jest.fn(async () => true),
     deleteUnarmedSchedule: jest.fn(async () => 'deleted'),
     markScheduleDeleting: jest.fn(async () => ({ id: 'sched-1' }) as ISchedule),
     updateScheduleById: jest.fn(async () => ({ id: 'sched-1' }) as ISchedule),
@@ -211,7 +224,6 @@ describe('createSchedule late-create compensation', () => {
       'user-1',
       0,
     );
-    expect(deps.methods.deleteScheduleById).not.toHaveBeenCalled();
     expect(deps.methods.markScheduleDeleting).not.toHaveBeenCalled();
     expect(captured.status).toBe(410);
   });
@@ -257,13 +269,17 @@ describe('createSchedule late-create compensation', () => {
    */
   it('never inserts an armed row, so a failed compensation leaves an inert one', async () => {
     const deps = makeCreateDeps();
-    (deps.methods.deleteScheduleById as jest.Mock).mockRejectedValue(new Error('mongo down'));
     (deps.methods.markScheduleDeleting as jest.Mock).mockRejectedValue(new Error('mongo down'));
     const { res } = makeRes();
     await createSchedulesHandlers(deps).createSchedule(makeCreateReq(), res);
 
     const inserted = (deps.methods.createScheduleWithSlot as jest.Mock).mock.calls[0][0];
     expect(inserted.nextRunAt).toBeUndefined();
+    expect(deps.preflightMCP).toHaveBeenCalledWith(
+      CREATE_BODY.agent_id,
+      expect.objectContaining({ id: 'user-1' }),
+      expect.objectContaining({ scheduleId: inserted.id }),
+    );
     // And it is never armed afterwards, because the barrier refused the create.
     expect(deps.methods.updateScheduleById).not.toHaveBeenCalled();
   });
@@ -358,7 +374,6 @@ describe('createSchedule late-create compensation', () => {
       'user-1',
       0,
     );
-    expect(deps.methods.deleteScheduleById).not.toHaveBeenCalled();
   });
 
   it('answers 201 instead of deleting when the ambiguous arm actually committed', async () => {
@@ -600,7 +615,6 @@ describe('create idempotency', () => {
     expect(deps.methods.armSchedule).not.toHaveBeenCalled();
     expect(deps.methods.updateScheduleById).not.toHaveBeenCalled();
     expect(deps.methods.deleteUnarmedSchedule).not.toHaveBeenCalled();
-    expect(deps.methods.deleteScheduleById).not.toHaveBeenCalled();
   });
 
   /**
@@ -707,7 +721,6 @@ describe('create idempotency', () => {
 
     // The established row survives for the next retry; deleting it here is data loss.
     expect(captured.status).toBe(500);
-    expect(deps.methods.deleteScheduleById).not.toHaveBeenCalled();
     expect(deps.methods.deleteUnarmedSchedule).not.toHaveBeenCalled();
     expect(deps.methods.markScheduleDeleting).not.toHaveBeenCalled();
   });
@@ -1185,6 +1198,11 @@ describe('updateSchedule re-enable attachment revalidation', () => {
     await createSchedulesHandlers(deps).updateSchedule(makeReEnableReq(), res);
 
     expect(markFilesUsed).toHaveBeenCalledWith(['file-a', 'file-b'], 'user-1');
+    expect(deps.preflightMCP).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ id: 'user-1', tenantId: 't1' }),
+      expect.objectContaining({ scheduleId: 'sched-1' }),
+    );
     expect(captured.status ?? 200).toBe(200);
     expect(deps.methods.updateScheduleById).toHaveBeenCalled();
   });

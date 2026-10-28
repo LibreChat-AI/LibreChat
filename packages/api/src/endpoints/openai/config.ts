@@ -1,15 +1,15 @@
-import { Agent } from 'undici';
 import { Providers } from '@librechat/agents';
+import { Agent, fetch as undiciFetch } from 'undici';
 import { KnownEndpoints, EModelEndpoint, ReasoningParameterFormat } from 'librechat-data-provider';
 import type { Dispatcher } from 'undici';
 import type * as t from '~/types';
+import { getOpenAILLMConfig, extractDefaultParams, removeReasoningPayload } from './llm';
 import { getGoogleConfig, stripGeminiFlashBlockedParams } from '~/endpoints/google/llm';
 import { getLLMConfig as getAnthropicLLMConfig } from '~/endpoints/anthropic/llm';
 import { createSSRFSafeAgents, createSSRFSafeUndiciConnect } from '~/auth';
-import { getOpenAILLMConfig, extractDefaultParams } from './llm';
+import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { constructAzureResponsesURL } from '~/utils/azure';
 import { transformToOpenAIConfig } from './transform';
-import { getProxyDispatcher } from '~/utils/proxy';
 import { createFetch } from '~/utils/generators';
 import { mergeHeaders } from '~/utils/headers';
 
@@ -103,6 +103,7 @@ export function getOpenAIConfig(
     directEndpoint,
     streaming = true,
     modelOptions = {},
+    inferenceParameters,
     reverseProxyUrl: baseURL,
   } = options;
   const shouldProtectUserBaseURL = options.baseURLIsUserProvided === true && !!baseURL;
@@ -135,6 +136,7 @@ export function getOpenAIConfig(
   if (isAnthropic) {
     const anthropicResult = getAnthropicLLMConfig(apiKey, {
       modelOptions,
+      inferenceParameters,
       proxy: options.proxy,
       reverseProxyUrl: baseURL,
       addParams,
@@ -184,6 +186,7 @@ export function getOpenAIConfig(
       ),
       dropParams,
       defaultParams,
+      inferenceParameters,
       tools: googleResult.tools,
       llmConfig: googleResult.llmConfig,
       fromEndpoint: EModelEndpoint.google,
@@ -200,6 +203,7 @@ export function getOpenAIConfig(
       addParams,
       dropParams,
       defaultParams,
+      inferenceParameters,
       modelOptions,
       useOpenRouter,
       reasoningFormat: getReasoningFormat({
@@ -210,6 +214,13 @@ export function getOpenAIConfig(
     llmConfig = openaiResult.llmConfig;
     azure = openaiResult.azure;
     tools = openaiResult.tools;
+  }
+
+  if (options.customParams?.reasoningFormat === ReasoningParameterFormat.disabled) {
+    removeReasoningPayload(llmConfig as Record<string, unknown>);
+    if (llmConfig.modelKwargs) {
+      removeReasoningPayload(llmConfig.modelKwargs);
+    }
   }
 
   /**
@@ -235,7 +246,7 @@ export function getOpenAIConfig(
         'HTTP-Referer': 'https://librechat.ai',
         'X-Title': 'LibreChat',
         'X-OpenRouter-Title': 'LibreChat',
-        'X-OpenRouter-Categories': 'general-chat,personal-agent',
+        'X-OpenRouter-Categories': 'general-chat,personal-agent,programming-app',
       },
       headers,
     );
@@ -247,9 +258,11 @@ export function getOpenAIConfig(
     configOptions.defaultQuery = defaultQuery;
   }
 
+  const transportTimeouts = options.transportTimeouts;
   if (shouldProtectUserBaseURL) {
     mergeFetchOptions(configOptions, {
       dispatcher: new Agent({
+        ...transportTimeouts,
         connect: createSSRFSafeUndiciConnect(
           options.allowedAddresses,
           getEffectiveURLPort(baseURL),
@@ -257,11 +270,16 @@ export function getOpenAIConfig(
       }),
       redirect: 'error',
     });
-  }
-
-  const proxyDispatcher = getProxyDispatcher(proxy);
-  if (proxyDispatcher && !shouldProtectUserBaseURL) {
-    mergeFetchOptions(configOptions, { dispatcher: proxyDispatcher });
+  } else if (transportTimeouts != null) {
+    const proxyDispatcher = getProxyDispatcher(proxy, transportTimeouts);
+    mergeFetchOptions(configOptions, {
+      dispatcher: proxyDispatcher ?? getDirectDispatcher(transportTimeouts),
+    });
+  } else {
+    const proxyDispatcher = getProxyDispatcher(proxy);
+    if (proxyDispatcher) {
+      mergeFetchOptions(configOptions, { dispatcher: proxyDispatcher });
+    }
   }
 
   if (azure && !isAnthropic) {
@@ -296,12 +314,23 @@ export function getOpenAIConfig(
   }
 
   if (directEndpoint === true && configOptions?.baseURL != null) {
-    configOptions.fetch = createFetch({
-      directEndpoint: directEndpoint,
-      reverseProxyUrl: configOptions?.baseURL,
-      ssrfAgents,
-      redirect: shouldProtectUserBaseURL ? 'error' : undefined,
-    }) as unknown as Fetch;
+    const directURL = configOptions.baseURL;
+    if (transportTimeouts != null) {
+      /** Keep the exact URL, but use the same proxy/SSRF/timeout policy as SDK requests. */
+      configOptions.fetch = ((_url: string | URL | Request, init?: RequestInit) =>
+        undiciFetch(directURL, {
+          ...(init as Parameters<typeof undiciFetch>[1]),
+          // These options are constructed above with an Undici dispatcher, not another SDK runtime.
+          ...(configOptions.fetchOptions as Parameters<typeof undiciFetch>[1]),
+        })) as unknown as Fetch;
+    } else {
+      configOptions.fetch = createFetch({
+        directEndpoint,
+        reverseProxyUrl: directURL,
+        ssrfAgents,
+        redirect: shouldProtectUserBaseURL ? 'error' : undefined,
+      }) as unknown as Fetch;
+    }
   }
 
   const result: t.OpenAIConfigResult = {

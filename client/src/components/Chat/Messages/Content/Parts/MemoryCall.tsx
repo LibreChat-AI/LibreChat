@@ -8,6 +8,7 @@ import useToolCallState from './useToolCallState';
 import { AttachmentGroup } from './Attachment';
 import parseJsonField from './parseJsonField';
 import MemoryInfo from '../MemoryInfo';
+import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -63,11 +64,12 @@ export default function MemoryCall({
   }, [attachments]);
   const memoryFailed = isMemoryFailureOutput(toolName, output) || memoryErrors.length > 0;
 
-  const { showCode, toggleCode, expandStyle, expandRef, phase } = useToolCallState({
+  const { showCode, toggleCode, expandStyle, expandRef, phase, bare, rowRef } = useToolCallState({
     initialProgress,
     isSubmitting,
     output,
     hasInput: hasPanel || memoryFailed || runStepStatus === 'failed',
+    panelReady: hasPanel,
     onExpand,
     runStepStatus,
     extraError: memoryFailed,
@@ -81,39 +83,42 @@ export default function MemoryCall({
 
   return (
     <>
-      <div className="relative my-1 flex h-5 shrink-0 items-center gap-2.5">
-        <ProgressText
-          phase={phase}
-          onClick={toggleCode}
-          inProgressText={localize(isSave ? 'com_ui_memory_saving' : 'com_ui_memory_deleting')}
-          finishedText={finishedText}
-          durationMs={runStepDurationMs}
-          subtitle={memoryKey || undefined}
-          icon={
-            <Brain
-              className={cn(
-                'size-4 shrink-0 text-text-secondary',
-                phase === 'running' && 'animate-pulse',
-              )}
-              aria-hidden="true"
-            />
-          }
-          hasInput={hasPanel || phase === 'failed'}
-          isExpanded={showCode}
-        />
-      </div>
+      <BareStatus active={bare} text={finishedText} />
+      {!bare && (
+        <div className="relative my-1 flex h-5 shrink-0 items-center gap-2.5" ref={rowRef}>
+          <ProgressText
+            phase={phase}
+            onClick={toggleCode}
+            inProgressText={localize(isSave ? 'com_ui_memory_saving' : 'com_ui_memory_deleting')}
+            finishedText={finishedText}
+            durationMs={runStepDurationMs}
+            subtitle={memoryKey || undefined}
+            icon={
+              <Brain
+                className={cn(
+                  'text-text-secondary size-4 shrink-0',
+                  phase === 'running' && 'animate-pulse',
+                )}
+                aria-hidden="true"
+              />
+            }
+            hasInput={hasPanel || phase === 'failed'}
+            isExpanded={showCode}
+          />
+        </div>
+      )}
       <div style={expandStyle}>
         <div className="overflow-hidden" ref={expandRef}>
           {(hasPanel || phase === 'failed') && (
             <div
               className={cn(
                 toolPanelSpacingClassName,
-                'overflow-hidden rounded-lg border border-border-light bg-surface-secondary p-3',
+                'border-border-light bg-surface-secondary overflow-hidden rounded-lg border p-3',
               )}
             >
               {phase === 'failed' ? (
                 <>
-                  <pre className="whitespace-pre-wrap break-words font-mono text-xs text-status-error">
+                  <pre className="text-status-error font-mono text-xs break-words whitespace-pre-wrap">
                     {output}
                   </pre>
                   <MemoryInfo memoryArtifacts={memoryErrors} />
@@ -121,12 +126,12 @@ export default function MemoryCall({
               ) : (
                 <>
                   {memoryKey && (
-                    <div className="mb-1 text-xs font-bold uppercase tracking-wide text-text-secondary">
+                    <div className="text-text-secondary mb-1 text-xs font-bold tracking-wide uppercase">
                       {memoryKey}
                     </div>
                   )}
                   {isSave && memoryValue && (
-                    <div className="whitespace-pre-wrap text-sm text-text-primary">
+                    <div className="text-text-primary text-sm whitespace-pre-wrap">
                       {memoryValue}
                     </div>
                   )}
@@ -136,7 +141,7 @@ export default function MemoryCall({
                       claimed the memory was gone while the header said
                       Cancelled. The key above already shows what was tried. */}
                   {!isSave && phase === 'completed' && (
-                    <div className="text-sm italic text-text-secondary">
+                    <div className="text-text-secondary text-sm italic">
                       {localize('com_ui_memory_deleted')}
                     </div>
                   )}

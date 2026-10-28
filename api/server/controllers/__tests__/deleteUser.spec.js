@@ -1,3 +1,5 @@
+/** Account deletion converts the id for ObjectId-keyed stores, so it must be a valid one. */
+const USER_ID = '65f1a2b3c4d5e6f708192a3b';
 const mockGetUserById = jest.fn();
 const mockDeleteMessages = jest.fn();
 const mockDeleteAllUserSessions = jest.fn();
@@ -13,7 +15,7 @@ const mockUpdateUserPlugins = jest.fn();
 const mockUpdateUser = jest.fn();
 const mockFindToken = jest.fn();
 const mockVerifyOTPOrBackupCode = jest.fn();
-const mockDeleteUserPluginAuth = jest.fn();
+const mockDeleteAllUserPluginAuths = jest.fn();
 const mockProcessDeleteRequest = jest.fn();
 const mockDeleteToolCalls = jest.fn();
 const mockDeleteUserAgents = jest.fn();
@@ -34,6 +36,12 @@ const mockCancelAndDrainSubagentThreads = jest.fn();
 const mockQuiesceUserSchedules = jest.fn();
 const mockDeleteSchedulesByUser = jest.fn();
 const mockRevokeUserCodeEnvironmentWorkers = jest.fn();
+const mockDeletePasskeysByUser = jest.fn();
+
+jest.mock('../../../../packages/api/src/mcp/oauth/cleanup', () => ({
+  cleanupDeletedMCPServerOAuthUsers: jest.fn(),
+  prepareMCPServerOAuthDeletion: jest.fn(),
+}));
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), info: jest.fn() },
@@ -48,6 +56,12 @@ jest.mock('librechat-data-provider', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  clearSessionHintCookie: jest.fn(),
+  createEmailChangeService: jest.fn(() => ({
+    requestEmailChange: jest.fn(),
+    confirmEmailChange: jest.fn(),
+  })),
+  createEmailChangeDeps: jest.fn(() => ({})),
   MCPOAuthHandler: {},
   MCPTokenStorage: {},
   normalizeHttpError: jest.fn(),
@@ -55,6 +69,7 @@ jest.mock('@librechat/api', () => ({
   needsRefresh: jest.fn(),
   getNewS3URL: jest.fn(),
   deleteAllSharedLinksWithCleanup: (...args) => mockDeleteAllSharedLinksWithCleanup(...args),
+  eraseUserData: jest.requireActual('../../../../packages/api/src/user/erasure.ts').eraseUserData,
   revokeUserCodeEnvironmentWorkers: (...args) => mockRevokeUserCodeEnvironmentWorkers(...args),
   GenerationJobManager: {
     getAccountCleanupJobIdsForUser: (...args) => mockGetCleanupBlockingJobIdsForUser(...args),
@@ -62,13 +77,9 @@ jest.mock('@librechat/api', () => ({
     abortJob: (...args) => mockAbortJob(...args),
   },
   getOwnedAgentCheckpointScope: jest.fn(() => undefined),
-  isStopConfirmed: jest.fn(
-    (result) => result?.success === true || result?.failureReason === 'already_settled',
-  ),
   deleteOwnedAgentCheckpoints: jest.fn(),
-  waitForGenerationPersistence: jest.requireActual(
-    '../../../../packages/api/src/stream/persistence.ts',
-  ).waitForGenerationPersistence,
+  stopUserGenerations: jest.requireActual('../../../../packages/api/src/user/generations.ts')
+    .stopUserGenerations,
   openCheckpointDeletion: jest.fn(async (userId, tenantId, _root, cfg) => ({
     remember: jest.fn(),
     cleanup: () =>
@@ -81,9 +92,11 @@ jest.mock('@librechat/api', () => ({
 
 jest.mock('~/models', () => ({
   deleteAllUserSessions: (...args) => mockDeleteAllUserSessions(...args),
+  deletePasskeysByUser: (...args) => mockDeletePasskeysByUser(...args),
   deleteAllSharedLinks: (...args) => mockDeleteAllSharedLinks(...args),
   updateUserPlugins: (...args) => mockUpdateUserPlugins(...args),
   deleteUserById: (...args) => mockDeleteUserById(...args),
+  deleteAllUserPluginAuths: (...args) => mockDeleteAllUserPluginAuths(...args),
   beginAgentTriggerUserDeletion: (...args) => mockBeginAgentTriggerUserDeletion(...args),
   cancelAgentTriggerUserDeletion: (...args) => mockCancelAgentTriggerUserDeletion(...args),
   deleteMessages: (...args) => mockDeleteMessages(...args),
@@ -110,13 +123,19 @@ jest.mock('~/models', () => ({
   deleteTokens: jest.fn(),
   removeUserFromAllGroups: jest.fn(),
   deleteAclEntries: jest.fn(),
+  deleteUserChatProjects: jest.fn(),
+  deleteUserToolFavorites: jest.fn(),
+  deleteRefreshTokenBridges: jest.fn(),
+  deleteAllAgentQueuedTurnsForUser: jest.fn(),
   deleteSchedulesByUser: (...args) => mockDeleteSchedulesByUser(...args),
   getSoleOwnedResourceIds: jest.fn().mockResolvedValue([]),
+  findUserErasableMCPServers: jest.fn().mockResolvedValue([]),
+  deleteMCPServersWithAcl: jest.fn(),
 }));
 
 jest.mock('~/server/services/PluginService', () => ({
   updateUserPluginAuth: jest.fn(),
-  deleteUserPluginAuth: (...args) => mockDeleteUserPluginAuth(...args),
+  deleteUserPluginAuth: jest.fn(),
 }));
 
 jest.mock('~/server/services/twoFactorService', () => ({
@@ -173,7 +192,7 @@ jest.mock('~/cache', () => ({
 }));
 
 const { deleteUserController } = require('~/server/controllers/UserController');
-const { deleteOwnedAgentCheckpoints } = require('@librechat/api');
+const { deleteOwnedAgentCheckpoints, clearSessionHintCookie } = require('@librechat/api');
 
 function createRes() {
   const res = {};
@@ -189,12 +208,15 @@ function stubDeletionMocks() {
   mockDeleteUserKey.mockResolvedValue();
   mockDeletePresets.mockResolvedValue();
   mockDeleteConvos.mockResolvedValue();
-  mockDeleteUserPluginAuth.mockResolvedValue();
+  mockDeleteAllUserPluginAuths.mockResolvedValue();
   mockDeleteUserById.mockResolvedValue({ deletedCount: 1 });
   mockDeleteAllSharedLinks.mockResolvedValue();
   mockDeleteAllSharedLinksWithCleanup.mockResolvedValue({ deletedCount: 0 });
   mockGetFiles.mockResolvedValue([]);
-  mockProcessDeleteRequest.mockResolvedValue({ deletedFileIds: [], failedFileIds: [] });
+  mockProcessDeleteRequest.mockImplementation(async ({ files }) => ({
+    deletedFileIds: files.map((file) => file.file_id),
+    failedFileIds: [],
+  }));
   mockDeleteFiles.mockResolvedValue();
   mockDeleteToolCalls.mockResolvedValue();
   mockDeleteUserAgents.mockResolvedValue();
@@ -214,6 +236,7 @@ function stubDeletionMocks() {
   mockQuiesceUserSchedules.mockResolvedValue(true);
   mockDeleteSchedulesByUser.mockResolvedValue();
   mockRevokeUserCodeEnvironmentWorkers.mockResolvedValue(0);
+  mockDeletePasskeysByUser.mockResolvedValue();
 }
 
 beforeEach(() => {
@@ -221,23 +244,90 @@ beforeEach(() => {
   stubDeletionMocks();
 });
 
-describe('deleteUserController - 2FA enforcement', () => {
-  it('proceeds with deletion when 2FA is not enabled', async () => {
-    const req = { user: { id: 'user1', _id: 'user1', email: 'a@b.com' }, body: {} };
+describe('deleteUserController - session hint', () => {
+  it('retires the session hint once sessions are revoked, even when a later cleanup fails', async () => {
+    const req = { user: { id: USER_ID, _id: USER_ID, email: 'a@b.com' }, body: {} };
     const res = createRes();
-    mockGetUserById.mockResolvedValue({ _id: 'user1', twoFactorEnabled: false });
+    mockGetUserById.mockResolvedValue({ _id: USER_ID, twoFactorEnabled: false });
+    mockDeletePresets.mockRejectedValue(new Error('preset store unavailable'));
+
+    await deleteUserController(req, res);
+
+    expect(mockDeleteAllUserSessions).toHaveBeenCalledWith({ userId: USER_ID });
+    expect(clearSessionHintCookie).toHaveBeenCalledWith(res);
+    expect(mockDeleteAllUserSessions.mock.invocationCallOrder[0]).toBeLessThan(
+      clearSessionHintCookie.mock.invocationCallOrder[0],
+    );
+    expect(res.status).toHaveBeenCalledWith(500);
+  });
+});
+
+describe('deleteUserController - 2FA enforcement', () => {
+  it('deletes stored files when the DELETE arrives without a body', async () => {
+    const files = [{ file_id: 'file-1', filepath: '/uploads/a', source: 'local' }];
+    const req = { user: { id: USER_ID, _id: USER_ID, email: 'a@b.com' } };
+    const res = createRes();
+    mockGetUserById.mockResolvedValue({ _id: USER_ID, twoFactorEnabled: false });
+    mockGetFiles.mockResolvedValueOnce(files);
+
+    await deleteUserController(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(200);
+    const [{ req: fileRequest, files: deleted }] = mockProcessDeleteRequest.mock.calls[0];
+    expect(deleted).toBe(files);
+    expect(fileRequest.body).toEqual({});
+    expect(fileRequest.user).toBe(req.user);
+  });
+
+  it.each(['reported', 'thrown'])('retains the account on %s failure', async (failure) => {
+    const req = { user: { id: USER_ID, _id: USER_ID }, body: {} };
+    const res = createRes();
+    mockGetUserById.mockResolvedValue({ _id: USER_ID, twoFactorEnabled: false });
+    mockGetFiles.mockResolvedValue([{ file_id: 'file-1', embedded: true }]);
+    if (failure === 'reported') {
+      mockProcessDeleteRequest.mockResolvedValueOnce({
+        deletedFileIds: [],
+        failedFileIds: ['file-1'],
+      });
+    } else {
+      mockProcessDeleteRequest.mockRejectedValueOnce(new Error('provider down'));
+    }
+    await deleteUserController(req, res);
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(mockDeleteFiles).not.toHaveBeenCalled();
+    expect(mockDeleteUserKey).not.toHaveBeenCalled();
+    expect(mockDeleteUserById).not.toHaveBeenCalled();
+    expect(mockCancelAgentTriggerUserDeletion).toHaveBeenCalled();
+  });
+
+  it('proceeds with deletion when 2FA is not enabled', async () => {
+    const req = { user: { id: USER_ID, _id: USER_ID, email: 'a@b.com' }, body: {} };
+    const res = createRes();
+    mockGetUserById.mockResolvedValue({ _id: USER_ID, twoFactorEnabled: false });
 
     await deleteUserController(req, res);
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(res.send).toHaveBeenCalledWith({ message: 'User deleted' });
     expect(mockDeleteMessages).toHaveBeenCalled();
-    expect(mockDeleteUserAgents).toHaveBeenCalledWith('user1');
-    expect(mockDeleteUserPrompts).toHaveBeenCalledWith('user1');
-    expect(mockDeleteUserSkills).toHaveBeenCalledWith('user1');
+    expect(mockDeleteUserAgents).toHaveBeenCalledWith(USER_ID);
+    expect(mockDeleteUserPrompts).toHaveBeenCalledWith(USER_ID);
+    expect(mockDeleteUserSkills).toHaveBeenCalledWith(USER_ID);
     expect(mockInvalidateCodeEnvironmentConfigCache).toHaveBeenCalledWith(undefined);
     expect(mockRevokeUserCodeEnvironmentWorkers).toHaveBeenCalledWith(
-      expect.objectContaining({ userId: 'user1' }),
+      expect.objectContaining({ userId: USER_ID }),
+    );
+    expect(mockDeletePasskeysByUser).toHaveBeenCalledWith(USER_ID);
+    expect(mockDeleteAllUserPluginAuths).toHaveBeenCalledWith(USER_ID);
+    expect(mockDeleteAllSharedLinksWithCleanup).toHaveBeenCalledWith(USER_ID, {
+      awaitCleanup: true,
+    });
+    expect(mockProcessDeleteRequest).toHaveBeenCalledWith({
+      req: expect.objectContaining({ user: req.user, body: {} }),
+      files: [],
+    });
+    expect(mockProcessDeleteRequest.mock.invocationCallOrder[0]).toBeLessThan(
+      mockDeleteFiles.mock.invocationCallOrder[0],
     );
     expect(mockVerifyOTPOrBackupCode).not.toHaveBeenCalled();
     expect(mockBeginAgentTriggerUserDeletion.mock.invocationCallOrder[0]).toBeLessThan(
@@ -262,23 +352,44 @@ describe('deleteUserController - 2FA enforcement', () => {
     expect(mockCancelAgentTriggerUserPurge).not.toHaveBeenCalled();
   });
 
+  it('logs the deleted account by id and tenant without the email address', async () => {
+    const { logger } = require('@librechat/data-schemas');
+    logger.info.mockClear();
+    const req = {
+      user: { id: USER_ID, _id: USER_ID, email: 'a@b.com', tenantId: 'tenant-1' },
+      body: {},
+    };
+    mockGetUserById.mockResolvedValue({
+      _id: USER_ID,
+      email: 'a@b.com',
+      tenantId: 'tenant-1',
+      twoFactorEnabled: false,
+    });
+
+    await deleteUserController(req, createRes());
+
+    const lines = logger.info.mock.calls.map(([line]) => String(line));
+    expect(lines).toContain(`User deleted account. ID: ${USER_ID} Tenant: tenant-1`);
+    expect(JSON.stringify(logger.info.mock.calls)).not.toContain('a@b.com');
+  });
+
   it('aborts active generation jobs before deleting account-owned records', async () => {
     const req = {
-      user: { id: 'user1', _id: 'user1', email: 'a@b.com', tenantId: 'tenant-1' },
+      user: { id: USER_ID, _id: USER_ID, email: 'a@b.com', tenantId: 'tenant-1' },
       body: {},
     };
     const res = createRes();
-    mockGetUserById.mockResolvedValue({ _id: 'user1', twoFactorEnabled: false });
+    mockGetUserById.mockResolvedValue({ _id: USER_ID, twoFactorEnabled: false });
     mockGetCleanupBlockingJobIdsForUser.mockResolvedValueOnce(['stream-1']);
     mockGetAgentJob.mockResolvedValueOnce({
-      metadata: { userId: 'user1', tenantId: 'tenant-1' },
+      metadata: { userId: USER_ID, tenantId: 'tenant-1' },
       createdAt: 123,
     });
     mockAbortJob.mockResolvedValueOnce({ success: true });
 
     await deleteUserController(req, res);
 
-    expect(mockGetCleanupBlockingJobIdsForUser).toHaveBeenCalledWith('user1', 'tenant-1');
+    expect(mockGetCleanupBlockingJobIdsForUser).toHaveBeenCalledWith(USER_ID, 'tenant-1');
     expect(mockAbortJob).toHaveBeenCalledWith('stream-1', {
       expectedCreatedAt: 123,
       awaitProviderDrain: true,
@@ -290,16 +401,16 @@ describe('deleteUserController - 2FA enforcement', () => {
 
   it('deletes owner checkpoints before erasing the account after job records expire', async () => {
     const req = {
-      user: { id: 'user1', _id: 'user1', email: 'a@b.com', tenantId: 'tenant-1' },
+      user: { id: USER_ID, _id: USER_ID, email: 'a@b.com', tenantId: 'tenant-1' },
       body: {},
       config: { endpoints: { agents: { checkpointer: { ttl: 60 } } } },
     };
     const res = createRes();
-    mockGetUserById.mockResolvedValue({ _id: 'user1', twoFactorEnabled: false });
+    mockGetUserById.mockResolvedValue({ _id: USER_ID, twoFactorEnabled: false });
 
     await deleteUserController(req, res);
 
-    expect(deleteOwnedAgentCheckpoints).toHaveBeenCalledWith('user1', 'tenant-1', undefined, {
+    expect(deleteOwnedAgentCheckpoints).toHaveBeenCalledWith(USER_ID, 'tenant-1', undefined, {
       ttl: 60,
     });
     expect(deleteOwnedAgentCheckpoints.mock.invocationCallOrder[0]).toBeLessThan(
@@ -308,9 +419,9 @@ describe('deleteUserController - 2FA enforcement', () => {
   });
 
   it('preserves code environment records when revocation marking fails after deletion', async () => {
-    const req = { user: { id: 'user1', _id: 'user1', email: 'a@b.com' }, body: {} };
+    const req = { user: { id: USER_ID, _id: USER_ID, email: 'a@b.com' }, body: {} };
     const res = createRes();
-    mockGetUserById.mockResolvedValue({ _id: 'user1', twoFactorEnabled: false });
+    mockGetUserById.mockResolvedValue({ _id: USER_ID, twoFactorEnabled: false });
     mockRevokeUserCodeEnvironmentWorkers.mockRejectedValueOnce(new Error('worker unavailable'));
 
     await deleteUserController(req, res);
@@ -318,14 +429,14 @@ describe('deleteUserController - 2FA enforcement', () => {
     expect(res.status).toHaveBeenCalledWith(200);
     expect(mockBeginAgentTriggerUserDeletion).toHaveBeenCalledTimes(1);
     expect(mockDeleteMessages).toHaveBeenCalled();
-    expect(mockDeleteUserById).toHaveBeenCalledWith('user1');
+    expect(mockDeleteUserById).toHaveBeenCalledWith(USER_ID);
     expect(mockDeleteUserCodeEnvironments).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerUserPurge).not.toHaveBeenCalled();
     expect(mockCancelAgentTriggerUserDeletion).not.toHaveBeenCalled();
   });
 
   it('proceeds with deletion when user has no 2FA record', async () => {
-    const req = { user: { id: 'user1', _id: 'user1', email: 'a@b.com' }, body: {} };
+    const req = { user: { id: USER_ID, _id: USER_ID, email: 'a@b.com' }, body: {} };
     const res = createRes();
     mockGetUserById.mockResolvedValue(null);
     mockBeginAgentTriggerUserDeletion.mockResolvedValueOnce('missing');
@@ -337,10 +448,10 @@ describe('deleteUserController - 2FA enforcement', () => {
   });
 
   it('returns error when 2FA is enabled and verification fails with 400', async () => {
-    const req = { user: { id: 'user1', _id: 'user1' }, body: {} };
+    const req = { user: { id: USER_ID, _id: USER_ID }, body: {} };
     const res = createRes();
     mockGetUserById.mockResolvedValue({
-      _id: 'user1',
+      _id: USER_ID,
       twoFactorEnabled: true,
       totpSecret: 'enc-secret',
     });
@@ -354,11 +465,11 @@ describe('deleteUserController - 2FA enforcement', () => {
 
   it('returns 401 when 2FA is enabled and invalid TOTP token provided', async () => {
     const existingUser = {
-      _id: 'user1',
+      _id: USER_ID,
       twoFactorEnabled: true,
       totpSecret: 'enc-secret',
     };
-    const req = { user: { id: 'user1', _id: 'user1' }, body: { token: 'wrong' } };
+    const req = { user: { id: USER_ID, _id: USER_ID }, body: { token: 'wrong' } };
     const res = createRes();
     mockGetUserById.mockResolvedValue(existingUser);
     mockVerifyOTPOrBackupCode.mockResolvedValue({
@@ -381,12 +492,12 @@ describe('deleteUserController - 2FA enforcement', () => {
 
   it('returns 401 when 2FA is enabled and invalid backup code provided', async () => {
     const existingUser = {
-      _id: 'user1',
+      _id: USER_ID,
       twoFactorEnabled: true,
       totpSecret: 'enc-secret',
       backupCodes: [],
     };
-    const req = { user: { id: 'user1', _id: 'user1' }, body: { backupCode: 'bad-code' } };
+    const req = { user: { id: USER_ID, _id: USER_ID }, body: { backupCode: 'bad-code' } };
     const res = createRes();
     mockGetUserById.mockResolvedValue(existingUser);
     mockVerifyOTPOrBackupCode.mockResolvedValue({
@@ -408,12 +519,12 @@ describe('deleteUserController - 2FA enforcement', () => {
 
   it('deletes account when valid TOTP token provided with 2FA enabled', async () => {
     const existingUser = {
-      _id: 'user1',
+      _id: USER_ID,
       twoFactorEnabled: true,
       totpSecret: 'enc-secret',
     };
     const req = {
-      user: { id: 'user1', _id: 'user1', email: 'a@b.com' },
+      user: { id: USER_ID, _id: USER_ID, email: 'a@b.com' },
       body: { token: '123456' },
     };
     const res = createRes();
@@ -434,13 +545,13 @@ describe('deleteUserController - 2FA enforcement', () => {
 
   it('deletes account when valid backup code provided with 2FA enabled', async () => {
     const existingUser = {
-      _id: 'user1',
+      _id: USER_ID,
       twoFactorEnabled: true,
       totpSecret: 'enc-secret',
       backupCodes: [{ codeHash: 'h1', used: false }],
     };
     const req = {
-      user: { id: 'user1', _id: 'user1', email: 'a@b.com' },
+      user: { id: USER_ID, _id: USER_ID, email: 'a@b.com' },
       body: { backupCode: 'valid-code' },
     };
     const res = createRes();

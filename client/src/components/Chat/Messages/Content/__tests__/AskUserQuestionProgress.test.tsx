@@ -1,13 +1,16 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 import AskUserQuestionProgress from '../AskUserQuestionProgress';
+import { ToolPreparation } from '../preparation';
 
 const translations: Record<string, string> = {
   com_ui_asking: 'Asking',
+  com_ui_tool_name_ask_user_question: 'Question',
 };
 
 jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => translations[key] ?? key,
+  useLocalize: () => (key: string, values?: Record<string, string>) =>
+    key === 'com_ui_tool_preparing' ? `Preparing ${values?.[0]}` : (translations[key] ?? key),
 }));
 
 jest.mock('~/Providers/ChatContext', () => {
@@ -118,5 +121,29 @@ describe('AskUserQuestionProgress', () => {
     );
 
     expect(container).toBeEmptyDOMElement();
+  });
+});
+
+describe('question preparation transitions', () => {
+  test('announces preparation until measured dispatch, then asking until its interactive pause', () => {
+    mockLivePauses = { ids: [], hasUnattributed: false };
+    const frame = (args: string, toolDispatchedAt?: number) => (
+      <ToolPreparation
+        call={{ name: 'ask_user_question', args, toolPreparationStartedAt: 0, toolDispatchedAt }}
+        isSubmitting
+      >
+        <AskUserQuestionProgress args={args} toolCallId="call_1" />
+      </ToolPreparation>
+    );
+    const { rerender } = render(frame('{"question":"Which environment'));
+    expect(screen.getByRole('status')).toHaveTextContent('Preparing Question');
+    expect(screen.getByText('Which environment')).toBeInTheDocument();
+    rerender(frame('{"question":"Which environment?"}'));
+    expect(screen.getByRole('status')).toHaveTextContent('Preparing Question');
+    rerender(frame('{"question":"Which environment?"}', 100));
+    expect(screen.getByRole('status')).toHaveTextContent('Asking');
+    mockLivePauses = { ids: ['call_1'], hasUnattributed: false };
+    rerender(frame('{"question":"Which environment?"}', 100));
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
   });
 });
