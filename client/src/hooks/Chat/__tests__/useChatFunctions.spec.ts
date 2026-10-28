@@ -1,9 +1,11 @@
-import type { TMessage } from 'librechat-data-provider';
+import { EModelEndpoint } from 'librechat-data-provider';
+import type { TMessage, TUser } from 'librechat-data-provider';
 import {
   getRegenerateSubmissionMessages,
   getPreliminaryRegenerateResponseMessageId,
   getRegenerateTargetResponseMessage,
 } from '../useChatFunctions';
+import { resolvePayloadPromptPrefix } from '../ask/turn';
 
 const userMessage = (messageId: string, parentMessageId = '00000000-0000-0000-0000-000000000000') =>
   ({
@@ -125,5 +127,34 @@ describe('regenerate response targeting', () => {
         .map((message) => message.messageId)
         .sort(),
     ).toEqual(['assistant-1b', 'user-1']);
+  });
+});
+
+describe('resolvePayloadPromptPrefix', () => {
+  const user = { name: 'Ada' } as TUser;
+  const template = 'Hi {{current_user}}, today is {{current_date}}.';
+  const resolved = /^Hi Ada, today is \d{4}-\d{2}-\d{2} \(\w+\)\.$/;
+
+  it.each([EModelEndpoint.agents, EModelEndpoint.openAI, 'custom-vllm'])(
+    'sends the raw template on the agents route (%s) with stableContext',
+    (endpoint) => {
+      expect(
+        resolvePayloadPromptPrefix({ promptPrefix: template, endpoint, user, stableContext: true }),
+      ).toBe(template);
+    },
+  );
+
+  it('resolves in the browser without stableContext and on the assistants routes', () => {
+    expect(
+      resolvePayloadPromptPrefix({ promptPrefix: template, endpoint: EModelEndpoint.agents, user }),
+    ).toMatch(resolved);
+    expect(
+      resolvePayloadPromptPrefix({
+        promptPrefix: template,
+        endpoint: EModelEndpoint.assistants,
+        user,
+        stableContext: true,
+      }),
+    ).toMatch(resolved);
   });
 });

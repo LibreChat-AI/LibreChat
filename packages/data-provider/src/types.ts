@@ -707,6 +707,8 @@ export type TConfig = {
     /** Approval modes the endpoint policy permits the client to offer. */
     approvalModes?: CodeApprovalMode[];
   };
+  /** `endpoints.agents.promptCache.stableContext`: the server resolves prompt date variables. */
+  stableContext?: boolean;
   /** Effective subagents-per-agent cap served from `endpoints.agents.maxSubagents`. */
   maxSubagents?: number;
   fileSharing?: TAgentsEndpoint['fileSharing'];

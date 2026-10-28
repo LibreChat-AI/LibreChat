@@ -7784,6 +7784,161 @@ describe('AgentClient - titleConvo', () => {
       expect(client.memoryPayload).toBeNull();
     });
 
+    describe('context updates', () => {
+      const history = () => [
+        {
+          messageId: 'msg-1',
+          parentMessageId: null,
+          sender: 'User',
+          text: 'First question',
+          isCreatedByUser: true,
+          createdAt: '2026-03-09T20:00:00.000Z',
+          tokenCount: 5,
+        },
+        {
+          messageId: 'msg-2',
+          parentMessageId: 'msg-1',
+          sender: 'Assistant',
+          text: 'First answer',
+          isCreatedByUser: false,
+          createdAt: '2026-03-09T20:00:10.000Z',
+          tokenCount: 5,
+        },
+        {
+          messageId: 'msg-3',
+          parentMessageId: 'msg-2',
+          sender: 'User',
+          text: 'Next question',
+          isCreatedByUser: true,
+        },
+      ];
+
+      beforeEach(() => {
+        mockReq.config.endpoints = {
+          [EModelEndpoint.agents]: { promptCache: { stableContext: true } },
+        };
+        mockReq.conversationCreatedAt = '2026-03-09T20:00:00.000Z';
+        mockReq.turnStartedAt = Date.parse('2026-03-10T09:00:00.000Z');
+        mockReq.body.timezone = 'UTC';
+        mockAgent.dynamicToolContextMap = { web_search: 'Conversation Date & Time: ...' };
+        require('@librechat/api').countFormattedMessageTokens.mockImplementation(({ content }) =>
+          String(content).includes('<context_update>') ? 90 : 10,
+        );
+      });
+
+      it('announces a later date in the prompt copy only, where the prompt states a date', async () => {
+        const result = await client.buildMessages(history(), 'msg-3', {});
+
+        expect(result.prompt[0].content).toBe('First question');
+        expect(result.prompt[2].content).toBe(
+          '<context_update>\nCurrent date changed to: 2026-03-10 (Tuesday)\n</context_update>\n\nNext question',
+        );
+        expect(result.tokenCountMap['msg-3']).toBe(10);
+        expect(client.indexTokenCountMap[2]).toBe(90);
+        expect(client.memoryPayload[2].content).toBe('Next question');
+
+        mockAgent.dynamicToolContextMap = {};
+        const withoutDate = await client.buildMessages(history(), 'msg-3', {});
+        expect(withoutDate.prompt[2].content).toBe('Next question');
+      });
+
+      it('stamps every user message with its send time with promptMessageTimestamps', async () => {
+        mockReq.config.endpoints = { [EModelEndpoint.agents]: { promptMessageTimestamps: true } };
+
+        const result = await client.buildMessages(history(), 'msg-3', {});
+
+        expect(result.prompt[0].content).toBe(
+          '<context_update>\nMessage sent: 2026-03-09 20:00:00 +00:00 (Monday)\n</context_update>\n\nFirst question',
+        );
+        expect(result.prompt[2].content).toBe(
+          '<context_update>\nMessage sent: 2026-03-10 09:00:00 +00:00 (Tuesday)\n</context_update>\n\nNext question',
+        );
+        expect(client.memoryPayload[0].content).toBe('First question');
+      });
+
+      it('builds the prompt exactly as upstream without the settings', async () => {
+        mockReq.config.endpoints = {};
+        client.options.agent.additional_instructions = 'Agent context';
+
+        const result = await client.buildMessages(history(), 'msg-3', {});
+
+        expect({
+          prompt: result.prompt,
+          tokenCountMap: result.tokenCountMap,
+          indexTokenCountMap: client.indexTokenCountMap,
+          memoryPayload: client.memoryPayload,
+          instructions: client.options.agent.instructions,
+          additional_instructions: client.options.agent.additional_instructions,
+        }).toMatchInlineSnapshot(`
+          {
+            "additional_instructions": "Agent context",
+            "indexTokenCountMap": {
+              "0": 5,
+              "1": 5,
+              "2": 10,
+            },
+            "instructions": "Primary instructions",
+            "memoryPayload": null,
+            "prompt": [
+              {
+                "content": "First question",
+                "messageId": "msg-1",
+                "role": "user",
+              },
+              {
+                "content": "First answer",
+                "messageId": "msg-2",
+                "role": "assistant",
+              },
+              {
+                "content": "Next question",
+                "messageId": "msg-3",
+                "role": "user",
+              },
+            ],
+            "tokenCountMap": {
+              "msg-1": 5,
+              "msg-2": 5,
+              "msg-3": 10,
+            },
+          }
+        `);
+      });
+
+      it('compares the first message after a summary with the conversation start date', async () => {
+        const messages = history();
+        messages[1].content = [{ type: ContentTypes.SUMMARY, text: 'Earlier talk' }];
+        messages.splice(
+          1,
+          0,
+          {
+            messageId: 'msg-0a',
+            parentMessageId: 'msg-1',
+            sender: 'Assistant',
+            text: 'Old answer',
+            isCreatedByUser: false,
+            tokenCount: 5,
+          },
+          {
+            messageId: 'msg-0b',
+            parentMessageId: 'msg-0a',
+            sender: 'User',
+            text: 'Morning question',
+            isCreatedByUser: true,
+            createdAt: '2026-03-10T08:00:00.000Z',
+            tokenCount: 5,
+          },
+        );
+        messages[3].parentMessageId = 'msg-0b';
+
+        const result = await client.buildMessages(messages, 'msg-3', {});
+
+        expect(result.prompt[4].content).toBe(
+          '<context_update>\nCurrent date changed to: 2026-03-10 (Tuesday)\n</context_update>\n\nNext question',
+        );
+      });
+    });
+
     it('does not duplicate a file that is both request context and scoped context', async () => {
       const sharedFile = makeTextFile('shared-file', 'shared.txt', 'Shared duplicate context');
 

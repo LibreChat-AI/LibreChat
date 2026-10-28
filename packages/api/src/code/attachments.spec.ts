@@ -489,6 +489,32 @@ describe('primeWorkspaceAttachments', () => {
     );
   });
 
+  it('lists attachments in upload order with stableContext, in priming order without', async () => {
+    const worker = createFakeWorker();
+    const { deps } = createDeps(worker);
+    const first = remember(chatFile('first.csv', 'one', worker.objects));
+    const second = remember(chatFile('second.csv', 'two', worker.objects));
+
+    const newestFirst = agentWith(attachedContext(), [second, first]);
+    await primeWorkspaceAttachments({
+      agents: [newestFirst],
+      deps: { ...deps, uploadOrder: true },
+    });
+    const oldestFirst = agentWith(attachedContext(), [first, second]);
+    await primeWorkspaceAttachments({
+      agents: [oldestFirst],
+      deps: { ...deps, uploadOrder: true },
+    });
+    const asPrimed = agentWith(attachedContext(), [second, first]);
+    await primeWorkspaceAttachments({ agents: [asPrimed], deps });
+
+    const note = newestFirst.dynamicToolContextMap?.[Tools.execute_code] as string;
+    expect(note.indexOf('first.csv')).toBeLessThan(note.indexOf('second.csv'));
+    expect(oldestFirst.dynamicToolContextMap?.[Tools.execute_code]).toBe(note);
+    const primedNote = asPrimed.dynamicToolContextMap?.[Tools.execute_code] as string;
+    expect(primedNote.indexOf('second.csv')).toBeLessThan(primedNote.indexOf('first.csv'));
+  });
+
   it('creates the ignore file once and checks it again on a later turn', async () => {
     const worker = createFakeWorker();
     const { deps } = createDeps(worker);
