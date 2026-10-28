@@ -1,8 +1,0 @@
-@import 'tailwindcss';
-/* The published token stylesheet: every semantic role, light and dark, as `@librechat/client`
- * documents for a consumer. */
-@import '@librechat/client/theme.css';
-/* The component rules the package build extracts from its JavaScript, such as the field's
- * coarse-pointer 16px minimum. */
-@import '@librechat/client/style.css';
-@config '../tailwind.config.cjs';

@@ -218,7 +218,6 @@ export default [
       'client/src/**/*.{ts,tsx,js,jsx}',
       'packages/client/src/**/*.{ts,tsx,js,jsx}',
       'packages/chat/src/**/*.{ts,tsx,js,jsx}',
-      'packages/chat/example/src/**/*.{ts,tsx}',
     ],
     plugins: { shadcn, design },
     settings: {
@@ -663,28 +662,6 @@ export default [
         },
       ],
       'no-restricted-syntax': ['error', chatLiteralAttributes],
-    },
-  },
-  {
-    // The example is a consumer: it reaches the package through its published entries only, and
-    // nothing of the app.
-    files: ['packages/chat/example/**/*.{ts,tsx}'],
-    rules: {
-      'no-restricted-imports': [
-        'error',
-        {
-          patterns: [
-            {
-              group: ['~/*', '**/client/src/**', '@librechat/frontend', '@librechat/frontend/*'],
-              message: 'The example is an outside consumer; it cannot load the app.',
-            },
-            {
-              group: ['../src', '../src/*', '../../src', '../../src/*', '../../../src/*'],
-              message: 'Import the package by name (@librechat/chat, /react, /components).',
-            },
-          ],
-        },
-      ],
     },
   },
   {

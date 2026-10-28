@@ -13,8 +13,8 @@ module.exports = {
   ],
   // The component library's resolver: its ESM-only @ariakit packages need the `import` condition.
   resolver: '<rootDir>/../client/jest.resolver.cjs',
-  // The example imports the package by name, as a consumer would; this points the name at the
-  // sources so its smoke test needs no package build.
+  // `test/` imports the package by its published entry names, as a consumer would; this points
+  // those names at the sources so the suite needs no package build.
   moduleNameMapper: {
     '^@librechat/chat$': '<rootDir>/src/index.ts',
     '^@librechat/chat/(react|components)$': '<rootDir>/src/$1.ts',

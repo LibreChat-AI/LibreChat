@@ -6,11 +6,10 @@
     "declarationMap": false,
     "isolatedDeclarations": false,
     "rootDir": "..",
-    "types": ["jest", "@testing-library/jest-dom", "vite/client"],
     "paths": {
       "@librechat/chat": ["../src/index.ts"],
       "@librechat/chat/*": ["../src/*.ts"]
     }
   },
-  "include": ["src/**/*", "vite.config.ts"]
+  "include": ["**/*"]
 }
