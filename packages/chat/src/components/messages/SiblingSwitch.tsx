@@ -1,10 +1,11 @@
-import { Button } from '@librechat/client';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
-import type { TMessageProps } from '~/common';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import { cn, Button, useLocalize } from '@librechat/client';
+import type { ReactElement } from 'react';
 
-type TSiblingSwitchProps = Pick<TMessageProps, 'siblingIdx' | 'siblingCount' | 'setSiblingIdx'> & {
+type TSiblingSwitchProps = {
+  siblingIdx?: number;
+  siblingCount?: number;
+  setSiblingIdx?: ((value: number) => void) | null;
   className?: string;
 };
 
@@ -13,7 +14,7 @@ export default function SiblingSwitch({
   siblingCount,
   setSiblingIdx,
   className,
-}: TSiblingSwitchProps) {
+}: TSiblingSwitchProps): ReactElement | null {
   const localize = useLocalize();
 
   if (siblingIdx === undefined) {
@@ -23,11 +24,11 @@ export default function SiblingSwitch({
   }
 
   const previous = () => {
-    setSiblingIdx && setSiblingIdx(siblingIdx - 1);
+    setSiblingIdx?.(siblingIdx - 1);
   };
 
   const next = () => {
-    setSiblingIdx && setSiblingIdx(siblingIdx + 1);
+    setSiblingIdx?.(siblingIdx + 1);
   };
 
   const buttonStyle = cn(

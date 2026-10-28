@@ -1,5 +1,5 @@
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import { cn, useLocalize } from '@librechat/client';
+import type { ReactElement } from 'react';
 
 type HeaderLabelProps = {
   label: string;
@@ -58,7 +58,7 @@ const labelSlot =
  *  `revealOnRowHoverClasses` in `../styles`: the row itself or a descendant
  *  that is not a text-entry control. Both halves matter here for the same
  *  reasons they matter to the timestamp and the footer actions. */
-export default function HeaderLabel({ label, hoverLabel }: HeaderLabelProps) {
+export default function HeaderLabel({ label, hoverLabel }: HeaderLabelProps): ReactElement {
   const localize = useLocalize();
 
   if (!hoverLabel || hoverLabel === label) {

@@ -1,10 +1,10 @@
 import { Zap } from 'lucide-react';
 import { ContentTypes } from 'librechat-data-provider';
+import { HeaderLabel } from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import MessageTimestamp from './MessageTimestamp';
 import { getMessageRowWidthClass } from './width';
-import HeaderLabel from './HeaderLabel';
 import Files from '../Content/Files';
 import { cn } from '~/utils';
 

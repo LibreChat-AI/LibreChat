@@ -43,9 +43,9 @@ jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
   default: () => null,
 }));
 
-jest.mock('~/components/Chat/Messages/Elapsed', () => ({
-  __esModule: true,
-  default: () => null,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  Elapsed: () => null,
   shouldShowElapsed: () => false,
 }));
 

@@ -1,6 +1,15 @@
 import React, { useMemo } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
+import {
+  getHeaderHoverLabel,
+  revealOnRowHoverClasses,
+  messageFooterClasses,
+  Elapsed,
+  shouldShowElapsed,
+  SiblingSwitch,
+  SubRow,
+} from '@librechat/chat/components';
 import type { TMessageContentParts } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon } from '~/common';
 import {
@@ -12,17 +21,12 @@ import {
 import { useLocalize, useAttachments, useMessageHelpers, useContentMetadata } from '~/hooks';
 import ResumeAuthorHeader from '~/components/Chat/Messages/Content/Parts/ResumeAuthorHeader';
 import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source';
-import { getHeaderHoverLabel } from '~/components/Chat/Messages/ui/HeaderLabel';
-import { revealOnRowHoverClasses, messageFooterClasses } from './styles';
 import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import { showThinkingAtom } from '~/store/showThinking';
-import Elapsed, { shouldShowElapsed } from './Elapsed';
 import ContentParts from './Content/ContentParts';
-import SiblingSwitch from './SiblingSwitch';
 import { AuthorContext } from '~/Providers';
 import HoverButtons from './HoverButtons';
-import SubRow from './SubRow';
 import store from '~/store';
 
 /**

@@ -63,9 +63,9 @@ jest.mock('~/components/Chat/Messages/HoverButtons', () => ({
   __esModule: true,
   default: () => null,
 }));
-jest.mock('~/components/Chat/Messages/SiblingSwitch', () => ({
-  __esModule: true,
-  default: ({ className }: { className?: string }) => (
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  SiblingSwitch: ({ className }: { className?: string }) => (
     <span data-testid="sibling-footer" className={className} />
   ),
 }));

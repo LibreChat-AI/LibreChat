@@ -39,13 +39,10 @@ jest.mock('~/components/Chat/Messages/HoverButtons', () => ({
   __esModule: true,
   default: () => null,
 }));
-jest.mock('~/components/Chat/Messages/SiblingSwitch', () => ({
-  __esModule: true,
-  default: () => null,
-}));
-jest.mock('~/components/Chat/Messages/Elapsed', () => ({
-  __esModule: true,
-  default: () => null,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  SiblingSwitch: () => null,
+  Elapsed: () => null,
   shouldShowElapsed: () => false,
 }));
 

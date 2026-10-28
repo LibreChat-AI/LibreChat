@@ -498,21 +498,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/SiblingSwitch.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
-  "client/src/components/Chat/Messages/styles.ts": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Messages/ui/HeaderLabel.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 5
-    }
-  },
   "client/src/components/Chat/Messages/ui/MessageRow.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 1
@@ -1431,6 +1416,21 @@
       "count": 9
     },
     "shadcn/require-static-classes": {
+      "count": 1
+    }
+  },
+  "packages/chat/src/components/messages/HeaderLabel.tsx": {
+    "shadcn/no-arbitrary-values": {
+      "count": 5
+    }
+  },
+  "packages/chat/src/components/messages/SiblingSwitch.tsx": {
+    "shadcn/no-restyle": {
+      "count": 2
+    }
+  },
+  "packages/chat/src/components/messages/styles.ts": {
+    "shadcn/no-arbitrary-values": {
       "count": 1
     }
   },
