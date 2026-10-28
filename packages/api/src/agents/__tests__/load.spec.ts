@@ -297,7 +297,6 @@ describe('loadAgent', () => {
       await loadEphemeral(
         {
           mcpConfig: {},
-          endpoints: { agents: { promptCache: { stableContext: true } } },
           modelSpecs: {
             list: [
               {
@@ -316,7 +315,7 @@ describe('loadAgent', () => {
       /** `applyContextToAgent` reads this straight off the body and prefers it
        *  over the agent's tools when loading `serverInstructions`: the hidden
        *  pick is gone, the spec's pin stays. */
-      expect(body.ephemeralAgent.mcp).toEqual(['hidden', 'visible']);
+      expect(body.ephemeralAgent.mcp).toEqual(['visible', 'hidden']);
     });
   });
 

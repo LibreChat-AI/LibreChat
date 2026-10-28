@@ -1,5 +1,5 @@
 import { v4 } from 'uuid';
-import { cloneDeep } from 'lodash';
+import cloneDeep from 'lodash/cloneDeep';
 import {
   Constants,
   ContentTypes,
@@ -32,27 +32,6 @@ import type {
 } from 'librechat-data-provider';
 import type { TAskProps, TOptions, ExtendedFile } from '~/common';
 import { getRouteChatProjectId, logger } from '~/utils';
-
-/**
- * Prompt prefix as sent in the request payload. Only the Assistants routes take
- * the browser's resolution of special variables; the Agents route receives the
- * template and resolves it server-side against the conversation start, so the
- * resolved text is identical on every turn of a conversation.
- */
-export function resolvePayloadPromptPrefix({
-  promptPrefix,
-  endpoint,
-  user,
-}: {
-  promptPrefix: string;
-  endpoint?: string | null;
-  user?: TUser | null;
-}): string {
-  if (!isAssistantsEndpoint(endpoint)) {
-    return promptPrefix;
-  }
-  return replaceSpecialVars({ text: promptPrefix, user });
-}
 
 /** What `ask` hands the turn builder once it has decided the send may go ahead. */
 export type BuildTurnInput = {
@@ -181,9 +160,8 @@ export function buildTurn({
   let currentMessages: TMessage[] = overrideMessages ?? cachedMessages ?? [];
 
   if (conversation?.promptPrefix) {
-    conversation.promptPrefix = resolvePayloadPromptPrefix({
-      promptPrefix: conversation.promptPrefix,
-      endpoint,
+    conversation.promptPrefix = replaceSpecialVars({
+      text: conversation.promptPrefix,
       user,
     });
   }

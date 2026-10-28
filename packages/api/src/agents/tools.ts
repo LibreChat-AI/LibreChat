@@ -5,7 +5,6 @@ import {
   BashExecutionToolDefinition,
   ReadFileToolDefinition,
   SkillToolDefinition,
-  TOOL_DISPATCHER_NAME,
   buildBashExecutionToolDescription,
 } from '@librechat/agents';
 import {
@@ -111,8 +110,6 @@ export interface BuildToolSetConfig {
   tools?: (ToolInstanceLike | null | undefined)[];
   /** Tool names retained on unresolved agent descriptors for history replay. */
   historicalToolNames?: readonly string[];
-  /** The agent binds the SDK's dispatcher tool, so its past calls stay in the history. */
-  toolDispatch?: boolean;
 }
 
 export interface BuildHistoricalToolNamesConfig {
@@ -248,7 +245,7 @@ export function buildToolSet(agentConfig: BuildToolSetConfig | null | undefined)
     return new Set();
   }
 
-  const { toolDefinitions, tools, historicalToolNames, toolDispatch } = agentConfig;
+  const { toolDefinitions, tools, historicalToolNames } = agentConfig;
 
   const toolNames =
     toolDefinitions && toolDefinitions.length > 0
@@ -256,11 +253,7 @@ export function buildToolSet(agentConfig: BuildToolSetConfig | null | undefined)
       : (tools ?? []).map((tool) => tool?.name);
 
   return new Set(
-    [
-      ...toolNames,
-      ...(historicalToolNames ?? []),
-      ...(toolDispatch === true ? [TOOL_DISPATCHER_NAME] : []),
-    ].filter((name): name is string => Boolean(name)),
+    [...toolNames, ...(historicalToolNames ?? [])].filter((name): name is string => Boolean(name)),
   );
 }
 

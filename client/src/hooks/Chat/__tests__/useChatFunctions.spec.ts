@@ -1,6 +1,4 @@
-import { EModelEndpoint } from 'librechat-data-provider';
-import type { TMessage, TUser } from 'librechat-data-provider';
-import { resolvePayloadPromptPrefix } from '../ask/turn';
+import type { TMessage } from 'librechat-data-provider';
 import {
   getRegenerateSubmissionMessages,
   getPreliminaryRegenerateResponseMessageId,
@@ -127,26 +125,5 @@ describe('regenerate response targeting', () => {
         .map((message) => message.messageId)
         .sort(),
     ).toEqual(['assistant-1b', 'user-1']);
-  });
-});
-
-describe('resolvePayloadPromptPrefix', () => {
-  const user = { name: 'Ada' } as TUser;
-  const template = 'Hi {{current_user}}, today is {{current_date}}.';
-
-  it.each([EModelEndpoint.agents, EModelEndpoint.openAI, 'custom-vllm'])(
-    'sends the raw template on the agents route (%s) for server-side resolution',
-    (endpoint) => {
-      expect(resolvePayloadPromptPrefix({ promptPrefix: template, endpoint, user })).toBe(template);
-    },
-  );
-
-  it('resolves special variables in the browser for assistants endpoints', () => {
-    const resolved = resolvePayloadPromptPrefix({
-      promptPrefix: template,
-      endpoint: EModelEndpoint.assistants,
-      user,
-    });
-    expect(resolved).toMatch(/^Hi Ada, today is \d{4}-\d{2}-\d{2} \(\w+\)\.$/);
   });
 });

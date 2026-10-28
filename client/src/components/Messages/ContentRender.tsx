@@ -14,7 +14,6 @@ import {
 import { revealOnRowHoverClasses, messageFooterClasses } from '~/components/Chat/Messages/styles';
 import { useLocalize, useAttachments, useMessageActions, useContentMetadata } from '~/hooks';
 import ResumeAuthorHeader from '~/components/Chat/Messages/Content/Parts/ResumeAuthorHeader';
-import PromptCacheResetNotice from '~/components/Chat/Messages/Content/PromptCacheResetNotice';
 import ToolCallLimitNotice from '~/components/Chat/Messages/Content/ToolCallLimitNotice';
 import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source';
 import Elapsed, { shouldShowElapsed } from '~/components/Chat/Messages/Elapsed';
@@ -169,6 +168,7 @@ const ContentRender = memo(function ContentRender({
 
   return (
     <MessageRow
+      message={msg}
       id={msg.messageId}
       icon={author.icon}
       label={author.label}
@@ -226,7 +226,6 @@ const ContentRender = memo(function ContentRender({
         </SubRow>
       }
     >
-      {!msg.isCreatedByUser && <PromptCacheResetNotice message={msg} />}
       <AuthorContext.Provider value={author}>
         <ErrorSourceProvider message={msg}>
           {!edit && msg.isCreatedByUser && msg.privacyRevision ? (

@@ -249,8 +249,6 @@ function buildAgentToolContext({ agent, config }) {
      *  the producing agent's config in multi-endpoint graphs. */
     endpointTokenConfig: config.endpointTokenConfig,
     toolRegistry: config.toolRegistry,
-    /** Read at execution: the turn context's tool plan sets it after initialization. */
-    toolDispatch: () => config.toolDispatch === true,
     backgroundToolNames: config.backgroundToolNames,
     intentToolNames: config.intentToolNames,
     mcpAvailableTools: config.mcpAvailableTools,

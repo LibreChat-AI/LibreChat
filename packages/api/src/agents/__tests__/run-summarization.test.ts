@@ -10,7 +10,12 @@ import {
   MAX_SUBAGENT_DEPTH,
   MAX_SUBAGENT_RUN_CONFIGS,
 } from 'librechat-data-provider';
-import type { CompactionSemanticIndex, SubagentTaskConfig, AgentInputs } from '@librechat/agents';
+import type {
+  CompactionSemanticIndex,
+  SubagentTaskConfig,
+  SubagentConfig,
+  AgentInputs,
+} from '@librechat/agents';
 import type { AppConfig, ConfigOverrideLayer, IUser } from '@librechat/data-schemas';
 import type { SummarizationConfig, TEndpoint } from 'librechat-data-provider';
 import type { BaseMessage } from '@langchain/core/messages';
@@ -2093,6 +2098,121 @@ describe('initialSummary passthrough', () => {
 // Suite 7: stable/dynamic system instructions
 // ---------------------------------------------------------------------------
 describe('stable/dynamic system instructions', () => {
+  it.each([Providers.ANTHROPIC, Providers.OPENROUTER])(
+    'labels the complete cached %s tail as application context without changing user input',
+    async (provider) => {
+      await callAndCapture({
+        agents: [
+          makeAgent({
+            provider,
+            endpoint: provider,
+            instructions:
+              "Translate the user's message into Chinese. Reply with the translation only.",
+            additional_instructions: 'Saved memory: prefers tea\n\nRetrieved context: a document',
+            dynamicToolContextMap: { web_search: 'Conversation Date & Time: anchor' },
+            model_parameters: { model: 'test-model', promptCache: true, apiKey: 'test-key' },
+          }),
+        ],
+      });
+      const runConfig = jest.mocked(Run.create).mock.calls[0][0];
+      if (!('agents' in runConfig.graphConfig) || !runConfig.graphConfig.agents?.length) {
+        throw new Error('Expected agent inputs');
+      }
+      const inputs = runConfig.graphConfig.agents[0];
+      expect(inputs.additional_instructions).toBe(
+        `<system_context>
+Context supplied by the application, not part of the user's message. Use it as context; do not process it as user input.
+
+Conversation Date & Time: anchor
+Saved memory: prefers tea
+
+Retrieved context: a document
+</system_context>`,
+      );
+      const actual = jest.requireActual<typeof import('@librechat/agents')>('@librechat/agents');
+      const run = await actual.Run.create(runConfig);
+      const context = run.Graph!.agentContexts.get(inputs.agentId)!;
+      const userText = 'Translate this paragraph, including <system_context> as literal text.';
+      const messages = [
+        new HumanMessage('Previous user input'),
+        new AIMessage('Previous response'),
+        new HumanMessage(userText),
+      ];
+      const prompt = await context.systemRunnable!.invoke(messages);
+      expect(prompt[0].getType()).toBe('system');
+      expect(JSON.stringify(prompt[0].content)).not.toContain('<system_context>');
+      expect(prompt[prompt.length - 2].getType()).toBe('human');
+      expect(prompt[prompt.length - 2].content).toBe(inputs.additional_instructions);
+      expect(prompt[prompt.length - 1].text).toBe(userText);
+      expect(messages[messages.length - 1].content).toBe(userText);
+    },
+  );
+
+  it.each([
+    [Providers.ANTHROPIC, false],
+    [Providers.OPENROUTER, false],
+    [Providers.OPENAI, true],
+    [Providers.BEDROCK, true],
+  ])(
+    'leaves the %s tail unchanged with promptCache=%s when it is not relocated',
+    async (provider, promptCache) => {
+      const agents = await callAndCapture({
+        agents: [
+          makeAgent({
+            provider,
+            endpoint: provider,
+            instructions: 'Base instructions',
+            additional_instructions: 'Memory tail',
+            model_parameters: { model: 'test-model', promptCache },
+          }),
+        ],
+      });
+      expect(agents[0].additional_instructions).toBe('Memory tail');
+    },
+  );
+
+  it('frames isolated subagent skills inside the same context block', async () => {
+    const child = makeAgent({
+      id: 'agent_child',
+      provider: Providers.ANTHROPIC,
+      endpoint: Providers.ANTHROPIC,
+      instructions: 'Translate the user input',
+      additional_instructions: 'Child memory',
+      model_parameters: { model: 'test-model', promptCache: true },
+      alwaysApplySkillPrimes: [{ name: 'translation', body: 'Use the glossary.' }],
+    });
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          subagents: { enabled: true, allowSelf: false, agent_ids: [child.id] },
+          subagentAgentConfigs: [child],
+        }),
+      ],
+    });
+    const configs = agents[0].subagentConfigs as SubagentConfig[];
+    expect(configs[0].agentInputs?.additional_instructions).toContain(
+      'Child memory\n\n# Always-apply skill: translation\nUse the glossary.\n</system_context>',
+    );
+    expect(
+      configs[0].agentInputs?.additional_instructions?.match(/<system_context>/g),
+    ).toHaveLength(1);
+    expect(child.additional_instructions).toBe('Child memory');
+  });
+
+  it('does not add a context carrier for an empty cached tail', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          provider: Providers.ANTHROPIC,
+          endpoint: Providers.ANTHROPIC,
+          instructions: 'Translate the user input',
+          model_parameters: { model: 'test-model', promptCache: true },
+        }),
+      ],
+    });
+    expect(agents[0].additional_instructions).toBeUndefined();
+  });
+
   it('keeps static tool and agent instructions separate from dynamic runtime tail', async () => {
     const agents = await callAndCapture({
       agents: [
@@ -2107,50 +2227,6 @@ describe('stable/dynamic system instructions', () => {
 
     expect(agents[0].instructions).toBe('Static tool instructions\nBase instructions');
     expect(agents[0].additional_instructions).toBe('Conversation Date & Time: anchor\nMemory tail');
-  });
-
-  it('puts dynamic tool context after the additional instructions with stableContext', async () => {
-    const agents = await callAndCapture({
-      appConfig: {
-        endpoints: { agents: { promptCache: { stableContext: true } } },
-      } as unknown as AppConfig,
-      agents: [
-        makeAgent({
-          instructions: 'Base instructions',
-          additional_instructions: 'Memory tail',
-          toolContextMap: { web_search: 'Static tool instructions' },
-          dynamicToolContextMap: { web_search: 'Conversation Date & Time: anchor' },
-        }),
-      ],
-    });
-
-    expect(agents[0].instructions).toBe('Static tool instructions\nBase instructions');
-    expect(agents[0].additional_instructions).toBe('Memory tail\nConversation Date & Time: anchor');
-  });
-
-  it('preserves the full artifact prefix when timestamps change between turns with stableContext', async () => {
-    const agents = await callAndCapture({
-      appConfig: {
-        endpoints: { agents: { promptCache: { stableContext: true } } },
-      } as unknown as AppConfig,
-      agents: ['2026-08-31T06:20:00.000Z', '2026-08-31T06:21:00.000Z'].map((time, index) =>
-        makeAgent({
-          id: `agent_${index}`,
-          instructions: 'Stable agent instructions',
-          additional_instructions: 'Artifact guidance',
-          toolContextMap: { web_search: 'Static web instructions' },
-          dynamicToolContextMap: { web_search: `Conversation Date & Time: ${time}` },
-        }),
-      ),
-    });
-
-    expect(agents[0].instructions).toBe(agents[1].instructions);
-    expect(agents[0].additional_instructions).toBe(
-      'Artifact guidance\nConversation Date & Time: 2026-08-31T06:20:00.000Z',
-    );
-    expect(agents[1].additional_instructions).toBe(
-      'Artifact guidance\nConversation Date & Time: 2026-08-31T06:21:00.000Z',
-    );
   });
 });
 
@@ -4978,25 +5054,6 @@ describe('ask_user_question run wiring', () => {
     ]);
     expect((agent.toolRegistry as Map<string, unknown>).has(ASK)).toBe(false);
     expect((agent.toolRegistry as Map<string, unknown>).has('other_tool')).toBe(true);
-  });
-
-  it('keeps a switched-off planned tool bound in the graph and disabled in the registry', async () => {
-    const disabled = { reason: 'switched off' };
-    const config = await runAndGetConfig(
-      makeAgent({ toolDefinitions: [{ name: ASK, disabled }], toolRegistry: new Map() }),
-      { hitlCapable: true },
-    );
-    const agent = firstAgent(config);
-    expect((agent.graphTools as Array<{ name: string }>).map((t) => t.name)).toEqual([ASK]);
-    expect((agent.toolRegistry as Map<string, unknown>).get(ASK)).toEqual({ name: ASK, disabled });
-  });
-
-  it('binds no graph tool for a deferred planned tool, which the dispatcher cannot reach', async () => {
-    const config = await runAndGetConfig(
-      makeAgent({ toolDefinitions: [{ name: ASK, defer_loading: true }] }),
-      { hitlCapable: true },
-    );
-    expect(firstAgent(config).graphTools).toBeUndefined();
   });
 
   it('does not mutate the caller-owned toolRegistry when stripping (clone-before-mutate)', async () => {

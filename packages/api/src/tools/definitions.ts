@@ -24,7 +24,7 @@ import { resolveJsonSchemaRefs, normalizeJsonSchema, sanitizeGeminiSchema } from
 import { buildToolClassification } from './classification';
 import { getToolDefinition } from './registry/definitions';
 import { toolkitExpansion } from './toolkits/mapping';
-import { isMCPAllPlaceholder, sortNames } from '~/mcp/utils';
+import { isMCPAllPlaceholder } from '~/mcp/utils';
 
 export interface MCPServerTool {
   function?: {
@@ -76,8 +76,6 @@ export interface LoadToolDefinitionsParams {
    * alias, or the aliased server's definitions would be emitted under the
    * unavailable server's names.
    */
-  /** Orders the tools of an `mcp_all` server by name (`promptCache.stableContext`). */
-  sortMcpTools?: boolean;
   accessibleServerNames?: readonly string[];
 }
 
@@ -144,7 +142,6 @@ export async function loadToolDefinitions(
     mcpServerNames,
     rawServerNames,
     accessibleServerNames,
-    sortMcpTools = false,
   } = params;
   const {
     getOrFetchMCPServerTools,
@@ -318,9 +315,7 @@ export async function loadToolDefinitions(
     }
 
     if (isMCPAllPlaceholder(toolName)) {
-      const toolNames = Object.keys(serverTools);
-      for (const actualToolName of sortMcpTools ? sortNames(toolNames) : toolNames) {
-        const toolDef = serverTools[actualToolName];
+      for (const [actualToolName, toolDef] of Object.entries(serverTools)) {
         if (toolDef?.function) {
           mcpToolDefs.push(
             bindToolApprovalIdentity(

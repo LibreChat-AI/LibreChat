@@ -2,15 +2,6 @@ import mongoose, { Schema } from 'mongoose';
 import type { IMessage } from '~/types/message';
 import { agentFadingContextDefinition } from './fading';
 
-/** A context source state; shared with the conversation's anchor. */
-export const contextEntrySchema: Schema = new Schema(
-  {
-    key: { type: String, required: true },
-    value: { type: String, default: null },
-  },
-  { _id: false },
-);
-
 const messageSchema: Schema<IMessage> = new Schema(
   {
     messageId: {
@@ -71,12 +62,6 @@ const messageSchema: Schema<IMessage> = new Schema(
     privateText: { type: String, select: false },
     privacyRevision: { type: String },
     privateTextTokens: { type: [String], select: false, default: undefined },
-    /** Server-written only (`saveMessage` metadata, `setMessageContextAnchor`); may hold memory
-     *  text, so both stay out of ordinary reads, shares and forks. */
-    contextUpdates: { type: [contextEntrySchema], select: false, default: undefined },
-    contextAnchor: { type: [contextEntrySchema], select: false, default: undefined },
-    /** Server-written by `saveMessage`; encrypted reasoning, so it stays out of every ordinary read. */
-    providerItems: { type: Schema.Types.Mixed, select: false },
     isCreatedByUser: {
       type: Boolean,
       required: true,
@@ -159,6 +144,8 @@ const messageSchema: Schema<IMessage> = new Schema(
       default: undefined,
       meiliIndex: true,
     },
+    /** Server-written by `saveMessage`; encrypted reasoning, so it stays out of every ordinary read. */
+    providerItems: { type: Schema.Types.Mixed, select: false },
     thread_id: {
       type: String,
     },
@@ -379,6 +366,12 @@ messageSchema.index({
  * the sort back into memory for them.
  */
 messageSchema.index({ conversationId: 1, user: 1, createdAt: 1, _id: 1 });
+
+/**
+ * Serves the cursor-paginated message read when sorted by `updatedAt`, the
+ * default of `GET /api/messages`; the `createdAt` sort uses the index above.
+ */
+messageSchema.index({ conversationId: 1, user: 1, updatedAt: 1, _id: 1 });
 
 /**
  * Serves the batched newest-task read for child threads. `user` is an equality

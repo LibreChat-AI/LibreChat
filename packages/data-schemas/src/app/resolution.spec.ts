@@ -2865,6 +2865,23 @@ describe('mergeConfigOverrides: Azure groups an override writes', () => {
       expect(later.endpoints?.azureOpenAI?.assistantModels).toEqual(['gpt-5', 'o3-mini']);
     });
 
+    it('keeps them on for a group whose model entry, not the group, supports them', () => {
+      const modelLevel = {
+        ...plain,
+        models: { 'gpt-5-mini': { deploymentName: 'gpt-5-mini', assistants: true } },
+      };
+      const merged = mergeWithGroups(assistantsBase, [
+        fakeConfig({ endpoints: { azureOpenAI: { groups: [modelLevel] } } }, 10, [
+          'endpoints.azureOpenAI.groups',
+        ]),
+      ]);
+
+      const azure = merged.endpoints?.azureOpenAI;
+      expect(azure?.assistants).toBe(true);
+      expect(azure?.assistantModels).toEqual(['gpt-5-mini']);
+      expect(azure?.assistantGroups).toEqual(['plain']);
+    });
+
     it('turns off a layer that turns them on over models none of which supports them', () => {
       const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
       const merged = mergeWithGroups(base, [
@@ -4421,6 +4438,27 @@ describe('issue params', () => {
       type: 'number',
     });
     expect(byPath['endpoints.allowedAddresses.0']).toEqual({ reason: 'missing_port' });
+  });
+
+  it('keeps record-key diagnostics at their full path inside a union', () => {
+    expect(
+      getConfigOverrideIssues({
+        interface: {
+          theme: {
+            version: 1,
+            name: 'Custom',
+            modes: { light: { colors: { Invalid: '255 255 255' } } },
+          },
+        },
+      }),
+    ).toEqual([
+      {
+        path: 'interface.theme.modes.light.colors.Invalid',
+        segments: ['interface', 'theme', 'modes', 'light', 'colors', 'Invalid'],
+        code: 'invalid_string',
+        params: { validation: 'regex' },
+      },
+    ]);
   });
 
   it('names the integer expectation of a fractional step limit', () => {

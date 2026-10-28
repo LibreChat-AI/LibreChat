@@ -6,6 +6,13 @@ jest.mock('nanoid', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  writeGuarded: (res, chunk) => {
+    if (res.writableEnded === true || res.destroyed === true) {
+      return false;
+    }
+    res.write(chunk);
+    return true;
+  },
   sendEvent: jest.fn(),
   writeAttachmentEvent: jest.fn(),
   createOwnedToolEndHandler: jest.fn((callback) => ({ handle: callback })),
@@ -1907,7 +1914,6 @@ describe('provider output items', () => {
       collectedUsage: [],
       streamId: 'conversation-1',
       jobCreatedAt: 1234,
-      storeProviderItems: true,
     });
     await handlers[GraphEvents.ON_RUN_STEP].handle(GraphEvents.ON_RUN_STEP, {
       id: 'step-1',

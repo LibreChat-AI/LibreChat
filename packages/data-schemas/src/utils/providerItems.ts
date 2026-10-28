@@ -1,12 +1,16 @@
 type ToolCallPart = { tool_call?: Record<string, unknown> } | null;
 
+/** Keeps a message document far below the MongoDB size limit; over it no items are kept, so every later turn restores the rounds the same way. */
+export const MAX_PROVIDER_ITEMS_CHARS = 2_000_000;
+
 /**
  * Splits the provider output items off the tool call parts of a response
  * (`tool_call.providerItems`: encrypted reasoning and ids of an OpenAI Responses
  * round). They live in a field of their own, outside `content`, so no read of the
  * content can carry them by accident.
  * @returns the content without them, and the items by tool call id (those of a call
- *          without an id are dropped); undefined when the content has none
+ *          without an id are dropped, all of them over the size cap); undefined when the
+ *          content has none
  */
 export function splitProviderItems(
   content: unknown,
@@ -28,5 +32,12 @@ export function splitProviderItems(
     }
     return { ...part, tool_call: rest };
   });
-  return found ? { content: stripped, providerItems } : undefined;
+  if (!found) {
+    return undefined;
+  }
+  return {
+    content: stripped,
+    providerItems:
+      JSON.stringify(providerItems).length <= MAX_PROVIDER_ITEMS_CHARS ? providerItems : {},
+  };
 }

@@ -851,13 +851,7 @@ export function createUserMethods(
   ): Promise<IUser | null> {
     const User = mongoose.models.User;
 
-    // First, ensure the personalization object exists
-    const user = await User.findById(userId);
-    if (!user) {
-      return null;
-    }
-
-    // Use $set to update the nested field, which will create the personalization object if it doesn't exist
+    /** `$set` on the nested path creates `personalization` when missing; a missing user yields null. */
     const updateOperation = {
       $set: {
         'personalization.memories': memoriesEnabled,
@@ -1005,29 +999,36 @@ export function createUserMethods(
   };
 
   /**
-   * Updates the plugins for a user based on the action specified (install/uninstall).
+   * Installs or uninstalls a plugin with a single atomic array operator, so concurrent
+   * install/uninstall requests cannot overwrite each other.
    * @param userId - The user ID whose plugins are to be updated
-   * @param plugins - The current plugins array
+   * @param _plugins - Ignored; the caller's possibly stale snapshot, kept for signature compatibility
    * @param pluginKey - The key of the plugin to install or uninstall
    * @param action - The action to perform, 'install' or 'uninstall'
-   * @returns The result of the update operation or null if action is invalid
+   * @returns The updated user, or null if the action is invalid or the user is missing
    */
   async function updateUserPlugins(
     userId: string,
-    plugins: string[] | undefined,
+    _plugins: string[] | undefined,
     pluginKey: string,
     action: 'install' | 'uninstall',
   ): Promise<IUser | null> {
-    const userPlugins = plugins ?? [];
+    let arrayOperation: Record<string, { plugins: string }>;
     if (action === 'install') {
-      return updateUser(userId, { plugins: [...userPlugins, pluginKey] });
+      arrayOperation = { $addToSet: { plugins: pluginKey } };
+    } else if (action === 'uninstall') {
+      arrayOperation = { $pull: { plugins: pluginKey } };
+    } else {
+      return null;
     }
-    if (action === 'uninstall') {
-      return updateUser(userId, {
-        plugins: userPlugins.filter((plugin) => plugin !== pluginKey),
-      });
-    }
-    return null;
+    const User = mongoose.models.User;
+    const updated = await User.findByIdAndUpdate(
+      userId,
+      { ...arrayOperation, $unset: { expiresAt: '' } },
+      { new: true, runValidators: true },
+    ).lean<IUser>();
+    await invalidateAuthUserDocCache(userId);
+    return updated;
   }
 
   return {

@@ -20,6 +20,7 @@ import type {
   ResponseStatus,
   Usage,
 } from './types';
+import { writeGuarded } from '~/utils/events';
 
 /* =============================================================================
  * RESPONSE TRACKER
@@ -102,15 +103,15 @@ export function createResponseTracker(): ResponseTracker {
  * The `event:` field matches the `type` in the data payload.
  */
 export function writeEvent(res: ServerResponse, event: ResponseEvent): void {
-  res.write(`event: ${event.type}\n`);
-  res.write(`data: ${JSON.stringify(event)}\n\n`);
+  writeGuarded(res, `event: ${event.type}\n`);
+  writeGuarded(res, `data: ${JSON.stringify(event)}\n\n`);
 }
 
 /**
  * Write the terminal [DONE] event
  */
 export function writeDone(res: ServerResponse): void {
-  res.write('data: [DONE]\n\n');
+  writeGuarded(res, 'data: [DONE]\n\n');
 }
 
 /* =============================================================================

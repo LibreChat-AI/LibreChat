@@ -39,6 +39,7 @@ import {
   scheduledMCPResourceBindingSchema,
   scheduledMCPReadOnlyPolicySchema,
 } from './types/scheduleConsent';
+import { partialWithoutDefaults } from './zod';
 
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_DEFAULT = 24 * 1024;
 export const AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_HARD_MAX = 64 * 1024;
@@ -63,6 +64,8 @@ import { ComponentTypes, SettingTypes, OptionTypes } from './generate';
 import { STATEFUL_CODE_ENVIRONMENTS } from './stateful-code';
 import { specsConfigSchema, TSpecsConfig } from './models';
 import { fileConfigSchema } from './file-config';
+import { clientLimitsSchema } from './clientLimits';
+import type { TClientLimits } from './clientLimits';
 import {
   PULL_REQUEST_PROVIDERS,
   PULL_REQUEST_BATCH_VERSION,
@@ -180,6 +183,7 @@ export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnl
   'endpoints.agents.backgroundTasks.completionResultBatchSize': 'startup',
   'endpoints.agents.backgroundTasks.completionReceiptBatching': 'startup',
   'endpoints.agents.toolApproval.hooks': 'operator',
+  'mcpSettings.oauthFailureRetentionMs': 'startup',
   'mcpSettings.catalogRecovery.maxStateEntries': 'startup',
   'mcpSettings.catalogRecovery.maxDetachedDiscoveries': 'startup',
   'mcpSettings.catalogRecovery.authorizationFenceRetryIntervalMs': 'startup',
@@ -708,7 +712,11 @@ type SchemaShape<T> = T extends z.ZodObject<infer U> ? U : never;
 
 // Helper type to determine the default value or undefined based on whether the field has a default
 type DefaultValue<T> =
-  T extends z.ZodDefault<z.ZodTypeAny> ? ReturnType<T['_def']['defaultValue']> : undefined;
+  T extends z.ZodDefault<infer Inner>
+    ? z.output<Inner>
+    : T extends z.ZodPrefault<infer Inner>
+      ? z.input<Inner>
+      : undefined;
 
 // Extract default values or undefined from the schema shape
 type ExtractDefaults<T> = {
@@ -719,14 +727,13 @@ export type SchemaDefaults<T> = ExtractDefaults<SchemaShape<T>>;
 
 export type TConfigDefaults = SchemaDefaults<typeof configSchema>;
 
-export function getSchemaDefaults<Schema extends z.AnyZodObject>(
+export function getSchemaDefaults<Schema extends z.ZodObject>(
   schema: Schema,
 ): ExtractDefaults<SchemaShape<Schema>> {
   const shape = schema.shape;
   const entries = Object.entries(shape).map(([key, value]) => {
-    if (value instanceof z.ZodDefault) {
-      // Extract default value if it exists
-      return [key, value._def.defaultValue()];
+    if (value instanceof z.ZodDefault || value instanceof z.ZodPrefault) {
+      return [key, value.def.defaultValue];
     }
     return [key, undefined];
   });
@@ -781,7 +788,7 @@ export const azureBaseSchema = z.object({
   dropParams: z.array(z.string()).optional(),
   version: z.string().optional(),
   baseURL: z.string().optional(),
-  additionalHeaders: z.record(z.string()).optional(),
+  additionalHeaders: z.record(z.string(), z.string()).optional(),
 });
 
 export type TAzureBaseSchema = z.infer<typeof azureBaseSchema>;
@@ -884,7 +891,7 @@ export const baseEndpointSchema = z.object({
    * providers through an AI gateway / reverse proxy that consumes metadata
    * headers (provider-native request shaping is preserved).
    */
-  headers: z.record(z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   titlePrompt: z.string().optional(),
   titleModel: z.string().optional(),
   titleConvo: z.boolean().optional(),
@@ -1012,7 +1019,7 @@ export const assistantEndpointSchema = baseEndpointSchema.merge(
         userIdQuery: z.boolean().optional(),
       })
       .optional(),
-    headers: z.record(z.string()).optional(),
+    headers: z.record(z.string(), z.string()).optional(),
   }),
 );
 
@@ -1235,7 +1242,7 @@ export const toolApprovalHookConfigSchema = z.object({
   /** Optional regex matched against the tool name; omit to run for every tool. */
   matcher: z.string().optional(),
   /** Static options forwarded to the module's builder; the hook's own per-call config. */
-  options: z.record(z.unknown()).optional(),
+  options: z.record(z.string(), z.unknown()).optional(),
 });
 
 export type TToolApprovalHookConfig = z.infer<typeof toolApprovalHookConfigSchema>;
@@ -1691,20 +1698,6 @@ export const agentsEndpointSchema = baseEndpointSchema
       /** Graph steps an agent run may take; a run with fewer than 1 cannot take a step. */
       recursionLimit: z.number().int().min(1).optional(),
       disableBuilder: z.boolean().optional().default(false),
-      /** Prefixes every user message in the prompt with the time it was sent, to the second. */
-      promptMessageTimestamps: z.boolean().optional().default(false),
-      /** Prompt-cache levers for the agents endpoint. */
-      promptCache: z
-        .object({
-          /**
-           * Keeps the cacheable prompt prefix stable across the turns of a conversation: prompt
-           * time is anchored to the conversation start, date changes are announced in the
-           * history, and per-turn context stays out of the stable instructions. Off reproduces
-           * the previous behavior exactly.
-           */
-          stableContext: z.boolean().optional().default(false),
-        })
-        .optional(),
       /** Optional workspace guidance acquisition budget, separate from command execution. */
       repositoryInstructions: z
         .object({
@@ -1740,7 +1733,7 @@ export const agentsEndpointSchema = baseEndpointSchema
                 .default(DEFAULT_CACHE_CLEAR_TIMEOUT_MS),
             })
             .optional()
-            .default({}),
+            .prefault({}),
         })
         .optional(),
       /** Cap on any agent's `recursion_limit` and on `recursionLimit`. */
@@ -1753,7 +1746,7 @@ export const agentsEndpointSchema = baseEndpointSchema
       /** Per-tool overrides of `maxToolCallArgBytes`, keyed by model-facing tool name; `0`
        * disables the guard for that tool only. Merged over LibreChat's shipped default of
        * `{ create_file: 131072 }`. */
-      maxToolCallArgBytesByTool: z.record(z.number()).optional(),
+      maxToolCallArgBytesByTool: z.record(z.string(), z.number()).optional(),
       /** Characters of retained tool output the save path may tokenize exactly for the
        * context gauge when a turn stops at the tool-call limit (see
        * `retainedToolTokens`). Tokenizing costs ~60 ms/MB and runs once per stopped
@@ -2222,9 +2215,8 @@ export const agentsEndpointSchema = baseEndpointSchema
       checkpointer: checkpointerSchema,
     }),
   )
-  .default({
+  .prefault({
     disableBuilder: false,
-    promptMessageTimestamps: false,
     capabilities: defaultAgentCapabilities,
     maxCitations: 30,
     maxCitationsPerFile: 7,
@@ -2257,7 +2249,7 @@ export const paramDefinitionSchema = z.object({
       path: ['positiveMin'],
     })
     .optional(),
-  enumMappings: z.record(z.union([z.number(), z.boolean(), z.string()])).optional(),
+  enumMappings: z.record(z.string(), z.union([z.number(), z.boolean(), z.string()])).optional(),
   component: z.nativeEnum(ComponentTypes).optional(),
   optionType: z.nativeEnum(OptionTypes).optional(),
   columnSpan: z.number().int().nonnegative().optional(),
@@ -2314,7 +2306,7 @@ export const endpointSchema = baseEndpointSchema.merge(
      * OpenAI-compatible endpoints.
      */
     provider: z.literal(EModelEndpoint.anthropic).optional(),
-    headers: z.record(z.string()).optional(),
+    headers: z.record(z.string(), z.string()).optional(),
     addParams: addParamsSchema.optional(),
     dropParams: z.array(z.string()).optional(),
     customParams: z
@@ -2355,6 +2347,7 @@ export const endpointSchema = baseEndpointSchema.merge(
     /** Static per-model token config: context window and per-million-token rates */
     tokenConfig: z
       .record(
+        z.string(),
         z.object({
           prompt: z.number(),
           completion: z.number(),
@@ -2702,7 +2695,7 @@ export const mcpAppRateLimitSchema = z
     resourcesPerMinute: z.number().int().positive().default(120),
     toolCallsPerMinute: z.number().int().positive().default(60),
   })
-  .default({});
+  .prefault({});
 
 export type TMCPAppRateLimits = z.infer<typeof mcpAppRateLimitSchema>;
 
@@ -2722,6 +2715,12 @@ export const outboundTimeoutsSchema = z.object({
   moderationMs: outboundTimeoutMs,
   /** Fetching a stored image by URL to encode it for a provider. */
   imageFetchMs: outboundTimeoutMs,
+});
+
+/** Retention for the write-only GENERAL violation log kept per user. */
+export const violationLogSchema = z.object({
+  /** Newest entries kept per user; older ones are dropped on the next append. */
+  maxEntries: z.number().int().positive().optional(),
 });
 
 export type TOutboundTimeouts = z.infer<typeof outboundTimeoutsSchema>;
@@ -2778,7 +2777,7 @@ export const rateLimitSchema = z.object({
       userWindowInMinutes: z.number().optional(),
     })
     .optional(),
-  mcpApps: mcpAppRateLimitSchema.optional(),
+  mcpApps: mcpAppRateLimitSchema.unwrap().optional(),
   /** Requesting a change of the registered email; keyed by the authenticated user. */
   emailChange: z
     .object({
@@ -2854,7 +2853,7 @@ const termsOfServiceSchema = z.object({
 export type TTermsOfService = z.infer<typeof termsOfServiceSchema>;
 
 // Schema for localized string (either simple string or language-keyed object)
-const localizedStringSchema = z.union([z.string(), z.record(z.string())]);
+const localizedStringSchema = z.union([z.string(), z.record(z.string(), z.string())]);
 
 export const mcpRefreshDefaults = {
   toolsRefreshInterval: 5 * 60 * 1000,
@@ -2991,8 +2990,8 @@ const themeModeSchema = z
       z.string().regex(/^[a-z][a-z0-9-]*$/),
       z.string().regex(/^\d{1,3} \d{1,3} \d{1,3}$/),
     ),
-    appearance: z.record(z.string()),
-    brands: z.record(z.string()),
+    appearance: z.record(z.string(), z.string()),
+    brands: z.record(z.string(), z.string()),
   })
   .partial()
   .strict();
@@ -3006,7 +3005,7 @@ export const themeDefinitionSchema = z
     version: z.literal(1),
     name: z.string().trim().min(1),
     modes: z.object({ light: themeModeSchema, dark: themeModeSchema }).partial().strict(),
-    brands: z.record(z.string()).optional(),
+    brands: z.record(z.string(), z.string()).optional(),
   })
   .strict();
 
@@ -3282,9 +3281,9 @@ export const interfaceSchema = z
             .object({
               enabled: z.boolean().optional(),
               maxLifetimeHours: z.number().int().min(1).max(8760).optional(),
-              resources: z.record(scheduledMCPResourceBindingSchema).optional(),
+              resources: z.record(z.string(), scheduledMCPResourceBindingSchema).optional(),
               /** Trusted service declarations, keyed by raw server and upstream tool name. */
-              readOnlyPolicy: z.record(scheduledMCPReadOnlyPolicySchema).optional(),
+              readOnlyPolicy: z.record(z.string(), scheduledMCPReadOnlyPolicySchema).optional(),
             })
             .optional(),
           /** Bounded exponential receipt retry interval; equal jitter prevents outage waves. */
@@ -3366,7 +3365,7 @@ export const interfaceSchema = z
       .max(Number.MAX_SAFE_INTEGER)
       .default(DEFAULT_HISTORY_CACHE_MAX_BYTES),
   })
-  .default({
+  .prefault({
     modelSelect: true,
     runningChatRename: true,
     codeHighlightThrottleMs: DEFAULT_CODE_HIGHLIGHT_THROTTLE_MS,
@@ -3475,7 +3474,7 @@ export const turnstileOptionsSchema = z
 
 export const turnstileSchema = z.object({
   siteKey: z.string(),
-  options: turnstileOptionsSchema.optional(),
+  options: turnstileOptionsSchema.unwrap().optional(),
 });
 
 export type TTurnstileConfig = z.infer<typeof turnstileSchema>;
@@ -3717,6 +3716,7 @@ export type TStartupConfig = {
   titleGenerationTiming?: 'immediate' | 'final';
   analyticsGtmId?: string;
   rum?: TRumConfig;
+  clientLimits?: TClientLimits;
   bundlerURL?: string;
   staticBundlerURL?: string;
   /** Whether the deployment has a configured RAG service. */
@@ -3870,7 +3870,7 @@ export const webSearchSchema = z.object({
       formats: z.array(z.string()).optional(),
       includeTags: z.array(z.string()).optional(),
       excludeTags: z.array(z.string()).optional(),
-      headers: z.record(z.string()).optional(),
+      headers: z.record(z.string(), z.string()).optional(),
       waitFor: z.number().optional(),
       timeout: z.number().int().nonnegative().optional(),
       maxAge: z.number().optional(),
@@ -3891,7 +3891,7 @@ export const webSearchSchema = z.object({
       changeTrackingOptions: z
         .object({
           modes: z.array(z.string()).optional(),
-          schema: z.record(z.unknown()).optional(),
+          schema: z.record(z.string(), z.unknown()).optional(),
           prompt: z.string().optional(),
           tag: z.string().nullable().optional(),
         })
@@ -4020,7 +4020,9 @@ export const memorySchema = z.object({
         provider: z.string(),
         model: z.string(),
         instructions: z.string().optional(),
-        model_parameters: z.record(z.union([z.string(), z.number(), z.boolean()])).optional(),
+        model_parameters: z
+          .record(z.string(), z.union([z.string(), z.number(), z.boolean()]))
+          .optional(),
       }),
     ])
     .optional(),
@@ -4060,7 +4062,9 @@ export const summarizationConfigSchema = z.object({
   enabled: z.boolean().optional(),
   provider: z.string().optional(),
   model: z.string().optional(),
-  parameters: z.record(z.union([z.string(), z.number(), z.boolean(), z.null()])).optional(),
+  parameters: z
+    .record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()]))
+    .optional(),
   trigger: summarizationTriggerSchema.optional(),
   prompt: z.string().optional(),
   updatePrompt: z.string().optional(),
@@ -4283,7 +4287,7 @@ export const langfuseConfigSchema = z.object({
    * schema does not yet express — and note the fanout collector forwards only
    * `Authorization` upstream regardless.
    */
-  headers: z.record(z.string()).optional(),
+  headers: z.record(z.string(), z.string()).optional(),
   /** Trace user identity and allowlisted user/request metadata. */
   trace: langfuseTraceConfigSchema.optional(),
   /** Tenant admin switch for Langfuse prompt sync. Effective only when the
@@ -4340,7 +4344,7 @@ export const chatProjectsConfigSchema = z
       .default(MAX_CHAT_PROJECT_DESCRIPTION_LENGTH),
   })
   .strict()
-  .default({});
+  .prefault({});
 
 export type TChatProjectsConfig = z.infer<typeof chatProjectsConfigSchema>;
 
@@ -4392,6 +4396,7 @@ export type TToolCallPreviewsConfig = z.infer<typeof toolCallPreviewsConfigSchem
 export const configSchema = z.object({
   version: z.string(),
   telemetry: telemetrySchema.optional(),
+  clientLimits: clientLimitsSchema.optional(),
   permissions: z
     .object({
       maxWriteAttempts: permissionWriteAttemptsSchema,
@@ -4524,13 +4529,21 @@ export const configSchema = z.object({
             .max(256)
             .default(DEFAULT_MCP_APP_OPERATION_LIMITS.maxActive),
         })
-        .default({}),
+        .prefault({}),
     })
-    .default({}),
+    .prefault({}),
   mcpSettings: z
     .object({
       allowedDomains: z.array(z.string()).optional(),
       allowedAddresses: allowedAddressesSchema,
+      /** How long a failed OAuth reconnection is remembered before its attempt count resets.
+       * Defaults to 24 hours. */
+      oauthFailureRetentionMs: z
+        .number()
+        .int()
+        .positive()
+        .max(30 * 24 * 60 * 60_000)
+        .optional(),
       catalogRecovery: z
         .object({
           discoveryBackoffMs: z
@@ -4585,7 +4598,7 @@ export const configSchema = z.object({
             .default(30_000),
           authorizationFenceRetryBatchSize: z.number().int().positive().max(10_000).default(100),
         })
-        .default({}),
+        .prefault({}),
       apps: z.boolean().optional(),
     })
     .optional(),
@@ -4609,7 +4622,7 @@ export const configSchema = z.object({
       /** Milliseconds a started social login may take to reach its callback; defaults to `DEFAULT_OAUTH_STATE_TTL_MS`. */
       oauthStateTtlMs: z.number().int().min(60_000).max(3_600_000).optional(),
       /** OpenID discovery retries; an unset field falls back to its `OPENID_DISCOVERY_RETRY_*` env var, then the schema default. */
-      openidDiscovery: openIdDiscoverySchema.partial().optional(),
+      openidDiscovery: partialWithoutDefaults(openIdDiscoverySchema).optional(),
     })
     .default({ socialLogins: defaultSocialLogins }),
   /** Changing the registered email address. An unset field falls back to its env var, then the
@@ -4648,6 +4661,13 @@ export const configSchema = z.object({
     })
     .optional(),
   timeouts: outboundTimeoutsSchema.optional(),
+  violationLog: violationLogSchema.optional(),
+  messages: z
+    .object({
+      /** Largest `pageSize` accepted by `GET /api/messages`. Defaults to 1000. */
+      maxPageSize: z.number().int().min(1).max(10000).optional(),
+    })
+    .optional(),
   fileConfig: fileConfigSchema.optional(),
   modelSpecs: specsConfigSchema.optional(),
   filters: filtersConfigSchema.optional(),
@@ -4676,7 +4696,7 @@ export const configSchema = z.object({
       [EModelEndpoint.azureOpenAI]: azureEndpointSchema.optional(),
       [EModelEndpoint.azureAssistants]: assistantEndpointSchema.optional(),
       [EModelEndpoint.assistants]: assistantEndpointSchema.optional(),
-      [EModelEndpoint.agents]: agentsEndpointSchema.optional(),
+      [EModelEndpoint.agents]: agentsEndpointSchema.unwrap().optional(),
       [EModelEndpoint.custom]: customEndpointsSchema.optional(),
       [EModelEndpoint.bedrock]: bedrockEndpointSchema.optional(),
     })

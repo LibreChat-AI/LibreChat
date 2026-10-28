@@ -1122,7 +1122,9 @@ const executeResponse = async (envelope, { req, res }) => {
             mcpManager,
             configServers,
             user: req.user,
-            runContext: { memory: memoryContext, agentFiles: agentScopedContext.get(runAgent.id) },
+            sharedRunContext: [memoryContext, agentScopedContext.get(runAgent.id)]
+              .filter(Boolean)
+              .join('\n\n'),
           });
         }),
       );

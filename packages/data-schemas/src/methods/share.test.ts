@@ -78,9 +78,6 @@ describe('Share Methods', () => {
         user: { type: String, required: true },
         text: String,
         privateTextTokens: { type: [String], select: false, default: undefined },
-        contextUpdates: { type: [mongoose.Schema.Types.Mixed], select: false, default: undefined },
-        contextAnchor: { type: [mongoose.Schema.Types.Mixed], select: false, default: undefined },
-        providerItems: { type: mongoose.Schema.Types.Mixed, select: false },
         isCreatedByUser: Boolean,
         isUserSubmitted: Boolean,
         userSubmittedPaths: {
@@ -107,6 +104,7 @@ describe('Share Methods', () => {
         attachments: [mongoose.Schema.Types.Mixed],
         files: [mongoose.Schema.Types.Mixed],
         content: [mongoose.Schema.Types.Mixed],
+        providerItems: { type: mongoose.Schema.Types.Mixed, select: false },
       },
       { timestamps: true },
     );
@@ -550,47 +548,6 @@ describe('Share Methods', () => {
       return { userId, conversationId, shareId };
     };
 
-    test('publishes no turn context: neither change records nor segment anchors', async () => {
-      const userId = new mongoose.Types.ObjectId().toString();
-      const conversationId = `conv_${nanoid()}`;
-      await Conversation.create({ conversationId, user: userId, title: 'Shared' });
-      await Message.create({
-        messageId: `msg_${nanoid()}`,
-        conversationId,
-        user: userId,
-        text: 'Question',
-        isCreatedByUser: true,
-        parentMessageId: Constants.NO_PARENT,
-        contextUpdates: [{ key: 'memory', value: 'Private memory.' }],
-        contextAnchor: [{ key: 'memory', value: 'Private memory.' }],
-      });
-      const { shareId } = await shareMethods.createSharedLink(userId, conversationId);
-
-      const result = await shareMethods.getSharedMessages(shareId);
-      expect(result?.messages).toHaveLength(1);
-      expect(JSON.stringify(result)).not.toContain('Private memory.');
-    });
-
-    test('publishes no provider items of a response', async () => {
-      const userId = new mongoose.Types.ObjectId().toString();
-      const conversationId = `conv_${nanoid()}`;
-      await Conversation.create({ conversationId, user: userId, title: 'Shared' });
-      await Message.create({
-        messageId: `msg_${nanoid()}`,
-        conversationId,
-        user: userId,
-        text: '',
-        isCreatedByUser: false,
-        parentMessageId: Constants.NO_PARENT,
-        providerItems: { call_1: { origin: 'digest', items: [{ encrypted_content: 'opaque' }] } },
-      });
-      const { shareId } = await shareMethods.createSharedLink(userId, conversationId);
-
-      const result = await shareMethods.getSharedMessages(shareId);
-      expect(result?.messages).toHaveLength(1);
-      expect(JSON.stringify(result)).not.toContain('opaque');
-    });
-
     /* The header renders the stored `sender`, so a link publishing a label must not swap
        it for the model the label stands in for. */
     test('flags a link whose messages show a configured sender', async () => {
@@ -778,6 +735,26 @@ describe('Share Methods', () => {
       expect(result?.messages.find((message) => message.text === 'Hello')).not.toHaveProperty(
         'userSubmittedMessageFieldPaths',
       );
+    });
+
+    test('publishes no provider items of a response', async () => {
+      const userId = new mongoose.Types.ObjectId().toString();
+      const conversationId = `conv_${nanoid()}`;
+      await Conversation.create({ conversationId, user: userId, title: 'Shared' });
+      await Message.create({
+        messageId: `msg_${nanoid()}`,
+        conversationId,
+        user: userId,
+        text: '',
+        isCreatedByUser: false,
+        parentMessageId: Constants.NO_PARENT,
+        providerItems: { call_1: { origin: 'digest', items: [{ encrypted_content: 'opaque' }] } },
+      });
+      const { shareId } = await shareMethods.createSharedLink(userId, conversationId);
+
+      const result = await shareMethods.getSharedMessages(shareId);
+      expect(result?.messages).toHaveLength(1);
+      expect(JSON.stringify(result)).not.toContain('opaque');
     });
 
     test('should return null for non-existent share', async () => {

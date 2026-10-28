@@ -827,9 +827,7 @@ describe('OpenAIChatCompletionController', () => {
     expect(mockApplyContextToAgent).toHaveBeenCalledWith(
       expect.objectContaining({
         agent,
-        runContext: expect.objectContaining({
-          memory: expect.stringContaining(memoryInstructions),
-        }),
+        sharedRunContext: expect.stringContaining(memoryInstructions),
       }),
     );
     expect(require('~/models').getFormattedMemories).toHaveBeenCalledWith({

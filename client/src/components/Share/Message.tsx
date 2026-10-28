@@ -67,6 +67,7 @@ export default function Message(props: TMessageProps) {
           <Row
             task={subagentWakeup}
             conversationId={message.conversationId ?? conversation?.conversationId ?? ''}
+            message={wakeupDisplay == null ? message : undefined}
             id={messageId}
             icon={<Icon message={message} conversation={conversation} />}
             label={messageLabel}
