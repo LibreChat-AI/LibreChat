@@ -1,4 +1,5 @@
 import { RecoilRoot } from 'recoil';
+import { useResumeOnLoad } from '@librechat/chat/react';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, ContentTypes, QueryKeys, RetentionMode } from 'librechat-data-provider';
@@ -36,7 +37,6 @@ import { usePaneConversation } from '~/routes/ChatSettings';
 import { StreamHostTestProvider } from 'test/streamHost';
 import { SteerHostTestProvider } from 'test/steerHost';
 import { ChatHostTestProvider } from 'test/chatHost';
-import useResumeOnLoad from '../useResumeOnLoad';
 import store from '~/store';
 
 const mockUseStreamStatus = jest.fn();

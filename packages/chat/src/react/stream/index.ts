@@ -7,6 +7,9 @@ export { useContentHandler } from './content';
 export { settleFinishedRun } from './resume/finished';
 export { useResumeAnnouncements } from './resume/announcements';
 export { useOwedSuccessor, ACTIVE_JOBS_SUCCESSOR_GRACE_MS } from './resume/successor';
+export { useResumeOnLoad } from './resume/load';
+export { useSteerState } from './steer';
+export type { SteerState } from './steer';
 export type { FinishedRunSteers } from './resume/finished';
 export type { OwedSuccessorState } from './resume/successor';
 export { useAttachmentHandler } from './attachments';
@@ -26,6 +29,8 @@ export type {
   StreamHost,
   StreamChat,
   ResumeQuery,
+  ResumeSettings,
+  ResumeStatusQuery,
   ResumableServices,
   ResumableStreamParams,
 } from './host';

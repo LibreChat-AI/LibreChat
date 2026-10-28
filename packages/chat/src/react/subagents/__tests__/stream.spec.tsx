@@ -80,6 +80,13 @@ const host: StreamHost = {
   useQueuedTurnReceipts: () => ({ data: undefined, dataUpdatedAt: 0 }),
   useActiveJobs: () => ({ data: undefined, dataUpdatedAt: 0 }),
   extendActiveJobsGrace: () => undefined,
+  useStreamStatus: () => ({
+    data: undefined,
+    dataUpdatedAt: 0,
+    isSuccess: false,
+    isFetching: false,
+  }),
+  useResumeSettings: () => ({ configLoaded: true, conversation: null }),
 };
 const transport = createSSETransport({ token: 'token-1' });
 

@@ -1,4 +1,5 @@
 import { isEmptyContentPart } from '@librechat/chat/react';
+import { getBranchSiblingIndexesForTarget } from '@librechat/chat';
 import { QueryKeys, Constants, buildTree, ContentTypes } from 'librechat-data-provider';
 import {
   hasStreamStartFailed,
@@ -7,6 +8,7 @@ import {
   STREAM_START_FAILED_METADATA_KEY,
 } from '@librechat/chat';
 import type { Agents, TMessage, TMessageContentParts } from 'librechat-data-provider';
+import type { BranchSiblingIndex } from '@librechat/chat';
 import type { QueryClient } from '@tanstack/react-query';
 import type { LocalizeFunction, TMessageProps } from '~/common';
 
@@ -29,12 +31,10 @@ export function isUnacknowledgedUserMessage(message: TMessage): boolean {
   );
 }
 
-type SiblingIndexLookup = (parentMessageId: string | null | undefined) => number;
+export { getBranchSiblingIndexesForTarget };
+export type { BranchSiblingIndex };
 
-export type BranchSiblingIndex = {
-  parentMessageId: string | null | undefined;
-  siblingIdx: number;
-};
+type SiblingIndexLookup = (parentMessageId: string | null | undefined) => number;
 
 export const selectActiveBranchTail = (
   messages: TMessage[] | null | undefined,
@@ -93,54 +93,6 @@ export const getMessageBranchSiblingParentIds = (
     }
   }
   return Array.from(parentIds);
-};
-
-export const getBranchSiblingIndexesForTarget = (
-  messages: TMessage[] | null | undefined,
-  targetMessageId: string | null | undefined,
-  rootSiblingKey: string | null | undefined,
-): BranchSiblingIndex[] => {
-  if (!targetMessageId) {
-    return [];
-  }
-
-  const messagesTree = buildTree({ messages: messages ?? null });
-  if (!messagesTree?.length) {
-    return [];
-  }
-
-  const branchIndexes: BranchSiblingIndex[] = [];
-  const stack = [
-    { siblings: messagesTree, parentMessageId: rootSiblingKey, index: 0, branchCount: 0 },
-  ];
-  while (stack.length > 0) {
-    const frame = stack[stack.length - 1];
-    const index = frame.index++;
-    const message = frame.siblings[index];
-    if (!message) {
-      stack.pop();
-      continue;
-    }
-    branchIndexes.length = frame.branchCount;
-    if (frame.siblings.length > 1) {
-      branchIndexes.push({
-        parentMessageId: frame.parentMessageId,
-        siblingIdx: frame.siblings.length - index - 1,
-      });
-    }
-    if (message.messageId === targetMessageId) {
-      return branchIndexes;
-    }
-    if (message.children?.length) {
-      stack.push({
-        siblings: message.children,
-        parentMessageId: message.messageId,
-        index: 0,
-        branchCount: branchIndexes.length,
-      });
-    }
-  }
-  return [];
 };
 
 export const getLatestText = (message?: TMessage | null, includeIndex?: boolean): string => {

@@ -1,7 +1,13 @@
 import { useMemo } from 'react';
 import type { StreamHost } from '@librechat/chat/react';
-import { useActiveJobs, useAgentQueuedTurns, extendActiveJobsGrace } from '~/data-provider';
+import {
+  useActiveJobs,
+  useStreamStatus,
+  useAgentQueuedTurns,
+  extendActiveJobsGrace,
+} from '~/data-provider';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { useResumableServices } from '~/hooks/SSE/resumable';
 import { useAuthContext } from '~/hooks/AuthContext';
 import useSSE from '~/hooks/SSE/useSSE';
@@ -26,6 +32,15 @@ export const appStreamHost: StreamHost = {
   useQueuedTurnReceipts: (conversationId) => useAgentQueuedTurns(conversationId, false),
   useActiveJobs,
   extendActiveJobsGrace,
+  useStreamStatus,
+  useResumeSettings: (runIndex) => {
+    const { config, usePaneConversation } = useChatSettings();
+    return {
+      configLoaded: config.loaded !== false,
+      retentionMode: config.retentionMode,
+      conversation: usePaneConversation(runIndex),
+    };
+  },
 };
 
 export { StreamHostProvider, useStreamHost } from '@librechat/chat/react';

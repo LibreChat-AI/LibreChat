@@ -1,7 +1,13 @@
 import { createContext, useContext } from 'react';
-import type { ChatTransport, TSubmission, TAgentQueuedTurnReceipt } from 'librechat-data-provider';
+import type {
+  TSubmission,
+  ChatTransport,
+  RetentionMode,
+  TConversation,
+  TAgentQueuedTurnReceipt,
+} from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
-import type { ResumableHost, ResumableRun } from '../../core';
+import type { ResumableHost, ResumableRun, StreamStatusResponse } from '../../core';
 import type { ChatContract } from '../chat/contract';
 
 /** The chat members a stream writes through: the message cache, the pane's conversation and its
@@ -26,6 +32,21 @@ export type ResumableStreamParams = {
 export type ResumeQuery<Data> = {
   data: Data | undefined;
   dataUpdatedAt: number;
+};
+
+/** The stream status read a resume decides on. */
+export type ResumeStatusQuery = ResumeQuery<StreamStatusResponse> & {
+  isSuccess: boolean;
+  isFetching: boolean;
+};
+
+/** What a pane's resume check reads from the app's settings. */
+export type ResumeSettings = {
+  /** Whether the deployment's startup configuration has loaded. */
+  configLoaded: boolean;
+  retentionMode?: RetentionMode;
+  /** The conversation the pane shows. */
+  conversation: TConversation | null;
 };
 
 /** Everything a resumable stream runs on except how it re-attaches, which the binding owns. */
@@ -67,6 +88,10 @@ export interface StreamHost {
   ): ResumeQuery<{ activeJobIds: string[] }>;
   /** Restarts the active-job list's handover window after a run was seen live another way. */
   extendActiveJobsGrace(): void;
+  /** A conversation's generation status, read only while `enabled`. */
+  useStreamStatus(conversationId: string | undefined, enabled: boolean): ResumeStatusQuery;
+  /** The settings a pane's resume check reads. */
+  useResumeSettings(runIndex: number): ResumeSettings;
 }
 
 const StreamHostContext = createContext<StreamHost | null>(null);

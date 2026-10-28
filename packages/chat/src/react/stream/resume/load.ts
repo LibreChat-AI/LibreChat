@@ -5,17 +5,7 @@ import {
   isAssistantsEndpoint,
   isForcedTemporaryRetention,
 } from 'librechat-data-provider';
-import {
-  useChatHost,
-  useSubmission,
-  useIsSubmitting,
-  useOwedSuccessor,
-  settleFinishedRun,
-  submissionByIndex,
-  submissionStartFamily,
-  useResumeAnnouncements,
-  activeGenerationCreatedAtByConvoId,
-} from '@librechat/chat/react';
+import type { TMessage, Agents } from 'librechat-data-provider';
 import {
   hasSubmissionUserMessage,
   getGenerationProtocolVersion,
@@ -24,14 +14,19 @@ import {
   resumeStateMatchesSubmission,
   getResumeBranchTargetMessageId,
   buildSubmissionFromResumeState,
-} from '@librechat/chat';
-import type { TMessage, Agents } from 'librechat-data-provider';
-import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
-import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
-import { useChatSettings } from '~/Providers/ChatSettingsContext';
-import { getBranchSiblingIndexesForTarget } from '~/utils';
-import { useStreamStatus } from '~/data-provider';
-import useSteerState from './steer';
+  getBranchSiblingIndexesForTarget,
+} from '../../../core';
+import { useSubmission, useIsSubmitting, submissionByIndex } from '../../submission';
+import { activeGenerationCreatedAtByConvoId } from '../../steer/atoms';
+import { pendingApprovalActionFamily } from '../../approval';
+import { siblingIdxFamily, siblingKey } from '../../thread';
+import { submissionStartFamily } from '../../generation';
+import { useResumeAnnouncements } from './announcements';
+import { useOwedSuccessor } from './successor';
+import { settleFinishedRun } from './finished';
+import { useChatHost } from '../../chat/host';
+import { useSteerState } from '../steer';
+import { useStreamHost } from '../host';
 
 /**
  * Hook to resume streaming if navigating to a conversation with active generation.
@@ -44,12 +39,12 @@ import useSteerState from './steer';
  *
  * @param messagesLoaded - Whether the messages query has finished loading (prevents race condition)
  */
-export default function useResumeOnLoad(
+export function useResumeOnLoad(
   conversationId: string | undefined,
   getMessages: () => TMessage[] | undefined,
   runIndex = 0,
   messagesLoaded = true,
-) {
+): void {
   const jotaiStore = useStore();
   const cache = useChatHost().useMessageCache();
   const setSubmission = useSetAtom(submissionByIndex(runIndex));
@@ -59,14 +54,18 @@ export default function useResumeOnLoad(
   const attachedGenerationCreatedAt = useAtomValue(
     activeGenerationCreatedAtByConvoId(conversationId ?? ''),
   );
-  const { config, usePaneConversation } = useChatSettings();
-  const currentConversation = usePaneConversation(runIndex);
+  const streamHost = useStreamHost();
+  const {
+    configLoaded,
+    retentionMode,
+    conversation: currentConversation,
+  } = streamHost.useResumeSettings(runIndex);
   const endpoint = currentConversation?.endpoint;
   const endpointType = currentConversation?.endpointType;
   const actualEndpoint = endpointType ?? endpoint;
   const resumableEnabled = !isAssistantsEndpoint(actualEndpoint);
-  const startupConfigSettled = config.loaded !== false;
-  const isRetentionForced = isForcedTemporaryRetention(config.retentionMode);
+  const startupConfigSettled = configLoaded;
+  const isRetentionForced = isForcedTemporaryRetention(retentionMode);
   // Track conversations we've already processed (either resumed or skipped)
   const processedConvoRef = useRef<string | null>(null);
   /**
@@ -162,7 +161,7 @@ export default function useResumeOnLoad(
     dataUpdatedAt: streamStatusUpdatedAt,
     isSuccess,
     isFetching,
-  } = useStreamStatus(conversationId, shouldCheck);
+  } = streamHost.useStreamStatus(conversationId, shouldCheck);
 
   useEffect(() => {
     console.log('[ResumeOnLoad] Effect check', {
