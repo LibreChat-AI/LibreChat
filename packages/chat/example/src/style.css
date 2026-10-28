@@ -1,0 +1,5 @@
+@import 'tailwindcss';
+/* The published token stylesheet: every semantic role, light and dark, as `@librechat/client`
+ * documents for a consumer. */
+@import '@librechat/client/theme.css';
+@config '../tailwind.config.cjs';
