@@ -16,9 +16,11 @@ import path from 'node:path';
  *   since the rule could not tell what it loads.
  * - Outside specs: nothing reaches into another package while the module loads. App specs replace
  *   whole packages with mocks (`@librechat/client`, `librechat-data-provider`), so a top-level
- *   `cn(...)`, or a map keyed by `FileSources.local`, throws before a single test runs. A call,
- *   `new`, tagged template or member read through an import belongs inside a function. Packages no
- *   spec replaces (React, Jotai) are exempt through the `loadSafe` option.
+ *   `cn(...)`, or a map keyed by `FileSources.local`, throws before a single test runs. Every
+ *   load-time use of an import that reads it (a call, `new`, a member read, destructuring, a spread,
+ *   `extends`) belongs inside a function; only handing the value on is allowed. A call argument
+ *   counts as handing on, so `memo(Search)` passes; what the callee does with it is the callee's.
+ *   Packages no spec replaces (React, Jotai) are exempt through the `loadSafe` option.
  */
 
 const EXTENSION = /\.(?:[cm]?[jt]sx?)$/;
@@ -38,13 +40,49 @@ const TRANSPARENT = new Set([
   'TSInstantiationExpression',
 ]);
 
-/** `cn`, `Client.cn`, `Client['cn']`, `cn.call` and `(cn as Fn)` all start at the identifier they call through. */
-const rootIdentifier = (node) => {
-  let current = node;
-  while (current?.type === 'MemberExpression' || TRANSPARENT.has(current?.type)) {
-    current = current.type === 'MemberExpression' ? current.object : current.expression;
+/** `typeof cn` and every other type position is erased; only runtime references can throw. */
+const inType = (node) => {
+  for (let parent = node.parent; parent; parent = parent.parent) {
+    if (parent.type === 'TSTypeQuery' || parent.type === 'TSTypeReference') return true;
   }
-  return current?.type === 'Identifier' ? current : undefined;
+  return false;
+};
+
+/**
+ * Whether a reference only hands its value on, which cannot throw however a mock defines it: an
+ * object property's value, an array element, a call argument, the right side of an assignment, a
+ * plain `const x =`, a branch of `?:`, `&&`, `||` or `??`, an export, or a JSX tag. Every other use
+ * (a call, `new`, a member read, destructuring, a spread, `extends`, `in`, `instanceof`, iteration)
+ * reads the import itself.
+ */
+const isInert = (reference) => {
+  let node = reference;
+  while (TRANSPARENT.has(node.parent.type)) node = node.parent;
+  const { parent } = node;
+  switch (parent.type) {
+    case 'Property':
+      return parent.value === node;
+    case 'ArrayExpression':
+    case 'ExportSpecifier':
+    case 'ExportDefaultDeclaration':
+    case 'JSXOpeningElement':
+    case 'JSXClosingElement':
+    case 'JSXExpressionContainer':
+      return true;
+    case 'CallExpression':
+    case 'NewExpression':
+      return parent.callee !== node;
+    case 'AssignmentExpression':
+      return parent.right === node;
+    case 'VariableDeclarator':
+      return parent.init === node && parent.id.type === 'Identifier';
+    case 'ConditionalExpression':
+      return parent.test !== node;
+    case 'LogicalExpression':
+      return true;
+    default:
+      return false;
+  }
 };
 
 /**
@@ -132,19 +170,20 @@ const boundary = {
     const loadSafe = new Set(options.loadSafe ?? LOAD_SAFE);
     /** Import specifiers that bind a name to another package, mapped to that package. */
     const externalBindings = new Map();
-    const usesExternalOnLoad = (node, target) => {
-      if (isSpec) return;
-      const identifier = rootIdentifier(target);
-      if (!identifier) return;
-      const scope = context.sourceCode.getScope(node);
-      let variable;
-      for (let current = scope; current && !variable; current = current.upper) {
-        variable = current.set.get(identifier.name);
+    const reportLoadTimeUses = () => {
+      for (const [specifier, source] of externalBindings) {
+        for (const variable of context.sourceCode.getDeclaredVariables(specifier)) {
+          for (const { identifier } of variable.references) {
+            if (identifier === specifier.local || inType(identifier)) continue;
+            if (isInert(identifier) || !runsOnLoad(identifier)) continue;
+            context.report({
+              node: identifier,
+              messageId: 'load',
+              data: { name: identifier.name, source },
+            });
+          }
+        }
       }
-      const source = variable && externalBindings.get(variable.defs[0]?.node);
-      if (!source) return;
-      if (!runsOnLoad(node)) return;
-      context.report({ node, messageId: 'load', data: { name: identifier.name, source } });
     };
 
     const isCore =
@@ -209,28 +248,16 @@ const boundary = {
             .forEach((specifier) => externalBindings.set(specifier, source));
         }
       },
-      ImportDeclaration: (node) => check(node, node.source),
-      NewExpression: (node) => usesExternalOnLoad(node, node.callee),
-      TaggedTemplateExpression: (node) => usesExternalOnLoad(node, node.tag),
-      /** `const { local } = FileSources` and `{ ...FileSources }` read the import like `A.b`. */
-      VariableDeclarator: (node) =>
-        node.id.type !== 'Identifier' && usesExternalOnLoad(node, node.init),
-      SpreadElement: (node) => usesExternalOnLoad(node, node.argument),
-      /** The outermost read only: `A.b.c` is one report, and a call reports its own callee. */
-      MemberExpression(node) {
-        if (node.parent.type === 'MemberExpression' && node.parent.object === node) return;
-        if (node.parent.type === 'CallExpression' && node.parent.callee === node) return;
-        if (node.parent.type === 'NewExpression' && node.parent.callee === node) return;
-        if (node.parent.type === 'TaggedTemplateExpression' && node.parent.tag === node) return;
-        usesExternalOnLoad(node, node);
+      'Program:exit': () => {
+        if (!isSpec) reportLoadTimeUses();
       },
+      ImportDeclaration: (node) => check(node, node.source),
       ExportNamedDeclaration: (node) => node.source && check(node, node.source),
       ExportAllDeclaration: (node) => check(node, node.source),
       ImportExpression: (node) => check(node, node.source),
       TSImportType: (node) => check(node, node.argument),
       TSExternalModuleReference: (node) => check(node, node.expression),
       CallExpression(node) {
-        usesExternalOnLoad(node, node.callee);
         if (node.callee.type !== 'Identifier' || node.callee.name !== 'require') return;
         check(node, node.arguments[0]);
       },

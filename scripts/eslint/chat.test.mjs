@@ -126,6 +126,11 @@ tester.run('chat/boundary', chat.rules.boundary, {
       "import { FileSources } from 'librechat-data-provider'; export const icon = (source: string) => ({ [FileSources.local]: 'x' })[source];",
       "import { FileSources } from 'librechat-data-provider'; export const sources = [FileSources];",
       "import { local } from './sources'; export const icons = { [local.key]: 'x' };",
+      "import { Search, cn } from '@librechat/client'; export const icons = { search: Search, cn, list: [Search] };",
+      "import { Store } from '@librechat/client'; export const wrapped = wrap(Store); export const alias = Store; export default Store;",
+      "import { A, B } from '@librechat/client'; export const pick = flag ? A : B ?? A;",
+      "import { Button } from '@librechat/client'; export const element = <Button />;",
+      "import { cn } from '@librechat/client'; export { cn };",
       "import { FileSources } from 'librechat-data-provider'; export const read = () => { const { local } = FileSources; return { ...FileSources, local }; };",
       "import { cn } from '@librechat/client'; export const C = memo((() => cn('a')) as () => string);",
     ].map((code) => ({ code, filename: at('components/Probe.tsx'), options })),
@@ -190,6 +195,25 @@ tester.run('chat/boundary', chat.rules.boundary, {
       [
         "import { cn } from '@librechat/client'; export const c = ((() => cn('a')) as () => string)();",
         'cn',
+      ],
+      ["import { Store } from '@librechat/client'; export class Derived extends Store {}", 'Store'],
+      [
+        "import { Store } from '@librechat/client'; export const D = class extends Store {};",
+        'Store',
+      ],
+      [
+        "import { FileSources } from 'librechat-data-provider'; export const has = 'local' in FileSources;",
+        'FileSources',
+        'librechat-data-provider',
+      ],
+      [
+        "import { Store } from '@librechat/client'; export const is = ({}) instanceof Store;",
+        'Store',
+      ],
+      [
+        "import { FileSources } from 'librechat-data-provider'; for (const s of FileSources) {}",
+        'FileSources',
+        'librechat-data-provider',
       ],
       [
         "import { FileSources } from 'librechat-data-provider'; export const { local } = FileSources;",
