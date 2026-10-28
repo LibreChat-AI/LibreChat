@@ -373,7 +373,7 @@ export default defineConfig(({ command }) => ({
                   if (
                     normalizedId.includes('/node_modules/axios/') ||
                     normalizedId.includes('/node_modules/ky/') ||
-                    /\/node_modules\/[^/]*fetch[^/]*\//.test(normalizedId)
+                    /\/node_modules\/(?:@[^/]+\/)?[^/@]*fetch[^/]*\//.test(normalizedId)
                   ) {
                     return 'http-client';
                   }
