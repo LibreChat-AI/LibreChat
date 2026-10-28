@@ -28,6 +28,12 @@ const externals = (): string[] => {
 };
 
 /**
+ * This spec mocks workspace packages on purpose, an exception to the repository's real-logic
+ * testing rule: its subject is the mock itself. App specs replace `@librechat/client` and
+ * `librechat-data-provider` wholesale, and the failure it guards against (an entry that throws
+ * on import under those mocks) only exists under them. Every other spec here uses the real
+ * packages.
+ *
  * A package the way an app spec's factory mock leaves it: a module whose every export is missing.
  * Handing an export on is harmless; calling one, constructing one or reading a member of one is
  * what throws, and that is the failure this spec catches.

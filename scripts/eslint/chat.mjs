@@ -105,7 +105,10 @@ const boundary = {
     const relativeFile = path.relative(root, filename);
     if (relativeFile.startsWith('..') || path.isAbsolute(relativeFile)) return {};
     const segments = relativeFile.split(path.sep);
-    const isSpec = segments.includes('__tests__') || /\.(spec|test)\./.test(relativeFile);
+    /** Specs and their support files (`__fixtures__`, `__mocks__`) never load in an app spec. */
+    const isSpec =
+      segments.some((segment) => /^__(tests|fixtures|mocks)__$/.test(segment)) ||
+      /\.(spec|test)\./.test(relativeFile);
     const loadSafe = new Set(options.loadSafe ?? LOAD_SAFE);
     /** Import specifiers that bind a name to another package, mapped to that package. */
     const externalBindings = new Map();
@@ -176,7 +179,9 @@ const boundary = {
         for (const statement of program.body) {
           if (statement.type !== 'ImportDeclaration' || statement.importKind === 'type') continue;
           const source = statement.source.value;
-          if (source.startsWith('.') || source.startsWith('~') || loadSafe.has(source)) continue;
+          /** Node built-ins (`node:path`) are never replaced by a spec. */
+          const local = source.startsWith('.') || source.startsWith('~');
+          if (local || source.startsWith('node:') || loadSafe.has(source)) continue;
           statement.specifiers
             .filter((specifier) => specifier.importKind !== 'type')
             .forEach((specifier) => externalBindings.set(specifier, source));

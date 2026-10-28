@@ -130,6 +130,21 @@ tester.run('chat/boundary', chat.rules.boundary, {
       filename: at('components/__tests__/Probe.spec.tsx'),
       options,
     },
+    {
+      code: "import path from 'node:path'; export const dir = path.join('a', 'b');",
+      filename: at('__fixtures__/i18n.ts'),
+      options,
+    },
+    {
+      code: "import { cn } from '@librechat/client'; export const classes = cn('a');",
+      filename: at('components/__mocks__/Probe.tsx'),
+      options,
+    },
+    {
+      code: "import path from 'node:path'; export const dir = path.join('a', 'b');",
+      filename: at('react/probe.ts'),
+      options,
+    },
   ],
   invalid: [
     ...cases('core/streaming/probe.ts', entrySpellings, 'entry'),
