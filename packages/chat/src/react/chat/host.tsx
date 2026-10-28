@@ -179,8 +179,6 @@ export interface ChatHost {
   /** Stops a resumable generation. */
   useAbortStream(): (params: AbortStreamParams) => Promise<AbortStreamResponse>;
   useMessageCache(): ChatMessageCache;
-  /** Attachments delivered by message id ahead of the message cache. Stable across renders. */
-  useLiveAttachments(): Record<string, TAttachment[] | undefined>;
   /** Whether message feedback controls are on. */
   useFeedbackEnabled(): boolean;
   /** The app's tool outcome rules for viewing one message; see {@link ChatContract}. */

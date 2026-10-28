@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { useAtomValue, useSetAtom } from 'jotai';
+import { useSetAtom } from 'jotai';
 import { Constants, QueryKeys } from 'librechat-data-provider';
 import { hashQueryKey, useQueryClient } from '@tanstack/react-query';
 import type { ChatHost, ChatMessageCache, ChatMessagesQuery } from '@librechat/chat/react';
@@ -9,7 +9,6 @@ import { useLatestMessage, useLatestMessageId } from '~/hooks/Messages/useLatest
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { useAbortStreamMutation, useGetMessagesByConvoId } from '~/data-provider';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
-import { messageAttachmentsMapAtom } from '~/hooks/SSE/atoms';
 import { getMappingOptions } from '~/hooks/Chat/outcomes';
 import useTurnServices from '~/hooks/Chat/services';
 import { useResumeOnLoad } from '~/hooks/SSE';
@@ -108,7 +107,6 @@ export const appChatHost: ChatHost = {
    *  render and would defeat the contract's memo. */
   useAbortStream: () => useAbortStreamMutation().mutateAsync,
   useMessageCache,
-  useLiveAttachments: () => useAtomValue(messageAttachmentsMapAtom),
   useFeedbackEnabled: () => useChatSettings().config.feedbackEnabled,
   getMappingOptions,
   useMessages,
