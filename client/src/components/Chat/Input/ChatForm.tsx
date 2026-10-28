@@ -4,7 +4,6 @@ import { useWatch } from 'react-hook-form';
 import { useAtom, useAtomValue } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { useDirection } from '@radix-ui/react-direction';
-import { PastedTextDialog } from '@librechat/chat/components';
 import { useSteering, showStopButtonByIndex, useComposerRestoreHost } from '@librechat/chat/react';
 import {
   submitFromComposer,
@@ -25,6 +24,13 @@ import {
   isAgentsEndpoint,
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
+import {
+  PastedTextDialog,
+  QuoteButton,
+  composerHintId,
+  ComposerHints as Hints,
+  ComposerWaveform as Waveform,
+} from '@librechat/chat/components';
 import type { TChatProject, TMessage, TConversation } from 'librechat-data-provider';
 import type { QueuedMessageContext } from '@librechat/chat';
 import type { SetterOrUpdater } from 'recoil';
@@ -62,6 +68,7 @@ import {
   PendingToolApprovalButton,
   PendingToolApprovalPanel,
 } from '~/components/Chat/approval/Review';
+import { WatchedSendButton, WatchedDuringRunSendButton } from './watched';
 import useComposerRestore from '~/hooks/Input/useComposerRestore';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import usePastedTextEdit from '~/hooks/Files/usePastedTextEdit';
@@ -70,8 +77,6 @@ import AskUserQuestionPopover from './AskUserQuestionPopover';
 import useComposerItems from '~/hooks/Input/useComposerItems';
 import useAttachTarget from '~/hooks/Input/useAttachTarget';
 import { chatDirectionAtom } from '~/store/chatDirection';
-import Hints, { composerHintId } from './Composer/Hints';
-import DuringRunSendButton from './DuringRunSendButton';
 import ProjectLandingChip from '../ProjectLandingChip';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
 import useDictation from '~/hooks/Input/useDictation';
@@ -82,11 +87,8 @@ import TextareaHeader from './TextareaHeader';
 import PromptsCommand from './PromptsCommand';
 import SkillsCommand from './SkillsCommand';
 import AutoPlayAudio from './AutoPlayAudio';
-import Waveform from './Composer/Waveform';
 import { mainTextareaId } from '~/common';
-import QuoteButton from './QuoteButton';
 import ToolDialogs from './ToolDialogs';
-import SendButton from './SendButton';
 import Queue from './Composer/Queue';
 import Tray from './Composer/Tray';
 import Bar from './Composer/Bar';
@@ -616,7 +618,7 @@ const ChatForm = memo(function ChatForm({
     if (sendOwnsSlot) {
       return (
         <>
-          <DuringRunSendButton
+          <WatchedDuringRunSendButton
             ref={submitButtonRef}
             control={methods.control}
             steering={steering}
@@ -659,7 +661,7 @@ const ChatForm = memo(function ChatForm({
       isSubmitting && !answerMode.composerAnswers && duringRunSlot != null
         ? duringRunSlot
         : endpoint && (
-            <SendButton
+            <WatchedSendButton
               ref={submitButtonRef}
               control={methods.control}
               fileCount={submittableFileCount}

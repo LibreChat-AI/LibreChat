@@ -2,10 +2,11 @@ import { memo, useRef, useEffect, useCallback, useLayoutEffect } from 'react';
 import { useSetAtom } from 'jotai';
 import { createPortal } from 'react-dom';
 import { TextQuote } from 'lucide-react';
-import { pendingQuotesByConvoId } from '@librechat/chat/react';
-import { cn, MAX_QUOTE_COUNT } from '~/utils';
-import { mainTextareaId } from '~/common';
-import { useLocalize } from '~/hooks';
+import { cn, useLocalize } from '@librechat/client';
+import type { NamedExoticComponent } from 'react';
+import { pendingQuotesByConvoId } from '../../react/composer';
+import { MAX_QUOTE_COUNT } from '../../core/steer/steer';
+import { mainTextareaId } from '../../core/composer';
 
 /** Only selections fully inside a rendered chat message get the popup. */
 const MESSAGE_SELECTOR = '.message-render';
@@ -318,7 +319,9 @@ const resolveTop = (anchor: Anchor, height: number, preferBelow: boolean): numbe
  * is clamped accurately to the viewport, and it tracks the selection while the
  * page scrolls rather than dismissing on the first scroll event.
  */
-function QuoteButton({ conversationId }: { conversationId: string }) {
+type QuoteButtonProps = { conversationId: string };
+
+function QuoteButton({ conversationId }: QuoteButtonProps): React.ReactPortal | null {
   const localize = useLocalize();
   const selectionRef = useRef<SelectionState | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -644,4 +647,6 @@ function QuoteButton({ conversationId }: { conversationId: string }) {
   );
 }
 
-export default memo(QuoteButton);
+const MemoQuoteButton: NamedExoticComponent<QuoteButtonProps> = memo(QuoteButton);
+
+export default MemoQuoteButton;

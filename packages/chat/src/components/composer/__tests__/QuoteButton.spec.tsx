@@ -1,14 +1,18 @@
+/**
+ * @jest-environment jsdom
+ */
 import React, { Profiler, useState } from 'react';
 import { act, render, screen, fireEvent } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore, useAtomValue } from 'jotai';
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string) => key,
 }));
 
 import QuoteButton from '../QuoteButton';
-import { mainTextareaId } from '~/common';
-import { pendingQuotesByConvoId } from '@librechat/chat/react';
+import { mainTextareaId } from '../../../core/composer';
+import { pendingQuotesByConvoId } from '../../../react/composer';
 
 const CONVO_ID = 'convo-1';
 const SELECTED_TEXT = 'Selected assistant text';

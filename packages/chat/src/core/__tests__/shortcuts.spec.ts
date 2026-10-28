@@ -1,4 +1,7 @@
-import type { ShortcutBinding, ComposerKeyContext } from './shortcuts';
+/**
+ * @jest-environment jsdom
+ */
+import type { ShortcutBinding, ComposerKeyContext } from '../shortcuts';
 import {
   hasModifier,
   isCancelKey,
@@ -16,7 +19,7 @@ import {
   bindingFromEvent,
   bindingDisplayKeys,
   bindingDisplayString,
-} from './shortcuts';
+} from '../shortcuts';
 
 function makeBinding(overrides: Partial<ShortcutBinding> = {}): ShortcutBinding {
   return { meta: false, ctrl: false, alt: false, shift: false, key: '', ...overrides };

@@ -1,26 +1,36 @@
+/**
+ * @jest-environment jsdom
+ */
 import { render, screen, fireEvent, act } from '@testing-library/react';
+import type { ComposerHost } from '../../../react/input';
+import { ComposerHostProvider } from '../../../react/input';
+import { NO_HOST_BINDINGS } from '../../../core/shortcuts';
 import EscalateNowButton from '../EscalateNowButton';
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string) => key,
 }));
 
-jest.mock('~/hooks/useKeyboardShortcuts', () => ({
+const host: ComposerHost = {
+  useComposerBindings: () => NO_HOST_BINDINGS,
   useShortcutDisplay: () => 'Ctrl+Shift+.',
   useShortcutAriaKey: () => 'Control+Shift+.',
-}));
+};
 
 function Pane({ index }: { index: number }) {
   return (
-    <section data-chat-pane={index}>
-      <textarea aria-label={`composer ${index}`} />
-      <EscalateNowButton
-        surface="bubble"
-        disabled={false}
-        messageText={`waiting ${index}`}
-        onClick={jest.fn()}
-      />
-    </section>
+    <ComposerHostProvider host={host}>
+      <section data-chat-pane={index}>
+        <textarea aria-label={`composer ${index}`} />
+        <EscalateNowButton
+          surface="bubble"
+          disabled={false}
+          messageText={`waiting ${index}`}
+          onClick={jest.fn()}
+        />
+      </section>
+    </ComposerHostProvider>
   );
 }
 

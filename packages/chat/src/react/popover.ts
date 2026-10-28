@@ -15,7 +15,7 @@ const useInitPopoverInput = ({
   preserveTextAfterCursor?: boolean;
   setSearchValue: (value: string) => void;
   setOpen: (value: boolean) => void;
-}) =>
+}): ((node: HTMLInputElement | null) => void) =>
   useCallback(
     (node: HTMLInputElement | null) => {
       inputRef.current = node;

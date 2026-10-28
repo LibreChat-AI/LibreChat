@@ -1,8 +1,13 @@
 import { useMemo } from 'react';
-import type { LocalizeFunction } from '~/common';
-import { isMacPlatform, bindingDisplayString, resolveComposerKeyDown } from '~/utils/shortcuts';
-import useComposerBindings from '~/hooks/Input/useComposerBindings';
-import useLocalize from '~/hooks/useLocalize';
+import { useLocalize } from '@librechat/client';
+import {
+  isMacPlatform,
+  bindingDisplayString,
+  resolveComposerKeyDown,
+} from '../../../core/shortcuts';
+import { useComposerHost } from '../../../react/input';
+
+type LocalizeFunction = ReturnType<typeof useLocalize>;
 
 /** The effective `submitMessage` binding, reduced to what the hints need.
  *  `customized` false means the stock modifier chord applies; a customized
@@ -194,6 +199,7 @@ export function composeHint(
 
 export default function useComposerHint(state: ComposerHintState): ComposerHint {
   const localize = useLocalize();
+  const { useComposerBindings } = useComposerHost();
   const { shortcutsEnabled, submitOverride, yieldedChords } = useComposerBindings();
   const sendBinding = useMemo<SendBinding>(
     () => ({

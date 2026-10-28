@@ -3,6 +3,7 @@ import { v4 } from 'uuid';
 import { useNavigate } from 'react-router-dom';
 import { dataService, ForkOptions } from 'librechat-data-provider';
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
+import { isMacPlatform, resolveComposerKeyDown } from '@librechat/chat';
 import { ArrowUpRight, Clock, OctagonPause, X, Zap } from 'lucide-react';
 import {
   Alert,
@@ -30,7 +31,7 @@ import type {
 import type { ComposerKeyVerdict, ComposerStopProps, SendAction } from '@librechat/client';
 import type { ActiveSubagentPanel, SubagentControlUiState } from '@librechat/chat/react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
-import type { ComposerKeyAction } from '~/utils/shortcuts';
+import type { ComposerKeyAction } from '@librechat/chat';
 import type { OptionWithIcon } from '~/common';
 import {
   ACTIVE_THREAD_REFRESH_MS,
@@ -58,7 +59,6 @@ import {
 import SubagentActivity, { SubagentActivityScrollSurface } from './SubagentActivity';
 import ApprovalProvider from '~/components/Chat/Messages/Content/ApprovalContext';
 import { TaskContentScopeContext } from '~/data-provider/Subagents/content';
-import { isMacPlatform, resolveComposerKeyDown } from '~/utils/shortcuts';
 import { useFocusTrap, useLocalize, useNavigateToConvo } from '~/hooks';
 import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import { useConfiguredFooter } from '~/components/Chat/Footer';

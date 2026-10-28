@@ -21,3 +21,5 @@ export * from './a11y';
 export * from './ptc';
 export * from './subagents';
 export { strongDirection } from './direction';
+export * from './shortcuts';
+export * from './pane';

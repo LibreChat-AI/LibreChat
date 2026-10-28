@@ -444,6 +444,7 @@
         "sse.js": "^2.8.0",
       },
       "devDependencies": {
+        "@ariakit/react": "^0.4.29",
         "@babel/preset-env": "^7.29.5",
         "@babel/preset-react": "^7.22.15",
         "@babel/preset-typescript": "^7.21.0",
@@ -470,6 +471,7 @@
         "uuid": "^11.1.1",
       },
       "peerDependencies": {
+        "@ariakit/react": "^0.4.29",
         "@librechat/client": "*",
         "@radix-ui/react-dialog": "^1.1.23",
         "jotai": "^2.12.5",
@@ -477,6 +479,7 @@
         "lucide": "^0.528.0",
         "lucide-react": "^0.528.0",
         "react": "^18.2.0 || ^19.1.0",
+        "react-dom": "^18.2.0 || ^19.1.0",
         "uuid": "^11.1.1",
       },
     },

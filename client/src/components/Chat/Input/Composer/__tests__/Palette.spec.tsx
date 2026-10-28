@@ -26,9 +26,9 @@ jest.mock('react-virtualized', () => {
   };
 });
 
-jest.mock('~/hooks/Generic/useElementSize', () => ({
-  __esModule: true,
-  default: () => ({ ref: { current: null }, height: mockPopupHeight, width: 0 }),
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useElementSize: () => ({ ref: { current: null }, height: mockPopupHeight, width: 0 }),
 }));
 
 jest.mock('~/components/SharePoint', () => ({ SharePointPickerDialog: () => null }));

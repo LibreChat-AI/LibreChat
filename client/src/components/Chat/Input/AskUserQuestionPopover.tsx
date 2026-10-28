@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useRef } from 'react';
 import { useWatch } from 'react-hook-form';
+import { isCancelKey } from '@librechat/chat';
 import { Button, TooltipAnchor } from '@librechat/client';
 import { useComposerOverlay } from '@librechat/chat/react';
 import { ChevronDown, CornerDownLeft, TriangleAlert } from 'lucide-react';
@@ -7,7 +8,6 @@ import AskUserQuestions from '~/components/Chat/Messages/Content/AskUserQuestion
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
 import AskOptions from '~/components/Chat/ask/options';
 import { useChatFormContext } from '~/Providers';
-import { isCancelKey } from '~/utils/shortcuts';
 import { useLocalize } from '~/hooks';
 
 /**

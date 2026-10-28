@@ -1,5 +1,6 @@
 import { memo, useRef, useMemo, useState, useEffect, useCallback } from 'react';
 import { CircleHelp } from 'lucide-react';
+import { useReducedMotion } from '@librechat/chat/react';
 import { Constants, reasoningOverrideSchema } from 'librechat-data-provider';
 import {
   Button,
@@ -13,7 +14,6 @@ import type { SettingDefinition, TConversation, TReasoningOverride } from 'libre
 import type { CSSProperties } from 'react';
 import type { LocalizeFunction } from '~/common';
 import type { TranslationKeys } from '~/hooks';
-import useReducedMotion from '~/hooks/Generic/useReducedMotion';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 

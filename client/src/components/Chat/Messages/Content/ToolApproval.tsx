@@ -9,16 +9,16 @@ import {
   ShieldQuestion,
   TriangleAlert,
 } from 'lucide-react';
-import type { Agents } from 'librechat-data-provider';
-import type { KeyboardEvent } from 'react';
-import type { TranslationKeys } from '~/hooks';
 import {
   isReboundSubmitChord,
   resolveComposerKeyDown,
   bindingFromEvent,
   bindingsMatch,
   bindingHash,
-} from '~/utils/shortcuts';
+} from '@librechat/chat';
+import type { Agents } from 'librechat-data-provider';
+import type { KeyboardEvent } from 'react';
+import type { TranslationKeys } from '~/hooks';
 import { useComposerPresentsApproval } from '~/components/Chat/approval/state';
 import { useOptionalChatSurface } from '~/components/Chat/Subagents/surface';
 import { boundApprovalLabel } from '~/components/Chat/approval/preview';

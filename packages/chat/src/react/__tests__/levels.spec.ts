@@ -1,4 +1,4 @@
-import { frameLevel } from '../useAudioLevels';
+import { frameLevel } from '../levels';
 
 /** A time-domain frame of a sine at the given peak amplitude (0-1). */
 const sine = (amplitude: number, length = 1024) =>

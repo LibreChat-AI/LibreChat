@@ -104,11 +104,6 @@
       "count": 2
     }
   },
-  "client/src/components/Chat/Input/EscalateNowButton.tsx": {
-    "design/disabled-recipe": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Input/Files/MyFilesModal.tsx": {
     "shadcn/no-restyle": {
       "count": 2
@@ -148,11 +143,6 @@
     },
     "shadcn/require-static-classes": {
       "count": 3
-    }
-  },
-  "client/src/components/Chat/Input/QuoteButton.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
     }
   },
   "client/src/components/Chat/Input/TokenUsage/Breakdown.tsx": {
@@ -1375,6 +1365,16 @@
       "count": 9
     },
     "shadcn/require-static-classes": {
+      "count": 1
+    }
+  },
+  "packages/chat/src/components/composer/EscalateNowButton.tsx": {
+    "design/disabled-recipe": {
+      "count": 1
+    }
+  },
+  "packages/chat/src/components/composer/QuoteButton.tsx": {
+    "shadcn/no-inline-styles": {
       "count": 1
     }
   },

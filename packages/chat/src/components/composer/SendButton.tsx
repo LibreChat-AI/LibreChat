@@ -1,13 +1,12 @@
 import React, { forwardRef } from 'react';
-import { useWatch } from 'react-hook-form';
-import { SendIcon, IconButton, TooltipAnchor } from '@librechat/client';
-import type { Control } from 'react-hook-form';
-import { isSubmittableMessage } from '~/utils';
-import { useLocalize } from '~/hooks';
+import { SendIcon, IconButton, useLocalize, TooltipAnchor } from '@librechat/client';
+import type { ForwardRefExoticComponent, RefAttributes } from 'react';
+import { isSubmittableMessage } from '../../core/composer';
 
 type SendButtonProps = {
   disabled: boolean;
-  control: Control<{ text: string }>;
+  /** The composer's current text; the host owns the input state. */
+  text: string;
   /** Number of attached files; attachments allow sending without text */
   fileCount?: number;
 };
@@ -38,10 +37,11 @@ const SubmitButton = React.memo(
     );
   }),
 );
-const SendButton = React.memo(
+const SendButton: React.MemoExoticComponent<
+  ForwardRefExoticComponent<SendButtonProps & RefAttributes<HTMLButtonElement>>
+> = React.memo(
   forwardRef((props: SendButtonProps, ref: React.ForwardedRef<HTMLButtonElement>) => {
-    const data = useWatch({ control: props.control });
-    const canSubmit = isSubmittableMessage(data?.text, props.fileCount);
+    const canSubmit = isSubmittableMessage(props.text, props.fileCount);
     return <SubmitButton ref={ref} disabled={props.disabled || !canSubmit} />;
   }),
 );

@@ -1,11 +1,9 @@
 import { useEffect, useId, useSyncExternalStore } from 'react';
 import { ArrowUp } from 'lucide-react';
 import * as Ariakit from '@ariakit/react';
-import { Button, IconButton } from '@librechat/client';
-import { useShortcutAriaKey, useShortcutDisplay } from '~/hooks/useKeyboardShortcuts';
-import { getChatPane, getFocusedChatPane } from '~/utils/pane';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import { cn, Button, IconButton, useLocalize } from '@librechat/client';
+import { getChatPane, getFocusedChatPane } from '../../core/pane';
+import { useComposerHost } from '../../react/input';
 
 /** Longest message excerpt spoken as part of the button's accessible name;
  *  past this the row is identified by its opening words rather than read out. */
@@ -115,8 +113,9 @@ export default function EscalateNowButton({
   size = 'xs',
   shape,
   onClick,
-}: EscalateNowButtonProps) {
+}: EscalateNowButtonProps): React.JSX.Element {
   const localize = useLocalize();
+  const { useShortcutDisplay, useShortcutAriaKey } = useComposerHost();
   const chord = useShortcutDisplay('escalateSteer');
   const ariaKey = useShortcutAriaKey('escalateSteer');
   const targetId = useId();

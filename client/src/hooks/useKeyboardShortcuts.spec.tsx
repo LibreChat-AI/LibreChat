@@ -1,5 +1,6 @@
 import { MemoryRouter } from 'react-router-dom';
 import { RecoilRoot, useRecoilValue } from 'recoil';
+import { bindingDisplayString, bindingToString } from '@librechat/chat';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, act, cleanup, renderHook, fireEvent, screen } from '@testing-library/react';
 import type { SettingDefinition, TConversation } from 'librechat-data-provider';
@@ -17,7 +18,6 @@ import useKeyboardShortcuts, {
   useShortcutDisplay,
   useShortcutAriaKey,
 } from './useKeyboardShortcuts';
-import { bindingDisplayString, bindingToString } from '~/utils/shortcuts';
 import { ReasoningControl } from '~/components/Chat/Input/Reasoning';
 import Thinking from '~/components/Chat/Input/Composer/Thinking';
 import store from '~/store';
@@ -54,9 +54,9 @@ jest.mock('~/Providers', () => ({
   }),
 }));
 
-jest.mock('~/hooks/Generic/useReducedMotion', () => ({
-  __esModule: true,
-  default: () => true,
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useReducedMotion: () => true,
 }));
 
 jest.mock('copy-to-clipboard', () => ({

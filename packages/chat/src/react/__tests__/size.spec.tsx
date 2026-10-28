@@ -1,5 +1,8 @@
+/**
+ * @jest-environment jsdom
+ */
 import { renderHook, act } from '@testing-library/react';
-import useElementSize from '../useElementSize';
+import useElementSize from '../size';
 
 class MockResizeObserver {
   static instances: MockResizeObserver[] = [];

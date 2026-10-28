@@ -1,8 +1,9 @@
 import { memo, useRef, useEffect } from 'react';
-import useReducedMotion from '~/hooks/Generic/useReducedMotion';
-import useElementSize from '~/hooks/Generic/useElementSize';
-import useAudioLevels from '~/hooks/Input/useAudioLevels';
-import { cn } from '~/utils';
+import { cn } from '@librechat/client';
+import type { NamedExoticComponent } from 'react';
+import useReducedMotion from '../../../react/motion';
+import useAudioLevels from '../../../react/levels';
+import useElementSize from '../../../react/size';
 
 /** One loudness sample per this many ms; each becomes a bar. */
 const SAMPLE_MS = 55;
@@ -31,7 +32,7 @@ interface WaveformProps {
  * The bar color is the element's own `text-text-primary`, read from the
  * canvas every frame, so it follows the theme like any other text.
  */
-function Waveform({ active, className }: WaveformProps) {
+function Waveform({ active, className }: WaveformProps): React.JSX.Element {
   const read = useAudioLevels(active);
   const reducedMotion = useReducedMotion();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -99,4 +100,6 @@ function Waveform({ active, className }: WaveformProps) {
   );
 }
 
-export default memo(Waveform);
+const MemoWaveform: NamedExoticComponent<WaveformProps> = memo(Waveform);
+
+export default MemoWaveform;

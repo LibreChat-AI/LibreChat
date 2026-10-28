@@ -1,10 +1,11 @@
 import { memo } from 'react';
-import type { ComposerHintState } from '~/hooks/Input/useComposerHint';
-import useComposerHint from '~/hooks/Input/useComposerHint';
+import type { NamedExoticComponent } from 'react';
+import type { ComposerHintState } from './hint';
+import useComposerHint from './hint';
 
 /** Scoped per pane: split view mounts one composer per index, and a shared id
  *  would point every textarea's `aria-describedby` at the first pane's hint. */
-export const composerHintId = (index: number) => `composer-hint-${index}`;
+export const composerHintId = (index: number): string => `composer-hint-${index}`;
 
 /**
  * The composer's accessible description: whatever the current state affords
@@ -14,7 +15,9 @@ export const composerHintId = (index: number) => `composer-hint-${index}`;
  * every keystroke as the hint flips between idle and typing, so the description
  * channel carries it instead.
  */
-function Hints({ index, enterToSend, ...state }: ComposerHintState & { index: number }) {
+type HintsProps = ComposerHintState & { index: number };
+
+function Hints({ index, enterToSend, ...state }: HintsProps): React.JSX.Element {
   const hint = useComposerHint({ ...state, enterToSend });
 
   return (
@@ -24,4 +27,6 @@ function Hints({ index, enterToSend, ...state }: ComposerHintState & { index: nu
   );
 }
 
-export default memo(Hints);
+const MemoHints: NamedExoticComponent<HintsProps> = memo(Hints);
+
+export default MemoHints;

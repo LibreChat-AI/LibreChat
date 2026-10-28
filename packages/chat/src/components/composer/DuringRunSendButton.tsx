@@ -1,14 +1,12 @@
 import React, { forwardRef, useMemo, useRef } from 'react';
-import { useWatch } from 'react-hook-form';
 import { Zap, Clock, ZapOff } from 'lucide-react';
-import { composerSubmitClasses, SendActions, SendIcon } from '@librechat/client';
-import type { SteeringControls } from '@librechat/chat/react';
+import { SendIcon, SendActions, useLocalize, composerSubmitClasses } from '@librechat/client';
+import type { ForwardRefExoticComponent, RefAttributes } from 'react';
 import type { SendAction } from '@librechat/client';
-import type { Control } from 'react-hook-form';
-import type { ComposerKeyContext, KeyChordSource } from '~/utils/shortcuts';
-import { isMacPlatform, resolveComposerKeyDown } from '~/utils/shortcuts';
-import useComposerBindings from '~/hooks/Input/useComposerBindings';
-import { useLocalize } from '~/hooks';
+import type { ComposerKeyContext, KeyChordSource } from '../../core/shortcuts';
+import type { SteeringControls } from '../../react/steering/useSteering';
+import { isMacPlatform, resolveComposerKeyDown } from '../../core/shortcuts';
+import { useComposerHost } from '../../react/input';
 
 /** The rows, the popover and the chord chips are shared with every other chat
  *  surface that can submit more than one way — see `SendActions`. */
@@ -21,7 +19,8 @@ const ACTION_LABELS = {
 } as const;
 
 type DuringRunSendButtonProps = {
-  control: Control<{ text: string }>;
+  /** The composer's current text; the host owns the input state. */
+  text: string;
   steering: SteeringControls;
   isNewConversation: boolean;
   getText: () => string;
@@ -33,15 +32,17 @@ type DuringRunSendButtonProps = {
 };
 
 /** The active mode owns submission; the menu overrides it for one message. */
-const DuringRunSendButton = React.memo(
+const DuringRunSendButton: React.MemoExoticComponent<
+  ForwardRefExoticComponent<DuringRunSendButtonProps & RefAttributes<HTMLButtonElement>>
+> = React.memo(
   forwardRef((props: DuringRunSendButtonProps, ref: React.ForwardedRef<HTMLButtonElement>) => {
     const localize = useLocalize();
+    const { useComposerBindings } = useComposerHost();
     const { shortcutsEnabled, submitOverride, yieldedChords } = useComposerBindings();
     const { steering, enterToSend } = props;
     const disabledRef = useRef(props.disabled);
     disabledRef.current = props.disabled;
-    const data = useWatch({ control: props.control });
-    const content = data?.text?.trim();
+    const content = props.text.trim();
     const primary = steering.effectiveAction;
     const modEnter = isMacPlatform ? '⌘⏎' : 'Ctrl ⏎';
     const altEnter = isMacPlatform ? '⌥⏎' : 'Alt ⏎';

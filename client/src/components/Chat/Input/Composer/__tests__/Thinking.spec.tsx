@@ -40,9 +40,9 @@ jest.mock('../../Reasoning', () => ({
   }),
 }));
 
-jest.mock('~/hooks/Generic/useReducedMotion', () => ({
-  __esModule: true,
-  default: () => true,
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useReducedMotion: () => true,
 }));
 
 jest.mock('~/hooks', () => ({

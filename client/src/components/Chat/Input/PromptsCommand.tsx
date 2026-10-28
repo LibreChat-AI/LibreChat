@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useMemo, memo, useCallback } from 'react';
 import { AutoSizer, List } from 'react-virtualized';
 import { MentionItem } from '@librechat/chat/components';
 import { useSetRecoilState, useRecoilValue } from 'recoil';
+import { useInitPopoverInput } from '@librechat/chat/react';
 import { Input, Spinner, useCombobox, useRemScale, useToastContext } from '@librechat/client';
 import type { TPromptGroup } from 'librechat-data-provider';
 import type { PromptOption } from '~/common';
@@ -13,7 +14,6 @@ import {
 } from '~/utils';
 import { activateCatalog, useLocalize, usePromptContentResolver } from '~/hooks';
 import useChatScopedRequest from '~/hooks/Prompts/useChatScopedRequest';
-import useInitPopoverInput from '~/hooks/Input/useInitPopoverInput';
 import { useRecordPromptUsage } from '~/data-provider';
 import { VariableDialog } from '~/components/Prompts';
 import { usePromptGroupsContext } from '~/Providers';

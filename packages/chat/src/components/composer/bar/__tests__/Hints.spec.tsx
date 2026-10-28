@@ -1,16 +1,26 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-import type { ComposerHintState } from '~/hooks/Input/useComposerHint';
+import type { ComposerHintState } from '../hint';
 import Hints, { composerHintId } from '../Hints';
 
-jest.mock('~/hooks/Input/useComposerBindings', () => ({
-  __esModule: true,
-  default: () => ({
-    shortcutsEnabled: true,
-    submitOverride: undefined,
-    yieldedChords: new Set<string>(),
-  }),
-}));
+/** The hint copy is the app's English, interpolated the way i18next does for these keys. */
+jest.mock('@librechat/client', () => {
+  const english: Record<string, string> = jest.requireActual(
+    '../../../../../../../client/src/locales/en/translation.json',
+  );
+  return {
+    ...jest.requireActual('@librechat/client'),
+    useLocalize: () => (key: string, options?: Record<string, string | number>) => {
+      const count = options?.count;
+      const plural = count == null ? undefined : english[`${key}_${count === 1 ? 'one' : 'other'}`];
+      const template = english[key] ?? plural ?? key;
+      return template.replace(/\{\{(\w+)\}\}/g, (_, name: string) => String(options?.[name] ?? ''));
+    },
+  };
+});
 
 const baseState: ComposerHintState = {
   hasText: true,

@@ -3,8 +3,8 @@ import { RecoilRoot } from 'recoil';
 import { Provider, createStore } from 'jotai';
 import { activeGenerationCreatedAtByConvoId } from '@librechat/chat/react';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import type { ShortcutBinding } from '@librechat/chat';
 import type { Agents } from 'librechat-data-provider';
-import type { ShortcutBinding } from '~/utils/shortcuts';
 import {
   approvalPanelOpenFamily,
   pendingApprovalActionFamily,

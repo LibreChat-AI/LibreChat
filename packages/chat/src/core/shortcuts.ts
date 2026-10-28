@@ -6,7 +6,7 @@ export type ShortcutBinding = {
   key: string;
 };
 
-export const isMacPlatform =
+export const isMacPlatform: boolean =
   typeof navigator !== 'undefined' && /Mac|iPhone|iPad|iPod/.test(navigator.userAgent);
 
 const MODIFIER_KEYS = new Set(['Meta', 'Control', 'Alt', 'Shift']);
@@ -402,3 +402,33 @@ export function bindingDisplayString(binding: ShortcutBinding | null, mac: boole
   const keys = bindingDisplayKeys(binding, mac);
   return mac ? keys.join(' ') : keys.join('+');
 }
+
+export type ComposerBindings = {
+  /** Whether user-configurable keyboard shortcuts are globally enabled. */
+  shortcutsEnabled: boolean;
+  /**
+   * Effective `submitMessage` override: `undefined` when unset (default Ctrl/Cmd+Enter applies),
+   * `null` when explicitly unbound, otherwise the rebound chord.
+   */
+  submitOverride: ShortcutBinding | null | undefined;
+  /**
+   * Chords the user has bound to global shortcuts that still run while typing
+   * (`EDITING_ALLOWED_SHORTCUTS`). The window-level handler in
+   * `useKeyboardShortcuts` runs AFTER the composer's and yields any keypress
+   * a closer handler claimed via `preventDefault`, so the composer must leave
+   * these chords entirely untouched: acting on them would claim the event
+   * and silently swallow the global action. `submitMessage` is excluded: its
+   * rebinding is resolved through `submitOverride` instead. No default binding
+   * uses an Enter chord besides submit, so this only ever yields to a
+   * deliberate rebinding.
+   */
+  yieldedChords: ReadonlySet<string>;
+};
+
+/** Default bindings for a card rendered without a chat surface host
+ * (Share, search), where the user's custom shortcuts are not in scope. */
+export const NO_HOST_BINDINGS: ComposerBindings = {
+  shortcutsEnabled: true,
+  submitOverride: undefined,
+  yieldedChords: new Set(),
+};

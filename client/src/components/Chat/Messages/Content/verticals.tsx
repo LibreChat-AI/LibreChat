@@ -1,12 +1,12 @@
 import { Star, MapPin } from 'lucide-react';
 import { Tools } from 'librechat-data-provider';
+import { isMacPlatform } from '@librechat/chat';
 import type {
   TAttachment,
   ImageResult,
   PlaceResult,
   ShoppingResult,
 } from 'librechat-data-provider';
-import { isMacPlatform } from '~/utils/shortcuts';
 import { isSafeUrl } from '~/utils/markdown';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';

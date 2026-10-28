@@ -68,7 +68,7 @@ export type LocalizeFunction = (
 
 export type ChatFormValues = { text: string };
 
-export const mainTextareaId = 'prompt-textarea';
+export { mainTextareaId } from '@librechat/chat';
 export const globalAudioId = 'global-audio';
 
 export type NavLink = {

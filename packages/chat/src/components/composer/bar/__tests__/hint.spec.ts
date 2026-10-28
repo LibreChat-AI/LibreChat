@@ -1,5 +1,5 @@
-import type { ComposerHintState } from '../useComposerHint';
-import { composeHint } from '../useComposerHint';
+import type { ComposerHintState } from '../hint';
+import { composeHint } from '../hint';
 
 /** Echoes the key so assertions read against the key, not English copy. */
 const localize = ((key: string, options?: Record<string, string | number>) =>

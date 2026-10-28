@@ -1,5 +1,6 @@
 import React, { memo, useMemo, useState, useCallback } from 'react';
 import * as Ariakit from '@ariakit/react';
+import { useElementSize } from '@librechat/chat/react';
 import { ComposerChip as Chip } from '@librechat/chat/components';
 import { Mic, Plus, Check, Square, ChevronDown } from 'lucide-react';
 import { IconButton, TooltipAnchor, SendIcon } from '@librechat/client';
@@ -10,7 +11,6 @@ import type { ExtendedFile, FileSetter } from '~/common';
 import usePaletteEntries from '~/hooks/Input/usePaletteEntries';
 import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
 import useToolFavorites from '~/hooks/Input/useToolFavorites';
-import useElementSize from '~/hooks/Generic/useElementSize';
 import useChipPacking from '~/hooks/Input/useChipPacking';
 import { useBadgeRowContext } from '~/Providers';
 import TokenUsage from '../TokenUsage';
