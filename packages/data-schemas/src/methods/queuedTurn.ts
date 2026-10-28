@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { CODE_APPROVAL_MODES } from 'librechat-data-provider';
 import { reasoningOverrideSchema } from 'librechat-data-provider';
+import { Constants, CODE_APPROVAL_MODES } from 'librechat-data-provider';
 import type { TReasoningOverride } from 'librechat-data-provider';
 import type { CodeApprovalMode } from 'librechat-data-provider';
 import type { FilterQuery, Model, Types } from 'mongoose';
@@ -181,7 +181,7 @@ export interface AgentQueuedTurnPredecessor {
 
 function getRootLineagePredecessorId(parentMessageId: string): string {
   return `${ROOT_LINEAGE_PREDECESSOR_PREFIX}${createHash('sha256')
-    .update(requireBoundedString(parentMessageId, 256))
+    .update(requireBoundedString(parentMessageId, Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH))
     .digest('base64url')}`;
 }
 
@@ -547,7 +547,10 @@ function requireCodeApprovalMode(mode: CodeApprovalMode): CodeApprovalMode {
 function normalizeEnqueue(input: EnqueueAgentQueuedTurnInput) {
   const normalized = {
     agentId: requireBoundedString(input.agentId, 256),
-    parentMessageId: requireBoundedString(input.parentMessageId, 256),
+    parentMessageId: requireBoundedString(
+      input.parentMessageId,
+      Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH,
+    ),
     clientRequestId: requireBoundedString(input.clientRequestId, 128),
     text: normalizeText(input.text),
     files: normalizeFiles(input.files),
@@ -2583,7 +2586,10 @@ export function createAgentQueuedTurnMethods(
       throw new TypeError('Agent queued turn sequence must be a positive integer');
     }
     const rootEpoch = normalizePredecessor(input.expectedPredecessorCreatedAt);
-    const rootParentMessageId = requireBoundedString(input.rootParentMessageId, 256);
+    const rootParentMessageId = requireBoundedString(
+      input.rootParentMessageId,
+      Constants.MAX_RESPONSE_MESSAGE_ID_LENGTH,
+    );
     const rootLineagePredecessorId = getRootLineagePredecessorId(rootParentMessageId);
     const predecessors = await Turn()
       .find({

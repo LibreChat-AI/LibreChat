@@ -10,6 +10,7 @@ import React, {
 import { useSetAtom } from 'jotai';
 import * as Ariakit from '@ariakit/react';
 import { AutoSizer, List } from 'react-virtualized';
+import { composerLiftFamily } from '@librechat/chat/react';
 import { Star, Plus, Search, ChevronDown } from 'lucide-react';
 import { Button, FileUpload, IconButton, TooltipAnchor, useMediaQuery } from '@librechat/client';
 import type {
@@ -34,7 +35,6 @@ import useAttachItems from '~/hooks/Input/useAttachItems';
 import { useMCPRefresh } from '~/hooks/MCP/useMCPRefresh';
 import { isMacPlatform } from '~/utils/shortcuts';
 import { useBadgeRowContext } from '~/Providers';
-import { composerLiftFamily } from './state';
 import { useLocalize } from '~/hooks';
 import Catalog from './Catalog';
 

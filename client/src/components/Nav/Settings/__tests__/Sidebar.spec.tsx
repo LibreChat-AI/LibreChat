@@ -64,6 +64,11 @@ describe('Sidebar', () => {
     expect(screen.getByText('Langfuse')).toBeInTheDocument();
   });
 
+  it('shows the Langfuse tab with prompt access and no connection access', () => {
+    setup({ langfuseConnectionAccess: false, langfusePromptSyncAccess: true });
+    expect(screen.getByText('Langfuse')).toBeInTheDocument();
+  });
+
   it('hides the Langfuse tab without Langfuse connection access', () => {
     setup({ langfuseConnectionAccess: false });
     expect(screen.queryByText('Langfuse')).not.toBeInTheDocument();

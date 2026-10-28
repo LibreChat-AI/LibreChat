@@ -134,6 +134,47 @@ describe('Citation', () => {
     expect(screen.getByTestId('file-preview-dialog')).toHaveAttribute('data-file-source', 'text');
   });
 
+  it.each([
+    { refType: 'image', collection: 'images', composite: false },
+    { refType: 'video', collection: 'videos', composite: false },
+    { refType: 'image', collection: 'images', composite: true },
+    { refType: 'video', collection: 'videos', composite: true },
+  ] as const)(
+    'links $refType citations to the source page (composite: $composite)',
+    ({ refType, collection, composite }) => {
+      const title = `${refType} source`;
+      const link = `https://example.com/${refType}`;
+      const searchResults: Record<string, SearchResultData> = {
+        '0': {
+          [collection]: [
+            {
+              title,
+              link,
+              imageUrl: 'https://example.com/media.jpg',
+            },
+          ],
+        },
+      };
+      const citation = { turn: 0, refType, index: 0 };
+      const citationId = `cite-${refType}`;
+
+      renderWithProviders(
+        composite ? (
+          <CompositeCitation node={{ properties: { citationId, citations: [citation] } }} />
+        ) : (
+          <Citation
+            citationId={citationId}
+            citationType="standalone"
+            node={{ properties: { citationId, citation } }}
+          />
+        ),
+        searchResults,
+      );
+
+      expect(screen.getByRole('link', { name: title })).toHaveAttribute('href', link);
+    },
+  );
+
   it('keeps standalone web citations as links', () => {
     const searchResults = {
       '0': {

@@ -1,4 +1,4 @@
-const { logger, redactMessage, getTenantId } = require('@librechat/data-schemas');
+const { logger, getTenantId } = require('@librechat/data-schemas');
 const { tool: toolFn, DynamicStructuredTool } = require('@librechat/agents/langchain/tools');
 const {
   sleep,
@@ -77,6 +77,7 @@ const {
   appendAssistantMCPAppArtifact,
   resolveMCPClientCapabilityProfile,
   getOutboundTimeoutMs,
+  getToolErrorText,
 } = require('@librechat/api');
 const {
   Time,
@@ -732,7 +733,7 @@ async function processRequiredActions(client, requiredActions) {
       const output = getSafeRequiredActionOutput(
         client,
         currentAction,
-        `Error processing tool ${currentAction.tool}: ${redactMessage(error.message, 256)}`,
+        `Error processing tool ${currentAction.tool}: ${getToolErrorText(error)}`,
       );
       return {
         tool_call_id: currentAction.toolCallId,
@@ -1555,9 +1556,10 @@ async function loadToolDefinitionsWrapper({
    * sandbox can't see the prior turn's generated artifacts on first read.
    */
   let primedCodeFiles;
+  let codeContextEntries;
   if (hasExecuteCode && tool_resources) {
     try {
-      const { toolContext, files } = await primeCodeFiles({
+      const { toolContext, files, contextFiles } = await primeCodeFiles({
         req,
         tool_resources,
         agentId: agent.id,
@@ -1577,6 +1579,7 @@ async function loadToolDefinitionsWrapper({
       if (files?.length) {
         primedCodeFiles = files;
       }
+      codeContextEntries = contextFiles;
     } catch (error) {
       if (isFatalAgentInitializationError(error, { signal })) {
         throw error;
@@ -1648,6 +1651,7 @@ async function loadToolDefinitionsWrapper({
     mcpToolAliases,
     actionsEnabled,
     primedCodeFiles,
+    codeContextEntries,
     oauthActionToolNames,
     codeExecutionContext: resolvedCodeExecutionContext,
     repositoryInstructionSource: createRepositoryInstructionSource({

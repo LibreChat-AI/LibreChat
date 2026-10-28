@@ -9,6 +9,7 @@ import type {
   SubagentControlRequest,
   SubagentUpdatePhase,
   TMessageContentParts,
+  TAttachment,
   SubagentUpdateEvent,
 } from 'librechat-data-provider';
 import type { Getter, PrimitiveAtom, WritableAtom } from 'jotai';
@@ -170,6 +171,13 @@ const boundSingletonPart = (part: SubagentContentPart): SubagentContentPart => {
     );
   }
 
+  if (part.type === ContentTypes.STEER) {
+    return fitStringField(
+      truncateUtf8(part.steer, MAX_SINGLE_ACTIVITY_TEXT_BYTES),
+      (steer) => ({ ...part, steer }),
+      MAX_SINGLE_ACTIVITY_ENCODED_BYTES,
+    );
+  }
   let bounded: SubagentContentPart = {
     ...part,
     tool_call: {
@@ -316,6 +324,7 @@ export type ActiveSubagentPanel = {
   prompt?: string;
   legacyOutput?: string | null;
   persistedContent?: TMessageContentParts[];
+  attachments?: TAttachment[];
   /** The tool call came from the server as a preview: its transcript, output or arguments are
    *  shortened or absent, so the panel loads the stored part before rendering activity. Carries
    *  what identifies the stored part and the preview's revision. */
@@ -1044,6 +1053,9 @@ function prependSubagentReplay(
     } else if (part.type === ContentTypes.THINK) {
       event.phase = 'reasoning_delta';
       event.data = { delta: { content: [part] } };
+    } else if (part.type === ContentTypes.STEER) {
+      event.phase = 'steer_applied';
+      event.data = { index: parts.length, part };
     } else {
       event.phase = 'run_step';
       event.data = {

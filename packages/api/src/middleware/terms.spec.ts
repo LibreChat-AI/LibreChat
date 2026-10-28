@@ -1,7 +1,12 @@
 import { TERMS_NOT_ACCEPTED_CODE } from 'librechat-data-provider';
 import type { NextFunction, Request, Response } from 'express';
 import type { AppConfig } from '@librechat/data-schemas';
-import { afterTermsGate, createTermsAcceptanceGate, createTermsBlockCheck } from './terms';
+import {
+  afterTermsGate,
+  createTermsBlockCheck,
+  createTermsAcceptanceGate,
+  allowBeforeTermsAcceptance,
+} from './terms';
 
 const configWith = (modalAcceptance?: boolean): AppConfig =>
   ({ interfaceConfig: { termsOfService: { modalAcceptance } } }) as unknown as AppConfig;
@@ -163,6 +168,46 @@ describe('createTermsAcceptanceGate', () => {
   it('resolves the config fail-closed so an override lookup failure cannot fall back to the base', async () => {
     const { getAppConfig } = await run(createRequest('POST', '/api/files'));
     expect(getAppConfig).toHaveBeenCalledWith(expect.objectContaining({ failClosed: true }));
+  });
+});
+
+describe('allowBeforeTermsAcceptance', () => {
+  it('lets a router that opts out take writes from a user who has not accepted', async () => {
+    const req = createRequest('PATCH', '/api/admin/config/role/USER/fields', {
+      id: 'admin-1',
+      role: 'ADMIN',
+      termsAccepted: false,
+    });
+    const marked = jest.fn();
+    allowBeforeTermsAcceptance(req, createResponse(), marked as NextFunction);
+    expect(marked).toHaveBeenCalledWith();
+
+    const { getAppConfig, ...result } = await run(req);
+    expect(outcome(result)).toBe('allowed');
+    expect(getAppConfig).not.toHaveBeenCalled();
+  });
+
+  it('holds only inside the router that opted out, not one the request reaches after it', async () => {
+    const req = createRequest('POST', '/admin/config/role/USER/fields', {
+      id: 'admin-1',
+      role: 'ADMIN',
+      termsAccepted: false,
+    });
+    req.baseUrl = '/api/admin/config';
+    allowBeforeTermsAcceptance(req, createResponse(), jest.fn() as NextFunction);
+
+    req.baseUrl = '/api';
+    expect(outcome(await run(req))).toBe('blocked');
+    req.baseUrl = '/api/admin/config';
+    expect(outcome(await run(req))).toBe('allowed');
+  });
+
+  it('keeps every request it did not mark gated, on the same path and any other', async () => {
+    const user = { id: 'admin-1', role: 'ADMIN', termsAccepted: false };
+    const sameRoute = createRequest('PATCH', '/api/admin/config/role/USER/fields', user);
+    const chat = createRequest('POST', '/api/agents/chat/agents', user);
+    expect(outcome(await run(sameRoute))).toBe('blocked');
+    expect(outcome(await run(chat))).toBe('blocked');
   });
 });
 

@@ -194,7 +194,9 @@ export function prepareQueuedCodeFileContext(
   );
   const location = getCodeFileLocation(agent.codeExecutionContext);
   let context = '';
+  const described = agent.provisionState.describedFileIds;
   for (const { file, destination } of uploads) {
+    if (described?.has(file.file_id)) continue;
     context = appendCodeFileContextLine(
       context,
       getCodeFileContextLine(file, agent.provisionState.agentScopedFileIds, destination, location),

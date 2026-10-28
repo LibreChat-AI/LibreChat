@@ -7,7 +7,7 @@ import {
   FileSources,
   getCodeEnvRefs,
   canToolResourceConsume,
-  hasToolResourceProvisioning,
+  hasToolResourceDestination,
 } from 'librechat-data-provider';
 import type {
   AgentToolResources,
@@ -130,6 +130,9 @@ export type ProvisionState = {
    *  another agent's setup file to this conversation, and provisioning it here would put
    *  it in a namespace this agent's other users can read. */
   agentScopedFileIds: Set<string>;
+  /** Files an attached workspace's attachment note already describes; the queued-file note
+   *  leaves them out rather than pointing at a second location. */
+  describedFileIds?: Set<string>;
 };
 
 /**
@@ -496,17 +499,8 @@ const computeProvisionState = async ({
     return choice == null ? true : choice;
   };
 
-  /** A chooser upload may still be provisioned for the destination it was filed under,
-   *  which is how an inherited search file gets vectors in a duplicated agent's namespace.
-   *  The destinations it carries no reference for were declined, not deferred. */
-  /** What the record itself shows about where it was sent. A message attachment is never
-   *  in the agent's resources, so a reference or an embedding is the only evidence that
-   *  the chooser picked that destination, and it is proof: nothing else creates one. */
-  /* The predicate the turn's delivery decision reads too, so a file this queue has yet to
-   * provision is never one the prompt withheld its text for. */
-  const carriesEvidenceFor = (file: TFile, resourceType: EToolResources): boolean =>
-    hasToolResourceProvisioning(file, resourceType);
-
+  /* Search intent survives vector cleanup without claiming the vectors still exist.
+   * A chooser's other destinations remain declined unless membership or a copy proves them. */
   const allowsResource = (file: TFile, resourceType: EToolResources): boolean => {
     if (!cameFromChooser(file)) {
       return true;
@@ -514,7 +508,7 @@ const computeProvisionState = async ({
     const isPersistedResource =
       file.file_id != null &&
       persistedResourceMembership?.get(resourceType)?.has(file.file_id) === true;
-    return isPersistedResource || carriesEvidenceFor(file, resourceType);
+    return isPersistedResource || hasToolResourceDestination(file, resourceType);
   };
   const provisionable = attachments.filter(
     (file) =>

@@ -10,6 +10,7 @@ const {
   resolveInitializationProjectContext,
   initializeAgent,
   primeInvokedSkillsForProfiles,
+  createWorkspaceAttachmentPrimer,
   validateAgentModel,
   extractManualSkills,
   GenerationJobManager,
@@ -100,6 +101,7 @@ const {
   provisionToCodeEnv,
   provisionToVectorDB,
   checkSessionsAlive,
+  digestFile,
 } = require('~/server/services/Files/provision');
 const { createProvisionFilesCallback } = require('~/server/services/Files/provisionCallback');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
@@ -117,6 +119,7 @@ const {
 } = require('./backgroundCompletion');
 const { logViolation } = require('~/cache');
 const db = require('~/models');
+const { getFileStorage } = require('~/server/services/Files/operations');
 const { getAppConfig } = require('~/server/services/Config');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { encodeAndFormat } = require('~/server/services/Files/images/encode');
@@ -592,6 +595,21 @@ const initializeClientWithProvider = async ({
       resolveExecutionContext: getRoutedToolContext,
     }),
   };
+
+  const primeAttachments = createWorkspaceAttachmentPrimer({
+    toolContexts: agentToolContexts,
+    getProvisionFiles: () => toolExecuteOptions.provisionFiles,
+    deps: {
+      userId: req.user.id,
+      conversationId,
+      getAuthHeaders: (workerId) => getCodeApiAuthHeaders(req, workerId),
+      digestFile: (file, digestSignal) => digestFile({ req, file, signal: digestSignal }),
+      recordImport: db.recordFileWorkspaceImport,
+      codeApiMaxRetryWaitMs: appConfig?.endpoints?.agents?.codeApiMaxRetryWaitMs,
+      timeoutMs: appConfig?.endpoints?.agents?.workspaceAttachments?.timeoutMs,
+      concurrency: appConfig?.endpoints?.agents?.workspaceAttachments?.concurrency,
+    },
+  });
 
   const summarizationOptions =
     appConfig?.summarization?.enabled === false ? { enabled: false } : { enabled: true };
@@ -1479,14 +1497,22 @@ const initializeClientWithProvider = async ({
     if (config.userMCPAuthMap) {
       Object.assign(userMCPAuthMap, config.userMCPAuthMap);
     }
+    const toolContext = buildAgentToolContext({ agent: routedAgent, config });
     subagentCodeRouting.attach(agentToolContexts, {
       agentId,
       context,
       placement,
       codeExecutionContext: config.codeExecutionContext,
-      toolContext: buildAgentToolContext({ agent: routedAgent, config }),
+      toolContext,
     });
     endpointTokenConfigByAgentId.set(agentId, config.endpointTokenConfig);
+    /** A routed execution keeps its own tool context, so provision against exactly that one. */
+    const ownToolContexts = new Map([[agentId, toolContext]]);
+    await primeAttachments([config], {
+      signal: context.signal,
+      toolContexts: ownToolContexts,
+      provisionFiles: createProvisionFilesCallback({ req, agentToolContexts: ownToolContexts }),
+    });
     return config;
   };
   const initializeLazySubagent = async ({
@@ -1839,6 +1865,7 @@ const initializeClientWithProvider = async ({
           },
           {
             completionWakeups: completionWakeupsEnabled,
+            requestScopedConnections: getMCPRequestContext(req, res),
             scheduleMCPIdentity: getScheduleMCPExecution(getMCPRequestContext(req, res))?.identity,
           },
         )
@@ -1991,6 +2018,7 @@ const initializeClientWithProvider = async ({
     filterFiles: filterFilesByAgentAccess,
     listPublications: db.listRunArtifacts,
     provisioning: {
+      fileStorage: getFileStorage(),
       provisionToCodeEnv,
       provisionToVectorDB,
       updateFile: db.updateFile,
@@ -2029,6 +2057,7 @@ const initializeClientWithProvider = async ({
   toolExecuteOptions.provisionFiles = runFileBindings.wrapProvision(
     toolExecuteOptions.provisionFiles,
   );
+  await primeAttachments([primaryConfig, ...agentConfigs.values()], { signal });
 
   const eventHandlers = getDefaultHandlers({
     res,

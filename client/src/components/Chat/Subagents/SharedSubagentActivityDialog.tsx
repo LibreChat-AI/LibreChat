@@ -82,6 +82,7 @@ export default function SharedSubagentActivityDialog({
         prompt: selection?.prompt,
         progress: null,
         persistedContent: selection?.persistedContent,
+        attachments: selection?.attachments,
         legacyOutput: selection?.legacyOutput,
         initialProgress: selection?.initialProgress ?? 1,
         isSubmitting: false,

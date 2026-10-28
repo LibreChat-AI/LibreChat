@@ -1,11 +1,11 @@
 import { memo, useCallback, useEffect, useRef } from 'react';
 import { TextQuote, WandSparkles } from 'lucide-react';
+import { ComposerChip as Chip } from '@librechat/chat/components';
 import type { TConversation } from 'librechat-data-provider';
 import type { ComposerItem, ComposerItemKind } from '~/hooks/Input/useComposerItems';
 import type { ExtendedFile, FileSetter } from '~/common';
 import { useFileHandlingNoChatContext, useLocalize } from '~/hooks';
 import FileRow from '../Files/FileRow';
-import Chip from './Chip';
 
 const KIND_ICON: Record<ComposerItemKind, JSX.Element> = {
   quote: <TextQuote className="h-4 w-4" aria-hidden="true" />,

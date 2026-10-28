@@ -2,9 +2,9 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Provider as JotaiProvider, createStore } from 'jotai';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { composerOverlayCountFamily } from '@librechat/chat/react';
 import type { Agents } from 'librechat-data-provider';
 import { PendingToolApprovalButton, PendingToolApprovalPanel } from '../Review';
-import { composerOverlayCountFamily } from '~/components/Chat/Input/overlay';
 import ApprovalProvider from '../../Messages/Content/ApprovalContext';
 import { pendingApprovalActionFamily } from '../state';
 

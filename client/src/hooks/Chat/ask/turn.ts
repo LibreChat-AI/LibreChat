@@ -1,5 +1,5 @@
 import { v4 } from 'uuid';
-import { cloneDeep } from 'lodash';
+import cloneDeep from 'lodash/cloneDeep';
 import {
   Constants,
   ContentTypes,
@@ -344,7 +344,8 @@ export function buildTurn({
   let editPrefixLength: number | undefined;
   const initialResponseId =
     responseMessageId ??
-    `${regenerateShaped ? messageId : intermediateId}`.replace(/_+$/, '') + '_';
+    getPreliminaryRegenerateResponseMessageId(`${regenerateShaped ? messageId : intermediateId}`) ??
+    `${v4()}_`;
 
   const initialResponse: TMessage = {
     sender: responseSender,

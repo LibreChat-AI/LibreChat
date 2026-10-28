@@ -14,7 +14,12 @@ const collectSourceModules = (directory: string): string[] =>
     return entry.isFile() && /\.tsx?$/.test(entry.name) ? [sourcePath] : [];
   });
 
-const composerModules = collectSourceModules(composerRoot);
+const composerModules = [
+  ...collectSourceModules(composerRoot),
+  ...collectSourceModules(
+    join(__dirname, '../../../../../../../packages/chat/src/components/composer'),
+  ),
+];
 
 const protectedModules = [
   ...composerModules,

@@ -10,6 +10,8 @@ import type { ServerRequest } from '~/types/http';
 process.env.CREDS_KEY =
   process.env.CREDS_KEY ?? '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
 process.env.CREDS_IV = process.env.CREDS_IV ?? '0123456789abcdef0123456789abcdef';
+/** An Azure group a write stores must resolve, its `${AZURE_API_KEY}` included. */
+process.env.AZURE_API_KEY = process.env.AZURE_API_KEY ?? 'test-azure-key';
 
 type DataSchemas = typeof import('@librechat/data-schemas');
 type Doc = Record<string, unknown>;
@@ -48,7 +50,6 @@ beforeAll(async () => {
     listAllConfigs: methods.listAllConfigs,
     findConfigByPrincipal: methods.findConfigByPrincipal,
     writeConfigDocument: methods.writeConfigDocument,
-    tombstoneConfigField: methods.tombstoneConfigField,
     unsetConfigField: methods.unsetConfigField,
     deleteConfig: methods.deleteConfig,
     toggleConfigActiveTracked: methods.toggleConfigActiveTracked,
@@ -152,7 +153,16 @@ describe('admin config writes keep dotted record keys (real sanitizer, handlers 
     await putOverrides(role, {
       endpoints: {
         azureOpenAI: {
-          groups: [{ group: 'eastus', apiKey: '${AZURE_API_KEY}', instanceName: 'east', models }],
+          groups: [
+            {
+              group: 'eastus',
+              apiKey: '${AZURE_API_KEY}',
+              instanceName: 'east',
+              deploymentName: 'gpt-41',
+              version: '2024-10-21',
+              models,
+            },
+          ],
         },
       },
     }).expect(201);
@@ -287,6 +297,7 @@ describe('admin config writes refuse keys that cannot be config', () => {
         path: `endpoints.bedrock.inferenceProfiles.${PROFILE}`,
         segments: ['endpoints', 'bedrock', 'inferenceProfiles', PROFILE],
         code: 'invalid_type',
+        params: { expected: 'string', received: 'number' },
       },
     ]);
     expect(await readRaw(role)).toBeNull();
@@ -372,7 +383,14 @@ describe('admin config writes on an engine that cannot store dotted keys', () =>
           endpoints: {
             azureOpenAI: {
               groups: [
-                { group: 'eastus', apiKey: '${AZURE_API_KEY}', models: { 'gpt-4.1': true } },
+                {
+                  group: 'eastus',
+                  apiKey: '${AZURE_API_KEY}',
+                  instanceName: 'east',
+                  deploymentName: 'gpt-41',
+                  version: '2024-10-21',
+                  models: { 'gpt-4.1': true },
+                },
               ],
             },
           },

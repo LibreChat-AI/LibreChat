@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { SSE } from 'sse.js';
-import { selectAtom } from 'jotai/utils';
-import { useAtomValue, useSetAtom } from 'jotai';
+import { atomFamily, selectAtom } from 'jotai/utils';
 import { useQueryClient } from '@tanstack/react-query';
+import { atom, useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { QueryKeys, StepEvents, apiBaseUrl } from 'librechat-data-provider';
-import type { SubagentUpdateEvent } from 'librechat-data-provider';
+import type { SubagentTaskContentSnapshot, SubagentUpdateEvent } from 'librechat-data-provider';
 import type { ActiveSubagentPanel } from '~/components/Chat/Subagents/state';
 import {
   closeParentSubagentProgress,
@@ -23,7 +23,11 @@ type ActivityEnvelope = {
   final?: unknown;
   subagentActivity?: unknown;
   droppedCount?: unknown;
+  ready?: unknown;
 };
+
+const contentReady = atomFamily((_key: string) => atom(false));
+const readyReaders = new Map<string, number>();
 
 const INITIAL_RECONNECT_MS = 500;
 const MAX_RECONNECT_MS = 5_000;
@@ -46,7 +50,7 @@ const isSubagentUpdate = (value: unknown): value is SubagentUpdateEvent => {
 export default function useSubagentActivityStream(
   selection: ActiveSubagentPanel,
   enabled = true,
-): void {
+): { isReady: boolean } {
   const { token, isAuthenticated } = useAuthContext();
   const queryClient = useQueryClient();
   const key = subagentProgressKey(
@@ -54,6 +58,28 @@ export default function useSubagentActivityStream(
     selection.event?.progressKey ?? selection.toolCallId,
     selection.partIndex,
   );
+  const readyKey = JSON.stringify([
+    selection.parentConversationId,
+    selection.durable?.threadId,
+    selection.durable?.taskId,
+  ]);
+  const [isReady, setReady] = useAtom(contentReady(readyKey));
+  useEffect(() => {
+    readyReaders.set(readyKey, (readyReaders.get(readyKey) ?? 0) + 1);
+    return () => {
+      const remaining = (readyReaders.get(readyKey) ?? 1) - 1;
+      if (remaining > 0) {
+        readyReaders.set(readyKey, remaining);
+        return;
+      }
+      readyReaders.delete(readyKey);
+      queueMicrotask(() => {
+        if (readyReaders.has(readyKey)) return;
+        setReady(false);
+        contentReady.remove(readyKey);
+      });
+    };
+  }, [readyKey, setReady]);
   const replayFrom = useAtomValue(
     useMemo(
       () =>
@@ -101,6 +127,16 @@ export default function useSubagentActivityStream(
     }
 
     const queryKey = [QueryKeys.subagentThread, selection.parentConversationId, threadId, taskId];
+    const contentKey = [
+      QueryKeys.subagentTaskContent,
+      selection.parentConversationId,
+      threadId,
+      taskId,
+    ];
+    const refreshContent = () => {
+      void queryClient.invalidateQueries(contentKey, { exact: true }, { cancelRefetch: false });
+    };
+    if ((readyReaders.get(readyKey) ?? 0) <= 1) setReady(false);
     const endpoint = `${apiBaseUrl()}/api/convos/${encodeURIComponent(selection.parentConversationId)}/subagents/${encodeURIComponent(threadId)}/tasks/${encodeURIComponent(taskId)}/activity`;
     let stream: SSE | undefined;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -130,7 +166,37 @@ export default function useSubagentActivityStream(
         } catch {
           return;
         }
+        if (envelope.ready === true) {
+          setReady(true);
+          refreshContent();
+          return;
+        }
+        if (envelope.event === 'subagent_content_available') {
+          const watermark = envelope.data as
+            | {
+                taskId?: string;
+                revision?: number;
+                throughSequence?: number;
+              }
+            | undefined;
+          if (
+            watermark?.taskId === taskId &&
+            Number.isSafeInteger(watermark.revision) &&
+            Number.isSafeInteger(watermark.throughSequence)
+          ) {
+            const cached = queryClient.getQueryData<SubagentTaskContentSnapshot>(contentKey);
+            if (
+              cached == null ||
+              cached.revision < watermark.revision! ||
+              cached.throughSequence < watermark.throughSequence!
+            )
+              refreshContent();
+          }
+          return;
+        }
         if (envelope.final === true && envelope.subagentActivity === true) {
+          setReady(true);
+          refreshContent();
           terminal = true;
           closeCurrent();
           void queryClient.invalidateQueries(queryKey);
@@ -190,7 +256,10 @@ export default function useSubagentActivityStream(
         );
       });
       next.addEventListener('error', () => {
-        if (stream === next) reconnect();
+        if (stream !== next) return;
+        setReady(true);
+        refreshContent();
+        reconnect();
       });
     };
 
@@ -214,6 +283,7 @@ export default function useSubagentActivityStream(
     isAuthenticated,
     key,
     queryClient,
+    readyKey,
     selection.host,
     selection.event,
     selection.parentConversationId,
@@ -221,8 +291,10 @@ export default function useSubagentActivityStream(
     selection.partIndex,
     selection.toolCallId,
     setProgress,
+    setReady,
     taskId,
     threadId,
     token,
   ]);
+  return { isReady };
 }

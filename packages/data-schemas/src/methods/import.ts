@@ -51,6 +51,13 @@ export function createConversationImportMethods(
     await runAsSystem(async () => {
       for (const conversationIds of chunkConversationIds(scope.conversationIds)) {
         await Message.deleteMany(createImportCleanupFilter<IMessage>(scope, conversationIds));
+        await mongoose.models.SubagentContent?.deleteMany({
+          user: scope.user,
+          conversationId: { $in: conversationIds },
+          ...(scope.tenantId == null
+            ? { tenantId: { $exists: false } }
+            : { tenantId: scope.tenantId }),
+        });
       }
     });
   }
@@ -71,6 +78,7 @@ export function createConversationImportMethods(
           }
         }
         await Conversation.deleteMany(filter);
+        await mongoose.models.SubagentContent?.deleteMany(filter);
       }
       return [...affectedProjectIds];
     });

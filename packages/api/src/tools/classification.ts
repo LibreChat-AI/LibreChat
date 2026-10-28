@@ -35,6 +35,7 @@ import type { CodeCapabilityConfigLoader } from '~/code/capabilities';
 import { supportsProgrammaticCodeExecution } from '~/code/capabilities';
 import { createContextProgrammaticBashTool } from '~/code/command';
 import { sanitizeGeminiSchema } from '~/mcp/zod';
+import { capturePersistedToolOptions } from '~/agents/options';
 
 export type { LCTool, LCToolRegistry, AllowedCaller, JsonSchemaType };
 
@@ -121,6 +122,7 @@ export function aliasMCPToolOptions(
   }
   for (const { name, aliasName } of aliases) {
     if (agentToolOptions[name] == null && agentToolOptions[aliasName] != null) {
+      capturePersistedToolOptions(agentToolOptions);
       agentToolOptions[name] = agentToolOptions[aliasName];
     }
   }
