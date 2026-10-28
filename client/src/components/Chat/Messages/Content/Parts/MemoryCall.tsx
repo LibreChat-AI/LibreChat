@@ -1,12 +1,12 @@
 import { useMemo } from 'react';
 import { Brain } from 'lucide-react';
 import { Tools } from 'librechat-data-provider';
+import { parseJsonField } from '@librechat/chat';
 import type { PartMetadata, TAttachment, MemoryArtifact } from 'librechat-data-provider';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import { toolPanelSpacingClassName } from '../disclosure';
 import useToolCallState from './useToolCallState';
 import { AttachmentGroup } from './Attachment';
-import parseJsonField from './parseJsonField';
 import MemoryInfo from '../MemoryInfo';
 import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';

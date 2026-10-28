@@ -1,7 +1,7 @@
 import { useMemo, useState, useCallback } from 'react';
+import { backgroundTaskOutcome, parseBackgroundTaskOutput } from '@librechat/chat';
 import type { PartMetadata, TAttachment } from 'librechat-data-provider';
 import { backgroundListGuidanceKeys, backgroundTaskNoticeKey } from './guidance';
-import { backgroundTaskOutcome, parseBackgroundTaskOutput } from './background';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { useLocalize, useLazyCollapseBody } from '~/hooks';

@@ -1,4 +1,5 @@
-import parseJsonField, {
+import {
+  parseJsonField,
   parseJsonFieldOccurrences,
   areToolCallArgsComplete,
 } from '../parseJsonField';

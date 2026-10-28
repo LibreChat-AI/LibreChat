@@ -2,6 +2,7 @@ import React, { useEffect, useId, useMemo, useRef, useState, useCallback } from 
 import copy from 'copy-to-clipboard';
 import { ChevronDown } from 'lucide-react';
 import { Button } from '@librechat/client';
+import { unescapeJsonString } from '@librechat/chat';
 import { EModelEndpoint, Constants } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
@@ -11,7 +12,6 @@ import {
   toolPanelSpacingClassName,
 } from './disclosure';
 import CopyButton from '~/components/Messages/Content/CopyButton';
-import { unescapeJsonString } from './Parts/parseJsonField';
 import MessageIcon from '~/components/Share/MessageIcon';
 import { useLocalize, useExpandCollapse } from '~/hooks';
 import { useAgentsMapContext } from '~/Providers';

@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { FilePenLine, FilePlus2 } from 'lucide-react';
+import { parseJsonField, parseJsonFieldOccurrences } from '@librechat/chat';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import DiffView, {
   parseUnifiedDiff,
@@ -7,7 +8,6 @@ import DiffView, {
   diffPreviewText,
   type TextEditPreview,
 } from './DiffView';
-import parseJsonField, { parseJsonFieldOccurrences } from './parseJsonField';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import { toolPanelSpacingClassName } from '../disclosure';
 import useToolCallState from './useToolCallState';

@@ -1,6 +1,7 @@
 import { useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
 import { useSetAtom } from 'jotai';
 import { ChevronRight, Users } from 'lucide-react';
+import { parseSubagentBackgroundHandle } from '@librechat/chat';
 import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
 import type {
   PartMetadata,
@@ -25,7 +26,6 @@ import { tailOverflowDirection } from '~/utils/subagentContent';
 import { MessageContext } from '~/Providers/MessageContext';
 import { useShareContext } from '~/Providers/ShareContext';
 import MessageIcon from '~/components/Share/MessageIcon';
-import { parseSubagentBackgroundHandle } from './handle';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { isError } from '../ToolOutput/OutputRenderer';
 import { useToolPreparation } from '../preparation';

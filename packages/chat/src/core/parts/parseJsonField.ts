@@ -97,7 +97,7 @@ export function unescapeJsonString(value: string, streaming = true): string {
 }
 
 /** Extracts a string field from tool call args, handling object, JSON string, and partial-JSON fallback. */
-export default function parseJsonField(args: ToolCallArgs, field: string): string {
+export function parseJsonField(args: ToolCallArgs, field: string): string {
   if (typeof args === 'object' && args !== null) {
     return String(args[field] ?? '');
   }

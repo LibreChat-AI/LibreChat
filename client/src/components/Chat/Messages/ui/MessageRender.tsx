@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, memo } from 'react';
 import { useRecoilValue } from 'recoil';
+import { parseWakeupMessage } from '@librechat/chat';
 import {
   revealOnRowHoverClasses,
   messageFooterClasses,
@@ -19,7 +20,6 @@ import {
   areMessageFieldsEqual,
   getHeaderPrefixForScreenReader,
 } from '~/utils';
-import { parseWakeupMessage } from '~/components/Chat/Messages/Content/Parts/wakeup';
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
 import { useLocalize, useMessageActions, useContentMetadata } from '~/hooks';
 import { PrivateText } from '~/components/Chat/Messages/PrivateText';

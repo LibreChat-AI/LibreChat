@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react';
 import { Tools } from 'librechat-data-provider';
+import { parseJsonField } from '@librechat/chat';
 import { Globe, ChevronDown, Info } from 'lucide-react';
 import {
   Button,
@@ -22,7 +23,6 @@ import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { collectSources, getUniqueDomainSources } from './sources';
 import { StackedFavicons } from '~/components/Web/Sources';
 import { isError } from './ToolOutput/OutputRenderer';
-import parseJsonField from './Parts/parseJsonField';
 import { useToolCallIntent } from './Parts/intent';
 import { useToolPreparation } from './preparation';
 import { useSearchContext } from '~/Providers';

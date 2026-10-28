@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useEffect, useContext, useCallback } from 'react';
 import { Button } from '@librechat/client';
+import { hasToolParams } from '@librechat/chat';
 import {
   Constants,
   dataService,
@@ -27,7 +28,6 @@ import { AttachmentGroup } from './Parts';
 import ToolCallInfo from './ToolCallInfo';
 import ProgressText from './ProgressText';
 import { TOOL_ROW_CLASSES } from './rows';
-import { hasToolParams } from './params';
 import { ToolAuthWarning } from './auth';
 import { firstErrorLine } from './live';
 import useRowHandoff from './handoff';

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { v4 } from 'uuid';
+import { parseJsonField } from '@librechat/chat';
 import { useQuery, useQueries } from '@tanstack/react-query';
 import { QueryKeys, dataService } from 'librechat-data-provider';
 import type { TMessage, ParentSubagentSummary } from 'librechat-data-provider';
@@ -18,7 +19,6 @@ import {
   useCancelBackgroundTasksMutation,
 } from '~/data-provider';
 import { useParentSubagents } from '~/components/Chat/Subagents/ParentSubagentsProvider';
-import parseJsonField from '~/components/Chat/Messages/Content/Parts/parseJsonField';
 import { getToolCallIntent } from '~/components/Chat/Messages/Content/Parts/intent';
 
 const noThreads: ReadonlyMap<string, ParentSubagentSummary> = new Map();

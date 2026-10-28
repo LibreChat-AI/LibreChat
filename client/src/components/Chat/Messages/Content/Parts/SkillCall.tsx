@@ -1,11 +1,11 @@
 import { useMemo } from 'react';
 import { ScrollText } from 'lucide-react';
+import { parseJsonField } from '@librechat/chat';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import { toolPanelSpacingClassName } from '../disclosure';
 import useToolCallState from './useToolCallState';
 import { AttachmentGroup } from './Attachment';
-import parseJsonField from './parseJsonField';
 import { useToolCallIntent } from './intent';
 import { TOOL_ROW_CLASSES } from '../rows';
 import BareStatus from './BareStatus';

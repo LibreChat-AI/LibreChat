@@ -1,10 +1,10 @@
+import { parseBackgroundTaskOutput } from '@librechat/chat';
 import {
   backgroundListGuidanceKeys,
   backgroundTaskMessageKey,
   backgroundTaskNoteKey,
   backgroundTaskNoticeKey,
 } from '../guidance';
-import { parseBackgroundTaskOutput } from '../background';
 
 describe('background task host guidance', () => {
   it.each([

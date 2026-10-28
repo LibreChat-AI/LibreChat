@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { MessageRow } from '@librechat/chat/components';
+import type { WakeupTask } from '@librechat/chat';
 import type { ComponentProps } from 'react';
-import type { WakeupTask } from '../Content/Parts/wakeup';
 import {
   messageAuthor,
   resolveSubagentAuthor,

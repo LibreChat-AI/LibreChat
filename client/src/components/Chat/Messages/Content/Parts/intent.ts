@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { unescapeJsonString } from './parseJsonField';
+import { unescapeJsonString } from '@librechat/chat';
 
 /**
  * Single-line clamp mirroring the SDK's outcome-label bound

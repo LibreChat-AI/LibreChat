@@ -1,6 +1,6 @@
+import { parseSubagentBackgroundHandle } from '@librechat/chat';
 import { Constants, ContentTypes } from 'librechat-data-provider';
 import type { SubagentIdentity, TMessage } from 'librechat-data-provider';
-import { parseSubagentBackgroundHandle } from '~/components/Chat/Messages/Content/Parts/handle';
 
 type Dispatch = {
   message: TMessage;

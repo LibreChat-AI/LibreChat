@@ -5,7 +5,7 @@ import {
   SystemEventIcon,
   systemEventHeaderClasses,
 } from '@librechat/chat/components';
-import type { WakeupDisplay, WakeupTask } from './Parts/wakeup';
+import type { WakeupDisplay, WakeupTask } from '@librechat/chat';
 import type { TranslationKeys } from '~/hooks';
 import { subagentStatusIcon, subagentStatusLabelKey } from '~/components/Chat/Subagents/status';
 import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
