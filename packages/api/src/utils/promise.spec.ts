@@ -338,4 +338,20 @@ describe('mapWithConcurrency', () => {
       }),
     ).rejects.toThrow('boom');
   });
+
+  it('does not start queued work after a failure', async () => {
+    const started: number[] = [];
+    await expect(
+      mapWithConcurrency([1, 2, 3, 4, 5], 2, async (value) => {
+        started.push(value);
+        await tick(5);
+        if (value === 1) {
+          throw new Error('boom');
+        }
+        return value;
+      }),
+    ).rejects.toThrow('boom');
+    await tick(40);
+    expect(started).toEqual([1, 2]);
+  });
 });
