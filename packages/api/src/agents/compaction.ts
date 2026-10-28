@@ -534,6 +534,55 @@ export async function announceDisconnectSnapshot(
   await announceErrorTurn(deps, announcement);
 }
 
+/**
+ * Runs a turn's disconnect snapshots one at a time and plans the snapshot once
+ * more when the turn settles. Once every subscriber has left, no further
+ * disconnect arrives, so a terminal write that failed afterwards would leave a
+ * compaction's live snapshot (or nothing, when it left before any content)
+ * without its terminal outcome. Serializing keeps an earlier live write from
+ * landing over the promoted row.
+ */
+export function createDisconnectSnapshotQueue({
+  isCompaction,
+  persist,
+  readContent,
+  onSettleError,
+}: {
+  isCompaction: boolean;
+  /** Plans and writes one snapshot of the turn's content. */
+  persist: (content: TMessageContentParts[]) => Promise<void>;
+  /** The turn's stored content once it settled. */
+  readContent: () => Promise<TMessageContentParts[]>;
+  onSettleError?: (error: unknown) => void;
+}): {
+  onDisconnect: (content: TMessageContentParts[]) => Promise<void>;
+  settle: () => Promise<void>;
+} {
+  let pending: Promise<void> = Promise.resolve();
+  let disconnected = false;
+  const enqueue = (write: () => Promise<void>): Promise<void> => {
+    const next = pending.then(write);
+    pending = next.catch(() => undefined);
+    return next;
+  };
+  return {
+    onDisconnect: (content) => {
+      disconnected = true;
+      return enqueue(() => persist(content));
+    },
+    settle: async () => {
+      if (!isCompaction || !disconnected) {
+        return;
+      }
+      try {
+        await enqueue(async () => persist(await readContent()));
+      } catch (error) {
+        onSettleError?.(error);
+      }
+    },
+  };
+}
+
 /** How the abort route persists a stopped turn's prerequisite rows. */
 export type AbortAnchorDecision = 'persist' | 'skip-anchor' | 'skip-turn';
 

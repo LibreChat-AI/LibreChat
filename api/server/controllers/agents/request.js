@@ -67,6 +67,7 @@ const {
   announceErrorTurn,
   settleExistingRowsBeforeErrorTurn,
   planDisconnectSnapshot,
+  createDisconnectSnapshotQueue,
   isTemporaryTurn,
   getPreliminaryResponseMessageId,
 } = require('@librechat/api');
@@ -2025,7 +2026,19 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         partialResponseSaved = false;
       }
     };
-    job.emitter.on('allSubscribersLeft', persistDisconnectSnapshot);
+    const disconnectSnapshots = createDisconnectSnapshotQueue({
+      isCompaction,
+      persist: persistDisconnectSnapshot,
+      readContent: async () =>
+        (await GenerationJobManager.getJobStore().getContentParts(streamId, jobCreatedAt))
+          ?.content ?? [],
+      onSettleError: (error) =>
+        logger.error(
+          '[ResumableAgentController] Error settling the saved partial response:',
+          error,
+        ),
+    });
+    job.emitter.on('allSubscribersLeft', disconnectSnapshots.onDisconnect);
 
     /** @type {{ client: TAgentClient; userMCPAuthMap?: Record<string, Record<string, string>> }} */
     const result = await initializeClient({
@@ -3534,26 +3547,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           drainError,
         );
       });
-    /** A snapshot saved while the run was live gets no further disconnect once
-     *  every subscriber has left, so a terminal write that then failed would
-     *  leave it unfinished: it is planned once more against the settled job. */
-    void generationSettled
-      .then(async () => {
-        if (!isCompaction || !partialResponseSaved) {
-          return;
-        }
-        const saved = await GenerationJobManager.getJobStore().getContentParts(
-          streamId,
-          jobCreatedAt,
-        );
-        await persistDisconnectSnapshot(saved?.content ?? []);
-      })
-      .catch((error) => {
-        logger.error(
-          '[ResumableAgentController] Error settling the saved partial response:',
-          error,
-        );
-      });
+    void generationSettled.then(disconnectSnapshots.settle);
   } catch (error) {
     logGenerationStartFailure(error, {
       streamId,

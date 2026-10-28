@@ -23,6 +23,7 @@ import {
   resolveReconciledSnapshotEnvelope,
   planAbortedTurnPersistence,
   planDisconnectSnapshot,
+  createDisconnectSnapshotQueue,
   announceDisconnectSnapshot,
   resolveAbortedTurnPersistence,
   resolveAbortedTurnAnchorDecision,
@@ -1772,6 +1773,86 @@ describe('planDisconnectSnapshot', () => {
     expect(getMessages.mock.calls.map(([filter]) => filter.messageId).sort()).toEqual(
       [anchorMessageId, 'response'].sort(),
     );
+  });
+});
+
+describe('createDisconnectSnapshotQueue', () => {
+  const text = { type: ContentTypes.TEXT, text: 'Partial' } as TMessageContentParts;
+  const stored = { type: ContentTypes.TEXT, text: 'Stored' } as TMessageContentParts;
+
+  it('plans once more from the stored content when a disconnected compaction settles', async () => {
+    const persist = jest.fn(async () => undefined);
+    const queue = createDisconnectSnapshotQueue({
+      isCompaction: true,
+      persist,
+      readContent: async () => [stored],
+    });
+
+    await queue.onDisconnect([]);
+    await queue.settle();
+
+    expect(persist.mock.calls).toEqual([[[]], [[stored]]]);
+  });
+
+  it('does not plan again when nobody disconnected or the turn is not a compaction', async () => {
+    const persist = jest.fn(async () => undefined);
+    const readContent = jest.fn(async () => [stored]);
+
+    await createDisconnectSnapshotQueue({ isCompaction: true, persist, readContent }).settle();
+    const ordinary = createDisconnectSnapshotQueue({ isCompaction: false, persist, readContent });
+    await ordinary.onDisconnect([text]);
+    await ordinary.settle();
+
+    expect(persist.mock.calls).toEqual([[[text]]]);
+    expect(readContent).not.toHaveBeenCalled();
+  });
+
+  it('waits for an outstanding snapshot write before the settle plan starts', async () => {
+    const order: string[] = [];
+    let finishLive: () => void = () => undefined;
+    const persist = jest.fn(async (content: TMessageContentParts[]) => {
+      const label = content[0] === stored ? 'settle' : 'live';
+      order.push(`${label}:start`);
+      if (label === 'live') {
+        await new Promise<void>((resolve) => {
+          finishLive = resolve;
+        });
+      }
+      order.push(`${label}:end`);
+    });
+    const queue = createDisconnectSnapshotQueue({
+      isCompaction: true,
+      persist,
+      readContent: async () => [stored],
+    });
+
+    const live = queue.onDisconnect([text]);
+    const settled = queue.settle();
+    await Promise.resolve();
+    finishLive();
+    await Promise.all([live, settled]);
+
+    expect(order).toEqual(['live:start', 'live:end', 'settle:start', 'settle:end']);
+  });
+
+  it('reports a failed settle plan and still runs after a failed live write', async () => {
+    const liveError = new Error('live failed');
+    const settleError = new Error('read failed');
+    const onSettleError = jest.fn();
+    const queue = createDisconnectSnapshotQueue({
+      isCompaction: true,
+      persist: jest.fn(async () => {
+        throw liveError;
+      }),
+      readContent: async () => {
+        throw settleError;
+      },
+      onSettleError,
+    });
+
+    await expect(queue.onDisconnect([text])).rejects.toBe(liveError);
+    await expect(queue.settle()).resolves.toBeUndefined();
+    expect(onSettleError).toHaveBeenCalledWith(settleError);
   });
 });
 
