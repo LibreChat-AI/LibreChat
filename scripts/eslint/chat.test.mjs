@@ -208,6 +208,10 @@ tester.run('chat/boundary', chat.rules.boundary, {
         'join',
       ],
       [
+        "import { cn } from '@librechat/client'; const join = on ? (cn as typeof cn) : String; export const c = join('a');",
+        'join',
+      ],
+      [
         "import { cn } from '@librechat/client'; export const o = new (class { v = cn('a'); })();",
         'cn',
       ],

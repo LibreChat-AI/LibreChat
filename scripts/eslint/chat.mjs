@@ -213,8 +213,10 @@ const boundary = {
         seen.add(variable);
         for (const { identifier, init } of variable.references) {
           if (init || inType(identifier)) continue;
-          const alias = identifier.parent;
-          if (alias.type === 'VariableDeclarator' && alias.init === identifier) {
+          let value = identifier;
+          while (forwards(value)) value = value.parent;
+          const alias = value.parent;
+          if (alias.type === 'VariableDeclarator' && alias.init === value) {
             context.sourceCode
               .getDeclaredVariables(alias)
               .forEach((aliased) => pending.push({ variable: aliased, source }));
