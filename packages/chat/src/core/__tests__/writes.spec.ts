@@ -1,3 +1,4 @@
+import { buildTree } from 'librechat-data-provider';
 import type { TMessage, TPayload, ChatEvent } from 'librechat-data-provider';
 import type { ChatStream, ChatSendResult, ChatTransport } from '../types';
 import type { ChatState } from '../chat';
@@ -81,6 +82,15 @@ const createChat = (state: ChatState, transport: Partial<ChatTransport> = {}) =>
       messages: (current: TMessage[]) => [...current, userMessage, placeholder],
       responseMessageId: 'response-1',
     }),
+  });
+
+type TreeNode = { messageId: string; children?: TreeNode[] };
+
+/** Every root-to-leaf path of a tree, so a row filed under the wrong parent shows as its own root. */
+const toBranches = (nodes: TreeNode[], prefix = ''): string[] =>
+  nodes.flatMap((node) => {
+    const path = prefix ? `${prefix}>${node.messageId}` : node.messageId;
+    return node.children?.length ? toBranches(node.children, path) : [path];
   });
 
 describe('Chat.version', () => {
@@ -168,21 +178,33 @@ describe('Chat.setMessages', () => {
       (current: TMessage[]) =>
         current.map((m) => (m.messageId === 'earlier-1' ? { ...m, text: 'Edited' } : m)),
       ['earlier-1:Edited'],
+      ['earlier-1'],
     ],
     [
-      'a row the turn added',
+      'a row the turn added, keeping the turn rows above it',
       (current: TMessage[]) =>
         current.map((m) => (m.messageId === 'response-1' ? { ...m, text: 'Kept' } : m)),
-      ['earlier-1:Earlier', 'response-1:Kept'],
+      ['earlier-1:Earlier', 'user-1:Earlier', 'response-1:Kept'],
+      ['earlier-1>user-1>response-1'],
+    ],
+    [
+      'a row appended under the turn, keeping the turn rows above it',
+      (current: TMessage[]) => [
+        ...current,
+        { ...placeholder, messageId: 'note-1', parentMessageId: 'response-1', text: 'Note' },
+      ],
+      ['earlier-1:Earlier', 'user-1:Earlier', 'response-1:', 'note-1:Note'],
+      ['earlier-1>user-1>response-1>note-1'],
     ],
     [
       'a removal of a row the turn did not touch',
       (current: TMessage[]) => current.filter((m) => m.messageId !== 'earlier-1'),
       [],
+      [],
     ],
   ])(
     'keeps its write to %s when the server replaces the start and the turn is undone',
-    async (_label, edit, expected) => {
+    async (_label, edit, expected, branches) => {
       let answer: ((result: ChatSendResult) => void) | undefined;
       const state = createState([earlier]);
       const chat = createChat(state, {
@@ -210,6 +232,7 @@ describe('Chat.setMessages', () => {
       expect(chat.messages.map((message) => `${message.messageId}:${message.text}`)).toEqual(
         expected,
       );
+      expect(toBranches(buildTree({ messages: chat.messages }) ?? [])).toEqual(branches);
     },
   );
 });
