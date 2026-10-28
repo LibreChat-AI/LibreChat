@@ -34,6 +34,7 @@ import {
   stripUnusableSummaryParts,
   getLatestEventActorSummary,
 } from './compaction';
+import { MAX_RESPONSE_MESSAGE_ID_LENGTH } from '~/utils/message';
 
 const index = [
   {
@@ -1748,6 +1749,29 @@ describe('planDisconnectSnapshot', () => {
     });
 
     await expect(result).resolves.toMatchObject({ write: true, unfinished: false });
+  });
+
+  it('reads only the response row when a full-length anchor leaves no room for the suffix', async () => {
+    const anchorMessageId = 'a'.repeat(MAX_RESPONSE_MESSAGE_ID_LENGTH);
+    const getMessages = jest.fn(async (filter: { messageId: string }) =>
+      filter.messageId === anchorMessageId ? [{ messageId: anchorMessageId }] : [],
+    );
+
+    await expect(
+      planDisconnectSnapshot(true, {
+        content: [text],
+        jobRecord: reconciled,
+        jobCreatedAt: 1000,
+        userId: 'user-1',
+        conversationId: 'convo-1',
+        anchorMessageId,
+        responseMessageId: 'response',
+        getMessages,
+      }),
+    ).resolves.toMatchObject({ write: true, unfinished: false });
+    expect(getMessages.mock.calls.map(([filter]) => filter.messageId).sort()).toEqual(
+      [anchorMessageId, 'response'].sort(),
+    );
   });
 });
 

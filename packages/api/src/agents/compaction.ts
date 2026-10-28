@@ -19,6 +19,7 @@ import type {
 import type { SummaryContentPart, TMessageContentParts } from 'librechat-data-provider';
 import type { IAgentEventActorSummary } from '@librechat/data-schemas';
 import type { ErrorTurnAnnouncement, ErrorTurnStampStore } from '~/conversations/announce';
+import { getPreliminaryResponseMessageId } from '~/utils/message';
 import { createAgentEventActorSummary } from './compatibility';
 import { announceErrorTurn } from '~/conversations/announce';
 
@@ -412,13 +413,19 @@ export async function resolveDisconnectSnapshotMode(
 
 /**
  * Every id a compaction's finished row can carry: the response id the stream
- * preallocated, and the anchor-derived id the failed-turn path writes its
- * error row under (`getPreliminaryResponseMessageId` in the agents request
- * controller). A settled row under either already ends the turn.
+ * preallocated, and the id the failed-turn path writes its error row under,
+ * derived from the anchor exactly as that path derives it. A settled row under
+ * either already ends the turn.
  */
 function terminalRowIds(anchorMessageId: string, responseMessageId: string): string[] {
-  const errorRowId = `${anchorMessageId.replace(/_+$/, '')}_`;
-  return errorRowId === responseMessageId ? [responseMessageId] : [responseMessageId, errorRowId];
+  const errorRowId = getPreliminaryResponseMessageId({
+    compact: true,
+    messageId: anchorMessageId,
+    liveResponseMessageId: responseMessageId,
+  });
+  return errorRowId == null || errorRowId === responseMessageId
+    ? [responseMessageId]
+    : [responseMessageId, errorRowId];
 }
 
 /** What the last-subscriber disconnect writes for this turn, if anything. */
