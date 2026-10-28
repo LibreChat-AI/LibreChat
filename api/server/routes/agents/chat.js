@@ -2,12 +2,14 @@ const express = require('express');
 const { logger } = require('@librechat/data-schemas');
 const {
   createMessageFilterPii,
+  getPreinspectedPrivateText,
   reportLocatorTraversalFailure,
   generateCheckAccess,
   skipAgentCheck,
   applyResumeRequest,
   GenerationJobManager,
   getSafeErrorMetadata,
+  validateChatMessageIds,
 } = require('@librechat/api');
 const { PermissionTypes, Permissions, PermissionBits } = require('librechat-data-provider');
 const {
@@ -60,12 +62,14 @@ const restoreResumeContext = async (req, res, next) => {
   next();
 };
 
+router.use(validateChatMessageIds);
 router.use(restoreResumeContext);
 router.use(
   createMessageFilterPii({
     onTraversalFailure: reportLocatorTraversalFailure,
     getConfig: (req) => req.config?.messageFilter?.pii,
     getFilters: (req) => req.config?.filters,
+    getPreinspectedText: getPreinspectedPrivateText,
     getFiles,
   }),
 );

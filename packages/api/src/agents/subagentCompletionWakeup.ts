@@ -5,10 +5,12 @@ import type {
   AgentTriggerContinuePreparation,
   AgentTriggerExecutionHostDeps,
 } from './triggers/host';
+import type { ScheduleMCPCompletionLookup } from '~/schedules/authorization/continuation';
 import type { SubagentTaskWakeupRegistration } from './subagentThreads';
 import type { AgentContinueTriggerEnvelope } from './triggers/envelope';
 import type { AgentTriggerDispatchContext } from './triggers/dispatch';
 import type { AgentTriggerEnqueueOptions } from './triggers/delivery';
+import { resolveScheduleMCPCompletion } from '~/schedules/authorization/continuation';
 import { WAITING_RETRY_CAP_MS, waitingRetryAfter } from './triggers/backoff';
 import { boundedSubagentTaskResult } from './subagentTaskRouting';
 import { createAgentTriggerEnvelope } from './triggers/envelope';
@@ -79,6 +81,7 @@ interface OrchestrationSnapshotResolution {
 }
 
 export interface SubagentCompletionWakeupResolverDeps {
+  getScheduleMCPCompletionState?: ScheduleMCPCompletionLookup;
   methods: WakeupMethods;
   getGenerationJob: (conversationId: string) => Promise<GenerationState | null>;
   now?: () => number;
@@ -589,6 +592,7 @@ export function createSubagentCompletionWakeupResolver({
   getGenerationJob,
   now = Date.now,
   getWaitMaxIntervalMs,
+  getScheduleMCPCompletionState,
 }: SubagentCompletionWakeupResolverDeps): NonNullable<
   AgentTriggerExecutionHostDeps['prepareContinue']
 > {
@@ -748,6 +752,18 @@ export function createSubagentCompletionWakeupResolver({
       });
     }
 
+    const payload = envelope.event.payload;
+    const scheduleMCPIdentity = await resolveScheduleMCPCompletion(
+      {
+        ownerId: userId,
+        tenantId: envelope.principal.tenantId ?? null,
+        scheduleMCPIdentity:
+          payload && typeof payload === 'object' && 'scheduleMCPIdentity' in payload
+            ? payload.scheduleMCPIdentity
+            : undefined,
+      },
+      getScheduleMCPCompletionState,
+    );
     const claim = await methods.claimSubagentTaskResult({
       userId,
       conversationId: registration.threadId,
@@ -790,6 +806,7 @@ export function createSubagentCompletionWakeupResolver({
     return {
       status: 'ready',
       parentMessageId,
+      ...(scheduleMCPIdentity && { scheduleMCPIdentity }),
       ...(parent.codeApprovalMode != null && { codeApprovalMode: parent.codeApprovalMode }),
       input: renderWakeupInput(registration, resultTaskId, claim.message, orchestrationSnapshot),
       releaseOnDefiniteFailure: async () => {
@@ -832,6 +849,7 @@ export function createSubagentCompletionWakeupHandler(
         occurredAt: registration.createdAt,
         source: { id: SUBAGENT_COMPLETION_SOURCE, type: 'internal' },
         payload: {
+          scheduleMCPIdentity: registration.scheduleMCPIdentity ?? null,
           taskId: registration.taskId,
           threadId: registration.threadId,
           subagentType: registration.subagentType,

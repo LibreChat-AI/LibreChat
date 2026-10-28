@@ -2,11 +2,11 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { QueryKeys } from 'librechat-data-provider';
 import { Provider, createStore, useAtomValue } from 'jotai';
+import { liveAppliedSteerIdsAtom } from '@librechat/chat/react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TMessage } from 'librechat-data-provider';
 import { STEER_ICON } from '~/components/Chat/Steering/identity';
-import { liveAppliedSteerIdsAtom } from '~/store/steer';
 import SteerPart from '../SteerPart';
 import store from '~/store';
 
@@ -169,7 +169,7 @@ describe('SteerPart presentation', () => {
     renderPart();
     const message = screen.getByText('steered words');
 
-    expect(message.closest('.bg-surface-tertiary')).toHaveClass('rounded-theme-surface');
+    expect(message.closest('.bg-surface-user-message')).toHaveClass('rounded-theme-surface');
     expect(screen.getByRole('heading', { name: 'Danny' })).toHaveClass('sr-only');
     expect(screen.queryByTitle('Danny')).not.toBeInTheDocument();
   });
@@ -178,7 +178,7 @@ describe('SteerPart presentation', () => {
     renderPart();
     const part = screen.getByTestId('steer-part');
     expect(part).toHaveAttribute('id', 'steer-s1');
-    expect(part).toHaveClass('steer-render');
+    expect(part).toHaveAttribute('data-steer-render');
   });
 
   it('stays on the message content edge instead of outdenting', () => {
@@ -199,7 +199,7 @@ describe('SteerPart presentation', () => {
 
     expect(images).toHaveLength(2);
     expect(imageGroup).toContainElement(images[1]);
-    expect(imageGroup).toHaveClass('ml-auto', 'flex-wrap', 'justify-end');
+    expect(imageGroup).toHaveClass('ms-auto', 'flex-wrap', 'justify-end');
     expect(imageGroup?.parentElement).toHaveClass('w-full');
     expect(imageGroup).not.toContainElement(screen.getByTestId('steer-file'));
     expect(screen.getByTestId('steer-file')).toHaveTextContent('notes.pdf');
@@ -234,7 +234,7 @@ describe('SteerPart presentation', () => {
     );
     const quotes = screen.getByTestId('message-quotes');
     expect(quotes).toHaveTextContent('the selected excerpt');
-    expect(quotes.closest('.bg-surface-tertiary')).not.toBeNull();
+    expect(quotes.closest('.bg-surface-user-message')).not.toBeNull();
   });
 
   it('renders no quote block when the steer carried none', () => {
@@ -334,4 +334,25 @@ describe('SteerPart receipt settling', () => {
     expect(checks()).toHaveClass('text-text-secondary');
     expect(checks()).not.toHaveClass(STEER_ICON);
   });
+});
+
+it('keeps an unsuccessful guidance body and timestamp without a waiting or applied receipt', () => {
+  const queryClient = new QueryClient();
+  queryClient.setQueryData([QueryKeys.endpoints], {});
+  render(
+    <QueryClientProvider client={queryClient}>
+      <RecoilRoot>
+        <SteerPart
+          steer="unsuccessful guidance"
+          steerId="failed"
+          createdAt={1}
+          receiptState={null}
+        />
+      </RecoilRoot>
+    </QueryClientProvider>,
+  );
+  expect(screen.getByText('unsuccessful guidance')).toBeVisible();
+  expect(screen.getByTestId('steer-timestamp')).toBeInTheDocument();
+  expect(screen.queryByTestId('steer-receipt')).not.toBeInTheDocument();
+  queryClient.clear();
 });

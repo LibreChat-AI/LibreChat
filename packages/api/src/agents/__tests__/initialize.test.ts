@@ -34,6 +34,7 @@ jest.mock('@librechat/agents', () => ({
 
 import { Providers } from '@librechat/agents';
 import { createHash } from 'node:crypto';
+import { logger } from '@librechat/data-schemas';
 import { createRepositoryInstructionLoader } from '../../code/instructions';
 import {
   Tools,
@@ -49,8 +50,9 @@ import {
   configSchema,
 } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
-import type { Agent, TFile, FiltersConfig } from 'librechat-data-provider';
+import type { Agent, TFile, FiltersConfig, AgentInstructionsPrompt } from 'librechat-data-provider';
 import type { ServerRequest, InitializeResultBase, EndpointTokenConfig } from '~/types';
+import type { ResolveLinkedInstructions } from '../instructions/linked';
 import type { InitializeAgentDbMethods } from '../initialize';
 import type { CodeExecutionContext } from '../execution';
 import type { GraphSubagentHostConfig } from '../discovery';
@@ -108,9 +110,7 @@ jest.mock('~/endpoints', () => ({
 }));
 
 jest.mock('~/files', () => ({
-  filterFilesByEndpointConfig: jest.fn(() => []),
   filterFilesByEndpointRuntimeConfig: jest.fn(() => []),
-  isLegacyFileUploadUX: jest.fn(() => false),
 }));
 
 jest.mock('~/prompts', () => ({
@@ -141,6 +141,7 @@ jest.mock('../../middleware/modelBoundContent', () => {
 import { initializeAgent } from '../initialize';
 import { primeResources } from '../resources';
 import { isFatalAgentInitializationError } from '../errors';
+import { canAgentGraphPause } from '../hitl/admission';
 
 const realUtils = jest.requireActual<typeof import('~/utils')>('~/utils');
 
@@ -466,9 +467,82 @@ describe('initializeAgent — execution context', () => {
   });
 });
 
-describe('initializeAgent: ChatProject context', () => {
+describe('initializeAgent: allowed providers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  /** The effective config serves `endpoints.agents.allowedProviders` in served names, so a
+   *  YAML `Ollama` arrives as `ollama`. The chat path's model check before this is covered in
+   *  `api/server/services/Endpoints/agents/initialize.spec.js`. */
+  it.each(['ollama', 'Ollama', 'OLLAMA'])(
+    'sets up an agent saved with provider %s on the served ollama endpoint',
+    async (provider) => {
+      const { agent, req, res, loadTools, db } = createMocks({
+        provider,
+        overrideProvider: Providers.OPENAI,
+      });
+
+      const result = await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set(['ollama']),
+          isInitialAgent: true,
+        },
+        db,
+      );
+
+      expect(mockGetProviderConfig).toHaveBeenCalledWith(
+        expect.objectContaining({ provider: 'ollama' }),
+      );
+      const { getOptions } = mockGetProviderConfig.mock.results[0].value;
+      expect(getOptions).toHaveBeenCalledWith(expect.objectContaining({ endpoint: 'ollama' }));
+      expect(result.endpoint).toBe('ollama');
+    },
+  );
+
+  it('rejects a provider the allowed list does not name', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({
+      provider: 'OpenRouter',
+      overrideProvider: Providers.OPENAI,
+    });
+
+    await expect(
+      initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set(['ollama']),
+          isInitialAgent: true,
+        },
+        db,
+      ),
+    ).rejects.toThrow(ErrorTypes.INVALID_AGENT_PROVIDER);
+  });
+});
+
+describe('initializeAgent: ChatProject context', () => {
+  const filterMock = jest.requireMock('~/files') as {
+    filterFilesByEndpointRuntimeConfig: jest.Mock;
+  };
+  const realFilters = jest.requireActual<typeof import('~/files/filter')>('~/files/filter');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    filterMock.filterFilesByEndpointRuntimeConfig
+      .mockReset()
+      .mockImplementation(realFilters.filterFilesByEndpointRuntimeConfig);
+  });
+
+  afterEach(() => {
+    filterMock.filterFilesByEndpointRuntimeConfig.mockReset().mockReturnValue([]);
   });
 
   const projectFile: TFile = {
@@ -692,6 +766,336 @@ describe('initializeAgent: ChatProject context', () => {
     expect(agent).not.toHaveProperty('tool_resources');
     expect(db.getFiles).not.toHaveBeenCalled();
   });
+  it('queues cleared Project files for the first search in a new conversation', async () => {
+    const { agent, loadTools, db } = createMocks();
+    agent.tools = [Tools.file_search];
+    const repairing = {
+      ...canonicalFile,
+      embedded: false,
+      source: FileSources.s3,
+      metadata: { searchDestination: true },
+    };
+    const runtime = projectRuntime();
+    runtime.chatProjectContext = {
+      ...projectContext,
+      resources: [toCanonicalProjectResource(repairing)],
+    };
+    const result = await initializeAgent(
+      {
+        runtime,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        useChatProjectContext: true,
+      },
+      db,
+    );
+    expect(result.provisionState?.vectorDBFiles).toEqual([
+      expect.objectContaining({
+        file_id: 'project-file',
+        embedded: false,
+        source: FileSources.s3,
+        metadata: { searchDestination: true },
+      }),
+    ]);
+    expect(result.provisionState?.codeEnvFiles).toEqual([]);
+    expect(result.provisionState?.agentScopedFileIds.size).toBe(0);
+    expect(agent.tools).toEqual([Tools.file_search]);
+    expect(db.getFiles).not.toHaveBeenCalled();
+    expect(db.getProjectFiles).not.toHaveBeenCalled();
+  });
+
+  describe('retained Project repair endpoint policy', () => {
+    const MB = 1024 * 1024;
+    const realResources = jest.requireActual<typeof import('../resources')>('../resources');
+
+    beforeEach(() => {
+      jest.mocked(primeResources).mockImplementationOnce(realResources.primeResources);
+    });
+
+    function repairFile(
+      overrides: Partial<ProjectFileRecord & TFile> = {},
+    ): ProjectFileRecord & TFile {
+      return {
+        ...canonicalFile,
+        embedded: false,
+        source: FileSources.s3,
+        storageKey: 'uploads/project.txt',
+        storageRegion: 'us-east-1',
+        tenantId: 'tenant-1',
+        context: FileContext.message_attachment,
+        bytes: MB / 2,
+        metadata: { searchDestination: true },
+        ...overrides,
+      };
+    }
+
+    async function initializeRepairs({
+      projectFiles = [repairFile()],
+      current = [],
+      deferred = [],
+      persistent = [],
+      fileConfig,
+      filters,
+    }: {
+      projectFiles?: ProjectFileRecord[];
+      current?: TFile[];
+      deferred?: TFile[];
+      persistent?: TFile[];
+      fileConfig?: NonNullable<ServerRequest['config']>['fileConfig'];
+      filters?: FiltersConfig;
+    } = {}) {
+      const { agent, loadTools, db } = createMocks();
+      agent.tools = [Tools.file_search];
+      agent.endpoint = EModelEndpoint.openAI;
+      agent.tool_resources = {
+        [EToolResources.file_search]: { file_ids: persistent.map((file) => file.file_id) },
+      };
+      const runtime = projectRuntime();
+      runtime.user!.tenantId = 'tenant-1';
+      runtime.appConfig.fileConfig = fileConfig;
+      runtime.appConfig.filters = filters;
+      runtime.chatProjectContext = {
+        ...projectContext,
+        file_ids: projectFiles.map((file) => file.file_id),
+        resources: projectFiles.map(toCanonicalProjectResource),
+      };
+      const getFiles = jest.fn().mockResolvedValue(persistent);
+      if (current.length > 0 || deferred.length > 0) {
+        getFiles.mockResolvedValueOnce([...current, ...deferred]);
+      }
+      const getProjectFiles = jest.fn().mockResolvedValue(projectFiles);
+      const getDeferredProvisionFiles = jest.fn().mockResolvedValue(deferred);
+      const result = await initializeAgent(
+        {
+          runtime,
+          agent,
+          loadTools,
+          requestFiles: current.map(({ file_id }) => ({ file_id }) as IMongoFile),
+          conversationId: deferred.length > 0 ? 'repair-conversation' : undefined,
+          allowedProviders: new Set([Providers.OPENAI]),
+          useChatProjectContext: true,
+          fileSearchAvailable: true,
+        },
+        {
+          ...db,
+          getFiles,
+          getProjectFiles,
+          getDeferredProvisionFiles,
+          getConvoFiles: jest.fn().mockResolvedValue(deferred.map((file) => file.file_id)),
+        },
+      );
+      return { result, runtime, getFiles, getProjectFiles, getDeferredProvisionFiles };
+    }
+
+    it.each([
+      { policy: 'disabled files', config: { disabled: true } },
+      { policy: 'MIME allowlist', config: { supportedMimeTypes: ['application/pdf'] } },
+      { policy: 'per-file size', config: { fileSizeLimit: 0.25 } },
+      { policy: 'total size', config: { totalSizeLimit: 0.25 } },
+    ])('does not append or queue a repair rejected by $policy', async ({ config }) => {
+      const { result, getFiles, getProjectFiles } = await initializeRepairs({
+        fileConfig: { endpoints: { [EModelEndpoint.openAI]: config } },
+      });
+      expect(result.tool_resources?.[EToolResources.file_search]?.files ?? []).toEqual([]);
+      expect(result.provisionState?.vectorDBFiles ?? []).toEqual([]);
+      expect(getFiles).not.toHaveBeenCalled();
+      expect(getProjectFiles).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      { routingMimeType: 'text/csv', allowed: 'text/csv', admitted: true },
+      { routingMimeType: 'text/csv', allowed: 'text/plain', admitted: false },
+      { routingMimeType: undefined, allowed: 'text/plain', admitted: true },
+      { routingMimeType: undefined, allowed: 'text/csv', admitted: false },
+    ])(
+      'screens retained repairs routed as $routingMimeType against $allowed',
+      async ({ routingMimeType, allowed, admitted }) => {
+        const { result, getFiles, getProjectFiles } = await initializeRepairs({
+          projectFiles: [
+            repairFile({
+              type: 'text/plain',
+              metadata: {
+                searchDestination: true,
+                ...(routingMimeType !== undefined ? { routingMimeType } : {}),
+              },
+            }),
+          ],
+          fileConfig: {
+            endpoints: { [EModelEndpoint.openAI]: { supportedMimeTypes: [allowed] } },
+          },
+        });
+        const queued = result.provisionState?.vectorDBFiles ?? [];
+        const attached = result.tool_resources?.[EToolResources.file_search]?.files ?? [];
+        expect(queued).toHaveLength(admitted ? 1 : 0);
+        expect(attached).toHaveLength(admitted ? 1 : 0);
+        if (admitted) {
+          expect(queued[0]).toMatchObject({
+            type: 'text/plain',
+            metadata: {
+              searchDestination: true,
+              ...(routingMimeType !== undefined ? { routingMimeType } : {}),
+            },
+          });
+        }
+        expect(getFiles).not.toHaveBeenCalled();
+        expect(getProjectFiles).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([undefined, false, true])(
+      'queues an admitted repair without rereading it when retainedFileCleanup is %p',
+      async (retainedFileCleanup) => {
+        const { result, runtime, getFiles, getProjectFiles } = await initializeRepairs({
+          fileConfig: {
+            ...(retainedFileCleanup === undefined ? {} : { retainedFileCleanup }),
+            endpoints: {
+              [EModelEndpoint.openAI]: {
+                supportedMimeTypes: ['text/plain'],
+                fileSizeLimit: 0.5,
+                totalSizeLimit: 0.5,
+              },
+            },
+          },
+        });
+        const admitted = runtime.chatProjectContext.resources[0];
+        if (admitted.availability !== 'ready') {
+          throw new Error('Expected a ready Project fixture');
+        }
+        expect(result.provisionState?.vectorDBFiles).toEqual([admitted.file]);
+        expect(result.provisionState?.vectorDBFiles[0]).toBe(admitted.file);
+        expect(result.tool_resources?.[EToolResources.file_search]?.files).toEqual([admitted.file]);
+        expect(admitted.file).toMatchObject({
+          embedded: false,
+          user: 'user-1',
+          tenantId: 'tenant-1',
+          source: FileSources.s3,
+          storageKey: 'uploads/project.txt',
+          storageRegion: 'us-east-1',
+          metadata: { searchDestination: true },
+        });
+        expect(result.provisionState?.agentScopedFileIds.size).toBe(0);
+        expect(getFiles).not.toHaveBeenCalled();
+        expect(getProjectFiles).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([false, true])(
+      'rejects an over-budget Project repair that overlaps current files (deferred: %s)',
+      async (deferred) => {
+        const oversized = repairFile({ bytes: 2 * MB });
+        const { result } = await initializeRepairs({
+          projectFiles: [oversized],
+          current: [oversized],
+          deferred: deferred ? [oversized] : [],
+          fileConfig: { endpoints: { [EModelEndpoint.openAI]: { totalSizeLimit: 1 } } },
+        });
+        expect(result.provisionState?.vectorDBFiles ?? []).toEqual([]);
+        expect(result.tool_resources?.[EToolResources.file_search]?.files ?? []).toEqual([]);
+      },
+    );
+
+    it.each([false, true])(
+      'reserves current admission before deferred candidates (overlap first: %s)',
+      async (overlapFirst) => {
+        const current = repairFile({ file_id: 'current', bytes: (MB * 3) / 4 });
+        const other = repairFile({ file_id: 'deferred', bytes: (MB * 3) / 4 });
+        const { result } = await initializeRepairs({
+          projectFiles: [current, other],
+          current: [current],
+          deferred: overlapFirst ? [current, other] : [other, current],
+          fileConfig: { endpoints: { [EModelEndpoint.openAI]: { totalSizeLimit: 1 } } },
+        });
+        expect(result.provisionState?.vectorDBFiles.map((file) => file.file_id)).toEqual([
+          'current',
+        ]);
+      },
+    );
+
+    it('does not charge duplicate current files twice before admitting other project repairs', async () => {
+      const shared = repairFile({ file_id: 'shared-current', bytes: MB / 2 });
+      const other = repairFile({ file_id: 'other-project', bytes: MB / 2 });
+      const { result } = await initializeRepairs({
+        projectFiles: [shared, other],
+        current: [shared, shared],
+        deferred: [shared, shared],
+        fileConfig: { endpoints: { [EModelEndpoint.openAI]: { totalSizeLimit: 1 } } },
+      });
+      const ids = result.provisionState?.vectorDBFiles.map((file) => file.file_id) ?? [];
+      expect(ids).toEqual(['shared-current', 'other-project']);
+    });
+
+    it('shares one allowance with current, deferred and persistent files, counting overlaps once', async () => {
+      const shared = repairFile({ file_id: 'shared', bytes: MB / 4 });
+      const currentOnly = repairFile({ file_id: 'current', bytes: MB / 8 });
+      const deferredOnly = repairFile({ file_id: 'deferred', bytes: MB / 8 });
+      const persistentOnly = repairFile({ file_id: 'persistent', bytes: MB / 4 });
+      const fits = repairFile({ file_id: 'fits', bytes: MB / 4 });
+      const overflow = repairFile({ file_id: 'overflow', bytes: MB / 8 });
+      const { result, getFiles, getProjectFiles, getDeferredProvisionFiles } =
+        await initializeRepairs({
+          projectFiles: [shared, persistentOnly, fits, overflow],
+          current: [shared, currentOnly],
+          deferred: [shared, deferredOnly],
+          persistent: [shared, persistentOnly],
+          fileConfig: { endpoints: { [EModelEndpoint.openAI]: { totalSizeLimit: 1 } } },
+        });
+      const queuedIds = result.provisionState?.vectorDBFiles.map((file) => file.file_id) ?? [];
+      expect(queuedIds).toEqual(
+        expect.arrayContaining(['shared', 'current', 'deferred', 'persistent', 'fits']),
+      );
+      expect(queuedIds).not.toContain('overflow');
+      expect(new Set(queuedIds).size).toBe(queuedIds.length);
+      expect(result.tool_resources?.[EToolResources.file_search]?.files).toEqual(
+        expect.arrayContaining([expect.objectContaining({ file_id: 'fits' })]),
+      );
+      expect(result.tool_resources?.[EToolResources.file_search]?.files).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ file_id: 'overflow' })]),
+      );
+      expect(filterMock.filterFilesByEndpointRuntimeConfig).toHaveBeenLastCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          consumedBytes: (MB * 3) / 4,
+          files: [
+            expect.objectContaining({ file_id: 'fits' }),
+            expect.objectContaining({ file_id: 'overflow' }),
+          ],
+        }),
+      );
+      expect(getFiles).toHaveBeenCalledTimes(2);
+      expect(getProjectFiles).not.toHaveBeenCalled();
+      expect(getDeferredProvisionFiles).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['endpoint', 'content'])(
+      'does not charge persistent files rejected by %s policy',
+      async (policy) => {
+        const persistent = repairFile({
+          file_id: 'rejected-persistent',
+          bytes: (MB * 3) / 4,
+          ...(policy === 'endpoint' ? { type: 'application/pdf' } : { text: 'BLOCKED' }),
+        });
+        const { result } = await initializeRepairs({
+          persistent: [persistent],
+          filters: policy === 'content' ? projectFilePolicy : undefined,
+          fileConfig: {
+            endpoints: {
+              [EModelEndpoint.openAI]: { supportedMimeTypes: ['text/plain'], totalSizeLimit: 1 },
+            },
+          },
+        });
+        expect(result.provisionState?.vectorDBFiles.map((file) => file.file_id)).toEqual([
+          projectFile.file_id,
+        ]);
+        expect(filterMock.filterFilesByEndpointRuntimeConfig).toHaveBeenLastCalledWith(
+          expect.anything(),
+          expect.objectContaining({ consumedBytes: 0 }),
+        );
+      },
+    );
+  });
+
   it('adds Project files for file_search supplied by a manual Skill', async () => {
     const { agent, req, loadTools, db } = createMocks();
     const { Types } = await import('mongoose');
@@ -2892,6 +3296,12 @@ describe('initializeAgent — skill `allowed-tools` union (Phase 6)', () => {
     expect(definedNames).not.toContain('mcp__broken__tool');
   });
   it('removes skill-added Project resources before retrying without denied tools', async () => {
+    const { filterFilesByEndpointRuntimeConfig } = jest.requireMock('~/files') as {
+      filterFilesByEndpointRuntimeConfig: jest.Mock;
+    };
+    filterFilesByEndpointRuntimeConfig.mockImplementationOnce(
+      (_config: unknown, { files }: { files: TFile[] }) => files,
+    );
     const { agent, req, loadTools, db } = createMocks();
     const { Types } = await import('mongoose');
     const skillId = new Types.ObjectId();
@@ -3359,6 +3769,9 @@ describe('initializeAgent — execute_code capability expansion', () => {
     const primeCall = primeResources.mock.calls[primeResources.mock.calls.length - 1][0];
     expect(primeCall.enabledToolResources.has(EToolResources.execute_code)).toBe(false);
     expect(primeCall.tool_resources).not.toHaveProperty(EToolResources.execute_code);
+    expect(loadTools).toHaveBeenLastCalledWith(
+      expect.objectContaining({ attachedEnvironmentOptOut: true }),
+    );
   });
 
   it('does not disable managed code tools for the without-attached decision', async () => {
@@ -3405,6 +3818,9 @@ describe('initializeAgent — execute_code capability expansion', () => {
     expect(result.codeEnvAvailable).toBe(true);
     expect(result.toolDefinitions?.map(({ name }) => name)).toEqual(
       expect.arrayContaining(['bash_tool', 'read_file']),
+    );
+    expect(loadTools).toHaveBeenLastCalledWith(
+      expect.objectContaining({ attachedEnvironmentOptOut: false }),
     );
   });
 
@@ -3531,11 +3947,12 @@ describe('initializeAgent — execute_code capability expansion', () => {
     );
   });
 
-  it('keeps legacy opt-out classification until the deployment protocol is enabled', async () => {
+  it('keeps legacy opt-out classification when the deployment opts out of the protocol', async () => {
     const { agent, req, res, loadTools, db } = createMocks();
     agent.tools = [Tools.execute_code];
     agent.stateful_code_sessions = true;
     delete agent.code_environment_id;
+    process.env.CODE_ENVIRONMENT_DECISION_VERSION = '0';
     process.env.LIBRECHAT_CODE_BASEURL_STATEFUL = 'https://stateful-code.example.com/v1/';
     req.config = {
       endpoints: {
@@ -3568,6 +3985,7 @@ describe('initializeAgent — execute_code capability expansion', () => {
       expect(result.codeEnvAvailable).toBe(false);
       expect(result.statefulCodeSessions).toBe(false);
     } finally {
+      delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
       delete process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
     }
   });
@@ -3613,6 +4031,77 @@ describe('initializeAgent — execute_code capability expansion', () => {
     } finally {
       delete process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
     }
+  });
+
+  it('routes a restored machine selection before file priming and tool discovery', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.tools = ['execute_code'];
+    agent.stateful_code_sessions = true;
+    agent.code_environment_id = 'application-vm';
+    agent.code_environment_ids = ['runtime-vm'];
+    req.config = {
+      endpoints: {
+        agents: {
+          statefulCodeSessions: {
+            allowEnvironmentSelection: true,
+            environments: ['application-vm', 'runtime-vm'].map((id) => ({
+              id,
+              name: id,
+              type: 'attached',
+              owner: 'deployment',
+              baseURL: `https://${id}.example.com/v1`,
+              workerId: `worker-${id}`,
+            })),
+          },
+        },
+      },
+    } as NonNullable<typeof req.config>;
+    req.resolvedConversation = {
+      conversationId: 'chat-runtime',
+      codeWorkspaces: [
+        { environmentId: 'application-vm', workspaceId: 'primary' },
+        { environmentId: 'runtime-vm', workspaceId: 'primary', agentIds: [agent.id] },
+      ],
+    };
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        conversationId: 'chat-runtime',
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        codeEnvAvailable: true,
+        statefulSessionsAvailable: true,
+        requestBody: {
+          codeWorkspaces: [{ environmentId: 'application-vm', workspaceId: 'primary' }],
+        },
+      },
+      db,
+    );
+    expect(loadTools).toHaveBeenCalledWith(
+      expect.objectContaining({
+        codeExecutionContext: expect.objectContaining({
+          environmentId: 'runtime-vm',
+          baseUrl: 'https://runtime-vm.example.com/v1',
+          bridgeWorkerId: 'worker-runtime-vm',
+        }),
+      }),
+    );
+    expect(result.codeExecutionContext?.environmentId).toBe('runtime-vm');
+    expect(agent.code_environment_id).toBe('application-vm');
+    /* The liveness probe inside priming authenticates to this route the way its uploads
+     * do, which needs the request to mint from and the route's worker to bind to. */
+    expect(primeResources).toHaveBeenCalledWith(
+      expect.objectContaining({
+        req,
+        codeBaseUrl: 'https://runtime-vm.example.com/v1',
+        codeExecutionProfile: 'stateful',
+        codeBridgeWorkerId: 'worker-runtime-vm',
+      }),
+    );
   });
 
   it.each([false, true])(
@@ -3716,6 +4205,42 @@ describe('initializeAgent — execute_code capability expansion', () => {
         (bashTool?.parameters as { properties?: { cwd?: { description?: string } } })?.properties
           ?.cwd?.description,
       ).toContain('.worktrees/<name>');
+    },
+  );
+
+  it.each([
+    { ['q' + '_mcp_z'.repeat(4000)]: { approval_mode: 'ask' as const } },
+    Object.fromEntries(
+      Array.from({ length: 1025 }, (_, i) => [`${i}`, { approval_mode: 'ask' as const }]),
+    ),
+    Object.fromEntries(
+      Array.from({ length: 129 }, (_, i) => [
+        `${i}`.padEnd(256, 'é'),
+        { approval_mode: 'ask' as const },
+      ]),
+    ),
+  ])(
+    'rejects legacy option-limit violations before loading tools or priming resources',
+    async (tool_options) => {
+      const { agent, req, res, loadTools, db } = createMocks();
+      agent.tool_options = tool_options;
+      const primeCalls = jest.mocked(primeResources).mock.calls.length;
+      await expect(
+        initializeAgent(
+          {
+            req,
+            res,
+            agent,
+            loadTools,
+            endpointOption: { endpoint: EModelEndpoint.agents },
+            allowedProviders: new Set([Providers.OPENAI]),
+            isInitialAgent: true,
+          },
+          db,
+        ),
+      ).rejects.toMatchObject({ code: 'AGENT_TOOL_OPTIONS_LIMIT_EXCEEDED' });
+      expect(loadTools).not.toHaveBeenCalled();
+      expect(primeResources).toHaveBeenCalledTimes(primeCalls);
     },
   );
 
@@ -4370,10 +4895,10 @@ describe('initializeAgent — code-generated file thread filter (regression)', (
     const deferredOnly = { file_id: 'deferred', filename: 'b.csv', bytes: 100 };
     const { agent, req, res, loadTools, db } = setupExecuteCodeAgent();
 
-    /* Delivery keeps the shared file; the deferred pass keeps both. */
+    /* Delivery has admitted the shared file; deferred screening sees only new ids. */
     filterFilesByEndpointRuntimeConfig
       .mockReturnValueOnce([shared])
-      .mockReturnValueOnce([shared, deferredOnly]);
+      .mockReturnValueOnce([deferredOnly]);
     const getDeferredProvisionFiles = jest.fn().mockResolvedValue([shared, deferredOnly]);
     const getConvoFiles = jest.fn().mockResolvedValue(['shared', 'deferred']);
     const getToolFilesByIds = jest.fn().mockResolvedValue([shared]);
@@ -4402,9 +4927,12 @@ describe('initializeAgent — code-generated file thread filter (regression)', (
     const chargedToDeferred = filterFilesByEndpointRuntimeConfig.mock.calls
       .map(([, params]) => (params as { consumedBytes?: number }).consumedBytes)
       .find((bytes) => bytes !== undefined);
-    /* The only delivered file is also the shared one, and the deferred pass charges its
-     * own list as it walks it, so nothing is carried in. */
-    expect(chargedToDeferred).toBe(0);
+    expect(chargedToDeferred).toBe(400);
+    expect(filterFilesByEndpointRuntimeConfig).toHaveBeenNthCalledWith(
+      2,
+      expect.anything(),
+      expect.objectContaining({ files: [deferredOnly], consumedBytes: 400 }),
+    );
 
     /* The persistent screening runs inside the callback, and must see the two unique
      * files rather than three. */
@@ -4534,6 +5062,40 @@ describe('initializeAgent — code-generated file thread filter (regression)', (
       expect.anything(),
       expect.objectContaining({ code: true }),
     );
+  });
+
+  it('takes no conversation files for a turn sent at the root', async () => {
+    /* A root turn has no history: the conversation's file refs belong to sibling roots, such
+     * as the first message edited or retried without its files, and must not come back. */
+    const { agent, req, res, loadTools, db } = setupExecuteCodeAgent();
+
+    const getMessages = jest.fn().mockResolvedValue([]);
+    const getConvoFiles = jest.fn().mockResolvedValue(['sibling-root-file']);
+    const getDeferredProvisionFiles = jest.fn().mockResolvedValue([]);
+    const getToolFilesByIds = jest.fn().mockResolvedValue([]);
+
+    await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        conversationId: 'conv-1',
+        parentMessageId: Constants.NO_PARENT as string,
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        codeEnvAvailable: true,
+      },
+      { ...db, getMessages, getConvoFiles, getDeferredProvisionFiles, getToolFilesByIds },
+    );
+
+    expect(getConvoFiles).not.toHaveBeenCalled();
+    expect(getMessages).not.toHaveBeenCalled();
+    expect(getDeferredProvisionFiles).not.toHaveBeenCalled();
+    for (const [ids] of getToolFilesByIds.mock.calls) {
+      expect(ids).toEqual([]);
+    }
   });
 
   it('keeps an anchored branch scoped to itself when it references no files', async () => {
@@ -4757,6 +5319,43 @@ describe('initializeAgent — run-scoped MCP tool definitions', () => {
     expect(loadTools).toHaveBeenCalledWith(
       expect.objectContaining({ accessibleMcpServerNames: accessibleNames }),
     );
+  });
+
+  it('keeps valid authored limits through symbol-only server normalization and chat admission', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({
+      structuredTools: [{ name: 'web_search' }],
+      loadedToolDefinitions: [{ name: 'web_search' }],
+    });
+    const names = Array.from({ length: 1023 }, (_, i) => `${`${i}`.padEnd(58, 'q')}_mcp_!`);
+    agent.tools = ['web_search'];
+    agent.tool_options = Object.fromEntries([
+      ...names.map((name) => [name, { approval_mode: 'ask' as const }]),
+      ['web_search', { approval_mode: 'ask' as const }],
+    ]);
+    req.config!.mcpConfig = { '!': { type: 'stdio', command: 'node', args: [] } };
+    db.getAccessibleMcpServerNames = jest.fn().mockResolvedValue(['!']);
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+    expect(loadTools).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tool_options: expect.objectContaining({
+          [names[0].replace(/!$/, 'server_33')]: { approval_mode: 'ask' },
+        }),
+      }),
+    );
+    expect(
+      canAgentGraphPause({ policy: { enabled: true, mode: 'bypass' }, agents: [result] }),
+    ).toBe(true);
   });
 
   it('threads the normalized MCP request body into tool discovery', async () => {
@@ -5174,6 +5773,10 @@ describe('initializeAgent — authorized run file snapshots', () => {
 describe('initializeAgent — provider-native web search role gate', () => {
   const OPENAI_SEARCH = { type: 'web_search' };
 
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
   const roleWithWebSearch = (use: boolean) =>
     jest.fn().mockResolvedValue({
       name: 'USER',
@@ -5255,6 +5858,34 @@ describe('initializeAgent — provider-native web search role gate', () => {
     const result = await run({ getRoleByName: roleWithWebSearch(false) });
 
     expect(result.tools).not.toContainEqual(OPENAI_SEARCH);
+  });
+
+  it('keeps native search when the external pipeline capability is disabled', async () => {
+    const getRoleByName = roleWithWebSearch(true);
+    const result = await run({
+      getRoleByName,
+      params: {
+        req: {
+          ...roleGatedReq(),
+          config: { endpoints: { agents: { capabilities: [AgentCapabilities.file_search] } } },
+        } as ServerRequest,
+      },
+    });
+
+    expect(result.tools).toContainEqual(OPENAI_SEARCH);
+    expect(getRoleByName).toHaveBeenCalledTimes(1);
+    expect(logger.warn).not.toHaveBeenCalledWith(expect.stringContaining('Restore the role grant'));
+  });
+
+  it('explains a blocked native request even when the caller supplies the denial', async () => {
+    const result = await run({
+      params: { resolveWebSearchGrant: jest.fn().mockResolvedValue(false) },
+    });
+
+    expect(result.tools).not.toContainEqual(OPENAI_SEARCH);
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('removing interface.webSearch does not reset stored permissions'),
+    );
   });
 
   it('reads no role when the built config turns no native search on', async () => {
@@ -5360,6 +5991,368 @@ describe('initializeAgent — provider-native web search role gate', () => {
     const result = await run({});
 
     expect(result.tools).toContainEqual(OPENAI_SEARCH);
+  });
+});
+
+describe('initializeAgent — linked instructions', () => {
+  const link: AgentInstructionsPrompt = {
+    source: 'native',
+    groupId: 'group-1',
+    selection: { type: 'production' },
+  };
+
+  const flush = () => new Promise((resolve) => setImmediate(resolve));
+
+  /** `ResolveLinkedInstructions` is a callable that also carries a `recordUse`
+   *  method (see `../instructions/linked`); a bare `jest.fn()` has no such
+   *  property, so tests build the mock the same shape the real resolver has. */
+  type ResolveLinkedInstructionsMock = jest.Mock<
+    ReturnType<ResolveLinkedInstructions>,
+    Parameters<ResolveLinkedInstructions>
+  > & { recordUse: jest.Mock };
+  function makeResolveLinkedInstructions(): ResolveLinkedInstructionsMock {
+    const resolve = jest.fn() as unknown as ResolveLinkedInstructionsMock;
+    return Object.assign(resolve, { recordUse: jest.fn() });
+  }
+
+  const run = async ({
+    agentOverrides,
+    reqOverrides,
+    params = {},
+    loadToolsOverride,
+  }: {
+    agentOverrides?: Partial<Agent>;
+    reqOverrides?: Partial<ServerRequest>;
+    params?: Partial<Parameters<typeof initializeAgent>[0]>;
+    loadToolsOverride?: (loadTools: ReturnType<typeof createMocks>['loadTools']) => void;
+  }) => {
+    const { agent, req, res, loadTools, db } = createMocks({});
+    Object.assign(agent, agentOverrides);
+    Object.assign(req, reqOverrides);
+    loadToolsOverride?.(loadTools);
+    return initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        ...params,
+      },
+      db,
+    );
+  };
+
+  beforeEach(() => {
+    (logger.warn as jest.Mock).mockClear?.();
+  });
+
+  it('resolves a linked agent, still applies special-vars substitution, and records exactly one usage', async () => {
+    const resolveLinkedInstructions = makeResolveLinkedInstructions();
+    resolveLinkedInstructions.mockResolvedValue({
+      status: 'resolved',
+      prompt: 'Hello {{current_user}}, be concise.',
+      facts: { source: 'native', groupId: 'group-1', promptId: 'prompt-1' },
+    });
+
+    const result = await run({
+      agentOverrides: { instructionsPrompt: link },
+      reqOverrides: { user: { id: 'user-1', name: 'Ada' } as never },
+      params: { resolveLinkedInstructions },
+    });
+    await flush();
+
+    expect(resolveLinkedInstructions).toHaveBeenCalledWith(expect.objectContaining({ link }));
+    expect(result.instructions).toBe('Hello Ada, be concise.');
+    expect(result.instructionsPromptFacts).toEqual({
+      source: 'native',
+      groupId: 'group-1',
+      promptId: 'prompt-1',
+    });
+    expect(resolveLinkedInstructions.recordUse).toHaveBeenCalledTimes(1);
+    expect(resolveLinkedInstructions.recordUse).toHaveBeenCalledWith({
+      source: 'native',
+      groupId: 'group-1',
+      promptId: 'prompt-1',
+    });
+  });
+
+  it('falls back to empty instructions with a warning, and records no usage, when the link is unavailable', async () => {
+    const resolveLinkedInstructions = makeResolveLinkedInstructions();
+    resolveLinkedInstructions.mockResolvedValue({ status: 'unavailable', reason: 'timeout' });
+
+    const result = await run({
+      agentOverrides: { instructionsPrompt: link, instructions: 'stale inline text' },
+      params: { resolveLinkedInstructions },
+    });
+    await flush();
+
+    expect(result.instructions).toBe('');
+    expect(result.instructionsPromptFacts).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('group-1'));
+    expect(resolveLinkedInstructions.recordUse).not.toHaveBeenCalled();
+  });
+
+  it('falls back to empty instructions with a warning when no resolver is provided', async () => {
+    const result = await run({
+      agentOverrides: { instructionsPrompt: link, instructions: 'stale inline text' },
+    });
+
+    expect(result.instructions).toBe('');
+    expect(result.instructionsPromptFacts).toBeUndefined();
+    expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('group-1'));
+  });
+
+  it('leaves an unlinked agent unchanged, never calls the resolver, and records no usage', async () => {
+    const resolveLinkedInstructions = makeResolveLinkedInstructions();
+
+    const result = await run({
+      agentOverrides: { instructions: 'Be helpful.' },
+      params: { resolveLinkedInstructions },
+    });
+    await flush();
+
+    expect(resolveLinkedInstructions).not.toHaveBeenCalled();
+    expect(result.instructions).toBe('Be helpful.');
+    expect(result.instructionsPromptFacts).toBeUndefined();
+    expect(resolveLinkedInstructions.recordUse).not.toHaveBeenCalled();
+  });
+
+  it('resolves and initializes normally, but records no usage, when recordLinkedPromptUsage is false', async () => {
+    const resolveLinkedInstructions = makeResolveLinkedInstructions();
+    resolveLinkedInstructions.mockResolvedValue({
+      status: 'resolved',
+      prompt: 'Fixed instructions.',
+      facts: { source: 'native', groupId: 'group-1', promptId: 'prompt-1' },
+    });
+
+    const result = await run({
+      agentOverrides: { instructionsPrompt: link },
+      params: { resolveLinkedInstructions, recordLinkedPromptUsage: false },
+    });
+    await flush();
+
+    expect(result.instructions).toBe('Fixed instructions.');
+    expect(resolveLinkedInstructions).toHaveBeenCalledWith(expect.objectContaining({ link }));
+    expect(resolveLinkedInstructions.recordUse).not.toHaveBeenCalled();
+  });
+
+  it('records no usage when initializeAgent throws after a successful resolution', async () => {
+    const resolveLinkedInstructions = makeResolveLinkedInstructions();
+    resolveLinkedInstructions.mockResolvedValue({
+      status: 'resolved',
+      prompt: 'Fixed instructions.',
+      facts: { source: 'native', groupId: 'group-1', promptId: 'prompt-1' },
+    });
+    const failure = new Error('boom after resolution');
+
+    await expect(
+      run({
+        agentOverrides: { instructionsPrompt: link },
+        params: { resolveLinkedInstructions },
+        loadToolsOverride: (loadTools) =>
+          loadTools.mockResolvedValue({
+            tools: [],
+            toolContextMap: {},
+            dynamicToolContextMap: {},
+            toolDefinitions: [],
+            hasDeferredTools: false,
+            // Rejects well after the instructions block has resolved and set
+            // `agent.instructions`, so the throw happens on the way OUT.
+            repositoryInstructionSource: { load: jest.fn().mockRejectedValue(failure) },
+          }),
+      }),
+    ).rejects.toBe(failure);
+    await flush();
+
+    expect(resolveLinkedInstructions.recordUse).not.toHaveBeenCalled();
+  });
+
+  it('does not throw when the resolver is a plain function with no recordUse (a successful init still returns normally)', async () => {
+    // `resolveLinkedInstructions` is typed as a plain callable in
+    // `InitializeAgentParams`; a caller-supplied function that matches the
+    // type but not the real resolver's `Object.assign(resolve, { recordUse })`
+    // shape must not throw after initialization has already succeeded.
+    const resolveLinkedInstructions: ResolveLinkedInstructions = jest.fn().mockResolvedValue({
+      status: 'resolved',
+      prompt: 'Fixed instructions.',
+      facts: { source: 'native', groupId: 'group-1', promptId: 'prompt-1' },
+    }) as unknown as ResolveLinkedInstructions;
+
+    const result = await run({
+      agentOverrides: { instructionsPrompt: link },
+      params: { resolveLinkedInstructions },
+    });
+    await flush();
+
+    expect(result.instructions).toBe('Fixed instructions.');
+  });
+
+  it('does not produce an unhandled rejection when the resolution rejects before it is awaited', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on('unhandledRejection', onUnhandledRejection);
+    try {
+      const rejection = new Error('rejected before the instructions block awaits it');
+      const resolveLinkedInstructions = makeResolveLinkedInstructions();
+      // Rejects on the same tick it's called — well before `initializeAgent`
+      // reaches the instructions block, since that only happens after tool
+      // loading (delayed below) and several other steps.
+      resolveLinkedInstructions.mockImplementation(() => Promise.reject(rejection));
+
+      await expect(
+        run({
+          agentOverrides: { instructionsPrompt: link },
+          params: { resolveLinkedInstructions },
+          loadToolsOverride: (loadTools) =>
+            loadTools.mockImplementation(
+              () =>
+                new Promise((resolve) => {
+                  setTimeout(
+                    () =>
+                      resolve({
+                        tools: [],
+                        toolContextMap: {},
+                        dynamicToolContextMap: {},
+                        toolDefinitions: [],
+                        hasDeferredTools: false,
+                      }),
+                    10,
+                  );
+                }),
+            ),
+        }),
+      ).rejects.toBe(rejection);
+
+      // Give the process a turn to report an unhandled rejection, if any occurred.
+      await flush();
+    } finally {
+      process.off('unhandledRejection', onUnhandledRejection);
+    }
+    expect(unhandled).toEqual([]);
+  });
+});
+
+describe('initializeAgent — linked instructions and the agent-definition content policy', () => {
+  const link: AgentInstructionsPrompt = {
+    source: 'native',
+    groupId: 'group-1',
+    selection: { type: 'production' },
+  };
+  const blockingAgentInstructionsFilters: FiltersConfig = {
+    agentInstructions: {
+      pii: {
+        starterPatterns: [],
+        customPatterns: [{ id: 'secret', label: 'secret value', regex: 'SECRET-[A-Z]+' }],
+        fields: ['instructions'],
+      },
+    },
+  };
+
+  it('blocks a stored inline instructions field that trips the policy when there is no link', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({});
+    agent.instructions = 'Contains SECRET-VALUE marker';
+    Object.assign(req, { config: { filters: blockingAgentInstructionsFilters } });
+
+    await expect(
+      initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([Providers.OPENAI]),
+          isInitialAgent: true,
+        },
+        db,
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('excludes the stored inline instructions from that scan when the agent has a valid link', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({});
+    Object.assign(agent, {
+      instructionsPrompt: link,
+      instructions: 'Contains SECRET-VALUE marker',
+    });
+    Object.assign(req, { config: { filters: blockingAgentInstructionsFilters } });
+    const resolveLinkedInstructions = jest.fn().mockResolvedValue({
+      status: 'resolved',
+      prompt: 'Safe resolved prompt.',
+      facts: { source: 'native', groupId: 'group-1', promptId: 'prompt-1' },
+    });
+    Object.assign(resolveLinkedInstructions, { recordUse: jest.fn() });
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        resolveLinkedInstructions:
+          resolveLinkedInstructions as unknown as ResolveLinkedInstructions,
+      },
+      db,
+    );
+
+    expect(result.instructions).toBe('Safe resolved prompt.');
+  });
+
+  it('never calls the resolver when the definition-content check rejects a field other than instructions', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({});
+    Object.assign(agent, {
+      instructionsPrompt: link,
+      // The stored inline `instructions` are excluded from the scan by the
+      // link (see the test above), but `description` is not — the check
+      // must still run, and reject, before the resolver is ever started.
+      description: 'Contains SECRET-VALUE marker',
+    });
+    Object.assign(req, {
+      config: {
+        filters: {
+          agentInstructions: {
+            pii: {
+              starterPatterns: [],
+              customPatterns: [{ id: 'secret', label: 'secret value', regex: 'SECRET-[A-Z]+' }],
+              fields: ['description'],
+            },
+          },
+        },
+      },
+    });
+    const resolveLinkedInstructions = jest.fn().mockResolvedValue({
+      status: 'resolved',
+      prompt: 'Safe resolved prompt.',
+      facts: { source: 'native', groupId: 'group-1', promptId: 'prompt-1' },
+    });
+    Object.assign(resolveLinkedInstructions, { recordUse: jest.fn() });
+
+    await expect(
+      initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([Providers.OPENAI]),
+          isInitialAgent: true,
+          resolveLinkedInstructions:
+            resolveLinkedInstructions as unknown as ResolveLinkedInstructions,
+        },
+        db,
+      ),
+    ).rejects.toThrow();
+
+    expect(resolveLinkedInstructions).not.toHaveBeenCalled();
   });
 });
 
@@ -5737,5 +6730,240 @@ describe('initializeAgent turn delivery routing', () => {
     const [toolsOrder] = loadTools.mock.invocationCallOrder;
     expect(optionsOrder).toBeLessThan(filesOrder);
     expect(filesOrder).toBeLessThan(toolsOrder);
+  });
+});
+
+describe('initializeAgent — inference trust boundary', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it.each([true, false])(
+    'projects saved settings and request overrides (initial: %s)',
+    async (isInitialAgent) => {
+      const { agent, req, res, loadTools, db } = createMocks({
+        provider: Providers.OPENAI,
+        model: 'gpt-4o-mini',
+      });
+      Object.assign(agent.model_parameters, {
+        temperature: 0.2,
+        apiKey: 'untrusted-secret',
+        modelKwargs: { model: 'gpt-4o', service_tier: 'flex' },
+        configuration: { baseURL: 'https://unchecked.invalid' },
+        callbacks: ['not-user-configurable'],
+        fallbacks: [{ provider: 'openAI', clientOptions: { model: 'gpt-4o' } }],
+        unknownConstructorField: true,
+      });
+      mockExtractLibreChatParams.mockImplementation(realUtils.extractLibreChatParams);
+
+      await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: {
+            endpoint: EModelEndpoint.agents,
+            model_parameters: { temperature: 0.4, modelKwargs: { model: 'gpt-4o' } },
+          },
+          allowedProviders: new Set([Providers.OPENAI]),
+          isInitialAgent,
+        },
+        db,
+      );
+
+      const { results } = mockGetProviderConfig.mock;
+      const { getOptions } = results[results.length - 1].value;
+      expect(getOptions).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model_parameters: {
+            model: 'gpt-4o-mini',
+            temperature: isInitialAgent ? 0.4 : 0.2,
+          },
+        }),
+      );
+    },
+  );
+
+  it.each(['custom', 'anthropic', 'google'])(
+    'retains canonical settings and endpoint identity for same-agent memory reentry (%s)',
+    async (mode) => {
+      const { agent, req, res, loadTools, db } = createMocks({
+        provider: 'Gateway',
+        overrideProvider: Providers.OPENAI,
+        model: 'permitted',
+      });
+      Object.assign(agent.model_parameters, { min_p: 0.7, modelKwargs: { min_p: 0.9 } });
+      const getOptions = jest
+        .fn()
+        .mockImplementation(async ({ model_parameters, inferenceParameters }) => ({
+          llmConfig: {
+            model: model_parameters.model,
+            apiKey: 'trusted-key',
+            modelKwargs: { min_p: inferenceParameters?.min_p ?? 0.1 },
+          },
+          configOptions: { baseURL: 'https://trusted.invalid' },
+        }));
+      mockGetProviderConfig.mockImplementation(({ provider }) => {
+        if (provider !== 'Gateway') throw new Error('Lost original endpoint identity');
+        return {
+          getOptions,
+          overrideProvider: Providers.OPENAI,
+          customEndpointConfig: {
+            customParams: {
+              defaultParamsEndpoint: mode,
+              paramDefinitions: [
+                { key: 'min_p', type: 'number', default: 0.1, range: { min: 0, max: 1 } },
+              ],
+            },
+          },
+        };
+      });
+      mockExtractLibreChatParams.mockImplementation(realUtils.extractLibreChatParams);
+      const params = {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI, 'Gateway']),
+        isInitialAgent: true,
+      };
+      const main = await initializeAgent(params, db);
+      const mainConfig = main.model_parameters;
+      expect(mainConfig).toMatchObject({ modelKwargs: { min_p: 0.7 } });
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const memory = await initializeAgent(
+          { ...params, agent: { ...main }, isInitialAgent: false },
+          db,
+        );
+        expect(memory.model_parameters).toMatchObject({ modelKwargs: { min_p: 0.7 } });
+        expect(memory).not.toBe(main);
+        expect(main.model_parameters).toBe(mainConfig);
+        expect(getOptions).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            endpoint: 'Gateway',
+            model_parameters: { model: 'permitted' },
+            inferenceParameters: { min_p: 0.7 },
+          }),
+        );
+      }
+      await expect(
+        initializeAgent(
+          {
+            ...params,
+            agent: main,
+            allowedProviders: new Set([Providers.OPENAI]),
+            isInitialAgent: false,
+          },
+          db,
+        ),
+      ).rejects.toThrow('invalid_agent_provider');
+    },
+  );
+
+  it('uses the trusted URL profile before projecting saved and request caching controls', async () => {
+    const key = 'TEST_INFERENCE_GATEWAY_URL';
+    const previous = process.env[key];
+    process.env[key] = 'https://openrouter.ai/api/v1';
+    try {
+      const { agent, req, res, loadTools, db } = createMocks({
+        provider: 'Gateway',
+        overrideProvider: Providers.OPENAI,
+        model: 'permitted',
+      });
+      Object.assign(agent.model_parameters, { promptCache: false, promptCacheTtl: '1h' });
+      const endpoint = {
+        name: 'Gateway',
+        apiKey: 'synthetic-key',
+        baseURL: '${TEST_INFERENCE_GATEWAY_URL}',
+        models: { default: ['permitted'], fetch: false },
+      };
+      if (req.config == null) throw new Error('Expected the request configuration fixture');
+      req.config.endpoints = { custom: [endpoint] };
+      const getOptions = jest
+        .fn()
+        .mockResolvedValue({ llmConfig: { model: 'permitted', promptCache: false } });
+      mockGetProviderConfig.mockReturnValue({
+        getOptions,
+        overrideProvider: Providers.OPENAI,
+        customEndpointConfig: endpoint,
+      });
+      mockExtractLibreChatParams.mockImplementation(realUtils.extractLibreChatParams);
+      await initializeAgent(
+        {
+          req,
+          res,
+          agent,
+          loadTools,
+          endpointOption: { endpoint: EModelEndpoint.agents },
+          allowedProviders: new Set([Providers.OPENAI, 'Gateway']),
+          isInitialAgent: true,
+        },
+        db,
+      );
+      expect(getOptions).toHaveBeenCalledWith(
+        expect.objectContaining({
+          endpoint: 'Gateway',
+          model_parameters: { model: 'permitted', promptCache: false, promptCacheTtl: '1h' },
+        }),
+      );
+    } finally {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    }
+  });
+
+  it('constructs custom request kwargs only from administrator-declared inference values', async () => {
+    const { agent, req, res, loadTools, db } = createMocks({
+      provider: 'Gateway',
+      overrideProvider: Providers.OPENAI,
+      model: 'permitted',
+    });
+    Object.assign(agent.model_parameters, { min_p: 0.1, modelKwargs: { model: 'restricted' } });
+    const getOptions = jest.fn().mockResolvedValue({
+      llmConfig: {
+        model: 'permitted',
+        apiKey: 'trusted-key',
+        configuration: { baseURL: 'https://trusted.invalid' },
+        modelKwargs: { seed: 7 },
+      },
+    });
+    mockGetProviderConfig.mockReturnValue({
+      getOptions,
+      overrideProvider: Providers.OPENAI,
+      customEndpointConfig: {
+        customParams: {
+          defaultParamsEndpoint: 'custom',
+          paramDefinitions: [{ key: 'min_p', type: 'number', range: { min: 0, max: 1 } }],
+        },
+      },
+    });
+    mockExtractLibreChatParams.mockImplementation(realUtils.extractLibreChatParams);
+    const initialized = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI, 'Gateway']),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(getOptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model_parameters: { model: 'permitted' },
+        inferenceParameters: { min_p: 0.1 },
+      }),
+    );
+    expect(initialized.model_parameters).toMatchObject({
+      model: 'permitted',
+      apiKey: 'trusted-key',
+      configuration: { baseURL: 'https://trusted.invalid' },
+      modelKwargs: { seed: 7 },
+    });
   });
 });

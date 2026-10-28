@@ -1,5 +1,6 @@
-import type { IThemeRGB } from '../types';
 import {
+  highContrastDarkTheme,
+  highContrastLightTheme,
   HIGH_CONTRAST_THEME_NAME,
   defaultBrands,
   highContrastTheme,
@@ -7,8 +8,8 @@ import {
   themeBrandTokens,
   themeColorTokens,
   validateThemeDefinition,
-} from '../registry';
-import { highContrastDarkTheme, highContrastLightTheme } from './highContrast';
+} from 'librechat-data-provider';
+import type { IThemeRGB } from 'librechat-data-provider';
 
 type Rgb = [number, number, number];
 
@@ -180,6 +181,13 @@ describe.each([
 
     expect(theme['rgb-surface-code']).toBe(expected);
     expect(theme['rgb-surface-code']).toBe(source);
+  });
+
+  it('paints the page canvas in the mode canvas, black in dark and white in light', () => {
+    const expected = theme === highContrastDarkTheme ? '0 0 0' : '255 255 255';
+
+    expect(theme['rgb-page-canvas']).toBe(expected);
+    expect(theme['rgb-page-canvas']).toBe(theme['rgb-surface-primary']);
   });
 
   it('keeps neutral text at WCAG AAA on every canvas and hover fill', () => {

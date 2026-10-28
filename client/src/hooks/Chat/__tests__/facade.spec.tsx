@@ -1,14 +1,14 @@
 import React from 'react';
 import { act, render, renderHook } from '@testing-library/react';
 import { QueryKeys, Constants, ContentTypes } from 'librechat-data-provider';
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { useChat, ChatContext, useChatActions, resumeRequestsAtom } from '@librechat/chat/react';
+import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { TConversation, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ChatContract } from '../contract';
 import type { JotaiStore } from 'test/harness';
-import { ChatContext } from '~/Providers/ChatContext';
-import { useChat, useChatActions } from '../facade';
+import { createMessageCache } from '~/Providers/ChatHostContext';
 import { IsolatedAtomStore } from 'test/harness';
-import { resumeRequestsAtom } from '../resume';
+import { getMappingOptions } from '../outcomes';
 
 const userMessage: TMessage = {
   messageId: 'user-1',
@@ -30,6 +30,9 @@ const response = (overrides: Partial<TMessage> = {}): TMessage => ({
   ...overrides,
 });
 
+/** No attachment has arrived outside the message cache; one map, so every read is the same. */
+const noLiveAttachments = {};
+
 const createContract = (overrides: Partial<ChatContract> = {}): ChatContract => {
   const noop = jest.fn();
   return {
@@ -47,6 +50,10 @@ const createContract = (overrides: Partial<ChatContract> = {}): ChatContract => 
     setSiblingIdx: noop,
     latestMessageId: 'user-1',
     latestMessageDepth: 0,
+    subscribeMessages: () => () => undefined,
+    getMessagesRevision: () => 0,
+    useLiveAttachments: () => noLiveAttachments,
+    getMappingOptions,
     ask: jest.fn(),
     regenerate: jest.fn(),
     isSubmitting: false,
@@ -61,12 +68,24 @@ const createContract = (overrides: Partial<ChatContract> = {}): ChatContract => 
     setFiles: noop,
     filesLoading: false,
     setFilesLoading: noop,
-    showPopover: false,
-    setShowPopover: noop,
     feedbackEnabled: false,
     ...overrides,
   };
 };
+
+/** Serves `contract` subscribed to the provided query cache, as `useChatHelpers` serves it. */
+function CachedChat({ contract, children }: { contract: ChatContract; children: React.ReactNode }) {
+  const queryClient = useQueryClient();
+  const value = React.useMemo(() => {
+    const cache = createMessageCache(queryClient);
+    return {
+      ...contract,
+      subscribeMessages: (onChange: () => void) => cache.subscribe(contract.messagesKey, onChange),
+      getMessagesRevision: () => cache.revision(contract.messagesKey),
+    };
+  }, [contract, queryClient]);
+  return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
+}
 
 /** The facade delivers cache writes on a microtask, outside the render that caused them. */
 const flushCacheNotify = () => Promise.resolve();
@@ -77,7 +96,7 @@ const renderChat = (initial: ChatContract) => {
   const queryClient = new QueryClient();
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={queryClient}>
-      <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+      <CachedChat contract={contract}>{children}</CachedChat>
     </QueryClientProvider>
   );
   const view = renderHook(() => useChat(), { wrapper });
@@ -293,7 +312,7 @@ describe('useChat', () => {
     });
     const wrapper = ({ children }: { children: React.ReactNode }) => (
       <QueryClientProvider client={queryClient}>
-        <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+        <CachedChat contract={contract}>{children}</CachedChat>
       </QueryClientProvider>
     );
     const { result } = renderHook(() => useChat(), { wrapper });
@@ -343,18 +362,18 @@ describe('useChat', () => {
     };
     const view = render(
       <QueryClientProvider client={queryClient}>
-        <ChatContext.Provider value={contract}>
+        <CachedChat contract={contract}>
           <Probe withReader={false} />
-        </ChatContext.Provider>
+        </CachedChat>
       </QueryClientProvider>,
     );
 
     await act(async () => {
       view.rerender(
         <QueryClientProvider client={queryClient}>
-          <ChatContext.Provider value={contract}>
+          <CachedChat contract={contract}>
             <Probe withReader />
-          </ChatContext.Provider>
+          </CachedChat>
         </QueryClientProvider>,
       );
       await flushCacheNotify();
@@ -377,7 +396,7 @@ describe('useChat', () => {
     });
     const wrapper = ({ children }: { children: React.ReactNode }) => (
       <QueryClientProvider client={queryClient}>
-        <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+        <CachedChat contract={contract}>{children}</CachedChat>
       </QueryClientProvider>
     );
     const { result } = renderHook(() => useChat(), { wrapper });
@@ -435,6 +454,44 @@ describe('useChat', () => {
     const { result } = renderChat(turn([userMessage, repeated], true));
 
     expect(result.current.messages[1].parts[1]).toMatchObject({ state: 'input-available' });
+  });
+
+  it('resolves a tool part against an attachment that reached only the live map', () => {
+    const memoryCall = response({
+      content: [
+        {
+          type: ContentTypes.TOOL_CALL,
+          tool_call: {
+            id: 'mem-1',
+            type: 'tool_call',
+            name: 'set_memory',
+            args: '{}',
+            output: 'Memory set for key "k"',
+            progress: 1,
+          },
+        },
+      ],
+    });
+    const memoryError = {
+      conversationId: 'convo-1',
+      messageId: 'response-1',
+      toolCallId: 'mem-1',
+      type: 'memory',
+      memory: { type: 'error', key: 'k', value: 'v' },
+    } as unknown as NonNullable<TMessage['attachments']>[number];
+    const running = turn([userMessage, memoryCall], true);
+    const { result, update } = renderChat(running);
+    const userView = result.current.messages[0];
+    expect(result.current.messages[1].parts[0]).toMatchObject({ state: 'output-available' });
+
+    const live = { 'response-1': [memoryError] };
+    update({ ...running, useLiveAttachments: () => live });
+
+    expect(result.current.messages[1].parts[0]).toMatchObject({
+      type: 'tool-set_memory',
+      state: 'output-error',
+    });
+    expect(result.current.messages[0]).toBe(userView);
   });
 
   it('joins an inserted message to the conversation under the one before it', () => {
@@ -707,7 +764,7 @@ describe('useChat', () => {
               store.set(resumeRequestsAtom, new Set(['convo-2']));
             }}
           >
-            <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+            <CachedChat contract={contract}>{children}</CachedChat>
           </IsolatedAtomStore>
         </QueryClientProvider>
       ),
@@ -768,7 +825,7 @@ describe('useChatActions', () => {
     let renders = 0;
     const wrapper = ({ children }: { children: React.ReactNode }) => (
       <QueryClientProvider client={queryClient}>
-        <ChatContext.Provider value={contract}>{children}</ChatContext.Provider>
+        <CachedChat contract={contract}>{children}</CachedChat>
       </QueryClientProvider>
     );
     const view = renderHook(

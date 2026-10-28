@@ -1,3 +1,5 @@
+import { HOST_FILE_EDIT_HARD_MAX_COUNT } from 'librechat-data-provider';
+
 export type TextEdit = {
   old_text: string;
   new_text: string;
@@ -50,6 +52,9 @@ export function normalizeEditArgs(args: {
     const coercedEdits = coerceJsonValue(args.edits);
     if (!Array.isArray(coercedEdits) || coercedEdits.length === 0) {
       return 'Provide a non-empty edits array when edits is supplied.';
+    }
+    if (coercedEdits.length > HOST_FILE_EDIT_HARD_MAX_COUNT) {
+      return `File edits are limited to ${HOST_FILE_EDIT_HARD_MAX_COUNT} replacements per call.`;
     }
     const edits: TextEdit[] = [];
     for (const rawEdit of coercedEdits) {

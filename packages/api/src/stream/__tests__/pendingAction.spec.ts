@@ -5,9 +5,10 @@ import {
 } from '~/stream/interfaces/IJobStore';
 import { ApprovalLifecycle, PendingActionExpiredError } from '~/stream/ApprovalLifecycle';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
-import { buildPendingAction, buildToolApprovalPayload } from '~/agents/hitl/policy';
+import { buildToolApprovalPayload } from '~/agents/hitl/__fixtures__/approval';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
+import { buildPendingAction } from '~/agents/hitl/policy';
 
 jest.spyOn(console, 'log').mockImplementation();
 
@@ -827,6 +828,38 @@ describe('ApprovalLifecycle via GenerationJobManager.approvals (in-memory)', () 
       await expect(manager.steering.arm(streamId, 'waiting-steer', job.createdAt)).resolves.toBe(
         'incapable',
       );
+    });
+
+    test('persists user-submitted provenance in the same CAS that resumes the job', async () => {
+      const streamId = 'stream-resolve-provenance';
+      const job = await manager.createJob(streamId, 'user-1');
+      const action = buildAction(streamId);
+      await manager.approvals.pause(streamId, action);
+      const userSubmittedMessageFieldPaths = [
+        { path: '/content/0/tool_call/output', field: 'decision_response' as const },
+      ];
+
+      expect(
+        await manager.approvals.resolve(
+          streamId,
+          action.actionId,
+          {
+            userSubmittedPaths: ['/content/0/tool_call/args'],
+            userSubmittedMessageFieldPaths,
+          },
+          job.createdAt,
+        ),
+      ).toBe(true);
+
+      const resumed = await manager.getJob(streamId);
+      expect(resumed?.status).toBe('running');
+      expect(resumed?.metadata.userSubmittedPaths).toEqual(['/content/0/tool_call/args']);
+      expect(resumed?.metadata.userSubmittedMessageFieldPaths).toEqual(
+        userSubmittedMessageFieldPaths,
+      );
+      await expect(jobStore.getJob(streamId)).resolves.toMatchObject({
+        preResumeProvenance: { userSubmittedPaths: [], userSubmittedMessageFieldPaths: [] },
+      });
     });
 
     test('returns false when the job is not paused', async () => {

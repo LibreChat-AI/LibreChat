@@ -77,11 +77,66 @@ export interface FileSearchResource {
  */
 export type AllowedCaller = 'direct' | 'code_execution';
 
+export const AGENT_TOOL_APPROVAL_MODES = ['ask', 'allow', 'chat', 'always'] as const;
+export type AgentToolApprovalMode = (typeof AGENT_TOOL_APPROVAL_MODES)[number];
+
+export type ToolApprovalAuthKind = 'oauth' | 'other';
+
+export interface ToolApprovalGrantBinding {
+  instanceName: string;
+  /** SDK child execution identity; never part of remembered consent scope. */
+  executionScope?: string;
+  serverName?: string;
+  /** Effective MCP authentication path; server-owned. Unset retains legacy OAuth checks. */
+  authKind?: ToolApprovalAuthKind;
+  /** Server-only OAuth authorization generation, not renewable token bytes. */
+  oauthEpoch?: string | null;
+  agentId: string;
+  toolName: string;
+  binding: string;
+  scope: 'once' | 'chat' | 'always';
+  revocation?: string;
+  /** Existing consent at review capture; server-only compare-and-set witness. */
+  consentBinding?: string | null;
+  canRemember?: boolean;
+  unavailable?: 'connection' | 'disabled' | 'storage' | 'background';
+}
+
+export interface ToolApprovalGrantScope {
+  userId: string;
+  tenantId?: string;
+  conversationId: string;
+}
+
+export interface ToolApprovalGrantStorage {
+  getToolApprovalGrants: (
+    scope: ToolApprovalGrantScope,
+    bindings: readonly ToolApprovalGrantBinding[],
+  ) => Promise<
+    Array<{
+      binding: string;
+      approved: boolean;
+      revocation?: string;
+      oauthEpoch?: string | null;
+      consentBinding?: string | null;
+    }>
+  >;
+  rememberToolApprovalGrants: (
+    scope: ToolApprovalGrantScope,
+    grants: readonly ToolApprovalGrantBinding[],
+  ) => Promise<void>;
+  resetToolApprovalGrants: (userId: string, agentId: string, toolName?: string) => Promise<void>;
+}
+
 /**
  * Per-tool configuration options stored at the agent level.
  * Keyed by tool_id (e.g., "search_mcp_github").
  */
 export type ToolOptions = {
+  /** Unset inherits the administrator policy. */
+  approval_mode?: AgentToolApprovalMode;
+  /** Changing a mode invalidates previously remembered approvals. */
+  approval_revision?: string;
   /**
    * If true, the tool uses deferred loading (discoverable via tool search).
    * @default false

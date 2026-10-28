@@ -1,8 +1,9 @@
 import { useCallback, useState, useEffect, useRef, memo } from 'react';
 import { useAtom } from 'jotai';
 import { useForm } from 'react-hook-form';
-import { useMediaQuery } from '@librechat/client';
+import { ChatProvider } from '@librechat/chat/react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import { pxToRem, useRemScale, useMediaQuery } from '@librechat/client';
 import type { ReactNode } from 'react';
 import type { ChatFormValues } from '~/common';
 import {
@@ -17,15 +18,16 @@ import {
   DRAWER_UNPAINTED,
 } from './constants';
 import { filesDialogTriggerAtom, showFilesDialogAtom } from '~/store/filesDialog';
-import { ChatContext, ChatFormProvider, ActivePanelProvider } from '~/Providers';
 import { MobileHeader, MobileBottomBar, MobileShortcutTargets } from './mobile';
 import AgentMarketplaceButton from '~/components/Nav/AgentMarketplaceButton';
 import { MyFilesModal } from '~/components/Chat/Input/Files/MyFilesModal';
 import useUnifiedSidebarLinks from '~/hooks/Nav/useUnifiedSidebarLinks';
+import { ChatFormProvider, ActivePanelProvider } from '~/Providers';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import useSidebarState from '~/hooks/Nav/useSidebarState';
-import { useChatHelpers, useLocalize } from '~/hooks';
 import SidePanelNav from '~/components/SidePanel/Nav';
+import { createResizeMeasure } from './resize';
+import { useLocalize } from '~/hooks';
 import Sidebar from './Sidebar';
 import { cn } from '~/utils';
 
@@ -35,17 +37,16 @@ function getInitialWidth(): number {
 }
 
 /**
- * Isolates useChatHelpers Recoil subscriptions from the sidebar layout.
- * Atom changes (e.g. during streaming) only re-render this component
- * and the active panel — not the sidebar shell, resize logic, or icon strip.
- * This works because Recoil subscriptions don't propagate to parent components.
+ * Isolates the root pane's chat contract subscriptions from the sidebar layout.
+ * Atom changes (e.g. during streaming) only re-render `ChatProvider` and the
+ * active panel, not the sidebar shell, resize logic, or icon strip, because
+ * atom subscriptions don't propagate to parent components.
  */
 function SidebarChatProvider({ children }: { children: ReactNode }) {
-  const chatHelpers = useChatHelpers(0);
   const sidebarFormMethods = useForm<ChatFormValues>({ defaultValues: { text: '' } });
   return (
     <ChatFormProvider {...sidebarFormMethods}>
-      <ChatContext.Provider value={chatHelpers}>{children}</ChatContext.Provider>
+      <ChatProvider index={0}>{children}</ChatProvider>
     </ChatFormProvider>
   );
 }
@@ -69,6 +70,7 @@ function UnifiedSidebar({
   const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)');
   const [sidebarWidth, setSidebarWidth] = useState(getInitialWidth);
   const [viewportWidth, setViewportWidth] = useState(() => window.innerWidth);
+  const remScale = useRemScale();
   const [isResizing, setIsResizing] = useState(false);
   const resizeHandlers = useRef<{ move: (e: MouseEvent) => void; up: () => void } | null>(null);
 
@@ -84,12 +86,11 @@ function UnifiedSidebar({
     return () => window.removeEventListener('resize', handleViewportResize);
   }, []);
 
-  /** Mirrors the bounds the aside is rendered with, so the handle never announces a value
-   *  outside its own range. CSS resolves a 40% that falls under `min-width` in favor of the
-   *  minimum, and the resize handlers clamp the same way, so the floor belongs here too. */
-  const resizeMax = Math.max(EXPANDED_MIN, Math.round(viewportWidth * 0.4));
+  /** Keep the handle's announced range in the same baseline units as stored widths. */
+  const resizeMax = (viewportWidth * 0.4) / remScale;
+  const resizeMin = Math.min(EXPANDED_MIN, resizeMax);
   const resizeNow = panelExpanded
-    ? Math.min(Math.max(sidebarWidth, EXPANDED_MIN), resizeMax)
+    ? Math.min(Math.max(sidebarWidth, resizeMin), resizeMax)
     : COLLAPSED_WIDTH;
 
   const handleCollapse = useCallback(
@@ -114,54 +115,67 @@ function UnifiedSidebar({
     handleExpand();
   }, [handleExpand, handleLeaveInsights, isInsightsRoute]);
 
-  const handleResizeStart = useCallback(() => {
-    setIsResizing(true);
-    document.body.style.userSelect = 'none';
-    const maxWidth = window.innerWidth * 0.4;
-    let rafId: number | null = null;
+  const handleResizeStart = useCallback(
+    (event: React.MouseEvent<HTMLElement>) => {
+      setIsResizing(true);
+      document.body.style.userSelect = 'none';
+      const maxWidth = (window.innerWidth * 0.4) / remScale;
+      /** The scaled minimum can exceed the viewport cap, so it yields to the cap. */
+      const minWidth = Math.min(EXPANDED_MIN, maxWidth);
+      const measure = createResizeMeasure(event.currentTarget);
+      let rafId: number | null = null;
 
-    const move = (e: MouseEvent) => {
-      if (rafId != null) {
-        return;
-      }
-      rafId = requestAnimationFrame(() => {
-        rafId = null;
-        const next = Math.max(EXPANDED_MIN, Math.min(e.clientX, maxWidth));
-        setSidebarWidth(next);
-      });
-    };
+      const move = (e: MouseEvent) => {
+        if (rafId != null) {
+          return;
+        }
+        rafId = requestAnimationFrame(() => {
+          rafId = null;
+          const next = Math.max(minWidth, Math.min(measure(e.clientX) / remScale, maxWidth));
+          setSidebarWidth(next);
+        });
+      };
 
-    const up = () => {
-      if (rafId != null) {
-        cancelAnimationFrame(rafId);
-        rafId = null;
-      }
-      document.body.style.userSelect = '';
-      setIsResizing(false);
-      resizeHandlers.current = null;
+      const up = () => {
+        if (rafId != null) {
+          cancelAnimationFrame(rafId);
+          rafId = null;
+        }
+        document.body.style.userSelect = '';
+        setIsResizing(false);
+        resizeHandlers.current = null;
+        setSidebarWidth((w) => {
+          localStorage.setItem('side:width', String(Math.round(w)));
+          return w;
+        });
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+      };
+
+      resizeHandlers.current = { move, up };
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    },
+    [remScale],
+  );
+
+  const handleResizeKeyboard = useCallback(
+    (direction: 'shrink' | 'grow') => {
       setSidebarWidth((w) => {
-        localStorage.setItem('side:width', String(Math.round(w)));
-        return w;
+        const maxWidth = (window.innerWidth * 0.4) / remScale;
+        /** A width stored at a lower scale can exceed the current maximum, so it
+         *  is brought into range before stepping rather than crawling down by 20. */
+        const current = Math.min(w, maxWidth);
+        const next =
+          direction === 'shrink'
+            ? Math.max(current - 20, Math.min(EXPANDED_MIN, maxWidth))
+            : Math.min(current + 20, maxWidth);
+        localStorage.setItem('side:width', String(Math.round(next)));
+        return next;
       });
-      document.removeEventListener('mousemove', move);
-      document.removeEventListener('mouseup', up);
-    };
-
-    resizeHandlers.current = { move, up };
-    document.addEventListener('mousemove', move);
-    document.addEventListener('mouseup', up);
-  }, []);
-
-  const handleResizeKeyboard = useCallback((direction: 'shrink' | 'grow') => {
-    setSidebarWidth((w) => {
-      const next =
-        direction === 'shrink'
-          ? Math.max(w - 20, EXPANDED_MIN)
-          : Math.min(w + 20, window.innerWidth * 0.4);
-      localStorage.setItem('side:width', String(Math.round(next)));
-      return next;
-    });
-  }, []);
+    },
+    [remScale],
+  );
 
   useEffect(() => {
     return () => {
@@ -178,6 +192,15 @@ function UnifiedSidebar({
     }
     const handler = (e: KeyboardEvent) => {
       if (e.key !== 'Escape') {
+        return;
+      }
+      /**
+       * A layer above the drawer already took this Escape: a dialog opened from
+       * the drawer dismisses itself and marks the event handled. Collapsing the
+       * drawer too would close two levels for one keystroke and drop the focus
+       * the dialog hands back to its trigger.
+       */
+      if (e.defaultPrevented) {
         return;
       }
       /**
@@ -209,12 +232,13 @@ function UnifiedSidebar({
          * a site banner above that container stays above the drawer too
          * instead of covering its header strip, as it already does for the
          * scrim and the pane. */
-        'bg-surface-primary-alt text-text-primary absolute inset-y-0 left-0 flex touch-pan-y touch-pinch-zoom flex-col',
+        'bg-surface-sidebar text-text-primary absolute inset-y-0 inset-s-0 flex touch-pan-y touch-pinch-zoom flex-col',
         /** In dark mode the scrim and the drawer are both near-black, and no
          *  scrim opacity separates them by 3:1, so the drawer draws its own
-         *  edge. Light palettes get that separation from the scrim. */
-        'dark:border-border-xheavy dark:border-r',
-        expanded ? 'translate-x-0' : '-translate-x-full',
+         *  edge. Light palettes get that separation from the scrim, so the
+         *  `drawer-edge` role defaults to the drawer's own fill there. */
+        'border-drawer-edge border-e',
+        expanded ? 'translate-x-0' : '-translate-x-full rtl:translate-x-full',
       )}
       style={{
         width: MOBILE_DRAWER_WIDTH,
@@ -250,10 +274,7 @@ function UnifiedSidebar({
           <div className="shrink-0 px-3 pt-2 empty:hidden">
             <AgentMarketplaceButton layout="row" onNavigate={handleCollapse} />
           </div>
-          <nav
-            id="chat-history-nav"
-            className="bg-surface-primary-alt min-h-0 flex-1 overflow-hidden"
-          >
+          <nav id="chat-history-nav" className="bg-surface-sidebar min-h-0 flex-1 overflow-hidden">
             <SidePanelNav links={links} />
           </nav>
           <MobileShortcutTargets
@@ -271,9 +292,11 @@ function UnifiedSidebar({
         <aside
           className="relative flex h-full shrink-0 overflow-hidden"
           style={{
-            width: panelExpanded ? sidebarWidth : COLLAPSED_WIDTH,
-            minWidth: panelExpanded ? EXPANDED_MIN : COLLAPSED_WIDTH,
-            maxWidth: panelExpanded ? '40%' : COLLAPSED_WIDTH,
+            width: pxToRem(panelExpanded ? sidebarWidth : COLLAPSED_WIDTH),
+            minWidth: panelExpanded
+              ? `min(${pxToRem(EXPANDED_MIN)}, 40%)`
+              : pxToRem(COLLAPSED_WIDTH),
+            maxWidth: panelExpanded ? '40%' : pxToRem(COLLAPSED_WIDTH),
             transition: isResizing
               ? 'none'
               : `width ${TRANSITION_MS}ms ${EASING}, min-width ${TRANSITION_MS}ms ${EASING}, max-width ${TRANSITION_MS}ms ${EASING}`,
@@ -284,7 +307,7 @@ function UnifiedSidebar({
             links={links}
             expanded={panelExpanded}
             width={resizeNow}
-            minWidth={panelExpanded ? EXPANDED_MIN : COLLAPSED_WIDTH}
+            minWidth={panelExpanded ? resizeMin : COLLAPSED_WIDTH}
             maxWidth={panelExpanded ? resizeMax : COLLAPSED_WIDTH}
             onCollapse={handleCollapse}
             onExpand={handlePanelExpand}

@@ -1,13 +1,24 @@
 import React from 'react';
+import { getDefaultStore } from 'jotai';
 import { ContentTypes, Tools } from 'librechat-data-provider';
-import { fireEvent, render, screen } from '@testing-library/react';
-import type { TMessageContentParts, TAttachment } from 'librechat-data-provider';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import type {
+  TMessageContentParts,
+  SubagentUpdateEvent,
+  TAttachment,
+} from 'librechat-data-provider';
+import type { SubagentProgress } from '~/components/Chat/Subagents/state';
+import {
+  subagentProgressKey,
+  reduceSubagentProgress,
+  subagentProgressByToolCallId,
+} from '~/components/Chat/Subagents/state';
 import { preserveStreamedContentIdentity } from '~/utils/messages';
-import { groupSequentialToolCalls } from '~/utils';
+import { mapAttachments, groupSequentialToolCalls } from '~/utils';
 
 jest.mock('~/utils', () => ({
   cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
-  mapAttachments: () => ({}),
+  mapAttachments: jest.fn(() => ({})),
   filterAttachmentsForPart: (attachments: unknown) => attachments,
   groupSequentialToolCalls: jest.fn(),
   hasPendingApprovalInPart: jest.requireActual('~/utils/groupToolCalls').hasPendingApprovalInPart,
@@ -82,12 +93,15 @@ jest.mock('../ToolCallGroup', () => ({
   default: ({
     initialExpansionState,
     onExpansionChange,
+    groupAttachments,
   }: {
     initialExpansionState?: { isExpanded: boolean; userOverride: boolean };
     onExpansionChange?: (state: { isExpanded: boolean; userOverride: boolean }) => void;
+    groupAttachments?: TAttachment[];
   }) => (
     <button
       data-testid="tool-call-group"
+      data-attachments={(groupAttachments ?? []).map((file) => file.filename).join(',')}
       data-initial-expanded={
         initialExpansionState == null ? 'unset' : String(initialExpansionState.isExpanded)
       }
@@ -155,6 +169,18 @@ jest.mock('../Part', () => {
     },
   };
 });
+
+/** What the server answers when asked which subagent transcripts hold the files in doubt. */
+let mockOwners: unknown;
+const mockUseSubagentAttachmentCallsQueries = jest.fn(
+  (params: { files: unknown[] }, enabled: boolean) =>
+    params.files.length === 0 ? [] : [{ data: enabled ? mockOwners : undefined }],
+);
+jest.mock('~/data-provider', () => ({
+  useSubagentAttachmentCallsQueries: (
+    ...args: Parameters<typeof mockUseSubagentAttachmentCallsQueries>
+  ) => mockUseSubagentAttachmentCallsQueries(...args),
+}));
 
 jest.mock('../ParallelContent', () => ({
   /** Invokes `renderResumeAttribution` per content index like the real
@@ -677,6 +703,777 @@ describe('ContentParts — activity phase state', () => {
     );
 
     expect(screen.getByTestId('parallel-renderer')).toHaveAttribute('data-index-offset', '1');
+  });
+
+  it('hoists files a tool saved inside a grouped subagent run onto the group', () => {
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => [{ type: 'tool-group', parts }]);
+    const childImage = (subagent_content?: unknown[]) =>
+      [
+        {
+          type: ContentTypes.TOOL_CALL,
+          [ContentTypes.TOOL_CALL]: {
+            id: 'subagent-1',
+            name: 'subagent',
+            args: {},
+            output: 'done',
+            subagent_content,
+          },
+        },
+        {
+          type: ContentTypes.TOOL_CALL,
+          [ContentTypes.TOOL_CALL]: { id: 'tool-2', name: 'search', args: {}, output: 'two' },
+        },
+      ] as unknown as TMessageContentParts[];
+    const attachments = [
+      {
+        filename: 'cat.png',
+        filepath: '/images/cat.png',
+        conversationId: 'conversation-1',
+        messageId: 'msg-1',
+        toolCallId: 'child-image',
+      },
+    ] as TAttachment[];
+    const nested = [
+      {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: { id: 'child-image', name: 'image_gen_oai', args: {} },
+      },
+    ];
+
+    const { rerender } = render(
+      <ContentParts {...baseProps} content={childImage(nested)} attachments={attachments} />,
+    );
+    expect(screen.getByTestId('tool-call-group')).toHaveAttribute('data-attachments', 'cat.png');
+
+    rerender(<ContentParts {...baseProps} content={childImage()} attachments={attachments} />);
+    expect(screen.getByTestId('tool-call-group')).toHaveAttribute('data-attachments', '');
+  });
+
+  it('hoists a grouped subagent file whose transcript the server left out of the preview', () => {
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => [{ type: 'tool-group', parts }]);
+    const content = [
+      {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: {
+          id: 'subagent-previewed',
+          name: 'subagent',
+          args: {},
+          output: 'done',
+          progress: 1,
+          subagentContentOmitted: true,
+          subagentContentParts: 3,
+          subagentAttachmentCalls: [{ id: 'omitted-image' }],
+        },
+      },
+    ] as unknown as TMessageContentParts[];
+    const attachments = [
+      {
+        filename: 'previewed-cat.png',
+        filepath: '/images/previewed-cat.png',
+        conversationId: 'conversation-1',
+        messageId: 'msg-1',
+        toolCallId: 'omitted-image',
+      },
+    ] as TAttachment[];
+
+    render(<ContentParts {...baseProps} content={content} attachments={attachments} />);
+    expect(screen.getByTestId('tool-call-group')).toHaveAttribute(
+      'data-attachments',
+      'previewed-cat.png',
+    );
+  });
+
+  const previewedSubagent = (id: string, extra: Record<string, unknown> = {}) => ({
+    type: ContentTypes.TOOL_CALL,
+    [ContentTypes.TOOL_CALL]: {
+      id,
+      name: 'subagent',
+      args: {},
+      output: 'done',
+      progress: 1,
+      subagentContentOmitted: true,
+      subagentContentParts: 1,
+      ...extra,
+    },
+  });
+  const lateFile = (toolCallId: string, filename: string, agentId?: string) =>
+    ({
+      file_id: `${filename}-id`,
+      filename,
+      filepath: `/images/${filename}`,
+      conversationId: 'conversation-1',
+      messageId: 'msg-1',
+      toolCallId,
+      ...(agentId != null ? { agentId } : {}),
+    }) as TAttachment;
+
+  it('asks the server which transcript holds a file a previewed subagent run delivered late', () => {
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => [{ type: 'tool-group', parts }]);
+    const content = [previewedSubagent('subagent-reloaded')] as unknown as TMessageContentParts[];
+    mockOwners = {
+      parts: [{ toolCallId: 'subagent-reloaded', calls: [{ id: 'background-child' }] }],
+    };
+    const props = { ...baseProps, conversationId: 'conversation-1', content };
+
+    const { rerender } = render(<ContentParts {...props} attachments={[]} />);
+    expect(mockUseSubagentAttachmentCallsQueries).toHaveBeenLastCalledWith(
+      { conversationId: 'conversation-1', messageId: 'msg-1', files: [] },
+      false,
+    );
+    expect(screen.getByTestId('tool-call-group')).toHaveAttribute('data-attachments', '');
+
+    rerender(
+      <ContentParts {...props} attachments={[lateFile('background-child', 'late-chart.png')]} />,
+    );
+    expect(mockUseSubagentAttachmentCallsQueries).toHaveBeenLastCalledWith(
+      {
+        conversationId: 'conversation-1',
+        messageId: 'msg-1',
+        files: [{ toolCallId: 'background-child' }],
+      },
+      true,
+    );
+    expect(screen.getByTestId('tool-call-group')).toHaveAttribute(
+      'data-attachments',
+      'late-chart.png',
+    );
+    mockOwners = undefined;
+  });
+
+  it('asks for a scoped late file an unscoped call reusing its id took', () => {
+    jest
+      .mocked(mapAttachments)
+      .mockImplementation(
+        jest.requireActual<typeof import('~/utils/map')>('~/utils/map').mapAttachments,
+      );
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => parts.map((part) => ({ type: 'tool-group', parts: [part] })));
+    const content = [
+      {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: { id: 'call_0', name: 'search', args: {}, output: 'top' },
+      },
+      previewedSubagent('subagent-reloaded'),
+    ] as unknown as TMessageContentParts[];
+    mockOwners = {
+      parts: [
+        { toolCallId: 'subagent-reloaded', calls: [{ id: 'call_0', agentId: 'child-agent' }] },
+      ],
+    };
+
+    render(
+      <ContentParts
+        {...baseProps}
+        conversationId="conversation-1"
+        content={content}
+        attachments={[lateFile('call_0', 'child-chart.png', 'child-agent')]}
+      />,
+    );
+    expect(mockUseSubagentAttachmentCallsQueries).toHaveBeenCalledWith(
+      expect.objectContaining({ files: [{ toolCallId: 'call_0', agentId: 'child-agent' }] }),
+      true,
+    );
+    const [topLevel, subagentGroup] = screen.getAllByTestId('tool-call-group');
+    expect(topLevel).toHaveAttribute('data-attachments', '');
+    expect(subagentGroup).toHaveAttribute('data-attachments', 'child-chart.png');
+    mockOwners = undefined;
+  });
+
+  it('asks for a scoped late file only an unscoped hint of another subagent matched', () => {
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => parts.map((part) => ({ type: 'tool-group', parts: [part] })));
+    const content = [
+      previewedSubagent('subagent-a', { subagentAttachmentCalls: [{ id: 'shared' }] }),
+      previewedSubagent('subagent-b'),
+    ] as unknown as TMessageContentParts[];
+    mockOwners = {
+      parts: [
+        { toolCallId: 'subagent-a', calls: [{ id: 'shared' }] },
+        { toolCallId: 'subagent-b', calls: [{ id: 'shared', agentId: 'agent-b' }] },
+      ],
+    };
+
+    render(
+      <ContentParts
+        {...baseProps}
+        conversationId="conversation-1"
+        content={content}
+        attachments={[lateFile('shared', 'b-chart.png', 'agent-b')]}
+      />,
+    );
+    const [first, second] = screen.getAllByTestId('tool-call-group');
+    expect(first).toHaveAttribute('data-attachments', '');
+    expect(second).toHaveAttribute('data-attachments', 'b-chart.png');
+    mockOwners = undefined;
+  });
+
+  it('hoists files from a grouped subagent run that is still streaming', () => {
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => [{ type: 'tool-group', parts }]);
+    const content = [
+      {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: { id: 'subagent-live', name: 'subagent', args: {} },
+      },
+      {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: { id: 'tool-2', name: 'search', args: {}, output: 'two' },
+      },
+    ] as unknown as TMessageContentParts[];
+    const attachments = [
+      {
+        filename: 'live-cat.png',
+        filepath: '/images/live-cat.png',
+        conversationId: 'conversation-1',
+        messageId: 'msg-1',
+        toolCallId: 'live-child-image',
+      },
+    ] as TAttachment[];
+    const progressAtom = subagentProgressByToolCallId(
+      subagentProgressKey('msg-1', 'subagent-live', 0),
+    );
+
+    const streaming = { ...baseProps, isSubmitting: true, isLatestMessage: true };
+    const { rerender } = render(
+      <ContentParts {...streaming} content={content} attachments={attachments} />,
+    );
+    expect(screen.getByTestId('tool-call-group')).toHaveAttribute('data-attachments', '');
+    /** A streamed delta replaces the content array before the first progress update. */
+    rerender(<ContentParts {...streaming} content={[...content]} attachments={attachments} />);
+
+    act(() => {
+      getDefaultStore().set(progressAtom, {
+        contentParts: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            [ContentTypes.TOOL_CALL]: { id: 'live-child-image', name: 'image_gen_oai', args: '' },
+          },
+        ],
+      } as unknown as SubagentProgress);
+    });
+    expect(screen.getByTestId('tool-call-group')).toHaveAttribute(
+      'data-attachments',
+      'live-cat.png',
+    );
+
+    /** The bounded live activity evicts early parts as later ones arrive. */
+    act(() => {
+      getDefaultStore().set(progressAtom, {
+        contentParts: [{ type: ContentTypes.TEXT, text: 'later output' }],
+      } as unknown as SubagentProgress);
+    });
+    expect(screen.getByTestId('tool-call-group')).toHaveAttribute(
+      'data-attachments',
+      'live-cat.png',
+    );
+    act(() => getDefaultStore().set(progressAtom, null));
+  });
+
+  it('keeps a live child file routed when the message remounts after eviction', () => {
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => [{ type: 'tool-group', parts }]);
+    const content = [
+      {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: { id: 'subagent-remount', name: 'subagent', args: {} },
+      },
+    ] as unknown as TMessageContentParts[];
+    const attachments = [
+      {
+        filename: 'remount-cat.png',
+        filepath: '/images/remount-cat.png',
+        conversationId: 'conversation-1',
+        messageId: 'msg-1',
+        toolCallId: 'remount-child',
+      },
+    ] as TAttachment[];
+    const progressAtom = subagentProgressByToolCallId(
+      subagentProgressKey('msg-1', 'subagent-remount', 0),
+    );
+    const streaming = { ...baseProps, isSubmitting: true, isLatestMessage: true };
+    act(() => {
+      getDefaultStore().set(progressAtom, {
+        contentParts: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            [ContentTypes.TOOL_CALL]: { id: 'remount-child', name: 'image_gen_oai', args: '' },
+          },
+        ],
+      } as unknown as SubagentProgress);
+    });
+    const first = render(
+      <ContentParts {...streaming} content={content} attachments={attachments} />,
+    );
+    first.unmount();
+    act(() => {
+      getDefaultStore().set(progressAtom, {
+        contentParts: [{ type: ContentTypes.TEXT, text: 'later output' }],
+      } as unknown as SubagentProgress);
+    });
+
+    render(<ContentParts {...streaming} content={content} attachments={attachments} />);
+    expect(screen.getByTestId('tool-call-group')).toHaveAttribute(
+      'data-attachments',
+      'remount-cat.png',
+    );
+    act(() => getDefaultStore().set(progressAtom, null));
+  });
+
+  it('hoists a file a settled message receives late through its subagent progress', () => {
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => [{ type: 'tool-group', parts }]);
+    const content = [
+      {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: {
+          id: 'subagent-settled',
+          name: 'subagent',
+          args: {},
+          output: 'done',
+          progress: 1,
+          subagentContentOmitted: true,
+        },
+      },
+    ] as unknown as TMessageContentParts[];
+    const progressAtom = subagentProgressByToolCallId(
+      subagentProgressKey('msg-1', 'subagent-settled', 0),
+    );
+    act(() => {
+      getDefaultStore().set(progressAtom, {
+        contentParts: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            [ContentTypes.TOOL_CALL]: { id: 'late-child', name: 'bash_tool', args: '' },
+          },
+        ],
+      } as unknown as SubagentProgress);
+    });
+    const late = [
+      {
+        filename: 'late-report.csv',
+        filepath: '/files/late-report.csv',
+        conversationId: 'conversation-1',
+        messageId: 'msg-1',
+        toolCallId: 'late-child',
+      },
+    ] as TAttachment[];
+
+    render(<ContentParts {...baseProps} content={content} attachments={late} />);
+    expect(screen.getByTestId('tool-call-group')).toHaveAttribute(
+      'data-attachments',
+      'late-report.csv',
+    );
+    act(() => getDefaultStore().set(progressAtom, null));
+  });
+
+  it('routes a live child file whose call was evicted before the message mounted', () => {
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => [{ type: 'tool-group', parts }]);
+    const content = [
+      {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: { id: 'subagent-unread', name: 'subagent', args: {} },
+      },
+    ] as unknown as TMessageContentParts[];
+    const progressAtom = subagentProgressByToolCallId(
+      subagentProgressKey('msg-1', 'subagent-unread', 0),
+    );
+    act(() => {
+      getDefaultStore().set(progressAtom, {
+        contentParts: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            agentId: 'agent-unread',
+            [ContentTypes.TOOL_CALL]: { id: 'unread-child', name: 'image_gen_oai', args: '' },
+          },
+        ],
+      } as unknown as SubagentProgress);
+      getDefaultStore().set(progressAtom, (previous) => ({
+        ...(previous as SubagentProgress),
+        contentParts: [{ type: ContentTypes.TEXT, text: 'later output' }],
+      }));
+    });
+    const files = [
+      {
+        filename: 'unread-cat.png',
+        filepath: '/images/unread-cat.png',
+        conversationId: 'conversation-1',
+        messageId: 'msg-1',
+        toolCallId: 'unread-child',
+        agentId: 'agent-unread',
+      },
+    ] as TAttachment[];
+
+    render(<ContentParts {...baseProps} content={content} attachments={files} />);
+    expect(screen.getByTestId('tool-call-group')).toHaveAttribute(
+      'data-attachments',
+      'unread-cat.png',
+    );
+    act(() => getDefaultStore().set(progressAtom, null));
+  });
+
+  it('routes a live child file when one batch shows and evicts its call while mounted', () => {
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => [{ type: 'tool-group', parts }]);
+    const content = [
+      {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: { id: 'subagent-batched', name: 'subagent', args: {} },
+      },
+    ] as unknown as TMessageContentParts[];
+    const progressAtom = subagentProgressByToolCallId(
+      subagentProgressKey('msg-1', 'subagent-batched', 0),
+    );
+    const files = [
+      {
+        filename: 'batched-cat.png',
+        filepath: '/images/batched-cat.png',
+        conversationId: 'conversation-1',
+        messageId: 'msg-1',
+        toolCallId: 'batched-child',
+      },
+    ] as TAttachment[];
+    const streaming = { ...baseProps, isSubmitting: true, isLatestMessage: true };
+    const { rerender } = render(<ContentParts {...streaming} content={content} />);
+    act(() => {
+      getDefaultStore().set(progressAtom, {
+        contentParts: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            [ContentTypes.TOOL_CALL]: { id: 'batched-child', name: 'image_gen_oai', args: '' },
+          },
+        ],
+      } as unknown as SubagentProgress);
+      getDefaultStore().set(progressAtom, (previous) => ({
+        ...(previous as SubagentProgress),
+        contentParts: [{ type: ContentTypes.TEXT, text: 'later output' }],
+      }));
+    });
+    rerender(<ContentParts {...streaming} content={content} attachments={files} />);
+    expect(screen.getByTestId('tool-call-group')).toHaveAttribute(
+      'data-attachments',
+      'batched-cat.png',
+    );
+    act(() => getDefaultStore().set(progressAtom, null));
+  });
+
+  it('routes a child file whose call a single bounded batch evicted', () => {
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => [{ type: 'tool-group', parts }]);
+    const content = [
+      {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: { id: 'subagent-batch', name: 'subagent', args: {} },
+      },
+    ] as unknown as TMessageContentParts[];
+    const progressAtom = subagentProgressByToolCallId(
+      subagentProgressKey('msg-1', 'subagent-batch', 0),
+    );
+    act(() => {
+      getDefaultStore().set(progressAtom, {
+        contentParts: [{ type: ContentTypes.TEXT, text: 'after the bound' }],
+        aggregatorState: { evictedToolCalls: [{ id: 'batch-evicted' }] },
+      } as unknown as SubagentProgress);
+    });
+    const files = [
+      {
+        filename: 'batch-cat.png',
+        filepath: '/images/batch-cat.png',
+        conversationId: 'conversation-1',
+        messageId: 'msg-1',
+        toolCallId: 'batch-evicted',
+      },
+    ] as TAttachment[];
+
+    render(<ContentParts {...baseProps} content={content} attachments={files} />);
+    expect(screen.getByTestId('tool-call-group')).toHaveAttribute(
+      'data-attachments',
+      'batch-cat.png',
+    );
+    act(() => getDefaultStore().set(progressAtom, null));
+  });
+
+  it('keeps the owner of a shown file past the bounded call history', () => {
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => [{ type: 'tool-group', parts }]);
+    const content = [
+      {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: { id: 'subagent-long', name: 'subagent', args: {} },
+      },
+    ] as unknown as TMessageContentParts[];
+    const progressAtom = subagentProgressByToolCallId(
+      subagentProgressKey('msg-1', 'subagent-long', 0),
+    );
+    const call = (id: string) => ({
+      type: ContentTypes.TOOL_CALL,
+      [ContentTypes.TOOL_CALL]: { id, name: 'bash_tool', args: '' },
+    });
+    const files = [
+      {
+        filename: 'early-cat.png',
+        filepath: '/images/early-cat.png',
+        conversationId: 'conversation-1',
+        messageId: 'msg-1',
+        toolCallId: 'early-image',
+      },
+    ] as TAttachment[];
+    act(() => {
+      getDefaultStore().set(progressAtom, {
+        contentParts: [call('early-image')],
+      } as unknown as SubagentProgress);
+    });
+    render(<ContentParts {...baseProps} content={content} attachments={files} />);
+    for (let batch = 0; batch < 6; batch++) {
+      act(() => {
+        getDefaultStore().set(progressAtom, {
+          contentParts: Array.from({ length: 100 }, (_, index) => call(`later-${batch}-${index}`)),
+        } as unknown as SubagentProgress);
+      });
+    }
+    expect(screen.getByTestId('tool-call-group')).toHaveAttribute(
+      'data-attachments',
+      'early-cat.png',
+    );
+    act(() => getDefaultStore().set(progressAtom, null));
+  });
+
+  it('keeps a shown file owner through reduced progress that replays its eviction list', () => {
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => [{ type: 'tool-group', parts }]);
+    const content = [
+      {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: { id: 'subagent-reduced', name: 'subagent', args: {} },
+      },
+    ] as unknown as TMessageContentParts[];
+    const progressAtom = subagentProgressByToolCallId(
+      subagentProgressKey('msg-1', 'subagent-reduced', 0),
+    );
+    const runStep = (id: string, sequence: number) =>
+      ({
+        runId: 'parent-run',
+        subagentRunId: 'child-run',
+        subagentType: 'self',
+        phase: 'run_step',
+        activityEventId: `reduced-${sequence}`,
+        data: { stepDetails: { type: 'tool_calls', tool_calls: [{ id, name: 'bash_tool' }] } },
+        timestamp: '',
+      }) as unknown as SubagentUpdateEvent;
+    const files = [
+      {
+        filename: 'reduced-cat.png',
+        filepath: '/images/reduced-cat.png',
+        conversationId: 'conversation-1',
+        messageId: 'msg-1',
+        toolCallId: 'reduced-image',
+      },
+    ] as TAttachment[];
+    act(() => {
+      getDefaultStore().set(progressAtom, (previous) =>
+        reduceSubagentProgress(previous, [runStep('reduced-image', 0)]),
+      );
+    });
+    render(<ContentParts {...baseProps} content={content} attachments={files} />);
+    for (let index = 1; index <= 600; index++) {
+      act(() => {
+        getDefaultStore().set(progressAtom, (previous) =>
+          reduceSubagentProgress(previous, [runStep(`reduced-later-${index}`, index)]),
+        );
+      });
+    }
+    expect(screen.getByTestId('tool-call-group')).toHaveAttribute(
+      'data-attachments',
+      'reduced-cat.png',
+    );
+    act(() => getDefaultStore().set(progressAtom, null));
+  });
+
+  it('routes a file from a nested subagent run the live activity evicted', () => {
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => [{ type: 'tool-group', parts }]);
+    const content = [
+      {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: { id: 'subagent-outer', name: 'subagent', args: {} },
+      },
+    ] as unknown as TMessageContentParts[];
+    const progressAtom = subagentProgressByToolCallId(
+      subagentProgressKey('msg-1', 'subagent-outer', 0),
+    );
+    act(() => {
+      getDefaultStore().set(progressAtom, {
+        contentParts: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            [ContentTypes.TOOL_CALL]: {
+              id: 'inner-subagent',
+              name: 'subagent',
+              args: '',
+              subagent_content: [
+                {
+                  type: ContentTypes.TOOL_CALL,
+                  [ContentTypes.TOOL_CALL]: { id: 'inner-image', name: 'image_gen_oai' },
+                },
+              ],
+            },
+          },
+        ],
+      } as unknown as SubagentProgress);
+      getDefaultStore().set(progressAtom, (previous) => ({
+        ...(previous as SubagentProgress),
+        contentParts: [{ type: ContentTypes.TEXT, text: 'later output' }],
+      }));
+    });
+    const files = [
+      {
+        filename: 'inner-cat.png',
+        filepath: '/images/inner-cat.png',
+        conversationId: 'conversation-1',
+        messageId: 'msg-1',
+        toolCallId: 'inner-image',
+      },
+    ] as TAttachment[];
+
+    render(<ContentParts {...baseProps} content={content} attachments={files} />);
+    expect(screen.getByTestId('tool-call-group')).toHaveAttribute(
+      'data-attachments',
+      'inner-cat.png',
+    );
+    act(() => getDefaultStore().set(progressAtom, null));
+  });
+
+  it('reads live progress under the index a compacted part streamed at', () => {
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => [{ type: 'tool-group', parts }]);
+    const content = [
+      {
+        type: ContentTypes.TOOL_CALL,
+        streamedIndex: 1,
+        [ContentTypes.TOOL_CALL]: { id: 'subagent-compacted', name: 'subagent', args: {} },
+      },
+    ] as unknown as TMessageContentParts[];
+    const progressAtom = subagentProgressByToolCallId(
+      subagentProgressKey('msg-1', 'subagent-compacted', 1),
+    );
+    act(() => {
+      getDefaultStore().set(progressAtom, {
+        contentParts: [
+          {
+            type: ContentTypes.TOOL_CALL,
+            [ContentTypes.TOOL_CALL]: { id: 'compacted-child', name: 'bash_tool', args: '' },
+          },
+        ],
+      } as unknown as SubagentProgress);
+    });
+    const files = [
+      {
+        filename: 'compacted.csv',
+        filepath: '/files/compacted.csv',
+        conversationId: 'conversation-1',
+        messageId: 'msg-1',
+        toolCallId: 'compacted-child',
+      },
+    ] as TAttachment[];
+
+    render(<ContentParts {...baseProps} content={content} attachments={files} />);
+    expect(screen.getByTestId('tool-call-group')).toHaveAttribute(
+      'data-attachments',
+      'compacted.csv',
+    );
+    act(() => getDefaultStore().set(progressAtom, null));
+  });
+
+  it('keeps a scoped child file off an unscoped top-level call that reuses its id', () => {
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => parts.map((part) => ({ type: 'tool-group', parts: [part] })));
+    jest.mocked(mapAttachments).mockImplementation((files) => {
+      const map: Record<string, TAttachment[] | undefined> = {};
+      for (const file of files) {
+        if (file?.toolCallId != null) {
+          (map[file.toolCallId] ??= []).push(file);
+        }
+      }
+      return map;
+    });
+    const content = [
+      {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: {
+          id: 'subagent-owner',
+          name: 'subagent',
+          args: {},
+          output: 'done',
+          subagent_content: [
+            {
+              type: ContentTypes.TOOL_CALL,
+              [ContentTypes.TOOL_CALL]: {
+                id: 'reused-id',
+                name: 'bash_tool',
+                stepId: 'step-child',
+              },
+            },
+          ],
+        },
+      },
+      {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: { id: 'reused-id', name: 'search', args: {}, output: 'x' },
+      },
+    ] as unknown as TMessageContentParts[];
+    const files = [
+      {
+        filename: 'child.csv',
+        filepath: '/files/child.csv',
+        conversationId: 'conversation-1',
+        messageId: 'msg-1',
+        toolCallId: 'reused-id',
+        stepId: 'step-child',
+      },
+    ] as TAttachment[];
+
+    render(<ContentParts {...baseProps} content={content} attachments={files} />);
+    const [subagentGroup, topLevelGroup] = screen.getAllByTestId('tool-call-group');
+    expect(subagentGroup).toHaveAttribute('data-attachments', 'child.csv');
+    expect(topLevelGroup).toHaveAttribute('data-attachments', '');
+    jest.mocked(mapAttachments).mockImplementation(() => ({}));
+  });
+
+  it('frees the progress member of a streaming subagent no update reached', () => {
+    jest
+      .mocked(groupSequentialToolCalls)
+      .mockImplementation((parts) => parts.map((part) => ({ type: 'single', part })));
+    const key = subagentProgressKey('msg-1', 'subagent-silent', 0);
+    const content = [
+      {
+        type: ContentTypes.TOOL_CALL,
+        [ContentTypes.TOOL_CALL]: { id: 'subagent-silent', name: 'subagent', args: {} },
+      },
+    ] as unknown as TMessageContentParts[];
+    const streaming = { ...baseProps, isSubmitting: true, isLatestMessage: true };
+    const { unmount } = render(<ContentParts {...streaming} content={content} />);
+    expect([...subagentProgressByToolCallId.getParams()]).toContain(key);
+    unmount();
+    expect([...subagentProgressByToolCallId.getParams()]).not.toContain(key);
   });
 
   it('retains a tool-group expansion override when a completed phase remounts the group', () => {

@@ -51,11 +51,11 @@ export default function ItemDialogHeader({ item }: { item: AgentItem }) {
   const kindLabel = localize(KIND_LABEL_KEYS[item.kind]);
 
   return (
-    <OGDialogHeader className="flex flex-row items-center gap-3 space-y-0 px-6 pt-5 pb-4 text-left">
+    <OGDialogHeader className="flex flex-row items-center gap-3 space-y-0 px-6 pt-5 pb-4 text-start">
       <HeaderIcon item={item} />
       <div className="min-w-0 flex-1">
         <OGDialogTitle className="truncate text-base font-semibold">{displayName}</OGDialogTitle>
-        <OGDialogDescription className="text-text-secondary m-0 text-[11px] tracking-wide uppercase">
+        <OGDialogDescription className="text-2xs m-0 tracking-wide uppercase">
           {kindLabel}
         </OGDialogDescription>
       </div>

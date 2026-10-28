@@ -1,9 +1,10 @@
 import { memo, useState, useRef, useEffect, useMemo, useCallback } from 'react';
 import { ScrollText } from 'lucide-react';
 import { useSetRecoilState } from 'recoil';
-import { useAtomValue, useSetAtom } from 'jotai';
+import { useSetAtom, useAtomValue } from 'jotai';
 import { AutoSizer, List } from 'react-virtualized';
-import { Input, Spinner, useCombobox } from '@librechat/client';
+import { pendingManualSkillsByConvoId } from '@librechat/chat/react';
+import { Input, Spinner, useCombobox, useRemScale } from '@librechat/client';
 import { SkillsScope, resolveAgentSkillsScope } from 'librechat-data-provider';
 import type { TSkillSummary } from 'librechat-data-provider';
 import type { MentionOption } from '~/common';
@@ -15,7 +16,6 @@ import { useAgentsMapContext } from '~/Providers';
 import { ephemeralAgentByConvoId } from '~/store';
 import { isEphemeralAgent } from '~/common';
 import MentionItem from './MentionItem';
-import store from '~/store';
 
 const commandChar = '$';
 const ROW_HEIGHT = 44;
@@ -89,11 +89,10 @@ function SkillsCommandContent({
   agentId?: string | null;
 }) {
   const localize = useLocalize();
+  const remScale = useRemScale();
   const setShowSkillsPopover = useSetAtom(showSkillsPopoverFamily(index));
   const setEphemeralAgent = useSetRecoilState(ephemeralAgentByConvoId(conversationId));
-  const setPendingManualSkills = useSetRecoilState(
-    store.pendingManualSkillsByConvoId(conversationId),
-  );
+  const setPendingManualSkills = useSetAtom(pendingManualSkillsByConvoId(conversationId));
 
   const agentsMap = useAgentsMapContext();
   const { isActive } = useSkillActiveState();
@@ -285,11 +284,12 @@ function SkillsCommandContent({
 
   return (
     <div className="absolute bottom-28 z-10 w-full space-y-2">
-      <div className="popover border-border-light bg-surface-tertiary-alt rounded-2xl border p-2 shadow-lg">
+      <div className="popover border-border-light bg-surface-tertiary-alt rounded-theme-popover border p-2 shadow-lg">
         <Input
           ref={initInputRef}
           placeholder={localize('com_ui_skills_command_placeholder')}
-          className="bg-surface-tertiary-alt text-text-primary mb-1 h-auto w-full rounded-none border-0 p-2 text-sm"
+          variant="embedded"
+          className="mb-1"
           autoComplete="off"
           value={searchValue}
           onKeyDown={(e) => {
@@ -358,11 +358,11 @@ function SkillsCommandContent({
                 <List
                   width={width}
                   overscanRowCount={5}
-                  rowHeight={ROW_HEIGHT}
+                  rowHeight={ROW_HEIGHT * remScale}
                   rowCount={matches.length}
                   rowRenderer={rowRenderer}
                   scrollToIndex={activeIndex}
-                  height={Math.min(matches.length * ROW_HEIGHT, 160)}
+                  height={Math.min(matches.length * ROW_HEIGHT, 160) * remScale}
                 />
               )}
             </AutoSizer>

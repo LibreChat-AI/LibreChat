@@ -14,7 +14,7 @@ import { ROW_GLYPH_SLOT } from './rows';
 import { useLocalize } from '~/hooks';
 
 const wrapperClass =
-  'progress-text-wrapper text-text-secondary relative -mt-[0.75px] h-5 w-full leading-5';
+  'progress-text-wrapper text-text-secondary relative -mt-[0.046875rem] h-5 w-full leading-5';
 
 /** `right-0` and `max-w-full` cap the absolutely-positioned line at the message
  *  column; the label span truncates itself, so overflow stays visible for the
@@ -46,9 +46,7 @@ const Wrapper = ({
     return (
       <div className={cn(wrapperClass, failed && failedStripeClass)} ref={rootRef}>
         <Popover.Trigger asChild>
-          <div className={contentClass} style={{ opacity: 1, transform: 'none' }}>
-            {children}
-          </div>
+          <div className={contentClass}>{children}</div>
         </Popover.Trigger>
       </div>
     );
@@ -56,9 +54,7 @@ const Wrapper = ({
 
   return (
     <div className={cn(wrapperClass, failed && failedStripeClass)} ref={rootRef}>
-      <div className={contentClass} style={{ opacity: 1, transform: 'none' }}>
-        {children}
-      </div>
+      <div className={contentClass}>{children}</div>
     </div>
   );
 };
@@ -104,7 +100,7 @@ export default function ProgressText({
   hasInput?: boolean;
   popover?: boolean;
   isExpanded?: boolean;
-  /** Why a failed card failed ("exit code 2"), shown after the failure
+  /** Why a failed card failed ("exit code 2"), shown in place of the generic failure
    *  suffix. Plain text inside the button, so it is part of its name. */
   verdict?: string;
 }) {
@@ -202,13 +198,8 @@ export default function ProgressText({
     <Wrapper popover={popover} failed={phase === 'failed'} rootRef={rootRef}>
       <Button
         type="button"
-        variant="ghost"
-        className={cn(
-          'group/disclosure inline-flex h-auto w-full items-center justify-start gap-2 rounded-none p-0 hover:bg-transparent hover:text-inherit disabled:opacity-100',
-          hasInput
-            ? 'focus-visible:ring-border-heavy focus-visible:ring-offset-0'
-            : 'pointer-events-none',
-        )}
+        variant="disclosure"
+        className="group/disclosure"
         disabled={!hasInput}
         tabIndex={hasInput ? 0 : -1}
         onClick={hasInput ? onClick : undefined}
@@ -245,11 +236,10 @@ export default function ProgressText({
             </span>
           )}
         </span>
+        {/* A reason ("timed out", "exit code 2") already says the call failed,
+            so it replaces the generic word instead of following it. */}
         {errorSuffix && (
-          <span className="text-status-error shrink-0 font-normal">· {errorSuffix}</span>
-        )}
-        {errorSuffix && verdict && (
-          <span className="text-text-secondary shrink-0 font-normal">· {verdict}</span>
+          <span className="text-status-error shrink-0 font-normal">· {verdict || errorSuffix}</span>
         )}
         {isRunning && phaseStartAt != null && localPhaseStart != null && (
           <ElapsedTimer start={localPhaseStart} />
@@ -268,7 +258,7 @@ export default function ProgressText({
           <ChevronDown
             className={cn(
               disclosureChevronVariants({ expanded: isExpanded }),
-              'size-4 shrink-0 translate-y-[1px]',
+              'size-4 shrink-0 translate-y-[0.0625rem]',
             )}
             aria-hidden="true"
           />

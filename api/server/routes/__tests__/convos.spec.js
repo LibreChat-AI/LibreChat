@@ -237,6 +237,21 @@ describe('Convos Routes', () => {
     });
   });
 
+  describe('GET /:conversationId/pull-request', () => {
+    it('is registered and reaches the pull request handler', async () => {
+      const response = await request(app).get('/api/convos/ordinary/pull-request');
+
+      expect(response.status).toBe(200);
+      expect(response.body).toEqual({ pullRequest: null });
+    });
+
+    it('does not fall through to the conversation read', async () => {
+      await request(app).get('/api/convos/ordinary/pull-request');
+
+      expect(getConvo).not.toHaveBeenCalled();
+    });
+  });
+
   describe('POST /import', () => {
     const { importConversations } = require('~/server/utils/import');
 
@@ -349,6 +364,30 @@ describe('Convos Routes', () => {
             starterPatterns: ['sk_prefix'],
           },
         }),
+      );
+    });
+
+    it('forwards excludeFiles only when it is exactly true', async () => {
+      forkConversation.mockResolvedValue({ conversation: { conversationId: 'forked-convo' } });
+
+      await request(app).post('/api/convos/fork').send({
+        conversationId: 'source-convo',
+        messageId: 'source-message',
+        excludeFiles: true,
+      });
+      await request(app).post('/api/convos/fork').send({
+        conversationId: 'source-convo',
+        messageId: 'source-message',
+        excludeFiles: 'true',
+      });
+
+      expect(forkConversation).toHaveBeenNthCalledWith(
+        1,
+        expect.objectContaining({ excludeFiles: true }),
+      );
+      expect(forkConversation).toHaveBeenNthCalledWith(
+        2,
+        expect.objectContaining({ excludeFiles: false }),
       );
     });
 
@@ -2057,6 +2096,30 @@ describe('Convos Routes', () => {
     });
   });
 
+  describe('POST /update running chat rename', () => {
+    it('delegates rename semantics to the injected TypeScript handler', async () => {
+      const { renameConversationHandler, renameHandlerInputs } = require(MOCKS);
+      const arg = { conversationId: 'running-rename', title: 'Renamed' };
+      expect((await request(app).post('/api/convos/update').send({ arg })).status).toBe(204);
+      expect(renameConversationHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: { arg },
+          user: expect.objectContaining({ id: 'test-user-123' }),
+        }),
+        expect.anything(),
+        expect.anything(),
+      );
+      expect(renameHandlerInputs.at(-1)).toEqual(
+        expect.objectContaining({
+          saveConvo,
+          getConvo,
+          getActiveRunIds: expect.any(Function),
+          logger: expect.anything(),
+        }),
+      );
+    });
+  });
+
   describe('POST /archive', () => {
     it('should archive a conversation successfully', async () => {
       const mockConversationId = 'conv-123';
@@ -2090,6 +2153,7 @@ describe('Convos Routes', () => {
           context: `POST /api/convos/archive ${mockConversationId}`,
           preserveUpdatedAt: true,
           noUpsert: true,
+          appendMessageIds: [],
         },
       );
     });
@@ -2123,6 +2187,7 @@ describe('Convos Routes', () => {
           context: `POST /api/convos/archive ${mockConversationId}`,
           preserveUpdatedAt: true,
           noUpsert: true,
+          appendMessageIds: [],
         },
       );
     });

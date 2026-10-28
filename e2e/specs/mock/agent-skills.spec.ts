@@ -692,7 +692,7 @@ test.describe('Agent Builder skills', () => {
       await createSkillDialog.getByLabel('Name').fill(skillName);
       await createSkillDialog.getByLabel('Description').fill(INLINE_SKILL_DESCRIPTION);
       await createSkillDialog
-        .getByLabel('Instructions')
+        .getByRole('textbox', { name: 'Instructions', exact: true })
         .fill(`# ${skillName}\n\nCreated inline from Agent Builder.`);
 
       const skillResponsePromise = page.waitForResponse(

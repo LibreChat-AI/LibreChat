@@ -1,3 +1,4 @@
+import { UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import mongoose from 'mongoose';
@@ -177,7 +178,7 @@ test('later visible read wins over a delayed unread response, and stale seen can
     body: { arg: { conversationId, lastResponseAt: initialStamp } },
   });
   expect(stale.modified).toBe(false);
-  expect((await readState(conversationId))?.lastSeenAt).toBeUndefined();
+  expect((await readState(conversationId))?.lastSeenAt?.toISOString()).toBe(UNSEEN_REPLY_WATERMARK);
   const read = await requestJson<MutationResult>(page, {
     path: '/api/convos/seen',
     token,
@@ -266,7 +267,7 @@ test('a hidden sibling reply stays unread until its actual branch is rendered @s
     await promise;
   });
   expect(seenRequests).toBe(0);
-  expect((await readState(conversationId))?.lastSeenAt).toBeUndefined();
+  expect((await readState(conversationId))?.lastSeenAt?.toISOString()).toBe(UNSEEN_REPLY_WATERMARK);
   await page.screenshot({ path: testInfo.outputPath('reply-hidden.png') });
 
   await visibleRow.hover();

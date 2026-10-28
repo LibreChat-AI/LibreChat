@@ -13,12 +13,16 @@ const {
   findOpenIDUser,
   getOpenIdEmail,
   getOpenIdIssuer,
+  createOpenIDUser,
   getBalanceConfig,
   selectOpenIdRole,
   getTokenCacheTtlMs,
+  recordIdpRoleChange,
+  applyOpenIDProfile,
   getAvatarSaveParams,
   isEmailDomainAllowed,
   getAvatarFileStrategy,
+  resolvePreAuthAppConfig,
   resolveAppConfigForUser,
   getOpenIdProxyDispatcher,
   getOpenIdRoleSyncOptions,
@@ -28,7 +32,14 @@ const {
 } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { resizeAvatar } = require('~/server/services/Files/images/avatar');
-const { findUser, createUser, updateUser, findRolesByNames } = require('~/models');
+const {
+  findUser,
+  updateUser,
+  findRolesByNames,
+  findBalanceByUser,
+  recordAuditEntry,
+  createUserIfAbsent,
+} = require('~/models');
 const { getAppConfig } = require('~/server/services/Config');
 const getLogStores = require('~/cache/getLogStores');
 
@@ -478,10 +489,12 @@ function getRoleSource(kind, label, tokenset, userinfo) {
 }
 
 /**
- * Applies generic OpenID role sync to the request-local user before the existing final update.
+ * Returns the role generic OpenID role sync gives `account`, or its current role when sync is
+ * off, skipped or keeps it. Role definitions are tenant-scoped, so configured roles are validated
+ * in the account's tenant, or in the request's for an account not created yet.
  */
-async function applyOpenIdRoleSync({
-  user,
+async function selectOpenIdSyncRole({
+  account,
   username,
   tokenset,
   claims,
@@ -490,14 +503,14 @@ async function applyOpenIdRoleSync({
 }) {
   const options = getOpenIdRoleSyncOptions();
   if (!options.enabled) {
-    return;
+    return account.role;
   }
 
-  if (user.role === SystemRoles.ADMIN) {
+  if (account.role === SystemRoles.ADMIN) {
     logger.info(
       `[openidStrategy] OpenID role sync skipped for ${username}; existing ADMIN role is not managed by generic role sync`,
     );
-    return;
+    return account.role;
   }
 
   const resolveGroupOverage = async () =>
@@ -516,7 +529,7 @@ async function applyOpenIdRoleSync({
     logger.warn(
       `[openidStrategy] OpenID role sync skipped; claim '${options.claim}' was not found, invalid, or unresolved`,
     );
-    return;
+    return account.role;
   }
 
   const libreChatRoles = {
@@ -526,27 +539,104 @@ async function applyOpenIdRoleSync({
     logPrefix: '[openidStrategy]',
   };
 
-  /** Role definitions are tenant-scoped, so validate configured roles in the matched user's tenant. */
-  const { rolePriority, fallbackRole } = user?.tenantId
-    ? await tenantStorage.run({ tenantId: user.tenantId }, async () =>
+  const { rolePriority, fallbackRole } = account.tenantId
+    ? await tenantStorage.run({ tenantId: account.tenantId }, async () =>
         getLibreChatRolesForOpenIdSync(libreChatRoles),
       )
     : await getLibreChatRolesForOpenIdSync(libreChatRoles);
   const result = selectOpenIdRole({
-    currentRole: user.role,
+    currentRole: account.role,
     openIdRoleValues,
     rolePriority,
     fallbackRole,
   });
+  return result.selectedRole || account.role;
+}
 
-  if (!result.selectedRole || result.selectedRole === user.role) {
-    return;
+/**
+ * Whether the token carries `OPENID_ADMIN_ROLE` at the configured path, or `undefined` when no
+ * admin role claim is configured.
+ */
+async function hasOpenIdAdminRole({ tokenset, claims, userinfo, resolvedOverageGroups }) {
+  const adminRole = process.env.OPENID_ADMIN_ROLE;
+  const adminRoleParameterPath = process.env.OPENID_ADMIN_ROLE_PARAMETER_PATH;
+  const adminRoleTokenKind = process.env.OPENID_ADMIN_ROLE_TOKEN_KIND;
+  if (!adminRole || !adminRoleParameterPath || !adminRoleTokenKind) {
+    return undefined;
   }
 
-  logger.info(
-    `[openidStrategy] OpenID role sync updated role for ${username}: ${user.role || 'unset'} -> ${result.selectedRole}`,
-  );
-  user.role = result.selectedRole;
+  const adminRoleObject = getRoleSource(adminRoleTokenKind, 'admin role', tokenset, userinfo);
+
+  let adminRoles = get(adminRoleObject, adminRoleParameterPath);
+
+  // Handle Azure AD group overage for admin role when using ID token groups
+  if (adminRoleTokenKind === 'id' && adminRoleParameterPath === 'groups' && adminRoleObject) {
+    const hasAdminOverage =
+      adminRoleObject.hasgroups ||
+      (adminRoleObject._claim_names?.groups &&
+        adminRoleObject._claim_sources?.[adminRoleObject._claim_names.groups]);
+
+    if (hasAdminOverage) {
+      const overageGroups =
+        resolvedOverageGroups ||
+        (await resolveGroupsFromOverage(tokenset.access_token, claims.sub));
+      if (overageGroups) {
+        adminRoles = overageGroups;
+      }
+    }
+  }
+
+  let adminRoleValues = [];
+  if (Array.isArray(adminRoles)) {
+    adminRoleValues = adminRoles;
+  } else if (typeof adminRoles === 'string') {
+    adminRoleValues = adminRoles.split(/[\s,]+/).filter(Boolean);
+  }
+
+  return Boolean(adminRoles && (adminRoles === true || adminRoleValues.includes(adminRole)));
+}
+
+/**
+ * Decides, without changing the account, the role this token's claims give an account in
+ * `account.role` (in `account.tenantId`, or the request's tenant for an account not created yet):
+ * the admin role claim grants ADMIN, or moves an ADMIN without it to USER, and generic role sync
+ * maps the rest.
+ */
+async function resolveOpenIdClaimsRole(account, claimsContext) {
+  const adminClaim = await hasOpenIdAdminRole(claimsContext);
+  if (adminClaim) {
+    return { role: SystemRoles.ADMIN, adminRoleGranted: true, demoted: false };
+  }
+
+  const demoted = adminClaim === false && account.role === SystemRoles.ADMIN;
+  const role = demoted ? SystemRoles.USER : account.role;
+  const syncedRole = await selectOpenIdSyncRole({
+    ...claimsContext,
+    account: { ...account, role },
+  });
+  return { role: syncedRole, adminRoleGranted: false, demoted };
+}
+
+/** Moves the request-local `user` into the role `claimsRole` decided, before the final update. */
+function applyOpenIdClaimsRole(user, username, { role, adminRoleGranted, demoted }) {
+  if (adminRoleGranted) {
+    logger.info(
+      `[openidStrategy] User ${user._id} is an admin based on role: ${process.env.OPENID_ADMIN_ROLE}`,
+    );
+  }
+  if (demoted) {
+    logger.info(
+      `[openidStrategy] User ${user._id} demoted from admin - role no longer present in token`,
+    );
+  }
+
+  const syncedFrom = demoted ? SystemRoles.USER : user.role;
+  if (!adminRoleGranted && role !== syncedFrom) {
+    logger.info(
+      `[openidStrategy] OpenID role sync updated role for ${username}: ${syncedFrom || 'unset'} -> ${role}`,
+    );
+  }
+  user.role = role;
 }
 
 /**
@@ -572,7 +662,7 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
   const email = getOpenIdEmail(userinfo);
   const openidIssuer = getOpenIdIssuer(claims, openidConfig);
 
-  const baseConfig = await getAppConfig({ baseOnly: true });
+  const baseConfig = await resolvePreAuthAppConfig(getAppConfig);
   if (!isEmailDomainAllowed(email, baseConfig?.registration?.allowedDomains)) {
     logger.error(
       `[OpenID Strategy] Authentication blocked - email domain not allowed [Identifier: ${email}]`,
@@ -580,14 +670,15 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
     throw new Error('Email domain not allowed');
   }
 
-  const result = await findOpenIDUser({
+  const lookup = {
     findUser,
     email: email,
     openidId: claims.sub || userinfo.sub,
     openidIssuer,
     idOnTheSource: claims.oid || userinfo.oid,
     strategyName: 'openidStrategy',
-  });
+  };
+  const result = await findOpenIDUser(lookup);
   let user = result.user;
   const error = result.error;
 
@@ -595,7 +686,7 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
     throw new Error(ErrorTypes.AUTH_FAILED);
   }
 
-  const appConfig = user?.tenantId ? await resolveAppConfigForUser(getAppConfig, user) : baseConfig;
+  let appConfig = user ? await resolveAppConfigForUser(getAppConfig, user) : baseConfig;
 
   if (!isEmailDomainAllowed(email, appConfig?.registration?.allowedDomains)) {
     logger.error(
@@ -676,105 +767,57 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
     throw new Error('User does not exist');
   }
 
-  if (!user) {
-    user = {
-      provider: 'openid',
-      openidId: userinfo.sub,
-      username,
-      email: email || '',
-      emailVerified: userinfo.email_verified || false,
-      name: fullName,
-      idOnTheSource: userinfo.oid,
-      openidIssuer,
-    };
+  const profile = {
+    openidId: userinfo.sub,
+    openidIssuer,
+    username,
+    name: fullName,
+    email,
+    emailVerified: userinfo.email_verified || false,
+    idOnTheSource: userinfo.oid,
+  };
 
-    const balanceConfig = getBalanceConfig(appConfig);
-    user = await createUser(user, balanceConfig, true, true);
+  const claimsContext = { username, tokenset, claims, userinfo, resolvedOverageGroups };
+  let claimsRole;
+  if (user) {
+    user = applyOpenIDProfile(user, profile);
   } else {
-    user.provider = 'openid';
-    user.openidId = userinfo.sub;
-    if (openidIssuer) {
-      user.openidIssuer = openidIssuer;
-    }
-    user.username = username;
-    user.name = fullName;
-    user.idOnTheSource = userinfo.oid;
-    if (email && email !== user.email) {
-      user.email = email;
-      user.emailVerified = userinfo.email_verified || false;
-    }
-  }
-
-  const adminRole = process.env.OPENID_ADMIN_ROLE;
-  const adminRoleParameterPath = process.env.OPENID_ADMIN_ROLE_PARAMETER_PATH;
-  const adminRoleTokenKind = process.env.OPENID_ADMIN_ROLE_TOKEN_KIND;
-  let adminRoleGranted = false;
-
-  if (adminRole && adminRoleParameterPath && adminRoleTokenKind) {
-    const adminRoleObject = getRoleSource(adminRoleTokenKind, 'admin role', tokenset, userinfo);
-
-    let adminRoles = get(adminRoleObject, adminRoleParameterPath);
-
-    // Handle Azure AD group overage for admin role when using ID token groups
-    if (adminRoleTokenKind === 'id' && adminRoleParameterPath === 'groups' && adminRoleObject) {
-      const hasAdminOverage =
-        adminRoleObject.hasgroups ||
-        (adminRoleObject._claim_names?.groups &&
-          adminRoleObject._claim_sources?.[adminRoleObject._claim_names.groups]);
-
-      if (hasAdminOverage) {
-        const overageGroups =
-          resolvedOverageGroups ||
-          (await resolveGroupsFromOverage(tokenset.access_token, claims.sub));
-        if (overageGroups) {
-          adminRoles = overageGroups;
-        }
-      }
-    }
-
-    let adminRoleValues = [];
-    if (Array.isArray(adminRoles)) {
-      adminRoleValues = adminRoles;
-    } else if (typeof adminRoles === 'string') {
-      adminRoleValues = adminRoles.split(/[\s,]+/).filter(Boolean);
-    }
-
-    if (adminRoles && (adminRoles === true || adminRoleValues.includes(adminRole))) {
-      user.role = SystemRoles.ADMIN;
-      adminRoleGranted = true;
-      logger.info(`[openidStrategy] User ${username} is an admin based on role: ${adminRole}`);
-    } else if (user.role === SystemRoles.ADMIN) {
-      user.role = SystemRoles.USER;
-      logger.info(
-        `[openidStrategy] User ${username} demoted from admin - role no longer present in token`,
-      );
-    }
-  }
-
-  if (!adminRoleGranted) {
-    const roleBeforeSync = user.role;
-    await applyOpenIdRoleSync({
-      user,
-      username,
-      tokenset,
-      claims,
-      userinfo,
-      resolvedOverageGroups,
+    const newUserClaimsRole = await resolveOpenIdClaimsRole(
+      { role: SystemRoles.USER },
+      claimsContext,
+    );
+    const provisioned = await createOpenIDUser({
+      lookup,
+      profile,
+      claimedRole: newUserClaimsRole.role,
+      getAppConfig,
+      getBalanceConfig,
+      createUserIfAbsent,
+      findBalanceByUser,
     });
-    /**
-     * The earlier login-policy check ran with the pre-sync role. If role sync moved a
-     * tenant user into a different role, re-resolve the tenant config and re-enforce
-     * `allowedDomains` so role-scoped overrides for the new role are honored and a token
-     * cannot complete login under the previous role's looser policy.
-     */
-    if (user?.tenantId && user.role !== roleBeforeSync) {
-      const postSyncConfig = await resolveAppConfigForUser(getAppConfig, user);
-      if (!isEmailDomainAllowed(email, postSyncConfig?.registration?.allowedDomains)) {
-        logger.error(
-          `[OpenID Strategy] Authentication blocked after role sync - email domain not allowed [Identifier: ${email}]`,
-        );
-        throw new Error('Email domain not allowed');
-      }
+    ({ user, appConfig } = provisioned);
+    claimsRole = provisioned.created ? newUserClaimsRole : undefined;
+  }
+
+  const roleBeforeClaims = user.role;
+  claimsRole ??= await resolveOpenIdClaimsRole(user, claimsContext);
+  applyOpenIdClaimsRole(user, username, claimsRole);
+
+  /**
+   * The earlier login-policy check ran with the role the account had before this token's
+   * claims: its stored role, or the role it was created with (a new account was also admitted
+   * under the role its claims move it into before it was created). If the admin role claim or
+   * role sync moved it into a different role, re-resolve its config (in its tenant, if any) and
+   * re-enforce `allowedDomains`, so the new role's overrides are honored and a token cannot
+   * complete login under the previous role's looser policy.
+   */
+  if (user.role !== roleBeforeClaims) {
+    appConfig = await resolveAppConfigForUser(getAppConfig, user);
+    if (!isEmailDomainAllowed(email, appConfig?.registration?.allowedDomains)) {
+      logger.error(
+        `[OpenID Strategy] Authentication blocked after a role change - email domain not allowed [Identifier: ${email}]`,
+      );
+      throw new Error('Email domain not allowed');
     }
   }
 
@@ -813,18 +856,16 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
   }
 
   user = await updateUser(user._id, user);
+  await recordIdpRoleChange({
+    recordAuditEntry,
+    userId: String(user._id),
+    previousRole: roleBeforeClaims,
+    role: user.role,
+    source: 'openid_login',
+    tenantId: user.tenantId,
+  });
 
-  logger.info(
-    `[openidStrategy] login success openidId: ${user.openidId} | email: ${user.email} | username: ${user.username} `,
-    {
-      user: {
-        openidId: user.openidId,
-        username: user.username,
-        email: user.email,
-        name: user.name,
-      },
-    },
-  );
+  logger.info(`[openidStrategy] login success for user: ${user._id}`);
 
   return {
     ...user,

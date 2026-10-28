@@ -19,6 +19,7 @@ jest.mock('librechat-data-provider', () => ({
 jest.mock('@librechat/client', () => ({
   Spinner: () => <div data-testid="spinner" />,
   useMediaQuery: (query: string) => mockUseMediaQuery(query),
+  useRemScale: () => 1,
 }));
 
 jest.mock('~/components/Chat/Menus/OpenSidebar', () => ({

@@ -115,6 +115,20 @@ export function UnclassifiedError({ json, text, message }: UnclassifiedErrorProp
   const withoutPayload =
     jsonString !== '' ? text.replace(jsonString, () => payloadProse ?? '') : text;
   const prose = stripLangChainTroubleshootingUrl(withoutPayload).trim() || payloadProse;
+  if (
+    prose != null &&
+    /^This turn exceeds the configured (attachment count|total attachment size|extracted document text) limit \(/.test(
+      prose,
+    )
+  ) {
+    return (
+      <ErrorWithDetail
+        headline={localize('com_error_attachment_limit')}
+        detail={prose}
+        label={localize('com_error_details_attachment')}
+      />
+    );
+  }
   /** A payload that told us nothing usable is its own statement; otherwise name who failed. */
   const providerHeadline =
     provider != null

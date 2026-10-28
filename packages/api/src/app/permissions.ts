@@ -1,4 +1,4 @@
-import { logger, tenantStorage, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
+import { logger, getTenantId, tenantStorage, SYSTEM_TENANT_ID } from '@librechat/data-schemas';
 import {
   SystemRoles,
   Permissions,
@@ -7,7 +7,12 @@ import {
   getConfigDefaults,
 } from 'librechat-data-provider';
 import type { IRole, AppConfig } from '@librechat/data-schemas';
+import type { RecordAuditEntry } from '~/admin/audit';
+import { diffRolePermissions, recordSystemAuditEntry } from '~/admin/audit';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { isMemoryEnabled } from '~/memory/config';
+
+type RolePermissions = Partial<Record<PermissionTypes, Record<string, boolean | undefined>>>;
 
 /**
  * Checks if a permission type has explicit configuration
@@ -67,10 +72,40 @@ function hasExplicitConfig(
   }
 }
 
+/**
+ * `WEB_SEARCH.USE` gates provider-native search (the `web_search` model parameter) as well as
+ * LibreChat's `web_search` tool. Warns when model specs ask for native search that a role's
+ * effective permission blocks, whether `interface.webSearch: false` sets it or a stored role keeps it.
+ */
+function warnNativeWebSearchDenied(
+  appConfig: AppConfig,
+  deniedRoles: string[],
+  isExplicitlyConfigured: boolean,
+): void {
+  if (deniedRoles.length === 0) {
+    return;
+  }
+  const specs = (appConfig.modelSpecs?.list ?? [])
+    .filter((spec) => spec.preset?.web_search === true)
+    .map((spec) => spec.name);
+  if (specs.length === 0) {
+    return;
+  }
+  const source = isExplicitlyConfigured
+    ? '`interface.webSearch: false` denies'
+    : '`interface.webSearch` is not set, and the stored role permission keeps denying';
+  logger.warn(
+    `Model specs request provider-native web search (\`preset.web_search: true\`), but ${source} the \`WEB_SEARCH\` permission for roles ${deniedRoles.join(', ')}, which also blocks native search: ${specs.join(', ')}. ` +
+      "To offer native search without LibreChat's search tool, set `interface.webSearch: true` and remove `web_search` from `endpoints.agents.capabilities`. " +
+      'Removing `interface.webSearch` alone keeps the stored role permission; set it explicitly or update the role in the admin settings. See "Native-only web search" in UPGRADING.md.',
+  );
+}
+
 export async function updateInterfacePermissions({
   appConfig,
   getRoleByName,
   updateAccessPermissions,
+  recordAuditEntry,
   tenantId,
 }: {
   appConfig: AppConfig;
@@ -81,6 +116,8 @@ export async function updateInterfacePermissions({
 
     roleData?: IRole | null,
   ) => Promise<void>;
+  /** Records a `role.synced` entry for each role whose stored permissions changed. */
+  recordAuditEntry?: RecordAuditEntry;
   /**
    * Optional tenant ID for scoping role updates to a specific tenant.
    * When provided (and not SYSTEM_TENANT_ID), runs inside `tenantStorage.run({ tenantId })`.
@@ -90,7 +127,12 @@ export async function updateInterfacePermissions({
 }): Promise<void> {
   if (tenantId && tenantId !== SYSTEM_TENANT_ID) {
     return tenantStorage.run({ tenantId }, async () =>
-      updateInterfacePermissions({ appConfig, getRoleByName, updateAccessPermissions }),
+      updateInterfacePermissions({
+        appConfig,
+        getRoleByName,
+        updateAccessPermissions,
+        recordAuditEntry,
+      }),
     );
   }
 
@@ -124,6 +166,43 @@ export async function updateInterfacePermissions({
   };
 
   const defaults = getConfigDefaults().interface;
+  const webSearchDeniedRoles: string[] = [];
+
+  /**
+   * Re-reads the role so the entry lists what was persisted rather than what was
+   * requested (`updateAccessPermissions` logs and swallows its own failures).
+   */
+  const recordRoleSync = async (roleName: string, before: RolePermissions | undefined) => {
+    let after: IRole | null;
+    let changes: string[];
+    try {
+      after = await getRoleByName(roleName);
+      changes = diffRolePermissions(before, after?.permissions as RolePermissions | undefined);
+    } catch (err) {
+      /** The verification read is part of auditing, which must not fail startup. */
+      logger.error(
+        `[updateInterfacePermissions] could not verify '${roleName}' for audit`,
+        getSafeErrorMetadata(err),
+      );
+      return;
+    }
+    if (!after || changes.length === 0) {
+      return;
+    }
+    const tenantId = getTenantId();
+    await recordSystemAuditEntry(
+      recordAuditEntry,
+      {
+        action: 'role.synced',
+        severity: 'warning',
+        actor: { type: 'system', name: 'librechat.yaml interface sync' },
+        target: { type: 'role', id: roleName, name: roleName },
+        metadata: { changes: changes.join(', '), changeCount: changes.length },
+        tenantId: tenantId && tenantId !== SYSTEM_TENANT_ID ? tenantId : undefined,
+      },
+      '[updateInterfacePermissions]',
+    );
+  };
 
   // Permission precedence order:
   // 1. Explicit user configuration (from librechat.yaml)
@@ -767,9 +846,25 @@ export async function updateInterfacePermissions({
       }
     }
 
+    const webSearchUse =
+      permissionsToUpdate[PermissionTypes.WEB_SEARCH]?.[Permissions.USE] ??
+      existingPermissions?.[PermissionTypes.WEB_SEARCH]?.[Permissions.USE];
+    if (webSearchUse === false) {
+      webSearchDeniedRoles.push(roleName);
+    }
+
     // Update permissions if any need updating
     if (Object.keys(permissionsToUpdate).length > 0) {
       await updateAccessPermissions(roleName, permissionsToUpdate, existingRole);
+      if (recordAuditEntry) {
+        await recordRoleSync(roleName, existingPermissions);
+      }
     }
   }
+
+  warnNativeWebSearchDenied(
+    appConfig,
+    webSearchDeniedRoles,
+    hasExplicitConfig(interfaceConfig, PermissionTypes.WEB_SEARCH),
+  );
 }

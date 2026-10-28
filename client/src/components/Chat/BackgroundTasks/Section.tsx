@@ -1,5 +1,6 @@
 import { useId, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
+import { Collapse } from '~/components/ui';
 import { cn } from '~/utils';
 
 /** A labelled, collapsible group; `action` stays reachable while collapsed. */
@@ -19,14 +20,14 @@ export default function Section({
   const listId = useId();
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <section className="space-y-2">
+    <section>
       <div className="flex items-center gap-2">
         <button
           type="button"
           aria-expanded={open}
           aria-controls={listId}
           onClick={() => setOpen((value) => !value)}
-          className="text-text-secondary hover:text-text-primary focus-visible:ring-ring-primary flex min-w-0 flex-1 items-center gap-1 rounded text-sm focus-visible:ring-2 focus-visible:outline-none"
+          className="text-text-secondary hover:text-text-primary focus-visible:ring-focus-control flex min-w-0 flex-1 items-center gap-1 rounded text-sm focus-visible:ring-2 focus-visible:outline-none"
         >
           <span>{label}</span>
           <span className="tabular-nums">{count}</span>
@@ -40,11 +41,11 @@ export default function Section({
         </button>
         {action}
       </div>
-      {open && (
-        <ul id={listId} className="space-y-2">
+      <Collapse open={open}>
+        <ul id={listId} className="space-y-2 pt-2">
           {children}
         </ul>
-      )}
+      </Collapse>
     </section>
   );
 }

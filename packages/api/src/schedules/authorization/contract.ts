@@ -1,63 +1,20 @@
-import type { ScheduleMCPOutcome } from 'librechat-data-provider';
-import type { ScheduledTokenContext } from '../context';
+import type {
+  ScheduleMCPOutcome,
+  ScheduledMCPFailureReason,
+  ScheduledMCPIdentity,
+  ScheduledMCPResource,
+  ScheduledMCPConsent,
+  ScheduledMCPToolSelection,
+} from 'librechat-data-provider';
+export type {
+  ScheduledMCPCredentialMode,
+  ScheduledMCPIdentity,
+  ScheduledMCPResource,
+  ScheduledMCPConsent,
+  ScheduledMCPToolSelection,
+} from 'librechat-data-provider';
 
-export type ScheduledMCPCredentialMode =
-  | 'stored_oauth'
-  | 'browser_bearer'
-  | 'renewable_obo'
-  | 'resource_bearer'
-  | 'static'
-  | 'anonymous';
-
-/** agentId remains the enrolled root, including during child execution. */
-export interface ScheduledMCPIdentity extends Omit<ScheduledTokenContext, 'tenantId'> {
-  readonly tenantId: string | null;
-}
-
-/** Resolved by trusted configuration, never by model arguments or token scopes. */
-export interface ScheduledMCPResource {
-  readonly serverName: string;
-  readonly url: string;
-  readonly configurationRevision: string;
-  readonly credentialMode: ScheduledMCPCredentialMode;
-  readonly issuer: string | null;
-  readonly audience: string | null;
-  readonly scopes: readonly string[];
-}
-
-export interface ScheduledMCPToolSelection {
-  readonly agentId: string;
-  readonly tools: readonly string[];
-}
-
-export interface ScheduledMCPConsent {
-  readonly id: string;
-  readonly revision: string;
-  readonly identity: ScheduledMCPIdentity;
-  readonly resource: ScheduledMCPResource;
-  readonly permittedTools: readonly ScheduledMCPToolSelection[];
-  readonly policyRevision: string;
-  readonly grantedAtMs: number;
-  /** Fixed consent deadline; credential renewal cannot extend it. */
-  readonly absoluteExpiresAtMs: number;
-  readonly revokedAtMs: number | null;
-}
-
-export type ScheduledMCPFailureReason =
-  | 'consent_missing'
-  | 'consent_expired'
-  | 'consent_revoked'
-  | 'binding_mismatch'
-  | 'rbac_denied'
-  | 'tool_policy_denied'
-  | 'approval_required'
-  | 'credential_missing'
-  | 'credential_rejected'
-  | 'resource_permission_denied'
-  | 'provider_missing'
-  | 'resource_unverified'
-  | 'unsupported_mode'
-  | 'dependency_unavailable';
+export type { ScheduledMCPFailureReason } from 'librechat-data-provider';
 
 /** Safe diagnosis projected onto existing schedule statuses. */
 export interface ScheduledMCPFailure {
@@ -76,6 +33,8 @@ export interface ScheduledMCPAuthorizationRequest {
   readonly identity: ScheduledMCPIdentity;
   readonly resource: ScheduledMCPResource;
   readonly stage: 'activation' | 'mint' | 'invoke' | 'resume';
+  /** Set only by the owner-authorized manual trigger or its verified resume metadata. */
+  readonly manual?: boolean;
   readonly selection: ScheduledMCPToolSelection;
 }
 

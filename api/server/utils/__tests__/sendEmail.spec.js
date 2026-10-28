@@ -141,3 +141,16 @@ describe('sendEmail SMTP auth assembly', () => {
     expect(freshLogger.warn).not.toHaveBeenCalled();
   });
 });
+
+describe('sendEmail SMTP encryption options', () => {
+  it('requires STARTTLS when EMAIL_ENCRYPTION=starttls', async () => {
+    process.env.EMAIL_ENCRYPTION = 'starttls';
+    const sendEmail = loadSendEmail();
+    const { createTransport } = require('nodemailer');
+
+    await sendEmail(baseParams);
+
+    const transporterOptions = createTransport.mock.calls[0][0];
+    expect(transporterOptions).toMatchObject({ secure: false, requireTLS: true });
+  });
+});

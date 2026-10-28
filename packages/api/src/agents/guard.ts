@@ -106,6 +106,7 @@ async function isBoundEventContinuation(
   }
   return {
     [PARTIAL_RESOLVED_CONVERSATION]: true,
+    user: target.userId,
     conversationId: binding.conversationId,
     agent_id: binding.agentId,
     ...(binding.tenantId == null ? {} : { tenantId: binding.tenantId }),
@@ -224,6 +225,9 @@ export function createSubagentThreadTurnGuard(deps: SubagentThreadWriteGuardDeps
         },
       );
       if (boundConversation != null) {
+        if (resolvedConversation?.conversationId === boundConversation.conversationId) {
+          boundConversation.spec = resolvedConversation.spec;
+        }
         applyEventBindingContext(resolvedRequest, boundConversation);
         next();
         return;

@@ -8,6 +8,7 @@ import Landing from '../Landing';
 let mockConversation: Record<string, unknown> | null = null;
 let mockAgentsMap: Record<string, any> | undefined;
 let mockAssistantMap: Record<string, any> | undefined;
+let mockInterfaceConfig: Record<string, unknown> = {};
 
 jest.mock('@react-spring/web', () => ({
   easings: {
@@ -26,6 +27,7 @@ jest.mock('@librechat/client', () => ({
   BirthdayIcon: () => <span data-testid="birthday-icon" />,
   TooltipAnchor: ({ children }: { children: React.ReactNode }) => <span>{children}</span>,
   SplitText: ({ text }: { text: string }) => <span>{text}</span>,
+  useRemScale: () => 1,
 }));
 
 jest.mock('~/Providers', () => ({
@@ -35,7 +37,7 @@ jest.mock('~/Providers', () => ({
 }));
 
 jest.mock('~/data-provider', () => ({
-  useGetStartupConfig: () => ({ data: { interface: {} } }),
+  useGetStartupConfig: () => ({ data: { interface: mockInterfaceConfig } }),
   useGetEndpointsQuery: () => ({ data: {} }),
 }));
 
@@ -126,6 +128,29 @@ describe('Landing agent contact', () => {
     expect(screen.queryByRole('link', { name: 'Owner User' })).not.toBeInTheDocument();
   });
 
+  it('renders the email link without inline baseline space beside the contact label', () => {
+    mockConversation = {
+      endpoint: 'agents',
+      agent_id: 'agent-1',
+    };
+    mockAgentsMap = {
+      'agent-1': {
+        id: 'agent-1',
+        name: 'LibreChat',
+        description: 'Contact Danny if you see any errors',
+        support_contact: { email: 'messagedaniel@pm.me' },
+      },
+    };
+
+    renderLanding();
+
+    const link = screen.getByRole('link', { name: 'messagedaniel@pm.me' });
+    expect(link).toHaveAttribute('href', 'mailto:messagedaniel@pm.me');
+    expect(link).toHaveClass('block');
+    expect(link).not.toHaveClass('inline-block');
+    expect(screen.getByText('Contact:').parentElement).toHaveClass('items-center');
+  });
+
   it('does not show contact when the selected agent is missing from agentsMap', () => {
     mockConversation = {
       endpoint: 'agents',
@@ -206,5 +231,43 @@ describe('Landing temporary chat empty state', () => {
     expect(screen.getByText('Welcome')).toBeInTheDocument();
     expect(screen.queryByText('Temporary Chat')).not.toBeInTheDocument();
     expect(screen.getByTestId('convo-icon')).toBeInTheDocument();
+  });
+});
+
+describe('Landing heading', () => {
+  beforeEach(() => {
+    mockInterfaceConfig = {};
+    mockConversation = { endpoint: 'agents', agent_id: 'agent-1' };
+    mockAgentsMap = {
+      'agent-1': { id: 'agent-1', name: 'Data Analyst', description: 'Answers SQL questions' },
+    };
+    mockAssistantMap = undefined;
+  });
+
+  it('heads the welcome screen with the selected agent name by default', () => {
+    renderLanding();
+
+    expect(screen.getByText('Data Analyst')).toBeInTheDocument();
+    expect(screen.queryByText('Welcome')).not.toBeInTheDocument();
+  });
+
+  it('greets the user instead when the deployment opts into the greeting heading', () => {
+    mockInterfaceConfig = { landingHeading: 'greeting' };
+
+    renderLanding();
+
+    expect(screen.getByText('Welcome')).toBeInTheDocument();
+    expect(screen.queryByText('Data Analyst')).not.toBeInTheDocument();
+    expect(screen.getByText('Answers SQL questions')).toBeInTheDocument();
+    expect(screen.getByTestId('convo-icon')).toBeInTheDocument();
+  });
+
+  it('uses the configured welcome as the greeting heading', () => {
+    mockInterfaceConfig = { landingHeading: 'greeting', customWelcome: 'Hello there' };
+
+    renderLanding();
+
+    expect(screen.getByText('Hello there')).toBeInTheDocument();
+    expect(screen.queryByText('Data Analyst')).not.toBeInTheDocument();
   });
 });

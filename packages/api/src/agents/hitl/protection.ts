@@ -54,6 +54,7 @@ import {
 import { getResumeAgentSnapshot, getResumeContentInspection } from './inspection';
 import { extractStoredMessageContent } from '~/protection/adapters/submissions';
 import { agentHasInlineMemoryTools, getMemoryAgentId } from '../memory';
+import { isValidInstructionsPromptLink } from '../instructions/linked';
 import { LIBRECHAT_CHECKPOINT_NAMESPACE_KEY } from '../checkpointer';
 import { AttachmentObjectNotFoundError } from '~/files/encode/utils';
 import { ASK_USER_QUESTION_TOOL_NAME } from './askUserQuestionTool';
@@ -546,12 +547,21 @@ function assertResumeToolContentAllowed(
   }
 }
 
+/**
+ * Projects a resume snapshot agent's definition fields for the content-policy
+ * scan. Excludes the stored inline `instructions` when the agent has a valid
+ * `instructionsPrompt` link — matching `initializeAgent`'s init-time content
+ * check, which excludes the same field for the same reason: a linked agent's
+ * stored inline text is dead, unused text, superseded by the resolved prompt
+ * at runtime, so it must not block a resume this scan gates.
+ */
 function projectResumeAgentDefinition(agent: ResumeSnapshotAgent): AgentContentInput {
+  const hasValidLink = isValidInstructionsPromptLink(agent.instructionsPrompt);
   return {
     name: agent.name,
     category: agent.category,
     description: agent.description,
-    instructions: agent.instructions,
+    instructions: hasValidLink ? undefined : agent.instructions,
     additional_instructions: agent.additional_instructions,
     conversation_starters: agent.conversation_starters,
     edges: agent.edges?.map((edge) => ({

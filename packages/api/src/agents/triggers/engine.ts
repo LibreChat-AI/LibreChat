@@ -92,6 +92,7 @@ export interface AgentTriggerDeliveryRecord {
   orderingKey: string;
   laneSequence: number;
   envelope: unknown;
+  requiredWorkerCapability?: string;
   status: AgentTriggerDeliveryStatus;
   attempts: number;
   availableAt: Date;
@@ -100,7 +101,6 @@ export interface AgentTriggerDeliveryRecord {
   coalesceKey?: string;
   coalesceFrom?: Date;
   coalesceUntil?: Date;
-  batchSize?: number;
   batchBytes?: number;
   batchMemberIds?: Array<{ toString(): string } | string>;
   batchRootId?: { toString(): string } | string;
@@ -184,6 +184,7 @@ export interface AgentTriggerDeliveryStore {
     attempt: number;
     error: AgentTriggerDeliveryFailure;
     settledAt: Date;
+    expiresAt?: Date;
     receiptRetryAt?: Date;
   }) => Promise<boolean>;
 }
@@ -198,13 +199,21 @@ export interface AgentTriggerDeliveryEngineOptions {
   /** Ceiling for the poll interval while the queue stays empty; any wake or claimed
    *  delivery snaps polling back to `tickMs`, so only true idleness ever waits this long. */
   maxIdleTickMs?: number;
+  /** How long a dead-lettered delivery is kept for review before it expires; unset keeps it until an operator acts. */
+  deadLetterRetentionMs?: number;
 }
 
 export interface AgentTriggerDeliveryEngineDeps {
   store: AgentTriggerDeliveryStore;
   dispatch: (
     envelope: unknown,
-    options?: { signal?: AbortSignal; attempt?: number; maxAttempts?: number },
+    options?: {
+      signal?: AbortSignal;
+      attempt?: number;
+      maxAttempts?: number;
+      deliveryClaimToken?: string;
+      requiredWorkerCapability?: string;
+    },
   ) => Promise<AgentTriggerExecutionResult>;
   /** Source-owned terminalization must commit before its delivery can become
    * dead, including recovery after a crash that exhausted the attempt budget. */
@@ -347,6 +356,10 @@ export function createAgentTriggerDeliveryEngine(
   const retryBaseMs = positiveInteger(options.retryBaseMs, DEFAULT_RETRY_BASE_MS, 'retryBaseMs');
   const retryCapMs = positiveInteger(options.retryCapMs, DEFAULT_RETRY_CAP_MS, 'retryCapMs');
   const tickMs = positiveInteger(options.tickMs, DEFAULT_TICK_MS, 'tickMs');
+  const deadLetterRetentionMs =
+    options.deadLetterRetentionMs == null
+      ? undefined
+      : positiveInteger(options.deadLetterRetentionMs, 1, 'deadLetterRetentionMs');
   const maxIdleTickMs = Math.max(
     tickMs,
     positiveInteger(options.maxIdleTickMs, DEFAULT_MAX_IDLE_TICK_MS, 'maxIdleTickMs'),
@@ -428,6 +441,9 @@ export function createAgentTriggerDeliveryEngine(
         attempt: delivery.attempts,
         error: recorded,
         settledAt: now(),
+        ...(deadLetterRetentionMs != null && {
+          expiresAt: new Date(now().getTime() + deadLetterRetentionMs),
+        }),
         ...(recorded.retryable && {
           receiptRetryAt: new Date(now().getTime() + retryCapMs),
         }),
@@ -489,6 +505,10 @@ export function createAgentTriggerDeliveryEngine(
           signal: controller.signal,
           attempt,
           maxAttempts,
+          deliveryClaimToken: delivery.claimToken,
+          ...(delivery.requiredWorkerCapability != null && {
+            requiredWorkerCapability: delivery.requiredWorkerCapability,
+          }),
         });
       } catch (error) {
         const attemptedAt = now();
@@ -558,6 +578,9 @@ export function createAgentTriggerDeliveryEngine(
             attempt,
             error: recorded,
             settledAt: attemptedAt,
+            ...(deadLetterRetentionMs != null && {
+              expiresAt: new Date(attemptedAt.getTime() + deadLetterRetentionMs),
+            }),
             ...(recorded.retryable && {
               receiptRetryAt: new Date(attemptedAt.getTime() + retryCapMs),
             }),

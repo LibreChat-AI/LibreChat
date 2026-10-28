@@ -1,12 +1,7 @@
 import type { ErrorRendererProps, JsonValue } from './parts';
-import {
-  ErrorBody,
-  ErrorDetails,
-  formatCredits,
-  formatNumber,
-  readNumber,
-  readString,
-} from './parts';
+import { ErrorBody, ErrorDetails, formatNumber, readNumber, readString } from './parts';
+import { useBalanceDisplay } from '~/hooks/useBalanceSummary';
+import { formatBalanceAmount } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 type GenerationRow = {
@@ -42,6 +37,7 @@ function readGeneration(generation: JsonValue): GenerationRow | null {
 
 export default function BalanceError({ json }: ErrorRendererProps) {
   const localize = useLocalize();
+  const { display, currency } = useBalanceDisplay();
   const balance = readNumber(json, 'balance');
   const tokenCost = readNumber(json, 'tokenCost');
   const promptTokens = readNumber(json, 'promptTokens');
@@ -49,13 +45,21 @@ export default function BalanceError({ json }: ErrorRendererProps) {
     ? json.generations.map(readGeneration).filter((row): row is GenerationRow => row != null)
     : [];
 
-  const summary =
-    tokenCost != null && balance != null
-      ? localize('com_error_token_balance', {
-          0: formatCredits(tokenCost),
-          1: formatCredits(balance),
-        })
-      : localize('com_error_limit_reached');
+  /** Same figures the balance summary shows: money for `currency`, none at all for `percent` */
+  let summary = localize('com_error_limit_reached');
+  if (tokenCost != null && balance != null) {
+    if (display === 'percent') {
+      summary = localize('com_error_token_balance_hidden');
+    } else {
+      summary = localize(
+        display === 'currency' ? 'com_error_token_balance_currency' : 'com_error_token_balance',
+        {
+          0: formatBalanceAmount(tokenCost, display, currency),
+          1: formatBalanceAmount(balance, display, currency),
+        },
+      );
+    }
+  }
 
   return (
     <ErrorBody>

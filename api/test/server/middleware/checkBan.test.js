@@ -307,6 +307,19 @@ describe('checkBan middleware', () => {
       },
     );
 
+    it('treats a banned queued-turn POST as an early text-saving denial', async () => {
+      mockBanCacheGet.mockResolvedValueOnce({ expiresAt: Date.now() + 60000 });
+      const req = createReq({
+        method: 'POST',
+        baseUrl: '/api/agents',
+        originalUrl: '/api/agents/chat/queued-turns',
+        body: { text: 'submitted text' },
+      });
+      const res = createRes();
+      await checkBan(req, res, jest.fn());
+      expect(denyRequest).toHaveBeenCalledWith(req, res, { type: ViolationTypes.BAN });
+    });
+
     it('preserves SSE denial for a banned browser interactive chat request', async () => {
       mockBanCacheGet.mockResolvedValueOnce({ expiresAt: Date.now() + 60000 });
       const req = createReq({

@@ -1007,27 +1007,6 @@ function renderPptxSlidesHtml(slides: PptxSlide[]): string {
   return wrapAsDocument(renderPptxSlidesBody(slides), PPTX_SLIDE_LIST_CSS);
 }
 
-/**
- * Convert a `.pptx` buffer to a slide-list HTML document — text-only
- * preview rendering each slide as a card (slide number, title, body
- * bullets). Honest about NOT preserving complex visual layouts,
- * charts, theming, or embedded media. Used as the safe fallback path
- * when the CDN renderer is disabled, the binary exceeds the embed
- * size cap, or the high-fidelity path can't be reached.
- *
- * Pre-flights through `assertSafeZipSize` so a zip-bomb PPTX can't blow
- * up the slide-XML extraction pass.
- */
-export async function pptxToSlideListHtml(buffer: Buffer): Promise<string> {
-  await assertSafeZipSize(buffer, { name: 'pptx' });
-  const rawSlides = await extractPptxSlideXml(buffer);
-  const slides: PptxSlide[] = rawSlides.map(({ number, xml }) => {
-    const { title, body } = extractSlideText(xml);
-    return { number, title, body };
-  });
-  return renderPptxSlidesHtml(slides);
-}
-
 /* =============================================================================
  * PPTX CDN renderer (high-fidelity path)
  *
@@ -1460,8 +1439,7 @@ export async function pptxToHtml(buffer: Buffer): Promise<string> {
 /**
  * Slide-list path that skips its own `assertSafeZipSize` call — used
  * by `pptxToHtml` after the dispatcher has already validated the
- * buffer. `pptxToSlideListHtml` (public, validating) stays the entry
- * point for tests and direct callers.
+ * buffer.
  */
 async function pptxToSlideListHtmlInternal(buffer: Buffer): Promise<string> {
   const rawSlides = await extractPptxSlideXml(buffer);

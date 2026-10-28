@@ -445,6 +445,8 @@ export interface InjectSkillCatalogParams {
   workspaceEnvironment?: CodeWorkspaceDescriptor['environment'];
   /** The worker runs `.worktrees/<name>` in its own lane; advertise `cwd` routing to the model. */
   workspaceLinkedWorktrees?: boolean;
+  /** The worker advertises its native SRT sandbox; describe the read-only filesystem to the model. */
+  workspaceNativeSandbox?: boolean;
   /** Current user ID — used to determine skill ownership for active-state resolution. */
   userId?: string;
   /** Per-user skill overrides: `{ [skillId]: boolean }`. Missing entries use the default. */
@@ -684,6 +686,7 @@ export async function injectSkillCatalog(
     workspaceReadFileDefaultLines,
     workspaceEnvironment,
     workspaceLinkedWorktrees,
+    workspaceNativeSandbox,
     userId,
     skillStates,
     defaultActiveOnShare = false,
@@ -873,6 +876,7 @@ export async function injectSkillCatalog(
     workspaceReadFileDefaultLines,
     workspaceEnvironment,
     workspaceLinkedWorktrees,
+    workspaceNativeSandbox,
   });
   workingDefs = codeExecResult.toolDefinitions;
 

@@ -28,7 +28,6 @@ export default function FileRow({
   tool_resource,
   index,
   fileFilter,
-  isRTL = false,
   Wrapper,
   isPastedTextFile,
   isPasteActionPending,
@@ -44,7 +43,6 @@ export default function FileRow({
   agent_id?: string;
   tool_resource?: EToolResources;
   index?: number;
-  isRTL?: boolean;
   Wrapper?: React.FC<{ children: React.ReactNode }>;
   /** Marks chips the composer generated from a long paste. Provenance comes from the caller's
    * marker registry rather than the filename, which a deliberate upload can share. */
@@ -111,27 +109,10 @@ export default function FileRow({
   }
 
   const renderFiles = () => {
-    const rowStyle = isRTL
-      ? {
-          display: 'flex',
-          flexDirection: 'row-reverse',
-          flexWrap: 'wrap',
-          gap: '6px',
-          width: '100%',
-          maxWidth: '100%',
-        }
-      : {
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: '6px',
-          width: '100%',
-          maxWidth: '100%',
-        };
-
     return (
       /* `items-center` so a card and a thumbnail of different heights share
          one baseline instead of hanging from the top of the tallest row. */
-      <div className="items-center" style={rowStyle as React.CSSProperties}>
+      <div className="flex w-full max-w-full flex-wrap items-center gap-1.5">
         {files
           .reduce(
             (acc, current) => {

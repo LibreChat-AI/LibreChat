@@ -246,6 +246,8 @@ describe('createEndpointsConfigService', () => {
 
       expect(result?.[EModelEndpoint.agents]?.statefulCodeSessions).toEqual({
         allowedEnvironments: ['user', 'agent-user'],
+        allowEnvironmentSelection: true,
+        maxEnvironmentChoices: 32,
         approvalsEnabled: false,
         approvalModes: [],
         environments: [
@@ -299,10 +301,68 @@ describe('createEndpointsConfigService', () => {
 
       expect(result?.[EModelEndpoint.agents]?.statefulCodeSessions).toEqual({
         allowedEnvironments: ['user'],
+        allowEnvironmentSelection: true,
+        maxEnvironmentChoices: 32,
         approvalsEnabled: true,
         approvalModes: ['ask', 'acceptEdits', 'fullAccess'],
         environments: [],
       });
+    });
+
+    it.each([
+      [undefined, true],
+      [true, true],
+      [false, undefined],
+    ])(
+      'advertises machine selection unless the deployment turns it off (configured: %p)',
+      async (allowEnvironmentSelection, advertised) => {
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+          }),
+          getAppConfig: jest.fn().mockResolvedValue(
+            appConfig({
+              endpoints: {
+                [EModelEndpoint.agents]: {
+                  statefulCodeSessions: {
+                    ...(allowEnvironmentSelection === undefined
+                      ? {}
+                      : { allowEnvironmentSelection }),
+                  },
+                },
+              },
+            }),
+          ),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+        const result = await getEndpointsConfig(fakeReq());
+        const advertisedConfig = result?.[EModelEndpoint.agents]?.statefulCodeSessions;
+        expect(advertisedConfig?.allowEnvironmentSelection).toBe(advertised);
+        expect(advertisedConfig?.maxEnvironmentChoices).toBe(advertised ? 32 : undefined);
+      },
+    );
+
+    it('does not advertise machine selection when the decision protocol is off', async () => {
+      process.env.CODE_ENVIRONMENT_DECISION_VERSION = '0';
+      try {
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+          }),
+          getAppConfig: jest.fn().mockResolvedValue(
+            appConfig({
+              endpoints: { [EModelEndpoint.agents]: { statefulCodeSessions: {} } },
+            }),
+          ),
+        });
+        const { getEndpointsConfig } = createEndpointsConfigService(deps);
+        const result = await getEndpointsConfig(fakeReq());
+        expect(
+          result?.[EModelEndpoint.agents]?.statefulCodeSessions?.allowEnvironmentSelection,
+        ).toBeUndefined();
+      } finally {
+        delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
+      }
     });
 
     it.each([
@@ -426,7 +486,8 @@ describe('createEndpointsConfigService', () => {
       });
     });
 
-    it('exposes custom endpoints from group-scoped overrides for grouped users', async () => {
+    /** Endpoints a grouped user gets from a group override that references `${FOO_KEY}`/`${FOO_URL}`. */
+    async function getGroupScopedEndpoints(overrideEnvAllowlist?: string) {
       const groupId = new Types.ObjectId('6a0aea2172e2d59d4658c9d2');
       const getUserPrincipals = jest.fn().mockResolvedValue([
         { principalType: PrincipalType.ROLE, principalId: 'USER' },
@@ -470,6 +531,7 @@ describe('createEndpointsConfigService', () => {
         cacheKeys: { APP_CONFIG: 'app_config' },
         getApplicableConfigs,
         getUserPrincipals,
+        overrideEnvAllowlist,
       });
       const { getEndpointsConfig } = createEndpointsConfigService({
         getAppConfig,
@@ -487,7 +549,17 @@ describe('createEndpointsConfigService', () => {
           expect.objectContaining({ principalType: PrincipalType.GROUP, principalId: groupId }),
         ]),
       );
+      return result;
+    }
+
+    it('exposes custom endpoints from group-scoped overrides for grouped users', async () => {
+      const result = await getGroupScopedEndpoints('FOO_KEY,FOO_URL');
       expect(result?.FOO).toEqual(expect.objectContaining({ type: EModelEndpoint.custom }));
+    });
+
+    it('treats env references outside the override allowlist as missing', async () => {
+      const result = await getGroupScopedEndpoints();
+      expect(result?.FOO).toBeUndefined();
     });
   });
 

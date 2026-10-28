@@ -1,29 +1,32 @@
-import { EModelEndpoint } from 'librechat-data-provider';
 import { QueryClient, InfiniteData } from '@tanstack/react-query';
+import { EModelEndpoint, UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
 import type { TConversation } from 'librechat-data-provider';
 import type { ConversationCursorData } from './convos';
 import {
   dateKeys,
+  mergeConvoSnapshot,
+  beginConvoSnapshot,
+  endConvoSnapshot,
+  endConvoReadIntent,
+  supersedeConvoSnapshots,
+  fetchConvoSnapshot,
   storeEndpointSettings,
-  addConversationToInfinitePages,
-  updateInfiniteConvoPage,
   findConversationInInfinite,
   removeConvoFromInfinitePages,
   groupConversations,
-  updateConvoFieldsInfinite,
   addConvoToAllQueries,
   collectPinnedConversations,
   upsertConvoInAllQueries,
   updateConvoInAllQueries,
   findConvoInAllQueries,
+  findManualConvoTitleInAllQueries,
+  trackConvoQueryAuthority,
   isConvoInAggregateCaches,
   isConversationUnseen,
   applyServerReplyStamp,
   removeConvoFromAllQueries,
-  addConversationToAllConversationsQueries,
   invalidateConversationLists,
 } from './convos';
-import { normalizeData } from './collection';
 
 jest.mock('date-fns', () => {
   const actual = jest.requireActual('date-fns');
@@ -407,173 +410,6 @@ describe('Conversation Utilities', () => {
     });
   });
 
-  describe('normalizeConversationData', () => {
-    it('normalizes the number of items on each page after data removal', () => {
-      // Create test data:
-      // Generates 15 conversation items, each with a unique conversationId and an updatedAt timestamp set to a different day.
-      // { conversationId: '1', updatedAt: new Date(Date.now() - 86400000 * i).toISOString() }
-      const conversations = Array.from({ length: 15 }, (_, i) => ({
-        conversationId: (i + 1).toString(),
-        updatedAt: new Date(Date.now() - 86400000 * i).toISOString(),
-      }));
-
-      // Paginate Data:
-      // Divides the 15 conversation items into pages, with each page containing up to 5 items (pageSize is set to 5). This results in 3 pages.
-      const pageSize = 5;
-      const totalPageNumber = Math.ceil(conversations.length / pageSize);
-
-      const paginatedData = Array.from({ length: totalPageNumber }, (_, index) => ({
-        conversations: conversations.slice(index * pageSize, (index + 1) * pageSize),
-        pages: totalPageNumber,
-        pageNumber: index + 1,
-        pageSize,
-      }));
-
-      const testData = { pages: paginatedData, pageParams: [null, 2, 3] };
-
-      // Removes one item from the first page, resulting in the first page having 4 items, while the second and third pages still have 5 items each.
-      testData.pages[0].conversations.splice(1, 1);
-      expect(testData.pages[0].conversations).toHaveLength(4);
-      expect(testData.pages[1].conversations).toHaveLength(5);
-      expect(testData.pages[2].conversations).toHaveLength(5);
-
-      // Normalize Data:
-      // Calls the normalizeData function to ensure that each page contains exactly 5 items, redistributing the items across the pages as needed.
-      const normalizedData = normalizeData(testData, 'conversations', pageSize);
-
-      // Verify Results:
-      // Asserts that the number of conversation data is 5 except for the last page,
-      // that the number of conversation data is 4 only for the last page,
-      // and that the conversation ids are in the expected order.
-      expect(normalizedData.pages[0].conversations).toHaveLength(5);
-      expect(normalizedData.pages[0].conversations[0].conversationId).toBe('1');
-      expect(normalizedData.pages[0].conversations[4].conversationId).toBe('6');
-
-      expect(normalizedData.pages[1].conversations).toHaveLength(5);
-      expect(normalizedData.pages[1].conversations[0].conversationId).toBe('7');
-      expect(normalizedData.pages[1].conversations[4].conversationId).toBe('11');
-
-      expect(normalizedData.pages[2].conversations).toHaveLength(4);
-      expect(normalizedData.pages[2].conversations[0].conversationId).toBe('12');
-      expect(normalizedData.pages[2].conversations[3].conversationId).toBe('15');
-    });
-
-    it('normalizes the number of items on each page after data addition', () => {
-      // Create test data:
-      // Generates 15 conversation items, each with a unique conversationId and an updatedAt timestamp set to a different day.
-      // { conversationId: '1', updatedAt: new Date(Date.now() - 86400000 * i).toISOString() }
-      const conversations = Array.from({ length: 15 }, (_, i) => ({
-        conversationId: (i + 1).toString(),
-        updatedAt: new Date(Date.now() - 86400000 * i).toISOString(),
-      }));
-
-      // Paginate Data:
-      // Divides the 15 conversation items into pages,
-      // with each page containing up to 5 items (pageSize is set to 5). This results in 3 pages.
-      const pageSize = 5;
-      const totalPageNumber = Math.ceil(conversations.length / pageSize);
-
-      const paginatedData = Array.from({ length: totalPageNumber }, (_, index) => ({
-        conversations: conversations.slice(index * pageSize, (index + 1) * pageSize),
-        pages: totalPageNumber,
-        pageNumber: index + 1,
-        pageSize,
-      }));
-
-      const testData = { pages: paginatedData, pageParams: [null, 2, 3] };
-
-      // Inserts a new conversation item at the beginning of the first page,
-      testData.pages[0].conversations.unshift({
-        conversationId: '16',
-        updatedAt: new Date().toISOString(),
-      });
-
-      // resulting in the first page having 6 items,
-      // while the second and third pages still have 5 items each.
-      expect(testData.pages[0].conversations).toHaveLength(6);
-      expect(testData.pages[1].conversations).toHaveLength(5);
-      expect(testData.pages[2].conversations).toHaveLength(5);
-      expect(testData.pages[2].conversations[4].conversationId).toBe('15');
-      expect(testData.pages).toHaveLength(3);
-
-      const normalizedData = normalizeData(testData, 'conversations', pageSize);
-
-      // Verify Results:
-      // Asserts that after normalization, each page contains the correct number of items (5 items per page).
-      expect(normalizedData.pages[0].conversations).toHaveLength(5);
-      expect(normalizedData.pages[1].conversations).toHaveLength(5);
-      expect(normalizedData.pages[2].conversations).toHaveLength(5);
-      expect(normalizedData.pages).toHaveLength(3);
-
-      // Checks that the items are in the expected order, ensuring that the conversationId values are correctly distributed across the pages.
-
-      expect(normalizedData.pages[0].conversations[0].conversationId).toBe('16');
-      expect(normalizedData.pages[0].conversations[4].conversationId).toBe('4');
-
-      expect(normalizedData.pages[1].conversations[0].conversationId).toBe('5');
-      expect(normalizedData.pages[1].conversations[4].conversationId).toBe('9');
-
-      expect(normalizedData.pages[2].conversations[0].conversationId).toBe('10');
-      expect(normalizedData.pages[2].conversations[4].conversationId).toBe('14');
-      expect(normalizedData.pageParams).toHaveLength(3);
-    });
-
-    it('returns empty data when there is no data', () => {
-      const normalizedData = normalizeData(
-        { pages: [{ conversations: [], pageNumber: 1, pageSize: 5, pages: 1 }], pageParams: [] },
-        'conversations',
-        5,
-      );
-
-      expect(normalizedData.pages[0].conversations).toHaveLength(0);
-    });
-
-    it('does not normalize data when not needed', () => {
-      const normalizedData = normalizeData(
-        { pages: [{ conversations: ['1'], pageNumber: 1, pageSize: 5, pages: 1 }], pageParams: [] },
-        'conversations',
-        5,
-      );
-
-      expect(normalizedData.pages[0].conversations).toHaveLength(1);
-    });
-
-    it('deletes pages that have no data as a result of normalization', () => {
-      const conversations = Array.from({ length: 15 }, (_, i) => ({
-        conversationId: (i + 1).toString(),
-        updatedAt: new Date(Date.now() - 86400000 * i).toISOString(),
-      }));
-
-      const pageSize = 5;
-      const totalPageNumber = Math.ceil(conversations.length / pageSize);
-
-      const paginatedData = Array.from({ length: totalPageNumber }, (_, index) => ({
-        conversations: conversations.slice(index * pageSize, (index + 1) * pageSize),
-        pages: totalPageNumber,
-        pageNumber: index + 1,
-        pageSize,
-      }));
-
-      const testData = { pages: paginatedData, pageParams: [null, 2, 3] };
-
-      // Removes all data from the last page, resulting in the last page having 0 items.
-      testData.pages[2].conversations = [];
-      expect(testData.pages[0].conversations).toHaveLength(5);
-      expect(testData.pages[1].conversations).toHaveLength(5);
-      expect(testData.pages[2].conversations).toHaveLength(0);
-      expect(testData.pageParams).toHaveLength(3);
-
-      const normalizedData = normalizeData(testData, 'conversations', pageSize);
-
-      // Verify Results:
-      // Asserts that the last page is removed after normalization, leaving only the first and second pages.
-      expect(normalizedData.pages).toHaveLength(2);
-      expect(normalizedData.pages[0].conversations).toHaveLength(5);
-      expect(normalizedData.pages[1].conversations).toHaveLength(5);
-      expect(normalizedData.pageParams).toHaveLength(2);
-    });
-  });
-
   describe('InfiniteData helpers', () => {
     const makeConversation = (id: string, updatedAt?: string) => ({
       conversationId: id,
@@ -612,52 +448,6 @@ describe('Conversation Utilities', () => {
       });
     });
 
-    describe('updateInfiniteConvoPage', () => {
-      it('updates a conversation in InfiniteData', () => {
-        const data = {
-          pages: [makePage([makeConversation('1', '2023-01-01T00:00:00Z'), makeConversation('2')])],
-          pageParams: [],
-        };
-        const updater = (c: any) => ({ ...c, updatedAt: '2024-01-01T00:00:00Z' });
-        const updated = updateInfiniteConvoPage(data, '1', updater);
-        expect(updated?.pages[0].conversations[0].updatedAt).toBe('2024-01-01T00:00:00Z');
-      });
-
-      it('returns original data if conversation not found', () => {
-        const data = {
-          pages: [makePage([makeConversation('1')])],
-          pageParams: [],
-        };
-        const updater = (c: any) => ({ ...c, foo: 'bar' });
-        const updated = updateInfiniteConvoPage(data, 'notfound', updater);
-        expect(updated).toEqual(data);
-      });
-
-      it('returns undefined if data is undefined', () => {
-        expect(updateInfiniteConvoPage(undefined, '1', (c) => c)).toBeUndefined();
-      });
-    });
-
-    describe('addConversationToInfinitePages', () => {
-      it('adds a conversation to the first page', () => {
-        const data = {
-          pages: [makePage([makeConversation('1')])],
-          pageParams: [],
-        };
-        const newConvo = makeConversation('new');
-        const updated = addConversationToInfinitePages(data, newConvo as TConversation);
-        expect(updated.pages[0].conversations[0].conversationId).toBe('new');
-        expect(updated.pages[0].conversations[1].conversationId).toBe('1');
-      });
-
-      it('creates new InfiniteData if data is undefined', () => {
-        const newConvo = makeConversation('new');
-        const updated = addConversationToInfinitePages(undefined, newConvo as TConversation);
-        expect(updated.pages[0].conversations[0].conversationId).toBe('new');
-        expect(updated.pageParams).toEqual([undefined]);
-      });
-    });
-
     describe('removeConvoFromInfinitePages', () => {
       it('removes a conversation by id', () => {
         const data = {
@@ -683,57 +473,6 @@ describe('Conversation Utilities', () => {
 
       it('returns original data if data is undefined', () => {
         expect(removeConvoFromInfinitePages(undefined, '1')).toBeUndefined();
-      });
-    });
-
-    describe('updateConvoFieldsInfinite', () => {
-      it('updates fields and bumps to front if keepPosition is false', () => {
-        const data = {
-          pages: [
-            makePage([makeConversation('1'), makeConversation('2')]),
-            makePage([makeConversation('3')]),
-          ],
-          pageParams: [],
-        };
-        const updated = updateConvoFieldsInfinite(
-          data,
-          { conversationId: '2', title: 'new' },
-          false,
-        );
-        expect(updated?.pages[0].conversations[0].conversationId).toBe('2');
-        expect(updated?.pages[0].conversations[0].title).toBe('new');
-      });
-
-      it('updates fields and keeps position if keepPosition is true', () => {
-        const data = {
-          pages: [makePage([makeConversation('1'), makeConversation('2')])],
-          pageParams: [],
-        };
-        const updated = updateConvoFieldsInfinite(
-          data,
-          { conversationId: '2', title: 'stay' },
-          true,
-        );
-        expect(updated?.pages[0].conversations[1].title).toBe('stay');
-      });
-
-      it('returns original data if conversation not found', () => {
-        const data = {
-          pages: [makePage([makeConversation('1')])],
-          pageParams: [],
-        };
-        const updated = updateConvoFieldsInfinite(
-          data,
-          { conversationId: 'notfound', title: 'x' },
-          false,
-        );
-        expect(updated).toEqual(data);
-      });
-
-      it('returns original data if data is undefined', () => {
-        expect(
-          updateConvoFieldsInfinite(undefined, { conversationId: '1', title: 'x' }, false),
-        ).toBeUndefined();
       });
     });
 
@@ -1201,6 +940,101 @@ describe('Conversation Utilities', () => {
         expect(data!.pages[0].conversations[0].lastResponseMessageId).toBe('reply-a');
       });
 
+      it('snapshot merging distinguishes authoritative absence from partial UI updates', () => {
+        const cached = {
+          ...convoA,
+          lastResponseAt: '2026-08-16T10:00:00.000Z',
+          lastResponseMessageId: 'reply',
+          isMarkedUnread: false,
+          lastSeenAt: UNSEEN_REPLY_WATERMARK,
+        } as TConversation;
+        const server = JSON.parse(
+          JSON.stringify({ ...cached, lastSeenAt: undefined }),
+        ) as TConversation;
+        const merged = mergeConvoSnapshot(server, cached);
+        expect(merged.lastSeenAt).toBeUndefined();
+        expect('lastSeenAt' in merged).toBe(true);
+        expect(merged.lastResponseMessageId).toBe('reply');
+        const older = { ...server, lastResponseAt: '2026-08-16T09:00:00.000Z' };
+        expect(mergeConvoSnapshot(older, cached).lastSeenAt).toBe(UNSEEN_REPLY_WATERMARK);
+        const read = { ...cached, lastSeenAt: cached.lastResponseAt };
+        expect(mergeConvoSnapshot(cached, read, true).lastSeenAt).toBe(read.lastSeenAt);
+        expect(mergeConvoSnapshot(cached, read).lastSeenAt).toBe(read.lastSeenAt);
+        const reminder = { ...cached, lastSeenAt: undefined, isMarkedUnread: true };
+        expect(mergeConvoSnapshot(cached, reminder).isMarkedUnread).toBe(true);
+        const later = { ...cached, lastResponseAt: '2026-08-16T11:00:00.000Z' };
+        expect(mergeConvoSnapshot(later, read, true).lastSeenAt).toBe(UNSEEN_REPLY_WATERMARK);
+      });
+
+      it.each([true, false])(
+        'snapshot upserts clear an omitted watermark while partial updates preserve it (pinned: %s)',
+        (pinned) => {
+          updateConvoInAllQueries(queryClient, 'a', (c) => ({
+            ...c,
+            pinned,
+            lastResponseAt: '2026-08-16T10:00:00.000Z',
+            isMarkedUnread: false,
+            lastSeenAt: UNSEEN_REPLY_WATERMARK,
+          }));
+          upsertConvoInAllQueries(
+            queryClient,
+            { conversationId: 'a', title: 'Partial' } as TConversation,
+            false,
+          );
+          expect(findConvoInAllQueries(queryClient, 'a')?.lastSeenAt).toBe(UNSEEN_REPLY_WATERMARK);
+          upsertConvoInAllQueries(
+            queryClient,
+            {
+              conversationId: 'a',
+              title: 'Snapshot',
+              lastResponseAt: '2026-08-16T10:00:00.000Z',
+              isMarkedUnread: false,
+            } as TConversation,
+            false,
+            'snapshot',
+          );
+          expect(findConvoInAllQueries(queryClient, 'a')?.lastSeenAt).toBeUndefined();
+        },
+      );
+
+      it('does not invent reply eligibility for an unclassified backend snapshot', () => {
+        updateConvoInAllQueries(queryClient, 'a', (c) => ({
+          ...c,
+          lastResponseAt: '2026-08-16T10:00:00.000Z',
+          isMarkedUnread: true,
+        }));
+        updateConvoInAllQueries(
+          queryClient,
+          'a',
+          () =>
+            ({
+              conversationId: 'a',
+              lastResponseAt: '2026-08-16T11:00:00.000Z',
+            }) as TConversation,
+        );
+        expect(findConvoInAllQueries(queryClient, 'a')?.isMarkedUnread).toBeUndefined();
+      });
+
+      it('marks only an advancing live reply as confirmed, preserving reminders on duplicate delivery', () => {
+        const original = '2026-08-16T10:00:00.000Z';
+        updateConvoInAllQueries(queryClient, 'a', (c) => ({
+          ...c,
+          lastResponseAt: original,
+          isMarkedUnread: true,
+        }));
+        applyServerReplyStamp(queryClient, 'a', {
+          lastResponseAt: original,
+          lastResponseMessageId: 'existing',
+        });
+        expect(findConvoInAllQueries(queryClient, 'a')?.isMarkedUnread).toBe(true);
+        applyServerReplyStamp(queryClient, 'a', {
+          lastResponseAt: '2026-08-16T11:00:00.000Z',
+          lastResponseMessageId: 'new',
+        });
+        expect(findConvoInAllQueries(queryClient, 'a')?.isMarkedUnread).toBe(false);
+        expect(findConvoInAllQueries(queryClient, 'a')?.lastSeenAt).toBe(UNSEEN_REPLY_WATERMARK);
+      });
+
       it('updateConvoInAllQueries lets an explicit lastSeenAt win over the cached one', () => {
         updateConvoInAllQueries(queryClient, 'a', (c) => ({
           ...c,
@@ -1232,6 +1066,129 @@ describe('Conversation Utilities', () => {
         const data = queryClient.getQueryData<InfiniteData<any>>(['allConversations']);
         expect(data!.pages[0].conversations[0].lastSeenAt).toBeUndefined();
         expect(data!.pages[0].conversations[0].lastResponseAt).toBe('2026-08-16T10:00:00.000Z');
+      });
+
+      it.each([
+        'allConversations',
+        'archivedConversations',
+        'pinnedConversations',
+        'runningConversation',
+      ])(
+        'reads the highest manual title revision from %s without changing reply selection',
+        (root) => {
+          const old = {
+            ...convoA,
+            title: 'Old owned title',
+            titleSetByUser: true,
+            titleRevision: 1,
+            lastResponseAt: '2026-08-16T10:05:00.000Z',
+          };
+          const freshTitle = {
+            ...old,
+            title: 'New Chat',
+            titleRevision: 2,
+            lastResponseAt: '2026-08-16T10:00:00.000Z',
+          };
+          queryClient.clear();
+          queryClient.setQueryData(['conversation', 'a'], old);
+          const key =
+            root === 'runningConversation' ? [root, 'a'] : [root, { tag: 'older-snapshot' }];
+          let data;
+          if (root === 'runningConversation') {
+            data = freshTitle;
+          } else if (root === 'pinnedConversations') {
+            data = { conversations: [freshTitle] };
+          } else {
+            data = { pages: [{ conversations: [freshTitle] }], pageParams: [] };
+          }
+          queryClient.setQueryData(key, data, { updatedAt: Date.now() - 10 * 60_000 });
+          expect(findConvoInAllQueries(queryClient, 'a')?.title).toBe(old.title);
+          expect(findManualConvoTitleInAllQueries(queryClient, 'a')).toEqual({
+            title: 'New Chat',
+            titleSetByUser: true,
+            titleRevision: 2,
+          });
+          expect(findManualConvoTitleInAllQueries(queryClient, 'missing')).toBeUndefined();
+        },
+      );
+
+      it('compares repeated rows within a paginated variant and a pinned cache', () => {
+        queryClient.clear();
+        const old = { ...convoA, title: 'Old owned title', titleSetByUser: true, titleRevision: 1 };
+        queryClient.setQueryData(['allConversations'], {
+          pages: [
+            { conversations: [old] },
+            { conversations: [{ ...old, title: 'Page rename', titleRevision: 2 }] },
+          ],
+          pageParams: [],
+        });
+        expect(findManualConvoTitleInAllQueries(queryClient, 'a')?.titleRevision).toBe(2);
+        queryClient.setQueryData(['pinnedConversations'], {
+          conversations: [old, { ...old, title: 'Pinned rename', titleRevision: 3 }],
+        });
+        expect(findManualConvoTitleInAllQueries(queryClient, 'a')?.titleRevision).toBe(3);
+      });
+
+      it('uses durable revisions independently of server request ordering', async () => {
+        queryClient.clear();
+        const old = { ...convoA, title: 'Old owned title', titleSetByUser: true, titleRevision: 1 };
+        trackConvoQueryAuthority(queryClient);
+        let release!: (value: InfiniteData<ConversationCursorData>) => void;
+        const list = queryClient.fetchQuery(
+          ['allConversations'],
+          () =>
+            new Promise<InfiniteData<ConversationCursorData>>((resolve) => {
+              release = resolve;
+            }),
+        );
+        await queryClient.fetchQuery(['conversation', 'a'], async () => old);
+        release({
+          pages: [
+            {
+              conversations: [{ ...old, title: 'New owned title', titleRevision: 2 }],
+              nextCursor: null,
+            },
+          ],
+          pageParams: [],
+        });
+        await list;
+        expect(findConvoInAllQueries(queryClient, 'a')?.titleRevision).toBe(1);
+        expect(findManualConvoTitleInAllQueries(queryClient, 'a')?.titleRevision).toBe(2);
+      });
+
+      it('prefers an authoritative incoming title on equal revision and preserves later cache revisions', () => {
+        queryClient.clear();
+        queryClient.setQueryData(['conversation', 'a'], {
+          ...convoA,
+          title: 'Cached',
+          titleSetByUser: true,
+          titleRevision: 2,
+        });
+        expect(
+          findManualConvoTitleInAllQueries(queryClient, 'a', {
+            title: 'Incoming',
+            titleSetByUser: true,
+            titleRevision: 2,
+          })?.title,
+        ).toBe('Incoming');
+        expect(
+          findManualConvoTitleInAllQueries(queryClient, 'a', {
+            title: 'Stale',
+            titleSetByUser: true,
+            titleRevision: 1,
+          })?.title,
+        ).toBe('Cached');
+        queryClient.setQueryData(['allConversations', { tag: 'unrelated' }], {
+          pages: [
+            {
+              conversations: [
+                { ...convoB, title: 'Unrelated', titleSetByUser: true, titleRevision: 99 },
+              ],
+            },
+          ],
+          pageParams: [],
+        });
+        expect(findManualConvoTitleInAllQueries(queryClient, 'a')?.titleRevision).toBe(2);
       });
 
       it('findConvoInAllQueries reads from whichever cached list query holds the conversation', () => {
@@ -1547,12 +1504,12 @@ describe('Conversation Utilities', () => {
         expect(data!.pages.length).toBe(0);
       });
 
-      it('addConversationToAllConversationsQueries works with multiple pages', () => {
+      it('addConvoToAllQueries works with multiple pages', () => {
         queryClient.setQueryData(['allConversations', 'other'], {
           pages: [{ conversations: [], nextCursor: null }],
           pageParams: [],
         });
-        addConversationToAllConversationsQueries(queryClient, convoB);
+        addConvoToAllQueries(queryClient, convoB);
 
         const mainData = queryClient.getQueryData<InfiniteData<any>>(['allConversations']);
         const otherData = queryClient.getQueryData<InfiniteData<any>>([
@@ -1580,7 +1537,7 @@ describe('Conversation Utilities', () => {
       });
     });
 
-    describe('addConversationToAllConversationsQueries with list facets', () => {
+    describe('addConvoToAllQueries with list facets', () => {
       const emptyPages = { pages: [{ conversations: [], nextCursor: null }], pageParams: [] };
       /** A row the endpoint and date facets can judge from its own fields. */
       const facetConvo = {
@@ -1596,7 +1553,7 @@ describe('Conversation Utilities', () => {
         const key = ['allConversations', { endpoints: ['google'] }];
         queryClient.setQueryData(key, emptyPages);
 
-        addConversationToAllConversationsQueries(queryClient, facetConvo);
+        addConvoToAllQueries(queryClient, facetConvo);
 
         expect(
           queryClient.getQueryData<InfiniteData<any>>(key)!.pages[0].conversations,
@@ -1608,7 +1565,7 @@ describe('Conversation Utilities', () => {
         const key = ['allConversations', { updatedAfter: '2026-09-25T00:00:00.000Z' }];
         queryClient.setQueryData(key, emptyPages);
 
-        addConversationToAllConversationsQueries(queryClient, facetConvo);
+        addConvoToAllQueries(queryClient, facetConvo);
 
         expect(
           queryClient.getQueryData<InfiniteData<any>>(key)!.pages[0].conversations,
@@ -1620,7 +1577,7 @@ describe('Conversation Utilities', () => {
         const key = ['allConversations', { updatedAfter: '2026-09-24T00:00:00.000Z' }];
         queryClient.setQueryData(key, emptyPages);
 
-        addConversationToAllConversationsQueries(queryClient, facetConvo);
+        addConvoToAllQueries(queryClient, facetConvo);
 
         expect(
           queryClient.getQueryData<InfiniteData<any>>(key)!.pages[0].conversations[0]
@@ -1691,7 +1648,7 @@ describe('Conversation Utilities', () => {
         queryClient.setQueryData(key, emptyPages);
         const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
 
-        addConversationToAllConversationsQueries(queryClient, facetConvo);
+        addConvoToAllQueries(queryClient, facetConvo);
 
         expect(invalidate).toHaveBeenCalledWith(
           expect.objectContaining({ queryKey: key, refetchType: 'active' }),
@@ -1701,5 +1658,74 @@ describe('Conversation Utilities', () => {
         ).toHaveLength(0);
       });
     });
+  });
+});
+
+describe('conversation snapshot read authority', () => {
+  it('fences reads already pending at request start and drops settled records', () => {
+    const client = new QueryClient();
+    supersedeConvoSnapshots(client, 'convo', 1);
+    const fence = beginConvoSnapshot(client, 'convo');
+    expect(fence.superseded).toBe(true);
+    endConvoReadIntent(client, 'convo', 1);
+    endConvoSnapshot(client, 'convo', fence);
+    const fresh = beginConvoSnapshot(client, 'convo');
+    expect(fresh.superseded).toBe(false);
+    endConvoSnapshot(client, 'convo', fresh);
+    client.clear();
+  });
+
+  it('isolates concurrent snapshots by request, conversation and query client', () => {
+    const client = new QueryClient();
+    const other = new QueryClient();
+    const completed = beginConvoSnapshot(client, 'convo');
+    const pending = beginConvoSnapshot(client, 'convo');
+    endConvoSnapshot(client, 'convo', completed);
+    supersedeConvoSnapshots(other, 'convo', 1);
+    supersedeConvoSnapshots(client, 'another', 1);
+    expect(pending.superseded).toBe(false);
+    supersedeConvoSnapshots(client, 'convo', 2);
+    expect(completed.superseded).toBe(false);
+    expect(pending.superseded).toBe(true);
+    endConvoReadIntent(client, 'convo', 1);
+    const during = beginConvoSnapshot(client, 'convo');
+    expect(during.superseded).toBe(true);
+    endConvoReadIntent(client, 'convo', 2);
+    endConvoSnapshot(client, 'convo', pending);
+    endConvoSnapshot(client, 'convo', during);
+    endConvoReadIntent(client, 'another', 1);
+    endConvoReadIntent(other, 'convo', 1);
+    client.clear();
+    other.clear();
+  });
+
+  it('a snapshot fetch preserves same-reply read intent that settles during the request', async () => {
+    const client = new QueryClient();
+    const repliedAt = '2026-08-16T10:00:00.000Z';
+    const confirmed = {
+      conversationId: 'convo',
+      lastResponseAt: repliedAt,
+      lastSeenAt: UNSEEN_REPLY_WATERMARK,
+      isMarkedUnread: false,
+    } as TConversation;
+    client.setQueryData(['conversation', 'convo'], confirmed);
+    let complete!: (value: TConversation) => void;
+    const pending = fetchConvoSnapshot(
+      client,
+      'convo',
+      () =>
+        new Promise((resolve) => {
+          complete = resolve;
+        }),
+    );
+    supersedeConvoSnapshots(client, 'convo', 1);
+    client.setQueryData(['conversation', 'convo'], { ...confirmed, lastSeenAt: repliedAt });
+    endConvoReadIntent(client, 'convo', 1);
+    complete(confirmed);
+    expect((await pending).lastSeenAt).toBe(repliedAt);
+    const fresh = beginConvoSnapshot(client, 'convo');
+    expect(fresh.superseded).toBe(false);
+    endConvoSnapshot(client, 'convo', fresh);
+    client.clear();
   });
 });

@@ -10,3 +10,7 @@ export * from './adapters/chat';
 export * from './adapters/nested';
 export * from './adapters/messages';
 export * from './adapters/submissions';
+export * from './private/submission';
+export * from './private/view';
+export * from './private/copy';
+export * from './private/admission';

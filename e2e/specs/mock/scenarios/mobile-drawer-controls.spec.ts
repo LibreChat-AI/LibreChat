@@ -133,7 +133,9 @@ async function readBoundary(page: Page) {
           contrast(over(styles.edgeColor, styles.drawer), dimmed),
         )
       : 0;
-  return { fill, edge, scrim: styles.scrim };
+  /** How far the edge stands off the drawer's own fill: 1 when it paints nothing new. */
+  const line = styles.edgeWidth >= 1 ? contrast(over(styles.edgeColor, styles.drawer), drawer) : 1;
+  return { fill, edge, line, scrim: styles.scrim };
 }
 
 test.describe('mobile drawer controls', () => {
@@ -303,13 +305,14 @@ test.describe('mobile drawer controls', () => {
     test(title, async ({ page }) => {
       await openDrawer(page, mode, definition, true);
       await expect(page.locator(SCRIM)).toBeVisible();
-      const { fill, edge } = await readBoundary(page);
+      const { fill, edge, line } = await readBoundary(page);
       /** Either the fill against the scrim or the drawer's own edge has to carry it. */
       expect(Math.max(fill, edge)).toBeGreaterThanOrEqual(BOUNDARY_CONTRAST);
       if (mode === 'light') {
-        /** The scrim does the work in light: no extra line on a surface that already reads. */
+        /** The scrim does the work in light: the `drawer-edge` role defaults to the drawer's own
+         *  fill there, so no extra line shows on a surface that already reads. */
         expect(fill).toBeGreaterThanOrEqual(BOUNDARY_CONTRAST);
-        expect(edge).toBe(0);
+        expect(line).toBeCloseTo(1, 5);
       }
     });
   }

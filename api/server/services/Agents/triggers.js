@@ -6,6 +6,7 @@ const {
   createSubagentCompletionWakeupResolver,
   SUBAGENT_COMPLETION_SOURCE,
   createBackgroundToolCompletionWakeupResolver,
+  createBackgroundToolDeadClaimRecovery,
   BACKGROUND_TOOL_COMPLETION_SOURCE,
   createAgentQueuedTurnLifecycle,
   AGENT_QUEUED_TURN_SOURCE,
@@ -24,12 +25,30 @@ const getGenerationAdmissionEvidence = (userId, clientRequestId, streamId, conve
 const subagentCompletionAdapter = createSubagentCompletionWakeupResolver({
   methods,
   getGenerationJob: (conversationId) => GenerationJobManager.getJob(conversationId),
+  getScheduleMCPCompletionState: methods.getScheduleMCPCompletionState,
   getWaitMaxIntervalMs: () => service.getCompletionWaitMaxIntervalMs(),
 });
 const backgroundToolCompletionAdapter = createBackgroundToolCompletionWakeupResolver({
   methods,
   getGenerationJob: (conversationId) => GenerationJobManager.getJob(conversationId),
+  getScheduleMCPCompletionState: methods.getScheduleMCPCompletionState,
   getResultBatchSize: () => service.getBackgroundCompletionResultBatchSize(),
+  getGenerationAdmissionEvidence,
+  recoverDeadClaim: createBackgroundToolDeadClaimRecovery(
+    (...args) => service.retire(...args),
+    methods.releaseBackgroundToolResultClaims,
+    (conversationId) => GenerationJobManager.getJob(conversationId),
+    ({ userId, conversationId, claimId }) =>
+      GenerationJobManager.fenceGenerationClaimForRecovery(
+        userId,
+        claimId,
+        conversationId,
+        conversationId,
+      ),
+    methods.releaseAgentBackgroundToolResultClaims,
+    methods,
+    getGenerationAdmissionEvidence,
+  ),
   getWaitMaxIntervalMs: () => service.getCompletionWaitMaxIntervalMs(),
 });
 const eventActorAdapter = createAgentEventContinueResolver({
@@ -95,6 +114,7 @@ module.exports = {
   persistAgentBackgroundToolResult: service.persistBackgroundToolResult,
   expediteCompletionWakeups: service.expediteCompletionWakeups,
   getAgentBackgroundToolResultClaim: service.getBackgroundToolResultClaim,
+  getBackgroundCompletionReceiptBatching: service.getBackgroundCompletionReceiptBatching,
   releaseAgentBackgroundToolResultClaims: service.releaseBackgroundToolResultClaims,
   drainAgentTriggerDeliveriesForUser: service.drainUser,
   prepareAgentTriggerUserPurge: service.prepareUserPurge,

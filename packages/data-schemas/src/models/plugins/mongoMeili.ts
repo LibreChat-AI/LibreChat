@@ -767,7 +767,7 @@ const createMeiliMongooseModel = ({
 
         const projection = Object.keys(this.schema.obj).reduce<Record<string, number>>(
           (results, key) => {
-            if (!key.startsWith('$')) {
+            if (!key.startsWith('$') && this.schema.path(key)?.options?.select !== false) {
               results[key] = 1;
             }
             return results;

@@ -21,10 +21,7 @@ export default function Action({ action, onClick }: { action: Action; onClick: (
       onMouseLeave={() => setIsHovering(false)}
       aria-label={`Action for ${action.metadata.domain}`}
     >
-      <div
-        className="h-9 grow overflow-hidden px-3 py-2 text-ellipsis whitespace-nowrap"
-        style={{ wordBreak: 'break-all' }}
-      >
+      <div className="h-9 grow overflow-hidden px-3 py-2 break-all text-ellipsis whitespace-nowrap">
         {action.metadata.domain}
       </div>
       <div

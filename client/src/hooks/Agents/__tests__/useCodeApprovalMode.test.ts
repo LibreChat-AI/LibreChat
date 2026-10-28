@@ -70,6 +70,98 @@ describe('useCodeApprovalMode', () => {
     });
   });
 
+  test('offers no attached mode once the chat runs without a workspace, and submits ask', () => {
+    const { result, rerender } = renderHook(
+      ({ codeEnvironmentMode }: Pick<TConversation, 'codeEnvironmentMode'>) =>
+        useCodeApprovalMode({ ...conversation, codeEnvironmentMode }),
+      { initialProps: { codeEnvironmentMode: 'without_attached' } },
+    );
+
+    expect(result.current).toEqual({ available: false, modes: [], selected: 'ask' });
+    rerender({ codeEnvironmentMode: 'attached' });
+    expect(result.current).toEqual({
+      available: true,
+      modes: ['ask', 'acceptEdits'],
+      selected: 'acceptEdits',
+    });
+  });
+
+  test('follows the composer-resolved mode for a chat that records no decision', () => {
+    const { result, rerender } = renderHook(
+      ({ resolved }: { resolved?: TConversation['codeEnvironmentMode'] }) =>
+        useCodeApprovalMode(conversation, undefined, resolved),
+      { initialProps: { resolved: 'without_attached' } },
+    );
+
+    expect(result.current).toEqual({ available: false, modes: [], selected: 'ask' });
+    rerender({ resolved: 'attached' });
+    expect(result.current).toEqual({
+      available: true,
+      modes: ['ask', 'acceptEdits'],
+      selected: 'acceptEdits',
+    });
+  });
+
+  test('uses the chosen machine policy without inheriting full access from the default', () => {
+    mockUseAgentToolPermissions.mockReturnValue({
+      agent: {
+        id: 'agent_1',
+        tools: ['execute_code'],
+        stateful_code_sessions: true,
+        code_environment_id: 'mac',
+        code_environment_ids: ['runtime'],
+      },
+    });
+    mockUseGetAgentsConfig.mockReturnValue({
+      agentsConfig: {
+        statefulCodeSessions: {
+          allowEnvironmentSelection: true,
+          approvalsEnabled: true,
+          approvalModes: ['ask', 'acceptEdits', 'fullAccess'],
+          environments: [
+            {
+              id: 'mac',
+              type: 'attached',
+              configSchema: {
+                permissions: {
+                  fileWrite: { allowed: ['ask', 'allow'], default: 'ask' },
+                  commandExecution: { allowed: ['ask', 'allow'], default: 'ask' },
+                },
+              },
+            },
+            {
+              id: 'runtime',
+              type: 'attached',
+              configSchema: {
+                permissions: {
+                  fileWrite: { allowed: ['ask'], default: 'ask' },
+                  commandExecution: { allowed: ['ask'], default: 'ask' },
+                },
+              },
+            },
+          ],
+        },
+      },
+    });
+    const runtime = renderHook(() =>
+      useCodeApprovalMode({
+        ...conversation,
+        codeApprovalMode: 'fullAccess',
+        codeWorkspaces: [{ environmentId: 'runtime', workspaceId: 'primary' }],
+      }),
+    );
+    expect(runtime.result.current.modes).toEqual(['ask']);
+    expect(runtime.result.current.selected).toBe('ask');
+    const application = renderHook(() =>
+      useCodeApprovalMode({
+        ...conversation,
+        codeApprovalMode: 'fullAccess',
+        codeWorkspaces: undefined,
+      }),
+    );
+    expect(application.result.current.selected).toBe('fullAccess');
+  });
+
   test.each(['permitted', 'restricted', 'missing'])(
     'full access requires every reachable machine: %s',
     (policy) => {

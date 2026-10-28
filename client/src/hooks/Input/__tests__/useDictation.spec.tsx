@@ -62,6 +62,7 @@ function setup({
   speechToText = true,
   draft = '',
   isSubmitting = false,
+  duringRunSubmit,
   filesLoading = false,
   deferComposerReset = false,
   disabled = false,
@@ -71,6 +72,7 @@ function setup({
   speechToText?: boolean;
   draft?: string;
   isSubmitting?: boolean;
+  duringRunSubmit?: (text: string) => boolean | void;
   filesLoading?: boolean;
   deferComposerReset?: boolean;
   disabled?: boolean;
@@ -78,6 +80,7 @@ function setup({
 } = {}) {
   let text = draft;
   let uploading = filesLoading;
+  let speechDisabled = disabled;
   const methods = {
     setValue: jest.fn((_name: string, value: string) => {
       text = value;
@@ -92,9 +95,10 @@ function setup({
       ask: ask as unknown as TAskFunction,
       methods: methods as never,
       isSubmitting,
+      duringRunSubmit,
       filesLoading: uploading,
       deferComposerReset,
-      disabled,
+      disabled: speechDisabled,
       autoSendText,
       speechToText,
       index,
@@ -107,6 +111,9 @@ function setup({
     currentText: () => text,
     setFilesLoading: (value: boolean) => {
       uploading = value;
+    },
+    setDisabled: (value: boolean) => {
+      speechDisabled = value;
     },
   };
 }
@@ -232,6 +239,86 @@ describe('useDictation', () => {
 
     expect(result.current.startDisabled).toBe(true);
     expect(mockStart).not.toHaveBeenCalled();
+  });
+
+  it('blocks a captured external auto-send callback when the host becomes disabled', async () => {
+    mockSpeechEndpoint = 'external';
+    const { result, rerender, currentText, methods, setDisabled } = setup({
+      autoSendText: 0,
+      draft: 'hi',
+    });
+    act(() => result.current.start());
+    mockIsListening = true;
+    act(() => rerender());
+    act(() => result.current.stopToComposer());
+    const complete = mockOnTranscriptionComplete;
+    setDisabled(true);
+    act(() => rerender());
+    act(() => mockSetTextCallback('dictated words'));
+    await settle(rerender);
+    act(() => complete('dictated words'));
+    expect(ask).not.toHaveBeenCalled();
+    expect(currentText()).toBe('hi dictated words');
+    expect(methods.reset).not.toHaveBeenCalled();
+    setDisabled(false);
+    act(() => rerender());
+    act(() => complete('dictated words'));
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('stands an armed recording send down if the host disables speech before it settles', async () => {
+    const { result, rerender, currentText, setDisabled } = setup();
+    act(() => result.current.start());
+    mockIsListening = true;
+    act(() => rerender());
+    act(() => result.current.stopAndSend());
+    setDisabled(true);
+    act(() => rerender());
+    act(() => mockSetTextCallback('keep these words'));
+    await settle(rerender);
+    expect(ask).not.toHaveBeenCalled();
+    expect(currentText()).toBe('keep these words');
+    setDisabled(false);
+    act(() => rerender());
+    expect(ask).not.toHaveBeenCalled();
+  });
+
+  it('holds a transcript before invoking the during-run route', async () => {
+    const duringRunSubmit = jest.fn();
+    const { result, rerender, currentText, setDisabled } = setup({
+      isSubmitting: true,
+      duringRunSubmit,
+    });
+    act(() => result.current.start());
+    mockIsListening = true;
+    act(() => rerender());
+    act(() => result.current.stopAndSend());
+    setDisabled(true);
+    act(() => rerender());
+    act(() => mockSetTextCallback('do not steer yet'));
+    await settle(rerender);
+    expect(duringRunSubmit).not.toHaveBeenCalled();
+    expect(ask).not.toHaveBeenCalled();
+    expect(currentText()).toBe('do not steer yet');
+  });
+
+  it('refuses a stale recording-send action during the hold but leaves stop and cancel available', async () => {
+    const { result, rerender, setDisabled } = setup();
+    act(() => result.current.start());
+    mockIsListening = true;
+    act(() => rerender());
+    const stopAndSend = result.current.stopAndSend;
+    setDisabled(true);
+    act(() => rerender());
+    act(() => stopAndSend());
+    expect(mockStop).not.toHaveBeenCalled();
+    expect(result.current.startDisabled).toBe(true);
+    act(() => result.current.stopToComposer());
+    expect(mockStop).toHaveBeenCalledTimes(1);
+    await settle(rerender);
+    expect(ask).not.toHaveBeenCalled();
+    act(() => result.current.cancel());
+    expect(mockAbort).toHaveBeenCalledTimes(1);
   });
 
   it('leaves a plain stop in the composer', async () => {

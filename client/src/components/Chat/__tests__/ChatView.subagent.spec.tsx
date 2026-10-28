@@ -27,27 +27,38 @@ jest.mock('librechat-data-provider', () => ({
   buildTree: ({ messages }: { messages: unknown[] }) => messages,
 }));
 
-jest.mock('~/hooks', () => ({
-  useAddedResponse: () => ({}),
-  useResumeOnLoad: jest.fn(),
-  useAdaptiveSSE: jest.fn(),
-  useQueueDrain: jest.fn(),
-  useQueuedTurnReveal: jest.fn(),
-  useScrollbarGutterSeed: jest.fn(),
-  useLocalize: () => (key: string) => key,
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useChatHelpers: () => ({
     conversation: mockConversation,
     getMessages: jest.fn(),
     ask: jest.fn(),
   }),
+  useQueueDrain: jest.fn(),
+  useQueuedTurnReveal: jest.fn(),
+}));
+
+jest.mock('~/hooks', () => ({
+  useAddedResponse: () => ({}),
+  useScrollbarGutterSeed: jest.fn(),
+  useLocalize: () => (key: string) => key,
+}));
+
+jest.mock('~/hooks/Chat/outcomes', () => ({
+  getMappingOptions: () => ({}),
+}));
+
+jest.mock('~/hooks/SSE', () => ({
+  useAdaptiveSSE: jest.fn(),
+  useResumeOnLoad: jest.fn(),
 }));
 
 jest.mock('~/Providers', () => {
   const Passthrough = ({ children }: { children: React.ReactNode }) => <>{children}</>;
   const Context = { Provider: Passthrough };
   return {
-    ChatContext: Context,
     AddedChatContext: Context,
+    useChatContext: jest.requireActual('~/Providers/ChatContext').useChatContext,
     ChatFormProvider: Passthrough,
     ComposerRestoreProvider: Passthrough,
     useFileMapContext: () => new Map(),
@@ -70,6 +81,7 @@ jest.mock('../Presentation', () => ({ children }: { children: React.ReactNode })
 ));
 jest.mock('../Input/ChatForm', () => () => <div data-testid="chat-form" />);
 jest.mock('../Landing', () => () => <div data-testid="landing" />);
+jest.mock('~/components/Lia', () => () => null);
 jest.mock('../Trace', () => ({
   TraceSurface: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
@@ -77,6 +89,7 @@ jest.mock('../Footer', () => ({
   __esModule: true,
   default: () => <div data-testid="footer" />,
   useConfiguredFooter: () => false,
+  useLandingFooter: () => true,
 }));
 jest.mock('../Header', () => ({ readOnly }: { readOnly?: boolean }) => (
   <div data-read-only={String(readOnly)} data-testid="header" />
@@ -89,8 +102,6 @@ jest.mock('~/utils', () => ({
 jest.mock('~/store', () => ({
   __esModule: true,
   default: {
-    submissionByIndex: jest.fn(),
-    isSubmittingFamily: jest.fn(),
     centerFormOnLanding: {},
   },
 }));

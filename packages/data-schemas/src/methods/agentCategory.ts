@@ -1,28 +1,11 @@
-import type { Model, Types } from 'mongoose';
+import type { Model } from 'mongoose';
 import type { IAgentCategory } from '~/types';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 
 export function createAgentCategoryMethods(mongoose: typeof import('mongoose')): {
   getActiveCategories: () => Promise<IAgentCategory[]>;
   getCategoriesWithCounts: () => Promise<(IAgentCategory & { agentCount: number })[]>;
-  getValidCategoryValues: () => Promise<string[]>;
-  seedCategories: (
-    categories: Array<{
-      value: string;
-      label?: string;
-      description?: string;
-      order?: number;
-      custom?: boolean;
-    }>,
-  ) => Promise<import('mongoose').mongo.BulkWriteResult>;
-  findCategoryByValue: (value: string) => Promise<IAgentCategory | null>;
   createCategory: (categoryData: Partial<IAgentCategory>) => Promise<IAgentCategory>;
-  updateCategory: (
-    value: string,
-    updateData: Partial<IAgentCategory>,
-  ) => Promise<IAgentCategory | null>;
-  deleteCategory: (value: string) => Promise<boolean>;
-  findCategoryById: (id: string | Types.ObjectId) => Promise<IAgentCategory | null>;
   getAllCategories: () => Promise<IAgentCategory[]>;
   ensureDefaultCategories: () => Promise<boolean>;
 } {
@@ -44,73 +27,20 @@ export function createAgentCategoryMethods(mongoose: typeof import('mongoose')):
   async function getCategoriesWithCounts(): Promise<(IAgentCategory & { agentCount: number })[]> {
     const Agent = mongoose.models.Agent;
 
-    const categoryCounts = await Agent.aggregate([
-      { $match: { category: { $exists: true, $ne: null } } },
-      { $group: { _id: '$category', count: { $sum: 1 } } },
+    const [categoryCounts, categories] = await Promise.all([
+      Agent.aggregate([
+        { $match: { category: { $exists: true, $ne: null } } },
+        { $group: { _id: '$category', count: { $sum: 1 } } },
+      ]),
+      getActiveCategories(),
     ]);
 
     const countMap = new Map(categoryCounts.map((c) => [c._id, c.count]));
-    const categories = await getActiveCategories();
 
     return categories.map((category) => ({
       ...category,
       agentCount: countMap.get(category.value) || (0 as number),
     })) as (IAgentCategory & { agentCount: number })[];
-  }
-
-  /**
-   * Get valid category values for Agent model validation
-   * @returns Array of valid category values
-   */
-  async function getValidCategoryValues(): Promise<string[]> {
-    const AgentCategory = mongoose.models.AgentCategory as Model<IAgentCategory>;
-    return await AgentCategory.find({ isActive: true }).distinct('value').lean();
-  }
-
-  /**
-   * Seed initial categories from existing constants
-   * @param categories - Array of category data to seed
-   * @returns Bulk write result
-   */
-  async function seedCategories(
-    categories: Array<{
-      value: string;
-      label?: string;
-      description?: string;
-      order?: number;
-      custom?: boolean;
-    }>,
-  ): Promise<import('mongoose').mongo.BulkWriteResult> {
-    const AgentCategory = mongoose.models.AgentCategory as Model<IAgentCategory>;
-
-    const operations = categories.map((category, index) => ({
-      updateOne: {
-        filter: { value: category.value },
-        update: {
-          $setOnInsert: {
-            value: category.value,
-            label: category.label || category.value,
-            description: category.description || '',
-            order: category.order || index,
-            isActive: true,
-            custom: category.custom || false,
-          },
-        },
-        upsert: true,
-      },
-    }));
-
-    return await tenantSafeBulkWrite(AgentCategory, operations);
-  }
-
-  /**
-   * Find a category by value
-   * @param value - The category value to search for
-   * @returns The category document or null
-   */
-  async function findCategoryByValue(value: string): Promise<IAgentCategory | null> {
-    const AgentCategory = mongoose.models.AgentCategory as Model<IAgentCategory>;
-    return await AgentCategory.findOne({ value }).lean<IAgentCategory>();
   }
 
   /**
@@ -122,45 +52,6 @@ export function createAgentCategoryMethods(mongoose: typeof import('mongoose')):
     const AgentCategory = mongoose.models.AgentCategory as Model<IAgentCategory>;
     const category = await AgentCategory.create(categoryData);
     return category.toObject() as IAgentCategory;
-  }
-
-  /**
-   * Update a category by value
-   * @param value - The category value to update
-   * @param updateData - The data to update
-   * @returns The updated category or null
-   */
-  async function updateCategory(
-    value: string,
-    updateData: Partial<IAgentCategory>,
-  ): Promise<IAgentCategory | null> {
-    const AgentCategory = mongoose.models.AgentCategory as Model<IAgentCategory>;
-    return await AgentCategory.findOneAndUpdate(
-      { value },
-      { $set: updateData },
-      { new: true, runValidators: true },
-    ).lean<IAgentCategory>();
-  }
-
-  /**
-   * Delete a category by value
-   * @param value - The category value to delete
-   * @returns Whether the deletion was successful
-   */
-  async function deleteCategory(value: string): Promise<boolean> {
-    const AgentCategory = mongoose.models.AgentCategory as Model<IAgentCategory>;
-    const result = await AgentCategory.deleteOne({ value });
-    return result.deletedCount > 0;
-  }
-
-  /**
-   * Find a category by ID
-   * @param id - The category ID to search for
-   * @returns The category document or null
-   */
-  async function findCategoryById(id: string | Types.ObjectId): Promise<IAgentCategory | null> {
-    const AgentCategory = mongoose.models.AgentCategory as Model<IAgentCategory>;
-    return await AgentCategory.findById(id).lean<IAgentCategory>();
   }
 
   /**
@@ -276,13 +167,7 @@ export function createAgentCategoryMethods(mongoose: typeof import('mongoose')):
   return {
     getActiveCategories,
     getCategoriesWithCounts,
-    getValidCategoryValues,
-    seedCategories,
-    findCategoryByValue,
     createCategory,
-    updateCategory,
-    deleteCategory,
-    findCategoryById,
     getAllCategories,
     ensureDefaultCategories,
   };

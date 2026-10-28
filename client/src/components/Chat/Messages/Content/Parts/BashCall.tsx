@@ -1,13 +1,15 @@
 import { useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import copy from 'copy-to-clipboard';
+import { Button } from '@librechat/client';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
+import { toolPanelSpacingClassName, useToolContentPending } from '../disclosure';
 import { parseBackgroundHandle, splitBackgroundAttachments } from './handle';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import parseJsonField, { areToolCallArgsComplete } from './parseJsonField';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import LangIcon from '~/components/Messages/Content/LangIcon';
-import { toolPanelSpacingClassName } from '../disclosure';
+import { PANE_COPY_REVEAL, TOOL_ROW_CLASSES } from '../rows';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
 import useFollowScroll from './useFollowScroll';
@@ -16,8 +18,8 @@ import { ERROR_PATTERNS } from './ExecuteCode';
 import { AttachmentGroup } from './Attachment';
 import { parseCommandOutput } from './command';
 import { useToolCallIntent } from './intent';
-import { TOOL_ROW_CLASSES } from '../rows';
 import PtcToolTrace from './PtcToolTrace';
+import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -39,6 +41,7 @@ export default function BashCall({
   hideAttachments = false,
   onExpand,
   toolCallId,
+  stepId,
 }: {
   initialProgress: number;
   isSubmitting: boolean;
@@ -54,8 +57,10 @@ export default function BashCall({
   hideAttachments?: boolean;
   onExpand?: () => void;
   toolCallId?: string;
+  stepId?: string;
 }) {
   const localize = useLocalize();
+  const [showTimeoutDetails, setShowTimeoutDetails] = useState(false);
   const command = useMemo(() => parseJsonField(args, commandField), [args, commandField]);
   const isWritingCommand = !command || !areToolCallArgsComplete(args);
   const { useSandboxStarting } = useMessagePartsHost();
@@ -92,9 +97,11 @@ export default function BashCall({
               text: result.stderr,
               className: result.failed ? 'text-status-error' : 'text-text-secondary',
             },
-            { text: result.trailer, className: 'text-text-tertiary' },
+            ...(!result.timedOut || showTimeoutDetails
+              ? [{ text: result.trailer, className: 'text-text-tertiary' }]
+              : []),
           ],
-    [result],
+    [result, showTimeoutDetails],
   );
   /** A backgrounded call's persisted output stays the dispatch handle until
    *  the detached run settles and patches it; render a background state
@@ -120,16 +127,21 @@ export default function BashCall({
       )
     : null;
 
-  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput } = useToolCallState({
-    initialProgress,
-    isSubmitting,
-    output,
-    hasInput: !!command,
-    onExpand,
-    runStepStatus,
-    extraError: backgroundFailed || result?.failed === true,
-    extraCancelled: cancelledInBackground,
-  });
+  /** The model-authored `intent` is the settled label too, and only the row
+   *  renders it, so a call that carries one keeps its row. */
+  const intent = useToolCallIntent(args);
+  const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare, rowRef } =
+    useToolCallState({
+      initialProgress,
+      isSubmitting,
+      output,
+      hasInput: !!command,
+      onExpand,
+      runStepStatus,
+      extraError: backgroundFailed || result?.failed === true,
+      extraCancelled: cancelledInBackground,
+      keepRow: backgroundHandle != null || intent != null,
+    });
 
   const highlighted = useLazyHighlight(showCode ? command || undefined : undefined, 'bash');
   const { ref: commandPaneRef, onScroll: onCommandPaneScroll } = useFollowScroll<HTMLDivElement>(
@@ -142,18 +154,21 @@ export default function BashCall({
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
   useEffect(() => () => clearTimeout(timerRef.current), []);
 
+  const contentPending = useToolContentPending();
   const handleCopy = useCallback(() => {
+    if (contentPending) {
+      return;
+    }
     setIsCopied(true);
     copy(command, { format: 'text/plain' });
     clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => setIsCopied(false), 3000);
-  }, [command]);
+  }, [command, contentPending]);
 
   /** The model-authored `intent` streams as the FIRST args key, so it is the
    *  live label from the earliest delta — before the command exists and while
    *  it runs. It persists as the settled label too (completion is a UI state,
    *  not a tense change); the generic texts are the no-intent fallback. */
-  const intent = useToolCallIntent(args);
   const inProgressText = (() => {
     if (intent != null) {
       return intent;
@@ -167,41 +182,50 @@ export default function BashCall({
     return localize('com_ui_running_command');
   })();
 
+  const finishedText =
+    phase === 'cancelled'
+      ? localize('com_ui_cancelled')
+      : (backgroundFinishedText ?? intent ?? localize('com_ui_command_finished'));
+
   return (
     <>
-      <div className={TOOL_ROW_CLASSES}>
-        <ProgressText
-          phase={phase}
-          onClick={toggleCode}
-          inProgressText={inProgressText}
-          finishedText={
-            phase === 'cancelled'
-              ? localize('com_ui_cancelled')
-              : (backgroundFinishedText ?? intent ?? localize('com_ui_command_finished'))
-          }
-          /** A backgrounded call's run step closes when dispatch returns the
-           *  handle, so its duration is the dispatch time — showing it would
-           *  misstate a detached task's runtime as seconds. The handle check
-           *  covers the live card; the persisted `backgrounded` marker covers
-           *  the card after harvest replaces the handle with real stdout
-           *  (and after any reload), when no transient signal survives. */
-          durationMs={
-            backgroundHandle == null && backgrounded !== true ? runStepDurationMs : undefined
-          }
-          icon={
-            <LangIcon
-              lang="bash"
-              className={cn(
-                'text-text-secondary size-4 shrink-0',
-                phase === 'running' && 'animate-pulse',
-              )}
-            />
-          }
-          hasInput={!!command || hasOutput}
-          isExpanded={showCode}
-          verdict={verdict}
-        />
-      </div>
+      <BareStatus active={bare} text={finishedText} />
+      {!bare && (
+        <div
+          className={TOOL_ROW_CLASSES}
+          ref={rowRef}
+          data-task-tool-call={toolCallId}
+          data-task-step={stepId}
+        >
+          <ProgressText
+            phase={phase}
+            onClick={toggleCode}
+            inProgressText={inProgressText}
+            finishedText={finishedText}
+            /** A backgrounded call's run step closes when dispatch returns the
+             *  handle, so its duration is the dispatch time, and showing it would
+             *  misstate a detached task's runtime as seconds. The handle check
+             *  covers the live card; the persisted `backgrounded` marker covers
+             *  the card after harvest replaces the handle with real stdout
+             *  (and after any reload), when no transient signal survives. */
+            durationMs={
+              backgroundHandle == null && backgrounded !== true ? runStepDurationMs : undefined
+            }
+            icon={
+              <LangIcon
+                lang="bash"
+                className={cn(
+                  'text-text-secondary size-4 shrink-0',
+                  phase === 'running' && 'animate-pulse',
+                )}
+              />
+            }
+            hasInput={!!command || hasOutput}
+            isExpanded={showCode}
+            verdict={verdict}
+          />
+        </div>
+      )}
       <div style={expandStyle}>
         <div className="overflow-hidden" ref={expandRef}>
           <div
@@ -215,20 +239,27 @@ export default function BashCall({
               // (`DiffView`, the user-turn code bars) instead of a palette shade a theme
               // cannot reach: the previous dark-only gray-950 fill was Tailwind's blue-black,
               // outside this palette entirely.
-              <div className="bg-surface-code relative">
+              <div className="bg-surface-code group/copy relative">
                 <CopyButton
                   iconOnly
                   isCopied={isCopied}
                   onClick={handleCopy}
-                  className="absolute top-1 right-1.5"
+                  disabled={contentPending}
+                  className={cn(
+                    'bg-surface-code absolute inset-e-1.5 top-1 z-[1]',
+                    PANE_COPY_REVEAL,
+                  )}
                   label={localize('com_ui_copy_code')}
                 />
                 <div
                   ref={commandPaneRef}
                   onScroll={onCommandPaneScroll}
-                  className="max-h-[300px] overflow-auto"
+                  className="max-h-[18.75rem] overflow-auto"
                 >
-                  <pre className="px-3 py-2.5 pr-10 font-mono text-xs break-words whitespace-pre-wrap">
+                  <pre
+                    dir="ltr"
+                    className="px-3 py-2.5 font-mono text-xs break-words whitespace-pre-wrap"
+                  >
                     <span className="text-text-tertiary select-none" aria-hidden="true">
                       {'$ '}
                     </span>
@@ -245,10 +276,10 @@ export default function BashCall({
             <PtcToolTrace
               toolCallId={toolCallId}
               expanded={showCode}
-              className={cn(command && 'border-border-light border-t')}
+              className={cn(command && 'border-border-inset border-t')}
             />
             {hasOutput && backgroundHandle == null && (
-              <div className={cn('px-3 py-2.5', command && 'border-border-light border-t')}>
+              <div className={cn('px-3 py-2.5', command && 'border-border-inset border-t')}>
                 {outputIsEmpty ? (
                   <p className="text-text-secondary text-xs italic">
                     {localize('com_ui_no_output')}
@@ -261,6 +292,22 @@ export default function BashCall({
                     segments={outputSegments}
                     variant="terminal"
                   />
+                )}
+                {result?.timedOut === true && (
+                  <div className="mt-2 flex items-center justify-between gap-2 text-xs">
+                    <span className="text-text-secondary">
+                      {localize('com_ui_command_timeout_note')}
+                    </span>
+                    <Button
+                      type="button"
+                      variant="inline-link"
+                      size="bare"
+                      aria-expanded={showTimeoutDetails}
+                      onClick={() => setShowTimeoutDetails((previous) => !previous)}
+                    >
+                      {localize(showTimeoutDetails ? 'com_ui_hide' : 'com_ui_details')}
+                    </Button>
+                  </div>
                 )}
               </div>
             )}

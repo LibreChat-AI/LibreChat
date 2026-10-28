@@ -1,5 +1,4 @@
 import React, { useEffect, useMemo, useRef } from 'react';
-import { useMediaQuery } from '@librechat/client';
 import { PermissionTypes, Permissions } from 'librechat-data-provider';
 import { useSearchParams, useParams, useNavigate } from 'react-router-dom';
 import type t from 'librechat-data-provider';
@@ -8,6 +7,7 @@ import SortDropdown, { SORT_OPTIONS, DEFAULT_SORT_OPTION } from './SortDropdown'
 import { useDocumentTitle, useHasAccess, useLocalize } from '~/hooks';
 import MarketplaceAdminSettings from './MarketplaceAdminSettings';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
+import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import { SidePanelGroup } from '~/components/SidePanel';
 import MineFilterToggle from './MineFilterToggle';
 import CategoryTabs from './CategoryTabs';
@@ -23,7 +23,7 @@ const AgentMarketplace: React.FC<AgentMarketplaceProps> = ({ className = '' }) =
   const navigate = useNavigate();
   const { category } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
-  const isSmallScreen = useMediaQuery('(max-width: 768px)');
+  const isSmallScreen = useDrawerViewport();
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const searchQuery = searchParams.get('q') || '';
   const sort = useMemo<t.AgentSortOption>(() => {

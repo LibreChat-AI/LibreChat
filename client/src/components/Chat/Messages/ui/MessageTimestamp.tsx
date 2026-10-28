@@ -19,9 +19,9 @@ function TimestampText({
       dateTime={timestamp.iso}
       title={timestamp.isRecent ? timestamp.absolute : undefined}
       className={cn(
-        'message-timestamp text-xs font-normal text-text-secondary',
+        'message-timestamp text-text-secondary text-xs font-normal',
         revealOnHover &&
-          'ml-2 transition-opacity duration-theme-normal ease-out motion-reduce:transition-none',
+          'duration-theme-normal ms-2 transition-opacity ease-out motion-reduce:transition-none',
         className,
       )}
     >

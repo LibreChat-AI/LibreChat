@@ -1,9 +1,17 @@
 # Codegraph e2e VOTES — observe-only, post-merge, time-boxed.
 #
 # Playwright never runs on pushes to dev, so evidence for the e2e skip election would
-# otherwise wait on rare organic PR spec failures. This workflow runs the FULL mock suite on
-# every merge: each run is one graduation trial for every spec it executes, and doubles as
-# the post-merge safety net the jest workflows already have via their dev-push triggers.
+# otherwise wait on rare organic PR spec failures. This workflow runs the FULL mock suite after
+# merges: each run is one graduation trial for every spec it executes, and doubles as the
+# post-merge safety net the jest workflows already have via their dev-push triggers.
+#
+# By default every merge votes (the push trigger). Each run costs about 154 job-minutes on ten
+# runners, so with repo variable CODEGRAPH_E2E_VOTE_MIN_HOURS set to N > 0 a push run votes
+# nothing: its job is skipped and codegraph-e2e-vote-gate.yml starts this workflow on dev
+# (workflow_dispatch) at most once per N hours, catching up hourly on the newest merge once the
+# window opens (rules in .github/scripts/vote-gate.mjs). A handed-off push run takes a
+# concurrency group of its own, so it neither waits behind a vote nor replaces the pending one.
+# Leave run-name unset: the codegraph shadow matches vote runs by this workflow's name.
 #
 # It previously ran only the merged PR's skippable tier, passing the tier as CLI path
 # filters. playwright.config.mock.ts scopes discovery to testDir specs/mock/, so tier
@@ -14,9 +22,29 @@
 # since env-gated suites self-skip under this job's default env — and the run takes no
 # path filters at all.
 #
-# It cannot fail the branch: the test step is continue-on-error. The newest merge cancels
-# older vote runs. The whole campaign switches off by setting repo variable
-# CODEGRAPH_E2E_VOTES=off once the election passes.
+# It cannot fail the branch: the test step is continue-on-error. A vote run is never
+# cancelled once it starts, because only a finished run is a trial: while each merge
+# cancelled the run before it (dev merges every few minutes, the suite takes ~43 min), 480
+# of 499 runs from 2026-09-24 never finished and graduation evidence stopped at 09-30. One
+# run proceeds and the newest merge waits as the single pending run. The whole campaign
+# switches off by setting repo variable CODEGRAPH_E2E_VOTES=off once the election passes.
+#
+# The suite runs as duration-planned shards, one runner each, the way playwright-mock.yml's
+# memory shards do: on one runner with one worker it grew from 375 tests in 39.1 min
+# (2026-09-30) to 1,321 tests, and run 39682542347 reached 570 of them when its 75-minute
+# timeout cancelled it, so no vote finished after 09-30. Every shard plans the same disjoint
+# partition (.github/scripts/playwright-shards.mjs over e2e/timings.mock.json), so the
+# shards together still run the whole suite and the run is still ONE trial: the codegraph
+# shadow unions the specs each shard's ledger logged. A shard that never logs its ledger
+# (setup failed) adds no spec to the trial, so it can mint no clean trial for the specs it
+# would have run. Each shard's test step has its own time budget below the job's, so a slow
+# shard ends as a shard that ran out of time; a job timeout would cancel the whole run, and
+# the shadow reads a cancelled run as no trial. A shard that ran out of time still logs the
+# specs that FAILED: failing tests run three times, so a regression is what pushes a shard
+# past its budget, and dropping that shard would drop exactly the failure the votes exist to
+# catch. Its clean specs are not logged (not all of their tests ran), and the shadow ages
+# each spec by its own newest observation, so a shard that never finishes stops its specs'
+# skips instead of hiding behind the other shards' fresh votes.
 name: Codegraph E2E Votes
 
 on:
@@ -28,13 +56,15 @@ on:
       - '!**.md'
       - '!.github/workflows/**'
       - '.github/workflows/codegraph-e2e-votes.yml'
+      - '.github/workflows/codegraph-e2e-vote-gate.yml'
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: codegraph-e2e-votes
-  cancel-in-progress: true
+  group: ${{ github.event_name == 'push' && vars.CODEGRAPH_E2E_VOTE_MIN_HOURS != '' && vars.CODEGRAPH_E2E_VOTE_MIN_HOURS != '0' && format('codegraph-e2e-votes-handoff-{0}', github.run_id) || 'codegraph-e2e-votes' }}
+  cancel-in-progress: false
 
 env:
   NODE_OPTIONS: '--max-old-space-size=6144'
@@ -42,21 +72,38 @@ env:
 
 jobs:
   vote:
-    name: vote (full suite)
-    if: vars.CODEGRAPH_E2E_VOTES != 'off'
+    name: vote (shard ${{ matrix.shard }}/10)
+    # A push run votes only while the throttle is off; with it on, the gate starts the votes.
+    if: >-
+      vars.CODEGRAPH_E2E_VOTES != 'off' &&
+      github.ref == 'refs/heads/dev' &&
+      (github.event_name != 'push' || vars.CODEGRAPH_E2E_VOTE_MIN_HOURS == '' || vars.CODEGRAPH_E2E_VOTE_MIN_HOURS == '0')
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # Sized from e2e/timings.mock.json: 6,151 recorded seconds over 10 shards plans ~10.3 min
+    # of tests per shard. PR CI's memory shards (same plan, same workers: 1) ran their test
+    # step in 8.3-16.5 min on 2026-10-21/22, up to 1.6x the plan, and the single vote job ran
+    # ~7.7 s per test (17 min for a tenth of 1,321). VOTE_TEST_MINUTES gives the tests 28 min
+    # (2.7x the plan); the job adds setup (about 2.5 min with npm ci, 70 s of it) and margin.
+    timeout-minutes: 40
+    # Separate runners isolate each shard's user, MongoDB and fixture state. Keep workers: 1
+    # in Playwright; shared-user cleanup is not worker-safe.
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     env:
       CI: 'true'
       E2E_CHROMIUM_CHANNEL: chrome
       E2E_STREAM_STORE: memory
+      VOTE_SHARD: ${{ matrix.shard }}/10
+      VOTE_TEST_MINUTES: '28'
     steps:
       - uses: actions/checkout@v5
 
-      - name: Use Node.js 24.16.0
+      - name: Use Node.js 24.22.1
         uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.1'
 
       - name: Restore node_modules cache
         id: cache-node-modules
@@ -66,11 +113,12 @@ jobs:
             node_modules
             client/node_modules
             packages/client/node_modules
+            packages/chat/node_modules
             packages/data-provider/node_modules
             packages/data-schemas/node_modules
             packages/api/node_modules
             api/node_modules
-          key: node-modules-e2e-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+          key: node-modules-e2e-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
 
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -120,12 +168,16 @@ jobs:
         if: steps.cache-client-package.outputs.cache-hit != 'true'
         run: npm run build:client-package
 
+      # About a second, so it is not cached; the client app imports the built entries.
+      - name: Build chat package
+        run: npm run build:chat
+
       - name: Restore client app build cache
         id: cache-client-app
         uses: actions/cache@v5
         with:
           path: client/dist
-          key: build-client-app-e2e-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'client/src/**', 'client/public/**', 'client/index.html', 'client/package.json', 'client/vite.config.*', 'client/tsconfig*.json', 'client/tailwind.config.*', 'client/postcss.config.*', 'packages/client/src/**', 'packages/client/tailwind.preset.cjs', 'packages/client/tsconfig*.json', 'packages/client/tsdown.config.mjs', 'packages/client/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
+          key: build-client-app-e2e-${{ runner.os }}-${{ hashFiles('package.json', 'package-lock.json', 'client/src/**', 'client/public/**', 'client/index.html', 'client/package.json', 'client/vite.config.*', 'client/tsconfig*.json', 'client/tailwind.config.*', 'client/postcss.config.*', 'packages/client/src/**', 'packages/chat/src/**', 'packages/client/tailwind.preset.cjs', 'packages/client/tsconfig*.json', 'packages/client/tsdown.config.mjs', 'packages/client/package.json', 'packages/data-provider/src/**', 'packages/data-provider/tsconfig*.json', 'packages/data-provider/tsdown.config.mjs', 'packages/data-provider/package.json') }}
 
       - name: Build client app
         if: steps.cache-client-app.outputs.cache-hit != 'true'
@@ -171,15 +223,39 @@ jobs:
         continue-on-error: true
         run: .github/scripts/install-playwright-fonts.sh
 
-      - name: Vote — run the full mock suite (cannot fail the branch)
+      # The plan is playwright-mock.yml's: list the suite, assign whole spec files longest
+      # first to the least-loaded shard by recorded duration. No --skip (votes run every spec,
+      # graduated or not: they are the net that catches a wrong skip) and no --reserve (vote
+      # shards run nothing after the suite).
+      #
+      # The tests run under `timeout`, not the step's timeout-minutes, so the ledger can tell
+      # a shard that ran out of time from one whose tests failed: an interrupted shard's
+      # results would claim specs whose tests never all ran.
+      - name: Vote — run this shard of the mock suite (cannot fail the branch)
         continue-on-error: true
-        env:
-          # Absolute on purpose: Playwright resolves a relative PLAYWRIGHT_JSON_OUTPUT_NAME
-          # against the CONFIG directory (e2e/), not the working directory — the first live run
-          # wrote e2e/pw-results.json while the ledger looked in the repo root and logged zero
-          # trials (fail-safe, but a silent no-op).
-          PLAYWRIGHT_JSON_OUTPUT_NAME: ${{ github.workspace }}/pw-results.json
-        run: npx playwright test --config=e2e/playwright.config.mock.ts --reporter=line,json
+        run: |
+          PLAYWRIGHT_JSON_OUTPUT_FILE=e2e/.generated/playwright-list.json \
+            npx playwright test --config=e2e/playwright.config.mock.ts --list --reporter=json > /dev/null
+          node .github/scripts/playwright-shards.mjs plan \
+            --list e2e/.generated/playwright-list.json \
+            --timings e2e/timings.mock.json \
+            --shard "$VOTE_SHARD" \
+            --out e2e/.generated/shard-tests.txt
+          # PLAYWRIGHT_JSON_OUTPUT_NAME is absolute on purpose: Playwright resolves a relative
+          # one against the CONFIG directory (e2e/), not the working directory — the first live
+          # run wrote e2e/pw-results.json while the ledger looked in the repo root and logged
+          # zero trials (fail-safe, but a silent no-op).
+          set +e
+          PLAYWRIGHT_JSON_OUTPUT_NAME="$GITHUB_WORKSPACE/pw-results.json" \
+            timeout --signal=INT --kill-after=60 "${VOTE_TEST_MINUTES}m" \
+            npx playwright test --config=e2e/playwright.config.mock.ts \
+            --test-list=e2e/.generated/shard-tests.txt --reporter=line,json
+          rc=$?
+          if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+            touch "$GITHUB_WORKSPACE/vote-timed-out"
+            echo "::warning::shard $VOTE_SHARD ran out of its ${VOTE_TEST_MINUTES}-minute test budget"
+          fi
+          exit "$rc"
 
       - name: Ledger — log the specs that actually executed
         run: |
@@ -190,15 +266,26 @@ jobs:
           # specs needs E2E_MODEL_SPECS_ENFORCE) are discovered by --list yet skip every test
           # under this job's default env — counting them as covered would mint phantom trials,
           # the exact bug this workflow revision exists to kill (Codex P1 on #15162). A spec is
-          # covered iff at least one of its tests reached a non-skipped outcome.
-          if jq -e '.suites' "$GITHUB_WORKSPACE/pw-results.json" >/dev/null 2>&1; then
+          # covered iff at least one of its tests reached a non-skipped outcome. Each shard logs
+          # only what it executed; the shadow unions the shards of one run into one trial. A
+          # shard that ran out of time logs no clean spec (not all of their tests ran), only
+          # the specs with a test Playwright counts as failed (outcome unexpected: every
+          # attempt that finished failed), so the shadow records them as failed trials.
+          if [ -e "$GITHUB_WORKSPACE/vote-timed-out" ]; then
+            echo "codegraph-votes: shard $VOTE_SHARD ran out of time — only its failures logged"
+            if jq -e '.suites' "$GITHUB_WORKSPACE/pw-results.json" >/dev/null 2>&1; then
+              jq -r '[.suites[] | recurse(.suites[]?) | .specs[]? | select(any(.tests[]?; .status == "unexpected")) | .file] | unique | .[]' "$GITHUB_WORKSPACE/pw-results.json" \
+                | sed 's|^|specs/mock/|' > failed.txt
+              if [ -s failed.txt ]; then echo "codegraph-votes-failed: $(tr '\n' ' ' < failed.txt)"; fi
+            fi
+          elif jq -e '.suites' "$GITHUB_WORKSPACE/pw-results.json" >/dev/null 2>&1; then
             jq -r '[.suites[] | recurse(.suites[]?) | .specs[]? | select([.tests[]?.status] | any(. != "skipped")) | .file] | unique | .[]' "$GITHUB_WORKSPACE/pw-results.json" \
               | sed 's|^|specs/mock/|' > covered.txt
             N=$(wc -l < covered.txt | tr -d ' ')
-            echo "codegraph-votes: running $N specs (executed, full suite)"
+            echo "codegraph-votes: running $N specs (executed, shard $VOTE_SHARD)"
             if [ "$N" != "0" ]; then echo "codegraph-votes-specs: $(tr '\n' ' ' < covered.txt)"; fi
           else
-            echo "codegraph-votes: no results json — run crashed before reporting; no trials logged"
+            echo "codegraph-votes: no results json — shard $VOTE_SHARD crashed before reporting; no trials logged"
           fi
           exit 0
 

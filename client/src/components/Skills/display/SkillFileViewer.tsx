@@ -85,7 +85,7 @@ function SkillFileViewer({ skillId, relativePath, skill }: SkillFileViewerProps)
           className="text-text-secondary hover:bg-surface-hover hover:text-text-primary rounded-md p-1 transition-colors"
           aria-label={localize('com_ui_back')}
         >
-          <ArrowLeft className="size-4" />
+          <ArrowLeft className="size-4 rtl:-scale-x-100" />
         </button>
         <FileText className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
         <span className="text-text-primary min-w-0 flex-1 truncate text-sm font-medium">
@@ -153,7 +153,7 @@ function SkillFileViewer({ skillId, relativePath, skill }: SkillFileViewerProps)
           <>
             {isLoading && (
               <div className="flex items-center justify-center py-12">
-                <Spinner className="text-text-secondary size-6" />
+                <Spinner tone="secondary" className="size-6" />
               </div>
             )}
 
@@ -178,7 +178,7 @@ function SkillFileViewer({ skillId, relativePath, skill }: SkillFileViewerProps)
                   <img
                     src={rawUrl}
                     alt={data.filename}
-                    className="max-h-[600px] max-w-full rounded-lg object-contain"
+                    className="max-h-[37.5rem] max-w-full rounded-lg object-contain"
                   />
                 )}
 

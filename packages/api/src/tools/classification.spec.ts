@@ -12,6 +12,8 @@ import {
   getServerNameFromTool,
   agentHasDeferredTools,
 } from './classification';
+import { bindToolApproval, getToolApprovalAuthKind } from './approval';
+import { extractMCPToolDefinition } from './classification';
 
 describe('classification.ts', () => {
   describe('getServerNameFromTool', () => {
@@ -777,3 +779,36 @@ describe('classification.ts', () => {
     });
   });
 });
+
+test.each(['oauth', 'other'] as const)(
+  'classification and both registries preserve private %s auth provenance',
+  async (kind) => {
+    const tool = bindToolApproval(
+      {
+        name: 'query_mcp_db',
+        mcp: true,
+        mcpRawServerName: 'db',
+        mcpJsonSchema: { type: 'object' as const },
+      },
+      'source',
+      undefined,
+      undefined,
+      undefined,
+      kind,
+    );
+    const definition = extractMCPToolDefinition(tool);
+    expect(getToolApprovalAuthKind(definition)).toBe(kind);
+    const configured = buildToolRegistryFromAgentOptions([definition], {
+      query_mcp_db: { approval_mode: 'always' },
+    });
+    expect(getToolApprovalAuthKind(configured.get('query_mcp_db')!)).toBe(kind);
+    const plain = await buildToolClassification({
+      userId: 'user-a',
+      agentId: 'agent-a',
+      loadedTools: [tool as unknown as GenericTool],
+      definitionsOnly: true,
+      deferredToolsEnabled: false,
+    });
+    expect(getToolApprovalAuthKind(plain.toolRegistry!.get('query_mcp_db')!)).toBe(kind);
+  },
+);

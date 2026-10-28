@@ -5,6 +5,7 @@ import type * as t from './types';
 import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from './config';
 import { persistTwoFactorSetupToken } from './twoFactor';
 import { setTokenHeader } from './headers-helpers';
+import { getClientLimit } from './clientLimits';
 import * as endpoints from './api-endpoints';
 
 async function _get<T>(url: string, options?: AxiosRequestConfig): Promise<T> {
@@ -19,8 +20,9 @@ async function _getResponse<T = unknown>(
   return await axios.get<T>(url, { ...options });
 }
 
-async function _post(url: string, data?: any) {
+async function _post(url: string, data?: any, options?: AxiosRequestConfig) {
   const response = await axios.post(url, JSON.stringify(data), {
+    ...options,
     headers: { 'Content-Type': 'application/json' },
   });
   return response.data;
@@ -84,8 +86,9 @@ type AuthRecoveryWindow = Window & {
   __librechatAuthRecovery?: AuthRecoveryState;
 };
 
+/** A hung refresh gates every API call through the deduped recovery promise, so it must reject. */
 const refreshToken = (retry?: boolean): Promise<t.TRefreshTokenResponse | undefined> =>
-  _post(endpoints.refreshToken(retry));
+  _post(endpoints.refreshToken(retry), undefined, { timeout: getClientLimit('refreshMs') });
 
 const SHARE_PAGE_PATH_REGEX = /^\/share\/[^/]+\/?$/;
 const SHARED_MESSAGES_PATH_REGEX = /^\/api\/share\/[^/]+$/;

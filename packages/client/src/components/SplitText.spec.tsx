@@ -1,5 +1,15 @@
-import { render } from '@testing-library/react';
+import { act, render } from '@testing-library/react';
 import SplitText from './SplitText';
+
+let mockRemScale = 1;
+jest.mock('~/hooks/useRemScale', () => ({
+  __esModule: true,
+  default: () => mockRemScale,
+}));
+
+beforeEach(() => {
+  mockRemScale = 1;
+});
 
 describe('SplitText', () => {
   it.each(['سلام', 'می‌توانید', 'مرحبا', 'שלום'])(
@@ -24,7 +34,7 @@ describe('SplitText', () => {
       expect(animatedSegments[0].childNodes).toHaveLength(1);
       expect(animatedSegments[0].firstChild?.nodeType).toBe(Node.TEXT_NODE);
       expect(animatedSegments[0].textContent).toBe(text);
-      expect(animatedSegments[0].parentElement).toHaveStyle({ whiteSpace: 'normal' });
+      expect(animatedSegments[0].parentElement).toHaveClass('whitespace-normal');
       expect(container.querySelector('.sr-only')).toHaveTextContent(text);
     },
   );
@@ -77,13 +87,75 @@ describe('SplitText', () => {
       for (const [index, box] of Array.from(wordBoxes).entries()) {
         expect(box).toHaveAttribute('aria-hidden', 'true');
         expect(
-          Array.from(box.querySelectorAll('span.inline-block'))
+          Array.from(box.querySelectorAll('span.inline-block.will-change-transform'))
             .map((span) => span.textContent)
             .join(''),
         ).toBe(expectedWords[index]);
       }
     } finally {
       document.documentElement.dir = previousDir;
+    }
+  });
+
+  it('reports new wrapping after scale changes without changing the text', () => {
+    jest.useFakeTimers();
+    const observerSpy = jest
+      .spyOn(window, 'IntersectionObserver')
+      .mockImplementation((callback) => {
+        const observer: IntersectionObserver = {
+          root: null,
+          rootMargin: '',
+          thresholds: [0],
+          observe(target) {
+            callback(
+              [
+                {
+                  target,
+                  isIntersecting: true,
+                  intersectionRatio: 1,
+                  time: 0,
+                  boundingClientRect: target.getBoundingClientRect(),
+                  intersectionRect: target.getBoundingClientRect(),
+                  rootBounds: null,
+                },
+              ],
+              observer,
+            );
+          },
+          unobserve() {},
+          disconnect() {},
+          takeRecords: () => [],
+        };
+        return observer;
+      });
+    const onLineCountChange = jest.fn();
+    const animation = { opacity: 1, transform: 'none' };
+    const props = {
+      text: 'A stable greeting',
+      delay: 0,
+      animationFrom: animation,
+      animationTo: animation,
+      onLineCountChange,
+    };
+    const view = render(<SplitText {...props} />);
+    const paragraph = view.container.querySelector('p')!;
+    let height = 20;
+    Object.defineProperty(paragraph, 'offsetHeight', { get: () => height });
+    try {
+      paragraph.style.lineHeight = '20px';
+      act(() => jest.advanceTimersByTime(100));
+      expect(onLineCountChange).toHaveBeenLastCalledWith(1);
+
+      mockRemScale = 1.5;
+      height = 60;
+      paragraph.style.lineHeight = '30px';
+      view.rerender(<SplitText {...props} />);
+      act(() => jest.advanceTimersByTime(100));
+      expect(onLineCountChange).toHaveBeenLastCalledWith(2);
+    } finally {
+      view.unmount();
+      observerSpy.mockRestore();
+      jest.useRealTimers();
     }
   });
 });

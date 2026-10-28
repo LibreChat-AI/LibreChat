@@ -1,4 +1,4 @@
-import { lazy, Suspense, useRef } from 'react';
+import { Suspense, useRef } from 'react';
 import { Spinner } from '@librechat/client';
 import * as Tabs from '@radix-ui/react-tabs';
 import type { SandpackPreviewRef } from '@codesandbox/sandpack-react/unstyled';
@@ -7,10 +7,12 @@ import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
 import { MermaidRenderer } from '~/components/Messages/Content/Mermaid/Mermaid';
 import { MERMAID_ARTIFACT_TYPE, type Artifact } from '~/common/artifacts';
 import { useArtifactCode } from '~/Providers/EditorContext';
+import { normalizeArtifactType } from '~/utils/artifacts';
 import { ArtifactCodeEditor } from './ArtifactCodeEditor';
+import { lazyWithRecovery } from '~/lib/assets/lazy';
 import { useLocalize } from '~/hooks';
 
-const SandboxArtifactTabs = lazy(() => import('./SandboxArtifactTabs'));
+const SandboxArtifactTabs = lazyWithRecovery(() => import('./SandboxArtifactTabs'));
 
 interface ArtifactTabsProps {
   artifact: Artifact;
@@ -84,7 +86,7 @@ function MermaidArtifactTabs({
 }
 
 export default function ArtifactTabs(props: ArtifactTabsProps) {
-  if (props.artifact.type === MERMAID_ARTIFACT_TYPE) {
+  if (normalizeArtifactType(props.artifact.type ?? '') === MERMAID_ARTIFACT_TYPE) {
     return (
       <MermaidArtifactTabs
         artifact={props.artifact}

@@ -101,7 +101,7 @@ function RatingBadge({ rating, ratingCount }: { rating?: number; ratingCount?: n
     return null;
   }
   return (
-    <span className="text-text-secondary flex items-center gap-1 text-[11px]">
+    <span className="text-text-secondary text-2xs flex items-center gap-1">
       <Star className="size-3 fill-current" aria-hidden="true" />
       {rating}
       {ratingCount != null && <span className="text-text-secondary">({ratingCount})</span>}
@@ -128,7 +128,7 @@ function ImageStrip({ images, label }: { images: ImageResult[]; label: string })
               target="_blank"
               rel="noopener noreferrer"
               aria-label={image.title || image.domain || label}
-              className="border-border-light focus-visible:ring-border-heavy block h-28 overflow-hidden rounded-xl border no-underline focus-visible:ring-2 focus-visible:outline-hidden"
+              className="border-border-light focus-visible:ring-focus-subtle block h-28 overflow-hidden rounded-xl border no-underline focus-visible:ring-2 focus-visible:outline-hidden"
               style={{ aspectRatio: ratio }}
             >
               <img
@@ -157,7 +157,7 @@ function ShoppingStrip({ items, label }: { items: ShoppingResult[]; label: strin
             href={safeUrl(item.link)}
             target="_blank"
             rel="noopener noreferrer"
-            className="border-border-light hover:bg-surface-hover focus-visible:ring-border-heavy flex w-full flex-col rounded-xl border p-2 no-underline transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
+            className="border-border-light hover:bg-surface-hover focus-visible:ring-focus-subtle flex w-full flex-col rounded-xl border p-2 no-underline transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
           >
             {safeUrl(item.imageUrl) && (
               <div className="bg-surface-tertiary mb-2 aspect-square w-full shrink-0 overflow-hidden rounded-lg">
@@ -173,14 +173,12 @@ function ShoppingStrip({ items, label }: { items: ShoppingResult[]; label: strin
               {item.title}
             </span>
             {(item.price || item.source) && (
-              <span className="text-text-secondary mt-0.5 block truncate text-[11px]">
+              <span className="text-text-secondary text-2xs mt-0.5 block truncate">
                 {[item.price, item.source].filter(Boolean).join(' · ')}
               </span>
             )}
             {item.delivery && (
-              <span className="text-text-secondary block truncate text-[11px]">
-                {item.delivery}
-              </span>
+              <span className="text-text-secondary text-2xs block truncate">{item.delivery}</span>
             )}
             <span className="mt-0.5 block">
               <RatingBadge rating={item.rating} ratingCount={item.ratingCount} />
@@ -203,13 +201,13 @@ function PlaceList({ places, label }: { places: PlaceResult[]; label: string }) 
           /** The same provider place can appear in several grouped searches;
            *  discriminate each occurrence even when its identifier is present. */
           key={`${place.identifier || `${place.name ?? ''}|${place.address ?? ''}`}|${i}`}
-          className={cn(i > 0 && 'border-border-light border-t')}
+          className={cn(i > 0 && 'border-border-inset border-t')}
         >
           <a
             href={mapLink(place)}
             target="_blank"
             rel="noopener noreferrer"
-            className="hover:bg-surface-hover focus-visible:ring-border-heavy flex items-center gap-2.5 px-3 py-2 no-underline transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
+            className="hover:bg-surface-hover focus-visible:ring-focus-subtle flex items-center gap-2.5 px-3 py-2 no-underline transition-colors focus-visible:ring-2 focus-visible:outline-hidden"
           >
             <MapPin className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
             <span className="min-w-0 flex-1">
@@ -217,7 +215,7 @@ function PlaceList({ places, label }: { places: PlaceResult[]; label: string }) 
                 {place.name}
               </span>
               {(place.category || place.address) && (
-                <span className="text-text-secondary block truncate text-[11px]">
+                <span className="text-text-secondary text-2xs block truncate">
                   {[place.category, place.address].filter(Boolean).join(' · ')}
                 </span>
               )}

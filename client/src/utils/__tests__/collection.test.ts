@@ -5,7 +5,6 @@ import {
   deleteData,
   updateFields,
   updateFieldsInPlace,
-  normalizeData,
   getRecordByProperty,
 } from '../collection';
 
@@ -339,48 +338,5 @@ describe('deleteData', () => {
     );
 
     expect(result.pages[0].items).toHaveLength(1);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// normalizeData
-// ---------------------------------------------------------------------------
-
-describe('normalizeData', () => {
-  it('redistributes items evenly according to pageSize', () => {
-    const data = makeInfiniteData([
-      { items: [makeItem('a', 'A'), makeItem('b', 'B'), makeItem('c', 'C')] },
-      { items: [makeItem('d', 'D')] },
-    ]);
-
-    const result = normalizeData<Page, Item>(data, 'items', 2);
-
-    expect(result.pages[0].items).toHaveLength(2);
-    expect(result.pages[1].items).toHaveLength(2);
-  });
-
-  it('removes empty pages after redistribution', () => {
-    const data = makeInfiniteData([{ items: [makeItem('a', 'A')] }, { items: [] }]);
-
-    const result = normalizeData<Page, Item>(data, 'items', 10);
-
-    expect(result.pages).toHaveLength(1);
-  });
-
-  it('deduplicates items when uniqueProperty is provided', () => {
-    const data = makeInfiniteData([
-      { items: [makeItem('a', 'Alpha'), makeItem('a', 'AlphaDuplicate')] },
-    ]);
-
-    const result = normalizeData<Page, Item>(data, 'items', 10, 'id');
-
-    const ids = result.pages.flatMap((p) => p.items.map((i) => i.id));
-    expect(ids.filter((id) => id === 'a')).toHaveLength(1);
-  });
-
-  it('returns the data unchanged when pages array is empty', () => {
-    const data = makeInfiniteData([]);
-    const result = normalizeData<Page, Item>(data, 'items', 10);
-    expect(result.pages).toHaveLength(0);
   });
 });

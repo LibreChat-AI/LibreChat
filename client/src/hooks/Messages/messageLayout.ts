@@ -1,4 +1,3 @@
-export const MESSAGE_CONTENT_LAYOUT_CHANGE_EVENT = 'librechat:message-content-layout-change';
 const MESSAGE_SCROLL_CONTAINER_SELECTOR = '.scrollbar-gutter-stable';
 const MESSAGE_LAYOUT_RECONCILE_DURATION_MS = 350;
 
@@ -71,17 +70,4 @@ export function scheduleMessageContentLayoutReconcile(target: HTMLElement | null
       window.cancelAnimationFrame(animationFrameId);
     }
   };
-}
-
-export function dispatchMessageContentLayoutChange(target: HTMLElement | null): void {
-  reconcileMessageContentLayout(target);
-  if (!target || typeof CustomEvent === 'undefined') {
-    return;
-  }
-
-  target.dispatchEvent(
-    new CustomEvent(MESSAGE_CONTENT_LAYOUT_CHANGE_EVENT, {
-      bubbles: true,
-    }),
-  );
 }

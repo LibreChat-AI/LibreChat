@@ -658,3 +658,26 @@ describe('GenerationJobManager resume replay events', () => {
     expect(resumeState?.replayEvents).toEqual(expect.arrayContaining(events));
   });
 });
+
+it('projects private completion authority for a freshly reconstructed approval job', async () => {
+  const store = new InMemoryJobStore();
+  const manager = createManagerWithStore(store);
+  const identity = {
+    scheduleId: 'schedule',
+    ownerId: 'owner',
+    tenantId: 'tenant',
+    agentId: 'original-root',
+    invocationMode: 'delegated' as const,
+  };
+  try {
+    const job = await manager.createJob('completion', 'owner', 'completion', {
+      initialMetadata: { scheduleMCPCompletion: identity },
+    });
+    const rebuilt = await manager.getJob('completion');
+    expect(rebuilt?.metadata.scheduleMCPCompletion).toEqual(identity);
+    expect(rebuilt?.metadata.scheduleId).toBeUndefined();
+    expect(rebuilt?.createdAt).toBe(job.createdAt);
+  } finally {
+    await manager.destroy();
+  }
+});

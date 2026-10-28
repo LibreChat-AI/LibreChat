@@ -2,7 +2,8 @@ import React, { useState, useMemo, useCallback, memo } from 'react';
 import { Copy, Check } from 'lucide';
 import { useAtomValue } from 'jotai';
 import { useRecoilState } from 'recoil';
-import { findMessageById, isUserInitiatedCompaction } from 'librechat-data-provider';
+import { revealedQueuedTurnFamily } from '@librechat/chat/react';
+import { getSpeechText, findMessageById, isUserInitiatedCompaction } from 'librechat-data-provider';
 import {
   Button,
   EditIcon,
@@ -15,7 +16,6 @@ import type { TConversation, TMessage, TFeedback } from 'librechat-data-provider
 import { useMessagesIsSubmitting, useOptionalMessagesOperations } from '~/Providers';
 import { useGenerationsByLatest, useLocalize } from '~/hooks';
 import { hasEditablePart } from './Content/editableParts';
-import { revealedQueuedTurnFamily } from '~/store/steer';
 import { Fork } from '~/components/Conversations';
 import { hoverButtonClasses } from './styles';
 import MessageAudio from './MessageAudio';
@@ -53,38 +53,6 @@ type HoverButtonProps = {
   buttonStyle?: string;
   dataTestId?: string;
   disabled?: boolean;
-};
-
-const extractMessageContent = (message: TMessage): string => {
-  if (typeof message.content === 'string') {
-    return message.content;
-  }
-
-  if (Array.isArray(message.content)) {
-    return message.content
-      .map((part) => {
-        if (part == null) {
-          return '';
-        }
-        if (typeof part === 'string') {
-          return part;
-        }
-        if ('text' in part) {
-          return part.text || '';
-        }
-        if ('think' in part) {
-          const think = part.think;
-          if (typeof think === 'string') {
-            return think;
-          }
-          return think && 'text' in think ? think.text || '' : '';
-        }
-        return '';
-      })
-      .join('');
-  }
-
-  return message.text || '';
 };
 
 const HoverButton = memo(
@@ -226,16 +194,17 @@ const HoverButtons = ({
   };
 
   const handleCopy = () => copyToClipboard(setIsCopied);
+  const speechText = getSpeechText(message);
 
   return (
     <div className="group visible flex justify-center gap-0.5 self-end focus-within:outline-hidden lg:justify-start">
       {/* Text to Speech */}
-      {TextToSpeech && !error && !isActiveStreamingMessage && (
+      {TextToSpeech && !error && !isActiveStreamingMessage && speechText.length > 0 && (
         <MessageAudio
           index={index}
           isLast={isLast}
           messageId={message.messageId}
-          content={extractMessageContent(message)}
+          content={speechText}
           renderButton={(props) => (
             <HoverButton
               onClick={props.onClick}
@@ -256,14 +225,12 @@ const HoverButtons = ({
           title={
             isCopied ? localize('com_ui_copied_to_clipboard') : localize('com_ui_copy_to_clipboard')
           }
-          icon={<MorphIcon icon={isCopied ? Check : Copy} size={19} />}
+          icon={<MorphIcon icon={isCopied ? Check : Copy} size="1.1875rem" />}
           isLast={isLast}
           disabled={!canCopy}
           className={cn(
-            'ml-0 flex items-center gap-1.5 text-xs',
-            isSubmitting && isCreatedByUser
-              ? 'group-hover:opacity-100 [@media(hover:hover)]:opacity-0'
-              : '',
+            'ms-0 flex items-center gap-1.5 text-xs',
+            isSubmitting && isCreatedByUser ? 'no-touch:opacity-0 group-hover:opacity-100' : '',
           )}
           dataTestId={!isCreatedByUser ? 'copy-response-button' : undefined}
         />
@@ -282,7 +249,8 @@ const HoverButtons = ({
         />
       )}
 
-      {/* Fork Button */}
+      {/* Fork Button: withheld on a failed turn, whose copy would carry the provider's error as an
+          ordinary answer. The error card's "Branch without files" copies up to the turn before. */}
       {!error && !isActiveStreamingMessage && (
         <Fork
           messageId={message.messageId}
@@ -315,7 +283,7 @@ const HoverButtons = ({
         <HoverButton
           onClick={(e) => e && handleContinue(e)}
           title={localize('com_ui_continue')}
-          icon={<ContinueIcon className="-rotate-180" />}
+          icon={<ContinueIcon className="size-4.75" />}
           isLast={isLast}
           dataTestId={isLast ? 'continue-generation-button' : undefined}
           className="active"

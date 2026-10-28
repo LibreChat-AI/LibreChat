@@ -4,7 +4,6 @@ import sharp from 'sharp';
 import { logger } from '@librechat/data-schemas';
 import type { IUser } from '@librechat/data-schemas';
 import type { TFile } from 'librechat-data-provider';
-import type { FormatEnum } from 'sharp';
 import type {
   SaveBufferFn,
   UploadImageParams,
@@ -12,13 +11,14 @@ import type {
   ProcessAvatarParams,
 } from '~/storage/types';
 import { AVATAR_BASE_PATH, DEFAULT_BASE_PATH as defaultBasePath } from '~/storage/constants';
+import { convertImageBuffer } from '~/files/format';
 
 export interface ImageServiceDeps {
   resizeImageBuffer: (
     buffer: Buffer,
     resolution: string,
     endpoint: string,
-  ) => Promise<{ buffer: Buffer; width: number; height: number }>;
+  ) => Promise<{ buffer: Buffer; width: number; height: number; type?: string }>;
   updateUser: (userId: string, update: { avatar: string }) => Promise<IUser | null>;
   updateFile: (params: { file_id: string }) => Promise<TFile>;
 }
@@ -71,26 +71,16 @@ export class ImageService {
         buffer: resizedBuffer,
         width,
         height,
+        type,
       } = await this.deps.resizeImageBuffer(inputBuffer, resolution, endpoint);
 
-      const extension = path.extname(inputFilePath);
       const userId = req.user.id;
-      const outputType = appConfig?.imageOutputType ?? 'webp';
-      const targetExtension = `.${outputType}`;
-
-      let processedBuffer: Buffer;
-      let fileName = `${file_id}__${path.basename(inputFilePath)}`;
-
-      if (extension.toLowerCase() === targetExtension) {
-        processedBuffer = resizedBuffer;
-      } else {
-        const outputFormat = outputType as keyof FormatEnum;
-        processedBuffer = await sharp(resizedBuffer).toFormat(outputFormat).toBuffer();
-        fileName = fileName.replace(new RegExp(path.extname(fileName) + '$'), targetExtension);
-        if (!path.extname(fileName)) {
-          fileName += targetExtension;
-        }
-      }
+      const { buffer: processedBuffer, fileName } = await convertImageBuffer({
+        buffer: resizedBuffer,
+        type,
+        fileName: `${file_id}__${path.basename(inputFilePath)}`,
+        outputType: appConfig?.imageOutputType ?? 'webp',
+      });
 
       const downloadURL = await this.saveBuffer({
         userId,

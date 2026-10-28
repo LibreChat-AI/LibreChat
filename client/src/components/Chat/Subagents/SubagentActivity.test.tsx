@@ -1,8 +1,11 @@
 import React from 'react';
-import { act, fireEvent, render as rtlRender, screen } from '@testing-library/react';
-import type { Agents } from 'librechat-data-provider';
+import { ContentTypes } from 'librechat-data-provider';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react';
+import type { TMessageContentParts, Agents } from 'librechat-data-provider';
 import type { ChildActivity } from './adapters';
 import SubagentActivity, { SubagentActivityScrollSurface } from './SubagentActivity';
+import { TaskContentScopeContext } from '~/data-provider/Subagents/content';
 import { ChatSurfaceHarness } from 'test/harness';
 
 const Wrapper = ({ children }: { children: React.ReactNode }) => (
@@ -10,13 +13,56 @@ const Wrapper = ({ children }: { children: React.ReactNode }) => (
 );
 const render = (ui: React.ReactElement) => rtlRender(ui, { wrapper: Wrapper });
 
+const mockShowMore = 'com_ui_show_more';
+const mockReadControl = jest.fn();
+jest.mock('librechat-data-provider', () => {
+  const actual = jest.requireActual('librechat-data-provider');
+  return {
+    ...actual,
+    dataService: {
+      ...actual.dataService,
+      getSubagentControlReceipt: (...args: unknown[]) => mockReadControl(...args),
+    },
+  };
+});
+const mockContentParts = jest.fn();
+let mockAutoExpandTools = false;
+
+jest.mock('~/Providers/MessagePartsHostContext', () => ({
+  useMessagePartsHost: () => ({
+    useShowThinking: () => false,
+    useAutoExpandTools: () => mockAutoExpandTools,
+  }),
+}));
+
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
-jest.mock('~/components/Chat/Messages/Content/Parts/Text', () => ({
+jest.mock('~/components/Chat/Messages/Content/Parts/SteerPart', () => ({
   __esModule: true,
-  default: ({ text }: { text: string }) => <div>{text}</div>,
+  default: ({
+    steer,
+    steerId,
+    receiptState,
+    hasMore,
+    onExpand,
+  }: {
+    steer: string;
+    steerId?: string;
+    receiptState?: string | null;
+    hasMore?: boolean;
+    onExpand?: () => void;
+  }) => (
+    <div data-testid="shared-steer-part" data-receipt={receiptState} data-steer-id={steerId}>
+      {steer}
+      {hasMore && (
+        <button type="button" onClick={onExpand}>
+          {mockShowMore}
+        </button>
+      )}
+    </div>
+  ),
 }));
 
 jest.mock('~/components/Chat/Messages/Content/Parts', () => ({
@@ -28,6 +74,7 @@ jest.mock('~/components/Chat/Messages/Content/ContentParts', () => ({
   default: function MockContentParts({
     content,
     messageId,
+    ...props
   }: {
     content: Array<{
       type: string;
@@ -47,13 +94,16 @@ jest.mock('~/components/Chat/Messages/Content/ContentParts', () => ({
       };
     }>;
     messageId: string;
+    foldLiveActivity?: boolean;
   }) {
+    mockContentParts({ content, messageId, ...props });
     const { useState } = jest.requireActual<typeof import('react')>('react');
     const [expandedTool, setExpandedTool] = useState<string | null>(null);
-    const tools = content.filter((part) => part.type === 'tool_call');
+    const tools = content.filter((part) => part?.type === 'tool_call');
     return (
       <div data-testid="regular-content-parts" data-message-id={messageId}>
         {content.map((part, index) => {
+          if (part == null) return null;
           if (part.type === 'text') {
             return (
               <div key={index} data-phase={part.phase}>
@@ -174,7 +224,15 @@ jest.mock('~/components/Chat/Messages/Content/ToolApproval', () => ({
   default: () => <div data-testid="tool-approval">approval</div>,
 }));
 
+jest.mock('~/components/Chat/Steering/Receipt', () => ({
+  __esModule: true,
+  default: ({ state }: { state: string }) => (
+    <span data-testid="steer-receipt" data-receipt-state={state} />
+  ),
+}));
+
 jest.mock('@librechat/client', () => ({
+  Alert: ({ children }: { children: React.ReactNode }) => <div role="alert">{children}</div>,
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => (
     <button {...props}>{children}</button>
   ),
@@ -216,7 +274,76 @@ const base: ChildActivity = {
   ],
 };
 
+it('keeps a host notice inside the floating-header clearance', () => {
+  const activity: ChildActivity = { title: 'Review', status: 'running', items: [] };
+  const { container } = render(
+    <SubagentActivity
+      activity={activity}
+      headerInset
+      notice={<div role="status">{String(19)}</div>}
+    />,
+  );
+  const inset = container.querySelector('[class~="pt-13"]');
+  expect(inset).toContainElement(screen.getByRole('status'));
+});
+
 describe('SubagentActivity', () => {
+  beforeEach(() => {
+    mockContentParts.mockClear();
+    mockAutoExpandTools = false;
+  });
+
+  it('passes standard content unchanged with its stable message identity', () => {
+    const content: TMessageContentParts[] = [
+      {
+        type: ContentTypes.THINK,
+        think: 'Reasoning.',
+        agentId: 'agent-1',
+        reasoning_label: 'Checked constraints',
+        reasoning_label_step_id: 'step-1',
+        reasoning_label_revision: 4,
+      },
+      {
+        type: ContentTypes.TOOL_CALL,
+        agentId: 'agent-1',
+        tool_call: {
+          id: 'call-1',
+          name: 'bash',
+          args: '{}',
+          output: 'result',
+          stepId: 'step-2',
+          progress: 1,
+          outputTruncated: true,
+          previewRevision: 'revision-2',
+          toolPreparationDurationMs: 21,
+          toolExecutionDurationMs: 34,
+        },
+      },
+      { type: ContentTypes.ERROR, error: 'Failure', agentId: 'agent-1' },
+    ] as TMessageContentParts[];
+    render(
+      <SubagentActivity
+        activity={{ ...base, content, messageId: 'stable-response', items: [] }}
+        activityId="synthetic-response"
+      />,
+    );
+    expect(mockContentParts).toHaveBeenLastCalledWith(
+      expect.objectContaining({ content, messageId: 'stable-response' }),
+    );
+    expect(mockContentParts.mock.calls.at(-1)?.[0].content).toBe(content);
+  });
+
+  it.each([false, true])(
+    'uses the shared default fold policy with card auto-expand=%s',
+    (autoExpand) => {
+      mockAutoExpandTools = autoExpand;
+      render(<SubagentActivity activity={{ ...base, status: 'running' }} />);
+      expect(mockContentParts).toHaveBeenLastCalledWith(
+        expect.objectContaining({ isSubmitting: true }),
+      );
+      expect(mockContentParts.mock.calls.at(-1)?.[0].foldLiveActivity).toBeUndefined();
+    },
+  );
   it.each(['failed', 'cancelled'] as const)(
     'renders the %s lifecycle through the shared view',
     (status) => {
@@ -290,7 +417,7 @@ describe('SubagentActivity', () => {
     expect(screen.getByTestId('tool-approval')).toBeInTheDocument();
   });
 
-  it('renders bounded tool details without any shortening caption', () => {
+  it('keeps a genuine legacy truncation notice instead of claiming full details', () => {
     render(
       <SubagentActivity
         activity={{
@@ -310,9 +437,7 @@ describe('SubagentActivity', () => {
     );
 
     expect(screen.queryByText('bounded input')).not.toBeInTheDocument();
-    expect(
-      screen.queryByText('com_ui_subagent_activity_details_truncated'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('com_ui_subagent_activity_details_unavailable')).toBeInTheDocument();
     expect(screen.queryByText('com_ui_subagent_thread_history_truncated')).not.toBeInTheDocument();
   });
 
@@ -408,7 +533,12 @@ describe('SubagentActivity', () => {
     expect(screen.getByText('com_ui_subagent_control_status_accepted')).toBeInTheDocument();
     expect(screen.getByText('com_ui_subagent_control_status_applied')).toBeInTheDocument();
     expect(screen.getByText('com_ui_subagent_control_status_rejected')).toBeInTheDocument();
-    expect(screen.getByText('com_ui_subagent_control_message_truncated')).toBeInTheDocument();
+    expect(screen.queryByText('com_ui_subagent_control_message_truncated')).not.toBeInTheDocument();
+    expect(
+      screen
+        .getAllByTestId('shared-steer-part')
+        .some((part) => part.textContent === 'Add a citation.'),
+    ).toBe(true);
     expect(screen.getByText('com_ui_subagent_control_reason_task_completed')).toBeInTheDocument();
 
     const accepted = screen.getByText('com_ui_subagent_control_status_accepted');
@@ -563,11 +693,386 @@ describe('SubagentActivity', () => {
 
   it('renders the load error state', () => {
     render(<SubagentActivity activity={{ ...base, items: [] }} state="error" />);
-    expect(screen.getByText('com_ui_subagent_thread_load_error')).toBeInTheDocument();
+    expect(screen.getByText('com_ui_conversation_load_error')).toBeInTheDocument();
   });
 
   it('does not describe a completed tool-only child as missing a result', () => {
     render(<SubagentActivity activity={{ ...base, status: 'completed', items: [] }} />);
     expect(screen.queryByText('com_ui_subagent_empty_result')).not.toBeInTheDocument();
   });
+});
+
+it('retains standard content when a refresh fails and reports the failure', () => {
+  render(<SubagentActivity activity={base} state="error" />);
+  expect(screen.getByText('Final answer.')).toBeInTheDocument();
+  expect(screen.getByRole('alert')).toHaveTextContent('com_ui_conversation_load_error');
+});
+
+it('does not repeat an applied control already rendered at its standard content position', () => {
+  render(
+    <SubagentActivity
+      activity={{
+        ...base,
+        content: [{ type: ContentTypes.STEER, steer: 'Applied message', steerId: 'control-1' }],
+        controls: [
+          {
+            invocationId: 'invocation-1',
+            controlId: 'control-1',
+            action: 'steer',
+            status: 'applied',
+            message: 'Applied message',
+            createdAt: '2026-10-20T00:00:00Z',
+            updatedAt: '2026-10-20T00:00:01Z',
+          },
+        ],
+      }}
+    />,
+  );
+  expect(screen.queryByText('com_ui_subagent_control_status_applied')).not.toBeInTheDocument();
+  expect(mockContentParts.mock.calls.at(-1)?.[0].content[0]).toMatchObject({
+    type: ContentTypes.STEER,
+    steerId: 'control-1',
+  });
+});
+
+it('does not claim delivery or application before the server confirms it', () => {
+  render(
+    <SubagentActivity
+      activity={{
+        ...base,
+        controls: [
+          {
+            invocationId: 'invocation-1',
+            action: 'steer',
+            status: 'submitted',
+            message: 'Check it',
+            createdAt: '2026-10-20T00:00:00Z',
+            updatedAt: '2026-10-20T00:00:00Z',
+          },
+        ],
+      }}
+    />,
+  );
+  expect(screen.getByTestId('shared-steer-part')).toHaveAttribute('data-receipt', 'sending');
+});
+
+it('preserves empty recovered slots when rendering applied control receipts', () => {
+  const sparse = new Array<TMessageContentParts>(2);
+  sparse[1] = {
+    type: ContentTypes.TOOL_CALL,
+    tool_call: { id: 'retained', name: 'retained', args: '{}', output: 'Done', progress: 1 },
+  };
+  const content: TMessageContentParts[] = JSON.parse(JSON.stringify(sparse));
+  render(
+    <SubagentActivity
+      activity={{
+        ...base,
+        content,
+        controls: [
+          {
+            invocationId: 'applied-sparse',
+            controlId: 'guidance',
+            action: 'steer',
+            status: 'applied',
+            createdAt: '2026-10-20T00:00:00.000Z',
+            updatedAt: '2026-10-20T00:00:00.000Z',
+            message: 'Continue',
+          },
+        ],
+      }}
+    />,
+  );
+  expect(screen.getAllByTestId('regular-content-parts').length).toBeGreaterThan(0);
+  expect(mockContentParts.mock.calls[0][0].content[0]).toBeNull();
+  expect(mockContentParts.mock.calls[0][0].content[1].tool_call.id).toBe('retained');
+});
+
+it('renders applied controls inline once instead of repeating them below all current activity', () => {
+  const part = {
+    type: ContentTypes.STEER as const,
+    steer: 'Apply now.',
+    steerId: 'control',
+    createdAt: 100,
+  };
+  render(
+    <SubagentActivity
+      activity={{
+        ...base,
+        content: [part, { type: ContentTypes.TEXT, text: 'Work after guidance.' }],
+        controls: [
+          {
+            invocationId: 'invocation',
+            controlId: 'control',
+            action: 'steer',
+            status: 'applied',
+            message: 'Apply now.',
+            createdAt: '2026-08-24T12:00:00.000Z',
+            updatedAt: '2026-08-24T12:00:01.000Z',
+          },
+        ],
+      }}
+    />,
+  );
+  expect(screen.queryByTestId('shared-steer-part')).not.toBeInTheDocument();
+  expect(mockContentParts.mock.calls.at(-1)?.[0].content).toEqual([
+    part,
+    { type: ContentTypes.TEXT, text: 'Work after guidance.' },
+  ]);
+});
+
+it('keeps retained applied guidance that a partial legacy transcript does not contain', () => {
+  render(
+    <SubagentActivity
+      activity={{
+        ...base,
+        activityTruncated: true,
+        content: [
+          { type: ContentTypes.STEER, steer: 'Guidance present in the transcript.' },
+          { type: ContentTypes.TEXT, text: 'Continued work.' },
+        ],
+        controls: [
+          {
+            invocationId: 'retained',
+            controlId: 'retained-control',
+            action: 'steer',
+            status: 'applied',
+            message: 'Different retained guidance outside this transcript prefix.',
+            createdAt: '2026-10-23T00:00:00Z',
+            updatedAt: '2026-10-23T00:00:01Z',
+          },
+        ],
+      }}
+    />,
+  );
+  expect(screen.getByTestId('shared-steer-part')).toHaveTextContent(
+    'Different retained guidance outside this transcript prefix.',
+  );
+});
+
+it('suppresses only the corresponding number of legacy guidance bodies and does not invent identities', () => {
+  const receipt = {
+    action: 'steer' as const,
+    status: 'applied' as const,
+    message: 'Repeated guidance.',
+    createdAt: '2026-10-23T00:00:00Z',
+    updatedAt: '2026-10-23T00:00:01Z',
+  };
+  render(
+    <SubagentActivity
+      activity={{
+        ...base,
+        activityTruncated: true,
+        content: [{ type: ContentTypes.STEER, steer: 'Repeated guidance.' }],
+        controls: [
+          { ...receipt, invocationId: 'one', controlId: 'one' },
+          { ...receipt, invocationId: 'two', controlId: 'two' },
+        ],
+      }}
+    />,
+  );
+  expect(screen.getAllByTestId('shared-steer-part')).toHaveLength(1);
+  expect(screen.getByTestId('shared-steer-part')).toHaveTextContent('Repeated guidance.');
+  expect(screen.getByTestId('shared-steer-part')).toHaveAttribute('data-steer-id', 'one');
+  expect(mockContentParts.mock.calls.at(-1)?.[0].content).toEqual([
+    { type: ContentTypes.STEER, steer: 'Repeated guidance.' },
+  ]);
+});
+
+it('loads a budgeted retained body only after expansion while keeping Withdraw actionable', async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const full = 'Full retained guidance. '.repeat(80);
+  const control = {
+    invocationId: 'budgeted',
+    controlId: 'pending-control',
+    action: 'queue' as const,
+    status: 'accepted' as const,
+    createdAt: '2026-10-23T00:00:00Z',
+    updatedAt: '2026-10-23T00:00:01Z',
+    message: 'Budgeted prefix',
+    messageTruncated: true,
+  };
+  mockReadControl.mockResolvedValueOnce({
+    receipt: { ...control, message: full, messageTruncated: false },
+  });
+  const withdraw = jest.fn();
+  const { unmount } = render(
+    <QueryClientProvider client={client}>
+      <TaskContentScopeContext.Provider
+        value={{ parentConversationId: 'parent', threadId: 'child', taskId: 'task' }}
+      >
+        <SubagentActivity activity={{ ...base, controls: [control] }} onCancelControl={withdraw} />
+      </TaskContentScopeContext.Provider>
+    </QueryClientProvider>,
+  );
+  expect(mockReadControl).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: mockShowMore }));
+  await waitFor(() =>
+    expect(screen.getByTestId('shared-steer-part')).toHaveTextContent(full.trim()),
+  );
+  expect(mockReadControl).toHaveBeenCalledTimes(1);
+  expect(mockReadControl).toHaveBeenCalledWith('parent', 'child', 'task', 'budgeted');
+  fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_control_withdraw' }));
+  expect(withdraw).toHaveBeenCalledWith('pending-control');
+  expect(screen.queryByText('Message shortened for display.')).not.toBeInTheDocument();
+  unmount();
+  client.clear();
+});
+
+it.each(['submitted', 'accepted', 'failed'] as const)(
+  'retires an already-applied %s receipt by its client identity without waiting for the ledger',
+  (status) => {
+    const applied = {
+      type: ContentTypes.STEER as const,
+      steer: 'Applied guidance.',
+      steerId: 'server-control',
+      clientSteerId: 'client-invocation',
+    };
+    render(
+      <SubagentActivity
+        activity={{
+          ...base,
+          content: [applied, { type: ContentTypes.TEXT, text: 'Later activity.' }],
+          controls: [
+            {
+              invocationId: 'client-invocation',
+              action: 'steer',
+              status,
+              message: 'Applied guidance.',
+              createdAt: '2026-10-23T00:00:00Z',
+              updatedAt: '2026-10-23T00:00:01Z',
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.queryByTestId('shared-steer-part')).not.toBeInTheDocument();
+    expect(mockContentParts.mock.calls.at(-1)?.[0].content).toContainEqual(applied);
+  },
+);
+
+it('does not hide a failed withdrawal just because its target was already applied', () => {
+  render(
+    <SubagentActivity
+      activity={{
+        ...base,
+        content: [
+          { type: ContentTypes.STEER, steer: 'Applied guidance.', steerId: 'server-control' },
+        ],
+        controls: [
+          {
+            invocationId: 'withdrawal',
+            controlId: 'server-control',
+            action: 'cancel_message',
+            status: 'rejected',
+            reason: 'control_not_found',
+            createdAt: '2026-10-23T00:00:00Z',
+            updatedAt: '2026-10-23T00:00:01Z',
+          },
+        ],
+      }}
+    />,
+  );
+  expect(screen.getByText('com_ui_subagent_control_reason_control_not_found')).toBeInTheDocument();
+});
+
+it.each(['failed', 'rejected'] as const)(
+  'keeps the %s guidance body readable without asserting enqueue or application',
+  (status) => {
+    render(
+      <SubagentActivity
+        activity={{
+          ...base,
+          controls: [
+            {
+              invocationId: 'terminal',
+              action: 'steer',
+              status,
+              message: 'Retained terminal guidance.',
+              reason: status === 'rejected' ? 'withdrawn' : 'owner_unavailable',
+              createdAt: '2026-10-23T00:00:00Z',
+              updatedAt: '2026-10-23T00:00:01Z',
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.getByTestId('shared-steer-part')).toHaveTextContent(
+      'Retained terminal guidance.',
+    );
+    expect(screen.getByTestId('shared-steer-part')).not.toHaveAttribute('data-receipt');
+    expect(screen.getByText(`com_ui_subagent_control_status_${status}`)).toBeVisible();
+  },
+);
+
+it.each(['submitted', 'failed'] as const)(
+  'retains the durable client identity to retire an already-applied %s receipt',
+  (status) => {
+    render(
+      <SubagentActivity
+        activity={{
+          ...base,
+          items: [
+            {
+              type: 'steer',
+              steer: 'Durably applied guidance.',
+              steerId: 'server-control',
+              clientSteerId: 'client-invocation',
+              createdAt: 100,
+            },
+            { type: 'writing', text: 'Later durable work.' },
+          ],
+          controls: [
+            {
+              invocationId: 'client-invocation',
+              action: 'steer',
+              status,
+              message: 'Durably applied guidance.',
+              createdAt: '2026-10-23T00:00:00Z',
+              updatedAt: '2026-10-23T00:00:01Z',
+            },
+          ],
+        }}
+      />,
+    );
+    expect(screen.queryByTestId('shared-steer-part')).not.toBeInTheDocument();
+    expect(mockContentParts.mock.calls.at(-1)?.[0].content).toEqual([
+      {
+        type: ContentTypes.STEER,
+        steer: 'Durably applied guidance.',
+        steerId: 'server-control',
+        clientSteerId: 'client-invocation',
+        createdAt: 100,
+      },
+      { type: ContentTypes.TEXT, text: 'Later durable work.' },
+    ]);
+  },
+);
+
+it('reserves identified inline controls before matching the newest legacy occurrences', () => {
+  const receipt = {
+    action: 'steer' as const,
+    status: 'applied' as const,
+    message: 'Same guidance.',
+    createdAt: '2026-10-23T00:00:00Z',
+    updatedAt: '2026-10-23T00:00:01Z',
+  };
+  render(
+    <SubagentActivity
+      activity={{
+        ...base,
+        activityTruncated: true,
+        content: [
+          { type: ContentTypes.STEER, steer: 'Same guidance.' },
+          { type: ContentTypes.STEER, steer: 'Same guidance.', steerId: 'identified' },
+        ],
+        controls: [
+          { ...receipt, invocationId: 'oldest', controlId: 'oldest' },
+          { ...receipt, invocationId: 'legacy', controlId: 'legacy' },
+          { ...receipt, invocationId: 'identified', controlId: 'identified' },
+        ],
+      }}
+    />,
+  );
+  expect(screen.getAllByTestId('shared-steer-part')).toHaveLength(1);
+  expect(screen.getByTestId('shared-steer-part')).toHaveAttribute('data-steer-id', 'oldest');
 });

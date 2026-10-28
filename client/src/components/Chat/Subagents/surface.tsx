@@ -3,7 +3,7 @@ import { useSetAtom } from 'jotai';
 import type { ReactNode } from 'react';
 import type { ComposerBindings } from '~/hooks/Input/useComposerBindings';
 import type { ActiveSubagentPanel } from './state';
-import { activeSubagentPanel } from './state';
+import { activeSubagentPanel, subagentPanelFocusRequest } from './state';
 
 /**
  * Everything this feature needs from the application hosting it, and nothing
@@ -64,11 +64,13 @@ export function useOptionalChatSurface(): ChatSurface | null {
 export function useOpenSubagentPanel(): ((selection: ActiveSubagentPanel) => void) | null {
   const claimForeground = useOptionalChatSurface()?.claimForeground;
   const setSelection = useSetAtom(activeSubagentPanel);
+  const requestFocus = useSetAtom(subagentPanelFocusRequest);
   return useMemo(() => {
     if (claimForeground == null) return null;
     return (selection: ActiveSubagentPanel) => {
       claimForeground();
       setSelection(selection);
+      requestFocus((current) => current + 1);
     };
-  }, [claimForeground, setSelection]);
+  }, [claimForeground, requestFocus, setSelection]);
 }

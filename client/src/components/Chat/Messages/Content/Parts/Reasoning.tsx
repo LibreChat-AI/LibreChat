@@ -2,8 +2,8 @@ import { memo, useMemo, useState, useEffect, useCallback, useRef, useId } from '
 import { useAtom } from 'jotai';
 import copy from 'copy-to-clipboard';
 import { Lightbulb, ChevronDown } from 'lucide-react';
-import { ContentTypes } from 'librechat-data-provider';
 import { Button, disclosureChevronVariants } from '@librechat/client';
+import { ContentTypes, readableReasoning } from 'librechat-data-provider';
 import type { MouseEvent, FocusEvent } from 'react';
 import {
   ThinkingContent,
@@ -25,6 +25,12 @@ const stripThinkTags = (reasoning: string): string =>
     .replace(/^<think>\s*/, '')
     .replace(/\s*<\/think>$/, '')
     .trim();
+
+/** The reasoning to show and copy: wrapper tags and encoded provider payloads
+ *  are removed, and while it streams, a trailing run that could still grow
+ *  into a payload is held back until it is classified. */
+const displayReasoning = (reasoning: string, streaming: boolean): string =>
+  stripThinkTags(readableReasoning(reasoning, streaming));
 
 const PEEK_SENTENCES = 4;
 
@@ -97,7 +103,7 @@ export const StreamingThoughtPeek = memo(({ text }: { text: string }) => {
           /** Fixed-height window the text scrolls through. The one-line top pad
            *  keeps the first streaming line below the top fade (a blank line
            *  above it) instead of jammed against the faded edge. */
-          'text-text-primary h-[5.5rem] overflow-hidden pt-[26px] leading-[26px] break-words whitespace-pre-wrap',
+          'text-text-primary h-[5.5rem] overflow-hidden pt-6.5 leading-6.5 break-words whitespace-pre-wrap',
           fontSize,
         )}
         style={{ maskImage: PEEK_FADE, WebkitMaskImage: PEEK_FADE }}
@@ -140,13 +146,23 @@ type ReasoningProps = {
  * For legacy text-based messages, see Thinking.tsx component.
  */
 /** Reasoning that happened but whose text this view cannot show — detached
- *  subagent projections keep only a marker. Renders the shared reasoning
- *  header row without a disclosure. */
-export const ReasoningMarker = memo(({ label }: { label?: string }) => {
-  const localize = useLocalize();
-  const display = label?.trim() || localize('com_ui_thoughts');
-  return <ThinkingLabel label={display} title={localize('com_ui_thoughts_unavailable')} />;
-});
+ *  subagent projections keep only a marker, and providers can return reasoning
+ *  encrypted. Renders the shared reasoning header row without a disclosure. */
+export const ReasoningMarker = memo(
+  ({ label, encrypted = false }: { label?: string; encrypted?: boolean }) => {
+    const localize = useLocalize();
+    if (encrypted) {
+      return (
+        <ThinkingLabel
+          label={localize('com_ui_reasoning_encrypted')}
+          title={localize('com_ui_reasoning_encrypted_description')}
+        />
+      );
+    }
+    const display = label?.trim() || localize('com_ui_thoughts');
+    return <ThinkingLabel label={display} title={localize('com_ui_thoughts_unavailable')} />;
+  },
+);
 
 ReasoningMarker.displayName = 'ReasoningMarker';
 
@@ -162,13 +178,17 @@ const Reasoning = memo((props: ReasoningProps) => {
   const isExpanded = expansionOverride ?? defaultExpanded;
   const [isBarVisible, setIsBarVisible] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const { ref: headerRef, inViewport: headerInViewport } = useInViewport();
+  const { ref: headerRef, inViewport: headerInViewport, recheck: recheckHeader } = useInViewport();
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(isExpanded);
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(isExpanded);
   const { isSubmitting, isLatestMessage, nextType } = useMessage();
+  const effectiveIsSubmitting = isLatestMessage ? isSubmitting : false;
+  const streaming = effectiveIsSubmitting === true && isLast;
 
-  // Strip <think> tags from the reasoning content (modern format)
-  const reasoningText = useMemo(() => stripThinkTags(reasoning), [reasoning]);
+  const reasoningText = useMemo(
+    () => displayReasoning(reasoning, streaming),
+    [reasoning, streaming],
+  );
 
   const handleClick = useCallback(
     (e: MouseEvent<HTMLButtonElement>) => {
@@ -180,8 +200,9 @@ const Reasoning = memo((props: ReasoningProps) => {
   );
 
   const handleFocus = useCallback(() => {
+    recheckHeader();
     setIsBarVisible(true);
-  }, []);
+  }, [recheckHeader]);
 
   const handleBlur = useCallback((e: FocusEvent) => {
     if (!containerRef.current?.contains(e.relatedTarget as Node)) {
@@ -190,16 +211,15 @@ const Reasoning = memo((props: ReasoningProps) => {
   }, []);
 
   const handleMouseEnter = useCallback(() => {
+    recheckHeader();
     setIsBarVisible(true);
-  }, []);
+  }, [recheckHeader]);
 
   const handleMouseLeave = useCallback(() => {
     if (!containerRef.current?.contains(document.activeElement)) {
       setIsBarVisible(false);
     }
   }, []);
-
-  const effectiveIsSubmitting = isLatestMessage ? isSubmitting : false;
 
   const label = useMemo(() => {
     const generated = reasoningLabel?.trim();
@@ -318,7 +338,11 @@ export const ReasoningCompact = memo(
     const [isBarVisible, setIsBarVisible] = useState(false);
     const [isCopied, setIsCopied] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
-    const { ref: headerRef, inViewport: headerInViewport } = useInViewport();
+    const {
+      ref: headerRef,
+      inViewport: headerInViewport,
+      recheck: recheckHeader,
+    } = useInViewport();
     const { style: expandStyle, ref: expandRef } = useExpandCollapse(isExpanded);
     /** Collapsed is the default whenever thoughts are hidden, and a streaming
      *  THINK part re-renders on every delta. Keeping the full text mounted
@@ -326,7 +350,10 @@ export const ReasoningCompact = memo(
      *  more expensive on top of the visible peek. */
     const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(isExpanded);
 
-    const reasoningText = useMemo(() => stripThinkTags(reasoning), [reasoning]);
+    const reasoningText = useMemo(
+      () => displayReasoning(reasoning, isStreaming),
+      [reasoning, isStreaming],
+    );
 
     const handleToggle = useCallback(
       (e: MouseEvent<HTMLButtonElement>) => {
@@ -345,7 +372,10 @@ export const ReasoningCompact = memo(
       setTimeout(() => setIsCopied(false), 2000);
     }, [reasoningText]);
 
-    const revealBar = useCallback(() => setIsBarVisible(true), []);
+    const revealBar = useCallback(() => {
+      recheckHeader();
+      setIsBarVisible(true);
+    }, [recheckHeader]);
     const hideBar = useCallback(() => {
       if (!containerRef.current?.contains(document.activeElement)) {
         setIsBarVisible(false);
@@ -372,11 +402,11 @@ export const ReasoningCompact = memo(
       >
         <div ref={headerRef} className="relative flex h-5 shrink-0 items-center gap-1.5">
           <Button
-            variant="ghost"
+            variant="disclosure"
             onClick={handleToggle}
             aria-expanded={isExpanded}
             aria-controls={contentId}
-            className="group/disclosure text-text-secondary h-auto min-w-0 flex-1 justify-start gap-2 rounded-none p-0 font-normal hover:bg-transparent"
+            className="group/disclosure text-text-secondary min-w-0 flex-1 font-normal"
           >
             <span className={ROW_GLYPH_SLOT} aria-hidden="true">
               <Lightbulb className="text-text-secondary size-4 shrink-0" />
@@ -416,10 +446,8 @@ export const ReasoningCompact = memo(
         >
           <div className="overflow-hidden" ref={expandRef}>
             {shouldRenderBody && (
-              <div className="border-border-light bg-surface-secondary text-text-secondary relative my-2 rounded-2xl border p-4 pb-9">
-                <p className={cn('leading-[26px] whitespace-pre-wrap', fontSize)}>
-                  {reasoningText}
-                </p>
+              <div className="border-border-light bg-surface-secondary text-text-secondary relative my-2 rounded-2xl border p-4">
+                <p className={cn('leading-6.5 whitespace-pre-wrap', fontSize)}>{reasoningText}</p>
                 <FloatingThinkingBar
                   isVisible={isBarVisible && isExpanded && !headerInViewport}
                   isExpanded={isExpanded}

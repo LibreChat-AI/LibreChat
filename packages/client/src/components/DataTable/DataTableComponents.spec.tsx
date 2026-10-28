@@ -236,26 +236,6 @@ describe('DataTableComponents', () => {
       expect(skeletons).toHaveLength(2); // One per column
     });
 
-    it('should apply desktopOnly class to column cells', () => {
-      const columns = [
-        { accessorKey: 'name', header: 'Name' },
-        { accessorKey: 'status', header: 'Status', meta: { desktopOnly: true } },
-      ] as TableColumn<Record<string, unknown>, unknown>[];
-
-      render(
-        <table>
-          <tbody>
-            <SkeletonRows count={1} columns={columns} />
-          </tbody>
-        </table>,
-      );
-
-      const cells = screen.getAllByTestId('table-cell');
-      // Second cell should have desktopOnly class
-      expect(cells[1]).toHaveClass('hidden');
-      expect(cells[1]).toHaveClass('md:table-cell');
-    });
-
     it('should apply custom className from column meta', () => {
       const columns = [
         { accessorKey: 'name', header: 'Name', meta: { className: 'custom-class' } },

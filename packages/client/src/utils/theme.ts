@@ -1,3 +1,5 @@
+import { invalidateRemScale } from './remScale';
+
 /**
  * The disabled appearance a `fill` theme paints (`disabledStyle: 'fill'`): the
  * disabled fill, ink, placeholder and edge at full opacity. Every shared control
@@ -26,6 +28,39 @@ export const peerDisabledInkClasses =
  *  wrapper's own parts (OTP slots) take the disabled edge and ink. */
 export const disabledWithinFillClasses =
   'theme-disabled-within:border-border-disabled theme-disabled-within:bg-surface-disabled theme-disabled-within:text-text-disabled theme-disabled-within:opacity-100 theme-disabled-within:[&_*]:border-border-disabled theme-disabled-within:[&_*]:text-text-disabled';
+
+export const MIN_UI_SCALE = 0.5;
+export const MAX_UI_SCALE = 1.5;
+export const DEFAULT_UI_SCALE = 1;
+
+const BASE_FONT_SIZE = 16;
+
+/**
+ * Expresses a pixel measurement in rem so elements sized from JavaScript follow
+ * the UI scale. A fixed pixel size in a scaled layout gets squeezed by its flex
+ * container, which distorts avatars and icons.
+ */
+export const pxToRem = (px: number): string => `${px / BASE_FONT_SIZE}rem`;
+
+/**
+ * Guards every consumer of the stored preference: a corrupted value must not be
+ * able to render the app unusable, nor reach layout maths as NaN.
+ */
+export const clampUiScale = (scale: number): number => {
+  if (typeof scale !== 'number' || !Number.isFinite(scale)) {
+    return DEFAULT_UI_SCALE;
+  }
+  return Math.min(MAX_UI_SCALE, Math.max(MIN_UI_SCALE, scale));
+};
+
+/**
+ * Scales the entire interface by driving the `--ui-scale` custom property, which
+ * `style.css` feeds to the root font size.
+ */
+export const applyUiScale = (scale: number): void => {
+  document.documentElement.style.setProperty('--ui-scale', String(clampUiScale(scale)));
+  invalidateRemScale();
+};
 
 export const applyFontSize = (val: string): void => {
   const root = document.documentElement;

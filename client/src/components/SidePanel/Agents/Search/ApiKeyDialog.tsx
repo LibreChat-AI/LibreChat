@@ -297,7 +297,7 @@ export default function ApiKeyDialog({
       triggerRefs={triggerRefs}
     >
       <OGDialogTemplate
-        className="w-11/12 sm:w-[500px]"
+        className="w-11/12 sm:w-[min(31.25rem,90vw)]"
         title=""
         main={
           <>

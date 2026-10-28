@@ -121,6 +121,15 @@ export interface DiscoverConnectedAgentsParams {
    * request-memoized read as its parent.
    */
   resolveWebSearchGrant?: InitializeAgentParams['resolveWebSearchGrant'];
+  /**
+   * Resolves a handoff/subagent's own `instructionsPrompt` link, forwarded so
+   * every discovered agent honors its link the same way the primary does.
+   * There is no default resolution path, unlike `resolveWebSearchGrant` —
+   * omitting it leaves a linked handoff agent with empty instructions.
+   */
+  resolveLinkedInstructions?: InitializeAgentParams['resolveLinkedInstructions'];
+  /** Forwarded verbatim; the resume path sets this `false` for every discovered agent. */
+  recordLinkedPromptUsage?: InitializeAgentParams['recordLinkedPromptUsage'];
   /** Sibling of `codeEnvAvailable` — the `stateful_code_sessions` capability flag, forwarded to every handoff `initializeAgent`. */
   statefulSessionsAvailable?: InitializeAgentParams['statefulSessionsAvailable'];
   /** Deployment policy for stateful workspace scopes, forwarded unchanged to every referenced agent. */
@@ -271,6 +280,8 @@ async function initializeReferencedAgent(
         codeEnvAvailable: params.codeEnvAvailable,
         fileSearchAvailable: params.fileSearchAvailable,
         resolveWebSearchGrant: params.resolveWebSearchGrant,
+        resolveLinkedInstructions: params.resolveLinkedInstructions,
+        recordLinkedPromptUsage: params.recordLinkedPromptUsage,
         backgroundToolsAvailable: params.backgroundToolsAvailable,
         toolIntentsAvailable: params.toolIntentsAvailable,
         statefulSessionsAvailable: params.statefulSessionsAvailable,

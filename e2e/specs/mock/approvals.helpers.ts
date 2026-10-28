@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { expect } from '@playwright/test';
-import type { Page, Request } from '@playwright/test';
+import type { Locator, Page, Request } from '@playwright/test';
 import type { AgentDetail } from './agents.helpers';
 import { openAgentBuilder, uniqueAgentName } from './agents.helpers';
 import {
@@ -11,6 +11,7 @@ import {
   getAccessToken,
   messagesView,
   requestJson,
+  sendMessage,
 } from './helpers';
 
 const MCP_SERVER_NAME = 'e2e-memory';
@@ -110,18 +111,17 @@ async function waitForApprovalTool(page: Page) {
   ).toEqual(expect.arrayContaining([expect.objectContaining({ pluginKey: APPROVAL_TOOL_ID })]));
 }
 
-export async function createAndSelectApprovalAgent(page: Page): Promise<string> {
+export async function createApprovalAgent(page: Page): Promise<AgentDetail> {
   await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
   await waitForApprovalTool(page);
 
   const token = await getAccessToken(page);
-  const agentName = uniqueAgentName('E2E Tool Approval Agent');
-  const agent = await requestJson<AgentDetail>(page, {
+  return requestJson<AgentDetail>(page, {
     path: '/api/agents',
     token,
     method: 'POST',
     body: {
-      name: agentName,
+      name: uniqueAgentName('E2E Tool Approval Agent'),
       description: DESCRIPTION,
       instructions: 'Use the requested approval probe tools and report their results.',
       provider: MOCK_ENDPOINTS[0].label,
@@ -129,11 +129,96 @@ export async function createAndSelectApprovalAgent(page: Page): Promise<string> 
       tools: [MCP_SERVER_TOOL_ID, APPROVAL_TOOL_ID],
     },
   });
+}
 
+export async function createAndSelectApprovalAgent(page: Page): Promise<string> {
+  const agent = await createApprovalAgent(page);
   const form = await openAgentBuilder(page);
   await form.getByRole('combobox', { name: 'Agent', exact: true }).click();
-  await page.getByRole('option', { name: agentName }).click();
-  await expect(form.getByLabel('Agent name')).toHaveValue(agentName);
+  await page.getByRole('option', { name: agent.name }).click();
+  await expect(form.getByLabel('Agent name')).toHaveValue(agent.name);
   await form.getByRole('button', { name: 'Select Agent' }).click();
   return agent.id;
+}
+
+export async function startApproval(
+  page: Page,
+  label: string,
+  marker = APPROVAL_PROMPT_MARKER,
+  expectedReason = APPROVAL_REASON,
+): Promise<Locator> {
+  const response = await sendMessage(page, `${marker}${label}`);
+  expect(response.ok()).toBeTruthy();
+  await expect(page).toHaveURL(/\/c\/(?!new)/, { timeout: 15000 });
+  const card = approvalCards(page).first();
+  await expect(card).toBeVisible({ timeout: 30000 });
+  await expect(card).toContainText(expectedReason);
+  /**
+   * The primary composer review opens automatically above the historical
+   * timeline card. Verify that entry point, then collapse it so these tests
+   * can keep exercising the timeline fallback without an overlay intercepting
+   * its controls. The native BYOM acceptance spec submits through the composer.
+   */
+  await collapseComposerApproval(page);
+  return card;
+}
+
+export async function submitAndCapture(page: Page, submit: Locator) {
+  const [request, response] = await Promise.all([
+    page.waitForRequest(isResumeRequest),
+    page.waitForResponse(
+      (candidate) => isResumeRequest(candidate.request()) && candidate.status() === 200,
+    ),
+    submit.click(),
+  ]);
+  return {
+    body: request.postDataJSON() as ApprovalResumeBody,
+    response,
+  };
+}
+
+export async function expectCompletedApprovalToolOutput(
+  page: Page,
+  toolCallId: string,
+  output: string,
+) {
+  const view = messagesView(page);
+  const groupToggle = view.getByRole('button', { name: /^Ran \d+ actions/ }).last();
+  const toolCall = view.locator(`[data-testid="tool-call"][data-tool-call-id="${toolCallId}"]`);
+
+  // On reload, the conversation arrives asynchronously and multi-tool groups
+  // start collapsed. Wait for either the target card or its group before
+  // deciding whether expansion is necessary.
+  await expect(toolCall.or(groupToggle).first()).toBeVisible({ timeout: 30000 });
+  // The final model turn is the quiescence barrier: all parallel tool work
+  // has settled before invocation-count assertions inspect the audit. It is
+  // also the fence the expansions below need, because the streamed response
+  // carries a placeholder id that the saved message replaces, remounting
+  // every card in the turn and closing whatever this helper had opened.
+  await expect(view.getByText(/^E2E approval outcomes:/).last()).toBeVisible({ timeout: 30000 });
+
+  const toggle = toolCall.getByRole('button', { name: /Ran approval_probe/ });
+  // Scope exact output to its stable call id. This catches both a dropped
+  // completion and an output accidentally attached to a sibling tool card.
+  const toolOutput = view
+    .locator(`[data-tool-call-output-id="${toolCallId}"]`)
+    .getByText(output, { exact: true });
+
+  // Re-open on every attempt rather than expanding once: a card that a late
+  // remount closes underneath would otherwise leave the assertion waiting on
+  // a body that nothing is going to mount again.
+  await expect(async () => {
+    if (!(await toolCall.isVisible())) {
+      const hasGroup = (await groupToggle.count()) > 0;
+      if (hasGroup && (await groupToggle.getAttribute('aria-expanded')) !== 'true') {
+        await groupToggle.click();
+      }
+    }
+    await expect(toolCall).toBeVisible({ timeout: 5000 });
+    await expect(toggle).toBeVisible({ timeout: 5000 });
+    if ((await toggle.getAttribute('aria-expanded')) !== 'true') {
+      await toggle.click();
+    }
+    await expect(toolOutput).toBeVisible({ timeout: 5000 });
+  }).toPass({ timeout: 30000 });
 }

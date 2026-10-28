@@ -83,6 +83,7 @@ const mockAddDocumentsInBatches = jest.fn();
 const mockUpdateDocuments = jest.fn();
 const mockDeleteDocument = jest.fn();
 const mockDeleteDocuments = jest.fn();
+const mockSearch = jest.fn();
 const mockGetDocument = jest.fn();
 const mockGetDocuments = jest.fn().mockResolvedValue({ results: [] });
 const mockWaitForTask = jest.fn().mockResolvedValue({ status: 'succeeded' });
@@ -96,6 +97,7 @@ const mockIndex = jest.fn().mockReturnValue({
   deleteDocuments: mockDeleteDocuments,
   getDocument: mockGetDocument,
   getDocuments: mockGetDocuments,
+  search: mockSearch,
 });
 jest.mock('meilisearch', () => {
   return {
@@ -134,6 +136,7 @@ describe('Meilisearch Mongoose plugin', () => {
     mockDeleteDocuments.mockReset().mockResolvedValue({ taskUid: 1 });
     mockGetDocument.mockClear();
     mockGetDocuments.mockReset().mockResolvedValue({ results: [] });
+    mockSearch.mockReset().mockResolvedValue({ hits: [] });
     mockWaitForTask.mockReset().mockResolvedValue({ status: 'succeeded' });
   });
 
@@ -162,6 +165,28 @@ describe('Meilisearch Mongoose plugin', () => {
     } finally {
       mongoose.deleteModel(modelName);
     }
+  });
+
+  test('hydrated message search excludes encrypted originals and all schema-hidden fields', async () => {
+    const Message = createMessageModel(mongoose) as unknown as SchemaWithMeiliMethods;
+    const messageId = new mongoose.Types.ObjectId().toString();
+    const conversationId = new mongoose.Types.ObjectId().toString();
+    await Message.collection.insertOne({
+      messageId,
+      conversationId,
+      user: 'search-owner',
+      text: '[EMAIL_1_private]',
+      isCreatedByUser: true,
+      privacyRevision: 'private',
+      privateText: 'v1:encrypted-original',
+    });
+    mockSearch.mockResolvedValueOnce({ hits: [{ messageId, text: '[EMAIL_1_private]' }] });
+
+    const result = await Message.meiliSearch('EMAIL', { filter: 'user = "search-owner"' }, true);
+    expect(result.hits).toHaveLength(1);
+    expect(result.hits[0]).toMatchObject({ messageId, privacyRevision: 'private' });
+    expect(result.hits[0]).not.toHaveProperty('privateText');
+    expect(result.hits[0]).not.toHaveProperty('_meiliIndex');
   });
 
   test('saving conversation indexes w/ meilisearch', async () => {

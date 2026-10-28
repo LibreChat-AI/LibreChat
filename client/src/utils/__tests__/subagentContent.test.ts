@@ -1,6 +1,7 @@
 import { ContentTypes } from 'librechat-data-provider';
 import type { SubagentUpdateEvent } from 'librechat-data-provider';
-import { aggregateSubagentContent, buildSubagentTickerLines } from '../subagentContent';
+import { aggregateSubagentContent, buildSubagentTickerLines } from 'test/subagents';
+import { tailOverflowDirection, textDirection } from '../subagentContent';
 
 const makeEvent = (overrides: Partial<SubagentUpdateEvent>): SubagentUpdateEvent => ({
   runId: 'parent-run',
@@ -75,8 +76,18 @@ describe('aggregateSubagentContent', () => {
     ]);
 
     expect(parts).toEqual([
-      { type: ContentTypes.TEXT, text: 'Commentary.', phase: 'commentary' },
-      { type: ContentTypes.TEXT, text: 'Final answer.', phase: 'final_answer' },
+      {
+        type: ContentTypes.TEXT,
+        text: 'Commentary.',
+        phase: 'commentary',
+        stepId: 'commentary-step',
+      },
+      {
+        type: ContentTypes.TEXT,
+        text: 'Final answer.',
+        phase: 'final_answer',
+        stepId: 'final-step',
+      },
     ]);
   });
 
@@ -117,7 +128,12 @@ describe('aggregateSubagentContent', () => {
     ];
 
     expect(aggregateSubagentContent(events)).toEqual([
-      { type: ContentTypes.TEXT, text: 'Still commentary.', phase: 'commentary' },
+      {
+        type: ContentTypes.TEXT,
+        text: 'Still commentary.',
+        phase: 'commentary',
+        stepId: 'long-lived-step',
+      },
     ]);
   });
 
@@ -711,4 +727,64 @@ describe('buildSubagentTickerLines', () => {
     ]);
     expect(lines).toEqual([{ kind: 'error', message: 'recursion limit' }]);
   });
+});
+
+describe('tail ellipsis direction', () => {
+  it('runs the outer box right to left for Latin text', () => {
+    expect(tailOverflowDirection('Writing the report, done.')).toBe('rtl');
+    expect(textDirection('123 hello')).toBe('ltr');
+  });
+
+  it('runs the outer box left to right for Arabic and Hebrew text', () => {
+    expect(tailOverflowDirection('كتابة التقرير.')).toBe('ltr');
+    expect(tailOverflowDirection('12 שלום עולם')).toBe('ltr');
+  });
+
+  it('follows the first strong character of mixed text', () => {
+    expect(textDirection('(foo) مرحبا')).toBe('ltr');
+    expect(textDirection('... مرحبا foo')).toBe('rtl');
+  });
+
+  it('skips Arabic-Indic digits, Arabic separators and marks like dir="auto" does', () => {
+    expect(textDirection('\u0661\u0662\u0663 report done')).toBe('ltr');
+    expect(textDirection('\u06F1\u06F2\u060C step two')).toBe('ltr');
+    expect(tailOverflowDirection('\u0661\u0662 report done')).toBe('rtl');
+    expect(textDirection('\u0661\u0662 \u0645\u0631\u062D\u0628\u0627')).toBe('rtl');
+  });
+});
+
+it('places applied guidance before subsequent live activity and closes the current text buffer', () => {
+  const applied = makeEvent({
+    phase: 'steer_applied',
+    data: {
+      index: 1,
+      steerId: 'control-1',
+      responseMessageId: 'task:assistant',
+      conversationId: 'thread',
+      part: {
+        type: ContentTypes.STEER,
+        steer: 'Continue with a citation.',
+        steerId: 'control-1',
+        clientSteerId: 'invocation-1',
+        createdAt: 100,
+      },
+    },
+  });
+  const parts = aggregateSubagentContent([
+    makeEvent({
+      phase: 'message_delta',
+      data: { id: 'before', delta: { content: [{ type: 'text', text: 'Earlier work.' }] } },
+    }),
+    applied,
+    applied,
+    makeEvent({
+      phase: 'message_delta',
+      data: { id: 'after', delta: { content: [{ type: 'text', text: 'Later work.' }] } },
+    }),
+  ]);
+  expect(parts).toMatchObject([
+    { type: ContentTypes.TEXT, text: 'Earlier work.' },
+    { type: ContentTypes.STEER, steer: 'Continue with a citation.', steerId: 'control-1' },
+    { type: ContentTypes.TEXT, text: 'Later work.' },
+  ]);
 });

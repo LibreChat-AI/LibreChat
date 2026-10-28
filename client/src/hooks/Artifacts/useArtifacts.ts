@@ -59,8 +59,16 @@ const getArtifactFence = (text: string, lineStart: number): ArtifactFence | null
 };
 
 const isClosingArtifactFence = (line: string, openingFence: ArtifactFence): boolean => {
-  const closePattern = new RegExp(`^\\${openingFence.marker}{${openingFence.length},}\\s*$`);
-  return closePattern.test(line.trim());
+  const trimmed = line.trim();
+  if (trimmed.length < openingFence.length) {
+    return false;
+  }
+  for (const char of trimmed) {
+    if (char !== openingFence.marker) {
+      return false;
+    }
+  }
+  return true;
 };
 
 const isArtifactCloseLine = (line: string): boolean => {
@@ -104,6 +112,9 @@ const hasUnfencedArtifactClose = (text: string, start: number): boolean => {
 };
 
 const hasEnclosedArtifact = (messageText: string): boolean => {
+  if (!messageText.includes(':::artifact')) {
+    return false;
+  }
   const text = messageText.trim();
   const artifactPattern = /:::artifact(?:\{[^}]*\})?/g;
   let artifactMatch = artifactPattern.exec(text);

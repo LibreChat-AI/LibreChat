@@ -1,8 +1,8 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
-import { defaultTheme } from '../../../../packages/client/src/theme/themes/default';
-import { darkTheme } from '../../../../packages/client/src/theme/themes/dark';
+import { defaultTheme } from '../../../../packages/data-provider/src/themes/default';
+import { darkTheme } from '../../../../packages/data-provider/src/themes/dark';
 import {
   sendMessageAndWaitForCompletion,
   selectMockEndpoint,

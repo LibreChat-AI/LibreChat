@@ -4,7 +4,9 @@ import {
   parseLangChainErrorCode,
   stripLangChainTroubleshootingUrl,
 } from 'librechat-data-provider';
+import { ScheduledMCPPolicyError } from '~/schedules/authorization/policy';
 import { MCPErrorCodes, isMCPInitializationError } from '~/mcp/errors';
+import { AGENT_TOOL_OPTIONS_LIMIT_EXCEEDED } from './options';
 import { OboTokenResolutionError } from '~/mcp/oauth/obo';
 
 export const AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE = 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE';
@@ -13,6 +15,7 @@ export const AGENT_ATTACHMENT_LIMIT_EXCEEDED = 'AGENT_ATTACHMENT_LIMIT_EXCEEDED'
 const FATAL_AGENT_INITIALIZATION_CODES = new Set(
   [
     AGENT_ATTACHMENT_LIMIT_EXCEEDED,
+    AGENT_TOOL_OPTIONS_LIMIT_EXCEEDED,
     ErrorTypes.RESOURCE_RECOVERY_REQUIRED,
     ErrorTypes.STATEFUL_CODE_ENVIRONMENT_NOT_ALLOWED,
     ErrorTypes.CODE_WORKSPACE_UNAVAILABLE,
@@ -59,6 +62,7 @@ export function isFatalAgentInitializationError(
 ): boolean {
   const code = getErrorCode(error);
   return (
+    error instanceof ScheduledMCPPolicyError ||
     isMCPInitializationError(error, options.signal) ||
     FATAL_AGENT_INITIALIZATION_CODES.has(code as string) ||
     (code === AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE && options.allowExpectedMCPFallback !== true)

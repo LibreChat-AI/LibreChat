@@ -2,7 +2,6 @@ import { useMemo } from 'react';
 import type { LocalizeFunction } from '~/common';
 import { isMacPlatform, bindingDisplayString, resolveComposerKeyDown } from '~/utils/shortcuts';
 import useComposerBindings from '~/hooks/Input/useComposerBindings';
-import { useShortcutDisplay } from '~/hooks/useKeyboardShortcuts';
 import useLocalize from '~/hooks/useLocalize';
 
 /** The effective `submitMessage` binding, reduced to what the hints need.
@@ -25,12 +24,8 @@ export interface ComposerHintState {
    *  later, and until it lands every chord that touches the live run refuses.
    *  Queueing is local, so it works throughout. */
   canControlGeneration: boolean;
-  /** Whether the stop control can act yet; the stop shortcut presses it, so
-   *  the key is named only once it does something. Defaults to reachable. */
-  canStop?: boolean;
   /** Which action Enter takes during a run, per the effective setting. */
-  duringRunAction: 'steer' | 'queue';
-  steerInterruptsByDefault?: boolean;
+  duringRunAction: 'steer' | 'interrupt' | 'queue';
   /** Whether the steer route can accept input right now. A paused tool
    *  approval forces the effective action to queue and refuses steers, so the
    *  live-send alternate must not be advertised through it. */
@@ -74,9 +69,6 @@ export function composeHint(
   state: ComposerHintState,
   localize: LocalizeFunction,
   isMac: boolean,
-  /** The live binding for `stopGenerating`, which the user can rebind or clear
-   *  outright, so the stop line is built from it rather than naming a key. */
-  stopShortcut: string,
   /** The live `submitMessage` binding, for the same reason: the send chords
    *  named below follow the customization instead of asserting the stock one. */
   sendBinding: SendBinding = DEFAULT_SEND_BINDING,
@@ -110,7 +102,7 @@ export function composeHint(
        alternate is named only while the stock chord still works. */
     const sendChord = sendBinding.customized ? sendBinding.display : mod;
     const isSteer = state.duringRunAction === 'steer';
-    const interruptByDefault = isSteer && state.steerInterruptsByDefault === true;
+    const interruptByDefault = state.duringRunAction === 'interrupt';
     /* The default action and the live submit route share this preference:
        naming plain Enter as Steer while it preempts is materially misleading. */
     let defaultAction: string;
@@ -121,9 +113,10 @@ export function composeHint(
     } else {
       defaultAction = localize('com_ui_composer_hint_queue_default');
     }
-    const alternateAction = isSteer
-      ? `${mod} ${localize('com_ui_composer_hint_queue')}`
-      : `${mod} ${localize('com_ui_composer_hint_send_now')}`;
+    const alternateAction =
+      state.duringRunAction !== 'queue'
+        ? `${mod} ${localize('com_ui_composer_hint_queue')}`
+        : `${mod} ${localize('com_ui_composer_hint_send_now')}`;
     let chordVerb: Parameters<typeof localize>[0];
     if (interruptByDefault) {
       chordVerb = 'com_ui_interrupt_steer';
@@ -137,7 +130,7 @@ export function composeHint(
       parts.push(defaultAction);
       /* The queue alternate is local and always lands; the send-now alternate
          rides the steer route, which a paused approval refuses. */
-      if (!sendBinding.customized && (isSteer || state.canSteer)) {
+      if (!sendBinding.customized && (state.duringRunAction !== 'queue' || state.canSteer)) {
         parts.push(alternateAction);
       }
     } else if (sendChord) {
@@ -154,12 +147,12 @@ export function composeHint(
       };
     }
     /* The interrupt chord is named only while the keydown resolver still hands
-       it back: a `submitMessage` rebound to Alt+Enter, a chord yielded to a
-       global shortcut, or shortcuts disabled altogether each make the key do
-       something else, and advertising it is worse than omitting it. */
-    const text = altEnterInterrupt
-      ? [...parts, `${alt} ${localize('com_ui_composer_hint_interrupt')}`].join(SEPARATOR)
-      : parts.join(SEPARATOR);
+       it back and the run accepts steering. Approval pauses and staged reasoning
+       refuse Interrupt just like the disabled menu row. */
+    const text =
+      altEnterInterrupt && state.canSteer
+        ? [...parts, `${alt} ${localize('com_ui_composer_hint_interrupt')}`].join(SEPARATOR)
+        : parts.join(SEPARATOR);
     return {
       text: text || localize('com_ui_composer_hint_running'),
       kind: 'state',
@@ -167,16 +160,10 @@ export function composeHint(
   }
 
   if (state.isSubmitting) {
-    /* Nothing to advertise when the binding has been cleared: the stop button
-       is right there, and naming a key that does nothing is worse than saying
-       only that a reply is running. */
-    return {
-      text:
-        stopShortcut && state.canStop !== false
-          ? `${stopShortcut} ${localize('com_ui_composer_hint_stop')}`
-          : localize('com_ui_composer_hint_running'),
-      kind: 'state',
-    };
+    /* The stop button is right there, so a plain running reply advertises
+       nothing under the composer; the line stays as ambient copy for screen
+       readers and for users who keep tips on. */
+    return { text: localize('com_ui_composer_hint_running'), kind: 'tip' };
   }
 
   if (state.hasText) {
@@ -207,7 +194,6 @@ export function composeHint(
 
 export default function useComposerHint(state: ComposerHintState): ComposerHint {
   const localize = useLocalize();
-  const stopShortcut = useShortcutDisplay('stopGenerating');
   const { shortcutsEnabled, submitOverride, yieldedChords } = useComposerBindings();
   const sendBinding = useMemo<SendBinding>(
     () => ({
@@ -241,5 +227,5 @@ export default function useComposerHint(state: ComposerHintState): ComposerHint 
       ) === 'interrupt',
     [shortcutsEnabled, state.enterToSend, submitOverride, yieldedChords],
   );
-  return composeHint(state, localize, isMacPlatform, stopShortcut, sendBinding, altEnterInterrupt);
+  return composeHint(state, localize, isMacPlatform, sendBinding, altEnterInterrupt);
 }

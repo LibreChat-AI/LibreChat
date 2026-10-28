@@ -42,11 +42,18 @@ const documentedEdgeSchema = z.object({
  * one cast is needed to reach `.extend`.
  */
 function withDocumentedEdges(schema: ZodTypeAny): ZodTypeAny {
-  return (schema as unknown as z.AnyZodObject).extend({
+  return (schema as unknown as z.ZodObject).extend({
     edges: z.array(documentedEdgeSchema).optional(),
   });
 }
 
+/**
+ * `instructionsPrompt` (the Builder's link to a native prompt group) is Builder-only: the
+ * Management API's create/update/response schemas omit it entirely (see
+ * `packages/api/src/agents/management.ts`), so this document never carries the field —
+ * neither the full link shape a request could send nor the restricted stub a Builder
+ * response can carry (`packages/api/src/agents/instructions/access.ts`).
+ */
 const agentCreateRequestSchema = withDocumentedEdges(agentManagementCreateSchema);
 const agentUpdateRequestSchema = withDocumentedEdges(agentManagementUpdateSchema);
 const agentResponseSchema = withDocumentedEdges(agentManagementResponseSchema);
@@ -56,7 +63,7 @@ const agentResponseSchema = withDocumentedEdges(agentManagementResponseSchema);
  * The envelope is exported as `ZodType`, so reach `.extend` the same way `withDocumentedEdges` does.
  */
 const agentListResponseSchema = (
-  agentManagementListEnvelopeSchema as unknown as z.AnyZodObject
+  agentManagementListEnvelopeSchema as unknown as z.ZodObject
 ).extend({
   data: z.array(agentResponseSchema),
 });

@@ -1,12 +1,20 @@
-import { logger } from '@librechat/data-schemas';
+import mongoose from 'mongoose';
+import { MongoMemoryServer } from 'mongodb-memory-server';
 import { McpError, ErrorCode } from '@modelcontextprotocol/sdk/types.js';
+import { logger, createModels, createMethods } from '@librechat/data-schemas';
 import type { SchedulesServiceDeps } from './service';
-import { createSchedulesService, recordScheduledMCPToolAuthFailure } from './service';
+import {
+  createSchedulesService,
+  recordScheduledMCPToolAuthFailure,
+  ScheduledMCPReceiptFencedError,
+} from './service';
+import { ScheduledMCPPolicyError } from './authorization/policy';
 import { OboTokenResolutionError } from '../mcp/oauth/obo';
+import { ScheduledMCPBearerError } from '../mcp/errors';
 import { isShutdownInProgress } from '../app/shutdown';
 
 /** Swappable per test: null keeps the no-job-store harness the drain tests rely on. */
-let mockJobStore: { getJob: jest.Mock; deleteJob?: jest.Mock } | null = null;
+let mockJobStore: { getJob: jest.Mock; deleteJob?: jest.Mock; updateJob?: jest.Mock } | null = null;
 
 jest.mock('../agents/checkpointer', () => ({
   checkpointStorageConfigs: jest.fn(async (_user, _tenant, cfg) => [cfg]),
@@ -27,7 +35,8 @@ jest.mock('../stream/GenerationJobManager', () => ({
   GenerationJobManager: {
     // No configured job store by default: abortScheduledJob returns false, so the drain
     // loop is driven purely by getActiveRunsForUser (the run rows).
-    getJobStore: () => mockJobStore,
+    getJobStore: () =>
+      mockJobStore && { ...mockJobStore, hasScheduleCleanupObligation: async () => false },
     abortJob: jest.fn(),
     updateMetadata: jest.fn(async () => undefined),
     isRedis: false,
@@ -748,6 +757,8 @@ describe('scheduled OBO tool failure settlement', () => {
     methods.eraseScheduleIfDrained = jest.fn(async () => false);
     methods.getScheduleRunAbortState = jest.fn(async () => ({ status: 'started', mcp: [failure] }));
     const store = {
+      durableScheduleReceipts: false,
+      updateJob: jest.fn(async () => undefined),
       getJob: jest.fn(async () => ({
         createdAt: 42,
         scheduleId: 's1',
@@ -761,6 +772,167 @@ describe('scheduled OBO tool failure settlement', () => {
     mockJobStore = store;
     return { service, methods, store };
   }
+
+  it.each(['Mongo receipt', 'job evidence', 'neither'] as const)(
+    'retains a verified bearer denial using %s and prevents success settlement',
+    async (storageMode) => {
+      const { service, methods, store } = setup();
+      store.durableScheduleReceipts = storageMode === 'job evidence';
+      const job: {
+        createdAt: number;
+        scheduleId: string;
+        scheduledFor: string;
+        conversationId: string;
+        userId: string;
+        tenantId: string;
+        status: string;
+        agent_id: string;
+        scheduleOutcomeError?: string;
+        preserveForScheduleReconcile?: boolean;
+      } = {
+        createdAt: 42,
+        scheduleId: 's1',
+        scheduledFor: occurrence,
+        conversationId: 'c1',
+        userId: 'owner',
+        tenantId: 'tenant-1',
+        status: 'running',
+        agent_id: 'root',
+      };
+      store.getJob.mockImplementation(async () => job);
+      methods.getScheduleRunAbortState.mockResolvedValue({ status: 'started', mcp: [] });
+      const error = new ScheduledMCPBearerError('consent_revoked', 'Files', 'child');
+      methods.recordMCPToolAuthFailure.mockImplementation(async () => {
+        if (storageMode === 'job evidence' || storageMode === 'neither')
+          throw new Error('receipt store unavailable');
+        methods.getScheduleRunAbortState.mockResolvedValue({
+          status: 'started',
+          mcp: error.outcomes,
+        });
+        return true;
+      });
+      const manager = jest.requireMock('../stream/GenerationJobManager').GenerationJobManager;
+      const originalUpdate = manager.updateMetadata;
+      const update = jest.fn(async (_stream, changes) => {
+        if (storageMode === 'Mongo receipt' || storageMode === 'neither')
+          throw new Error('job store unavailable');
+        Object.assign(job, changes);
+      });
+      manager.updateMetadata = update;
+      const input = {
+        error,
+        streamId: 'c1',
+        jobCreatedAt: 42,
+        userId: 'owner',
+        serverName: 'Files',
+        identity: {
+          scheduleId: 's1',
+          ownerId: 'owner',
+          tenantId: 'tenant-1',
+          agentId: 'root',
+          invocationMode: 'delegated' as const,
+        },
+      };
+      await expect(service.recordMCPToolAuthFailure(input)).resolves.toBe(
+        storageMode !== 'neither',
+      );
+      // Restore metadata writes so terminal retry can retain Mongo-only evidence.
+      if (storageMode === 'Mongo receipt')
+        update.mockImplementation(async (_stream, changes) => {
+          Object.assign(job, changes);
+        });
+      const settled = await service.recordScheduleOutcome({
+        scheduleId: 's1',
+        scheduledFor: occurrence,
+        streamId: 'c1',
+        jobCreatedAt: 42,
+        status: 'success',
+      });
+      expect(settled).toBe(storageMode !== 'neither');
+      if (storageMode === 'neither') expect(methods.recordRunOutcome).not.toHaveBeenCalled();
+      else
+        expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+          expect.objectContaining({
+            status: 'error',
+            mcp: expect.arrayContaining([
+              expect.objectContaining({
+                server: 'Files',
+                reason: 'consent_revoked',
+                recovery: 'authorize',
+                agentId: 'child',
+              }),
+            ]),
+          }),
+        );
+      manager.updateMetadata = originalUpdate;
+    },
+  );
+
+  it('refuses a bearer failure receipt for a replaced epoch, owner, tenant or enrolled root', async () => {
+    const { service, methods, store } = setup();
+    store.getJob.mockImplementation(async () => ({
+      createdAt: 42,
+      scheduleId: 's1',
+      scheduledFor: occurrence,
+      conversationId: 'c1',
+      userId: 'owner',
+      tenantId: 'tenant-1',
+      status: 'running',
+      agent_id: 'root',
+    }));
+    const source = {
+      error: new ScheduledMCPBearerError('tool_policy_denied', 'Files'),
+      streamId: 'c1',
+      jobCreatedAt: 42,
+      userId: 'owner',
+      serverName: 'Files',
+      identity: {
+        scheduleId: 's1',
+        ownerId: 'owner',
+        tenantId: 'tenant-1',
+        agentId: 'root',
+        invocationMode: 'delegated' as const,
+      },
+    };
+    for (const input of [
+      { ...source, jobCreatedAt: 43 },
+      { ...source, userId: 'other' },
+      { ...source, identity: { ...source.identity, tenantId: 'other' } },
+      { ...source, identity: { ...source.identity, agentId: 'child' } },
+    ])
+      await expect(service.recordMCPToolAuthFailure(input)).rejects.toMatchObject({
+        name: 'AbortError',
+      });
+    expect(methods.recordMCPToolAuthFailure).not.toHaveBeenCalled();
+  });
+
+  it('does not return a model-visible bearer error while durable writes are unavailable', async () => {
+    const input = {
+      error: new ScheduledMCPBearerError('consent_revoked', 'Files'),
+      streamId: 'c1',
+      jobCreatedAt: 42,
+      userId: 'owner',
+      serverName: 'Files',
+      identity: {
+        scheduleId: 's1',
+        ownerId: 'owner',
+        tenantId: 'tenant-1',
+        agentId: 'root',
+        invocationMode: 'delegated' as const,
+      },
+    };
+    let durable = false;
+    let returned = false;
+    const persist = jest.fn(async () => durable);
+    const pending = recordScheduledMCPToolAuthFailure(input, () => persist).then(() => {
+      returned = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(returned).toBe(false);
+    durable = true;
+    await pending;
+    expect(returned).toBe(true);
+  });
 
   it('does not initialize the schedule service for unrelated MCP errors', async () => {
     const getRecorder = jest.fn();
@@ -810,6 +982,68 @@ describe('scheduled OBO tool failure settlement', () => {
     },
   );
 
+  it('records the public-safe policy denial for the exact scheduled generation', async () => {
+    const { service, methods } = setup();
+    const error = new ScheduledMCPPolicyError('tool_policy_denied', 'Graph', 'child');
+    const input = { error, streamId: 'c1', jobCreatedAt: 42, userId: 'owner', serverName: 'Graph' };
+    await expect(
+      recordScheduledMCPToolAuthFailure(input, () => service.recordMCPToolAuthFailure),
+    ).resolves.toBe(true);
+    expect(methods.recordMCPToolAuthFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: {
+          server: 'Graph',
+          agentId: 'child',
+          status: 'mcp_permission_denied',
+          reason: 'tool_policy_denied',
+          recovery: 'configure',
+          automaticReplay: false,
+        },
+      }),
+    );
+    await expect(
+      service.recordMCPToolAuthFailure({ ...input, jobCreatedAt: 43 }),
+    ).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
+  it.each(['consent_revoked', 'tool_policy_denied', 'credential_rejected'] as const)(
+    'settles a handled %s tool denial as an error with the durable diagnosis',
+    async (reason) => {
+      const { service, methods } = setup();
+      const error = new ScheduledMCPPolicyError(reason, 'Graph', 'child');
+      const input = {
+        error,
+        streamId: 'c1',
+        jobCreatedAt: 42,
+        userId: 'owner',
+        serverName: 'Graph',
+      };
+      await expect(
+        recordScheduledMCPToolAuthFailure(input, () => service.recordMCPToolAuthFailure),
+      ).resolves.toBe(true);
+      methods.getScheduleRunAbortState.mockResolvedValue({
+        status: 'started',
+        mcp: error.outcomes,
+      });
+      await expect(
+        service.recordScheduleOutcome({
+          scheduleId: 's1',
+          scheduledFor: occurrence,
+          status: 'success',
+          conversationId: 'c1',
+          streamId: 'c1',
+          jobCreatedAt: 42,
+        }),
+      ).resolves.toBe(true);
+      expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'error', mcp: error.outcomes }),
+      );
+      expect(
+        jest.requireMock('../stream/GenerationJobManager').GenerationJobManager.updateMetadata,
+      ).toHaveBeenCalledWith('c1', expect.objectContaining({ scheduleOutcome: 'error' }), 42);
+    },
+  );
+
   it('records a typed tool failure only for the matching scheduled generation and owner', async () => {
     const { service, methods, store } = setup();
     const source = new OboTokenResolutionError('missing_upstream_provider', 'No credentials');
@@ -854,7 +1088,8 @@ describe('scheduled OBO tool failure settlement', () => {
       scheduledFor: occurrence,
       status: 'requires_action',
     });
-    expect(methods.getScheduleRunAbortState).not.toHaveBeenCalled();
+    expect(methods.getScheduleRunAbortState).toHaveBeenCalledTimes(1);
+    expect(methods.recordRunOutcome).not.toHaveBeenCalled();
     await expect(
       service.recordScheduleOutcome({
         scheduleId: 's1',
@@ -1046,16 +1281,26 @@ describe('interactive Stop persistence barrier', () => {
 
   it('does not gate a pause (requires_action) on the Stop barrier', async () => {
     const { service, methods } = outcomeService();
-    methods.getScheduleRunAbortState = jest.fn(async () => null);
+    methods.getScheduleRunAbortState = jest.fn(async () => ({
+      status: 'started',
+      abortSource: 'stop',
+      abortRequestedAt: new Date(),
+      mcp: [],
+    }));
 
-    await service.recordScheduleOutcome({
-      scheduleId: 's1',
-      scheduledFor: '2026-01-01T00:00:00.000Z',
-      status: 'requires_action',
-    });
+    await expect(
+      service.recordScheduleOutcome({
+        scheduleId: 's1',
+        scheduledFor: '2026-01-01T00:00:00.000Z',
+        status: 'requires_action',
+      }),
+    ).resolves.toBe(true);
 
-    // A pause is not a settlement, so the barrier is never consulted.
-    expect(methods.getScheduleRunAbortState).not.toHaveBeenCalled();
+    // Receipt discovery does not poll a fresh Stop for an ordinary pause.
+    expect(methods.getScheduleRunAbortState).toHaveBeenCalledTimes(1);
+    expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'requires_action' }),
+    );
   });
 });
 
@@ -2169,4 +2414,418 @@ describe('provider-drained schedule aborts', () => {
     });
     expect(deleteJob).toHaveBeenCalledWith('c1', 7);
   });
+});
+
+describe('scheduled receipt retry load', () => {
+  it('backs off instead of polling durable stores four times per second', async () => {
+    jest.useFakeTimers();
+    const input = {
+      error: new ScheduledMCPBearerError('consent_revoked', 'Files'),
+      streamId: 'backoff',
+      jobCreatedAt: 42,
+      userId: 'owner',
+      serverName: 'Files',
+      identity: {
+        scheduleId: 's1',
+        ownerId: 'owner',
+        tenantId: null,
+        agentId: 'root',
+        invocationMode: 'delegated' as const,
+      },
+    };
+    let durable = false;
+    const persist = jest.fn(async () => durable);
+    const pending = recordScheduledMCPToolAuthFailure(input, () => persist);
+    try {
+      await jest.advanceTimersByTimeAsync(10_000);
+      expect(persist.mock.calls.length).toBeLessThanOrEqual(7);
+      durable = true;
+      await jest.advanceTimersByTimeAsync(30_000);
+      await expect(pending).resolves.toBe(true);
+    } finally {
+      durable = true;
+      await jest.runAllTimersAsync();
+      await pending;
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not issue receipt writes during shutdown or return model-visible success', async () => {
+    const shutdown = jest
+      .spyOn(jest.requireActual('../app/shutdown'), 'isShutdownInProgress')
+      .mockReturnValue(true);
+    const persist = jest.fn(async () => true);
+    try {
+      await expect(
+        recordScheduledMCPToolAuthFailure(
+          {
+            error: new ScheduledMCPBearerError('consent_revoked', 'Files'),
+            streamId: 'shutdown',
+            jobCreatedAt: 42,
+            userId: 'owner',
+            serverName: 'Files',
+            identity: {
+              scheduleId: 's1',
+              ownerId: 'owner',
+              tenantId: null,
+              agentId: 'root',
+              invocationMode: 'delegated',
+            },
+          },
+          () => persist,
+        ),
+      ).rejects.toMatchObject({ name: 'AbortError' });
+      expect(persist).not.toHaveBeenCalled();
+    } finally {
+      shutdown.mockRestore();
+    }
+  });
+});
+
+it('coalesces only identical receipt retries and honors a capped host policy', async () => {
+  jest.useFakeTimers();
+  const randomness = jest.spyOn(Math, 'random').mockReturnValue(1);
+  const input = {
+    error: new ScheduledMCPBearerError('consent_revoked', 'Files'),
+    streamId: 'coalesced',
+    jobCreatedAt: 42,
+    userId: 'owner',
+    serverName: 'Files',
+    identity: {
+      scheduleId: 's1',
+      ownerId: 'owner',
+      tenantId: null,
+      agentId: 'root',
+      invocationMode: 'delegated' as const,
+    },
+  };
+  let durable = false;
+  const record = jest.fn(async () => durable);
+  const config = jest.fn(async () => ({ baseMs: 1000, maxMs: 2000 }));
+  const first = recordScheduledMCPToolAuthFailure(input, () => record, config);
+  const second = recordScheduledMCPToolAuthFailure(input, () => record, config);
+  try {
+    expect(second).toBe(first);
+    await jest.advanceTimersByTimeAsync(3000);
+    expect(record).toHaveBeenCalledTimes(3);
+    expect(config).toHaveBeenCalledTimes(1);
+    durable = true;
+    await jest.advanceTimersByTimeAsync(2000);
+    await expect(first).resolves.toBe(true);
+  } finally {
+    durable = true;
+    await jest.runAllTimersAsync();
+    await first;
+    randomness.mockRestore();
+    jest.useRealTimers();
+  }
+});
+
+it('interrupts a pending receipt backoff immediately when shutdown starts', async () => {
+  const controller = new AbortController();
+  const signal = jest
+    .spyOn(jest.requireActual('../app/shutdown'), 'getShutdownSignal')
+    .mockReturnValue(controller.signal);
+  const record = jest.fn(async () => false);
+  const pending = recordScheduledMCPToolAuthFailure(
+    {
+      error: new ScheduledMCPBearerError('consent_revoked', 'Files'),
+      streamId: 'abort-wait',
+      jobCreatedAt: 42,
+      userId: 'owner',
+      serverName: 'Files',
+      identity: {
+        scheduleId: 's1',
+        ownerId: 'owner',
+        tenantId: null,
+        agentId: 'root',
+        invocationMode: 'delegated',
+      },
+    },
+    () => record,
+    async () => ({ baseMs: 60_000, maxMs: 60_000 }),
+  );
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    const stopped = pending.catch((error) => error);
+    controller.abort();
+    await expect(stopped).resolves.toMatchObject({ name: 'AbortError' });
+    expect(record).toHaveBeenCalledTimes(1);
+  } finally {
+    controller.abort();
+    signal.mockRestore();
+  }
+});
+
+it('stops a stalled receipt attempt on shutdown without acknowledging persistence', async () => {
+  const controller = new AbortController();
+  const signal = jest
+    .spyOn(jest.requireActual('../app/shutdown'), 'getShutdownSignal')
+    .mockReturnValue(controller.signal);
+  let release!: (value: boolean) => void;
+  const unresolved = new Promise<boolean>((resolve) => {
+    release = resolve;
+  });
+  const record = jest.fn(() => unresolved);
+  const pending = recordScheduledMCPToolAuthFailure(
+    {
+      error: new ScheduledMCPBearerError('consent_revoked', 'Files'),
+      streamId: 'stalled-shutdown',
+      jobCreatedAt: 42,
+      userId: 'owner',
+      serverName: 'Files',
+      identity: {
+        scheduleId: 's1',
+        ownerId: 'owner',
+        tenantId: null,
+        agentId: 'root',
+        invocationMode: 'delegated',
+      },
+    },
+    () => record,
+  );
+  try {
+    const stopped = pending.catch((error) => error);
+    controller.abort();
+    await expect(stopped).resolves.toMatchObject({ name: 'AbortError' });
+    expect(record).toHaveBeenCalledTimes(1);
+  } finally {
+    release(false);
+    controller.abort();
+    signal.mockRestore();
+  }
+});
+
+it.each(['false', 'throw'] as const)(
+  'holds A3 policy failures behind durable admission when the recorder returns %s',
+  async (mode) => {
+    jest.useFakeTimers();
+    const error = new ScheduledMCPPolicyError('tool_policy_denied', 'Files', 'child');
+    const input = {
+      error,
+      streamId: 'policy-admission',
+      jobCreatedAt: 42,
+      userId: 'owner',
+      serverName: 'Files',
+      identity: {
+        scheduleId: 's1',
+        ownerId: 'owner',
+        tenantId: null,
+        agentId: 'root',
+        invocationMode: 'delegated' as const,
+      },
+    };
+    let durable = false,
+      returned = false;
+    const record = jest.fn(async () => {
+      if (!durable && mode === 'throw') throw new Error('Receipt unavailable');
+      return durable;
+    });
+    const first = recordScheduledMCPToolAuthFailure(input, () => record);
+    const duplicate = recordScheduledMCPToolAuthFailure(input, () => record);
+    const observed = first.then((value) => {
+      returned = true;
+      return value;
+    });
+    try {
+      await jest.advanceTimersByTimeAsync(1000);
+      expect(returned).toBe(false);
+      expect(duplicate).toBe(first);
+      expect(record.mock.calls.length).toBeGreaterThan(1);
+      durable = true;
+      await jest.advanceTimersByTimeAsync(30_000);
+      await expect(observed).resolves.toBe(true);
+    } finally {
+      durable = true;
+      await jest.runAllTimersAsync();
+      await Promise.all([first, duplicate, observed]);
+      jest.useRealTimers();
+    }
+  },
+);
+
+it('does not coalesce different A3 diagnoses for the same exact generation', async () => {
+  jest.useFakeTimers();
+  let durable = false;
+  const record = jest.fn(async () => durable);
+  const input = {
+    streamId: 'policy-diagnoses',
+    jobCreatedAt: 42,
+    userId: 'owner',
+    serverName: 'Files',
+    identity: {
+      scheduleId: 's1',
+      ownerId: 'owner',
+      tenantId: null,
+      agentId: 'root',
+      invocationMode: 'delegated' as const,
+    },
+  };
+  const first = recordScheduledMCPToolAuthFailure(
+    { ...input, error: new ScheduledMCPPolicyError('tool_policy_denied', 'Files', 'child') },
+    () => record,
+  );
+  const second = recordScheduledMCPToolAuthFailure(
+    { ...input, error: new ScheduledMCPPolicyError('binding_mismatch', 'Files', 'child') },
+    () => record,
+  );
+  try {
+    expect(second).not.toBe(first);
+    durable = true;
+    await jest.advanceTimersByTimeAsync(30_000);
+    await expect(first).resolves.toBe(true);
+    await expect(second).resolves.toBe(true);
+  } finally {
+    durable = true;
+    await jest.runAllTimersAsync();
+    await Promise.all([first, second]);
+    jest.useRealTimers();
+  }
+});
+
+it('fences a foreign or replaced A3 receipt instead of retrying an impossible admission', async () => {
+  const record = jest.fn(async () => {
+    throw new ScheduledMCPReceiptFencedError();
+  });
+  await expect(
+    recordScheduledMCPToolAuthFailure(
+      {
+        error: new ScheduledMCPPolicyError('tool_policy_denied', 'Files', 'child'),
+        streamId: 'retired-policy',
+        jobCreatedAt: 42,
+        userId: 'owner',
+        serverName: 'Files',
+        identity: {
+          scheduleId: 's1',
+          ownerId: 'owner',
+          tenantId: null,
+          agentId: 'root',
+          invocationMode: 'delegated',
+        },
+      },
+      () => record,
+    ),
+  ).rejects.toMatchObject({ name: 'AbortError' });
+  expect(record).toHaveBeenCalledTimes(1);
+});
+
+it('interrupts an A3 admission wait at shutdown without a model-visible policy result', async () => {
+  const controller = new AbortController();
+  const signal = jest
+    .spyOn(jest.requireActual('../app/shutdown'), 'getShutdownSignal')
+    .mockReturnValue(controller.signal);
+  const record = jest.fn(async () => false);
+  const pending = recordScheduledMCPToolAuthFailure(
+    {
+      error: new ScheduledMCPPolicyError('tool_policy_denied', 'Files', 'child'),
+      streamId: 'policy-shutdown',
+      jobCreatedAt: 42,
+      userId: 'owner',
+      serverName: 'Files',
+      identity: {
+        scheduleId: 's1',
+        ownerId: 'owner',
+        tenantId: null,
+        agentId: 'root',
+        invocationMode: 'delegated',
+      },
+    },
+    () => record,
+    async () => ({ baseMs: 60_000, maxMs: 60_000 }),
+  );
+  const outcome = pending.catch((error) => error);
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    controller.abort();
+    await expect(outcome).resolves.toMatchObject({ name: 'AbortError' });
+    expect(record).toHaveBeenCalledTimes(1);
+  } finally {
+    controller.abort();
+    await outcome;
+    signal.mockRestore();
+  }
+});
+
+describe('scheduled reset policy synchronization', () => {
+  let mongo: MongoMemoryServer;
+  beforeAll(async () => {
+    mongo = await MongoMemoryServer.create();
+    createModels(mongoose);
+    await mongoose.connect(mongo.getUri());
+  });
+  afterAll(async () => {
+    await mongoose.disconnect();
+    await mongo.stop();
+  });
+  beforeEach(async () => {
+    await mongoose.connection.dropDatabase();
+  });
+
+  it.each([
+    ['increased', 2000, true],
+    ['decreased', 400, true],
+    ['unchanged', 1000, true],
+    ['disabled', 1000, false],
+  ])(
+    'applies the %s policy before resetting a scheduled balance',
+    async (_case, refillAmount, autoRefillEnabled) => {
+      const user = new mongoose.Types.ObjectId();
+      const lastRefill = new Date('2020-01-01');
+      await mongoose.models.Balance.create({
+        user,
+        tokenCredits: 500,
+        autoRefillEnabled: true,
+        refillMode: 'reset',
+        refillAmount: 1000,
+        refillIntervalValue: 1,
+        refillIntervalUnit: 'weeks',
+        lastRefill,
+        reservations: [{ id: 'held', amount: 450, expiresAt: new Date(Date.now() + 60_000) }],
+        reservedCredits: 450,
+      });
+      const db = createMethods(mongoose);
+      const findBalance: SchedulesServiceDeps['findBalance'] = (userId, options) =>
+        db.findBalanceByUser(userId, { includeReservedCredits: true, ...options });
+      const service = createSchedulesService({
+        methods: {} as SchedulesServiceDeps['methods'],
+        getAppConfig: async () =>
+          ({
+            balance: {
+              enabled: true,
+              startBalance: 1000,
+              autoRefillEnabled,
+              refillMode: 'reset',
+              refillAmount,
+              refillIntervalValue: 1,
+              refillIntervalUnit: 'weeks',
+            },
+          }) as Awaited<ReturnType<SchedulesServiceDeps['getAppConfig']>>,
+        findBalance,
+        upsertBalance: (userId, { set, setOnInsert }) =>
+          db.upsertBalanceFields(userId, set, setOnInsert),
+        initializeNullBalance: jest.fn(async () => null),
+        findUserById: jest.fn(async () => null),
+        preflightMCP: jest.fn().mockResolvedValue([]),
+        resolveAgentFireAccess: jest.fn(async () => 'ok' as const),
+        getChatProject: jest.fn(async () => null),
+        isUserDeleting: jest.fn(async () => false),
+        enqueueAgentTrigger: jest.fn(async () => undefined),
+        getTriggerDelivery: jest.fn(async () => null),
+      });
+      await expect(service.engineDeps.isOutOfBalance({ id: user.toString() })).resolves.toBe(
+        autoRefillEnabled && refillAmount <= 450,
+      );
+      const record = await db.findBalanceByUser(user.toString());
+      expect(record?.tokenCredits).toBe(autoRefillEnabled ? refillAmount : 500);
+      expect(record?.lastRefill).toEqual(autoRefillEnabled ? expect.any(Date) : lastRefill);
+      const ledger = await mongoose.models.Transaction.find({
+        user,
+        context: 'balanceReset',
+      }).lean();
+      expect(ledger).toHaveLength(autoRefillEnabled ? 1 : 0);
+      if (autoRefillEnabled) {
+        expect(ledger[0].rawAmount).toBe(refillAmount - 500);
+      }
+    },
+  );
 });

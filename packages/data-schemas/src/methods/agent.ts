@@ -12,7 +12,7 @@ import {
 import type { FilterQuery, Model, PipelineStage, ProjectionType, Types } from 'mongoose';
 import type { AgentSortOption, AgentToolResources } from 'librechat-data-provider';
 import type { IAgent, IAclEntry, IUser, ActionQuery } from '~/types';
-import { withCodeEnvironmentReference } from './codeEnvironment';
+import { withCodeEnvironmentReferences } from './codeEnvironment';
 import { OWNER_ACL_PERMISSION_BIT_SUPERSETS } from './aclEntry';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { filterExistingSkillIds } from './skill';
@@ -591,12 +591,13 @@ interface GraphEdges {
 async function removeAgentIdsFromEdges(
   Agent: Model<IAgent>,
   agentIds: string[],
-  tenantId?: string,
+  tenantId?: string | null,
 ): Promise<void> {
   if (agentIds.length === 0) {
     return;
   }
   const filter: FilterQuery<IAgent> = {
+    /** `null` pins the cleanup to tenantless graphs (matches a missing field). */
     ...(tenantId !== undefined ? { tenantId } : {}),
     $or: [{ 'edges.from': { $in: agentIds } }, { 'edges.to': { $in: agentIds } }],
   };
@@ -671,6 +672,12 @@ export interface AgentDeps {
 }
 
 /** Plain projection used to discover runnable agent graphs without exposing Mongoose. */
+/** The agent fields a models list reads. */
+export type AgentModelSummary = Pick<
+  IAgent,
+  '_id' | 'id' | 'name' | 'description' | 'provider' | 'author'
+> & { createdAt?: Date };
+
 export interface AgentGraphNode {
   id: string;
   provider: string;
@@ -1050,6 +1057,7 @@ export function createAgentMethods(
   deps: AgentDeps,
 ): {
   getAgent: GetAgent;
+  getAgentName: (id: string, tenantId?: string) => Promise<string | undefined>;
   getAgentVersions: (searchParameter: FilterQuery<IAgent>) => Promise<IAgent['versions'] | null>;
   getAgentWithVersionCount: (
     searchParameter: FilterQuery<IAgent>,
@@ -1066,6 +1074,9 @@ export function createAgentMethods(
   createAgent: (agentData: Record<string, unknown>) => Promise<IAgent>;
   getAgentIdsByMCPServerName: (serverName: string) => Promise<Types.ObjectId[]>;
   getAgentsWithMCPServerNames: () => Promise<Array<Pick<IAgent, '_id' | 'mcpServerNames'>>>;
+  getAgentModelSummaries: (
+    agentIds: Array<Types.ObjectId | string>,
+  ) => Promise<AgentModelSummary[]>;
   updateAgent: (
     searchParameter: FilterQuery<IAgent>,
     updateData: Record<string, unknown>,
@@ -1169,6 +1180,13 @@ export function createAgentMethods(
 } {
   const { removeAllPermissions, getActions, getSoleOwnedResourceIds, isExternalSkillId } = deps;
 
+  function codeEnvironmentReferences(data: Record<string, unknown>): string[] {
+    return [
+      data.code_environment_id,
+      ...(Array.isArray(data.code_environment_ids) ? data.code_environment_ids : []),
+    ].filter((id): id is string => typeof id === 'string' && id.length > 0);
+  }
+
   async function restoreAgentAfterReferenceLoss(
     Agent: Model<IAgent>,
     agentAfterWrite: IAgent | null,
@@ -1180,7 +1198,10 @@ export function createAgentMethods(
     const restored = await Agent.replaceOne(
       {
         _id: agentAfterWrite._id,
-        code_environment_id: lostEnvironmentId,
+        $or: [
+          { code_environment_id: lostEnvironmentId },
+          { code_environment_ids: lostEnvironmentId },
+        ],
         updatedAt,
       },
       originalAgent,
@@ -1193,6 +1214,10 @@ export function createAgentMethods(
       await Agent.updateOne(
         { _id: agentAfterWrite._id, code_environment_id: lostEnvironmentId },
         { $unset: { code_environment_id: 1 } },
+      );
+      await Agent.updateOne(
+        { _id: agentAfterWrite._id, code_environment_ids: lostEnvironmentId },
+        { $pull: { code_environment_ids: lostEnvironmentId } },
       );
     }
   }
@@ -1235,11 +1260,10 @@ export function createAgentMethods(
         extractMCPServerNames(agentData.tools as string[] | undefined),
     };
 
-    return await withCodeEnvironmentReference(
+    return await withCodeEnvironmentReferences(
       mongoose,
-      typeof agentData.code_environment_id === 'string' ? agentData.code_environment_id : undefined,
+      codeEnvironmentReferences(agentData),
       async () => (await Agent.create(initialAgentData)).toObject() as IAgent,
-      undefined,
       async (createdAgent) => {
         await Agent.deleteOne({ _id: createdAgent._id });
       },
@@ -1258,6 +1282,16 @@ export function createAgentMethods(
     const Agent = mongoose.models.Agent as Model<IAgent>;
     return await Agent.findOne(searchParameter, projection).lean<IAgent>();
   };
+
+  /** Storage-neutral display-name lookup for a known execution subject. */
+  async function getAgentName(id: string, tenantId?: string): Promise<string | undefined> {
+    const agent = await getAgent(
+      { id, tenantId: tenantId ?? null },
+      { name: 1, tenantId: 1, _id: 0 },
+    );
+    if ((agent?.tenantId ?? undefined) !== tenantId) return undefined;
+    return agent?.name || undefined;
+  }
 
   /**
    * Get an agent's version history only, without the rest of the document.
@@ -1388,6 +1422,17 @@ export function createAgentMethods(
       Array<Pick<IAgent, '_id'>>
     >();
     return agents.map((agent) => agent._id);
+  }
+
+  /** Loads only the fields a models list shows, never the unbounded `versions` history. */
+  async function getAgentModelSummaries(
+    agentIds: Array<Types.ObjectId | string>,
+  ): Promise<AgentModelSummary[]> {
+    const Agent = mongoose.models.Agent as Model<IAgent>;
+    return await Agent.find(
+      { _id: { $in: agentIds } },
+      { id: 1, name: 1, description: 1, provider: 1, author: 1, createdAt: 1 },
+    ).lean<AgentModelSummary[]>();
   }
 
   /** Returns every agent with a non-empty `mcpServerNames`, so access
@@ -1574,37 +1619,42 @@ export function createAgentMethods(
       }
     }
 
-    const directEnvironmentId = updateData.code_environment_id;
-    const setEnvironmentId =
-      typeof updateData.$set === 'object' && updateData.$set != null
-        ? (updateData.$set as { code_environment_id?: unknown }).code_environment_id
-        : undefined;
-    let nextEnvironmentId: string | undefined;
-    if (typeof directEnvironmentId === 'string') {
-      nextEnvironmentId = directEnvironmentId;
-    } else if (typeof setEnvironmentId === 'string') {
-      nextEnvironmentId = setEnvironmentId;
+    const nextEnvironmentIds = codeEnvironmentReferences({
+      ...updateData,
+      ...(typeof updateData.$set === 'object' && updateData.$set != null ? updateData.$set : {}),
+    });
+    for (const operator of ['$push', '$addToSet']) {
+      const update = updateData[operator] as { code_environment_ids?: unknown } | undefined;
+      const values = update?.code_environment_ids;
+      const added =
+        values != null && typeof values === 'object' && '$each' in values
+          ? (values as { $each: unknown }).$each
+          : values;
+      nextEnvironmentIds.push(
+        ...codeEnvironmentReferences({
+          code_environment_ids: Array.isArray(added) ? added : [added],
+        }),
+      );
     }
-    const updatedAgent = await withCodeEnvironmentReference(
+    const updatedAgent = await withCodeEnvironmentReferences(
       mongoose,
-      nextEnvironmentId,
+      nextEnvironmentIds,
       async () =>
         (await Agent.findOneAndUpdate(
-          currentAgent == null || nextEnvironmentId == null
+          currentAgent == null || nextEnvironmentIds.length === 0
             ? searchParameter
             : { ...searchParameter, _id: currentAgent._id, updatedAt: currentRevision },
           updateData,
           mongoOptions,
         ).lean()) as IAgent | null,
-      undefined,
-      async (agentAfterUpdate) => {
-        if (agentAfterUpdate == null || nextEnvironmentId == null) return;
+      async (agentAfterUpdate, lostEnvironmentId) => {
+        if (agentAfterUpdate == null) return;
         if (currentAgent == null) return;
         await restoreAgentAfterReferenceLoss(
           Agent,
           agentAfterUpdate,
           currentAgent.toObject() as IAgent,
-          nextEnvironmentId,
+          lostEnvironmentId,
         );
       },
     );
@@ -1894,7 +1944,9 @@ export function createAgentMethods(
         ResourceType.REMOTE_AGENT,
       ]);
 
-      const authoredAgents = await Agent.find({ author: userObjectId }).select('id _id').lean();
+      const authoredAgents = await Agent.find({ author: userObjectId })
+        .select('id _id tenantId')
+        .lean();
 
       const migratedEntries =
         authoredAgents.length > 0
@@ -1911,42 +1963,48 @@ export function createAgentMethods(
       const soleOwnedAgents =
         soleOwnedObjectIds.length > 0
           ? await Agent.find({ _id: { $in: soleOwnedObjectIds } })
-              .select('id _id')
+              .select('id _id tenantId')
               .lean()
           : [];
 
       const allAgents = [...soleOwnedAgents, ...legacyAgents];
+      /** Sole-owned ids whose agent is already gone: ACLs left by an interrupted earlier attempt. */
+      const aclResourceIds = [...soleOwnedObjectIds, ...legacyAgents.map((a) => a._id)];
 
-      if (allAgents.length === 0) {
+      if (aclResourceIds.length === 0) {
         return;
       }
 
-      const agentIds = allAgents.map((agent) => agent.id);
       const agentObjectIds = allAgents.map((agent) => agent._id);
-
-      await AclEntry.deleteMany({
-        resourceType: { $in: [ResourceType.AGENT, ResourceType.REMOTE_AGENT] },
-        resourceId: { $in: agentObjectIds },
-      });
-
-      try {
-        await removeAgentIdsFromEdges(Agent, agentIds);
-      } catch (error) {
-        logger.error('[deleteUserAgents] Error removing agents from handoff edges', error);
+      /** Agent ids are unique per tenant only, so reference cleanup runs once per agent tenant. */
+      const idsByTenant = new Map<string | null, string[]>();
+      for (const agent of allAgents) {
+        const tenant = agent.tenantId ?? null;
+        const bucket = idsByTenant.get(tenant);
+        if (bucket) {
+          bucket.push(agent.id);
+        } else {
+          idsByTenant.set(tenant, [agent.id]);
+        }
       }
-
-      try {
+      /** Reference cleanup precedes the irreversible delete, so a failure keeps the agent discoverable for retry. */
+      for (const [tenant, tenantAgentIds] of idsByTenant) {
+        await removeAgentIdsFromEdges(Agent, tenantAgentIds, tenant);
         await User.updateMany(
-          { 'favorites.agentId': { $in: agentIds } },
-          { $pull: { favorites: { agentId: { $in: agentIds } } } },
+          { tenantId: tenant, 'favorites.agentId': { $in: tenantAgentIds } },
+          { $pull: { favorites: { agentId: { $in: tenantAgentIds } } } },
         );
-      } catch (error) {
-        logger.error('[deleteUserAgents] Error removing agents from user favorites', error);
       }
 
       await Agent.deleteMany({ _id: { $in: agentObjectIds } });
+      /** ACL entries are the retry discovery key for sole-owned agents, so they go last. */
+      await AclEntry.deleteMany({
+        resourceType: { $in: [ResourceType.AGENT, ResourceType.REMOTE_AGENT] },
+        resourceId: { $in: aclResourceIds },
+      });
     } catch (error) {
       logger.error('[deleteUserAgents] General error:', error);
+      throw error;
     }
   }
 
@@ -2032,6 +2090,7 @@ export function createAgentMethods(
       projection.stateful_code_sessions = 1;
       projection.code_environment_id = 1;
       projection.code_workspace_id = 1;
+      projection.code_environment_ids = 1;
       projection.repositoryInstructions = 1;
       projection.agent_ids = 1;
       projection['edges.from'] = 1;
@@ -2629,8 +2688,10 @@ export function createAgentMethods(
     for (const field of [
       'code_environment_id',
       'code_workspace_id',
+      'code_environment_ids',
       'repositoryInstructions',
       'git_identity',
+      'instructionsPrompt',
       'skills_scope',
       'skill_authoring_enabled',
     ]) {
@@ -2642,27 +2703,24 @@ export function createAgentMethods(
       Object.keys(unsetOnRestore).length > 0
         ? { $set: revertToVersion, $unset: unsetOnRestore }
         : { $set: revertToVersion };
-    const revertedAgent = await withCodeEnvironmentReference(
+    const revertedAgent = await withCodeEnvironmentReferences(
       mongoose,
-      typeof revertToVersion.code_environment_id === 'string'
-        ? revertToVersion.code_environment_id
-        : undefined,
+      codeEnvironmentReferences(revertToVersion),
       async () =>
         await Agent.findOneAndUpdate(
           { ...searchParameter, _id: agent._id, updatedAt: originalRevision },
           revertUpdate,
           { new: true },
         ).lean<IAgent>(),
-      undefined,
-      async (agentAfterRevert) => {
-        if (agentAfterRevert == null || typeof revertToVersion.code_environment_id !== 'string') {
+      async (agentAfterRevert, lostEnvironmentId) => {
+        if (agentAfterRevert == null) {
           return;
         }
         await restoreAgentAfterReferenceLoss(
           Agent,
           agentAfterRevert,
           agent.toObject() as IAgent,
-          revertToVersion.code_environment_id,
+          lostEnvironmentId,
         );
       },
     );
@@ -2705,6 +2763,7 @@ export function createAgentMethods(
 
   return {
     getAgent,
+    getAgentName,
     getAgentVersions,
     getAgentWithVersionCount,
     getAgents,
@@ -2713,6 +2772,7 @@ export function createAgentMethods(
     createAgent,
     getAgentIdsByMCPServerName,
     getAgentsWithMCPServerNames,
+    getAgentModelSummaries,
     updateAgent,
     updateAgentAvatar,
     deleteAgent,

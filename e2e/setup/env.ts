@@ -145,7 +145,7 @@ export function getBaseE2EEnv(): Record<string, string> {
 export function getLocalE2EEnv(): Record<string, string> {
   return {
     ...getBaseE2EEnv(),
-    TITLE_CONVO: 'false',
+    TITLE_CONVO: process.env.E2E_TITLE_CONVO ?? 'false',
     LOGIN_VIOLATION_SCORE: '0',
     REGISTRATION_VIOLATION_SCORE: '0',
     CONCURRENT_VIOLATION_SCORE: '0',

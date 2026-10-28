@@ -74,7 +74,7 @@ type PinnedRowDragItem = ConversationDragItem & { key: string };
 /** Mirrors a favorite row (h-9, icon, title) so the loading swap keeps height. */
 const FavoriteRowSkeleton = () => (
   <div className="flex w-full items-center rounded-lg p-2" aria-hidden="true">
-    <Skeleton className="mr-2 h-5 w-5 rounded-full" />
+    <Skeleton className="me-2 h-5 w-5 rounded-full" />
     <Skeleton className="h-4 w-24" />
   </div>
 );
@@ -203,7 +203,7 @@ const DraggablePinnedRow = ({
   return (
     <div
       ref={ref}
-      style={{ opacity: isDragging ? 0 : 1 }}
+      className={isDragging ? 'opacity-0' : undefined}
       data-handler-id={handlerId}
       onKeyDown={handleKeyDown}
     >
@@ -715,8 +715,8 @@ const PinnedSection = ({
     >
       <div
         className={cn(
-          'flex h-8 w-full items-center pr-1',
-          isPinOver && canPin && 'bg-surface-active-alt rounded-lg',
+          'flex h-8 w-full items-center pe-1',
+          isPinOver && canPin && 'bg-surface-nav-selected rounded-lg',
         )}
       >
         <button
@@ -744,7 +744,7 @@ const PinnedSection = ({
               className={cn(
                 'text-text-secondary flex h-9 items-center justify-center rounded-lg border border-dashed text-xs',
                 isPinOver && canPin
-                  ? 'border-border-medium bg-surface-active-alt text-text-primary'
+                  ? 'border-border-medium bg-surface-nav-selected text-text-primary'
                   : 'border-border-light',
               )}
               aria-hidden="true"

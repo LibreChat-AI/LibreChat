@@ -1,4 +1,5 @@
 const mockTaskStore = {
+  configureActivity: jest.fn((config) => ({ publicationTimeoutMs: 1000, ...config })),
   configureTaskControlTransport: jest.fn().mockResolvedValue(undefined),
   configureActivityStream: jest.fn(),
   prepareActivityForShutdown: jest.fn(),
@@ -111,7 +112,16 @@ describe('subagent thread Redis lifecycle', () => {
       .mockReturnValueOnce(taskPublisher)
       .mockReturnValueOnce(activityPublisher);
 
-    await configureSubagentTaskRouting();
+    await configureSubagentTaskRouting({ publicationTimeoutMs: 4321, replayTtlMs: 600000 });
+    expect(mockTaskStore.configureActivity).toHaveBeenCalledWith({
+      publicationTimeoutMs: 4321,
+      replayTtlMs: 600000,
+    });
+    expect(duplicateIoRedisClient).toHaveBeenCalledWith(ioredisClient, {
+      enableOfflineQueue: false,
+      maxRetriesPerRequest: 1,
+      commandTimeout: 4321,
+    });
 
     expect(createIoRedisSubscriber.mock.calls).toEqual([
       [ioredisClient, '[SubagentTaskRouting] task subscriber'],

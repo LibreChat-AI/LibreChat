@@ -2,6 +2,7 @@ import { logger } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { PasswordResetUpdate } from './passwordResetUpdate';
 import { createPasswordResetUpdate } from './passwordResetUpdate';
+import { clearSessionHintCookie } from '~/oauth/csrf';
 import { EMAIL_CHANGE_TOKEN_TYPE } from './email';
 
 /** The stored reset token, in both the typed shape and the untyped legacy one. */
@@ -29,8 +30,8 @@ export interface PasswordResetDeps {
     expectedState: { email: string },
   ) => Promise<PasswordResetUser | null>;
   deleteTokens: (query: { userId: string; type: string }) => Promise<unknown>;
-  compareToken: (candidate: string, storedHash: string) => boolean;
-  hashPassword: (password: string) => string;
+  compareToken: (candidate: string, storedHash: string) => Promise<boolean>;
+  hashPassword: (password: string) => Promise<string>;
 }
 
 export interface PasswordResetInput {
@@ -87,11 +88,12 @@ export function createResetPasswordController(deps: PasswordResetControllerDeps)
       }
       /** After the revocations, so nothing can mint a post-stamp token while it waits. */
       await deps.awaitAuthUserDocEviction(userId);
+      clearSessionHintCookie(res);
 
       return res.status(200).json(result);
     } catch (error) {
       logger.error('[resetPasswordController]', error);
-      return res.status(400).json({ message: error instanceof Error ? error.message : undefined });
+      return res.status(400).json({ message: 'Password reset failed' });
     }
   };
 }
@@ -150,7 +152,7 @@ export async function commitPasswordReset(
     deps.getUserById(input.userId, PASSWORD_RESET_USER_FIELDS),
   ]);
 
-  if (!resetToken || !deps.compareToken(input.token, resetToken.token)) {
+  if (!resetToken || !(await deps.compareToken(input.token, resetToken.token))) {
     return { ok: false };
   }
 
@@ -160,7 +162,7 @@ export async function commitPasswordReset(
 
   const user = await deps.updateUser(
     input.userId,
-    createPasswordResetUpdate(deps.hashPassword(input.password)),
+    createPasswordResetUpdate(await deps.hashPassword(input.password)),
     { email: account.email },
   );
   if (!user) {

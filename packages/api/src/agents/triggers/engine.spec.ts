@@ -74,7 +74,12 @@ describe('createAgentTriggerDeliveryEngine', () => {
 
     expect(dispatch).toHaveBeenCalledWith(
       { version: 1 },
-      { signal: expect.any(AbortSignal), attempt: 1, maxAttempts: 8 },
+      {
+        signal: expect.any(AbortSignal),
+        attempt: 1,
+        maxAttempts: 8,
+        deliveryClaimToken: 'claim-1',
+      },
     );
     expect(store.beginAttempt).toHaveBeenCalledWith({
       id: 'delivery-row-1',
@@ -627,6 +632,44 @@ describe('createAgentTriggerDeliveryEngine', () => {
       expect.objectContaining({
         availableAt: new Date(START.getTime() + 60 * 60_000),
       }),
+    );
+  });
+
+  it('stamps dead letters with the configured retention deadline', async () => {
+    const store = storeWith();
+    const engine = createAgentTriggerDeliveryEngine(
+      {
+        store,
+        dispatch: async () => Promise.reject(new AgentTriggerDispatchError('invalid envelope')),
+        now: () => START,
+      },
+      { concurrency: 1, deadLetterRetentionMs: 7 * 24 * 60 * 60_000 },
+    );
+
+    await engine.runTick();
+
+    expect(store.dead).toHaveBeenCalledWith(
+      expect.objectContaining({
+        expiresAt: new Date(START.getTime() + 7 * 24 * 60 * 60_000),
+      }),
+    );
+  });
+
+  it('leaves dead letters without a deadline when no retention is configured', async () => {
+    const store = storeWith();
+    const engine = createAgentTriggerDeliveryEngine(
+      {
+        store,
+        dispatch: async () => Promise.reject(new AgentTriggerDispatchError('invalid envelope')),
+        now: () => START,
+      },
+      { concurrency: 1 },
+    );
+
+    await engine.runTick();
+
+    expect(store.dead).toHaveBeenCalledWith(
+      expect.not.objectContaining({ expiresAt: expect.anything() }),
     );
   });
 

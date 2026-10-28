@@ -1,10 +1,15 @@
 import { RecoilRoot } from 'recoil';
 import copy from 'copy-to-clipboard';
 import { renderHook, act } from '@testing-library/react';
+import type { TMessage } from 'librechat-data-provider';
 import type { MutableSnapshot } from 'recoil';
 import type { ReactNode } from 'react';
 import type { MarkdownVariant } from '~/utils/richtext';
-import { useCopyMessageToClipboard } from '~/hooks/Messages/useCopyToClipboard';
+import {
+  useCopyMessageToClipboard,
+  getMessageClipboardSource,
+  hasCopyableText,
+} from '~/hooks/Messages/useCopyToClipboard';
 import store from '~/store';
 
 jest.mock('copy-to-clipboard');
@@ -52,6 +57,77 @@ describe('useCopyMessageToClipboard', () => {
     options?.onCopy?.(clipboardData);
     return (clipboardData.setData.mock.calls[0]?.[1] ?? '') as string;
   };
+
+  it.each([false, true])('copies rendered wake-up results with rich text %s', (rich) => {
+    const text = `A detached subagent task has completed. Continue the parent task using its durable result below.\n${JSON.stringify({ background_task_id: 'task', subagent_thread_id: 'thread', subagent_type: 'reviewer', status: 'completed', result: '**Visible result**', snapshot: 'private orchestration' })}`;
+    const message: TMessage = {
+      messageId: 'wake',
+      parentMessageId: null,
+      conversationId: 'parent',
+      isCreatedByUser: true,
+      isUserSubmitted: false,
+      text,
+      content: [],
+    };
+    const { result } = renderHook(
+      () => useCopyMessageToClipboard(getMessageClipboardSource(message)),
+      {
+        wrapper: ({ children }: { children: ReactNode }) => (
+          <RecoilRoot
+            initializeState={({ set }) => {
+              set(store.copyRichText, rich);
+              set(store.enableUserMsgMarkdown, false);
+            }}
+          >
+            {children}
+          </RecoilRoot>
+        ),
+      },
+    );
+    act(() => {
+      result.current(mockSetIsCopied);
+    });
+    expect(mockCopy.mock.calls[0][0]).toBe('**Visible result**');
+    if (rich) expect(copiedHtml()).toBe('<p><strong>Visible result</strong></p>');
+    expect(getMessageClipboardSource({ ...message, isUserSubmitted: true }).text).toBe(text);
+    const empty = { ...message, text: text.replace('**Visible result**', '') };
+    expect(hasCopyableText(getMessageClipboardSource(empty))).toBe(false);
+  });
+
+  it('copies all displayed background results without host metadata', () => {
+    const text = `2 background tool tasks have finished. Continue using their durable results below.\n${JSON.stringify(
+      [
+        {
+          background_task_id: 'first',
+          tool_call_id: 'call-1',
+          tool: 'tool',
+          status: 'completed',
+          result: 'First result',
+        },
+        {
+          background_task_id: 'second',
+          tool_call_id: 'call-2',
+          tool: 'tool',
+          status: 'error',
+          result: 'Second result',
+        },
+      ],
+    )}`;
+    const source = getMessageClipboardSource({
+      messageId: 'wake',
+      parentMessageId: null,
+      conversationId: 'parent',
+      isCreatedByUser: true,
+      text,
+    });
+    const { result } = renderHook(() => useCopyMessageToClipboard(source), {
+      wrapper: ({ children }: { children: ReactNode }) => <RecoilRoot>{children}</RecoilRoot>,
+    });
+    act(() => {
+      result.current(mockSetIsCopied);
+    });
+    expect(mockCopy.mock.calls[0][0]).toBe('First result\n\nSecond result');
+  });
 
   it('copies an assistant message as html when the preference is on', () => {
     const { result } = renderWithSettings(

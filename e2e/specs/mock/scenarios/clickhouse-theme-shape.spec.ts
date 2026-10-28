@@ -80,8 +80,8 @@ async function expectClickUiShape(page: Page, menu: Locator) {
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'clickhouse');
   const alpha = SHADOW_ALPHA[await resolvedMode(page)];
 
-  /** Click UI's `radii.2`; LibreChat's own `rounded-2xl` is twice that. */
-  await expect(menu).toHaveCSS('border-radius', '8px');
+  /** Click UI's `genericMenu.panel.radii.all`, the popover role's ClickHouse value. */
+  await expect(menu).toHaveCSS('border-radius', '4px');
   const shadow = await menu.evaluate((node) => getComputedStyle(node).boxShadow);
   expect(shadow).toContain(`rgba(21, 21, 21, ${alpha}) 0px 4px 6px -1px`);
   expect(shadow).toContain(`rgba(21, 21, 21, ${alpha}) 0px 2px 4px -1px`);

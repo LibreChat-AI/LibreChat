@@ -235,6 +235,46 @@ test.describe('unseen replies', () => {
     }
   });
 
+  test('a pre-upgrade manual reminder keeps its date group after reload @scenario:legacy-manual-unread-keeps-date', async ({
+    page,
+  }) => {
+    const id = conversationId();
+    const title = `Legacy reminder ${id.slice(0, 8)}`;
+    try {
+      await seedConversation(id, title, { lastResponseAt: new Date(Date.now() - 2000) });
+      await seedReplyMessage(id, title);
+      await page.goto(NEW_CHAT_PATH);
+      await openSidebar(page);
+      const row = page.getByTestId('convo-item').filter({ hasText: title });
+      for (let pass = 0; pass < 2; pass++) {
+        if (pass > 0) {
+          await page.reload();
+          await openSidebar(page);
+        }
+        await expect(row.locator('span[aria-hidden="true"].bg-status-info')).toBeVisible();
+        await expect
+          .poll(async () =>
+            row.evaluate((node) => {
+              let previous = node.closest('[role="row"]')?.previousElementSibling;
+              while (previous) {
+                const heading = previous.querySelector('h2');
+                if (heading) return heading.textContent;
+                previous = previous.previousElementSibling;
+              }
+              return null;
+            }),
+          )
+          .toBe('Today');
+      }
+      const stored = await readConversation(id);
+      expect(stored?.isMarkedUnread).toBeUndefined();
+      expect(stored?.lastResponseIsManual).toBeUndefined();
+      expect(stored?.lastSeenAt).toBeUndefined();
+    } finally {
+      await cleanup(id);
+    }
+  });
+
   test('marking a read conversation unread restores its dot and title count @scenario:mark-as-unread-restores-dot', async ({
     page,
   }) => {
@@ -258,6 +298,24 @@ test.describe('unseen replies', () => {
       /* At least one more, not exactly one: the other projects share this user
        * and seed unseen conversations of their own while this one runs. */
       await expect.poll(() => titleCount(page)).toBeGreaterThanOrEqual(baseline + 1);
+      await expect.poll(async () => (await readConversation(id))?.isMarkedUnread).toBe(true);
+      expect((await readConversation(id))?.lastResponseIsManual).not.toBe(true);
+      await page.reload();
+      await openSidebar(page);
+      await expect(row.locator('span[aria-hidden="true"].bg-status-info')).toBeVisible();
+      await expect
+        .poll(async () =>
+          row.evaluate((node) => {
+            let previous = node.closest('[role="row"]')?.previousElementSibling;
+            while (previous) {
+              const heading = previous.querySelector('h2');
+              if (heading) return heading.textContent;
+              previous = previous.previousElementSibling;
+            }
+            return null;
+          }),
+        )
+        .toBe('Today');
 
       const token = await getAccessToken(page);
       const neverReplied = conversationId();
@@ -433,6 +491,7 @@ test.describe('unseen replies', () => {
     const id = conversationId();
     const title = `Withheld reply ${id.slice(0, 8)}`;
     const replyAt = new Date(Date.now() - 2_000);
+    let completedReplyAt: Date;
     await page.addInitScript(() => {
       const constructions: string[] = [];
       const calls: string[] = [];
@@ -448,8 +507,8 @@ test.describe('unseen replies', () => {
         }
         close() {}
         onclick: (() => void) | null = null;
-        constructor() {
-          constructions.push('notification');
+        constructor(_title: string, options?: NotificationOptions) {
+          constructions.push(options?.tag ?? '');
         }
       }
       Object.defineProperty(window, 'Notification', {
@@ -511,11 +570,19 @@ test.describe('unseen replies', () => {
         await second.bringToFront();
         await unfocus(page);
         await sendMessageAndWaitForCompletion(second, `E2E_REPLY:withheld-${id.slice(0, 8)}`);
-        await restoreUnreadBaseline(id, now(), replyAt);
+        const completed = await readConversation(id);
+        if (completed?.lastResponseAt == null) throw new Error('Reply timestamp was not saved');
+        completedReplyAt = new Date(completed.lastResponseAt);
+        await restoreUnreadBaseline(id, completedReplyAt, replyAt);
       } finally {
         await second.evaluate(() => window.dispatchEvent(new Event('blur'))).catch(() => {});
         await second.close();
       }
+      /* The reply tab may collapse the shared sidebar; observe the arrival before granting. */
+      await openSidebar(page);
+      await expect(row.locator('span[aria-hidden="true"].bg-status-info')).toBeVisible({
+        timeout: 45_000,
+      });
       await expect
         .poll(() =>
           page.evaluate(
@@ -531,23 +598,19 @@ test.describe('unseen replies', () => {
           window as Window & { __grantNotificationPermission: () => void }
         ).__grantNotificationPermission();
       });
-      await restoreUnreadBaseline(id, now(), replyAt);
-      /* `sidebarExpanded` is stored per browser, so the reply tab's own mobile shell closed this
-         list while it was open. Looking at the list again is what a reader does, and it is where
-         the dot has to show. */
-      await openSidebar(page);
-      await expect(row.locator('span[aria-hidden="true"].bg-status-info')).toBeVisible({
-        timeout: 45_000,
-      });
+      await restoreUnreadBaseline(id, completedReplyAt, replyAt);
+      /* Other scenarios leave unseen history for this user; only this reply must notify once. */
       await expect
         .poll(() =>
           page.evaluate(
-            () =>
-              (window as Window & { __notificationConstructions: string[] })
-                .__notificationConstructions,
+            (conversationId) =>
+              (
+                window as Window & { __notificationConstructions: string[] }
+              ).__notificationConstructions.filter((tag) => tag === conversationId),
+            id,
           ),
         )
-        .toEqual(['notification']);
+        .toEqual([id]);
     } finally {
       await cleanup(id);
     }

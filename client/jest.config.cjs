@@ -1,4 +1,4 @@
-/** v0.8.8 */
+/** v0.8.9-rc1 */
 const { maxWorkers } = require('../config/jest.workers.cjs');
 
 module.exports = {
@@ -7,7 +7,7 @@ module.exports = {
   testEnvironmentOptions: {
     url: 'http://localhost:3080',
   },
-  collectCoverage: true,
+  collectCoverage: process.env.COVERAGE === 'true',
   collectCoverageFrom: [
     'src/**/*.{js,jsx,ts,tsx}',
     '!<rootDir>/node_modules/',
@@ -34,6 +34,7 @@ module.exports = {
     '^test/(.*)$': '<rootDir>/test/$1',
     '^~/(.*)$': '<rootDir>/src/$1',
     '^@librechat/client$': '<rootDir>/../packages/client/dist/index.cjs',
+    '^@librechat/chat$': '<rootDir>/../packages/chat/dist/index.cjs',
     '^librechat-data-provider/react-query$':
       '<rootDir>/../node_modules/librechat-data-provider/src/react-query',
   },

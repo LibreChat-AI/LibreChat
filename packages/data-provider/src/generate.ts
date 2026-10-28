@@ -1,10 +1,7 @@
 import { z, ZodArray, ZodError, ZodIssueCode } from 'zod';
 import type { ZodIssue } from 'zod';
 import type { TConversation, TSetOption, TPreset } from './schemas';
-import { tConversationSchema, googleSettings as google, openAISettings as openAI } from './schemas';
-
-export type GoogleSettings = Partial<typeof google>;
-export type OpenAISettings = Partial<typeof google>;
+import { tConversationSchema } from './schemas';
 
 export type ComponentType =
   | 'input'
@@ -241,9 +238,9 @@ export function generateDynamicSchema(settings: SettingsConfiguration) {
 }
 
 const ZodTypeToSettingType: Record<string, string | undefined> = {
-  ZodString: 'string',
-  ZodNumber: 'number',
-  ZodBoolean: 'boolean',
+  string: 'string',
+  number: 'number',
+  boolean: 'boolean',
 };
 
 const minColumns = 1;
@@ -503,7 +500,7 @@ export function validateSettingDefinitions(settings: SettingsConfiguration): voi
           path: ['optionType'],
         });
       } else {
-        const zodType = conversationSchema._def.typeName;
+        const zodType = conversationSchema.def.type;
         const settingTypeEquivalent = ZodTypeToSettingType[zodType] || null;
         if (settingTypeEquivalent !== setting.type) {
           errors.push({
@@ -623,89 +620,3 @@ export function validateSettingDefinitions(settings: SettingsConfiguration): voi
     throw new ZodError(errors);
   }
 }
-
-export const generateOpenAISchema = (customOpenAI: OpenAISettings) => {
-  const defaults = { ...openAI, ...customOpenAI };
-  return tConversationSchema
-    .pick({
-      model: true,
-      chatGptLabel: true,
-      promptPrefix: true,
-      temperature: true,
-      top_p: true,
-      presence_penalty: true,
-      frequency_penalty: true,
-      resendFiles: true,
-      imageDetail: true,
-      maxContextTokens: true,
-    })
-    .transform((obj) => ({
-      ...obj,
-      model: obj.model ?? defaults.model.default,
-      chatGptLabel: obj.chatGptLabel ?? null,
-      promptPrefix: obj.promptPrefix ?? null,
-      temperature: obj.temperature ?? defaults.temperature.default,
-      top_p: obj.top_p ?? defaults.top_p.default,
-      presence_penalty: obj.presence_penalty ?? defaults.presence_penalty.default,
-      frequency_penalty: obj.frequency_penalty ?? defaults.frequency_penalty.default,
-      resendFiles:
-        typeof obj.resendFiles === 'boolean' ? obj.resendFiles : defaults.resendFiles.default,
-      imageDetail: obj.imageDetail ?? defaults.imageDetail.default,
-      maxContextTokens: obj.maxContextTokens ?? undefined,
-    }))
-    .catch(() => ({
-      model: defaults.model.default,
-      chatGptLabel: null,
-      promptPrefix: null,
-      temperature: defaults.temperature.default,
-      top_p: defaults.top_p.default,
-      presence_penalty: defaults.presence_penalty.default,
-      frequency_penalty: defaults.frequency_penalty.default,
-      resendFiles: defaults.resendFiles.default,
-      imageDetail: defaults.imageDetail.default,
-      maxContextTokens: undefined,
-    }));
-};
-
-export const generateGoogleSchema = (customGoogle: GoogleSettings) => {
-  const defaults = { ...google, ...customGoogle };
-  return tConversationSchema
-    .pick({
-      model: true,
-      modelLabel: true,
-      promptPrefix: true,
-      examples: true,
-      temperature: true,
-      maxOutputTokens: true,
-      topP: true,
-      topK: true,
-      maxContextTokens: true,
-    })
-    .transform((obj) => {
-      return {
-        ...obj,
-        model: obj.model ?? defaults.model.default,
-        modelLabel: obj.modelLabel ?? null,
-        promptPrefix: obj.promptPrefix ?? null,
-        examples: obj.examples ?? [{ input: { content: '' }, output: { content: '' } }],
-        temperature: obj.temperature ?? defaults.temperature.default,
-        maxOutputTokens:
-          obj.maxOutputTokens ??
-          defaults.maxOutputTokens.reset(obj.model ?? defaults.model.default),
-        topP: obj.topP ?? defaults.topP.default,
-        topK: obj.topK ?? defaults.topK.default,
-        maxContextTokens: obj.maxContextTokens ?? undefined,
-      };
-    })
-    .catch(() => ({
-      model: defaults.model.default,
-      modelLabel: null,
-      promptPrefix: null,
-      examples: [{ input: { content: '' }, output: { content: '' } }],
-      temperature: defaults.temperature.default,
-      maxOutputTokens: defaults.maxOutputTokens.default,
-      topP: defaults.topP.default,
-      topK: defaults.topK.default,
-      maxContextTokens: undefined,
-    }));
-};

@@ -1,7 +1,16 @@
 import { memo, useRef, useMemo, useEffect, useState, useCallback } from 'react';
+import { useRecoilValue } from 'recoil';
 import { useWatch } from 'react-hook-form';
-import { useRecoilState, useRecoilValue } from 'recoil';
-import { composerSurfaceClasses, composerSurfaceShadow, TextareaAutosize } from '@librechat/client';
+import { useAtom, useAtomValue } from 'jotai';
+import { useNavigate } from 'react-router-dom';
+import { useDirection } from '@radix-ui/react-direction';
+import { useSteering, showStopButtonByIndex, useComposerRestoreHost } from '@librechat/chat/react';
+import {
+  composerSurfaceClasses,
+  composerSurfaceShadow,
+  TextareaAutosize,
+  useRemScale,
+} from '@librechat/client';
 import {
   Constants,
   Permissions,
@@ -10,9 +19,9 @@ import {
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
 import type { TChatProject, TMessage, TConversation } from 'librechat-data-provider';
+import type { QueuedMessageContext } from '@librechat/chat';
 import type { SetterOrUpdater } from 'recoil';
 import type { ExtendedFile, FileSetter, ConvoGenerator, TAskFunction } from '~/common';
-import type { QueuedMessageContext } from '~/hooks/Chat/useSteering';
 import {
   cn,
   getModelSpec,
@@ -40,7 +49,6 @@ import {
   useChatFormContext,
   useAddedChatContext,
   useAssistantsMapContext,
-  useComposerRestoreHost,
   BadgeRowProvider,
 } from '~/Providers';
 import {
@@ -54,7 +62,7 @@ import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
 import AskUserQuestionPopover from './AskUserQuestionPopover';
 import useComposerItems from '~/hooks/Input/useComposerItems';
 import useAttachTarget from '~/hooks/Input/useAttachTarget';
-import InterruptSteerButton from './InterruptSteerButton';
+import { chatDirectionAtom } from '~/store/chatDirection';
 import Hints, { composerHintId } from './Composer/Hints';
 import PastedTextDialog from './Files/PastedTextDialog';
 import DuringRunSendButton from './DuringRunSendButton';
@@ -63,13 +71,13 @@ import useHasAccess from '~/hooks/Roles/useHasAccess';
 import useDictation from '~/hooks/Input/useDictation';
 import { useGetStartupConfig } from '~/data-provider';
 import CodeWorkspaceMenu from './CodeWorkspaceMenu';
-import useSteering from '~/hooks/Chat/useSteering';
 import CodeApprovalMenu from './CodeApprovalMenu';
 import TextareaHeader from './TextareaHeader';
 import PromptsCommand from './PromptsCommand';
 import { submitFromComposer } from './submit';
 import SkillsCommand from './SkillsCommand';
 import AutoPlayAudio from './AutoPlayAudio';
+import composerClearance from './clearance';
 import Waveform from './Composer/Waveform';
 import { mainTextareaId } from '~/common';
 import CollapseChat from './CollapseChat';
@@ -83,35 +91,15 @@ import Bar from './Composer/Bar';
 import Mention from './Mention';
 import store from '~/store';
 
-export function toRestoredComposerFile(
-  file: NonNullable<TMessage['files']>[number],
-): ExtendedFile | null {
-  if (!file.file_id) {
-    return null;
-  }
-  return {
-    file_id: file.file_id,
-    filename: file.filename,
-    filepath: file.filepath,
-    type: file.type ?? '',
-    height: file.height,
-    width: file.width,
-    size: file.bytes ?? 0,
-    progress: 1,
-    attached: true,
-    llmDeliveryPath: file.llmDeliveryPath,
-  };
-}
-
 interface ChatFormProps {
   index: number;
   placeholder?: string;
   project?: TChatProject;
+  /** The host is reconciling the requested route with its conversation record. */
+  routePending: boolean;
   /** Owned by ChatView: which layout the composer sits in — the welcome screen
    *  floats or bottoms it out, a conversation ends the page with it. */
   isLandingPage: boolean;
-  /** Owned by the host: the persisted preference for showing keyboard hints. */
-  showComposerTips: boolean;
   /** Owned by the host: the persisted preference for whether Enter sends the
    *  message (vs. queues a newline). The composer only consumes it. */
   enterToSend: boolean;
@@ -157,13 +145,15 @@ const focusOwningTargetSelector = [
   '[role="dialog"]',
   '[role="alertdialog"]',
 ].join(', ');
+/** Matches the composer's one-line height; scaled so it tracks its rem padding. */
+const INITIAL_TEXTAREA_HEIGHT = 44;
 
 const ChatForm = memo(function ChatForm({
   index,
   placeholder,
   project,
+  routePending,
   isLandingPage,
-  showComposerTips,
   enterToSend,
   autoSendText,
   speechSettingsInitialized,
@@ -181,11 +171,13 @@ const ChatForm = memo(function ChatForm({
 }: ChatFormProps) {
   const submitButtonRef = useRef<HTMLButtonElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
+  const approvalTriggerRef = useRef<HTMLButtonElement>(null);
   /** The palette anchors to the whole composer, not to its own button, so it
    *  spans the composer width and sits flush above it. */
   const composerBoxRef = useRef<HTMLDivElement>(null);
   useFocusChatEffect(textAreaRef);
   const localize = useLocalize();
+  const remScale = useRemScale();
 
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [, setIsScrollable] = useState(false);
@@ -197,12 +189,12 @@ const ChatForm = memo(function ChatForm({
 
   const SpeechToText = useRecoilValue(store.speechToText);
   const TextToSpeech = useRecoilValue(store.textToSpeech);
-  const chatDirection = useRecoilValue(store.chatDirection);
+  const chatDirection = useAtomValue(chatDirectionAtom);
   const automaticPlayback = useRecoilValue(store.automaticPlayback);
   const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
   const { isTemporary } = useChatSettings();
 
-  const [showStopButton, setShowStopButton] = useRecoilState(store.showStopButtonByIndex(index));
+  const [showStopButton, setShowStopButton] = useAtom(showStopButtonByIndex(index));
   const plusPopoverAtom = useMemo(() => store.showPlusPopoverFamily(index), [index]);
   const mentionPopoverAtom = useMemo(() => store.showMentionPopoverFamily(index), [index]);
 
@@ -248,10 +240,6 @@ const ChatForm = memo(function ChatForm({
    */
   const quotesEnabled = useMemo(() => !isAssistantsEndpoint(endpoint), [endpoint]);
 
-  const isRTL = useMemo(
-    () => (chatDirection != null ? chatDirection?.toLowerCase() === 'rtl' : false),
-    [chatDirection],
-  );
   const invalidAssistant = useMemo(
     () =>
       isAssistantsEndpoint(endpoint) &&
@@ -319,8 +307,11 @@ const ChatForm = memo(function ChatForm({
    *  answer box, or is locked behind the batch card that owns the answer. A
    *  collapsed batch is neither, it hands the composer back to the thread. */
   const composerReserved = answerMode.composerAnswers || answerMode.composerLocked;
+  /** A batch card stacks above the composer with its own height cap, so a
+   *  locked composer keeps the draft to one line to leave the card on screen. */
+  const compactComposer = isCollapsed || answerMode.composerLocked;
 
-  const consumeDraft = useAutoSave({
+  const { consumeDraft, preserveText, settleText } = useAutoSave({
     index,
     files,
     setFiles,
@@ -331,6 +322,17 @@ const ChatForm = memo(function ChatForm({
     // swap to the answer's own key, and the conversation draft is restored
     // when the question resolves.
     draftId: answerMode.draftId,
+  });
+
+  const {
+    isPreparing: isPreparingFromUrl,
+    settingsError: urlSettingsError,
+    clearSettingsError,
+  } = useQueryParams({
+    textAreaRef,
+    routePending,
+    onBeforePrompt: preserveText,
+    onPromptSettled: settleText,
   });
 
   const pastedTextEdit = usePastedTextEdit({ index, files, setFiles, textAreaRef });
@@ -380,6 +382,13 @@ const ChatForm = memo(function ChatForm({
       }),
     [submitMessage],
   );
+  const navigate = useNavigate();
+  /** A queued message becomes the first message of a fresh chat through the same
+   *  `prompt` + `submit` query contract that deep links already use. */
+  const startQueuedInNewChat = useCallback(
+    (text: string) => navigate(`/c/new?${new URLSearchParams({ prompt: text, submit: 'true' })}`),
+    [navigate],
+  );
   const { restoreReclaimedSteer, canRestoreToComposer } = useComposerRestore({
     index,
     conversationId,
@@ -404,8 +413,10 @@ const ChatForm = memo(function ChatForm({
     index,
     conversationId,
     conversation,
+    codeEnvironmentMode: codeWorkspace.mode,
     isSubmitting,
     answerModeActive: composerReserved,
+    composerDisabled: isPreparingFromUrl,
     files,
     setFiles,
     filesLoading,
@@ -421,18 +432,16 @@ const ChatForm = memo(function ChatForm({
     return () => publishRewake(null);
   }, [publishRewake, steeringRewakeDrain]);
 
-  /** ⌘/Ctrl+Enter = the non-default during-run action, ⌥/Alt+Enter =
-   *  interrupt & send (discards the answer), ⌘/Ctrl+Shift+Enter = interrupt &
-   *  steer (keeps it): all counterparts of Enter's `submitDuringRun`. */
+  /** Ctrl/Cmd+Enter selects the alternate; both interrupt chords use the same mode. */
   const handleDuringRunModifier = useCallback(
     (kind: 'other' | 'interrupt' | 'preempt') => {
       const text = methods.getValues('text');
       let consumed = false;
       if (kind === 'interrupt') {
-        consumed = steering.interruptAndSend(text);
+        consumed = steering.interruptSteer(text);
       } else if (kind === 'preempt') {
         consumed = steering.interruptSteer(text);
-      } else if (steering.effectiveAction === 'steer') {
+      } else if (steering.effectiveAction !== 'queue') {
         consumed = steering.queueFromComposer(text);
       } else {
         consumed = steering.steerFromComposer(text);
@@ -458,7 +467,8 @@ const ChatForm = memo(function ChatForm({
     textAreaRef,
     submitButtonRef,
     setIsScrollable,
-    disabled: disableInputs || answerMode.composerLocked,
+    /* Only picks the missing-key placeholder; preparation and answer holds live on the textarea. */
+    disabled: disableInputs,
     // The composer IS the free-form answer box while a question pause is live.
     placeholder: composerReserved ? answerPlaceholder : placeholder,
     // Enter stays live during a run when it can steer/queue instead of send.
@@ -467,8 +477,6 @@ const ChatForm = memo(function ChatForm({
     answerModeActive: answerMode.composerAnswers,
     enterToSend,
   });
-
-  useQueryParams({ textAreaRef });
 
   /** Attachments stand in for text only on the normal send path. Answer mode
    *  hands the composer text straight to the paused run, which answers with
@@ -486,6 +494,11 @@ const ChatForm = memo(function ChatForm({
   });
 
   const textValue = useWatch({ control: methods.control, name: 'text' });
+  const interfaceDirection = useDirection();
+  /** An empty `dir="auto"` field resolves to LTR, which would park an RTL interface's placeholder on
+   *  the wrong edge, so the empty field follows the interface until text gives it a direction. */
+  const autoDirection = textValue ? 'auto' : interfaceDirection;
+  const textDirection = chatDirection === 'auto' ? autoDirection : chatDirection;
 
   /** The composer commits once per keystroke for the row count and the send
    *  button; a second commit for a row count that did not move (or that no
@@ -506,7 +519,7 @@ const ChatForm = memo(function ChatForm({
     }
     measuredRowCountRef.current = nextRowCount;
     setVisualRowCount(nextRowCount);
-  }, [textValue]);
+  }, [textValue, remScale]);
 
   const isMoreThanThreeRows = visualRowCount > 3;
 
@@ -529,7 +542,11 @@ const ChatForm = memo(function ChatForm({
   const { submitText: submitAnswerText } = answerMode;
   const dictationAnswerModeActive = answerMode.composerAnswers;
   const speechDisabled =
-    !speechSettingsInitialized || disableInputs || isNotAppendable || answerMode.composerLocked;
+    !speechSettingsInitialized ||
+    disableInputs ||
+    isNotAppendable ||
+    answerMode.composerLocked ||
+    isPreparingFromUrl;
   /** The same gate `onSubmit` applies: while a question pause is live the
    * composer IS the answer box, so a dictated turn has to answer it rather
    * than start a turn the paused run would drop. */
@@ -591,21 +608,12 @@ const ChatForm = memo(function ChatForm({
         stop={handleStopGenerating}
         setShowStopButton={setShowStopButton}
         canStop={canStop}
-        hidden={sendOwnsSlot}
+        hidden={sendOwnsSlot && !isPreparingFromUrl}
       />
     ) : null;
     if (sendOwnsSlot) {
       return (
         <>
-          {steering.canControlGeneration && (
-            <InterruptSteerButton
-              steering={steering}
-              isNewConversation={isNewConversation}
-              getText={() => methods.getValues('text')}
-              onConsumed={consumeComposer}
-              disabled={filesLoading}
-            />
-          )}
           <DuringRunSendButton
             ref={submitButtonRef}
             control={methods.control}
@@ -613,7 +621,7 @@ const ChatForm = memo(function ChatForm({
             isNewConversation={isNewConversation}
             getText={() => methods.getValues('text')}
             onConsumed={consumeComposer}
-            disabled={filesLoading}
+            disabled={filesLoading || isPreparingFromUrl}
             enterToSend={enterToSend}
           />
           {stopButton}
@@ -624,6 +632,7 @@ const ChatForm = memo(function ChatForm({
   }, [
     consumeComposer,
     isNewConversation,
+    isPreparingFromUrl,
     steering,
     textValue,
     methods,
@@ -654,6 +663,7 @@ const ChatForm = memo(function ChatForm({
               fileCount={submittableFileCount}
               disabled={
                 filesLoading ||
+                isPreparingFromUrl ||
                 disableInputs ||
                 !codeWorkspace.canSubmit ||
                 isNotAppendable ||
@@ -664,6 +674,7 @@ const ChatForm = memo(function ChatForm({
           ),
     [
       codeWorkspace.canSubmit,
+      isPreparingFromUrl,
       endpoint,
       duringRunSlot,
       filesLoading,
@@ -680,29 +691,18 @@ const ChatForm = memo(function ChatForm({
   const baseClasses = useMemo(
     () =>
       cn(
-        'md:py-3.5 m-0 w-full resize-none py-[13px] placeholder:text-text-tertiary bg-transparent [&:has(textarea:focus)]:shadow-[0_2px_6px_rgba(0,0,0,.05)]',
-        isCollapsed ? 'max-h-[52px]' : 'max-h-[45vh] md:max-h-[55vh]',
-        isMoreThanThreeRows ? 'pl-5' : 'px-5',
+        'composer-text md:py-3.5 m-0 w-full resize-none py-3.25 placeholder:text-text-tertiary bg-transparent [&:has(textarea:focus)]:shadow-[0_2px_6px_rgba(0,0,0,.05)]',
+        compactComposer ? 'max-h-[3.25rem]' : 'max-h-[45vh] md:max-h-[55vh]',
+        'px-5',
       ),
-    [isCollapsed, isMoreThanThreeRows],
+    [compactComposer],
   );
 
-  /* From `sm` up the band leaves room under itself for the disclaimer, which only
-     the landing page carries — doubled while the centred landing composer floats,
-     and dropped back the moment a submission starts the thread. A started
-     conversation has nothing beneath it, so it keeps only enough to clear the
-     surface's own shadow. Below `sm` the composer runs to the viewport floor in
-     every state. */
-  const landingClearance =
-    centerFormOnLanding && !isSubmitting ? 'transition-all duration-200 sm:mb-28' : 'sm:mb-10';
-  let bottomClearance = 'sm:mb-4';
-  if (isLandingPage) {
-    bottomClearance = landingClearance;
-  } else if (footerBelow) {
-    /* A conversation that carries a configured footer keeps the band that bar
-       needs, exactly as the welcome screen does. */
-    bottomClearance = 'sm:mb-10';
-  }
+  const bottomClearance = composerClearance({
+    isLandingPage,
+    footerBelow,
+    floating: centerFormOnLanding && !isSubmitting,
+  });
 
   /** Answer mode, then during-run steering or queueing (a run in flight, or a
    *  queued follow-up about to start), then an ordinary send: the same route
@@ -729,8 +729,13 @@ const ChatForm = memo(function ChatForm({
 
   return (
     <form
+      /* A forced direction mirrors the whole composer, chrome included; `auto`
+         leaves the layout to the page and lets the text field follow its text. */
+      dir={chatDirection === 'auto' ? undefined : chatDirection}
       onSubmit={methods.handleSubmit((data) => {
-        submitComposerText(data);
+        if (!isPreparingFromUrl && submitComposerText(data) !== false) {
+          clearSettingsError();
+        }
       })}
       className={cn(
         /* `margin-bottom` is animated as well as `max-width`: it is what carries
@@ -760,20 +765,20 @@ const ChatForm = memo(function ChatForm({
               conversationId={conversationId}
               onRestoreToComposer={restoreReclaimedSteer}
               canRestoreToComposer={canRestoreToComposer}
+              onStartNewChat={startQueuedInNewChat}
             />
           )}
           {(project || codeWorkspace.visible) && (
             <div
               data-testid="composer-context-rail"
               className={cn(
-                'mx-4 -mb-3 flex min-w-0 flex-wrap items-center gap-1 rounded-t-2xl',
-                'border-border-light bg-surface-secondary border px-2 pt-1 pb-4',
-                isRTL && 'flex-row-reverse',
+                'mx-4 -mb-3 flex min-w-0 flex-wrap items-center gap-1.5 rounded-t-2xl',
+                'border-border-light bg-surface-secondary border px-2 pt-2 pb-5',
               )}
             >
               {project ? <ProjectLandingChip project={project} /> : null}
               {codeWorkspace.visible ? (
-                <div className="min-w-0 px-1 pt-1">
+                <div className="min-w-0">
                   <CodeWorkspaceMenu
                     setConversation={setConversation}
                     workspace={codeWorkspace}
@@ -783,7 +788,7 @@ const ChatForm = memo(function ChatForm({
               ) : null}
             </div>
           )}
-          <div className={cn('flex w-full items-center', isRTL && 'flex-row-reverse')}>
+          <div className="flex w-full items-center">
             <Mention
               index={index}
               popoverAtom={plusPopoverAtom}
@@ -804,7 +809,10 @@ const ChatForm = memo(function ChatForm({
               <AskUserQuestionPopover conversationId={conversationId} textAreaRef={textAreaRef} />
             )}
             {index === 0 && conversationId != null && (
-              <PendingToolApprovalPanel conversationId={conversationId} />
+              <PendingToolApprovalPanel
+                conversationId={conversationId}
+                triggerRef={approvalTriggerRef}
+              />
             )}
             <SkillsCommand
               index={index}
@@ -834,7 +842,10 @@ const ChatForm = memo(function ChatForm({
                    a warning rather than a quiet mode hint. The contrast modes take
                    it opaque, because that is the only way it clears the 3:1
                    non-text floor there. */
-                isTemporary && 'border-series-6/50 bg-series-6/10 high-contrast:border-series-6',
+                /** The tint layers over the opaque chat surface instead of replacing it, so the
+                 *  context rail tucked under the composer never shows through. */
+                isTemporary &&
+                  'border-series-6/50 from-series-6/10 to-series-6/10 high-contrast:border-series-6 bg-linear-to-b',
               )}
             >
               <TextareaHeader addedConvo={addedConvo} setAddedConvo={setAddedConvo} />
@@ -845,7 +856,6 @@ const ChatForm = memo(function ChatForm({
                 files={files}
                 setFiles={setFiles}
                 setFilesLoading={setFilesLoading}
-                isRTL={isRTL}
                 index={index}
                 isPastedTextFile={isPastedTextFile}
                 isPasteActionPending={isPasteActionPending}
@@ -858,15 +868,17 @@ const ChatForm = memo(function ChatForm({
                 onSave={pastedTextEdit.saveEdit}
               />
               {endpoint && (
-                <div className={cn('flex', isRTL ? 'flex-row-reverse' : 'flex-row')}>
+                <div className="flex">
                   <div
                     className={cn(
                       'relative flex-1',
                       listening &&
                         '[&_textarea]:caret-transparent [&_textarea]:placeholder:text-transparent',
+                      /* Locked behind a question: the placeholder is a notice, not text. */
+                      answerMode.composerLocked && '[&_textarea]:select-none',
                     )}
                     style={
-                      isCollapsed
+                      compactComposer
                         ? {
                             WebkitMaskImage:
                               'linear-gradient(to bottom, black 60%, transparent 90%)',
@@ -877,13 +889,19 @@ const ChatForm = memo(function ChatForm({
                   >
                     <TextareaAutosize
                       {...registerProps}
+                      dir={textDirection}
                       ref={(e) => {
                         ref(e);
                         (
                           textAreaRef as React.MutableRefObject<HTMLTextAreaElement | null>
                         ).current = e;
                       }}
-                      disabled={disableInputs || isNotAppendable || answerMode.composerLocked}
+                      disabled={
+                        disableInputs ||
+                        isNotAppendable ||
+                        answerMode.composerLocked ||
+                        isPreparingFromUrl
+                      }
                       onPaste={handlePaste}
                       onKeyDown={(e) => {
                         // Answer mode consumes option-navigation keys from the
@@ -909,7 +927,7 @@ const ChatForm = memo(function ChatForm({
                           `code-workspace-hint-${index}`,
                       )}
                       onClick={handleFocusOrClick}
-                      style={{ height: 44, overflowY: 'auto' }}
+                      style={{ height: INITIAL_TEXTAREA_HEIGHT * remScale, overflowY: 'auto' }}
                       className={cn(
                         baseClasses,
                         removeFocusRings,
@@ -922,24 +940,26 @@ const ChatForm = memo(function ChatForm({
                          bolted on. Once words arrive the transcript takes over. */
                       <Waveform
                         active={dictation.active}
-                        className={cn(
-                          'pointer-events-none absolute inset-y-2',
-                          isMoreThanThreeRows ? 'right-2 left-5' : 'inset-x-5',
-                        )}
+                        className={cn('pointer-events-none absolute inset-x-5 inset-y-2')}
                       />
                     )}
                     {/* Sits over the fade scrim in the corner of the input
                         rather than in its own column beside it, so a long draft
                         does not push an orphaned control off to the side. */}
-                    <div className="absolute right-2 bottom-1 z-10">
+                    <div className="absolute inset-e-2 bottom-1 z-10">
                       <CollapseChat
                         isCollapsed={isCollapsed}
-                        isScrollable={isMoreThanThreeRows}
+                        isScrollable={isMoreThanThreeRows && !answerMode.composerLocked}
                         setIsCollapsed={setIsCollapsed}
                       />
                     </div>
                   </div>
                 </div>
+              )}
+              {(isPreparingFromUrl || urlSettingsError) && (
+                <p role="status" className="text-text-secondary px-5 pb-2 text-sm">
+                  {localize(urlSettingsError ? 'com_ui_url_settings_failed' : 'com_ui_sending')}
+                </p>
               )}
               {(codeWorkspace.state === 'choose' || codeWorkspace.state === 'missing') && (
                 <p
@@ -962,7 +982,6 @@ const ChatForm = memo(function ChatForm({
               >
                 <Bar
                   index={index}
-                  isRTL={isRTL}
                   disabled={disableInputs}
                   agentId={conversation?.agent_id}
                   /* The RAW endpoint, not the effective type above: the attach
@@ -987,15 +1006,19 @@ const ChatForm = memo(function ChatForm({
                   speechDisabled={speechDisabled}
                   dictation={dictation}
                   approvalSlot={
-                    <div className={cn('flex items-center gap-1.5', isRTL && 'flex-row-reverse')}>
+                    <div className="flex items-center gap-1.5">
                       <CodeApprovalMenu
                         conversation={conversation}
                         addedConversation={addedConvo}
+                        codeEnvironmentMode={codeWorkspace.mode}
                         setConversation={setConversation}
                         disabled={disableInputs}
                       />
                       {index === 0 && conversationId != null && (
-                        <PendingToolApprovalButton conversationId={conversationId} />
+                        <PendingToolApprovalButton
+                          conversationId={conversationId}
+                          triggerRef={approvalTriggerRef}
+                        />
                       )}
                     </div>
                   }
@@ -1012,13 +1035,10 @@ const ChatForm = memo(function ChatForm({
           <Hints
             index={index}
             enterToSend={enterToSend}
-            showTips={showComposerTips}
             hasText={(textValue?.trim() ?? '') !== ''}
             isSubmitting={isSubmitting}
             duringRunActive={steering.duringRunActive}
             canControlGeneration={steering.canControlGeneration}
-            canStop={canStop}
-            steerInterruptsByDefault={steering.steerInterruptsByDefault}
             duringRunAction={steering.effectiveAction}
             /* A staged reasoning choice forces the message to queue, and the
                send-now chord then queues too; do not advertise it. */
@@ -1043,8 +1063,8 @@ function ChatFormWrapper({
   index = 0,
   placeholder,
   project,
+  routePending = false,
   isLandingPage,
-  showComposerTips,
   /** Defaults to the atom's own default (`atomWithLocalStorage('enterToSend',
    *  true)`) so call sites that predate this prop, mainly tests, keep their
    *  prior behavior without passing it explicitly. */
@@ -1059,7 +1079,7 @@ function ChatFormWrapper({
   index?: number;
   placeholder?: string;
   project?: TChatProject;
-  showComposerTips: boolean;
+  routePending?: boolean;
   enterToSend?: boolean;
   autoSendText?: number;
   speechSettingsInitialized?: boolean;
@@ -1139,12 +1159,12 @@ function ChatFormWrapper({
   return (
     <ChatForm
       index={index}
-      showComposerTips={showComposerTips}
       enterToSend={enterToSend}
       autoSendText={autoSendText}
       speechSettingsInitialized={speechSettingsInitialized}
       placeholder={placeholder}
       project={project}
+      routePending={routePending}
       isLandingPage={isLandingPage}
       footerBelow={footerBelow}
       centerFormOnLanding={centerFormOnLanding}

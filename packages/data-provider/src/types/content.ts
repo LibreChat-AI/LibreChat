@@ -345,6 +345,3 @@ export type TContentData = StreamContentData & {
   thread_id: string;
   stream?: boolean;
 };
-
-export const hostImageIdSuffix = '_host_copy';
-export const hostImageNamePrefix = 'host_copy_';

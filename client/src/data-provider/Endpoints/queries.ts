@@ -1,6 +1,6 @@
 import { useRecoilValue } from 'recoil';
 import { useQuery } from '@tanstack/react-query';
-import { QueryKeys, dataService } from 'librechat-data-provider';
+import { Time, QueryKeys, dataService } from 'librechat-data-provider';
 import type { QueryObserverResult, UseQueryOptions } from '@tanstack/react-query';
 import type t from 'librechat-data-provider';
 import { normalizeStartupConfigModelSpecs } from '~/utils';
@@ -40,6 +40,63 @@ export const useTokenConfigQuery = (
     ...config,
     enabled: (config?.enabled ?? true) === true && queriesEnabled,
   });
+};
+
+/** Floor for the revalidation timer, so an entry that is about to expire cannot cause a request storm. */
+const MIN_REVALIDATE_MS = 1000;
+
+/** The server's catalog entry is gone, or the request failed, so the data must be read again. */
+const reasoningCapabilitiesExpired = (query: {
+  state: { status: string; data?: unknown; dataUpdatedAt: number };
+}): 'always' | false => {
+  const data = query.state.data as t.TReasoningCapabilitiesResponse | undefined;
+  if (query.state.status === 'error') {
+    return 'always';
+  }
+  return data != null && Date.now() - query.state.dataUpdatedAt >= data.expiresInMs
+    ? 'always'
+    : false;
+};
+
+/**
+ * Per-model reasoning efforts of one OpenRouter endpoint. Scoped to the endpoint, so another
+ * endpoint's outage cannot hide this one's data. Pass `enabled: false` unless the endpoint is an
+ * OpenRouter one, so other users never pay for the request.
+ *
+ * The response says how long the server keeps the catalog it came from, and the client reads it
+ * again when that time passes, on a timer while the page is open and on focus or reconnect
+ * otherwise, so it never offers a list the server has already replaced. A failed request retries
+ * every 30 seconds without waiting for an event, because the editors offer nothing while it fails.
+ */
+export const useReasoningCapabilitiesQuery = (
+  endpoint: string,
+  config?: UseQueryOptions<t.TReasoningCapabilitiesResponse>,
+): QueryObserverResult<t.TReasoningCapabilitiesResponse> => {
+  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
+  return useQuery<t.TReasoningCapabilitiesResponse>(
+    [QueryKeys.reasoningCapabilities, endpoint],
+    () => dataService.getReasoningCapabilities(endpoint),
+    {
+      staleTime: Infinity,
+      refetchOnWindowFocus: reasoningCapabilitiesExpired,
+      refetchOnReconnect: reasoningCapabilitiesExpired,
+      refetchOnMount: reasoningCapabilitiesExpired,
+      /** The interval restarts whenever a consumer mounts, so it counts down what is left of the
+       *  entry's lifetime, not the lifetime it had when it was read. */
+      refetchInterval: (data, query) => {
+        if (query.state.status === 'error') {
+          return Time.THIRTY_SECONDS;
+        }
+        if (data == null) {
+          return false;
+        }
+        const remaining = data.expiresInMs - (Date.now() - query.state.dataUpdatedAt);
+        return Math.max(remaining, MIN_REVALIDATE_MS);
+      },
+      ...config,
+      enabled: (config?.enabled ?? true) === true && queriesEnabled,
+    },
+  );
 };
 
 /**

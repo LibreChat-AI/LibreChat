@@ -1,11 +1,14 @@
 import { useEffect, useRef } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { dataService, MutationKeys, QueryKeys } from 'librechat-data-provider';
+import { isDefiniteQueuedTurnRejection, isDefiniteQueuedTurnsUnsupported } from '@librechat/chat';
 import type {
   TAgentQueuedTurnReceipt,
   TEnqueueAgentQueuedTurnRequest,
 } from 'librechat-data-provider';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
+
+export { isDefiniteQueuedTurnRejection, isDefiniteQueuedTurnsUnsupported };
 
 export type AgentQueuedTurnReceipt = TAgentQueuedTurnReceipt;
 export type EnqueueAgentQueuedTurnRequest = TEnqueueAgentQueuedTurnRequest;
@@ -16,42 +19,6 @@ export type EnqueueAgentQueuedTurnRequest = TEnqueueAgentQueuedTurnRequest;
  * retired. */
 export const agentQueuedTurnsQueryKey = (conversationId: string) =>
   [QueryKeys.agentQueuedTurns, conversationId] as const;
-
-function queuedTurnErrorResponse(error: unknown): { status?: number; code?: string } {
-  const response = (
-    error as { response?: { status?: unknown; data?: { code?: unknown } } } | undefined
-  )?.response;
-  return {
-    ...(typeof response?.status === 'number' && { status: response.status }),
-    ...(typeof response?.data?.code === 'string' && { code: response.data.code }),
-  };
-}
-
-export function isDefiniteQueuedTurnsUnsupported(error: unknown): boolean {
-  const { status, code } = queuedTurnErrorResponse(error);
-  return (
-    (status === 404 && code == null) ||
-    (status === 501 &&
-      (code == null ||
-        code === 'QUEUED_TURNS_UNSUPPORTED' ||
-        code === 'QUEUED_TURN_PRIORITY_UNSUPPORTED'))
-  );
-}
-
-/** A bounded origin 4xx proves the queued row was not committed. Timeouts and
- * early-data responses can be generated while the origin request continues,
- * so those remain outcome-ambiguous and must reconcile by request identity. */
-export function isDefiniteQueuedTurnRejection(error: unknown): boolean {
-  const { status } = queuedTurnErrorResponse(error);
-  return (
-    !isDefiniteQueuedTurnsUnsupported(error) &&
-    typeof status === 'number' &&
-    status >= 400 &&
-    status < 500 &&
-    status !== 408 &&
-    status !== 425
-  );
-}
 
 export async function fetchAgentQueuedTurns(
   conversationId: string,

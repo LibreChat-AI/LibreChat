@@ -1,8 +1,9 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { render } from '@testing-library/react';
+import { createStore, Provider as JotaiProvider } from 'jotai';
 import type { PtcTraceEntry } from '~/common';
-import { ptcTraceByToolCallId, ptcTraceKey } from '~/store/ptc';
+import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
 import { MessageContext } from '~/Providers/MessageContext';
 import ExecuteCode from '../ExecuteCode';
 import store from '~/store';
@@ -147,25 +148,28 @@ describe('ExecuteCode programmatic tool trace', () => {
   const TOOL_CALL_ID = 'call_ptc_1';
   const MESSAGE_ID = 'response-msg-1';
 
-  const renderWithTrace = (entries: PtcTraceEntry[]) =>
-    render(
-      <RecoilRoot
-        initializeState={({ set }) => {
-          set(store.autoExpandTools, true);
-          set(ptcTraceByToolCallId(ptcTraceKey(MESSAGE_ID, TOOL_CALL_ID)), { entries, dropped: 0 });
-        }}
-      >
-        <MessageContext.Provider value={{ messageId: MESSAGE_ID, isExpanded: true }}>
-          <ExecuteCode
-            initialProgress={0.5}
-            isSubmitting={true}
-            toolCallId={TOOL_CALL_ID}
-            args={{ lang: 'py', code: 'print(1)' }}
-            output=""
-          />
-        </MessageContext.Provider>
+  const renderWithTrace = (entries: PtcTraceEntry[]) => {
+    const traceStore = createStore();
+    traceStore.set(ptcTraceByToolCallId(ptcTraceKey(MESSAGE_ID, TOOL_CALL_ID)), {
+      entries,
+      dropped: 0,
+    });
+    return render(
+      <RecoilRoot initializeState={({ set }) => set(store.autoExpandTools, true)}>
+        <JotaiProvider store={traceStore}>
+          <MessageContext.Provider value={{ messageId: MESSAGE_ID, isExpanded: true }}>
+            <ExecuteCode
+              initialProgress={0.5}
+              isSubmitting={true}
+              toolCallId={TOOL_CALL_ID}
+              args={{ lang: 'py', code: 'print(1)' }}
+              output=""
+            />
+          </MessageContext.Provider>
+        </JotaiProvider>
       </RecoilRoot>,
     );
+  };
 
   it('lists the inner tool calls the running program has made', () => {
     const { getByText } = renderWithTrace([

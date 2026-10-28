@@ -1,15 +1,23 @@
 import mongoose, { FilterQuery } from 'mongoose';
-import {
-  AUTH_USER_DOC_CACHE_TTL_MS,
-  CacheKeys,
-  type RefillIntervalUnit,
-  type StatefulCodeEnvironment,
+import { AUTH_USER_DOC_CACHE_TTL_MS, CacheKeys } from 'librechat-data-provider';
+import type {
+  BalanceRefillMode,
+  RefillIntervalUnit,
+  StatefulCodeEnvironment,
 } from 'librechat-data-provider';
-import type { IUser, BalanceConfig, CreateUserRequest, UserDeleteResult } from '~/types';
+import type {
+  IUser,
+  BalanceConfig,
+  CreateUserRequest,
+  UserRecord,
+  NewUserData,
+  UserDeleteResult,
+  CreateUserIfAbsentResult,
+} from '~/types';
 import type { TwoFactorEnrollmentGuard, TwoFactorEnrollmentUpdate } from '~/types';
 import type { CacheStore } from '~/types';
+import { scoreSearchMatch, buildUserSearchFilter } from '~/utils/search';
 import { evictAuthUserDocs } from '~/utils/eviction';
-import { escapeRegExp } from '~/utils/string';
 import { signPayload } from '~/crypto';
 import logger from '~/config/winston';
 
@@ -35,6 +43,9 @@ const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(
 
 /** Timers can fire a millisecond early, so the wait outlasts the cache TTL by this much. */
 const AUTH_USER_DOC_EXPIRY_MARGIN_MS = 100;
+
+/** Cached auth documents evicted at once when a reset touches every user. */
+const TERMS_RESET_EVICTION_BATCH = 100;
 
 function isAuthUserDocCacheEnabled(): boolean {
   return process.env.AUTH_USER_CACHE_MODE === 'on';
@@ -64,6 +75,10 @@ export function createUserMethods(
     disableTTL?: boolean,
     returnUser?: boolean,
   ) => Promise<mongoose.Types.ObjectId | Partial<IUser>>;
+  createUserIfAbsent: (
+    data: NewUserData,
+    balanceConfig?: BalanceConfig,
+  ) => Promise<CreateUserIfAbsentResult>;
   updateUser: (
     userId: string,
     updateData: Partial<IUser>,
@@ -71,6 +86,7 @@ export function createUserMethods(
     options?: { preserveExpiresAt?: boolean },
   ) => Promise<IUser | null>;
   awaitAuthUserDocEviction: (userId: string) => Promise<void>;
+  consumeBackupCode: (userId: string, codeHash: string) => Promise<boolean>;
   claimSamlIdentity: (
     userId: string,
     samlId: string,
@@ -82,6 +98,7 @@ export function createUserMethods(
     updateData: TwoFactorEnrollmentUpdate,
   ) => Promise<IUser | null>;
   acceptTerms: (userId: string) => Promise<IUser | null>;
+  resetTermsAcceptance: () => Promise<{ modifiedCount: number }>;
   searchUsers: ({
     searchPattern,
     limit,
@@ -266,6 +283,48 @@ export function createUserMethods(
   }
 
   /**
+   * Initializes a new user's start balance, with auto-refill settings when complete. The write is
+   * insert-only, so it never replaces a balance that already exists or the activity recorded on it.
+   */
+  async function creditStartBalance(
+    userId: mongoose.Types.ObjectId,
+    balanceConfig?: BalanceConfig,
+  ): Promise<void> {
+    if (!balanceConfig?.enabled || !balanceConfig?.startBalance) {
+      return;
+    }
+
+    const Balance = mongoose.models.Balance;
+    const initial: {
+      tokenCredits: number;
+      autoRefillEnabled?: boolean;
+      refillIntervalValue?: number;
+      refillIntervalUnit?: RefillIntervalUnit;
+      refillAmount?: number;
+      refillMode?: BalanceRefillMode;
+    } = { tokenCredits: balanceConfig.startBalance };
+
+    if (
+      balanceConfig.autoRefillEnabled &&
+      balanceConfig.refillIntervalValue != null &&
+      balanceConfig.refillIntervalUnit != null &&
+      balanceConfig.refillAmount != null
+    ) {
+      initial.autoRefillEnabled = true;
+      initial.refillIntervalValue = balanceConfig.refillIntervalValue;
+      initial.refillIntervalUnit = balanceConfig.refillIntervalUnit;
+      initial.refillAmount = balanceConfig.refillAmount;
+      initial.refillMode = balanceConfig.refillMode ?? 'add';
+    }
+
+    await Balance.findOneAndUpdate(
+      { _id: userId },
+      { $setOnInsert: { ...initial, user: userId } },
+      { upsert: true, new: true },
+    ).lean();
+  }
+
+  /**
    * Creates a new user, optionally with a TTL of 1 week.
    */
   async function createUser(
@@ -275,7 +334,6 @@ export function createUserMethods(
     returnUser: boolean = false,
   ): Promise<mongoose.Types.ObjectId | Partial<IUser>> {
     const User = mongoose.models.User;
-    const Balance = mongoose.models.Balance;
 
     const userData: Partial<IUser> = {
       ...data,
@@ -287,46 +345,71 @@ export function createUserMethods(
     }
 
     const user = await User.create(userData);
-
-    // If balance is enabled, create or update a balance record for the user
-    if (balanceConfig?.enabled && balanceConfig?.startBalance) {
-      const update: {
-        $inc: { tokenCredits: number };
-        $set?: {
-          autoRefillEnabled: boolean;
-          refillIntervalValue: number;
-          refillIntervalUnit: RefillIntervalUnit;
-          refillAmount: number;
-        };
-      } = {
-        $inc: { tokenCredits: balanceConfig.startBalance },
-      };
-
-      if (
-        balanceConfig.autoRefillEnabled &&
-        balanceConfig.refillIntervalValue != null &&
-        balanceConfig.refillIntervalUnit != null &&
-        balanceConfig.refillAmount != null
-      ) {
-        update.$set = {
-          autoRefillEnabled: true,
-          refillIntervalValue: balanceConfig.refillIntervalValue,
-          refillIntervalUnit: balanceConfig.refillIntervalUnit,
-          refillAmount: balanceConfig.refillAmount,
-        };
-      }
-
-      await Balance.findOneAndUpdate(
-        { _id: user._id },
-        { ...update, $setOnInsert: { user: user._id } },
-        { upsert: true, new: true },
-      ).lean();
-    }
+    await creditStartBalance(user._id, balanceConfig);
 
     if (returnUser) {
       return user.toObject() as Partial<IUser>;
     }
     return user._id as mongoose.Types.ObjectId;
+  }
+
+  /**
+   * Creates a user without a TTL, or reports `user_exists` when a unique email or provider
+   * identity index already holds the account, as when concurrent first logins race to insert it.
+   * The start balance is initialized under the new user's id before the user is inserted, so
+   * the account is never visible without it and login balance sync never initializes it first.
+   * A balance write that fails, or an insert a unique index rejects, removes the balance under
+   * the id that never became a user; any other insert failure keeps it, since an unacknowledged
+   * insert may still have committed.
+   */
+  async function createUserIfAbsent(
+    data: NewUserData,
+    balanceConfig?: BalanceConfig,
+  ): Promise<CreateUserIfAbsentResult> {
+    const User = mongoose.models.User as mongoose.Model<IUser>;
+    const userData: Partial<IUser> = { ...data };
+    delete userData.expiresAt;
+
+    const user = new User(userData);
+    await user.validate();
+    try {
+      await creditStartBalance(user._id, balanceConfig);
+    } catch (error) {
+      await discardStartBalance(user._id, balanceConfig);
+      throw error;
+    }
+
+    try {
+      await user.save({ validateBeforeSave: false });
+    } catch (error) {
+      if ((error as { code?: number }).code !== 11000) {
+        throw error;
+      }
+      await discardStartBalance(user._id, balanceConfig);
+      return { ok: false, error: { code: 'user_exists' } };
+    }
+
+    return { ok: true, value: user.toObject() as UserRecord };
+  }
+
+  /** Removes, best effort, the start balance initialized for an id that never became a user. */
+  async function discardStartBalance(
+    userId: mongoose.Types.ObjectId,
+    balanceConfig?: BalanceConfig,
+  ): Promise<void> {
+    if (!balanceConfig?.enabled || !balanceConfig?.startBalance) {
+      return;
+    }
+    try {
+      await mongoose.models.Balance.deleteOne({ _id: userId });
+    } catch {
+      logger.warn(
+        '[createUserIfAbsent] Could not remove the start balance of a user never created',
+        {
+          userId: userId.toString(),
+        },
+      );
+    }
   }
 
   /**
@@ -372,6 +455,19 @@ export function createUserMethods(
       { userId, waitMs: AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS },
     );
     await (deps.delay ?? wait)(AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
+  }
+
+  /** Only the request that atomically consumes an unused recovery code may authenticate. */
+  async function consumeBackupCode(userId: string, codeHash: string): Promise<boolean> {
+    const result = await mongoose.models.User.updateOne(
+      { _id: userId, backupCodes: { $elemMatch: { codeHash, used: false } } },
+      { $set: { 'backupCodes.$.used': true, 'backupCodes.$.usedAt': new Date() } },
+    );
+    if (result.modifiedCount !== 1) {
+      return false;
+    }
+    await invalidateAuthUserDocCache(userId);
+    return true;
   }
 
   /** Atomically updates a SAML user only when the incoming identity can claim the document. */
@@ -458,13 +554,50 @@ export function createUserMethods(
    * updates are used instead of an aggregation pipeline with $$NOW, which
    * Amazon DocumentDB rejects.
    */
+  /** Withdraws every user's acceptance and evicts their cached auth documents, so a reset takes effect at once. */
+  async function resetTermsAcceptance(): Promise<{ modifiedCount: number }> {
+    const User = mongoose.models.User;
+    const result = await User.updateMany(
+      {},
+      {
+        $set: { termsAccepted: false, termsAcceptedAt: null },
+        $unset: { termsAcceptedSource: 1 },
+      },
+    );
+    /** Every user, not only those read as accepted beforehand: an acceptance racing the update may be cached. */
+    const cursor = User.find({}).select('_id').lean().cursor();
+    let batch: string[] = [];
+    for await (const user of cursor) {
+      batch.push(String(user._id));
+      if (batch.length === TERMS_RESET_EVICTION_BATCH) {
+        await Promise.all(batch.map(invalidateAuthUserDocCache));
+        batch = [];
+      }
+    }
+    await Promise.all(batch.map(invalidateAuthUserDocCache));
+    if (isAuthUserDocCacheEnabled()) {
+      /**
+       * A request that read the old document before the update can still fill the cache after
+       * the eviction above, so no eviction result proves the reset took effect. Only expiry does.
+       */
+      logger.info('[resetTermsAcceptance] Waiting for cached auth documents to expire', {
+        waitMs: AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS,
+      });
+      await (deps.delay ?? wait)(AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
+    }
+    return { modifiedCount: result.modifiedCount };
+  }
+
   async function acceptTerms(userId: string): Promise<IUser | null> {
     const User = mongoose.models.User;
     const maxAttempts = 3;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const firstAcceptance = await User.findOneAndUpdate(
         { _id: userId, termsAcceptedAt: null },
-        { $set: { termsAccepted: true, termsAcceptedAt: new Date() } },
+        {
+          $set: { termsAccepted: true, termsAcceptedAt: new Date() },
+          $unset: { termsAcceptedSource: 1 },
+        },
         { new: true, runValidators: true },
       ).lean<IUser>();
       if (firstAcceptance) {
@@ -509,6 +642,7 @@ export function createUserMethods(
   async function deleteUserById(userId: string): Promise<UserDeleteResult> {
     try {
       const User = mongoose.models.User;
+      await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
       const result = await User.deleteOne({ _id: userId });
       if (result.deletedCount === 0) {
         return { deletedCount: 0, message: 'No user found with that ID.' };
@@ -717,13 +851,7 @@ export function createUserMethods(
   ): Promise<IUser | null> {
     const User = mongoose.models.User;
 
-    // First, ensure the personalization object exists
-    const user = await User.findById(userId);
-    if (!user) {
-      return null;
-    }
-
-    // Use $set to update the nested field, which will create the personalization object if it doesn't exist
+    /** `$set` on the nested path creates `personalization` when missing; a missing user yields null. */
     const updateOperation = {
       $set: {
         'personalization.memories': memoriesEnabled,
@@ -757,7 +885,7 @@ export function createUserMethods(
   }
 
   /**
-   * Search for users by pattern matching on name, email, or username (case-insensitive)
+   * Search for users by word prefix of name, email, or username (see `buildUserSearchFilter`)
    * @param searchPattern - The pattern to search for
    * @param limit - Maximum number of results to return
    * @param fieldsToSelect - The fields to include or exclude in the returned documents
@@ -841,12 +969,13 @@ export function createUserMethods(
     }
 
     const trimmedPattern = searchPattern.trim();
-    const regex = new RegExp(escapeRegExp(trimmedPattern), 'i');
+    const filter = buildUserSearchFilter(trimmedPattern);
+    if (!filter) {
+      return [];
+    }
     const User = mongoose.models.User;
 
-    const query = User.find({
-      $or: [{ email: regex }, { name: regex }, { username: regex }],
-    }).limit(limit * 2); // Get more results to allow for relevance sorting
+    const query = User.find(filter).limit(limit * 2); // Get more results to allow for relevance sorting
 
     if (fieldsToSelect) {
       query.select(fieldsToSelect);
@@ -854,41 +983,10 @@ export function createUserMethods(
 
     const users = await query.lean<IUser[]>();
 
-    // Score results by relevance
-    const startsWithPattern = trimmedPattern.toLowerCase();
-
-    const scoredUsers = users.map((user) => {
-      const searchableFields = [user.name, user.email, user.username].filter(
-        (field): field is string => typeof field === 'string' && field.length > 0,
-      );
-      let maxScore = 0;
-
-      for (const field of searchableFields) {
-        const fieldLower = field.toLowerCase();
-        let score = 0;
-
-        // Exact match gets highest score
-        if (fieldLower === startsWithPattern) {
-          score = 100;
-        }
-        // Starts with query gets high score
-        else if (fieldLower.startsWith(startsWithPattern)) {
-          score = 80;
-        }
-        // Contains query gets medium score
-        else if (fieldLower.includes(startsWithPattern)) {
-          score = 50;
-        }
-        // Default score for database match
-        else {
-          score = 10;
-        }
-
-        maxScore = Math.max(maxScore, score);
-      }
-
-      return { ...user, _searchScore: maxScore };
-    });
+    const scoredUsers = users.map((user) => ({
+      ...user,
+      _searchScore: scoreSearchMatch([user.name, user.email, user.username], trimmedPattern),
+    }));
 
     /** Top results sorted by relevance */
     return scoredUsers
@@ -901,29 +999,36 @@ export function createUserMethods(
   };
 
   /**
-   * Updates the plugins for a user based on the action specified (install/uninstall).
+   * Installs or uninstalls a plugin with a single atomic array operator, so concurrent
+   * install/uninstall requests cannot overwrite each other.
    * @param userId - The user ID whose plugins are to be updated
-   * @param plugins - The current plugins array
+   * @param _plugins - Ignored; the caller's possibly stale snapshot, kept for signature compatibility
    * @param pluginKey - The key of the plugin to install or uninstall
    * @param action - The action to perform, 'install' or 'uninstall'
-   * @returns The result of the update operation or null if action is invalid
+   * @returns The updated user, or null if the action is invalid or the user is missing
    */
   async function updateUserPlugins(
     userId: string,
-    plugins: string[] | undefined,
+    _plugins: string[] | undefined,
     pluginKey: string,
     action: 'install' | 'uninstall',
   ): Promise<IUser | null> {
-    const userPlugins = plugins ?? [];
+    let arrayOperation: Record<string, { plugins: string }>;
     if (action === 'install') {
-      return updateUser(userId, { plugins: [...userPlugins, pluginKey] });
+      arrayOperation = { $addToSet: { plugins: pluginKey } };
+    } else if (action === 'uninstall') {
+      arrayOperation = { $pull: { plugins: pluginKey } };
+    } else {
+      return null;
     }
-    if (action === 'uninstall') {
-      return updateUser(userId, {
-        plugins: userPlugins.filter((plugin) => plugin !== pluginKey),
-      });
-    }
-    return null;
+    const User = mongoose.models.User;
+    const updated = await User.findByIdAndUpdate(
+      userId,
+      { ...arrayOperation, $unset: { expiresAt: '' } },
+      { new: true, runValidators: true },
+    ).lean<IUser>();
+    await invalidateAuthUserDocCache(userId);
+    return updated;
   }
 
   return {
@@ -932,11 +1037,14 @@ export function createUserMethods(
     findOwnerContactUsers,
     countUsers,
     createUser,
+    createUserIfAbsent,
     updateUser,
     awaitAuthUserDocEviction,
+    consumeBackupCode,
     claimSamlIdentity,
     updateTwoFactorEnrollment,
     acceptTerms,
+    resetTermsAcceptance,
     searchUsers,
     getUserById,
     generateToken,

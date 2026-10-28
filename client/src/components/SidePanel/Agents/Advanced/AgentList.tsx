@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useContext, createContext } from 'react';
 import { X, PlusCircle } from 'lucide-react';
 import { EModelEndpoint } from 'librechat-data-provider';
 import { Button, ControlCombobox } from '@librechat/client';
@@ -8,6 +8,8 @@ import type { OptionWithIcon } from '~/common';
 import MessageIcon from '~/components/Share/MessageIcon';
 import { useAgentsMapContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
+
+export const AgentPickerPortalContext = createContext<HTMLElement | null>(null);
 
 const AGENT_MESSAGE = { endpoint: EModelEndpoint.agents, isCreatedByUser: false } as TMessage;
 
@@ -74,9 +76,11 @@ interface AddAgentSelectProps {
 /** Dashed "+ Add agent" combobox shared by every orchestration pattern. */
 export function AddAgentSelect({ options, onSelect, placeholder, ariaLabel }: AddAgentSelectProps) {
   const localize = useLocalize();
+  const portalElement = useContext(AgentPickerPortalContext) ?? undefined;
   return (
     <ControlCombobox
       isCollapsed={false}
+      portalElement={portalElement}
       ariaLabel={ariaLabel}
       selectedValue=""
       setValue={onSelect}
@@ -109,9 +113,11 @@ export function AgentSelectInline({
   ariaLabel,
 }: AgentSelectInlineProps) {
   const localize = useLocalize();
+  const portalElement = useContext(AgentPickerPortalContext) ?? undefined;
   return (
     <ControlCombobox
       isCollapsed={false}
+      portalElement={portalElement}
       ariaLabel={ariaLabel}
       selectedValue={selectedValue}
       setValue={onChange}
@@ -120,7 +126,7 @@ export function AgentSelectInline({
       items={options}
       displayValue={displayValue}
       SelectIcon={icon}
-      className="border-border-light h-9 flex-1"
+      className="h-9 flex-1"
       containerClassName="px-0"
     />
   );
@@ -135,9 +141,9 @@ interface RemoveButtonProps {
 export function RemoveButton({ onClick, label }: RemoveButtonProps) {
   return (
     <Button
-      variant="ghost"
-      size="icon"
-      className="text-text-secondary hover:bg-surface-secondary hover:text-text-primary size-auto shrink-0 p-1"
+      variant="quiet"
+      size="snug"
+      className="hover:bg-surface-secondary size-auto shrink-0"
       onClick={onClick}
       aria-label={label}
     >
@@ -191,7 +197,7 @@ export function ListMeta({ label, count, max }: ListMetaProps) {
   return (
     <div className="flex items-center justify-between gap-2">
       <span className="text-text-secondary text-xs font-medium">{label}</span>
-      <span className="text-text-tertiary text-[10px] font-medium whitespace-nowrap tabular-nums">
+      <span className="text-text-tertiary text-3xs font-medium whitespace-nowrap tabular-nums">
         {count} / {max}
       </span>
     </div>

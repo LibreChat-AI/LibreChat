@@ -62,7 +62,7 @@ export default function GroupSidePanel({
   return (
     <div id="prompts-panel" className={cn('flex h-full w-full flex-col', className)}>
       {onClose && (
-        <div className="flex items-center justify-end px-2 py-[2px] md:py-2">
+        <div className="flex items-center justify-end px-2 py-0.5 md:py-2">
           <TooltipAnchor
             description={localize('com_nav_close_sidebar')}
             render={
@@ -73,7 +73,7 @@ export default function GroupSidePanel({
                 data-testid="close-prompts-panel-button"
                 aria-label={localize('com_nav_close_sidebar')}
                 aria-expanded={true}
-                className="hover:bg-surface-hover rounded-full border-none bg-transparent p-2 md:rounded-xl"
+                className="rounded-full border-none p-2 md:rounded-xl"
                 onClick={onClose}
               >
                 <Sidebar />
@@ -89,7 +89,7 @@ export default function GroupSidePanel({
           ref={containerRef}
           isLoading={!!groupsQuery.isLoading}
           skeleton={<PromptGroupSkeleton />}
-          className="text-text-primary flex scrollbar-gutter-stable flex-col gap-2 overflow-x-hidden pr-1 pb-3 pl-3"
+          className="text-text-primary flex scrollbar-gutter-stable flex-col gap-2 overflow-x-hidden ps-3 pe-1 pb-3"
         >
           <List groups={promptGroups} isChatRoute={isChatRoute} />
           {/* Appending the next page, so the loaded rows stay put */}

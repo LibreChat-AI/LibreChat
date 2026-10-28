@@ -15,19 +15,21 @@ const connect = require('./connect');
   console.purple('Show the stats of all users');
   console.purple('-----------------------------');
 
-  let users = await User.find({});
-  let userData = [];
-  for (const user of users) {
-    let conversationsCount = (await Conversation.countDocuments({ user: user._id })) ?? 0;
-    let messagesCount = (await Message.countDocuments({ user: user._id })) ?? 0;
-
-    userData.push({
-      User: user.name,
-      Email: user.email,
-      Conversations: conversationsCount,
-      Messages: messagesCount,
-    });
-  }
+  const countByUser = async (Model) => {
+    const rows = await Model.aggregate([{ $group: { _id: '$user', count: { $sum: 1 } } }]);
+    return new Map(rows.map(({ _id, count }) => [String(_id), count]));
+  };
+  const [users, conversationCounts, messageCounts] = await Promise.all([
+    User.find({}),
+    countByUser(Conversation),
+    countByUser(Message),
+  ]);
+  const userData = users.map((user) => ({
+    User: user.name,
+    Email: user.email,
+    Conversations: conversationCounts.get(String(user._id)) ?? 0,
+    Messages: messageCounts.get(String(user._id)) ?? 0,
+  }));
 
   userData.sort((a, b) => {
     if (a.Conversations !== b.Conversations) {

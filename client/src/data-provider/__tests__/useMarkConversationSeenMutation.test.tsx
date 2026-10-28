@@ -1,11 +1,11 @@
 import React from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { EModelEndpoint, QueryKeys } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { EModelEndpoint, QueryKeys, UNSEEN_REPLY_WATERMARK } from 'librechat-data-provider';
 import type { InfiniteData } from '@tanstack/react-query';
 import type { ConversationCursorData } from '~/utils/convos';
 import { useMarkConversationSeenMutation, useMarkConversationUnreadMutation } from '../mutations';
-import { isConversationUnseen, updateConvoInAllQueries } from '~/utils';
+import { applyServerReplyStamp, isConversationUnseen, updateConvoInAllQueries } from '~/utils';
 
 const mockMarkSeen = jest.fn();
 const mockMarkUnread = jest.fn();
@@ -133,6 +133,45 @@ describe('useMarkConversationSeenMutation', () => {
 
     expect(cached()?.lastSeenAt).toBeUndefined();
     expect(isConversationUnseen(cached())).toBe(true);
+  });
+
+  it.each(['accepted', 'rejected', 'failed'])(
+    'keeps a newer unseen reply in Finished when an older acknowledgement is %s',
+    async (outcome) => {
+      const request = deferred();
+      mockMarkSeen.mockReturnValue(request.promise);
+      const { result, cached, queryClient } = setup(SEEN_AT);
+      await act(async () => {
+        const pending = result.current
+          .mutateAsync({ conversationId: CONVO_ID, lastResponseAt: RESPONDED_AT })
+          .catch(() => undefined);
+        await flush();
+        applyServerReplyStamp(queryClient, CONVO_ID, {
+          lastResponseAt: '2026-08-16T11:00:00.000Z',
+          lastResponseMessageId: 'newer-reply',
+        });
+        if (outcome === 'failed') request.reject(new Error('Unavailable'));
+        else request.resolve({ modified: outcome === 'accepted' });
+        await pending;
+      });
+      expect(cached()?.lastSeenAt).toBe(UNSEEN_REPLY_WATERMARK);
+      expect(cached()?.lastResponseMessageId).toBe('newer-reply');
+      expect(cached()?.isMarkedUnread).toBe(false);
+      expect(isConversationUnseen(cached())).toBe(true);
+    },
+  );
+
+  it('does not optimistically replace a newer reply watermark with an old observation', async () => {
+    mockMarkSeen.mockResolvedValue({ modified: false });
+    const { result, cached, queryClient } = setup(SEEN_AT);
+    applyServerReplyStamp(queryClient, CONVO_ID, {
+      lastResponseAt: '2026-08-16T11:00:00.000Z',
+      lastResponseMessageId: 'newer-reply',
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ conversationId: CONVO_ID, lastResponseAt: RESPONDED_AT });
+    });
+    expect(cached()?.lastSeenAt).toBe(UNSEEN_REPLY_WATERMARK);
   });
 
   it('cancels list fetches already reading the old catch-up', async () => {

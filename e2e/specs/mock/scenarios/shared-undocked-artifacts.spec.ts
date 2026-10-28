@@ -49,7 +49,7 @@ test('a shared link can undock its artifacts pane @scenario:a-shared-link-can-un
     throw new Error(`Could not parse conversation id from ${page.url()}`);
   }
 
-  await page.getByRole('button', { name: 'Export/Share' }).click();
+  await page.getByRole('button', { name: 'Chat options' }).click();
   await page.getByTestId('share-conversation-menu-item').click();
   const shareDialog = page.getByRole('dialog', { name: 'Share link to chat' });
   await expect(shareDialog).toBeVisible();

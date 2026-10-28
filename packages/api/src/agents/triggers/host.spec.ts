@@ -576,6 +576,7 @@ describe('createAgentTriggerExecutionHost continue adapter', () => {
     const [input, init] = fetcher.mock.calls[0];
     expect(String(input)).toBe('http://127.0.0.1:3080/api/agents/chat/agents');
     expect(JSON.parse(String(init?.body))).toEqual({
+      agentCompletion: { version: 1, sourceId: 'subagent-completion' },
       text: envelope.input,
       endpoint: EModelEndpoint.agents,
       agent_id: 'agent-1',

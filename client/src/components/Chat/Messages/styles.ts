@@ -36,7 +36,7 @@ import { cn } from '~/utils';
  * the hover tint would snap instead of fading.
  */
 export const revealOnRowHoverClasses =
-  'transition-[opacity,color,background-color] duration-theme-normal ease-out group-hover:opacity-100 group-focus-visible:opacity-100 group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:opacity-100 motion-reduce:transition-none [@media(hover:hover)]:opacity-0';
+  'transition-[opacity,color,background-color] duration-theme-normal ease-out group-hover:opacity-100 group-focus-visible:opacity-100 group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:opacity-100 motion-reduce:transition-none no-touch:opacity-0';
 
 /**
  * The message footer, holding the height of its action row.
@@ -48,7 +48,7 @@ export const revealOnRowHoverClasses =
  * completes. The value is the height of a hover button, `p-1.5` either side of a
  * 19px icon.
  */
-export const messageFooterClasses = 'min-h-[31px] text-xs';
+export const messageFooterClasses = 'min-h-[1.9375rem] text-xs';
 
 type HoverButtonStyleOptions = {
   isActive?: boolean;

@@ -168,11 +168,30 @@ const triggerDeliverySchema: Schema<IAgentTriggerDeliveryDocument> = new Schema(
                 kind: { type: String, enum: ['wakeup'], required: true },
                 claimId: { type: String, required: true, maxlength: 128 },
                 claimedAt: { type: Date, required: true },
+                appliedAt: { type: Date },
+                batchId: { type: String, maxlength: 128 },
               },
               { _id: false },
             ),
             required: false,
           },
+        },
+        { _id: false },
+      ),
+      select: false,
+    },
+    backgroundToolResultBatch: {
+      type: new Schema(
+        {
+          batchId: { type: String, required: true, maxlength: 128 },
+          dispatchCount: { type: Number, required: true, min: 0 },
+          dispatchId: { type: String, maxlength: 128 },
+          releaseId: { type: String, maxlength: 128 },
+          proofCopiedAt: { type: Date },
+          candidates: { type: [String], required: true },
+          releasing: { type: Boolean },
+          members: { type: [String], default: undefined },
+          appliedAt: { type: Date },
         },
         { _id: false },
       ),
@@ -215,6 +234,8 @@ const triggerDeliverySchema: Schema<IAgentTriggerDeliveryDocument> = new Schema(
     history: { type: [historySchema], default: undefined },
     settledAt: { type: Date },
     expiresAt: { type: Date },
+    /** Deadline of a dead batch root, armed into expiresAt once its members are settled. */
+    deadLetterExpiresAt: { type: Date },
     requeueCount: { type: Number, default: 0, min: 0 },
     stagingRecoveryAt: { type: Date },
     laneCleanupPendingAt: { type: Date },
@@ -272,8 +293,8 @@ triggerDeliverySchema.index({ user: 1, actorActionAdmittedAt: 1 }, { sparse: tru
 triggerDeliverySchema.index({ stagingRecoveryAt: 1 }, { sparse: true });
 triggerDeliverySchema.index({ laneCleanupPendingAt: 1 }, { sparse: true });
 triggerDeliverySchema.index({ backgroundToolResultDeletionPendingAt: 1 }, { sparse: true });
-// Only successful rows receive expiresAt. Dead letters remain available until
-// an operator explicitly requeues or removes them.
+// Successful rows expire after their retention window; dead letters expire after the
+// configured review window, and a requeue clears expiresAt again.
 triggerDeliverySchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 export default triggerDeliverySchema;

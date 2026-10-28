@@ -1,4 +1,4 @@
-import { render, waitFor } from '@testing-library/react';
+import { render, cleanup, waitFor } from '@testing-library/react';
 import PixelCard from './PixelCard';
 
 /** The canvas draws with whatever the palette resolved to, so the test reads what the card
@@ -39,6 +39,7 @@ describe('PixelCard palette', () => {
   });
 
   afterEach(() => {
+    cleanup();
     jest.restoreAllMocks();
     document.documentElement.className = '';
   });
@@ -55,10 +56,13 @@ describe('PixelCard palette', () => {
     jest
       .spyOn(HTMLElement.prototype, 'getBoundingClientRect')
       .mockReturnValue({ width: 200, height: 200 } as DOMRect);
+    let sample = 0;
+    jest.spyOn(Math, 'random').mockImplementation(() => ((sample++ % 7) + 0.5) / 7);
     render(<PixelCard progress={1} />);
 
-    await waitFor(() => expect(fillStyles.length).toBeGreaterThan(0));
-    expect(new Set(fillStyles)).toEqual(new Set(['rgb(1 1 1)', 'rgb(2 2 2)', 'currentColor']));
+    await waitFor(() =>
+      expect(new Set(fillStyles)).toEqual(new Set(['rgb(1 1 1)', 'rgb(2 2 2)', 'currentColor'])),
+    );
   });
 
   it('keeps an explicit colors prop as given', async () => {

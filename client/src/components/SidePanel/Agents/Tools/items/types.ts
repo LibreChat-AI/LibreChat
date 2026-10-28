@@ -21,7 +21,9 @@ export type BuiltinId =
    * toggling ride `agent.tools` exactly like a plugin — see the special cases
    * in `selectors.ts` / `mutations.ts`.
    */
-  | 'ask_user_question';
+  | 'ask_user_question'
+  | `${AgentCapabilities.subagents}`
+  | 'handoffs';
 
 export type AgentItemStatus = 'needs_setup';
 

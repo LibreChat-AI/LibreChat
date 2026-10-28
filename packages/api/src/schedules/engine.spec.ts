@@ -89,7 +89,7 @@ function makeDeps(
     getTriggerDelivery: async () => null,
     runInTenantContext: (_user, fn) => fn(),
     getJobStatus: async () => null,
-    abortScheduledJob: async () => undefined,
+    abortScheduledJob: async () => true,
     clearReconciledJob: async () => undefined,
     isOwnerDeleting: async () => false,
     isGloballyDisabled: async () => false,
@@ -117,6 +117,24 @@ afterEach(() => jest.restoreAllMocks());
 
 /** Overdue past MISFIRE_GRACE_MS (15m), so the tick skips it forward instead of firing. */
 const staleAt = () => new Date(Date.now() - 20 * 60_000);
+
+describe('armed-engine retained-job recovery', () => {
+  it('uses the host erasure acknowledgement barrier instead of raw storage erasure', async () => {
+    const methods = makeMethods(makeClaimedSchedule());
+    methods.getDeletingSchedules.mockResolvedValue([{ id: 'deleting' }] as never);
+    const eraseSettledSchedule = jest.fn(async () => false);
+    await reconcileOnce(makeDeps(methods, { eraseSettledSchedule }));
+    expect(eraseSettledSchedule).toHaveBeenCalledWith('deleting');
+    expect(methods.eraseScheduleIfDrained).not.toHaveBeenCalled();
+  });
+
+  it('retries held-job settlement independently of active and unbookkept Mongo rows', async () => {
+    const methods = makeMethods(makeClaimedSchedule());
+    const reconcileRetainedJobs = jest.fn(async () => undefined);
+    await reconcileOnce(makeDeps(methods, { reconcileRetainedJobs }));
+    expect(reconcileRetainedJobs).toHaveBeenCalled();
+  });
+});
 
 describe('runTick misfire skip-forward', () => {
   it('advances a stale occurrence to the next future one', async () => {
@@ -732,7 +750,7 @@ describe('reconciliation preserves the intended outcome', () => {
     firedAt: new Date(Date.now() - 60 * 60_000),
   });
   const retainedComplete =
-    (extra: Record<string, string> = {}) =>
+    (extra: Partial<import('./types').JobState> = {}) =>
     async () => ({
       status: 'complete',
       scheduleId: 'sched-1',
@@ -746,6 +764,60 @@ describe('reconciliation preserves the intended outcome', () => {
    * `success` from it turned a transient outcome-write failure into a reset of the very
    * streaks that drive insufficient_balance and too_many_failures auto-disable.
    */
+  it('does not copy denial evidence from a replacement occurrence at the same stream', async () => {
+    const methods = makeMethods(makeClaimedSchedule());
+    (methods.getRunsForReconciliation as jest.Mock).mockResolvedValue([unsettledRun()]);
+    const failure = {
+      server: '',
+      reason: 'tool_policy_denied' as const,
+      status: 'mcp_permission_denied' as const,
+      automaticReplay: false as const,
+    };
+    await tickOnce(
+      makeDeps(methods, {
+        getJobStatus: async () => ({
+          status: 'complete',
+          scheduleId: 'other',
+          scheduledFor: scheduledFor.toISOString(),
+          scheduleMCPFailure: failure,
+        }),
+      }),
+    );
+    expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'interrupted' }),
+    );
+    expect(methods.recordRunOutcome).not.toHaveBeenCalledWith(
+      expect.objectContaining({ mcp: expect.anything() }),
+    );
+  });
+
+  it('passes job-retained MCP denial evidence to crash-recovery settlement', async () => {
+    const methods = makeMethods(makeClaimedSchedule());
+    (methods.getRunsForReconciliation as jest.Mock).mockResolvedValue([unsettledRun()]);
+    const failure = {
+      server: '',
+      agentId: 'child',
+      reason: 'tool_policy_denied' as const,
+      status: 'mcp_permission_denied' as const,
+      recovery: 'configure' as const,
+      automaticReplay: false as const,
+    };
+    await tickOnce(
+      makeDeps(methods, {
+        getJobStatus: async () => ({
+          status: 'complete',
+          scheduleId: 'sched-1',
+          scheduledFor: scheduledFor.toISOString(),
+          scheduleMCPFailure: failure,
+        }),
+        clearReconciledJob: async () => undefined,
+      }),
+    );
+    expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+      expect.objectContaining({ mcp: [failure] }),
+    );
+  });
+
   it('recovers a balance refusal as skipped_balance, not success', async () => {
     const methods = makeMethods(makeClaimedSchedule());
     (methods.getRunsForReconciliation as jest.Mock).mockResolvedValue([unsettledRun()]);
@@ -839,6 +911,61 @@ describe('reconciliation preserves the intended outcome', () => {
 
   // The stamp crosses a serialization boundary, and recordRunOutcome would reject a
   // status outside its union: degrade to success rather than fail the recovery write.
+  it.each(['requires_action', 'aborted', 'complete', 'error'] as const)(
+    'retains job-only bearer denial through %s recovery before clearing evidence',
+    async (status) => {
+      const methods = makeMethods(makeClaimedSchedule());
+      (methods.getRunsForReconciliation as jest.Mock).mockResolvedValue([unsettledRun()]);
+      const denial = {
+        server: 'Files',
+        status: 'mcp_reauth_required',
+        reason: 'consent_revoked',
+        recovery: 'authorize',
+        automaticReplay: false,
+        detail: 'unattended_auth_required',
+      };
+      const clearReconciledJob = jest.fn(async () => undefined);
+      await reconcileOnce(
+        makeDeps(methods, {
+          getJobStatus: retainedComplete({
+            status,
+            scheduleOutcomeError: `mcp_reauth_required: ${JSON.stringify([denial])}`,
+          }),
+          clearReconciledJob,
+        }),
+      );
+      expect(methods.recordRunOutcome).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'error', mcp: [denial] }),
+      );
+      expect(clearReconciledJob).toHaveBeenCalled();
+      expect(methods.recordRunOutcome.mock.invocationCallOrder[0]).toBeLessThan(
+        clearReconciledJob.mock.invocationCallOrder[0],
+      );
+    },
+  );
+
+  it.each(['terminalPersistencePending', 'providerDrained'] as const)(
+    'defers denial settlement while %s blocks pause cleanup',
+    async (fence) => {
+      const methods = makeMethods(makeClaimedSchedule());
+      (methods.getRunsForReconciliation as jest.Mock).mockResolvedValue([unsettledRun()]);
+      const clearReconciledJob = jest.fn(async () => undefined);
+      await reconcileOnce(
+        makeDeps(methods, {
+          getJobStatus: retainedComplete({
+            status: 'requires_action',
+            [fence]: fence === 'terminalPersistencePending',
+            scheduleOutcomeError:
+              'mcp_reauth_required: [{"server":"Files","status":"mcp_reauth_required","detail":"unattended_auth_required","reason":"consent_revoked"}]',
+          }),
+          clearReconciledJob,
+        }),
+      );
+      expect(methods.recordRunOutcome).not.toHaveBeenCalled();
+      expect(clearReconciledJob).not.toHaveBeenCalled();
+    },
+  );
+
   it('degrades an unrecognized stamp to success', async () => {
     const methods = makeMethods(makeClaimedSchedule());
     (methods.getRunsForReconciliation as jest.Mock).mockResolvedValue([unsettledRun()]);

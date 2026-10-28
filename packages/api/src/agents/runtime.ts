@@ -28,6 +28,8 @@ export interface AgentExecutionContext {
   chatProjectContextResourcesPromise?: Promise<ResolvedChatProjectContext>;
   /** Shares in-flight hydration across concurrently initialized graph agents. */
   chatProjectFilesPromise?: Promise<TFile[]>;
+  /** Subagents that run on their parent's machine this turn, keyed by saved agent ID. */
+  codeWorkspaceInheritance?: ReadonlyMap<string, string>;
 }
 
 /** Creates the transport-free context at the existing HTTP adapter seam. */
@@ -43,6 +45,7 @@ export function createAgentExecutionContext({
   chatProjectFiles,
   chatProjectContextResourcesPromise,
   chatProjectFilesPromise,
+  codeWorkspaceInheritance,
 }: {
   user?: IUser;
   appConfig?: AppConfig;
@@ -55,6 +58,7 @@ export function createAgentExecutionContext({
   chatProjectFiles?: TFile[];
   chatProjectContextResourcesPromise?: Promise<ResolvedChatProjectContext>;
   chatProjectFilesPromise?: Promise<TFile[]>;
+  codeWorkspaceInheritance?: ReadonlyMap<string, string>;
 }): AgentExecutionContext {
   const context: AgentExecutionContext = {
     user,
@@ -68,6 +72,7 @@ export function createAgentExecutionContext({
       : {}),
     ...(chatProjectFiles !== undefined ? { chatProjectFiles } : {}),
     ...(chatProjectFilesPromise !== undefined ? { chatProjectFilesPromise } : {}),
+    ...(codeWorkspaceInheritance !== undefined ? { codeWorkspaceInheritance } : {}),
   };
   if (hasResolvedConversation) {
     context.resolvedConversation = resolvedConversation ?? null;
@@ -94,5 +99,6 @@ export function createRequestAgentExecutionContext(
     chatProjectFiles: req.chatProjectFiles,
     chatProjectContextResourcesPromise: req.chatProjectContextResourcesPromise,
     chatProjectFilesPromise: req.chatProjectFilesPromise,
+    codeWorkspaceInheritance: req.codeWorkspaceInheritance,
   });
 }

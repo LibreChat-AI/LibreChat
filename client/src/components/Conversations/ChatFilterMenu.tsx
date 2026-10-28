@@ -1,6 +1,6 @@
 import { memo, useCallback, useId, useMemo, useRef, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { useAtomValue, useSetAtom } from 'jotai';
+import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { BookmarkFilledIcon, BookmarkIcon } from '@radix-ui/react-icons';
 import { TooltipAnchor, buttonVariants, usePopoverZIndex } from '@librechat/client';
 import { alternateName, PermissionTypes, Permissions } from 'librechat-data-provider';
@@ -13,6 +13,7 @@ import {
   Check,
   ChevronRight,
   Clock,
+  Folder,
   ListFilter,
   MessagesSquare,
   Paperclip,
@@ -35,6 +36,7 @@ import {
   resetChatFiltersAtom,
   selectableBookmarks,
   setChatFilterStatusAtom,
+  showProjectChatsAtom,
   sortFieldsFor,
   toggleChatFilterTagAtom,
 } from './chatFilters';
@@ -51,6 +53,7 @@ import {
   updatedRangeAtom,
 } from './facets';
 import { useGetConversationTags, useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
+import useDirection, { inlineSide } from '~/hooks/Nav/useDirection';
 import MinimalIcon from '~/components/Endpoints/MinimalIcon';
 import { useHasAccess, useLocalize } from '~/hooks';
 import { cn } from '~/utils';
@@ -66,9 +69,9 @@ const groupLabelClassName = 'px-2 pb-1 pt-1.5 text-xs font-medium text-text-seco
 /** Keeps every row's label on the same x, checked or not. */
 const CheckSlot = ({ checked }: { checked: boolean }) =>
   checked ? (
-    <Check className="text-text-primary ml-auto size-4 shrink-0" aria-hidden="true" />
+    <Check className="text-text-primary ms-auto size-4 shrink-0" aria-hidden="true" />
   ) : (
-    <span className="ml-auto size-4 shrink-0" aria-hidden="true" />
+    <span className="ms-auto size-4 shrink-0" aria-hidden="true" />
   );
 
 type ChoiceProps = {
@@ -149,9 +152,10 @@ const PropertyRow = ({
   children,
 }: PropertyRowProps) => {
   const zIndex = usePopoverZIndex();
+  const submenuSide = inlineSide(useDirection(), 'end');
 
   return (
-    <Ariakit.MenuProvider placement="right-start" focusLoop={true}>
+    <Ariakit.MenuProvider placement={`${submenuSide}-start`} focusLoop={true}>
       <Ariakit.MenuButton
         render={<Ariakit.MenuItem />}
         data-testid={testId}
@@ -161,10 +165,13 @@ const PropertyRow = ({
           {icon}
         </span>
         <span className="shrink-0">{label}</span>
-        <span className="text-text-secondary ml-auto flex min-w-0 items-center gap-1.5 pl-4">
+        <span className="text-text-secondary ms-auto flex min-w-0 items-center gap-1.5 ps-4">
           {valueIcon}
           <span className="truncate">{value}</span>
-          <ChevronRight className="text-text-tertiary size-4 shrink-0" aria-hidden="true" />
+          <ChevronRight
+            className="text-text-tertiary size-4 shrink-0 rtl:-scale-x-100"
+            aria-hidden="true"
+          />
         </span>
       </Ariakit.MenuButton>
       <Ariakit.Menu
@@ -248,7 +255,7 @@ const BookmarkChoices = memo(() => {
               )}
             </span>
             <span className="truncate">{bookmark.tag}</span>
-            <span className="text-text-tertiary ml-auto shrink-0 text-xs tabular-nums">
+            <span className="text-text-tertiary ms-auto shrink-0 text-xs tabular-nums">
               {bookmark.count}
             </span>
           </Ariakit.MenuItem>
@@ -785,6 +792,7 @@ const ChatFilterMenu = () => {
   const facetCount = useAtomValue(facetFilterCountAtom);
   const setStatus = useSetAtom(setChatFilterStatusAtom);
   const setSort = useSetAtom(chatSortAtom);
+  const [showProjectChats, setShowProjectChats] = useAtom(showProjectChatsAtom);
   const resetFilters = useSetAtom(resetChatFiltersAtom);
   const resetAllFacets = useSetAtom(resetFacetsAtom);
 
@@ -866,7 +874,7 @@ const ChatFilterMenu = () => {
             <ListFilter aria-hidden="true" className="size-4" />
             {totalCount > 0 && (
               <span
-                className="bg-text-primary absolute top-0.5 right-0.5 size-1.5 rounded-full"
+                className="bg-text-primary absolute inset-e-0.5 top-0.5 size-1.5 rounded-full"
                 aria-hidden="true"
               />
             )}
@@ -977,6 +985,19 @@ const ChatFilterMenu = () => {
         >
           <FilterFacets showBookmarks={hasAccessToBookmarks} searchRef={facetSearchRef} />
         </PropertyRow>
+
+        {/* The archive and search already list every chat, project or not. */}
+        {status === 'active' && (
+          <>
+            <Ariakit.MenuSeparator className="border-border-medium my-1 h-px" />
+            <Toggle
+              label={localize('com_ui_show_project_chats')}
+              icon={<Folder className="size-4" />}
+              checked={showProjectChats}
+              onSelect={() => setShowProjectChats(!showProjectChats)}
+            />
+          </>
+        )}
       </Ariakit.Menu>
     </Ariakit.MenuProvider>
   );

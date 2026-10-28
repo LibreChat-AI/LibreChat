@@ -1,6 +1,6 @@
+import { findResponseMessageIndex } from '@librechat/chat';
 import { Constants, ContentTypes } from 'librechat-data-provider';
 import type { TMessage, TActivityLabelEvent, TMessageContentParts } from 'librechat-data-provider';
-import { findResponseMessageIndex } from '~/utils/steer';
 import { hasParallelLanes } from '~/utils/lanes';
 
 type ActivityLabelPart = Extract<TMessageContentParts, { type: ContentTypes.ACTIVITY_LABEL }> & {

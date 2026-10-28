@@ -15,6 +15,7 @@ function deferred(): Deferred {
   return { promise, reject };
 }
 
+let mockWebAuthnImportError: Error | undefined;
 const mockStartAuthentication = jest.fn();
 const mockGetPasskeyLoginOptions = jest.fn();
 const mockVerifyPasskeyLogin = jest.fn();
@@ -23,11 +24,16 @@ const mockNavigate = jest.fn();
 const mockLocalize = (key: string) => key;
 const mockToastContext = { showToast: mockShowToast };
 
-jest.mock('@simplewebauthn/browser', () => ({
-  startAuthentication: (...args: unknown[]) => mockStartAuthentication(...args),
-  browserSupportsWebAuthn: () => true,
-  browserSupportsWebAuthnAutofill: async () => true,
-}));
+jest.mock('@simplewebauthn/browser', () => {
+  if (mockWebAuthnImportError) {
+    throw mockWebAuthnImportError;
+  }
+  return {
+    startAuthentication: (...args: unknown[]) => mockStartAuthentication(...args),
+    browserSupportsWebAuthn: () => true,
+    browserSupportsWebAuthnAutofill: async () => true,
+  };
+});
 
 jest.mock('librechat-data-provider', () => ({
   ...jest.requireActual('librechat-data-provider'),
@@ -56,6 +62,11 @@ jest.mock('~/data-provider', () => ({
 }));
 
 describe('usePasskeySignIn', () => {
+  afterEach(() => {
+    mockWebAuthnImportError = undefined;
+    delete window.__lcRecoverStaleAssets;
+    delete window.__lcStaleAssetRecoveryPending;
+  });
   beforeEach(() => {
     jest.clearAllMocks();
     Object.defineProperty(window, 'PublicKeyCredential', {
@@ -63,6 +74,26 @@ describe('usePasskeySignIn', () => {
       value: function PublicKeyCredential() {},
     });
     mockGetPasskeyLoginOptions.mockResolvedValue({ options: {}, sessionId: 'session' });
+  });
+
+  it('recovers a missing WebAuthn chunk before its local sign-in catch', async () => {
+    mockWebAuthnImportError = new TypeError(
+      'Failed to fetch dynamically imported module: /assets/webauthn-old.js',
+    );
+    const recover = jest.fn(() => false);
+    window.__lcRecoverStaleAssets = recover;
+    const { result } = renderHook(() => usePasskeySignIn({ enabled: true }));
+    await waitFor(() => expect(recover).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      await result.current.signIn();
+    });
+    expect(recover).toHaveBeenCalledTimes(1);
+    expect(mockStartAuthentication).not.toHaveBeenCalled();
+    expect(mockGetPasskeyLoginOptions).not.toHaveBeenCalled();
+    expect(mockShowToast).toHaveBeenCalledWith({
+      message: 'com_auth_passkey_error',
+      status: 'error',
+    });
   });
 
   it('keeps the manual ceremony locked when it aborts the pending autofill ceremony', async () => {

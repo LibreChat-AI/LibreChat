@@ -3,6 +3,7 @@
 export type { TranslationKeys } from './useLocalize';
 
 export { default as useToast } from './useToast';
+export { default as useRemScale } from './useRemScale';
 export { default as useAvatar } from './useAvatar';
 export { default as useCombobox } from './useCombobox';
 export { default as useLocalize } from './useLocalize';

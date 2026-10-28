@@ -30,13 +30,13 @@ function MessageQuotes({ quotes }: { quotes?: string[] }) {
         <div
           key={`${index}-${text.slice(0, 24)}`}
           role="listitem"
-          className="flex items-start gap-1.5 rounded-2xl border border-border-light bg-surface-secondary px-2.5 py-1.5 text-sm text-text-secondary"
+          className="border-border-chrome bg-surface-secondary text-text-secondary flex items-start gap-1.5 rounded-2xl border px-2.5 py-1.5 text-sm"
         >
           <TextQuote
-            className="mt-0.5 h-3.5 w-3.5 shrink-0 text-text-tertiary"
+            className="text-text-tertiary mt-0.5 h-3.5 w-3.5 shrink-0"
             aria-hidden="true"
           />
-          <span className="line-clamp-3 whitespace-pre-wrap break-words">{text}</span>
+          <span className="line-clamp-3 break-words whitespace-pre-wrap">{text}</span>
         </div>
       ))}
     </div>

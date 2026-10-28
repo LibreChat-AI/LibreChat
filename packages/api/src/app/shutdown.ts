@@ -22,6 +22,12 @@ type ShutdownTask = {
 const tasks: ShutdownTask[] = [];
 let nextRegistrationOrder = 0;
 let isShuttingDown = false;
+let shutdownController = new AbortController();
+
+/** Cancels fail-closed dependency waits when process shutdown begins. */
+export function getShutdownSignal(): AbortSignal {
+  return shutdownController.signal;
+}
 let httpServer: Server | null = null;
 let forceExitTimer: NodeJS.Timeout | null = null;
 let shutdownStartedAt: number | null = null;
@@ -116,6 +122,7 @@ export function __resetShutdownStateForTests(): void {
   tasks.length = 0;
   nextRegistrationOrder = 0;
   isShuttingDown = false;
+  shutdownController = new AbortController();
   shutdownStartedAt = null;
   httpServer = null;
   /** A drain that never settles leaves this armed. It is `unref`'d, so it does
@@ -158,6 +165,7 @@ async function shutdown(signal: NodeJS.Signals): Promise<void> {
     return;
   }
   isShuttingDown = true;
+  shutdownController.abort();
   shutdownStartedAt = Date.now();
   logger.info(`Received ${signal}, draining HTTP server...`);
 

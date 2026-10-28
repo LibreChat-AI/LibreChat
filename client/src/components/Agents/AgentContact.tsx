@@ -59,7 +59,7 @@ export default function AgentContact({
         {contact?.email ? (
           <a
             href={`mailto:${contact.email}`}
-            className="text-text-primary focus-visible:ring-text-primary inline-block max-w-full truncate rounded-sm py-1 hover:underline focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset"
+            className="text-text-primary focus-visible:ring-text-primary block max-w-full truncate rounded-sm py-1 hover:underline focus-visible:ring-2 focus-visible:outline-hidden focus-visible:ring-inset"
           >
             {label}
           </a>

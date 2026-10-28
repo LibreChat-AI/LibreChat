@@ -10,8 +10,10 @@ import {
   NEW_CHAT_PATH,
   replyPrompt,
   thinkPrompt,
+  uploadViaUnifiedButton,
   replyText,
   thinkText,
+  uniqueName,
   fetchJson,
 } from '../helpers';
 
@@ -98,6 +100,45 @@ test.describe('UI parts view of persisted messages', () => {
     expect(reasoning).toBeGreaterThanOrEqual(0);
     expect(reasoning).toBeLessThan(answer);
     expect(assistant.parts[reasoning]).toMatchObject({ text: thinkText(label) });
+  });
+
+  test('drops an attachment name removed through the view @scenario:attachment-name-removed-through-the-view-is-dropped', async ({
+    page,
+  }) => {
+    test.setTimeout(90_000);
+    const label = uniqueLabel('parts-file');
+    const fileName = `${uniqueName('parts-doc')}.md`;
+    await page.goto(NEW_CHAT_PATH, { timeout: 10_000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[1]);
+    const upload = await uploadViaUnifiedButton(page, {
+      name: fileName,
+      mimeType: 'text/markdown',
+      content: '# Parts view\n',
+    });
+    expect(upload.ok()).toBeTruthy();
+    await expect(
+      page.getByTestId('composer-tray').getByRole('button', { name: fileName }),
+    ).toBeVisible({ timeout: 15_000 });
+    const response = await sendMessageAndWaitForCompletion(page, replyPrompt(label));
+    expect(response.ok()).toBeTruthy();
+
+    const messages = await readPersistedMessages(page);
+    const views = viewAndRestore(messages);
+    const index = messages.findIndex((message) => message.isCreatedByUser);
+    const stored = messages[index];
+    const storedFile = stored.files?.find((file) => file.filename === fileName);
+    if (!storedFile) {
+      throw new Error('Persisted attachment missing');
+    }
+
+    const parts = views[index].parts.map((part) =>
+      part.type === 'file' && part.filename === fileName ? { ...part, filename: undefined } : part,
+    );
+    const restored = fromUIMessage({ ...views[index], parts }, stored).files?.find(
+      (file) => file.file_id === storedFile.file_id,
+    );
+    expect(restored).not.toHaveProperty('filename');
+    expect(restored).toEqual({ ...storedFile, filename: undefined });
   });
 
   test.describe('with an MCP tool turn', () => {

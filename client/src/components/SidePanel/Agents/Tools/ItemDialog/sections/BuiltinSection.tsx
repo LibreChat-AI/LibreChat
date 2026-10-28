@@ -4,6 +4,7 @@ import { Tools, MemoryScope, ArtifactModes, AgentCapabilities } from 'librechat-
 import type { TranslationKeys } from '~/hooks/useLocalize';
 import type { AgentForm, ExtendedFile } from '~/common';
 import type { BuiltinId } from '../../items/types';
+import OrchestrationHub from '../../../Advanced/OrchestrationHub';
 import { useVerifyAgentToolAuth } from '~/data-provider';
 import CodeBackground from '../../../Code/Background';
 import CodeSettings from '../../../Code/Settings';
@@ -22,10 +23,14 @@ interface Props {
   description?: string;
 }
 
+const ARTIFACTS_CUSTOM_DOCS_URL =
+  'https://www.librechat.ai/docs/features/artifacts#custom-instructions';
+
 const ARTIFACT_MODES: Array<{
   value: string;
   labelKey: TranslationKeys;
   infoKey?: TranslationKeys;
+  docs?: { url: string; labelKey: TranslationKeys };
 }> = [
   {
     value: ArtifactModes.DEFAULT,
@@ -41,6 +46,7 @@ const ARTIFACT_MODES: Array<{
     value: ArtifactModes.CUSTOM,
     labelKey: 'com_ui_artifacts_mode_custom',
     infoKey: 'com_ui_artifacts_mode_custom_info',
+    docs: { url: ARTIFACTS_CUSTOM_DOCS_URL, labelKey: 'com_ui_artifacts_mode_custom_docs' },
   },
 ];
 
@@ -70,7 +76,23 @@ function ArtifactsConfig({ value, onChange }: ArtifactsConfigProps) {
         aria-labelledby="artifacts-mode-label"
       />
       {active?.infoKey ? (
-        <p className="text-text-secondary text-sm leading-relaxed">{localize(active.infoKey)}</p>
+        <p className="text-text-secondary text-sm leading-relaxed">
+          {localize(active.infoKey)}
+          {active.docs ? (
+            <>
+              {' '}
+              <a
+                href={active.docs.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={localize(active.docs.labelKey)}
+                className="text-link hover:text-link-hover underline"
+              >
+                {localize('com_ui_learn_more')}
+              </a>
+            </>
+          ) : null}
+        </p>
       ) : null}
     </div>
   );
@@ -94,7 +116,7 @@ function MemoryConfig({ value, onChange }: MemoryConfigProps) {
           onCheckedChange={(checked) =>
             onChange(checked === true ? MemoryScope.agent : MemoryScope.user)
           }
-          className="relative float-left mr-2 inline-flex cursor-pointer"
+          className="relative float-start me-2 inline-flex cursor-pointer"
           value={isolated.toString()}
           aria-labelledby="memory-scope-label"
         />
@@ -142,7 +164,9 @@ export default function BuiltinSection({
 
   let body: React.ReactNode = null;
 
-  if (builtinId === 'execute_code') {
+  if (builtinId === 'subagents' || builtinId === 'handoffs') {
+    body = <OrchestrationHub currentAgentId={agentId} tool={builtinId} />;
+  } else if (builtinId === 'execute_code') {
     body = (
       <div className="flex flex-col gap-4">
         <CodeSettings />
@@ -172,7 +196,10 @@ export default function BuiltinSection({
     );
   }
 
-  const localizedDescription = description ? localize(description as TranslationKeys) : '';
+  const localizedDescription =
+    description && builtinId !== 'subagents' && builtinId !== 'handoffs'
+      ? localize(description as TranslationKeys)
+      : '';
 
   return (
     <div className="flex flex-col gap-5">

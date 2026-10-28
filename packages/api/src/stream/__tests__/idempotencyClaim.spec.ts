@@ -14,8 +14,9 @@ import {
 } from '~/stream/GenerationJobManager';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { registerChunkPublicationCapability } from '~/stream/internal/chunkPublication';
-import { buildPendingAction, buildToolApprovalPayload } from '~/agents/hitl/policy';
+import { buildToolApprovalPayload } from '~/agents/hitl/__fixtures__/approval';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
+import { buildPendingAction } from '~/agents/hitl/policy';
 
 jest.spyOn(console, 'log').mockImplementation();
 
@@ -392,6 +393,13 @@ describe('GenerationJobManager start-generation claim', () => {
       claimed: false,
       existing: { startedAt: expect.any(Number) },
     });
+  });
+
+  it('does not mistake a replayed recovery tombstone for actual admission proof', async () => {
+    const args = ['user-1', 'req-recovery-proof', 'stream-proof', 'stream-proof'] as const;
+    expect(await manager.fenceGenerationClaimForRecovery(...args)).toBe('fenced');
+    expect(await manager.fenceGenerationClaimForRecovery(...args)).toBe('fenced');
+    expect(await manager.getGenerationAdmissionEvidence(...args)).toBeNull();
   });
 
   it('invalidates an unpublished continuation creator before manual recovery', async () => {

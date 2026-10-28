@@ -220,6 +220,7 @@ const mergeTimestamps = async (
     lastResponseAt,
     lastResponseMessageId,
     lastResponseIsManual,
+    isMarkedUnread,
     lastSeenAt,
     updatedAt,
   } = convo;
@@ -260,6 +261,7 @@ const mergeTimestamps = async (
     cached &&
     cached.lastResponseAt === lastResponseAt &&
     cached.lastResponseIsManual === lastResponseIsManual &&
+    cached.isMarkedUnread === isMarkedUnread &&
     cached.lastSeenAt === (lastSeenAt ?? undefined) &&
     (updatedAt === undefined || cached.updatedAt === updatedAt) &&
     (incomingResponseMessageId === undefined ||
@@ -286,11 +288,13 @@ const mergeTimestamps = async (
       lastResponseIsManual === true
         ? undefined
         : (incomingResponseMessageId ?? cached.lastResponseMessageId);
+    const nextIsMarkedUnread = stampDelivery ? cached.isMarkedUnread : isMarkedUnread;
     const nextLastSeenAt = stampDelivery ? cached.lastSeenAt : lastSeenAt;
     const nextUpdatedAt = stampDelivery ? cached.updatedAt : (updatedAt ?? cached.updatedAt);
     if (
       cached.lastResponseMessageId !== nextLastResponseMessageId ||
       cached.lastResponseIsManual !== lastResponseIsManual ||
+      cached.isMarkedUnread !== nextIsMarkedUnread ||
       cached.lastSeenAt !== nextLastSeenAt ||
       cached.updatedAt !== nextUpdatedAt
     ) {
@@ -298,6 +302,7 @@ const mergeTimestamps = async (
         ...current,
         lastResponseMessageId: nextLastResponseMessageId,
         lastResponseIsManual,
+        isMarkedUnread: nextIsMarkedUnread,
         lastSeenAt: nextLastSeenAt,
         updatedAt: nextUpdatedAt,
       }));
@@ -355,6 +360,7 @@ const mergeTimestamps = async (
     fresh.lastResponseAt === lastResponseAt &&
     fresh.lastResponseMessageId === (incomingResponseMessageId ?? fresh.lastResponseMessageId) &&
     fresh.lastResponseIsManual === lastResponseIsManual &&
+    fresh.isMarkedUnread === isMarkedUnread &&
     fresh.lastSeenAt === (lastSeenAt ?? undefined) &&
     (updatedAt === undefined || fresh.updatedAt === updatedAt)
   ) {
@@ -369,6 +375,7 @@ const mergeTimestamps = async (
       lastResponseAt,
       lastResponseMessageId: incomingResponseMessageId ?? current.lastResponseMessageId,
       lastResponseIsManual,
+      isMarkedUnread,
       lastSeenAt,
       updatedAt: updatedAt ?? current.updatedAt,
     }),

@@ -1,6 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useSprings, animated } from '@react-spring/web';
 import type { SpringConfig } from '@react-spring/web';
+import useRemScale from '~/hooks/useRemScale';
+
+const TEXT_ALIGN: Record<NonNullable<SplitTextProps['textAlign']>, string> = {
+  left: 'text-left',
+  right: 'text-right',
+  center: 'text-center',
+  justify: 'text-justify',
+  start: 'text-start',
+  end: 'text-end',
+};
 
 interface SegmenterOptions {
   granularity?: 'grapheme' | 'word' | 'sentence';
@@ -46,17 +56,26 @@ interface SplitTextProps {
   onLineCountChange?: (lineCount: number) => void;
 }
 
-const splitGraphemes = (text: string): string[] => {
-  if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
-    const segmenter = new (Intl as typeof Intl & { Segmenter: IntlSegmenterConstructor }).Segmenter(
-      'en',
-      { granularity: 'grapheme' },
-    );
-    const segments = segmenter.segment(text);
-    return Array.from(segments).map((s: SegmentData) => s.segment);
-  } else {
-    return [...text];
+let segmenter: IntlSegmenter | null | undefined;
+
+const getSegmenter = (): IntlSegmenter | null => {
+  if (segmenter === undefined) {
+    segmenter =
+      typeof Intl !== 'undefined' && 'Segmenter' in Intl
+        ? new (Intl as typeof Intl & { Segmenter: IntlSegmenterConstructor }).Segmenter('en', {
+            granularity: 'grapheme',
+          })
+        : null;
   }
+  return segmenter;
+};
+
+const splitGraphemes = (text: string): string[] => {
+  const instance = getSegmenter();
+  if (instance) {
+    return Array.from(instance.segment(text)).map((s: SegmentData) => s.segment);
+  }
+  return [...text];
 };
 
 const SplitText: React.FC<SplitTextProps> = ({
@@ -73,21 +92,30 @@ const SplitText: React.FC<SplitTextProps> = ({
   onLineCountChange,
 }) => {
   const containsRtl = /[\p{Script=Arabic}\p{Script=Hebrew}]/u.test(text);
-  const words = containsRtl ? [[text]] : text.split(' ').map(splitGraphemes);
-  const letters = words.flat();
+  const { words, letterCount, offsets } = useMemo(() => {
+    const split = containsRtl ? [[text]] : text.split(' ').map(splitGraphemes);
+    const starts: number[] = [];
+    let total = 0;
+    for (const w of split) {
+      starts.push(total);
+      total += w.length;
+    }
+    return { words: split, letterCount: total, offsets: starts };
+  }, [text, containsRtl]);
   const [inView, setInView] = useState(false);
   const ref = useRef<HTMLParagraphElement>(null);
   const animatedCount = useRef(0);
+  const remScale = useRemScale();
 
   const [springs] = useSprings(
-    letters.length,
+    letterCount,
     (i) => ({
       from: animationFrom,
       to: inView
         ? async (next) => {
             await next(animationTo);
             animatedCount.current += 1;
-            if (animatedCount.current === letters.length && onLetterAnimationComplete) {
+            if (animatedCount.current === letterCount && onLetterAnimationComplete) {
               onLetterAnimationComplete();
             }
           }
@@ -119,29 +147,24 @@ const SplitText: React.FC<SplitTextProps> = ({
   }, [threshold, rootMargin]);
 
   useEffect(() => {
-    if (ref.current && inView) {
-      const element = ref.current;
-      setTimeout(() => {
-        const lineHeight =
-          parseInt(getComputedStyle(element).lineHeight) ||
-          parseInt(getComputedStyle(element).fontSize) * 1.2;
-        const height = element.offsetHeight;
-        const lines = Math.round(height / lineHeight);
-
-        if (onLineCountChange) {
-          onLineCountChange(lines);
-        }
-      }, 100);
+    const element = ref.current;
+    if (!element || !inView || !onLineCountChange) {
+      return;
     }
-  }, [inView, text, onLineCountChange]);
+    const timeout = setTimeout(() => {
+      const style = getComputedStyle(element);
+      const lineHeight = parseFloat(style.lineHeight) || parseFloat(style.fontSize) * 1.2;
+      onLineCountChange(Math.round(element.offsetHeight / lineHeight));
+    }, 100);
+    return () => clearTimeout(timeout);
+  }, [inView, text, onLineCountChange, remScale]);
 
   return (
     <>
       <p
         ref={ref}
         dir="auto"
-        className={`split-parent inline overflow-hidden ${className}`}
-        style={{ textAlign, whiteSpace: 'normal', wordWrap: 'break-word' }}
+        className={`split-parent inline overflow-hidden break-words whitespace-normal ${TEXT_ALIGN[textAlign]} ${className}`}
       >
         {/* The paragraph's auto direction ignores word boxes with their own dir. */}
         <span className="sr-only">{text}</span>
@@ -150,11 +173,10 @@ const SplitText: React.FC<SplitTextProps> = ({
             key={wordIndex}
             dir="auto"
             aria-hidden="true"
-            style={{ display: 'inline-block', whiteSpace: containsRtl ? 'normal' : 'nowrap' }}
+            className={`inline-block ${containsRtl ? 'whitespace-normal' : 'whitespace-nowrap'}`}
           >
             {word.map((letter, letterIndex) => {
-              const index =
-                words.slice(0, wordIndex).reduce((acc, w) => acc + w.length, 0) + letterIndex;
+              const index = offsets[wordIndex] + letterIndex;
 
               return (
                 <animated.span
@@ -167,7 +189,9 @@ const SplitText: React.FC<SplitTextProps> = ({
               );
             })}
             {wordIndex < words.length - 1 && (
-              <span style={{ display: 'inline-block', width: '0.3em' }}>&nbsp;</span>
+              <span className="inline-block" style={{ width: '0.3em' }}>
+                &nbsp;
+              </span>
             )}
           </span>
         ))}

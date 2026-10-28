@@ -1,4 +1,6 @@
 import { Keyv } from 'keyv';
+import { inspect } from 'util';
+import { logger } from '@librechat/data-schemas';
 import type { TokenMethods, IUser } from '@librechat/data-schemas';
 import type {
   OAuthClientInformation,
@@ -303,6 +305,7 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     jest.spyOn(manager, 'getConnection').mockResolvedValue(connection);
     const registrySpy = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
       isAppServerConfig: jest.fn().mockResolvedValue(false),
+      isHiddenFromPrincipal: jest.fn().mockResolvedValue(false),
       resolveAllowlists: jest.fn().mockResolvedValue({
         allowedDomains: null,
         allowedAddresses: null,
@@ -545,9 +548,13 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
   it.each(['invalid_client', 'invalid_grant'])(
     'still requests consent for a permanent HTTP 400 %s',
     async (error) => {
+      const secret = 'sentinel-provider-refresh-credential';
       server = await createOAuthMCPServer({
         issueRefreshTokens: true,
-        refreshFailure: () => ({ status: 400, body: JSON.stringify({ error }) }),
+        refreshFailure: () => ({
+          status: 400,
+          body: JSON.stringify({ error, error_description: secret }),
+        }),
       });
       const initial = await issueTokens(server);
       await storeTokens(tokenStore, server, { ...initial, expires_at: Date.now() - 1000 });
@@ -577,6 +584,9 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
           ),
         ).rejects.toThrow('OAuth flow initiated');
         expect(oauthStart).toHaveBeenCalledTimes(1);
+        expect(inspect(jest.mocked(logger.error).mock.calls, { depth: null })).not.toContain(
+          secret,
+        );
       } finally {
         await flowManager.deleteFlow(
           MCPOAuthHandler.generateFlowId(USER_ID, SERVER_NAME),
@@ -683,6 +693,7 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     jest.spyOn(manager, 'getConnection').mockResolvedValue(connection);
     const registrySpy = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
       isAppServerConfig: jest.fn().mockResolvedValue(false),
+      isHiddenFromPrincipal: jest.fn().mockResolvedValue(false),
       resolveAllowlists: jest.fn().mockResolvedValue({
         allowedDomains: null,
         allowedAddresses: null,
@@ -972,6 +983,7 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     jest.spyOn(manager, 'getConnection').mockResolvedValue(connection);
     const registrySpy = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
       isAppServerConfig: jest.fn().mockResolvedValue(false),
+      isHiddenFromPrincipal: jest.fn().mockResolvedValue(false),
       resolveAllowlists: jest.fn().mockResolvedValue({
         allowedDomains: null,
         allowedAddresses: null,
@@ -1063,6 +1075,7 @@ describe('MCPConnectionFactory OAuth against real SDK Streamable HTTP server', (
     jest.spyOn(manager, 'getConnection').mockResolvedValue(connection);
     const registrySpy = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
       isAppServerConfig: jest.fn().mockResolvedValue(false),
+      isHiddenFromPrincipal: jest.fn().mockResolvedValue(false),
       resolveAllowlists: jest.fn().mockResolvedValue({
         allowedDomains: null,
         allowedAddresses: null,

@@ -11,7 +11,7 @@ import type {
   TAssignConversationToProjectResponse,
 } from 'librechat-data-provider';
 import type { QueryClient, UseMutationResult } from '@tanstack/react-query';
-import { enqueue, invalidateConversationLists } from '~/utils';
+import { enqueue, updateConvoInAllQueries, invalidateConversationLists } from '~/utils';
 import { getSessionPrincipal } from '~/utils/session';
 import store from '~/store';
 
@@ -182,6 +182,10 @@ export const useAssignConversationToProjectMutation = (): UseMutationResult<
                 ? { ...previous, chatProjectId: result.conversation.chatProjectId ?? null }
                 : result.conversation,
           );
+          updateConvoInAllQueries(queryClient, conversationId, (previous) => ({
+            ...previous,
+            chatProjectId: result.conversation.chatProjectId ?? null,
+          }));
           return result;
         } finally {
           /* Only the newest write clears the entry; by now the conversation

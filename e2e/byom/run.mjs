@@ -158,12 +158,13 @@ try {
     cache: true,
     endpoints: {
       agents: {
-        capabilities: ['tools', 'execute_code', 'stateful_code_sessions'],
+        capabilities: ['tools', 'execute_code', 'stateful_code_sessions', 'subagents'],
         /** BYOM supplies the safe Ask baseline. The endpoint bypass permits a
          * per-turn Accept edits selection without weakening command approvals. */
         toolApproval: { enabled: true, mode: 'bypass' },
         statefulCodeSessions: {
           allowedEnvironments: ['conversation'],
+          allowEnvironmentSelection: true,
           ...(workspaceTransitions && {
             conversationMoves: { enabled: true, allowAttachDetach: true },
           }),
@@ -216,7 +217,7 @@ try {
     CODEAPI_JWT_KID: 'acceptance',
     CODEAPI_JWT_SINGLE_TENANT_ID: 'acceptance',
     BYOM_ENROLLMENT_TOKEN: adminToken,
-    ...(workspaceTransitions && { CODE_ENVIRONMENT_DECISION_VERSION: '1' }),
+    CODE_ENVIRONMENT_DECISION_VERSION: '1',
     /** Deliberately unusable: accidental default routing must fail, never hit production. */
     LIBRECHAT_CODE_BASEURL: `${appURL}/forbidden-default-codeapi`,
     LIBRECHAT_CODE_BASEURL_STATEFUL: codeURL,
@@ -247,7 +248,7 @@ try {
     appEnv,
     root,
   );
-  await ready(appURL, app);
+  await ready(`${appURL}/readyz`, app);
   await mkdir(path.join(runDir, 'workers'), { mode: 0o700 });
   console.log(
     `Native BYOM acceptance: ${appURL}; Code API ${codeURL}; Redis ${redisPort}; Mongo ${mongo.instanceInfo.port}`,

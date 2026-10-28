@@ -1,5 +1,4 @@
 import React, { Profiler } from 'react';
-import { RecoilRoot } from 'recoil';
 import ReactMarkdown from 'react-markdown';
 import { render } from '@testing-library/react';
 import { getRemarkPlugins, getRehypePlugins, getMarkdownComponents } from './markdownConfig';
@@ -7,6 +6,7 @@ import { splitMarkdownIntoBlocks, splitMarkdownIntoBlocksUncached } from './spli
 import { ArtifactProvider, CodeBlockProvider, MessageContext } from '~/Providers';
 import CodeBlock from '~/components/Messages/Content/CodeBlock';
 import MarkdownBlocks from './MarkdownBlocks';
+import { AppStores } from 'test/harness';
 import Markdown from './Markdown';
 
 /**
@@ -126,9 +126,9 @@ const measure = (
   };
   const tree = (content: string) => (
     <Profiler id="bench" onRender={onRender}>
-      <RecoilRoot>
+      <AppStores>
         <Component content={content} />
-      </RecoilRoot>
+      </AppStores>
     </Profiler>
   );
   const { rerender, unmount } = render(tree(prefixes[0]));

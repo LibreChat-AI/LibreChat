@@ -111,7 +111,7 @@ const PopoverButton: React.FC<PopoverButtonProps> = ({
             gutter={16}
             shift={40}
             flip={false}
-            className="border-border-medium bg-surface-secondary text-text-primary z-[999] w-80 rounded-2xl border p-4 shadow-md"
+            className="border-border-medium bg-surface-secondary text-text-primary rounded-theme-popover z-[999] w-[min(20rem,90vw)] border p-4 shadow-md"
             portal={true}
             unmountOnHide={true}
           >
@@ -171,14 +171,15 @@ const CheckboxOption: React.FC<CheckboxOptionProps> = ({
               />
               <Label
                 htmlFor={id}
-                className="text-text-secondary hover:text-text-primary ml-2 w-auto cursor-pointer text-sm break-normal select-none"
+                variant="secondary"
+                className="hover:text-text-primary ms-2 w-auto cursor-pointer text-sm break-normal select-none"
               >
                 {localize(labelKey)}
               </Label>
             </div>
           }
         />
-        <Ariakit.HovercardDisclosure className="text-text-secondary focus:ring-text-primary ml-1 rounded-full focus:ring-2 focus:outline-hidden">
+        <Ariakit.HovercardDisclosure className="text-text-secondary focus:ring-text-primary ms-1 rounded-full focus:ring-2 focus:outline-hidden">
           <VisuallyHidden>{localize(infoKey)}</VisuallyHidden>
           {chevronDown}
         </Ariakit.HovercardDisclosure>
@@ -187,7 +188,7 @@ const CheckboxOption: React.FC<CheckboxOptionProps> = ({
         gutter={14}
         shift={40}
         flip={false}
-        className="border-border-medium bg-surface-secondary text-text-primary z-[999] w-80 rounded-2xl border p-4 shadow-md"
+        className="border-border-medium bg-surface-secondary text-text-primary rounded-theme-popover z-[999] w-[min(20rem,90vw)] border p-4 shadow-md"
         portal={true}
         unmountOnHide={true}
       >
@@ -216,6 +217,8 @@ function Fork({
   const localize = useLocalize();
   const { showToast } = useToastContext();
   const [remember, setRemember] = useState(false);
+  /** Per fork, never remembered: a copy without files is a recovery step, not a preference. */
+  const [excludeFiles, setExcludeFiles] = useState(false);
   const { navigateToConvo } = useNavigateToConvo();
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
   const [forkSetting, setForkSetting] = useRecoilState(store.forkSetting);
@@ -279,6 +282,7 @@ function Fork({
       option,
       splitAtTarget,
       latestMessageId: getLatestMessageId?.(),
+      ...(excludeFiles ? { excludeFiles } : {}),
     });
   };
 
@@ -347,26 +351,22 @@ function Fork({
             type="button"
             aria-label={localize('com_ui_fork_open_menu')}
           >
-            <GitFork size="19" aria-hidden="true" />
+            <GitFork className="size-[1.1875rem]" aria-hidden="true" />
           </Button>
         }
       />
       <Ariakit.Popover
         store={popoverStore}
         gutter={10}
-        className={`popover-animate ${isActive ? 'open' : ''} border-border-medium bg-surface-secondary flex w-60 flex-col gap-3 overflow-hidden rounded-2xl border p-2 px-4 shadow-lg`}
-        style={{
-          outline: 'none',
-          pointerEvents: 'auto',
-          zIndex: 50,
-        }}
+        className={`popover-animate ${isActive ? 'open' : ''} border-border-medium bg-surface-secondary rounded-theme-popover pointer-events-auto flex w-[min(15rem,90vw)] flex-col gap-3 overflow-hidden border p-2 px-4 shadow-lg outline-none`}
+        style={{ zIndex: 50 }}
         portal={true}
         unmountOnHide={true}
       >
         <div className="text-text-primary flex h-8 w-full items-center justify-center text-sm">
           {localize(activeSetting)}
           <Ariakit.HovercardProvider placement="right-start">
-            <div className="ml-auto flex h-6 w-6 items-center justify-center gap-1">
+            <div className="ms-auto flex h-6 w-6 items-center justify-center gap-1">
               <Ariakit.HovercardAnchor
                 render={
                   <button
@@ -386,7 +386,7 @@ function Fork({
               gutter={19}
               shift={40}
               flip={false}
-              className="border-border-medium bg-surface-secondary text-text-primary z-[999] w-80 rounded-2xl border p-4 shadow-md"
+              className="border-border-medium bg-surface-secondary text-text-primary rounded-theme-popover z-[999] w-[min(20rem,90vw)] border p-4 shadow-md"
               portal={true}
               unmountOnHide={true}
             >
@@ -424,6 +424,13 @@ function Fork({
           onToggle={setSplitAtTarget}
           labelKey="com_ui_fork_split_target"
           infoKey="com_ui_fork_info_start"
+        />
+        <CheckboxOption
+          id="exclude-files-checkbox"
+          checked={excludeFiles}
+          onToggle={setExcludeFiles}
+          labelKey="com_ui_fork_exclude_files"
+          infoKey="com_ui_fork_info_exclude_files"
         />
         <CheckboxOption
           id="remember-checkbox"

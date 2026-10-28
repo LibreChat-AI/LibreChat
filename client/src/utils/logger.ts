@@ -3,12 +3,36 @@ const isLoggerEnabled = import.meta.env.VITE_ENABLE_LOGGER === 'true';
 const loggerFilter = import.meta.env.VITE_LOGGER_FILTER || '';
 
 type LogFunction = (...args: unknown[]) => void;
+type RemoteLogLevel = 'warn' | 'error';
+export type RemoteLogSink = (level: RemoteLogLevel, args: unknown[]) => void;
+
+let remoteLogSink: RemoteLogSink | undefined;
+
+/**
+ * Routes `warn`/`error` calls to a telemetry sink (RUM client logs) independently of console
+ * output. The sink owns redaction; it receives the raw arguments and must never throw.
+ */
+export function setRemoteLogSink(sink: RemoteLogSink | undefined): void {
+  remoteLogSink = sink;
+}
+
+function forwardToRemote(type: string | undefined, args: unknown[]): void {
+  if (!remoteLogSink || (type !== 'warn' && type !== 'error')) {
+    return;
+  }
+  try {
+    remoteLogSink(type, args);
+  } catch {
+    /* Telemetry must never affect the caller. */
+  }
+}
 
 const createLogFunction = (
   consoleMethod: LogFunction,
   type?: 'log' | 'warn' | 'error' | 'info' | 'debug' | 'dir',
 ): LogFunction => {
   return (...args: unknown[]) => {
+    forwardToRemote(type, args);
     if (isLoggerEnabled || (import.meta.env.VITE_ENABLE_LOGGER == null && isDevelopment)) {
       const tag = typeof args[0] === 'string' ? args[0] : '';
       if (shouldLog(tag)) {

@@ -25,7 +25,6 @@ import {
 } from 'librechat-data-provider';
 import type {
   TFile,
-  TMessage,
   DeleteFilesResponse,
   EndpointFileConfig,
   FileConfig,
@@ -42,39 +41,8 @@ export function usesImagePreview(file: Partial<Pick<TFile, 'type' | 'llmDelivery
   return file.type?.startsWith('image/') === true && file.llmDeliveryPath !== 'text';
 }
 
-export type FileDeliveryMetadataMap = Readonly<
-  Record<string, Pick<TFile, 'llmDeliveryPath'> | undefined>
->;
-
-/** Restores display-only delivery metadata that an older replica may have
- * omitted from a persisted attachment ref. The persisted ref wins, followed
- * by the matching process-local ref, then the owner-scoped stored file map. */
-export function hydrateFileDeliveryMetadata(
-  persistedFiles: TMessage['files'],
-  localFiles?: TMessage['files'],
-  storedFiles?: FileDeliveryMetadataMap,
-): TMessage['files'] {
-  if (persistedFiles == null || persistedFiles.length === 0) {
-    return persistedFiles;
-  }
-  const localById = new Map(
-    (localFiles ?? []).flatMap((file) =>
-      file.file_id != null ? [[file.file_id, file] as const] : [],
-    ),
-  );
-  let changed = false;
-  const hydrated = persistedFiles.map((file) => {
-    const local = file.file_id == null ? undefined : localById.get(file.file_id);
-    const stored = file.file_id == null ? undefined : storedFiles?.[file.file_id];
-    const llmDeliveryPath = local?.llmDeliveryPath ?? stored?.llmDeliveryPath;
-    if (file.llmDeliveryPath != null || llmDeliveryPath == null) {
-      return file;
-    }
-    changed = true;
-    return { ...file, llmDeliveryPath };
-  });
-  return changed ? hydrated : persistedFiles;
-}
+export { hydrateFileDeliveryMetadata } from '@librechat/chat';
+export type { FileDeliveryMetadataMap } from '@librechat/chat';
 
 export function hasIncompleteFiles(files: Map<string, ExtendedFile>): boolean {
   for (const file of files.values()) {
@@ -148,27 +116,6 @@ export const fileTypes = {
   // 'text/css':,
   // image,
 };
-
-// export const getFileType = (type = '') => {
-//   let fileType = fileTypes.file;
-//   const exactMatch = fileTypes[type];
-//   const partialMatch = !exactMatch && partialTypes.find((type) => type.includes(type));
-//   const category = (!partialMatch && (type.split('/')[0] ?? 'text') || 'text');
-
-//   if (exactMatch) {
-//     fileType = exactMatch;
-//   } else if (partialMatch) {
-//     fileType = fileTypes[partialMatch];
-//   } else if (fileTypes[category]) {
-//     fileType = fileTypes[category];
-//   }
-
-//   if (!fileType) {
-//     fileType = fileTypes.file;
-//   }
-
-//   return fileType;
-// };
 
 export const getFileType = (
   type = '',
@@ -721,20 +668,6 @@ export const getViableUploadOptions = (
 export const PASTE_AS_FILE_MIN_LENGTH = 2500;
 
 export const PASTED_TEXT_FILENAME = 'pasted-text.txt';
-
-/** Matches every name `nextPastedTextFilename` can produce, and nothing else: the counter
- * starts at the bare name and jumps to 2, so `-0`, `-1`, and zero-padded variants are never
- * generated and must not read as generated. The alternation is "any integer of 2 or more":
- * a single digit 2-9, or two or more digits. */
-const PASTED_TEXT_FILENAME_PATTERN = /^pasted-text(-([2-9]|[1-9]\d+))?\.txt$/;
-
-/**
- * Whether a filename is one `nextPastedTextFilename` can produce. Name alone cannot prove an
- * attachment is a paste, though: a user can deliberately upload a file with one of these names.
- * Provenance comes from the paste registry and the files draft, not the name.
- */
-export const isPastedTextFilename = (filename?: string | null): boolean =>
-  filename != null && PASTED_TEXT_FILENAME_PATTERN.test(filename);
 
 /** Paste provenance is genuinely per-tab: it decides which chips offer the paste affordances, and
  * `sessionStorage` is exactly that scope, surviving this tab's reloads without reaching another.

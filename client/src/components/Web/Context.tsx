@@ -1,4 +1,4 @@
-import { createContext, useContext } from 'react';
+import { createContext } from 'react';
 import type { SearchRefType, ValidSource, ResultReference } from 'librechat-data-provider';
 import type * as t from './types';
 import { useSearchContext } from '~/Providers';
@@ -13,11 +13,6 @@ export const CitationContext = createContext<CitationContextType>({
   setHoveredCitationId: () => {},
 });
 
-export function useHighlightState(citationId: string | undefined) {
-  const { hoveredCitationId } = useContext(CitationContext);
-  return citationId && hoveredCitationId === citationId;
-}
-
 export type CitationSource = (ValidSource | ResultReference) & {
   turn: number;
   refType: string | SearchRefType;
@@ -29,6 +24,8 @@ const refTypeMap: Record<string | SearchRefType, string> = {
   ref: 'references',
   news: 'topStories',
   file: 'references',
+  image: 'images',
+  video: 'videos',
 };
 
 export function useCitation({

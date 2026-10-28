@@ -45,7 +45,7 @@ function collectErrors(theme: unknown): ThemeIssue[] {
   if (result.success) {
     return [];
   }
-  return result.error.errors.map(({ path, message }) => ({
+  return result.error.issues.map(({ path, message }) => ({
     path: path.map(String),
     message,
   }));

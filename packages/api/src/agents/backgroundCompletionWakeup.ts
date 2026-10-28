@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto';
 import { backgroundResultMetadata, isEphemeralAgentId } from 'librechat-data-provider';
-import { AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2 } from '@librechat/data-schemas';
+import {
+  AGENT_BACKGROUND_TOOL_RESULT_STORAGE_MAX_CHARS,
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3,
+  AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+} from '@librechat/data-schemas';
 import type {
   AgentTriggerProducerLeaseStatus,
   AgentTriggerDeliveryMethods,
@@ -20,9 +24,11 @@ import type {
   AgentTriggerContinuePreparation,
   AgentTriggerExecutionHostDeps,
 } from './triggers/host';
+import type { ScheduleMCPCompletionLookup } from '~/schedules/authorization/continuation';
 import type { AgentContinueTriggerEnvelope } from './triggers/envelope';
 import type { AgentTriggerDispatchContext } from './triggers/dispatch';
 import type { AgentTriggerEnqueueOptions } from './triggers/delivery';
+import { resolveScheduleMCPCompletion } from '~/schedules/authorization/continuation';
 import { WAITING_RETRY_CAP_MS, waitingRetryAfter } from './triggers/backoff';
 import { BACKGROUND_TOOL_PRODUCER_LEASE_MS } from './backgroundCompletion';
 import { SUBAGENT_COMPLETION_SOURCE } from './subagentCompletionWakeup';
@@ -80,6 +86,10 @@ type WakeupMethods = Pick<ConversationMethods, 'getConvo'> &
       output: string;
       settledAt: Date;
     } | null>;
+    persistAgentBackgroundToolResult?: AgentTriggerDeliveryMethods['persistAgentBackgroundToolResult'];
+    beginAgentBackgroundToolResultBatchDispatch?: AgentTriggerDeliveryMethods['beginAgentBackgroundToolResultBatchDispatch'];
+    claimAgentBackgroundToolResultBatch?: AgentTriggerDeliveryMethods['claimAgentBackgroundToolResultBatch'];
+    confirmAgentBackgroundToolResultBatch?: AgentTriggerDeliveryMethods['confirmAgentBackgroundToolResultBatch'];
     claimAgentBackgroundToolResults?: AgentTriggerDeliveryMethods['claimAgentBackgroundToolResults'];
     getAgentBackgroundToolResultClaim?: AgentTriggerDeliveryMethods['getAgentBackgroundToolResultClaim'];
     releaseAgentBackgroundToolResultClaims?: AgentTriggerDeliveryMethods['releaseAgentBackgroundToolResultClaims'];
@@ -95,9 +105,17 @@ interface GenerationState {
 }
 
 export interface BackgroundToolCompletionWakeupResolverDeps {
+  getScheduleMCPCompletionState?: ScheduleMCPCompletionLookup;
   methods: WakeupMethods;
   getGenerationJob: (conversationId: string) => Promise<GenerationState | null>;
   getResultBatchSize?: () => number | undefined;
+  recoverDeadClaim?: BackgroundToolDeadClaimRecovery;
+  getGenerationAdmissionEvidence?: (
+    userId: string,
+    clientRequestId: string,
+    streamId: string,
+    conversationId?: string,
+  ) => Promise<{ generationId: string; generationCreatedAt: number } | null>;
   /** Longest a waiting delivery re-checks readiness; the backoff default otherwise. */
   getWaitMaxIntervalMs?: () => number | undefined;
 }
@@ -265,12 +283,15 @@ export function createBackgroundToolCompletionWakeupResolver({
   getGenerationJob,
   getResultBatchSize,
   getWaitMaxIntervalMs,
+  getScheduleMCPCompletionState,
+  recoverDeadClaim,
+  getGenerationAdmissionEvidence,
 }: BackgroundToolCompletionWakeupResolverDeps): NonNullable<
   AgentTriggerExecutionHostDeps['prepareContinue']
 > {
   const waitingRetry = (receivedAt: number): string =>
     waitingRetryAfter(receivedAt, Date.now(), getWaitMaxIntervalMs?.() ?? WAITING_RETRY_CAP_MS);
-  return async (
+  const resolve = async (
     envelope: AgentContinueTriggerEnvelope,
     context: AgentTriggerDispatchContext,
   ): Promise<AgentTriggerContinuePreparation | undefined> => {
@@ -316,6 +337,18 @@ export function createBackgroundToolCompletionWakeupResolver({
         status: 404,
       });
     }
+    const payload = envelope.event.payload;
+    const scheduleMCPIdentity = await resolveScheduleMCPCompletion(
+      {
+        ownerId: userId,
+        tenantId: envelope.principal.tenantId ?? null,
+        scheduleMCPIdentity:
+          payload && typeof payload === 'object' && 'scheduleMCPIdentity' in payload
+            ? payload.scheduleMCPIdentity
+            : undefined,
+      },
+      getScheduleMCPCompletionState,
+    );
     const parentMessages = await methods.getMessages(
       { user: userId, conversationId: envelope.target.conversationId },
       MESSAGE_SELECT,
@@ -331,6 +364,314 @@ export function createBackgroundToolCompletionWakeupResolver({
         retryable: false,
         status: 404,
       });
+    }
+    const batchScope = {
+      deliveryKey: context.idempotencyKey,
+      sourceId: BACKGROUND_TOOL_COMPLETION_SOURCE,
+      userId,
+      ...(envelope.principal.tenantId != null && { tenantId: envelope.principal.tenantId }),
+      conversationId: envelope.target.conversationId,
+      parentMessageId: envelope.target.parentMessageId,
+      agentId: envelope.target.agentId,
+      ...(context.deliveryClaimToken != null && { deliveryClaimToken: context.deliveryClaimToken }),
+    };
+    const batch =
+      context.requiredWorkerCapability != null &&
+      context.requiredWorkerCapability !==
+        AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3
+        ? undefined
+        : await methods.claimAgentBackgroundToolResultBatch?.({
+            ...batchScope,
+            limit: getResultBatchSize?.() ?? 8,
+            maxMetadataChars: BACKGROUND_TOOL_WAKEUP_INPUT_MAX_CHARS - 256,
+          });
+    if (batch?.status === 'claimed') {
+      if (batch.ownerStatus === 'applied') return { status: 'settled' };
+      if (batch.ownerStatus === 'recoverable') {
+        await recoverDeadClaim?.({
+          userId,
+          conversationId: envelope.target.conversationId,
+          messageId: envelope.target.parentMessageId,
+          claimId: batch.claimId,
+          batchId: batch.batchId,
+        });
+      }
+      throw executionError('The background result is owned by another completion delivery.', {
+        code: 'BACKGROUND_TOOL_BATCH_PENDING',
+        retryable: true,
+        deferWithoutAttempt: true,
+        retryAfter: '1',
+      });
+    }
+    if (batch?.status === 'not_ready') {
+      if (batch.waitingForResult === true) {
+        // A producer can fail its receipt write while its terminal message
+        // projection succeeds. Reconstruct from that already-durable result.
+        const projection = await methods.claimBackgroundToolResults({
+          userId,
+          conversationId: envelope.target.conversationId,
+          messageId: envelope.target.parentMessageId,
+          taskId: registration.taskId,
+          agentId: envelope.target.agentId,
+          kind: 'wakeup',
+          claimId: context.idempotencyKey,
+          limit: 1,
+        });
+        if (
+          projection.status === 'claimed' &&
+          projection.claim?.kind === 'manual' &&
+          projection.claim.receiptReconciled === true
+        )
+          return { status: 'settled' };
+        if (projection.status === 'acquired') {
+          const result = projection.results.find((result) => result.taskId === registration.taskId);
+          const releaseProjection = async (): Promise<void> => {
+            if (
+              !(await methods.releaseBackgroundToolResultClaims({
+                userId,
+                conversationId: envelope.target.conversationId,
+                messageId: envelope.target.parentMessageId,
+                taskIds: [registration.taskId],
+                kind: 'wakeup',
+                claimId: context.idempotencyKey,
+                allowMissingMessage: true,
+              }))
+            ) {
+              throw new Error('Background projection reconstruction release was not confirmed');
+            }
+          };
+          let restored = false;
+          try {
+            if (result != null)
+              restored =
+                (await methods.persistAgentBackgroundToolResult?.({
+                  deliveryKey: context.idempotencyKey,
+                  sourceId: BACKGROUND_TOOL_COMPLETION_SOURCE,
+                  result: {
+                    status: result.status,
+                    output: truncateMiddle(
+                      result.output,
+                      AGENT_BACKGROUND_TOOL_RESULT_STORAGE_MAX_CHARS,
+                    ),
+                    settledAt: result.settledAt ?? new Date(envelope.event.occurredAt),
+                  },
+                })) === true;
+          } finally {
+            await releaseProjection();
+          }
+          if (restored) return resolve(envelope, context);
+          throw executionError('The background result receipt is being reconstructed.', {
+            code: 'BACKGROUND_TOOL_CLAIM_RECONCILING',
+            retryable: true,
+            deferWithoutAttempt: true,
+            retryAfter: '1',
+          });
+        }
+        if (
+          projection.status === 'claimed' &&
+          projection.claim?.kind === 'manual' &&
+          projection.claim.generationId != null
+        ) {
+          await recoverDeadClaim?.({
+            userId,
+            conversationId: envelope.target.conversationId,
+            messageId: envelope.target.parentMessageId,
+            claimId: projection.claim.claimId,
+            kind: 'manual',
+            generationId: projection.claim.generationId,
+            onlyIfUnreconciled: true,
+          });
+        }
+        if (projection.status === 'claimed')
+          throw executionError('The background projection is being reconciled.', {
+            code: 'BACKGROUND_TOOL_CLAIM_RECONCILING',
+            retryable: true,
+            deferWithoutAttempt: true,
+            retryAfter: '1',
+          });
+
+        const producer = await methods.getAgentTriggerDeliveryProducerLease({
+          deliveryKey: context.idempotencyKey,
+          sourceId: BACKGROUND_TOOL_COMPLETION_SOURCE,
+          now: new Date(),
+        });
+        if (producer.status === 'expired') {
+          throw executionError('The process-local background tool executor was lost.', {
+            code: 'BACKGROUND_TOOL_PRODUCER_LOST',
+            retryable: false,
+          });
+        }
+      }
+      throw executionError('The background result batch is not durable yet.', {
+        code: 'BACKGROUND_TOOL_RESULT_NOT_READY',
+        retryable: true,
+        deferWithoutAttempt: true,
+        retryAfter: waitingRetry(envelope.receivedAt),
+      });
+    }
+    if (batch?.status === 'acquired') {
+      const owned = { ...batchScope, batchId: batch.batchId };
+      const dispatchId = randomUUID();
+      let dispatchBegan = false;
+      const release = async (): Promise<boolean> => {
+        const admitted = await getGenerationAdmissionEvidence?.(
+          userId,
+          context.idempotencyKey,
+          envelope.target.conversationId,
+          envelope.target.conversationId,
+        );
+        if (admitted != null) {
+          await methods.confirmAgentBackgroundToolResultBatch?.(owned);
+          return false;
+        }
+        // Absence is not proof. The storage CAS permits only a first definite
+        // failure or a never-dispatched plan, never a retry of an ambiguous POST.
+        const released = await methods.releaseAgentBackgroundToolResultClaims?.({
+          sourceId: BACKGROUND_TOOL_COMPLETION_SOURCE,
+          userId,
+          conversationId: envelope.target.conversationId,
+          parentMessageId: envelope.target.parentMessageId,
+          claimId: context.idempotencyKey,
+          batchId: batch.batchId,
+          ...(dispatchBegan && { dispatchId }),
+          ...(context.deliveryClaimToken != null && {
+            deliveryClaimToken: context.deliveryClaimToken,
+          }),
+        });
+        return released === true;
+      };
+      // A receipt may precede its projection. Reconcile every member, not just
+      // the root, against a concurrent manual poll or late message persistence.
+      const projections = await Promise.all(
+        batch.results.map((result) =>
+          methods.claimBackgroundToolResults({
+            userId,
+            conversationId: envelope.target.conversationId,
+            messageId: envelope.target.parentMessageId,
+            taskId: result.taskId,
+            agentId: envelope.target.agentId,
+            kind: 'wakeup',
+            claimId: context.idempotencyKey,
+            batchId: batch.batchId,
+            limit: 1,
+          }),
+        ),
+      );
+      if (
+        projections.some(
+          (projection) =>
+            projection.status === 'claimed' || projection.status === 'outcome_unknown',
+        )
+      ) {
+        for (let index = 0; index < projections.length; index++) {
+          const stale = projections[index];
+          if (stale?.status !== 'claimed' || stale.claim?.kind !== 'wakeup') continue;
+          const taskId = batch.results[index]!.taskId;
+          const receipt = await methods.getAgentBackgroundToolResultClaim?.({
+            sourceId: BACKGROUND_TOOL_COMPLETION_SOURCE,
+            userId,
+            conversationId: envelope.target.conversationId,
+            parentMessageId: envelope.target.parentMessageId,
+            taskId,
+          });
+          if (receipt?.claimId !== context.idempotencyKey || receipt.batchId !== batch.batchId)
+            continue;
+          await methods.releaseBackgroundToolResultClaims({
+            userId,
+            conversationId: envelope.target.conversationId,
+            messageId: envelope.target.parentMessageId,
+            taskIds: [taskId],
+            kind: 'wakeup',
+            claimId: stale.claim.claimId,
+            ...(stale.claim.batchId != null && { batchId: stale.claim.batchId }),
+            allowMissingMessage: true,
+          });
+          throw executionError('A stale background projection is being reconciled.', {
+            code: 'BACKGROUND_TOOL_CLAIM_RECONCILING',
+            retryable: true,
+            deferWithoutAttempt: true,
+            retryAfter: '1',
+          });
+        }
+        const released = await release();
+        const rootProjection =
+          projections[batch.results.findIndex((result) => result.taskId === registration.taskId)];
+        if (
+          released &&
+          rootProjection?.status === 'claimed' &&
+          rootProjection.claim?.kind === 'manual' &&
+          rootProjection.claim.receiptReconciled === true
+        ) {
+          return { status: 'settled' };
+        }
+        if (released && recoverDeadClaim != null) {
+          await Promise.all(
+            projections.map(async (projection) => {
+              if (
+                projection.status !== 'claimed' ||
+                projection.claim?.kind !== 'manual' ||
+                projection.claim.receiptReconciled === true ||
+                projection.claim.generationId == null
+              )
+                return;
+              await recoverDeadClaim({
+                userId,
+                conversationId: envelope.target.conversationId,
+                messageId: envelope.target.parentMessageId,
+                claimId: projection.claim.claimId,
+                kind: 'manual',
+                generationId: projection.claim.generationId,
+                onlyIfUnreconciled: true,
+              });
+            }),
+          );
+        }
+        throw executionError('Background result ownership is being reconciled.', {
+          code: 'BACKGROUND_TOOL_CLAIM_RECONCILING',
+          retryable: true,
+          deferWithoutAttempt: true,
+          retryAfter: '1',
+        });
+      }
+      return {
+        status: 'ready',
+        parentMessageId,
+        ...(scheduleMCPIdentity && { scheduleMCPIdentity }),
+        ...(parent.codeApprovalMode != null && { codeApprovalMode: parent.codeApprovalMode }),
+        input: buildWakeupInput(batch.results),
+        releaseOnDefiniteFailure: async () => {
+          await release();
+        },
+        beginDispatch: async () => {
+          dispatchBegan = true;
+          if (
+            !(await methods.beginAgentBackgroundToolResultBatchDispatch?.({ ...owned, dispatchId }))
+          ) {
+            throw executionError('The background batch preparation was superseded.', {
+              code: 'BACKGROUND_TOOL_BATCH_SUPERSEDED',
+              retryable: true,
+              deferWithoutAttempt: true,
+            });
+          }
+        },
+        settleOnAdmission: async (result) => {
+          if (
+            result.status === 'settled' &&
+            getGenerationAdmissionEvidence != null &&
+            (await getGenerationAdmissionEvidence(
+              userId,
+              context.idempotencyKey,
+              envelope.target.conversationId,
+              envelope.target.conversationId,
+            )) == null
+          ) {
+            throw new Error('A recovery fence does not prove background admission');
+          }
+          if (!(await methods.confirmAgentBackgroundToolResultBatch?.(owned))) {
+            throw new Error('Background result batch admission was not confirmed');
+          }
+        },
+      };
     }
     const claim = await methods.claimBackgroundToolResults({
       userId,
@@ -401,6 +742,7 @@ export function createBackgroundToolCompletionWakeupResolver({
       return {
         status: 'ready',
         parentMessageId,
+        ...(scheduleMCPIdentity && { scheduleMCPIdentity }),
         ...(parent.codeApprovalMode != null && { codeApprovalMode: parent.codeApprovalMode }),
         input,
         releaseOnDefiniteFailure: async () => {
@@ -471,6 +813,7 @@ export function createBackgroundToolCompletionWakeupResolver({
       return {
         status: 'ready',
         parentMessageId,
+        ...(scheduleMCPIdentity && { scheduleMCPIdentity }),
         ...(parent.codeApprovalMode != null && { codeApprovalMode: parent.codeApprovalMode }),
         input: buildWakeupInput(receiptClaim.results),
         releaseOnDefiniteFailure: async () => {
@@ -507,6 +850,7 @@ export function createBackgroundToolCompletionWakeupResolver({
       return {
         status: 'ready',
         parentMessageId,
+        ...(scheduleMCPIdentity && { scheduleMCPIdentity }),
         ...(parent.codeApprovalMode != null && { codeApprovalMode: parent.codeApprovalMode }),
         input: buildWakeupInput([
           { ...registration, status: receipt.status, output: receipt.output },
@@ -545,6 +889,7 @@ export function createBackgroundToolCompletionWakeupResolver({
       deferWithoutAttempt: true,
     });
   };
+  return resolve;
 }
 
 /** Lists and discards a conversation's undelivered background completions from the
@@ -652,6 +997,7 @@ export function createBackgroundToolCompletionWakeupHandler(
   renewProducerLease: RenewBackgroundToolCompletionProducerLease,
   persistResult?: PersistBackgroundToolCompletionResult,
   expedite?: (deliveryKey: string) => void,
+  getReceiptBatchingEnabled?: () => boolean,
 ): (
   registration: BackgroundToolWakeupRegistration,
 ) => Promise<BackgroundToolWakeupAdmission | false> {
@@ -675,6 +1021,7 @@ export function createBackgroundToolCompletionWakeupHandler(
         occurredAt: registration.createdAt,
         source: { id: BACKGROUND_TOOL_COMPLETION_SOURCE, type: 'internal' },
         payload: {
+          scheduleMCPIdentity: registration.scheduleMCPIdentity ?? null,
           taskId: registration.taskId,
           toolCallId: registration.toolCallId,
           toolName: registration.toolName,
@@ -695,7 +1042,10 @@ export function createBackgroundToolCompletionWakeupHandler(
       availableAt: new Date(
         Math.max(Date.now(), registration.createdAt) + WAKEUP_ADMISSION_DELAY_MS,
       ),
-      requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+      requiredWorkerCapability:
+        getReceiptBatchingEnabled?.() === true
+          ? AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_BATCH_V3
+          : AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
       producerLeaseUntil: new Date(Date.now() + BACKGROUND_TOOL_PRODUCER_LEASE_MS),
     });
     return {
@@ -735,8 +1085,22 @@ export function createBackgroundToolDeadClaimRecovery(
     claimId: string;
   }) => Promise<'fenced' | 'started' | 'unavailable'>,
   releaseReceiptClaims?: AgentTriggerDeliveryMethods['releaseAgentBackgroundToolResultClaims'],
+  batchRecovery?: Pick<
+    AgentTriggerDeliveryMethods,
+    'getAgentBackgroundToolResultBatch' | 'confirmAgentBackgroundToolResultBatch'
+  >,
+  getAdmissionEvidence?: BackgroundToolCompletionWakeupResolverDeps['getGenerationAdmissionEvidence'],
 ): BackgroundToolDeadClaimRecovery {
-  return async ({ userId, conversationId, messageId, claimId, kind, generationId }) => {
+  return async ({
+    userId,
+    conversationId,
+    messageId,
+    claimId,
+    kind,
+    generationId,
+    batchId,
+    onlyIfUnreconciled,
+  }) => {
     if (kind === 'manual') {
       if (generationId == null || generationId.length === 0) {
         return false;
@@ -753,8 +1117,41 @@ export function createBackgroundToolDeadClaimRecovery(
         messageId,
         kind: 'manual',
         claimId,
+        ...(onlyIfUnreconciled === true && { onlyIfUnreconciled }),
       });
     }
+    const owner = {
+      deliveryKey: claimId,
+      sourceId: BACKGROUND_TOOL_COMPLETION_SOURCE,
+      userId,
+      conversationId,
+      parentMessageId: messageId,
+    };
+    const batch = await batchRecovery?.getAgentBackgroundToolResultBatch(owner);
+    if (batchId != null && batch != null && batch.batchId !== batchId) return false;
+    if (batch?.appliedAt != null) {
+      await batchRecovery?.confirmAgentBackgroundToolResultBatch({
+        ...owner,
+        batchId: batch.batchId,
+      });
+      return false;
+    }
+    const confirmAdmission = async (): Promise<boolean> => {
+      const evidence = await getAdmissionEvidence?.(
+        userId,
+        claimId,
+        conversationId,
+        conversationId,
+      );
+      if (evidence == null) return false;
+      if (batch != null)
+        await batchRecovery?.confirmAgentBackgroundToolResultBatch({
+          ...owner,
+          batchId: batch.batchId,
+        });
+      return true;
+    };
+    if (batch != null && (await confirmAdmission())) return false;
     const claimGenerationIsActive = async (): Promise<boolean> => {
       const generation = await getGenerationJob(conversationId);
       return (
@@ -778,30 +1175,39 @@ export function createBackgroundToolDeadClaimRecovery(
      * installs a started tombstone that invalidates a delayed creator's token,
      * or observes that job creation already won. */
     const generationFence = await fenceGenerationClaim({ userId, conversationId, claimId });
-    if (generationFence === 'unavailable') {
+    if (generationFence === 'unavailable') return false;
+    if (generationFence === 'started' && batch != null) {
+      // The native claim CAS proves admission even when a custom store cannot
+      // read historical claims or the live generation has been cleaned up.
+      await batchRecovery?.confirmAgentBackgroundToolResultBatch({
+        ...owner,
+        batchId: batch.batchId,
+      });
       return false;
     }
     if (await claimGenerationIsActive()) {
       return false;
     }
-    const released = await releaseClaims({
+    const receiptBatchId = batch?.batchId ?? batchId;
+    const receiptReleased = await releaseReceiptClaims?.({
+      sourceId: BACKGROUND_TOOL_COMPLETION_SOURCE,
+      userId,
+      conversationId,
+      parentMessageId: messageId,
+      claimId,
+      ...(receiptBatchId != null && { batchId: receiptBatchId }),
+      recoveryFenced: true,
+    });
+    if (receiptReleased === false) return false;
+    if (batch != null) return receiptReleased === true;
+    return releaseClaims({
       userId,
       conversationId,
       messageId,
+      allowMissingMessage: true,
       kind: 'wakeup',
       claimId,
+      ...(receiptBatchId != null && { batchId: receiptBatchId }),
     });
-    if (!released) {
-      return false;
-    }
-    return (
-      (await releaseReceiptClaims?.({
-        sourceId: BACKGROUND_TOOL_COMPLETION_SOURCE,
-        userId,
-        conversationId,
-        parentMessageId: messageId,
-        claimId,
-      })) ?? true
-    );
   };
 }

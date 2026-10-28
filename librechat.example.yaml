@@ -2,10 +2,29 @@
 # https://www.librechat.ai/docs/configuration/librechat_yaml
 
 # Configuration version (required)
-version: 1.3.17
+version: 1.3.18
 
 # Cache settings: Set to true to enable caching
 cache: true
+
+# Browser telemetry and session recording are independent opt-ins. Collector URL,
+# authentication and service settings remain in .env. YAML flags override .env;
+# omitting them preserves the corresponding environment settings.
+# telemetry:
+#   rum:
+#     enabled: true
+#     sessionReplay:
+#       enabled: false # Explicitly opt in to masked DOM/input recordings.
+
+# Client limits: request deadlines in milliseconds (1 to 3600000) and upload concurrency. Every field is optional and defaults
+# to the value shown, which is the behavior when the block is absent. Raise a deadline when your
+# infrastructure legitimately needs longer.
+# clientLimits:
+#   refreshMs: 30000     # token refresh; on expiry the user is sent to login
+#   ttsMs: 60000         # time for the text-to-speech endpoint to start responding
+#   sharepointMs: 300000 # download of one SharePoint file
+#   cloudfrontMs: 15000  # CloudFront signed-cookie refresh
+#   uploadConcurrency: 3 # project files uploaded at once (1 to 10)
 
 # Chat Projects: the ceilings a single project may reach. Every field is optional and
 # defaults to the value shown, which is the behavior when the block is absent.
@@ -16,6 +35,26 @@ projects:
   maxInstructionsLength: 16000
   # Characters of the project description shown in the workspace and sidebar (maximum 10000).
   maxDescriptionLength: 1000
+
+# Tool-call previews: a long conversation's tool outputs, arguments and subagent transcripts
+# can run to megabytes, though their cards render collapsed. The web client asks for bounded
+# previews when it loads a conversation (the start and end of each long output, arguments
+# with their long strings shortened, no subagent transcripts) and loads a call in full when
+# the reader opens it. Clients that do not ask, exports and share links get full content.
+# Every field is optional and defaults to the value shown; enabled: false always sends the
+# full payload.
+# toolCallPreviews:
+#   enabled: true
+#   outputChars: 512   # characters of each output kept, half from the start and half from the end
+#   argsChars: 512     # characters of serialized arguments kept; JSON stays valid JSON
+
+# Stored user credentials (tool and web search keys, MCP custom user variables) are
+# written with a random IV per value ("v3", the default). Both formats are always read.
+# During a rolling upgrade of a multi-replica deployment, set "legacy" until every
+# replica runs a release that reads v3, then remove it. A rollback to a release that
+# predates v3 cannot read credentials saved in the v3 format.
+# credentials:
+#   writeFormat: v3
 
 # Langfuse connections are managed through Settings > Langfuse when available.
 # That flow verifies the credentials and stores the secret key encrypted; do not
@@ -56,6 +95,10 @@ projects:
 # librechat.endpoint.type, librechat.provider, librechat.model,
 # librechat.model.label, librechat.spec.
 #
+# Temporary chats, including every chat when interface.retentionMode is
+# "ephemeral", are not traced and their feedback is not scored unless
+# langfuse.trace.temporaryChats is true.
+#
 # langfuse:
 #   headers:
 #     CF-Access-Client-Id: "${CF_ACCESS_CLIENT_ID}"
@@ -64,6 +107,7 @@ projects:
 #     userIdField: email
 #     userMetadataFields: [email, username, role, provider]
 #     conversationMetadataFields: [conversationId, endpoint, model, modelLabel, spec]
+#     temporaryChats: false
 
 # File storage configuration
 # Single strategy for all file types (legacy format, still supported)
@@ -155,8 +199,24 @@ projects:
 # Custom interface configuration
 interface:
   customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
+  # What heads the welcome screen when an agent, assistant or model spec is selected (default: entity).
+  # 'entity' shows its name; 'greeting' shows the time-of-day greeting (or customWelcome) with the
+  # user's name, for deployments where the header selector already names the agent.
+  # landingHeading: entity
+  # Show the generic disclaimer and policy links beneath the welcome screen's composer (default: true).
+  # When false, a CUSTOM_FOOTER still renders there, as it does in conversations.
+  # landingFooter: true
+  # Allow renaming a running chat or one with a placeholder title (default: true).
+  # Set to false during a rolling upgrade, until ALL API replicas are upgraded and old
+  # title-generation jobs have drained. While false, rename is disabled for running chats
+  # and unowned placeholder titles; other actions stay available.
+  # runningChatRename: true
   # Minimum interval between syntax-highlighting passes while streamed code changes (default: 300 ms)
   # codeHighlightThrottleMs: 300
+  # How long a conversation's message history stays cached in the browser after leaving it (default: 60000 ms),
+  # and how many of the most recently left conversations keep that grace (default: 1). Older ones are refetched.
+  # historyCacheTtlMs: 60000
+  # historyCacheRecent: 1
   # Deployment theme applied to every user, in both light and dark mode (default: unset).
   # It is not saved to the browser, outranks REACT_APP_THEME_* colors and stored themes,
   # and yields to the high-contrast modes. Either a bundled theme name (librechat, clickhouse):
@@ -246,6 +306,8 @@ interface:
     create: true
     share: false
     public: false
+  # Allow Lia, the welcome screen mascot. Users still opt in from Settings (default: true).
+  mascot: true
   # Scheduled chats are experimental and disabled unless explicitly enabled.
   # A deployment with Redis-backed resumable streams can run this on every replica.
   # A single-process deployment without Redis must also set
@@ -428,10 +490,13 @@ registration:
 #   enabled: false
 #   startBalance: 20000
 #   autoRefillEnabled: false
-#   refillIntervalValue: 30
+#   refillIntervalValue: 30 # Reset mode requires a positive integer
 #   refillIntervalUnit: 'days'
 #   refillAmount: 10000
+#   # Deploy reset-capable servers to every replica before selecting 'reset'.
+#   refillMode: 'add' # 'reset' replaces the allowance each period without rollover
 #   reservationTtlMs: 1800000  # How long an in-flight request's reserved credits count if never released
+#   display: 'credits'  # credits | currency (uses interface.currency) | percent (share of the allotment used)
 
 # Example Transactions settings
 # Controls whether to save transaction records to the database
@@ -457,6 +522,7 @@ registration:
 # connect-time guard only covers direct, non-proxied connections.
 # speech:
 #   tts:
+#     maxInputChars: 20000 # longest text one request may synthesize (each 1,000 chars is a provider call)
 #     openai:
 #       url: ''
 #       apiKey: '${TTS_API_KEY}'
@@ -488,6 +554,26 @@ registration:
 #   allowedAddresses:
 #     - 'localhost:8080'
 #     - '127.0.0.1:8080'
+
+# Worker threads that hash passwords and auth tokens off the event loop.
+# passwordHashing:
+#   maxWorkers: 2 # default: one less than the CPU count, at most 4
+
+# Outbound call budgets, in milliseconds. Each omitted key keeps the default shown.
+# timeouts:
+#   ragMs: 30000 # RAG API queries for file search and message context
+#   ocrMs: 300000 # each OCR provider call
+#   actionsMs: 300000 # each action (OpenAPI tool) HTTP call
+#   moderationMs: 10000 # the OpenAI moderation check before a chat turn
+#   imageFetchMs: 30000 # fetching a stored image to encode it for a provider
+
+# Newest violations kept per user in the general violation log.
+# violationLog:
+#   maxEntries: 100
+
+# Largest pageSize accepted when reading a conversation's messages.
+# messages:
+#   maxPageSize: 1000 # default: 1000
 
 # rateLimits:
 #   # Per-user MCP App browser-route limits. Each limit uses a fixed one-minute window.
@@ -585,6 +671,7 @@ actions:
 #   # New MCP Apps require explicit opt-in. If omitted, legacy inline HTML remains enabled;
 #   # false disables both MCP Apps and legacy inline HTML.
 #   apps: true
+#   oauthFailureRetentionMs: 86400000 # how long a failed OAuth reconnection is remembered
 #   allowedDomains:
 #     - 'host.docker.internal'    # Docker host access (required for Docker setups)
 #     - 'localhost'               # Local development
@@ -634,6 +721,19 @@ actions:
 #     oauthRefreshWaitTimeout: 15000
 #     # Callback/adoption persistence wait; raise for longer publication budgets (max 840000 ms).
 #     oauthPersistenceWaitTimeout: 15000
+#     # When to ask users to sign in. `on_start` (default) asks when the turn starts. `on_use`
+#     # waits for the agent's first call to one of this server's tools, but only when every tool
+#     # the agent selected from it is deferred. Until a user signs in, tool search offers the
+#     # tools listed in `oauthToolCatalog`; without one the turn-start prompt is kept.
+#     # oauthPrompt: on_use
+#     # oauthToolCatalog:
+#     #   - name: read_sheet
+#     #     description: Read the values in a spreadsheet range
+#     #     inputSchema:
+#     #       type: object
+#     #       properties:
+#     #         range: { type: string }
+#     #       required: [range]
 #   private-openid:
 #     type: streamable-http
 #     url: https://mcp.example.com/mcp
@@ -671,6 +771,11 @@ actions:
 
 # Definition of custom endpoints
 endpoints:
+  # (optional) How long the admin config catalog reuses a scope's model lists while its endpoint
+  # config is unchanged, in milliseconds. Defaults to 120000 (two minutes), at most 3600000 (one
+  # hour); 0 resolves them on every read (a fetched list may still come from the two-minute
+  # model-list cache). Only librechat.yaml sets it.
+  # catalogModelsTtlMs: 120000
   # assistants:
   #   disableBuilder: false # Disable Assistants Builder Interface by setting to `true`
   #   pollIntervalMs: 3000  # Polling interval for checking assistant updates
@@ -690,6 +795,10 @@ endpoints:
   #   modelResponseBodyTimeoutMs: 900000
   #   # Maximum wait for provider response headers. Defaults to 5 minutes; 0 disables.
   #   modelResponseHeadersTimeoutMs: 300000
+  #   # Interval between keepalive comments on a chat stream that is quiet (for example while a
+  #   # long tool runs), so proxies with an idle timeout (Cloudflare 100 s, nginx 60 s) keep it
+  #   # open. Defaults to 25000 ms; 0 disables.
+  #   streamKeepaliveIntervalMs: 25000
   #   # (optional) Default recursion depth for agents, defaults to 25
   #   recursionLimit: 50
   #   # Maximum provider error characters retained without content protection (0 hides detail).
@@ -698,6 +807,13 @@ endpoints:
   #   maxRecursionLimit: 100
   #   # (optional) Abort a run once a single streamed tool call's arguments exceed this many bytes.
   #   # Guards against runaway malformed tool-call generation. Defaults to 65536 (64 KiB); 0 disables.
+  #   # Host-side skill/sandbox edits, not attached-worker edits. Over-budget calls write nothing.
+  #   hostFileEdits:
+  #     maxEdits: 100
+  #     maxWorkBytes: 67108864  # cumulative matching/reconstruction bytes
+  #     maxOccurrences: 100000 # cumulative occurrences across every edit/pass
+  #     timeoutMs: 2000       # terminate an overlong worker job
+  #     maxConcurrent: 2      # per API process; no waiting queue
   #   maxToolCallArgBytes: 65536
   #   # (optional) Abort a run once a single model generation emits more than this many stream events.
   #   # Defense in depth against looping provider streams. Disabled by default.
@@ -751,6 +867,15 @@ endpoints:
   #   # (optional) Shared files during an active agent run. Each delegating agent must
   #   # also opt in with subagents.shareFiles. Inputs are read-only; outputs stay
   #   # private until explicitly published. Published files remain downloadable.
+  #   # Live child activity, independent of the completed transcript.
+  #   subagentActivity:
+  #     replayTtlMs: 300000 # Increase for long silent tool calls.
+  #     publicationTimeoutMs: 1000
+  #     retryAttempts: 3
+  #     retryBaseDelayMs: 100
+  #     recoveryDelayMs: 1000
+  #     memoryMaxStreams: 1000 # Non-Redis replay cache.
+  #     memoryMaxBytes: 16777216
   #   fileSharing:
   #     enabled: false
   #     allowSiblingSharing: false # permit explicitly named sibling/descendant recipients
@@ -766,12 +891,20 @@ endpoints:
   #   skills:
   #     maxCatalogSkills: 20
   #   # (optional) Agent Capabilities available to all users. Omit the ones you wish to exclude. Defaults to list below.
-  #   capabilities: ["deferred_tools", "execute_code", "file_search", "web_search", "artifacts", "subagents", "actions", "context", "skills", "memory", "ask_user_question", "tools", "chain", "ocr"]
+  #   # web_search controls only LibreChat's external pipeline, not provider-native search.
+  #   # Both require WEB_SEARCH.USE, seeded by interface.webSearch. See UPGRADING.md.
+  #   capabilities: ["deferred_tools", "execute_code", "file_search", "web_search", "artifacts", "subagents", "actions", "context", "skills", "memory", "ask_user_question", "tools", "ocr"]
   #   # The following capabilities are opt-in and must be added explicitly:
   #   # "programmatic_tools", "stateful_code_sessions", "run_in_background", "tool_intents"
   #   # "stateful_code_sessions" is highly experimental and may change substantially.
   #   # (optional) Limit the workspace scopes users may select. Omit to allow all three.
   #   statefulCodeSessions:
+  #     # Let new chats choose an attached machine from their agent's explicit machine allowlist.
+  #     # On by default; only agents with a saved allowlist are affected. Set false to keep
+  #     # every agent on its fixed machine (for example while older API replicas still run).
+  #     allowEnvironmentSelection: true
+  #     # Maximum additional machines per agent; default 32, supported ceiling 128.
+  #     maxEnvironmentChoices: 32
   #     # Keep move-only behavior unless attach/detach is explicitly enabled.
   #     # Enable only after ALL API replicas run this build and advertise decision protocol 1
   #     # (CODE_ENVIRONMENT_DECISION_VERSION=1), then refresh clients.
@@ -869,18 +1002,98 @@ endpoints:
   #   # Enabled by default; set false to keep background tools and subagents poll-only.
   #   backgroundTasks:
   #     completionWakeups: true
+  #     # Deliver a conversation's ready results together in one wake-up. On by default; set false
+  #     # during a rolling upgrade while replicas from releases without it still serve traffic.
+  #     completionReceiptBatching: true
   #     # Allow owners to cooperatively cancel ordinary background tools, including BYOM Bash.
   #     ordinaryToolCancellation: false
+  #   # (optional) Show a conversation's pull request in the chat header and the sidebar. It is on
+  #   # as soon as the server has a GitHub token and a repository scope, with no switch needed:
+  #   # the token is `token` below, else the first of GITHUB_PULL_REQUEST_TOKEN, GITHUB_TOKEN and
+  #   # GH_TOKEN that is set, and the scope is `allowedRepositories` or `allowAllRepositories`.
+  #   # Without either, every chat simply shows no pull request. It also needs a code worker built
+  #   # from LibreChat-AI/code-interpreter#311 or later that reports its branch, with
+  #   # CODEAPI_BRIDGE_LANE_GIT=true set on the Code API. Use a fine-grained token limited to the
+  #   # repositories involved, with read-only "Pull requests", "Checks" and "Contents" permissions.
+  #   # Without "Checks" every matched pull request fails to load, and without "Contents" a chat
+  #   # whose branch has moved on since its last command does.
+  #   # On GitLab the fallbacks are GITLAB_PULL_REQUEST_TOKEN and GITLAB_TOKEN, and the token needs
+  #   # read_api; on Bitbucket the fallback is BITBUCKET_PULL_REQUEST_TOKEN. Repositories may be
+  #   # nested GitLab group paths such as group/sub/name or group/sub/*.
+  #   pullRequests:
+  #     enabled: true # set false to turn the feature off
+  #     # github (default), gitlab, or bitbucket (Bitbucket Cloud). Read from this file only.
+  #     # provider: "gitlab"
+  #     # GitHub Enterprise Server, a *.ghe.com tenant, or a self-managed GitLab host; the
+  #     # provider's own host (github.com, gitlab.com, bitbucket.org) when omitted.
+  #     # host: "github.example.com"
+  #     # Environment variable reference only, never the token itself. Optional, see above.
+  #     token: "${GITHUB_PULL_REQUEST_TOKEN}"
+  #     # Let each user connect their own account, so lookups use their token, rate limit and
+  #     # repository access instead of the server's (read from this file only). Register
+  #     # <DOMAIN_SERVER>/api/pull-requests/oauth/callback as the app's callback URL. On GitHub a
+  #     # GitHub App with read-only Pull requests, Checks and Contents permissions is recommended.
+  #     # Changing clientId, provider or host asks users to connect again; a changed scope only
+  #     # applies to new connections. Disconnecting removes every grant of the user.
+  #     # oauth:
+  #     #   clientId: "${GITHUB_PR_OAUTH_CLIENT_ID}"
+  #     #   clientSecret: "${GITHUB_PR_OAUTH_CLIENT_SECRET}"
+  #     #   scope: "repo" # only for a classic OAuth app; GitLab defaults to read_api
+  #     #   flowTimeoutMinutes: 10 # time to approve at the provider
+  #     #   requestTimeoutSeconds: 10 # per code exchange or token refresh
+  #     #   retentionDays: 180 # an unused connection is removed after this; each use extends it
+  #     # Repositories the token may be used for, as owner/name or owner/*. A worker reports its
+  #     # own repository, and only these are ever looked up with the server's token.
+  #     allowedRepositories: ["LibreChat-AI/LibreChat"]
+  #     # Or look up every repository a worker reports, limited only by what the token can read.
+  #     # Off by default: any user could then point the server's token at any repository it can
+  #     # see, so use a read-only token scoped to the repositories you are willing to show.
+  #     allowAllRepositories: false
+  #     # Seconds a looked-up pull request is reused before GitHub is asked again (5 to 3600).
+  #     cacheTtlSeconds: 30
+  #     # Results cached per credential before the oldest is evicted (10 to 100000). Raise it when many
+  #     # repositories and branches are active at once, or fresh results are evicted and GitHub is asked again.
+  #     cacheMaxEntries: 500
+  #     # Credentials cached at once (1 to 10000), deployment-wide; the one idle longest is dropped
+  #     # past it. When principals configure different values, the largest applies.
+  #     cacheMaxCredentials: 256
+  #     # Lookups one sidebar request runs at once (1 to 16); each is a few GitHub requests.
+  #     maxConcurrentLookups: 4
+  #     # Seconds one sidebar request may stay open in total (1 to 120); entries still waiting then
+  #     # answer with an upstream error and the row shows nothing until the next refresh.
+  #     batchTimeoutSeconds: 20
+  #     # Bounds on one lookup. A repository with many check runs reads one page of 100 per request.
+  #     requestTimeoutSeconds: 10 # longest single GitHub request (1 to 60)
+  #     lookupTimeoutSeconds: 30 # longest the whole lookup may take (1 to 120)
+  #     maxCheckRunPages: 10 # pages read before checks are reported as running (1 to 50)
+  #     maxCandidatePullRequests: 10 # pull requests listed per state when matching a reused branch (1 to 100)
+  #     maxCandidatePages: 1 # pages of those read per state, for branch names reused more often (1 to 10)
+  #     maxHeadComparisons: 3 # candidates compared with the chat's last commit (0 to 20)
+  #     # Share looked-up pull requests and GitHub rate limit cooldowns between replicas, so they
+  #     # do not each spend the token on the same answer. Only takes effect with USE_REDIS. Failed
+  #     # lookups are never shared.
+  #     sharedCache: false
+  #     # Milliseconds one shared cache call may take before a lookup carries on without it (10 to 5000).
+  #     sharedCacheTimeoutMs: 250
+  #     # Redis keys the shared cache uses at most, for results and again for rate limits (64 to
+  #     # 1000000). Read from this file only.
+  #     sharedCacheSlots: 65536
   #   # "run_in_background" makes Code Interpreter tools eligible by default and enables per-tool MCP opt-in.
   #   # "tool_intents" enables live model-written labels for native tools and opted-in MCP tools.
   #   # (optional) Require user approval before matching tool calls. Disabled by default.
   #   toolApproval:
+  #     # Opt in after all replicas have been upgraded. Agent tool rows then expose
+  #     # Always ask, Always approve, Ask once per chat, and Ask once then always approve.
+  #     # Explicit administrator ask/deny rules and hooks remain authoritative.
+  #     agentModes: false
+  #     grantLookupTimeoutMs: 3000
   #     enabled: true
   #     mode: default # default, dontAsk, or bypass
   #     allow: ["mcp:trusted-server:read_*"]
   #     deny: ["mcp:*:delete_*"] # Deny rules always take precedence
   #     ask: ["mcp:*:*"]
   #     reason: "Review {tool} before it runs."
+  #     allowAlways: false # Offer "Always allow" to stop prompting for a tool for the rest of a conversation
   #   # (optional) Persist Agent runs paused for approval or Ask User. MongoDB is the durable default.
   #   checkpointer:
   #     type: mongo # mongo (default) or memory (single-process development only)
@@ -910,6 +1123,14 @@ endpoints:
   #           # subject: 'provider-specific-service-principal-subject'
   #           userId: '507f1f77bcf86cd799439011'
   #           tenantId: 'tenant-id'
+
+  # (optional) Title settings under `endpoints.all` apply to every endpoint one field at a
+  # time: a field set here wins over the endpoint's own value, and a field left out keeps it.
+  # `titleEndpoint` and `titleModel` are one choice, taken together from the first of `all`,
+  # the endpoint's block, or its custom endpoint entry that sets either.
+  # all:
+  #   titleConvo: true
+  #   titleMethod: completion
 
   # (optional) Custom request headers for the built-in OpenAI / Google endpoints.
   # Forwarded on every request to the provider (or an AI gateway / reverse proxy
@@ -1314,7 +1535,7 @@ endpoints:
 #   # Users can toggle this in Settings > Chat. Setting `enabled` here overrides
 #   # that choice for everyone and locks the toggle; omit it to leave users in control.
 #   clientImageResize:
-#     enabled: false  # Enable/disable client-side image resizing (default: false)
+#     enabled: false  # Force resizing on (true) or off (false) for everyone; omit it and each user decides, with resizing on by default
 #     maxWidth: 1900  # Maximum width for resized images (default: 1900)
 #     maxHeight: 1900  # Maximum height for resized images (default: 1900)
 #     quality: 0.92  # JPEG quality for compression (0.0-1.0, default: 0.92)
@@ -1322,6 +1543,14 @@ endpoints:
 # # https://www.librechat.ai/docs/configuration/librechat_yaml/object_structure/assistants_endpoint
 
 # Web Search Configuration (optional)
+# Keys and URLs are usually `${ENV_VAR}` references. A literal value, or a key saved
+# through the admin config API (encrypted at rest), is used as a system credential.
+# A key reaches a URL written in config only when both are set in the same place
+# (this file, or one admin config profile), and a later profile that changes, blanks
+# or removes that URL without storing the key again drops it. An environment key or
+# a user's own key never reaches a URL written in config. Reference both from the
+# environment, or set both together. The admin config API asks for a stored key
+# again when a write changes or removes the URL beside it.
 # webSearch:
 #   # Jina Reranking Configuration
 #   jinaApiKey: '${JINA_API_KEY}'  # Your Jina API key
@@ -1525,8 +1754,12 @@ endpoints:
 #   messages:
 #     unattributedAssistantContent: model_output # `model_output` (default) or `inspect`
 #     pii:
-#       action: audit # `block` (default), `audit`, or `redact` (reserved for transformation-aware ingress; current routes still block)
-#       # `redact` requires the later encrypted owner-view and canonical-message integration.
+#       action: audit # `block` (default), `audit`, or opt-in `redact`
+#       # `redact` transforms fresh, text-only interactive Agent chat submissions with a clientRequestId.
+#       # Edits, resumes, files, quotes, other endpoints, and other fields still use blocking checks.
+#       # Requires a valid CREDS_KEY. Preserve that key for owner-original recovery; changing it
+#       # makes existing originals unavailable. Text remains canonical/filtered in ordinary exports.
+#       # Originals are an encrypted, unindexed sidecar field, deleted/expired with the message.
 #       # maxCharacters: 65536 # bounded total inspected text per transformation session
 #       # maxMatches: 256 # bounded matches per transformation session
 #       # Custom patterns may set category: email, phone, name, credential, or custom.
@@ -1596,3 +1829,5 @@ endpoints:
 # ACL writes retry only conflicts on an individual document.
 # permissions:
 #   maxWriteAttempts: 3 # Integer 1-100, including the first attempt.
+#   leaseTtlMs: 30000 # Integer 1000-600000. Sharing updates on deployments without transactions hold a per-resource lease this long between renewals.
+#   leaseWaitMs: 3000 # Integer 0-60000. How long an update waits for a contended lease before answering 409.

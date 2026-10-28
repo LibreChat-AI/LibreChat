@@ -1,4 +1,4 @@
-import { memo, useEffect, useRef } from 'react';
+import { memo, useCallback, useEffect, useRef } from 'react';
 import { useWatch } from 'react-hook-form';
 import { Button, TooltipAnchor } from '@librechat/client';
 import { ChevronDown, CornerDownLeft, TriangleAlert } from 'lucide-react';
@@ -6,6 +6,7 @@ import AskUserQuestions from '~/components/Chat/Messages/Content/AskUserQuestion
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
 import AskOptions from '~/components/Chat/ask/options';
 import { useChatFormContext } from '~/Providers';
+import { isCancelKey } from '~/utils/shortcuts';
 import { useComposerOverlay } from './overlay';
 import { useLocalize } from '~/hooks';
 
@@ -32,21 +33,47 @@ function AskUserQuestionPopoverContent({
   textAreaRef?: React.RefObject<HTMLTextAreaElement>;
 }) {
   const ask = useAskAnswerMode(conversationId);
-  useComposerOverlay(conversationId, ask.popoverVisible);
+  const { collapse, popoverVisible } = ask;
+  useComposerOverlay(conversationId, popoverVisible);
 
-  if (!ask.popoverVisible || !ask.liveAsk) {
+  /**
+   * Escape from inside the popover does what it does from the composer: moves
+   * the question to the chat. Focus then returns to the composer, which a
+   * batch keeps disabled until the popover is gone, hence after the commit.
+   */
+  const refocusComposer = useRef(false);
+  const escapeToChat = useCallback(() => {
+    refocusComposer.current = true;
+    collapse();
+  }, [collapse]);
+  useEffect(() => {
+    if (popoverVisible || !refocusComposer.current) {
+      return;
+    }
+    refocusComposer.current = false;
+    textAreaRef?.current?.focus();
+  }, [popoverVisible, textAreaRef]);
+
+  if (!popoverVisible || !ask.liveAsk) {
     return null;
   }
 
   if (ask.liveAsk.questions != null && ask.liveAsk.questions.length > 0) {
-    return <AskUserQuestionsPopoverPanel ask={ask} />;
+    return <AskUserQuestionsPopoverPanel ask={ask} onEscape={escapeToChat} />;
   }
 
-  return <AskUserQuestionPopoverPanel ask={ask} textAreaRef={textAreaRef} />;
+  return (
+    <AskUserQuestionPopoverPanel ask={ask} textAreaRef={textAreaRef} onEscape={escapeToChat} />
+  );
 }
 
-function AskUserQuestionsPopoverPanel({ ask }: { ask: ReturnType<typeof useAskAnswerMode> }) {
-  const localize = useLocalize();
+function AskUserQuestionsPopoverPanel({
+  ask,
+  onEscape,
+}: {
+  ask: ReturnType<typeof useAskAnswerMode>;
+  onEscape: () => void;
+}) {
   const { liveAsk, collapse } = ask;
   const questions = liveAsk?.questions;
   if (liveAsk == null || questions == null || questions.length === 0) {
@@ -54,34 +81,45 @@ function AskUserQuestionsPopoverPanel({ ask }: { ask: ReturnType<typeof useAskAn
   }
 
   return (
-    <div className="absolute bottom-28 z-10 w-full">
-      <div className="popover border-border-light bg-surface-primary-alt flex max-h-[70vh] flex-col rounded-2xl border shadow-lg">
-        <div className="border-border-light flex shrink-0 items-center justify-between gap-2 border-b px-3 py-2">
-          <p className="text-text-primary text-sm font-medium">
-            {localize(
-              questions.length === 1 ? 'com_ui_asking_questions_one' : 'com_ui_asking_questions',
-              { 0: questions.length },
-            )}
-          </p>
-          <TooltipAnchor
-            description={localize('com_ui_ask_move_to_chat')}
-            side="top"
-            render={
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={localize('com_ui_ask_move_to_chat')}
-                className="text-text-secondary size-auto rounded-md p-1"
-                onClick={collapse}
-              >
-                <ChevronDown className="size-4" aria-hidden="true" />
-              </Button>
-            }
-          />
-        </div>
-        <AskUserQuestions actionId={liveAsk.actionId} questions={questions} />
+    <div className="absolute bottom-full z-10 mb-2 w-full">
+      {/* The prompt and answers each scroll within their own caps; this outer cap keeps
+          the whole card on screen when both are at their limit on a short viewport. */}
+      <div className="popover border-border-light bg-surface-secondary rounded-theme-popover flex max-h-[70vh] flex-col overflow-y-auto border shadow-lg [view-transition-name:ask-question]">
+        {/* Kept at full height so the cap above scrolls it rather than clipping its end. */}
+        <AskUserQuestions
+          actionId={liveAsk.actionId}
+          questions={questions}
+          className="shrink-0"
+          focusOnArrival
+          onEscape={onEscape}
+          headerAction={<MoveToChatButton onClick={collapse} />}
+        />
       </div>
     </div>
+  );
+}
+
+/** Moves the question to the chat card and hands the composer back. */
+function MoveToChatButton({ onClick }: { onClick: () => void }) {
+  const localize = useLocalize();
+  return (
+    <TooltipAnchor
+      description={localize('com_ui_ask_move_to_chat')}
+      side="top"
+      render={
+        <Button
+          variant="row-action"
+          size="icon-xs"
+          aria-label={localize('com_ui_ask_move_to_chat')}
+          onClick={onClick}
+        >
+          <ChevronDown
+            className="size-4 [view-transition-name:ask-question-chevron]"
+            aria-hidden="true"
+          />
+        </Button>
+      }
+    />
   );
 }
 
@@ -93,9 +131,11 @@ function AskUserQuestionsPopoverPanel({ ask }: { ask: ReturnType<typeof useAskAn
 function AskUserQuestionPopoverPanel({
   ask,
   textAreaRef,
+  onEscape,
 }: {
   ask: ReturnType<typeof useAskAnswerMode>;
   textAreaRef?: React.RefObject<HTMLTextAreaElement>;
+  onEscape: () => void;
 }) {
   const localize = useLocalize();
   const { control } = useChatFormContext();
@@ -149,18 +189,25 @@ function AskUserQuestionPopoverPanel({
   const composerHasText = composerText.trim().length > 0;
 
   return (
-    <div className="absolute bottom-28 z-10 w-full space-y-2">
+    <div className="absolute bottom-full z-10 mb-2 w-full">
       {/* Digit shortcuts (1..N) work when focus is inside the popover too, not
           only from the composer — keydown bubbles here from the focused row/
           control. Height is viewport-bounded with the option list as the only
           scroll region: the panel is absolutely positioned, so anything that
           overflows it is unreachable by page scroll. */}
       <div
-        className="popover border-border-light bg-surface-primary-alt flex max-h-[60vh] flex-col rounded-2xl border p-2 shadow-lg [view-transition-name:ask-question]"
-        onKeyDown={handlePopoverKeyDown}
+        className="popover border-border-light bg-surface-secondary rounded-theme-popover flex max-h-[60vh] flex-col border p-2 shadow-lg [view-transition-name:ask-question]"
+        onKeyDown={(e) => {
+          if (isCancelKey(e.nativeEvent) && !e.nativeEvent.isComposing) {
+            e.preventDefault();
+            onEscape();
+            return;
+          }
+          handlePopoverKeyDown(e);
+        }}
       >
-        <div className="flex shrink-0 items-start justify-between gap-2 p-2">
-          <div className="max-h-[24vh] min-w-0 overflow-y-auto">
+        <div className="text-text-secondary flex shrink-0 items-start justify-between gap-2 p-1 ps-2">
+          <div className="max-h-[24vh] min-w-0 overflow-y-auto pt-1">
             <p className="text-text-primary text-sm font-medium [overflow-wrap:anywhere]">
               {liveAsk.question.question}
             </p>
@@ -170,23 +217,7 @@ function AskUserQuestionPopoverPanel({
               </p>
             )}
           </div>
-          {/* Single exit: moves the question to the chat card and hands the
-              composer back for normal messages. */}
-          <TooltipAnchor
-            description={localize('com_ui_ask_move_to_chat')}
-            side="top"
-            render={
-              <Button
-                variant="ghost"
-                size="icon"
-                aria-label={localize('com_ui_ask_move_to_chat')}
-                className="text-text-secondary size-auto rounded-md p-1"
-                onClick={collapse}
-              >
-                <ChevronDown className="size-4" aria-hidden="true" />
-              </Button>
-            }
-          />
+          <MoveToChatButton onClick={collapse} />
         </div>
         <AskOptions
           options={options}
@@ -215,7 +246,7 @@ function AskUserQuestionPopoverPanel({
               should still come from the recipe. */}
           <Button
             variant="ghost"
-            className="text-text-secondary hover:text-text-primary h-auto cursor-text rounded-md p-0 text-xs font-normal hover:bg-transparent"
+            className="text-text-secondary h-auto cursor-text rounded-md p-0 text-xs font-normal hover:bg-transparent"
             onClick={() => textAreaRef?.current?.focus()}
           >
             {options.length === 0
@@ -234,7 +265,7 @@ function AskUserQuestionPopoverPanel({
                 onClick={() => submit(composerText)}
               >
                 {localize('com_ui_submit')}
-                <CornerDownLeft className="ml-1.5 h-4 w-4" aria-hidden="true" />
+                <CornerDownLeft className="ms-1.5 h-4 w-4 rtl:-scale-x-100" aria-hidden="true" />
               </Button>
             )}
           </div>

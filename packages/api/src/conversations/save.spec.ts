@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createMethods, createModels } from '@librechat/data-schemas';
 import type { ConversationMethods, MessageMethods } from '@librechat/data-schemas';
+import type { AttachedCodeEnvironmentPolicySettings } from '~/agents/hitl/byom';
 import type { TurnConversationRequest } from './save';
 import {
   runAfterSeed,
@@ -11,6 +12,10 @@ import {
   getConversationWriteContext,
   recoverTurnMessageReference,
 } from './save';
+import {
+  getCodeApprovalPreservedFields,
+  resolvePersistedCodeApprovalMode,
+} from '~/agents/hitl/byom';
 
 type Store = Pick<ConversationMethods, 'getConvo' | 'saveConvo' | 'appendConvoMessageReference'> &
   Pick<MessageMethods, 'saveMessage'>;
@@ -179,6 +184,99 @@ describe('seedTurnConversation', () => {
     await seedTurnConversation(store, seedFields({ body: {} }, randomUUID()));
 
     expect(saveConvo).not.toHaveBeenCalled();
+  });
+});
+
+describe('code approval mode across workspace choices', () => {
+  const permissive: AttachedCodeEnvironmentPolicySettings = {
+    configSchema: {
+      permissions: {
+        fileWrite: { allowed: ['allow', 'ask'], default: 'ask' },
+        commandExecution: { allowed: ['allow', 'ask'], default: 'ask' },
+      },
+    },
+  };
+  const restricted: AttachedCodeEnvironmentPolicySettings = {
+    configSchema: { permissions: { fileWrite: { allowed: ['ask'], default: 'ask' } } },
+  };
+
+  /** One turn's save as `AgentClient` and `BaseClient` perform it: the row admission loaded is
+   *  the existing one, and a key the options omit is `$unset` from it unless the write keeps it.
+   *  `loadedId` names the row admission loaded when the turn is saved under another id. */
+  const saveTurn = async (
+    userId: string,
+    conversationId: string,
+    requested: unknown,
+    targets: Array<[string, AttachedCodeEnvironmentPolicySettings]>,
+    loadedId = conversationId,
+  ) => {
+    const req = createRequest(userId);
+    req.resolvedConversation = await store.getConvo(userId, loadedId);
+    const policies = targets.map(([, policy]) => policy);
+    const codeApprovalMode = resolvePersistedCodeApprovalMode({ requested, policies });
+    await saveTurnConversation(store, {
+      ...seedFields(req, conversationId),
+      endpointOptions: {
+        ...endpointOptions,
+        ...(codeApprovalMode != null && { codeApprovalMode }),
+      },
+      preservedFields: getCodeApprovalPreservedFields(policies),
+      context: 'save.spec approval mode',
+      ctx: getConversationWriteContext(req),
+    });
+    return (await store.getConvo(userId, conversationId))?.codeApprovalMode;
+  };
+
+  it('keeps the pick through a turn without a workspace and revalidates it on return', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const conversationId = randomUUID();
+    const attached: Array<[string, AttachedCodeEnvironmentPolicySettings]> = [
+      ['terra', permissive],
+    ];
+
+    expect(await saveTurn(userId, conversationId, 'fullAccess', attached)).toBe('fullAccess');
+    /** A current client sends the gated `ask`; an older one still sends the remembered pick. */
+    expect(await saveTurn(userId, conversationId, 'ask', [])).toBe('fullAccess');
+    expect(await saveTurn(userId, conversationId, 'fullAccess', [])).toBe('fullAccess');
+    await expect(saveTurn(userId, conversationId, 'unrestricted', [])).rejects.toThrow(
+      'not permitted',
+    );
+
+    expect(await saveTurn(userId, conversationId, 'fullAccess', attached)).toBe('fullAccess');
+    await expect(
+      saveTurn(userId, conversationId, 'fullAccess', [['terra', restricted]]),
+    ).rejects.toThrow('not permitted');
+    expect(await saveTurn(userId, conversationId, 'ask', attached)).toBe('ask');
+    expect(await saveTurn(userId, conversationId, undefined, attached)).toBeUndefined();
+  });
+
+  it('leaves a new chat without a mode until a turn with a workspace validates one', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const conversationId = randomUUID();
+
+    /** The gated `ask` a current client sends must not replace the remembered pick the composer
+     *  offers a chat that stores no mode of its own. */
+    expect(await saveTurn(userId, conversationId, 'ask', [])).toBeUndefined();
+    expect(await saveTurn(userId, conversationId, 'fullAccess', [])).toBeUndefined();
+    expect(await saveTurn(userId, randomUUID(), undefined, [])).toBeUndefined();
+    expect(await saveTurn(userId, conversationId, 'acceptEdits', [['terra', permissive]])).toBe(
+      'acceptEdits',
+    );
+    expect(await saveTurn(userId, conversationId, 'ask', [])).toBe('acceptEdits');
+  });
+
+  it('keeps the mode of a conversation the turn is saved under instead of the loaded one', async () => {
+    const userId = new mongoose.Types.ObjectId().toString();
+    const source = randomUUID();
+    const target = randomUUID();
+    const attached: Array<[string, AttachedCodeEnvironmentPolicySettings]> = [
+      ['terra', permissive],
+    ];
+
+    expect(await saveTurn(userId, source, 'fullAccess', attached)).toBe('fullAccess');
+    expect(await saveTurn(userId, target, 'acceptEdits', attached)).toBe('acceptEdits');
+    expect(await saveTurn(userId, target, 'ask', [], source)).toBe('acceptEdits');
+    expect((await store.getConvo(userId, source))?.codeApprovalMode).toBe('fullAccess');
   });
 });
 

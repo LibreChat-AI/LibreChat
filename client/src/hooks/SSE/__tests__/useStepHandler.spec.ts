@@ -1,7 +1,7 @@
 import React from 'react';
-import { useStore, useAtomValue } from 'jotai';
-import { RecoilRoot, useRecoilCallback } from 'recoil';
+import { RecoilRoot } from 'recoil';
 import { renderHook, act } from '@testing-library/react';
+import { useStore, useAtomValue, createStore, Provider as JotaiProvider } from 'jotai';
 import {
   Constants,
   StepTypes,
@@ -20,14 +20,20 @@ import type {
   PtcToolCallEvent,
   Agents,
 } from 'librechat-data-provider';
+import type { ActiveSubagentPanel } from '~/components/Chat/Subagents/state';
 import type { PtcTrace, PtcTraceEntry } from '~/common';
 import {
+  activeSubagentPanel,
+  listRegisteredSubagentProgressKeys,
+  reduceSubagentProgress,
+  registerSubagentProgressKey,
+  subagentParentStreamOpenByToolCallId,
   subagentProgressByToolCallId,
   subagentProgressKey,
 } from '~/components/Chat/Subagents/state';
-import { ptcTraceByToolCallId, ptcTraceKey, PTC_TRACE_MAX_ENTRIES } from '~/store/ptc';
+import { ptcTraceByToolCallId, ptcTraceKey, PTC_TRACE_MAX_ENTRIES } from '~/hooks/SSE/ptc';
+import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { resolveAskUserQuestionPart } from '~/utils/approval';
-import { sandboxStartingByToolCallId } from '~/store/sandbox';
 import useStepHandler from '~/hooks/SSE/useStepHandler';
 import { IsolatedAtomStore } from 'test/harness';
 
@@ -3778,6 +3784,98 @@ describe('useStepHandler', () => {
       expect(subagentProgressByToolCallId(invocationKey)).not.toBe(held);
     });
 
+    it.each(['tool', 'event'] as const)(
+      'keeps retained %s activity through navigation and releases it on host teardown',
+      (origin) => {
+        const { result } = renderHook(
+          () => ({ ...useStepHandler(createHookParams()), store: useStore() }),
+          { wrapper: subagentStoreWrapper },
+        );
+        const selected: ActiveSubagentPanel = {
+          host: 'conversation',
+          parentConversationId: 'conv-1',
+          parentMessageId: 'response-msg-1',
+          toolCallId: 'call_A',
+          partIndex: 0,
+          subagentType: 'self',
+          initialProgress: 0,
+          isSubmitting: false,
+          durable: { threadId: 'child-thread', taskId: 'task' },
+          ...(origin === 'event'
+            ? { event: { actorId: 'actor', progressKey: 'event-task:child-thread:task' } }
+            : {}),
+        };
+        const key = subagentProgressKey(
+          selected.parentMessageId,
+          selected.event?.progressKey ?? selected.toolCallId,
+          selected.partIndex,
+        );
+        const otherKey = subagentProgressKey('other-message', 'call_B', 1);
+        const store = result.current.store;
+        const held = subagentProgressByToolCallId(key);
+        const earlier = makeUpdate({
+          phase: 'message_delta',
+          activityEventId: 'earlier',
+          activitySequence: 0,
+          data: { delta: { content: [{ type: ContentTypes.TEXT, text: 'Earlier work.' }] } },
+        });
+        const tool = makeUpdate({
+          phase: 'run_step',
+          activityEventId: 'tool',
+          activitySequence: 1,
+          data: {
+            stepDetails: {
+              type: 'tool_calls',
+              tool_calls: [{ id: 'inner-call', name: 'calculator', args: '{"value":4}' }],
+            },
+          },
+        });
+        act(() => {
+          store.set(activeSubagentPanel, selected);
+          registerSubagentProgressKey(key);
+          registerSubagentProgressKey(otherKey);
+          store.set(held, reduceSubagentProgress(null, [earlier, tool], 'parent', true));
+          store.set(
+            subagentProgressByToolCallId(otherKey),
+            reduceSubagentProgress(null, [earlier]),
+          );
+          store.set(subagentParentStreamOpenByToolCallId(key), true);
+        });
+        const before = store.get(held)?.contentParts;
+        act(() => result.current.resetSubagentAtoms({ preserveSelectedTask: true }));
+        expect(store.get(held)?.contentParts).toEqual(before);
+        expect(subagentProgressByToolCallId(key)).toBe(held);
+        expect(store.get(subagentParentStreamOpenByToolCallId(key))).toBe(false);
+        expect(listRegisteredSubagentProgressKeys()).toEqual([key]);
+        expect(store.get(subagentProgressByToolCallId(otherKey))).toBeNull();
+        act(() => {
+          store.set(held, (progress) =>
+            reduceSubagentProgress(
+              progress,
+              [
+                makeUpdate({
+                  phase: 'message_delta',
+                  activityEventId: 'later',
+                  activitySequence: 2,
+                  data: { delta: { content: [{ type: ContentTypes.TEXT, text: 'Later work.' }] } },
+                }),
+              ],
+              'detached',
+              false,
+            ),
+          );
+        });
+        expect(store.get(held)?.contentParts).toEqual([
+          ...(before ?? []),
+          { type: ContentTypes.TEXT, text: 'Later work.' },
+        ]);
+        act(() => result.current.resetSubagentAtoms());
+        expect(store.get(held)).toBeNull();
+        expect(subagentProgressByToolCallId(key)).not.toBe(held);
+        expect(listRegisteredSubagentProgressKeys()).toEqual([]);
+      },
+    );
+
     it('falls back to oldest-unclaimed tool call when parentToolCallId is absent', () => {
       const { result, getProgress } = renderStepHandlerWithReader();
       /** Two subagent tool calls seeded in creation order. Without
@@ -4569,20 +4667,22 @@ describe('useStepHandler', () => {
 
   describe('PTC inner tool-call trace', () => {
     const renderWithTraceReader = () => {
+      const traceStore = createStore();
       const hookResult = renderHook(
         () => {
           const stepHandler = useStepHandler(createHookParams());
-          const read = useRecoilCallback(
-            ({ snapshot }) =>
-              (messageId: string, toolCallId: string): PtcTrace =>
-                snapshot
-                  .getLoadable(ptcTraceByToolCallId(ptcTraceKey(messageId, toolCallId)))
-                  .valueOrThrow(),
-            [],
-          );
+          const read = (messageId: string, toolCallId: string): PtcTrace =>
+            traceStore.get(ptcTraceByToolCallId(ptcTraceKey(messageId, toolCallId)));
           return { ...stepHandler, read };
         },
-        { wrapper: RecoilRoot },
+        {
+          wrapper: ({ children }: { children: React.ReactNode }) =>
+            React.createElement(
+              RecoilRoot,
+              null,
+              React.createElement(JotaiProvider, { store: traceStore }, children),
+            ),
+        },
       );
       return {
         result: hookResult.result,
@@ -4869,12 +4969,15 @@ describe('useStepHandler', () => {
         );
       });
       expect(getEntries('call_ptc')).toHaveLength(1);
+      const removeSpy = jest.spyOn(ptcTraceByToolCallId, 'remove');
 
       act(() => {
         (result.current as unknown as { resetPtcAtoms: () => void }).resetPtcAtoms();
       });
 
       expect(getEntries('call_ptc')).toEqual([]);
+      expect(removeSpy).toHaveBeenCalledWith(ptcTraceKey('response-msg-1', 'call_ptc'));
+      removeSpy.mockRestore();
     });
   });
 });

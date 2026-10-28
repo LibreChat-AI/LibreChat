@@ -1,13 +1,14 @@
-import { memo, lazy, Suspense, useEffect, useRef } from 'react';
+import { memo, Suspense, useEffect, useRef } from 'react';
 import { Button, Sidebar, Skeleton } from '@librechat/client';
 import type { NavLink } from '~/common';
 import { CLOSE_SIDEBAR_ID } from '~/components/Chat/Menus/OpenSidebar';
 import { useShortcutAriaKey } from '~/hooks/useKeyboardShortcuts';
+import { lazyWithRecovery } from '~/lib/assets/lazy';
 import { useLocalize } from '~/hooks';
 import Switcher from './Switcher';
 import NewChat from './NewChat';
 
-const AccountSettings = lazy(() => import('~/components/Nav/AccountSettings'));
+const AccountSettings = lazyWithRecovery(() => import('~/components/Nav/AccountSettings'));
 
 /**
  * At full width there is nothing beside the drawer left to tap, so this close
@@ -71,7 +72,7 @@ function Header({
         className="shrink-0"
         onClick={onClose}
       >
-        <Sidebar className="icon-md" aria-hidden="true" />
+        <Sidebar className="icon-md rtl:-scale-x-100" aria-hidden="true" />
       </Button>
       <Switcher
         links={links}

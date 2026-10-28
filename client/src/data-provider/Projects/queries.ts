@@ -1,3 +1,4 @@
+import { useContext } from 'react';
 import { dataService, QueryKeys } from 'librechat-data-provider';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import type {
@@ -13,6 +14,8 @@ import type {
   QueryObserverResult,
   UseQueryOptions,
 } from '@tanstack/react-query';
+
+import { ProjectNamesContext } from '~/Providers/ProjectNamesContext';
 
 export const useProjectsInfiniteQuery = (
   params: ProjectListParams = {},
@@ -53,6 +56,19 @@ export const useProjectQuery = (
       ...config,
     },
   );
+};
+/**
+ * A project's name for a row that only carries its id. The sidebar already holds the
+ * recent projects, so a name found there costs no request; only a project past that
+ * list is fetched, once per id. A record written by id (a rename) still wins.
+ */
+export const useProjectName = (projectId?: string | null): string | undefined => {
+  const listed = useContext(ProjectNamesContext);
+  const listedName = projectId ? listed?.names.get(projectId) : undefined;
+  const { data: project } = useProjectQuery(projectId, {
+    enabled: Boolean(projectId) && !listed?.isPending && listedName == null,
+  });
+  return project?.name ?? listedName;
 };
 export const useProjectFilesQuery = (
   projectId?: string | null,

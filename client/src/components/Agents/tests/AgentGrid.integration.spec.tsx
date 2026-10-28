@@ -1,3 +1,4 @@
+jest.mock('../ResetApprovals', () => () => null);
 import React, { useRef } from 'react';
 import userEvent from '@testing-library/user-event';
 import { dataService, QueryKeys } from 'librechat-data-provider';

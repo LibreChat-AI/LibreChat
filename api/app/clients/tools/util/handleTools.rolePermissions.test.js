@@ -136,3 +136,33 @@ describe('loadTools — tool role permission gate', () => {
     expect(logger.error).toHaveBeenCalled();
   });
 });
+
+describe('loadTools — GitHub comparison execution eligibility', () => {
+  it.each([undefined, new Map()])(
+    'does not load an unregistered model-emitted compare call (%p)',
+    async (toolRegistry) => {
+      const params = buildOptions(['github_compare']);
+      params.options.req.config.githubCompare = { enabled: true };
+      params.options.toolRegistry = toolRegistry;
+      const { loadedTools } = await loadTools(params);
+      expect(loadedTools).toEqual([]);
+    },
+  );
+  it('does not load a stale registered comparison when the request disables it', async () => {
+    const params = buildOptions(['github_compare']);
+    params.options.toolRegistry = new Map([['github_compare', { name: 'github_compare' }]]);
+    params.options.req.config.githubCompare = { enabled: false };
+    const { loadedTools } = await loadTools(params);
+    expect(loadedTools).toEqual([]);
+  });
+  it('loads the published SDK tool without code capability or workspace admission', async () => {
+    const params = buildOptions(['github_compare']);
+    params.options.toolRegistry = new Map([['github_compare', { name: 'github_compare' }]]);
+    params.options.req.config.githubCompare = { enabled: true };
+    const { loadedTools } = await loadTools(params);
+    const { GitHubCompareTool } = require('@librechat/agents');
+    expect(loadedTools).toHaveLength(1);
+    expect(loadedTools[0]).toBeInstanceOf(GitHubCompareTool);
+    expect(mockPrimeCodeFiles).not.toHaveBeenCalled();
+  });
+});

@@ -82,10 +82,10 @@ export default function ToolCallLimitNotice({ message }: { message: TMessage }) 
         render={
           <Button
             type="button"
-            variant="ghost"
+            variant="quiet"
             size="icon-xs"
             aria-label={localize('com_ui_tool_call_limit_dismiss')}
-            className="text-text-secondary absolute top-1.5 right-1.5 focus-visible:ring-offset-0 focus-visible:ring-inset"
+            className="absolute inset-e-1.5 top-1.5 focus-visible:ring-offset-0 focus-visible:ring-inset"
             onClick={() => setDismissed(true)}
           >
             <X className="h-4 w-4" aria-hidden="true" />
@@ -94,7 +94,7 @@ export default function ToolCallLimitNotice({ message }: { message: TMessage }) 
       />
       <p
         id={titleId}
-        className="text-text-primary flex min-w-0 items-center gap-2 pr-8 text-sm font-medium"
+        className="text-text-primary flex min-w-0 items-center gap-2 pe-8 text-sm font-medium"
       >
         <Gauge className="text-text-secondary h-4 w-4 shrink-0" aria-hidden="true" />
         {localize('com_ui_tool_call_limit_title')}

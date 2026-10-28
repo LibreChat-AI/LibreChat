@@ -198,10 +198,14 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  createFileProvisionRecovery: () =>
+    jest.requireActual('@librechat/api').createFileProvisionRecovery(),
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
   getConversationWriteContext: (...args) =>
     jest.requireActual('@librechat/api').getConversationWriteContext(...args),
+  isTemporaryTurn: (...args) => jest.requireActual('@librechat/api').isTemporaryTurn(...args),
+  getModelEndUsage: (...args) => jest.requireActual('@librechat/api').getModelEndUsage(...args),
   announceReply: jest.fn().mockResolvedValue(undefined),
   /* Provisioning moved into this package; the controllers build the callback from it. */
   createProvisionFilesCallback: () => async () => {},
@@ -263,7 +267,6 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').resolveAdmittedCodeEnvironmentDecision(...args),
   resolvePersistableCodeEnvironmentDecision: (...args) =>
     jest.requireActual('@librechat/api').resolvePersistableCodeEnvironmentDecision(...args),
-  getCodeWorkspaceSelections: jest.fn(),
   createMCPRuntimeRequestBody: ({
     messageId,
     conversationId,
@@ -518,11 +521,14 @@ jest.mock('~/server/services/Endpoints/agents/skillDeps', () => ({
   getSkillDbMethods: jest.fn(() => ({})),
   canAuthorSkillFiles: mockCanAuthorSkillFiles,
   withDeploymentSkillIds: jest.fn((ids = []) => ids),
-  enrichWithSkillConfigurable: mockEnrichWithSkillConfigurable,
-  buildSkillPrimedIdsByName: mockBuildSkillPrimedIdsByName,
   buildAgentToolContext: mockBuildAgentToolContext,
   resolveMemoryAvailability: mockResolveMemoryAvailability,
   enrichLoadedToolsWithAgentContext: mockEnrichLoadedToolsWithAgentContext,
+}));
+
+const mockResolveLinkedInstructions = jest.fn();
+jest.mock('~/server/services/Endpoints/agents/linkedInstructions', () => ({
+  getLinkedInstructionsResolver: jest.fn(() => mockResolveLinkedInstructions),
 }));
 
 jest.mock('~/cache', () => ({
@@ -699,9 +705,6 @@ describe('createResponse controller', () => {
     async (stream) => {
       const api = require('@librechat/api');
       const db = require('~/models');
-      api.getCodeWorkspaceSelections.mockReturnValueOnce([
-        { environmentId: 'machine', workspaceId: 'stale-project' },
-      ]);
       api.validateResponseRequest.mockReturnValueOnce({
         request: {
           model: 'agent-123',
@@ -722,7 +725,6 @@ describe('createResponse controller', () => {
         expect.anything(),
       );
       expect(db.saveConvo.mock.calls.at(-1)[1]).not.toHaveProperty('codeWorkspaces');
-      expect(api.getCodeWorkspaceSelections).not.toHaveBeenCalled();
     },
   );
 
@@ -1041,7 +1043,9 @@ describe('createResponse controller', () => {
 
     await createResponse(req, res);
 
-    expect(api.getLangfuseTraceMessageFields).toHaveBeenCalledWith(req.config, 'resp_mock-123');
+    expect(api.getLangfuseTraceMessageFields).toHaveBeenCalledWith(req.config, 'resp_mock-123', {
+      isTemporary: false,
+    });
     expect(saveMessage).toHaveBeenCalledWith(
       expect.objectContaining({ userId: 'user-123' }),
       expect.objectContaining({
@@ -1054,6 +1058,24 @@ describe('createResponse controller', () => {
       { context: 'Responses API - save assistant response' },
     );
   });
+
+  it.each([false, true])(
+    'runs and records a forced-temporary turn as temporary for Langfuse: stream=%s',
+    async (stream) => {
+      const api = require('@librechat/api');
+      req.config.interfaceConfig = { retentionMode: 'ephemeral', temporaryChatRetention: 1 };
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: { ...req.body, stream, store: true },
+      });
+
+      await createResponse(req, res);
+
+      expect(api.createRun).toHaveBeenCalledWith(expect.objectContaining({ isTemporary: true }));
+      expect(api.getLangfuseTraceMessageFields).toHaveBeenCalledWith(req.config, 'resp_mock-123', {
+        isTemporary: true,
+      });
+    },
+  );
 
   it.each([false, true])(
     'stores input and output under the retention write context: stream=%s',

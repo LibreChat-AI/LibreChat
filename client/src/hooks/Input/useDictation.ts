@@ -82,6 +82,8 @@ export default function useDictation({
   const takeIdRef = useRef(0);
   const isSubmittingRef = useRef(isSubmitting);
   isSubmittingRef.current = isSubmitting;
+  const disabledRef = useRef(disabled);
+  disabledRef.current = disabled;
   const duringRunSubmitRef = useRef(duringRunSubmit);
   duringRunSubmitRef.current = duringRunSubmit;
   const filesLoadingRef = useRef(filesLoading);
@@ -103,6 +105,11 @@ export default function useDictation({
   const submit = useCallback(
     (text: string) => {
       if (spentRef.current || !text) {
+        return;
+      }
+      if (disabledRef.current) {
+        /** Retain the transcript for manual send; lifting the hold must not replay this take. */
+        spentRef.current = true;
         return;
       }
       const runSubmit = duringRunSubmitRef.current;
@@ -266,7 +273,7 @@ export default function useDictation({
   activeRef.current = active;
   const stopWith = useCallback(
     (mode: StopMode) => {
-      if (!activeRef.current) {
+      if (!activeRef.current || (mode === 'send' && disabledRef.current)) {
         return;
       }
       modeRef.current = mode;

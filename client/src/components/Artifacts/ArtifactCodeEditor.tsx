@@ -1,7 +1,12 @@
 import React, { useMemo, useState, useEffect, useRef, useCallback, useContext } from 'react';
 import debounce from 'lodash/debounce';
 import MonacoEditor from '@monaco-editor/react';
-import { ThemeContext, highContrastDarkTheme, highContrastLightTheme } from '@librechat/client';
+import {
+  ThemeContext,
+  highContrastDarkTheme,
+  highContrastLightTheme,
+  useRemScale,
+} from '@librechat/client';
 import type { Monaco } from '@monaco-editor/react';
 import type { IThemeRGB } from '@librechat/client';
 import type { editor } from 'monaco-editor';
@@ -13,9 +18,13 @@ import {
   useMutationState,
   resolveServerContent,
 } from '~/Providers/EditorContext';
+import { normalizeArtifactType } from '~/utils/artifacts';
 import { getResponseStatus } from '~/utils/errors';
 import { useArtifactsContext } from '~/Providers';
 import { useEditArtifact } from '~/data-provider';
+
+/** Monaco's font size, in baseline pixels. */
+const EDITOR_FONT_SIZE = 13;
 
 const LANG_MAP: Record<string, string> = {
   javascript: 'javascript',
@@ -49,11 +58,8 @@ const LANG_MAP: Record<string, string> = {
 
 const TYPE_MAP: Record<string, string> = {
   'text/html': 'html',
-  'application/vnd.code-html': 'html',
   'application/vnd.react': 'typescript',
-  'application/vnd.ant.react': 'typescript',
   'text/markdown': 'markdown',
-  'text/md': 'markdown',
   'text/plain': 'plaintext',
   'application/vnd.mermaid': 'markdown',
 };
@@ -200,7 +206,7 @@ function getMonacoLanguage(type?: string, language?: string): string {
   if (language && LANG_MAP[language]) {
     return LANG_MAP[language];
   }
-  return TYPE_MAP[type ?? ''] ?? 'plaintext';
+  return TYPE_MAP[normalizeArtifactType(type ?? '')] ?? 'plaintext';
 }
 
 function getArtifactEditTarget(artifact: Artifact): ArtifactEditTarget | null {
@@ -755,13 +761,17 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
         : highContrastLightEditorAppearance;
   }
 
+  /* Monaco renders into a canvas rather than inheriting the root font size, so the
+     one size the app cannot scale through CSS has to be computed. Changing the options
+     object is enough: the wrapper calls editor.updateOptions when it changes. */
+  const remScale = useRemScale();
   const editorOptions = useMemo<editor.IStandaloneEditorConstructionOptions>(
     () => ({
       readOnly,
       minimap: { enabled: false },
       lineNumbers: 'on',
       scrollBeyondLastLine: false,
-      fontSize: 13,
+      fontSize: Math.round(EDITOR_FONT_SIZE * remScale),
       tabSize: 2,
       wordWrap: 'on',
       automaticLayout: true,
@@ -791,7 +801,7 @@ export const ArtifactCodeEditor = function ArtifactCodeEditor({
       hover: { enabled: readOnly ? 'off' : 'on' },
       matchBrackets: readOnly ? 'never' : 'always',
     }),
-    [readOnly],
+    [readOnly, remScale],
   );
 
   if (!artifact.content) {

@@ -11,6 +11,7 @@ const {
   prepareMCPAuthorizationMutation,
   resolveMCPClientCapabilityProfile,
   recordScheduledMCPToolAuthFailure,
+  getScheduledMCPBearerIdentity,
 } = require('@librechat/api');
 const { CacheKeys, Constants } = require('librechat-data-provider');
 const { getMCPManager, getMCPServersRegistry, getFlowStateManager } = require('~/config');
@@ -183,7 +184,10 @@ async function reinitMCPServer({
     const resolution = await resolveMCPReinitializeConfig(
       registry,
       serverName,
-      serverConfig ?? (await registry.getServerConfig(serverName, user?.id, configServers)),
+      serverConfig ??
+        (await registry.getServerConfig(serverName, user?.id, configServers, user?.role, {
+          idOnTheSource: user?.idOnTheSource,
+        })),
       user?.id,
     );
     if (resolution.result) {
@@ -472,7 +476,14 @@ async function reinitMCPServer({
   } catch (error) {
     if (isMCPInitializationError(error, signal)) {
       await recordScheduledMCPToolAuthFailure(
-        { error, streamId, jobCreatedAt, userId: user?.id, serverName },
+        {
+          error,
+          streamId,
+          jobCreatedAt,
+          userId: user?.id,
+          serverName,
+          identity: getScheduledMCPBearerIdentity(requestScopedConnections),
+        },
         () => require('~/server/services/Schedules').recordMCPToolAuthFailure,
       );
       throw error;

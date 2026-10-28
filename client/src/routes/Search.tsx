@@ -3,11 +3,11 @@ import { useAtomValue } from 'jotai';
 import throttle from 'lodash/throttle';
 import { useRecoilValue } from 'recoil';
 import { Search as SearchIcon, SearchX } from 'lucide-react';
-import { EmptyState, Spinner, useToastContext } from '@librechat/client';
 import { List, CellMeasurer, CellMeasurerCache } from 'react-virtualized';
+import { EmptyState, Spinner, useRemScale, useToastContext } from '@librechat/client';
 import type { Index, ListRowProps } from 'react-virtualized';
 import type { TMessage } from 'librechat-data-provider';
-import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/MessageRow';
+import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/width';
 import { useElementSize, useLocalize, useAuthContext } from '~/hooks';
 import SearchMessage from '~/components/Chat/Messages/SearchMessage';
 import { useMessagesInfiniteQuery } from '~/data-provider';
@@ -88,6 +88,7 @@ export default function Search() {
   const { isAuthenticated } = useAuthContext();
   const search = useRecoilValue(store.search);
   const fontSize = useAtomValue(fontSizeAtom);
+  const remScale = useRemScale();
   const searchQuery = search.debouncedQuery;
 
   const {
@@ -141,10 +142,10 @@ export default function Search() {
     () =>
       new CellMeasurerCache({
         fixedWidth: true,
-        defaultHeight: 140,
+        defaultHeight: Math.round(140 * remScale),
         keyMapper: (index) => itemsRef.current[index]?.messageId ?? `search-row-${index}`,
       }),
-    [],
+    [remScale],
   );
 
   const recompute = useCallback(
@@ -168,11 +169,13 @@ export default function Search() {
     return () => cancelAnimationFrame(frameId);
   }, [searchQuery, recompute]);
 
-  /** A font-size change alters every row's height but keeps the user's place. */
+  /** A font-size or UI-scale change alters every row's height but keeps the user's
+   *  place. The scale can change without the container width doing so, in which case
+   *  the width effect below never fires. */
   useEffect(() => {
     const frameId = requestAnimationFrame(() => recompute(true));
     return () => cancelAnimationFrame(frameId);
-  }, [fontSize, recompute]);
+  }, [fontSize, remScale, recompute]);
 
   /** Appending a page keeps existing measures; any other content change at the
    *  same row count (a file preview resolving, a refetch) can alter a row's
@@ -260,8 +263,9 @@ export default function Search() {
   );
 
   const getRowHeight = useCallback(
-    ({ index }: Index) => (index >= messages.length ? FOOTER_HEIGHT : cache.getHeight(index, 0)),
-    [cache, messages.length],
+    ({ index }: Index) =>
+      index >= messages.length ? FOOTER_HEIGHT * remScale : cache.getHeight(index, 0),
+    [cache, messages.length, remScale],
   );
 
   useEffect(() => {
@@ -287,7 +291,7 @@ export default function Search() {
 
   const loadingSpinner = (
     <div className="absolute inset-0 flex items-center justify-center">
-      <Spinner className="text-text-primary" />
+      <Spinner tone="primary" />
     </div>
   );
 
@@ -357,15 +361,14 @@ export default function Search() {
           overscanRowCount={10}
           aria-label={localize('com_nav_search_placeholder')}
           className={cn(
-            'focus-visible:ring-ring-primary outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
+            'focus-visible:ring-ring-primary outline-none focus-visible:ring-2 focus-visible:ring-inset',
             showingStale && 'opacity-70',
           )}
-          style={{ outline: 'none' }}
         />
       </div>
       {isFetchingNextPage && (
         <div className="pointer-events-none absolute right-0 bottom-0 left-0 flex justify-center py-4">
-          <Spinner className="text-text-primary" />
+          <Spinner tone="primary" />
         </div>
       )}
       <div className="from-surface-primary-alt pointer-events-none absolute right-0 bottom-0 left-0 h-[5%] bg-gradient-to-t to-transparent" />

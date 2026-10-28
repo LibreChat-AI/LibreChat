@@ -376,6 +376,7 @@ const FIELD_MUTATIONS: Array<[string, Partial<TMessage>]> = [
   ['createdAt', { createdAt: '2026-07-02T00:00:00.000Z' }],
   ['depth', { depth: 3 }],
   ['isCreatedByUser', { isCreatedByUser: true }],
+  ['isUserSubmitted', { isUserSubmitted: true }],
   ['children length', { children: [makeFieldsMsg(), makeFieldsMsg()] }],
   ['content reference', { content: [] as TMessage['content'] }],
   ['model', { model: 'gpt-5' }],

@@ -123,7 +123,7 @@ test.describe('activity fold', () => {
     await expect(header).toHaveClass(/font-semibold/);
     await expect(header).toHaveClass(/text-text-primary/);
     const rail = messagesView(page).getByTestId('activity-phase-panel').locator('> div').first();
-    await expect(rail).toHaveClass(/pl-6/);
+    await expect(rail).toHaveClass(/ps-6/);
     /** Only the group holding the failure opened; its sibling groups stay
      *  folded under the phase. The slow echo shares that batch. */
     expect(await messagesView(page).locator('[data-testid="tool-call"]').count()).toBe(2);
@@ -151,8 +151,114 @@ test.describe('activity fold', () => {
     const groupRail = groupPanel.locator('> div > [data-testid="fold-rail"]');
     const groupHeader = groupPanel.locator('xpath=preceding-sibling::div[1]').getByRole('button');
     const lineColor = (railLocator: typeof groupRail) =>
-      railLocator.locator('span').evaluate((line) => getComputedStyle(line).backgroundColor);
+      railLocator
+        .locator('g > path')
+        .first()
+        .evaluate((line) => getComputedStyle(line).stroke);
     const restingLine = await lineColor(groupRail);
+
+    /** A row two folds deep lights both rails, each into its own branch: the
+     *  group's into the row's glyph, the phase's into the group's header. */
+    const failedCall = groupPanel.getByTestId('tool-call').filter({ hasText: /^Failed:/ });
+    const litBranch = (railLocator: typeof groupRail) =>
+      railLocator.locator('[data-fold-trace][data-lit]');
+    const endsAt = async (path: ReturnType<typeof litBranch>, row: typeof failedCall) => {
+      await expect(path).toHaveCSS('opacity', '1');
+      /** The foot slides into place, and branches are re-measured after rows move. */
+      await expect
+        .poll(async () => {
+          const [elbow, glyph] = await Promise.all([
+            path.boundingBox(),
+            row.locator('.fold-glyph').first().boundingBox(),
+          ]);
+          return elbow == null || glyph == null
+            ? Infinity
+            : Math.abs(elbow.y + elbow.height - (glyph.y + glyph.height / 2));
+        })
+        .toBeLessThan(2);
+    };
+    await failedCall.scrollIntoViewIfNeeded();
+    await failedCall.hover();
+    await expect(groupRail).toHaveAttribute('data-fold-lit');
+    await expect(phaseRail).toHaveAttribute('data-fold-lit');
+    await expect(litBranch(groupRail)).toHaveCount(1);
+    await expect(litBranch(phaseRail)).toHaveCount(1);
+    await endsAt(litBranch(groupRail), failedCall);
+    await endsAt(litBranch(phaseRail), groupHeader);
+    await shot(page, 'lit-path');
+
+    await failedCall.evaluate((row) => {
+      const { left, top, width, height } = row.getBoundingClientRect();
+      const pointer = {
+        bubbles: true,
+        pointerType: 'mouse',
+        pointerId: 1,
+        isPrimary: true,
+        clientX: left + width / 2,
+        clientY: top + height / 2,
+      };
+      row.dispatchEvent(new PointerEvent('pointermove', pointer));
+      row.dispatchEvent(new PointerEvent('pointerdown', { ...pointer, buttons: 1 }));
+      row.dispatchEvent(new PointerEvent('pointerup', pointer));
+    });
+    /** A press keeps the path, hit-tested again under the pointer that did not move. */
+    await expect(groupRail).toHaveAttribute('data-fold-lit');
+    await expect(phaseRail).toHaveAttribute('data-fold-lit');
+    await endsAt(litBranch(groupRail), failedCall);
+    /** Rows moving under a still pointer relight from the new geometry. */
+    await groupPanel.locator('> div > div').evaluate((rows) => {
+      (rows as HTMLElement).style.paddingTop = '12px';
+    });
+    await expect(groupRail).toHaveAttribute('data-fold-lit');
+    await endsAt(litBranch(groupRail), failedCall);
+    await groupPanel.locator('> div > div').evaluate((rows) => {
+      (rows as HTMLElement).style.removeProperty('padding-top');
+    });
+    await page.mouse.move(0, 0);
+    await expect(groupRail).not.toHaveAttribute('data-fold-lit');
+    await expect(phaseRail).not.toHaveAttribute('data-fold-lit');
+
+    /** An earlier message can shift this fold without resizing it or scrolling. */
+    const transcript = messagesView(page).getByTestId('screenshot-target');
+    const previousAnchor = await transcript.evaluate((content) => {
+      const spacer = document.createElement('div');
+      spacer.id = 'fold-layout-predecessor';
+      spacer.style.height = '0px';
+      content.prepend(spacer);
+      const scroll = content.closest<HTMLElement>('.scrollbar-gutter-stable')!;
+      const anchor = scroll.style.overflowAnchor;
+      scroll.style.overflowAnchor = 'none';
+      return anchor;
+    });
+    await failedCall.scrollIntoViewIfNeeded();
+    await failedCall.hover();
+    await expect(groupRail).toHaveAttribute('data-fold-lit');
+    const shift = await failedCall.evaluate((row) => {
+      const fold = row.closest<HTMLElement>('[data-testid="activity-phase-card"]')!;
+      const message = row.closest<HTMLElement>('.message-render')!;
+      const scroll = row.closest<HTMLElement>('.scrollbar-gutter-stable')!;
+      const measure = () => ({
+        top: fold.getBoundingClientRect().top,
+        foldHeight: fold.getBoundingClientRect().height,
+        messageHeight: message.getBoundingClientRect().height,
+        scrollTop: scroll.scrollTop,
+      });
+      const before = measure();
+      document.getElementById('fold-layout-predecessor')!.style.height = '32px';
+      return { before, after: measure() };
+    });
+    expect(shift.after.top - shift.before.top).toBeCloseTo(32);
+    expect(shift.after.foldHeight).toBe(shift.before.foldHeight);
+    expect(shift.after.messageHeight).toBe(shift.before.messageHeight);
+    expect(shift.after.scrollTop).toBe(shift.before.scrollTop);
+    /** 32px further down, the pointer is over the group's header: the path is hit-tested
+     *  again and now ends in that header's branch of the phase. */
+    await expect(groupRail).not.toHaveAttribute('data-fold-lit');
+    await endsAt(litBranch(phaseRail), groupHeader);
+    await transcript.evaluate((content, anchor) => {
+      content.querySelector('#fold-layout-predecessor')!.remove();
+      content.closest<HTMLElement>('.scrollbar-gutter-stable')!.style.overflowAnchor = anchor;
+    }, previousAnchor);
     await expect(knobs).toHaveCount(0);
     await groupRail.hover();
     await expect(knobs).toHaveCount(1);
