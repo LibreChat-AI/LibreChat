@@ -19,6 +19,9 @@ const host: StreamHost = {
   },
   useLegacyStream,
   useTransport: () => null,
+  useQueuedTurnReceipts: () => ({ data: undefined, dataUpdatedAt: 0 }),
+  useActiveJobs: () => ({ data: undefined, dataUpdatedAt: 0 }),
+  extendActiveJobsGrace: () => undefined,
 };
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (

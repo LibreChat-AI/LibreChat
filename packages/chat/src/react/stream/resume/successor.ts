@@ -1,17 +1,17 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useStore } from 'jotai';
-import { useQueryClient } from '@tanstack/react-query';
-import { Constants, QueryKeys } from 'librechat-data-provider';
-import { revealedQueuedTurnFamily } from '@librechat/chat/react';
+import { Constants } from 'librechat-data-provider';
 import type { TAgentQueuedTurnReceipt } from 'librechat-data-provider';
-import {
-  useActiveJobs,
-  useAgentQueuedTurns,
-  extendActiveJobsGrace,
-  isQueuedTurnSuccessorOwed,
-  ACTIVE_JOBS_SUCCESSOR_GRACE_MS,
-} from '~/data-provider';
-import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
+import { revealedQueuedTurnFamily } from '../../steer/atoms';
+import { isQueuedTurnSuccessorOwed } from '../../../core';
+import { useChatHost } from '../../chat/host';
+import { useStreamHost } from '../host';
+
+/**
+ * How long a conversation keeps listening for a run the server owes it after the active-job
+ * list empties; the app's active-job poll keeps the same window open.
+ */
+export const ACTIVE_JOBS_SUCCESSOR_GRACE_MS = 30_000;
 
 /** What the pane knows about runs it did not start for the conversation on screen. */
 export type OwedSuccessorState = {
@@ -31,7 +31,7 @@ export type OwedSuccessorState = {
  * Tracks runs the server owes a conversation (a queued turn it took ownership of, or a job
  * the active-job list names) until this pane attaches to them or a quiet window expires.
  */
-export default function useOwedSuccessor({
+export function useOwedSuccessor({
   conversationId,
   resumableEnabled,
   attachedGenerationCreatedAt,
@@ -43,7 +43,9 @@ export default function useOwedSuccessor({
   hasLiveSubmissionForThisConvo: boolean;
 }): OwedSuccessorState {
   const jotaiStore = useStore();
-  const queryClient = useQueryClient();
+  const streamHost = useStreamHost();
+  const { extendActiveJobsGrace } = streamHost;
+  const cache = useChatHost().useMessageCache();
 
   /**
    * A run this pane did not start (another tab, another device, a scheduled
@@ -79,10 +81,8 @@ export default function useOwedSuccessor({
    * `enabled: false` observes that cache without competing for it, and an
    * unpopulated cache simply falls back to the handover window.
    */
-  const { data: queuedTurnReceipts, dataUpdatedAt: queuedTurnsObservedAt } = useAgentQueuedTurns(
-    conversationId ?? '',
-    false,
-  );
+  const { data: queuedTurnReceipts, dataUpdatedAt: queuedTurnsObservedAt } =
+    streamHost.useQueuedTurnReceipts(conversationId ?? '');
   /**
    * Receipts whose successor this pane has already attached to, per turn and
    * per conversation. An `admitted` receipt stays in the cache for a fetch
@@ -171,7 +171,7 @@ export default function useOwedSuccessor({
     conversationId != null ? (owedSuccessors.get(conversationId) ?? null) : null;
   const successorOwed =
     !hasLiveSubmissionForThisConvo && (successorOwedByReceipt || owedSuccessor != null);
-  const { data: activeJobsData, dataUpdatedAt: activeJobsUpdatedAt } = useActiveJobs(
+  const { data: activeJobsData, dataUpdatedAt: activeJobsUpdatedAt } = streamHost.useActiveJobs(
     resumableEnabled,
     successorOwed,
   );
@@ -294,6 +294,7 @@ export default function useOwedSuccessor({
       return next;
     });
   }, [
+    extendActiveJobsGrace,
     conversationId,
     queuedTurnReceipts,
     owedReceipts,
@@ -343,13 +344,11 @@ export default function useOwedSuccessor({
           if (
             pendingReveal != null &&
             Date.parse(pendingReveal.revealedAt) <= latch.quietSince! &&
-            !isQueuedTurnSuccessorOwed(
-              queryClient.getQueryData(agentQueuedTurnsQueryKey(owedConversationId)),
-            )
+            !isQueuedTurnSuccessorOwed(cache.readQueuedTurns(owedConversationId))
           ) {
             jotaiStore.set(revealFamily, null);
           }
-          queryClient.invalidateQueries({ queryKey: [QueryKeys.messages, owedConversationId] });
+          cache.invalidateMessages(owedConversationId);
         }, remaining),
       );
     }
@@ -370,7 +369,7 @@ export default function useOwedSuccessor({
         clearTimeout(timer);
       }
     };
-  }, [owedSuccessors, owedIsReporting, conversationId, queryClient, jotaiStore]);
+  }, [owedSuccessors, owedIsReporting, conversationId, cache, jotaiStore]);
 
   return {
     queuedTurnReceipts,

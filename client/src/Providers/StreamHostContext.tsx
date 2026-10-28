@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import type { StreamHost } from '@librechat/chat/react';
+import { useActiveJobs, useAgentQueuedTurns, extendActiveJobsGrace } from '~/data-provider';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { useResumableServices } from '~/hooks/SSE/resumable';
 import { useAuthContext } from '~/hooks/AuthContext';
@@ -21,6 +22,10 @@ export const appStreamHost: StreamHost = {
   useResumableServices,
   useLegacyStream: useSSE,
   useTransport,
+  /** Observes the receipts `useSteering` fetches, without competing for the fetch. */
+  useQueuedTurnReceipts: (conversationId) => useAgentQueuedTurns(conversationId, false),
+  useActiveJobs,
+  extendActiveJobsGrace,
 };
 
 export { StreamHostProvider, useStreamHost } from '@librechat/chat/react';

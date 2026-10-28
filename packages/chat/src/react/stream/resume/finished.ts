@@ -1,18 +1,26 @@
-import { QueryKeys } from 'librechat-data-provider';
-import { resolveDetachedRunEnd } from '@librechat/chat';
+import type { TMessage, TPendingSteer, TAgentQueuedTurnReceipt } from 'librechat-data-provider';
+import type { useStore } from 'jotai';
+import type { StreamStatusResponse, GenerationProtocolVersion } from '../../../core';
+import type useSteerConvert from '../../steering/useSteerConvert';
+import type { ChatMessageCache } from '../../chat/host';
 import {
-  revealedQueuedTurnFamily,
   isDetachedRunManual,
   detachedRunByConvoId,
   pendingRunEndByConvoId,
-} from '@librechat/chat/react';
-import type { StreamStatusResponse, GenerationProtocolVersion } from '@librechat/chat';
-import type { TMessage, TAgentQueuedTurnReceipt } from 'librechat-data-provider';
-import type { QueryClient } from '@tanstack/react-query';
-import type { useStore } from 'jotai';
-import type { SteerState } from './steer';
-import { isQueuedTurnSuccessorOwed } from '~/data-provider';
-import { dedupeSteersById } from '~/utils';
+} from '../../steer/queue';
+import { dedupeSteersById, resolveDetachedRunEnd, isQueuedTurnSuccessorOwed } from '../../../core';
+import { revealedQueuedTurnFamily } from '../../steer/atoms';
+
+/** The steer chips a finished run settles. */
+export type FinishedRunSteers = {
+  seedSteerChips: (
+    conversationId: string,
+    steers: TPendingSteer[] | undefined,
+    generationCreatedAt?: number,
+  ) => void;
+  settleAppliedSteerParts: (conversationId: string, values: unknown[] | undefined) => void;
+  convertSteersToQueued: ReturnType<typeof useSteerConvert>;
+};
 
 /**
  * Settles what a run that ended while this pane was away left behind: the reveal guard of a
@@ -21,7 +29,7 @@ import { dedupeSteersById } from '~/utils';
  */
 export function settleFinishedRun({
   jotaiStore,
-  queryClient,
+  cache,
   steers,
   conversationId,
   streamStatus,
@@ -31,8 +39,8 @@ export function settleFinishedRun({
   generationProtocolVersion,
 }: {
   jotaiStore: ReturnType<typeof useStore>;
-  queryClient: QueryClient;
-  steers: Pick<SteerState, 'seedSteerChips' | 'settleAppliedSteerParts' | 'convertSteersToQueued'>;
+  cache: Pick<ChatMessageCache, 'messagesUpdatedAt' | 'reloadMessages'>;
+  steers: FinishedRunSteers;
   conversationId: string;
   streamStatus: StreamStatusResponse;
   streamStatusUpdatedAt: number;
@@ -45,10 +53,7 @@ export function settleFinishedRun({
   /** A remounted pane may have missed attachment and the quiet-window
    * timer. An expired job has no epoch; require a fresh inactive read
    * after restored history before retiring its surviving handoff guard. */
-  const historyUpdatedAt = queryClient.getQueryState([
-    QueryKeys.messages,
-    conversationId,
-  ])?.dataUpdatedAt;
+  const historyUpdatedAt = cache.messagesUpdatedAt(conversationId);
   if (
     pendingReveal != null &&
     streamStatus.active === false &&
@@ -112,11 +117,6 @@ export function settleFinishedRun({
   if (detachedRun != null && isDetachedRunManual(jotaiStore.get, conversationId, detachedRun)) {
     jotaiStore.set(detachedFamily, null);
   } else if (detachedRun != null) {
-    queryClient
-      .refetchQueries(
-        { queryKey: [QueryKeys.messages, conversationId], exact: true },
-        { throwOnError: true },
-      )
-      .then(parkDetachedEnd, () => undefined);
+    cache.reloadMessages(conversationId).then(parkDetachedEnd, () => undefined);
   }
 }

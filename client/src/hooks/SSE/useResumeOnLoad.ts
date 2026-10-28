@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useQueryClient } from '@tanstack/react-query';
 import { useStore, useSetAtom, useAtomValue } from 'jotai';
 import {
   Constants,
@@ -7,11 +6,15 @@ import {
   isForcedTemporaryRetention,
 } from 'librechat-data-provider';
 import {
-  activeGenerationCreatedAtByConvoId,
-  useIsSubmitting,
-  submissionStartFamily,
-  submissionByIndex,
+  useChatHost,
   useSubmission,
+  useIsSubmitting,
+  useOwedSuccessor,
+  settleFinishedRun,
+  submissionByIndex,
+  submissionStartFamily,
+  useResumeAnnouncements,
+  activeGenerationCreatedAtByConvoId,
 } from '@librechat/chat/react';
 import {
   hasSubmissionUserMessage,
@@ -27,10 +30,7 @@ import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { getBranchSiblingIndexesForTarget } from '~/utils';
-import useResumeAnnouncements from './announcements';
 import { useStreamStatus } from '~/data-provider';
-import { settleFinishedRun } from './finished';
-import useOwedSuccessor from './successor';
 import useSteerState from './steer';
 
 /**
@@ -51,7 +51,7 @@ export default function useResumeOnLoad(
   messagesLoaded = true,
 ) {
   const jotaiStore = useStore();
-  const queryClient = useQueryClient();
+  const cache = useChatHost().useMessageCache();
   const setSubmission = useSetAtom(submissionByIndex(runIndex));
   const setSubmissionStart = useSetAtom(submissionStartFamily(runIndex));
   const currentSubmission = useSubmission(runIndex);
@@ -275,7 +275,7 @@ export default function useResumeOnLoad(
       console.log('[ResumeOnLoad] No active job to resume for:', conversationId);
       settleFinishedRun({
         jotaiStore,
-        queryClient,
+        cache,
         steers: steerState,
         conversationId,
         streamStatus,
@@ -383,7 +383,7 @@ export default function useResumeOnLoad(
     streamStatus,
     streamStatusUpdatedAt,
     queuedTurnReceipts,
-    queryClient,
+    cache,
     getMessages,
     setSubmission,
     setSubmissionStart,

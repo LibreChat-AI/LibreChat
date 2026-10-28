@@ -1,12 +1,11 @@
 import { useRef, useEffect } from 'react';
 import { useAtom } from 'jotai';
-import { useQueryClient } from '@tanstack/react-query';
-import { resumeRequestsAtom } from '@librechat/chat/react';
-import { Constants, QueryKeys } from 'librechat-data-provider';
+import { Constants } from 'librechat-data-provider';
 import type { TSubmission } from 'librechat-data-provider';
 import type { MutableRefObject } from 'react';
 import type { OwedSuccessorState } from './successor';
-import { streamStatusQueryKey } from '~/data-provider';
+import { resumeRequestsAtom } from '../../chat/resume';
+import { useChatHost } from '../../chat/host';
 
 /**
  * Matches the active-job list's own poll interval: answering an announcement
@@ -19,7 +18,7 @@ const ACTIVE_JOB_REARM_INTERVAL_MS = 5_000;
  * list, an owed queued turn) or when `resumeStream` asks for it, forcing the status and
  * history reads it is about to make fresh first.
  */
-export default function useResumeAnnouncements({
+export function useResumeAnnouncements({
   conversationId,
   resumableEnabled,
   owed,
@@ -44,7 +43,7 @@ export default function useResumeAnnouncements({
   hasLiveSubmissionForThisConvo: boolean;
   attachedGenerationCreatedAt: number | null;
 }): void {
-  const queryClient = useQueryClient();
+  const cache = useChatHost().useMessageCache();
   const { successorOwed, hasActiveJobForThisConvo, activeJobsUpdatedAt, receiptSignature } = owed;
   /** Receipt state at the last arm, so history is refetched on a transition
    *  rather than on every heartbeat of an unchanged queued turn. */
@@ -110,7 +109,7 @@ export default function useResumeAnnouncements({
     if (hasActiveSubmissionForThisConvo) {
       setSubmission(null);
     }
-    queryClient.invalidateQueries({ queryKey: streamStatusQueryKey(conversationId) });
+    cache.refetchStreamStatus(conversationId);
     /**
      * History is refetched only when this arm can actually change what the
      * pane shows: a run is listed (attachment is imminent and must not be
@@ -122,7 +121,7 @@ export default function useResumeAnnouncements({
     const receiptsTransitioned = lastArmedReceiptSignatureRef.current !== receiptSignature;
     lastArmedReceiptSignatureRef.current = receiptSignature;
     if (hasActiveJobForThisConvo || receiptsTransitioned) {
-      queryClient.invalidateQueries({ queryKey: [QueryKeys.messages, conversationId] });
+      cache.invalidateMessages(conversationId);
     }
     processedConvoRef.current = null;
     setExternalRunArm((arm) => arm + 1);
@@ -137,7 +136,7 @@ export default function useResumeAnnouncements({
     activeJobsUpdatedAt,
     receiptSignature,
     setSubmission,
-    queryClient,
+    cache,
     processedConvoRef,
     answeredActiveJobRef,
     setExternalRunArm,
@@ -171,8 +170,8 @@ export default function useResumeAnnouncements({
     if (hasActiveSubmissionForThisConvo) {
       setSubmission(null);
     }
-    queryClient.invalidateQueries({ queryKey: streamStatusQueryKey(conversationId) });
-    queryClient.invalidateQueries({ queryKey: [QueryKeys.messages, conversationId] });
+    cache.refetchStreamStatus(conversationId);
+    cache.invalidateMessages(conversationId);
     processedConvoRef.current = null;
     setExternalRunArm((arm) => arm + 1);
   }, [
@@ -184,7 +183,7 @@ export default function useResumeAnnouncements({
     hasActiveSubmissionForThisConvo,
     hasLiveSubmissionForThisConvo,
     setSubmission,
-    queryClient,
+    cache,
     processedConvoRef,
     setExternalRunArm,
   ]);

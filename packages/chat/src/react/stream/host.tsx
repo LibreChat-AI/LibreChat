@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import type { ChatTransport, TSubmission } from 'librechat-data-provider';
+import type { ChatTransport, TSubmission, TAgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import type { ResumableHost, ResumableRun } from '../../core';
 import type { ChatContract } from '../chat/contract';
@@ -20,6 +20,12 @@ export type ResumableStreamParams = {
   isAddedRequest: boolean;
   /** Reports the stream the pane is attached to, or `null` once it detaches. */
   setStreamId: Dispatch<SetStateAction<string | null>>;
+};
+
+/** One of the app's queries as a resume reads it: the data and when it was last fetched. */
+export type ResumeQuery<Data> = {
+  data: Data | undefined;
+  dataUpdatedAt: number;
 };
 
 /** Everything a resumable stream runs on except how it re-attaches, which the binding owns. */
@@ -49,6 +55,18 @@ export interface StreamHost {
    * turn such as a subagent's activity. Changes when the token does.
    */
   useTransport(): ChatTransport | null;
+  /** A conversation's queued-turn receipts, observed from the app's cache without fetching. */
+  useQueuedTurnReceipts(conversationId: string): ResumeQuery<TAgentQueuedTurnReceipt[]>;
+  /**
+   * The signed-in user's active generations. `expectsSuccessor` keeps listening while the
+   * caller knows the server owes it a run.
+   */
+  useActiveJobs(
+    enabled: boolean,
+    expectsSuccessor: boolean,
+  ): ResumeQuery<{ activeJobIds: string[] }>;
+  /** Restarts the active-job list's handover window after a run was seen live another way. */
+  extendActiveJobsGrace(): void;
 }
 
 const StreamHostContext = createContext<StreamHost | null>(null);

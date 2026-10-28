@@ -77,6 +77,9 @@ const host: StreamHost = {
   },
   useLegacyStream: () => undefined,
   useTransport: () => transport,
+  useQueuedTurnReceipts: () => ({ data: undefined, dataUpdatedAt: 0 }),
+  useActiveJobs: () => ({ data: undefined, dataUpdatedAt: 0 }),
+  extendActiveJobsGrace: () => undefined,
 };
 const transport = createSSETransport({ token: 'token-1' });
 

@@ -43,6 +43,10 @@ const cache: ChatMessageCache = {
   refetchMessages: jest.fn(),
   refetchActiveJobs: jest.fn(),
   refetchStreamStatus: jest.fn(),
+  invalidateMessages: jest.fn(),
+  messagesUpdatedAt: () => undefined,
+  reloadMessages: () => Promise.resolve(),
+  readQueuedTurns: () => undefined,
 };
 
 /** A host with no app behind it: one fixed pane conversation and the abort under test. */

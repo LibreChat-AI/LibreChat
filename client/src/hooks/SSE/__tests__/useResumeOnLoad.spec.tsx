@@ -33,7 +33,9 @@ import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import { usePaneConversation } from '~/routes/ChatSettings';
+import { StreamHostTestProvider } from 'test/streamHost';
 import { SteerHostTestProvider } from 'test/steerHost';
+import { ChatHostTestProvider } from 'test/chatHost';
 import useResumeOnLoad from '../useResumeOnLoad';
 import store from '~/store';
 
@@ -212,24 +214,28 @@ function renderUseResumeOnLoad({
       <JotaiProvider store={jotaiStore}>
         <RecoilRoot initializeState={initializeState}>
           <SteerHostTestProvider>
-            <SubmissionProbe />
-            <SubmissionStartProbe />
-            <SiblingIndexProbe />
-            <PendingSteersProbe />
-            <QueuedMessagesProbe />
-            <ChatSettingsContext.Provider
-              value={{
-                ...defaultChatSettings,
-                usePaneConversation,
-                config: {
-                  ...defaultChatSettings.config,
-                  retentionMode: mockStartupConfig?.interface?.retentionMode,
-                  loaded: mockStartupConfigSettled,
-                },
-              }}
-            >
-              {children}
-            </ChatSettingsContext.Provider>
+            <ChatHostTestProvider>
+              <StreamHostTestProvider>
+                <SubmissionProbe />
+                <SubmissionStartProbe />
+                <SiblingIndexProbe />
+                <PendingSteersProbe />
+                <QueuedMessagesProbe />
+                <ChatSettingsContext.Provider
+                  value={{
+                    ...defaultChatSettings,
+                    usePaneConversation,
+                    config: {
+                      ...defaultChatSettings.config,
+                      retentionMode: mockStartupConfig?.interface?.retentionMode,
+                      loaded: mockStartupConfigSettled,
+                    },
+                  }}
+                >
+                  {children}
+                </ChatSettingsContext.Provider>
+              </StreamHostTestProvider>
+            </ChatHostTestProvider>
           </SteerHostTestProvider>
         </RecoilRoot>
       </JotaiProvider>

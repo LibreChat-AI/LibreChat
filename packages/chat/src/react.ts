@@ -3,6 +3,8 @@ export * from './react/chat';
 export * from './react/stream';
 export * from './react/subagents';
 export * from './react/usage';
+export * from './react/thread';
+export * from './react/approval';
 export { MessageContext, MessagePartIndex, useMessageContext } from './react/message';
 export {
   useMessagePartsHost,
