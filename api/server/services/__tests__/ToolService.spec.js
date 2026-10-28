@@ -1237,6 +1237,46 @@ describe('ToolService - Action Capability Gating', () => {
       expect(callArgs.tools).not.toContain(actionToolName);
     });
 
+    it('dates the web search context by the turn start as upstream without stableContext', async () => {
+      const capabilities = [AgentCapabilities.tools, AgentCapabilities.web_search];
+      const req = createMockReq(capabilities);
+      req.conversationCreatedAt = '2026-08-25T10:00:00.000Z';
+      req.turnStartedAt = Date.parse('2026-08-31T06:20:00.000Z');
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+      const result = await loadAgentTools({
+        req,
+        res: {},
+        agent: { id: 'agent_123', tools: [Tools.web_search] },
+        definitionsOnly: true,
+      });
+
+      expect(result.dynamicToolContextMap).toMatchInlineSnapshot(`
+        {
+          "web_search": "# \`web_search\` Runtime Context
+        Conversation Date & Time: 2026-08-31T06:20:00.000Z",
+        }
+      `);
+    });
+
+    it('dates the web search context by the conversation start with stableContext', async () => {
+      const capabilities = [AgentCapabilities.tools, AgentCapabilities.web_search];
+      const req = createMockReq(capabilities);
+      req.config.endpoints[EModelEndpoint.agents].promptCache = { stableContext: true };
+      req.conversationCreatedAt = '2026-08-25T10:00:00.000Z';
+      req.turnStartedAt = Date.parse('2026-08-31T06:20:00.000Z');
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+
+      const result = await loadAgentTools({
+        req,
+        res: {},
+        agent: { id: 'agent_123', tools: [Tools.web_search] },
+        definitionsOnly: true,
+      });
+
+      expect(result.dynamicToolContextMap[Tools.web_search]).toContain('2026-08-25T10:00:00.000Z');
+    });
+
     it('should include action tools in definitions when actions capability is enabled', async () => {
       const capabilities = [AgentCapabilities.tools, AgentCapabilities.actions];
       const req = createMockReq(capabilities);
@@ -3041,6 +3081,44 @@ describe('ToolService - Action Capability Gating', () => {
       expect(mockLoadToolsUtil.mock.calls[0][0].options.toolRegistry.has('github_compare')).toBe(
         true,
       );
+    });
+  });
+
+  describe('loadToolsForExecution — tool search with the dispatcher', () => {
+    const search = async (toolDispatch) => {
+      const capabilities = [AgentCapabilities.tools];
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+      const toolRegistry = new Map([
+        [
+          'lookup_mcp_gamma',
+          {
+            name: 'lookup_mcp_gamma',
+            description: 'Looks up an order.',
+            parameters: { type: 'object', properties: { order: { type: 'string' } } },
+            defer_loading: true,
+          },
+        ],
+      ]);
+      const { loadedTools } = await loadToolsForExecution({
+        req: createMockReq(capabilities),
+        res: {},
+        agent: { id: 'agent_123', tools: [] },
+        toolNames: ['tool_search'],
+        toolRegistry,
+        actionsEnabled: false,
+        toolDispatch,
+      });
+      const toolSearch = loadedTools.find((loaded) => loaded.name === 'tool_search');
+      return JSON.parse(await toolSearch.invoke({ query: 'order' }));
+    };
+
+    it('returns the schemas of found tools and points to the dispatcher', async () => {
+      const result = await search(true);
+      expect(result.tools[0]).toMatchObject({
+        name: 'lookup_mcp_gamma',
+        parameters: { properties: { order: { type: 'string' } } },
+      });
+      expect(result.call_with).toContain('call_tool');
     });
   });
 

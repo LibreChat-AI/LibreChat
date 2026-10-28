@@ -2063,6 +2063,7 @@ jest.mock('~/models', () => ({
   getMultiplier: jest.fn(),
   getFiles: jest.fn(),
   getMessages: jest.fn(),
+  getConvoContextAnchor: jest.fn(),
   getRoleByName: jest.fn(),
   getUserMemories: jest.fn(),
   getFormattedMemories: jest.fn(),
@@ -7784,6 +7785,444 @@ describe('AgentClient - titleConvo', () => {
       expect(client.memoryPayload).toBeNull();
     });
 
+    describe('turn context', () => {
+      const models = () => require('~/models');
+      const api = () => jest.requireActual('@librechat/api');
+      const WEB_SEARCH = '# `web_search` Runtime Context\nConversation started: 2026-03-09';
+      const PROJECT = 'Project guidance: quote prices in EUR.';
+      const ANCHOR = [
+        { key: 'runtime:web_search', value: WEB_SEARCH },
+        { key: 'date', value: '2026-03-09 (Monday)' },
+      ];
+      const conversationHistory = ({ firstUpdates, currentUpdates, summary } = {}) => [
+        {
+          messageId: 'msg-1',
+          parentMessageId: null,
+          sender: 'User',
+          text: 'First question',
+          isCreatedByUser: true,
+          createdAt: '2026-03-09T20:00:00.000Z',
+          tokenCount: 5,
+          ...(firstUpdates && { contextUpdates: firstUpdates }),
+        },
+        {
+          messageId: 'msg-2',
+          parentMessageId: 'msg-1',
+          sender: 'Assistant',
+          text: 'First answer',
+          isCreatedByUser: false,
+          createdAt: '2026-03-09T20:00:10.000Z',
+          tokenCount: 5,
+          ...(summary && {
+            content: [
+              {
+                type: ContentTypes.SUMMARY,
+                content: [{ type: ContentTypes.TEXT, text: 'Summary of the first turn.' }],
+                boundary: { messageId: 'msg-2', contentIndex: 0 },
+                tokenCount: 5,
+              },
+              { type: ContentTypes.TEXT, text: 'First answer' },
+            ],
+          }),
+        },
+        {
+          messageId: 'msg-3',
+          parentMessageId: 'msg-2',
+          sender: 'User',
+          text: 'Next question',
+          isCreatedByUser: true,
+          ...(currentUpdates && { contextUpdates: currentUpdates }),
+        },
+      ];
+      const promptText = (message) =>
+        Array.isArray(message.content)
+          ? message.content.map((part) => part.text ?? '').join('')
+          : message.content;
+      const toggleArtifacts = () => {
+        const prompt = api().generateArtifactsPrompt({
+          endpoint: mockAgent.provider,
+          artifacts: 'default',
+        });
+        mockAgent.artifacts = 'default';
+        api().contributeContext(mockAgent, 'artifacts', prompt);
+        return prompt;
+      };
+
+      beforeEach(() => {
+        mockReq.conversationCreatedAt = '2026-03-09T20:00:00.000Z';
+        mockReq.turnStartedAt = Date.parse('2026-03-10T09:00:00.000Z');
+        mockReq.body.timezone = 'UTC';
+        mockReq.config.endpoints = {
+          [EModelEndpoint.agents]: { promptCache: { stableContext: true } },
+        };
+        mockAgent.dynamicToolContextMap = { web_search: WEB_SEARCH };
+        models().getConvoContextAnchor.mockReset().mockResolvedValue(ANCHOR);
+        require('@librechat/api').countFormattedMessageTokens.mockImplementation(({ content }) => {
+          const text = Array.isArray(content)
+            ? content.map((part) => part.text ?? '').join('\n')
+            : String(content ?? '');
+          return text.includes('<context_update>') ? 90 : 10;
+        });
+      });
+
+      afterEach(() => {
+        models().getConvoContextAnchor.mockReset();
+      });
+
+      it('prepends a date change to the prompt copy only, counts it for the prompt and stores it', async () => {
+        const result = await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(result.prompt[0].content).toBe('First question');
+        expect(result.prompt[2].content).toBe(
+          '<context_update>\nCurrent date changed to: 2026-03-10 (Tuesday)\n</context_update>\n\nNext question',
+        );
+        expect(result.tokenCountMap['msg-3']).toBe(10);
+        expect(client.indexTokenCountMap[2]).toBe(90);
+        /** Stored counts 5 + 5, the sent message 10, and the 80 the block adds. */
+        expect(result.promptTokens).toBe(100);
+        expect(client.memoryPayload[2].content).toBe('Next question');
+        expect(mockReq.turnContextUpdates).toEqual({
+          messageId: 'msg-3',
+          entries: [{ key: 'date', value: '2026-03-10 (Tuesday)' }],
+        });
+        expect(client.pendingContextAnchor).toBeUndefined();
+        expect(mockAgent.additional_instructions).toBe(
+          `${WEB_SEARCH}\n\nCurrent date: 2026-03-09 (Monday)`,
+        );
+      });
+
+      it('binds the anchored MCP tools and instructions, and defers a server selected since', async () => {
+        const mcpTool = (server) => ({
+          name: `query_mcp_${server}`,
+          description: `Queries ${server}.`,
+          parameters: { type: 'object', properties: {} },
+          serverName: server,
+        });
+        mockAgent.toolDefinitions = [mcpTool('beta'), mcpTool('alpha')];
+        mockAgent.toolRegistry = new Map(mockAgent.toolDefinitions.map((d) => [d.name, d]));
+        mockAgent.selectedToolNames = ['sys__all__sys_mcp_alpha', 'sys__all__sys_mcp_beta'];
+        const { MCPServersRegistry } = jest.requireActual('@librechat/api');
+        const registrySpy = jest.spyOn(MCPServersRegistry, 'getInstance').mockReturnValue({
+          getAllServerConfigs: async () => ({
+            alpha: { serverInstructions: 'Alpha rule.' },
+            beta: { serverInstructions: 'Beta rule.' },
+          }),
+          getUserHiddenServerNames: async () => new Set(),
+        });
+        models().getConvoContextAnchor.mockResolvedValue([
+          ...ANCHOR,
+          {
+            key: 'tool:mcp:alpha',
+            value: JSON.stringify({
+              instructions: 'Alpha rule.',
+              tools: [
+                {
+                  name: 'query_mcp_alpha',
+                  description: 'Queries alpha.',
+                  parameters: { type: 'object', properties: {} },
+                },
+              ],
+            }),
+          },
+        ]);
+
+        let result;
+        try {
+          result = await client.buildMessages(conversationHistory(), 'msg-3', {});
+        } finally {
+          registrySpy.mockRestore();
+        }
+
+        expect(promptText(result.prompt[2])).toContain(
+          'Tools of MCP server `beta` are now available.',
+        );
+        expect(promptText(result.prompt[2])).toContain('Beta rule.');
+        expect(mockReq.turnContextUpdates.entries.map(({ key }) => key)).toEqual([
+          'tool:mcp:beta',
+          'date',
+        ]);
+        expect(mockAgent.toolDispatch).toBe(true);
+        expect(
+          mockAgent.toolDefinitions.map(({ name, defer_loading }) => [name, defer_loading]),
+        ).toEqual([
+          ['query_mcp_beta', true],
+          ['query_mcp_alpha', undefined],
+        ]);
+        expect(mockAgent.instructions).toContain('Alpha rule.');
+        expect(mockAgent.instructions).not.toContain('Beta rule.');
+        expect(mockFormatInstructions).not.toHaveBeenCalled();
+      });
+
+      it('stamps the sent message and replays stored send times when timestamps are on', async () => {
+        mockReq.config.endpoints = {
+          [EModelEndpoint.agents]: {
+            promptMessageTimestamps: true,
+            promptCache: { stableContext: true },
+          },
+        };
+        const history = conversationHistory({
+          firstUpdates: [{ key: 'message_time', value: '2026-03-09 20:00:00 +00:00 (Monday)' }],
+        });
+
+        const result = await client.buildMessages(history, 'msg-3', {});
+
+        expect(result.prompt[0].content).toBe(
+          '<context_update>\nMessage sent: 2026-03-09 20:00:00 +00:00 (Monday)\n</context_update>\n\nFirst question',
+        );
+        expect(result.prompt[2].content).toBe(
+          '<context_update>\nCurrent date changed to: 2026-03-10 (Tuesday)\nMessage sent: 2026-03-10 09:00:00 +00:00 (Tuesday)\n</context_update>\n\nNext question',
+        );
+        expect(client.memoryPayload[0].content).toBe('First question');
+      });
+
+      it('anchors a conversation without an anchor to this turn and keeps it for the next save', async () => {
+        models().getConvoContextAnchor.mockResolvedValue(null);
+        api().contributeContext(mockAgent, 'project', PROJECT);
+
+        const result = await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(client.pendingContextAnchor).toEqual({
+          messageId: null,
+          conversationId: 'convo-123',
+          anchor: [
+            { key: 'project', value: PROJECT },
+            { key: 'runtime:web_search', value: WEB_SEARCH },
+            { key: 'date', value: '2026-03-10 (Tuesday)' },
+            { key: 'segment:model', value: JSON.stringify(['openAI', 'openAI', 'gpt-4']) },
+            { key: 'segment:agent', value: expect.any(String) },
+            { key: 'segment:provider_tools', value: '[]' },
+          ],
+        });
+        expect(result.prompt[2].content).toBe('Next question');
+        expect(mockAgent.additional_instructions).toBe(
+          `${PROJECT}\n\n${WEB_SEARCH}\n\nCurrent date: 2026-03-10 (Tuesday)`,
+        );
+      });
+
+      it('reports the reset on the reply when the provider has a prompt cache', async () => {
+        mockAgent.provider = 'anthropic';
+        mockAgent.model_parameters = { model: 'claude-sonnet-4-5', promptCache: true };
+        models().getConvoContextAnchor.mockResolvedValue([
+          ...ANCHOR,
+          { key: 'segment:model', value: JSON.stringify(['anthropic', 'anthropic', 'claude-old']) },
+        ]);
+
+        await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(client.buildResponseMetadata()).toEqual({ promptCacheReset: ['model'] });
+      });
+
+      it('keeps the anchored system prompt and announces toggles in the sent message', async () => {
+        models().getConvoContextAnchor.mockResolvedValue([
+          { key: 'project', value: PROJECT },
+          ...ANCHOR,
+        ]);
+        mockReq.turnStartedAt = Date.parse('2026-03-09T21:00:00.000Z');
+        const artifactsPrompt = toggleArtifacts();
+
+        const result = await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(mockAgent.additional_instructions).toContain(PROJECT);
+        expect(mockAgent.additional_instructions).not.toContain(artifactsPrompt);
+        expect(promptText(result.prompt[2])).toBe(
+          `<context_update>\nArtifacts instructions:\n${artifactsPrompt}\nProject guidance no longer applies.\n</context_update>\n\nNext question`,
+        );
+        expect(mockReq.turnContextUpdates.entries).toEqual([
+          { key: 'artifacts', value: 'default' },
+          { key: 'project', value: null },
+        ]);
+        expect(client.indexTokenCountMap[2]).toBe(90);
+        expect(result.tokenCountMap['msg-3']).toBe(10);
+      });
+
+      it('announces changed memory as a snapshot, keeping it out of the system prompt and the memory copy', async () => {
+        const anchoredMemory = api().formatMemoryContext('tea: yes');
+        models().getConvoContextAnchor.mockResolvedValue([
+          ...ANCHOR,
+          { key: 'memory', value: anchoredMemory },
+        ]);
+        mockReq.turnStartedAt = Date.parse('2026-03-09T21:00:00.000Z');
+        client.useMemory = jest.fn().mockResolvedValue({ withoutKeys: 'tea: no' });
+
+        const result = await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(mockAgent.additional_instructions).toContain('tea: yes');
+        expect(mockAgent.additional_instructions).not.toContain('tea: no');
+        expect(promptText(result.prompt[2])).toContain('Memory about the user changed:');
+        expect(promptText(result.prompt[2])).toContain('Added:\ntea: no');
+        expect(promptText(result.prompt[2])).toContain('Removed:\ntea: yes');
+        expect(client.memoryPayload[2].content).toBe('Next question');
+        expect(client.modelBoundMemoryContexts).toEqual(
+          expect.arrayContaining([anchoredMemory, expect.stringContaining('tea: no')]),
+        );
+      });
+
+      it('re-anchors the first turn after a compaction on the message carrying the summary', async () => {
+        mockReq.turnStartedAt = Date.parse('2026-03-09T21:00:00.000Z');
+        const artifactsPrompt = toggleArtifacts();
+
+        const result = await client.buildMessages(
+          conversationHistory({
+            firstUpdates: [{ key: 'artifacts', value: 'default' }],
+            summary: true,
+          }),
+          'msg-3',
+          {},
+        );
+
+        expect(client.pendingContextAnchor).toEqual({
+          messageId: 'msg-2',
+          conversationId: 'convo-123',
+          anchor: [
+            ...ANCHOR,
+            { key: 'artifacts', value: 'default' },
+            { key: 'segment:model', value: JSON.stringify(['openAI', 'openAI', 'gpt-4']) },
+            { key: 'segment:agent', value: expect.any(String) },
+            { key: 'segment:provider_tools', value: '[]' },
+          ],
+        });
+        expect(mockAgent.additional_instructions).toContain(artifactsPrompt);
+        expect(JSON.stringify(result.prompt)).not.toContain('<context_update>');
+        expect(mockReq.turnContextUpdates).toBeUndefined();
+      });
+
+      it('binds the retrieved context to the sent message for every agent reading the conversation', async () => {
+        mockReq.turnStartedAt = Date.parse('2026-03-09T21:00:00.000Z');
+        client.contextHandlers = { createContext: jest.fn().mockResolvedValue('Passage 7919') };
+        const handoffAgent = {
+          id: 'handoff-agent',
+          endpoint: EModelEndpoint.openAI,
+          provider: EModelEndpoint.openAI,
+          instructions: 'Handoff instructions',
+          model_parameters: { model: 'gpt-4' },
+          tools: [],
+        };
+        client.agentConfigs = new Map([[handoffAgent.id, handoffAgent]]);
+        const history = conversationHistory({ firstUpdates: [{ key: 'rag', value: 'Passage 1' }] });
+
+        const result = await client.buildMessages(history, 'msg-3', {});
+
+        expect(promptText(result.prompt[0])).toBe(
+          '<context_update>\nPassage 1\n</context_update>\n\nFirst question',
+        );
+        expect(promptText(result.prompt[2])).toBe(
+          '<context_update>\nPassage 7919\n</context_update>\n\nNext question',
+        );
+        expect(mockReq.turnContextUpdates.entries).toEqual([{ key: 'rag', value: 'Passage 7919' }]);
+        for (const agent of [mockAgent, handoffAgent]) {
+          expect(agent.additional_instructions ?? '').not.toContain('Passage');
+        }
+        expect(client.modelBoundFileContexts).toEqual(
+          expect.arrayContaining(['Passage 1', 'Passage 7919']),
+        );
+        expect(client.memoryPayload[2].content).toBe('Next question');
+      });
+
+      it('gives a handoff target on the primary memory partition the anchored memory, not a live per-turn copy', async () => {
+        mockReq.turnStartedAt = Date.parse('2026-03-09T21:00:00.000Z');
+        mockReq.config.memory = {
+          agent: { enabled: true, provider: EModelEndpoint.openAI, model: 'gpt-4' },
+        };
+        client.useMemory = jest.fn().mockResolvedValue({ withoutKeys: 'tea: yes\n' });
+        models().getConvoContextAnchor.mockResolvedValue([
+          ...ANCHOR,
+          { key: 'memory', value: 'Anchored memory.' },
+        ]);
+        const handoffAgent = {
+          id: 'handoff-agent',
+          endpoint: EModelEndpoint.openAI,
+          provider: EModelEndpoint.openAI,
+          instructions: 'Handoff instructions',
+          model_parameters: { model: 'gpt-4' },
+          tools: [],
+        };
+        client.agentConfigs = new Map([[handoffAgent.id, handoffAgent]]);
+
+        await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(handoffAgent.additional_instructions).toBe('Anchored memory.');
+        expect(handoffAgent.additional_instructions).not.toContain('tea: yes');
+      });
+
+      it('keeps the prompt live and reads no anchor without stableContext', async () => {
+        mockReq.config.endpoints = { [EModelEndpoint.agents]: {} };
+        const artifactsPrompt = toggleArtifacts();
+        client.useMemory = jest.fn().mockResolvedValue({ withoutKeys: 'tea: no' });
+
+        const result = await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect(models().getConvoContextAnchor).not.toHaveBeenCalled();
+        expect(mockReq.turnContextUpdates).toBeUndefined();
+        expect(client.pendingContextAnchor).toBeUndefined();
+        expect(mockAgent.additional_instructions).toContain(artifactsPrompt);
+        expect(mockAgent.additional_instructions).toContain('tea: no');
+        expect(result.prompt[2].content).toBe('Next question');
+      });
+
+      it('builds the prompt exactly as upstream without the settings', async () => {
+        mockReq.config.endpoints = {};
+        mockAgent.additional_instructions = 'Agent context';
+        client.contextHandlers = { createContext: jest.fn().mockResolvedValue('Passage 7919') };
+        client.useMemory = jest.fn().mockResolvedValue({ withoutKeys: 'tea: no' });
+
+        const result = await client.buildMessages(conversationHistory(), 'msg-3', {});
+
+        expect({
+          prompt: result.prompt,
+          tokenCountMap: result.tokenCountMap,
+          indexTokenCountMap: client.indexTokenCountMap,
+          memoryPayload: client.memoryPayload,
+          instructions: mockAgent.instructions,
+          additional_instructions: mockAgent.additional_instructions,
+          dynamicToolContextMap: mockAgent.dynamicToolContextMap,
+        }).toMatchInlineSnapshot(`
+          {
+            "additional_instructions": "Agent context
+
+          Passage 7919
+
+          Persistent memory is available across conversations within the current memory scope. Saved memories, if any, are shown below. No entries shown here does not mean memory is unavailable. Use memory tools only if provided; claim a memory was saved or deleted only after the action is confirmed.
+
+          # Existing memory about the user:
+          tea: no",
+            "dynamicToolContextMap": {
+              "web_search": "# \`web_search\` Runtime Context
+          Conversation started: 2026-03-09",
+            },
+            "indexTokenCountMap": {
+              "0": 5,
+              "1": 5,
+              "2": 10,
+            },
+            "instructions": "Primary instructions",
+            "memoryPayload": null,
+            "prompt": [
+              {
+                "content": "First question",
+                "messageId": "msg-1",
+                "role": "user",
+              },
+              {
+                "content": "First answer",
+                "messageId": "msg-2",
+                "role": "assistant",
+              },
+              {
+                "content": "Next question",
+                "messageId": "msg-3",
+                "role": "user",
+              },
+            ],
+            "tokenCountMap": {
+              "msg-1": 5,
+              "msg-2": 5,
+              "msg-3": 10,
+            },
+          }
+        `);
+      });
+    });
+
     it('does not duplicate a file that is both request context and scoped context', async () => {
       const sharedFile = makeTextFile('shared-file', 'shared.txt', 'Shared duplicate context');
 
@@ -10159,6 +10598,34 @@ describe('AgentClient - resumeCompletion content protection', () => {
       body: { source: 'message', field: 'content_part' },
     });
     expect(mockCreateRun).not.toHaveBeenCalled();
+  });
+
+  it('renders the resumed system prompt from the anchor of the paused turn', async () => {
+    const api = jest.requireActual('@librechat/api');
+    mockGetAgentCheckpointer.mockResolvedValue({
+      getTuple: jest.fn().mockResolvedValue({ checkpoint: { channel_values: { messages: [] } } }),
+    });
+    require('~/models')
+      .getConvoContextAnchor.mockReset()
+      .mockResolvedValue([{ key: 'project', value: 'Anchored project.' }]);
+    mockCreateRun.mockResolvedValue({
+      resume: jest.fn().mockResolvedValue(undefined),
+      getCalibrationRatio: jest.fn(() => 0),
+    });
+    const context = makeContext();
+    context.options.req.config.endpoints[EModelEndpoint.agents].promptCache = {
+      stableContext: true,
+    };
+    context.useMemory = jest.fn().mockResolvedValue(undefined);
+    api.contributeContext(context.options.agent, 'project', 'Live project.');
+    api.contributeContext(context.options.agent, 'artifacts', 'Live artifacts.');
+
+    await AgentClient.prototype.resumeCompletion.call(context, { resumeValue: {} });
+
+    expect(mockCreateRun).toHaveBeenCalledTimes(1);
+    const [primary] = mockCreateRun.mock.calls[0][0].agents;
+    expect(primary.additional_instructions).toBe('Anchored project.');
+    require('~/models').getConvoContextAnchor.mockReset();
   });
 
   it('allows unmarked model prose and ignores a marked sibling branch on resume', async () => {

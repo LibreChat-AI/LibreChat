@@ -9,6 +9,7 @@ import type {
 import type { TAttachment, TPlugin, AgentProvider, MemoryScope, SkillsScope } from 'src/schemas';
 import type { TTokenUsageEvent, TContextUsageEvent, TPendingSteer } from './runs';
 import type { StatefulCodeEnvironment } from '../stateful-code';
+import type { DispatchedToolCall } from '../toolDispatch';
 import type { SummaryContentPart } from './content';
 import type { TFile } from './files';
 import { StepTypes, ContentTypes, ToolCallTypes } from './runs';
@@ -105,6 +106,8 @@ export namespace Agents {
     stepId?: string;
     /** If provided, the output of the tool call */
     output?: string;
+    /** The tool that ran when `name` is the dispatcher tool. */
+    dispatched?: DispatchedToolCall;
     /** Host-owned durable receipt for a detached ordinary tool result.
      * It lives beside the original call so reload, manual collection, and
      * automatic continuation all arbitrate the same result identity. */

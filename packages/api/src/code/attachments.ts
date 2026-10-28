@@ -114,6 +114,9 @@ export interface WorkspaceAttachmentDeps {
   timeoutMs?: number;
   /** Workspace requests in flight for the turn; defaults to three. */
   concurrency?: number;
+  /** Lists the attachments in upload order (`promptCache.stableContext`), not in the order
+   *  priming returned them, which follows each file's last use. */
+  uploadOrder?: boolean;
 }
 
 export interface WorkspaceAttachmentCandidate {
@@ -1061,6 +1064,9 @@ async function primeAgentAttachments({
   }
   const routeKey = getCodeExecutionRouteKey(context);
   const candidates = [...primed, ...queued.map((item) => withProvisionedSource(item, routeKey))];
+  if (deps.uploadOrder) {
+    candidates.sort(compareCandidates);
+  }
   const outcomes = new Map<string, WorkspaceAttachmentOutcome>();
   const importable: WorkspaceAttachmentCandidate[] = [];
   for (const candidate of candidates) {

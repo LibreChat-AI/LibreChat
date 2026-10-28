@@ -139,6 +139,7 @@ jest.mock('../../middleware/modelBoundContent', () => {
 });
 
 import { initializeAgent } from '../initialize';
+import { applyContextToAgent } from '../context';
 import { primeResources } from '../resources';
 import { isFatalAgentInitializationError } from '../errors';
 import { canAgentGraphPause } from '../hitl/admission';
@@ -598,6 +599,69 @@ describe('initializeAgent: ChatProject context', () => {
       chatProjectContext: projectContext,
     };
   }
+
+  /** Inline snapshot recorded on upstream/dev 6718244d8, where the run context was one string. */
+  it('builds the system prompt fields exactly as upstream without stableContext', async () => {
+    const { generateArtifactsPrompt } = jest.requireMock('~/prompts') as {
+      generateArtifactsPrompt: jest.Mock;
+    };
+    generateArtifactsPrompt.mockReturnValueOnce('Artifact guidance\n');
+    const { agent, loadTools, db } = createMocks();
+    agent.instructions = 'Today is {{current_date}}.\n';
+    agent.additional_instructions = 'Agent context\n';
+    agent.artifacts = 'enabled' as never;
+    const runtime = {
+      ...projectRuntime(),
+      requestBody: { timezone: 'Europe/Moscow' },
+      turnStartedAt: new Date('2026-08-31T06:20:00.000Z').getTime(),
+    };
+
+    const result = await initializeAgent(
+      {
+        runtime,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        useChatProjectContext: true,
+      },
+      db,
+    );
+    /** As `AgentClient.buildMessages` prepares a run agent: trim, then add the run context. */
+    result.additional_instructions = result.additional_instructions?.trim() || undefined;
+    const mcpManager = { formatInstructionsForContext: jest.fn(async () => '') };
+    await applyContextToAgent({
+      agent: result as never,
+      mcpManager: mcpManager as never,
+      runContext: { rag: 'Passage 7919', memory: 'tea: no\n', agentFiles: 'Agent file text' },
+    });
+
+    expect({
+      instructions: result.instructions,
+      additional_instructions: result.additional_instructions,
+    }).toMatchInlineSnapshot(`
+      {
+        "additional_instructions": "Agent context
+
+
+      Project guidance (user-provided context; subordinate to system, platform, agent, and tool policies):
+      Prefer concise project answers.
+
+      Today is 2026-08-31 (Monday).
+
+
+      Artifact guidance
+
+      Passage 7919
+
+      tea: no
+
+
+      Agent file text",
+        "instructions": undefined,
+      }
+    `);
+  });
 
   it('keeps Agent and Project guidance exactly once in initialized output without mutating the definition', async () => {
     const { agent, loadTools, db } = createMocks();
@@ -2214,6 +2278,91 @@ describe('initializeAgent — stable and dynamic instruction fields', () => {
     expect(result.additional_instructions).toBe(
       'Today is 2026-08-31 (Monday). The turn began at 2026-08-31 06:20:00 +00:00 (Monday) (2026-08-31T06:20:00.000Z).',
     );
+  });
+
+  it('builds the instruction fields exactly as upstream without stableContext', async () => {
+    const { generateArtifactsPrompt } = jest.requireMock('~/prompts') as {
+      generateArtifactsPrompt: jest.Mock;
+    };
+    generateArtifactsPrompt.mockReturnValueOnce('Artifact guidance');
+    const { agent, req, res, loadTools, db } = createMocks();
+    loadTools.mockResolvedValueOnce({
+      tools: [],
+      toolContextMap: { web_search: 'Web search instructions' },
+      dynamicToolContextMap: { web_search: 'Conversation Date & Time: turn' },
+      toolDefinitions: [],
+      hasDeferredTools: false,
+    });
+    agent.instructions = 'Today is {{current_date}}, at {{current_datetime}}.';
+    agent.additional_instructions = 'Agent context';
+    agent.artifacts = 'enabled' as never;
+    req.conversationCreatedAt = '2026-08-25T10:00:00.000Z';
+    req.turnStartedAt = new Date('2026-08-31T06:20:00.000Z').getTime();
+    req.body = { timezone: 'Europe/Moscow' };
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect({
+      instructions: result.instructions,
+      additional_instructions: result.additional_instructions,
+      toolContextMap: result.toolContextMap,
+      dynamicToolContextMap: result.dynamicToolContextMap,
+    }).toMatchInlineSnapshot(`
+      {
+        "additional_instructions": "Agent context
+
+      Today is 2026-08-31 (Monday), at 2026-08-31 09:20:00 +03:00 (Monday).
+
+      Artifact guidance",
+        "dynamicToolContextMap": {
+          "web_search": "Conversation Date & Time: turn",
+        },
+        "instructions": undefined,
+        "toolContextMap": {
+          "web_search": "Web search instructions",
+        },
+      }
+    `);
+  });
+
+  it('anchors temporal special vars to the conversation start with stableContext', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.instructions = 'Today is {{current_date}}.';
+    agent.additional_instructions = 'Agent context';
+    req.config = { endpoints: { agents: { promptCache: { stableContext: true } } } } as never;
+    req.conversationCreatedAt = '2026-08-25T10:00:00.000Z';
+    req.turnStartedAt = new Date('2026-08-31T06:20:00.000Z').getTime();
+    req.body = { timezone: 'UTC' };
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.instructions).toBeUndefined();
+    expect(result.additional_instructions).toBe('Agent context');
+    expect(result.dynamicToolContextMap).toEqual({
+      agent_temporal_instructions: 'Today is 2026-08-25 (Tuesday).',
+    });
   });
 
   it('resolves temporal special vars in the request timezone', async () => {
