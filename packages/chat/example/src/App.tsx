@@ -17,6 +17,7 @@ const CONVERSATION_ID = 'example';
 
 function createState(): ChatState {
   let messages: TMessage[] = [];
+  const listeners = new Set<() => void>();
   return {
     status: 'ready',
     error: undefined,
@@ -26,16 +27,36 @@ function createState(): ChatState {
     },
     replaceMessages(next) {
       messages = next;
+      listeners.forEach((listener) => listener());
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
     },
   };
 }
 
+/** A turn the transport rejected leaves nothing behind, so the restored text sends as a new turn. */
+function dropFailedTurn(state: ChatState, reply: TMessage | undefined): void {
+  if (!reply) {
+    return;
+  }
+  const failed = new Set([reply.messageId, reply.parentMessageId]);
+  state.replaceMessages(state.messages.filter((message) => !failed.has(message.messageId)));
+}
+
 /** Builds each turn's request and its optimistic user message and reply placeholder. */
 function createChat(transport: ChatTransport): Chat {
+  const state = createState();
   return new Chat({
     id: CONVERSATION_ID,
-    state: createState(),
+    state,
     transport,
+    onFinish({ isError, message }) {
+      if (isError) {
+        dropFailedTurn(state, message);
+      }
+    },
     prepareRequest({ input, messages }) {
       const text = input?.parts.map((part) => part.text).join('') ?? '';
       const parentMessageId = messages[messages.length - 1]?.messageId ?? null;

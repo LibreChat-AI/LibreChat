@@ -80,6 +80,13 @@ describe('example consumer', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('offline');
     expect(composer).toHaveValue('Hello');
+
+    transport.sendMessages = createMemoryTransport((text) => `Echo: ${text}`).sendMessages;
+    pressEnter(composer);
+    await screen.findByText('Echo: Hello');
+    const items = within(screen.getByRole('list', { name: 'Messages' })).getAllByRole('listitem');
+    expect(items.map((item) => item.textContent)).toEqual(['YouHello', 'AssistantEcho: Hello']);
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('renders under the ClickHouse reference theme', async () => {

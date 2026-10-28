@@ -15,6 +15,9 @@ export const en = {
 };
 
 /**
+ * Passed to `I18nextProvider` rather than imported for its side effect: the example sits inside a
+ * package marked `sideEffects: false`, so a bare import is dropped from the build.
+ *
  * The package's parts localize through `useLocalize`, which reads this react-i18next instance. A
  * real app adds its own translations, including the keys the parts use; the example ships only its
  * own copy, so a part label it has not translated shows its key.
