@@ -92,7 +92,11 @@ const isInert = (reference) => {
     case 'NewExpression':
       return parent.callee !== node;
     case 'AssignmentExpression':
-      return parent.right === node;
+      return (
+        parent.right === node &&
+        parent.left.type !== 'ObjectPattern' &&
+        parent.left.type !== 'ArrayPattern'
+      );
     case 'VariableDeclarator':
       return parent.init === node && parent.id.type === 'Identifier';
     default:
@@ -100,25 +104,30 @@ const isInert = (reference) => {
   }
 };
 
+/** Whether a function or class expression is called or constructed where it is written. */
+const invokedInPlace = (node) => {
+  let callee = node;
+  while (TRANSPARENT.has(callee.parent.type)) callee = callee.parent;
+  const { parent } = callee;
+  return (
+    (parent.type === 'CallExpression' || parent.type === 'NewExpression') &&
+    parent.callee === callee
+  );
+};
+
 /**
  * Whether `node` runs when its module loads: no enclosing function defers it, except one invoked
- * on the spot, and no instance field initializer does. A computed field key still runs with the
- * class. A callback handed to another call is taken as deferred, as `memo` and `forwardRef` take
- * theirs; the rule cannot see whether the callee invokes it right away.
+ * on the spot, and no instance field initializer does, except in a class constructed on the spot.
+ * A computed field key still runs with the class. A callback handed to another call is taken as
+ * deferred, as `memo` and `forwardRef` take theirs; the rule cannot see whether the callee invokes
+ * it right away.
  */
 const runsOnLoad = (node) => {
   for (let child = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
-    if (FUNCTIONS.has(parent.type)) {
-      let callee = parent;
-      while (TRANSPARENT.has(callee.parent.type)) callee = callee.parent;
-      const invoked =
-        (callee.parent.type === 'CallExpression' || callee.parent.type === 'NewExpression') &&
-        callee.parent.callee === callee;
-      if (!invoked) return false;
-    }
-    if (parent.type === 'PropertyDefinition' && !parent.static && child === parent.value) {
-      return false;
-    }
+    if (FUNCTIONS.has(parent.type) && !invokedInPlace(parent)) return false;
+    const instanceValue =
+      parent.type === 'PropertyDefinition' && !parent.static && child === parent.value;
+    if (instanceValue && !invokedInPlace(parent.parent.parent)) return false;
   }
   return true;
 };
