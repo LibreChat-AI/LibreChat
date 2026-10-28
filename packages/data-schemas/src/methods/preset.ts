@@ -159,13 +159,11 @@ export function createPresetMethods(mongoose: typeof import('mongoose')): {
         update.defaultPreset = defaultPreset;
         update.order = 0;
 
-        const currentDefault = await Preset.findOne({ defaultPreset: true, user });
-
-        if (currentDefault && currentDefault.presetId !== presetId) {
-          await Preset.findByIdAndUpdate(currentDefault._id, {
-            $unset: { defaultPreset: '', order: '' },
-          });
-        }
+        /** One write demotes every other default, instead of a read then a by-id update. */
+        await Preset.updateMany(
+          { user, defaultPreset: true, ...(presetId != null && { presetId: { $ne: presetId } }) },
+          { $unset: { defaultPreset: '', order: '' } },
+        );
       } else if (defaultPreset === false) {
         update.defaultPreset = undefined;
         update.order = undefined;

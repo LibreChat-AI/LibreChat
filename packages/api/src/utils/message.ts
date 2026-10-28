@@ -200,32 +200,10 @@ export function stripProviderItems<T>(content: T): T {
 }
 
 /**
- * Content with the signed reasoning of its `think` parts removed, of the parts before index
- * `before` only when given. The same array when no part carries any.
- */
-export function stripReasoningReplay<T>(content: T, before?: number): T {
-  if (!Array.isArray(content)) {
-    return content;
-  }
-  let stripped: unknown[] | undefined;
-  content.forEach((part: ReplayCarrierPart, index) => {
-    if (index < (before ?? Infinity) && part?.type === 'think' && THINK_REPLAY_FIELD in part) {
-      const { [THINK_REPLAY_FIELD]: _replay, ...rest } = part;
-      stripped ??= [...content];
-      stripped[index] = rest;
-    }
-  });
-  return (stripped ?? content) as T;
-}
-
-/**
  * A reasoning delta without the signed blocks of the reasoning parts it carries, for the
- * client stream. The same object when it carries none or when signed blocks are not stored.
+ * client stream. The same object when it carries none.
  */
-export function omitReasoningReplayFromDelta<T>(data: T, storesProviderItems = true): T {
-  if (!storesProviderItems) {
-    return data;
-  }
+export function omitReasoningReplayFromDelta<T>(data: T): T {
   const delta = (data as { delta?: { content?: unknown } } | null)?.delta;
   const parts = delta?.content;
   if (!Array.isArray(parts) || !parts.some((part) => part?.[THINK_REPLAY_FIELD] != null)) {

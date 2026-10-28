@@ -11,13 +11,6 @@ export * from './compaction';
 export * from './contact';
 export * from './context';
 export * from './contextUpdates';
-export {
-  isStableContextEnabled,
-  replaysSignedReasoning,
-  getReasoningReplayTarget,
-} from './promptCache';
-export type { PromptCacheConfig } from './promptCache';
-export * from './turnContext';
 export * from './control';
 export * from './conversation';
 export * from './creates';
@@ -56,22 +49,16 @@ export * from './parameters';
 export * from './input';
 export * from './plan';
 export * from './prewarm';
+export * from './promptCache';
 export * from './ptc';
 export * from './openai';
 export * from './transactions';
 export * from './traversal';
+export * from './reasoningReplay';
 export * from './usage';
 export * from './resources';
 export * from './responses';
 export * from './skills';
-export {
-  ContextPartKeys,
-  listContextParts,
-  contributeContext,
-  assembleSystemPrompt,
-  assembleAdditionalInstructions,
-} from './systemParts';
-export type { ContextKind, ContextPart, ContextAgent } from './systemParts';
 export * from './phases';
 export * from './stepBudget';
 export * from './startup';

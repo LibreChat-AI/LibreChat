@@ -6,6 +6,13 @@ jest.mock('nanoid', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  writeGuarded: (res, chunk) => {
+    if (res.writableEnded === true || res.destroyed === true) {
+      return false;
+    }
+    res.write(chunk);
+    return true;
+  },
   sendEvent: jest.fn(),
   writeAttachmentEvent: jest.fn(),
   createOwnedToolEndHandler: jest.fn((callback) => ({ handle: callback })),
@@ -1908,7 +1915,6 @@ describe('provider output items', () => {
       collectedUsage: [],
       streamId: 'conversation-1',
       jobCreatedAt: 1234,
-      storeProviderItems: true,
     });
     await handlers[GraphEvents.ON_RUN_STEP].handle(GraphEvents.ON_RUN_STEP, {
       id: 'step-1',
@@ -1943,7 +1949,7 @@ describe('signed reasoning of a reasoning delta', () => {
     anthropic: { model: 'claude-test', blocks: [{ type: 'thinking', signature: 'SIG_1' }] },
   };
 
-  const run = async (storeProviderItems) => {
+  it('is kept in the aggregated content and never emitted', async () => {
     const { GenerationJobManager } = require('@librechat/api');
     const { GraphEvents, createContentAggregator } = jest.requireActual('@librechat/agents');
     const { getDefaultHandlers } = require('../callbacks');
@@ -1957,7 +1963,6 @@ describe('signed reasoning of a reasoning delta', () => {
       collectedUsage: [],
       streamId: 'conversation-1',
       jobCreatedAt: 1234,
-      storeProviderItems,
     });
     await handlers[GraphEvents.ON_RUN_STEP].handle(GraphEvents.ON_RUN_STEP, {
       id: 'step-1',
@@ -1969,19 +1974,10 @@ describe('signed reasoning of a reasoning delta', () => {
       id: 'step-1',
       delta: { content: [{ type: 'think', think: 'plan', provider_replay: replay }] },
     });
-    return { contentParts, emitted: GenerationJobManager.emitChunk.mock.calls };
-  };
-
-  it('is kept in the aggregated content and never emitted with stableContext', async () => {
-    const { contentParts, emitted } = await run(true);
+    const emitted = GenerationJobManager.emitChunk.mock.calls;
     expect(contentParts[0].provider_replay).toEqual(replay);
     expect(emitted).toHaveLength(1);
     expect(JSON.stringify(emitted)).toContain('plan');
     expect(JSON.stringify(emitted)).not.toContain('SIG_1');
-  });
-
-  it('is forwarded as before when the lever is off', async () => {
-    const { emitted } = await run(false);
-    expect(JSON.stringify(emitted)).toContain('SIG_1');
   });
 });

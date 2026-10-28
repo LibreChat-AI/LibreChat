@@ -106,7 +106,6 @@ export type AgentManagementError = {
  */
 export const agentManagementCreateSchema: z.ZodType<
   AgentManagementCreate,
-  z.ZodTypeDef,
   AgentManagementCreateInput
 > = agentCreateSchema.omit({ instructionsPrompt: true }).extend({ model: z.string() }).strict();
 export const agentManagementUpdateSchema: z.ZodType<AgentManagementUpdate> = agentUpdateSchema
@@ -143,7 +142,7 @@ const agentManagementCursorSchema = z
     }
   });
 
-export const agentManagementListSchema: z.ZodType<AgentManagementList, z.ZodTypeDef, unknown> = z
+export const agentManagementListSchema: z.ZodType<AgentManagementList, unknown> = z
   .object({
     limit: z.coerce.number().int().min(1).max(MAX_LIST_LIMIT).default(DEFAULT_LIST_LIMIT),
     cursor: agentManagementCursorSchema.optional(),

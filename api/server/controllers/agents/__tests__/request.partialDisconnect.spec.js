@@ -41,6 +41,7 @@ const mockGenerationJobManager = {
 
 jest.mock('@librechat/data-schemas', () => ({
   logger: mockLogger,
+  redactMessage: jest.requireActual('@librechat/data-schemas').redactMessage,
   tenantStorage: {
     run: (...args) => mockTenantStorageRun(...args),
   },
@@ -50,6 +51,8 @@ jest.mock('@librechat/api', () => ({
   savePrivateTextMessage: (save, _req, ...args) => save(...args),
   savePrivateTextErrorTurn: (...args) =>
     jest.requireActual('@librechat/api').savePrivateTextErrorTurn(...args),
+  getUserFacingGenerationError: (...args) =>
+    jest.requireActual('@librechat/api').getUserFacingGenerationError(...args),
   stampPreliminaryPrivateTextMessage: (_req, message) => message,
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),

@@ -135,23 +135,16 @@ const {
   agentHasInlineMemoryTools,
   loadAgent: loadAgentFn,
   createMultiAgentMapper,
+  attachProviderItems,
+  getReasoningReplayTarget,
   filterMalformedContentParts,
   countFormattedMessageTokens,
   prependFileContext,
+  prependContextText,
+  buildHistoryContextUpdates,
   prependQuotes,
   applyAttachmentOnlyText,
   hydrateMissingIndexTokenCounts,
-  planSendContext,
-  isStableContextEnabled,
-  getReasoningReplayTarget,
-  dropReasoningReplayOutsideSegment,
-  attachProviderItems,
-  getMCPServerInstructions,
-  prepareResumedTurnContext,
-  readConversationAnchor,
-  applyTurnContextToRuntime,
-  applyTurnMemoryToAgent,
-  getConversationAgents,
   injectSkillPrimes,
   buildAgentEventActorSkillMessages,
   collectFreshSkillPrimeNames,
@@ -2374,12 +2367,6 @@ class AgentClient extends BaseClient {
     return super.loadHistory(conversationId, parentMessageId);
   }
 
-  /** Adds the provider items of a response's tool rounds, which the SDK replays as sent. */
-  historySelect() {
-    const base = super.historySelect();
-    return isStableContextEnabled(this.options.req?.config) ? `${base} +providerItems` : base;
-  }
-
   async buildMessages(messages, parentMessageId, _buildOptions, opts) {
     if (this.eventActorContinuation === 'cold') {
       /** Compatibility was rejected after warm state preparation. Rebuild all
@@ -2487,16 +2474,6 @@ class AgentClient extends BaseClient {
       resolveConfigServers(this.options.req),
     ]);
     void earlySharedContextPromise.catch(() => {});
-    /** A warm event actor continues from its checkpoint, not from the rendered history. */
-    const contextAnchorPromise =
-      this.eventActorContinuation === 'warm'
-        ? undefined
-        : readConversationAnchor({
-            req: this.options.req,
-            conversationId: this.conversationId,
-            db,
-          });
-    void contextAnchorPromise?.catch(() => {});
     assertModelBoundContent({
       onTraversalFailure: reportLocatorTraversalFailure,
       filters: this.options.req.config?.filters,
@@ -2683,6 +2660,12 @@ class AgentClient extends BaseClient {
     };
     /** Memory copies built for canonical recounts, reused by the memory payload pass. */
     const memoryFormattedMessages = [];
+    /** Date-change notes for the prompt copy only, never the stored message. */
+    const historyContextUpdates = buildHistoryContextUpdates({
+      req: this.options.req,
+      messages: orderedMessages,
+      agents: allAgents.map(({ agent }) => agent),
+    });
 
     const formattedMessages = orderedMessages.map((message, i) => {
       const formattedMessage = formatMessage({
@@ -2731,6 +2714,9 @@ class AgentClient extends BaseClient {
       const turnFiles = this.message_file_map?.[message.messageId] ?? message.files;
       applyAttachmentOnlyText(formattedMessage, turnFiles);
 
+      const contextUpdate = historyContextUpdates.get(i);
+      prependContextText(formattedMessage, contextUpdate, '\n\n');
+
       /**
        * A summarize round that errored or was cut off never reaches the model:
        * the formatter would take its partial text as the history boundary and
@@ -2741,7 +2727,8 @@ class AgentClient extends BaseClient {
        * canonical recount reads an unstripped surface instead.
        */
       const droppedPromptSummary = dropUnusableSummaryParts(formattedMessage);
-      const promptDiffersFromStored = Boolean(message.fileContext) || droppedPromptSummary;
+      const promptDiffersFromStored =
+        Boolean(message.fileContext) || droppedPromptSummary || contextUpdate != null;
 
       const dbTokenCount = Number(orderedMessages[i].tokenCount);
       const hasDbTokenCount = Number.isFinite(dbTokenCount) && dbTokenCount > 0;
@@ -2761,8 +2748,8 @@ class AgentClient extends BaseClient {
       if (needsCanonicalTokenCount) {
         /** Without fileContext the memory copy is content-identical to the
          *  prompt copy, so the prompt copy is the counting surface; with it (or
-         *  with a dropped summary), the canonical count must be taken from the
-         *  message as stored. */
+         *  with a dropped summary or a context update), the canonical count must
+         *  be taken from the message as stored. */
         let countSurface = formattedMessage;
         if (promptDiffersFromStored) {
           memoryFormattedMessages[i] = buildMemoryFormattedMessage(message);
@@ -2934,58 +2921,7 @@ class AgentClient extends BaseClient {
     }
     /** After the steer stamp, which adds replayed steers' documents of its own. */
     dedupeDocumentNames(payload);
-    messages = orderedMessages;
-    promptTokens = promptTokenTotal;
-
-    /**
-     * Build shared run context - applies to ALL agents in the run.
-     * Request attachment file context is already bound inline to the latest
-     * user message above; only side-channel context belongs here.
-     * Memory context is handled separately and applied per-agent based on config.
-     */
-    const [augmentedPrompt, [memories, configServers], agentScopedContext] = await Promise.all([
-      this.contextHandlers?.createContext(),
-      earlySharedContextPromise,
-      agentScopedContextPromise,
-    ]);
-
-    this.retainedAnswers = await retainedAnswersPromise;
-    promptTokens += this.retainedAnswers.tokenCount;
-
-    /** Context changes since the segment's anchor, prepended to the prompt copy only and
-     *  counted for the prompt. Planned here, once memory has loaded. */
-    const {
-      prepared: preparedTurnContext,
-      addedTokens,
-      applied,
-    } = await planSendContext({
-      req: this.options.req,
-      agent: this.options.agent,
-      allAgents,
-      orderedMessages,
-      opts,
-      memories,
-      rag: augmentedPrompt,
-      conversationId: this.conversationId,
-      anchorPromise: contextAnchorPromise,
-      configServers,
-      getServerInstructions: getMCPServerInstructions,
-      formattedMessages,
-      indexTokenCountMap,
-      countTokens: (message) => countFormattedMessageTokens(message, encoding),
-    });
-    const turnContext = preparedTurnContext?.plan ?? null;
-    this.pendingContextAnchor = preparedTurnContext?.pending;
-    this.promptCacheReset = preparedTurnContext?.promptCacheReset;
-    dropReasoningReplayOutsideSegment({
-      config: this.options.req?.config,
-      provider: this.options.agent?.provider,
-      formattedMessages,
-      segmentStart: turnContext?.segmentStart,
-      summaryPartIndex: turnContext?.summaryPartIndex,
-    });
-    promptTokens += addedTokens;
-    const hasPromptOnlyContext = hasFileContext || applied;
+    const hasPromptOnlyContext = hasFileContext || historyContextUpdates.size > 0;
     if (hasPromptOnlyContext) {
       for (let i = 0; i < orderedMessages.length; i++) {
         memoryPayload.push(
@@ -3013,11 +2949,30 @@ class AgentClient extends BaseClient {
       }
     }
     this.memoryPayload = hasPromptOnlyContext ? memoryPayload : null;
+    messages = orderedMessages;
+    promptTokens = promptTokenTotal;
+
+    /**
+     * Build shared run context - applies to ALL agents in the run.
+     * Request attachment file context is already bound inline to the latest
+     * user message above; only side-channel context belongs here.
+     * Memory context is handled separately and applied per-agent based on config.
+     */
+    const sharedRunContextParts = [];
+    const [augmentedPrompt, [memories, configServers], agentScopedContext] = await Promise.all([
+      this.contextHandlers?.createContext(),
+      earlySharedContextPromise,
+      agentScopedContextPromise,
+    ]);
+
+    this.retainedAnswers = await retainedAnswersPromise;
+    promptTokens += this.retainedAnswers.tokenCount;
 
     /** Augmented prompt from RAG/context handlers */
     this.augmentedPrompt = augmentedPrompt;
     if (this.augmentedPrompt) {
       modelBoundFileContexts.add(this.augmentedPrompt);
+      sharedRunContextParts.push(this.augmentedPrompt);
     }
 
     /** Memory context (user preferences/memories). Keyed context (with memory
@@ -3071,6 +3026,7 @@ class AgentClient extends BaseClient {
       return canonicalMemoryCache.get(cacheKey);
     };
 
+    const sharedRunContext = sharedRunContextParts.join('\n\n');
     const memoryAgentEnabled = isMemoryAgentEnabled(this.options.req.config?.memory);
 
     const configuredContextAttachments = this.options.agentContextAttachmentsByAgentId;
@@ -3137,23 +3093,6 @@ class AgentClient extends BaseClient {
      */
     const ephemeralAgent = this.options.req.body.ephemeralAgent;
     const mcpManager = getMCPManager();
-    /** With a turn context the sent message carries the retrieved context for every agent that
-     *  reads the conversation; isolated subagents still take it in their system prompt. */
-    const conversationAgents = getConversationAgents(
-      turnContext,
-      this.options.agent,
-      this.agentConfigs?.values(),
-    );
-
-    /** A handoff target on the primary agent's memory partition reads the memory the turn context
-     *  anchors, as the primary does, rather than a live copy in its per-turn tail. */
-    const sharesTurnMemory = (agent) =>
-      turnContext != null &&
-      agent !== this.options.agent &&
-      conversationAgents.has(agent) &&
-      (memoryAgentEnabled || agentHasInlineMemoryTools(agent)) &&
-      getMemoryAgentId(agent) === loadedMemoryAgentId &&
-      agentHasInlineMemoryTools(agent) === agentHasInlineMemoryTools(this.options.agent);
 
     const prepareRuntimeAgent = async (
       { agent, agentId },
@@ -3161,15 +3100,10 @@ class AgentClient extends BaseClient {
       assertLateBoundContent = false,
     ) => {
       normalizeInstructions(agent);
-      const runContext = {
-        rag: conversationAgents.has(agent) ? undefined : this.augmentedPrompt,
-      };
+      const agentRunContextParts = [sharedRunContext];
       const agentMemoryContexts = [];
       const agentHasMemory = agentHasInlineMemoryTools(agent);
-      if (
-        !sharesTurnMemory(agent) &&
-        (agentId === this.options.agent.id || memoryAgentEnabled || agentHasMemory)
-      ) {
+      if (agentId === this.options.agent.id || memoryAgentEnabled || agentHasMemory) {
         const partitionMemories = await getAgentPartitionMemories(agent);
         const canonicalMemories =
           partitionMemories != null ? await getCanonicalAgentMemories(agent) : undefined;
@@ -3190,11 +3124,13 @@ class AgentClient extends BaseClient {
           agentHasMemory ? partitionMemories?.withKeys : partitionMemories?.withoutKeys,
           { announceEmpty: agentHasMemory || memoryAgentEnabled },
         );
-        runContext.memory = agentMemoryContext;
+        if (agentMemoryContext) {
+          agentRunContextParts.push(agentMemoryContext);
+        }
       }
       if (scopedContext) {
         modelBoundFileContexts.add(scopedContext);
-        runContext.agentFiles = scopedContext;
+        agentRunContextParts.push(scopedContext);
       }
 
       await applyContextToAgent({
@@ -3204,10 +3140,8 @@ class AgentClient extends BaseClient {
         mcpManager,
         configServers,
         user: this.options.req.user,
-        runContext,
+        sharedRunContext: agentRunContextParts.filter(Boolean).join('\n\n'),
         ephemeralAgent: agentId === this.options.agent.id ? ephemeralAgent : undefined,
-        /** The anchor's MCP instructions are added by `applyTurnContext`. */
-        ...(agent === this.options.agent && turnContext?.tools != null && { mcpServers: [] }),
       });
       if (assertLateBoundContent) {
         assertModelBoundContent({
@@ -3237,17 +3171,6 @@ class AgentClient extends BaseClient {
         prepareRuntimeAgentOnce(agent, agentScopedContext.get(agentId)),
       ),
     );
-    if (turnContext != null) {
-      applyTurnContextToRuntime(this.options.agent, turnContext, {
-        memories: modelBoundMemoryContexts,
-        files: modelBoundFileContexts,
-      });
-      for (const agent of conversationAgents) {
-        if (sharesTurnMemory(agent)) {
-          applyTurnMemoryToAgent(agent, turnContext);
-        }
-      }
-    }
     this.modelBoundMemoryContexts = [...modelBoundMemoryContexts];
     this.modelBoundFileContexts = [...modelBoundFileContexts];
     assertModelBoundContent({
@@ -3812,7 +3735,6 @@ class AgentClient extends BaseClient {
      *   thoughtSignatures?: Record<string, string>,
      *   contextUsage?: import('librechat-data-provider').TContextUsageEvent,
      *   usage?: import('librechat-data-provider').TResponseUsage,
-     *   promptCacheReset?: string[],
      * }} */
     const metadata = {};
     const signatures = this.collectedThoughtSignatures;
@@ -3879,9 +3801,6 @@ class AgentClient extends BaseClient {
     const usage = aggregateEmittedUsage(usageEvents);
     if (usage) {
       metadata.usage = usage;
-    }
-    if (this.promptCacheReset?.length > 0) {
-      metadata.promptCacheReset = this.promptCacheReset;
     }
     return Object.keys(metadata).length > 0 ? metadata : undefined;
   }
@@ -4904,8 +4823,8 @@ class AgentClient extends BaseClient {
       }
       const hasMessageFormatOptions =
         needsReasoningContentFormat || freshSkillPrimeNames.size > 0 || useLegacyContent;
-      /** With `stableContext`, signed Anthropic / Bedrock reasoning of earlier turns goes back as
-       *  it was sent, to the model that signed it only. */
+      /** With `stableContext`, signed Anthropic reasoning of earlier turns goes back as it was
+       *  sent, to the model that signed it only. */
       const reasoningReplayTarget = getReasoningReplayTarget(
         this.options.req?.config,
         this.options.agent,
@@ -5718,19 +5637,7 @@ class AgentClient extends BaseClient {
           ]),
       );
       const resumeMcpManager = getMCPManager();
-      const resumeConfigServersPromise = resolveConfigServers(this.options.req);
-      const resumedTurnContextPromise = prepareResumedTurnContext({
-        req: this.options.req,
-        agent: this.options.agent,
-        conversationId: this.conversationId,
-        pausedMessageId: this.parentMessageId,
-        db,
-        getBranch: AgentClient.getMessagesForConversation,
-        loadMemories: () => AgentClient.prototype.getSharedMemoryContext.call(this),
-        configServers: resumeConfigServersPromise,
-        getServerInstructions: getMCPServerInstructions,
-      });
-      const [resumeScopedContext, resumeConfigServers, resumedTurnContext] = await Promise.all([
+      const [resumeScopedContext, resumeConfigServers] = await Promise.all([
         buildAgentScopedContext({
           agentIds: agents.map((agent) => agent?.id).filter(Boolean),
           attachmentsByAgentId: this.options.agentContextAttachmentsByAgentId,
@@ -5743,8 +5650,7 @@ class AgentClient extends BaseClient {
           endpointsByAgentId: resumeEndpointsByAgentId,
           tokenCountFn: (text) => countTokens(text),
         }),
-        resumeConfigServersPromise,
-        resumedTurnContextPromise,
+        resolveConfigServers(this.options.req),
       ]);
       const resumeScopedAttachmentMap = buildAgentScopedAttachmentMap({
         agentIds: agents.map((agent) => agent?.id).filter(Boolean),
@@ -5787,11 +5693,9 @@ class AgentClient extends BaseClient {
               mcpManager: resumeMcpManager,
               configServers: resumeConfigServers,
               user: this.options.req.user,
-              runContext: { agentFiles: scopedContext },
+              sharedRunContext: scopedContext ?? '',
               ephemeralAgent:
                 agent === this.options.agent ? this.options.req.body.ephemeralAgent : undefined,
-              ...(agent === this.options.agent &&
-                resumedTurnContext?.plan.tools != null && { mcpServers: [] }),
             });
             assertModelBoundContent({
               onTraversalFailure: reportLocatorTraversalFailure,
@@ -5802,18 +5706,6 @@ class AgentClient extends BaseClient {
             });
           }),
       );
-      /** The resumed run continues the paused turn: same anchor, not the live state. */
-      if (resumedTurnContext != null) {
-        applyTurnContextToRuntime(this.options.agent, resumedTurnContext.plan);
-        this.pendingContextAnchor = resumedTurnContext.pending;
-        assertModelBoundContent({
-          onTraversalFailure: reportLocatorTraversalFailure,
-          filters: this.options.req.config?.filters,
-          legacyPii: this.options.req.config?.messageFilter?.pii,
-          agents: [this.options.agent],
-          memories: resumedTurnContext.plan.memoryTexts,
-        });
-      }
       const wrappedResumeLazyDescriptors = new WeakSet();
       const validatedResumeAgents = new WeakSet(agents.filter((agent) => agent != null));
       const wrapResumeLazyAttachmentValidation = (configs) => {
@@ -5904,7 +5796,7 @@ class AgentClient extends BaseClient {
                   mcpManager: resumeMcpManager,
                   configServers: resumeConfigServers,
                   user: this.options.req.user,
-                  runContext: { agentFiles: scopedContext },
+                  sharedRunContext: scopedContext ?? '',
                 });
                 assertModelBoundContent({
                   onTraversalFailure: reportLocatorTraversalFailure,

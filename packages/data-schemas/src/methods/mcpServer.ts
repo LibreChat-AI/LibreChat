@@ -1,5 +1,10 @@
 import { nanoid } from 'nanoid';
-import { ResourceType, PermissionBits, normalizeServerName } from 'librechat-data-provider';
+import {
+  ResourceType,
+  PrincipalType,
+  PermissionBits,
+  normalizeServerName,
+} from 'librechat-data-provider';
 import type { Model, RootFilterQuery, Types } from 'mongoose';
 import type { MCPOptions } from 'librechat-data-provider';
 import type { MCPServerDocument } from '../types';
@@ -60,6 +65,14 @@ export interface MCPServerViewerEntry {
   principalId?: string;
 }
 
+/** A view-ACL principal as stored or as already read by a caller. */
+export interface MCPServerViewerPrincipal {
+  principalType: string;
+  principalId?: { toString(): string } | string | null;
+}
+
+const OBJECT_ID_PATTERN = /^[a-f\d]{24}$/i;
+
 export interface ErasableMCPServer {
   id: string;
   serverName: string;
@@ -103,6 +116,7 @@ export function createMCPServerMethods(
   deleteMCPServersWithAcl: (ids: string[]) => Promise<number>;
   findMCPServerOAuthTokenUserIds: (serverName: string, tenantId?: string) => Promise<string[]>;
   findMCPServerViewerEntries: (serverId: string) => Promise<MCPServerViewerEntry[]>;
+  findMCPServerViewerUserIds: (entries: MCPServerViewerPrincipal[]) => Promise<string[]>;
 } {
   /**
    * Finds the next available server name by checking DB and reserved-name collisions.
@@ -454,6 +468,59 @@ export function createMCPServerMethods(
     }));
   }
 
+  /**
+   * Users a server's view ACL names directly or through a group, so its removal can fence viewers
+   * who hold no OAuth credential. Role and public principals are not enumerated.
+   */
+  async function findMCPServerViewerUserIds(
+    entries: MCPServerViewerPrincipal[],
+  ): Promise<string[]> {
+    const userIds = new Set<string>();
+    const groupIds = new Set<string>();
+    for (const entry of entries) {
+      const principalId = entry.principalId?.toString();
+      if (!principalId) {
+        continue;
+      }
+      if (entry.principalType === PrincipalType.USER) {
+        userIds.add(principalId);
+      } else if (
+        entry.principalType === PrincipalType.GROUP &&
+        OBJECT_ID_PATTERN.test(principalId)
+      ) {
+        groupIds.add(principalId);
+      }
+    }
+    if (groupIds.size === 0) {
+      return [...userIds];
+    }
+    const groups = await mongoose.models.Group.find({
+      _id: { $in: [...groupIds].map((id) => new mongoose.Types.ObjectId(id)) },
+    })
+      .select('memberIds')
+      .lean<Array<{ memberIds?: string[] }>>();
+    /** `memberIds` holds `idOnTheSource` for external users and the user id otherwise. */
+    const memberIds = [...new Set(groups.flatMap((group) => group.memberIds ?? []))];
+    if (memberIds.length === 0) {
+      return [...userIds];
+    }
+    const objectIds = memberIds
+      .filter((id) => OBJECT_ID_PATTERN.test(id))
+      .map((id) => new mongoose.Types.ObjectId(id));
+    const members = await mongoose.models.User.find({
+      $or: [
+        { idOnTheSource: { $in: memberIds } },
+        ...(objectIds.length > 0 ? [{ _id: { $in: objectIds } }] : []),
+      ],
+    })
+      .select('_id')
+      .lean<Array<{ _id: Types.ObjectId }>>();
+    for (const member of members) {
+      userIds.add(member._id.toString());
+    }
+    return [...userIds];
+  }
+
   /** Deletes MCP servers by id together with every ACL entry on them. */
   async function deleteMCPServersWithAcl(ids: string[]): Promise<number> {
     if (ids.length === 0) {
@@ -475,6 +542,7 @@ export function createMCPServerMethods(
     deleteMCPServersWithAcl,
     findMCPServerOAuthTokenUserIds,
     findMCPServerViewerEntries,
+    findMCPServerViewerUserIds,
     createMCPServer,
     findMCPServerByServerName,
     findMCPServerByObjectId,

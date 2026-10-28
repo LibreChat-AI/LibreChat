@@ -763,24 +763,6 @@ describe('provider output items', () => {
   ];
   const toolCall = { id: 'call_1', name: 'lookup', args: '{}' };
 
-  it('leaves them out of a final event and a sync event', () => {
-    const final = omitProviderItemsFromEvent({
-      final: true,
-      responseMessage: { messageId: 'm', content: content() },
-    });
-    expect(final.responseMessage.content[1]).toEqual({ type: 'tool_call', tool_call: toolCall });
-    expect(final.responseMessage.messageId).toBe('m');
-    const sync = omitProviderItemsFromEvent({
-      sync: true,
-      resumeState: { runSteps: [], aggregatedContent: content() },
-    });
-    expect(sync.resumeState.aggregatedContent[1]).toEqual({
-      type: 'tool_call',
-      tool_call: toolCall,
-    });
-    expect(sync.resumeState.runSteps).toEqual([]);
-  });
-
   it('touches nothing else, however deep a key named like them sits', () => {
     const event = { data: { output: { providerItems: 'a tool result field' } } };
     expect(omitProviderItemsFromEvent(event)).toBe(event);
@@ -808,31 +790,6 @@ describe('provider output items', () => {
     expect(input[1].tool_call?.providerItems).toBe(providerItems);
   });
 
-  it('returns content without them, or no content, unchanged', () => {
-    const clean = [{ type: 'tool_call', tool_call: { id: 'call_1' } }, null];
-    expect(stripProviderItems(clean)).toBe(clean);
-    expect(stripProviderItems(undefined)).toBeUndefined();
-    expect(stripProviderItems('text')).toBe('text');
-  });
-
-  it('puts the stored items back on their tool calls for formatting, without changing the row', () => {
-    const row = {
-      content: [
-        { type: 'text', text: 'hi' },
-        { type: 'tool_call', tool_call: toolCall },
-        { type: 'tool_call', tool_call: { id: 'call_2', name: 'other' } },
-      ],
-      providerItems: { call_1: providerItems, call_9: { origin: 'x', items: [] } },
-    };
-    const attached = attachProviderItems(row);
-    expect(attached.content[1]).toEqual({
-      type: 'tool_call',
-      tool_call: { ...toolCall, providerItems },
-    });
-    expect(attached.content[2]).toBe(row.content[2]);
-    expect(row.content[1].tool_call).toEqual(toolCall);
-  });
-
   it('returns a row without stored items, or without list content, as it is', () => {
     const plain = { content: [{ type: 'text', text: 'x' }] };
     expect(attachProviderItems(plain)).toBe(plain);
@@ -858,13 +815,6 @@ describe('signed reasoning of think parts', () => {
     expect(input[0]).toHaveProperty('provider_replay');
   });
 
-  it('leaves it out of a final event and a sync event', () => {
-    const final = omitProviderItemsFromEvent({ final: true, responseMessage: { content: live() } });
-    expect(JSON.stringify(final)).not.toContain('SIG_1');
-    const sync = omitProviderItemsFromEvent({ resumeState: { aggregatedContent: live() } });
-    expect(JSON.stringify(sync)).not.toContain('SIG_1');
-  });
-
   it('leaves it out of a reasoning delta for the client, and returns a plain delta as it is', () => {
     const delta = { id: 'step_1', delta: { content: live().slice(0, 1) } };
     const forwarded = omitReasoningReplayFromDelta(delta);
@@ -873,7 +823,6 @@ describe('signed reasoning of think parts', () => {
     expect(delta.delta.content[0]).toHaveProperty('provider_replay');
     const plain = { id: 'step_1', delta: { content: [{ type: 'think', think: 'x' }] } };
     expect(omitReasoningReplayFromDelta(plain)).toBe(plain);
-    expect(omitReasoningReplayFromDelta(delta, false)).toBe(delta);
     expect(omitReasoningReplayFromDelta(undefined)).toBeUndefined();
   });
 

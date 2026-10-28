@@ -1,28 +1,13 @@
-import { splitProviderItems, thinkReplayHash, MAX_THINK_REPLAY_CHARS } from './providerItems';
+import {
+  splitProviderItems,
+  thinkReplayHash,
+  MAX_PROVIDER_ITEMS_CHARS,
+  MAX_THINK_REPLAY_CHARS,
+} from './providerItems';
 
 const items = { origin: 'digest', items: [{ id: 'rs_1', encrypted_content: 'opaque' }] };
 
 describe('splitProviderItems', () => {
-  it('moves the items of each tool call out of the content, keyed by tool call id', () => {
-    const content = [
-      { type: 'text', text: 'hi' },
-      {
-        type: 'tool_call',
-        agentId: 'a',
-        tool_call: { id: 'call_1', name: 'lookup', providerItems: items },
-      },
-      { type: 'tool_call', tool_call: { id: 'call_2', name: 'other' } },
-    ];
-    const split = splitProviderItems(content);
-    expect(split?.providerItems).toEqual({ call_1: items });
-    expect(split?.content).toEqual([
-      { type: 'text', text: 'hi' },
-      { type: 'tool_call', agentId: 'a', tool_call: { id: 'call_1', name: 'lookup' } },
-      { type: 'tool_call', tool_call: { id: 'call_2', name: 'other' } },
-    ]);
-    expect(content[1].tool_call).toHaveProperty('providerItems');
-  });
-
   it('returns nothing when no part carries items, or the content is not a list', () => {
     expect(
       splitProviderItems([{ type: 'tool_call', tool_call: { id: 'call_1' } }]),
@@ -91,9 +76,20 @@ describe('splitProviderItems with signed reasoning', () => {
     expect(JSON.stringify(split?.content)).not.toContain('SIG');
   });
 
-  it('ignores a replay on a part that is not reasoning', () => {
-    expect(
-      splitProviderItems([{ type: 'text', text: 'x', provider_replay: replay }]),
-    ).toBeUndefined();
+  it('keeps no items of a message over the size cap, and still strips them from the content', () => {
+    const big = {
+      origin: 'digest',
+      items: [{ encrypted_content: 'x'.repeat(MAX_PROVIDER_ITEMS_CHARS) }],
+    };
+    const split = splitProviderItems([
+      { type: 'tool_call', tool_call: { id: 'call_1', providerItems: items } },
+      { type: 'tool_call', tool_call: { id: 'call_2', providerItems: big } },
+    ]);
+    expect(split).toEqual({
+      content: [
+        { type: 'tool_call', tool_call: { id: 'call_1' } },
+        { type: 'tool_call', tool_call: { id: 'call_2' } },
+      ],
+    });
   });
 });

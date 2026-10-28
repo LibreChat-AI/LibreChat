@@ -8,6 +8,7 @@ import {
   extractMCPServers,
   getMCPInstructionsForServers,
   buildAgentInstructions,
+  buildAgentAdditionalInstructions,
   applyContextToAgent,
 } from './context';
 
@@ -271,6 +272,34 @@ describe('Agent Context Utilities', () => {
     });
   });
 
+  describe('buildAgentAdditionalInstructions', () => {
+    it('should combine existing additional instructions and shared context', () => {
+      const result = buildAgentAdditionalInstructions({
+        additionalInstructions: 'Existing dynamic',
+        sharedRunContext: 'Shared context',
+      });
+
+      expect(result).toBe('Existing dynamic\n\nShared context');
+    });
+
+    it('should handle only shared context', () => {
+      const result = buildAgentAdditionalInstructions({
+        sharedRunContext: 'Shared context only',
+      });
+
+      expect(result).toBe('Shared context only');
+    });
+
+    it('should return undefined when all dynamic parts are empty', () => {
+      const result = buildAgentAdditionalInstructions({
+        additionalInstructions: '',
+        sharedRunContext: '',
+      });
+
+      expect(result).toBeUndefined();
+    });
+  });
+
   describe('applyContextToAgent', () => {
     let mockMCPManager: jest.Mocked<MCPManager>;
     let mockLogger: Logger;
@@ -304,7 +333,7 @@ describe('Agent Context Utilities', () => {
 
       await applyContextToAgent({
         agent,
-        runContext: { rag: 'Shared context' },
+        sharedRunContext: 'Shared context',
         mcpManager: mockMCPManager,
         agentId: 'test-agent',
         logger: mockLogger,
@@ -327,7 +356,7 @@ describe('Agent Context Utilities', () => {
       const user = { id: 'user-1', role: 'USER', idOnTheSource: null };
       await applyContextToAgent({
         agent,
-        runContext: { rag: 'Context' },
+        sharedRunContext: 'Context',
         mcpManager: mockMCPManager,
         ephemeralAgent: { mcp: ['ephemeral-server'] },
         logger: mockLogger,
@@ -362,6 +391,7 @@ describe('Agent Context Utilities', () => {
 
       await applyContextToAgent({
         agent,
+        sharedRunContext: '',
         mcpManager: mockMCPManager,
         ephemeralAgent: { mcp: [] },
         logger: mockLogger,
@@ -385,7 +415,7 @@ describe('Agent Context Utilities', () => {
 
       await applyContextToAgent({
         agent,
-        runContext: { rag: 'Context' },
+        sharedRunContext: 'Context',
         mcpManager: mockMCPManager,
         logger: mockLogger,
       });
@@ -413,7 +443,7 @@ describe('Agent Context Utilities', () => {
 
       await applyContextToAgent({
         agent,
-        runContext: { rag: 'Context' },
+        sharedRunContext: 'Context',
         mcpManager: mockMCPManager,
       });
 
@@ -440,7 +470,7 @@ describe('Agent Context Utilities', () => {
 
       await applyContextToAgent({
         agent,
-        runContext: { rag: 'Shared context' },
+        sharedRunContext: 'Shared context',
         mcpManager: mockMCPManager,
         agentId: 'test-agent',
         logger: mockLogger,
@@ -468,7 +498,7 @@ describe('Agent Context Utilities', () => {
 
       await applyContextToAgent({
         agent,
-        runContext: { rag: 'Context' },
+        sharedRunContext: 'Context',
         mcpManager: mockMCPManager,
         logger: mockLogger,
       });
@@ -499,7 +529,7 @@ describe('Agent Context Utilities', () => {
 
       await applyContextToAgent({
         agent,
-        runContext: { rag: 'Shared' },
+        sharedRunContext: 'Shared',
         mcpManager: mockMCPManager,
       });
 
@@ -518,7 +548,7 @@ describe('Agent Context Utilities', () => {
 
       await applyContextToAgent({
         agent,
-        runContext: { rag: 'Context' },
+        sharedRunContext: 'Context',
         mcpManager: mockMCPManager,
       });
 
@@ -538,7 +568,7 @@ describe('Agent Context Utilities', () => {
 
       await applyContextToAgent({
         agent,
-        runContext: { rag: 'Context' },
+        sharedRunContext: 'Context',
         mcpManager: mockMCPManager,
       });
 

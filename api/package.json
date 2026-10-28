@@ -40,7 +40,7 @@
     "@azure/storage-blob": "^12.30.0",
     "@google/genai": "^2.8.0",
     "@keyv/redis": "5.1.6",
-    "@librechat/agents": "^4.1.0",
+    "@librechat/agents": "^4.1.1",
     "@librechat/api": "*",
     "@librechat/data-schemas": "*",
     "@microsoft/microsoft-graph-client": "^3.0.7",
@@ -105,7 +105,7 @@
     "nanoid": "^3.3.18",
     "node-fetch": "^2.7.0",
     "nodemailer": "^10.2.1",
-    "openai": "5.8.2",
+    "openai": "^6.49.0",
     "openid-client": "^6.5.0",
     "passport": "^0.6.0",
     "passport-apple": "^2.0.2",
@@ -129,7 +129,8 @@
     "winston-daily-rotate-file": "^5.0.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "yauzl": "^3.2.1",
-    "zod": "^3.22.4"
+    "zod": "^4.6.7",
+    "zod-to-json-schema": "^3.25.1"
   },
   "devDependencies": {
     "@babel/preset-env": "^7.29.5",

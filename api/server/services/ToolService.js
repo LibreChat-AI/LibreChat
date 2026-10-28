@@ -1,10 +1,9 @@
-const { logger, redactMessage, getTenantId } = require('@librechat/data-schemas');
+const { logger, getTenantId } = require('@librechat/data-schemas');
 const { tool: toolFn, DynamicStructuredTool } = require('@librechat/agents/langchain/tools');
 const {
   sleep,
   createToolSearch,
   createBashExecutionTool,
-  TOOL_DISPATCHER_NAME,
   Constants: AgentConstants,
 } = require('@librechat/agents');
 const {
@@ -25,7 +24,7 @@ const {
   getCodeFileLocation,
   getMissingCustomUserVars,
   buildWebSearchDynamicContext,
-  isStableContextEnabled,
+  getPromptTime,
   getCodeApiAuthHeaders,
   getReplayablePendingMCPOAuthStart,
   getMCPServerNamesFromTools,
@@ -79,6 +78,7 @@ const {
   appendAssistantMCPAppArtifact,
   resolveMCPClientCapabilityProfile,
   getOutboundTimeoutMs,
+  getToolErrorText,
 } = require('@librechat/api');
 const {
   Time,
@@ -734,7 +734,7 @@ async function processRequiredActions(client, requiredActions) {
       const output = getSafeRequiredActionOutput(
         client,
         currentAction,
-        `Error processing tool ${currentAction.tool}: ${redactMessage(error.message, 256)}`,
+        `Error processing tool ${currentAction.tool}: ${getToolErrorText(error)}`,
       );
       return {
         tool_call_id: currentAction.toolCallId,
@@ -1412,7 +1412,6 @@ async function loadToolDefinitionsWrapper({
       mcpServerNames,
       rawServerNames: mcpRawServerNames,
       accessibleServerNames: defsAccessibleServerNames,
-      sortMcpTools: isStableContextEnabled(appConfig),
     },
     {
       isBuiltInTool,
@@ -1516,7 +1515,6 @@ async function loadToolDefinitionsWrapper({
           mcpServerNames,
           rawServerNames: mcpRawServerNames,
           accessibleServerNames: defsAccessibleServerNames,
-          sortMcpTools: isStableContextEnabled(appConfig),
         },
         {
           isBuiltInTool,
@@ -1547,14 +1545,10 @@ async function loadToolDefinitionsWrapper({
   const hasExecuteCode = filteredTools.includes(Tools.execute_code);
 
   if (hasWebSearch) {
-    const stableContext = isStableContextEnabled(req.config);
-    toolContextMap[Tools.web_search] = buildWebSearchContext(stableContext);
-    dynamicToolContextMap[Tools.web_search] = buildWebSearchDynamicContext({
-      turnStartedAt: req.turnStartedAt,
-      conversationStartedAt: req.conversationCreatedAt,
-      timezone: req.body?.timezone,
-      stableContext,
-    });
+    toolContextMap[Tools.web_search] = buildWebSearchContext();
+    dynamicToolContextMap[Tools.web_search] = buildWebSearchDynamicContext(
+      getPromptTime(req.config, req),
+    );
   }
 
   /**
@@ -2174,7 +2168,6 @@ async function loadAgentTools({
  * @param {string} [params.conversationId] - Resolved conversation identity for this request
  * @param {boolean} [params.actionsEnabled] - Whether the actions capability is enabled
  * @param {readonly string[]} [params.accessibleMcpServerNames] - COMPLETE accessible-server audit resolved at initialization
- * @param {boolean} [params.toolDispatch] - The agent reaches deferred tools through the SDK's dispatcher
  * @returns {Promise<{ loadedTools: Array, configurable: Object }>}
  */
 async function loadToolsForExecution({
@@ -2201,7 +2194,6 @@ async function loadToolsForExecution({
   actionsEnabled,
   accessibleMcpServerNames,
   runFileCodeExecutionContext,
-  toolDispatch = false,
 }) {
   const appConfig = req.config;
   const allLoadedTools = [];
@@ -2333,11 +2325,9 @@ async function loadToolsForExecution({
   );
 
   if (isToolSearch && toolRegistry) {
-    /** With the dispatcher, found tools stay deferred: results carry their schemas. */
     const toolSearchTool = createToolSearch({
       mode: 'local',
       toolRegistry,
-      ...(toolDispatch && { toolDispatch: TOOL_DISPATCHER_NAME }),
     });
     allLoadedTools.push(toolSearchTool);
     configurable.toolRegistry = toolRegistry;

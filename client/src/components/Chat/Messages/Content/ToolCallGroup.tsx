@@ -1,11 +1,5 @@
 import { useState, useRef, useMemo, useEffect, useContext, useCallback } from 'react';
-import {
-  Tools,
-  Constants,
-  ContentTypes,
-  isOpaqueReasoning,
-  resolveDisplayToolCall,
-} from 'librechat-data-provider';
+import { Tools, Constants, ContentTypes, isOpaqueReasoning } from 'librechat-data-provider';
 import { ChevronDown, ListChecks, MessageCircleQuestion, TriangleAlert, Users } from 'lucide-react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { PartWithIndex } from './ParallelContent';
@@ -291,9 +285,9 @@ export default function ToolCallGroup({
           return true;
         }
         const toolCall = part[ContentTypes.TOOL_CALL] as
-          | { name?: string; id?: string; args?: unknown; output?: string | null }
+          | { name?: string; id?: string; output?: string | null }
           | undefined;
-        if (toolCall == null || resolveDisplayToolCall(toolCall).name !== ASK_USER_QUESTION) {
+        if (toolCall?.name !== ASK_USER_QUESTION) {
           return true;
         }
         return (

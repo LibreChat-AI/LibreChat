@@ -2189,108 +2189,7 @@ describe('initializeAgent — stable and dynamic instruction fields', () => {
     jest.clearAllMocks();
   });
 
-  it('moves instructions with temporal special vars into the dynamic tail anchored to the conversation start', async () => {
-    const { agent, req, res, loadTools, db } = createMocks();
-    agent.instructions =
-      'Today is {{current_date}}. The chat began at {{current_datetime}} ({{iso_datetime}}).';
-    req.config = { endpoints: { agents: { promptCache: { stableContext: true } } } } as never;
-    req.conversationCreatedAt = '2026-08-25T10:00:00.000Z';
-    req.turnStartedAt = new Date('2026-08-31T06:20:00.000Z').getTime();
-    req.body = { timezone: 'UTC' };
-
-    const result = await initializeAgent(
-      {
-        req,
-        res,
-        agent,
-        loadTools,
-        endpointOption: { endpoint: EModelEndpoint.agents },
-        allowedProviders: new Set([Providers.OPENAI]),
-        isInitialAgent: true,
-      },
-      db,
-    );
-
-    expect(result.instructions).toBeUndefined();
-    expect(result.additional_instructions).toBeUndefined();
-    expect(result.dynamicToolContextMap?.agent_temporal_instructions).toBe(
-      'Today is 2026-08-25 (Tuesday). The chat began at 2026-08-25 10:00:00 +00:00 (Tuesday) (2026-08-25T10:00:00.000Z).',
-    );
-  });
-
-  it('resolves temporal special vars in the request timezone, from the turn start without a conversation anchor', async () => {
-    const { agent, req, res, loadTools, db } = createMocks();
-    agent.instructions = 'It is currently {{current_datetime}}.';
-    req.config = { endpoints: { agents: { promptCache: { stableContext: true } } } } as never;
-    req.turnStartedAt = new Date('2024-01-15T18:30:00.000Z').getTime();
-    req.body = { timezone: 'America/New_York' };
-
-    const result = await initializeAgent(
-      {
-        req,
-        res,
-        agent,
-        loadTools,
-        endpointOption: { endpoint: EModelEndpoint.agents },
-        allowedProviders: new Set([Providers.OPENAI]),
-        isInitialAgent: true,
-      },
-      db,
-    );
-
-    expect(result.instructions).toBeUndefined();
-    expect(result.additional_instructions).toBeUndefined();
-    expect(result.dynamicToolContextMap?.agent_temporal_instructions).toBe(
-      'It is currently 2024-01-15 13:30:00 -05:00 (Monday).',
-    );
-  });
-
-  it('keeps artifact guidance before all per-turn context without mutating shared tool context', async () => {
-    const { generateArtifactsPrompt } = jest.requireMock('~/prompts') as {
-      generateArtifactsPrompt: jest.Mock;
-    };
-    generateArtifactsPrompt.mockReturnValue('Artifact guidance');
-
-    const { agent, req, res, loadTools, db } = createMocks();
-    const webContext = { web_search: 'Conversation Date & Time: 2026-08-31T06:20:00.000Z' };
-    loadTools.mockResolvedValueOnce({
-      tools: [],
-      toolContextMap: {},
-      dynamicToolContextMap: webContext,
-      toolDefinitions: [],
-      hasDeferredTools: false,
-    });
-    agent.additional_instructions = 'Stable agent context';
-    agent.instructions = 'Today is {{current_date}}.';
-    agent.artifacts = 'enabled' as never;
-    req.config = { endpoints: { agents: { promptCache: { stableContext: true } } } } as never;
-    req.turnStartedAt = new Date('2026-08-31T06:20:00.000Z').getTime();
-    req.body = { timezone: 'UTC' };
-
-    const result = await initializeAgent(
-      {
-        req,
-        res,
-        agent,
-        loadTools,
-        endpointOption: { endpoint: EModelEndpoint.agents },
-        allowedProviders: new Set([Providers.OPENAI]),
-        isInitialAgent: true,
-      },
-      db,
-    );
-
-    expect(result.additional_instructions).toBe('Stable agent context\n\nArtifact guidance');
-    expect(result.dynamicToolContextMap).toEqual({
-      ...webContext,
-      agent_temporal_instructions: 'Today is 2026-08-31 (Monday).',
-    });
-    expect(webContext).toEqual({
-      web_search: 'Conversation Date & Time: 2026-08-31T06:20:00.000Z',
-    });
-  });
-
-  it('keeps temporal instructions in additional_instructions, dated by the turn start, when stableContext is off', async () => {
+  it('moves instructions with temporal special vars into the dynamic tail using the turn start', async () => {
     const { agent, req, res, loadTools, db } = createMocks();
     agent.instructions =
       'Today is {{current_date}}. The turn began at {{current_datetime}} ({{iso_datetime}}).';
@@ -2315,7 +2214,116 @@ describe('initializeAgent — stable and dynamic instruction fields', () => {
     expect(result.additional_instructions).toBe(
       'Today is 2026-08-31 (Monday). The turn began at 2026-08-31 06:20:00 +00:00 (Monday) (2026-08-31T06:20:00.000Z).',
     );
-    expect(result.dynamicToolContextMap?.agent_temporal_instructions).toBeUndefined();
+  });
+
+  it('builds the instruction fields exactly as upstream without stableContext', async () => {
+    const { generateArtifactsPrompt } = jest.requireMock('~/prompts') as {
+      generateArtifactsPrompt: jest.Mock;
+    };
+    generateArtifactsPrompt.mockReturnValueOnce('Artifact guidance');
+    const { agent, req, res, loadTools, db } = createMocks();
+    loadTools.mockResolvedValueOnce({
+      tools: [],
+      toolContextMap: { web_search: 'Web search instructions' },
+      dynamicToolContextMap: { web_search: 'Conversation Date & Time: turn' },
+      toolDefinitions: [],
+      hasDeferredTools: false,
+    });
+    agent.instructions = 'Today is {{current_date}}, at {{current_datetime}}.';
+    agent.additional_instructions = 'Agent context';
+    agent.artifacts = 'enabled' as never;
+    req.conversationCreatedAt = '2026-08-25T10:00:00.000Z';
+    req.turnStartedAt = new Date('2026-08-31T06:20:00.000Z').getTime();
+    req.body = { timezone: 'Europe/Moscow' };
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect({
+      instructions: result.instructions,
+      additional_instructions: result.additional_instructions,
+      toolContextMap: result.toolContextMap,
+      dynamicToolContextMap: result.dynamicToolContextMap,
+    }).toMatchInlineSnapshot(`
+      {
+        "additional_instructions": "Agent context
+
+      Today is 2026-08-31 (Monday), at 2026-08-31 09:20:00 +03:00 (Monday).
+
+      Artifact guidance",
+        "dynamicToolContextMap": {
+          "web_search": "Conversation Date & Time: turn",
+        },
+        "instructions": undefined,
+        "toolContextMap": {
+          "web_search": "Web search instructions",
+        },
+      }
+    `);
+  });
+
+  it('anchors temporal special vars to the conversation start with stableContext', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.instructions = 'Today is {{current_date}}.';
+    agent.additional_instructions = 'Agent context';
+    req.config = { endpoints: { agents: { promptCache: { stableContext: true } } } } as never;
+    req.conversationCreatedAt = '2026-08-25T10:00:00.000Z';
+    req.turnStartedAt = new Date('2026-08-31T06:20:00.000Z').getTime();
+    req.body = { timezone: 'UTC' };
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.instructions).toBeUndefined();
+    expect(result.additional_instructions).toBe('Agent context');
+    expect(result.dynamicToolContextMap).toEqual({
+      agent_temporal_instructions: 'Today is 2026-08-25 (Tuesday).',
+    });
+  });
+
+  it('resolves temporal special vars in the request timezone', async () => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    agent.instructions = 'It is currently {{current_datetime}}.';
+    req.turnStartedAt = new Date('2024-01-15T18:30:00.000Z').getTime();
+    req.body = { timezone: 'America/New_York' };
+
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+      },
+      db,
+    );
+
+    expect(result.instructions).toBeUndefined();
+    expect(result.additional_instructions).toBe(
+      'It is currently 2024-01-15 13:30:00 -05:00 (Monday).',
+    );
   });
 
   it('keeps non-temporal special vars in stable instructions', async () => {

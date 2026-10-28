@@ -40,6 +40,7 @@ const {
   createToolTimingAdapter,
   stampCommandExecutor,
   omitReasoningReplayFromDelta,
+  writeGuarded,
 } = require('@librechat/api');
 const { processFileCitations } = require('~/server/services/Files/Citations');
 const { processCodeOutput, runPreviewFinalize } = require('~/server/services/Files/Code/process');
@@ -359,7 +360,6 @@ function getDefaultHandlers({
   eventChildActivity = null,
   resolveMcpServerName = null,
   toolTimingReplayEvents = [],
-  storeProviderItems = false,
 }) {
   if (!res || !aggregateContent) {
     throw new Error(
@@ -633,20 +633,19 @@ function getDefaultHandlers({
         }
       },
     },
-    /** Only with `promptCache.stableContext`; absent from an SDK that predates provider output items. */
-    ...(storeProviderItems &&
-      GraphEvents.ON_PROVIDER_OUTPUT_ITEMS != null && {
-        [GraphEvents.ON_PROVIDER_OUTPUT_ITEMS]: {
-          /**
-           * Registry-only: the provider output items of a finished tool round (OpenAI Responses
-           * ids, status, reasoning). Stored on the tool call parts so the next turn replays the
-           * round as it was sent; they carry encrypted reasoning and are never forwarded.
-           * @param {string} event - The event name.
-           * @param {import('@librechat/agents').ProviderOutputItemsEvent} data - The event data.
-           */
-          handle: (event, data) => aggregateContent({ event, data }),
-        },
-      }),
+    /** Absent from an SDK that predates provider output items. */
+    ...(GraphEvents.ON_PROVIDER_OUTPUT_ITEMS != null && {
+      [GraphEvents.ON_PROVIDER_OUTPUT_ITEMS]: {
+        /**
+         * Registry-only: the provider output items of a finished tool round (OpenAI Responses
+         * ids, status, reasoning). Stored on the tool call parts so the next turn replays the
+         * round as it was sent; they carry encrypted reasoning and are never forwarded.
+         * @param {string} event - The event name.
+         * @param {import('@librechat/agents').ProviderOutputItemsEvent} data - The event data.
+         */
+        handle: (event, data) => aggregateContent({ event, data }),
+      },
+    }),
     [GraphEvents.ON_MESSAGE_DELTA]: {
       /**
        * Handle ON_MESSAGE_DELTA event.
@@ -672,7 +671,7 @@ function getDefaultHandlers({
        */
       handle: async (event, data, metadata) => {
         aggregateContent({ event, data });
-        const forwarded = omitReasoningReplayFromDelta(data, storeProviderItems);
+        const forwarded = omitReasoningReplayFromDelta(data);
         if (checkIfLastAgent(metadata?.last_agent_id, metadata?.langgraph_node)) {
           await emitForJob({ event, data: forwarded });
         } else if (!metadata?.hide_sequential_outputs) {
@@ -866,7 +865,7 @@ function writeAttachment(res, streamId, attachment, expectedCreatedAt) {
       { expectedCreatedAt },
     );
   } else {
-    res.write(`event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
+    writeGuarded(res, `event: attachment\ndata: ${JSON.stringify(attachment)}\n\n`);
   }
 }
 

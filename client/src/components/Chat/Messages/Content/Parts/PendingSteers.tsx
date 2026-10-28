@@ -12,7 +12,7 @@ import {
   useSteerRecovery,
 } from '@librechat/chat/react';
 import type { SteerReceiptState } from '~/components/Chat/Steering/Receipt';
-import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/MessageRow';
+import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/width';
 import EscalateNowButton from '~/components/Chat/Input/EscalateNowButton';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useGetMessagesByConvoId } from '~/data-provider';

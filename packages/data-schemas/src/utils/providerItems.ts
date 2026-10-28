@@ -10,6 +10,9 @@ type ContentPart = {
 /** Key of the signed reasoning of the `think` part at a content index. */
 export const THINK_REPLAY_KEY_PREFIX = 'think:';
 
+/** Keeps a message document far below the MongoDB size limit; over it no items are kept, so every later turn restores the rounds the same way. */
+export const MAX_PROVIDER_ITEMS_CHARS = 2_000_000;
+
 /** Keeps a message document far below the MongoDB size limit; over it no reasoning is kept, so every later turn sees the same hole. */
 export const MAX_THINK_REPLAY_CHARS = 2_000_000;
 
@@ -68,10 +71,12 @@ export function splitProviderItems(
   if (!found) {
     return undefined;
   }
+  const kept =
+    JSON.stringify(providerItems).length <= MAX_PROVIDER_ITEMS_CHARS ? providerItems : {};
   if (thinkChars <= MAX_THINK_REPLAY_CHARS) {
-    Object.assign(providerItems, thinkItems);
+    Object.assign(kept, thinkItems);
   }
-  return Object.keys(providerItems).length > 0
-    ? { content: stripped, providerItems }
+  return Object.keys(kept).length > 0
+    ? { content: stripped, providerItems: kept }
     : { content: stripped };
 }

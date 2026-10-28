@@ -27,7 +27,7 @@ const {
   ASK_USER_QUESTION_TOOL_NAME,
   resolveWebSearchSSRFAgents,
   buildWebSearchDynamicContext,
-  isStableContextEnabled,
+  getPromptTime,
   codeExecutionAuthHeaders,
   getCodeFileLocation,
   withRequestCodeInputs,
@@ -407,14 +407,10 @@ const loadTools = async ({
         webSearch?.allowedAddresses,
       );
       requestedTools[tool] = async () => {
-        const stableContext = isStableContextEnabled(options.req?.config);
-        toolContextMap[tool] = buildWebSearchContext(stableContext);
-        dynamicToolContextMap[tool] = buildWebSearchDynamicContext({
-          turnStartedAt: options.req?.turnStartedAt,
-          conversationStartedAt: options.req?.conversationCreatedAt,
-          timezone: options.req?.body?.timezone,
-          stableContext,
-        });
+        toolContextMap[tool] = buildWebSearchContext();
+        dynamicToolContextMap[tool] = buildWebSearchDynamicContext(
+          getPromptTime(options.req?.config, options.req),
+        );
         return createSearchTool({
           ...result.authResult,
           httpAgent,

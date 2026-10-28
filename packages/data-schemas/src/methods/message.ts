@@ -9,7 +9,7 @@ import type { UserSubmittedMessageFieldPath } from 'librechat-data-provider';
 import type { SearchParams } from 'meilisearch';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 import type { ISubagentContentChunk } from '~/models/subagentContent';
-import type { AppConfig, IContextEntry, IConversation, IMessage } from '~/types';
+import type { AppConfig, IConversation, IMessage } from '~/types';
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
 import { activeExpirationFilter, createFallbackRetentionDate } from '~/utils/retention';
 import { fitBoundAppSnapshots, hasBoundAppSnapshots } from './appSnapshots';
@@ -32,16 +32,6 @@ const MAX_SUBAGENT_CONTROL_MESSAGE_LENGTH = 4 * 1024;
  * writer therefore has enough rounds for every admitted receipt to converge. */
 const MAX_SUBAGENT_CONTROL_RECEIPT_CAS_ATTEMPTS = 64;
 const HITL_MESSAGE_FILTER_FIELD_SET = new Set<string>(HITL_MESSAGE_FILTER_FIELDS);
-
-/**
- * Written only through `saveMessage` metadata, `setMessageContextAnchor` and the provider items
- * `saveMessage` splits off a response's content, never from input.
- */
-function stripContextFields(record: Record<string, unknown>): void {
-  delete record.contextUpdates;
-  delete record.contextAnchor;
-  delete record.providerItems;
-}
 
 function normalizeUserSubmittedPaths(paths: unknown): string[] {
   if (!Array.isArray(paths)) {
@@ -807,8 +797,6 @@ export interface MessageMethods {
       insertOnly?: boolean;
       /** Creation time to store when this save inserts the row; an existing row keeps its own. */
       createdAtOnInsert?: Date;
-      /** Context changes announced with this user message; the only way to write them. */
-      contextUpdates?: IContextEntry[];
     },
   ): Promise<IMessage | null | undefined>;
   /**
@@ -877,16 +865,6 @@ export interface MessageMethods {
     overrideTimestamp?: boolean,
     provenance?: { privateTextTokens: ReadonlyMap<string, readonly string[]> },
   ): Promise<unknown>;
-  /**
-   * Stores the anchor of the context segment a summary opens, on the user's message carrying it.
-   * A stored anchor is never replaced: concurrent turns cannot move one in use.
-   * @returns whether the message now holds an anchor
-   */
-  setMessageContextAnchor(input: {
-    user: string;
-    messageId: string;
-    anchor: IContextEntry[];
-  }): Promise<boolean>;
   updateToolCallResult(params: {
     userId: string;
     messageId: string;
@@ -1001,6 +979,7 @@ export interface MessageMethods {
       sortOrder?: 1 | -1;
       limit?: number;
       cursor?: string | null;
+      select?: string;
     },
   ): Promise<{ messages: IMessage[]; nextCursor: string | null }>;
   searchMessages(
@@ -1009,6 +988,58 @@ export interface MessageMethods {
     hydrate?: boolean,
   ): Promise<Awaited<ReturnType<SchemaWithMeiliMethods['meiliSearch']>>>;
   deleteMessages(filter: FilterQuery<IMessage>): Promise<DeleteResult>;
+}
+
+const DATE_SORT_FIELDS = new Set(['createdAt', 'updatedAt']);
+/** Cursor marker for a null or missing sort value, which MongoDB orders before every string, '' included. */
+const NULL_SORT_VALUE = '\u0000';
+const OBJECT_ID_PATTERN = /^[0-9a-f]{24}$/i;
+
+/** Encodes the last row of a page as `<sortValue>|<_id>`; dates use ISO strings so milliseconds survive. */
+function formatMessageCursor(value: unknown, id: unknown): string {
+  if (value == null) {
+    return id == null ? NULL_SORT_VALUE : `${NULL_SORT_VALUE}|${String(id)}`;
+  }
+  const sortValue = value instanceof Date ? value.toISOString() : String(value);
+  return id == null ? sortValue : `${sortValue}|${String(id)}`;
+}
+
+/** Accepts both the compound cursor and the legacy bare sort value from older clients. */
+function parseMessageCursor(cursor: string): { value: string; id?: string } {
+  const split = cursor.lastIndexOf('|');
+  if (split >= 0 && OBJECT_ID_PATTERN.test(cursor.slice(split + 1))) {
+    return { value: cursor.slice(0, split), id: cursor.slice(split + 1) };
+  }
+  return { value: cursor };
+}
+
+/** The rows after a cursor, following MongoDB's order: null/missing, then '' (strings only), then values. */
+function buildCursorFilter(
+  sortField: string,
+  op: '$gt' | '$lt',
+  value: string | Date,
+  position: { value: string; id?: Types.ObjectId },
+): FilterQuery<IMessage> {
+  if (position.id == null) {
+    return { [sortField]: { [op]: value } };
+  }
+  const tieId = { _id: { [op]: position.id } };
+  const ascending = op === '$gt';
+  if (position.value === NULL_SORT_VALUE) {
+    return {
+      $or: [
+        { [sortField]: null, ...tieId },
+        ...(ascending ? [{ [sortField]: { $ne: null } }] : []),
+      ],
+    };
+  }
+  return {
+    $or: [
+      { [sortField]: { [op]: value } },
+      { [sortField]: value, ...tieId },
+      ...(ascending ? [] : [{ [sortField]: null }]),
+    ],
+  };
 }
 
 /** The agent-ownership rule shared by background-tool settling and claiming:
@@ -1210,8 +1241,6 @@ export function createMessageMethods(
       insertOnly?: boolean;
       /** Creation time to store when this save inserts the row; an existing row keeps its own. */
       createdAtOnInsert?: Date;
-      /** Context changes announced with this user message; the only way to write them. */
-      contextUpdates?: IContextEntry[];
     },
   ) {
     if (!userId) {
@@ -1233,20 +1262,11 @@ export function createMessageMethods(
         user: userId,
         messageId: params.newMessageId || params.messageId,
       };
+      /** Written only from the provider items `saveMessage` splits off a response's content. */
+      delete update.providerItems;
       delete update.privateText;
       delete update.privacyRevision;
       delete update.privateTextTokens;
-      stripContextFields(update);
-      if (metadata?.contextUpdates != null && params.isCreatedByUser === true) {
-        update.contextUpdates = metadata.contextUpdates;
-      }
-      const split = splitProviderItems(update.content);
-      if (split != null) {
-        update.content = split.content;
-        if (params.isCreatedByUser !== true && split.providerItems != null) {
-          update.providerItems = split.providerItems;
-        }
-      }
       if (metadata?.privateText != null) {
         if (params.isCreatedByUser !== true || typeof params.text !== 'string') {
           throw new Error('Private text requires a user message.');
@@ -1256,6 +1276,13 @@ export function createMessageMethods(
       }
       delete update.isTemporary;
       delete update.expiredAt;
+      const split = splitProviderItems(update.content);
+      if (split != null) {
+        update.content = split.content;
+        if (params.isCreatedByUser !== true && split.providerItems != null) {
+          update.providerItems = split.providerItems;
+        }
+      }
       let retentionOnInsert: { expiredAt: Date; isTemporary: false } | undefined;
 
       const forcedTemporary = isForcedTemporaryRetention(interfaceConfig?.retentionMode);
@@ -1474,10 +1501,10 @@ export function createMessageMethods(
       const Message = mongoose.models.Message as Model<IMessage>;
       const bulkOps = messages.map((message) => {
         const normalizedMessage = sanitizeMessageUpdate(message);
+        delete normalizedMessage.providerItems;
         delete normalizedMessage.privateText;
         delete normalizedMessage.privacyRevision;
         delete normalizedMessage.privateTextTokens;
-        stripContextFields(normalizedMessage);
         const tokens = provenance?.privateTextTokens.get(String(message.messageId));
         const text = message.text;
         if (
@@ -2606,27 +2633,6 @@ export function createMessageMethods(
       : !remaining.some((result) => taskIds.includes(result.taskId));
   }
 
-  async function setMessageContextAnchor({
-    user,
-    messageId,
-    anchor,
-  }: {
-    user: string;
-    messageId: string;
-    anchor: IContextEntry[];
-  }): Promise<boolean> {
-    const Message = mongoose.models.Message as Model<IMessage>;
-    const result = await Message.updateOne(
-      { messageId, user, contextAnchor: { $exists: false } },
-      { $set: { contextAnchor: anchor } },
-      { timestamps: false },
-    );
-    if (result.modifiedCount === 1) {
-      return true;
-    }
-    return (await Message.exists({ messageId, user, contextAnchor: { $exists: true } })) != null;
-  }
-
   /**
    * Updates a message and returns sanitized fields.
    */
@@ -2637,10 +2643,10 @@ export function createMessageMethods(
   ) {
     try {
       const { messageId, ...update } = message;
+      delete update.providerItems;
       delete update.privateText;
       delete update.privacyRevision;
       delete update.privateTextTokens;
-      stripContextFields(update);
       const updatedMessage = await writeMessage({ messageId, user: userId }, update, {
         upsert: false,
         unsetPrivateText: Object.prototype.hasOwnProperty.call(update, 'text'),
@@ -4352,16 +4358,28 @@ export function createMessageMethods(
   ) {
     const Message = mongoose.models.Message as Model<IMessage>;
     const { sortField = 'createdAt', sortOrder = -1, limit = 25, cursor, select } = options;
-    const queryFilter = { ...filter };
-    if (cursor) {
-      queryFilter[sortField] = sortOrder === 1 ? { $gt: cursor } : { $lt: cursor };
+    const queryFilter: FilterQuery<IMessage> = { ...filter };
+    const position = cursor ? parseMessageCursor(cursor) : null;
+    if (position != null) {
+      const op = sortOrder === 1 ? '$gt' : '$lt';
+      const value =
+        DATE_SORT_FIELDS.has(sortField) && position.value !== NULL_SORT_VALUE
+          ? new Date(position.value)
+          : position.value;
+      const id = position.id == null ? undefined : new mongoose.Types.ObjectId(position.id);
+      const after = buildCursorFilter(sortField, op, value, { value: position.value, id });
+      queryFilter.$and = [...(queryFilter.$and ?? []), after];
     }
     const query = Message.find(queryFilter);
-    if (select) {
-      query.select(select);
+    /** The cursor needs `_id`, so an `-_id` projection is applied after it is read. */
+    const tokens = select ? select.split(/\s+/).filter(Boolean) : [];
+    const omitId = tokens.includes('-_id');
+    if (tokens.length > 0) {
+      query.select(tokens.filter((token) => token !== '-_id').join(' '));
     }
+    /** `_id` makes the order total, so a page boundary inside a run of equal sort values is stable. */
     const messages = await query
-      .sort({ [sortField]: sortOrder })
+      .sort({ [sortField]: sortOrder, _id: sortOrder })
       .limit(limit + 1)
       .lean<IMessage[]>();
 
@@ -4369,9 +4387,12 @@ export function createMessageMethods(
     if (messages.length > limit) {
       messages.pop();
       const last = messages[messages.length - 1];
-      const cursorValue =
-        sortField === 'createdAt' ? last.createdAt : last[sortField as keyof IMessage];
-      nextCursor = String(cursorValue ?? '');
+      nextCursor = formatMessageCursor(last[sortField as keyof IMessage], last._id);
+    }
+    if (omitId) {
+      for (const message of messages) {
+        delete (message as { _id?: unknown })._id;
+      }
     }
     return { messages, nextCursor };
   }
@@ -4466,7 +4487,6 @@ export function createMessageMethods(
     getPrivateMessageTexts,
     saveMessage,
     bulkSaveMessages,
-    setMessageContextAnchor,
     updateToolCallResult,
     claimBackgroundToolResults,
     confirmBackgroundToolResultClaim,

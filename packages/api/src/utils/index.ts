@@ -40,3 +40,4 @@ export * from './message';
 export * from './providerItems';
 export * from './quotes';
 export * from './tracing';
+export * from './keylock';

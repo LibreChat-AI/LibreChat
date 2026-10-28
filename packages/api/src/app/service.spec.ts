@@ -1793,7 +1793,6 @@ describe('createAppConfigService', () => {
         {
           code: 'invalid_type',
           expected: 'string',
-          received: 'number',
           path: ['interface', 'customWelcome'],
           message: 'Expected string, received number',
         },
