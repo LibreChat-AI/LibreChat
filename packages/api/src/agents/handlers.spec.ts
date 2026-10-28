@@ -30,6 +30,7 @@ import { ContentFilterError } from '../middleware/contentFilter';
 import { WorkspaceToolHttpError } from '../code/workspace';
 import { createAttachedWorkspaceBashTool, stampCommandExecutor } from '../code/command';
 import { createCodeApiUploadRegistry } from '~/utils';
+import { MODEL_ONLY_ARTIFACT_KEY } from './tools';
 
 function createMockTool(
   name: string,
@@ -10287,8 +10288,9 @@ describe('createToolExecuteHandler', () => {
       /**
        * `read_file` on a sandbox image returns the bytes as an `image_url`
        * artifact the model can see. The SDK folds `artifact.content` into
-       * the model-visible message and the host tool-end callback saves the
-       * same data URL as a viewable attachment. `readSandboxFile` (the text
+       * the model-visible message; the model-only marker keeps the host
+       * tool-end callback from re-attaching the read to the chat on every
+       * call. `readSandboxFile` (the text
        * `cat` path) must NOT be used — its JSON transport corrupts image
        * bytes, which was the matplotlib-shape mojibake regression.
        */
@@ -10332,6 +10334,7 @@ describe('createToolExecuteHandler', () => {
         expect(result.content).toContain('Image:');
         expect(result.content).toContain('image/png');
         expect(result.artifact).toMatchObject({
+          [MODEL_ONLY_ARTIFACT_KEY]: true,
           content: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${PNG_B64}` } }],
         });
       });
