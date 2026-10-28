@@ -129,12 +129,15 @@ import { createConfiguredContentInspector, inspectContent } from '../protection/
 import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
 import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
+import { getPromptTime, isStableContextEnabled } from './promptCache';
 import { isValidInstructionsPromptLink } from './instructions/linked';
 import { PARTIAL_RESOLVED_CONVERSATION } from './conversationSymbols';
 import { registerMemoryTools, memoryToolUsageGuard } from './memory';
 import { isImplicitStatefulCodeRouteAvailable } from '~/code/config';
+import { AGENT_TEMPORAL_INSTRUCTIONS_KEY } from './contextUpdates';
 import { applyIntentLabels, sanitizeIntentLabels } from './intent';
 import { prepareQueuedCodeFileContext } from '~/files/code/queued';
+import { ContextPartKeys, contributeContext } from './systemParts';
 import { ContentFilterError } from '../middleware/contentFilter';
 import { resolveToolRoleGrants } from '~/tools/rolePermissions';
 import { createRequestAgentExecutionContext } from './runtime';
@@ -293,25 +296,6 @@ function hasTemporalSpecialVars(text: string): boolean {
   return temporalSpecialVarRegex.test(text);
 }
 
-function appendAdditionalInstructions(agent: Agent, text?: string | null): void {
-  if (text == null || text === '') {
-    return;
-  }
-  agent.additional_instructions = [agent.additional_instructions ?? '', text]
-    .filter(Boolean)
-    .join('\n\n');
-}
-
-function appendProjectContextInstructions(
-  agent: Agent,
-  context: ResolvedChatProjectContext | null | undefined,
-): void {
-  const instruction = formatChatProjectInstructions(context);
-  if (instruction === '' || agent.additional_instructions?.includes(instruction)) {
-    return;
-  }
-  appendAdditionalInstructions(agent, instruction);
-}
 function addProjectFilesToFileSearch(
   resources: AgentToolResources | undefined,
   files: readonly TFile[] | undefined,
@@ -1256,7 +1240,11 @@ export async function initializeAgent(
       context: runtime.chatProjectContext,
       filters: appConfig?.filters,
     });
-    appendProjectContextInstructions(agent, runtime.chatProjectContext);
+    contributeContext(
+      agent,
+      ContextPartKeys.project,
+      formatChatProjectInstructions(runtime.chatProjectContext),
+    );
   }
 
   if (!db) {
@@ -2437,7 +2425,7 @@ export async function initializeAgent(
     });
     toolDefinitions = memoryResult.toolDefinitions;
     recordCapabilityToolNames(AgentCapabilities.memory, memoryResult.toolNames);
-    appendAdditionalInstructions(agent, memoryToolUsageGuard);
+    contributeContext(agent, ContextPartKeys.memoryGuard, memoryToolUsageGuard);
   } else if (agentRequestsMemory) {
     logger.debug(
       `[initializeAgent] Agent "${agent.id}" requests memory but memoryAvailable=${String(params.memoryAvailable)}; skipping set_memory + delete_memory registration.`,
@@ -2610,16 +2598,21 @@ export async function initializeAgent(
     }
   }
 
+  let temporalInstructions: string | undefined;
   if (agent.instructions && agent.instructions !== '') {
     const resolvedInstructions = replaceSpecialVars({
       text: agent.instructions,
       user: user ? (user as unknown as TUser) : null,
-      now: runtime.turnStartedAt,
+      now: getPromptTime(runtime.appConfig, runtime),
       timezone: runtime.requestBody.timezone,
     });
     if (hasTemporalSpecialVars(agent.instructions)) {
       agent.instructions = undefined;
-      appendAdditionalInstructions(agent, resolvedInstructions);
+      if (isStableContextEnabled(runtime.appConfig)) {
+        temporalInstructions = resolvedInstructions;
+      } else {
+        contributeContext(agent, ContextPartKeys.temporal, resolvedInstructions);
+      }
     } else {
       agent.instructions = resolvedInstructions;
     }
@@ -2649,7 +2642,9 @@ export async function initializeAgent(
       endpoint: agent.provider,
       artifacts: agent.artifacts as never,
     });
-    appendAdditionalInstructions(agent, artifactsPromptResult);
+    if (artifactsPromptResult) {
+      contributeContext(agent, ContextPartKeys.artifacts, artifactsPromptResult);
+    }
   }
 
   let skillCount = 0;
@@ -2887,7 +2882,9 @@ export async function initializeAgent(
     agentContextAttachments,
     fileConsumers,
     toolContextMap: toolContextMap ?? {},
-    dynamicToolContextMap: dynamicToolContextMap ?? {},
+    dynamicToolContextMap: temporalInstructions
+      ? { ...dynamicToolContextMap, [AGENT_TEMPORAL_INSTRUCTIONS_KEY]: temporalInstructions }
+      : (dynamicToolContextMap ?? {}),
     useLegacyContent: !!options.useLegacyContent,
     tools: (tools ?? []) as GenericTool[] & string[],
     maxToolResultChars: maxToolResultCharsResolved,

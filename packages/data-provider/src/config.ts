@@ -1698,6 +1698,11 @@ export const agentsEndpointSchema = baseEndpointSchema
       /** Graph steps an agent run may take; a run with fewer than 1 cannot take a step. */
       recursionLimit: z.number().int().min(1).optional(),
       disableBuilder: z.boolean().optional().default(false),
+      /** `stableContext` keeps the prompt prefix stable across turns for provider prompt caching:
+       * prompt time is anchored to the conversation start, a later date is announced in history. */
+      promptCache: z.object({ stableContext: z.boolean().optional().default(false) }).optional(),
+      /** Prefixes every user message in the prompt with the time it was sent, to the second. */
+      promptMessageTimestamps: z.boolean().optional().default(false),
       /** Optional workspace guidance acquisition budget, separate from command execution. */
       repositoryInstructions: z
         .object({

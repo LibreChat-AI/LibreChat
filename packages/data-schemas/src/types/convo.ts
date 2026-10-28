@@ -6,6 +6,7 @@ import type {
 } from 'librechat-data-provider';
 import type { Document, Types } from 'mongoose';
 import type { ICompactionSemanticIndexProjection } from './compaction';
+import type { IContextEntry } from './message';
 
 export const MAX_AGENT_EVENT_ACTOR_SKILLS = 64;
 export const MAX_AGENT_EVENT_ACTOR_DISCOVERED_TOOLS = 128;
@@ -305,6 +306,8 @@ export interface IConversation extends Document {
   toolApprovalAllows?: string[];
   /** Last lane branch and head a command reported; server-written only and excluded from reads. */
   laneGit?: IConversationLaneGit;
+  /** Server-written anchor of the conversation's first context segment; excluded from reads. */
+  contextAnchor?: IContextEntry[];
   /** Counter behind `laneGit.seq`; server-written only and excluded from reads. */
   laneGitSeq?: number;
   /** Moves and detaches of the workspace; fences lane reports from an earlier attachment. */

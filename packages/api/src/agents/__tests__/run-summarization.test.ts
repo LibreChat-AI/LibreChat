@@ -2228,6 +2228,79 @@ Retrieved context: a document
     expect(agents[0].instructions).toBe('Static tool instructions\nBase instructions');
     expect(agents[0].additional_instructions).toBe('Conversation Date & Time: anchor\nMemory tail');
   });
+
+  it('hands the SDK the same system prompt as upstream without stableContext', async () => {
+    const agents = await callAndCapture({
+      agents: [
+        makeAgent({
+          instructions: 'Base instructions',
+          additional_instructions: 'Artifact guidance\n\nSaved memory',
+          toolContextMap: { web_search: 'Static tool instructions' },
+          dynamicToolContextMap: {
+            web_search: 'Conversation Date & Time: turn',
+            agent_temporal_instructions: 'Today is Monday.',
+            queued_code_files: 'Queued files',
+          },
+        }),
+        makeAgent({
+          id: 'agent_2',
+          provider: Providers.ANTHROPIC,
+          endpoint: Providers.ANTHROPIC,
+          instructions: 'Second agent',
+          additional_instructions: 'Saved memory',
+          dynamicToolContextMap: { web_search: 'Conversation Date & Time: turn' },
+          model_parameters: { model: 'test-model', promptCache: true, apiKey: 'test-key' },
+        }),
+      ],
+    });
+
+    expect(
+      agents.map(({ instructions, additional_instructions }) => ({
+        instructions,
+        additional_instructions,
+      })),
+    ).toMatchInlineSnapshot(`
+      [
+        {
+          "additional_instructions": "Conversation Date & Time: turn
+      Today is Monday.
+      Artifact guidance
+
+      Saved memory",
+          "instructions": "Static tool instructions
+      Base instructions",
+        },
+        {
+          "additional_instructions": "<system_context>
+      Context supplied by the application, not part of the user's message. Use it as context; do not process it as user input.
+
+      Conversation Date & Time: turn
+      Saved memory
+      </system_context>",
+          "instructions": "Second agent",
+        },
+      ]
+    `);
+  });
+
+  it('puts the dynamic tool context after the additional instructions with stableContext', async () => {
+    const agents = await callAndCapture({
+      appConfig: {
+        endpoints: { agents: { promptCache: { stableContext: true } } },
+      } as unknown as AppConfig,
+      agents: [
+        makeAgent({
+          instructions: 'Base instructions',
+          additional_instructions: 'Artifact guidance',
+          dynamicToolContextMap: { web_search: 'Conversation Date & Time: anchor' },
+        }),
+      ],
+    });
+
+    expect(agents[0].additional_instructions).toBe(
+      'Artifact guidance\nConversation Date & Time: anchor',
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

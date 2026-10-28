@@ -90,6 +90,7 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
         statefulCodeSessions,
         maxSubagents,
         fileSharing,
+        promptCache,
       } = appConfig.endpoints[EModelEndpoint.agents];
       const toolApproval = appConfig.endpoints[EModelEndpoint.agents].toolApproval;
       /** Only advertise Accept edits when the endpoint fallback cannot force every
@@ -141,6 +142,7 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
         statefulCodeSessions: clientStatefulCodeSessions,
         maxSubagents,
         fileSharing,
+        ...(promptCache?.stableContext === true && { stableContext: true }),
         toolApproval: {
           enabled: toolApproval?.enabled === true,
           agentModes: toolApproval?.enabled === true && toolApproval.agentModes === true,
