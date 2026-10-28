@@ -54,11 +54,3 @@ export function releaseComposerFile(id: string): void {
 
 /** The DOM id of a pane's main composer textarea; selection and quote features locate it by id. */
 export const mainTextareaId = 'prompt-textarea';
-
-/**
- * Whether a draft message has enough content to submit: non-whitespace
- * text, or at least one attached file. Lets users send a file without
- * having to type a placeholder message alongside it.
- */
-export const isSubmittableMessage = (text?: string | null, fileCount = 0): boolean =>
-  (text ?? '').trim() !== '' || fileCount > 0;

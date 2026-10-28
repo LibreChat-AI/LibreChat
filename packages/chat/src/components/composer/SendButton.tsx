@@ -1,7 +1,7 @@
 import React, { forwardRef } from 'react';
 import { SendIcon, IconButton, useLocalize, TooltipAnchor } from '@librechat/client';
 import type { ForwardRefExoticComponent, RefAttributes } from 'react';
-import { isSubmittableMessage } from '../../core/composer';
+import { isSubmittableMessage } from '../../core/turns/draft';
 
 type SendButtonProps = {
   disabled: boolean;
