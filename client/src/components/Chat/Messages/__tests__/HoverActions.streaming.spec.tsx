@@ -50,8 +50,8 @@ jest.mock('~/components/Chat/Messages/Content/ContentParts', () => {
 });
 
 jest.mock('@librechat/chat/components', () => ({
-  __esModule: true,
-  default: () => <div data-testid="author-header" />,
+  ...jest.requireActual('@librechat/chat/components'),
+  AuthorHeader: () => <div data-testid="author-header" />,
 }));
 
 jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
