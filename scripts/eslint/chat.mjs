@@ -14,12 +14,36 @@ import path from 'node:path';
  *   `@librechat/client`, or any subpath of them) and none of the `/react` or `/components` entries.
  *   A core `import()` or `require()` whose specifier cannot be read statically is reported too,
  *   since the rule could not tell what it loads.
+ * - Outside specs: nothing reaches into another package while the module loads. App specs replace
+ *   whole packages with mocks (`@librechat/client`, `librechat-data-provider`), so a top-level
+ *   `cn(...)`, or a map keyed by `FileSources.local`, throws before a single test runs. A call,
+ *   `new`, tagged template or member read through an import belongs inside a function. Packages no
+ *   spec replaces (React, Jotai) are exempt through the `loadSafe` option.
  */
 
 const EXTENSION = /\.(?:[cm]?[jt]sx?)$/;
 const UI_PACKAGES = new Set(['react', 'react-dom', 'jotai', '@librechat/client']);
 const UI_SCOPES = ['@tanstack/'];
 const ENTRIES = new Set(['react', 'components']);
+/** Packages whose exports may be used while a module loads: no spec replaces them. */
+const LOAD_SAFE = ['react', 'react-dom', 'jotai', 'jotai/utils'];
+const FUNCTIONS = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
+
+/** `cn`, `Client.cn`, `Client['cn']` and `cn.call` all start at the identifier they call through. */
+const rootIdentifier = (node) => {
+  let current = node;
+  while (current?.type === 'MemberExpression' || current?.type === 'TSNonNullExpression') {
+    current = current.type === 'MemberExpression' ? current.object : current.expression;
+  }
+  return current?.type === 'Identifier' ? current : undefined;
+};
+
+/** Whether `node` runs when its module loads, rather than when a function or instance runs it. */
+const runsOnLoad = (ancestors) =>
+  !ancestors.some(
+    (ancestor) =>
+      FUNCTIONS.has(ancestor.type) || (ancestor.type === 'PropertyDefinition' && !ancestor.static),
+  );
 
 const packageName = (specifier) => {
   const parts = specifier.split('/');
@@ -55,6 +79,7 @@ const boundary = {
         properties: {
           sourceRoot: { type: 'string' },
           packageName: { type: 'string' },
+          loadSafe: { type: 'array', items: { type: 'string' } },
         },
         additionalProperties: false,
       },
@@ -67,6 +92,7 @@ const boundary = {
       ui: 'The @librechat/chat core has no UI dependency; {{specifier}} belongs in the /react entry.',
       entry: 'The core cannot load {{specifier}}; the /{{entry}} entry builds on the core.',
       opaque: 'The @librechat/chat core loads only specifiers the boundary can read.',
+      load: 'Use {{name}} from {{source}} inside a function, not while the module loads: app specs mock {{source}}, and this throws on import.',
     },
   },
   create(context) {
@@ -77,6 +103,25 @@ const boundary = {
     const relativeFile = path.relative(root, filename);
     if (relativeFile.startsWith('..') || path.isAbsolute(relativeFile)) return {};
     const segments = relativeFile.split(path.sep);
+    const isSpec = segments.includes('__tests__') || /\.(spec|test)\./.test(relativeFile);
+    const loadSafe = new Set(options.loadSafe ?? LOAD_SAFE);
+    /** Import specifiers that bind a name to another package, mapped to that package. */
+    const externalBindings = new Map();
+    const usesExternalOnLoad = (node, target) => {
+      if (isSpec) return;
+      const identifier = rootIdentifier(target);
+      if (!identifier) return;
+      const scope = context.sourceCode.getScope(node);
+      let variable;
+      for (let current = scope; current && !variable; current = current.upper) {
+        variable = current.set.get(identifier.name);
+      }
+      const source = variable && externalBindings.get(variable.defs[0]?.node);
+      if (!source) return;
+      if (!runsOnLoad(context.sourceCode.getAncestors(node))) return;
+      context.report({ node, messageId: 'load', data: { name: identifier.name, source } });
+    };
+
     const isCore =
       (segments.length === 1 && /^index\.[cm]?[jt]sx?$/.test(segments[0])) ||
       (segments[0] === 'core' &&
@@ -127,13 +172,36 @@ const boundary = {
     };
 
     return {
+      Program(program) {
+        for (const statement of program.body) {
+          if (statement.type !== 'ImportDeclaration' || statement.importKind === 'type') continue;
+          const source = statement.source.value;
+          const bare =
+            !source.startsWith('.') && !path.isAbsolute(source) && !source.startsWith('~');
+          if (!bare || loadSafe.has(source)) continue;
+          statement.specifiers
+            .filter((specifier) => specifier.importKind !== 'type')
+            .forEach((specifier) => externalBindings.set(specifier, source));
+        }
+      },
       ImportDeclaration: (node) => check(node, node.source),
+      NewExpression: (node) => usesExternalOnLoad(node, node.callee),
+      TaggedTemplateExpression: (node) => usesExternalOnLoad(node, node.tag),
+      /** The outermost read only: `A.b.c` is one report, and a call reports its own callee. */
+      MemberExpression(node) {
+        if (node.parent.type === 'MemberExpression' && node.parent.object === node) return;
+        if (node.parent.type === 'CallExpression' && node.parent.callee === node) return;
+        if (node.parent.type === 'NewExpression' && node.parent.callee === node) return;
+        if (node.parent.type === 'TaggedTemplateExpression' && node.parent.tag === node) return;
+        usesExternalOnLoad(node, node);
+      },
       ExportNamedDeclaration: (node) => node.source && check(node, node.source),
       ExportAllDeclaration: (node) => check(node, node.source),
       ImportExpression: (node) => check(node, node.source),
       TSImportType: (node) => check(node, node.argument),
       TSExternalModuleReference: (node) => check(node, node.expression),
       CallExpression(node) {
+        usesExternalOnLoad(node, node.callee);
         if (node.callee.type !== 'Identifier' || node.callee.name !== 'require') return;
         check(node, node.arguments[0]);
       },
