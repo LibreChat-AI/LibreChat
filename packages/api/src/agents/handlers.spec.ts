@@ -8404,6 +8404,59 @@ describe('createToolExecuteHandler', () => {
       }
     });
 
+    it('returns a skill image to the model without attaching it to the chat', async () => {
+      const image = Buffer.from(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+        'base64',
+      );
+      const handler = createToolExecuteHandler({
+        loadTools: async () => ({
+          loadedTools: [],
+          configurable: {
+            req: { user: { id: 'user-1' }, config: {} },
+            accessibleSkillIds: skillsInScope(),
+          },
+        }),
+        getSkillByName: async () => ({
+          _id: '507f1f77bcf86cd799439011' as unknown as never,
+          name: 'image-skill',
+          body: '# Image',
+          fileCount: 1,
+          version: 1,
+        }),
+        getSkillFileByPath: async (_id, relativePath) => ({
+          mimeType: 'image/png',
+          bytes: image.length,
+          isBinary: true,
+          filepath: `/storage/${relativePath}`,
+          source: 'local',
+          relativePath,
+        }),
+        getStrategyFunctions: () => ({
+          getDownloadStream: async () => Readable.from(image),
+        }),
+      });
+
+      const [result] = await invokeHandler(handler, [
+        {
+          id: 'skill-image',
+          name: Constants.READ_FILE,
+          args: { path: 'skills/image-skill/chart.png' },
+        },
+      ]);
+
+      expect(result.status).toBe('success');
+      expect(result.artifact).toMatchObject({
+        [MODEL_ONLY_ARTIFACT_KEY]: true,
+        content: [
+          {
+            type: 'image_url',
+            image_url: { url: `data:image/png;base64,${image.toString('base64')}` },
+          },
+        ],
+      });
+    });
+
     it('refuses incomplete or oversized sandbox text instead of reporting a false EOF', async () => {
       const original = text;
       const readSandboxFile: NonNullable<ToolExecuteOptions['readSandboxFile']> = jest.fn(
