@@ -1,18 +1,19 @@
 import React from 'react';
 import { ChevronDown, ChevronUp } from 'lucide';
-import { MorphIcon, TooltipAnchor } from '@librechat/client';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import { cn, MorphIcon, useLocalize, TooltipAnchor } from '@librechat/client';
+import type { NamedExoticComponent } from 'react';
+
+type CollapseChatProps = {
+  isScrollable: boolean;
+  isCollapsed: boolean;
+  setIsCollapsed: React.Dispatch<React.SetStateAction<boolean>>;
+};
 
 const CollapseChat = ({
   isScrollable,
   isCollapsed,
   setIsCollapsed,
-}: {
-  isScrollable: boolean;
-  isCollapsed: boolean;
-  setIsCollapsed: React.Dispatch<React.SetStateAction<boolean>>;
-}) => {
+}: CollapseChatProps): React.JSX.Element | null => {
   const localize = useLocalize();
   if (!isScrollable) {
     return null;
@@ -48,4 +49,6 @@ const CollapseChat = ({
   );
 };
 
-export default React.memo(CollapseChat);
+const MemoCollapseChat: NamedExoticComponent<CollapseChatProps> = React.memo(CollapseChat);
+
+export default MemoCollapseChat;

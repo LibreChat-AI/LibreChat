@@ -11,7 +11,7 @@ import {
   useSteerEscalate,
   useSteerRecovery,
 } from '@librechat/chat/react';
-import type { SteerReceiptState } from '~/components/Chat/Steering/Receipt';
+import type { SteerReceiptState } from '@librechat/chat/components';
 import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/width';
 import EscalateNowButton from '~/components/Chat/Input/EscalateNowButton';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';

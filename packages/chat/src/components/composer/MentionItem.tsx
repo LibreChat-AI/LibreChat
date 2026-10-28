@@ -1,6 +1,6 @@
 import React from 'react';
 import { Clock4 } from 'lucide-react';
-import { cn } from '~/utils';
+import { cn } from '@librechat/client';
 
 export interface MentionItemProps {
   name: string;
@@ -22,7 +22,7 @@ export default function MentionItem({
   description,
   style,
   type = 'mention',
-}: MentionItemProps) {
+}: MentionItemProps): React.JSX.Element {
   return (
     <button
       type="button"

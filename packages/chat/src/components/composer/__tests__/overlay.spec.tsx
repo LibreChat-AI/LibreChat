@@ -1,3 +1,6 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { Provider, createStore } from 'jotai';
 import { renderHook } from '@testing-library/react';

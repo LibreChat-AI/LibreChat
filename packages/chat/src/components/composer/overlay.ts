@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 import { atomFamily } from 'jotai/utils';
 import { atom, useSetAtom } from 'jotai';
+import type { Family } from '../../react/steer/family';
 
 /**
  * How many composer panels are open over the bottom of a conversation's
@@ -13,7 +14,9 @@ import { atom, useSetAtom } from 'jotai';
  * can never go stale; the family is never GC'd but holds one number per
  * visited conversation.
  */
-export const composerOverlayCountFamily = atomFamily((_conversationId: string) => atom<number>(0));
+export const composerOverlayCountFamily: Family<number> = atomFamily((_conversationId: string) =>
+  atom<number>(0),
+);
 
 /**
  * Registers a composer panel as open for `conversationId` while `open` holds.

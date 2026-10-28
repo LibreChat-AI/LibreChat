@@ -1,6 +1,6 @@
 import { memo } from 'react';
 import { Chip as SharedChip } from '@librechat/client';
-import type { ReactNode } from 'react';
+import type { ReactNode, NamedExoticComponent } from 'react';
 
 export interface ChipProps {
   label: string;
@@ -24,7 +24,7 @@ function Chip({
   removeLabel,
   className,
   'data-testid': testId,
-}: ChipProps) {
+}: ChipProps): React.JSX.Element {
   return (
     <SharedChip
       role="listitem"
@@ -50,4 +50,6 @@ function Chip({
   );
 }
 
-export default memo(Chip);
+const MemoChip: NamedExoticComponent<ChipProps> = memo(Chip);
+
+export default MemoChip;

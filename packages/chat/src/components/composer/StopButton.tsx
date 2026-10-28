@@ -1,13 +1,8 @@
 import { memo } from 'react';
-import { IconButton, TooltipAnchor } from '@librechat/client';
-import { useLocalize } from '~/hooks';
+import { IconButton, useLocalize, TooltipAnchor } from '@librechat/client';
+import type { NamedExoticComponent } from 'react';
 
-export default memo(function StopButton({
-  stop,
-  setShowStopButton,
-  canStop = true,
-  hidden = false,
-}: {
+type StopButtonProps = {
   stop: (e: React.MouseEvent<HTMLButtonElement>) => void;
   setShowStopButton: (value: boolean) => void;
   /** False while the abort would be a no-op (the generation epoch is not
@@ -20,7 +15,14 @@ export default memo(function StopButton({
    *  types a steer is what made the shortcut reach into another pane or do
    *  nothing at all, which is exactly when a hard stop is wanted. */
   hidden?: boolean;
-}) {
+};
+
+const StopButton: NamedExoticComponent<StopButtonProps> = memo(function StopButton({
+  stop,
+  setShowStopButton,
+  canStop = true,
+  hidden = false,
+}: StopButtonProps) {
   const localize = useLocalize();
 
   return (
@@ -60,3 +62,5 @@ export default memo(function StopButton({
     ></TooltipAnchor>
   );
 });
+
+export default StopButton;

@@ -1,7 +1,11 @@
+/**
+ * @jest-environment jsdom
+ */
 import { render, screen, fireEvent } from '@testing-library/react';
 import StopButton from '../StopButton';
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string) => key,
 }));
 

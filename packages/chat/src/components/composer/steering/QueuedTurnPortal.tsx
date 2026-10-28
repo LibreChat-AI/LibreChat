@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useMemo, useState } from 'react';
-import type { ReactNode } from 'react';
+import type { ReactNode, JSX } from 'react';
 
 type QueuedTurnTarget = {
   conversationId: string;
@@ -15,7 +15,7 @@ type QueuedTurnPortalContextValue = {
 const QueuedTurnPortalContext = createContext<QueuedTurnPortalContextValue | null>(null);
 
 /** The composer owns queue actions; the transcript only supplies their mount point. */
-export function QueuedTurnPortalProvider({ children }: { children: ReactNode }) {
+export function QueuedTurnPortalProvider({ children }: { children: ReactNode }): JSX.Element {
   const [target, setTargetState] = useState<QueuedTurnTarget | null>(null);
   const setTarget = useCallback((next: QueuedTurnTarget | null) => {
     setTargetState((current) =>
@@ -32,4 +32,5 @@ export function QueuedTurnPortalProvider({ children }: { children: ReactNode }) 
   );
 }
 
-export const useQueuedTurnPortal = () => useContext(QueuedTurnPortalContext);
+export const useQueuedTurnPortal = (): QueuedTurnPortalContextValue | null =>
+  useContext(QueuedTurnPortalContext);

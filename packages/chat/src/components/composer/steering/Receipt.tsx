@@ -1,9 +1,8 @@
 import { memo } from 'react';
 import { Check, CheckCheck } from 'lucide-react';
-import { InfoHoverCard, ESide } from '@librechat/client';
+import { cn, ESide, useLocalize, InfoHoverCard } from '@librechat/client';
+import type { NamedExoticComponent } from 'react';
 import { STEER_DOT, STEER_ICON } from './identity';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
 
 export type SteerReceiptState = 'sending' | 'delivered' | 'interrupting' | 'applied';
 
@@ -27,13 +26,7 @@ export type SteerReceiptState = 'sending' | 'delivered' | 'interrupting' | 'appl
  * The hover explanations render through the shared `InfoHoverCard` with the
  * receipt as the trigger, so the info text doubles as the accessible name.
  */
-const SteerReceipt = memo(function SteerReceipt({
-  state,
-  live = false,
-  confirmed = true,
-  animateIn = false,
-  className,
-}: {
+type SteerReceiptProps = {
   state: SteerReceiptState;
   /** Applied only: the owning response is still generating, so the receipt is
    *  the newest thing on screen and keeps the steering identity color. Off
@@ -45,7 +38,15 @@ const SteerReceipt = memo(function SteerReceipt({
   /** Plays the one-shot draw-in at the live chip→inline hand-off only. */
   animateIn?: boolean;
   className?: string;
-}) {
+};
+
+const SteerReceipt: NamedExoticComponent<SteerReceiptProps> = memo(function SteerReceipt({
+  state,
+  live = false,
+  confirmed = true,
+  animateIn = false,
+  className,
+}: SteerReceiptProps) {
   const localize = useLocalize();
 
   if (state === 'sending') {
@@ -53,7 +54,7 @@ const SteerReceipt = memo(function SteerReceipt({
       <span
         data-testid="steer-receipt"
         data-receipt-state="sending"
-        className={cn('text-xs text-text-secondary', className)}
+        className={cn('text-text-secondary text-xs', className)}
       >
         {localize('com_ui_steer_sending')}
       </span>
@@ -71,9 +72,9 @@ const SteerReceipt = memo(function SteerReceipt({
         <InfoHoverCard side={ESide.Top} text={localize('com_ui_steer_applied_info')}>
           <CheckCheck
             className={cn(
-              'h-4 w-4 transition-colors duration-theme-normal motion-reduce:transition-none',
+              'duration-theme-normal h-4 w-4 transition-colors motion-reduce:transition-none',
               live ? STEER_ICON : 'text-text-secondary',
-              animateIn && 'ease-out animate-in fade-in-0 zoom-in-50 motion-reduce:animate-none',
+              animateIn && 'animate-in fade-in-0 zoom-in-50 ease-out motion-reduce:animate-none',
             )}
             aria-hidden="true"
           />

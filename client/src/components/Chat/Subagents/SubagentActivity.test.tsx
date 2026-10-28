@@ -224,9 +224,9 @@ jest.mock('~/components/Chat/Messages/Content/ToolApproval', () => ({
   default: () => <div data-testid="tool-approval">approval</div>,
 }));
 
-jest.mock('~/components/Chat/Steering/Receipt', () => ({
-  __esModule: true,
-  default: ({ state }: { state: string }) => (
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  SteerReceipt: ({ state }: { state: string }) => (
     <span data-testid="steer-receipt" data-receipt-state={state} />
   ),
 }));

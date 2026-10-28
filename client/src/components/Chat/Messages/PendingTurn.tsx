@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
+import { useQueuedTurnPortal } from '@librechat/chat/components';
 import {
   hasRevealSuccessor,
   buildRevealedMessage,
@@ -9,7 +10,6 @@ import {
 import type { TMessage } from 'librechat-data-provider';
 import type { RefObject } from 'react';
 import type { TMessageIcon } from '~/common';
-import { useQueuedTurnPortal } from '~/components/Chat/Steering/QueuedTurnPortal';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
 import { messageFooterClasses } from '~/components/Chat/Messages/styles';
 import MessageRow from '~/components/Chat/Messages/ui/MessageRow';

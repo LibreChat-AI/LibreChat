@@ -16,7 +16,8 @@ jest.mock('jotai', () => ({
   ),
 }));
 
-jest.mock('~/components/Chat/Input/skillsState', () => ({
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   showSkillsPopoverFamily: (idx: number) => `showSkillsPopoverFamily-${idx}`,
 }));
 
