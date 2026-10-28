@@ -1,8 +1,0 @@
-/**
- * Repository entry for the chat package's design lint, which looks for a stylesheet importing
- * Tailwind under the package. The components render inside a host that loads the library's
- * tokens and preset, so the lint resolves classes against that same theme.
- */
-@import 'tailwindcss';
-@import '../../client/src/theme/tokens.css';
-@config '../../client/tailwind.config.js';
