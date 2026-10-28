@@ -28,9 +28,9 @@ jest.mock('~/hooks/Messages/useLatestMessage', () => ({
   useLatestMessageId: () => null,
 }));
 
-jest.mock('~/hooks/Chat/useChatFunctions', () => ({
+jest.mock('~/hooks/Chat/services', () => ({
   __esModule: true,
-  default: () => ({ ask: jest.fn(), regenerate: jest.fn() }),
+  default: () => jest.requireActual('test/turnServices').createTestTurnServices(),
 }));
 
 jest.mock('~/hooks/useNewConvo', () => ({

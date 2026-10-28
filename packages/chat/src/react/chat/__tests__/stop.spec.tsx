@@ -20,6 +20,7 @@ import {
   drainAfterAbortByIndex,
 } from '../../steer/queue';
 import { submissionByIndex, clearSubmissions } from '../../submission';
+import { createTurnServices } from '../__fixtures__/services';
 import { ChatHostProvider } from '../host';
 import { useAbortCleanup } from '../abort';
 import useChatHelpers from '../helpers';
@@ -34,7 +35,7 @@ jest.mock('../../steering/useSteerConvert', () => ({
 
 const noop = () => undefined;
 const noLiveAttachments = {};
-const turns = { ask: jest.fn(), regenerate: jest.fn() };
+const turnServices = createTurnServices();
 const cache: ChatMessageCache = {
   read: () => undefined,
   write: noop,
@@ -49,7 +50,7 @@ const cache: ChatMessageCache = {
 const createHost = (conversation: TConversation | null): ChatHost => ({
   usePaneConversation: () => ({ conversation, setConversation: noop }),
   useNewConversation: () => noop,
-  useTurns: () => turns,
+  useTurnServices: () => turnServices,
   useLatestMessage: () => null,
   useLatestMessageId: () => null,
   useSetSiblingIdx: () => noop,

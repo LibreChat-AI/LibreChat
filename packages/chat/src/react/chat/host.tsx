@@ -1,15 +1,20 @@
 import { createContext, useContext } from 'react';
 import type {
+  TUser,
   TMessage,
+  TModelSpec,
   TSubmission,
   TAttachment,
   TConversation,
   TPendingSteer,
+  TEndpointOption,
+  TEphemeralAgent,
+  TEndpointsConfig,
   UIMappingOptions,
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
+import type { BuildTurnInput, ExtendedFile } from '../../core';
 import type { ChatContract } from './contract';
-import type { ExtendedFile } from '../../core';
 
 export interface AbortStreamParams {
   /** The stream ID to abort (if known) */
@@ -38,11 +43,12 @@ export interface AbortStreamResponse {
   pendingSteers?: TPendingSteer[];
 }
 
-/** What the host's turn builder needs to submit and regenerate turns for one pane. */
+/** The pane state `ask` and `regenerate` read and write for one pane. */
 export type ChatTurnsParams = {
   index: number;
-  files: Map<string, ExtendedFile>;
-  setFiles: Dispatch<SetStateAction<Map<string, ExtendedFile>>>;
+  files?: Map<string, ExtendedFile>;
+  /** Without it a send leaves the composer's files alone. */
+  setFiles?: Dispatch<SetStateAction<Map<string, ExtendedFile>>>;
   getMessages: ChatContract['getMessages'];
   setMessages: ChatContract['setMessages'];
   isSubmitting: boolean;
@@ -50,6 +56,66 @@ export type ChatTurnsParams = {
   latestMessage: TMessage | null;
   setSubmission: Dispatch<SetStateAction<TSubmission | null>>;
   setConversation: Dispatch<SetStateAction<TConversation | null>>;
+};
+
+/** The code workspace and approval a send carries, decided by the app's agent settings. */
+export type TurnCodeDecision = {
+  code: BuildTurnInput['code'];
+  /** Records the decision on the pane's conversation once the send is published. */
+  apply: (conversation: TConversation) => TConversation | null;
+};
+
+/** The app's logger; `warn` and `error` may reach the app's telemetry. */
+export type TurnLogger = {
+  log: (...args: unknown[]) => void;
+  dir: (...args: unknown[]) => void;
+  warn: (...args: unknown[]) => void;
+};
+
+/**
+ * What a pane's turns need from the app: its catalogs, routing, composer files, code workspace
+ * and logging. Getters are read when a turn is sent, so they see the app's current state.
+ */
+export type TurnServices = {
+  logger: TurnLogger;
+  isTemporary: boolean;
+  user?: TUser;
+  modelSpecs?: TModelSpec[];
+  getEndpointsConfig: () => TEndpointsConfig | undefined;
+  getEphemeralAgent: (conversationId: string) => TEphemeralAgent | null;
+  /** The response sender label for an endpoint option. */
+  getSender: (endpointOption: TEndpointOption) => string;
+  /** The stored user key expiry of the pane's endpoint, sent with non-agent endpoints. */
+  getUserKey: () => string | undefined;
+  /** The project the route scopes a new chat to. */
+  getRouteProjectId: () => string | null;
+  /** Whether cached history is mid-refetch and old enough that a send could fork from it. */
+  isHistoryRevalidating: (conversationId: string | null) => boolean;
+  /** The send's code decision; `null` refuses the send. */
+  resolveCode: (conversation: TConversation | null) => TurnCodeDecision | null;
+  /**
+   * Checks a request-scoped reasoning override against the endpoint's loaded capabilities. An
+   * unsupported one is dropped; `retryable` says it was refused only because the capabilities
+   * are not known yet.
+   */
+  resolveReasoning: (args: {
+    endpoint?: string | null;
+    conversation: TConversation | null;
+    endpointsConfig?: TEndpointsConfig;
+    reasoningOverride: NonNullable<TMessage['reasoningOverride']>;
+  }) => { reasoningOverride: TMessage['reasoningOverride']; retryable: boolean };
+  /** Moves the pane to the route a new chat starts from. */
+  openNewChat: (path: string) => void;
+  /** Marks composer files as submitted, so draft cleanup keeps them. */
+  releaseFiles: (fileIds: (string | undefined)[]) => void;
+  /** Forgets the files queued for deletion once the composer is cleared. */
+  clearFilesToDelete: () => void;
+  /** Binds the conversation's usage display to the response it is waiting on. */
+  bindResponse: (conversationKey: string, responseMessageId: string) => void;
+  /** Brings a regenerated response into view. */
+  focusResponse: (parentMessageId?: string | null) => void;
+  /** Ties the composer launch to the conversation the submission starts. */
+  bindLaunch: (conversation: TSubmission['conversation'], index: number) => void;
 };
 
 /** The conversation a pane shows, and the setter that replaces or updates it. */
@@ -84,8 +150,8 @@ export interface ChatHost {
   usePaneConversation(index: number): ChatPaneConversation;
   /** Starts a fresh conversation in a pane. */
   useNewConversation(index: number): ChatContract['newConversation'];
-  /** Builds and submits turns: `ask` and `regenerate`. */
-  useTurns(params: ChatTurnsParams): Pick<ChatContract, 'ask' | 'regenerate'>;
+  /** What the pane's turns need from the app; see {@link TurnServices}. */
+  useTurnServices(params: ChatTurnsParams): TurnServices;
   /** The tail of the branch on screen for the pane, read from the messages cached under `key`. */
   useLatestMessage(index: number, key: string): TMessage | null;
   /** The id of {@link ChatHost.useLatestMessage}, subscribed on its own. */
