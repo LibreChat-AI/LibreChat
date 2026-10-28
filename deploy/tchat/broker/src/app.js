@@ -4,6 +4,7 @@ import { resolveSubject } from './identity.js';
 import { secretsMatch } from './signing.js';
 import { TINYFISH_PREFIX, createTinyfish } from './tinyfish.js';
 import { CATALOG_PREFIX, createCatalog } from './catalog.js';
+import { CREDIT_PATH, createCredit } from './credit.js';
 
 /** Paths the chat app is allowed to reach. Everything else is refused here
  *  rather than forwarded, so the broker can never be used as an open relay.
@@ -82,6 +83,7 @@ const jsonResponse = (status, body) =>
 export const createApp = ({ config, cache, fetchImpl = fetch, logger = console }) => {
   const tinyfish = createTinyfish({ config, fetchImpl });
   const catalog = createCatalog({ config, cache, fetchImpl });
+  const credit = createCredit({ config, cache, fetchImpl });
 
   const relay = async (request, url, token, bodyBytes) => {
     const upstream = new URL(url.pathname + url.search, config.upstreamBaseUrl);
@@ -115,6 +117,9 @@ export const createApp = ({ config, cache, fetchImpl = fetch, logger = console }
       // picker. Same for every user, so it needs no identity either.
       if (url.pathname.startsWith(CATALOG_PREFIX)) {
         return await catalog(request, url);
+      }
+      if (url.pathname === CREDIT_PATH) {
+        return await credit(request, url);
       }
       if (!RELAY_PREFIXES.some((prefix) => url.pathname.startsWith(prefix))) {
         throw new BrokerError({
