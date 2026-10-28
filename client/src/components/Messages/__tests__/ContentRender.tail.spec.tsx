@@ -7,27 +7,6 @@ import MessageContent from '../MessageContent';
 
 const mockRowRenders = new Map<string, number>();
 
-jest.mock('~/components/Chat/Messages/ui/MessageRow', () => ({
-  __esModule: true,
-  default: ({
-    id,
-    children,
-    footer,
-  }: {
-    id?: string;
-    children: React.ReactNode;
-    footer: React.ReactNode;
-  }) => {
-    mockRowRenders.set(id ?? '', (mockRowRenders.get(id ?? '') ?? 0) + 1);
-    return (
-      <div data-testid={`row-${id}`}>
-        {children}
-        {footer}
-      </div>
-    );
-  },
-}));
-
 jest.mock('~/components/Chat/Messages/Content/ContentParts', () => ({
   __esModule: true,
   default: () => null,
@@ -45,6 +24,23 @@ jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
 
 jest.mock('@librechat/chat/components', () => ({
   ...jest.requireActual('@librechat/chat/components'),
+  MessageRow: ({
+    id,
+    children,
+    footer,
+  }: {
+    id?: string;
+    children: React.ReactNode;
+    footer: React.ReactNode;
+  }) => {
+    mockRowRenders.set(id ?? '', (mockRowRenders.get(id ?? '') ?? 0) + 1);
+    return (
+      <div data-testid={`row-${id}`}>
+        {children}
+        {footer}
+      </div>
+    );
+  },
   Elapsed: () => null,
   shouldShowElapsed: () => false,
 }));

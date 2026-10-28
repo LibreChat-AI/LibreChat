@@ -1,14 +1,17 @@
 import { memo, useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
-import { getHeaderModelName, SubRow } from '@librechat/chat/components';
+import {
+  getHeaderModelName,
+  SubRow,
+  getMessageRowWidthClass,
+  MessageRow,
+} from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon } from '~/common';
 import AuthorHeader from '~/components/Chat/Messages/Content/Parts/AuthorHeader';
 import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
-import { getMessageRowWidthClass } from '~/components/Chat/Messages/ui/width';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
 import SearchContent, { rendersMarkdownLite } from './Content/SearchContent';
-import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
 import Icon from '~/components/Chat/Messages/MessageIcon';
 import { useAuthContext, useLocalize } from '~/hooks';
 import SearchButtons from './SearchButtons';

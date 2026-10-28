@@ -498,11 +498,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/ui/MessageRow.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/ProjectLandingChip.tsx": {
     "shadcn/no-restyle": {
       "count": 14
@@ -1422,6 +1417,11 @@
   "packages/chat/src/components/messages/HeaderLabel.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 5
+    }
+  },
+  "packages/chat/src/components/messages/MessageRow.tsx": {
+    "shadcn/no-arbitrary-values": {
+      "count": 1
     }
   },
   "packages/chat/src/components/messages/SiblingSwitch.tsx": {

@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { getHeaderHoverLabel, SiblingSwitch, SubRow } from '@librechat/chat/components';
+import { getHeaderHoverLabel, SiblingSwitch, SubRow, MessageRow } from '@librechat/chat/components';
 import type { TMessageProps } from '~/common';
 import SearchContent, {
   rendersMarkdownLite,
@@ -9,7 +9,6 @@ import AuthorHeader from '~/components/Chat/Messages/Content/Parts/AuthorHeader'
 import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
-import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
 import WakeupRow from '~/components/Chat/Messages/ui/WakeupRow';
 import Wakeup from '~/components/Chat/Messages/Content/Wakeup';
 import { MessageContext, useShareContext } from '~/Providers';

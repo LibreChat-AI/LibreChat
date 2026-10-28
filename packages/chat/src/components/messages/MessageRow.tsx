@@ -1,12 +1,12 @@
 import { Zap } from 'lucide-react';
+import { cn } from '@librechat/client';
 import { ContentTypes } from 'librechat-data-provider';
-import { HeaderLabel } from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
-import type { ReactNode } from 'react';
+import type { ReactNode, ReactElement } from 'react';
+import { useMessagesHost } from '../../react/messages/host';
 import MessageTimestamp from './MessageTimestamp';
 import { getMessageRowWidthClass } from './width';
-import Files from '../Content/Files';
-import { cn } from '~/utils';
+import HeaderLabel from './HeaderLabel';
 
 type MessageRowProps = {
   id?: string;
@@ -98,7 +98,8 @@ export default function MessageRow({
   systemLabel,
   showAuthor = false,
   outlined = false,
-}: MessageRowProps) {
+}: MessageRowProps): ReactElement {
+  const { renderFiles } = useMessagesHost();
   // Same column as ChatForm: max-width plus `sm:px-2`, so the body lines
   // up with the composer surface rather than the form's outer box.
   const widthClass = getMessageRowWidthClass({ fullWidth, hasParallelContent });
@@ -178,12 +179,12 @@ export default function MessageRow({
           })}
 
         <div className={cn('flex w-full flex-col gap-1', isUserSide && 'items-end')}>
-          {hasFiles && (
+          {hasFiles && message != null && (
             <div
               data-testid="message-attachments"
               className="flex max-w-full flex-col items-end gap-3 pb-2"
             >
-              <Files message={message} />
+              {renderFiles(message)}
             </div>
           )}
           {hasBody && (

@@ -232,6 +232,8 @@ jest.mock('@librechat/chat/components', () => ({
 }));
 
 jest.mock('@librechat/client', () => ({
+  cn: jest.requireActual('@librechat/client').cn,
+  useLanguage: () => 'en',
   Alert: ({ children }: { children: React.ReactNode }) => <div role="alert">{children}</div>,
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => (
     <button {...props}>{children}</button>

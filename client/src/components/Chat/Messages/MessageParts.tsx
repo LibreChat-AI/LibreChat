@@ -9,6 +9,7 @@ import {
   shouldShowElapsed,
   SiblingSwitch,
   SubRow,
+  MessageRow,
 } from '@librechat/chat/components';
 import type { TMessageContentParts } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon } from '~/common';
@@ -21,7 +22,6 @@ import {
 import { useLocalize, useAttachments, useMessageHelpers, useContentMetadata } from '~/hooks';
 import ResumeAuthorHeader from '~/components/Chat/Messages/Content/Parts/ResumeAuthorHeader';
 import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source';
-import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import { showThinkingAtom } from '~/store/showThinking';
 import ContentParts from './Content/ContentParts';

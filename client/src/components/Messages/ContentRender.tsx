@@ -10,6 +10,7 @@ import {
   getHeaderHoverLabel,
   SiblingSwitch,
   SubRow,
+  MessageRow,
 } from '@librechat/chat/components';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon, TMessageChatContext } from '~/common';
@@ -27,7 +28,6 @@ import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source'
 import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
 import { PrivateText } from '~/components/Chat/Messages/PrivateText';
 import HoverButtons from '~/components/Chat/Messages/HoverButtons';
-import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import { showThinkingAtom } from '~/store/showThinking';
 import { AuthorContext } from '~/Providers';

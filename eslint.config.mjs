@@ -358,6 +358,8 @@ export default [
             'result-thinking',
             'shimmer',
             'tool-status-text',
+            'message-render',
+            'message-timestamp',
           ],
         },
       ],

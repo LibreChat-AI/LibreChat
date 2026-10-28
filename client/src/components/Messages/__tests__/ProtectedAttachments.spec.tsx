@@ -7,6 +7,7 @@ import type { TMessageChatContext } from '~/common';
 import { OwnerTextProvider } from '~/components/Chat/Messages/PrivateText';
 import MessageRender from '~/components/Chat/Messages/ui/MessageRender';
 import ContentRender from '../ContentRender';
+import '~/Providers/MessagesHostContext';
 
 jest.mock('librechat-data-provider', () => ({
   ...jest.requireActual('librechat-data-provider'),

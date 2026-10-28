@@ -14,6 +14,7 @@ import {
   systemEventHeaderClasses,
   messageFooterClasses,
   ElapsedTimer,
+  MessageRow,
 } from '@librechat/chat/components';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
@@ -36,7 +37,6 @@ import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source'
 import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
 import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
 import { isAbnormalTerminalStatus, isLiveSubagentStatus } from './status';
-import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
 import { AuthorContext } from '~/Providers/AuthorContext';
 import { ChatContext } from '~/Providers/ChatContext';
 import { isEmptyContentPart } from '~/utils/messages';

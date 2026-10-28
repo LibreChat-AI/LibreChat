@@ -1,28 +1,13 @@
 /**
  * @jest-environment jsdom
  */
-import fs from 'node:fs';
-import path from 'node:path';
-import i18next from 'i18next';
 import { Provider, createStore } from 'jotai';
-import { initReactI18next } from 'react-i18next';
 import { render, screen, act } from '@testing-library/react';
 import { submissionStartFamily } from '../../../react/generation';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import Elapsed, { shouldShowElapsed } from '../Elapsed';
 
-/** The app's English bundle, so the readings and their plural forms are the ones users see. */
-const TRANSLATION = path.resolve(
-  __dirname,
-  '../../../../../../client/src/locales/en/translation.json',
-);
-
-beforeAll(async () => {
-  await i18next.use(initReactI18next).init({
-    lng: 'en',
-    resources: { en: { translation: JSON.parse(fs.readFileSync(TRANSLATION, 'utf8')) } },
-    interpolation: { escapeValue: false },
-  });
-});
+beforeAll(initEnglish);
 
 function storeWithStart(start?: number) {
   const jotaiStore = createStore();

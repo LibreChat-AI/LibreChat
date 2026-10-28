@@ -69,10 +69,6 @@ jest.mock('@librechat/chat/components', () => ({
     <span data-testid="sibling-footer" className={className} />
   ),
 }));
-jest.mock('~/components/Chat/Messages/ui/MessageTimestamp', () => ({
-  __esModule: true,
-  default: () => null,
-}));
 
 const chatContext = { latestMessageId: 'wake' } as unknown as TMessageChatContext;
 
