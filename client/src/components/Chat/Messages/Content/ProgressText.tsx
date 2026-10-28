@@ -20,29 +20,18 @@ const wrapperClass =
 const contentClass =
   'progress-text-content absolute left-0 right-0 top-0 max-w-full overflow-visible whitespace-nowrap';
 
-/** A failed row is marked at its left edge, in the rail's column when the row
- *  sits under a header and in the gutter when it stands alone, so a failure
- *  is findable by shape before its text is read. A pseudo-element rather than
- *  a border: the row's content is absolutely positioned against the padding
- *  box, so a border would push it and change the row's geometry. It lies over
- *  the rail's hit area, so it lets the pointer through to the rail. */
-const failedStripeClass =
-  "before:pointer-events-none before:absolute before:-left-3 before:top-0 before:h-full before:w-0.5 before:rounded-full before:bg-status-error before:content-['']";
-
 const Wrapper = ({
   popover,
-  failed,
   rootRef,
   children,
 }: {
   popover: boolean;
-  failed: boolean;
   rootRef: React.RefObject<HTMLDivElement>;
   children: React.ReactNode;
 }) => {
   if (popover) {
     return (
-      <div className={cn(wrapperClass, failed && failedStripeClass)} ref={rootRef}>
+      <div className={wrapperClass} ref={rootRef}>
         <Popover.Trigger asChild>
           <div className={contentClass}>{children}</div>
         </Popover.Trigger>
@@ -51,7 +40,7 @@ const Wrapper = ({
   }
 
   return (
-    <div className={cn(wrapperClass, failed && failedStripeClass)} ref={rootRef}>
+    <div className={wrapperClass} ref={rootRef}>
       <div className={contentClass}>{children}</div>
     </div>
   );
@@ -185,7 +174,7 @@ export default function ProgressText({
           ...(!measured && isReportableRunStepDuration(durationMs)
             ? [
                 {
-                  label: localize('com_ui_tool_total_time'),
+                  label: '',
                   duration: getRunStepDurationLabels(durationMs, i18n.language),
                 },
               ]
@@ -193,7 +182,7 @@ export default function ProgressText({
         ];
 
   return (
-    <Wrapper popover={popover} failed={phase === 'failed'} rootRef={rootRef}>
+    <Wrapper popover={popover} rootRef={rootRef}>
       <Button
         type="button"
         variant="disclosure"
@@ -245,10 +234,12 @@ export default function ProgressText({
         {durationParts.map(({ label, duration }) => (
           <span key={label} className="text-text-secondary shrink-0 font-normal">
             <span aria-hidden="true">
-              · {label} {localize(duration.key, duration.values)}
+              · {label && `${label} `}
+              {localize(duration.key, duration.values)}
             </span>
             <span className="sr-only">
-              {label} {localize(duration.announcedKey, duration.announcedValues)}
+              {label && `${label} `}
+              {localize(duration.announcedKey, duration.announcedValues)}
             </span>
           </span>
         ))}

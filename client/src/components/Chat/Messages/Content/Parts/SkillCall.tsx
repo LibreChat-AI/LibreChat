@@ -43,7 +43,7 @@ export default function SkillCall({
       output,
       hasInput: !!parsedSkillName,
       /** The row is the only place that names the skill that ran. */
-      keepRow: true,
+      keepLabelRow: true,
       onExpand,
       runStepStatus,
     });

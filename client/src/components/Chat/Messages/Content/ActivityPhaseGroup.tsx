@@ -1,7 +1,5 @@
 import { memo, useId, useCallback, useEffect, useMemo, useRef, useState, useContext } from 'react';
 import { useAtomValue } from 'jotai';
-import { useTranslation } from 'react-i18next';
-import { useTimeTick } from '@librechat/chat/react';
 import { ContentTypes } from 'librechat-data-provider';
 import { Check, CircleX, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '@librechat/chat/components';
@@ -16,7 +14,6 @@ import {
   EXPAND_TRANSITION,
 } from '~/hooks';
 import {
-  getFailedLines,
   getLiveActivity,
   getSpanIconNames,
   LIVE_ACTIVITY_THROTTLE_MS,
@@ -37,18 +34,18 @@ import useThrottledValue from '~/hooks/Messages/useThrottledValue';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { getActivityLabelText } from '~/utils/activityLabels';
+import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { MessageSurfaceContext } from '../ui/surface';
-import useClockFormat from '~/hooks/useClockFormat';
-import { cn, getMessageTimestamp } from '~/utils';
 import { StackedToolIcons } from './ToolOutput';
 import { getSourceDomains } from './sources';
 import { mapAttachments } from '~/utils/map';
 import { AttachmentGroup } from './Parts';
 import SearchVerticals from './verticals';
+import { cn } from '~/utils';
 
 /** Matches `EXPAND_TRANSITION` so the panel and the label ticker resolve on
- *  the same curve — two properties animating on two different easings is what
+ *  the same curve: two properties animating on two different easings is what
  *  makes a fold read as two separate movements.
  *
  *  Written as an arbitrary PROPERTY, not `ease-[…]`: `tailwindcss-animate`
@@ -415,7 +412,11 @@ function LivePhaseHeader({
         {combo !== '' && (
           <span
             id={comboId}
-            className="text-text-secondary shrink-0 text-xs font-normal"
+            className={
+              painted.isBackgroundTaskCheck
+                ? 'text-text-secondary shrink-0 text-xs font-normal'
+                : 'sr-only'
+            }
             data-testid="live-phase-combo"
           >
             {combo}
@@ -443,97 +444,6 @@ function LivePhaseHeader({
         </span>
       )}
     </>
-  );
-}
-
-/**
- * The first failed call of a collapsed card, on a row of its own beneath the
- * header, the way the cursor row peeks while streaming: the failure is
- * readable, and one click away, without unfolding. Its own component so only
- * a collapsed card with a failure pays for the line's lookups.
- */
-function FailedPeekTime({ failedAt }: { failedAt: number | Date }) {
-  useTimeTick();
-  const { i18n } = useTranslation();
-  const hour12 = useClockFormat();
-  const date = new Date(failedAt);
-  if (!Number.isFinite(date.getTime()) || date.getTime() > Date.now()) {
-    return null;
-  }
-  const timestamp = getMessageTimestamp(date.toISOString(), i18n.language, hour12);
-  if (timestamp == null) {
-    return null;
-  }
-  return (
-    <time
-      dateTime={timestamp.iso}
-      title={timestamp.absolute}
-      className="text-text-secondary min-w-0 shrink truncate text-xs"
-      data-testid="activity-phase-failed-time"
-    >
-      {timestamp.relative}
-    </time>
-  );
-}
-
-function FailedPeek({
-  parts,
-  attachmentsById,
-  count,
-  total,
-  onReveal,
-}: {
-  parts: ReadonlyArray<TMessageContentParts | undefined>;
-  attachmentsById: Record<string, TAttachment[] | undefined>;
-  count: number;
-  total: number;
-  onReveal: () => void;
-}) {
-  const localize = useLocalize();
-  const mcpServerNames = useMCPServerNames();
-  const first = useMemo(
-    () => getFailedLines(parts, localize, mcpServerNames, attachmentsById)[0],
-    [parts, localize, mcpServerNames, attachmentsById],
-  );
-  if (first == null) {
-    return null;
-  }
-  return (
-    <button
-      type="button"
-      className={cn(
-        TOOL_ROW_CLASSES,
-        'text-text-secondary hover:text-text-primary focus-visible:ring-focus-subtle w-full ps-6 text-start focus-visible:ring-2 focus-visible:outline-none focus-visible:ring-inset',
-      )}
-      onClick={onReveal}
-      data-testid="activity-phase-failed-peek"
-    >
-      <span className={cn(ROW_GLYPH_SLOT, 'text-status-error')} aria-hidden="true">
-        <CircleX size={14} />
-      </span>
-      <span className="tool-status-text flex min-w-0 items-center gap-2">
-        <span
-          className={cn(
-            'max-w-full min-w-0 shrink-0 truncate',
-            isSpanFailed(count, total) ? 'text-status-error font-medium' : 'text-text-primary',
-          )}
-        >
-          {first.text}
-        </span>
-        {first.detail !== '' && (
-          <span className="min-w-0 shrink truncate font-normal">{first.detail}</span>
-        )}
-      </span>
-      {first.failedAt != null && <FailedPeekTime failedAt={first.failedAt} />}
-      {count > 1 && (
-        <span className="shrink-0 text-xs font-normal">
-          {localize('com_ui_plus_n_more', { 0: String(count - 1) })}
-        </span>
-      )}
-      <span className="ms-auto shrink-0 text-xs font-medium underline underline-offset-2">
-        {localize('com_ui_show_error')}
-      </span>
-    </button>
   );
 }
 
@@ -726,17 +636,6 @@ export default function ActivityPhaseGroup({
    *  swap its text under a reader who is looking at the list. A live span
    *  with no label yet keeps the live line, which is all it has. */
   const showLiveHeader = isLive && (!isExpanded || label.length === 0);
-  const peek =
-    hasContent && !isExpanded && failedCount > 0 && outcomeParts != null ? (
-      <FailedPeek
-        parts={outcomeParts}
-        attachmentsById={attachmentsById}
-        count={failedCount}
-        total={toolCount}
-        onReveal={handleRevealFailed}
-      />
-    ) : null;
-
   /** Only the folding entrance drives the header off its natural height.
    *  History and reduced-motion render the plain, unstyled row. */
   const headerStyle = useMemo<CSSProperties | undefined>(() => {
@@ -830,7 +729,7 @@ export default function ActivityPhaseGroup({
          *  the header stops pinning where its own rows end. */
         className={cn(isExpanded && 'sticky top-0 z-[1]', isExpanded && messageSurface)}
       >
-        <div className="flex items-center gap-2 overflow-hidden">
+        <div className="relative flex items-center gap-2 overflow-hidden pe-6">
           <button
             type="button"
             /** `ring-inset` is not decoration: the clip above is permanent (the
@@ -884,7 +783,7 @@ export default function ActivityPhaseGroup({
             )}
             <ChevronDown
               className={cn(
-                'size-4 shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none',
+                'absolute end-0 size-4 shrink-0 transition-transform duration-200 ease-out motion-reduce:transition-none',
                 isExpanded && 'rotate-180',
               )}
               aria-hidden="true"
@@ -893,7 +792,6 @@ export default function ActivityPhaseGroup({
           <FailedRevealPill count={failedCount} total={toolCount} onReveal={handleRevealFailed} />
         </div>
       </div>
-      {peek}
       <div
         id={panelId}
         style={expandStyle}
@@ -910,7 +808,9 @@ export default function ActivityPhaseGroup({
             <FoldRail hover={railHover} expanded={isExpanded} onCollapse={handleRailCollapse} />
             <FoldHeaderContext.Provider value={railScope}>
               <FailedRevealContext.Provider value={revealValue}>
-                {children}
+                <GeneratedToolLabelContext.Provider value={toolCount === 1 && label.length > 0}>
+                  {children}
+                </GeneratedToolLabelContext.Provider>
               </FailedRevealContext.Provider>
             </FoldHeaderContext.Provider>
           </div>

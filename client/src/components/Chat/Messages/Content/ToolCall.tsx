@@ -13,6 +13,7 @@ import {
   toolPanelSpacingClassName,
   useToolContentRequest,
   useToolExpansion,
+  GeneratedToolLabelContext,
   LoneGroupContext,
   SoleToolContext,
   useToolCallIntent,
@@ -231,10 +232,8 @@ export default function ToolCall({
   const [expandedInfo, setShowInfo] = useToolExpansion(
     soleTool ? hasInfo : (output?.length ?? 0) > 0,
   );
-  /** The only call of its group, settled successfully: the group header is the
-   *  row, so the panel stands alone and stays open. An MCP or action call keeps
-   *  its row, the only place its function name and domain appear, as does a call
-   *  with a model-authored intent. */
+  /** A generated title can replace even a named MCP or action row. */
+  const generatedLabel = useContext(GeneratedToolLabelContext);
   const intent = useToolCallIntent(_args);
   const isActionCall = domain != null && domain !== '';
   const loneGroup = useContext(LoneGroupContext);
@@ -242,10 +241,8 @@ export default function ToolCall({
    *  on every argument delta, and the panel check parses its payload. */
   const bare =
     phase === 'completed' &&
-    (soleTool || loneGroup) &&
-    !isMCPToolCall &&
-    !isActionCall &&
-    intent == null &&
+    (generatedLabel ||
+      ((soleTool || loneGroup) && !isMCPToolCall && !isActionCall && intent == null)) &&
     hasInfo &&
     (hasToolParams(args) || hasRenderableOutput(output));
   const showInfo = bare || expandedInfo;

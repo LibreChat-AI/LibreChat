@@ -73,6 +73,9 @@ export const SoleToolContext: Context<boolean | undefined> = createContext<boole
   undefined,
 );
 
+/** A generated enclosing title names exactly one call, replacing its settled row. */
+export const GeneratedToolLabelContext = createContext(false);
+
 /** Set by a tool group for its own rows: true when the group holds exactly one
  *  tool call, whatever the phase around it holds. `SoleToolContext` lets the
  *  phase decide whether a card opens by default; this one decides whether the

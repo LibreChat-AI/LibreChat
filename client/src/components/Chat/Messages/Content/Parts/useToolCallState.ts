@@ -1,5 +1,6 @@
 import { useCallback, useContext } from 'react';
 import {
+  GeneratedToolLabelContext,
   SoleToolContext,
   LoneGroupContext,
   useToolExpansion,
@@ -54,6 +55,8 @@ export interface UseToolCallStateInput {
   /** Keep the card's own row even as the only call, for a state its phase does
    *  not carry (a detached task still running after its dispatch step closed). */
   keepRow?: boolean;
+  /** Preserve a descriptive row unless a generated title already names this call. */
+  keepLabelRow?: boolean;
   /** Whether the panel has a body to show. Defaults to `hasContent`; a card
    *  whose panel needs more than its input (a read file's output) passes its
    *  own, so a sole call never loses its row to an empty panel. */
@@ -70,6 +73,7 @@ export default function useToolCallState({
   extraError = false,
   extraCancelled = false,
   keepRow = false,
+  keepLabelRow = false,
   panelReady,
 }: UseToolCallStateInput): ToolCallState {
   const hasOutput = output.length > 0;
@@ -103,8 +107,14 @@ export default function useToolCallState({
    *  runs, or once it failed or was stopped, the row is the only place that
    *  says so, and `keepRow` covers a state the phase cannot express. */
   const lone = useContext(LoneGroupContext);
-  const solo = useContext(SoleToolContext) === true || lone;
-  const bare = solo && (panelReady ?? hasContent) && phase === 'completed' && !keepRow;
+  const generatedLabel = useContext(GeneratedToolLabelContext);
+  const solo = useContext(SoleToolContext) === true || lone || generatedLabel;
+  const bare =
+    solo &&
+    (panelReady ?? hasContent) &&
+    phase === 'completed' &&
+    !keepRow &&
+    !(keepLabelRow && !generatedLabel);
   const [expanded, setExpansionOverride] = useToolExpansion(hasContent);
   const showCode = bare || expanded;
   /** A bare panel is open without the reader expanding it, so it asks for the stored part too. */

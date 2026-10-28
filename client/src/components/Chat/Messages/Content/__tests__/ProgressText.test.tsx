@@ -44,7 +44,7 @@ const renderProgressText = (props: Partial<React.ComponentProps<typeof ProgressT
 describe('ProgressText duration', () => {
   it('renders the compact duration on a settled card', () => {
     renderProgressText({ durationMs: 3500 });
-    expect(screen.getByText('· Total elapsed 3.5s')).toBeInTheDocument();
+    expect(screen.getByText('· 3.5s')).toBeInTheDocument();
   });
 
   it('shows separate preparation and tool intervals without using the total as execution time', () => {
@@ -76,7 +76,7 @@ describe('ProgressText duration', () => {
 
   it('formats durations of a minute or more as minutes and seconds', () => {
     renderProgressText({ durationMs: 65_000 });
-    expect(screen.getByText('· Total elapsed 1m 5s')).toBeInTheDocument();
+    expect(screen.getByText('· 1m 5s')).toBeInTheDocument();
   });
 
   /**
@@ -95,7 +95,7 @@ describe('ProgressText duration', () => {
 
   it('does not render while the step is still running', () => {
     renderProgressText({ phase: 'running', durationMs: 3500 });
-    expect(screen.queryByText('· Total elapsed 3.5s')).not.toBeInTheDocument();
+    expect(screen.queryByText('· 3.5s')).not.toBeInTheDocument();
   });
 
   /**
@@ -108,13 +108,13 @@ describe('ProgressText duration', () => {
    */
   it('does not render on a cancelled card', () => {
     renderProgressText({ phase: 'cancelled', durationMs: 3500 });
-    expect(screen.queryByText('· Total elapsed 3.5s')).not.toBeInTheDocument();
+    expect(screen.queryByText('· 3.5s')).not.toBeInTheDocument();
   });
 
   it('does not render on a failed card', () => {
     renderProgressText({ phase: 'failed', durationMs: 3500 });
-    expect(screen.queryByText('· Total elapsed 3.5s')).not.toBeInTheDocument();
-    expect(screen.queryByText('Total elapsed took 3.5 seconds')).not.toBeInTheDocument();
+    expect(screen.queryByText('· 3.5s')).not.toBeInTheDocument();
+    expect(screen.queryByText('took 3.5 seconds')).not.toBeInTheDocument();
   });
 
   it('renders nothing when no duration was derivable', () => {
@@ -125,31 +125,31 @@ describe('ProgressText duration', () => {
   /** Sub-threshold durations are noise; the gate lives in the shared helper. */
   it('suppresses a duration too short to be worth reporting', () => {
     renderProgressText({ durationMs: 300 });
-    expect(screen.queryByText('· Total elapsed 0.3s')).not.toBeInTheDocument();
+    expect(screen.queryByText('· 0.3s')).not.toBeInTheDocument();
   });
 
   describe('accessibility', () => {
     it('hides the compact form from assistive technology and pairs it with a spoken one', () => {
       renderProgressText({ durationMs: 3500 });
-      expect(screen.getByText('· Total elapsed 3.5s')).toHaveAttribute('aria-hidden', 'true');
-      expect(screen.getByText('Total elapsed took 3.5 seconds')).toHaveClass('sr-only');
+      expect(screen.getByText('· 3.5s')).toHaveAttribute('aria-hidden', 'true');
+      expect(screen.getByText('took 3.5 seconds')).toHaveClass('sr-only');
     });
 
     it('announces the singular form for exactly one second', () => {
       renderProgressText({ durationMs: 1000 });
-      expect(screen.getByText('Total elapsed took 1 second')).toBeInTheDocument();
+      expect(screen.getByText('took 1 second')).toBeInTheDocument();
     });
 
     it('announces whole minutes for longer steps', () => {
       renderProgressText({ durationMs: 150_000 });
-      expect(screen.getByText('Total elapsed took 3 minutes')).toBeInTheDocument();
+      expect(screen.getByText('took 3 minutes')).toBeInTheDocument();
     });
 
     /** Both spans sit inside the button, so its accessible name carries the
      *  duration without an `aria-live` region re-announcing it. */
     it('keeps the duration inside the button', () => {
       renderProgressText({ durationMs: 3500 });
-      expect(screen.getByRole('button')).toHaveTextContent('Total elapsed took 3.5 seconds');
+      expect(screen.getByRole('button')).toHaveTextContent('took 3.5 seconds');
     });
   });
 });
@@ -207,9 +207,11 @@ describe('ProgressText failure', () => {
     expect(screen.getByText('· com_ui_tool_failed')).toBeInTheDocument();
   });
 
-  it('marks a failed row at its left edge and nothing else', () => {
+  it('does not add a failure stripe to a tool row', () => {
     const { container, rerender } = renderProgressText({ phase: 'failed' });
-    expect(container.querySelector('.progress-text-wrapper')).toHaveClass('before:bg-status-error');
+    expect(container.querySelector('.progress-text-wrapper')).not.toHaveClass(
+      'before:bg-status-error',
+    );
     rerender(<ProgressText {...defaults} phase="completed" />);
     expect(container.querySelector('.progress-text-wrapper')).not.toHaveClass(
       'before:bg-status-error',
@@ -274,7 +276,7 @@ describe('ProgressText fixed siblings', () => {
     const box = screen.getByText('Completed foo').parentElement;
     expect(box).toHaveClass('min-w-0');
     expect(box).toContainElement(screen.getByText('a very long subtitle'));
-    expect(screen.getByText('· Total elapsed 3.5s').parentElement).toHaveClass('shrink-0');
+    expect(screen.getByText('· 3.5s').parentElement).toHaveClass('shrink-0');
     expect(container.querySelector('svg')).toHaveClass('shrink-0');
   });
 });

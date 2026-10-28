@@ -130,6 +130,7 @@ export {
 } from './react/messages/host';
 export type { MessagesHost } from './react/messages/host';
 export {
+  GeneratedToolLabelContext,
   SoleToolContext,
   LoneGroupContext,
   useToolExpansion,

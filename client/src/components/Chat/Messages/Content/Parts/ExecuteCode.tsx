@@ -130,7 +130,8 @@ export default function ExecuteCode({
       runStepStatus,
       extraError: backgroundFailed,
       extraCancelled: cancelledInBackground,
-      keepRow: backgroundHandle != null || intent != null,
+      keepRow: backgroundHandle != null,
+      keepLabelRow: intent != null,
     });
 
   const highlighted = useLazyHighlight(showCode ? code : undefined, lang);

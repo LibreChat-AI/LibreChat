@@ -1,9 +1,11 @@
-import { useMemo, useState, useCallback } from 'react';
+import { useMemo, useState, useCallback, useContext } from 'react';
 import { Tools } from 'librechat-data-provider';
 import { TooltipAnchor } from '@librechat/client';
 import { FileText, FileSpreadsheet, FileCode, FileImage, File } from 'lucide-react';
 import {
   toolPanelSpacingClassName,
+  useToolContentRequest,
+  GeneratedToolLabelContext,
   useToolExpansion,
   useToolCallIntent,
 } from '@librechat/chat/react';
@@ -16,6 +18,7 @@ import { sortPagesByRelevance, cn } from '~/utils';
 import { useToolPreparation } from './preparation';
 import { useGetFiles } from '~/data-provider';
 import ProgressText from './ProgressText';
+import useRowHandoff from '@librechat/chat/react';
 
 interface FileSource {
   fileId: string;
@@ -405,7 +408,11 @@ export default function RetrievalCall({
   const hasResults = displayResults.length > 0;
   const hasExpandableContent = phase !== 'failed' && hasResults;
   const [expanded, setExpanded] = useToolExpansion(hasExpandableContent);
-  const showOutput = hasExpandableContent && expanded;
+  const generatedLabel = useContext(GeneratedToolLabelContext);
+  const bare = generatedLabel && phase === 'completed' && hasExpandableContent;
+  const rowRef = useRowHandoff(bare);
+  useToolContentRequest(bare);
+  const showOutput = hasExpandableContent && (bare || expanded);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showOutput);
 
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
@@ -467,24 +474,26 @@ export default function RetrievalCall({
           return intent ?? localize('com_ui_retrieved_files');
         })()}
       </span>
-      <div className="relative my-1 flex h-5 shrink-0 items-center gap-2.5">
-        <ProgressText
-          phase={phase}
-          onClick={hasExpandableContent ? handleToggleOutput : undefined}
-          inProgressText={intent ?? localize('com_ui_searching_files')}
-          /** A cancelled step must not read "Retrieved files" beside a
-           *  cancellation icon while the live region says "Cancelled". */
-          finishedText={
-            phase === 'cancelled'
-              ? localize('com_ui_cancelled')
-              : (intent ?? localize('com_ui_retrieved_files'))
-          }
-          durationMs={runStepDurationMs}
-          icon={<ToolIcon type="file_search" isAnimating={phase === 'running'} />}
-          hasInput={hasExpandableContent}
-          isExpanded={showOutput}
-        />
-      </div>
+      {!bare && (
+        <div className="relative my-1 flex h-5 shrink-0 items-center gap-2.5" ref={rowRef}>
+          <ProgressText
+            phase={phase}
+            onClick={hasExpandableContent ? handleToggleOutput : undefined}
+            inProgressText={intent ?? localize('com_ui_searching_files')}
+            /** A cancelled step must not read "Retrieved files" beside a
+             *  cancellation icon while the live region says "Cancelled". */
+            finishedText={
+              phase === 'cancelled'
+                ? localize('com_ui_cancelled')
+                : (intent ?? localize('com_ui_retrieved_files'))
+            }
+            durationMs={runStepDurationMs}
+            icon={<ToolIcon type="file_search" isAnimating={phase === 'running'} />}
+            hasInput={hasExpandableContent}
+            isExpanded={showOutput}
+          />
+        </div>
+      )}
       <div style={expandStyle}>
         <div className="overflow-hidden" ref={expandRef}>
           {hasExpandableContent && (

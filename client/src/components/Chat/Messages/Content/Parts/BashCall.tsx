@@ -146,7 +146,8 @@ export default function BashCall({
       runStepStatus,
       extraError: backgroundFailed || result?.failed === true,
       extraCancelled: cancelledInBackground,
-      keepRow: backgroundHandle != null || intent != null,
+      keepRow: backgroundHandle != null,
+      keepLabelRow: intent != null,
     });
 
   const highlighted = useLazyHighlight(showCode ? command || undefined : undefined, 'bash');
