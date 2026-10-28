@@ -166,3 +166,18 @@ describe('generated title replaces a completed descriptive row', () => {
     expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
   });
 });
+
+it('keeps an empty named skill row under a generated title', () => {
+  renderSole(
+    <GeneratedToolLabelContext.Provider value>
+      <SkillCall
+        initialProgress={1}
+        isSubmitting={false}
+        args={{ skillName: 'pdf' }}
+        output=""
+        runStepStatus="completed"
+      />
+    </GeneratedToolLabelContext.Provider>,
+  );
+  expect(screen.getByTestId('progress-text')).toBeInTheDocument();
+});

@@ -2997,7 +2997,6 @@
   "com_ui_show_image_details": "Show Image Details",
   "com_ui_show_less": "Show less",
   "com_ui_show_more": "Show more",
-  "com_ui_show_error": "Show error",
   "com_ui_show_failed_single": "Show 1 failed call out of 1 call",
   "com_ui_show_failed_one_of_n": "Show 1 failed call out of {{1}} calls",
   "com_ui_show_failed_n_of_n": "Show {{0}} failed calls out of {{1}} calls",
