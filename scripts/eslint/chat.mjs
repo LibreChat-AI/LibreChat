@@ -201,7 +201,7 @@ const boundary = {
     const loadSafe = new Set(options.loadSafe ?? LOAD_SAFE);
     /** Import specifiers and `require` declarations that bind another package, mapped to it. */
     const externalBindings = new Map();
-    /** Checks each reference to a binding; a `const join = cn` alias is checked the same way. */
+    /** Checks each reference to a binding; an alias (`const join = cn`, `join = cn`) is checked the same way. */
     const reportLoadTimeUses = () => {
       const pending = [...externalBindings].flatMap(([specifier, source]) =>
         context.sourceCode
@@ -224,6 +224,17 @@ const boundary = {
             context.sourceCode
               .getDeclaredVariables(alias)
               .forEach((aliased) => pending.push({ variable: aliased, source }));
+          }
+          if (
+            alias.type === 'AssignmentExpression' &&
+            alias.right === value &&
+            alias.left.type === 'Identifier'
+          ) {
+            const target = alias.left;
+            let scope = context.sourceCode.getScope(target);
+            let aliased;
+            for (; scope && !aliased; scope = scope.upper) aliased = scope.set.get(target.name);
+            if (aliased) pending.push({ variable: aliased, source });
           }
           if (isInert(identifier) || !runsOnLoad(identifier)) continue;
           context.report({
