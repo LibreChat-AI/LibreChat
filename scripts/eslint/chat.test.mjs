@@ -131,6 +131,10 @@ tester.run('chat/boundary', chat.rules.boundary, {
       "import { A, B } from '@librechat/client'; export const pick = flag ? A : B ?? A;",
       "import { Button } from '@librechat/client'; export const element = <Button />;",
       "import { cn } from '@librechat/client'; export { cn };",
+      "import { cn } from '@librechat/client'; let join = cn; join = () => ''; export const C = () => join();",
+      "import { cn } from '@librechat/client'; export const items = (function* () { yield cn('a'); })();",
+      "const { cn } = require('@librechat/client'); export const C = () => cn('a');",
+      "const React = require('react'); export const C = React.memo(() => null);",
       "import { cn } from '@librechat/client'; let fn; fn = cn; export const K = class { v = cn('a'); };",
       "import { cn } from '@librechat/client'; export class K { constructor() { cn('a'); } method() { return cn('b'); } }",
       "import { Store } from '@librechat/client'; export interface Derived extends Store {} export class Impl implements Store {} export type S = Store;",
@@ -206,6 +210,13 @@ tester.run('chat/boundary', chat.rules.boundary, {
       [
         "import { cn } from '@librechat/client'; const join = cn; export const c = join('a');",
         'join',
+      ],
+      ["const Client = require('@librechat/client'); export const c = Client.cn('a');", 'Client'],
+      ["const { cn } = require('@librechat/client'); export const c = cn('a');", 'cn'],
+      ["import Client = require('@librechat/client'); export const c = Client.cn('a');", 'Client'],
+      [
+        "import { cn } from '@librechat/client'; export const it = (function* (v = cn('a')) { yield v; })();",
+        'cn',
       ],
       [
         "import { cn } from '@librechat/client'; const join = on ? (cn as typeof cn) : String; export const c = join('a');",

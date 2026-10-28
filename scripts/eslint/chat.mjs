@@ -125,6 +125,8 @@ const invokedInPlace = (node) => {
  */
 const runsOnLoad = (node) => {
   for (let child = node, parent = node.parent; parent; child = parent, parent = parent.parent) {
+    /** Calling a generator only creates its iterator; the body waits for the first `next()`. */
+    if (FUNCTIONS.has(parent.type) && parent.generator && child === parent.body) return false;
     if (FUNCTIONS.has(parent.type)) {
       const method = parent.parent;
       const isConstructor = method.type === 'MethodDefinition' && method.kind === 'constructor';
@@ -197,7 +199,7 @@ const boundary = {
     const segments = relativeFile.split(path.sep);
     const isSpec = segments.includes('__tests__') || /\.(spec|test)\./.test(relativeFile);
     const loadSafe = new Set(options.loadSafe ?? LOAD_SAFE);
-    /** Import specifiers that bind a name to another package, mapped to that package. */
+    /** Import specifiers and `require` declarations that bind another package, mapped to it. */
     const externalBindings = new Map();
     /** Checks each reference to a binding; a `const join = cn` alias is checked the same way. */
     const reportLoadTimeUses = () => {
@@ -211,8 +213,10 @@ const boundary = {
         const { variable, source } = pending.pop();
         if (seen.has(variable)) continue;
         seen.add(variable);
-        for (const { identifier, init } of variable.references) {
-          if (init || inType(identifier)) continue;
+        for (const reference of variable.references) {
+          const { identifier } = reference;
+          /** A write such as `join = other` never touches the import. */
+          if (!reference.isRead() || inType(identifier)) continue;
           let value = identifier;
           while (forwards(value)) value = value.parent;
           const alias = value.parent;
@@ -282,15 +286,35 @@ const boundary = {
 
     return {
       Program(program) {
+        const external = (source) =>
+          typeof source === 'string' &&
+          !source.startsWith('.') &&
+          !path.isAbsolute(source) &&
+          !source.startsWith('~') &&
+          !loadSafe.has(source);
         for (const statement of program.body) {
-          if (statement.type !== 'ImportDeclaration' || statement.importKind === 'type') continue;
-          const source = statement.source.value;
-          const bare =
-            !source.startsWith('.') && !path.isAbsolute(source) && !source.startsWith('~');
-          if (!bare || loadSafe.has(source)) continue;
-          statement.specifiers
-            .filter((specifier) => specifier.importKind !== 'type')
-            .forEach((specifier) => externalBindings.set(specifier, source));
+          if (statement.type === 'ImportDeclaration' && statement.importKind !== 'type') {
+            if (!external(statement.source.value)) continue;
+            statement.specifiers
+              .filter((specifier) => specifier.importKind !== 'type')
+              .forEach((specifier) => externalBindings.set(specifier, statement.source.value));
+          }
+          /** `const Client = require('x')` and `const { cn } = require('x')` bind the same way. */
+          if (statement.type === 'VariableDeclaration') {
+            for (const declarator of statement.declarations) {
+              const { init } = declarator;
+              const isRequire =
+                init?.type === 'CallExpression' &&
+                init.callee.type === 'Identifier' &&
+                init.callee.name === 'require';
+              const { known, value } = specifierOf(init?.arguments?.[0]);
+              if (isRequire && known && external(value)) externalBindings.set(declarator, value);
+            }
+          }
+          if (statement.type === 'TSImportEqualsDeclaration') {
+            const { known, value } = specifierOf(statement.moduleReference.expression);
+            if (known && external(value)) externalBindings.set(statement, value);
+          }
         }
       },
       'Program:exit': () => {
