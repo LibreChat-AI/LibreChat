@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { v4 } from 'uuid';
+import { useTranslation } from 'react-i18next';
 import { Chat } from '@librechat/chat';
 import { Button, Textarea } from '@librechat/client';
 import { ContentTypes } from 'librechat-data-provider';
@@ -117,8 +118,9 @@ function Message({
     }),
     [message.messageId, message.conversationId, isLatest, isSubmitting],
   );
+  const { t } = useTranslation();
   const parts = partsOf(message);
-  const author = message.isCreatedByUser ? 'You' : 'Assistant';
+  const author = t(message.isCreatedByUser ? 'example_author_user' : 'example_author_assistant');
   return (
     <li aria-label={author} className="flex flex-col gap-1">
       <span className="text-text-secondary text-sm font-semibold">{author}</span>
@@ -141,6 +143,7 @@ function Message({
 }
 
 function Composer({ chat, disabled }: { chat: Chat; disabled: boolean }): ReactElement {
+  const { t } = useTranslation();
   const [text, setText] = useState('');
   const submit = (event?: FormEvent) => {
     event?.preventDefault();
@@ -156,25 +159,27 @@ function Composer({ chat, disabled }: { chat: Chat; disabled: boolean }): ReactE
     });
   };
   const onKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
+    // Safari reports an IME confirmation only through keyCode 229, as the app's composer handles.
+    const isComposing = event.nativeEvent.isComposing || event.keyCode === 229;
+    if (event.key === 'Enter' && !event.shiftKey && !isComposing) {
       submit(event);
     }
   };
   return (
     <form onSubmit={submit} className="flex items-end gap-2">
       <label htmlFor="example-composer" className="sr-only">
-        Message
+        {t('example_composer_label')}
       </label>
       <Textarea
         id="example-composer"
         value={text}
         rows={2}
-        placeholder="Send a message"
+        placeholder={t('example_composer_placeholder')}
         onChange={(event) => setText(event.target.value)}
         onKeyDown={onKeyDown}
       />
       <Button type="submit" disabled={disabled || !text.trim()}>
-        Send
+        {t('example_send')}
       </Button>
     </form>
   );
@@ -192,13 +197,14 @@ export function App({ transport }: { transport?: ChatTransport }): ReactElement 
 }
 
 function ChatView({ chat }: { chat: Chat }): ReactElement {
+  const { t } = useTranslation();
   const { messages, status, error } = useChatSnapshot(chat);
   const isSubmitting = status === 'submitted' || status === 'streaming';
   return (
     <MessagePartsHostProvider host={host}>
       <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-4 p-4">
-        <h1 className="text-lg font-semibold">@librechat/chat example</h1>
-        <ol aria-label="Messages" className="flex flex-1 flex-col gap-4">
+        <h1 className="text-lg font-semibold">{t('example_title')}</h1>
+        <ol aria-label={t('example_messages')} className="flex flex-1 flex-col gap-4">
           {messages.map((message, index) => (
             <Message
               key={message.messageId}
@@ -209,11 +215,11 @@ function ChatView({ chat }: { chat: Chat }): ReactElement {
           ))}
         </ol>
         <p role="status" className="sr-only">
-          {isSubmitting ? 'Generating' : ''}
+          {isSubmitting ? t('example_generating') : ''}
         </p>
         {error ? (
           <p role="alert" className="text-text-destructive text-sm">
-            {`The message was not sent: ${error.message}`}
+            {t('example_send_failed', { error: error.message })}
           </p>
         ) : null}
         <Composer chat={chat} disabled={isSubmitting} />

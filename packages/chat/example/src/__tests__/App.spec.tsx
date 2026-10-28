@@ -61,6 +61,7 @@ describe('example consumer', () => {
     pressEnter(composer);
     type(composer, '日本');
     fireEvent.keyDown(composer, { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(composer, { key: 'Enter', keyCode: 229 });
 
     expect(composer).toHaveValue('日本');
     expect(
