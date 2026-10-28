@@ -43,6 +43,8 @@ export class ReactQueryChatState implements ChatState {
   /** The cache entry and the data `version` last counted, and what it handed out for them. */
   private counted?: Query;
   private countedData?: unknown;
+  /** When the cache last wrote that data, which moves on a write no subscription heard. */
+  private countedUpdatedAt?: number;
   private carried = 0;
   private reported?: number;
   /** Data events the cache reported for the key, and how many `version` last accounted for. */
@@ -80,6 +82,7 @@ export class ReactQueryChatState implements ChatState {
     const changed =
       query !== this.counted ||
       data !== this.countedData ||
+      query?.state.dataUpdatedAt !== this.countedUpdatedAt ||
       read !== this.countedRead ||
       this.changes !== this.countedChanges;
     if (changed && this.reported != null && version <= this.reported) {
@@ -92,6 +95,7 @@ export class ReactQueryChatState implements ChatState {
     }
     this.counted = query;
     this.countedData = data;
+    this.countedUpdatedAt = query?.state.dataUpdatedAt;
     this.countedRead = read;
     this.countedChanges = this.changes;
     this.reported = version;

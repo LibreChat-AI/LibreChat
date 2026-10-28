@@ -243,6 +243,26 @@ describe('ReactQueryChatState', () => {
     unsubscribe();
   });
 
+  it('moves past the last version when a reset keeps the same array and count while unsubscribed', () => {
+    const queryClient = new QueryClient();
+    const state = new ReactQueryChatState({ queryClient, key: 'convo-1' });
+    const key = [QueryKeys.messages, 'convo-1'];
+    const list = [message('a')];
+    queryClient.getQueryCache().build(queryClient, {
+      queryKey: key,
+      initialData: list,
+      initialDataUpdatedAt: 1,
+    });
+    queryClient.setQueryData(key, list, { updatedAt: 2 });
+    const before = state.version;
+
+    queryClient.resetQueries({ queryKey: key, exact: true });
+    list[0] = { ...list[0], text: 'changed in place' };
+    queryClient.setQueryData(key, list, { updatedAt: 3 });
+
+    expect(state.version).not.toBe(before);
+  });
+
   it('reports a write that creates its cache entry once', async () => {
     const queryClient = new QueryClient();
     const state = new ReactQueryChatState({ queryClient, key: 'convo-1' });
