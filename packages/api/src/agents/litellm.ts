@@ -4,6 +4,7 @@ import {
   findLiteLLMModelDisplaySpec,
 } from 'librechat-data-provider';
 import type { TModelSpec } from 'librechat-data-provider';
+import type { LiteLLMModelSnapshotEntry } from '~/types/stream';
 import type * as t from '~/types';
 
 type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
@@ -12,6 +13,9 @@ type Fetch = (input: string | URL | Request, init?: RequestInit) => Promise<Resp
 export const LITELLM_MODEL_NAME_HEADER = 'x-litellm-model-name';
 
 const MAX_MODEL_NAME_LENGTH = 256;
+
+const isNonEmptyString = (value: unknown): value is string =>
+  typeof value === 'string' && value !== '';
 
 /** Run-scoped holder for the `x-litellm-model-name` of the latest model call;
  *  undefined when that call carried no header (served model unknown). */
@@ -72,12 +76,27 @@ export interface LiteLLMModelMetadata {
   litellmAgentModels?: LiteLLMAgentModel[];
 }
 
+/** Bounds a restored snapshot: a run has a handful of top-level agents. */
+const MAX_SNAPSHOT_ENTRIES = 32;
+const MAX_AGENT_ID_LENGTH = 1024;
+
 export interface LiteLLMModelCapture {
   /** The sink for an ephemeral top-level agent whose spec (or endpoint + model) opts in
    *  to `litellmRoutedModel.showOnResponses`; undefined, so nothing is captured,
    *  otherwise. Saved agents are never captured: their rows show the agent's name. */
   getSink: (agent: LiteLLMCaptureAgent) => LiteLLMModelSink | undefined;
   getMetadata: () => LiteLLMModelMetadata;
+  /** Every agent's served model so far, for persisting with a HITL pause; undefined
+   *  when nothing was captured. A list, since agent ids can contain dots. */
+  getSnapshot: () => LiteLLMModelSnapshotEntry[] | undefined;
+  /**
+   * Seeds the served models a paused run captured, before the resumed run asks for
+   * its sinks. A resume does not rerun the agents that finished before the pause, so
+   * without this their models would be lost; an agent that runs again replaces or
+   * clears its seeded value with its own calls. Only agents that still opt in get the
+   * seed, and malformed entries are dropped rather than trusted.
+   */
+  restore: (snapshot: unknown) => void;
 }
 
 /**
@@ -101,6 +120,7 @@ export function createLiteLLMModelCapture({
   addedSpec?: string | null;
 }): LiteLLMModelCapture {
   const entries = new Map<string, { spec: string; sink: LiteLLMModelSink } | undefined>();
+  const seeds = new Map<string, string>();
 
   const getSink = (agent: LiteLLMCaptureAgent): LiteLLMModelSink | undefined => {
     if (!entries.has(agent.id)) {
@@ -114,7 +134,13 @@ export function createLiteLLMModelCapture({
         endpoint: agent.endpoint ?? agent.provider,
         model: typeof model === 'string' ? model : undefined,
       });
-      entries.set(agent.id, modelSpec != null ? { spec: modelSpec.name, sink: {} } : undefined);
+      const seeded = seeds.get(agent.id);
+      entries.set(
+        agent.id,
+        modelSpec != null
+          ? { spec: modelSpec.name, sink: seeded != null ? { modelName: seeded } : {} }
+          : undefined,
+      );
     }
     return entries.get(agent.id)?.sink;
   };
@@ -140,16 +166,43 @@ export function createLiteLLMModelCapture({
     return metadata;
   };
 
-  return { getSink, getMetadata };
+  const getSnapshot = (): LiteLLMModelSnapshotEntry[] | undefined => {
+    const snapshot: LiteLLMModelSnapshotEntry[] = [];
+    for (const [agentId, entry] of entries) {
+      const modelName = entry?.sink.modelName;
+      if (modelName) {
+        snapshot.push({ agentId, modelName });
+      }
+    }
+    return snapshot.length > 0 ? snapshot : undefined;
+  };
+
+  const restore = (snapshot: unknown): void => {
+    if (!Array.isArray(snapshot)) {
+      return;
+    }
+    for (const candidate of snapshot.slice(0, MAX_SNAPSHOT_ENTRIES) as unknown[]) {
+      const { agentId, modelName } = (candidate ?? {}) as Partial<
+        Record<keyof LiteLLMModelSnapshotEntry, unknown>
+      >;
+      if (
+        isNonEmptyString(agentId) &&
+        agentId.length <= MAX_AGENT_ID_LENGTH &&
+        isNonEmptyString(modelName) &&
+        modelName.length <= MAX_MODEL_NAME_LENGTH
+      ) {
+        seeds.set(agentId, modelName);
+      }
+    }
+  };
+
+  return { getSink, getMetadata, getSnapshot, restore };
 }
 
 /** The routed-model fields a message branched from one comparison column carries. */
 export type LiteLLMBranchMetadata = Required<
   Pick<LiteLLMModelMetadata, 'litellmModelName' | 'litellmRoutedModelSpec'>
 >;
-
-const isNonEmptyString = (value: unknown): value is string =>
-  typeof value === 'string' && value !== '';
 
 /**
  * The served model of the column a message is branched from, promoted to the

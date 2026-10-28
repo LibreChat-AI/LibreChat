@@ -4254,6 +4254,7 @@ class AgentClient extends BaseClient {
         ? {}
         : { compactionSemanticIndex: staged.compactionSemanticIndex }),
       ...(staged.contextMeta == null ? {} : { contextMeta: staged.contextMeta }),
+      ...(staged.litellmModels == null ? {} : { litellmModels: staged.litellmModels }),
       persistencePending: true,
       ...(eventActorSuspension == null
         ? {}
@@ -4558,6 +4559,8 @@ class AgentClient extends BaseClient {
       // its rebuilt pruner from the same tiers and its provider projection of
       // history keeps the same bytes.
       contextMeta: captureRunContextMeta({ run, getEncoding: () => this.getEncoding() }),
+      // Served LiteLLM models so far: a resume does not rerun agents that finished first.
+      litellmModels: this.litellmModelCapture?.getSnapshot(),
     };
     if (this.eventActorInvocationId != null) {
       return;

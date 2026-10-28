@@ -263,6 +263,85 @@ describe('createLiteLLMModelCapture', () => {
   });
 });
 
+describe('LiteLLM capture across a HITL pause', () => {
+  const ROUTER = 'litellm-model-router';
+  const modelSpecs = {
+    list: [
+      {
+        name: ROUTER,
+        label: 'Claude Auto',
+        litellmRoutedModel: { showOnResponses: true },
+        preset: { endpoint: 'AnthropicClaude', model: ROUTER },
+      },
+    ] as TModelSpec[],
+  };
+  const PRIMARY = 'AnthropicClaude__litellm-model-router___Claude';
+  const ADDED = 'AnthropicClaude__litellm-model-router___Claude____1';
+  const agent = (id: string, model = ROUTER) => ({
+    id,
+    provider: 'AnthropicClaude',
+    model_parameters: { model },
+  });
+  const create = () =>
+    createLiteLLMModelCapture({ modelSpecs, primaryAgentId: PRIMARY, primarySpec: ROUTER });
+
+  it('snapshots every captured agent, and nothing when none was captured', () => {
+    const capture = create();
+    expect(capture.getSnapshot()).toBeUndefined();
+    capture.getSink(agent(PRIMARY))!.modelName = 'bedrock/claude-opus';
+    capture.getSink(agent(ADDED))!.modelName = 'bedrock/claude-haiku';
+    capture.getSink(agent('agent_saved'));
+
+    expect(capture.getSnapshot()).toEqual([
+      { agentId: PRIMARY, modelName: 'bedrock/claude-opus' },
+      { agentId: ADDED, modelName: 'bedrock/claude-haiku' },
+    ]);
+  });
+
+  it('keeps the model of an agent that finished before the pause and is not rerun', () => {
+    const paused = create();
+    paused.getSink(agent(PRIMARY))!.modelName = 'bedrock/claude-opus';
+    paused.getSink(agent(ADDED))!.modelName = 'bedrock/claude-haiku';
+
+    const resumed = create();
+    resumed.restore(paused.getSnapshot());
+    resumed.getSink(agent(PRIMARY));
+    /** The added column paused for approval and runs again; its call reports a new model. */
+    resumed.getSink(agent(ADDED))!.modelName = 'bedrock/claude-sonnet';
+
+    expect(resumed.getMetadata()).toEqual({
+      litellmModelName: 'bedrock/claude-opus',
+      litellmRoutedModelSpec: ROUTER,
+      litellmAgentModels: [{ agentId: ADDED, modelName: 'bedrock/claude-sonnet', spec: ROUTER }],
+    });
+  });
+
+  it('lets a rerun call clear a restored model', () => {
+    const resumed = create();
+    resumed.restore([{ agentId: PRIMARY, modelName: 'bedrock/claude-opus' }]);
+    resumed.getSink(agent(PRIMARY))!.modelName = undefined;
+
+    expect(resumed.getMetadata()).toEqual({});
+  });
+
+  it('seeds only agents that still opt in, and drops malformed entries', () => {
+    const resumed = create();
+    resumed.restore([
+      null,
+      { agentId: PRIMARY, modelName: 7 },
+      { agentId: '', modelName: 'x' },
+      { agentId: ADDED, modelName: 'm'.repeat(257) },
+      { agentId: 'agent_saved', modelName: 'bedrock/claude-opus' },
+    ]);
+    expect(resumed.getSink(agent(PRIMARY))).toEqual({});
+    expect(resumed.getSink(agent(ADDED))).toEqual({});
+    expect(resumed.getSink(agent('agent_saved'))).toBeUndefined();
+
+    resumed.restore('not a list');
+    expect(resumed.getSnapshot()).toBeUndefined();
+  });
+});
+
 describe('getLiteLLMBranchMetadata', () => {
   const PRIMARY = 'AnthropicClaude__litellm-model-router___Claude';
   const ADDED = 'AnthropicClaude__litellm-model-router___Claude____1';

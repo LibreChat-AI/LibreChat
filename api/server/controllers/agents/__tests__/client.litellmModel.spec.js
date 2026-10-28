@@ -1,3 +1,16 @@
+const mockPause = jest.fn();
+
+jest.mock('@librechat/api', () => {
+  const actual = jest.requireActual('@librechat/api');
+  return {
+    ...actual,
+    GenerationJobManager: new Proxy(actual.GenerationJobManager, {
+      get: (target, key) =>
+        key === 'approvals' ? { pause: (...args) => mockPause(...args) } : target[key],
+    }),
+  };
+});
+
 const { EModelEndpoint } = require('librechat-data-provider');
 const AgentClient = require('~/server/controllers/agents/client');
 
@@ -123,5 +136,30 @@ describe('AgentClient LiteLLM model label', () => {
     const metadata = client.buildResponseMetadata();
     expect(metadata?.litellmModelName).toBeUndefined();
     expect(metadata?.litellmRoutedModelSpec).toBeUndefined();
+  });
+});
+
+describe('AgentClient LiteLLM models across a HITL pause', () => {
+  it('persists the staged served models with the pause projection', async () => {
+    mockPause.mockResolvedValue(false);
+    const litellmModels = [{ agentId: ADDED_ID, modelName: 'bedrock/claude-haiku-5-5' }];
+    const self = {
+      stagedApproval: {
+        streamId: 'conversation-1',
+        pendingAction: { actionId: 'action-1', expiresAt: Date.now() + 60_000 },
+        discoveredTools: [],
+        litellmModels,
+      },
+      pendingApproval: null,
+      jobCreatedAt: 123,
+    };
+
+    await AgentClient.prototype.publishStagedApproval.call(self);
+
+    expect(mockPause).toHaveBeenCalledWith(
+      'conversation-1',
+      self.stagedApproval.pendingAction,
+      expect.objectContaining({ litellmModels }),
+    );
   });
 });
