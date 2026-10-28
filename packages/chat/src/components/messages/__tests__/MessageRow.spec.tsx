@@ -3,8 +3,8 @@
  */
 import { render, screen } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
-import { MessagesHostProvider } from '../../../react/messages/host';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
+import { MessagesHostProvider } from '../../../react/messages/host';
 import { initEnglish } from '../../../__fixtures__/i18n';
 import MessageRow from '../MessageRow';
 
