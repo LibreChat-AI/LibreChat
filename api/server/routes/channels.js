@@ -1,0 +1,31 @@
+const express = require('express');
+const handlers = require('~/server/services/Channels');
+
+const router = express.Router();
+router.use(require('./channels-identity'));
+router.use(require('./channels-feedback'));
+router.get('/service/slack/:tenantId/:channelId', handlers.bundle);
+router.get('/service/:channelId/threads/:externalThreadKey', handlers.getThread);
+router.put('/service/:channelId/threads/:externalThreadKey', handlers.putThread);
+router.post('/service/:channelId/runs', handlers.runs.admit);
+router.post('/service/:channelId/runs/claim', handlers.runs.claim);
+router.post('/service/:channelId/runs/stop-thread', handlers.runs.stopThread);
+router.post('/service/:channelId/runs/:runId/renew', handlers.runs.renew);
+router.post('/service/:channelId/runs/:runId/yield', handlers.runs.yieldLease);
+router.post('/service/:channelId/runs/:runId/advance', handlers.runs.advance);
+router.post('/service/:channelId/runs/:runId/response/prepare', handlers.runs.prepareResponse);
+router.post('/service/:channelId/runs/:runId/response/bind', handlers.runs.bindResponse);
+router.post('/service/:channelId/runs/:runId/cancel', handlers.runs.cancel);
+router.post('/service/:channelId/runs/:runId/review', handlers.runs.review);
+router.post('/service/:channelId/runs/:runId/review/decision', handlers.runs.submitReview);
+router.post('/service/:channelId/runs/:runId/plan', handlers.runs.plan);
+router.post('/service/:channelId/runs/:runId/progress/plan', handlers.runs.planProgress);
+router.post('/service/:channelId/runs/:runId/progress/begin', handlers.runs.beginProgress);
+router.post('/service/:channelId/runs/:runId/progress/settle', handlers.runs.settleProgress);
+router.post('/service/:channelId/runs/:runId/delivery/begin', handlers.runs.begin);
+router.post('/service/:channelId/runs/:runId/delivery/settle', handlers.runs.settle);
+router.post('/service/:channelId/runs/:runId/delivery/checkpoint', handlers.runs.checkpointUpload);
+router.post('/service/:channelId/runs/:runId/artifacts/:artifactId', handlers.runs.artifact);
+router.post('/service/:channelId/runs/:runId/commit', handlers.runs.commit);
+
+module.exports = router;

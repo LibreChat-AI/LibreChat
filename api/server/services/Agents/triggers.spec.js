@@ -1,4 +1,5 @@
 const mockCreateAgentTriggerService = jest.fn();
+const mockAuthorizeChannelTrigger = jest.fn().mockResolvedValue(false);
 const mockCreateBackgroundToolCompletionWakeupResolver = jest.fn(() => jest.fn());
 const mockGenerationJobManager = {
   supportsDetachedAgentEventActions: true,
@@ -36,6 +37,10 @@ jest.mock('@librechat/api', () => ({
 jest.mock('~/models', () => ({
   isAgentTriggerPrincipalActive: jest.fn(),
 }));
+jest.mock('../Responses', () => ({ backgroundResponseSourceDispatchers: new Map() }));
+jest.mock('../ChannelAuthority', () => ({
+  authorizeTrigger: (...args) => mockAuthorizeChannelTrigger(...args),
+}));
 
 describe('agent trigger service composition', () => {
   beforeEach(() => {
@@ -69,6 +74,16 @@ describe('agent trigger service composition', () => {
       'owner',
       'tenant',
     );
+  });
+
+  it('installs Responses dispatch and delegates source authority to the Channels leaf', async () => {
+    require('./triggers');
+    const dependencies = mockCreateAgentTriggerService.mock.calls[0][0];
+    expect(dependencies.sourceDispatchers).toBe(
+      require('../Responses').backgroundResponseSourceDispatchers,
+    );
+    await expect(dependencies.authorizeSource('envelope')).resolves.toBe(false);
+    expect(mockAuthorizeChannelTrigger).toHaveBeenCalledWith('envelope');
   });
 
   it('advertises detached completion capability for every compatible generation store', () => {
