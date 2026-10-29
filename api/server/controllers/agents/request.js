@@ -25,6 +25,7 @@ const {
   checkAndIncrementPendingRequest,
   exemptFromConcurrencyLimiter,
   isScheduleFireRequest,
+  getTrustedNewConversationId,
   isUnpersistedPreliminaryParent,
   startAgentProjectContextResolution,
   assertChatProjectInstructions,
@@ -70,6 +71,7 @@ const {
   createDisconnectSnapshotQueue,
   isTemporaryTurn,
   getPreliminaryResponseMessageId,
+  admitChannelGeneration,
 } = require('@librechat/api');
 const { disposeClient } = require('~/server/cleanup');
 const {
@@ -931,14 +933,15 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     req.body.overrideUserMessageId = `${recoveredSteerId}${Constants.COMMON_DIVIDER}0`;
   }
   const isNewConvo = !reqConversationId || reqConversationId === 'new';
-  const scheduledNewConversationId =
-    isScheduledFire && typeof req.body?.newConversationId === 'string'
-      ? req.body.newConversationId
-      : null;
+  const trustedNewConversationId = getTrustedNewConversationId({
+    isScheduledFire,
+    isAgentTrigger: req._isAgentTrigger === true,
+    newConversationId: req.body?.newConversationId,
+  });
   let conversationId = reqConversationId;
   if (isNewConvo) {
     conversationId =
-      scheduledNewConversationId ??
+      trustedNewConversationId ??
       (typeof clientRequestId === 'string' && clientRequestId.length > 0
         ? uuidv5(`${userId}:${clientRequestId}`, NEW_CONVERSATION_IDEMPOTENCY_NAMESPACE)
         : crypto.randomUUID());
@@ -1085,6 +1088,29 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
   // Treat "new" as a placeholder that needs a real UUID (frontend may send "new" for new convos)
   const streamId = conversationId;
   req.body.conversationId = conversationId;
+
+  const channelAdmission = await admitChannelGeneration(
+    {
+      isAgentTrigger: req._isAgentTrigger,
+      channelExecution: req.body?.channelExecution,
+      userId,
+      tenantId,
+      conversationId,
+      agentId: endpointOption.agent_id ?? req.body?.agent_id,
+      clientRequestId,
+    },
+    (input) => require('~/server/services/ChannelAuthority').authorizeGeneration(input),
+  );
+  if (!channelAdmission.ok) {
+    startupTelemetry?.end('rejected');
+    return sendGenerationJson(
+      res,
+      channelAdmission.status,
+      channelAdmission.body,
+      generationProtocolVersion,
+    );
+  }
+  const { channelExecution } = channelAdmission;
 
   /** A durable continuation trigger appends below a completed parent response. If
    * that response belongs to a still-running or paused generation, admitting
@@ -1471,6 +1497,10 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             streamId: existingStreamId,
             conversationId: claim.existing.conversationId,
             generationCreatedAt: liveJob.createdAt,
+            ...(liveJob.metadata.channelExecution &&
+              liveJob.metadata.responseMessageId && {
+                responseMessageId: liveJob.metadata.responseMessageId,
+              }),
             status: 'resumed',
           },
           generationProtocolVersion,
@@ -1687,6 +1717,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       }),
       initialMetadata: {
         conversationId,
+        ...(channelExecution && { channelExecution }),
         generationProtocolVersion,
         endpoint: endpointOption.endpoint,
         iconURL: endpointIconURL,
@@ -1872,7 +1903,13 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       sendGenerationJson(
         res,
         200,
-        { streamId, conversationId, generationCreatedAt: jobCreatedAt, status: 'started' },
+        {
+          streamId,
+          conversationId,
+          generationCreatedAt: jobCreatedAt,
+          ...(channelExecution && { responseMessageId: preallocatedResponseMessageId }),
+          status: 'started',
+        },
         generationProtocolVersion,
       );
     };

@@ -21,7 +21,11 @@ jest.mock('@librechat/api', () => ({
   createMessageFilterPii: mockCreateMessageFilterPii,
   generateCheckAccess: jest.fn(() => (_req, _res, next) => next()),
   skipAgentCheck: jest.fn(),
-  applyResumeRequest: jest.fn(),
+  createChatResumeContext: jest.fn((...args) =>
+    jest
+      .requireActual('../../../../../packages/api/src/agents/hitl/context')
+      .createChatResumeContext(...args),
+  ),
   GenerationJobManager: {
     getJob: jest.fn(),
   },
@@ -61,22 +65,22 @@ describe('agents chat content filtering', () => {
   it('logs only bounded metadata when resume context restoration fails', async () => {
     const api = require('@librechat/api');
     const router = require('../chat');
-    const restoreResumeContext = router.stack.find(
-      (layer) => layer.handle?.name === 'restoreResumeContext',
-    )?.handle;
+    expect(router.stack[0].handle).toBe(api.validateChatMessageIds);
+    const restoreResumeContext = router.stack[1].handle;
     const rawValue = 'PRIVATE-RESUME-CONTEXT';
     const restoreError = Object.assign(new Error(rawValue), {
       response: { status: 503, data: rawValue },
     });
     api.GenerationJobManager.getJob.mockRejectedValueOnce(restoreError);
     const next = jest.fn();
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
 
     await restoreResumeContext(
       {
         path: '/resume',
         body: { conversationId: 'conversation-1' },
       },
-      {},
+      res,
       next,
     );
 
@@ -86,7 +90,39 @@ describe('agents chat content filtering', () => {
       status: 503,
     });
     expect(JSON.stringify(mockLogger.warn.mock.calls)).not.toContain(rawValue);
-    expect(next).toHaveBeenCalledTimes(1);
+    expect(res.status).toHaveBeenCalledWith(503);
+    expect(res.json).toHaveBeenCalledWith({ error: 'resume_context_unavailable' });
+    expect(next).not.toHaveBeenCalled();
+  });
+
+  it.each(['/resume', '/resume/', '/ReSuMe/'])(
+    'rejects Responses jobs through the mounted ordinary chat route %s',
+    async (path) => {
+      const api = require('@librechat/api');
+      api.GenerationJobManager.getJob.mockResolvedValue({ metadata: { endpoint: 'responses' } });
+      const resume = require('~/server/controllers/agents/resume');
+      resume.mockImplementation((_req, res) => res.sendStatus(200));
+      const app = express();
+      app.use(express.json());
+      app.use('/chat', require('../chat'));
+      await request(app)
+        .post(`/chat${path}`)
+        .send({ conversationId: 'response-conversation' })
+        .expect(404, { error: 'No paused generation for this conversation' });
+      expect(resume).not.toHaveBeenCalled();
+    },
+  );
+
+  it('preserves ordinary chat turns without a generation-store lookup', async () => {
+    const api = require('@librechat/api');
+    const controller = require('~/server/controllers/agents/request');
+    controller.mockImplementation((_req, res) => res.sendStatus(200));
+    const app = express();
+    app.use(express.json());
+    app.use('/chat', require('../chat'));
+    await request(app).post('/chat').send({ conversationId: 'ordinary' }).expect(200);
+    expect(api.GenerationJobManager.getJob).not.toHaveBeenCalled();
+    expect(controller).toHaveBeenCalledTimes(1);
   });
 });
 
