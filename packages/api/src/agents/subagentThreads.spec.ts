@@ -3750,6 +3750,10 @@ describe('SubagentThreadTaskStore', () => {
     await saveParent(userId, parentConversationId);
     const store = new SubagentThreadTaskStore(methods);
     const config = buildSubagentThreadTaskConfig(store, { userId, parentConversationId });
+    let markEntered = (): void => undefined;
+    const entered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
     const started = store.start(
       taskRequest(config.scopeId, {
         run: async (runtime) =>
@@ -3757,6 +3761,7 @@ describe('SubagentThreadTaskStore', () => {
             runtime.signal.addEventListener('abort', () => reject(runtime.signal.reason), {
               once: true,
             });
+            markEntered();
           }),
       }),
     );
@@ -3772,6 +3777,7 @@ describe('SubagentThreadTaskStore', () => {
         ).length === 1,
       'the cancellation replay task seed',
     );
+    await entered;
 
     await expect(
       store.controlTask(config.scopeId, taskId, { action: 'cancel' }, 'cancel-invocation'),
