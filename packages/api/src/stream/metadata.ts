@@ -30,6 +30,8 @@ export function parseChannelExecution(value: unknown): GenerationJobMetadata['ch
 
 export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): JobMetadataPatch {
   const patch: JobMetadataPatch = {};
+  if (metadata.responseCheckpointConfigJSON !== undefined)
+    patch.responseCheckpointConfigJSON = metadata.responseCheckpointConfigJSON;
   if (metadata.channelExecution !== undefined) {
     patch.channelExecution = parseChannelExecution(metadata.channelExecution);
   }

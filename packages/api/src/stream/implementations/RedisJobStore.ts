@@ -5704,6 +5704,7 @@ export class RedisJobStore implements IJobStoreV2 {
       agent_id: data.agent_id || undefined,
       isTemporary: data.isTemporary != null ? data.isTemporary === '1' : undefined,
       retentionExpiresAt: data.retentionExpiresAt || undefined,
+      responseCheckpointConfigJSON: data.responseCheckpointConfigJSON || undefined,
       channelExecution: parseChannelExecution(
         data.channelExecution === undefined ? undefined : JSON.parse(data.channelExecution),
       ),
