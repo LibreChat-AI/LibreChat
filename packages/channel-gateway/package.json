@@ -7,6 +7,7 @@
   "scripts": {
     "build": "tsdown",
     "build:watch": "tsdown --watch",
+    "start": "node dist/main.cjs",
     "typecheck": "node ../../scripts/typecheck.mts",
     "test": "jest --watch",
     "test:ci": "jest --ci --runInBand"

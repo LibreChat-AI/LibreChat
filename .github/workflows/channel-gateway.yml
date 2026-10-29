@@ -1,0 +1,113 @@
+name: Channel Gateway
+
+on:
+  pull_request:
+    paths:
+      - 'packages/channel-gateway/**'
+      - 'packages/data-provider/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/typecheck.mts'
+      - '.dockerignore'
+      - 'docker-compose.channels.yml'
+      - '.github/workflows/channel-gateway.yml'
+  push:
+    branches: [dev]
+    paths:
+      - 'packages/channel-gateway/**'
+      - 'packages/data-provider/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/typecheck.mts'
+      - '.dockerignore'
+      - 'docker-compose.channels.yml'
+      - '.github/workflows/channel-gateway.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gateway:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SCARF_ANALYTICS: 'false'
+      HUSKY: '0'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.1'
+          cache: npm
+      - name: Install gateway and shared contracts
+        run: npm ci --ignore-scripts --no-audit --workspace @librechat/channel-gateway --workspace librechat-data-provider --include-workspace-root=false
+      - name: Build shared contracts
+        run: npm run build --workspace librechat-data-provider
+      - name: Typecheck gateway
+        run: npm run typecheck --workspace @librechat/channel-gateway
+      - name: Test gateway
+        run: npm run test:ci --workspace @librechat/channel-gateway
+      - name: Build gateway
+        run: npm run build --workspace @librechat/channel-gateway
+      - name: Build standalone image
+        run: docker build -f packages/channel-gateway/Dockerfile -t channel-gateway:ci .
+      - name: Verify standalone image and fail-closed startup
+        shell: bash
+        run: |
+          docker run --rm --entrypoint node channel-gateway:ci -e "const fs=require('node:fs');if(process.getuid()===0||!fs.existsSync('/app/main.cjs')||fs.existsSync('/app/node_modules'))process.exit(1)"
+          set +e
+          output=$(docker run --rm channel-gateway:ci 2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo 'Gateway unexpectedly started without a channel binding.'
+            exit 1
+          fi
+          if ! grep -q 'channel_gateway_startup_failed' <<< "$output"; then
+            echo 'Gateway did not report its expected safe startup failure.'
+            exit 1
+          fi
+      - name: Smoke-test isolated webhook process
+        run: |
+          docker run --rm -i --read-only --entrypoint node channel-gateway:ci - <<'NODE'
+          const http = require('node:http');
+          const { spawn } = require('node:child_process');
+          const { setTimeout: delay } = require('node:timers/promises');
+          const bundle = {
+            channel: { channelId: 'fixture', tenantId: 'fixture', agentId: 'agent_fixture', type: 'slack', status: 'active', revision: 'fixture', slack: { teamId: 'T1', appId: 'A1', botUserId: 'U1' } },
+            credentials: { botToken: 'fixture' }, agent: { id: 'agent_fixture' },
+          };
+          const backend = http.createServer((req, res) => {
+            if (req.url.endsWith('/runs/claim')) { req.resume(); res.writeHead(204); res.end(); return; }
+            res.setHeader('Content-Type', 'application/json'); res.end(JSON.stringify(bundle));
+          });
+          backend.listen(0, '127.0.0.1', async () => {
+            const child = spawn(process.execPath, ['/app/main.cjs'], {
+              env: { ...process.env, LIBRECHAT_INTERNAL_URL: `http://127.0.0.1:${backend.address().port}`, CHANNEL_SERVICE_TOKEN: 'fixture', CHANNEL_TENANT_ID: 'fixture', CHANNEL_ID: 'fixture', SLACK_TRANSPORT: 'webhook' },
+              stdio: 'ignore',
+            });
+            const exited = new Promise(resolve => child.once('exit', resolve));
+            const deadline = setTimeout(() => child.kill('SIGKILL'), 10000);
+            try {
+              let ready = false;
+              for (let attempt = 0; attempt < 50; attempt++) {
+                try { ready = (await fetch('http://127.0.0.1:8080/healthz', { signal: AbortSignal.timeout(500) })).ok; } catch {}
+                if (ready) break;
+                await delay(100);
+              }
+              if (!ready) throw new Error('Gateway did not become healthy');
+              child.kill('SIGTERM');
+              if (await exited !== 0) throw new Error('Gateway did not exit cleanly');
+              console.log('Standalone gateway became healthy and stopped cleanly.');
+            } catch {
+              child.kill('SIGKILL'); process.exitCode = 1;
+            } finally {
+              clearTimeout(deadline); backend.closeAllConnections(); backend.close();
+            }
+          });
+          NODE
