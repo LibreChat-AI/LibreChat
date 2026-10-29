@@ -61,6 +61,19 @@ import { createAgentCategoryMethods, type AgentCategoryMethods } from './agentCa
 /* Agent API Keys */
 import { createAgentApiKeyMethods, type AgentApiKeyMethods } from './agentApiKey';
 
+export { createChannelRunStorage, ChannelRunConflict } from './channelRun';
+export { createChannelSummaryStorage, CHANNEL_SUMMARY_MAX_PRIOR_ROWS } from './channelSummary';
+export type {
+  ChannelSummaryStorage,
+  ChannelSummaryScope,
+  ChannelSummaryRow,
+} from './channelSummary';
+export type {
+  ChannelRunStorage,
+  ChannelRunEnrollment,
+  ChannelRunRecord,
+  ChannelLaneRecord,
+} from './channelRun';
 /* MCP Servers */
 import { createMCPServerMethods, type MCPServerMethods } from './mcpServer';
 import { createCodeEnvironmentMethods, type CodeEnvironmentMethods } from './codeEnvironment';
