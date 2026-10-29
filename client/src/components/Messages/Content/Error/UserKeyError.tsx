@@ -157,6 +157,7 @@ export default function UserKeyError({ json, message }: ErrorRendererProps) {
             endpoint,
             'userProvideBearerToken',
           )}
+          userProvideRegion={getEndpointField(endpointsConfig, endpoint, 'userProvideRegion')}
         />
       )}
     </ErrorBody>
