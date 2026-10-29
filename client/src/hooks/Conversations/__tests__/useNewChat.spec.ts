@@ -35,7 +35,7 @@ const mockState = {
     return getDefaultStore().get(filesFamily(0));
   },
   set files(files: Map<string, LiveFile>) {
-    getDefaultStore().set(filesFamily(0), files as Map<string, ExtendedFile>);
+    act(() => getDefaultStore().set(filesFamily(0), files as Map<string, ExtendedFile>));
   },
   retainedDeletions: [] as { file_id: string; filepath: string; source: string }[],
   markedPasteIds: [] as string[],
@@ -121,6 +121,19 @@ jest.mock('~/utils', () => ({
     };
   },
   takeRetainedFileDeletions: () => mockState.retainedDeletions,
+  claimFileDeletionRetries: (records: typeof mockState.retainedDeletions) => {
+    const unique = Array.from(new Map(records.map((record) => [record.file_id, record])).values());
+    mockState.retainedDeletions = unique;
+    return unique;
+  },
+  settleFileDeletionRetries: (
+    _records: typeof mockState.retainedDeletions,
+    failed: Set<string>,
+  ) => {
+    mockState.retainedDeletions = mockState.retainedDeletions.filter((record) =>
+      failed.has(record.file_id),
+    );
+  },
   clearRetainedFileDeletion: (fileId: string) => {
     mockState.retainedDeletions = mockState.retainedDeletions.filter(
       (record) => record.file_id !== fileId,
@@ -209,6 +222,7 @@ jest.mock('~/utils', () => ({
 jest.mock('~/data-provider', () => ({
   useGetFiles: () => ({ data: mockState.fileList }),
   useDeleteFilesMutation: () => ({ mutateAsync: mockDeleteFiles }),
+  useGetFileConfig: () => ({ data: { deletionRetryLimit: 5 } }),
 }));
 
 jest.mock('~/store', () => ({

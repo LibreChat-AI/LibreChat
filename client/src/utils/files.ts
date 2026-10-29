@@ -1,5 +1,6 @@
 import {
   Tools,
+  LocalStorageKeys,
   megabyte,
   Providers,
   QueryKeys,
@@ -708,13 +709,15 @@ const RETAINED_DELETION_STORAGE_KEY = 'librechat-retained-file-deletions';
 const RETAINED_RETRY_BASE_DELAY_MS = 5_000;
 const RETAINED_RETRY_MAX_DELAY_MS = 60_000;
 
-const readStoredRetainedDeletions = (): PendingFileDeletion[] => {
+type RetainedFileDeletion = PendingFileDeletion & { attempts?: number };
+
+const readStoredRetainedDeletions = (): RetainedFileDeletion[] => {
   try {
     const raw = sessionStorage.getItem(RETAINED_DELETION_STORAGE_KEY);
     if (raw == null || raw === '') {
       return [];
     }
-    const parsed = JSON.parse(raw) as PendingFileDeletion[] | null;
+    const parsed = JSON.parse(raw) as RetainedFileDeletion[] | null;
     return Array.isArray(parsed) ? parsed : [];
   } catch {
     return [];
@@ -723,12 +726,19 @@ const readStoredRetainedDeletions = (): PendingFileDeletion[] => {
 
 /** Survives a reload: the chip these came from is gone, so once the tab forgets the payload the
  * upload on the server has no reference left at all. */
-const retainedFileDeletions = new Map<string, PendingFileDeletion>(
+const retainedFileDeletions = new Map<string, RetainedFileDeletion>(
   readStoredRetainedDeletions().map((record) => [record.file_id, record]),
 );
 const retainedFileDeletionListeners = new Set<() => void>();
 
 const persistRetainedFileDeletions = (): void => {
+  if (retainedFileDeletions.size === 0) {
+    retainedRetryDelayMs = RETAINED_RETRY_BASE_DELAY_MS;
+    if (retainedRetryTimer != null) {
+      clearTimeout(retainedRetryTimer);
+      retainedRetryTimer = null;
+    }
+  }
   try {
     if (retainedFileDeletions.size === 0) {
       sessionStorage.removeItem(RETAINED_DELETION_STORAGE_KEY);
@@ -757,17 +767,16 @@ const bindOnlineRetainedRetry = (): void => {
   }
   onlineRetryBound = true;
   window.addEventListener('online', () => {
-    retainedRetryDelayMs = RETAINED_RETRY_BASE_DELAY_MS;
-    notifyRetainedFileDeletions();
+    if (retainedFileDeletions.size > 0) {
+      retainedRetryDelayMs = RETAINED_RETRY_BASE_DELAY_MS;
+      notifyRetainedFileDeletions();
+    }
   });
 };
 
-/** A retry that fails again changes nothing the cleanup effect depends on, and the files query
- * does not refetch on reconnect, so without an explicit wake-up the payload would sit untouched
- * until some unrelated cache update happened to arrive. Backs off to a slow poll rather than
- * giving up, because giving up is what orphans the upload. */
+/** Wake unchanged queues after a failure, with backoff between automatic attempts. */
 export const scheduleRetainedFileDeletionRetry = (): void => {
-  if (retainedRetryTimer != null) {
+  if (retainedRetryTimer != null || retainedFileDeletions.size === 0 || !retentionOpen) {
     return;
   }
   bindOnlineRetainedRetry();
@@ -823,12 +832,11 @@ export const openFileDeletionRetention = (): void => {
 };
 
 export const retainFileDeletion = (record: PendingFileDeletion): void => {
-  if (!retentionOpen) {
+  if (!retentionOpen || retainedFileDeletions.has(record.file_id)) {
     return;
   }
   retainedFileDeletions.set(record.file_id, record);
   persistRetainedFileDeletions();
-  retainedRetryDelayMs = RETAINED_RETRY_BASE_DELAY_MS;
   notifyRetainedFileDeletions();
 };
 
@@ -837,12 +845,88 @@ export const clearRetainedFileDeletion = (fileId: string): void => {
     return;
   }
   persistRetainedFileDeletions();
-  retainedRetryDelayMs = RETAINED_RETRY_BASE_DELAY_MS;
 };
 
-/** The deletions waiting for a retry; ownership stays with the store until one succeeds. */
+/** Keep retry accounting private rather than sending it in the delete payload. */
 export const takeRetainedFileDeletions = (): PendingFileDeletion[] =>
-  Array.from(retainedFileDeletions.values());
+  Array.from(retainedFileDeletions.values(), ({ attempts: _attempts, ...record }) => record);
+
+/** Persist before dispatch so a reload during the request cannot reset its budget. */
+export const claimFileDeletionRetries = (
+  records: PendingFileDeletion[],
+  limit = defaultFileConfig.deletionRetryLimit,
+): PendingFileDeletion[] => {
+  if (!retentionOpen) {
+    return [];
+  }
+  const batch: PendingFileDeletion[] = [];
+  const seen = new Set<string>();
+  for (const record of records) {
+    if (seen.has(record.file_id)) {
+      continue;
+    }
+    seen.add(record.file_id);
+    const attempts = retainedFileDeletions.get(record.file_id)?.attempts ?? 0;
+    if (attempts >= limit) {
+      retainedFileDeletions.delete(record.file_id);
+      continue;
+    }
+    retainedFileDeletions.set(record.file_id, { ...record, attempts: attempts + 1 });
+    batch.push(record);
+  }
+  persistRetainedFileDeletions();
+  return batch;
+};
+
+/** Successful and exhausted records leave the queue; only retryable failures remain. */
+export const settleFileDeletionRetries = (
+  records: PendingFileDeletion[],
+  failedIds: Set<string>,
+  limit = defaultFileConfig.deletionRetryLimit,
+): void => {
+  let changed = false;
+  for (const record of records) {
+    if (
+      !failedIds.has(record.file_id) ||
+      (retainedFileDeletions.get(record.file_id)?.attempts ?? 0) >= limit
+    ) {
+      changed = retainedFileDeletions.delete(record.file_id) || changed;
+    }
+  }
+  if (changed) {
+    persistRetainedFileDeletions();
+  }
+};
+
+/** Move the legacy remount queue into the same bounded, ownership-checked retry path. */
+export const migrateStoredFileDeletions = (): void => {
+  try {
+    const raw = localStorage.getItem(LocalStorageKeys.FILES_TO_DELETE);
+    if (raw == null) {
+      return;
+    }
+    const map = JSON.parse(raw) as Record<string, ExtendedFile> | null;
+    for (const file of Object.values(map ?? {})) {
+      if (
+        file?.file_id &&
+        file.filepath != null &&
+        file.source &&
+        !(file.embedded ?? false) &&
+        file.temp_file_id
+      ) {
+        retainFileDeletion({
+          file_id: file.file_id,
+          filepath: file.filepath,
+          source: file.source as FileSources,
+          embedded: false,
+        });
+      }
+    }
+    localStorage.removeItem(LocalStorageKeys.FILES_TO_DELETE);
+  } catch {
+    // Unavailable storage cannot supply legacy cleanup work.
+  }
+};
 
 /** Subscribe to a retained deletion being recorded so a retry effect can run without waiting
  * for an unrelated files-cache update. */

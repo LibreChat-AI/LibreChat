@@ -2702,6 +2702,63 @@ describe('processDeleteRequest', () => {
     expect(result).toEqual({ deletedFileIds: ['expired-file'], failedFileIds: [] });
   });
 
+  it('removes eight stale uploads after local ENOENT and an unknown Code API user session', async () => {
+    const { createCodeFileDeleter } = jest.requireActual(
+      '../../../../packages/api/src/files/code/delete',
+    );
+    const httpClient = jest.fn().mockRejectedValue({ response: { status: 403 } });
+    const clearFileCodeEnvRefs = jest.fn().mockResolvedValue(true);
+    const deleteCodeFile = createCodeFileDeleter({
+      httpClient,
+      clearFileCodeEnvRefs,
+      getAuthHeaders: async () => ({}),
+      getBaseUrl: () => 'https://code.example',
+      routeKey: () => 'default',
+      profileHeaders: () => ({}),
+      downloadQuery: () => '?kind=user&id=user-123',
+      logger,
+    });
+    const deleteLocalFile = jest
+      .fn()
+      .mockRejectedValue(Object.assign(new Error('no such file'), { code: 'ENOENT' }));
+    getStrategyFunctions.mockImplementation((source) => ({
+      deleteFile: source === FileSources.execute_code ? deleteCodeFile : deleteLocalFile,
+    }));
+    const files = Array.from({ length: 8 }, (_, index) => ({
+      file_id: `expired-file-${index}`,
+      source: FileSources.local,
+      user: 'user-123',
+      filepath: `/uploads/user-123/expired-${index}.txt`,
+      metadata: {
+        codeEnvRef: {
+          kind: 'user',
+          id: 'user-123',
+          file_id: `remote-${index}`,
+          storage_session_id: 'expired-session',
+          provisionedAt: 1,
+        },
+      },
+    }));
+    const result = await processDeleteRequest({
+      req: {
+        body: {},
+        config: { fileConfig: { retainedFileCleanup: true } },
+        user: { id: 'user-123' },
+      },
+      files,
+    });
+    const ids = files.map((file) => file.file_id);
+    expect(result).toEqual({ deletedFileIds: ids, failedFileIds: [] });
+    expect(httpClient).toHaveBeenCalledTimes(8);
+    expect(deleteLocalFile).toHaveBeenCalledTimes(8);
+    expect(clearFileCodeEnvRefs).toHaveBeenCalledTimes(8);
+    expect(db.deleteFiles).toHaveBeenCalledWith(
+      ids,
+      undefined,
+      expect.objectContaining({ userId: 'user-123' }),
+    );
+  });
+
   it('does not treat unrelated not found messages as missing storage', async () => {
     const deleteFile = jest.fn().mockRejectedValue(new Error('Configuration not found'));
     getStrategyFunctions.mockReturnValue({ deleteFile });

@@ -1,12 +1,10 @@
 import { Suspense, useCallback, useEffect, useMemo, useRef } from 'react';
 import { useRecoilValue } from 'recoil';
 import { useAtomValue, useSetAtom } from 'jotai';
+import { EModelEndpoint } from 'librechat-data-provider';
 import { activeSubagentPanel, useIsSubmitting } from '@librechat/chat/react';
-import { EModelEndpoint, FileSources, LocalStorageKeys } from 'librechat-data-provider';
-import type { ExtendedFile } from '~/common';
 import { ParentSubagentsProvider } from '~/components/Chat/Subagents/ParentSubagentsProvider';
 import useArtifactsRegistryLifetime from '~/hooks/Artifacts/useArtifactsRegistryLifetime';
-import { useDeleteFilesMutation, useGetStartupConfig } from '~/data-provider';
 import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
 import DragDropWrapper from '~/components/Chat/Input/Files/DragDropWrapper';
 import UndockedArtifacts from '~/components/Artifacts/UndockedArtifacts';
@@ -14,9 +12,9 @@ import { artifactsUndocked } from '~/components/Artifacts/state';
 import { EditorProvider, ArtifactsProvider } from '~/Providers';
 import { SidePanelGroup } from '~/components/SidePanel';
 import AppChatSurface from '~/components/Chat/Surface';
+import { useGetStartupConfig } from '~/data-provider';
 import { lazyWithRecovery } from '~/lib/assets/lazy';
-import { useSetFilesToDelete } from '~/hooks';
-import { failedFileIdsFrom } from '~/utils';
+import { migrateStoredFileDeletions } from '~/utils';
 import store from '~/store';
 
 const Artifacts = lazyWithRecovery(() => import('~/components/Artifacts/Artifacts'));
@@ -68,59 +66,9 @@ export default function Presentation({
     }
   }, [conversationId, setSelectedSubagent]);
 
-  const setFilesToDelete = useSetFilesToDelete();
-
   const { data: startupConfig, isSuccess: hasStartupConfig } = useGetStartupConfig();
-  const { mutateAsync } = useDeleteFilesMutation({
-    onSuccess: (result) => {
-      console.log('Temporary Files deleted');
-      const failed = new Set(failedFileIdsFrom(result));
-      if (failed.size === 0) {
-        setFilesToDelete({});
-        return;
-      }
-      try {
-        const filesToDelete = localStorage.getItem(LocalStorageKeys.FILES_TO_DELETE);
-        const map = JSON.parse(filesToDelete ?? '{}') as Record<string, ExtendedFile>;
-        const remaining: Record<string, ExtendedFile> = {};
-        for (const [key, file] of Object.entries(map)) {
-          if (
-            (file.file_id != null && failed.has(file.file_id)) ||
-            (file.temp_file_id != null && failed.has(file.temp_file_id))
-          ) {
-            remaining[key] = file;
-          }
-        }
-        setFilesToDelete(remaining);
-      } catch {
-        // Keep existing records if reading or parsing fails.
-      }
-    },
-    onError: (error) => {
-      console.log('Error deleting temporary files:', error);
-    },
-  });
 
-  useEffect(() => {
-    const filesToDelete = localStorage.getItem(LocalStorageKeys.FILES_TO_DELETE);
-    const map = JSON.parse(filesToDelete ?? '{}') as Record<string, ExtendedFile>;
-    const files = Object.values(map)
-      .filter(
-        (file) =>
-          file.filepath != null && file.source && !(file.embedded ?? false) && file.temp_file_id,
-      )
-      .map((file) => ({
-        file_id: file.file_id,
-        filepath: file.filepath as string,
-        source: file.source as FileSources,
-        embedded: !!(file.embedded ?? false),
-      }));
-
-    if (files.length === 0) {
-      return;
-    }
-    mutateAsync({ files });
-  }, [mutateAsync]);
+  useEffect(() => migrateStoredFileDeletions(), []);
 
   /* The deployment's answer about the undocked window, resolved once by the
    * host and handed to the pane. Until the config has actually answered the
