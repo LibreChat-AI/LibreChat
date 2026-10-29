@@ -1,5 +1,6 @@
 import { Constants, Time } from 'librechat-data-provider';
 import { GraphEvents, StepTypes } from '@librechat/agents';
+import type { OAuthStartHandler } from '../types';
 import type * as t from '~/types';
 import { buildOAuthToolCallName, splitMCPToolKey } from '~/mcp/utils';
 
@@ -14,6 +15,62 @@ export type OAuthToolCall = {
   args?: string;
   output?: string;
 };
+
+interface OAuthPromptStep {
+  stepId: string;
+  toolCall: OAuthToolCall;
+}
+
+/** Reauthentication owns a separate replayable step, never the model tool's result. */
+export function createMCPReauthenticationPrompt({
+  serverName,
+  toolCallId,
+  stepId,
+  runId,
+  createStart,
+  createEnd,
+}: {
+  serverName: string;
+  toolCallId?: string;
+  stepId?: string;
+  runId: string;
+  createStart: (step: OAuthPromptStep) => OAuthStartHandler;
+  createEnd: (step: OAuthPromptStep) => () => Promise<void>;
+}): {
+  start: OAuthStartHandler;
+  end: () => Promise<void>;
+  run: <Result>(operation: () => Promise<Result>) => Promise<Result>;
+} {
+  const callId = `oauth:${toolCallId ?? stepId ?? runId}`;
+  const step = {
+    stepId: `${buildMCPAuthStepId(serverName)}:${callId}`,
+    toolCall: buildMCPAuthToolCall({ id: callId, serverName }),
+  };
+  const emitStart = createStart(step);
+  const emitEnd = createEnd(step);
+  let pending = false;
+  const start: OAuthStartHandler = async (...args) => {
+    pending = true;
+    await emitStart(...args);
+  };
+  const end = async () => {
+    if (!pending) return;
+    await emitEnd();
+    pending = false;
+  };
+  return {
+    start,
+    end,
+    async run<Result>(operation: () => Promise<Result>): Promise<Result> {
+      try {
+        return await operation();
+      } finally {
+        // Timeout and caller cancellation retire only this prompt, not a shared OAuth flow.
+        await end();
+      }
+    },
+  };
+}
 
 export function getOAuthPromptExpiresAt(
   options?: OAuthPromptOptions,
