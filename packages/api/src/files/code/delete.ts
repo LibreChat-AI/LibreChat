@@ -104,7 +104,7 @@ export function createCodeFileDeleter({
         const unavailableUserSession =
           response?.status === 403 &&
           ref.kind === 'user' &&
-          ref.id === (file.user?.toString() ?? req.user.id);
+          ref.id === (file.user?.toString() ?? req.user?.id);
         if (response?.status !== 404 && !unavailableUserSession) {
           if (response?.status === 409 && response.data?.error === 'execution_profile_mismatch') {
             skipped = true;
