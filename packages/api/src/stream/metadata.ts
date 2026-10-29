@@ -5,6 +5,7 @@ import {
 import type { JobMetadataPatch } from './interfaces/IJobStore';
 import type { GenerationJobMetadata } from '~/types';
 import { parseScheduleMCPCompletion } from '~/schedules/authorization/continuation';
+import { isAgentTriggerRequest } from '~/crypto/jwt';
 
 export function parseChannelExecution(value: unknown): GenerationJobMetadata['channelExecution'] {
   if (value === undefined) return undefined;
@@ -26,6 +27,16 @@ export function parseChannelExecution(value: unknown): GenerationJobMetadata['ch
   )
     throw new Error('channel_execution_invalid');
   return { channelId: value.channelId, runId: value.runId };
+}
+
+/** Body markers acquire authority only at the signed server-trigger ingress. */
+export function resolveChannelExecutionMetadata(request: {
+  headers?: Record<string, string | string[] | undefined>;
+  body?: { channelExecution?: unknown };
+}): Pick<GenerationJobMetadata, 'channelExecution'> {
+  if (request.body?.channelExecution === undefined) return {};
+  if (!isAgentTriggerRequest(request)) throw new Error('channel_execution_forbidden');
+  return { channelExecution: parseChannelExecution(request.body.channelExecution) };
 }
 
 export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): JobMetadataPatch {

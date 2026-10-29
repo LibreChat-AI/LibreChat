@@ -65,6 +65,7 @@ export async function executeAgentRun<Result>(
   const agentId = envelope.payload.model;
   let execution: AgentExecutionEnrollment | undefined;
   let executionError: unknown;
+  let settlementFailure: unknown;
   let responseClosed = connection?.isClosed() ?? false;
   const removeCloseListener =
     connection?.onClose(() => {
@@ -109,12 +110,17 @@ export async function executeAgentRun<Result>(
         if (execution.ownsSettlement) await beforeSettle?.(execution, executionError);
       } catch (error) {
         executionError ??= error;
+        settlementFailure = error;
       }
       try {
-        await execution.settle(executionError);
+        const settled = await execution.settle(executionError);
+        settlementFailure ??= settled.persistenceError;
+        executionError ??= settled.persistenceError;
         if (execution.ownsSettlement) await afterSettle?.(execution, executionError);
+        if (settlementFailure != null) throw settlementFailure;
       } catch (error) {
         onSettlementError?.(error);
+        throw error;
       }
     }
   }

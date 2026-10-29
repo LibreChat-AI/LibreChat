@@ -38,8 +38,13 @@ export async function waitForAgentExecutionWrites<T>(writes: readonly Promise<T>
   const results = await Promise.allSettled(writes);
   const failure = results.find((result) => result.status === 'rejected');
   if (failure?.status === 'rejected') {
-    throw failure.reason;
+    throw failure.reason ?? new Error('Required Agent persistence failed');
   }
+}
+
+export interface AgentExecutionSettlement {
+  /** Required writes failed; the durable terminal identity is error, never complete. */
+  persistenceError?: unknown;
 }
 
 export class AgentExecutionEnrollment {
@@ -50,12 +55,13 @@ export class AgentExecutionEnrollment {
   private readonly manager: GenerationJobManagerClass;
   private readonly providerExecutionId: string;
   private readonly abortController: AbortController;
+  private readonly attemptController?: AbortController;
   private readonly ownerId?: string;
   private readonly retainTerminalPersistence?: true;
   private readonly trailingWrites: Promise<unknown>[] = [];
   private providerStarted = false;
   private providerStartRejected = false;
-  private settlement?: Promise<void>;
+  private settlement?: Promise<AgentExecutionSettlement>;
   private pendingPause?: string;
   private paused = false;
 
@@ -89,10 +95,18 @@ export class AgentExecutionEnrollment {
     this.createdAt = job.createdAt;
     this.providerExecutionId = providerExecutionId;
     this.abortController = job.abortController;
-    this.signal = job.abortController.signal;
+    this.attemptController = ownerId == null ? undefined : new AbortController();
+    this.signal =
+      this.attemptController == null
+        ? job.abortController.signal
+        : AbortSignal.any([job.abortController.signal, this.attemptController.signal]);
   }
 
   abort(reason?: unknown): void {
+    if (this.attemptController) {
+      this.attemptController.abort(reason);
+      if (!this.providerStarted) return;
+    }
     this.abortController.abort(reason);
   }
 
@@ -147,6 +161,7 @@ export class AgentExecutionEnrollment {
     }
     this.providerStarted = true;
     if (this.signal.aborted) {
+      this.abortController.abort(this.signal.reason);
       throw new AgentExecutionAdmissionError(
         'Agent execution stopped before provider startup',
         'RUN_REPLACED',
@@ -230,7 +245,7 @@ export class AgentExecutionEnrollment {
     return true;
   }
 
-  settle(error?: unknown): Promise<void> {
+  settle(error?: unknown): Promise<AgentExecutionSettlement> {
     this.settlement ??= this.settleInternal(error);
     return this.settlement;
   }
@@ -280,10 +295,10 @@ export class AgentExecutionEnrollment {
     });
   }
 
-  private async settleInternal(error?: unknown): Promise<void> {
+  private async settleInternal(error?: unknown): Promise<AgentExecutionSettlement> {
     if (!this.ownsSettlement) {
       await waitForAgentExecutionWrites(this.trailingWrites);
-      return;
+      return {};
     }
     if (this.pendingPause && error == null) return this.settlePause(this.pendingPause);
     if (this.pendingPause) {
@@ -301,25 +316,32 @@ export class AgentExecutionEnrollment {
         throw pauseError;
       }
     }
+    let persistenceError: unknown;
+    try {
+      await waitForAgentExecutionWrites(this.trailingWrites);
+    } catch (writeError) {
+      persistenceError = writeError;
+    }
+    const effectiveError = error ?? persistenceError;
     let terminalError: unknown;
     try {
-      await this.complete(error);
+      await this.complete(effectiveError);
     } catch (settleError) {
       terminalError = settleError;
     }
-
-    await Promise.allSettled(this.trailingWrites);
 
     /** A failed terminal write is not allowed to become a drained running job. Retry
      * after trailing persistence settles; if another terminal owner won meanwhile,
      * exact-generation readback is the idempotent success receipt. */
     if (terminalError != null) {
       try {
-        const completed = await this.complete(error);
+        const completed = await this.complete(effectiveError);
         if (!completed) {
           const job = await this.manager.getJob(this.runId);
           if (
             job?.createdAt !== this.createdAt ||
+            job.metadata.providerExecutionId !== this.providerExecutionId ||
+            (this.ownerId != null && job.metadata.providerExecutionOwnerId !== this.ownerId) ||
             job.status === 'running' ||
             job.status === 'requires_action'
           ) {
@@ -360,9 +382,19 @@ export class AgentExecutionEnrollment {
     if (drainError != null) {
       throw drainError;
     }
+    if (persistenceError != null) {
+      const terminal = await this.manager.getJob(this.runId);
+      if (
+        terminal?.createdAt !== this.createdAt ||
+        terminal.metadata.providerExecutionId !== this.providerExecutionId ||
+        !['error', 'aborted'].includes(terminal.status)
+      )
+        throw new Error('Agent failed execution outcome could not be confirmed');
+    }
+    return persistenceError == null ? {} : { persistenceError };
   }
 
-  private async settlePause(actionId: string): Promise<void> {
+  private async settlePause(actionId: string): Promise<AgentExecutionSettlement> {
     try {
       await waitForAgentExecutionWrites(this.trailingWrites);
       const job = await this.manager.getJob(this.runId);
@@ -395,25 +427,36 @@ export class AgentExecutionEnrollment {
       )
         throw new Error('Agent approval persistence could not be confirmed');
       this.paused = true;
+      return {};
     } catch (error) {
       try {
-        const failed = await this.manager.failPausePersistence(
+        await this.manager.failPausePersistence(
           this.runId,
           actionId,
           REMOTE_EXECUTION_ERROR,
           this.createdAt,
           this.providerExecutionId,
         );
-        if (failed)
-          await this.manager.markProviderExecutionDrained(
-            this.runId,
-            this.createdAt,
-            this.providerExecutionId,
-          );
+        // Recovery may already have terminalized the same pause. Draining the exact
+        // generation/provider is still required after all trailing writes settle.
+        const drained = await this.manager.markProviderExecutionDrained(
+          this.runId,
+          this.createdAt,
+          this.providerExecutionId,
+          this.retainTerminalPersistence,
+        );
+        if (!drained) throw error;
+        const terminal = await this.manager.getJob(this.runId);
+        if (
+          terminal?.createdAt !== this.createdAt ||
+          terminal.metadata.providerExecutionId !== this.providerExecutionId ||
+          !['error', 'aborted'].includes(terminal.status)
+        )
+          throw error;
+        return { persistenceError: error };
       } finally {
         this.manager.abandonProviderExecution(this.runId, this.createdAt, this.providerExecutionId);
       }
-      throw error;
     }
   }
 }
@@ -457,6 +500,8 @@ export async function enrollAgentExecution(
       },
     });
   } catch (error) {
+    if (claim && params.clientRequestId != null)
+      await deps.manager.releaseGeneration(userId, params.clientRequestId, runId, claim.existing);
     if (error instanceof GenerationAdmissionDeniedError) {
       throw new AgentExecutionAdmissionError(
         ACCOUNT_DELETION_ERROR,

@@ -5793,7 +5793,11 @@ class GenerationJobManagerClass {
             // Poll modestly so a successfully persisted payload whose pub/sub
             // frame was lost is delivered promptly, while the hard deadline
             // still recovers a crashed owner.
-            scheduleTerminalPersistenceCheck(Math.min(1000, remaining));
+            scheduleTerminalPersistenceCheck(
+              terminalJob.endpoint === 'responses' && terminalJob.providerDrained === true
+                ? 1000
+                : Math.min(1000, remaining),
+            );
             return;
           }
         }
@@ -8511,16 +8515,20 @@ class GenerationJobManagerClass {
             );
     } catch (error) {
       if (ownerId == null) throw error;
-      const current = await this.jobStore.getJob(streamId);
-      if (
-        current?.createdAt === expectedCreatedAt &&
-        current.providerExecutionId === providerExecutionId &&
-        current.providerExecutionStartedId === providerExecutionId &&
-        current.providerExecutionOwnerId === ownerId
-      )
-        return true;
-      // An ambiguous reply without our exact receipt is not permission to drive or drain a provider.
-      throw error;
+      let confirmed = false;
+      try {
+        const current = await this.jobStore.getJob(streamId);
+        confirmed =
+          current?.createdAt === expectedCreatedAt &&
+          current.providerExecutionId === providerExecutionId &&
+          current.providerExecutionStartedId === providerExecutionId &&
+          current.providerExecutionOwnerId === ownerId;
+        if (confirmed) return true;
+        throw error;
+      } finally {
+        if (!confirmed)
+          this.closeProviderExecution(streamId, expectedCreatedAt, providerExecutionId);
+      }
     }
     if (!started) {
       this.closeProviderExecution(streamId, expectedCreatedAt, providerExecutionId);
