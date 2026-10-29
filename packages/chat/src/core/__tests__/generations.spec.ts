@@ -4292,3 +4292,66 @@ describe('Chat pauses created in the same millisecond', () => {
     expect(h.chat.pendingAction).toBeUndefined();
   });
 });
+
+describe('Chat pauses a sync frame carries or releases while an answer is in flight', () => {
+  const reattach = async (h: Harness) => {
+    const stream = createStream({ streamId: 'convo-1', generationCreatedAt: 500 });
+    h.transport.reconnectToStream.mockResolvedValueOnce(stream);
+    h.chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 500 }).then(
+      () => undefined,
+      () => undefined,
+    );
+    await flush();
+    return stream;
+  };
+
+  it('a pause buffered in the sync frame is held, so its answer resumes it', async () => {
+    const h = createHarness();
+    const stream = await reattach(h);
+    stream.push({
+      type: 'sync',
+      data: {
+        sync: true,
+        resumeState: { runSteps: [] },
+        pendingEvents: [{ event: 'on_pending_action', data: askAction }],
+      },
+    } as unknown as ChatEvent);
+    await flush();
+
+    expect(h.chat.pendingAction?.actionId).toBe('action-1');
+    await h.chat.addToolOutput({ toolCallId: 'ask-1', output: 'A' });
+    expect(h.transport.resume).toHaveBeenCalledWith(
+      expect.objectContaining({ actionId: 'action-1', answer: 'A' }),
+    );
+  });
+
+  it('an answer accepted after a snapshot released its pause and the stream dropped still follows the continuation', async () => {
+    const h = createHarness();
+    h.chat.restorePendingAction(askAction, 500);
+    let answer: (() => void) | undefined;
+    h.transport.resume.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answer = () =>
+            resolve({ streamId: 'convo-1', conversationId: 'convo-1', status: 'resuming' });
+        }),
+    );
+    const answering = h.chat.addToolOutput({ toolCallId: 'ask-1', output: 'A' });
+    await flush();
+    const stream = await reattach(h);
+    stream.push({
+      type: 'sync',
+      data: { sync: true, resumeState: { runSteps: [] } },
+    } as unknown as ChatEvent);
+    await flush();
+    stream.push(dropEvent);
+    await flush();
+    h.transport.reconnectToStream.mockClear();
+    h.transport.reconnectToStream.mockImplementationOnce(() => new Promise(() => undefined));
+    answer?.();
+    await answering;
+    await flush();
+
+    expect(h.transport.reconnectToStream).toHaveBeenCalledTimes(1);
+  });
+});

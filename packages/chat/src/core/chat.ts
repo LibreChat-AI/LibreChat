@@ -1,4 +1,4 @@
-import { Constants, ContentTypes } from 'librechat-data-provider';
+import { Constants, ContentTypes, ApprovalEvents } from 'librechat-data-provider';
 import type {
   Agents,
   TPayload,
@@ -7,6 +7,7 @@ import type {
   UITextPart,
   TPendingSteer,
   ChatFinalFrame,
+  ChatSyncFrame,
   ChatErrorData,
   TMessageContentParts,
   UIMessageMetadata,
@@ -452,6 +453,21 @@ const getSettledAs = (result: ChatAbortResult): ChatStreamAbortResult['terminalS
 
 /** The longest delay `setTimeout` honors; a longer one fires at once. */
 const MAX_TIMER_DELAY = 2_147_483_647;
+
+/**
+ * The pause a sync frame carries: one buffered after the snapshot, the newest of which stands,
+ * else the snapshot's own. The server sends a live pause in either place.
+ */
+const getSnapshotPause = (data: ChatSyncFrame): Agents.PendingAction | undefined => {
+  const buffered = data.pendingEvents ?? [];
+  for (let i = buffered.length - 1; i >= 0; i--) {
+    const frame = buffered[i];
+    if ('event' in frame && frame.event === ApprovalEvents.ON_PENDING_ACTION) {
+      return frame.data;
+    }
+  }
+  return data.resumeState?.pendingAction;
+};
 
 /** A pause past its expiry, whose resume the server refuses. */
 const isExpired = (action: Agents.PendingAction): boolean =>
@@ -1663,6 +1679,14 @@ export class Chat {
     }
   }
 
+  /** Whether `action` is the held pause, or the one a snapshot released while nothing replaced it. */
+  private holdsPause(action: Agents.PendingAction): boolean {
+    if (this.action) {
+      return this.action.actionId === action.actionId;
+    }
+    return this.releasedPause === action.actionId;
+  }
+
   private assertNotResuming(action: Agents.PendingAction): void {
     if (this.disposed) {
       throw new Error('The chat was disposed');
@@ -2259,8 +2283,8 @@ export class Chat {
 
   /** What one event changes in the pause the chat holds and the decisions made for it. */
   private reconcilePause(event: ChatEvent, older: boolean, disconnect: boolean): void {
-    if (event.type === 'sync' && event.data.resumeState) {
-      this.reconcileSnapshotPause(event.data.resumeState.pendingAction);
+    if (event.type === 'sync' && (event.data.resumeState || event.data.pendingEvents)) {
+      this.reconcileSnapshotPause(getSnapshotPause(event.data));
     } else if (event.type === 'pending_action' && isExpired(event.data)) {
       this.retireExpiredPause(event.data);
     } else if (
@@ -2404,7 +2428,7 @@ export class Chat {
       this.adopt(active.generation, { ...identity, responseMessageId: undefined });
       return;
     }
-    const snapshot = event.type === 'sync' ? event.data.resumeState?.pendingAction : undefined;
+    const snapshot = event.type === 'sync' ? getSnapshotPause(event.data) : undefined;
     if (event.type === 'pending_action') {
       active.generation.paused = event.data.actionId;
     } else if (snapshot && !this.isStalePause(snapshot)) {
@@ -2505,7 +2529,7 @@ export class Chat {
    * skipped, so no card is drawn for a pause the chat does not hold.
    */
   private withoutStalePause(event: ChatEvent): ChatEvent {
-    const snapshot = event.type === 'sync' ? event.data.resumeState?.pendingAction : undefined;
+    const snapshot = event.type === 'sync' ? getSnapshotPause(event.data) : undefined;
     if (event.type !== 'sync' || !snapshot) {
       return event;
     }
@@ -2676,8 +2700,11 @@ export class Chat {
       this.resumed.add(action.actionId);
       /** The answer names the conversation, which a chat started under `new` adopts either way. */
       this.learnConversation(result.conversationId);
-      /** A pause stopped or replaced while the request was in flight is no longer this one's. */
-      if (this.action?.actionId !== action.actionId) {
+      /**
+       * A pause stopped or replaced while the request was in flight is no longer this one's. One a
+       * snapshot only released still is: the server took its answer, so its continuation runs.
+       */
+      if (!this.holdsPause(action)) {
         return;
       }
       const reattach = this.active && !this.active.stream ? this.active.reattach : undefined;
@@ -2741,12 +2768,7 @@ export class Chat {
         throw error;
       }
       const ambiguous = isRetryableNetworkError(failure);
-      if (
-        ambiguous &&
-        !this.active &&
-        !this.disposed &&
-        this.action?.actionId === action.actionId
-      ) {
+      if (ambiguous && !this.active && !this.disposed && this.holdsPause(action)) {
         /**
          * The answer may have reached the server, which then runs the generation again. It stays
          * addressable through a reattachment, which finds the continuation, the pause or the end.
