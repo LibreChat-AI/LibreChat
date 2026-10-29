@@ -204,6 +204,20 @@ export const useFilePreviewBlob = (
     { enabled: false, retry: false, cacheTime: 0 },
   );
 
+/** Preview consumers of a code-interpreter output share immutable bytes, keyed by the code-output URL. */
+export const useCodeOutputPreviewBlob = (url = ''): QueryObserverResult<Blob> =>
+  useQuery(
+    [QueryKeys.fileDownload, 'previewBlob', 'codeOutput', url],
+    async () => {
+      if (!url) {
+        throw new Error('Preview identity unavailable');
+      }
+      const response = await dataService.getCodeOutputDownload(url);
+      return response.data;
+    },
+    { enabled: false, retry: false, cacheTime: 0 },
+  );
+
 export const useCodeOutputDownload = (url = ''): QueryObserverResult<string> => {
   return useQuery(
     [QueryKeys.fileDownload, url],

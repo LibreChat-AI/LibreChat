@@ -25,6 +25,8 @@ jest.mock('~/data-provider', () => ({
   useFilePreview: () => ({ refetch: jest.fn() }),
   useFileDownload: () => ({ refetch: jest.fn() }),
   useSharedFileDownload: () => ({ refetch: jest.fn() }),
+  useCodeOutputDownload: () => ({ refetch: jest.fn() }),
+  useCodeOutputPreviewBlob: () => ({ refetch: jest.fn() }),
 }));
 
 const mockShowToast = jest.fn();

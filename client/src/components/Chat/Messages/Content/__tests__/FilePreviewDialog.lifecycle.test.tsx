@@ -27,6 +27,9 @@ jest.mock('~/utils', () => ({
   logger: { error: jest.fn() },
   sortPagesByRelevance: () => [],
   triggerDownload: (...args: unknown[]) => mockTriggerDownload(...args),
+  // Pulled in transitively by the real `./Parts/LogLink` (below), whose
+  // `isCodeOutputAttachment` needs it.
+  isHttpDownloadTarget: (target?: string | null) => /^https?:\/\//i.test(target ?? ''),
 }));
 jest.mock('~/data-provider', () => ({
   useFilePreview: (...args: unknown[]) => {
@@ -48,6 +51,8 @@ jest.mock('~/data-provider', () => ({
   useSharedFileDownload: (_share: string, _file: string, purpose?: string) => ({
     refetch: purpose === 'preview' ? mockSharedPreview : mockDownload,
   }),
+  useCodeOutputDownload: () => ({ refetch: mockDownload }),
+  useCodeOutputPreviewBlob: () => ({ refetch: mockOwnedPreview }),
   revokeDownloadURL: (url: string) => mockRevoke(url),
 }));
 jest.mock('@librechat/client', () => ({
@@ -164,6 +169,45 @@ describe('FilePreviewDialog lifecycle', () => {
     });
     expect(screen.getByText('shared bytes')).toBeInTheDocument();
     expect(screen.queryByText('com_ui_preview_unavailable')).toBeNull();
+  });
+
+  it('previews and downloads a download-fallback code-output with no file_id/source', async () => {
+    // Download-fallback shape from `createDownloadFallback`
+    // (packages/api/src/files/code/process.ts): only filename + a
+    // session-scoped `filePath`, no `fileId`/`fileSource`/`fileType`/`bytes`.
+    const originalCreate = URL.createObjectURL;
+    const originalRevoke = URL.revokeObjectURL;
+    URL.createObjectURL = jest.fn(() => 'blob:display');
+    URL.revokeObjectURL = jest.fn();
+    try {
+      mockOwnedPreview.mockResolvedValue({ data: new Blob(['pdf']) });
+      mockDownload.mockResolvedValue({ data: 'blob:original' });
+      const view = render(
+        <FilePreviewDialog
+          open
+          onOpenChange={jest.fn()}
+          fileName="report.pdf"
+          filePath="/api/files/code/download/session-1/output-1"
+        />,
+      );
+      await waitFor(() =>
+        expect(screen.getByTitle('com_ui_preview: report.pdf')).toHaveAttribute(
+          'src',
+          'blob:display',
+        ),
+      );
+      fireEvent.click(screen.getByRole('button', { name: 'com_ui_download report.pdf' }));
+      await waitFor(() =>
+        expect(mockTriggerDownload).toHaveBeenCalledWith('blob:original', 'report.pdf'),
+      );
+      // Unmount (triggering the effect's `URL.revokeObjectURL` cleanup)
+      // while the mock is still installed — restoring first would call the
+      // real jsdom `URL.revokeObjectURL`, which may not exist.
+      view.unmount();
+    } finally {
+      URL.createObjectURL = originalCreate;
+      URL.revokeObjectURL = originalRevoke;
+    }
   });
 
   it('uses only shared metadata and the shared authorization scope', async () => {
