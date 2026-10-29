@@ -1716,6 +1716,29 @@ export class MCPConnectionFactory {
     return expiresAt > Date.now() ? expiresAt : undefined;
   }
 
+  /** Invoke while fenced, but let callers release the lease before awaiting the handler. */
+  private async beginOAuthStart(
+    flowId: string,
+    authorizationUrl: string,
+  ): Promise<{ completed: Promise<void> }> {
+    const flow = await this.flowManager!.getFlowState(flowId, 'mcp_oauth');
+    const metadata = flow?.metadata as MCPOAuthFlowMetadata | undefined;
+    const expiresAt = this.getOAuthReplayExpiresAt(flow?.createdAt);
+    if (
+      this.signal?.aborted ||
+      flow?.status !== 'PENDING' ||
+      metadata?.authorizationUrl !== authorizationUrl ||
+      !Number.isFinite(expiresAt) ||
+      expiresAt == null
+    )
+      throw new Error('OAuth prompt publication is no longer current');
+    const completed = this.oauthStart?.(authorizationUrl, { expiresAt }) ?? Promise.resolve();
+    // A handler can complete authorization, which reacquires the publication lease.
+    // Observe early rejection while release is pending; the caller still awaits the result.
+    void completed.catch(() => undefined);
+    return { completed };
+  }
+
   /**
    * Sets up the authentication handler for an OBO connection.
    *
@@ -1995,11 +2018,13 @@ export class MCPConnectionFactory {
                   connection.emit('oauthFailed', new Error('OAuth replay superseded by teardown'));
                   return;
                 }
+                let publication: { completed: Promise<void> };
                 try {
-                  await this.oauthStart(storedAuthUrl, { expiresAt });
+                  publication = await this.beginOAuthStart(flowId, storedAuthUrl);
                 } finally {
                   await replayLease.release();
                 }
+                await publication.completed;
               }
               connection.emit('oauthFailed', new Error('Pending OAuth flow reused - return early'));
               return;
@@ -2053,6 +2078,7 @@ export class MCPConnectionFactory {
             connection.emit('oauthFailed', new Error('OAuth initiation superseded by teardown'));
             return;
           }
+          let publication: { completed: Promise<void> };
           try {
             await this.flowManager!.initFlow(newFlowId, 'mcp_oauth', metadataWithUrl);
             await MCPOAuthHandler.storeStateMapping(
@@ -2060,9 +2086,11 @@ export class MCPConnectionFactory {
               newFlowId,
               this.flowManager!,
             );
+            publication = await this.beginOAuthStart(newFlowId, authorizationUrl);
           } finally {
             await publicationLease.release();
           }
+          await publication.completed;
 
           // Start monitoring in background — createFlow will find the existing PENDING state
           // written by initFlow above, so metadata arg is unused (pass {} to make that explicit)
@@ -2073,7 +2101,6 @@ export class MCPConnectionFactory {
 
           if (this.oauthStart) {
             logger.info(`${this.logPrefix} OAuth flow started, issuing authorization URL`);
-            await this.oauthStart(authorizationUrl);
           }
 
           connection.emit('oauthFailed', new Error('OAuth flow initiated - return early'));
@@ -2415,11 +2442,13 @@ export class MCPConnectionFactory {
               if (!replayLease) {
                 throw new Error('OAuth replay superseded by teardown');
               }
+              let publication: { completed: Promise<void> };
               try {
-                await this.oauthStart(storedAuthUrl, { expiresAt });
+                publication = await this.beginOAuthStart(flowId, storedAuthUrl);
               } finally {
                 await replayLease.release();
               }
+              await publication.completed;
             }
 
             reusedStoredClient = flowMeta?.reusedStoredClient === true;
@@ -2535,16 +2564,18 @@ export class MCPConnectionFactory {
       if (!publicationLease) {
         throw new Error('OAuth initiation superseded by teardown');
       }
+      let publication: { completed: Promise<void> };
       try {
         await this.flowManager.initFlow(newFlowId, 'mcp_oauth', metadataWithUrl);
         await MCPOAuthHandler.storeStateMapping(flowMetadata.state, newFlowId, this.flowManager);
+        publication = await this.beginOAuthStart(newFlowId, authorizationUrl);
       } finally {
         await publicationLease.release();
       }
+      await publication.completed;
 
       if (typeof this.oauthStart === 'function') {
         logger.info(`${this.logPrefix} OAuth flow started, issued authorization URL to user`);
-        await this.oauthStart(authorizationUrl);
       } else {
         logger.info(
           `${this.logPrefix} OAuth flow started, no \`oauthStart\` handler defined, relying on callback endpoint`,
