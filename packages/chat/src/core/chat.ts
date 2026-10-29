@@ -1730,7 +1730,7 @@ export class Chat {
       const superseded =
         this.action != null &&
         (generationCreatedAt !== this.generationCreatedAt ||
-          this.isOlderPause(this.action, generationCreatedAt));
+          this.isSupersededBy(this.action, action));
       if (this.action?.actionId === action.actionId || superseded) {
         this.clearAction();
       }
@@ -2493,7 +2493,7 @@ export class Chat {
     const generation = this.generationCreatedAt;
     this.seePause(expired, generation);
     const held = this.action;
-    const superseded = held != null && generation != null && this.isOlderPause(held, generation);
+    const superseded = held != null && generation != null && this.isSupersededBy(held, expired);
     if (held?.actionId === expired.actionId || superseded) {
       this.clearAction();
     }
@@ -2524,6 +2524,14 @@ export class Chat {
       this.resumed.has(action.actionId) ||
       (generation != null && this.isOlderPause(action, generation))
     );
+  }
+
+  /**
+   * Whether `next`, a pause of the held one's generation, replaces `held`: it was created later, or
+   * in the same millisecond, where the pause received last stands.
+   */
+  private isSupersededBy(held: Agents.PendingAction, next: Agents.PendingAction): boolean {
+    return held.actionId !== next.actionId && comparePauses(held, next) <= 0;
   }
 
   /** Whether `action` came before a pause this chat already saw in the same generation. */
