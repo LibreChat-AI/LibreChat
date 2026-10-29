@@ -2,6 +2,7 @@ import { runAsSystem } from '@librechat/data-schemas';
 import type { IUser } from '@librechat/data-schemas';
 import type { AuthUserDocCacheMode, AuthUserDocCacheStore, CachedAuthUser } from './userDocCache';
 import {
+  timeAuthUserLookup,
   setCachedAuthUserDoc,
   getCurrentCachedAuthUserDoc,
   buildAuthUserDocCacheKey,
@@ -63,7 +64,10 @@ export async function loadJwtUser(userId: string, deps: JwtUserLookupDeps): Prom
     }
   }
 
-  const user = await runAsSystem(() => deps.getUserById(userId, JWT_USER_PROJECTION));
+  /** Stamped before the read so a lookup that overlaps an eviction is never cached past it. */
+  const { result: user, lookupStartedAt } = await timeAuthUserLookup(() =>
+    runAsSystem(() => deps.getUserById(userId, JWT_USER_PROJECTION)),
+  );
   const deleting = user?.agentTriggerDeletionStartedAt != null;
   if (!user || deleting || !store || !cacheKey) {
     return { user, deleting, remember: noop };
@@ -76,7 +80,7 @@ export async function loadJwtUser(userId: string, deps: JwtUserLookupDeps): Prom
         await invalidateCachedAuthUserDoc(store, { userId, cacheKey });
         return;
       }
-      await setCachedAuthUserDoc(store, cacheKey, user);
+      await setCachedAuthUserDoc(store, cacheKey, user, lookupStartedAt);
     },
   };
 }

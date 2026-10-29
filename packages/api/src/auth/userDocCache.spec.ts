@@ -509,6 +509,7 @@ describe('auth user document cache helpers', () => {
     store.values.set('key', {
       version: 2,
       cachedAt: Date.now(),
+      expiresAt: Date.now() + 60_000,
       user: { _id: 'user-1', id: 'user-1', updatedAt },
     });
     const readStored = jest.fn();

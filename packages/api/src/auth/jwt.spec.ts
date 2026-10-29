@@ -1,6 +1,10 @@
 import type { IUser } from '@librechat/data-schemas';
 import type { AuthUserDocCacheMode } from './userDocCache';
-import { AUTH_USER_FRESHNESS_PROJECTION, buildAuthUserDocReverseIndexKey } from './userDocCache';
+import {
+  AUTH_USER_DOC_CACHE_TTL_MS,
+  AUTH_USER_FRESHNESS_PROJECTION,
+  buildAuthUserDocReverseIndexKey,
+} from './userDocCache';
 import { JWT_USER_PROJECTION, loadJwtUser } from './jwt';
 
 const UPDATED_AT = new Date('2026-10-20T00:00:00.000Z');
@@ -120,13 +124,36 @@ describe('loadJwtUser', () => {
     expect(store.set).not.toHaveBeenCalled();
   });
 
+  it('does not cache a document whose lookup outlived the cache window', async () => {
+    const { deps, store } = makeDeps(makeUser());
+    const start = Date.now();
+    const now = jest.spyOn(Date, 'now').mockReturnValue(start);
+    /** The read finishes after a mutation could already have evicted the key. */
+    deps.getUserById.mockImplementationOnce(async () => {
+      now.mockReturnValue(start + AUTH_USER_DOC_CACHE_TTL_MS + 1);
+      return makeUser();
+    });
+
+    try {
+      await (await loadJwtUser('user-1', deps)).remember(false);
+    } finally {
+      now.mockRestore();
+    }
+
+    expect(store.set).not.toHaveBeenCalled();
+  });
+
   it('evicts instead of caching when the caller wrote to the user', async () => {
     const { deps, store } = makeDeps(makeUser({ role: undefined }));
 
     await (await loadJwtUser('user-1', deps)).remember(true);
     await loadJwtUser('user-1', deps);
 
-    expect(store.set).not.toHaveBeenCalled();
+    /** Eviction writes its fence marker; the user document itself is never cached. */
+    const documentWrites = store.set.mock.calls.filter(
+      ([key]) => !String(key).startsWith('auth-user-doc-evicted:'),
+    );
+    expect(documentWrites).toEqual([]);
     expect(fullReads(deps.getUserById)).toBe(2);
   });
 });
