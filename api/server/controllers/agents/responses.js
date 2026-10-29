@@ -68,6 +68,9 @@ const {
   createStoredForegroundResponseReader,
   createResponseAccountingSnapshot,
   withResponsePersistenceErrors,
+  createResponseExecutionRuntime,
+  GenerationJobManager,
+  getPluginHookSource,
   writeDone,
   generateResponseId,
   isValidationFailure,
@@ -80,6 +83,8 @@ const {
   validateResponseRequest,
   buildAggregatedResponse,
   buildResponsesUsage,
+  createResponseAccountingCollector,
+  createApplicationBillingQuote,
   createResponseAggregator,
   sendResponsesErrorResponse,
   createResponsesEventHandlers,
@@ -182,7 +187,14 @@ function handleExecutionError({ error, res, appConfig }) {
  * @param {boolean} [runtime.definitionsOnly=true] - When true, returns only serializable
  *   tool definitions without creating full tool instances (for event-driven mode)
  */
-function createToolLoader({ req, res, signal, definitionsOnly = true }) {
+function createToolLoader({
+  req,
+  res,
+  signal,
+  definitionsOnly = true,
+  streamId = null,
+  jobCreatedAt,
+}) {
   return async function loadTools({
     tools,
     model,
@@ -209,7 +221,8 @@ function createToolLoader({ req, res, signal, definitionsOnly = true }) {
         agentResourceType: ResourceType.REMOTE_AGENT,
         definitionsOnly,
         accessibleMcpServerNames,
-        streamId: null,
+        streamId,
+        jobCreatedAt,
       });
     } catch (error) {
       if (isFatalAgentInitializationError(error, { signal }) || isContentFilterError(error)) {
@@ -455,7 +468,15 @@ const executeResponse = async (envelope, { req, res }) => {
   }
 
   // Generate IDs
-  const responseId = generateResponseId();
+  const responseRuntime = createResponseExecutionRuntime(req, res, {
+    getMessage: db.getMessage,
+    generateResponseId,
+    jobs: GenerationJobManager,
+    pluginHookSource: getPluginHookSource(),
+    toolApprovalStorage: db,
+    addConvoToolApprovalAllows: db.addConvoToolApprovalAllows,
+  });
+  const responseId = responseRuntime.responseId;
   const terminalRunError = createTerminalRunErrorObserver({
     maxProviderErrorChars: appConfig?.endpoints?.agents?.maxProviderErrorChars,
     logger,
@@ -472,11 +493,8 @@ const executeResponse = async (envelope, { req, res }) => {
     `[Responses API] Request ${responseId} started for agent ${agentId}, stream: ${isStreaming}`,
   );
 
-  const { conversationId, parentMessageId: previousMessageId } = await resolveResponseContinuation(
-    request.previous_response_id,
-    principal.userId,
-    { getMessage: db.getMessage },
-  );
+  const { conversationId, parentMessageId: previousMessageId } =
+    await responseRuntime.resolveContinuation(envelope);
   const terminal = createForegroundResponseTerminal({
     context,
     requestedStore: request.store,
@@ -490,19 +508,8 @@ const executeResponse = async (envelope, { req, res }) => {
     envelope,
     runId: responseId,
     conversationId,
-    connection: {
-      isClosed: () => res.destroyed === true && res.writableEnded !== true,
-      onClose: (listener) => {
-        const abortOnResponseClose = () => {
-          if (res.writableEnded !== true) {
-            logger.debug('[Responses API] Client disconnected, aborting');
-            listener();
-          }
-        };
-        res.once('close', abortOnResponseClose);
-        return () => res.off('close', abortOnResponseClose);
-      },
-    },
+    connection: responseRuntime.connection,
+    ...responseRuntime.hooks,
     /** Conversation delete-all uses the shared owner-admission fence. Remote
      * execution must observe it after durable enrollment and before provider work. */
     isPrincipalActive: db.isSubagentOwnerAdmissible,
@@ -614,10 +621,8 @@ const executeResponse = async (envelope, { req, res }) => {
       const previousMessages = request.previous_response_id
         ? await loadPreviousMessages(conversationId, principal.userId, previousMessageId)
         : [];
-      const inputChain = buildResponseInputChain(
-        inputMessages,
-        previousMessageId,
-        previousMessages,
+      const inputChain = responseRuntime.inputChain(
+        buildResponseInputChain(inputMessages, previousMessageId, previousMessages),
       );
       const parentMessageId = inputChain.parentMessageId;
       if (request.previous_response_id) {
@@ -633,7 +638,12 @@ const executeResponse = async (envelope, { req, res }) => {
       const allowedProviders = new Set(agentsEConfig?.allowedProviders);
 
       // Create tool loader
-      const loadTools = createToolLoader({ req, res, signal: execution.signal });
+      const loadTools = createToolLoader({
+        req,
+        res,
+        signal: execution.signal,
+        ...responseRuntime.toolContext(execution),
+      });
       const skillDbMethods = getSkillDbMethods();
 
       // Initialize the agent first to check for disableStreaming
@@ -901,6 +911,19 @@ const executeResponse = async (envelope, { req, res }) => {
           byAgentId: endpointTokenConfigByAgentId,
           fallback: primaryConfig.endpointTokenConfig,
         });
+      const accounting = createResponseAccountingCollector({
+        quote:
+          typeof db.getValueKey === 'function'
+            ? createApplicationBillingQuote({
+                pricing: {
+                  getMultiplier: db.getMultiplier,
+                  getCacheMultiplier: db.getCacheMultiplier,
+                },
+                getValueKey: db.getValueKey,
+                resolveEndpointTokenConfig,
+              })
+            : undefined,
+      });
       const runAgents = [primaryConfig, ...handoffAgentConfigs.values()];
       const initialSessions = buildInitialToolSessions({ agents: runAgents });
       const modelBoundAgentsById = new Map();
@@ -1059,6 +1082,7 @@ const executeResponse = async (envelope, { req, res }) => {
       // Create tracker for streaming or aggregator for non-streaming
       const tracker = actuallyStreaming ? createResponseTracker() : null;
       const aggregator = actuallyStreaming ? null : createResponseAggregator();
+      responseRuntime.seedAggregator(aggregator);
 
       const collectedUsage = [];
       const snapshotAccounting = createResponseAccountingSnapshot({
@@ -1131,6 +1155,7 @@ const executeResponse = async (envelope, { req, res }) => {
             const ctx =
               agentToolContexts.get(agentId) ?? agentToolContexts.get(primaryConfig.id) ?? {};
             const result = await loadToolsForExecution({
+              ...responseRuntime.toolContext(execution),
               req,
               res,
               agentResourceType: ResourceType.REMOTE_AGENT,
@@ -1170,6 +1195,12 @@ const executeResponse = async (envelope, { req, res }) => {
             handle: (event, data, metadata, graph) => {
               responsesHandlers.on_chat_model_end.handle(event, data);
               const usage = getModelEndUsage(data?.output);
+              accounting.record(
+                usage,
+                metadata,
+                graph?.getAgentContext?.(metadata),
+                data?.output?.id,
+              );
               if (usage) {
                 const agentContext = graph?.getAgentContext?.(metadata);
                 const taggedUsage = contextualizeModelUsage(usage, metadata, agentContext);
@@ -1200,8 +1231,9 @@ const executeResponse = async (envelope, { req, res }) => {
         const userMCPAuthMap = mergedMCPAuthMap;
 
         const run = await createRun({
+          ...(await responseRuntime.graphOptions(runAgents)),
           agents: runAgents,
-          messages: formattedMessages,
+          messages: responseRuntime.graphMessages(formattedMessages),
           indexTokenCountMap,
           initialSummary,
           runId: responseId,
@@ -1219,7 +1251,9 @@ const executeResponse = async (envelope, { req, res }) => {
           clientToolNames: clientTools.clientToolNames,
           /** Bills subagent child-run model calls (reported outside the
            *  streamEvents loop) into the same collectedUsage array. */
-          subagentUsageSink: createSubagentUsageSink(collectedUsage),
+          subagentUsageSink: createSubagentUsageSink(collectedUsage, (usage) =>
+            accounting.record(usage),
+          ),
         });
 
         if (!run) {
@@ -1242,7 +1276,7 @@ const executeResponse = async (envelope, { req, res }) => {
           version: 'v2',
         };
 
-        await run.processStream({ messages: formattedMessages }, config, {
+        await responseRuntime.processRun(run, { messages: formattedMessages }, config, {
           callbacks: {
             [Callback.TOOL_ERROR]: (graph, error, toolId) => {
               logger.error(`[Responses API] Tool Error "${toolId}"`, getSafeErrorMetadata(error));
@@ -1337,7 +1371,7 @@ const executeResponse = async (envelope, { req, res }) => {
           req,
           res,
           artifactPromises,
-          streamId: null,
+          ...responseRuntime.toolContext(execution),
         });
 
         const toolExecuteOptions = {
@@ -1360,6 +1394,7 @@ const executeResponse = async (envelope, { req, res }) => {
             const ctx =
               agentToolContexts.get(agentId) ?? agentToolContexts.get(primaryConfig.id) ?? {};
             const result = await loadToolsForExecution({
+              ...responseRuntime.toolContext(execution),
               req,
               res,
               agentResourceType: ResourceType.REMOTE_AGENT,
@@ -1398,6 +1433,12 @@ const executeResponse = async (envelope, { req, res }) => {
             handle: (event, data, metadata, graph) => {
               aggregatorHandlers.on_chat_model_end.handle(event, data);
               const usage = getModelEndUsage(data?.output);
+              accounting.record(
+                usage,
+                metadata,
+                graph?.getAgentContext?.(metadata),
+                data?.output?.id,
+              );
               if (usage) {
                 const agentContext = graph?.getAgentContext?.(metadata);
                 const taggedUsage = contextualizeModelUsage(usage, metadata, agentContext);
@@ -1425,8 +1466,9 @@ const executeResponse = async (envelope, { req, res }) => {
         const userMCPAuthMap = mergedMCPAuthMap;
 
         const run = await createRun({
+          ...(await responseRuntime.graphOptions(runAgents)),
           agents: runAgents,
-          messages: formattedMessages,
+          messages: responseRuntime.graphMessages(formattedMessages),
           indexTokenCountMap,
           initialSummary,
           runId: responseId,
@@ -1444,7 +1486,9 @@ const executeResponse = async (envelope, { req, res }) => {
           clientToolNames: clientTools.clientToolNames,
           /** Bills subagent child-run model calls (reported outside the
            *  streamEvents loop) into the same collectedUsage array. */
-          subagentUsageSink: createSubagentUsageSink(collectedUsage),
+          subagentUsageSink: createSubagentUsageSink(collectedUsage, (usage) =>
+            accounting.record(usage),
+          ),
         });
 
         if (!run) {
@@ -1466,7 +1510,7 @@ const executeResponse = async (envelope, { req, res }) => {
           version: 'v2',
         };
 
-        await run.processStream({ messages: formattedMessages }, config, {
+        await responseRuntime.processRun(run, { messages: formattedMessages }, config, {
           callbacks: {
             [Callback.TOOL_ERROR]: (graph, error, toolId) => {
               logger.error(`[Responses API] Tool Error "${toolId}"`, getSafeErrorMetadata(error));
