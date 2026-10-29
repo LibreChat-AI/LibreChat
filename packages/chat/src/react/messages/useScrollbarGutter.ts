@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect } from 'react';
+import type { RefObject } from 'react';
 
 export const SCROLLBAR_GUTTER_PROPERTY = '--message-scrollbar-gutter';
 
@@ -13,9 +14,7 @@ export const SCROLLBAR_GUTTER_PROPERTY = '--message-scrollbar-gutter';
  *  The value is app-wide, so it lives on the document element and outlives any
  *  one thread: a second chat column measures the same band, and dropping the
  *  property when one unmounts would strand the other on the fallback. */
-export default function useScrollbarGutter(
-  scrollableRef: React.RefObject<HTMLDivElement | null>,
-): void {
+export default function useScrollbarGutter(scrollableRef: RefObject<HTMLDivElement | null>): void {
   useEffect(() => {
     const element = scrollableRef.current;
     if (!element) {

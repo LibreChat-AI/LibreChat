@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useCallback } from 'react';
 import { useAtom } from 'jotai';
+import { useRowMountWindow } from '@librechat/chat/react';
 import { isAssistantsEndpoint } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { ReactElement } from 'react';
@@ -7,7 +8,6 @@ import type { TMessageProps } from '~/common';
 import EventSubagentActivityGroup from '~/components/Chat/Subagents/EventSubagentActivityGroup';
 import MessageContent from '~/components/Messages/MessageContent';
 import { siblingIdxFamily, siblingKey } from './Thread/state';
-import { useRowMountWindow } from '~/hooks/Messages';
 import { hasParallelLanes } from '~/utils/lanes';
 import MessageParts from './MessageParts';
 import Message from './Message';

@@ -26,7 +26,7 @@ export function RowMountProvider({
 }: {
   mountWindow: RowMountWindow;
   children: ReactNode;
-}) {
+}): ReactNode {
   return <RowMountContext.Provider value={mountWindow}>{children}</RowMountContext.Provider>;
 }
 

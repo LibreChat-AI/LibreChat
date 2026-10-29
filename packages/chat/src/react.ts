@@ -163,3 +163,15 @@ export { default as useAudioLevels, frameLevel } from './react/levels';
 export { default as useInitPopoverInput } from './react/popover';
 export { useComposerHost, ComposerHostProvider } from './react/input';
 export type { ComposerHost, ComposerShortcutAction } from './react/input';
+export {
+  RowMountProvider,
+  useRowMountWindow,
+  useProgressiveRowMount,
+  completeProgressiveRowMounts,
+} from './react/messages/useProgressiveRowMount';
+export type { RowMountWindow } from './react/messages/useProgressiveRowMount';
+export {
+  default as useScrollbarGutter,
+  useScrollbarGutterSeed,
+  SCROLLBAR_GUTTER_PROPERTY,
+} from './react/messages/useScrollbarGutter';

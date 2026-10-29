@@ -32,7 +32,6 @@ jest.mock('~/hooks', () => ({
     debouncedHandleScroll: jest.fn(),
     handleNearBottomChange: jest.fn(),
   }),
-  useScrollbarGutter: jest.fn(),
   useConversationSeen: () => jest.fn(),
   useLocalize: () => (key: string) => key,
 }));
@@ -43,7 +42,9 @@ jest.mock('~/Providers', () => ({
   useFileMapContext: () => ({}),
 }));
 
-jest.mock('~/hooks/Messages', () => ({
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useScrollbarGutter: jest.fn(),
   RowMountProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   useProgressiveRowMount: () => null,
 }));
