@@ -1,5 +1,6 @@
-import { Constants } from 'librechat-data-provider';
+import { Constants, ContentTypes } from 'librechat-data-provider';
 import type {
+  Agents,
   TPayload,
   TMessage,
   ChatEvent,
@@ -7,6 +8,7 @@ import type {
   TPendingSteer,
   ChatFinalFrame,
   ChatErrorData,
+  TMessageContentParts,
   UIMessageMetadata,
 } from 'librechat-data-provider';
 import type {
@@ -148,12 +150,31 @@ export type ChatInit = {
    * response messages are merged into the list by id and every other event only moves the status.
    */
   applyEvent?(event: ChatEvent, context: ChatEventContext): void;
-  /** The agent selection a generation this chat did not start runs on, which a reattachment reads. */
+  /** The agent selection a paused generation resumes with, matching the request that started it. */
   resumeSelection?(): Omit<ChatResumeSelection, 'conversationId' | 'generationCreatedAt'>;
   onError?(error: Error): void;
   onFinish?(result: ChatFinishResult): void;
   /** Every event, after it was applied: the side channels (usage, title, attachments, steering). */
   onEvent?(event: ChatEvent): void;
+};
+
+/** A tool call's review decision. AI SDK: `addToolApprovalResponse`. */
+export type ToolApprovalResponse = {
+  /** The paused tool call's id. */
+  id: string;
+  approved: boolean;
+  reason?: string;
+  /** A decision other than approve or reject, such as `edit` or `respond`; it overrides `approved`. */
+  decision?: Agents.ToolApprovalResolution['decision'];
+  editedArguments?: Agents.ToolApprovalResolution['editedArguments'];
+  responseText?: Agents.ToolApprovalResolution['responseText'];
+  scope?: Agents.ToolApprovalResolution['scope'];
+};
+
+/** The answer to an `ask_user_question` pause: free text, or answers keyed by question id. */
+export type ToolOutput = {
+  toolCallId: string;
+  output: string | Record<string, string>;
 };
 
 /** A turn whose messages the chat could not take from the stream, which the host reloads. */
@@ -187,6 +208,8 @@ type Generation = {
    * another generation) and no frame has named its response yet.
    */
   responseUnknown?: boolean;
+  /** The pause this generation reported, which a confirmed stop ends. */
+  paused?: string;
   /** Set once the server confirmed a stop, so a stream that drops instead of ending aborts. */
   stopped?: boolean;
   /** The terminal status a stop answer reported for a run that had already ended on its own. */
@@ -238,10 +261,10 @@ type ActiveRequest = {
   /** The generation this request runs or attaches to. */
   generation: Generation;
   /**
-   * Set when reattaching to a generation already running on the server, before it attaches,
-   * naming the stream a stop addresses meanwhile.
+   * Set when reattaching to a generation already running on the server, before it attaches.
+   * `continuation` marks one whose pause was answered meanwhile, so finding nothing means it ended.
    */
-  reattach?: { streamId?: string };
+  reattach?: { streamId?: string; continuation?: boolean };
   /**
    * The stream came from attaching to a running generation, whose HTTP failure ends only the
    * attachment unless the server says the generation is gone.
@@ -361,6 +384,20 @@ const getApplyFailure = (event: ChatEvent, failure: unknown, attached: boolean):
   return terminal
     ? { kind: 'error', error, disconnect: false, settled: {} }
     : { kind: 'error', error, disconnect: true };
+};
+
+/**
+ * A resume the server refused because the pause is over: no paused generation (404), or a conflict
+ * (409) such as a replaced run or an action answered elsewhere. A 409 that only says the event
+ * actor is not ready yet leaves the pause answerable for a retry.
+ */
+const isPauseOver = (error: ChatTransportError): boolean => {
+  const status = error.response?.status;
+  if (status === 404) {
+    return true;
+  }
+  const code = (error.response?.data as { code?: string } | undefined)?.code;
+  return status === 409 && code !== 'EVENT_ACTOR_NOT_READY';
 };
 
 /** A run that ended on its own before a stop reached it, whose final frame never arrived. */
@@ -545,6 +582,81 @@ const defaultApplyEvent = (event: ChatEvent, context: ChatEventContext) => {
   }
 };
 
+/** A tool call that may hold a subagent's own tool calls, where a paused tool can live. */
+type NestedToolCall = Agents.ToolCall & { subagent_content?: TMessageContentParts[] };
+
+/**
+ * Writes `decision` onto the tool calls of `actionId` with the given id in `parts`, descending into
+ * subagent calls the way the pause was tagged. Returns the new parts, or nothing when none matched.
+ */
+const markApprovalIn = (
+  parts: TMessageContentParts[],
+  actionId: string,
+  toolCallId: string,
+  decision: Agents.ToolApprovalResolution,
+): TMessageContentParts[] | undefined => {
+  let next: TMessageContentParts[] | undefined;
+  parts.forEach((part, index) => {
+    if (part?.type !== ContentTypes.TOOL_CALL) {
+      return;
+    }
+    const toolCall = part.tool_call as NestedToolCall | undefined;
+    if (!toolCall) {
+      return;
+    }
+    let marked = toolCall;
+    const nested = Array.isArray(toolCall.subagent_content)
+      ? markApprovalIn(toolCall.subagent_content, actionId, toolCallId, decision)
+      : undefined;
+    if (nested) {
+      marked = { ...marked, subagent_content: nested };
+    }
+    if (
+      'approval' in toolCall &&
+      toolCall.id === toolCallId &&
+      toolCall.approval?.actionId === actionId
+    ) {
+      const approval = {
+        ...toolCall.approval,
+        decision: decision.decision,
+        reason: decision.reason,
+      };
+      if (decision.reason === undefined) {
+        /** A changed decision shows only its own reason. */
+        delete approval.reason;
+      }
+      marked = { ...marked, approval };
+    }
+    if (marked === toolCall) {
+      return;
+    }
+    next ??= [...parts];
+    next[index] = { ...part, tool_call: marked } as TMessageContentParts;
+  });
+  return next;
+};
+
+/** Writes `decision` onto every tool call of `actionId` with the given id. */
+const markApproval = (
+  messages: TMessage[],
+  actionId: string,
+  toolCallId: string,
+  decision: Agents.ToolApprovalResolution,
+): TMessage[] | undefined => {
+  let changed = false;
+  const next = messages.map((message) => {
+    const content = message.content
+      ? markApprovalIn(message.content, actionId, toolCallId, decision)
+      : undefined;
+    if (!content) {
+      return message;
+    }
+    changed = true;
+    return { ...message, content };
+  });
+  return changed ? next : undefined;
+};
+
 /**
  * Where a removed row goes back: after the nearest earlier row of `before` still listed, else
  * before the nearest later one, so rows written around it since then keep their place.
@@ -684,7 +796,11 @@ export class Chat {
   private readonly listeners = new Set<() => void>();
   private releaseState?: () => void;
   private active?: ActiveRequest;
+  /** The pause the running generation waits on, for a tool decision or an answer. */
+  private action?: Agents.PendingAction;
   private generationCreatedAt?: number;
+  /** The pause whose resume request is in flight, so a second submit cannot send it again. */
+  private resuming?: string;
   private disposed = false;
   /** Set while the chat writes the state, whose own report of that write the chat announces itself. */
   private writing = false;
@@ -693,8 +809,15 @@ export class Chat {
   private readonly lifetime = new AbortController();
   /** A generation whose stream dropped while the server kept it running. */
   private detached?: DetachedGeneration;
-  /** The timestamps of the generations a stop or their own stream ended. */
+  /** The timestamps of the generations a stop or their own stream ended, whose later pauses are stale. */
   private readonly endedGenerations = new Set<number>();
+  /** The generation a restored pause belongs to, which a reattachment to it continues. */
+  private restored?: { createdAt: number; generation: Generation };
+  private readonly decisions = new Map<string, Agents.ToolApprovalResolution>();
+  /** Pauses already resumed, whose replay by a reattached stream is stale. */
+  private readonly resumed = new Set<string>();
+  /** The newest generation a status read named, below which a read is stale. */
+  private newestRead?: number;
   /** The newest start handed to the transport, whose conversation a late answer must not replace. */
   private latestStart?: ActiveRequest;
   /**
@@ -757,6 +880,11 @@ export class Chat {
     });
   }
 
+  /** The pause the running generation waits on for a tool decision or an answer, if any. */
+  get pendingAction(): Agents.PendingAction | undefined {
+    return this.action;
+  }
+
   /** Submits a user turn. Rejects while another turn of this chat is in flight. */
   sendMessage(input: SendMessageInput, options?: ChatRequestOptions): Promise<void> {
     return this.request({ trigger: 'submit-message', input }, options);
@@ -778,18 +906,41 @@ export class Chat {
    * Reattaches to the generation the server is still running. The status stays as it is until a
    * stream is returned, so a chat with nothing running never flashes `submitted`.
    */
-  async resumeStream(
+  resumeStream(
     options: { streamId?: string; generationCreatedAt?: number } & ChatRequestOptions = {},
+  ): Promise<void> {
+    return this.reattach(options, false);
+  }
+
+  /**
+   * Reattaches to a running generation. A `continuation` follows an answered pause, so finding
+   * nothing running means the continuation already finished, which the turn reports as settled.
+   */
+  private async reattach(
+    options: {
+      streamId?: string;
+      generationCreatedAt?: number;
+      /** The conversation the generation runs under, when the server named it. */
+      conversationId?: string;
+      /** The endpoint an answer already resolved, so its continuation does not ask the host again. */
+      endpoint?: string;
+    } & ChatRequestOptions,
+    continuation: boolean,
   ): Promise<void> {
     if (this.active || this.disposed) {
       return;
     }
-    if (options.generationCreatedAt != null && this.isStaleRead(options.generationCreatedAt)) {
+    if (
+      options.generationCreatedAt != null &&
+      !continuation &&
+      this.isStaleRead(options.generationCreatedAt)
+    ) {
       /** A status read that named an older generation than this chat holds changes nothing. */
       return;
     }
     /** The host's selection is read before any marker changes, so a throw leaves them all as they were. */
-    const selected = this.resumeEndpoint();
+    const { endpoint: resolved, ...reattachOptions } = options;
+    const selected = resolved ?? this.resumeEndpoint();
     if (this.active || this.disposed) {
       /** The host's selection may have started a turn or disposed the chat, which then owns it. */
       return;
@@ -806,7 +957,16 @@ export class Chat {
       options.generationCreatedAt === dropped?.target.generationCreatedAt
         ? dropped
         : undefined;
-    const active = createActiveRequest(continued?.generation);
+    /** Reattaching to a restored pause's generation continues its record the same way. */
+    const paused =
+      !continued &&
+      this.action &&
+      (options.generationCreatedAt == null ||
+        options.generationCreatedAt === this.restored?.createdAt)
+        ? this.restored
+        : undefined;
+    this.restored = undefined;
+    const active = createActiveRequest(continued?.generation ?? paused?.generation);
     const { generation } = active;
     if (!continued && generation.responseId === undefined) {
       /**
@@ -817,16 +977,36 @@ export class Chat {
     }
     /** A continued generation runs where it started; the host's selection names any other. */
     generation.endpoint = continued?.target.endpoint ?? selected ?? dropped?.target.endpoint;
+    generation.conversationId = options.conversationId ?? generation.conversationId;
+    this.learnConversation(options.conversationId);
     /** The generation the caller named, or the record continued, so a stream of another is told apart. */
     active.inheritedGeneration =
-      options.generationCreatedAt ?? continued?.target.generationCreatedAt;
+      options.generationCreatedAt ?? continued?.target.generationCreatedAt ?? paused?.createdAt;
     active.reattach = { streamId: options.streamId ?? continued?.target.streamId };
     active.attached = true;
     this.active = active;
-    /** Only the generation this continues vouches for a timestamp, so a stop made now addresses it. */
-    this.generationCreatedAt = options.generationCreatedAt ?? active.inheritedGeneration;
-    const conversationId = generation.conversationId ?? this.conversationId;
+    const superseded =
+      this.action &&
+      options.generationCreatedAt != null &&
+      this.generationCreatedAt != null &&
+      options.generationCreatedAt !== this.generationCreatedAt;
+    /**
+     * Only the generation this continues, or a restored pause, vouches for a timestamp. Stored
+     * before clearing a superseded pause notifies, so a stop made then addresses this generation.
+     */
+    this.generationCreatedAt =
+      options.generationCreatedAt ??
+      active.inheritedGeneration ??
+      (this.action ? this.generationCreatedAt : undefined);
+    /** A restored pause names a running generation, so finding nothing means it ended elsewhere. */
+    const restored = !superseded && this.action !== undefined;
+    const { conversationId = generation.conversationId ?? this.conversationId, ...request } =
+      reattachOptions;
     try {
+      if (superseded) {
+        /** A restored pause belongs to the generation it was restored with, not this one. */
+        this.clearAction();
+      }
       this.setConnection('reconnecting');
       if (active.controller.signal.aborted) {
         /** A listener of that notification stopped or disposed the chat; nothing is opened. */
@@ -834,7 +1014,7 @@ export class Chat {
       }
       const stream = await openUntilAborted(
         this.init.transport.reconnectToStream({
-          ...options,
+          ...request,
           chatId: conversationId,
           resume: true,
           abortSignal: active.controller.signal,
@@ -863,7 +1043,16 @@ export class Chat {
         options.generationCreatedAt != null &&
         !this.endedGenerations.has(options.generationCreatedAt);
       /** A lost start the answer released may have finished on the server, which the host reloads. */
-      if (!stream && (named || dropped != null || released)) {
+      const ended =
+        continuation ||
+        restored ||
+        named ||
+        dropped != null ||
+        released ||
+        active.reattach.continuation;
+      if (!stream && ended) {
+        this.action = undefined;
+        this.decisions.clear();
         this.settle({ kind: 'complete', settled: { conversationId } }, active);
         return;
       }
@@ -909,9 +1098,12 @@ export class Chat {
     if (!active && this.detached) {
       return this.orUnaddressed(await this.stopDetached(this.detached));
     }
+    if (!active && this.lostStart) {
+      /** A restored pause is stopped too, and the lost start is still the caller's. */
+      return this.action ? this.orUnaddressed(await this.stopPaused()) : unaddressable;
+    }
     if (!active) {
-      /** The lost start is still the caller's. */
-      return this.lostStart ? unaddressable : { status: 'idle' };
+      return this.stopPaused();
     }
     if (!active.stream && !active.reattach) {
       const { detached } = this;
@@ -950,6 +1142,7 @@ export class Chat {
     if (!this.isAddressable(target)) {
       return unaddressable;
     }
+    generation.paused ??= this.action?.actionId;
     const result = await this.stopGeneration(generation, target);
     return this.orUnaddressed(await this.endStopped(active, generation, result));
   }
@@ -1039,6 +1232,8 @@ export class Chat {
     if (!this.active && this.detached?.generation === generation) {
       /** The request dropped before the answer arrived, so the answer ends what it left running. */
       this.detached = undefined;
+      this.action = undefined;
+      this.decisions.clear();
       if (this.publishUnframedStop(result, generation)) {
         return getStopResult(result, generation.stoppedConversationId);
       }
@@ -1047,7 +1242,11 @@ export class Chat {
     if (active.disconnected && this.error === active.disconnected) {
       this.clearFailure();
     }
-    this.notify();
+    if (generation.paused && this.action?.actionId === generation.paused) {
+      this.clearAction();
+    } else {
+      this.notify();
+    }
     return getStopResult(result, generation.stoppedConversationId);
   }
 
@@ -1279,6 +1478,8 @@ export class Chat {
     }
     const failed = this.detached?.error ?? detached.error;
     this.detached = undefined;
+    this.action = undefined;
+    this.decisions.clear();
     if (this.publishUnframedStop(result, generation)) {
       return getStopResult(result, generation.stoppedConversationId);
     }
@@ -1322,6 +1523,66 @@ export class Chat {
     return true;
   }
 
+  /** Stops a pause restored without a stream on the server, which frees the chat for a turn. */
+  private async stopPaused(): Promise<ChatStopResult> {
+    const action = this.action;
+    if (!action) {
+      return { status: 'idle' };
+    }
+    const endpoint = this.resumeEndpoint();
+    if (!endpoint) {
+      throw new Error('The paused generation cannot be stopped without its endpoint');
+    }
+    const stoppedAt = this.generationCreatedAt;
+    /** A pause no status read restored names no response this chat prepared or saw framed. */
+    const generation: Generation = this.restored?.generation ?? { responseUnknown: true };
+    const result = await this.stopGeneration(generation, {
+      endpoint,
+      streamId: action.streamId,
+      generationCreatedAt: stoppedAt,
+    });
+    const active = this.active;
+    if (!this.disposed && active?.generation === generation) {
+      /** A reattachment took the generation over while the stop was in flight; it ends with it. */
+      return this.endStopped(active, generation, result);
+    }
+    /** Whatever pause the stopped generation holds now ends with it, however often it was refreshed. */
+    const owned =
+      this.action &&
+      (this.action.actionId === action.actionId || this.generationCreatedAt === stoppedAt);
+    if (this.disposed || !owned) {
+      return getStopResult(result, generation.stoppedConversationId);
+    }
+    this.action = undefined;
+    this.decisions.clear();
+    /** A pause a status read restored names no response this chat prepared or saw framed. */
+    const unframed = {
+      conversationId: generation.conversationId,
+      stoppedConversationId: generation.stoppedConversationId,
+      responseId: generation.responseId,
+      responseUnknown: generation.responseId === undefined,
+    };
+    if (this.publishUnframedStop(result, unframed)) {
+      return getStopResult(result, generation.stoppedConversationId);
+    }
+    if (this.status === 'error' && !this.lostStart) {
+      /**
+       * The stop confirmed the end a dropped connection left unknown. A lost start still owed its
+       * own abort keeps the failure it reported.
+       */
+      this.clearFailure();
+    }
+    this.notify();
+    return getStopResult(result, generation.stoppedConversationId);
+  }
+
+  /** The conversation the paused generation's record names, which a frame may have assigned. */
+  private pausedConversationId(): string | undefined {
+    const generation =
+      this.active?.generation ?? this.detached?.generation ?? this.restored?.generation;
+    return generation?.conversationId;
+  }
+
   /** The endpoint a generation this chat did not start runs on, as the host selects it. */
   private resumeEndpoint(): string | undefined {
     return this.init.resumeSelection?.().endpoint ?? undefined;
@@ -1341,6 +1602,21 @@ export class Chat {
     }
   }
 
+  private assertNotResuming(action: Agents.PendingAction): void {
+    if (this.disposed) {
+      throw new Error('The chat was disposed');
+    }
+    if (this.resuming === action.actionId) {
+      throw new Error('This pause is already being resumed');
+    }
+  }
+
+  private clearAction(): void {
+    this.action = undefined;
+    this.decisions.clear();
+    this.notify();
+  }
+
   /** Returns a failed chat to `ready`. AI SDK: `clearError`. */
   clearError(): void {
     if (this.status !== 'error') {
@@ -1348,6 +1624,130 @@ export class Chat {
     }
     this.init.state.error = undefined;
     this.setStatus('ready');
+  }
+
+  /**
+   * Restores a pause the server reported outside a stream, such as the status check of a reload,
+   * so its tool decisions and answers can be submitted. Refused while a request is in flight.
+   */
+  restorePendingAction(action: Agents.PendingAction, generationCreatedAt: number): void {
+    if (this.disposed) {
+      return;
+    }
+    if (this.active) {
+      throw new Error('A request is in flight; its stream reports the pause');
+    }
+    if (this.resumed.has(action.actionId) && generationCreatedAt === this.generationCreatedAt) {
+      /** A status read before the answer landed reports a pause this chat already resumed. */
+      return;
+    }
+    if (this.isStaleRead(generationCreatedAt)) {
+      return;
+    }
+    this.newestRead = generationCreatedAt;
+    const dropped = this.detached?.target.generationCreatedAt;
+    if (this.detached && (dropped == null || generationCreatedAt > dropped)) {
+      /**
+       * The pause belongs to a newer generation, or one the dropped stream never dated, which
+       * superseded the one whose stream dropped.
+       */
+      this.detached = undefined;
+    }
+    /**
+     * A lost start is left as it is: no read can tell whether it names that start's generation or
+     * an older one, so only an answer about the start itself clears it.
+     */
+    this.learnConversation(action.conversationId);
+    if (this.action?.actionId !== action.actionId) {
+      this.decisions.clear();
+    }
+    this.action = action;
+    this.generationCreatedAt = generationCreatedAt;
+    if (this.restored?.createdAt !== generationCreatedAt) {
+      /** The generation whose stream dropped keeps one record, which this read adds to. */
+      const dropped =
+        this.detached?.target.generationCreatedAt === generationCreatedAt
+          ? this.detached.generation
+          : undefined;
+      this.restored = { createdAt: generationCreatedAt, generation: dropped ?? {} };
+    }
+    /** The record carries what the status read says of the generation, for a stop or reattachment. */
+    const { generation } = this.restored;
+    generation.paused = action.actionId;
+    generation.conversationId = action.conversationId ?? generation.conversationId;
+    if (action.responseMessageId) {
+      generation.responseId = action.responseMessageId;
+      generation.responseUnknown = false;
+    } else if (generation.responseId === undefined) {
+      generation.responseUnknown = true;
+    }
+    this.notify();
+  }
+
+  /**
+   * Records a decision for one paused tool call and shows it on the call. Once every call of the
+   * pause has one, the batch resumes the generation, which continues on the attached stream.
+   * AI SDK: `addToolApprovalResponse`.
+   */
+  async addToolApprovalResponse(response: ToolApprovalResponse): Promise<void> {
+    const action = this.action;
+    if (action?.payload.type !== 'tool_approval') {
+      throw new Error('No tool approval is pending');
+    }
+    const ids = action.payload.action_requests.map((request) => request.tool_call_id);
+    if (!ids.includes(response.id)) {
+      throw new Error(`Tool call ${response.id} is not awaiting approval`);
+    }
+    this.assertNotResuming(action);
+    const {
+      id,
+      approved,
+      decision: chosen,
+      reason,
+      editedArguments,
+      responseText,
+      scope,
+    } = response;
+    const decision: Agents.ToolApprovalResolution = {
+      tool_call_id: id,
+      decision: chosen ?? (approved ? 'approve' : 'reject'),
+      ...(reason !== undefined && { reason }),
+      ...(editedArguments !== undefined && { editedArguments }),
+      ...(responseText !== undefined && { responseText }),
+      ...(scope !== undefined && { scope }),
+    };
+    this.decisions.set(response.id, decision);
+    await this.executor.run(() => {
+      const next = markApproval(this.messages, action.actionId, response.id, decision);
+      if (next) {
+        this.write(next);
+      }
+    });
+    if (ids.some((id) => !this.decisions.has(id))) {
+      return;
+    }
+    const decisions = ids.map((id) => this.decisions.get(id) as Agents.ToolApprovalResolution);
+    await this.resume(action, { decisions });
+  }
+
+  /**
+   * Answers an `ask_user_question` pause, which resumes the generation. AI SDK: `addToolOutput`.
+   * `toolCallId` is the asking tool call, or the pause's action id when the server named no call.
+   */
+  async addToolOutput({ toolCallId, output }: ToolOutput): Promise<void> {
+    const action = this.action;
+    if (action?.payload.type !== 'ask_user_question') {
+      throw new Error('No question is pending');
+    }
+    const expected = action.payload.tool_call_id ?? action.actionId;
+    if (toolCallId !== expected) {
+      throw new Error(`Tool call ${toolCallId} is not awaiting an answer`);
+    }
+    this.assertNotResuming(action);
+    await this.resume(
+      action,
+      typeof output === 'string' ? { answer: output } : { answers: output },
+    );
   }
 
   /** Notifies `listener` after every change to the messages, status or error. */
@@ -1414,6 +1814,9 @@ export class Chat {
     }
     if (this.active) {
       throw new Error('A turn is already in flight for this chat');
+    }
+    if (this.action) {
+      throw new Error('A paused generation is waiting for a decision; answer or stop it first');
     }
     const active = createActiveRequest({ responseless: true });
     this.active = active;
@@ -1506,8 +1909,9 @@ export class Chat {
       }
       if (answered == null || answered !== dropped?.target.generationCreatedAt) {
         /**
-         * A start the server attached to the dropped generation continues it; any other supersedes
-         * it, which stays in the stale-read history so a late read of it changes nothing.
+         * A start the server attached to the dropped generation continues it, answered pauses
+         * included; any other supersedes it, and the old generation's resumed pauses with it. A
+         * superseded one stays in the stale-read history so a late read of it changes nothing.
          */
         for (const superseded of [this.generationCreatedAt, dropped?.target.generationCreatedAt]) {
           if (superseded != null) {
@@ -1515,6 +1919,7 @@ export class Chat {
           }
         }
         this.generationCreatedAt = undefined;
+        this.resumed.clear();
       }
       let stream: ChatStream | null = null;
       if (result.status === 'stream') {
@@ -1636,7 +2041,12 @@ export class Chat {
       active.generation = { endpoint, conversationId, responseUnknown: true };
     }
     if (stream.generationCreatedAt != null) {
+      const previous = this.generationCreatedAt;
       this.generationCreatedAt = stream.generationCreatedAt;
+      if (this.action && previous != null && previous !== stream.generationCreatedAt) {
+        /** A restored pause belongs to the generation it was restored with, not this one. */
+        this.clearAction();
+      }
     }
     let outcome: Outcome | undefined;
     /** The event this chat is applying, whose failure is the chat's, not the generation's. */
@@ -1651,7 +2061,7 @@ export class Chat {
           if (!signal.aborted) {
             handling = event;
             /** Recorded first, so a host that stops from the event's own callbacks names the run. */
-            this.adopt(active.generation, getFrameIdentity(event));
+            this.track(active, event);
             outcome = this.apply(event, active);
             handling = undefined;
           }
@@ -1697,21 +2107,41 @@ export class Chat {
 
   /** Applies one event; returns the turn's outcome when the event ends it. */
   private apply(event: ChatEvent, active: ActiveRequest): Outcome | undefined {
-    const applyEvent = this.init.applyEvent ?? defaultApplyEvent;
-    applyEvent(event, {
-      messages: this.messages,
-      write: (messages) => this.write(messages),
-    });
+    /** A pause this chat already resumed is stale, so no card is drawn for it. */
+    const stale = event.type === 'pending_action' && this.isStalePause(event.data);
+    const folded = stale ? undefined : this.withoutStalePause(event);
+    const disconnect =
+      event.type === 'error' &&
+      (event.status === 0 || (active.attached === true && isAttachFailure(event)));
+    /**
+     * The pause is reconciled before the host reducer folds the event in, so a subscriber its
+     * writes notify never answers a pause the same event ended or replaced.
+     */
+    this.reconcilePause(event, stale, disconnect);
+    if (folded && !this.disposed) {
+      const applyEvent = this.init.applyEvent ?? defaultApplyEvent;
+      applyEvent(folded, {
+        messages: this.messages,
+        write: (messages) => this.write(messages),
+      });
+    }
     /** A listener told of that write may have disposed the chat, which then owns no more state. */
     if (this.disposed) {
       return undefined;
     }
     let outcome: Outcome | undefined;
-    if (streamingEvents.has(event.type) || event.type === 'pending_action') {
-      /** A live pause is the generation running, however its first frame arrives. */
+    if (streamingEvents.has(event.type)) {
       if (this.markStreaming()) {
         this.notify();
       }
+      /** A listener told of that status may have disposed the chat too. */
+      if (this.disposed) {
+        return undefined;
+      }
+    } else if (event.type === 'pending_action' && !stale) {
+      /** A live pause is the generation running, however its first frame arrives. */
+      this.markStreaming();
+      this.notify();
       /** A listener told of that status may have disposed the chat too. */
       if (this.disposed) {
         return undefined;
@@ -1721,12 +2151,28 @@ export class Chat {
     } else if (event.type === 'abort') {
       outcome = { kind: 'abort' };
     } else if (event.type === 'error') {
-      const disconnect = event.status === 0 || (active.attached === true && isAttachFailure(event));
       const message = getErrorMessage(event.data) ?? 'The response failed';
       outcome = { kind: 'error', error: new Error(message), disconnect };
     }
     this.callHost(this.init.onEvent, event);
     return outcome;
+  }
+
+  /** What one event changes in the pause the chat holds and the decisions made for it. */
+  private reconcilePause(event: ChatEvent, stale: boolean, disconnect: boolean): void {
+    if (event.type === 'pending_action' && !stale) {
+      if (this.action?.actionId !== event.data.actionId) {
+        /** A reconnect replays the same pause; decisions already made for it still stand. */
+        this.decisions.clear();
+      }
+      this.action = event.data;
+    } else if (event.type === 'final') {
+      this.action = undefined;
+    } else if (event.type === 'abort' || (event.type === 'error' && !disconnect)) {
+      /** A dropped connection leaves the server's generation, and its pause, as it was. */
+      this.action = undefined;
+      this.decisions.clear();
+    }
   }
 
   /**
@@ -1809,6 +2255,12 @@ export class Chat {
      */
     this.active = undefined;
     if (outcome.kind !== 'error' || !outcome.disconnect) {
+      /**
+       * An ended generation ends its pause too, before the host hears of it, so a completion
+       * callback can start the next turn; only a dropped connection leaves it running.
+       */
+      this.action = undefined;
+      this.decisions.clear();
       /** Including an attachment that found its generation already finished. */
       const ended =
         active.stream?.generationCreatedAt ??
@@ -1831,6 +2283,23 @@ export class Chat {
     );
   }
 
+  /** Records the ids and pause an event reports for the request it arrived on. */
+  private track(active: ActiveRequest, event: ChatEvent): void {
+    const identity = getFrameIdentity(event);
+    if (event.type === 'pending_action' && this.isStalePause(event.data)) {
+      /** A stale pause names neither the held pause nor the response its generation reports. */
+      this.adopt(active.generation, { ...identity, responseMessageId: undefined });
+      return;
+    }
+    const snapshot = event.type === 'sync' ? event.data.resumeState?.pendingAction : undefined;
+    if (event.type === 'pending_action') {
+      active.generation.paused = event.data.actionId;
+    } else if (snapshot && !this.isStalePause(snapshot)) {
+      active.generation.paused = snapshot.actionId;
+    }
+    this.adopt(active.generation, identity);
+  }
+
   /**
    * Adopts the ids a frame names: the conversation for the generation and, for a chat started
    * under `new`, for the chat; and the response the generation produces, which makes it known.
@@ -1850,6 +2319,7 @@ export class Chat {
   /**
    * Whether a status read names a generation this chat already knows is over or superseded: one
    * that ended, or one older than any generation the chat has seen, including one that since ended.
+   * Every consumer of a status read checks this before changing anything.
    */
   private isStaleRead(generationCreatedAt: number): boolean {
     if (this.endedGenerations.has(generationCreatedAt)) {
@@ -1860,8 +2330,30 @@ export class Chat {
       ...this.endedGenerations,
       this.detached?.target.generationCreatedAt,
       this.generationCreatedAt,
+      this.newestRead,
     ];
     return seen.some((known) => known != null && generationCreatedAt < known);
+  }
+
+  /**
+   * The event the host reducer folds in: a sync snapshot drops a pause this chat already resumed,
+   * as a standalone `pending_action` frame of it would be skipped, so no card is drawn for it.
+   */
+  private withoutStalePause(event: ChatEvent): ChatEvent {
+    const snapshot = event.type === 'sync' ? event.data.resumeState?.pendingAction : undefined;
+    if (event.type !== 'sync' || !snapshot) {
+      return event;
+    }
+    if (!this.isStalePause(snapshot)) {
+      return event;
+    }
+    const resumeState = { ...event.data.resumeState, pendingAction: undefined };
+    return { ...event, data: { ...event.data, resumeState } } as ChatEvent;
+  }
+
+  /** Whether `action` was already resumed by this chat, so a replay of it is stale. */
+  private isStalePause(action: Agents.PendingAction): boolean {
+    return this.resumed.has(action.actionId);
   }
 
   /** Adopts the conversation the server created for a chat started under `new`; a real id stays. */
@@ -1941,6 +2433,145 @@ export class Chat {
       this.active = undefined;
     }
     active.finish();
+  }
+
+  private async resume(
+    action: Agents.PendingAction,
+    resolution:
+      | { decisions: Agents.ToolApprovalResolution[] }
+      | { answer?: string; answers?: Record<string, string> },
+  ): Promise<void> {
+    const { resume } = this.init.transport;
+    if (!resume) {
+      throw new Error('The transport cannot resume a paused generation');
+    }
+    /** Unknown on a stream that names no generation; the server then fences by the action alone. */
+    const generationCreatedAt = this.generationCreatedAt;
+    if (this.disposed) {
+      throw new Error('The chat was disposed');
+    }
+    if (this.action?.actionId !== action.actionId) {
+      throw new Error('The pause ended before it was resumed');
+    }
+    if (this.resuming === action.actionId) {
+      return;
+    }
+    this.resuming = action.actionId;
+    /** Read once: the answer and the reattachment that follows it run on the same selection. */
+    let selection: ReturnType<NonNullable<ChatInit['resumeSelection']>> | undefined;
+    try {
+      selection = this.init.resumeSelection?.();
+      if (this.disposed) {
+        /** The host's selection disposed the chat, which then sends no answer for it. */
+        throw new Error('The chat was disposed');
+      }
+      /** Disposal releases the submit; a late answer then finds nothing to change. */
+      const result = await untilAborted(
+        resume.call(this.init.transport, {
+          ...selection,
+          ...resolution,
+          conversationId:
+            action.conversationId ?? this.pausedConversationId() ?? this.conversationId,
+          ...(generationCreatedAt != null && { generationCreatedAt }),
+          actionId: action.actionId,
+        }),
+        this.lifetime.signal,
+      );
+      this.resumed.add(action.actionId);
+      /** The answer names the conversation, which a chat started under `new` adopts either way. */
+      this.learnConversation(result.conversationId);
+      /** A pause stopped or replaced while the request was in flight is no longer this one's. */
+      if (this.action?.actionId !== action.actionId) {
+        return;
+      }
+      const reattach = this.active && !this.active.stream ? this.active.reattach : undefined;
+      if (reattach && this.generationCreatedAt === generationCreatedAt) {
+        /** A reconnect already opening attaches to the continuation, or finds it finished. */
+        reattach.continuation = true;
+      } else if (!this.active && !this.disposed) {
+        /** A pause restored after a reload has no stream attached for the continuation. */
+        this.reattach(
+          {
+            streamId: result.streamId,
+            generationCreatedAt,
+            conversationId: result.conversationId,
+            endpoint: selection?.endpoint ?? undefined,
+          },
+          true,
+        ).catch((error: unknown) =>
+          this.callHost(
+            this.init.onError,
+            error instanceof Error ? error : new Error(String(error)),
+          ),
+        );
+      }
+      this.clearAction();
+    } catch (error) {
+      const failure = error as ChatTransportError;
+      if (isPauseOver(failure)) {
+        /**
+         * The server answered that this pause can no longer be resumed: another client answered
+         * it or a newer generation replaced it. It ends here, and a probe finds what runs now.
+         */
+        /** A newer pause restored meanwhile owns the chat, and the probe would end it. */
+        const ours = this.action?.actionId === action.actionId;
+        const probing = (ours || !this.action) && !this.active && !this.disposed;
+        if (!probing && ours) {
+          this.clearAction();
+        }
+        if (probing) {
+          /**
+           * Started while the pause still names its generation, so a subscriber cannot take the
+           * chat first and the reattachment settles or replaces the pause by what it finds.
+           */
+          this.reattach(
+            {
+              streamId: action.streamId,
+              endpoint: selection?.endpoint ?? undefined,
+              conversationId: action.conversationId ?? this.pausedConversationId(),
+            },
+            false,
+          ).catch((probe: unknown) =>
+            this.callHost(
+              this.init.onError,
+              probe instanceof Error ? probe : new Error(String(probe)),
+            ),
+          );
+        }
+        throw error;
+      }
+      const ambiguous = isRetryableNetworkError(failure);
+      if (
+        ambiguous &&
+        !this.active &&
+        !this.disposed &&
+        this.action?.actionId === action.actionId
+      ) {
+        /**
+         * The answer may have reached the server, which then runs the generation again. It stays
+         * addressable through a reattachment, which finds the continuation, the pause or the end.
+         */
+        this.reattach(
+          {
+            streamId: action.streamId,
+            endpoint: selection?.endpoint ?? undefined,
+            generationCreatedAt,
+            conversationId: action.conversationId ?? this.pausedConversationId(),
+          },
+          true,
+        ).catch((failure: unknown) =>
+          this.callHost(
+            this.init.onError,
+            failure instanceof Error ? failure : new Error(String(failure)),
+          ),
+        );
+      }
+      throw error;
+    } finally {
+      if (this.resuming === action.actionId) {
+        this.resuming = undefined;
+      }
+    }
   }
 
   /**

@@ -337,4 +337,81 @@ test.describe('the built @librechat/chat package', () => {
       cached: 1,
     });
   });
+
+  test('a host answers a pause on a stream that names no generation @scenario:a-host-answers-a-pause-on-a-stream-without-a-generation', () => {
+    test.setTimeout(120_000);
+    const dist = resolve(repoRoot, 'packages/chat/dist');
+    expect(existsSync(dist), 'packages/chat/dist is missing: run npm run build').toBe(true);
+
+    /** An older server streams the pause without dating its generation; the action id fences the answer. */
+    const probe = `
+      const { Chat } = require('@librechat/chat');
+      let messages = [];
+      const events = [];
+      let push;
+      const stream = {
+        streamId: 'convo-1',
+        close() {},
+        async *[Symbol.asyncIterator]() {
+          while (true) {
+            const event = events.shift() ?? (await new Promise((resolve) => { push = resolve; }));
+            yield event;
+            if (event.type === 'final') return;
+          }
+        },
+      };
+      const emit = (event) => { if (push) { const p = push; push = undefined; p(event); } else events.push(event); };
+      const answers = [];
+      const chat = new Chat({
+        id: 'convo-1',
+        state: { error: undefined, connection: 'idle', status: 'ready',
+          get messages() { return messages; },
+          replaceMessages(next) { messages = next; } },
+        transport: {
+          sendMessages: async () => ({ status: 'stream', stream }),
+          reconnectToStream: async () => null,
+          abort: async () => ({ success: true }),
+          resume: async (request) => {
+            answers.push(request);
+            return { status: 'resuming', streamId: 'convo-1', conversationId: 'convo-1' };
+          },
+        },
+        prepareRequest: () => ({ payload: { endpoint: 'agents' } }),
+        resumeSelection: () => ({ endpoint: 'agents' }),
+      });
+      const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+      (async () => {
+        const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+        await tick();
+        emit({ type: 'pending_action', data: {
+          actionId: 'action-1', streamId: 'convo-1', conversationId: 'convo-1', createdAt: 1,
+          payload: { type: 'ask_user_question', question: { question: 'Which?' }, tool_call_id: 'ask-1' },
+        } });
+        await tick();
+        await chat.addToolOutput({ toolCallId: 'ask-1', output: 'yes' });
+        const cleared = chat.pendingAction === undefined;
+        emit({ type: 'final', data: { final: true, responseMessage: { messageId: 'r1', text: 'Done' } } });
+        await sent;
+        const [answer] = answers;
+        process.stdout.write(JSON.stringify({
+          answered: answers.length,
+          actionId: answer.actionId,
+          answer: answer.answer,
+          dated: 'generationCreatedAt' in answer,
+          cleared,
+          status: chat.status,
+        }));
+      })();
+    `;
+    const loaded = run(process.execPath, ['-e', probe], { cwd: resolve(repoRoot, 'client') });
+    expect(loaded.status, loaded.output).toBe(0);
+    expect(JSON.parse(loaded.stdout)).toEqual({
+      answered: 1,
+      actionId: 'action-1',
+      answer: 'yes',
+      dated: false,
+      cleared: true,
+      status: 'ready',
+    });
+  });
 });

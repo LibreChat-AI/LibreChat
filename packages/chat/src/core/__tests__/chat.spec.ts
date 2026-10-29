@@ -1,4 +1,4 @@
-import { StepEvents, buildTree } from 'librechat-data-provider';
+import { ContentTypes, StepEvents, buildTree } from 'librechat-data-provider';
 import type { Agents, TMessage, TPayload, ChatEvent } from 'librechat-data-provider';
 import type {
   ChatStream,
@@ -349,6 +349,68 @@ describe('Chat', () => {
       await expect(stopped).rejects.toThrow('The chat was disposed');
       await expect(sent).resolves.toBeUndefined();
       expect(chat.connection).toBe('idle');
+    });
+  });
+
+  it('releases an answer still waiting on its resume when the chat is disposed', async () => {
+    const { chat, stream, transport } = setup({
+      resumeSelection: () => ({ endpoint: 'agents' }),
+    });
+    transport.resume.mockImplementationOnce(() => new Promise<never>(() => undefined));
+    const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+    await flush();
+    stream.push({
+      type: 'pending_action',
+      data: {
+        actionId: 'action-1',
+        streamId: 'convo-1',
+        conversationId: 'convo-1',
+        createdAt: 1,
+        expiresAt: Date.now() + 60_000,
+        payload: { type: 'ask_user_question', question: { question: 'Which?' }, tool_call_id: 'a' },
+      } as Agents.PendingAction,
+    });
+    await flush();
+    const answered = chat.addToolOutput({ toolCallId: 'a', output: 'Yes' });
+    await flush();
+
+    chat.dispose();
+
+    await expect(answered).rejects.toThrow('The chat was disposed');
+    await sent;
+  });
+
+  describe('a replayed stale pause', () => {
+    const pause = {
+      actionId: 'action-1',
+      streamId: 'convo-1',
+      conversationId: 'convo-1',
+      createdAt: 1,
+      expiresAt: Date.now() + 60_000,
+      payload: { type: 'ask_user_question', question: { question: 'Which?' }, tool_call_id: 'a' },
+    } as Agents.PendingAction;
+
+    it('stays out of the host reducer when this chat already resumed it', async () => {
+      const applyEvent = jest.fn();
+      const { chat, transport } = setup({
+        applyEvent,
+        resumeSelection: () => ({ endpoint: 'agents' }),
+      });
+      const continuation = createStream({ streamId: 'convo-1', generationCreatedAt: 100 });
+      transport.reconnectToStream.mockResolvedValueOnce(continuation);
+      chat.restorePendingAction(pause, 100);
+      await chat.addToolOutput({ toolCallId: 'a', output: 'Yes' });
+      await flush();
+
+      continuation.push({ type: 'pending_action', data: pause });
+      await flush();
+
+      expect(applyEvent).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'pending_action' }),
+        expect.anything(),
+      );
+      continuation.push(finalEvent());
+      await flush();
     });
   });
 
@@ -1028,6 +1090,43 @@ describe('Chat', () => {
     expect(replaced.chat.status).toBe('ready');
   });
 
+  it('resumes a pause of a replacing generation with the timestamp the start reported', async () => {
+    const stream = createStream({ streamId: 'stream-2' });
+    const { chat, transport } = setup(
+      { resumeSelection: () => ({ endpoint: 'agents' }) },
+      {
+        sendMessages: jest.fn(async () => ({
+          status: 'replaced' as const,
+          generationProtocolVersion: 2,
+          conversationId: 'convo-1',
+          streamId: 'stream-2',
+          generationCreatedAt: 200,
+        })),
+        reconnectToStream: jest.fn(async () => stream),
+      },
+    );
+    const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+    await flush();
+    stream.push({
+      type: 'pending_action',
+      data: {
+        actionId: 'action-3',
+        streamId: 'stream-2',
+        conversationId: 'convo-1',
+        createdAt: 1,
+        payload: { type: 'ask_user_question', question: { question: 'Which?' } },
+      } as Agents.PendingAction,
+    });
+    await flush();
+
+    await chat.addToolOutput({ toolCallId: 'action-3', output: 'Blue' });
+    expect(transport.resume).toHaveBeenCalledWith(
+      expect.objectContaining({ generationCreatedAt: 200, actionId: 'action-3' }),
+    );
+    stream.push(finalEvent());
+    await sent;
+  });
+
   it('stops a replacing generation on the server while it is still attaching', async () => {
     const { chat, transport } = setup(
       {},
@@ -1465,6 +1564,49 @@ describe('Chat', () => {
     );
     expect(chat.messages[1].text).toBe('Partial');
     expect(chat.status).toBe('ready');
+  });
+
+  it('keeps a newer pause restored while a dropped Assistants run merged its stop', async () => {
+    const stream = createStream();
+    const { chat, transport } = setup(
+      {
+        prepareRequest: jest.fn(() => ({
+          payload: { endpoint: 'assistants', conversationId: 'convo-1', text: 'Hi' } as TPayload,
+          messages: [userMessage, placeholder],
+          responseMessageId: 'response-1',
+        })),
+      },
+      { sendMessages: jest.fn(async () => ({ status: 'stream' as const, stream })) },
+    );
+    transport.abort.mockResolvedValue({
+      final: true,
+      conversation: {},
+      runMessages: [userMessage, { ...placeholder, text: 'Partial' }],
+    });
+    const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+    await flush();
+    stream.push({ type: 'error', status: 0, data: 'offline' } as ChatEvent);
+    await sent;
+    const newer = {
+      actionId: 'action-newer',
+      streamId: 'convo-1',
+      conversationId: 'convo-1',
+      createdAt: 2,
+      payload: { type: 'ask_user_question', question: { question: 'Which?' }, tool_call_id: 'q' },
+    } as Agents.PendingAction;
+    let restored = false;
+    const unsubscribe = chat.subscribe(() => {
+      if (!restored && chat.messages[1]?.text === 'Partial') {
+        restored = true;
+        chat.restorePendingAction(newer, 900);
+      }
+    });
+
+    await chat.stop();
+    unsubscribe();
+
+    expect(chat.messages[1].text).toBe('Partial');
+    expect(chat.pendingAction?.actionId).toBe('action-newer');
   });
 
   it('keeps the reattachment target of a reconnect that failed on the network', async () => {
@@ -1979,8 +2121,798 @@ describe('Chat', () => {
     expect(onError).not.toHaveBeenCalled();
   });
 
+  describe('paused generations', () => {
+    const toolCall = (id: string) => ({
+      type: ContentTypes.TOOL_CALL,
+      tool_call: {
+        id,
+        name: 'search',
+        args: '{}',
+        type: 'tool_call',
+        approval: { actionId: 'action-1', allowed_decisions: ['approve', 'reject'] },
+      },
+    });
+
+    const approvalAction = {
+      actionId: 'action-1',
+      streamId: 'convo-1',
+      conversationId: 'convo-1',
+      createdAt: 1,
+      payload: {
+        type: 'tool_approval',
+        action_requests: [
+          { name: 'search', arguments: '{}', tool_call_id: 'call-1' },
+          { name: 'search', arguments: '{}', tool_call_id: 'call-2' },
+        ],
+        review_configs: [],
+      },
+    } as Agents.PendingAction;
+
+    const askAction = {
+      actionId: 'action-2',
+      streamId: 'convo-1',
+      conversationId: 'convo-1',
+      createdAt: 1,
+      payload: {
+        type: 'ask_user_question',
+        question: { question: 'Which?' },
+        tool_call_id: 'ask-1',
+      },
+    } as Agents.PendingAction;
+
+    const pause = async (action: Agents.PendingAction, overrides: Partial<ChatInit> = {}) => {
+      const paused = setup({
+        resumeSelection: () => ({ endpoint: 'agents', agent_id: 'agent-1' }),
+        prepareRequest: () => ({
+          payload,
+          messages: [
+            userMessage,
+            { ...placeholder, content: [toolCall('call-1'), toolCall('call-2')] } as TMessage,
+          ],
+        }),
+        ...overrides,
+      });
+      const sent = paused.chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      paused.stream.push({ type: 'pending_action', data: action });
+      await flush();
+      return { ...paused, sent };
+    };
+
+    it('shows a decision on a paused call nested inside a subagent', async () => {
+      const subagent = {
+        type: ContentTypes.TOOL_CALL,
+        tool_call: {
+          id: 'subagent-1',
+          name: 'subagent',
+          args: '{}',
+          type: 'tool_call',
+          subagent_content: [toolCall('call-1')],
+        },
+      };
+      const { chat, stream, sent } = await pause(approvalAction, {
+        prepareRequest: () => ({
+          payload,
+          messages: [
+            userMessage,
+            { ...placeholder, content: [subagent, toolCall('call-2')] } as TMessage,
+          ],
+        }),
+      });
+
+      await chat.addToolApprovalResponse({ id: 'call-1', approved: true });
+
+      const [outer] = chat.messages[1].content as unknown as Array<{
+        tool_call: { subagent_content: Array<{ tool_call: Agents.ToolCall }> };
+      }>;
+      expect(outer.tool_call.subagent_content[0].tool_call).toMatchObject({
+        approval: { decision: 'approve' },
+      });
+      stream.push(finalEvent());
+      await sent;
+    });
+
+    it('shows each decision and resumes once the whole batch is decided', async () => {
+      const { chat, transport, stream, sent } = await pause(approvalAction);
+      expect(chat.pendingAction).toBe(approvalAction);
+
+      await chat.addToolApprovalResponse({ id: 'call-1', approved: true });
+      expect(transport.resume).not.toHaveBeenCalled();
+      const [first] = chat.messages[1].content as Array<{ tool_call: Agents.ToolCall }>;
+      expect(first.tool_call).toMatchObject({ approval: { decision: 'approve' } });
+
+      await chat.addToolApprovalResponse({ id: 'call-2', approved: false, reason: 'No' });
+      expect(transport.resume).toHaveBeenCalledWith({
+        endpoint: 'agents',
+        agent_id: 'agent-1',
+        conversationId: 'convo-1',
+        generationCreatedAt: 100,
+        actionId: 'action-1',
+        decisions: [
+          { tool_call_id: 'call-1', decision: 'approve' },
+          { tool_call_id: 'call-2', decision: 'reject', reason: 'No' },
+        ],
+      });
+      expect(chat.pendingAction).toBeUndefined();
+
+      stream.push(finalEvent());
+      await sent;
+    });
+
+    it('keeps the decisions of a pause the stream replays after a reconnect', async () => {
+      const { chat, transport, stream, sent } = await pause(approvalAction);
+      await chat.addToolApprovalResponse({ id: 'call-1', approved: true });
+      stream.push({ type: 'pending_action', data: { ...approvalAction } });
+      await flush();
+
+      await chat.addToolApprovalResponse({ id: 'call-2', approved: false });
+
+      expect(transport.resume).toHaveBeenCalledWith(
+        expect.objectContaining({
+          decisions: [
+            { tool_call_id: 'call-1', decision: 'approve' },
+            { tool_call_id: 'call-2', decision: 'reject' },
+          ],
+        }),
+      );
+      stream.push(finalEvent());
+      await sent;
+    });
+
+    it('does not resume a batch whose pause was replaced while its last decision was shown', async () => {
+      const { chat, transport, state } = setup();
+      state.replaceMessages([
+        userMessage,
+        { ...placeholder, content: [toolCall('call-1'), toolCall('call-2')] } as TMessage,
+      ]);
+      chat.restorePendingAction(approvalAction, 500);
+      await chat.addToolApprovalResponse({ id: 'call-1', approved: true });
+      const unsubscribe = chat.subscribe(() => {
+        if (chat.pendingAction === approvalAction) {
+          chat.restorePendingAction(askAction, 500);
+        }
+      });
+
+      await chat.addToolApprovalResponse({ id: 'call-2', approved: true });
+      unsubscribe();
+
+      expect(transport.resume).not.toHaveBeenCalled();
+      expect(chat.pendingAction).toBe(askAction);
+    });
+
+    it('lets a subscriber start a turn once a reconnect drops a pause that ended elsewhere', async () => {
+      const { chat, transport, stream } = setup();
+      chat.restorePendingAction(askAction, 500);
+      let next: Promise<void> | undefined;
+      const unsubscribe = chat.subscribe(() => {
+        if (!chat.pendingAction && !next) {
+          next = Promise.resolve();
+          next = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+        }
+      });
+
+      await chat.resumeStream({ streamId: 'convo-1' });
+      unsubscribe();
+
+      expect(chat.status).toBe('submitted');
+      await flush();
+      expect(transport.sendMessages).toHaveBeenCalled();
+      stream.push(finalEvent());
+      await next;
+    });
+
+    it('resumes a replayed pause once, with the decisions made before the replay', async () => {
+      const { chat, transport, stream, sent } = await pause(approvalAction);
+      let accept: (() => void) | undefined;
+      transport.resume.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            accept = () =>
+              resolve({ streamId: 'convo-1', conversationId: 'convo-1', status: 'resuming' });
+          }),
+      );
+      await chat.addToolApprovalResponse({ id: 'call-1', approved: true });
+      const resumed = chat.addToolApprovalResponse({ id: 'call-2', approved: true });
+      await flush();
+      stream.push({ type: 'pending_action', data: { ...approvalAction } });
+      await flush();
+
+      await expect(chat.addToolApprovalResponse({ id: 'call-2', approved: false })).rejects.toThrow(
+        'already being resumed',
+      );
+      accept?.();
+      await resumed;
+      expect(transport.resume).toHaveBeenCalledTimes(1);
+      expect(chat.pendingAction).toBeUndefined();
+      stream.push(finalEvent());
+      await sent;
+    });
+
+    it('keeps the decisions of a pause a status check restores again', async () => {
+      const { chat, transport } = setup();
+      chat.restorePendingAction(approvalAction, 500);
+      await chat.addToolApprovalResponse({ id: 'call-1', approved: true });
+      chat.restorePendingAction({ ...approvalAction }, 500);
+
+      await chat.addToolApprovalResponse({ id: 'call-2', approved: true });
+
+      expect(transport.resume).toHaveBeenCalledWith(
+        expect.objectContaining({
+          decisions: [
+            { tool_call_id: 'call-1', decision: 'approve' },
+            { tool_call_id: 'call-2', decision: 'approve' },
+          ],
+        }),
+      );
+    });
+
+    it('does not reattach for a pause replaced while its resume was in flight', async () => {
+      let accept: (() => void) | undefined;
+      const { chat, transport } = setup(
+        { resumeSelection: () => ({ endpoint: 'agents' }) },
+        {
+          resume: jest.fn(
+            () =>
+              new Promise((resolve) => {
+                accept = () =>
+                  resolve({ streamId: 'convo-1', conversationId: 'convo-1', status: 'resuming' });
+              }),
+          ),
+        },
+      );
+      chat.restorePendingAction(askAction, 500);
+      const answered = chat.addToolOutput({ toolCallId: 'ask-1', output: 'Blue' });
+      await flush();
+      const next = { ...approvalAction, actionId: 'action-9' } as Agents.PendingAction;
+      chat.restorePendingAction(next, 900);
+
+      accept?.();
+      await answered;
+      await flush();
+
+      expect(transport.reconnectToStream).not.toHaveBeenCalled();
+      expect(chat.pendingAction).toBe(next);
+    });
+
+    it('shows only the reason of the latest decision for a call', async () => {
+      const { chat, stream, sent } = await pause(approvalAction);
+      await chat.addToolApprovalResponse({ id: 'call-1', approved: false, reason: 'No' });
+      await chat.addToolApprovalResponse({ id: 'call-1', approved: true });
+
+      const call = chat.messages[1].content?.[0] as { tool_call: Agents.ToolCall };
+      expect(call.tool_call).toMatchObject({ approval: { decision: 'approve' } });
+      expect((call.tool_call as { approval?: { reason?: string } }).approval).not.toHaveProperty(
+        'reason',
+      );
+      stream.push(finalEvent());
+      await sent;
+    });
+
+    it('resumes a batch once when its last decisions arrive together', async () => {
+      const { chat, transport, stream, sent } = await pause(approvalAction);
+      transport.resume.mockImplementationOnce(
+        () =>
+          new Promise((resolve) =>
+            setTimeout(
+              () => resolve({ streamId: 'convo-1', conversationId: 'convo-1', status: 'resuming' }),
+              10,
+            ),
+          ),
+      );
+
+      await Promise.all([
+        chat.addToolApprovalResponse({ id: 'call-1', approved: true }),
+        chat.addToolApprovalResponse({ id: 'call-2', approved: true }),
+      ]);
+
+      expect(transport.resume).toHaveBeenCalledTimes(1);
+      stream.push(finalEvent());
+      await sent;
+    });
+
+    it('attaches to the continuation of a pause restored without a stream', async () => {
+      const continuation = createStream();
+      const { chat, transport } = setup(
+        {},
+        { reconnectToStream: jest.fn(async () => continuation) },
+      );
+
+      chat.restorePendingAction(askAction, 500);
+      await chat.addToolOutput({ toolCallId: 'ask-1', output: 'Blue' });
+      await flush();
+
+      expect(transport.reconnectToStream).toHaveBeenCalledWith(
+        expect.objectContaining({ streamId: 'convo-1', generationCreatedAt: 500, resume: true }),
+      );
+      continuation.push(stepEvent);
+      continuation.push(finalEvent());
+      await flush();
+      expect(chat.status).toBe('ready');
+      expect(chat.messages[1].text).toBe('Hello');
+    });
+
+    it('does not reattach once disposed while a resume is in flight', async () => {
+      let accept: (() => void) | undefined;
+      const { chat, transport } = setup(
+        {},
+        {
+          resume: jest.fn(
+            () =>
+              new Promise((resolve) => {
+                accept = () =>
+                  resolve({ streamId: 'convo-1', conversationId: 'convo-1', status: 'resuming' });
+              }),
+          ),
+        },
+      );
+
+      chat.restorePendingAction(askAction, 500);
+      const answered = chat.addToolOutput({ toolCallId: 'ask-1', output: 'Blue' });
+      await flush();
+      chat.dispose();
+      await expect(answered).rejects.toThrow('The chat was disposed');
+      accept?.();
+      await flush();
+
+      expect(transport.reconnectToStream).not.toHaveBeenCalled();
+      await expect(chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] })).rejects.toThrow(
+        'disposed',
+      );
+    });
+
+    it('stops the continuation of a restored pause with the generation it resumed', async () => {
+      const continuation = createStream({ streamId: 'convo-1' });
+      const { chat, transport } = setup(
+        { resumeSelection: () => ({ endpoint: 'agents' }) },
+        { reconnectToStream: jest.fn(async () => continuation) },
+      );
+      transport.abort.mockImplementation(async () => {
+        continuation.push(finalEvent({ terminalStatus: 'aborted' }));
+        return { success: true };
+      });
+
+      chat.restorePendingAction(askAction, 500);
+      await chat.addToolOutput({ toolCallId: 'ask-1', output: 'Blue' });
+      await flush();
+      continuation.push(stepEvent);
+      await flush();
+      await chat.stop();
+
+      expect(transport.abort).toHaveBeenCalledWith(
+        expect.objectContaining({ endpoint: 'agents', generationCreatedAt: 500 }),
+      );
+      expect(chat.status).toBe('ready');
+    });
+
+    it('stops a restored pause on the server while its continuation is still attaching', async () => {
+      const { chat, transport } = setup(
+        { resumeSelection: () => ({ endpoint: 'agents' }) },
+        { reconnectToStream: jest.fn(() => new Promise<null>(() => undefined)) },
+      );
+      chat.restorePendingAction(askAction, 500);
+
+      const resumed = chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 500 });
+      await flush();
+      await chat.stop();
+      await resumed;
+
+      expect(transport.abort).toHaveBeenCalledWith({
+        chatId: 'convo-1',
+        endpoint: 'agents',
+        streamId: 'convo-1',
+        generationCreatedAt: 500,
+      });
+      expect(chat.pendingAction).toBeUndefined();
+      expect(chat.status).toBe('ready');
+    });
+
+    it('refuses decisions and answers once disposed', async () => {
+      const { chat, transport } = setup();
+      chat.restorePendingAction(askAction, 500);
+      chat.dispose();
+
+      await expect(chat.addToolOutput({ toolCallId: 'ask-1', output: 'Blue' })).rejects.toThrow(
+        'disposed',
+      );
+      expect(transport.resume).not.toHaveBeenCalled();
+    });
+
+    it('drops a restored pause once a reconnect finds nothing running', async () => {
+      const { chat, transport } = setup();
+      chat.restorePendingAction(askAction, 500);
+
+      await chat.resumeStream({ streamId: 'convo-1' });
+
+      expect(transport.reconnectToStream).toHaveBeenCalled();
+      expect(chat.pendingAction).toBeUndefined();
+    });
+
+    it('drops a restored pause when the reattached stream is another generation', async () => {
+      const other = createStream({ streamId: 'convo-1', generationCreatedAt: 200 });
+      const { chat } = setup({}, { reconnectToStream: jest.fn(async () => other) });
+      chat.restorePendingAction(askAction, 100);
+
+      const resumed = chat.resumeStream({ streamId: 'convo-1' });
+      await flush();
+
+      expect(chat.pendingAction).toBeUndefined();
+      other.push(finalEvent());
+      await resumed;
+    });
+
+    it('refuses to restore a pause while a stream is attached', async () => {
+      const { chat, stream, sent } = await pause(askAction);
+      const newer = { ...askAction, actionId: 'action-7' } as Agents.PendingAction;
+
+      expect(() => chat.restorePendingAction(newer, 900)).toThrow('in flight');
+      expect(chat.pendingAction).toBe(askAction);
+      stream.push(finalEvent());
+      await sent;
+    });
+
+    it('drops a restored pause when an explicit reconnect names another generation', async () => {
+      const other = createStream({ streamId: 'convo-1', generationCreatedAt: 200 });
+      const { chat } = setup({}, { reconnectToStream: jest.fn(async () => other) });
+      chat.restorePendingAction(askAction, 100);
+
+      const resumed = chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 200 });
+      await flush();
+
+      expect(chat.pendingAction).toBeUndefined();
+      other.push(finalEvent());
+      await resumed;
+    });
+
+    it('ignores the replay of a pause it already resumed', async () => {
+      let attach: (() => void) | undefined;
+      const continuation = createStream({ streamId: 'convo-1' });
+      const { chat } = setup(
+        {},
+        {
+          reconnectToStream: jest.fn(
+            () =>
+              new Promise((resolve) => {
+                attach = () => resolve(continuation);
+              }),
+          ),
+        },
+      );
+      chat.restorePendingAction(askAction, 500);
+      const resumed = chat.resumeStream({ streamId: 'convo-1' });
+      await flush();
+      await chat.addToolOutput({ toolCallId: 'ask-1', output: 'Blue' });
+      attach?.();
+      await flush();
+      continuation.push({ type: 'pending_action', data: askAction });
+      await flush();
+
+      expect(chat.pendingAction).toBeUndefined();
+      continuation.push(finalEvent());
+      await resumed;
+    });
+
+    it('reports a continuation that finished before it attached as settled', async () => {
+      const { chat, state, onFinish } = setup();
+      state.error = new Error('dropped');
+      state.status = 'error';
+      chat.restorePendingAction(askAction, 500);
+
+      await chat.addToolOutput({ toolCallId: 'ask-1', output: 'Blue' });
+      await flush();
+
+      expect(onFinish).toHaveBeenCalledWith(expect.objectContaining({ isSettled: true }));
+      expect(chat.status).toBe('ready');
+      expect(chat.error).toBeUndefined();
+    });
+
+    it('submits edit, respond and session-scoped decisions as given', async () => {
+      const { chat, transport, stream, sent } = await pause(approvalAction);
+      await chat.addToolApprovalResponse({
+        id: 'call-1',
+        approved: true,
+        decision: 'edit',
+        editedArguments: { q: 'cats' },
+      });
+      await chat.addToolApprovalResponse({ id: 'call-2', approved: true, scope: 'session' });
+
+      expect(transport.resume).toHaveBeenCalledWith(
+        expect.objectContaining({
+          decisions: [
+            { tool_call_id: 'call-1', decision: 'edit', editedArguments: { q: 'cats' } },
+            { tool_call_id: 'call-2', decision: 'approve', scope: 'session' },
+          ],
+        }),
+      );
+      stream.push(finalEvent());
+      await sent;
+    });
+
+    it('stops a restored pause of a newer generation, not an older dropped one', async () => {
+      const { chat, stream, sent, transport } = await pause(askAction, {
+        resumeSelection: () => ({ endpoint: 'agents' }),
+      });
+      stream.push({ type: 'error', status: 0, data: 'offline' } as ChatEvent);
+      await sent;
+      const newer = {
+        ...askAction,
+        actionId: 'action-8',
+        streamId: 'convo-1',
+      } as Agents.PendingAction;
+      chat.restorePendingAction(newer, 900);
+
+      await chat.stop();
+
+      expect(transport.abort).toHaveBeenCalledWith(
+        expect.objectContaining({ generationCreatedAt: 900 }),
+      );
+      expect(chat.pendingAction).toBeUndefined();
+    });
+
+    it('holds new turns behind a restored pause until it is stopped on the server', async () => {
+      const { chat, transport } = setup({ resumeSelection: () => ({ endpoint: 'agents' }) });
+      chat.restorePendingAction(askAction, 500);
+
+      await expect(chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] })).rejects.toThrow(
+        'paused generation',
+      );
+      expect(transport.sendMessages).not.toHaveBeenCalled();
+
+      await chat.stop();
+      expect(transport.abort).toHaveBeenCalledWith({
+        chatId: 'convo-1',
+        endpoint: 'agents',
+        streamId: 'convo-1',
+        generationCreatedAt: 500,
+      });
+      expect(chat.pendingAction).toBeUndefined();
+    });
+
+    it('keeps the pause when only the connection drops', async () => {
+      const { chat, stream, sent } = await pause(askAction);
+      stream.push({ type: 'error', status: 0, data: 'offline' } as ChatEvent);
+      await sent;
+
+      expect(chat.status).toBe('error');
+      expect(chat.pendingAction).toBe(askAction);
+    });
+
+    it('refuses a decision once the batch is being resumed', async () => {
+      const single = {
+        ...approvalAction,
+        payload: {
+          ...approvalAction.payload,
+          action_requests: [{ name: 'search', arguments: '{}', tool_call_id: 'call-1' }],
+        },
+      } as Agents.PendingAction;
+      const { chat, transport, stream, sent } = await pause(single);
+      let accept: (() => void) | undefined;
+      transport.resume.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            accept = () =>
+              resolve({ streamId: 'convo-1', conversationId: 'convo-1', status: 'resuming' });
+          }),
+      );
+
+      const approved = chat.addToolApprovalResponse({ id: 'call-1', approved: true });
+      await flush();
+      await expect(chat.addToolApprovalResponse({ id: 'call-1', approved: false })).rejects.toThrow(
+        'already being resumed',
+      );
+      accept?.();
+      await approved;
+
+      expect(transport.resume).toHaveBeenCalledWith(
+        expect.objectContaining({
+          decisions: [{ tool_call_id: 'call-1', decision: 'approve' }],
+        }),
+      );
+      stream.push(finalEvent());
+      await sent;
+    });
+
+    it('drops the pause of a stopped generation whose stream disconnects instead of aborting', async () => {
+      const { chat, transport, stream, sent } = await pause(askAction);
+      transport.abort.mockImplementation(async () => {
+        stream.push({ type: 'error', status: 0, data: 'offline' } as ChatEvent);
+        return { success: true };
+      });
+
+      await chat.stop();
+      await sent;
+
+      expect(chat.pendingAction).toBeUndefined();
+    });
+
+    it('drops a pause that arrives while a confirmed stop is in flight', async () => {
+      const { chat, transport, stream } = setup();
+      let confirm: (() => void) | undefined;
+      transport.abort.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            confirm = () => resolve({ success: true });
+          }),
+      );
+      const turn = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      stream.push(stepEvent);
+      await flush();
+
+      const stopped = chat.stop();
+      stream.push({ type: 'pending_action', data: askAction });
+      await flush();
+      stream.push({ type: 'error', status: 0, data: 'offline' } as ChatEvent);
+      await flush();
+      confirm?.();
+      await stopped;
+      await turn;
+
+      expect(chat.pendingAction).toBeUndefined();
+    });
+
+    it('keeps the pause of a turn started while a slow stop was in flight', async () => {
+      const first = createStream({ streamId: 'convo-1', generationCreatedAt: 100 });
+      const second = createStream({ streamId: 'convo-1', generationCreatedAt: 200 });
+      let confirm: (() => void) | undefined;
+      const { chat, transport } = setup(
+        {},
+        {
+          sendMessages: jest
+            .fn()
+            .mockResolvedValueOnce({ status: 'stream', stream: first })
+            .mockResolvedValueOnce({ status: 'stream', stream: second }),
+          abort: jest.fn(
+            () =>
+              new Promise((resolve) => {
+                confirm = () => resolve({ success: true });
+              }),
+          ),
+        },
+      );
+      const firstTurn = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      const stopped = chat.stop();
+      first.push(finalEvent());
+      await firstTurn;
+
+      const secondTurn = chat.sendMessage({ parts: [{ type: 'text', text: 'Again' }] });
+      await flush();
+      second.push({ type: 'pending_action', data: askAction });
+      await flush();
+      confirm?.();
+      await stopped;
+
+      expect(transport.abort).toHaveBeenCalledTimes(1);
+      expect(chat.pendingAction).toBe(askAction);
+      second.push(finalEvent());
+      await secondTurn;
+    });
+
+    it('reports ready once a stop ends a pause its dropped connection left in error', async () => {
+      const { chat, stream, sent } = await pause(askAction);
+      stream.push({ type: 'error', status: 0, data: 'offline' } as ChatEvent);
+      await sent;
+      expect(chat.status).toBe('error');
+
+      await chat.stop();
+
+      expect(chat.pendingAction).toBeUndefined();
+      expect(chat.status).toBe('ready');
+      expect(chat.error).toBeUndefined();
+    });
+
+    it('drops the pause when the generation aborts or fails', async () => {
+      const aborted = await pause(askAction);
+      aborted.stream.push({ type: 'abort', data: {} } as ChatEvent);
+      await aborted.sent;
+      expect(aborted.chat.pendingAction).toBeUndefined();
+      await expect(
+        aborted.chat.addToolOutput({ toolCallId: 'ask-1', output: 'x' }),
+      ).rejects.toThrow('No question is pending');
+
+      const failed = await pause(askAction);
+      failed.stream.push({ type: 'error', data: 'boom' } as ChatEvent);
+      await failed.sent;
+      expect(failed.chat.pendingAction).toBeUndefined();
+    });
+
+    it('resumes a later pause with its own generation, not the previous one', async () => {
+      const first = createStream({ streamId: 'convo-1', generationCreatedAt: 100 });
+      const second = createStream({ streamId: 'convo-1' });
+      const { chat, transport } = setup(
+        { resumeSelection: () => ({ endpoint: 'agents' }) },
+        {
+          sendMessages: jest
+            .fn()
+            .mockResolvedValueOnce({ status: 'stream', stream: first })
+            .mockResolvedValueOnce({ status: 'stream', stream: second }),
+        },
+      );
+
+      const firstTurn = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      first.push(finalEvent());
+      await firstTurn;
+
+      const secondTurn = chat.sendMessage({ parts: [{ type: 'text', text: 'Again' }] });
+      await flush();
+      second.push({ type: 'pending_action', data: askAction });
+      await flush();
+      await chat.addToolOutput({ toolCallId: 'ask-1', output: 'x' });
+      /** The second stream names no generation, so the answer is fenced by its action alone. */
+      expect(transport.resume).toHaveBeenCalledTimes(1);
+      const [request] = (transport.resume as jest.Mock).mock.calls[0];
+      expect(request).toMatchObject({ actionId: askAction.actionId, answer: 'x' });
+      expect(request).not.toHaveProperty('generationCreatedAt');
+      expect(chat.pendingAction).toBeUndefined();
+      second.push(finalEvent());
+      await secondTurn;
+    });
+
+    it('refuses a decision for a call the pause does not hold', async () => {
+      const { chat, stream, sent } = await pause(approvalAction);
+
+      await expect(chat.addToolApprovalResponse({ id: 'other', approved: true })).rejects.toThrow(
+        'not awaiting approval',
+      );
+      await expect(chat.addToolOutput({ toolCallId: 'call-1', output: 'x' })).rejects.toThrow(
+        'No question is pending',
+      );
+
+      stream.push(finalEvent());
+      await sent;
+      await expect(chat.addToolApprovalResponse({ id: 'call-1', approved: true })).rejects.toThrow(
+        'No tool approval is pending',
+      );
+    });
+
+    it('answers a question with free text or keyed answers', async () => {
+      const { chat, transport, stream, sent } = await pause(askAction);
+
+      await expect(chat.addToolOutput({ toolCallId: 'other', output: 'x' })).rejects.toThrow(
+        'not awaiting an answer',
+      );
+      await chat.addToolOutput({ toolCallId: 'ask-1', output: 'Blue' });
+      expect(transport.resume).toHaveBeenCalledWith(
+        expect.objectContaining({ actionId: 'action-2', answer: 'Blue' }),
+      );
+
+      stream.push(finalEvent());
+      await sent;
+
+      chat.restorePendingAction(askAction, 400);
+      await chat.addToolOutput({ toolCallId: 'ask-1', output: { q1: 'Blue' } });
+      expect(transport.resume).toHaveBeenLastCalledWith(
+        expect.objectContaining({ generationCreatedAt: 400, answers: { q1: 'Blue' } }),
+      );
+    });
+
+    it('refuses to answer over a transport that cannot resume', async () => {
+      const { chat, transport, stream, sent } = await pause(askAction);
+      (transport as Partial<Transport>).resume = undefined;
+
+      await expect(chat.addToolOutput({ toolCallId: 'ask-1', output: 'Blue' })).rejects.toThrow(
+        'cannot resume',
+      );
+      expect(chat.pendingAction).toBe(askAction);
+
+      stream.push(finalEvent());
+      await sent;
+    });
+  });
+
   describe('stop answers and reattachment targets', () => {
     const steer = { steerId: 'steer-1', text: 'Shorter' };
+    const pausedAction = {
+      actionId: 'action-5',
+      streamId: 'new',
+      createdAt: 1,
+      payload: {
+        type: 'ask_user_question',
+        question: { question: 'Which?' },
+        tool_call_id: 'ask-5',
+      },
+    } as Agents.PendingAction;
 
     it('hands back the steers a stop found uninjected, under the conversation it stopped', async () => {
       const { chat, stream, transport } = setup();
@@ -2134,6 +3066,18 @@ describe('Chat', () => {
       expect(transport.abort).toHaveBeenCalledWith(
         expect.objectContaining({ abortKey: 'convo-9:response-9' }),
       );
+    });
+
+    it('reports a restored pause a reconnect finds finished elsewhere as settled', async () => {
+      const { chat, transport, onFinish } = setup();
+      chat.restorePendingAction({ ...pausedAction, streamId: 'convo-1' }, 500);
+      transport.reconnectToStream.mockResolvedValueOnce(null);
+
+      await chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 500 });
+
+      expect(chat.pendingAction).toBeUndefined();
+      expect(onFinish).toHaveBeenCalledTimes(1);
+      expect(onFinish).toHaveBeenCalledWith(expect.objectContaining({ isSettled: true }));
     });
 
     it('reattaches a dropped first turn under the conversation its sync frame assigned', async () => {
@@ -2530,6 +3474,145 @@ describe('Chat', () => {
       );
     });
 
+    it('keeps the pause of a generation whose stream failed while read, and a stop ends it', async () => {
+      const failing: ChatStream = {
+        streamId: 'convo-1',
+        close: () => undefined,
+        async *[Symbol.asyncIterator]() {
+          yield { type: 'pending_action', data: pausedAction } as ChatEvent;
+          throw new Error('Malformed frame');
+        },
+      };
+      const { chat, transport } = setup();
+      transport.sendMessages.mockResolvedValueOnce({ status: 'stream', stream: failing });
+
+      await chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+
+      /** The stream failed, not the generation, which still waits on its pause. */
+      expect(chat.status).toBe('error');
+      expect(chat.pendingAction?.actionId).toBe('action-5');
+      transport.abort.mockResolvedValueOnce({ success: true });
+      await chat.stop();
+      expect(transport.abort).toHaveBeenCalledTimes(1);
+      expect(chat.pendingAction).toBeUndefined();
+      transport.sendMessages.mockResolvedValueOnce({
+        status: 'settled',
+        conversationId: 'convo-1',
+        generationProtocolVersion: 2,
+      });
+      await expect(
+        chat.sendMessage({ parts: [{ type: 'text', text: 'Again' }] }),
+      ).resolves.toBeUndefined();
+    });
+
+    it('reports a continuation that ended while an earlier reconnect was still opening', async () => {
+      let open: ((stream: ChatStream | null) => void) | undefined;
+      const { chat, onFinish } = setup(
+        {},
+        {
+          reconnectToStream: jest.fn(
+            () =>
+              new Promise<ChatStream | null>((resolve) => {
+                open = resolve;
+              }),
+          ),
+        },
+      );
+      chat.restorePendingAction({ ...pausedAction, streamId: 'convo-1' }, 500);
+      const resumed = chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 500 });
+      await flush();
+
+      await chat.addToolOutput({ toolCallId: 'ask-5', output: 'Blue' });
+      open?.(null);
+      await resumed;
+
+      expect(chat.status).toBe('ready');
+      expect(onFinish).toHaveBeenCalledTimes(1);
+      expect(onFinish).toHaveBeenCalledWith(expect.objectContaining({ isSettled: true }));
+    });
+
+    it('ignores a status read that restores a pause this chat already resumed', async () => {
+      const { chat } = setup();
+      const action = { ...pausedAction, streamId: 'convo-1' };
+      chat.restorePendingAction(action, 500);
+      await chat.addToolOutput({ toolCallId: 'ask-5', output: 'Blue' });
+      await flush();
+
+      chat.restorePendingAction(action, 500);
+
+      expect(chat.pendingAction).toBeUndefined();
+    });
+
+    it('lets a completion callback start a turn once a stopped pause ended', async () => {
+      const next: Promise<void>[] = [];
+      const { chat, transport } = setup({
+        resumeSelection: () => ({ endpoint: 'agents' }),
+        onFinish: () => {
+          if (next.length > 0) {
+            return;
+          }
+          transport.sendMessages.mockResolvedValueOnce({
+            status: 'settled',
+            conversationId: 'convo-1',
+            generationProtocolVersion: 2,
+          });
+          next.push(chat.sendMessage({ parts: [{ type: 'text', text: 'Next' }] }));
+        },
+      });
+      transport.reconnectToStream.mockImplementation(
+        (request) =>
+          new Promise((_resolve, reject) => {
+            request.abortSignal?.addEventListener('abort', () => reject(new Error('aborted')));
+          }),
+      );
+      chat.restorePendingAction({ ...pausedAction, streamId: 'convo-1' }, 500);
+      const resumed = chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 500 });
+      await flush();
+
+      await chat.stop();
+      await resumed;
+
+      expect(next).toHaveLength(1);
+      await expect(next[0]).resolves.toBeUndefined();
+      expect(chat.pendingAction).toBeUndefined();
+    });
+
+    it('reports nothing for a stop answered after the chat was disposed', async () => {
+      for (const restore of [false, true]) {
+        let answer: ((result: ChatAbortResult) => void) | undefined;
+        const { chat, stream, transport, onFinish } = setup(
+          { resumeSelection: () => ({ endpoint: 'agents' }) },
+          {
+            abort: jest.fn(
+              () =>
+                new Promise((resolve) => {
+                  answer = resolve;
+                }),
+            ),
+          },
+        );
+        if (restore) {
+          chat.restorePendingAction({ ...pausedAction, streamId: 'convo-1' }, 500);
+        } else {
+          const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+          await flush();
+          stream.push({ type: 'error', status: 0, data: 'offline' } as ChatEvent);
+          await sent;
+        }
+        const finishes = onFinish.mock.calls.length;
+
+        const stopped = chat.stop();
+        await flush();
+        chat.dispose();
+        await expect(stopped).rejects.toThrow('The chat was disposed');
+        answer?.({ success: true, persistenceFailed: true });
+        await flush();
+
+        expect(transport.abort).toHaveBeenCalledTimes(1);
+        expect(onFinish).toHaveBeenCalledTimes(finishes);
+      }
+    });
+
     it('sends the request options of a turn to the generation that replaced it', async () => {
       const stream = createStream();
       const { chat, transport } = setup(
@@ -2553,6 +3636,183 @@ describe('Chat', () => {
 
       expect(transport.reconnectToStream).toHaveBeenCalledWith(
         expect.objectContaining({ ...options, chatId: 'convo-1', streamId: 'stream-2' }),
+      );
+    });
+
+    it('reattaches an answered first-turn pause under the conversation the server assigned', async () => {
+      const { chat, transport, onFinish } = setup(
+        { id: 'new' },
+        {
+          resume: jest.fn(async () => ({
+            streamId: 'convo-9',
+            conversationId: 'convo-9',
+            status: 'resuming' as const,
+          })),
+        },
+      );
+
+      chat.restorePendingAction(pausedAction, 500);
+      await chat.addToolOutput({ toolCallId: 'ask-5', output: 'Blue' });
+      await flush();
+
+      expect(transport.reconnectToStream).toHaveBeenCalledWith(
+        expect.objectContaining({ chatId: 'convo-9', streamId: 'convo-9' }),
+      );
+      expect(onFinish).toHaveBeenCalledWith(
+        expect.objectContaining({ isSettled: true, conversationId: 'convo-9' }),
+      );
+    });
+
+    it('keeps the assigned conversation of a continuation that dropped before its sync frame', async () => {
+      const continuation = createStream({ streamId: 'convo-9', generationCreatedAt: 500 });
+      const { chat, transport, onFinish } = setup(
+        { id: 'new', resumeSelection: () => ({ endpoint: 'agents' }) },
+        {
+          resume: jest.fn(async () => ({
+            streamId: 'convo-9',
+            conversationId: 'convo-9',
+            status: 'resuming' as const,
+          })),
+          reconnectToStream: jest.fn(async () => continuation),
+        },
+      );
+      chat.restorePendingAction(pausedAction, 500);
+      await chat.addToolOutput({ toolCallId: 'ask-5', output: 'Blue' });
+      await flush();
+      continuation.push({ type: 'error', status: 0, data: 'offline' } as ChatEvent);
+      await flush();
+      expect(onFinish).toHaveBeenLastCalledWith(expect.objectContaining({ isDisconnect: true }));
+      transport.reconnectToStream.mockResolvedValueOnce(null);
+
+      await chat.resumeStream();
+
+      expect(transport.reconnectToStream).toHaveBeenLastCalledWith(
+        expect.objectContaining({ chatId: 'convo-9' }),
+      );
+      expect(onFinish).toHaveBeenLastCalledWith(
+        expect.objectContaining({ isSettled: true, conversationId: 'convo-9' }),
+      );
+    });
+
+    it('ends a reattachment of the same generation by a detached stop answered after it', async () => {
+      const { chat, stream, transport, onFinish } = setup({
+        resumeSelection: () => ({ endpoint: 'agents' }),
+      });
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      stream.push({ type: 'pending_action', data: pausedAction });
+      stream.push({ type: 'error', status: 0, data: 'offline' } as ChatEvent);
+      await sent;
+      expect(chat.pendingAction?.actionId).toBe('action-5');
+
+      let answer: (result: ChatAbortResult) => void = () => undefined;
+      transport.abort.mockImplementationOnce(
+        () =>
+          new Promise<ChatAbortResult>((resolve) => {
+            answer = resolve;
+          }),
+      );
+      const stopped = chat.stop();
+      await flush();
+      const reattached = createStream({ streamId: 'convo-1', generationCreatedAt: 100 });
+      transport.reconnectToStream.mockResolvedValueOnce(reattached);
+      const resumed = chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 100 });
+      await flush();
+      expect(chat.connection).toBe('live');
+
+      answer({ success: true });
+      await flush();
+      reattached.close();
+      await resumed;
+
+      await expect(stopped).resolves.toEqual({ status: 'stopped' });
+      expect(transport.abort).toHaveBeenCalledTimes(1);
+      expect(chat.status).toBe('ready');
+      expect(chat.pendingAction).toBeUndefined();
+      expect(onFinish).toHaveBeenLastCalledWith(
+        expect.objectContaining({ isAbort: true, isDisconnect: false }),
+      );
+    });
+
+    it('ends a reattachment of a restored pause by the stop answered after it', async () => {
+      const { chat, transport, onFinish } = setup({
+        resumeSelection: () => ({ endpoint: 'agents' }),
+      });
+      chat.restorePendingAction(pausedAction, 500);
+      let answer: (result: ChatAbortResult) => void = () => undefined;
+      transport.abort.mockImplementationOnce(
+        () =>
+          new Promise<ChatAbortResult>((resolve) => {
+            answer = resolve;
+          }),
+      );
+      const stopped = chat.stop();
+      await flush();
+      const reattached = createStream({ streamId: 'convo-1', generationCreatedAt: 500 });
+      transport.reconnectToStream.mockResolvedValueOnce(reattached);
+      const resumed = chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 500 });
+      await flush();
+      expect(chat.connection).toBe('live');
+
+      answer({ success: true });
+      await flush();
+      reattached.close();
+      await resumed;
+
+      await expect(stopped).resolves.toEqual({ status: 'stopped' });
+      expect(transport.abort).toHaveBeenCalledTimes(1);
+      expect(chat.status).toBe('ready');
+      expect(chat.pendingAction).toBeUndefined();
+      expect(onFinish).toHaveBeenLastCalledWith(
+        expect.objectContaining({ isAbort: true, isDisconnect: false }),
+      );
+    });
+
+    it('does not end another generation a restored pause reattachment found by its stop', async () => {
+      const { chat, transport, onFinish } = setup({
+        resumeSelection: () => ({ endpoint: 'agents' }),
+      });
+      chat.restorePendingAction(pausedAction, 500);
+      let answer: (result: ChatAbortResult) => void = () => undefined;
+      transport.abort.mockImplementationOnce(
+        () =>
+          new Promise<ChatAbortResult>((resolve) => {
+            answer = resolve;
+          }),
+      );
+      const stopped = chat.stop();
+      await flush();
+      const newer = createStream({ streamId: 'convo-1', generationCreatedAt: 700 });
+      transport.reconnectToStream.mockResolvedValueOnce(newer);
+      const resumed = chat.resumeStream({ streamId: 'convo-1' });
+      await flush();
+
+      answer({ success: true });
+      await stopped;
+      newer.close();
+      await resumed;
+
+      expect(onFinish).toHaveBeenLastCalledWith(expect.objectContaining({ isDisconnect: true }));
+    });
+
+    it('addresses a stop made as a newer reattachment clears a restored pause to that one', async () => {
+      const { chat, transport } = setup({
+        resumeSelection: () => ({ endpoint: 'agents' }),
+      });
+      transport.reconnectToStream.mockImplementationOnce(() => new Promise(() => undefined));
+      chat.restorePendingAction(pausedAction, 100);
+      const stops: Promise<unknown>[] = [];
+      chat.subscribe(() => {
+        if (!chat.pendingAction && stops.length === 0) {
+          stops.push(chat.stop().catch(() => undefined));
+        }
+      });
+
+      void chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 200 });
+      await Promise.all(stops);
+
+      expect(transport.abort).toHaveBeenCalledWith(
+        expect.objectContaining({ generationCreatedAt: 200 }),
       );
     });
 
@@ -2629,6 +3889,60 @@ describe('Chat', () => {
         );
       },
     );
+
+    it('ignores a late status read restoring a pause whose generation was stopped', async () => {
+      const { chat, stream } = setup({ resumeSelection: () => ({ endpoint: 'agents' }) });
+      chat.restorePendingAction(pausedAction, 500);
+      await expect(chat.stop()).resolves.toEqual({ status: 'stopped' });
+
+      chat.restorePendingAction(pausedAction, 500);
+
+      expect(chat.pendingAction).toBeUndefined();
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Next' }] });
+      await flush();
+      stream.push(finalEvent());
+      await expect(sent).resolves.toBeUndefined();
+    });
+
+    it('ignores a late status read restoring a streamed pause of a stopped dropped generation', async () => {
+      const { chat, stream, transport } = setup({
+        resumeSelection: () => ({ endpoint: 'agents' }),
+      });
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      stream.push({ type: 'pending_action', data: pausedAction });
+      stream.push({ type: 'error', status: 0, data: 'offline' } as ChatEvent);
+      await sent;
+      await expect(chat.stop()).resolves.toEqual({ status: 'stopped' });
+
+      chat.restorePendingAction(pausedAction, 100);
+
+      expect(chat.pendingAction).toBeUndefined();
+      const next = createStream({ streamId: 'convo-1', generationCreatedAt: 200 });
+      transport.sendMessages.mockResolvedValueOnce({ status: 'stream', stream: next });
+      const again = chat.sendMessage({ parts: [{ type: 'text', text: 'Next' }] });
+      await flush();
+      next.push(finalEvent());
+      await expect(again).resolves.toBeUndefined();
+    });
+
+    it('answers a first-turn pause under the conversation its sync frame assigned', async () => {
+      const { chat, stream, transport } = setup({ id: 'new' });
+      void chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      stream.push({
+        type: 'sync',
+        data: { conversationId: 'convo-9', responseMessage: placeholder },
+      } as ChatEvent);
+      stream.push({ type: 'pending_action', data: pausedAction });
+      await flush();
+
+      await chat.addToolOutput({ toolCallId: 'ask-5', output: 'Blue' });
+
+      expect(transport.resume).toHaveBeenCalledWith(
+        expect.objectContaining({ conversationId: 'convo-9', actionId: 'action-5' }),
+      );
+    });
 
     it('still stops a dropped generation after a retry rejected as an unnegotiated replacement', async () => {
       const { chat, stream, transport } = setup({
@@ -2726,6 +4040,25 @@ describe('Chat', () => {
       await sent;
       expect(transport.abort).toHaveBeenCalledWith(
         expect.objectContaining({ abortKey: 'convo-9:response-1' }),
+      );
+    });
+
+    it('keeps the stop target of a dropped generation when a stale pause of a stopped one is read', async () => {
+      const { chat, stream, transport } = setup({
+        resumeSelection: () => ({ endpoint: 'agents' }),
+      });
+      chat.restorePendingAction(pausedAction, 500);
+      await chat.stop();
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      stream.push({ type: 'error', status: 0, data: 'offline' } as ChatEvent);
+      await sent;
+
+      chat.restorePendingAction(pausedAction, 500);
+
+      await expect(chat.stop()).resolves.toEqual({ status: 'stopped' });
+      expect(transport.abort).toHaveBeenLastCalledWith(
+        expect.objectContaining({ streamId: 'convo-1', generationCreatedAt: 100 }),
       );
     });
 
@@ -2832,6 +4165,21 @@ describe('Chat', () => {
       );
     });
 
+    it('ignores a late status read for any generation a stop ended, not only the latest', async () => {
+      const { chat, transport } = setup({ resumeSelection: () => ({ endpoint: 'agents' }) });
+      const older = { ...pausedAction, streamId: 'convo-1' };
+      const newer = { ...older, actionId: 'action-6' };
+
+      chat.restorePendingAction(older, 500);
+      await chat.stop();
+      chat.restorePendingAction(newer, 600);
+      await chat.stop();
+      chat.restorePendingAction(older, 500);
+
+      expect(transport.abort).toHaveBeenCalledTimes(2);
+      expect(chat.pendingAction).toBeUndefined();
+    });
+
     it('reports a cancelled start the server may still run as a disconnect, not an abort', async () => {
       const { chat, onFinish } = setup(
         {},
@@ -2849,6 +4197,30 @@ describe('Chat', () => {
       );
       expect(chat.status).toBe('error');
       await expect(chat.stop()).resolves.toEqual({ status: 'unaddressable' });
+    });
+
+    it('answers a pause on a reattached stream by the dropped generation it continued', async () => {
+      const reattached = createStream({ streamId: 'convo-1' });
+      const { chat, stream, transport } = setup(
+        { resumeSelection: () => ({ endpoint: 'agents' }) },
+        { reconnectToStream: jest.fn(async () => reattached) },
+      );
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      stream.push({ type: 'error', status: 0, data: 'offline' } as ChatEvent);
+      await sent;
+
+      const resumed = chat.resumeStream();
+      await flush();
+      reattached.push({ type: 'pending_action', data: { ...pausedAction, streamId: 'convo-1' } });
+      await flush();
+      await chat.addToolOutput({ toolCallId: 'ask-5', output: 'Blue' });
+      reattached.push(finalEvent());
+      await resumed;
+
+      expect(transport.resume).toHaveBeenCalledWith(
+        expect.objectContaining({ actionId: 'action-5', generationCreatedAt: 100 }),
+      );
     });
 
     it('reports the stored tail when a local turn without a named response reattaches', async () => {
@@ -3035,6 +4407,34 @@ describe('Chat', () => {
       expect(chat.messages.map((message) => message.messageId)).toEqual(['user-1', 'response-1']);
     });
 
+    it('ignores a late status read for a generation whose own stream ended it', async () => {
+      const { chat, stream } = setup();
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      stream.push(finalEvent());
+      await sent;
+
+      chat.restorePendingAction({ ...pausedAction, expiresAt: Date.now() + 60_000 }, 100);
+
+      expect(chat.pendingAction).toBeUndefined();
+    });
+
+    it('ignores a late status read for a generation a reattachment found finished', async () => {
+      const { chat, stream, transport } = setup({
+        resumeSelection: () => ({ endpoint: 'agents' }),
+      });
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      stream.push({ type: 'error', status: 0, data: 'offline' } as ChatEvent);
+      await sent;
+      transport.reconnectToStream.mockResolvedValueOnce(null);
+      await chat.resumeStream();
+
+      chat.restorePendingAction({ ...pausedAction, expiresAt: Date.now() + 60_000 }, 100);
+
+      expect(chat.pendingAction).toBeUndefined();
+    });
+
     it('reports a lost start stopped once its late stream was stopped on the server', async () => {
       let deliver: ((result: { status: 'stream'; stream: ChatStream }) => void) | undefined;
       const late = createStream({ streamId: 'convo-1', generationCreatedAt: 300 });
@@ -3059,6 +4459,42 @@ describe('Chat', () => {
       await expect(chat.stop()).resolves.toEqual({ status: 'idle' });
     });
 
+    it('keeps a dropped generation stoppable through a late status read of a stopped one', async () => {
+      const { chat, stream, transport } = setup({
+        resumeSelection: () => ({ endpoint: 'agents' }),
+      });
+      chat.restorePendingAction(pausedAction, 50);
+      await expect(chat.stop()).resolves.toEqual({ status: 'stopped' });
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      stream.push({ type: 'error', status: 0, data: 'offline' } as ChatEvent);
+      await sent;
+      transport.abort.mockClear();
+
+      chat.restorePendingAction({ ...pausedAction, expiresAt: Date.now() + 60_000 }, 50);
+
+      expect(chat.pendingAction).toBeUndefined();
+      await expect(chat.stop()).resolves.toEqual({ status: 'stopped' });
+      expect(transport.abort).toHaveBeenCalledWith(
+        expect.objectContaining({ streamId: 'convo-1', generationCreatedAt: 100 }),
+      );
+    });
+
+    it('reports the response of a restored pause a stop found already gone as unknown', async () => {
+      const { chat, state, transport, onFinish } = setup({
+        resumeSelection: () => ({ endpoint: 'assistants' }),
+      });
+      state.replaceMessages([userMessage, { ...placeholder, messageId: 'other-branch' }]);
+      transport.abort.mockResolvedValue(null);
+      chat.restorePendingAction({ ...pausedAction, expiresAt: Date.now() + 60_000 }, 500);
+
+      await expect(chat.stop()).resolves.toEqual({ status: 'stopped' });
+
+      expect(onFinish).toHaveBeenLastCalledWith(
+        expect.objectContaining({ isSettled: true, isResponseUnknown: true, message: undefined }),
+      );
+    });
+
     it('settles a named reattachment that finds its generation already finished', async () => {
       const { chat, transport, onFinish } = setup({
         resumeSelection: () => ({ endpoint: 'agents' }),
@@ -3071,6 +4507,31 @@ describe('Chat', () => {
       await chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 300 });
       expect(onFinish).toHaveBeenCalledTimes(1);
       expect(onFinish).toHaveBeenCalledWith(expect.objectContaining({ isSettled: true }));
+    });
+
+    it('ignores a late status read for a late start a stop already ended', async () => {
+      let deliver: ((result: { status: 'stream'; stream: ChatStream }) => void) | undefined;
+      const late = createStream({ streamId: 'convo-1', generationCreatedAt: 300 });
+      const { chat, transport } = setup();
+      transport.sendMessages.mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            deliver = resolve;
+          }),
+      );
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      await chat.stop();
+      await sent;
+      deliver?.({ status: 'stream', stream: late });
+      await flush();
+      expect(transport.abort).toHaveBeenCalledWith(
+        expect.objectContaining({ generationCreatedAt: 300 }),
+      );
+
+      chat.restorePendingAction({ ...pausedAction, expiresAt: Date.now() + 60_000 }, 300);
+
+      expect(chat.pendingAction).toBeUndefined();
     });
   });
 
@@ -3989,6 +5450,105 @@ describe('Chat attachments and reported conversations', () => {
         expect(state.statuses).toHaveLength(atDispose?.statuses ?? -1);
         expect(state.connection).toBe(atDispose?.connection);
         expect(rows(state.messages)).toEqual(atDispose?.rows);
+      },
+    );
+
+    const toolCall = (id: string) => ({
+      type: ContentTypes.TOOL_CALL,
+      tool_call: {
+        id,
+        name: 'search',
+        args: '{}',
+        type: 'tool_call',
+        approval: { actionId: 'action-1', allowed_decisions: ['approve', 'reject'] },
+      },
+    });
+    const approval = {
+      actionId: 'action-1',
+      streamId: 'convo-1',
+      conversationId: 'convo-1',
+      createdAt: 1,
+      payload: {
+        type: 'tool_approval',
+        action_requests: [{ name: 'search', arguments: '{}', tool_call_id: 'call-1' }],
+        review_configs: [],
+      },
+    } as Agents.PendingAction;
+
+    /** Starts a turn over `state` whose stream pauses for approval of `call-1`. */
+    const pauseForApproval = async (state: ChatState) => {
+      const stream = createStream({ streamId: 'convo-1', generationCreatedAt: 100 });
+      const paused = setup(
+        {
+          state,
+          resumeSelection: () => ({ endpoint: 'agents', agent_id: 'agent-1' }),
+          prepareRequest: jest.fn(() => ({
+            payload,
+            messages: (current: TMessage[]) => [
+              ...current,
+              userMessage,
+              { ...placeholder, content: [toolCall('call-1')] } as TMessage,
+            ],
+          })),
+        },
+        { sendMessages: jest.fn(async () => ({ status: 'stream' as const, stream })) },
+      );
+      const sent = paused.chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      await flush();
+      stream.push({ type: 'pending_action', data: approval });
+      await flush();
+      return { ...paused, stream, sent };
+    };
+
+    const isDecided = (messages: TMessage[]) =>
+      messages.some((m) => JSON.stringify(m.content ?? []).includes('"decision":"approve"'));
+
+    it.each([
+      ['over a store that reports writes synchronously', false],
+      ['over a structurally shared store', true],
+    ])(
+      'keeps a row a store subscriber appended inside an approval write and resumes once, %s',
+      async (_label, shared) => {
+        const state = createStore(shared);
+        const { chat, transport, stream, sent } = await pauseForApproval(state);
+        state.subscribe?.(() => {
+          const current = state.messages;
+          if (isDecided(current) && !current.some((m) => m.messageId === external.messageId)) {
+            state.replaceMessages([...current, external]);
+          }
+        });
+
+        await chat.addToolApprovalResponse({ id: 'call-1', approved: true });
+
+        expect(transport.resume).toHaveBeenCalledTimes(1);
+        expect(state.messages.map((m) => m.messageId)).toContain(external.messageId);
+        stream.push(finalEvent({ requestMessage: null, responseMessage: null }));
+        await sent;
+        expect(state.messages.map((m) => m.messageId)).toContain(external.messageId);
+      },
+    );
+
+    it.each([
+      ['over a store that reports writes synchronously', false],
+      ['over a structurally shared store', true],
+    ])(
+      'sends no resume once a store subscriber disposes the chat inside an approval write, %s',
+      async (_label, shared) => {
+        const state = createStore(shared);
+        const { chat, transport, sent } = await pauseForApproval(state);
+        let disposed = false;
+        state.subscribe?.(() => {
+          if (!disposed && isDecided(state.messages)) {
+            disposed = true;
+            chat.dispose();
+          }
+        });
+
+        await chat.addToolApprovalResponse({ id: 'call-1', approved: true }).catch(() => undefined);
+        await sent;
+
+        expect(disposed).toBe(true);
+        expect(transport.resume).not.toHaveBeenCalled();
       },
     );
   });
