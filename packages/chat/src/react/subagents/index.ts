@@ -8,3 +8,4 @@ export * from './adapters';
 export * from './recovery';
 export * from './eventSelection';
 export * from './attachments';
+export * from './parents';

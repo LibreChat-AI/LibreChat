@@ -34,7 +34,8 @@ const mockCompletedChild: ParentSubagentSummary = {
 };
 let mockChildrenByMessage = new Map<string, ParentSubagentSummary[]>();
 
-jest.mock('./ParentSubagentsProvider', () => ({
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useParentSubagents: () => ({
     byMessageId: mockChildrenByMessage,
     byThreadId: new Map([['event-thread', mockChild]]),

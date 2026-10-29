@@ -1,7 +1,6 @@
 import { useCallback, useMemo } from 'react';
-import { durableSubagentSelection } from '@librechat/chat/react';
+import { durableSubagentSelection, useParentSubagents } from '@librechat/chat/react';
 import type { ActiveSubagentPanel } from '@librechat/chat/react';
-import { useParentSubagents } from './ParentSubagentsProvider';
 import { useShareContext } from '~/Providers/ShareContext';
 import { useOpenSubagentPanel } from './surface';
 import { useMessageContext } from '~/Providers';
