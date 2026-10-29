@@ -1526,6 +1526,7 @@ const OFFICE_EXTENSIONS: Record<string, OfficeHtmlBucket> = {
   docx: 'docx',
   csv: 'csv',
   xlsx: 'spreadsheet',
+  xlsm: 'spreadsheet',
   xls: 'spreadsheet',
   ods: 'spreadsheet',
   pptx: 'presentation',
