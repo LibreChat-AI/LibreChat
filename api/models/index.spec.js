@@ -3,14 +3,17 @@ jest.mock('@librechat/api', () => ({
   matchModelName: jest.fn(),
   findMatchingPattern: jest.fn(),
   isDeploymentSkillId: jest.fn(),
-  createChannelStorageConfigReader: jest.fn(() => jest.fn()),
+  createChannelStorageConfigReader: jest.fn(() => ({
+    getConfig: jest.fn(),
+    initialize: jest.fn(),
+  })),
   createMessageBudgetReader: jest.fn(() => ({ getBudget: jest.fn(), initialize: jest.fn() })),
 }));
 jest.mock('~/cache/getLogStores', () => jest.fn());
 
 const { createMethods } = require('@librechat/data-schemas');
 const { createMessageBudgetReader, createChannelStorageConfigReader } = require('@librechat/api');
-const { initializeMessageBudget } = require('./index');
+const { initializeMessageBudget, initializeChannelStorageConfig } = require('./index');
 const reader = createMessageBudgetReader.mock.results[0].value;
 const channelStorageConfigReader = createChannelStorageConfigReader.mock.results[0].value;
 const { getMCPAppMessageBudget, getChannelStorageConfig: channelStorageConfigDependency } =
@@ -26,7 +29,8 @@ describe('message App budget dependency wiring', () => {
 
 describe('channel storage configuration dependency wiring', () => {
   it('injects the deployment reader without reading config during module initialization', () => {
-    expect(channelStorageConfigDependency).toBe(channelStorageConfigReader);
-    expect(channelStorageConfigReader).not.toHaveBeenCalled();
+    expect(channelStorageConfigDependency).toBe(channelStorageConfigReader.getConfig);
+    expect(initializeChannelStorageConfig).toBe(channelStorageConfigReader.initialize);
+    expect(channelStorageConfigReader.getConfig).not.toHaveBeenCalled();
   });
 });

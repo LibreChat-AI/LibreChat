@@ -22,6 +22,7 @@ jest.mock('@librechat/data-schemas', () => {
 
 jest.mock('~/models', () => ({
   initializeMessageBudget: jest.fn(),
+  initializeChannelStorageConfig: jest.fn(),
   getApplicableConfigs: jest.fn().mockResolvedValue([]),
   getUserPrincipals: jest.fn().mockResolvedValue([]),
 }));
