@@ -823,19 +823,11 @@ export class Chat {
     if (generation.stopping) {
       return generation.stopping;
     }
+    /** A start sent while the stop waited may run in a conversation of its own, which wins. */
     const since = this.latestStart;
     const answer = this.abortOnServer(target).then((result) => {
       generation.stopped = true;
-      /** A start sent while the stop waited may run in a conversation of its own, which wins. */
-      const adopts = !this.startsAfter(since);
-      if (isStreamAbort(result)) {
-        generation.stoppedConversationId = this.stoppedConversationId(generation, result);
-        if (adopts) {
-          this.learnConversation(generation.stoppedConversationId);
-        }
-      } else if (result && adopts) {
-        this.learnConversation(result.conversation?.conversationId);
-      }
+      this.adoptStopAnswer(generation, result, since);
       generation.settledAs = getSettledAs(result);
       if (!generation.settledAs && isStreamAbort(result) && result.persistenceFailed) {
         generation.persistenceFailed = true;
@@ -934,7 +926,11 @@ export class Chat {
       return;
     }
     void this.abortOnServer(target).then(
-      () => this.resolveLostStart(active),
+      (result) => {
+        /** The answer names the conversation the start created, unless a newer start owns the chat. */
+        this.adoptStopAnswer(active.generation, result, active);
+        this.resolveLostStart(active);
+      },
       (error: unknown) =>
         this.disposed
           ? undefined
@@ -942,6 +938,28 @@ export class Chat {
               this.init.onError,
               error instanceof Error ? error : new Error(String(error)),
             ),
+    );
+  }
+
+  /**
+   * Records the conversation a stop's answer names for `generation`, which a chat started under
+   * `new` adopts unless a start sent after `since` may run in a conversation of its own.
+   */
+  private adoptStopAnswer(
+    generation: Generation,
+    result: ChatAbortResult,
+    since: ActiveRequest | undefined,
+  ): void {
+    if (isStreamAbort(result)) {
+      generation.stoppedConversationId = this.stoppedConversationId(generation, result);
+    }
+    if (this.startsAfter(since)) {
+      return;
+    }
+    this.learnConversation(
+      isStreamAbort(result)
+        ? generation.stoppedConversationId
+        : result?.conversation?.conversationId,
     );
   }
 
@@ -1215,14 +1233,10 @@ export class Chat {
         /** A start the server attached to a generation already running is an attachment too. */
         active.attached = result.stream.resumed === true;
       } else if (result.status === 'replaced') {
-        const rollback = active.optimistic;
-        if (rollback) {
-          /** The server ran a newer generation instead, so this turn's optimistic write is undone. */
-          await this.executor.run(() => {
-            this.write(undoOptimisticWrite(rollback, this.messages));
-          });
-        }
-        /** The replacement it names, so a stream of yet another generation gets its own record. */
+        /**
+         * The replacement it names, so a stream of yet another generation gets its own record.
+         * Recorded before the rollback notifies, so a stop made then addresses the replacement.
+         */
         active.inheritedGeneration = result.generationCreatedAt ?? undefined;
         active.reattach = { streamId: result.streamId };
         active.attached = true;
@@ -1230,6 +1244,13 @@ export class Chat {
         active.generation.responseId = undefined;
         active.generation.responseUnknown = true;
         active.generation.conversationId = result.conversationId;
+        const rollback = active.optimistic;
+        if (rollback) {
+          /** The server ran a newer generation instead, so this turn's optimistic write is undone. */
+          await this.executor.run(() => {
+            this.write(undoOptimisticWrite(rollback, this.messages));
+          });
+        }
         if (signal.aborted) {
           throw signal.reason;
         }

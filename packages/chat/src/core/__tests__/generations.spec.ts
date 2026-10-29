@@ -14,6 +14,7 @@ import type {
   ChatTransport,
   ChatConnection,
   ChatAbortResult,
+  ChatSendResult,
 } from '../types';
 import { Chat } from '../chat';
 
@@ -1422,4 +1423,66 @@ describe('Chat disposed while a confirmed stop ends its request', () => {
       expect(h.chat.messages).toBe(messages);
     },
   );
+});
+
+describe('Chat stop answers for a start answered late', () => {
+  it('(7) a late stream under `new` stopped by its own stop answer names the conversation the next turn uses', async () => {
+    const h = createHarness({
+      id: 'new',
+      prepareRequest: () => ({
+        payload: { ...payload, conversationId: null } as unknown as TPayload,
+        messages: [userMessage, placeholder],
+        responseMessageId: 'response-1',
+      }),
+    });
+    let answer: ((result: ChatSendResult) => void) | undefined;
+    h.transport.sendMessages.mockImplementationOnce(
+      () =>
+        new Promise<ChatSendResult>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const first = h.chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+    await flush();
+    expect((await h.chat.stop()).status).toBe('unaddressable');
+    await first;
+    h.transport.abort.mockResolvedValueOnce({ success: true, aborted: createdUnder });
+    answer?.({ status: 'stream', stream: createStream({ streamId: createdUnder }) });
+    await flush();
+
+    expect(h.chat.conversationId).toBe(createdUnder);
+    expect(h.chat.status).toBe('ready');
+  });
+});
+
+describe('Chat replacements and the notifications their rollback sends', () => {
+  it('a stop a subscriber sends while the replaced turn is undone reaches the replacement', async () => {
+    const h = createHarness();
+    h.transport.sendMessages.mockResolvedValueOnce({
+      status: 'replaced',
+      generationProtocolVersion: 2,
+      conversationId: 'convo-1',
+      streamId: 'stream-2',
+      generationCreatedAt: 200,
+    });
+    h.transport.reconnectToStream.mockImplementationOnce(() => new Promise(() => undefined));
+    h.transport.abort.mockResolvedValueOnce({ success: true, aborted: 'stream-2' });
+    let stopping: Promise<ChatStopResult> | undefined;
+    let written = false;
+    const unsubscribe = h.chat.subscribe(() => {
+      written ||= h.chat.messages.length > 0;
+      if (!stopping && written && h.chat.messages.length === 0) {
+        stopping = h.chat.stop();
+      }
+    });
+    send(h);
+    await flush();
+    unsubscribe();
+
+    expect(stopping).toBeDefined();
+    expect((await stopping)?.status).toBe('stopped');
+    expect(h.transport.abort).toHaveBeenCalledWith(
+      expect.objectContaining({ streamId: 'stream-2', generationCreatedAt: 200 }),
+    );
+  });
 });
