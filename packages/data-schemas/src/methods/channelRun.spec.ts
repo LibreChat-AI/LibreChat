@@ -3,6 +3,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { ChannelRunRecord } from '~/models/channelRun';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelRunStorage } from './channelRun';
+import { createUserMethods } from './user';
 import { createModels } from '~/models';
 
 let mongo: MongoMemoryReplSet;
@@ -459,4 +460,71 @@ it('does not replay an admitted event through a different principal or linked ac
     await expect(storage.admit({ ...input, agentId: 'another-agent' }, 101)).rejects.toMatchObject({
       code: 'event_conflict',
     });
+  }));
+
+it('erases channel request/output and legacy lane identity before deleting its account', () =>
+  scope(async () => {
+    const user = await mongoose.models.User.create({
+      email: 'channel-erasure@example.com',
+      provider: 'local',
+      tenantId,
+    });
+    const userId = String(user._id);
+    const input = { ...event(), principal: { ...event().principal, userId } };
+    const own = await storage.admit(input, 100);
+    const other = await storage.admit(event('other', 'other-owner'), 100);
+    await mongoose.models.ChannelLane.updateOne(
+      { laneId: own.run.laneId },
+      { $unset: { userId: 1 } },
+    );
+    await createUserMethods(mongoose).deleteUserById(userId);
+    expect(await storage.read(tenantId, 'channel', own.run.runId)).toBeNull();
+    expect(await mongoose.models.ChannelLane.exists({ laneId: own.run.laneId })).toBeNull();
+    expect(await storage.read(tenantId, 'channel', other.run.runId)).not.toBeNull();
+    await expect(storage.admit(input, 101)).rejects.toMatchObject({ code: 'invalid_transition' });
+  }));
+
+it('serializes account erasure with an already inserting channel event', () =>
+  scope(async () => {
+    const user = await mongoose.models.User.create({
+      email: 'channel-erasure-race@example.com',
+      provider: 'local',
+      tenantId,
+    });
+    const userId = String(user._id);
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const collection = mongoose.models.ChannelRun.collection;
+    const insert = collection.insertOne.bind(collection);
+    const paused = jest.spyOn(collection, 'insertOne').mockImplementation(async (...args) => {
+      entered();
+      await gate;
+      return insert(...args);
+    });
+    const pending = storage.admit({ ...event(), principal: { ...event().principal, userId } }, 100);
+    await started;
+    let erased = false;
+    const deletion = createUserMethods(mongoose)
+      .deleteUserById(userId)
+      .then((result) => {
+        erased = true;
+        return result;
+      });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(erased).toBe(false);
+    } finally {
+      release();
+      paused.mockRestore();
+    }
+    await pending;
+    await deletion;
+    expect(await mongoose.models.ChannelRun.exists({ 'principal.userId': userId })).toBeNull();
+    expect(await mongoose.models.ChannelLane.exists({ userId })).toBeNull();
   }));

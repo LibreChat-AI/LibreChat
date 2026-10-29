@@ -11,6 +11,8 @@ import type {
 import type { ClientSession } from 'mongoose';
 import type { ChannelRunRecord, ChannelLaneRecord } from '~/models/channelRun';
 import type { StoredResponseRecord } from '~/models/response';
+import { responseScopeKeys, initializeResponseScopes } from './responseScope';
+import { createResponseScopeModel } from '~/models/responseScope';
 import { createChannelIndexGate } from './channelIndexes';
 import { getTenantId } from '~/config/tenantContext';
 
@@ -424,6 +426,14 @@ export function createChannelRunStorage(mongoose: typeof import('mongoose')): Ch
       });
     },
     async admit(input, now) {
+      const [ownerKey] = responseScopeKeys(
+        {
+          userId: input.principal.userId,
+          tenantId: input.tenantId === '_' ? undefined : input.tenantId,
+        },
+        '',
+      );
+      await initializeResponseScopes(mongoose, [ownerKey]);
       const eventKey = {
         tenantId: input.tenantId,
         channelId: input.channelId,
@@ -439,6 +449,12 @@ export function createChannelRunStorage(mongoose: typeof import('mongoose')): Ch
         input.principal,
       );
       return transaction(async (session) => {
+        const admitted = await createResponseScopeModel(mongoose).updateOne(
+          { _id: ownerKey, closed: false },
+          { $inc: { revision: 1 } },
+          { session },
+        );
+        if (admitted.matchedCount !== 1) throw new ChannelRunConflict('invalid_transition');
         const existing = await runs().findOne(eventKey).session(session).lean();
         if (existing) {
           if (
@@ -452,7 +468,13 @@ export function createChannelRunStorage(mongoose: typeof import('mongoose')): Ch
         const lane = await lanes()
           .findOneAndUpdate(
             { tenantId: input.tenantId, laneId },
-            { $inc: { nextSequence: 1 }, $setOnInsert: { channelId: input.channelId } },
+            {
+              $inc: { nextSequence: 1 },
+              $setOnInsert: {
+                channelId: input.channelId,
+                userId: input.principal.userId,
+              },
+            },
             { upsert: true, new: true, session },
           )
           .lean();

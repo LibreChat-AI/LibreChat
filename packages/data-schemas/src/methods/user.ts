@@ -19,6 +19,7 @@ import type { CacheStore } from '~/types';
 import { closeResponseScopes, eraseResponseRecords } from './responseScope';
 import { scoreSearchMatch, buildUserSearchFilter } from '~/utils/search';
 import { evictAuthUserDocsForUsers } from '~/utils/eviction';
+import { eraseChannelOwner } from './channelErasure';
 import { signPayload } from '~/crypto';
 import logger from '~/config/winston';
 
@@ -634,6 +635,9 @@ export function createUserMethods(
       if (owner) {
         await closeResponseScopes(mongoose, { userId, tenantId: owner.tenantId });
         await eraseResponseRecords(mongoose, { userId, tenantId: owner.tenantId });
+        // Admission writes the same owner anchor in its insertion transaction.
+        // Closing it therefore precedes both this sweep and every delayed retry.
+        await eraseChannelOwner(mongoose, { userId, tenantId: owner.tenantId });
       }
       await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
       const result = await User.deleteOne({ _id: userId });
