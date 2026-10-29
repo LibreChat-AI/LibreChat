@@ -1,5 +1,4 @@
 const { nanoid } = require('nanoid');
-const { v4: uuidv4 } = require('uuid');
 const { logger } = require('@librechat/data-schemas');
 const { Callback, formatAgentMessages } = require('@librechat/agents');
 const {
@@ -62,6 +61,9 @@ const {
   // Responses API
   writeDone,
   buildResponse,
+  createResponseExecutionRuntime,
+  GenerationJobManager,
+  getPluginHookSource,
   generateResponseId,
   isValidationFailure,
   emitResponseCreated,
@@ -73,6 +75,8 @@ const {
   validateResponseRequest,
   buildAggregatedResponse,
   buildResponsesUsage,
+  createResponseAccountingCollector,
+  createApplicationBillingQuote,
   createResponseAggregator,
   sendResponsesErrorResponse,
   createResponsesEventHandlers,
@@ -94,6 +98,12 @@ const {
   isTemporaryTurn,
   getModelEndUsage,
   hasEntityEmbeddings,
+  selectResponseHistory,
+  selectStoredResponse,
+  buildResponseInputChain,
+  projectResponseMessage,
+  resolveResponseContinuation,
+  ResponsePersistenceError,
 } = require('@librechat/api');
 const {
   createResponsesToolEndCallback,
@@ -177,7 +187,14 @@ function handleExecutionError({ error, res, appConfig }) {
  * @param {boolean} [runtime.definitionsOnly=true] - When true, returns only serializable
  *   tool definitions without creating full tool instances (for event-driven mode)
  */
-function createToolLoader({ req, res, signal, definitionsOnly = true }) {
+function createToolLoader({
+  req,
+  res,
+  signal,
+  definitionsOnly = true,
+  streamId = null,
+  jobCreatedAt,
+}) {
   return async function loadTools({
     tools,
     model,
@@ -204,7 +221,8 @@ function createToolLoader({ req, res, signal, definitionsOnly = true }) {
         agentResourceType: ResourceType.REMOTE_AGENT,
         definitionsOnly,
         accessibleMcpServerNames,
-        streamId: null,
+        streamId,
+        jobCreatedAt,
       });
     } catch (error) {
       if (isFatalAgentInitializationError(error, { signal }) || isContentFilterError(error)) {
@@ -332,9 +350,12 @@ function extractResponseRequestContent(request, messageFragments) {
  * @param {string} userId - The user ID
  * @returns {Promise<Array>} Messages from the conversation
  */
-async function loadPreviousMessages(conversationId, userId) {
+async function loadPreviousMessages(conversationId, userId, previousResponseId) {
   try {
-    const messages = await db.getMessages({ conversationId, user: userId });
+    const messages = selectResponseHistory(
+      await db.getMessages({ conversationId, user: userId }),
+      previousResponseId,
+    );
     if (!messages || messages.length === 0) {
       return [];
     }
@@ -368,7 +389,7 @@ async function loadPreviousMessages(conversationId, userId) {
     });
   } catch (error) {
     logger.error('[Responses API] Error loading previous messages:', getSafeErrorMetadata(error));
-    return [];
+    throw new ResponsePersistenceError();
   }
 }
 
@@ -388,7 +409,7 @@ async function saveInputMessages(req, conversationId, inputMessages, agentId) {
         {
           messageId: msg.messageId || nanoid(),
           conversationId,
-          parentMessageId: null,
+          parentMessageId: msg.parentMessageId,
           isCreatedByUser: true,
           text: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
           sender: 'User',
@@ -418,19 +439,8 @@ async function saveResponseOutput(
   response,
   agentId,
   visibleOutputTokens,
+  parentMessageId,
 ) {
-  // Extract text content from output items
-  let responseText = '';
-  for (const item of response.output) {
-    if (item.type === 'message' && item.content) {
-      for (const part of item.content) {
-        if (part.type === 'output_text' && part.text) {
-          responseText += part.text;
-        }
-      }
-    }
-  }
-
   const langfuseTraceFields = await getLangfuseTraceMessageFields(req.config, responseId, {
     isTemporary: isTemporaryTurn(req),
   });
@@ -441,10 +451,10 @@ async function saveResponseOutput(
     {
       messageId: responseId,
       conversationId,
-      parentMessageId: null,
+      parentMessageId,
       isCreatedByUser: false,
       ...langfuseTraceFields,
-      text: responseText,
+      ...projectResponseMessage(response),
       sender: 'Agent',
       endpoint: EModelEndpoint.agents,
       model: agentId,
@@ -621,7 +631,15 @@ const executeResponse = async (envelope, { req, res }) => {
   }
 
   // Generate IDs
-  const responseId = generateResponseId();
+  const responseRuntime = createResponseExecutionRuntime(req, res, {
+    getMessage: db.getMessage,
+    generateResponseId,
+    jobs: GenerationJobManager,
+    pluginHookSource: getPluginHookSource(),
+    toolApprovalStorage: db,
+    addConvoToolApprovalAllows: db.addConvoToolApprovalAllows,
+  });
+  const responseId = responseRuntime.responseId;
   const terminalRunError = createTerminalRunErrorObserver({
     maxProviderErrorChars: appConfig?.endpoints?.agents?.maxProviderErrorChars,
     logger,
@@ -638,7 +656,8 @@ const executeResponse = async (envelope, { req, res }) => {
     `[Responses API] Request ${responseId} started for agent ${agentId}, stream: ${isStreaming}`,
   );
 
-  const conversationId = request.previous_response_id ?? uuidv4();
+  const continuation = await responseRuntime.resolveContinuation(envelope);
+  const { conversationId } = continuation;
   /** @type {Promise<import('librechat-data-provider').TAttachment | null>[]} */
   const artifactPromises = [];
   let artifactWritesCovered = false;
@@ -646,19 +665,8 @@ const executeResponse = async (envelope, { req, res }) => {
     envelope,
     runId: responseId,
     conversationId,
-    connection: {
-      isClosed: () => res.destroyed === true && res.writableEnded !== true,
-      onClose: (listener) => {
-        const abortOnResponseClose = () => {
-          if (res.writableEnded !== true) {
-            logger.debug('[Responses API] Client disconnected, aborting');
-            listener();
-          }
-        };
-        res.once('close', abortOnResponseClose);
-        return () => res.off('close', abortOnResponseClose);
-      },
-    },
+    connection: responseRuntime.connection,
+    ...responseRuntime.hooks,
     /** Conversation delete-all uses the shared owner-admission fence. Remote
      * execution must observe it after durable enrollment and before provider work. */
     isPrincipalActive: db.isSubagentOwnerAdmissible,
@@ -691,7 +699,7 @@ const executeResponse = async (envelope, { req, res }) => {
           {
             userId: principal.userId,
             tenantId: principal.tenantId,
-            conversationId: request.previous_response_id,
+            conversationId,
             rejectSubagentThread: true,
           },
           {
@@ -756,7 +764,6 @@ const executeResponse = async (envelope, { req, res }) => {
         chatProjectContext: req.chatProjectContext,
       });
 
-      const parentMessageId = null;
       const mcpRequestBody = createMCPRuntimeRequestBody({
         messageId: responseId,
         conversationId,
@@ -769,8 +776,12 @@ const executeResponse = async (envelope, { req, res }) => {
       const backgroundCompletionResultMaxChars =
         agentsEConfig?.backgroundTasks?.completionResultMaxChars;
       const previousMessages = request.previous_response_id
-        ? await loadPreviousMessages(request.previous_response_id, principal.userId)
+        ? await loadPreviousMessages(conversationId, principal.userId, continuation.parentMessageId)
         : [];
+      const inputChain = responseRuntime.inputChain(
+        buildResponseInputChain(inputMessages, continuation.parentMessageId, previousMessages),
+      );
+      const parentMessageId = inputChain.parentMessageId;
       if (request.previous_response_id) {
         assertModelBoundContent({
           onTraversalFailure: reportLocatorTraversalFailure,
@@ -784,7 +795,12 @@ const executeResponse = async (envelope, { req, res }) => {
       const allowedProviders = new Set(agentsEConfig?.allowedProviders);
 
       // Create tool loader
-      const loadTools = createToolLoader({ req, res, signal: execution.signal });
+      const loadTools = createToolLoader({
+        req,
+        res,
+        signal: execution.signal,
+        ...responseRuntime.toolContext(execution),
+      });
       const skillDbMethods = getSkillDbMethods();
 
       // Initialize the agent first to check for disableStreaming
@@ -1065,6 +1081,19 @@ const executeResponse = async (envelope, { req, res }) => {
           byAgentId: endpointTokenConfigByAgentId,
           fallback: primaryConfig.endpointTokenConfig,
         });
+      const accounting = createResponseAccountingCollector({
+        quote:
+          typeof db.getValueKey === 'function'
+            ? createApplicationBillingQuote({
+                pricing: {
+                  getMultiplier: db.getMultiplier,
+                  getCacheMultiplier: db.getCacheMultiplier,
+                },
+                getValueKey: db.getValueKey,
+                resolveEndpointTokenConfig,
+              })
+            : undefined,
+      });
       const runAgents = [primaryConfig, ...handoffAgentConfigs.values()];
       const initialSessions = buildInitialToolSessions({ agents: runAgents });
       const modelBoundAgentsById = new Map();
@@ -1223,6 +1252,7 @@ const executeResponse = async (envelope, { req, res }) => {
       // Create tracker for streaming or aggregator for non-streaming
       const tracker = actuallyStreaming ? createResponseTracker() : null;
       const aggregator = actuallyStreaming ? null : createResponseAggregator();
+      responseRuntime.seedAggregator(aggregator);
 
       // Set up response for streaming
       if (actuallyStreaming) {
@@ -1282,6 +1312,7 @@ const executeResponse = async (envelope, { req, res }) => {
             const ctx =
               agentToolContexts.get(agentId) ?? agentToolContexts.get(primaryConfig.id) ?? {};
             const result = await loadToolsForExecution({
+              ...responseRuntime.toolContext(execution),
               req,
               res,
               agentResourceType: ResourceType.REMOTE_AGENT,
@@ -1321,6 +1352,12 @@ const executeResponse = async (envelope, { req, res }) => {
             handle: (event, data, metadata, graph) => {
               responsesHandlers.on_chat_model_end.handle(event, data);
               const usage = getModelEndUsage(data?.output);
+              accounting.record(
+                usage,
+                metadata,
+                graph?.getAgentContext?.(metadata),
+                data?.output?.id,
+              );
               if (usage) {
                 const agentContext = graph?.getAgentContext?.(metadata);
                 const taggedUsage = contextualizeModelUsage(usage, metadata, agentContext);
@@ -1329,7 +1366,7 @@ const executeResponse = async (envelope, { req, res }) => {
             },
           },
           on_tool_end: createOwnedToolEndHandler(toolEndCallback, logger),
-          on_run_step_completed: { handle: () => {} },
+          on_run_step_completed: responsesHandlers.on_run_step_completed,
           on_chain_stream: { handle: () => {} },
           on_chain_end: { handle: () => {} },
           on_agent_update: { handle: () => {} },
@@ -1351,8 +1388,9 @@ const executeResponse = async (envelope, { req, res }) => {
         const userMCPAuthMap = mergedMCPAuthMap;
 
         const run = await createRun({
+          ...responseRuntime.graphOptions(runAgents),
           agents: runAgents,
-          messages: formattedMessages,
+          messages: responseRuntime.graphMessages(formattedMessages),
           indexTokenCountMap,
           initialSummary,
           runId: responseId,
@@ -1370,7 +1408,9 @@ const executeResponse = async (envelope, { req, res }) => {
           clientToolNames: clientTools.clientToolNames,
           /** Bills subagent child-run model calls (reported outside the
            *  streamEvents loop) into the same collectedUsage array. */
-          subagentUsageSink: createSubagentUsageSink(collectedUsage),
+          subagentUsageSink: createSubagentUsageSink(collectedUsage, (usage) =>
+            accounting.record(usage),
+          ),
         });
 
         if (!run) {
@@ -1393,7 +1433,7 @@ const executeResponse = async (envelope, { req, res }) => {
           version: 'v2',
         };
 
-        await run.processStream({ messages: formattedMessages }, config, {
+        await responseRuntime.processRun(run, { messages: formattedMessages }, config, {
           callbacks: {
             [Callback.TOOL_ERROR]: (graph, error, toolId) => {
               logger.error(`[Responses API] Tool Error "${toolId}"`, getSafeErrorMetadata(error));
@@ -1437,15 +1477,6 @@ const executeResponse = async (envelope, { req, res }) => {
 
         const usage = buildResponsesUsage(collectedUsage);
 
-        // Finalize the stream
-        finalizeStream(usage);
-        res.end();
-
-        const duration = Date.now() - requestStartTime;
-        logger.debug(
-          `[Responses API] Request ${responseId} completed in ${duration}ms (streaming)`,
-        );
-
         // Save to database if store: true
         if (request.store === true) {
           try {
@@ -1453,10 +1484,16 @@ const executeResponse = async (envelope, { req, res }) => {
             await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
 
             // Save input messages
-            await saveInputMessages(req, conversationId, inputMessages, agentId);
+            await saveInputMessages(req, conversationId, inputChain.messages, agentId);
 
             // Build response for saving (use tracker with buildResponse for streaming)
-            const finalResponse = buildResponse(context, tracker, 'completed');
+            const finalResponse = buildResponse(
+              context,
+              tracker,
+              'completed',
+              usage,
+              accounting.snapshot(),
+            );
             const savedResponse = await saveResponseOutput(
               req,
               conversationId,
@@ -1464,6 +1501,7 @@ const executeResponse = async (envelope, { req, res }) => {
               finalResponse,
               agentId,
               tracker.usage.outputTokens,
+              inputChain.parentMessageId,
             );
             await announceReply(db, {
               userId: req?.user?.id,
@@ -1471,15 +1509,24 @@ const executeResponse = async (envelope, { req, res }) => {
               reply: savedResponse,
               context: 'Responses API - announce stored reply',
             });
+            context.stored = true;
 
             logger.debug(
               `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
             );
           } catch (saveError) {
             logger.error('[Responses API] Error saving response:', getSafeErrorMetadata(saveError));
-            // Don't fail the request if saving fails
+            throw new ResponsePersistenceError();
           }
         }
+
+        finalizeStream(usage, accounting.snapshot());
+        res.end();
+
+        const duration = Date.now() - requestStartTime;
+        logger.debug(
+          `[Responses API] Request ${responseId} completed in ${duration}ms (streaming)`,
+        );
 
         // The HTTP response is complete, while destructive cleanup still waits for artifacts.
         if (artifactPromises.length > 0) {
@@ -1503,7 +1550,7 @@ const executeResponse = async (envelope, { req, res }) => {
           req,
           res,
           artifactPromises,
-          streamId: null,
+          ...responseRuntime.toolContext(execution),
         });
 
         const toolExecuteOptions = {
@@ -1526,6 +1573,7 @@ const executeResponse = async (envelope, { req, res }) => {
             const ctx =
               agentToolContexts.get(agentId) ?? agentToolContexts.get(primaryConfig.id) ?? {};
             const result = await loadToolsForExecution({
+              ...responseRuntime.toolContext(execution),
               req,
               res,
               agentResourceType: ResourceType.REMOTE_AGENT,
@@ -1564,6 +1612,12 @@ const executeResponse = async (envelope, { req, res }) => {
             handle: (event, data, metadata, graph) => {
               aggregatorHandlers.on_chat_model_end.handle(event, data);
               const usage = getModelEndUsage(data?.output);
+              accounting.record(
+                usage,
+                metadata,
+                graph?.getAgentContext?.(metadata),
+                data?.output?.id,
+              );
               if (usage) {
                 const agentContext = graph?.getAgentContext?.(metadata);
                 const taggedUsage = contextualizeModelUsage(usage, metadata, agentContext);
@@ -1572,7 +1626,7 @@ const executeResponse = async (envelope, { req, res }) => {
             },
           },
           on_tool_end: createOwnedToolEndHandler(toolEndCallback, logger),
-          on_run_step_completed: { handle: () => {} },
+          on_run_step_completed: aggregatorHandlers.on_run_step_completed,
           on_chain_stream: { handle: () => {} },
           on_chain_end: { handle: () => {} },
           on_agent_update: { handle: () => {} },
@@ -1591,8 +1645,9 @@ const executeResponse = async (envelope, { req, res }) => {
         const userMCPAuthMap = mergedMCPAuthMap;
 
         const run = await createRun({
+          ...responseRuntime.graphOptions(runAgents),
           agents: runAgents,
-          messages: formattedMessages,
+          messages: responseRuntime.graphMessages(formattedMessages),
           indexTokenCountMap,
           initialSummary,
           runId: responseId,
@@ -1610,7 +1665,9 @@ const executeResponse = async (envelope, { req, res }) => {
           clientToolNames: clientTools.clientToolNames,
           /** Bills subagent child-run model calls (reported outside the
            *  streamEvents loop) into the same collectedUsage array. */
-          subagentUsageSink: createSubagentUsageSink(collectedUsage),
+          subagentUsageSink: createSubagentUsageSink(collectedUsage, (usage) =>
+            accounting.record(usage),
+          ),
         });
 
         if (!run) {
@@ -1632,7 +1689,7 @@ const executeResponse = async (envelope, { req, res }) => {
           version: 'v2',
         };
 
-        await run.processStream({ messages: formattedMessages }, config, {
+        await responseRuntime.processRun(run, { messages: formattedMessages }, config, {
           callbacks: {
             [Callback.TOOL_ERROR]: (graph, error, toolId) => {
               logger.error(`[Responses API] Tool Error "${toolId}"`, getSafeErrorMetadata(error));
@@ -1686,47 +1743,93 @@ const executeResponse = async (envelope, { req, res }) => {
           artifactWritesCovered = true;
         }
 
-        const response = buildAggregatedResponse(
-          context,
-          aggregator,
-          buildResponsesUsage(collectedUsage),
-        );
-
-        if (request.store === true) {
-          try {
-            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
-
-            await saveInputMessages(req, conversationId, inputMessages, agentId);
-
-            const savedResponse = await saveResponseOutput(
-              req,
-              conversationId,
-              responseId,
-              response,
-              agentId,
-              aggregator.usage.outputTokens,
+        await responseRuntime.completeTurn(
+          {
+            run,
+            execution,
+            agents: runAgents,
+            visibleOutputTokens: aggregator.usage.outputTokens,
+            buildPartial: () =>
+              buildAggregatedResponse(
+                context,
+                aggregator,
+                buildResponsesUsage(collectedUsage),
+                accounting.snapshot(),
+              ),
+            persistence: {
+              saveConversation: () =>
+                saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision),
+              saveInput: () => saveInputMessages(req, conversationId, inputChain.messages, agentId),
+              saveOutput: (partial) =>
+                saveResponseOutput(
+                  req,
+                  conversationId,
+                  responseId,
+                  partial,
+                  agentId,
+                  responseRuntime.visibleOutputTokens(aggregator.usage.outputTokens),
+                  inputChain.parentMessageId,
+                ),
+            },
+          },
+          async () => {
+            const response = responseRuntime.composeResponse(
+              buildAggregatedResponse(
+                context,
+                aggregator,
+                buildResponsesUsage(collectedUsage),
+                accounting.snapshot(),
+              ),
             );
-            await announceReply(db, {
-              userId: req?.user?.id,
-              conversationId,
-              reply: savedResponse,
-              context: 'Responses API - announce stored reply',
-            });
 
+            if (request.store === true) {
+              try {
+                await saveConversation(
+                  req,
+                  conversationId,
+                  agentId,
+                  agent,
+                  codeEnvironmentDecision,
+                );
+
+                await saveInputMessages(req, conversationId, inputChain.messages, agentId);
+
+                const savedResponse = await saveResponseOutput(
+                  req,
+                  conversationId,
+                  responseId,
+                  response,
+                  agentId,
+                  responseRuntime.visibleOutputTokens(aggregator.usage.outputTokens),
+                  inputChain.parentMessageId,
+                );
+                await announceReply(db, {
+                  userId: req?.user?.id,
+                  conversationId,
+                  reply: savedResponse,
+                  context: 'Responses API - announce stored reply',
+                });
+                response.store = true;
+
+                logger.debug(
+                  `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
+                );
+              } catch (saveError) {
+                logger.error(
+                  '[Responses API] Error saving response:',
+                  getSafeErrorMetadata(saveError),
+                );
+                throw new ResponsePersistenceError();
+              }
+            }
+
+            res.json(response);
+
+            const duration = Date.now() - requestStartTime;
             logger.debug(
-              `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
+              `[Responses API] Request ${responseId} completed in ${duration}ms (non-streaming)`,
             );
-          } catch (saveError) {
-            logger.error('[Responses API] Error saving response:', getSafeErrorMetadata(saveError));
-            // Don't fail the request if saving fails
-          }
-        }
-
-        res.json(response);
-
-        const duration = Date.now() - requestStartTime;
-        logger.debug(
-          `[Responses API] Request ${responseId} completed in ${duration}ms (non-streaming)`,
+          },
         );
       }
     },
@@ -1844,9 +1947,10 @@ const getResponse = async (req, res) => {
       return sendResponsesErrorResponse(res, 400, 'Response ID is required');
     }
 
-    // The responseId could be either the response ID or the conversation ID
-    // Try to find a conversation with this ID
-    const conversation = await db.getConvo(userId, responseId);
+    const { conversationId } = await resolveResponseContinuation(responseId, userId, {
+      getMessage: db.getMessage,
+    });
+    const conversation = await db.getConvo(userId, conversationId);
 
     if (!conversation) {
       return sendResponsesErrorResponse(
@@ -1859,7 +1963,10 @@ const getResponse = async (req, res) => {
     }
 
     // Load messages for this conversation
-    const messages = await db.getMessages({ conversationId: responseId, user: userId });
+    const messages = selectStoredResponse(
+      await db.getMessages({ conversationId, user: userId }),
+      responseId,
+    );
 
     if (!messages || messages.length === 0) {
       return sendResponsesErrorResponse(
@@ -1875,7 +1982,7 @@ const getResponse = async (req, res) => {
     const output = convertMessagesToOutputItems(messages);
 
     // Find the last assistant message for usage info
-    const lastAssistantMessage = messages.filter((m) => !m.isCreatedByUser).pop();
+    const lastAssistantMessage = messages.at(-1);
 
     // Build the response object
     const response = {
@@ -1885,7 +1992,7 @@ const getResponse = async (req, res) => {
       completed_at: Math.floor(new Date(conversation.updatedAt || Date.now()).getTime() / 1000),
       status: 'completed',
       incomplete_details: null,
-      model: conversation.agentId || conversation.model || 'unknown',
+      model: conversation.agent_id || conversation.model || 'unknown',
       previous_response_id: null,
       instructions: null,
       output,
