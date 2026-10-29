@@ -204,6 +204,7 @@ const messagesHost: MessagesHost = {
   useScreenshotTarget: () => undefined,
   useAutoScroll: () => false,
   useConversationSeen: () => () => undefined,
+  renderMessageIcon: () => null,
 };
 
 const renderers: PartRenderers = {
