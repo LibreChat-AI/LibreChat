@@ -735,7 +735,9 @@ describe('canToolResourceConsume', () => {
   });
 
   it('accepts a macro-enabled workbook for code execution', () => {
-    expect(canToolResourceConsume('execute_code', 'application/vnd.ms-excel.sheet.macroEnabled.12')).toBe(true);
+    expect(
+      canToolResourceConsume('execute_code', 'application/vnd.ms-excel.sheet.macroEnabled.12'),
+    ).toBe(true);
   });
 
   it('still accepts csv for file search, which the retrieval set omits', () => {
