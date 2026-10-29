@@ -8,6 +8,9 @@ import {
 import type * as t from '~/types';
 import { createToolApprovalGrantModel } from '~/models/toolApprovalGrant';
 import { createUserMethods, USER_DELETION_FENCE_STALE_MS } from './user';
+import { createStoredResponseModel } from '~/models/response';
+import { runAsSystem } from '~/config/tenantContext';
+import { createResponseStorage } from './response';
 import balanceSchema from '~/schema/balance';
 import userSchema from '~/schema/user';
 
@@ -2329,5 +2332,87 @@ describe('personal grant cleanup before account deletion', () => {
       cleanup.mockRestore();
       deletion.mockRestore();
     }
+  });
+});
+
+describe('private response cleanup before account deletion', () => {
+  async function createResponses() {
+    const user = await User.create({ email: 'delete-responses@example.com', provider: 'local' });
+    const userId = user._id.toString();
+    const model = createStoredResponseModel(mongoose);
+    await runAsSystem(() =>
+      model.create(
+        [{ userId }, { userId, tenantId: 'another-tenant' }, { userId: 'another-owner' }].map(
+          (scope, index) => ({
+            ...scope,
+            responseId: `response-${index}`,
+            requestKey: `request-${index}`,
+            fingerprint: 'request',
+            agentId: 'agent',
+            requestJSON: '{"input":"private request"}',
+            responseJSON: '{"output":"private reply"}',
+            conversationId: 'conversation',
+            parentMessageId: 'root',
+            status: 'completed',
+          }),
+        ),
+      ),
+    );
+    return { userId, model };
+  }
+
+  it('removes private payloads before committing deletion and preserves other owners and tenants', async () => {
+    const { userId, model } = await createResponses();
+    const cleanup = jest.spyOn(model, 'deleteMany');
+    const deletion = jest.spyOn(User, 'deleteOne');
+    await expect(methods.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
+    expect(cleanup).toHaveBeenCalledWith({ userId, tenantId: { $in: [null, ''] } });
+    expect(cleanup.mock.invocationCallOrder[0]).toBeLessThan(deletion.mock.invocationCallOrder[0]);
+    await runAsSystem(async () => {
+      expect(await model.countDocuments({ userId, tenantId: null })).toBe(0);
+      expect(await model.countDocuments({ userId, tenantId: 'another-tenant' })).toBe(1);
+      expect(await model.countDocuments({ userId: 'another-owner' })).toBe(1);
+    });
+  });
+
+  it('erases every tenantless spelling when the legacy account stores an empty tenant', async () => {
+    const { userId, model } = await createResponses();
+    await User.updateOne({ _id: userId }, { $set: { tenantId: '' } });
+    const original = (await model.findOne({ userId, responseId: 'response-0' }).lean())!;
+    const { _id: _originalId, ...fields } = original;
+    await runAsSystem(async () => {
+      await model.create([
+        { ...fields, tenantId: '', responseId: 'empty-tenant', requestKey: 'empty-tenant' },
+        { ...fields, tenantId: null, responseId: 'null-tenant', requestKey: 'null-tenant' },
+      ]);
+      await expect(methods.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
+      expect(await model.countDocuments({ userId, tenantId: { $in: [null, ''] } })).toBe(0);
+      expect(await model.countDocuments({ userId, tenantId: 'another-tenant' })).toBe(1);
+    });
+  });
+
+  it('preserves the account on cleanup failure and allows a retry', async () => {
+    const { userId, model } = await createResponses();
+    jest
+      .spyOn(model.collection, 'deleteMany')
+      .mockRejectedValueOnce(new Error('response-store down'));
+    const deletion = jest.spyOn(User, 'deleteOne');
+    await expect(methods.deleteUserById(userId)).rejects.toThrow('response-store down');
+    expect(deletion).not.toHaveBeenCalled();
+    expect(await User.exists({ _id: userId })).not.toBeNull();
+    expect(await createResponseStorage(mongoose).read({ userId }, 'response-0')).not.toBeNull();
+    await methods.updateUser(userId, { name: 'Still usable' });
+    expect((await User.findById(userId).lean())?.name).toBe('Still usable');
+    await expect(methods.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
+  });
+
+  it('uses the account tenant when deletion runs under system authority', async () => {
+    const { userId, model } = await createResponses();
+    await User.updateOne({ _id: userId }, { $set: { tenantId: 'another-tenant' } });
+    await runAsSystem(async () => {
+      await expect(methods.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
+      expect(await model.countDocuments({ userId, tenantId: 'another-tenant' })).toBe(0);
+      expect(await model.countDocuments({ userId, tenantId: null })).toBe(1);
+    });
   });
 });

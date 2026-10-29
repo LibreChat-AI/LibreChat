@@ -16,6 +16,7 @@ import type {
 } from '~/types';
 import type { TwoFactorEnrollmentGuard, TwoFactorEnrollmentUpdate } from '~/types';
 import type { CacheStore } from '~/types';
+import { closeResponseScopes, eraseResponseRecords } from './responseScope';
 import { scoreSearchMatch, buildUserSearchFilter } from '~/utils/search';
 import { evictAuthUserDocs } from '~/utils/eviction';
 import { signPayload } from '~/crypto';
@@ -642,6 +643,11 @@ export function createUserMethods(
   async function deleteUserById(userId: string): Promise<UserDeleteResult> {
     try {
       const User = mongoose.models.User;
+      const owner = await User.findById(userId).select('tenantId').lean<Pick<IUser, 'tenantId'>>();
+      if (owner) {
+        await closeResponseScopes(mongoose, { userId, tenantId: owner.tenantId });
+        await eraseResponseRecords(mongoose, { userId, tenantId: owner.tenantId });
+      }
       await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
       const result = await User.deleteOne({ _id: userId });
       if (result.deletedCount === 0) {
