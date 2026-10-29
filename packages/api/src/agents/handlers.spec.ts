@@ -3300,6 +3300,7 @@ describe('createToolExecuteHandler', () => {
       'disabled',
       'unprimed',
       'unprimed-hidden',
+      'deleted-later',
     ])('restores authored identity into a fresh handler after approval: %s', async (scenario) => {
       const skill = {
         _id: SKILL_ID,
@@ -3311,13 +3312,16 @@ describe('createToolExecuteHandler', () => {
       };
       let stored = false;
       const twinId = new Types.ObjectId();
-      const getSkillByName = jest.fn(async (name: string, ids: Array<{ toString(): string }>) =>
-        ids.some((id) => id.toString() === twinId.toString())
-          ? { ...skill, _id: twinId, body: '# Same-name twin' }
-          : stored && name === skill.name && ids.some((id) => id.toString() === SKILL_ID.toString())
-            ? { ...skill, disableModelInvocation: scenario.endsWith('hidden') }
-            : null,
-      );
+      const getSkillByName = jest.fn(async (name: string, ids: Array<{ toString(): string }>) => {
+        if (ids.some((id) => id.toString() === twinId.toString())) {
+          return { ...skill, _id: twinId, body: '# Same-name twin' };
+        }
+        return stored &&
+          name === skill.name &&
+          ids.some((id) => id.toString() === SKILL_ID.toString())
+          ? { ...skill, disableModelInvocation: scenario.endsWith('hidden') }
+          : null;
+      });
       const saveSkillFileContent = jest.fn(async () => ({
         bytes: 9,
         relativePath: 'references/a.md',
@@ -3389,9 +3393,18 @@ describe('createToolExecuteHandler', () => {
         ],
         fresh,
       );
-      const allowed = ['allowed', 'hidden', 'unprimed'].includes(scenario);
+      const allowed = ['allowed', 'hidden', 'unprimed', 'deleted-later'].includes(scenario);
       expect(bundled.status).toBe(allowed ? 'success' : 'error');
       expect(saveSkillFileContent).toHaveBeenCalledTimes(allowed ? 1 : 0);
+      if (scenario === 'deleted-later') {
+        stored = false;
+        getAuthorSkillByName.mockResolvedValue({
+          ...skill,
+          _id: twinId,
+          disableModelInvocation: false,
+        });
+      }
+      const stillAllowed = allowed && scenario !== 'deleted-later';
       const [laterWrite] = await invokeHandlerWithConfig(
         resumed,
         [
@@ -3403,8 +3416,8 @@ describe('createToolExecuteHandler', () => {
         ],
         fresh,
       );
-      expect(laterWrite.status).toBe(allowed ? 'success' : 'error');
-      if (allowed) {
+      expect(laterWrite.status).toBe(stillAllowed ? 'success' : 'error');
+      if (stillAllowed) {
         expect(saveSkillFileContent.mock.calls).toHaveLength(2);
         expect(saveSkillFileContent).toHaveBeenLastCalledWith(
           expect.objectContaining({ skillId: SKILL_ID }),
@@ -3421,8 +3434,8 @@ describe('createToolExecuteHandler', () => {
         ],
         fresh,
       );
-      expect(read.status).toBe(allowed ? 'success' : 'error');
-      if (allowed) {
+      expect(read.status).toBe(stillAllowed ? 'success' : 'error');
+      if (stillAllowed) {
         expect(String(read.content)).toContain('# Authored body');
         expect(String(read.content)).not.toContain('# Same-name twin');
       }
@@ -3441,6 +3454,10 @@ describe('createToolExecuteHandler', () => {
       expect(invoked.status).toBe(['allowed', 'unprimed'].includes(scenario) ? 'success' : 'error');
       if (scenario.endsWith('hidden')) expect(invoked.errorMessage).toContain('cannot be invoked');
       if (scenario === 'disabled') expect(getAuthorSkillByName).not.toHaveBeenCalled();
+      if (scenario === 'deleted-later') {
+        expect(saveSkillFileContent).toHaveBeenCalledTimes(1);
+        expect(captureAuthoredSkills(resumed)).toEqual(bindings);
+      }
       if (scenario === 'allowed') {
         expect(JSON.stringify(invoked.injectedMessages)).toContain('# Authored body');
         // A second pause before another tool call retains the exact binding.

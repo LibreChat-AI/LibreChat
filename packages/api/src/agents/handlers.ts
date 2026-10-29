@@ -3008,7 +3008,8 @@ async function resolveAuthorSkillForCurrentUser({
     return null;
   }
   const skill = await options.getAuthorSkillByName({ req, name: skillName });
-  if (!skill) {
+  const authoredId = getAuthoredSkillId(skillName, mergedConfigurable);
+  if (!skill || (authoredId != null && skill._id.toString() !== authoredId)) {
     return null;
   }
   rememberAuthoredSkill([mergedConfigurable, sourceConfigurable], skill, { prime: false });
