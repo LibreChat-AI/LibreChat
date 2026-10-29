@@ -123,8 +123,14 @@ export function createChannelRunModel(
   schema.index({ tenantId: 1, runId: 1 }, { unique: true });
   schema.index({ tenantId: 1, 'principal.userId': 1 });
   schema.index(
-    { tenantId: 1, channelId: 1, 'admission.actor.teamId': 1, 'admission.eventId': 1 },
-    { unique: true },
+    {
+      tenantId: 1,
+      channelId: 1,
+      'admission.actor.teamId': 1,
+      'admission.actor.appId': 1,
+      'admission.eventId': 1,
+    },
+    { unique: true, name: 'channel_run_event_v2' },
   );
   schema.index({ tenantId: 1, laneId: 1, sequence: 1 }, { unique: true });
   schema.index(

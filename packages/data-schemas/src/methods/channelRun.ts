@@ -1,9 +1,10 @@
-import { createHash, randomUUID } from 'node:crypto';
-import { channelStorageConfigSchema } from 'librechat-data-provider';
+import { randomUUID } from 'node:crypto';
+import {
+  channelStorageConfigSchema,
+  CHANNEL_DELIVERY_PARTS_HARD_MAX,
+} from 'librechat-data-provider';
 import type {
   ChannelStorageConfig,
-  ChannelRunAdmission,
-  ChannelRunPrincipal,
   ChannelRunFence,
   ChannelRunSnapshot,
   ChannelDeliveryPlan,
@@ -11,8 +12,22 @@ import type {
   ChannelRunProgress,
 } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
+import type { ChannelLaneScope, ChannelRunEnrollment } from './channelProtocol';
 import type { ChannelRunRecord, ChannelLaneRecord } from '~/models/channelRun';
 import type { StoredResponseRecord } from '~/models/response';
+import {
+  digest,
+  laneKey,
+  activeStates,
+  assertReconciliation,
+  assertDeliveryEvidence,
+  snapshotPatch,
+  assertPlan,
+  deliveryDisposition,
+  hasPermanentDeliveryFailure,
+  leaseDeadline,
+  ChannelRunConflict,
+} from './channelProtocol';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
 import { responseOwnerFilter } from './responseScope';
@@ -20,26 +35,8 @@ import { getTenantId } from '~/config/tenantContext';
 
 export type { ChannelRunRecord, ChannelLaneRecord } from '~/models/channelRun';
 
-export interface ChannelLaneScope {
-  tenantId: string;
-  channelId: string;
-  agentId: string;
-  principal: ChannelRunPrincipal;
-  admission: Pick<ChannelRunAdmission, 'actor' | 'externalChannelId' | 'externalThreadKey'>;
-}
-
-export interface ChannelRunEnrollment extends ChannelLaneScope {
-  admission: ChannelRunAdmission;
-}
-
-export class ChannelRunConflict extends Error {
-  constructor(
-    readonly code: 'event_conflict' | 'stale_fence' | 'invalid_transition' | 'delivery_incomplete',
-  ) {
-    super(code);
-    this.name = 'ChannelRunConflict';
-  }
-}
+export type { ChannelLaneScope, ChannelRunEnrollment } from './channelProtocol';
+export { ChannelRunConflict } from './channelProtocol';
 
 export interface ChannelRunStorage {
   listPendingMetadata(
@@ -181,110 +178,9 @@ export interface ChannelRunStorage {
     observed?: { epoch: number; before: number },
   ): Promise<boolean>;
   findDeliveredReply(
-    tenantId: string,
-    channelId: string,
+    scope: ChannelLaneScope,
     externalMessageKey: string,
   ): Promise<ChannelRunRecord | null>;
-}
-
-const digest = (value: object): string =>
-  createHash('sha256')
-    .update(
-      JSON.stringify(value, (_key, item: unknown) =>
-        item != null && typeof item === 'object' && !Array.isArray(item)
-          ? Object.fromEntries(
-              Object.entries(item).sort(([a], [b]) => {
-                if (a === b) return 0;
-                return a < b ? -1 : 1;
-              }),
-            )
-          : item,
-      ),
-    )
-    .digest('hex');
-function laneKey(scope: ChannelLaneScope): string {
-  return digest({
-    tenantId: scope.tenantId,
-    channelId: scope.channelId,
-    agentId: scope.agentId,
-    thread: scope.admission.externalThreadKey,
-    externalChannelId: scope.admission.externalChannelId,
-    actor: scope.admission.actor,
-    userId: scope.principal.userId,
-    revision: scope.principal.channelRevision,
-    linkRevision: scope.principal.linkRevision ?? null,
-    linkId: scope.principal.linkId ?? null,
-  });
-}
-const activeStates = ['queued', 'executing', 'requires_action', 'delivering', 'blocked'];
-
-/** A projection cannot grant a different response authority to the next actor-lane turn. */
-function assertSnapshotBinding(run: ChannelRunRecord, snapshot: ChannelRunSnapshot): void {
-  if (
-    (snapshot.status === 'completed' && !snapshot.responseId) ||
-    (snapshot.responseId != null && snapshot.responseId !== run.execution?.responseId)
-  )
-    throw new ChannelRunConflict('invalid_transition');
-}
-
-/** Confirm the provider identity appropriate to the immutable plan, on every confirmation path. */
-function assertDeliveryEvidence(
-  run: ChannelRunRecord,
-  receipt: ChannelDeliveryReceipt,
-  previous: ChannelDeliveryReceipt | undefined,
-): void {
-  const part = run.plan?.parts.find((item) => item.operationId === receipt.operationId);
-  if (
-    !part ||
-    !previous ||
-    (previous.externalMessageKey != null &&
-      receipt.externalMessageKey != null &&
-      previous.externalMessageKey !== receipt.externalMessageKey) ||
-    (previous.externalFileId != null &&
-      receipt.externalFileId != null &&
-      previous.externalFileId !== receipt.externalFileId) ||
-    (receipt.upload != null && digest(receipt.upload) !== digest(previous.upload ?? {})) ||
-    (receipt.externalFileId != null &&
-      previous.upload != null &&
-      previous.upload.fileId !== receipt.externalFileId) ||
-    (receipt.outcome === 'confirmed' &&
-      ((part.kind === 'message' && !receipt.externalMessageKey) ||
-        (part.kind === 'artifact' &&
-          (!receipt.externalFileId ||
-            (previous.upload != null && previous.upload.fileId !== receipt.externalFileId)))))
-  )
-    throw new ChannelRunConflict('invalid_transition');
-}
-
-function leaseDeadline(now: number, leaseMs: number): number {
-  if (
-    !Number.isSafeInteger(now) ||
-    !Number.isSafeInteger(leaseMs) ||
-    leaseMs <= 0 ||
-    !Number.isSafeInteger(now + leaseMs)
-  )
-    throw new Error('Invalid channel lease');
-  return now + leaseMs;
-}
-
-/** Evidence is verified by the transport; storage binds it to the exact uncertain attempt. */
-function assertReconciliation(
-  previous: Omit<ChannelDeliveryReceipt, 'operationId'> | undefined,
-  receipt: Pick<ChannelDeliveryReceipt, 'attempts' | 'externalMessageKey' | 'externalFileId'>,
-): void {
-  if (
-    !previous ||
-    !['unknown', 'confirmed'].includes(previous.outcome) ||
-    previous.attempts !== receipt.attempts ||
-    (!receipt.externalMessageKey && !receipt.externalFileId) ||
-    (previous.externalMessageKey && previous.externalMessageKey !== receipt.externalMessageKey) ||
-    (previous.externalFileId && previous.externalFileId !== receipt.externalFileId) ||
-    (previous.upload && previous.upload.fileId !== receipt.externalFileId) ||
-    (previous.outcome === 'confirmed' &&
-      (previous.externalMessageKey !== receipt.externalMessageKey ||
-        previous.externalFileId !== receipt.externalFileId))
-  )
-    throw new ChannelRunConflict('invalid_transition');
 }
 
 function authorityLost(run: ChannelRunRecord): Partial<ChannelRunRecord> {
@@ -308,7 +204,27 @@ export function createChannelRunStorage(
   const limits = channelStorageConfigSchema.parse(options);
   const runs = () => mongoose.model<ChannelRunRecord>('ChannelRun');
   const lanes = () => mongoose.model<ChannelLaneRecord>('ChannelLane');
-  const ensureIndexes = createChannelIndexGate(() => [runs(), lanes()]);
+  const ensureIndexes = createChannelIndexGate(
+    () => [runs(), lanes()],
+    async () => {
+      // The prototype index was narrower than provider event identity. Build its
+      // replacement first, then remove only that exact old unique constraint.
+      const legacy = {
+        tenantId: 1,
+        channelId: 1,
+        'admission.actor.teamId': 1,
+        'admission.eventId': 1,
+      };
+      for (const index of await runs().listIndexes()) {
+        if (!index.unique || !index.name || digest(index.key) !== digest(legacy)) continue;
+        try {
+          await runs().cleanIndexes({ toDrop: [index.name] });
+        } catch (error) {
+          if (!(error instanceof mongoose.mongo.MongoServerError) || error.code !== 27) throw error;
+        }
+      }
+    },
+  );
   async function transaction<T>(work: (session: ClientSession) => Promise<T>): Promise<T> {
     await ensureIndexes();
     const session = await mongoose.startSession();
@@ -323,6 +239,7 @@ export function createChannelRunStorage(
       await session.endSession();
     }
   }
+  const terminalUnset = { leaseOwner: 1, 'execution.encryptedApiKey': 1 } as const;
   const predicate = (tenantId: string, fence: ChannelRunFence, now: number) => ({
     tenantId,
     runId: fence.runId,
@@ -484,6 +401,7 @@ export function createChannelRunStorage(
         tenantId: input.tenantId,
         channelId: input.channelId,
         'admission.actor.teamId': input.admission.actor.teamId,
+        'admission.actor.appId': input.admission.actor.appId,
         'admission.eventId': input.admission.eventId,
       };
       const payloadHash = digest(input.admission);
@@ -694,6 +612,7 @@ export function createChannelRunStorage(
       return mutate(tenantId, fence, now, async (run) => {
         if (
           !run.execution ||
+          !['queued', 'executing', 'requires_action'].includes(run.state) ||
           run.execution.deliveryKey ||
           run.execution.enqueueAttemptedAt ||
           !credential.apiKeyId ||
@@ -701,7 +620,14 @@ export function createChannelRunStorage(
           run.cancellationRequested
         )
           throw new ChannelRunConflict('invalid_transition');
-        if (run.execution.apiKeyId) return {};
+        if (run.execution.apiKeyId) {
+          if (
+            run.execution.apiKeyId !== credential.apiKeyId ||
+            run.execution.encryptedApiKey !== credential.encryptedApiKey
+          )
+            throw new ChannelRunConflict('invalid_transition');
+          return {};
+        }
         return { execution: { ...run.execution, protocol: 'responses' as const, ...credential } };
       });
     },
@@ -740,22 +666,15 @@ export function createChannelRunStorage(
     },
     async saveSnapshot(tenantId, fence, snapshot, now, generationCreatedAt) {
       return mutate(tenantId, fence, now, async (run) => {
-        if (!run.execution || run.plan) throw new ChannelRunConflict('invalid_transition');
-        assertSnapshotBinding(run, snapshot);
+        if (!run.execution) throw new ChannelRunConflict('invalid_transition');
         if (
           generationCreatedAt != null &&
           run.execution.generationCreatedAt != null &&
           generationCreatedAt !== run.execution.generationCreatedAt
         )
           throw new ChannelRunConflict('invalid_transition');
-        let state: ChannelRunRecord['state'] = 'delivering';
-        if (snapshot.status === 'running') state = 'executing';
-        else if (snapshot.status === 'requires_action') state = 'requires_action';
         return {
-          snapshot: run.snapshot?.summary
-            ? { ...snapshot, summary: run.snapshot.summary }
-            : snapshot,
-          state,
+          ...snapshotPatch(run, snapshot),
           execution: {
             ...run.execution,
             ...(generationCreatedAt != null ? { generationCreatedAt } : {}),
@@ -769,15 +688,7 @@ export function createChannelRunStorage(
           if (digest(run.plan) !== digest(plan)) throw new ChannelRunConflict('invalid_transition');
           return {};
         }
-        if (
-          run.state !== 'delivering' ||
-          !run.snapshot ||
-          !plan.parts.length ||
-          plan.parts.length > limits.maxDeliveryParts ||
-          new Set(plan.parts.map((part) => part.operationId)).size !== plan.parts.length ||
-          !plan.parts.some((part) => part.required)
-        )
-          throw new ChannelRunConflict('invalid_transition');
+        assertPlan(run, plan, limits.maxDeliveryParts);
         return {
           plan,
           receipts: plan.parts.map(({ operationId }) => ({
@@ -841,6 +752,15 @@ export function createChannelRunStorage(
       return mutate(tenantId, fence, now, async (run) => {
         const previous = run.progress;
         if (
+          previous &&
+          previous.outcome !== 'inflight' &&
+          ['confirmed', 'retryable', 'unknown', 'permanent_failure'].includes(receipt.outcome) &&
+          previous.attempts === receipt.attempts &&
+          previous.outcome === receipt.outcome &&
+          digest({ ...previous, ...receipt }) === digest(previous)
+        )
+          return {};
+        if (
           !previous ||
           previous.outcome !== 'inflight' ||
           previous.revision !== receipt.revision ||
@@ -858,6 +778,9 @@ export function createChannelRunStorage(
     },
     async beginDelivery(tenantId, fence, operationId, now) {
       return mutate(tenantId, fence, now, async (run) => {
+        if (!run.plan) throw new ChannelRunConflict('invalid_transition');
+        assertPlan(run, run.plan, CHANNEL_DELIVERY_PARTS_HARD_MAX);
+        if (hasPermanentDeliveryFailure(run)) throw new ChannelRunConflict('invalid_transition');
         const index = run.receipts.findIndex((receipt) => receipt.operationId === operationId);
         const receipt = run.receipts[index];
         if (
@@ -885,6 +808,15 @@ export function createChannelRunStorage(
     async settleDelivery(tenantId, fence, receipt, now) {
       return mutate(tenantId, fence, now, async (run) => {
         const previous = run.receipts.find((part) => part.operationId === receipt.operationId);
+        if (
+          previous &&
+          previous.outcome !== 'inflight' &&
+          ['confirmed', 'retryable', 'unknown', 'permanent_failure'].includes(receipt.outcome) &&
+          previous.attempts === receipt.attempts &&
+          previous.outcome === receipt.outcome &&
+          digest({ ...previous, ...receipt }) === digest(previous)
+        )
+          return {};
         if (
           !previous ||
           previous.outcome !== 'inflight' ||
@@ -947,6 +879,8 @@ export function createChannelRunStorage(
     },
     async checkpointUpload(tenantId, fence, operationId, attempts, upload, now) {
       return mutate(tenantId, fence, now, async (run) => {
+        if (!run.plan) throw new ChannelRunConflict('invalid_transition');
+        assertPlan(run, run.plan, CHANNEL_DELIVERY_PARTS_HARD_MAX);
         const previous = run.receipts.find((part) => part.operationId === operationId);
         const part = run.plan?.parts.find((item) => item.operationId === operationId);
         if (
@@ -980,26 +914,19 @@ export function createChannelRunStorage(
           })
           .session(session)
           .lean();
-        if (existing) return existing;
-        const run = await owned(tenantId, fence, now, session);
-        if (
-          !run.plan ||
-          !run.snapshot ||
-          run.plan.parts.some(
-            (part) =>
-              part.required &&
-              !run.receipts.some(
-                (receipt) =>
-                  receipt.operationId === part.operationId && receipt.outcome === 'confirmed',
-              ),
-          )
-        )
-          throw new ChannelRunConflict('delivery_incomplete');
-        assertSnapshotBinding(run, run.snapshot);
-        for (const receipt of run.receipts) {
-          if (receipt.outcome === 'confirmed') assertDeliveryEvidence(run, receipt, receipt);
+        if (existing) {
+          await runs().updateOne(
+            { tenantId, runId: existing.runId, state: existing.state },
+            { $unset: terminalUnset },
+            { session },
+          );
+          if (existing.execution) delete existing.execution.encryptedApiKey;
+          delete existing.leaseOwner;
+          return existing;
         }
-        const success = run.snapshot.status === 'completed';
+        const run = await owned(tenantId, fence, now, session);
+        const state = deliveryDisposition(run, CHANNEL_DELIVERY_PARTS_HARD_MAX);
+        const success = state === 'delivered';
         const laneUpdate = await lanes().updateOne(
           { tenantId, laneId: run.laneId, activeRunId: run.runId },
           {
@@ -1008,7 +935,7 @@ export function createChannelRunStorage(
               ? {
                   $set: {
                     conversationId: run.execution?.conversationId,
-                    responseId: run.snapshot.responseId,
+                    responseId: run.execution?.responseId,
                   },
                 }
               : {}),
@@ -1016,18 +943,19 @@ export function createChannelRunStorage(
           { session },
         );
         if (laneUpdate.modifiedCount !== 1) throw new ChannelRunConflict('stale_fence');
-        let state: ChannelRunRecord['state'] = 'failed';
-        if (success) state = 'delivered';
-        else if (run.snapshot.status === 'cancelled') state = 'cancelled';
         const result = await runs()
           .findOneAndUpdate(
             predicate(tenantId, fence, now),
             {
               $set: {
                 state,
+                ...(hasPermanentDeliveryFailure(run)
+                  ? { errorCode: 'delivery_permanent_failure' }
+                  : {}),
                 deliveredAt: now,
                 leaseExpiresAt: 0,
               },
+              $unset: terminalUnset,
             },
             { new: true, session },
           )
@@ -1051,7 +979,10 @@ export function createChannelRunStorage(
         );
         const result = await runs().updateOne(
           predicate(tenantId, fence, now),
-          { $set: { state: 'cancelled', leaseExpiresAt: 0 } },
+          {
+            $set: { state: 'cancelled', leaseExpiresAt: 0 },
+            $unset: terminalUnset,
+          },
           { session },
         );
         if (result.modifiedCount !== 1) throw new ChannelRunConflict('stale_fence');
@@ -1106,11 +1037,13 @@ export function createChannelRunStorage(
       );
       return result.matchedCount === 1;
     },
-    async findDeliveredReply(tenantId, channelId, externalMessageKey) {
+    async findDeliveredReply(scope, externalMessageKey) {
+      const { tenantId, channelId } = scope;
       return runs()
         .findOne({
           tenantId,
           channelId,
+          laneId: laneKey(scope),
           state: 'delivered',
           receipts: { $elemMatch: { externalMessageKey, outcome: 'confirmed' } },
         })
