@@ -121,7 +121,7 @@ const ODT_MIME = 'application/vnd.oasis.opendocument.text';
 const PPTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.presentation';
 const POTX_MIME = 'application/vnd.openxmlformats-officedocument.presentationml.template';
 
-const DOCUMENT_EXTENSIONS = new Set<string>(['docx', 'odt', 'xlsx', 'xls', 'ods']);
+const DOCUMENT_EXTENSIONS = new Set<string>(['docx', 'odt', 'xlsx', 'xls', 'xlsb', 'ods']);
 const PRESENTATION_EXTENSIONS = new Set<string>(['pptx', 'potx']);
 
 const extensionOf = (name: string): string => {

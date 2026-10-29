@@ -32,6 +32,7 @@ export const excelFileTypes = [
   'application/xls',
   'application/x-xls',
   'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.ms-excel.sheet.binary.macroenabled.12', // .xlsb - Excel Binary Workbook
 ];
 
 export const fullMimeTypesList = [
@@ -319,7 +320,7 @@ export const isAnthropicDocumentType = (mimeType?: string): boolean =>
   mimeType === 'application/pdf' || isAnthropicTextDocumentType(mimeType);
 
 export const excelMimeTypes =
-  /^application\/(vnd\.ms-excel|msexcel|x-msexcel|x-ms-excel|x-excel|x-dos_ms_excel|xls|x-xls|vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet)$/;
+  /^application\/(vnd\.ms-excel|msexcel|x-msexcel|x-ms-excel|x-excel|x-dos_ms_excel|xls|x-xls|vnd\.openxmlformats-officedocument\.spreadsheetml\.sheet|vnd\.ms-excel\.sheet\.binary\.macroenabled\.12)$/;
 
 export const textMimeTypes =
   /^(text\/(x-c|x-csharp|tab-separated-values|x-c\+\+|x-h|x-java|html|markdown|x-php|x-python|x-script\.python|x-ruby|x-tex|plain|css|vtt|javascript|csv|xml|calendar))$/;
@@ -501,6 +502,7 @@ export const codeTypeMapping: { [key: string]: string } = {
   docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx - Word
   xls: 'application/vnd.ms-excel', // .xls - Excel (legacy)
   xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', // .xlsx - Excel
+  xlsb: 'application/vnd.ms-excel.sheet.binary.macroenabled.12', // .xlsb - Excel Binary Workbook
   ppt: 'application/vnd.ms-powerpoint', // .ppt - PowerPoint (legacy)
   pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', // .pptx - PowerPoint
   potx: 'application/vnd.openxmlformats-officedocument.presentationml.template', // .potx - PowerPoint template
