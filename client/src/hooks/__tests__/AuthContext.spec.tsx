@@ -56,6 +56,7 @@ let mockCapturedLogoutOptions: {
 };
 
 const mockEndPullRequestSession = jest.fn();
+const mockClearTitleGenerationState = jest.fn();
 const mockRefreshMutate = jest.fn();
 const mockLoginMutate = jest.fn();
 const mockLogoutMutate = jest.fn();
@@ -88,6 +89,7 @@ jest.mock('~/data-provider', () => ({
   })),
   useGetRole: jest.fn(() => ({ data: null })),
   endPullRequestSession: jest.fn(() => mockEndPullRequestSession()),
+  clearTitleGenerationState: jest.fn(() => mockClearTitleGenerationState()),
   setPullRequestSessionOwner: jest.fn(),
   useListRoles: jest.fn(() => ({ data: undefined })),
 }));
@@ -523,6 +525,17 @@ describe('AuthContextProvider — logout onSuccess/onError handling', () => {
     });
 
     expect(mockEndPullRequestSession).toHaveBeenCalled();
+  });
+
+  it('clears module-level title generation state at the logout session boundary', () => {
+    mockClearTitleGenerationState.mockClear();
+    renderProvider();
+
+    act(() => {
+      mockCapturedLogoutOptions.onSuccess({ message: 'Logout successful' });
+    });
+
+    expect(mockClearTitleGenerationState).toHaveBeenCalled();
   });
 
   it('does not end the sidebar pull request queue while a session is being established', () => {

@@ -1,12 +1,12 @@
 import { memo, useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { createPortal } from 'react-dom';
+import { parseWakeupMessage } from '@librechat/chat';
 import { ChevronUp, ChevronDown } from 'lucide-react';
 import { ContentTypes } from 'librechat-data-provider';
 import { pxToRem, useRemScale } from '@librechat/client';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 import { useMessagesConversation, useMessagesSubmission } from '~/Providers';
-import { parseWakeupMessage } from './Content/Parts/wakeup';
 import { useGetMessagesByConvoId } from '~/data-provider';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';

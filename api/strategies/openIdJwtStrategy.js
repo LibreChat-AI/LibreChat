@@ -17,6 +17,7 @@ const {
   getValidOpenIdReuseUserId,
   invalidateCachedAuthUserDoc,
   setCachedAuthUserDoc,
+  timeAuthUserLookup,
   getHttpsProxyAgent,
   isAccessTokenJwt,
   math,
@@ -186,16 +187,18 @@ const openIdJwtLogin = (openIdConfig) => {
           authUserCacheMode === 'on' &&
           cachedUser &&
           isUserInAuthCacheScope(cachedUser, authUserCacheScope);
-        const lookupResult = servedCachedUser
-          ? { user: cachedUser, error: null, migration: false }
-          : await findOpenIDUser({
-              findUser,
-              email: payload ? getOpenIdEmail(payload) : undefined,
-              openidId: payload?.sub,
-              openidIssuer,
-              idOnTheSource: payload?.oid,
-              strategyName: 'openIdJwtLogin',
-            });
+        const { result: lookupResult, lookupStartedAt } = servedCachedUser
+          ? { result: { user: cachedUser, error: null, migration: false } }
+          : await timeAuthUserLookup(() =>
+              findOpenIDUser({
+                findUser,
+                email: payload ? getOpenIdEmail(payload) : undefined,
+                openidId: payload?.sub,
+                openidIssuer,
+                idOnTheSource: payload?.oid,
+                strategyName: 'openIdJwtLogin',
+              }),
+            );
         const { user, error, migration } = lookupResult;
 
         if (error) {
@@ -247,7 +250,12 @@ const openIdJwtLogin = (openIdConfig) => {
                     cacheKey: authUserCacheKey,
                   });
                 } else if (!servedCachedUser && isUserInAuthCacheScope(user, authUserCacheScope)) {
-                  await setCachedAuthUserDoc(authUserCacheStore, authUserCacheKey, user);
+                  await setCachedAuthUserDoc(
+                    authUserCacheStore,
+                    authUserCacheKey,
+                    user,
+                    lookupStartedAt,
+                  );
                 }
               }
 

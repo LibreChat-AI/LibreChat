@@ -43,12 +43,22 @@ async function expectNoGtm(page: Page, gtm: Probe, expected: number) {
   await expect(page.locator('script[src*="googletagmanager.com"]')).toHaveCount(0);
 }
 
-async function serveGtmId(page: Page, gtmId: string | null = GTM_ID): Promise<Probe> {
+/** `consentRequired: false` stands in for `interface.analyticsConsent: false` in the
+ *  deployment's yaml, layered the same way as the id. */
+async function serveGtmId(
+  page: Page,
+  gtmId: string | null = GTM_ID,
+  { consentRequired = true }: { consentRequired?: boolean } = {},
+): Promise<Probe> {
   const withId = (payload: Record<string, unknown>) => {
     const served = { ...payload };
     delete served.analyticsGtmId;
     if (gtmId !== null) {
       served.analyticsGtmId = gtmId;
+    }
+    if (!consentRequired) {
+      const iface = (served.interface ?? {}) as Record<string, unknown>;
+      served.interface = { ...iface, analyticsConsent: false };
     }
     return served;
   };
@@ -244,5 +254,48 @@ test.describe('analytics consent', () => {
     await expect(dialog.getByRole('button', { name: 'Archive all chats' })).toBeVisible();
     await expect(dialog.getByRole('switch', { name: 'Allow analytics' })).toHaveCount(0);
     expect(gtm.requests()).toBe(0);
+  });
+
+  test('a deployment that settles consent itself loads Google Tag Manager without asking @scenario:consent-disabled-loads-gtm-without-prompt', async ({
+    page,
+  }) => {
+    test.setTimeout(90000);
+    /** An answer stored before the operator turned the prompt off no longer applies. */
+    await page.addInitScript(() =>
+      window.localStorage.setItem('analyticsConsent', JSON.stringify('denied')),
+    );
+    const gtm = await serveGtmId(page, GTM_ID, { consentRequired: false });
+    await openNewChat(page);
+
+    await expect.poll(gtm.requests).toBeGreaterThan(0);
+    await expect(banner(page)).toHaveCount(0);
+
+    /** There is no choice left for the viewer, so Settings offers none. */
+    await openSettings(page);
+    const dialog = page.getByRole('dialog');
+    await dialog.getByRole('tab', { name: 'Data & Privacy' }).click();
+    await expect(dialog.getByRole('button', { name: 'Archive all chats' })).toBeVisible();
+    await expect(dialog.getByRole('switch', { name: 'Allow analytics' })).toHaveCount(0);
+  });
+
+  test('a shared link loads Google Tag Manager without asking when the deployment settles consent @scenario:shared-link-consent-disabled-loads-gtm', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    await serveGtmId(page, null);
+    const shareId = await createSharedLink(page);
+    await page.unrouteAll({ behavior: 'wait' });
+
+    const gtm = await serveGtmId(page, GTM_ID, { consentRequired: false });
+    await page.goto(`/share/${shareId}`, { timeout: 15000 });
+    await expect(page.getByTestId('messages-view')).toBeVisible({ timeout: 20000 });
+    await expect.poll(gtm.requests).toBeGreaterThan(0);
+    await expect(banner(page)).toHaveCount(0);
+
+    await page.getByRole('button', { name: 'Settings', exact: true }).click();
+    await expect(page.getByRole('dialog')).toBeVisible();
+    await expect(
+      page.getByRole('dialog').getByRole('switch', { name: 'Allow analytics' }),
+    ).toHaveCount(0);
   });
 });

@@ -6,6 +6,13 @@ jest.mock('nanoid', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  writeGuarded: (res, chunk) => {
+    if (res.writableEnded === true || res.destroyed === true) {
+      return false;
+    }
+    res.write(chunk);
+    return true;
+  },
   sendEvent: jest.fn(),
   writeAttachmentEvent: jest.fn(),
   createOwnedToolEndHandler: jest.fn((callback) => ({ handle: callback })),

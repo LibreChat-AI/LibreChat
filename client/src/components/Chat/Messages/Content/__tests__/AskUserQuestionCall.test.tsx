@@ -1,6 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { fireEvent, render, screen } from '@testing-library/react';
+import '~/Providers/MessagePartsHostContext';
 import AskUserQuestionCall from '../AskUserQuestionCall';
 import { FailedRevealContext } from '../reveal';
 import store from '~/store';

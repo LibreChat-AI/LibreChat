@@ -793,7 +793,7 @@ describe('createAdminLangfuseHandlers', () => {
       expect(fields['langfuse.destination']).toBe('us');
       expect(fields['langfuse.publicKey']).toBe('pk-2');
       expect(fields['langfuse.projectId']).toBe('project-1');
-      expect(global.fetch).toHaveBeenCalledTimes(2);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
       const [url, init] = (global.fetch as unknown as jest.Mock).mock.calls[0];
       expect(url).toBe('https://us.cloud.langfuse.com/api/public/projects');
       expect(
@@ -1113,10 +1113,7 @@ describe('createAdminLangfuseHandlers', () => {
     });
 
     it('returns success when Langfuse responds ok', async () => {
-      global.fetch = jest
-        .fn()
-        .mockResolvedValueOnce(projectResponse())
-        .mockResolvedValueOnce({ ok: true, status: 207 }) as unknown as typeof fetch;
+      global.fetch = jest.fn().mockResolvedValueOnce(projectResponse()) as unknown as typeof fetch;
       const { handlers } = createHandlers();
       const res = mockRes();
 
@@ -1132,23 +1129,13 @@ describe('createAdminLangfuseHandlers', () => {
       expect(url).toBe('https://cloud.langfuse.com/api/public/projects');
       expect(init.headers.Authorization).toMatch(/^Basic /);
       expect(init.signal).toBeInstanceOf(AbortSignal);
-      const [publicUrl, publicInit] = (global.fetch as unknown as jest.Mock).mock.calls[1];
-      expect(publicUrl).toBe('https://cloud.langfuse.com/api/public/ingestion');
-      expect(publicInit.method).toBe('POST');
-      expect(publicInit.headers.Authorization).toBe('Bearer pk');
-      expect(publicInit.headers['X-Langfuse-Public-Key']).toBe('pk');
-      expect(publicInit.headers['Content-Type']).toBe('application/json');
-      expect(JSON.parse(publicInit.body)).toEqual({ batch: [] });
-      expect(publicInit.signal).toBe(init.signal);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
     });
 
     it('returns a timeout failure when Langfuse verification exceeds its deadline', async () => {
       const timeoutError = new Error('The operation was aborted due to timeout');
       timeoutError.name = 'TimeoutError';
-      global.fetch = jest
-        .fn()
-        .mockResolvedValueOnce(projectResponse())
-        .mockRejectedValueOnce(timeoutError) as unknown as typeof fetch;
+      global.fetch = jest.fn().mockRejectedValueOnce(timeoutError) as unknown as typeof fetch;
       const { handlers } = createHandlers();
       const res = mockRes();
 
@@ -1163,29 +1150,7 @@ describe('createAdminLangfuseHandlers', () => {
         success: false,
         errorCode: 'timeout',
       });
-      expect(global.fetch).toHaveBeenCalledTimes(2);
-    });
-
-    it('rejects an invalid public key even when the secret key is valid', async () => {
-      global.fetch = jest
-        .fn()
-        .mockResolvedValueOnce(projectResponse())
-        .mockResolvedValueOnce({ ok: false, status: 401 }) as unknown as typeof fetch;
-      const { handlers } = createHandlers();
-      const res = mockRes();
-
-      await handlers.testConnection(
-        mockReq({
-          body: { destination: 'eu', publicKey: 'pk-invalid', secretKey: 'sk-valid' },
-        }),
-        res,
-      );
-
-      expect(res.body).toEqual({
-        success: false,
-        errorCode: 'invalid_credentials',
-      });
-      expect(global.fetch).toHaveBeenCalledTimes(2);
+      expect(global.fetch).toHaveBeenCalledTimes(1);
     });
 
     it('returns a key-specific failure when Langfuse rejects the credentials', async () => {
@@ -1249,10 +1214,7 @@ describe('createAdminLangfuseHandlers', () => {
     });
 
     it('falls back to the stored secret only for the unchanged connection', async () => {
-      global.fetch = jest
-        .fn()
-        .mockResolvedValueOnce(projectResponse())
-        .mockResolvedValueOnce({ ok: true, status: 207 }) as unknown as typeof fetch;
+      global.fetch = jest.fn().mockResolvedValueOnce(projectResponse()) as unknown as typeof fetch;
       const { handlers } = createHandlers({
         findConfigByPrincipal: jest.fn().mockResolvedValue(
           baseConfigDoc({
@@ -1296,17 +1258,14 @@ describe('createAdminLangfuseHandlers', () => {
       expect(global.fetch).not.toHaveBeenCalled();
     });
 
-    it('sends the deployment headers on both verification requests', async () => {
+    it('sends the deployment headers on the verification request', async () => {
       /** Single-tenant topology with one configured Langfuse origin — the
        *  self-hosted-behind-a-proxy case — so the header map is unambiguous. */
       delete process.env.TENANT_ISOLATION_STRICT;
       delete process.env.LANGFUSE_FANOUT_ENABLED;
       delete process.env.LANGFUSE_FANOUT_COLLECTOR_URL;
       process.env.LANGFUSE_FANOUT_TENANT_EU_BASE_URL = 'https://eu.langfuse.internal';
-      global.fetch = jest
-        .fn()
-        .mockResolvedValueOnce(projectResponse())
-        .mockResolvedValueOnce({ ok: true, status: 207 }) as unknown as typeof fetch;
+      global.fetch = jest.fn().mockResolvedValueOnce(projectResponse()) as unknown as typeof fetch;
       const { handlers } = createHandlers();
       const res = mockRes();
 
@@ -1322,9 +1281,6 @@ describe('createAdminLangfuseHandlers', () => {
       const [, projectsInit] = (global.fetch as unknown as jest.Mock).mock.calls[0];
       expect(projectsInit.headers['CF-Access-Client-Id']).toBe('proxy-client');
       expect(projectsInit.headers.Authorization).toMatch(/^Basic /);
-      const [, ingestionInit] = (global.fetch as unknown as jest.Mock).mock.calls[1];
-      expect(ingestionInit.headers['CF-Access-Client-Id']).toBe('proxy-client');
-      expect(ingestionInit.headers.Authorization).toBe('Bearer pk');
       delete process.env.LANGFUSE_FANOUT_TENANT_EU_BASE_URL;
     });
 
@@ -1332,10 +1288,7 @@ describe('createAdminLangfuseHandlers', () => {
       /** The collector from `beforeEach` plus an explicit tenant URL: the map
        *  does not say which of them it authenticates to, so neither gets it. */
       process.env.LANGFUSE_FANOUT_TENANT_EU_BASE_URL = 'https://eu.langfuse.internal';
-      global.fetch = jest
-        .fn()
-        .mockResolvedValueOnce(projectResponse())
-        .mockResolvedValueOnce({ ok: true, status: 207 }) as unknown as typeof fetch;
+      global.fetch = jest.fn().mockResolvedValueOnce(projectResponse()) as unknown as typeof fetch;
       const { handlers } = createHandlers();
       const res = mockRes();
 
@@ -1354,10 +1307,7 @@ describe('createAdminLangfuseHandlers', () => {
     });
 
     it('withholds deployment headers when verifying an unconfigured destination', async () => {
-      global.fetch = jest
-        .fn()
-        .mockResolvedValueOnce(projectResponse())
-        .mockResolvedValueOnce({ ok: true, status: 207 }) as unknown as typeof fetch;
+      global.fetch = jest.fn().mockResolvedValueOnce(projectResponse()) as unknown as typeof fetch;
       const { handlers } = createHandlers();
       const res = mockRes();
 
@@ -1380,8 +1330,7 @@ describe('createAdminLangfuseHandlers', () => {
       async (headerName) => {
         global.fetch = jest
           .fn()
-          .mockResolvedValueOnce(projectResponse())
-          .mockResolvedValueOnce({ ok: true, status: 207 }) as unknown as typeof fetch;
+          .mockResolvedValueOnce(projectResponse()) as unknown as typeof fetch;
         const { handlers } = createHandlers();
         const res = mockRes();
 

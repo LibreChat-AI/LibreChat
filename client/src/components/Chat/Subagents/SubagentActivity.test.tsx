@@ -224,14 +224,16 @@ jest.mock('~/components/Chat/Messages/Content/ToolApproval', () => ({
   default: () => <div data-testid="tool-approval">approval</div>,
 }));
 
-jest.mock('~/components/Chat/Steering/Receipt', () => ({
-  __esModule: true,
-  default: ({ state }: { state: string }) => (
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  SteerReceipt: ({ state }: { state: string }) => (
     <span data-testid="steer-receipt" data-receipt-state={state} />
   ),
 }));
 
 jest.mock('@librechat/client', () => ({
+  cn: jest.requireActual('@librechat/client').cn,
+  useLanguage: () => 'en',
   Alert: ({ children }: { children: React.ReactNode }) => <div role="alert">{children}</div>,
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => (
     <button {...props}>{children}</button>

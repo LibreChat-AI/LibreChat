@@ -1,7 +1,7 @@
 import React from 'react';
 import copy from 'copy-to-clipboard';
+import { ToolContentPendingContext } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { ToolContentPendingContext } from '../../disclosure';
 import OutputRenderer, { isError } from '../OutputRenderer';
 
 jest.mock('copy-to-clipboard', () => jest.fn());

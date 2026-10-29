@@ -1,11 +1,11 @@
 import { useRef, useState, useMemo, useCallback, useLayoutEffect } from 'react';
 import copy from 'copy-to-clipboard';
 import { Button } from '@librechat/client';
+import { useToolContentPending } from '@librechat/chat/react';
+import { PANE_COPY_REVEAL } from '@librechat/chat/components';
 import { hasToolCallErrorPrefix, stripToolCallErrorPrefix } from 'librechat-data-provider';
 import type { UIEvent } from 'react';
 import CopyButton from '~/components/Messages/Content/CopyButton';
-import { useToolContentPending } from '../disclosure';
-import { PANE_COPY_REVEAL } from '../rows';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 

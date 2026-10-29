@@ -268,13 +268,20 @@ export type ChatTransportError = Error & {
 export interface ChatTransport {
   /** Starts a turn, then attaches to its stream. Rejects with a {@link ChatTransportError}. */
   sendMessages(request: ChatSendRequest): Promise<ChatSendResult>;
-  /** Attaches to the running generation, or resolves `null` when nothing is running. */
+  /**
+   * Attaches to the running generation, or resolves `null` when nothing is running. A generation
+   * paused for a tool decision or an answer is still running.
+   */
   reconnectToStream(request: ChatReconnectRequest): Promise<ChatStream | null>;
   /**
    * Stops the running generation; its stream then reports the abort, unless the result says it
    * settled first. A request with `abortKey` resolves to a {@link ChatRunAbortResult}.
    */
   abort(request: ChatAbortRequest): Promise<ChatAbortResult>;
+  /**
+   * Releases what the transport holds. Its creator calls it: one transport can serve several chats,
+   * so disposing a chat closes only that chat's stream.
+   */
   close?(): void;
   /** Reads the conversation's generation state; what a reload checks before reattaching. */
   getStatus?(conversationId: string): Promise<ChatStreamStatus>;

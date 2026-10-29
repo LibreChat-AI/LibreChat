@@ -6,6 +6,12 @@ import { useNavigate } from 'react-router-dom';
 import { useDirection } from '@radix-ui/react-direction';
 import { useSteering, showStopButtonByIndex, useComposerRestoreHost } from '@librechat/chat/react';
 import {
+  submitFromComposer,
+  composerClearance,
+  CollapseChat,
+  StopButton,
+} from '@librechat/chat/components';
+import {
   composerSurfaceClasses,
   composerSurfaceShadow,
   TextareaAutosize,
@@ -74,16 +80,12 @@ import CodeWorkspaceMenu from './CodeWorkspaceMenu';
 import CodeApprovalMenu from './CodeApprovalMenu';
 import TextareaHeader from './TextareaHeader';
 import PromptsCommand from './PromptsCommand';
-import { submitFromComposer } from './submit';
 import SkillsCommand from './SkillsCommand';
 import AutoPlayAudio from './AutoPlayAudio';
-import composerClearance from './clearance';
 import Waveform from './Composer/Waveform';
 import { mainTextareaId } from '~/common';
-import CollapseChat from './CollapseChat';
 import QuoteButton from './QuoteButton';
 import ToolDialogs from './ToolDialogs';
-import StopButton from './StopButton';
 import SendButton from './SendButton';
 import Queue from './Composer/Queue';
 import Tray from './Composer/Tray';

@@ -62,7 +62,21 @@ class Tokenizer {
           : await import('ai-tokenizer/encoding/o200k_base');
       this.tokenizersCache[encoding] = new AiTokenizer(data);
     })();
-    return this.loadingPromises[encoding];
+    const loading = this.loadingPromises[encoding];
+    /** A failed load must not stay cached, or every later call replays the rejection. */
+    loading.catch(() => {
+      if (this.loadingPromises[encoding] === loading) {
+        delete this.loadingPromises[encoding];
+      }
+    });
+    return loading;
+  }
+
+  /** Fire-and-forget warm-up; a load failure is logged instead of surfacing as an unhandled rejection. */
+  private warmEncoding(encoding: EncodingName): void {
+    this.initEncoding(encoding).catch((error) => {
+      logger.error(`[Tokenizer] Failed to load encoding ${encoding}`, error);
+    });
   }
 
   /** Returns an initialized, deterministic budgeting counter that throws on tokenizer failure. */
@@ -85,7 +99,7 @@ class Tokenizer {
   getTokenCount(text: string, encoding: EncodingName = 'o200k_base'): number {
     const tokenizer = this.tokenizersCache[encoding];
     if (!tokenizer) {
-      this.initEncoding(encoding);
+      this.warmEncoding(encoding);
       return estimateUnavailableTokenCount(text);
     }
     try {
@@ -115,7 +129,7 @@ class Tokenizer {
     }
     const tokenizer = this.tokenizersCache[encoding];
     if (!tokenizer) {
-      void this.initEncoding(encoding);
+      this.warmEncoding(encoding);
       return undefined;
     }
     try {

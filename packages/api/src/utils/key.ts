@@ -2,6 +2,7 @@ import path from 'path';
 import axios from 'axios';
 import { logger } from '@librechat/data-schemas';
 import { ErrorTypes } from 'librechat-data-provider';
+import { SERVICE_REQUEST_TIMEOUT_MS } from './timeouts';
 import { readFileAsString } from './files';
 
 export interface GoogleServiceKey {
@@ -54,7 +55,10 @@ export async function loadServiceKey(keyPath: string): Promise<GoogleServiceKey 
   // Check if it's a URL
   else if (!serviceKey && /^https?:\/\//.test(keyPath)) {
     try {
-      const response = await axios.get(keyPath);
+      const response = await axios.get(keyPath, {
+        timeout: SERVICE_REQUEST_TIMEOUT_MS,
+        signal: AbortSignal.timeout(SERVICE_REQUEST_TIMEOUT_MS),
+      });
       serviceKey = response.data;
     } catch (error) {
       logger.error(`Failed to fetch the service key from URL: ${keyPath}`, error);

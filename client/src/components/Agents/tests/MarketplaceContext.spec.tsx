@@ -11,10 +11,26 @@ const mockResetNewConversation = jest.fn();
 
 const mockUseChatHelpers = jest.fn();
 
-jest.mock('~/hooks/Chat/useChatHelpers', () => ({
-  __esModule: true,
-  default: (index?: number, paramId?: string) => mockUseChatHelpers(index, paramId),
-}));
+/** The provider's contract is the spec's; it records the pane and route it was built for. */
+jest.mock('@librechat/chat/react', () => {
+  const actual = jest.requireActual('@librechat/chat/react');
+  return {
+    ...actual,
+    ChatProvider: ({
+      index = 0,
+      conversationId,
+      children,
+    }: {
+      index?: number;
+      conversationId?: string;
+      children: React.ReactNode;
+    }) => (
+      <actual.ChatContext.Provider value={mockUseChatHelpers(index, conversationId)}>
+        {children}
+      </actual.ChatContext.Provider>
+    ),
+  };
+});
 
 const chatHelpers = {
   conversation: {

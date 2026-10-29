@@ -9,6 +9,7 @@ import {
   type MouseEvent,
 } from 'react';
 import { Lightbulb, ChevronDown } from 'lucide-react';
+import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import { Button, MorphIcon, TooltipAnchor } from '@librechat/client';
 import { ChevronUp as ChevronUpNode, ChevronDown as ChevronDownNode } from 'lucide';
 import type { FocusEvent, FC } from 'react';
@@ -16,7 +17,6 @@ import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import { useLocalize, useExpandCollapse } from '~/hooks';
 import { AnimatedText } from '../animate';
-import { ROW_GLYPH_SLOT } from '../rows';
 import { cn } from '~/utils';
 
 /** Whether any part of `el` is inside the viewport and every clipping ancestor. */

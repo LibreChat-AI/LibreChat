@@ -46,6 +46,7 @@ jest.mock('@librechat/api', () => ({
   getValidOpenIdReuseUserId: jest.fn(),
   invalidateCachedAuthUserDoc: jest.fn(),
   setCachedAuthUserDoc: jest.fn(),
+  timeAuthUserLookup: jest.requireActual('@librechat/api').timeAuthUserLookup,
   getHttpsProxyAgent: jest.fn(() => undefined),
   isAccessTokenJwt: jest.requireActual('@librechat/api').isAccessTokenJwt,
   math: jest.fn((val, fallback) => fallback),
@@ -663,7 +664,11 @@ describe('openIdJwtStrategy – auth user document cache', () => {
   it('populates the cache after a miss with the fresh user document', async () => {
     getAuthUserDocCacheMode.mockReturnValue('on');
     getCachedAuthUserDoc.mockResolvedValue(undefined);
-    findOpenIDUser.mockResolvedValue({ user: { ...baseUser }, error: null, migration: false });
+    let lookupAt;
+    findOpenIDUser.mockImplementation(async () => {
+      lookupAt = Date.now();
+      return { user: { ...baseUser }, error: null, migration: false };
+    });
 
     await invokeVerify(req, payload);
 
@@ -672,7 +677,10 @@ describe('openIdJwtStrategy – auth user document cache', () => {
       mockAuthUserDocCacheStore,
       'auth-user-doc-key',
       expect.objectContaining({ id: 'user-abc' }),
+      expect.any(Number),
     );
+    /** The write is stamped with when the lookup began, so a slow lookup is not cached. */
+    expect(setCachedAuthUserDoc.mock.calls[0][3]).toBeLessThanOrEqual(lookupAt);
     expect(invalidateCachedAuthUserDoc).not.toHaveBeenCalled();
   });
 
@@ -706,6 +714,7 @@ describe('openIdJwtStrategy – auth user document cache', () => {
       mockAuthUserDocCacheStore,
       'auth-user-doc-key',
       expect.objectContaining({ id: 'tenant-b-user', tenantId: 'tenant-b' }),
+      expect.any(Number),
     );
   });
 

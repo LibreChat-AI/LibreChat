@@ -1,5 +1,6 @@
 import React, { memo, useState, useCallback, useMemo, useEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
+import { hoverButtonClasses } from '@librechat/chat/components';
 import { TFeedback, TFeedbackTag, getTagsForRating } from 'librechat-data-provider';
 import {
   AlertCircle,
@@ -21,7 +22,6 @@ import {
   ThumbUpIcon,
   ThumbDownIcon,
 } from '@librechat/client';
-import { hoverButtonClasses } from './styles';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 

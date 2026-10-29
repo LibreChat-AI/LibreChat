@@ -12,6 +12,7 @@ const {
   registerShutdownTask,
   auditCacheStores,
   formatMemoryUsage,
+  createSingleFlight,
 } = require('@librechat/api');
 
 /** No-op store for cache namespaces that are deliberately disabled. */
@@ -110,7 +111,7 @@ async function clearExpiredFromCache(cache) {
     return;
   }
 
-  const expiryTime = Date.now() - ttl;
+  const expiryTime = Date.now();
   let cleared = 0;
 
   // Get all keys first to avoid modification during iteration
@@ -124,7 +125,7 @@ async function clearExpiredFromCache(cache) {
       }
 
       const data = cache.opts.deserialize(raw);
-      // Check if the entry is older than TTL
+      // Check if the entry has expired
       if (data?.expires && data.expires <= expiryTime) {
         const deleted = await cache.opts.store.delete(key);
         if (!deleted) {
@@ -151,9 +152,7 @@ async function clearExpiredFromCache(cache) {
 
   if (cleared > 0) {
     cacheConfig.DEBUG_MEMORY_CACHE &&
-      logger.info(
-        `[Cache] Cleared ${cleared} entries older than ${ttl}ms from ${cache.opts.namespace}`,
-      );
+      logger.info(`[Cache] Cleared ${cleared} expired entries from ${cache.opts.namespace}`);
   }
 }
 
@@ -177,9 +176,10 @@ if (!cacheConfig.USE_REDIS && !cacheConfig.CI) {
   const cleanupIntervals = new Set();
 
   // Clear expired entries every 30 seconds
-  const cleanup = setInterval(() => {
-    clearAllExpiredFromCache();
-  }, Time.THIRTY_SECONDS);
+  const cleanup = setInterval(
+    createSingleFlight(clearAllExpiredFromCache, logger, '[Cache] Expired entry sweep'),
+    Time.THIRTY_SECONDS,
+  );
 
   cleanupIntervals.add(cleanup);
 

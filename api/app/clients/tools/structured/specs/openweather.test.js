@@ -317,7 +317,7 @@ describe('OpenWeather Tool', () => {
       Promise.resolve({
         ok: false,
         status: 404,
-        json: async () => ({ message: 'Not found' }),
+        json: async () => ({ message: 'Not found for PRIVATE-PROVIDER-DETAIL' }),
       }),
     );
 
@@ -325,7 +325,8 @@ describe('OpenWeather Tool', () => {
       action: 'current_forecast',
       city: 'Knoxville, Tennessee',
     });
-    expect(result).toMatch(/Error: OpenWeather API request failed with status 404: Not found/);
+    expect(result).toBe('Error: OpenWeather found no result for this request (status 404).');
+    expect(result).not.toContain('PRIVATE-PROVIDER-DETAIL');
   });
 
   test('invalid date format returns an error', async () => {
@@ -340,30 +341,23 @@ describe('OpenWeather Tool', () => {
       return Promise.reject('Unexpected fetch call for geocoding');
     });
 
-    // Mock timestamp API response
-    fetch.mockImplementationOnce((url) => {
-      if (url.includes('onecall/timemachine')) {
-        throw new Error('Invalid date format. Expected YYYY-MM-DD.');
-      }
-      return Promise.reject('Unexpected fetch call');
-    });
-
     const result = await tool.call({
       action: 'timestamp',
       city: 'Knoxville, Tennessee',
-      date: '03-04-2020', // Wrong format
+      date: '2020/03/04', // Wrong format
     });
     expect(result).toMatch(/Error: Invalid date format. Expected YYYY-MM-DD./);
   });
 
-  test('a failed request does not echo the API key to the model', async () => {
+  test('a failed request returns approved text, not the exception message', async () => {
     fetch.mockImplementationOnce((url) =>
       Promise.reject(new Error(`request to ${url} failed, reason: getaddrinfo ENOTFOUND`)),
     );
 
     const result = await tool.call({ action: 'current_forecast', lat: 35.96, lon: -83.92 });
 
-    expect(result).toMatch(/^Error: request to .*appid=\[REDACTED\]/);
+    expect(result).toBe('Error: The tool request failed.');
     expect(result).not.toContain('test-api-key');
+    expect(result).not.toContain('ENOTFOUND');
   });
 });

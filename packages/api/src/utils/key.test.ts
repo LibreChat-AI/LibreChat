@@ -69,7 +69,10 @@ describe('loadServiceKey', () => {
     (axios.get as jest.Mock).mockResolvedValue({ data: mockServiceKey });
 
     const result = await loadServiceKey(url);
-    expect(axios.get).toHaveBeenCalledWith(url);
+    expect(axios.get).toHaveBeenCalledWith(
+      url,
+      expect.objectContaining({ timeout: 10_000, signal: expect.any(AbortSignal) }),
+    );
     expect(result).toEqual(mockServiceKey);
   });
 

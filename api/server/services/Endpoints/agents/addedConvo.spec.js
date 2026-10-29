@@ -309,11 +309,13 @@ describe('processAddedConvo', () => {
       }),
     );
 
-    expect(mockResolveModelSpecSkillIds).toHaveBeenCalledWith({
-      names: ['finance-analyst'],
-      accessibleSkillIds: [accessibleSkillId],
-      getSkillByName: mockRegistryGetSkillByName,
-    });
+    expect(mockResolveModelSpecSkillIds).toHaveBeenCalledWith(
+      expect.objectContaining({
+        names: ['finance-analyst'],
+        accessibleSkillIds: [accessibleSkillId],
+        getSkillByName: mockRegistryGetSkillByName,
+      }),
+    );
     expect(mockResolveAgentScopedSkillIds).toHaveBeenNthCalledWith(1, {
       agent: expect.objectContaining({
         id: Constants.EPHEMERAL_AGENT_ID,

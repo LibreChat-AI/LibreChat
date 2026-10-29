@@ -26,6 +26,8 @@ describe('@librechat/chat localization keys', () => {
       ),
     );
     expect(used.size).toBeGreaterThan(0);
-    expect([...used].filter((key) => !(key in translations))).toEqual([]);
+    /** A key passed with a `count` resolves through its plural forms, so its `_one` form defines it. */
+    const defined = (key: string): boolean => key in translations || `${key}_one` in translations;
+    expect([...used].filter((key) => !defined(key))).toEqual([]);
   });
 });

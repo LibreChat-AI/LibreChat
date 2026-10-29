@@ -7,7 +7,16 @@ export const DEFAULT_OUTBOUND_TIMEOUTS_MS = {
   actionsMs: 300_000,
   moderationMs: 10_000,
   imageFetchMs: 30_000,
+  toolsMs: 60_000,
+  speechMs: 300_000,
+  imageGenerationMs: 300_000,
 } as const;
+
+/**
+ * Budget for calls made where no app config is in scope (startup, the config loader, auth
+ * refresh, email delivery), so `timeouts` cannot reach them.
+ */
+export const SERVICE_REQUEST_TIMEOUT_MS = 10_000;
 
 export type OutboundTimeout = keyof typeof DEFAULT_OUTBOUND_TIMEOUTS_MS;
 
@@ -66,4 +75,42 @@ export function getOutboundTimeout(error: unknown): Error | undefined {
     return Object.assign(new Error(budgetMessage), { name: 'OutboundTimeoutError' });
   }
   return undefined;
+}
+
+/** Budget for one call a built-in tool makes to its API, per `timeouts.toolsMs`. */
+export function toolRequestBudget(
+  timeouts?: AppConfig['timeouts'],
+  signal?: AbortSignal,
+): ReturnType<typeof outboundRequestBudget> {
+  return outboundRequestBudget(getOutboundTimeoutMs({ timeouts }, 'toolsMs'), 'toolsMs', signal);
+}
+
+/**
+ * Budget factory for speech providers, per `timeouts.speechMs`. Each call starts a fresh
+ * deadline, so every provider request gets the full budget while `signal` (a client
+ * disconnect) stays shared across them.
+ */
+export function createSpeechBudget(
+  appConfig: Pick<AppConfig, 'timeouts'> | null | undefined,
+  signal?: AbortSignal,
+): () => ReturnType<typeof outboundRequestBudget> {
+  const timeoutMs = getOutboundTimeoutMs(appConfig, 'speechMs');
+  return () => outboundRequestBudget(timeoutMs, 'speechMs', signal);
+}
+
+/** Budget for one request under the configured (or default) `key` timeout. */
+export function configuredRequestBudget(
+  appConfig: Pick<AppConfig, 'timeouts'> | null | undefined,
+  key: OutboundTimeout,
+  signal?: AbortSignal,
+): ReturnType<typeof outboundRequestBudget> {
+  return outboundRequestBudget(getOutboundTimeoutMs(appConfig, key), key, signal);
+}
+
+/** Fixed budget for startup and auth requests made before app config exists. */
+export function serviceRequestBudget(): { timeout: number; signal: AbortSignal } {
+  return {
+    timeout: SERVICE_REQUEST_TIMEOUT_MS,
+    signal: AbortSignal.timeout(SERVICE_REQUEST_TIMEOUT_MS),
+  };
 }

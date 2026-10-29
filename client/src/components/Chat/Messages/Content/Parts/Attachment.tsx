@@ -2,6 +2,11 @@ import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } fr
 import { Tools } from 'librechat-data-provider';
 import { Button, useRemScale } from '@librechat/client';
 import { Loader2, AlertCircle, Download, ChevronDown, Files as FilesIcon } from 'lucide-react';
+import {
+  ARTIFACT_ROW_NAV_SPACING,
+  ROW_GLYPH_SLOT,
+  TOOL_ROW_CLASSES,
+} from '@librechat/chat/components';
 import type { TAttachment, TFile, TAttachmentMetadata } from 'librechat-data-provider';
 import type { ToolArtifactType } from '~/utils/artifacts';
 import {
@@ -14,7 +19,6 @@ import {
   isTextAttachment,
   renderAttachmentKey,
 } from './attachmentTypes';
-import { ARTIFACT_ROW_NAV_SPACING, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '../rows';
 import { useLocalize, useAttachmentPreviewSync, useExpandCollapse } from '~/hooks';
 import FileContainer from '~/components/Chat/Input/Files/FileContainer';
 import { fileToArtifact, TOOL_ARTIFACT_TYPES } from '~/utils/artifacts';
