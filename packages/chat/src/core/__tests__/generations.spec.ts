@@ -3770,4 +3770,28 @@ describe('Chat pauses the server refused to resume', () => {
     await flush();
     expect(refused).toBeUndefined();
   });
+
+  it('a refused pause stays over for a later status read and a reattached replay', async () => {
+    const h = createHarness();
+    h.chat.restorePendingAction(askAction, 500);
+    h.transport.resume.mockRejectedValueOnce(
+      Object.assign(new Error('gone'), { response: { status: 404 } }),
+    );
+    h.transport.reconnectToStream.mockRejectedValueOnce(networkError());
+    await expect(h.chat.addToolOutput({ toolCallId: 'ask-1', output: 'A' })).rejects.toThrow();
+    await flush();
+
+    h.chat.restorePendingAction(askAction, 500);
+    expect(h.chat.pendingAction).toBeUndefined();
+    const stream = createStream({ streamId: 'convo-1', generationCreatedAt: 500 });
+    h.transport.reconnectToStream.mockResolvedValueOnce(stream);
+    h.chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 500 }).then(
+      () => undefined,
+      () => undefined,
+    );
+    await flush();
+    stream.push({ type: 'pending_action', data: askAction } as unknown as ChatEvent);
+    await flush();
+    expect(h.chat.pendingAction).toBeUndefined();
+  });
 });

@@ -814,7 +814,7 @@ export class Chat {
   /** The generation a restored pause belongs to, which a reattachment to it continues. */
   private restored?: { createdAt: number; generation: Generation };
   private readonly decisions = new Map<string, Agents.ToolApprovalResolution>();
-  /** Pauses already resumed, whose replay by a reattached stream is stale. */
+  /** Pauses already resumed, or refused as over, whose replay or later status read is stale. */
   private readonly resumed = new Set<string>();
   /** The newest generation a status read named, below which a read is stale. */
   private newestRead?: number;
@@ -2511,6 +2511,8 @@ export class Chat {
     } catch (error) {
       const failure = error as ChatTransportError;
       if (isPauseOver(failure)) {
+        /** Over for good: a later status read, replay or snapshot of it is stale, as an answered one is. */
+        this.resumed.add(action.actionId);
         /**
          * The server answered that this pause can no longer be resumed: another client answered
          * it or a newer generation replaced it. It ends here, and a probe finds what runs now.
