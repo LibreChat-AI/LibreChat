@@ -1,5 +1,6 @@
 import { setDefaultMessagesHost } from '@librechat/chat/react';
 import type { MessagesHost } from '@librechat/chat/react';
+import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import Files from '~/components/Chat/Messages/Content/Files';
 import useClockFormat from '~/hooks/useClockFormat';
 
@@ -9,6 +10,7 @@ import useClockFormat from '~/hooks/useClockFormat';
 export const appMessagesHost: MessagesHost = {
   useHour12: useClockFormat,
   renderFiles: (message) => <Files message={message} />,
+  renderMessageIcon: (props) => <MessageIcon {...props} />,
 };
 
 setDefaultMessagesHost(appMessagesHost);

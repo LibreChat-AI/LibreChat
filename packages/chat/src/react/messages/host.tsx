@@ -1,6 +1,21 @@
 import { createContext, useContext } from 'react';
-import type { TMessage } from 'librechat-data-provider';
+import type { Agent, Assistant, TConversation, TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
+
+/** What a message author's icon is drawn from: the endpoint and model, or the agent or
+ *  assistant that wrote it. */
+export type MessageIconData = { endpoint?: string | null; isCreatedByUser?: boolean } & Pick<
+  TConversation,
+  'modelLabel'
+> &
+  Pick<TMessage, 'model' | 'iconURL'>;
+
+/** The props the app's message icon renders from. */
+export type MessageIconProps = {
+  iconData?: MessageIconData;
+  assistant?: Assistant;
+  agent?: Agent;
+};
 
 /**
  * Everything the message list reads from the app: viewer preferences, and render slots for the
@@ -15,12 +30,16 @@ export interface MessagesHost {
   useHour12: () => boolean | undefined;
   /** Renders the files attached to a user message, above its text. */
   renderFiles: (message: TMessage) => ReactNode;
+
+  /** Renders a message author's icon with the app's endpoint and avatar icons. */
+  renderMessageIcon: (props: MessageIconProps) => ReactNode;
 }
 
 /** The host rows read outside any provider before an app registers one: locale clock, no slots. */
 const fallbackHost: MessagesHost = {
   useHour12: () => undefined,
   renderFiles: () => null,
+  renderMessageIcon: () => null,
 };
 
 const MessagesHostContext = createContext<MessagesHost | null>(null);
@@ -49,4 +68,9 @@ export function MessagesHostProvider({
 /** The host of the nearest provider, else the registered default, else the fallback. */
 export function useMessagesHost(): MessagesHost {
   return useContext(MessagesHostContext) ?? defaultHost;
+}
+
+/** A message author's icon, drawn by the host's slot. */
+export function MessageIconSlot(props: MessageIconProps): ReactNode {
+  return useMessagesHost().renderMessageIcon(props);
 }

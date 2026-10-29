@@ -7,6 +7,8 @@ import type { TMessageChatContext } from '~/common';
 import { ShareMessagesProvider } from '~/components/Share/ShareMessagesProvider';
 import { ShareContext } from '~/Providers/ShareContext';
 import MessageRender from '../MessageRender';
+import '~/Providers/MessagePartsHostContext';
+import '~/Providers/MessagesHostContext';
 
 const mockAgentsMap = {
   agent_reviewer: { id: 'agent_reviewer', name: 'Code Reviewer' },

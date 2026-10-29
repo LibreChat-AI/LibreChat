@@ -1,12 +1,11 @@
 import { useMemo, useSyncExternalStore } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { findSubagentDispatch } from '@librechat/chat';
-import { isDocumentId } from '@librechat/chat/components';
 import { EModelEndpoint, QueryKeys, ContentTypes } from 'librechat-data-provider';
 import type { Agent, TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import MessageIcon from '~/components/Chat/Messages/MessageIcon';
-import { useAgentsMapContext } from '~/Providers';
+import { findSubagentDispatch, isDocumentId } from '../../core';
+import { MessageIconSlot } from '../messages/host';
+import { useMessagePartsHost } from '../host';
 
 /** Who wrote a turn, in the form main chat's message header shows an author. */
 export type TurnAuthor = { name: string; icon: ReactNode; agent?: Agent; agentId?: string };
@@ -136,7 +135,7 @@ export function agentAuthor(agent: Agent | undefined, fallbackName: string): Tur
     agentId: agent?.id,
     name,
     icon: (
-      <MessageIcon
+      <MessageIconSlot
         iconData={{ endpoint: EModelEndpoint.agents, modelLabel: name, isCreatedByUser: false }}
         agent={agent}
       />
@@ -191,7 +190,7 @@ export function messageAuthor(
     agentId,
     name,
     icon: (
-      <MessageIcon
+      <MessageIconSlot
         iconData={{
           endpoint: message.endpoint,
           model: agentId,
@@ -216,7 +215,7 @@ export function useParentAuthor(
   threadId?: string,
 ): TurnAuthor {
   const queryClient = useQueryClient();
-  const agentsMap = useAgentsMapContext();
+  const host = useMessagePartsHost();
   /** A different dispatch must read the latest message snapshot, even when
    *  both children belong to the same streamed parent turn. */
   const source = useMemo(
@@ -263,8 +262,16 @@ export function useParentAuthor(
     };
   }, [queryClient, source]);
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+  const agentId = snapshot?.laneId ?? snapshot?.message.model ?? '';
+  const agent = host.useAgent(agentId);
   return useMemo(
-    () => messageAuthor(snapshot?.message, agentsMap, fallbackName, snapshot?.laneId),
-    [agentsMap, fallbackName, snapshot],
+    () =>
+      messageAuthor(
+        snapshot?.message,
+        agent == null ? undefined : { [agentId]: agent },
+        fallbackName,
+        snapshot?.laneId,
+      ),
+    [agent, agentId, fallbackName, snapshot],
   );
 }
