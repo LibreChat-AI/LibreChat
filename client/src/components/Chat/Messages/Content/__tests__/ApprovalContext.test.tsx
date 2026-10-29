@@ -3,7 +3,12 @@ import { RecoilRoot } from 'recoil';
 import { act, renderHook } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
 import { activeGenerationCreatedAtByConvoId } from '@librechat/chat/react';
-import ApprovalProvider, { useApprovalContext, useResumeSubmit } from '../ApprovalContext';
+import type { ResumeSubmitTransport } from '../ApprovalContext';
+import ApprovalProvider, {
+  ResumeSubmitContext,
+  useApprovalContext,
+  useResumeSubmit,
+} from '../ApprovalContext';
 import { ChatContext } from '~/Providers/ChatContext';
 
 const mockApprovalMutate = jest.fn();
@@ -76,6 +81,95 @@ const pendingAction: import('librechat-data-provider').Agents.PendingAction = {
 describe('useResumeSubmit', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  test('uses host submission outside a chat without invoking the ordinary resume mutations', () => {
+    const transport: ResumeSubmitTransport = {
+      submitToolApproval: jest.fn(),
+      submitAskAnswer: jest.fn(),
+    };
+    const onSuccess = jest.fn();
+    const hostWrapper = ({ children }: { children: React.ReactNode }) => (
+      <JotaiProvider>
+        <ResumeSubmitContext.Provider value={transport}>
+          <ApprovalProvider>{children}</ApprovalProvider>
+        </ResumeSubmitContext.Provider>
+      </JotaiProvider>
+    );
+    const { result } = renderHook(() => useResumeSubmit(), { wrapper: hostWrapper });
+    expect(result.current).toBe(transport);
+    act(() => {
+      result.current.submitToolApproval('approval-action');
+      result.current.submitAskAnswer('single-action', 'answer', { onSuccess });
+      result.current.submitAskAnswer('batch-action', { first: 'yes', second: 'no' });
+    });
+    expect(transport.submitToolApproval).toHaveBeenCalledWith('approval-action');
+    expect(transport.submitAskAnswer).toHaveBeenNthCalledWith(1, 'single-action', 'answer', {
+      onSuccess,
+    });
+    expect(transport.submitAskAnswer).toHaveBeenNthCalledWith(2, 'batch-action', {
+      first: 'yes',
+      second: 'no',
+    });
+    expect(onSuccess).not.toHaveBeenCalled();
+    expect(mockApprovalMutate).not.toHaveBeenCalled();
+    expect(mockAskMutate).not.toHaveBeenCalled();
+  });
+
+  test('switches host transports without changing hook order and restores ordinary chat submission', () => {
+    const first: ResumeSubmitTransport = {
+      submitToolApproval: jest.fn(),
+      submitAskAnswer: jest.fn(),
+    };
+    const second: ResumeSubmitTransport = {
+      submitToolApproval: jest.fn(),
+      submitAskAnswer: jest.fn(),
+    };
+    let transport: ResumeSubmitTransport | null = null;
+    const ChatWrapper = createWrapper(1000);
+    const hostWrapper = ({ children }: { children: React.ReactNode }) => (
+      <ChatWrapper>
+        <ResumeSubmitContext.Provider value={transport}>{children}</ResumeSubmitContext.Provider>
+      </ChatWrapper>
+    );
+    const { result, rerender } = renderHook(() => useResumeSubmit(), { wrapper: hostWrapper });
+    transport = first;
+    rerender();
+    act(() => result.current.submitAskAnswer('host-action', 'first'));
+    expect(first.submitAskAnswer).toHaveBeenCalledWith('host-action', 'first');
+    transport = second;
+    rerender();
+    act(() => result.current.submitAskAnswer('host-action', 'second'));
+    expect(second.submitAskAnswer).toHaveBeenCalledWith('host-action', 'second');
+    expect(mockAskMutate).not.toHaveBeenCalled();
+    transport = null;
+    rerender();
+    act(() => result.current.submitAskAnswer('chat-action', 'ordinary'));
+    expect(mockAskMutate).toHaveBeenCalledTimes(1);
+    expect(mockAskMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conversation-1',
+        actionId: 'chat-action',
+        answer: 'ordinary',
+      }),
+      expect.any(Object),
+    );
+  });
+
+  test('accepts only action identity and payload without requiring chat stream metadata', () => {
+    const hostWrapper = ({ children }: { children: React.ReactNode }) => (
+      <JotaiProvider>
+        <ApprovalProvider
+          pendingAction={{ actionId: pendingAction.actionId, payload: pendingAction.payload }}
+        >
+          {children}
+        </ApprovalProvider>
+      </JotaiProvider>
+    );
+    const { result } = renderHook(() => useApprovalContext(), { wrapper: hostWrapper });
+    expect(result.current.getRegisteredCount('action-1')).toBe(2);
+    expect(result.current.getLeadToolCallId('action-1')).toBe('call-1');
+    expect(result.current.isReady('action-1')).toBe(false);
   });
 
   test('synchronously deduplicates tool approval submissions and unlocks a retryable error', () => {
