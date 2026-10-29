@@ -1,4 +1,9 @@
-import type { ChannelRunSnapshot, ResponseAccounting } from 'librechat-data-provider';
+import { channelStorageConfigSchema } from 'librechat-data-provider';
+import type {
+  ChannelRunSnapshot,
+  ResponseAccounting,
+  ChannelStorageConfig,
+} from 'librechat-data-provider';
 import type { ChannelRunRecord } from '~/models/channelRun';
 
 export type ChannelSummaryScope = Pick<
@@ -22,11 +27,15 @@ export interface ChannelSummaryStorage {
 }
 
 /** Bounds footer work independently of thread length. Older rows become explicit coverage gaps. */
-export const CHANNEL_SUMMARY_MAX_PRIOR_ROWS = 1000;
+export const CHANNEL_SUMMARY_MAX_PRIOR_ROWS: number = channelStorageConfigSchema.parse(
+  {},
+).maxPriorSummaryRows;
 
 export function createChannelSummaryStorage(
   mongoose: typeof import('mongoose'),
+  options: Pick<Partial<ChannelStorageConfig>, 'maxPriorSummaryRows'> = {},
 ): ChannelSummaryStorage {
+  const { maxPriorSummaryRows } = channelStorageConfigSchema.parse(options);
   return {
     async *priorMetrics(scope) {
       if (!Number.isSafeInteger(scope.sequence) || scope.sequence < 1)
@@ -64,7 +73,7 @@ export function createChannelSummaryStorage(
           'snapshot.accounting.calls.reason': 1,
         })
         .sort({ sequence: -1 })
-        .limit(CHANNEL_SUMMARY_MAX_PRIOR_ROWS)
+        .limit(maxPriorSummaryRows)
         .lean<ChannelSummaryRow[]>()
         .cursor();
       try {
