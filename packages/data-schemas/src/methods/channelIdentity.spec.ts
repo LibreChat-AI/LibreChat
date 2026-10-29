@@ -3,6 +3,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { ChannelIdentityRecord } from './channelIdentity';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
+import { closeChannelScope } from './channelScope';
 import { createUserMethods } from './user';
 import { createModels } from '~/models';
 
@@ -37,6 +38,7 @@ beforeAll(async () => {
 beforeEach(async () =>
   runAsSystem(async () => {
     await mongoose.models.ChannelIdentity.deleteMany({});
+    await mongoose.models.ChannelScope.deleteMany({});
   }),
 );
 afterAll(async () => {
@@ -219,4 +221,62 @@ it('fences an in-flight personal-link acceptance before erasing its account', ()
     await deletion;
     expect(await storage.readChannelLink(tenantId, 'link')).toBeNull();
     expect(await storage.saveChannelIdentity(accepted, null)).toBe(false);
+  }));
+
+it('rejects new tickets and delayed acceptance after irreversible channel closure', () =>
+  scope(async () => {
+    await storage.saveChannelIdentity(identity(), null);
+    await closeChannelScope(mongoose, tenantId, 'channel');
+    expect(
+      await storage.saveChannelIdentity(
+        { ...identity(), state: 'accepted', userId: 'owner', revision: 'two' },
+        'one',
+      ),
+    ).toBe(false);
+    expect(
+      await storage.saveChannelIdentity({ ...identity(), linkId: 'new', ticketHash: 'new' }, null),
+    ).toBe(false);
+    expect(await storage.readChannelLink(tenantId, 'link')).toMatchObject({
+      state: 'pending',
+      revision: 'one',
+    });
+    await storage.revokeChannelIdentities(tenantId, 'channel', 'revoked');
+    expect(await storage.readChannelLink(tenantId, 'link')).toMatchObject({ state: 'revoked' });
+  }));
+
+it('serializes live identity insertion with channel closure', () =>
+  scope(async () => {
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const collection = mongoose.models.ChannelIdentity.collection;
+    const insert = collection.insertOne.bind(collection);
+    const paused = jest.spyOn(collection, 'insertOne').mockImplementation(async (...args) => {
+      entered();
+      await gate;
+      return insert(...args);
+    });
+    const pending = storage.saveChannelIdentity(identity(), null);
+    await started;
+    let closed = false;
+    const closure = closeChannelScope(mongoose, tenantId, 'channel').then(() => {
+      closed = true;
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(closed).toBe(false);
+    } finally {
+      release();
+      paused.mockRestore();
+    }
+    expect(await pending).toBe(true);
+    await closure;
+    expect(await storage.saveChannelIdentity({ ...identity(), revision: 'late' }, 'one')).toBe(
+      false,
+    );
   }));

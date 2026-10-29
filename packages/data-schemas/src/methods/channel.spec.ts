@@ -273,6 +273,7 @@ it('redacts deleted-owner credentials while retaining a retry anchor for other p
     await methods.createAgentChannel({
       ...channel(),
       createdBy: userId,
+      credentialMode: 'per_user',
       encryptedBotToken: 'private-bot-token',
       encryptedSigningSecret: 'private-signing-secret',
       encryptedApiKey: 'private-key',
