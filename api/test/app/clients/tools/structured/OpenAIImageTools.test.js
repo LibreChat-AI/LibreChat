@@ -32,6 +32,7 @@ jest.mock('@librechat/api', () => ({
   extractBaseURL: jest.fn((url) => url),
   getProxyDispatcher: jest.fn(() => undefined),
   applyAxiosProxyConfig: jest.fn(),
+  getImageGenClientOptions: jest.requireActual('@librechat/api').getImageGenClientOptions,
 }));
 
 jest.mock('~/server/services/Files/strategies', () => ({
@@ -263,5 +264,58 @@ describe('OpenAIImageTools - IMAGE_GEN_OAI_MODEL environment variable', () => {
         headers: expect.objectContaining({ 'api-key': 'test-api-key' }),
       }),
     );
+  });
+});
+
+describe('OpenAIImageTools - client timeout and retries', () => {
+  let originalEnv;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    originalEnv = { ...process.env };
+
+    process.env.IMAGE_GEN_OAI_API_KEY = 'test-api-key';
+    delete process.env.IMAGE_GEN_OAI_MAX_RETRIES;
+
+    OpenAI.mockImplementation(() => ({
+      images: {
+        generate: jest.fn().mockResolvedValue({
+          data: [{ b64_json: 'base64-encoded-image-data' }],
+        }),
+      },
+    }));
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  const generate = async (config) => {
+    const [imageGenTool] = createOpenAIImageTools({
+      isAgent: true,
+      override: false,
+      req: { user: { id: 'test-user' }, config },
+    });
+    await imageGenTool.func({ prompt: 'test prompt' });
+    return OpenAI.mock.calls[0][0];
+  };
+
+  it('should pass timeouts.imageGenMs and IMAGE_GEN_OAI_MAX_RETRIES to the OpenAI client', async () => {
+    process.env.IMAGE_GEN_OAI_MAX_RETRIES = '0';
+
+    const clientConfig = await generate({ timeouts: { imageGenMs: 1800000 } });
+
+    expect(clientConfig).toMatchObject({
+      timeout: 1800000,
+      maxRetries: 0,
+      fetchOptions: { dispatcher: expect.anything() },
+    });
+  });
+
+  it('should use the default budget and client retries when unset', async () => {
+    const clientConfig = await generate(undefined);
+
+    expect(clientConfig.timeout).toBe(600000);
+    expect(clientConfig).not.toHaveProperty('maxRetries');
   });
 });

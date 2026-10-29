@@ -1,4 +1,6 @@
-import { oaiToolkit, IMAGE_SIZE_PATTERN } from './oai';
+import { oaiToolkit, IMAGE_SIZE_PATTERN, getImageGenClientOptions } from './oai';
+import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
+import { DEFAULT_OUTBOUND_TIMEOUTS_MS } from '~/utils/timeouts';
 
 const sizeSchemas = [
   ['image_gen_oai', oaiToolkit.image_gen_oai.schema.properties?.size],
@@ -33,4 +35,41 @@ describe('OpenAI image toolkit size schema', () => {
       expect(pattern.test(value)).toBe(false);
     },
   );
+});
+
+describe('getImageGenClientOptions', () => {
+  const originalEnv = process.env;
+  const transport = (ms: number) => ({ headersTimeout: ms, bodyTimeout: ms });
+  const defaultMs = DEFAULT_OUTBOUND_TIMEOUTS_MS.imageGenMs;
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it('defaults to the imageGenMs budget, with matching undici timeouts on the dispatcher', () => {
+    process.env = {};
+    const options = getImageGenClientOptions();
+    expect(options.timeout).toBe(defaultMs);
+    expect(options).not.toHaveProperty('maxRetries');
+    expect(options.fetchOptions.dispatcher).toBe(getDirectDispatcher(transport(defaultMs)));
+  });
+
+  it('uses timeouts.imageGenMs and IMAGE_GEN_OAI_MAX_RETRIES when set', () => {
+    process.env = { IMAGE_GEN_OAI_MAX_RETRIES: '0' };
+    const options = getImageGenClientOptions({ timeouts: { imageGenMs: 1800000 } });
+    expect(options).toMatchObject({ timeout: 1800000, maxRetries: 0 });
+    expect(options.fetchOptions.dispatcher).toBe(getDirectDispatcher(transport(1800000)));
+  });
+
+  it('routes through the proxy dispatcher with the same timeouts', () => {
+    process.env = { PROXY: 'http://proxy.test:8080' };
+    expect(getImageGenClientOptions().fetchOptions.dispatcher).toBe(
+      getProxyDispatcher(undefined, transport(defaultMs)),
+    );
+  });
+
+  it.each(['', ' ', '-1', '1.5', 'two'])('ignores IMAGE_GEN_OAI_MAX_RETRIES=%j', (value) => {
+    process.env = { IMAGE_GEN_OAI_MAX_RETRIES: value };
+    expect(getImageGenClientOptions()).not.toHaveProperty('maxRetries');
+  });
 });

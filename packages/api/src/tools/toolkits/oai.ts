@@ -1,4 +1,8 @@
+import type { AppConfig } from '@librechat/data-schemas';
+import type { Dispatcher } from 'undici';
 import type { ExtendedJsonSchema } from '../registry/schema';
+import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
+import { getOutboundTimeoutMs } from '~/utils/timeouts';
 
 /** Default descriptions for image generation tool  */
 const DEFAULT_IMAGE_GEN_DESCRIPTION =
@@ -161,3 +165,30 @@ export const oaiToolkit: {
     responseFormat: 'content_and_artifact' as const,
   },
 } as const;
+
+type ImageGenClientOptions = {
+  timeout: number;
+  maxRetries?: number;
+  fetchOptions: { dispatcher: Dispatcher };
+};
+
+/** OpenAI client options for `image_gen_oai`, bounded by `timeouts.imageGenMs`. */
+export function getImageGenClientOptions(
+  appConfig?: Pick<AppConfig, 'timeouts'> | null,
+): ImageGenClientOptions {
+  const timeout = getOutboundTimeoutMs(appConfig, 'imageGenMs');
+  /** undici's default 300 s headers/body timeouts would otherwise end a longer request first */
+  const transport = { headersTimeout: timeout, bodyTimeout: timeout };
+  const options: ImageGenClientOptions = {
+    timeout,
+    fetchOptions: {
+      dispatcher: getProxyDispatcher(undefined, transport) ?? getDirectDispatcher(transport),
+    },
+  };
+  const retries = process.env.IMAGE_GEN_OAI_MAX_RETRIES?.trim();
+  const maxRetries = retries ? Number(retries) : Number.NaN;
+  if (Number.isSafeInteger(maxRetries) && maxRetries >= 0) {
+    options.maxRetries = maxRetries;
+  }
+  return options;
+}
