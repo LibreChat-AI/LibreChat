@@ -1109,6 +1109,12 @@ const remoteApiAuthSchema = z.object({
 
 const remoteApiSchema = z.object({
   auth: remoteApiAuthSchema.optional(),
+  background: z
+    .object({
+      enabled: z.boolean().default(false),
+      acknowledgementTimeoutMs: z.number().int().min(100).max(60_000).default(10_000),
+    })
+    .optional(),
 });
 
 const managementClientBindingSchema = z
