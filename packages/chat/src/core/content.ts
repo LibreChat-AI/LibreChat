@@ -132,3 +132,10 @@ export const createDualMessageContent = (
   // that will be replaced by real content with proper types from the server
   return [primaryContent, addedContent] as unknown as TMessageContentParts[];
 };
+
+/** Render-identity index for content-part keys: the streamed position stamped
+ * by the final handler survives the sparse to compact swap; everything else keys
+ * by the live index. Coordinate logic (edit indexes, phase bounds, cursor)
+ * must keep using the live index. */
+export const getPartKeyIndex = (part: TMessageContentParts | undefined, idx: number): number =>
+  part?.streamedIndex ?? idx;
