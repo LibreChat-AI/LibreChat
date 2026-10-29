@@ -6,6 +6,45 @@ import { getTransactionSupport } from '~/utils/transactions';
 import { createIndexesWithRetry } from '~/utils/retry';
 import { runAsSystem } from '~/config/tenantContext';
 
+/** Response-bound conversation IDs are immutable: jobs and checkpoints retain that identity.
+ * An empty source scope is closed before replacement so delayed admission cannot orphan data. */
+export function createResponseConversationReplacement(
+  mongoose: typeof import('mongoose'),
+): (owner: ResponseOwner, conversationId: string) => Promise<boolean> {
+  let supported: boolean | null = null;
+  return async (owner, conversationId) => {
+    supported = await getTransactionSupport(mongoose, supported);
+    const records = createStoredResponseModel(mongoose);
+    const filter = { ...responseOwnerFilter(owner), conversationId };
+    if (!supported) {
+      // Reservation fails closed on standalone deployments, so no admission can race this check.
+      if (await records.exists(filter)) return false;
+      await closeResponseScopes(mongoose, owner, [conversationId]);
+      return true;
+    }
+    const key = responseScopeKeys(owner, conversationId)[1];
+    await initializeResponseScopes(mongoose, [key]);
+    const session = await mongoose.startSession();
+    try {
+      let allowed = false;
+      await session.withTransaction(async () => {
+        const scopes = createResponseScopeModel(mongoose);
+        // Serialize with the reservation's write to this same anchor before checking rows.
+        await scopes.updateOne({ _id: key }, { $inc: { revision: 1 } }, { session });
+        if (await records.exists(filter).session(session)) {
+          allowed = false;
+          return;
+        }
+        await scopes.updateOne({ _id: key }, { $set: { closed: true } }, { session });
+        allowed = true;
+      });
+      return allowed;
+    } finally {
+      await session.endSession();
+    }
+  };
+}
+
 /** Authorized missing-root recovery, restricted to one globally unique owner/conversation. */
 export async function discoverResponseOwners(
   mongoose: typeof import('mongoose'),
