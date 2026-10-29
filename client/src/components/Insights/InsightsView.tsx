@@ -28,14 +28,14 @@ import { cn } from '~/utils';
 
 type ShortcutRange = Exclude<InsightsRange, 'custom'>;
 type Localize = ReturnType<typeof useLocalize>;
-type SparklinePoint = { date: string; value: number | null };
+type SparklinePoint = { date: string; value: number };
 type CustomDateRange = { startDate: Date; endDate: Date };
 
 type KpiCardData = {
   id: string;
   title: string;
   description?: string;
-  value: number | null;
+  value: number;
   format?: 'currency';
   sparkline: SparklinePoint[];
 };
@@ -69,14 +69,7 @@ function formatSpend(value: number, locale: string) {
   }).format(value);
 }
 
-function formatMetric(
-  value: number | null,
-  locale: string,
-  localize: Localize,
-  format?: 'currency',
-  compact = false,
-) {
-  if (value == null) return localize('com_insights_unavailable');
+function formatMetric(value: number, locale: string, format?: 'currency', compact = false) {
   if (format === 'currency') return formatSpend(value, locale);
   return compact ? formatValue(value, locale) : formatExactValue(value, locale);
 }
@@ -170,18 +163,17 @@ function Sparkline({
   locale: string;
   format?: 'currency';
 }) {
-  const localize = useLocalize();
   const patternId = useId().replace(/:/g, '');
   const [activeIndex, setActiveIndex] = useState<number>();
   const points = useMemo(() => {
     if (values.length < 2) {
       return [];
     }
-    const maximum = Math.max(0, ...values.map((point) => point.value ?? 0)) || 1;
+    const maximum = Math.max(0, ...values.map((point) => point.value)) || 1;
     return values.map((point, index) => ({
       ...point,
       x: (index / (values.length - 1)) * 300,
-      y: point.value == null ? 0 : 52 - (point.value / maximum) * 46,
+      y: 52 - (point.value / maximum) * 46,
     }));
   }, [values]);
 
@@ -189,17 +181,8 @@ function Sparkline({
     return <div className="h-14" />;
   }
 
-  const segments: (typeof points)[] = [];
-  let segment: typeof points = [];
-  for (const point of points) {
-    if (point.value == null) {
-      if (segment.length > 0) segments.push(segment);
-      segment = [];
-    } else {
-      segment.push(point);
-    }
-  }
-  if (segment.length > 0) segments.push(segment);
+  const line = points.map((point) => `${point.x},${point.y}`).join(' ');
+  const area = `M 0 56 L ${points.map((point) => `${point.x} ${point.y}`).join(' L ')} L 300 56 Z`;
   const activePoint = activeIndex == null ? undefined : points[activeIndex];
   const formatter = new Intl.DateTimeFormat(locale, {
     month: 'short',
@@ -240,30 +223,14 @@ function Sparkline({
             />
           </pattern>
         </defs>
-        {segments.map((part) => {
-          const first = part[0];
-          const last = part[part.length - 1];
-          const line = part.map((point) => `${point.x},${point.y}`).join(' ');
-          const area = `M ${first.x} 56 L ${part.map((point) => `${point.x} ${point.y}`).join(' L ')} L ${last.x} 56 Z`;
-          return (
-            <g key={first.date}>
-              {part.length === 1 ? (
-                <circle cx={first.x} cy={first.y} r="2" fill="currentColor" />
-              ) : (
-                <>
-                  <path d={area} fill={`url(#${patternId})`} />
-                  <polyline
-                    points={line}
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    vectorEffect="non-scaling-stroke"
-                  />
-                </>
-              )}
-            </g>
-          );
-        })}
+        <path d={area} fill={`url(#${patternId})`} />
+        <polyline
+          points={line}
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          vectorEffect="non-scaling-stroke"
+        />
       </svg>
       {activePoint && (
         <>
@@ -271,21 +238,19 @@ function Sparkline({
             className="bg-border-medium pointer-events-none absolute top-0 h-full w-px"
             style={{ left: `${(activePoint.x / 300) * 100}%` }}
           />
-          {activePoint.value != null && (
-            <span
-              className="bg-status-info ring-surface-primary pointer-events-none absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2"
-              style={{
-                left: `${(activePoint.x / 300) * 100}%`,
-                top: `${(activePoint.y / 56) * 100}%`,
-              }}
-            />
-          )}
+          <span
+            className="bg-status-info ring-surface-primary pointer-events-none absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2"
+            style={{
+              left: `${(activePoint.x / 300) * 100}%`,
+              top: `${(activePoint.y / 56) * 100}%`,
+            }}
+          />
           <span
             className="border-border-light bg-surface-primary text-text-primary pointer-events-none absolute bottom-full mb-2 -translate-x-1/2 rounded-lg border px-2.5 py-1.5 text-xs whitespace-nowrap shadow-lg"
             style={{ left: `${Math.max(14, Math.min(86, (activePoint.x / 300) * 100))}%` }}
           >
             {formatter.format(new Date(activePoint.date))}{' '}
-            <strong>{formatMetric(activePoint.value, locale, localize, format)}</strong>
+            <strong>{formatMetric(activePoint.value, locale, format)}</strong>
           </span>
         </>
       )}
@@ -322,13 +287,8 @@ function KpiCard({
           />
         )}
       </Heading>
-      <div
-        className={cn(
-          'text-text-primary mt-3 font-semibold break-words tabular-nums',
-          card.value == null ? 'text-base' : 'text-4xl leading-none',
-        )}
-      >
-        {formatMetric(card.value, locale, localize, card.format, true)}
+      <div className="text-text-primary mt-3 text-4xl leading-none font-semibold break-words tabular-nums">
+        {formatMetric(card.value, locale, card.format, true)}
       </div>
       <Sparkline
         values={card.sparkline}
@@ -756,9 +716,9 @@ export default function InsightsView() {
         id: 'spend',
         title: localize('com_insights_spend'),
         description: localize('com_insights_spend_definition'),
-        value: data.summary.spendUSD,
+        value: data.summary.spendUSD ?? 0,
         format: 'currency',
-        sparkline: data.daily.map((row) => ({ date: row.date, value: row.spendUSD })),
+        sparkline: data.daily.map((row) => ({ date: row.date, value: row.spendUSD ?? 0 })),
       },
     ];
   }, [data, localize]);

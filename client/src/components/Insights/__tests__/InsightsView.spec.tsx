@@ -231,11 +231,11 @@ describe('InsightsView agent selection', () => {
   });
 
   it.each([
-    [null, 'com_insights_unavailable'],
+    [null, '$0.00'],
     [0, '$0.00'],
     [0.0045, '$0.0045'],
     [0.0000000012, '$0.0000000012'],
-  ])('distinguishes unavailable, zero and small recorded spend: %s', (spendUSD, expected) => {
+  ])('shows missing spend as zero and preserves small recorded spend: %s', (spendUSD, expected) => {
     mockUseInsightsQuery.mockImplementation((params) => ({
       data: { ...insightsData, summary: { ...insightsData.summary, spendUSD } },
       isLoading: false,
@@ -266,12 +266,12 @@ describe('InsightsView agent selection', () => {
     expect(metricCard('com_insights_thumbs_down').getByText('0')).toBeInTheDocument();
   });
 
-  it('leaves gaps in the spend trend and labels unavailable days instead of showing zero', () => {
-    const spend = [0.0001, 0.0002, null, 0.0003, 0.0004, null];
+  it('plots missing daily spend as zero in the line and tooltip', () => {
+    const spend = [0.0001, 0.0002, null, 0.0003, 0, null];
     mockUseInsightsQuery.mockImplementation((params) => ({
       data: {
         ...insightsData,
-        summary: { ...insightsData.summary, spendUSD: 0.001 },
+        summary: { ...insightsData.summary, spendUSD: 0.0006 },
         daily: spend.map((value, index) => dailyPoint(`2026-10-0${index + 1}`, value)),
       },
       isLoading: false,
@@ -283,17 +283,18 @@ describe('InsightsView agent selection', () => {
     renderView();
 
     const trend = metricCard('com_insights_spend').getByRole('img');
-    expect(trend.querySelectorAll('polyline')).toHaveLength(2);
+    expect(trend.querySelectorAll('polyline')).toHaveLength(1);
     const firstSegment = trend.querySelector('polyline');
     const heights = firstSegment
       ?.getAttribute('points')
       ?.split(' ')
       .map((point) => Number(point.split(',')[1]));
-    expect(heights).toHaveLength(2);
+    expect(heights).toHaveLength(6);
+    expect(heights?.[2]).toBe(heights?.[4]);
+    expect(heights?.[5]).toBe(heights?.[4]);
     expect(Math.abs((heights?.[0] ?? 0) - (heights?.[1] ?? 0))).toBeGreaterThan(1);
     fireEvent.focus(trend);
-    expect(within(trend).getByText('com_insights_unavailable')).toBeInTheDocument();
-    expect(within(trend).queryByText('$0.00')).not.toBeInTheDocument();
+    expect(within(trend).getByText('$0.00')).toBeInTheDocument();
   });
 
   it('filters names without changing selection and clears search on close', async () => {
