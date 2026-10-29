@@ -4411,4 +4411,34 @@ describe('Chat pauses a sync frame carries or releases while an answer is in fli
     expect(h.transport.reconnectToStream).not.toHaveBeenCalled();
     expect(h.finishes).toHaveLength(finishes);
   });
+
+  it('a snapshot pause a newer buffered one supersedes never reaches the host reducer', async () => {
+    const folded: ChatEvent[] = [];
+    const h = createHarness({ applyEvent: (event) => folded.push(event) });
+    const stream = await reattach(h);
+    const older = { ...askAction, actionId: 'action-1', createdAt: 1 } as Agents.PendingAction;
+    const newer = {
+      ...askAction,
+      actionId: 'action-2',
+      createdAt: 2,
+      expiresAt: 1,
+    } as Agents.PendingAction;
+    stream.push({
+      type: 'sync',
+      data: {
+        sync: true,
+        resumeState: { runSteps: [], pendingAction: older },
+        pendingEvents: [{ event: 'on_pending_action', data: newer }],
+      },
+    } as unknown as ChatEvent);
+    await flush();
+
+    const sync = folded.find((event) => event.type === 'sync') as Extract<
+      ChatEvent,
+      { type: 'sync' }
+    >;
+    expect(sync.data.resumeState?.pendingAction).toBeUndefined();
+    expect(sync.data.pendingEvents).toEqual([]);
+    expect(h.chat.pendingAction).toBeUndefined();
+  });
 });

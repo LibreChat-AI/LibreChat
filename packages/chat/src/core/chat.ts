@@ -2540,13 +2540,16 @@ export class Chat {
       return event;
     }
     const { resumeState, pendingEvents } = event.data;
+    /** Only the pause the frame stands for, and only while it is live, reaches the reducer. */
+    const effective = getSnapshotPause(event.data);
+    const shown = effective != null && !this.isStalePause(effective) ? effective : undefined;
     const snapshot = resumeState?.pendingAction;
-    const staleSnapshot = snapshot != null && this.isStalePause(snapshot);
+    const staleSnapshot = snapshot != null && snapshot !== shown;
     const live = pendingEvents?.filter(
       (frame) =>
         !('event' in frame) ||
         frame.event !== ApprovalEvents.ON_PENDING_ACTION ||
-        !this.isStalePause(frame.data),
+        frame.data === shown,
     );
     const staleBuffered = live != null && live.length !== pendingEvents?.length;
     if (!staleSnapshot && !staleBuffered) {
