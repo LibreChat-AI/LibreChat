@@ -4,6 +4,7 @@ import type { AgentChannelRecord } from './channel';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
+import { createUserMethods } from './user';
 import { createModels } from '~/models';
 
 let mongo: MongoMemoryReplSet;
@@ -202,4 +203,129 @@ it('does not close admission when a different owner requests deletion', () =>
     await methods.createAgentChannel(channel());
     expect(await methods.deleteAgentChannel('channel', 'intruder')).toBe(false);
     expect(await runs.admit(event(), 100)).toMatchObject({ duplicate: false });
+  }));
+
+it('erases a credential creation already admitted before account deletion', () =>
+  scope(async () => {
+    const user = await mongoose.models.User.create({
+      email: 'connection-owner@example.com',
+      provider: 'local',
+      tenantId,
+    });
+    const userId = String(user._id);
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const collection = mongoose.models.AgentChannel.collection;
+    const insert = collection.insertOne.bind(collection);
+    const paused = jest.spyOn(collection, 'insertOne').mockImplementation(async (...args) => {
+      entered();
+      await gate;
+      return insert(...args);
+    });
+    const creation = methods.createAgentChannel({
+      ...channel(),
+      createdBy: userId,
+      encryptedBotToken: 'private-bot-token',
+      encryptedSigningSecret: 'private-signing-secret',
+    });
+    await started;
+    let finished = false;
+    const deletion = createUserMethods(mongoose)
+      .deleteUserById(userId)
+      .then((result) => {
+        finished = true;
+        return result;
+      });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(finished).toBe(false);
+    } finally {
+      release();
+      paused.mockRestore();
+    }
+    await creation;
+    await deletion;
+    expect(await methods.getAgentChannel('channel')).toBeNull();
+    await expect(
+      methods.createAgentChannel({
+        ...channel(),
+        channelId: 'late',
+        createdBy: userId,
+        encryptedBotToken: 'late-private-token',
+      }),
+    ).rejects.toThrow('owner unavailable');
+  }));
+
+it('redacts deleted-owner credentials while retaining a retry anchor for other principals', () =>
+  scope(async () => {
+    const user = await mongoose.models.User.create({
+      email: 'shared-connection-owner@example.com',
+      provider: 'local',
+      tenantId,
+    });
+    const userId = String(user._id);
+    await methods.createAgentChannel({
+      ...channel(),
+      createdBy: userId,
+      encryptedBotToken: 'private-bot-token',
+      encryptedSigningSecret: 'private-signing-secret',
+      encryptedApiKey: 'private-key',
+      apiKeyId: 'private-key-id',
+    });
+    const other = await runs.admit(
+      { ...event(), principal: { ...event().principal, userId: 'other-principal' } },
+      100,
+    );
+    await methods.putAgentChannelThread('channel', 'thread', 'conversation');
+    await createUserMethods(mongoose).deleteUserById(userId);
+    const parent = await methods.getAgentChannel('channel');
+    expect(parent).toMatchObject({ status: 'deleting' });
+    for (const field of [
+      'encryptedBotToken',
+      'encryptedSigningSecret',
+      'encryptedApiKey',
+      'apiKeyId',
+    ])
+      expect(parent).not.toHaveProperty(field);
+    expect(await methods.getAgentChannelThread('channel', 'thread')).toBeNull();
+    expect(await runs.read(tenantId, 'channel', other.run.runId)).not.toBeNull();
+    await expect(
+      runs.admit({ ...event(), admission: { ...event().admission, eventId: 'late' } }, 101),
+    ).rejects.toMatchObject({ code: 'invalid_transition' });
+    await mongoose.models.ChannelRun.updateOne(
+      { runId: other.run.runId },
+      { $set: { state: 'cancelled' } },
+    );
+    expect(await methods.deleteAgentChannel('channel', userId)).toBe(true);
+  }));
+
+it('keeps account erasure retryable after connection mapping cleanup fails', () =>
+  scope(async () => {
+    const user = await mongoose.models.User.create({
+      email: 'connection-erasure-retry@example.com',
+      provider: 'local',
+      tenantId,
+    });
+    const userId = String(user._id);
+    await methods.createAgentChannel({
+      ...channel(),
+      createdBy: userId,
+      encryptedBotToken: 'private-token',
+    });
+    await methods.putAgentChannelThread('channel', 'thread', 'conversation');
+    jest
+      .spyOn(mongoose.models.AgentChannelThread.collection, 'deleteMany')
+      .mockRejectedValueOnce(new Error('mapping store unavailable'));
+    const users = createUserMethods(mongoose);
+    await expect(users.deleteUserById(userId)).rejects.toThrow('mapping store unavailable');
+    expect(await mongoose.models.User.findById(userId).lean()).not.toBeNull();
+    expect(await methods.getAgentChannel('channel')).not.toHaveProperty('encryptedBotToken');
+    await expect(users.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
+    expect(await methods.getAgentChannel('channel')).toBeNull();
   }));
