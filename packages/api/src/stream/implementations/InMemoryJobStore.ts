@@ -149,6 +149,9 @@ interface ContentState {
  * - No chunk persistence needed - same instance handles generation and reconnects
  */
 export class InMemoryJobStore implements IJobStoreV2 {
+  readonly providerGuardedStatusTransitions = true as const;
+  readonly providerStartOwnership = true as const;
+  readonly providerTerminalPersistence = true as const;
   readonly durableScheduleReceipts = false;
   readonly detachedAgentEventActionStoreMode = 'process_local' as const;
 
@@ -776,10 +779,16 @@ export class InMemoryJobStore implements IJobStoreV2 {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    terminalPersistencePending?: true,
   ): Promise<boolean> {
     const job = this.jobs.get(streamId);
     if (job?.createdAt !== expectedCreatedAt || job.providerExecutionId !== providerExecutionId) {
       return false;
+    }
+    if (terminalPersistencePending) {
+      if (!['complete', 'error', 'aborted'].includes(job.status)) return false;
+      job.terminalPersistencePending = true;
+      job.terminalPersistenceStartedAt ??= Date.now();
     }
     job.providerDrained = true;
     return true;
@@ -789,6 +798,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    ownerId?: string,
   ): Promise<boolean> {
     const job = this.jobs.get(streamId);
     if (
@@ -801,6 +811,8 @@ export class InMemoryJobStore implements IJobStoreV2 {
     }
     job.providerDrained = false;
     job.providerExecutionStartedId = providerExecutionId;
+    if (ownerId != null) job.providerExecutionOwnerId = ownerId;
+    else delete job.providerExecutionOwnerId;
     return true;
   }
 
@@ -835,6 +847,11 @@ export class InMemoryJobStore implements IJobStoreV2 {
     if (args.expectCreatedAt != null && job.createdAt !== args.expectCreatedAt) {
       return false;
     }
+    if (
+      args.expectProviderExecutionId != null &&
+      job.providerExecutionId !== args.expectProviderExecutionId
+    )
+      return false;
     if (args.notAfterMs != null && Date.now() >= args.notAfterMs) {
       throw new JobStatusTransitionDeadlineError(args.notAfterMs);
     }
@@ -914,7 +931,9 @@ export class InMemoryJobStore implements IJobStoreV2 {
       !job ||
       job.status !== args.from ||
       (args.expectActionId != null && job.pendingActionId !== args.expectActionId) ||
-      (args.expectCreatedAt != null && job.createdAt !== args.expectCreatedAt)
+      (args.expectCreatedAt != null && job.createdAt !== args.expectCreatedAt) ||
+      (args.expectProviderExecutionId != null &&
+        job.providerExecutionId !== args.expectProviderExecutionId)
     ) {
       return null;
     }

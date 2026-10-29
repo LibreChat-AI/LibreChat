@@ -29,6 +29,7 @@ import { bindToolReviewAuthority } from '~/tools/approval';
 import { createToolExecuteHandler } from '../handlers';
 import { createMCPStructuredTool } from '~/mcp/tools';
 import { markMCPToolResultError } from '~/mcp/status';
+import { captureRunPendingAction } from './capture';
 import { formatMCPServerTools } from '~/mcp/tools';
 import { formatToolContent } from '~/mcp/parsers';
 
@@ -252,10 +253,21 @@ test.each([
     const interrupt = first.getInterrupt();
     expect(interrupt?.payload.type).toBe('tool_approval');
     expect(executions).toBe(0);
-    const bindings = captureRunToolApprovalBindings(
-      first,
-      interrupt!.payload as Agents.ToolApprovalInterruptPayload,
-    )!;
+    const captured = captureRunPendingAction({
+      run: first,
+      payload: interrupt!.payload,
+      agents: [source],
+      aliases: [],
+      context: {
+        streamId: 'stream-a',
+        responseMessageId: 'response-a',
+        conversationId: 'chat-a',
+        actionId: 'action-a',
+        projectContextKey: 'project-revision-a',
+      },
+    });
+    const bindings = captured.toolApprovalBindings!;
+    expect(captured.projectContextKey).toBe('project-revision-a');
     expect(bindings['first-call']?.agentId).toBe(source.id);
     const resumed = await build({
       source,

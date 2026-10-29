@@ -6,8 +6,33 @@ import type { JobMetadataPatch } from './interfaces/IJobStore';
 import type { GenerationJobMetadata } from '~/types';
 import { parseScheduleMCPCompletion } from '~/schedules/authorization/continuation';
 
+export function parseChannelExecution(value: unknown): GenerationJobMetadata['channelExecution'] {
+  if (value === undefined) return undefined;
+  if (
+    value == null ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 2 ||
+    !('channelId' in value) ||
+    !('runId' in value) ||
+    typeof value.channelId !== 'string' ||
+    !value.channelId ||
+    value.channelId.length > 256 ||
+    !/^[\w-]+$/.test(value.channelId) ||
+    typeof value.runId !== 'string' ||
+    !value.runId ||
+    value.runId.length > 256 ||
+    !/^[\w-]+$/.test(value.runId)
+  )
+    throw new Error('channel_execution_invalid');
+  return { channelId: value.channelId, runId: value.runId };
+}
+
 export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): JobMetadataPatch {
   const patch: JobMetadataPatch = {};
+  if (metadata.channelExecution !== undefined) {
+    patch.channelExecution = parseChannelExecution(metadata.channelExecution);
+  }
   if (metadata.responseMessageId) {
     patch.responseMessageId = metadata.responseMessageId;
   }
