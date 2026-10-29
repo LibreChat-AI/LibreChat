@@ -327,14 +327,20 @@ async function verifyLangfuseCredentials(
       };
     }
 
-    const publicResponse = await fetch(`${destination.baseUrl}/api/public/ingestion`, {
+    /**
+     * Probe the path traces actually take: the fan-out collector exports OTLP to
+     * `/api/public/otel/v1/traces`. The legacy `/api/public/ingestion` batch endpoint
+     * returns 400 on Langfuse v4 (Cloud is v4-only from 2026-11-16), which would make
+     * valid keys fail this test. An empty `resourceSpans` request writes nothing.
+     */
+    const publicResponse = await fetch(`${destination.baseUrl}/api/public/otel/v1/traces`, {
       method: 'POST',
       headers: mergeHeaders(headers, {
-        Authorization: `Bearer ${publicKey}`,
-        'X-Langfuse-Public-Key': publicKey,
+        Authorization: `Basic ${auth}`,
         'Content-Type': 'application/json',
+        'x-langfuse-ingestion-version': '4',
       }),
-      body: JSON.stringify({ batch: [] }),
+      body: JSON.stringify({ resourceSpans: [] }),
       signal,
       ...redirectPolicyFor(headers),
     });

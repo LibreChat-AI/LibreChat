@@ -1133,13 +1133,31 @@ describe('createAdminLangfuseHandlers', () => {
       expect(init.headers.Authorization).toMatch(/^Basic /);
       expect(init.signal).toBeInstanceOf(AbortSignal);
       const [publicUrl, publicInit] = (global.fetch as unknown as jest.Mock).mock.calls[1];
-      expect(publicUrl).toBe('https://cloud.langfuse.com/api/public/ingestion');
+      expect(publicUrl).toBe('https://cloud.langfuse.com/api/public/otel/v1/traces');
       expect(publicInit.method).toBe('POST');
-      expect(publicInit.headers.Authorization).toBe('Bearer pk');
-      expect(publicInit.headers['X-Langfuse-Public-Key']).toBe('pk');
+      expect(publicInit.headers.Authorization).toBe(init.headers.Authorization);
+      expect(publicInit.headers['x-langfuse-ingestion-version']).toBe('4');
       expect(publicInit.headers['Content-Type']).toBe('application/json');
-      expect(JSON.parse(publicInit.body)).toEqual({ batch: [] });
+      expect(JSON.parse(publicInit.body)).toEqual({ resourceSpans: [] });
       expect(publicInit.signal).toBe(init.signal);
+    });
+
+    it('never probes the legacy ingestion endpoint that Langfuse v4 rejects', async () => {
+      global.fetch = jest
+        .fn()
+        .mockResolvedValueOnce(projectResponse())
+        .mockResolvedValueOnce({ ok: true, status: 200 }) as unknown as typeof fetch;
+      const { handlers } = createHandlers();
+      const res = mockRes();
+
+      await handlers.testConnection(
+        mockReq({ body: { destination: 'eu', publicKey: 'pk', secretKey: 'sk' } }),
+        res,
+      );
+
+      const urls = (global.fetch as unknown as jest.Mock).mock.calls.map(([url]) => url);
+      expect(urls.some((url: string) => url.endsWith('/api/public/ingestion'))).toBe(false);
+      expect(res.body).toEqual({ success: true });
     });
 
     it('returns a timeout failure when Langfuse verification exceeds its deadline', async () => {
@@ -1324,7 +1342,7 @@ describe('createAdminLangfuseHandlers', () => {
       expect(projectsInit.headers.Authorization).toMatch(/^Basic /);
       const [, ingestionInit] = (global.fetch as unknown as jest.Mock).mock.calls[1];
       expect(ingestionInit.headers['CF-Access-Client-Id']).toBe('proxy-client');
-      expect(ingestionInit.headers.Authorization).toBe('Bearer pk');
+      expect(ingestionInit.headers.Authorization).toMatch(/^Basic /);
       delete process.env.LANGFUSE_FANOUT_TENANT_EU_BASE_URL;
     });
 
