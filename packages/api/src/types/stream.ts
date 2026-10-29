@@ -13,6 +13,7 @@ import type {
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { EarlyBufferOverflowState } from './earlyBufferRecovery';
 import type { ResolvedAskUserQuestion } from '../agents/hitl/resume';
+import type { AuthoredSkillBinding } from '~/agents/authored';
 import type { MCPRuntimeRequestBody } from '../mcp/types';
 import type { ServerSentEvent } from './events';
 
@@ -100,6 +101,7 @@ export interface GenerationJobMetadata {
    * without them the rebuilt model would lose the discovered tool schemas.
    */
   discoveredTools?: string[];
+  authoredSkills?: AuthoredSkillBinding[];
   /** Bounded collector state for continuing a phase across HITL resume. */
   activityPhaseSnapshot?: ActivityPhaseSnapshot;
   /** Exact bounded compaction guidance captured atomically with a HITL pause. */

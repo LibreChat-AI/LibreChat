@@ -32,3 +32,11 @@ test('does not downgrade an existing prime during same-author recovery', () => {
   state.record({ agentId: 'a' }, { name: 'created', id, primed: false });
   expect(state.snapshot()[0].primed).toBe(true);
 });
+
+test('round-trips every valid name shape accepted by skill authoring', () => {
+  const original = new AuthoredSkillState();
+  original.record({ agentId: 'a' }, { name: 'valid--name-', id, primed: false });
+  const resumed = new AuthoredSkillState();
+  resumed.restore(original.snapshot());
+  expect(resumed.snapshot()).toEqual(original.snapshot());
+});

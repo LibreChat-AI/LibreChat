@@ -1,3 +1,4 @@
+import { SKILL_NAME_PATTERN } from 'librechat-data-provider';
 import type { EventHandler, SubagentExecutionContext } from '@librechat/agents';
 
 /** Server-owned identity, not skill content or permission grants. */
@@ -64,7 +65,7 @@ export class AuthoredSkillState {
         typeof binding.agentId !== 'string' ||
         (binding.executionId != null && typeof binding.executionId !== 'string') ||
         typeof binding.name !== 'string' ||
-        !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(binding.name) ||
+        !SKILL_NAME_PATTERN.test(binding.name) ||
         typeof binding.id !== 'string' ||
         !/^[a-f0-9]{24}$/i.test(binding.id)
       ) {
