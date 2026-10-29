@@ -78,6 +78,7 @@ export type {
 export type {
   ChannelRunStorage,
   ChannelRunEnrollment,
+  ChannelLaneScope,
   ChannelRunRecord,
   ChannelLaneRecord,
 } from './channelRun';
