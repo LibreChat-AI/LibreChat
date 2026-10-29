@@ -1,6 +1,7 @@
 import type { ChannelExternalIdentity } from 'librechat-data-provider';
 import type { ChannelIdentityRecord } from '~/models/channelIdentity';
 import { createChannelIndexGate } from './channelIndexes';
+import { assertChannelTenant } from './channelScope';
 export type { ChannelIdentityRecord } from '~/models/channelIdentity';
 
 export interface ChannelIdentityStorage {
@@ -22,6 +23,7 @@ export function createChannelIdentityStorage(
   const ensureIndexes = createChannelIndexGate(() => [model()]);
   return {
     async readChannelIdentity(identity) {
+      assertChannelTenant(identity.tenantId);
       return model()
         .findOne({
           tenantId: identity.tenantId,
@@ -33,15 +35,21 @@ export function createChannelIdentityStorage(
         .lean();
     },
     async readChannelTicket(tenantId, ticketHash) {
+      assertChannelTenant(tenantId);
       return model().findOne({ tenantId, ticketHash }).select('+ticketHash').lean();
     },
     async readChannelLink(tenantId, linkId) {
+      assertChannelTenant(tenantId);
       return model().findOne({ tenantId, linkId }).select('+ticketHash').lean();
     },
     async listChannelLinks(tenantId, userId) {
+      assertChannelTenant(tenantId);
       return model().find({ tenantId, userId }).sort({ createdAt: -1 }).lean();
     },
     async saveChannelIdentity(record, expectedRevision) {
+      assertChannelTenant(record.tenantId);
+      if (record.tenantId !== record.identity.tenantId)
+        throw new TypeError('Channel identity tenant mismatch');
       await ensureIndexes();
       if (expectedRevision === null) {
         try {
@@ -71,6 +79,7 @@ export function createChannelIdentityStorage(
       return result.modifiedCount === 1;
     },
     async revokeChannelIdentities(tenantId, channelId, revision) {
+      assertChannelTenant(tenantId);
       await model().updateMany(
         { tenantId, 'identity.channelId': channelId, state: { $ne: 'revoked' } },
         { $set: { state: 'revoked', revision } },

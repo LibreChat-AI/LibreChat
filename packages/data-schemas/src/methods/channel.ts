@@ -1,4 +1,5 @@
 import type { AgentChannelRecord, AgentChannelThreadRecord } from '~/models/channel';
+import { closeChannelScope, initializeChannelScope, touchChannelScope } from './channelScope';
 import { createChannelIndexGate } from './channelIndexes';
 
 export type { AgentChannelRecord, AgentChannelThreadRecord } from '~/models/channel';
@@ -57,10 +58,12 @@ export function createAgentChannelMethods(
   const channel = () => mongoose.model<AgentChannelRecord>('AgentChannel');
   const threads = () => mongoose.model<AgentChannelThreadRecord>('AgentChannelThread');
   const ensureIndexes = createChannelIndexGate(() => [channel()]);
+  const ensureThreadIndexes = createChannelIndexGate(() => [threads()]);
   const secrets = '+encryptedBotToken +encryptedSigningSecret +encryptedApiKey +apiKeyId';
 
   return {
     async createAgentChannel(input: AgentChannelRecord): Promise<AgentChannelRecord> {
+      await ensureIndexes();
       const record = await channel().create(input);
       return record.toObject();
     },
@@ -139,12 +142,14 @@ export function createAgentChannelMethods(
       expectedStatus?: AgentChannelRecord['status'],
       expectedRevision?: string,
     ): Promise<AgentChannelRecord | null> {
+      if (expectedStatus === 'deleting' && update.status && update.status !== 'deleting')
+        return null;
       return channel()
         .findOneAndUpdate(
           {
             channelId,
             createdBy,
-            ...(expectedStatus ? { status: expectedStatus } : {}),
+            status: expectedStatus ?? { $ne: 'deleting' },
             ...(expectedRevision ? { revision: expectedRevision } : {}),
           },
           { $set: update },
@@ -154,19 +159,27 @@ export function createAgentChannelMethods(
         .lean();
     },
     async deleteAgentChannel(channelId: string, createdBy: string): Promise<boolean> {
-      if (!(await channel().exists({ channelId, createdBy }))) {
-        return false;
-      }
+      const deleting = await channel()
+        .findOneAndUpdate({ channelId, createdBy }, { $set: { status: 'deleting' } }, { new: true })
+        .select('tenantId')
+        .lean();
+      if (!deleting) return false;
+      await closeChannelScope(mongoose, deleting.tenantId, channelId);
       if (
         await mongoose.models.ChannelRun.exists({
           channelId,
+          tenantId: deleting.tenantId || '_',
           state: { $in: ['queued', 'executing', 'requires_action', 'delivering', 'blocked'] },
         })
       )
         return false;
       // Keep the deleting parent available for a retry if dependent cleanup fails.
-      await threads().deleteMany({ channelId });
-      const result = await channel().deleteOne({ channelId, createdBy });
+      await threads().deleteMany({ channelId, tenantId: deleting.tenantId || { $in: [null, ''] } });
+      const result = await channel().deleteOne({
+        _id: deleting._id,
+        createdBy,
+        status: 'deleting',
+      });
       return result.deletedCount > 0;
     },
     async getAgentChannelThread(
@@ -180,11 +193,25 @@ export function createAgentChannelMethods(
       externalThreadKey: string,
       conversationId: string,
     ): Promise<void> {
-      await threads().updateOne(
-        { channelId, externalThreadKey },
-        { $set: { conversationId } },
-        { upsert: true },
-      );
+      await ensureThreadIndexes();
+      const parent = await channel().findOne({ channelId }).select('tenantId status').lean();
+      if (!parent || parent.status === 'deleting')
+        throw new Error('Channel thread authority unavailable');
+      await initializeChannelScope(mongoose, parent.tenantId, channelId);
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          if (!(await touchChannelScope(mongoose, parent.tenantId, channelId, session)))
+            throw new Error('Channel thread authority unavailable');
+          await threads().updateOne(
+            { channelId, externalThreadKey, tenantId: parent.tenantId || { $in: [null, ''] } },
+            { $set: { conversationId } },
+            { upsert: true, session },
+          );
+        });
+      } finally {
+        await session.endSession();
+      }
     },
   };
 }

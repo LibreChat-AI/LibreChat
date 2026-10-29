@@ -28,6 +28,7 @@ import {
   leaseDeadline,
   ChannelRunConflict,
 } from './channelProtocol';
+import { initializeChannelScope, touchChannelScope } from './channelScope';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
 import { responseOwnerFilter } from './responseScope';
@@ -397,6 +398,7 @@ export function createChannelRunStorage(
         userId: input.principal.userId,
         tenantId: input.tenantId === '_' ? undefined : input.tenantId,
       });
+      await initializeChannelScope(mongoose, input.tenantId, input.channelId);
       const eventKey = {
         tenantId: input.tenantId,
         channelId: input.channelId,
@@ -409,6 +411,8 @@ export function createChannelRunStorage(
       try {
         return await transaction(async (session) => {
           if (!(await ownerAdmission(session))) throw new ChannelRunConflict('invalid_transition');
+          if (!(await touchChannelScope(mongoose, input.tenantId, input.channelId, session)))
+            throw new ChannelRunConflict('invalid_transition');
           const existing = await runs().findOne(eventKey).session(session).lean();
           if (existing) {
             if (
