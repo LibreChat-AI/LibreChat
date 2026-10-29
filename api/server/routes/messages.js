@@ -37,6 +37,7 @@ const {
   resolveMessagesPageSize,
   awaitPageSize,
   withMessageToolCallPreviews,
+  stripProviderItems,
 } = require('@librechat/api');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
 const { getAppConfig } = require('~/server/services/Config');
@@ -593,6 +594,12 @@ router.post('/:conversationId', storedMessageMutationMiddleware, async (req, res
     /** Server-private run state: a client-authored row must never seed a run's
      * calibration or fading tiers, so the field only ever comes from the server. */
     delete message.contextMeta;
+    /** Provider items are replayed to the model as its own output, so only the server writes them
+     *  (`saveMessage` would move them into the stored field). */
+    delete message.providerItems;
+    if (Array.isArray(message.content)) {
+      message.content = stripProviderItems(message.content);
+    }
     const reqCtx = {
       userId: req?.user?.id,
       isTemporary: req.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
