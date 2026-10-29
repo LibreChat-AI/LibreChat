@@ -9,6 +9,7 @@ import {
   isCodeEnvironmentMode,
   isCodeWorkspaceSelections,
 } from 'librechat-data-provider';
+import type { ProcessedToolCall } from '@librechat/agents';
 import type { Response as ServerResponse } from 'express';
 import type {
   FunctionCallOutputItemParam,
@@ -20,6 +21,7 @@ import type {
   ModelContent,
   InputItem,
   Response,
+  ResponseAccounting,
   Usage,
 } from './types';
 import type { UsageMetadata } from '~/stream/interfaces/IJobStore';
@@ -63,6 +65,30 @@ interface ModelUsageMetadata {
   };
   cache_creation_input_tokens?: number;
   cache_read_input_tokens?: number;
+}
+
+/** The SDK owns result filtering/serialization; never serialize raw tool artifacts here. */
+function completedRunStepTool(
+  data: unknown,
+): (Pick<ProcessedToolCall, 'id' | 'output'> & { args?: string }) | undefined {
+  if (data == null || typeof data !== 'object' || !('result' in data)) return undefined;
+  const result = data.result;
+  if (result == null || typeof result !== 'object' || !('tool_call' in result)) return undefined;
+  const call = result.tool_call;
+  if (
+    call == null ||
+    typeof call !== 'object' ||
+    !('id' in call) ||
+    !('output' in call) ||
+    typeof call.id !== 'string' ||
+    typeof call.output !== 'string'
+  )
+    return undefined;
+  return {
+    id: call.id,
+    output: call.output,
+    ...('args' in call && typeof call.args === 'string' ? { args: call.args } : {}),
+  };
 }
 
 function accumulateResponseUsage(
@@ -121,6 +147,12 @@ export function validateResponseRequest(body: unknown): RequestValidationResult 
   // Optional validations
   if (request.stream !== undefined && typeof request.stream !== 'boolean') {
     return { valid: false, error: 'stream must be a boolean' };
+  }
+  if (request.background !== undefined && typeof request.background !== 'boolean') {
+    return { valid: false, error: 'background must be a boolean' };
+  }
+  if (request.background === true && request.store === false) {
+    return { valid: false, error: 'background responses require store: true' };
   }
 
   if (request.temperature !== undefined) {
@@ -614,7 +646,7 @@ function createToolCallChunkResolver(): ToolCallChunkResolver {
 export function createResponsesEventHandlers(config: StreamHandlerConfig): {
   handlers: Record<string, { handle: (event: string, data: unknown) => void }>;
   state: StreamState;
-  finalizeStream: (usage?: Usage) => void;
+  finalizeStream: (usage?: Usage, accounting?: ResponseAccounting) => void;
   emitClientToolDeferral: (callId: string, output: string) => void;
 } {
   const state: StreamState = {
@@ -628,6 +660,21 @@ export function createResponsesEventHandlers(config: StreamHandlerConfig): {
   };
 
   const chunkResolver = createToolCallChunkResolver();
+  const completeToolCall = (callId: string, output: string, args?: string): void => {
+    if (!state.activeToolCalls.has(callId) || state.completedToolCalls.has(callId)) return;
+    const streamed = config.tracker.accumulatedArguments.get(callId) ?? '';
+    if (args != null && args.startsWith(streamed) && args.length > streamed.length)
+      emitFunctionCallArgumentsDelta(config, callId, args.slice(streamed.length));
+    else if (args != null && args !== streamed) {
+      config.tracker.accumulatedArguments.set(callId, args);
+      const item = config.tracker.functionCalls.get(callId);
+      if (item) item.arguments = args;
+    }
+    state.completedToolCalls.add(callId);
+    emitFunctionCallArgumentsDone(config, callId);
+    emitFunctionCallItemDone(config, callId);
+    emitFunctionCallOutputItem(config, callId, output);
+  };
   let modelEndedClientCalls: Set<string> | undefined;
   let pendingClientToolDeferrals: Map<string, string> | undefined;
 
@@ -716,12 +763,8 @@ export function createResponsesEventHandlers(config: StreamHandlerConfig): {
    * waits for the terminating event before running the tool, as the streaming
    * lifecycle tells it to, would wait forever.
    *
-   * Deliberately limited to those calls. A server tool left open is the
-   * separate, pre-existing symptom of `on_tool_end` never reaching this module
-   * (the controller replaces the handler rather than composing with it); fixing
-   * that belongs at the wiring, not here, and closing such calls from
-   * finalization would change the event stream of every request that declares
-   * no client tool.
+   * Server-owned calls close only on SDK-reported completion. Finalization must
+   * not fabricate a result for a tool that never finished.
    *
    * Idempotent in both directions: a call already closed by `on_tool_end` is
    * skipped, and marking it closed keeps `on_tool_end` from emitting a second
@@ -870,7 +913,7 @@ export function createResponsesEventHandlers(config: StreamHandlerConfig): {
             // Resolved before the empty-args check so an id-bearing opening chunk is recorded.
             const callId = chunkResolver.resolve(deltaData?.id ?? '', tc);
             const args = typeof tc.args === 'string' ? tc.args : '';
-            if (!args || !callId) {
+            if (!args || !callId || state.completedToolCalls.has(callId)) {
               continue;
             }
 
@@ -889,16 +932,14 @@ export function createResponsesEventHandlers(config: StreamHandlerConfig): {
         const callId = toolData?.tool_call_id;
         const output = toolData?.output ?? '';
 
-        if (callId && state.activeToolCalls.has(callId) && !state.completedToolCalls.has(callId)) {
-          state.completedToolCalls.add(callId);
+        if (callId) completeToolCall(callId, output);
+      },
+    },
 
-          // Complete the function call item
-          emitFunctionCallArgumentsDone(config, callId);
-          emitFunctionCallItemDone(config, callId);
-
-          // Emit the function call output (internal tool result)
-          emitFunctionCallOutputItem(config, callId, output);
-        }
+    on_run_step_completed: {
+      handle: (_event: string, data: unknown): void => {
+        const call = completedRunStepTool(data);
+        if (call) completeToolCall(call.id, call.output, call.args);
       },
     },
 
@@ -919,7 +960,7 @@ export function createResponsesEventHandlers(config: StreamHandlerConfig): {
         }
 
         for (const { id, args } of completedToolCallArguments(data)) {
-          if (!state.activeToolCalls.has(id)) {
+          if (!state.activeToolCalls.has(id) || state.completedToolCalls.has(id)) {
             continue;
           }
           const streamed = config.tracker.accumulatedArguments.get(id) ?? '';
@@ -945,7 +986,7 @@ export function createResponsesEventHandlers(config: StreamHandlerConfig): {
   /**
    * Finalize the stream - close open items and emit completed
    */
-  const finalizeStream = (usage?: Usage): void => {
+  const finalizeStream = (usage?: Usage, accounting?: ResponseAccounting): void => {
     closeOpenStreams();
     for (const [callId, output] of pendingClientToolDeferrals ?? []) {
       deliverClientToolDeferral(callId, output);
@@ -953,7 +994,7 @@ export function createResponsesEventHandlers(config: StreamHandlerConfig): {
     // A later step can announce a sibling before its arguments or deferral
     // are settled. Only terminate handoffs after the run has completed.
     closeOpenClientToolCalls();
-    emitResponseCompleted(config, usage);
+    emitResponseCompleted(config, usage, accounting);
     writeDone(config.res);
   };
 
@@ -1026,6 +1067,7 @@ export function buildAggregatedResponse(
   context: ResponseContext,
   aggregator: ResponseAggregator,
   usageOverride?: Usage,
+  accounting?: ResponseAccounting,
 ): Response {
   const output: Response['output'] = [];
 
@@ -1053,12 +1095,12 @@ export function buildAggregatedResponse(
     });
 
     const toolOutput = aggregator.toolOutputs.get(callId);
-    if (toolOutput) {
+    if (aggregator.toolOutputs.has(callId)) {
       output.push({
         type: 'function_call_output',
         id: `fco_${Date.now().toString(36)}${Math.random().toString(36).substring(2, 6)}`,
         call_id: callId,
-        output: toolOutput,
+        output: toolOutput ?? '',
         status: 'completed',
       });
     }
@@ -1080,6 +1122,7 @@ export function buildAggregatedResponse(
     // Required fields per Open Responses spec
     id: context.responseId,
     object: 'response',
+    ...(accounting ? { accounting } : {}),
     created_at: context.createdAt,
     completed_at: Math.floor(Date.now() / 1000),
     status: 'completed',
@@ -1237,7 +1280,7 @@ export function createAggregatorEventHandlers(aggregator: ResponseAggregator): R
             // Resolved before the empty-args check so an id-bearing opening chunk is recorded.
             const callId = chunkResolver.resolve(deltaData?.id ?? '', tc);
             const args = typeof tc.args === 'string' ? tc.args : '';
-            if (!args || !callId) {
+            if (!args || !callId || aggregator.toolOutputs.has(callId)) {
               continue;
             }
 
@@ -1256,8 +1299,18 @@ export function createAggregatorEventHandlers(aggregator: ResponseAggregator): R
         const callId = toolData?.tool_call_id;
         const output = toolData?.output ?? '';
 
-        if (callId) {
+        if (callId && !aggregator.toolOutputs.has(callId)) {
           aggregator.toolOutputs.set(callId, output);
+        }
+      },
+    },
+
+    on_run_step_completed: {
+      handle: (_event: string, data: unknown): void => {
+        const call = completedRunStepTool(data);
+        if (call && aggregator.toolCalls.has(call.id) && !aggregator.toolOutputs.has(call.id)) {
+          if (call.args != null) aggregator.toolCalls.get(call.id)!.arguments = call.args;
+          aggregator.toolOutputs.set(call.id, call.output);
         }
       },
     },
