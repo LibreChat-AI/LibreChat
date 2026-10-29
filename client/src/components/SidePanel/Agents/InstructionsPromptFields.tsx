@@ -32,14 +32,9 @@ export function LoadError({
   retrying,
 }: {
   forbidden?: boolean;
-  /** Overrides the forbidden/generic choice below with a specific copy key,
-   *  for a caller (the Version dropdown) that distinguishes more failure
-   *  shapes than a plain forbidden/other split. */
+  /** Overrides the forbidden/generic choice below with a specific copy key. */
   messageKey?: TranslationKeys;
   onRetry: () => void;
-  /** Disables Retry while the same query is already fetching, so a repeated
-   *  click does nothing instead of queuing a duplicate request, and the
-   *  button itself gives feedback that a retry is in flight. */
   retrying?: boolean;
 }) {
   const localize = useLocalize();
@@ -48,10 +43,7 @@ export function LoadError({
     (forbidden
       ? 'com_agents_instructions_prompt_forbidden'
       : 'com_agents_instructions_prompt_load_error');
-  /** No Retry for a forbidden result, whether it came from the plain
-   *  `forbidden` flag or a caller-chosen `messageKey` that resolves to the
-   *  same forbidden copy (the Version dropdown's 403 case): retrying a
-   *  permission failure cannot succeed. */
+  // Retrying a permission failure cannot succeed.
   const showRetry = resolvedKey !== 'com_agents_instructions_prompt_forbidden';
   return (
     <div className="border-border-light bg-surface-secondary text-text-secondary flex flex-col gap-1.5 rounded-lg border px-3 py-2 text-sm">
@@ -72,11 +64,7 @@ export function LoadError({
   );
 }
 
-/** Labels a disabled Langfuse link's saved selection with no revision fetch:
- *  "Production" or "Version N" straight off the stored selection, since a
- *  pinned Langfuse version is already the display number. Only ever called
- *  for a Langfuse link (the switch-off case), so the selection carries just
- *  the Langfuse `production | exact` shape. */
+/** Labels a disabled Langfuse link's saved selection without fetching revisions. */
 function formatDisabledVersionLabel(
   selection: LangfuseAgentInstructionsPromptSelection | undefined,
   localize: (key: TranslationKeys, vars?: Record<string, unknown>) => string,
@@ -95,12 +83,10 @@ function VersionSelect({
   disabled,
 }: {
   groupId: string;
-  /** The linked group's source, used to tell the two `exact` selection shapes apart. */
   source?: TPromptGroupSource;
   selection?: PromptRevisionSelection;
   onSelect: (selection: PromptRevisionSelection) => void;
-  /** True for a saved Langfuse link while the switch is off: no revisions are
-   *  fetched, and the saved selection is shown as plain text. */
+  /** True for a saved Langfuse link while the switch is off. */
   disabled?: boolean;
 }) {
   const localize = useLocalize();
@@ -126,10 +112,7 @@ function VersionSelect({
       </div>
     );
   } else if (disabled) {
-    /** `disabled` is only ever true for a Langfuse link (the switch-off case), so the
-     *  saved selection can never carry the native `exact` shape (a `promptId` field)
-     *  here; this narrows the type accordingly rather than handling a case that
-     *  cannot occur. */
+    // `disabled` implies a Langfuse link, so the selection is always the Langfuse shape.
     const langfuseSelection = isLangfuseSelection(selection) ? selection : undefined;
     content = (
       <div className={fieldWrapperClass}>
@@ -143,9 +126,7 @@ function VersionSelect({
     revisionsData == null ||
     !Array.isArray(revisionsData.revisions)
   ) {
-    /** A malformed 200 (missing `revisions`, e.g. a permission failure that does
-     *  not reach `isError`) is treated the same as a load failure, never as an
-     *  empty revision list. */
+    // A malformed 200 (missing `revisions`) is treated as a load failure, not an empty list.
     content = (
       <LoadError
         messageKey={getRevisionsLoadErrorKey(revisionsQuery.error)}
@@ -184,8 +165,7 @@ function VersionSelect({
       <Label id="instructions-prompt-version-label" variant="section" className="mb-1 block">
         {localize('com_agents_instructions_prompt_version_label')}
       </Label>
-      {/* `aria-labelledby`, not `htmlFor`, because the loading/error/empty/disabled
-       * states render a plain `div`, not the combobox `id` a `for` would need to target. */}
+      {/* `aria-labelledby`, not `htmlFor`: no state here renders a labelable control. */}
       <div role="group" aria-labelledby="instructions-prompt-version-label">
         {content}
       </div>
@@ -193,20 +173,13 @@ function VersionSelect({
   );
 }
 
-/**
- * Prompt + Version dropdown row shown in "Prompt" instructions mode. Reads and
- * writes the whole `instructionsPrompt` link through a single Controller, since
- * the two dropdowns jointly determine one value.
- */
 export default function InstructionsPromptFields() {
   const localize = useLocalize();
   const { control } = useFormContext<AgentForm>();
   const { agentsConfig } = useAgentPanelContext();
   const langfuseEnabled = agentsConfig?.linkedInstructions?.langfuse?.enabled === true;
   const groupsQuery = useGetAllPromptGroups();
-  /** The endpoint can answer a 200 with `{ message }` instead of an array (for example, on
-   *  a permission failure that does not reach `isError`); treat that the same as a load
-   *  failure rather than an empty prompt library. */
+  // A 200 with `{ message }` instead of an array is a load failure, not an empty library.
   const groupsData = groupsQuery.data;
   const groupsFailed = groupsQuery.isError || !Array.isArray(groupsData);
   const groups = Array.isArray(groupsData) ? groupsData : [];
@@ -231,24 +204,15 @@ export default function InstructionsPromptFields() {
           field.value != null && !isRestrictedInstructionsPrompt(field.value) ? field.value : null;
         const groupId = link?.groupId ?? '';
         const selectedGroup = groups.find((group) => group._id === groupId);
-        /** The link's source: the picked group's own source once one is loaded, falling
-         *  back to the existing link's source when the group is missing from the listing
-         *  (deleted, or the editor's share access was revoked). Disambiguates the two
-         *  `exact` selection shapes below, which share the same `type` literal. */
+        // Falls back to the link's own source when the group is missing from the listing.
         const linkSource: TPromptGroupSource | undefined = selectedGroup?.source ?? link?.source;
-        /** A link that survived loading but matches no listed group: the group was
-         *  deleted, or the editor's share access to it was revoked. */
         const linkedGroupMissing = groupId !== '' && !groupsFailed && selectedGroup == null;
-        /** A saved Langfuse link while the switch is off: still shown (never hidden or
-         *  dropped for inline text), but read-only until the switch is on again. */
         const isDisabledLangfuseLink = !langfuseEnabled && linkSource === 'langfuse';
-        /** Langfuse groups disappear from the picker while the switch is off, except the
-         *  one already linked, which stays visible so its name and badge keep showing. */
+        // Keep the already-linked Langfuse group visible even while the switch is off.
         const visibleGroups = langfuseEnabled
           ? groups
           : groups.filter((group) => group.source !== 'langfuse' || group._id === groupId);
-        /** The stub carries no `groupId`, so the dropdown's current value comes from
-         *  this label, never from a group name: nothing here reads identity off it. */
+        // A restricted stub has no `groupId`, so the display value comes from this label.
         const groupDisplayValue = isRestrictedInstructionsPrompt(field.value)
           ? localize('com_agents_instructions_prompt_restricted_title')
           : (selectedGroup?.name ?? '');
@@ -258,10 +222,7 @@ export default function InstructionsPromptFields() {
             field.onChange(null);
             return;
           }
-          /** Re-picking the already-linked group (for example, choosing the same
-           *  disabled Langfuse group again from the combobox) must keep the saved
-           *  selection rather than resetting it to Production: the server rejects a
-           *  write that changes a pinned, currently-unavailable Langfuse link. */
+          // Keeps the saved selection: the server rejects a write that changes a pinned link.
           if (link != null && nextGroupId === link.groupId) {
             return;
           }
@@ -294,10 +255,7 @@ export default function InstructionsPromptFields() {
             </div>
           );
         } else {
-          /** A missing link still gets the combobox, not just the hint below it: the
-           *  backend allows removing or replacing a link to a deleted group, so the user
-           *  needs a way to pick a replacement (or switch to Inline) rather than being
-           *  stuck with prose and no control. */
+          // A missing link still gets the combobox, so the user can pick a replacement.
           groupField = (
             <ControlCombobox
               selectId="instructions-prompt-group"
@@ -309,15 +267,11 @@ export default function InstructionsPromptFields() {
               items={visibleGroups.map((group) => ({
                 label: group.name,
                 value: group._id ?? '',
-                /** Non-interactive: this icon sits inside an Ariakit `SelectItem` option
-                 *  label, itself already interactive, so the focusable tooltip form would
-                 *  nest a second focusable element inside it. */
+                // Non-interactive: nests inside the already-interactive `SelectItem`.
                 icon: <PromptSourceBadge source={group.source} interactive={false} />,
               }))}
               SelectIcon={
                 selectedGroup?.source === 'langfuse' ? (
-                  /** Non-interactive for the same reason: this renders inside the Select's
-                   *  own trigger button. */
                   <PromptSourceBadge source="langfuse" interactive={false} />
                 ) : undefined
               }
@@ -335,8 +289,7 @@ export default function InstructionsPromptFields() {
               <Label id="instructions-prompt-group-label" variant="section" className="mb-1 block">
                 {localize('com_ui_prompt')}
               </Label>
-              {/* `aria-labelledby`, not `htmlFor`: the loading/error/empty
-               * states render a plain `div`, not the combobox `id` a `for` would need. */}
+              {/* `aria-labelledby`, not `htmlFor`: no state here renders a labelable control. */}
               <div role="group" aria-labelledby="instructions-prompt-group-label">
                 {groupField}
               </div>
@@ -374,9 +327,7 @@ export default function InstructionsPromptFields() {
                 if (groupId === '') {
                   return;
                 }
-                /** The two `exact` shapes share a `type` literal but never a field: a
-                 *  `promptId` selection only ever fits a native link, a `version`
-                 *  selection only ever fits a Langfuse one. */
+                // The two `exact` shapes share a `type` literal but differ by field.
                 if (linkSource === 'langfuse') {
                   if ('promptId' in selection) {
                     return;

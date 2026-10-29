@@ -361,9 +361,6 @@ describe('createLangfusePromptAdapter', () => {
 
       await adapter.listRevisions({ group: makeGroup() });
 
-      // Mirrors the `resolvePrompt` default-timeout test: asserts the timeout
-      // the adapter was configured with reaches the request `listPrompts`
-      // makes, rather than some other value or the shared default.
       expect(timeoutSpy).toHaveBeenCalledWith(7000);
       timeoutSpy.mockRestore();
     });

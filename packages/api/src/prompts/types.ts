@@ -61,13 +61,7 @@ export interface PromptGroupRecord {
   readonly sourceDestination?: string;
 }
 
-/**
- * A source-tagged reference to a prompt-group selection: which source the group must
- * be, paired with that source's own selection shape. `resolvePrompt` rejects a
- * reference whose `source` does not match the loaded group's `source` as
- * `unsupported_source` before any adapter runs, so an adapter only ever receives its
- * own source's selection.
- */
+/** A source-tagged selection; a mismatched `source` is rejected as `unsupported_source`. */
 export type PromptReference =
   | { readonly source: 'native'; readonly selection: NativePromptSelection }
   | { readonly source: 'langfuse'; readonly selection: LangfusePromptSelection };
@@ -175,8 +169,7 @@ export type PromptServiceError =
    *  including `savePrompt`, `updatePromptGroup`, `deletePromptGroup`,
    *  `makePromptProduction` and `deletePrompt`. */
   | { readonly type: 'read_only'; readonly source: PromptGroupSource }
-  /** The reference's `source` does not match the loaded group's `source`. Returned by
-   *  `resolvePrompt` before any adapter runs. */
+  /** The reference's `source` does not match the loaded group's `source`. */
   | { readonly type: 'unsupported_source'; readonly source: PromptGroupSource }
   | {
       readonly type: 'source_unavailable';
@@ -199,8 +192,6 @@ export type MakePromptProductionResult =
   | { readonly ok: true; readonly value: TMakePromptProductionResponse; readonly groupId?: string }
   | { readonly ok: false; readonly error: PromptServiceError };
 
-/** `resolvePrompt`'s input: a `PromptReference` (source + its own selection), plus the
- *  group to resolve it against and optional preloaded records. */
 export type ResolvePromptInput = PromptReference & {
   readonly groupId: string;
   readonly loadedGroup?: PromptGroupRecord | null;
@@ -213,21 +204,12 @@ export interface ListRevisionsInput {
   readonly loadedGroup?: PromptGroupRecord | null;
 }
 
-/**
- * Resolves a group's content for a selection, or lists its revision choices. One
- * adapter per `PromptGroupSource`, typed over that source's own selection shape so an
- * adapter can only ever be called with a selection its source supports; the service
- * picks it from `group.source` and dispatches the already-resolved `group`, so an
- * adapter never has to look its own group up.
- */
 export interface PromptSourceAdapter<TSelection> {
   resolvePrompt(input: {
     readonly group: PromptGroupRecord;
     readonly selection: TSelection;
     readonly loadedRevision?: PromptRecord | null;
   }): Promise<PromptServiceResult<ResolvedPrompt>>;
-  /** Lists the group's revision choices, newest first, metadata only — no prompt
-   *  content. */
   listRevisions(input: {
     readonly group: PromptGroupRecord;
   }): Promise<PromptServiceResult<TPromptRevisionChoicesResponse>>;

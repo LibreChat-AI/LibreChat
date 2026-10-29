@@ -69,7 +69,6 @@ export async function checkInstructionsPromptWrite({
   previous: AgentInstructionsPrompt | null | undefined;
   next: AgentInstructionsPrompt | null | undefined;
   filters?: FiltersConfig;
-  /** The Langfuse rollout switch, passed through unexamined to `validateLinkWrite`. */
   linkedInstructions?: Pick<LinkedInstructionsConfig, 'langfuse'>;
   logger: InstructionsPromptAccessLogger;
   /** Forwarded unexamined to `access.validateLinkWrite` so its role lookup can reuse

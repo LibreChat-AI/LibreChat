@@ -10,8 +10,6 @@ import type {
 } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 
-/** Either source's revision selection, as read from or written to the agent's
- *  linked-prompt field. */
 export type PromptRevisionSelection =
   | AgentInstructionsPromptSelection
   | LangfuseAgentInstructionsPromptSelection;
@@ -30,20 +28,13 @@ export type PromptVersionOption = {
   selection: PromptRevisionSelection;
 };
 
-/** Narrows a selection to the Langfuse shape by field presence: a `promptId` field
- *  means the native `exact` shape, which a Langfuse link's selection never carries. */
+/** Narrows a selection to the Langfuse shape by the absence of `promptId`, the native-only field. */
 export function isLangfuseSelection(
   selection: PromptRevisionSelection | undefined,
 ): selection is LangfuseAgentInstructionsPromptSelection | undefined {
   return selection == null || !('promptId' in selection);
 }
 
-/** The Version dropdown's `selectedValue` for a given selection: `'production'`
- *  for the Production label, the native prompt id for a native `exact` selection,
- *  and `v<n>` for a pinned Langfuse `exact` selection. Used both to find the
- *  matching option and to label an unresolvable saved selection that no option
- *  lists. `source` disambiguates the two `exact` shapes, which share the same
- *  `type` literal. */
 export function selectionValue(
   source: TPromptGroupSource | undefined,
   selection: PromptRevisionSelection | undefined,
@@ -60,18 +51,7 @@ export function selectionValue(
   return 'production';
 }
 
-/**
- * Builds the Version dropdown options from a group's listed revisions
- * (`GET /api/prompts/groups/:groupId/revisions`), newest first. "Production" is
- * always first: for a native group it is labelled with the production
- * revision's display number when one is marked `isProduction`, otherwise the
- * plain "Production" label; a Langfuse group always gets the plain label, since
- * its Production points at a live label rather than a listed revision. When the
- * agent's saved selection matches none of the built options (the pinned
- * revision was removed from the group), it is appended labelled "no longer
- * available" so the dropdown still shows and keeps the saved selection instead
- * of silently switching to Production.
- */
+/** Appends the saved selection as "no longer available" if it matches no listed revision. */
 export function buildPromptVersionOptions(
   data: TPromptRevisionChoicesResponse,
   selection: PromptRevisionSelection | undefined,
@@ -146,14 +126,6 @@ export function getHttpStatus(error: unknown): number | undefined {
   return axios.isAxiosError(error) ? error.response?.status : undefined;
 }
 
-/**
- * Chooses the copy key for a failed `GET /api/prompts/groups/:groupId/revisions`
- * read, from the status and `code` the route sends (`packages/api/src/prompts/
- * handlers.ts`, `sendResolveRejection`): a permission failure gets its own
- * copy, a source that exists but cannot currently be read gets the shared
- * "not available" copy, and anything else (including a plain "not found" or an
- * unexpected failure) falls back to the generic load-error copy.
- */
 export function getRevisionsLoadErrorKey(error: unknown): TranslationKeys {
   const status = getHttpStatus(error);
   if (status === 403) {

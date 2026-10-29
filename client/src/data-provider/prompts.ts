@@ -389,13 +389,7 @@ export const useResolvePromptGroup = (
   );
 };
 
-/**
- * Lists a prompt group's revisions for the Builder's version picker:
- * `GET /api/prompts/groups/:groupId/revisions`. No cache and no retry, for the
- * same reason as `useResolvePromptGroup`: a Langfuse group's revisions can
- * change between requests and a stale read should not linger or be retried
- * silently.
- */
+/** No cache or retry: a Langfuse group's revisions can change between requests. */
 export const useGetPromptGroupRevisions = (
   id: string,
   config?: { enabled?: boolean },

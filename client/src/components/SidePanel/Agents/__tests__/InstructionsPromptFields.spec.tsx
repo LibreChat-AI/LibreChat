@@ -23,9 +23,7 @@ let mockRevisionsQuery: {
 };
 let mockLangfuseEnabled: boolean;
 
-/** Wraps the mocked hook so a test can read what `InstructionsPromptFields` passed
- *  it (specifically `enabled`), which the fixed object `mockRevisionsQuery` cannot
- *  capture on its own. */
+// Lets a test read the `enabled` option passed to the mocked hook.
 const mockUseGetPromptGroupRevisions = jest.fn(
   (_id: string, _options: { enabled?: boolean }) => mockRevisionsQuery,
 );
@@ -347,11 +345,7 @@ describe('InstructionsPromptFields', () => {
     });
 
     it('still shows the disabled note and read-only version when the saved group is missing from the listing', () => {
-      /** The group list here has no entry for 'group2' at all (deleted, or the
-       *  editor's share access was revoked); the disabled state must still read off
-       *  the link's own `source`, not a `selectedGroup` that cannot be found. This
-       *  also trips the separate "Prompt not found" note, so both notes are present;
-       *  the assertion below targets the disabled-source one specifically. */
+      // No matching group, so the disabled state must read off the link's own `source`.
       mockGroupsQuery.data = [];
       render(
         <Harness
@@ -472,9 +466,6 @@ describe('InstructionsPromptFields', () => {
     });
 
     it('keeps the saved selection when the same disabled Langfuse group is re-picked', () => {
-      /** Re-selecting the already-linked group must not reset it to Production: the
-       *  server rejects a write that changes a pinned, currently-unavailable Langfuse
-       *  link, so an unchanged pick has to stay unchanged. */
       mockGroupsQuery.data = [group({ _id: 'group2', source: 'langfuse' })];
       let methods: UseFormReturn<AgentForm> | undefined;
       render(
@@ -657,7 +648,6 @@ describe('InstructionsPromptFields', () => {
     );
 
     expect(screen.getByText('com_agents_instructions_prompt_forbidden')).toBeInTheDocument();
-    /** Retrying a 403 cannot succeed, matching the Prompt dropdown's own 403 case. */
     expect(screen.queryByRole('button', { name: 'com_ui_retry' })).not.toBeInTheDocument();
   });
 

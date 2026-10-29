@@ -7608,16 +7608,10 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
     });
 
     describe('Langfuse links', () => {
-      /** Spies created by a single test, restored individually in `afterEach` below
-       *  instead of a blanket `jest.restoreAllMocks()` — which would also tear down
-       *  unrelated spies (e.g. `db.getRoleByName`) set up by sibling describe blocks
-       *  sharing this file's module-level mocks. */
+      /** Restored individually so sibling describe blocks' spies survive `afterEach`. */
       let activeSpies = [];
 
-      /** Stubs the resolved value `promptService.resolvePrompt` returns for a
-       *  Langfuse selection. The real Langfuse adapter dispatch (listing, HTTP
-       *  calls) is out of scope here; only the write-path decision in
-       *  `validateLinkWrite` is under test. */
+      /** Stubs the Langfuse resolve result; the real adapter dispatch is out of scope here. */
       const stubLangfuseResolve = (overrides = {}) => {
         const spy = jest.spyOn(promptService, 'resolvePrompt').mockResolvedValue({
           ok: true,
@@ -7634,9 +7628,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         return spy;
       };
 
-      /** Spies on the global `fetch` the Langfuse adapter dispatches through
-       *  (see `prompts.test.js`'s `mockLangfuseFetch`), with no implementation
-       *  override — used only to assert it was never called. */
+      /** Spies on global `fetch` only to assert the Langfuse adapter never calls it. */
       const spyOnLangfuseFetch = () => {
         const spy = jest.spyOn(global, 'fetch');
         activeSpies.push(spy);
@@ -7692,8 +7684,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         mockReq.params = { id: agentId };
         mockReq.body = { instructionsPrompt: link };
         await updateAgentHandler(mockReq, mockRes);
-        // `updateAgentHandler` never calls `res.status(...)` on success (only on an
-        // error branch), so a 200 is proven by the absence of any status call at all.
+        // `updateAgentHandler` only calls `res.status` on error, so no call means success.
         expect(mockRes.status).not.toHaveBeenCalled();
         const resaved = mockRes.json.mock.calls[0][0];
         expect(resaved.instructionsPrompt).toEqual(link);
@@ -7738,9 +7729,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       });
 
       test('returns 400 instructions_prompt_unavailable for a native link to a real Langfuse group, with no Langfuse network call', async () => {
-        // Real group, real promptService.resolvePrompt: a `source: 'native'` reference
-        // rejects on the group's actual recorded source before the Langfuse adapter
-        // (and therefore any network call) is ever reached.
+        // Real group and resolver: rejected on the group's recorded source before any Langfuse call.
         const { _id: groupId } = await db.createLangfusePromptGroup({
           name: 'Mismatched Source Group',
           author: mockReq.user.id,
@@ -7770,9 +7759,6 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       });
 
       test('returns 400 instructions_prompt_unavailable for a Langfuse link to a real native group while the switch is on, with no Langfuse network call', async () => {
-        // Mirror of the above in the other direction: a `source: 'langfuse'` reference
-        // rejects on the group's actual recorded (native) source, again before any
-        // Langfuse adapter dispatch.
         const { groupId } = await createPromptGroupFixture('Native Group For Langfuse Mismatch');
         const fetchSpy = spyOnLangfuseFetch();
         switchOn();
@@ -7807,8 +7793,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
           tools: [],
           instructionsPrompt: link,
         });
-        // No VIEW grant for `groupId`: duplication must still succeed, carrying
-        // the link verbatim, and present it as a restricted stub with its own source.
+        // No VIEW grant for `groupId`.
 
         mockReq.params = { id: agent.id };
 
@@ -7842,7 +7827,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
             },
           ],
         });
-        // No VIEW grant for `groupId`: the snapshot's link is not visible.
+        // No VIEW grant for `groupId`.
 
         mockReq.params = { id: agentId };
         mockReq.body = { version_index: 0 };

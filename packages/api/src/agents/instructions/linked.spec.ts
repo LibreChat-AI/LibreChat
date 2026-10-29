@@ -537,8 +537,7 @@ describe('createLinkedInstructionsResolver', () => {
       status: 'unavailable',
       reason: 'blocked_content',
     });
-    // A `blocked_content` error carries `finding`, not `reason`; the warn must
-    // never surface the finding (which can echo matched prompt content).
+    // The warn must never surface `finding`, which can echo matched prompt content.
     expect(logger.warn).toHaveBeenCalledWith(
       '[linkedInstructions] resolvePrompt returned a failure result',
       { groupId, source: 'native', type: 'blocked_content' },
@@ -739,8 +738,7 @@ describe('createLinkedInstructionsResolver', () => {
       await expect(
         resolver({ link: langfuseProductionLink, config: langfuseEnabledConfig }),
       ).resolves.toEqual({ status: 'unavailable', reason: 'unavailable_selection' });
-      // Exact shape asserts the warn carries only `type`/`reason`/ids — never
-      // prompt text or any other field from the error.
+      // The warn must carry only `type`/`reason`/ids, never prompt text.
       expect(logger.warn).toHaveBeenCalledWith(
         '[linkedInstructions] resolvePrompt returned a failure result',
         { groupId, source: 'langfuse', type: 'unsupported_content', reason: 'chat_prompt' },

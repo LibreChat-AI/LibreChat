@@ -97,9 +97,7 @@ export function createNativePromptAdapter(
     },
 
     listRevisions: async ({ group }) => {
-      // `getPrompts` returns revisions newest (`createdAt`) first, so the oldest
-      // revision is version 1 and the newest is `total`: `total - index` turns that
-      // order directly into a version number with no separate counter stored.
+      // getPrompts returns revisions newest first; version is derived from position, not stored.
       const revisions = await store.getPrompts(group._id);
       const total = revisions.length;
       return {

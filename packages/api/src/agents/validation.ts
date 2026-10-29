@@ -389,14 +389,11 @@ const agentGitIdentityUpdateSchema: z.ZodType<AgentGitIdentity | null | undefine
 /** A 24-character hexadecimal Mongo ObjectId string. */
 const objectIdStringSchema = z.string().refine(isValidObjectIdString);
 
-/** Selects which revision of a linked native prompt group an agent's instructions follow. */
 const nativeInstructionsPromptSelectionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('production') }).strict(),
   z.object({ type: z.literal('exact'), promptId: objectIdStringSchema }).strict(),
 ]);
 
-/** Selects which revision of a linked Langfuse prompt group an agent's instructions
- *  follow: the group's Production label, or a pinned exact version number. */
 const langfuseInstructionsPromptSelectionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('production') }).strict(),
   z
@@ -416,7 +413,6 @@ const nativeAgentInstructionsPromptSchema = z
   })
   .strict();
 
-/** Links an agent's instructions to a Langfuse prompt group revision. */
 const langfuseAgentInstructionsPromptSchema = z
   .object({
     source: z.literal('langfuse'),
@@ -425,9 +421,6 @@ const langfuseAgentInstructionsPromptSchema = z
   })
   .strict();
 
-/** Links an agent's instructions to a native or Langfuse prompt group revision,
- *  discriminated on `source`. A Langfuse link is rejected at the write boundary
- *  (`validateLinkWrite`) rather than here when the rollout switch is off. */
 export const agentInstructionsPromptSchema: z.ZodType<AgentInstructionsPrompt> =
   z.discriminatedUnion('source', [
     nativeAgentInstructionsPromptSchema,

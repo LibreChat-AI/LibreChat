@@ -80,38 +80,12 @@ export interface InstructionsPromptAccess {
   canViewGroup(
     input: Omit<InstructionsPromptAccessUser, 'id'> & { userId: string; groupId: string },
   ): Promise<boolean>;
-  /**
-   * Validates a create/update write of `instructionsPrompt` against the stored link.
-   * `next === undefined` means the field is absent from the payload (no change
-   * requested) — ok. Keeping, removing (`next === null`), or re-submitting the
-   * unchanged link (`isSameLink`) is always ok: agent EDIT already authorizes all
-   * three, and none of them reveals anything about `previous`'s group that EDIT
-   * doesn't already know. This also means an unchanged Langfuse link, or its
-   * removal, stays editable while `linkedInstructions.langfuse.enabled` is off.
-   *
-   * Next, a genuinely new or changed `source: 'langfuse'` link is rejected with
-   * `UNAVAILABLE` while `linkedInstructions?.langfuse?.enabled !== true` — before the
-   * USE/VIEW checks below, so no permission check or adapter call runs for a link the
-   * switch has disabled. A native replacement is never blocked by this switch.
-   *
-   * A genuinely new or changed `next` otherwise requires the role-level PROMPTS `USE`
-   * permission (`canUsePrompts`) and PROMPTGROUP `VIEW` on `next.groupId`
-   * (`canViewGroup`), `FORBIDDEN` otherwise — a PROMPTGROUP `VIEW` grant on one group
-   * says nothing about whether the role may link prompts at all, and `next` not
-   * existing is indistinguishable from `next` existing but hidden, so group
-   * existence is never revealed through it. The two checks are independent, so both
-   * run concurrently instead of one gating the start of the other. Once both pass,
-   * the selection must still resolve (restricted to `next.source`) and pass content
-   * policy (`UNAVAILABLE` otherwise); a thrown `LangfusePromptRequestError` from that
-   * resolution also maps to `UNAVAILABLE`.
-   */
+  /** Checks an `instructionsPrompt` write; an unchanged link always passes. */
   validateLinkWrite(input: {
     user: InstructionsPromptAccessUser;
     previous: AgentInstructionsPrompt | null | undefined;
     next: AgentInstructionsPrompt | null | undefined;
     filters?: FiltersConfig;
-    /** The rollout switch for a Langfuse link, passed explicitly by the caller
-     *  rather than looked up from `req` — see `InstructionsPromptAccessRequest`. */
     linkedInstructions?: Pick<LinkedInstructionsConfig, 'langfuse'>;
     /** Forwarded unexamined to `canUsePrompts` so its role lookup can reuse the
      *  caller's per-request role cache. */
@@ -166,10 +140,7 @@ function isSameLink(
   if (left.selection.type !== right.selection.type) {
     return false;
   }
-  // `left.source === right.source` is already established above; the pairwise check
-  // on each side (rather than `left.source` alone) is what narrows both operands'
-  // `selection` to the same source's shape — native's `exact` carries `promptId`,
-  // Langfuse's carries `version`.
+  // Narrows both selections to the same source's shape.
   if (left.source === 'native' && right.source === 'native') {
     return left.selection.type === 'exact' && right.selection.type === 'exact'
       ? left.selection.promptId === right.selection.promptId
@@ -359,10 +330,7 @@ export function createInstructionsPromptAccess(deps: {
       return { ok: true };
     }
     if (next.source === 'langfuse' && linkedInstructions?.langfuse?.enabled !== true) {
-      // A genuinely new or changed Langfuse link (never a removal, and never a
-      // re-selection of the unchanged value — both returned above) while the rollout
-      // switch is off: reject before the USE/VIEW checks and before any resolve call.
-      // A native replacement is never blocked by this switch.
+      // Reject a new or changed Langfuse link here, before any USE/VIEW check or resolve call.
       return { ok: false, status: 400, code: InstructionsPromptErrorCode.UNAVAILABLE };
     }
     // A genuinely new or changed link (never a removal, and never a re-selection of the
@@ -387,8 +355,7 @@ export function createInstructionsPromptAccess(deps: {
       // revealed through a new link.
       return { ok: false, status: 403, code: InstructionsPromptErrorCode.FORBIDDEN };
     }
-    // Built from `next` itself, not a destructured copy, so narrowing on `source` also
-    // narrows `selection` to that source's own shape.
+    // Built from `next` directly so narrowing on `source` also narrows `selection`.
     const reference: PromptReference =
       next.source === 'native'
         ? { source: 'native', selection: next.selection }
@@ -414,9 +381,7 @@ export function createInstructionsPromptAccess(deps: {
       return { ok: false, status: 400, code: InstructionsPromptErrorCode.UNAVAILABLE };
     }
     if (resolved.value.source !== next.source) {
-      /* `reference.source` above means the service only ever resolves a group of
-       * that source here; this check narrows the type for the compiler and cannot
-       * be reached at runtime. */
+      /* Defensive: `reference.source` already guarantees this, so it is unreachable at runtime. */
       return { ok: false, status: 400, code: InstructionsPromptErrorCode.UNAVAILABLE };
     }
     try {

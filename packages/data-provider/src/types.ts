@@ -710,9 +710,7 @@ export type TConfig = {
   /** Effective subagents-per-agent cap served from `endpoints.agents.maxSubagents`. */
   maxSubagents?: number;
   fileSharing?: TAgentsEndpoint['fileSharing'];
-  /** Rollout switches for linking an agent's instructions to a prompt-group revision,
-   *  served from `endpoints.agents.linkedInstructions`. Only the named fields the
-   *  Builder needs are copied in. */
+  /** Rollout switches served to the Builder from `endpoints.agents.linkedInstructions`. */
   linkedInstructions?: {
     langfuse?: { enabled?: boolean };
   };
@@ -1253,16 +1251,8 @@ export type TGetRandomPromptsRequest = {
   skip: number;
 };
 
-/** Selects which revision of a native prompt group content comes from: the group's
- *  Production label, or an exact stored revision by its ID. Source-neutral: the
- *  agent-instructions link's native selection
- *  (`AgentInstructionsPromptSelection`) is this same type. */
 export type NativePromptSelection = { type: 'production' } | { type: 'exact'; promptId: string };
 
-/** Selects which revision of a Langfuse prompt group content comes from: the group's
- *  Production label, or a pinned exact version number. Source-neutral: the
- *  agent-instructions link's Langfuse selection
- *  (`LangfuseAgentInstructionsPromptSelection`) is this same type. */
 export type LangfusePromptSelection = { type: 'production' } | { type: 'exact'; version: number };
 
 /** `GET /api/prompts/groups/:groupId/resolve`. Native resolves the group's
@@ -1290,16 +1280,12 @@ export type TResolvedLangfusePrompt = {
 
 export type TResolvedPromptResponse = TResolvedNativePrompt | TResolvedLangfusePrompt;
 
-/** One revision choice in `GET /api/prompts/groups/:groupId/revisions` — metadata
- *  only, no prompt content. */
+/** One revision choice: metadata only, no prompt content. */
 export type TPromptRevisionChoice =
   | { source: 'native'; promptId: string; version: number; isProduction: boolean }
   | { source: 'langfuse'; version: number };
 
-/** `GET /api/prompts/groups/:groupId/revisions`. Lists a group's revisions newest
- *  first, for the Builder's version picker; the Production entry is identified by
- *  `isProduction` (native) or carries no separate marker (Langfuse, where the
- *  Production label is resolved live rather than listed here). */
+/** Only a native revision marks `isProduction`; Langfuse resolves Production live. */
 export type TPromptRevisionChoicesResponse = {
   source: TPromptGroupSource;
   groupId: string;

@@ -138,9 +138,7 @@ export function toResolveResponse(
   return rest;
 }
 
-/** Maps a `resolvePrompt` or `listRevisions` rejection to its HTTP response;
- *  `unsupported_source`, `invalid_input` and `unsupported` are not mapped and fall
- *  through to the generic 500. */
+/** Maps a `resolvePrompt` or `listRevisions` rejection to its HTTP response. */
 function sendResolveRejection(res: Response, error: PromptServiceError): Response {
   switch (error.type) {
     case 'blocked_content':
@@ -245,15 +243,7 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
      * (the only selection it accepts), and Langfuse fetches live, by the `production`
      * label or an exact `version`. Usage is not recorded here — `/use` already does.
      *
-     * The wire format is `?version=N` with no `type` param. The handler needs the
-     * group's `source` before it can build the `PromptReference` the service takes, so
-     * it reads the group once — from `loadedGroup(req)` when the access middleware
-     * already loaded it, or with one deterministic read (`readPromptGroup`) when a
-     * capability bypass (e.g. `MANAGE_PROMPTS`) skipped that load — then builds the
-     * reference from that group's own `source`. No version resolves to `production`; a
-     * version on a native group is rejected as `invalid_request` before any service
-     * call, since native has no selection a version number can satisfy. A group that
-     * does not exist gets the same 404 a missing selection would.
+     * Reads the group first because `source` decides which reference shape to build.
      */
     async resolvePrompt(req, res) {
       const groupId = param(req, 'groupId');
@@ -309,13 +299,7 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
       }
     },
 
-    /**
-     * Lists a group's revision choices, newest first, metadata only. Unlike
-     * `resolvePrompt`, a database read failure (`PromptStoreError`) is a failed call,
-     * not an absent group, so it maps to the same 500 as any other unexpected error
-     * rather than to `resolvePrompt`'s 404. Never increments usage: that happens once,
-     * on a successful initialization, not while browsing versions.
-     */
+    /** Never increments usage. */
     async listRevisions(req, res) {
       const groupId = param(req, 'groupId');
       try {

@@ -142,8 +142,7 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
         statefulCodeSessions: clientStatefulCodeSessions,
         maxSubagents,
         fileSharing,
-        /** Only the switch itself reaches the client; `timeoutMs` and `native` stay
-         * server-side budget/cache configuration the Builder never needs. */
+        /** Only the switch reaches the client; the budget/cache fields stay server-side. */
         linkedInstructions: {
           langfuse: { enabled: linkedInstructions?.langfuse?.enabled === true },
         },

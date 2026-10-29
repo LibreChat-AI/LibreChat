@@ -688,16 +688,12 @@ describe('createInstructionsPromptAccess', () => {
           next: productionLink,
         });
         expect(result).toEqual({ ok: true });
-        // The switch gates only a new/changed Langfuse link; a native replacement
-        // still goes through the normal USE/VIEW/resolve checks.
         expect(canUse).toHaveBeenCalled();
         expect(map).toHaveBeenCalled();
         expect(resolve).toHaveBeenCalled();
       });
 
       it('rejects a native replacement when USE is denied, even though the switch is off', async () => {
-        // The switch never blocks a native replacement, but the role-level USE gate
-        // still applies to it regardless of the switch's own state.
         const { access } = buildAccess({
           visibleGroupIds: new Set([groupId]),
           canUsePromptsResult: false,
@@ -856,9 +852,7 @@ describe('createInstructionsPromptAccess', () => {
       });
 
       it('rejects when the resolved value source does not match the requested link source', async () => {
-        // The injected `resolve` mock's default answer is a native value; requesting
-        // a Langfuse link against it exercises the defensive check that building the
-        // reference from `next.source` should otherwise make unreachable.
+        // The mock `resolve` answers with a native value, so this exercises the mismatch.
         const { access } = buildAccess({ visibleGroupIds: new Set([otherGroupId]) });
         const result = await access.validateLinkWrite({
           user,

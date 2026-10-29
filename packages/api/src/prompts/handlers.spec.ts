@@ -50,8 +50,7 @@ function mockRes(): Response & MockRes {
 function makeService(overrides: Partial<PromptService> = {}): PromptService {
   return {
     resolvePrompt: jest.fn(),
-    // A capability bypass (no `resourceAccess`) falls back to this read; defaults to a
-    // native group so tests that don't care about it still reach `resolvePrompt`.
+    // Defaults to native so tests that don't set a source still reach resolvePrompt.
     readPromptGroup: jest.fn().mockResolvedValue({ _id: groupId, source: 'native' }),
     listRevisions: jest.fn(),
     getListPromptGroupsByAccess: jest.fn(),
@@ -698,7 +697,7 @@ describe('createPromptHandlers resolvePrompt', () => {
     );
     const res = mockRes();
 
-    // No `resourceAccess`, as a `MANAGE_PROMPTS` capability bypass leaves it.
+    // No resourceAccess, as a MANAGE_PROMPTS capability bypass leaves it.
     await handlers.resolvePrompt(resolveReq(), res);
 
     expect(readPromptGroup).toHaveBeenCalledWith(groupId);
@@ -1132,9 +1131,7 @@ describe('createPromptHandlers listRevisions', () => {
 
     await handlers.listRevisions(revisionsReq(), res);
 
-    // `sendResolveRejection` is shared with `/resolve`, so an error type neither
-    // route's adapters actually produce still falls through to its own 500 body,
-    // not `listRevisions`'s own `catch` message.
+    // An unmapped error type falls through to the generic 500.
     expect(res.statusCode).toBe(500);
     expect(res.body).toEqual({ message: 'Error resolving prompt' });
   });

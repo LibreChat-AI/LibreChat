@@ -86,19 +86,7 @@ export function createLangfusePromptAdapter({
       };
     },
 
-    /**
-     * Lists the group's Langfuse versions, newest first. One list request, filtered to
-     * an exact name match so a chat prompt is still found and rejected rather than
-     * looking absent (see `listLangfusePrompts`'s `filter` precedence). `page: 1,
-     * limit: 1` is enough: the filter already narrows the list to at most one prompt.
-     *
-     * The response is accepted only when it unambiguously names this one prompt — one
-     * item, that item's name matching `sourcePromptName`, and `meta.totalItems === 1` —
-     * because a Langfuse deployment that ignores an unsupported `filter` would
-     * otherwise echo back an unrelated or paginated list that this adapter must never
-     * mistake for "not found" or silently truncate. Anything short of that, including a
-     * text match with no versions, throws `invalid_response` rather than guessing.
-     */
+    /** Rejects a response for another prompt, in case Langfuse ignores the filter. */
     async listRevisions({ group }) {
       if (!group.sourcePromptName) {
         return {

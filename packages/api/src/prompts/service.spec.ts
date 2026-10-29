@@ -1407,9 +1407,7 @@ describe('createPromptService', () => {
 
     it('treats a stored group with no source field as native', async () => {
       // A group with no `source` field at all, not a `native` value.
-      // `toPromptGroupRecord` is the only place that defaults it, so routing
-      // and `savePrompt` must agree the default is native rather than
-      // treating the absence as unresolved.
+      // toPromptGroupRecord is the only place that defaults a missing source to native.
       await mongoose.models.PromptGroup.collection.updateOne(
         { _id: new Types.ObjectId(group._id) },
         { $unset: { source: '' } },

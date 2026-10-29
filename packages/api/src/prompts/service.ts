@@ -61,16 +61,8 @@ export interface PromptServiceListResult {
  */
 export interface PromptService {
   resolvePrompt(input: ResolvePromptInput): Promise<PromptServiceResult<ResolvedPrompt>>;
-  /**
-   * Reads a group by id with no filter projection and no cache — the same read
-   * `resolvePrompt` and every other method fall back to when not given a preloaded
-   * record. For a caller that must know a group's `source` before it can build the
-   * `PromptReference` a call needs, ahead of that call (`/resolve`'s capability-bypass
-   * path, where the access middleware's own read was skipped).
-   */
+  /** Uncached read, for a caller that needs `source` before building a `PromptReference`. */
   readPromptGroup(groupId: string): Promise<PromptGroupRecord | null>;
-  /** Returns the group's revision choices, newest first, metadata only — no prompt
-   *  content. Dispatches by `group.source` the same way `resolvePrompt` does. */
   listRevisions(
     input: ListRevisionsInput,
   ): Promise<PromptServiceResult<TPromptRevisionChoicesResponse>>;
@@ -201,10 +193,7 @@ export function createPromptServiceFromAdapters(adapters: PromptServiceAdapters)
       if (input.source !== group.source) {
         return { ok: false, error: { type: 'unsupported_source', source: group.source } };
       }
-      // `input.source === group.source` is established above; the switch on
-      // `input.source` (rather than `group.source`) is what narrows `input.selection`
-      // to the adapter's own selection type — TypeScript cannot correlate a
-      // discriminated union's members once narrowed through a separately-read field.
+      // Switches on input.source, not group.source, so TypeScript narrows input.selection to match.
       const resolved =
         input.source === 'native'
           ? await sources.native.resolvePrompt({

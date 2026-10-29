@@ -245,8 +245,6 @@ describe('createEndpointsConfigService', () => {
           const { getEndpointsConfig } = createEndpointsConfigService(deps);
           const result = await getEndpointsConfig(fakeReq());
 
-          // Only the switch itself reaches the client; `timeoutMs` and `native` stay
-          // server-side budget/cache configuration the Builder never needs.
           expect(result?.[EModelEndpoint.agents]?.linkedInstructions).toEqual({
             langfuse: { enabled },
           });

@@ -24,12 +24,7 @@ export type LangfusePromptConnection = {
 
 export type LangfusePromptListQuery = {
   name?: string;
-  /** An exact, case-sensitive name match, composed into `filter` (see
-   *  `listLangfusePrompts`) and also sent as the plain `name` param, so a
-   *  Langfuse server that predates `filter` still narrows by name; a server
-   *  that supports `filter` ignores the plain `name` param instead, because
-   *  `filter` takes precedence. Mutually exclusive with `name` in practice:
-   *  nothing in this module sets both at once. */
+  /** Also sent as `name` for Langfuse servers without `filter` support. */
   nameEquals?: string;
   label?: string;
   tag?: string;
@@ -245,27 +240,7 @@ function appendDefined(
   }
 }
 
-/**
- * Lists prompt metadata from Langfuse. Query params are sent as-is, only those
- * defined; every prompt type — including `chat` — is returned unless `type`
- * is given. `type` is not a Langfuse query param itself: it is composed as a
- * condition of the `filter` parameter, the shape the Langfuse list endpoint
- * expects for a column filter. `nameEquals` is composed into that same
- * `filter` (AND'd with `type` when both are given) and, additionally, sent as
- * the plain `name` param, so a Langfuse server old enough to not support
- * `filter` still narrows by name. `filter` is omitted entirely when neither
- * `type` nor `nameEquals` is set.
- *
- * Per the Langfuse list-prompts spec, `filter`, when present, takes
- * precedence over `name`, `label`, `tag` and the date range params — those
- * are ignored rather than combined with it — and it applies to versions
- * before they are aggregated into each `PromptListItem`, so a `name`-equals
- * condition narrows `versions` and `labels` to the matching versions only,
- * not just the top-level list. The filter's `=` operator on `name` is
- * documented as a case-sensitive exact match. The spec does not document the
- * plain `name` param's own match semantics (exact or partial); this module
- * relies on it only as the fallback above, never as the sole narrowing.
- */
+/** `type` and `nameEquals` combine into `filter`, which Langfuse applies ahead of `name`/`label`/`tag`. */
 export async function listLangfusePrompts(
   conn: LangfusePromptConnection,
   query: LangfusePromptListQuery,
