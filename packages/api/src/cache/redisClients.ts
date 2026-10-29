@@ -46,6 +46,15 @@ if (cacheConfig.USE_REDIS) {
     username: username,
     password: password,
     tls: useTls ? { ca: ca ?? undefined } : undefined,
+    /**
+     * ioredis defaults to IPv4 (`family: 4`), so on IPv6 single-stack clusters
+     * the Redis hostname has no A record and connections fail with `ENOTFOUND`.
+     * `family: 0` accepts either family: Node resolves both records and connects
+     * via Happy Eyeballs (`autoSelectFamily`, default since Node 20), attempting
+     * them in resolver order rather than always trying IPv4 first, so dual-stack
+     * hosts may now connect over IPv6. See #15290.
+     */
+    family: 0,
     keyPrefix: `${cacheConfig.REDIS_KEY_PREFIX}${cacheConfig.GLOBAL_PREFIX_SEPARATOR}`,
     maxListeners: cacheConfig.REDIS_MAX_LISTENERS,
     retryStrategy: (times: number) => {
