@@ -359,6 +359,112 @@ describe('MCP Routes', () => {
     expect(routeLayer.route.stack[1].handle).toBe(admissionLimiter);
   });
 
+  describe('OAuth diagnostic confidentiality', () => {
+    const { MCPOAuthHandler } = require('@librechat/api');
+    const { logger } = require('@librechat/data-schemas');
+    const expectPrivate = (...secrets) => {
+      const output = inspect(
+        ['debug', 'info', 'warn', 'error'].flatMap((level) => logger[level].mock.calls),
+        { depth: null },
+      );
+      for (const secret of secrets) expect(output.includes(secret)).toBe(false);
+    };
+
+    it('redirects initiation normally without logging the generated authorization URL or metadata', async () => {
+      const secret = 'fixture-private-authorization';
+      const authorizationUrl = `https://oauth.example.com/auth?state=${secret}`;
+      const flowId = 'test-user-id:test-server';
+      mockResolveAllMcpConfigs.mockResolvedValue({
+        'test-server': { url: 'https://test-server.com' },
+      });
+      require('~/config').getFlowStateManager.mockReturnValue({
+        getFlowState: jest.fn().mockResolvedValue({
+          status: 'PENDING',
+          createdAt: Date.now(),
+          metadata: { serverUrl: 'https://test-server.com', oauth: { client_id: 'client' } },
+        }),
+        initFlow: jest.fn().mockResolvedValue(),
+      });
+      MCPOAuthHandler.initiateOAuthFlow.mockResolvedValueOnce({
+        authorizationUrl,
+        flowId,
+        flowMetadata: {
+          state: secret,
+          codeVerifier: secret,
+          oauthHeaders: { Authorization: secret },
+        },
+      });
+      MCPOAuthHandler.storeStateMapping.mockResolvedValueOnce();
+
+      const response = await request(app)
+        .get('/api/mcp/test-server/oauth/initiate')
+        .query({ userId: 'test-user-id', flowId });
+
+      expect(response.status).toBe(302);
+      expect(response.headers.location).toBe(authorizationUrl);
+      expectPrivate(secret, authorizationUrl);
+      expect(logger.debug).toHaveBeenCalledWith('[MCP OAuth] OAuth flow initiated', {
+        oauthFlowId: flowId,
+      });
+    });
+
+    it('reports callback presence without logging unrecognized state or authorization code', async () => {
+      const state = 'fixture-private-unrecognized-state';
+      const code = 'fixture-private-authorization-code';
+      MCPOAuthHandler.resolveStateToFlowId.mockResolvedValueOnce(null);
+      const response = await request(app)
+        .get('/api/mcp/test-server/oauth/callback')
+        .query({ state, code });
+
+      expect(response.status).toBe(302);
+      expect(response.headers.location).toContain('error=invalid_state');
+      expectPrivate(state, code);
+      expect(logger.debug).toHaveBeenCalledWith('[MCP OAuth] Callback received', {
+        serverName: 'test-server',
+        code: 'present',
+        hasState: true,
+        hasError: false,
+      });
+    });
+
+    it('does not log raw provider error text on an error callback', async () => {
+      const secret = 'fixture-private-provider-error';
+      MCPOAuthHandler.resolveStateToFlowId.mockResolvedValueOnce(null);
+      const response = await request(app)
+        .get('/api/mcp/test-server/oauth/callback')
+        .query({ state: secret, error: secret });
+
+      expect(response.status).toBe(302);
+      expectPrivate(secret);
+      expect(logger.error).toHaveBeenCalledWith('[MCP OAuth] OAuth error received');
+    });
+
+    it('projects callback failures to safe type/status without changing the failure redirect', async () => {
+      const secret = 'fixture-private-callback-failure';
+      const flowId = 'test-user-id:test-server';
+      MCPOAuthHandler.resolveStateToFlowId.mockResolvedValueOnce(flowId);
+      MCPOAuthHandler.getFlowState.mockRejectedValueOnce(
+        Object.assign(new Error(secret), {
+          status: 503,
+          codeVerifier: secret,
+          tokens: { access_token: secret, refresh_token: secret },
+        }),
+      );
+      const response = await request(app)
+        .get('/api/mcp/test-server/oauth/callback')
+        .set('Cookie', [`oauth_csrf=${generateTestCsrfToken(flowId)}`])
+        .query({ state: secret, code: secret });
+
+      expect(response.status).toBe(302);
+      expect(response.headers.location).toContain('error=callback_failed');
+      expectPrivate(secret);
+      expect(logger.error).toHaveBeenCalledWith('[MCP OAuth] OAuth callback error', {
+        type: 'Error',
+        status: 503,
+      });
+    });
+  });
+
   describe('GET /:serverName/oauth/initiate', () => {
     const { MCPOAuthHandler } = require('@librechat/api');
     const { getLogStores } = require('~/cache');
