@@ -1,0 +1,37 @@
+{
+  "name": "@librechat/channel-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone messaging transport for LibreChat Agent Channels",
+  "type": "module",
+  "scripts": {
+    "build": "tsdown",
+    "build:watch": "tsdown --watch",
+    "typecheck": "node ../../scripts/typecheck.mts",
+    "test": "jest --watch",
+    "test:ci": "jest --ci --runInBand"
+  },
+  "dependencies": {
+    "@slack/socket-mode": "3.1.0",
+    "@slack/types": "3.2.0",
+    "@slack/web-api": "8.2.0",
+    "undici": "^7.30.1",
+    "librechat-data-provider": "*",
+    "prom-client": "^15.1.3",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@babel/preset-env": "^7.21.5",
+    "@babel/preset-typescript": "^7.21.0",
+    "@types/jest": "^29.5.2",
+    "@types/node": "^24.12.4",
+    "babel-jest": "^30.2.0",
+    "jest": "^30.2.0",
+    "tsdown": "^0.22.2",
+    "typescript": "^5.8.3"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "license": "MIT"
+}
