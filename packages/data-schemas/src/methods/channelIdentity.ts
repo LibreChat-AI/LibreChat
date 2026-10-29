@@ -1,9 +1,9 @@
 import type { ChannelExternalIdentity } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { ChannelIdentityRecord } from '~/models/channelIdentity';
+import { assertChannelTenant, initializeChannelScope, touchChannelScope } from './channelScope';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
-import { assertChannelTenant } from './channelScope';
 export type { ChannelIdentityRecord } from '~/models/channelIdentity';
 
 export interface ChannelIdentityStorage {
@@ -84,16 +84,37 @@ export function createChannelIdentityStorage(
         return result.modifiedCount === 1;
       };
       try {
-        if (!record.userId) return await persist();
-        const admit = await prepareChannelOwnerAdmission(mongoose, {
-          userId: record.userId,
-          tenantId: record.tenantId === '_' ? undefined : record.tenantId,
-        });
+        const live = ['pending', 'accepted', 'active'].includes(record.state);
+        if (live)
+          await initializeChannelScope(mongoose, record.tenantId, record.identity.channelId);
+        const admit = record.userId
+          ? await prepareChannelOwnerAdmission(mongoose, {
+              userId: record.userId,
+              tenantId: record.tenantId === '_' ? undefined : record.tenantId,
+            })
+          : undefined;
+        if (!live && !admit) return await persist();
         const session = await mongoose.startSession();
         try {
           let saved = false;
           await session.withTransaction(async () => {
-            saved = (await admit(session)) ? await persist(session) : false;
+            if (admit && !(await admit(session))) {
+              saved = false;
+              return;
+            }
+            if (
+              live &&
+              !(await touchChannelScope(
+                mongoose,
+                record.tenantId,
+                record.identity.channelId,
+                session,
+              ))
+            ) {
+              saved = false;
+              return;
+            }
+            saved = await persist(session);
           });
           return saved;
         } finally {
