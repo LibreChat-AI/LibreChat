@@ -196,12 +196,19 @@ export function createBackgroundResponseWorkerAuth(
             checkpointNamespace: result.checkpointNamespace,
           };
         }
-        const request = req as ServerRequest & Pick<ContextRequest, 'tenantId'>;
+        const request = req as ServerRequest &
+          Pick<ContextRequest, 'tenantId'> &
+          import('~/conversations/save').TurnConversationRequest;
         user.id = record.userId;
         request.user = user;
         request.tenantId = record.tenantId;
         // Caller body/headers cannot replace the persisted, already validated request.
         request.body = JSON.parse(record.requestJSON);
+        if (record.expiredAt)
+          request._agentEventBindingRetention = {
+            expiredAt: record.expiredAt,
+            isTemporary: record.isTemporary,
+          };
         admitted.set(req, {
           record,
           storage: deps.storage,
