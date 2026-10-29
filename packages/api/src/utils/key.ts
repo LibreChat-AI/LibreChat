@@ -148,14 +148,15 @@ export function checkUserKeyExpiry(expiresAt: string, endpoint: string): void {
 const availableServiceKeys = new Map<string, string>();
 
 /**
- * The file's modification time and size, or `inline` when `keyPath` names no readable file
+ * The file's identity, change and modification times and size (a chmod or replacement moves
+ * the change time), or `inline` when `keyPath` names no readable file
  * (stringified or base64 JSON), so a replaced or removed key file is noticed without a read.
  */
 async function getKeySourceSignature(keyPath: string): Promise<string> {
   try {
     const absolutePath = path.isAbsolute(keyPath) ? keyPath : path.resolve(keyPath);
     const stats = await stat(absolutePath);
-    return `${stats.mtimeMs}:${stats.size}`;
+    return `${stats.ino}:${stats.ctimeMs}:${stats.mtimeMs}:${stats.size}`;
   } catch {
     return 'inline';
   }
@@ -163,8 +164,8 @@ async function getKeySourceSignature(keyPath: string): Promise<string> {
 
 /**
  * Whether a Google service key loads from `keyPath`, for endpoint availability checks that run
- * on every endpoints config read. A file or inline source that loaded is remembered while the
- * file's modification time and size are unchanged, so those reads stop re-reading and
+ * on every endpoints config read. A file or inline source that loaded is remembered while that
+ * signature is unchanged, so those reads stop re-reading and
  * re-parsing the key; a changed, removed or failing source is loaded again. URL sources are
  * fetched on every call, since nothing local says whether they changed.
  */

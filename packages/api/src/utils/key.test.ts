@@ -198,7 +198,7 @@ describe('isServiceKeyAvailable', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    statMock.mockResolvedValue({ mtimeMs: 1, size: 16 });
+    statMock.mockResolvedValue({ ino: 7, ctimeMs: 1, mtimeMs: 1, size: 16 });
   });
 
   it('reads an unchanged key file once it has loaded, and retries one that failed', async () => {
@@ -222,11 +222,22 @@ describe('isServiceKeyAvailable', () => {
 
     await expect(isServiceKeyAvailable(keyPath)).resolves.toBe(true);
 
-    statMock.mockResolvedValue({ mtimeMs: 2, size: 9 });
+    statMock.mockResolvedValue({ ino: 7, ctimeMs: 2, mtimeMs: 2, size: 9 });
     await expect(isServiceKeyAvailable(keyPath)).resolves.toBe(false);
 
     statMock.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
     (readFileAsString as jest.Mock).mockRejectedValueOnce(new Error('ENOENT'));
+    await expect(isServiceKeyAvailable(keyPath)).resolves.toBe(false);
+  });
+
+  it('rechecks a key file whose permissions changed without a content change', async () => {
+    const keyPath = '/secrets/chmodded.json';
+    (readFileAsString as jest.Mock)
+      .mockResolvedValueOnce(validKey)
+      .mockRejectedValueOnce(Object.assign(new Error('EACCES'), { code: 'EACCES' }));
+
+    await expect(isServiceKeyAvailable(keyPath)).resolves.toBe(true);
+    statMock.mockResolvedValue({ ino: 7, ctimeMs: 3, mtimeMs: 1, size: 16 });
     await expect(isServiceKeyAvailable(keyPath)).resolves.toBe(false);
   });
 
