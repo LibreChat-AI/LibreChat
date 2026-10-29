@@ -87,6 +87,7 @@ const host: StreamHost = {
     isFetching: false,
   }),
   useResumeSettings: () => ({ configLoaded: true, conversation: null }),
+  useParentSubagentIndex: () => ({ isError: false, refetch: async () => ({}) }),
 };
 const transport = createSSETransport({ token: 'token-1' });
 

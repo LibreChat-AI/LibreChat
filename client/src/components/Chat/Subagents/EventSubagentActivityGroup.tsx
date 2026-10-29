@@ -9,10 +9,10 @@ import {
   subagentStatusDotClass,
   subagentStatusLabelKey,
   eventSubagentSelection,
+  useParentSubagents,
 } from '@librechat/chat/react';
 import type { ParentSubagentSummary } from 'librechat-data-provider';
 import { useChatSurface, useOpenSubagentPanel } from './surface';
-import { useParentSubagents } from './ParentSubagentsProvider';
 import { useAgentsMapContext } from '~/Providers';
 import { renderAgentAvatar } from '~/utils';
 import { useLocalize } from '~/hooks';

@@ -12,6 +12,7 @@ import {
   resolveSubagentAgentId,
   subagentStatusLabelKey,
   getSubagentPrompt,
+  useParentSubagents,
 } from '@librechat/chat/react';
 import type {
   PartMetadata,
@@ -21,7 +22,6 @@ import type {
 } from 'librechat-data-provider';
 import type { SubagentContentPreview } from '@librechat/chat/react';
 import type { SubagentTickerLine } from '@librechat/chat';
-import { useParentSubagents } from '~/components/Chat/Subagents/ParentSubagentsProvider';
 import { isSelfSpawn as isSelfSpawnType } from '~/components/Chat/Subagents/author';
 import { useOpenSubagentPanel } from '~/components/Chat/Subagents/surface';
 import { MessageContext } from '~/Providers/MessageContext';
