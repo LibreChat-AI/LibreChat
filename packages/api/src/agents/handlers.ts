@@ -2974,9 +2974,10 @@ async function resolveSkillForAuthoring(
 
   const skillPrimedIdsByName =
     (mergedConfigurable?.skillPrimedIdsByName as Record<string, string> | undefined) ?? {};
-  const primedIdString = skillPrimedIdsByName[skillName];
-  if (primedIdString) {
-    return await getSkillByName(skillName, [new Types.ObjectId(primedIdString)], {});
+  const pinnedIdString =
+    getAuthoredSkillId(skillName, mergedConfigurable) ?? skillPrimedIdsByName[skillName];
+  if (pinnedIdString) {
+    return await getSkillByName(skillName, [new Types.ObjectId(pinnedIdString)], {});
   }
 
   const accessibleIds = (mergedConfigurable?.accessibleSkillIds as Types.ObjectId[]) ?? [];
@@ -3071,7 +3072,9 @@ function isSkillPrimedForAuthoring(
 ): boolean {
   const skillPrimedIdsByName =
     (mergedConfigurable.skillPrimedIdsByName as Record<string, string> | undefined) ?? {};
-  return typeof skillPrimedIdsByName[skillName] === 'string';
+  const primedId = skillPrimedIdsByName[skillName];
+  const authoredId = getAuthoredSkillId(skillName, mergedConfigurable);
+  return typeof primedId === 'string' && (authoredId == null || authoredId === primedId);
 }
 
 function isSkillKnownToCurrentRun(
@@ -4779,13 +4782,13 @@ async function handleReadFileCall(
   let skillPrimedIdsByName =
     (mergedConfigurable?.skillPrimedIdsByName as Record<string, string> | undefined) ?? {};
   let primedIdString = skillPrimedIdsByName[skillName];
-  let isPrimedThisTurn = primedIdString != null;
+  let isPrimedThisTurn = isSkillPrimedForAuthoring(skillName, mergedConfigurable);
   const refreshSkillReadScope = () => {
     accessibleIds = (mergedConfigurable?.accessibleSkillIds as Types.ObjectId[]) ?? [];
     skillPrimedIdsByName =
       (mergedConfigurable?.skillPrimedIdsByName as Record<string, string> | undefined) ?? {};
     primedIdString = skillPrimedIdsByName[skillName];
-    isPrimedThisTurn = primedIdString != null;
+    isPrimedThisTurn = isSkillPrimedForAuthoring(skillName, mergedConfigurable);
   };
   let recoveredAuthorSkill: AuthoringSkill | null | undefined;
   const recoverAuthorSkill = async () => {
@@ -4912,9 +4915,10 @@ async function handleReadFileCall(
      (rather than relying on mongoose's string auto-cast in `$in` queries)
      keeps the value correct for any future consumer that compares with
      `.equals()` or `===`. */
-  const lookupAccessibleIds = primedIdString ? [new Types.ObjectId(primedIdString)] : accessibleIds;
+  const pinnedIdString = getAuthoredSkillId(skillName, mergedConfigurable) ?? primedIdString;
+  const lookupAccessibleIds = pinnedIdString ? [new Types.ObjectId(pinnedIdString)] : accessibleIds;
   const lookupOptions: { preferUserInvocable?: boolean; preferModelInvocable?: boolean } =
-    primedIdString ? {} : { preferModelInvocable: true };
+    pinnedIdString ? {} : { preferModelInvocable: true };
   let skill = await getSkillByName(skillName, lookupAccessibleIds, lookupOptions);
   if (!skill) {
     skill = await recoverAuthorSkill();
@@ -5821,8 +5825,9 @@ export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): Ev
             const authoredScopeKey = JSON.stringify(authoredScope);
             let resumedSkillConfigurable = resumedSkillConfigurables.get(authoredScopeKey);
             const baseConfigurable = mergeToolConfigurables(sourceConfigurable, loadedConfigurable);
+            // Restored identity wins; current capability and request fields still come from loadTools.
             const mergedConfigurable = resumedSkillConfigurable
-              ? mergeToolConfigurables(baseConfigurable, resumedSkillConfigurable)
+              ? mergeToolConfigurables(resumedSkillConfigurable, baseConfigurable)
               : baseConfigurable;
             if (authoredSkills.hasPending) {
               const requestedSkills = new Map<string, ToolCallRequest[]>();
