@@ -7,6 +7,7 @@
 import type { Response as ServerResponse } from 'express';
 import type {
   Response,
+  ResponseAccounting,
   ResponseContext,
   ResponseEvent,
   OutputItem,
@@ -127,6 +128,7 @@ export function buildResponse(
   tracker: ResponseTracker,
   status: ResponseStatus = 'in_progress',
   usageOverride?: Usage,
+  accounting?: ResponseAccounting,
 ): Response {
   const isCompleted = status === 'completed';
 
@@ -134,6 +136,7 @@ export function buildResponse(
     // Required fields
     id: context.responseId,
     object: 'response',
+    ...(isCompleted && accounting ? { accounting } : {}),
     created_at: context.createdAt,
     completed_at: isCompleted ? Math.floor(Date.now() / 1000) : null,
     status,
@@ -166,7 +169,7 @@ export function buildResponse(
       : null,
     max_output_tokens: null,
     max_tool_calls: null,
-    store: false,
+    store: context.stored === true,
     background: false,
     service_tier: 'default',
     metadata: {},
@@ -318,10 +321,14 @@ export function emitResponseInProgress(config: StreamHandlerConfig): void {
 /**
  * Emit response.completed event
  */
-export function emitResponseCompleted(config: StreamHandlerConfig, usage?: Usage): void {
+export function emitResponseCompleted(
+  config: StreamHandlerConfig,
+  usage?: Usage,
+  accounting?: ResponseAccounting,
+): void {
   const { res, context, tracker } = config;
   tracker.status = 'completed';
-  const response = buildResponse(context, tracker, 'completed', usage);
+  const response = buildResponse(context, tracker, 'completed', usage, accounting);
   writeEvent(res, {
     type: 'response.completed',
     sequence_number: tracker.nextSequence(),

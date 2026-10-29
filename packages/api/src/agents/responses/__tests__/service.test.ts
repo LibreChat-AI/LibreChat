@@ -15,6 +15,7 @@ import {
 import { clientToolDeferralContent, createClientToolExecuteHandler } from '../clientTools';
 import { extractMessageContent } from '~/protection/adapters/messages';
 import { buildResponse, createResponseTracker } from '../handlers';
+import { createResponseAccountingCollector } from '../accounting';
 import { buildRunToolSet } from '~/agents/tools';
 
 describe('response usage aggregation', () => {
@@ -103,6 +104,31 @@ describe('response usage aggregation', () => {
 
     const completed = writes.find((chunk) => chunk.startsWith('data: {'));
     expect(JSON.parse(completed?.slice(6) ?? '{}').response.usage).toEqual(usage);
+  });
+
+  it('uses the same separate accounting metadata for terminal JSON and SSE only', () => {
+    const writes: string[] = [];
+    const res = { write: (chunk: string) => writes.push(chunk) } as unknown as ServerResponse;
+    const tracker = createResponseTracker();
+    const collector = createResponseAccountingCollector();
+    collector.record({ input_tokens: 5, output_tokens: 2, model: 'actual-model' });
+    const accounting = collector.snapshot();
+    expect(
+      buildResponse(context, tracker, 'in_progress', undefined, accounting),
+    ).not.toHaveProperty('accounting');
+    const response = buildAggregatedResponse(
+      context,
+      createResponseAggregator(),
+      undefined,
+      accounting,
+    );
+    createResponsesEventHandlers({ res, context, tracker }).finalizeStream(undefined, accounting);
+    const completed = writes.find((chunk) => chunk.startsWith('data: {'));
+    expect(JSON.parse(completed?.slice(6) ?? '{}').response.accounting).toEqual(
+      response.accounting,
+    );
+    expect(response.accounting?.calls[0].model).toBe('actual-model');
+    expect(response.model).toBe('agent_test');
   });
 });
 
