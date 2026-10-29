@@ -40,6 +40,7 @@ export interface ApprovalPauseOptions {
   /** Generation identity observed by the interrupted run. */
 
   expectedCreatedAt?: number;
+  expectedProviderExecutionId?: string;
   /** Hold Stop/resume until the paused assistant row is durably unfinished. */
   persistencePending?: boolean;
   /** Versioned pointer to the canonical signed Conversation suspension. */
@@ -107,6 +108,11 @@ export class ApprovalLifecycle {
     pendingAction: Agents.PendingAction,
     options: ApprovalPauseOptions = {},
   ): Promise<boolean> {
+    if (
+      options.expectedProviderExecutionId != null &&
+      this.store.providerGuardedStatusTransitions !== true
+    )
+      throw new Error('Provider-guarded approval transitions are unavailable');
     if (isPendingActionExpired({ pendingAction })) {
       throw new PendingActionExpiredError();
     }
@@ -164,6 +170,7 @@ export class ApprovalLifecycle {
          * segment's calibration and tier on the job for the next resume. */
         ...(contextMeta == null ? { clear: ['contextMeta' as const] } : {}),
         expectCreatedAt: expectedCreatedAt,
+        expectProviderExecutionId: options.expectedProviderExecutionId,
         notAfterMs: pendingAction.expiresAt,
         steerReceiptTtlSeconds: pauseReceiptTtl,
       });
@@ -192,6 +199,7 @@ export class ApprovalLifecycle {
     streamId: string,
     expectedActionId: string,
     expectedCreatedAt?: number,
+    expectedProviderExecutionId?: string,
   ): Promise<boolean> {
     const job = await this.store.getJob(streamId);
     return (
@@ -199,6 +207,8 @@ export class ApprovalLifecycle {
       job.terminalPersistencePending === true &&
       job.pendingAction?.actionId === expectedActionId &&
       job.pendingActionId === pausePersistenceActionId(expectedActionId) &&
+      (expectedProviderExecutionId == null ||
+        job.providerExecutionId === expectedProviderExecutionId) &&
       (expectedCreatedAt == null || job.createdAt === expectedCreatedAt)
     );
   }
@@ -208,7 +218,10 @@ export class ApprovalLifecycle {
     streamId: string,
     expectedActionId: string,
     expectedCreatedAt?: number,
+    expectedProviderExecutionId?: string,
   ): Promise<boolean> {
+    if (expectedProviderExecutionId != null && this.store.providerGuardedStatusTransitions !== true)
+      throw new Error('Provider-guarded approval transitions are unavailable');
     return this.store.transitionStatus(streamId, {
       from: 'requires_action',
       to: 'requires_action',
@@ -219,6 +232,7 @@ export class ApprovalLifecycle {
       clear: ['terminalPersistenceStartedAt'],
       expectActionId: pausePersistenceActionId(expectedActionId),
       expectCreatedAt: expectedCreatedAt,
+      expectProviderExecutionId: expectedProviderExecutionId,
     });
   }
 
@@ -363,18 +377,26 @@ export class ApprovalLifecycle {
    *
    * The caller MUST treat `false` as "do not drive the run": only the `true`
    * winner may re-enter the agent.
+   * A durable dispatcher may reconcile its own preselected provider identity after
+   * a lost acknowledgement, but must still win that segment's provider-start CAS.
+   * `expectedProviderExecutionId` fences the paused segment as well as the action/epoch.
    */
   async resolve(
     streamId: string,
     expectedActionId?: string,
     resumePatch?: JobMetadataPatch,
     expectedCreatedAt?: number,
+    expectedProviderExecutionId?: string,
   ): Promise<boolean> {
+    if (expectedProviderExecutionId != null && this.store.providerGuardedStatusTransitions !== true)
+      throw new Error('Provider-guarded approval transitions are unavailable');
     const job = await this.waitForPausePersistence(streamId, expectedCreatedAt);
     if (
       !job ||
       job.status !== 'requires_action' ||
-      (expectedCreatedAt != null && job.createdAt !== expectedCreatedAt)
+      (expectedCreatedAt != null && job.createdAt !== expectedCreatedAt) ||
+      (expectedProviderExecutionId != null &&
+        job.providerExecutionId !== expectedProviderExecutionId)
     ) {
       return false;
     }
@@ -421,6 +443,7 @@ export class ApprovalLifecycle {
         'pendingActionId',
         'agentEventSuspension',
         'providerExecutionStartedId',
+        'providerExecutionOwnerId',
       ],
       // Refresh the liveness basis so a long-paused run isn't reaped as stale
       // immediately after resuming (cleanup keys off lastActiveAt).
@@ -430,6 +453,7 @@ export class ApprovalLifecycle {
       patch: { lastActiveAt: Date.now(), ...boundPatch },
       expectActionId: expectedActionId,
       expectCreatedAt: job.createdAt,
+      expectProviderExecutionId: expectedProviderExecutionId,
     });
     if (resumed) {
       this.callbacks.onResumed?.(streamId, job.createdAt);

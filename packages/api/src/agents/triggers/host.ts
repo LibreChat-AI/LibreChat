@@ -25,6 +25,16 @@ const TRIGGER_USER_AGENT =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
   '(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 LibreChat-Agent-Trigger/1';
 
+/** Only server-authenticated automation can supply an already reserved new conversation ID. */
+export function getTrustedNewConversationId(input: {
+  isScheduledFire: boolean;
+  isAgentTrigger: boolean;
+  newConversationId?: string | null;
+}): string | null {
+  if (!input.isScheduledFire && !input.isAgentTrigger) return null;
+  return typeof input.newConversationId === 'string' ? input.newConversationId : null;
+}
+
 const PRE_CONNECT_ERROR_CODES = new Set([
   'ECONNREFUSED',
   'ENOTFOUND',
@@ -124,6 +134,8 @@ export interface AgentTriggerFireResult {
   conversationId: string;
   streamId?: string;
   generationCreatedAt?: number;
+  /** Exact saved reply identity, retained after the generation cache is cleaned. */
+  responseMessageId?: string;
 }
 
 export interface AgentTriggerSteerResult {
@@ -145,6 +157,7 @@ export interface AgentTriggerContinueResult {
   conversationId: string;
   streamId?: string;
   generationCreatedAt?: number;
+  responseMessageId?: string;
 }
 
 export type AgentTriggerExecutionResult =
@@ -516,12 +529,16 @@ function parseStartResult(
   const generationCreatedAt = requireSafeInteger(
     'generationCreatedAt' in payload ? payload.generationCreatedAt : undefined,
   );
+  const responseMessageId = requireString(
+    'responseMessageId' in payload ? payload.responseMessageId : undefined,
+  );
   return {
     mode,
     status,
     conversationId,
     ...(streamId != null && { streamId }),
     ...(generationCreatedAt != null && { generationCreatedAt }),
+    ...(responseMessageId != null && { responseMessageId }),
   };
 }
 
@@ -695,6 +712,9 @@ async function startRun(
           isContinued: false,
           isRegenerate: false,
           clientRequestId: context.idempotencyKey,
+          ...(envelope.event.source.type === 'channel' && {
+            channelExecution: { channelId: envelope.event.source.id, runId: envelope.event.id },
+          }),
           generationProtocolVersion: 2,
           ...(readyPreparation?.admissionSource != null && {
             agentContinuationAdmission: readyPreparation.admissionSource,

@@ -1412,6 +1412,9 @@ class GenerationJobManagerClass {
     ) {
       return jobData;
     }
+    /** Responses publishes its terminal result in the canonical response journal. Chat's
+     * reconciliation frame cannot substitute for that write or release the provider proof. */
+    if (jobData.endpoint === 'responses' && jobData.providerDrained === true) return jobData;
     const startedAt =
       jobData.terminalPersistenceStartedAt ?? jobData.completedAt ?? jobData.createdAt;
     if (Date.now() - startedAt < TERMINAL_PERSISTENCE_TIMEOUT_MS) {
@@ -3144,6 +3147,7 @@ class GenerationJobManagerClass {
         // Surface whether the turn was temporary so a resume keeps it non-persisted.
         isTemporary: jobData.isTemporary,
         retentionExpiresAt: jobData.retentionExpiresAt,
+        channelExecution: jobData.channelExecution,
         agentEventDeliveryKey: jobData.agentEventDeliveryKey,
         agentEventInvocationKey: jobData.agentEventInvocationKey,
         agentEventInvocationGenerationCreatedAt: jobData.agentEventInvocationGenerationCreatedAt,
@@ -3175,6 +3179,7 @@ class GenerationJobManagerClass {
         steerQuotesExecutionId: jobData.steerQuotesExecutionId,
         providerExecutionId: jobData.providerExecutionId,
         providerExecutionStartedId: jobData.providerExecutionStartedId,
+        providerExecutionOwnerId: jobData.providerExecutionOwnerId,
         providerDrained: jobData.providerDrained,
         steersClosed: jobData.steersClosed,
         idempotencyClientRequestId: jobData.idempotencyClientRequestId,
@@ -4050,8 +4055,14 @@ class GenerationJobManagerClass {
     options: {
       persistencePending?: boolean;
       failedPauseActionId?: string;
+      expectedProviderExecutionId?: string;
     } = {},
   ): Promise<TerminalJobClaim | null> {
+    if (
+      options.expectedProviderExecutionId != null &&
+      this.jobStore.providerGuardedStatusTransitions !== true
+    )
+      throw new Error('Provider-guarded terminal transitions are unavailable');
     if (
       options.failedPauseActionId != null &&
       (status !== 'error' || options.persistencePending === true)
@@ -4071,6 +4082,11 @@ class GenerationJobManagerClass {
       return null;
     }
     const failedPauseActionId = options.failedPauseActionId;
+    if (
+      options.expectedProviderExecutionId != null &&
+      jobData.providerExecutionId !== options.expectedProviderExecutionId
+    )
+      return null;
     const failedPauseBarrierId =
       failedPauseActionId != null ? pausePersistenceActionId(failedPauseActionId) : undefined;
     if (failedPauseBarrierId != null) {
@@ -4116,6 +4132,9 @@ class GenerationJobManagerClass {
       from: sourceStatus,
       to: status,
       expectCreatedAt: createdAt,
+      ...(options.expectedProviderExecutionId != null && {
+        expectProviderExecutionId: options.expectedProviderExecutionId,
+      }),
       ...(sourceStatus === 'requires_action' && {
         ...(failedPauseBarrierId != null
           ? { expectActionId: failedPauseBarrierId }
@@ -4583,6 +4602,8 @@ class GenerationJobManagerClass {
       /** Runs once the final event is stored and before the job's content and
        *  resume state are released; it must not throw. */
       beforeTerminalCleanup?: () => Promise<void>;
+      expectedProviderExecutionId?: string;
+      persistencePending?: true;
     } = {},
   ): Promise<boolean> {
     const beforeErrorPublication = error ? options.beforeErrorPublication : undefined;
@@ -4591,7 +4612,18 @@ class GenerationJobManagerClass {
       error ? 'error' : 'complete',
       error,
       expectedCreatedAt,
-      beforeErrorPublication ? { persistencePending: true } : undefined,
+      beforeErrorPublication ||
+        options.expectedProviderExecutionId != null ||
+        options.persistencePending
+        ? {
+            ...(beforeErrorPublication || options.persistencePending
+              ? { persistencePending: true }
+              : {}),
+            ...(options.expectedProviderExecutionId != null && {
+              expectedProviderExecutionId: options.expectedProviderExecutionId,
+            }),
+          }
+        : undefined,
     );
     if (!claim) {
       return false;
@@ -4648,12 +4680,14 @@ class GenerationJobManagerClass {
     actionId: string,
     error: string,
     expectedCreatedAt?: number,
+    expectedProviderExecutionId?: string,
   ): Promise<boolean> {
     if (actionId.length === 0) {
       return false;
     }
     const claim = await this.claimTerminalJob(streamId, 'error', error, expectedCreatedAt, {
       failedPauseActionId: actionId,
+      ...(expectedProviderExecutionId != null && { expectedProviderExecutionId }),
     });
     if (!claim) {
       return false;
@@ -4688,6 +4722,8 @@ class GenerationJobManagerClass {
        * FINAL lets the client submit against that history. Throwing emits a
        * conservative reconciliation frame instead of the normal payload. */
       beforePublish?: (result: AbortResult) => void | Promise<void>;
+      /** The external protocol owns terminal publication and releases this exact drained proof. */
+      retainTerminalPersistence?: true;
       /** Epoch observed by the authenticated route. Without this fence, a
        * same-stream replacement between authorization and the manager read
        * could be stopped by a stale request intended for its predecessor. */
@@ -4697,6 +4733,9 @@ class GenerationJobManagerClass {
       awaitProviderDrain?: boolean;
     },
   ): Promise<AbortResult> {
+    if (options?.retainTerminalPersistence && this.jobStore.providerTerminalPersistence !== true) {
+      throw new Error('Agent terminal persistence barrier is unavailable');
+    }
     const observedRuntime = this.runtimeState.get(streamId);
     let jobData = await this.jobStore.getJob(streamId);
 
@@ -4843,7 +4882,7 @@ class GenerationJobManagerClass {
           completedAt: terminalPersistenceStartedAt,
           terminalPersistencePending: true,
           terminalPersistenceStartedAt,
-          ...(jobData.agentEventDeliveryKey != null &&
+          ...((jobData.agentEventDeliveryKey != null || jobData.channelExecution != null) &&
             this.terminalHostActionHandler != null && {
               terminalHostActionPending: true,
             }),
@@ -5080,6 +5119,13 @@ class GenerationJobManagerClass {
         );
       }
 
+      if (options?.retainTerminalPersistence)
+        return {
+          ...abortResult,
+          finalEvent: null,
+          ...(requiredPersistenceFailed && { persistenceFailed: true }),
+        };
+
       const publication = await this.publishTerminalClaim(
         terminalClaim,
         requiredPersistenceFailed ? null : abortFinalEvent,
@@ -5092,7 +5138,8 @@ class GenerationJobManagerClass {
       };
     } finally {
       try {
-        const mustDrainForTerminalEvidence = jobData.agentEventDeliveryKey != null;
+        const mustDrainForTerminalEvidence =
+          jobData.agentEventDeliveryKey != null || jobData.channelExecution != null;
         if (options?.awaitProviderDrain || mustDrainForTerminalEvidence) {
           await this.waitForProviderDrainIfRequired(streamId, jobData);
           await this.persistAgentEventRunStepEvidence(streamId, jobData);
@@ -8299,12 +8346,14 @@ class GenerationJobManagerClass {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    terminalPersistencePending?: true,
   ): Promise<boolean> {
     try {
       return await this.recordProviderExecutionDrain(
         streamId,
         expectedCreatedAt,
         providerExecutionId,
+        terminalPersistencePending,
       );
     } finally {
       /** Settles the shutdown wait whether or not the record succeeded: a drain that failed
@@ -8318,10 +8367,13 @@ class GenerationJobManagerClass {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    terminalPersistencePending?: true,
   ): Promise<boolean> {
     if (providerExecutionId.length === 0 || providerExecutionId.length > 128) {
       return false;
     }
+    if (terminalPersistencePending && this.jobStore.providerTerminalPersistence !== true)
+      throw new Error('Provider terminal persistence barrier is unavailable');
 
     const observedJob = await this.jobStore.getJob(streamId);
     if (
@@ -8339,6 +8391,7 @@ class GenerationJobManagerClass {
         streamId,
         expectedCreatedAt,
         providerExecutionId,
+        terminalPersistencePending,
       ) ?? Promise.resolve(false),
       this.eventTransport.recordProviderDrain?.(streamId, expectedCreatedAt, providerExecutionId) ??
         Promise.resolve(false),
@@ -8374,16 +8427,57 @@ class GenerationJobManagerClass {
     return marked;
   }
 
+  /** Release exact provider proof after its canonical external terminal journal committed. */
+  async finishProviderTerminalPersistence(
+    streamId: string,
+    expectedCreatedAt: number,
+    providerExecutionId: string,
+    ownerId?: string,
+  ): Promise<boolean> {
+    const job = await this.jobStore.getJob(streamId);
+    if (!job) return true;
+    if (
+      job.createdAt !== expectedCreatedAt ||
+      job.providerExecutionId !== providerExecutionId ||
+      job.providerDrained !== true ||
+      !['complete', 'error', 'aborted'].includes(job.status) ||
+      (ownerId != null && job.providerExecutionOwnerId !== ownerId)
+    )
+      return false;
+    if (job.terminalPersistencePending === true) {
+      await this.jobStore.finalizeTerminalPersistence(
+        streamId,
+        expectedCreatedAt,
+        job.finalEvent ?? JSON.stringify(buildTerminalPersistenceReconcile(job)),
+      );
+      const finalized = await this.jobStore.getJob(streamId);
+      if (
+        finalized?.createdAt === expectedCreatedAt &&
+        finalized.terminalPersistencePending === true
+      )
+        return false;
+    }
+    return this.recordProviderExecutionDrain(streamId, expectedCreatedAt, providerExecutionId);
+  }
+
   /** Starts the initial provider owner only if account deletion, abort, or a
    * replacement has not already changed the exact running generation. */
   async beginProviderExecution(
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    ownerId?: string,
   ): Promise<boolean> {
     if (providerExecutionId.length === 0 || providerExecutionId.length > 128) {
       return false;
     }
+    if (
+      ownerId != null &&
+      (ownerId.length === 0 ||
+        ownerId.length > 128 ||
+        this.jobStore.providerStartOwnership !== true)
+    )
+      return false;
     /** A provider that has not started by the time shutdown begins must not start. The
      *  settlement wait only covers executions begun before it returned; one begun after it
      *  would commit `providerDrained: false` against a store that is about to close and
@@ -8397,13 +8491,36 @@ class GenerationJobManagerClass {
      *  caller treats it that way, running or cleaning up and recording the drain either way.
      *  Leaving the tracker open makes shutdown wait for that record instead of tearing the
      *  transport down underneath it; the deadline still bounds the wait if it never comes. */
-    this.openProviderExecution(streamId, expectedCreatedAt, providerExecutionId);
-    const started =
-      (await this.jobStore.beginProviderExecution?.(
-        streamId,
-        expectedCreatedAt,
-        providerExecutionId,
-      )) ?? false;
+    // A duplicate local attempt must not close the winner's shared shutdown tracker.
+    if (!this.openProviderExecution(streamId, expectedCreatedAt, providerExecutionId)) return false;
+    let started: boolean;
+    try {
+      started =
+        ownerId == null
+          ? ((await this.jobStore.beginProviderExecution?.(
+              streamId,
+              expectedCreatedAt,
+              providerExecutionId,
+            )) ?? false)
+          : await this.jobStore.beginProviderExecution(
+              streamId,
+              expectedCreatedAt,
+              providerExecutionId,
+              ownerId,
+            );
+    } catch (error) {
+      if (ownerId == null) throw error;
+      const current = await this.jobStore.getJob(streamId);
+      if (
+        current?.createdAt === expectedCreatedAt &&
+        current.providerExecutionId === providerExecutionId &&
+        current.providerExecutionStartedId === providerExecutionId &&
+        current.providerExecutionOwnerId === ownerId
+      )
+        return true;
+      // An ambiguous reply without our exact receipt is not permission to drive or drain a provider.
+      throw error;
+    }
     if (!started) {
       this.closeProviderExecution(streamId, expectedCreatedAt, providerExecutionId);
     }
@@ -8422,16 +8539,17 @@ class GenerationJobManagerClass {
     streamId: string,
     createdAt: number,
     providerExecutionId: string,
-  ): void {
+  ): boolean {
     const key = this.providerExecutionKey(streamId, createdAt, providerExecutionId);
     if (this.openProviderExecutions.has(key)) {
-      return;
+      return false;
     }
     let settle: () => void = () => undefined;
     const promise = new Promise<void>((resolve) => {
       settle = resolve;
     });
     this.openProviderExecutions.set(key, { promise, settle });
+    return true;
   }
 
   private closeProviderExecution(
@@ -9226,7 +9344,7 @@ class GenerationJobManagerClass {
   ): Promise<void> {
     try {
       await this.approvalExpiredHandler?.(streamId, job);
-      if (job.agentEventDeliveryKey != null) {
+      if (job.agentEventDeliveryKey != null || job.channelExecution != null) {
         await this.terminalHostActionHandler?.(
           streamId,
           job,
@@ -9252,7 +9370,7 @@ class GenerationJobManagerClass {
     job: SerializableJobData,
   ): Promise<boolean> {
     try {
-      if (job.agentEventDeliveryKey != null) {
+      if (job.agentEventDeliveryKey != null || job.channelExecution != null) {
         await this.terminalHostActionHandler?.(
           streamId,
           job,

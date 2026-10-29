@@ -250,6 +250,8 @@ export interface SerializableJobData {
    * Unlike `providerDrained`, this identity survives terminal drain so host
    * compensation can distinguish a projected-but-never-started resume. */
   providerExecutionStartedId?: string;
+  /** Winning start attempt within a provider segment; written only by the start CAS. */
+  providerExecutionOwnerId?: string;
   /** False while the identified provider segment can still mutate user data;
    * true before provider startup and after the owner has fully unwound. */
   providerDrained?: boolean;
@@ -343,6 +345,8 @@ export interface SerializableJobData {
   isTemporary?: boolean;
   /** Original server-authenticated retention deadline, serialized across replicas. */
   retentionExpiresAt?: string;
+  /** Trusted Channels source, persisted with the generation across replicas. */
+  channelExecution?: { channelId: string; runId: string };
   agentEventDeliveryKey?: string;
   /** Original actor invocation when an internal completion delivery owns this generation. */
   agentEventInvocationKey?: string;
@@ -500,6 +504,7 @@ export type JobMetadataPatch = Partial<
     | 'agent_id'
     | 'isTemporary'
     | 'retentionExpiresAt'
+    | 'channelExecution'
     | 'agentEventDeliveryKey'
     | 'agentEventInvocationKey'
     | 'agentEventInvocationGenerationCreatedAt'
@@ -717,6 +722,8 @@ export interface JobStatusTransition {
    * the same stream ID.
    */
   expectCreatedAt?: number;
+  /** Fence an old provider segment after the same generation has resumed. */
+  expectProviderExecutionId?: string;
   /**
    * Additional guard: reject the transition when the store's clock has reached
    * this absolute deadline. The comparison is part of the same atomic operation
@@ -1107,6 +1114,10 @@ export interface IJobStore {
  * generation startup.
  */
 export interface IJobStoreV2 extends IJobStore {
+  /** Opt-in contract: status transitions atomically enforce expectProviderExecutionId. */
+  readonly providerGuardedStatusTransitions?: true;
+  readonly providerStartOwnership?: true;
+  readonly providerTerminalPersistence?: true;
   /** Initialize the store (e.g., connect to Redis, start cleanup intervals) */
   initialize(): Promise<void>;
 
@@ -1154,6 +1165,7 @@ export interface IJobStoreV2 extends IJobStore {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    terminalPersistencePending?: true,
   ): Promise<boolean>;
 
   /** Activates the provider only while its exact generation is still running. */
@@ -1161,6 +1173,7 @@ export interface IJobStoreV2 extends IJobStore {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    ownerId?: string,
   ): Promise<boolean>;
 
   /** Includes terminal jobs whose provider still owns user-data writes. */
