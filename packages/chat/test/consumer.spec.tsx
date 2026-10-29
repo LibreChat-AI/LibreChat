@@ -178,6 +178,7 @@ const host: MessagePartsHost = {
 const messagesHost: MessagesHost = {
   useHour12: () => false,
   renderFiles: () => null,
+  renderMessageIcon: () => null,
 };
 
 const renderers: PartRenderers = {
