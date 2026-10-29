@@ -219,7 +219,10 @@ export class MCPOAuthHandler {
       token_endpoint_auth_methods_supported: ['client_secret_basic', 'client_secret_post', 'none'],
     };
 
-    logger.debug(`[MCPOAuth] Using fallback metadata:`, fallbackMetadata);
+    logger.debug('[MCPOAuth] Using fallback authorization capabilities', {
+      grant_types_supported: fallbackMetadata.grant_types_supported,
+      token_endpoint_auth_methods_supported: fallbackMetadata.token_endpoint_auth_methods_supported,
+    });
     return {
       metadata: fallbackMetadata,
       resourceMetadata,
@@ -1013,9 +1016,13 @@ export class MCPOAuthHandler {
           ...(tenantId && { tenantId }),
         };
 
-        logger.debug(
-          `[MCPOAuth] Authorization URL generated: ${sanitizeUrlForLogging(authorizationUrl.toString())}`,
-        );
+        logger.debug('[MCPOAuth] Authorization flow ready', {
+          flowId,
+          serverName,
+          clientSource: flowMetadata.clientSource,
+          hasClientSecret: Boolean(clientInfo.client_secret),
+          hasResourceMetadata: Boolean(resourceMetadata),
+        });
         return {
           authorizationUrl: authorizationUrl.toString(),
           flowId,
@@ -1111,7 +1118,7 @@ export class MCPOAuthHandler {
         } catch (error) {
           logger.warn(
             `[MCPOAuth] Failed to look up existing client registration, falling back to new registration`,
-            { error, serverName, userId },
+            { ...getSafeErrorMetadata(error), serverName, userId },
           );
         }
       }
@@ -1155,9 +1162,6 @@ export class MCPOAuthHandler {
         codeVerifier = authResult.codeVerifier;
 
         logger.debug(`[MCPOAuth] startAuthorization completed successfully`);
-        logger.debug(
-          `[MCPOAuth] Authorization URL: ${sanitizeUrlForLogging(authorizationUrl.toString())}`,
-        );
 
         /** Add cryptographic state parameter to the authorization URL */
         authorizationUrl.searchParams.set('state', state);
@@ -1227,19 +1231,19 @@ export class MCPOAuthHandler {
         ...(tenantId && { tenantId }),
       };
 
-      logger.debug(
-        `[MCPOAuth] Authorization URL generated for ${serverName}: ${sanitizeUrlForLogging(authorizationUrl.toString())}`,
-      );
-
       const result = {
         authorizationUrl: authorizationUrl.toString(),
         flowId,
         flowMetadata,
       };
 
-      logger.debug(
-        `[MCPOAuth] Returning from initiateOAuthFlow with result ${flowId} for ${serverName}`,
-      );
+      logger.debug('[MCPOAuth] Authorization flow ready', {
+        flowId,
+        serverName,
+        clientSource,
+        hasClientSecret: Boolean(clientInfo.client_secret),
+        hasResourceMetadata: Boolean(resourceMetadata),
+      });
       return result;
     } catch (error) {
       logger.error('[MCPOAuth] Failed to initiate OAuth flow', {
