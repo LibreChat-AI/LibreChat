@@ -3,10 +3,11 @@ import { useQuery } from '@tanstack/react-query';
 import { Alert, Button } from '@librechat/client';
 import { Maximize2, Minimize2 } from 'lucide-react';
 import { CSSTransition } from 'react-transition-group';
+import { MessageTimestamp } from '@librechat/chat/components';
 import { ContentTypes, QueryKeys, dataService } from 'librechat-data-provider';
 import type { SearchResultData, TMessageContentParts } from 'librechat-data-provider';
+import type { SteerReceiptState } from '@librechat/chat/components';
 import type { ToolContentQuery } from '~/components/Chat/Messages/Content/disclosure';
-import type { SteerReceiptState } from '~/components/Chat/Steering/Receipt';
 import type { TaskContentScope } from '~/data-provider/Subagents/content';
 import type { ChildActivity, ChildActivityItem } from './adapters';
 import type { TranslationKeys } from '~/hooks';
@@ -17,7 +18,6 @@ import {
   subagentStatusLabelKey,
 } from './status';
 import { ToolContentQueryContext } from '~/components/Chat/Messages/Content/disclosure';
-import MessageTimestamp from '~/components/Chat/Messages/ui/MessageTimestamp';
 import { TaskContentScopeContext } from '~/data-provider/Subagents/content';
 import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
 import ContentParts from '~/components/Chat/Messages/Content/ContentParts';

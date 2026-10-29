@@ -29,6 +29,11 @@ jest.mock('librechat-data-provider', () => ({
 
 jest.mock('@librechat/chat/react', () => ({
   ...jest.requireActual('@librechat/chat/react'),
+  useChatHelpers: () => ({
+    conversation: mockConversation,
+    getMessages: jest.fn(),
+    ask: jest.fn(),
+  }),
   useQueueDrain: jest.fn(),
   useQueuedTurnReveal: jest.fn(),
 }));
@@ -39,13 +44,8 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
-jest.mock('~/hooks/Chat/useChatHelpers', () => ({
-  __esModule: true,
-  default: () => ({
-    conversation: mockConversation,
-    getMessages: jest.fn(),
-    ask: jest.fn(),
-  }),
+jest.mock('~/hooks/Chat/outcomes', () => ({
+  getMappingOptions: () => ({}),
 }));
 
 jest.mock('~/hooks/SSE', () => ({

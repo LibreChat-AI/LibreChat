@@ -45,7 +45,8 @@ jest.mock('~/hooks', () => ({
   useShowMarketplace: () => false,
 }));
 
-jest.mock('~/hooks/Chat/provider', () => ({
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   ChatProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 

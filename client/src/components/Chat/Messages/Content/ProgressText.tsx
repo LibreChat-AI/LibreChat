@@ -2,6 +2,7 @@ import { useCallback, useRef } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import * as Popover from '@radix-ui/react-popover';
+import { ElapsedTimer } from '@librechat/chat/components';
 import { Button, disclosureChevronVariants } from '@librechat/client';
 import { isReportableRunStepDuration } from 'librechat-data-provider';
 import type { ToolCallPhase } from '~/utils/toolCallPhase';
@@ -9,7 +10,6 @@ import { cn, getRunStepDurationLabels } from '~/utils';
 import { useToolPreparation } from './preparation';
 import CancelledIcon from './CancelledIcon';
 import { useFailedReveal } from './reveal';
-import { ElapsedTimer } from '../Elapsed';
 import { ROW_GLYPH_SLOT } from './rows';
 import { useLocalize } from '~/hooks';
 

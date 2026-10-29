@@ -5,19 +5,22 @@ import { useForm } from 'react-hook-form';
 import { Spinner } from '@librechat/client';
 import { useParams } from 'react-router-dom';
 import { Constants, buildTree } from 'librechat-data-provider';
-import { submissionByIndex, ComposerRestoreProvider } from '@librechat/chat/react';
+import { QueuedTurnPortalProvider } from '@librechat/chat/components';
+import {
+  submissionByIndex,
+  ComposerRestoreProvider,
+  composerLiftFamily,
+} from '@librechat/chat/react';
 import type { TChatProject, TMessage } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { AddedChatContext, ChatFormProvider, useChatContext, useFileMapContext } from '~/Providers';
 import { useScrollbarGutterSeed, useAddedResponse, useLocalize } from '~/hooks';
 import Footer, { useLandingFooter, useConfiguredFooter } from './Footer';
-import { QueuedTurnPortalProvider } from './Steering/QueuedTurnPortal';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import ApprovalProvider from './Messages/Content/ApprovalContext';
 import ConversationStarters from './Input/ConversationStarters';
 import { pendingApprovalActionFamily } from './approval/state';
 import ProjectBadge from '~/components/Projects/ProjectBadge';
-import { composerLiftFamily } from './Input/Composer/state';
 import { ChatSessionProvider } from '~/hooks/Chat/provider';
 import { OwnerTextProvider } from './Messages/PrivateText';
 import { AskAnswerHostProvider } from './ask/state';

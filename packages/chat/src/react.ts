@@ -1,4 +1,6 @@
 /** React bindings for the core `Chat`: providers and `useChat`. Populated as the hooks move in. */
+export * from './react/chat';
+export * from './react/stream';
 export { MessageContext, MessagePartIndex, useMessageContext } from './react/message';
 export {
   useMessagePartsHost,
@@ -107,3 +109,19 @@ export {
   shouldRollbackReveal,
   buildRevealedMessage,
 } from './react/steering/useQueuedTurnReveal';
+export { useCoreChat } from './react/core';
+export { useSnapshot } from './react/snapshot';
+export { ReactQueryChatState } from './react/state';
+export type { Subscribe, SnapshotOptions } from './react/snapshot';
+export type { UseCoreChatOptions, CoreChatHelpers } from './react/core';
+export type { ReactQueryChatStateOptions } from './react/state';
+export { composerLiftFamily } from './react/lift';
+export { showSkillsPopoverFamily } from './react/skills';
+export { useComposerOverlay, composerOverlayCountFamily } from './react/overlay';
+export { default as useTimeTick } from './react/tick';
+export {
+  useMessagesHost,
+  MessagesHostProvider,
+  setDefaultMessagesHost,
+} from './react/messages/host';
+export type { MessagesHost } from './react/messages/host';

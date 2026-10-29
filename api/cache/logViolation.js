@@ -1,4 +1,4 @@
-const { isEnabled } = require('@librechat/api');
+const { isEnabled, incrementViolationCount, appendViolationLog } = require('@librechat/api');
 const { ViolationTypes } = require('librechat-data-provider');
 const getLogStores = require('./getLogStores');
 const banViolation = require('./banViolation');
@@ -21,20 +21,20 @@ const logViolation = async (req, res, type, errorMessage, score = 1) => {
   const violationLogs = getLogStores(type);
   const key = isEnabled(process.env.USE_REDIS) ? `${type}:${userId}` : userId;
 
-  const userViolations = (await violationLogs.get(key)) ?? 0;
-  const violationCount = +userViolations + +score;
-  await violationLogs.set(key, violationCount);
+  const { prevCount, count: violationCount } = await incrementViolationCount(
+    violationLogs,
+    key,
+    score,
+  );
 
   errorMessage.user_id = userId;
-  errorMessage.prev_count = userViolations;
+  errorMessage.prev_count = prevCount;
   errorMessage.violation_count = violationCount;
   errorMessage.date = new Date().toISOString();
 
   await banViolation(req, res, errorMessage);
-  const userLogs = (await logs.get(key)) ?? [];
-  userLogs.push(errorMessage);
   delete errorMessage.user_id;
-  await logs.set(key, userLogs);
+  await appendViolationLog(logs, key, errorMessage, req.config?.violationLog?.maxEntries);
 };
 
 module.exports = logViolation;

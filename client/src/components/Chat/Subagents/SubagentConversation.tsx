@@ -8,6 +8,14 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@librechat/client';
+import {
+  SystemEventHeader,
+  SystemEventIcon,
+  systemEventHeaderClasses,
+  messageFooterClasses,
+  ElapsedTimer,
+  MessageRow,
+} from '@librechat/chat/components';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import type { ToolContentQuery } from '~/components/Chat/Messages/Content/disclosure';
@@ -21,10 +29,6 @@ import {
   useSubagentTaskContentQuery,
   useSubagentToolContentQuery,
 } from '~/data-provider/Subagents/content';
-import SystemEventHeader, {
-  SystemEventIcon,
-  systemEventHeaderClasses,
-} from '~/components/Chat/Messages/ui/SystemEvent';
 import { MessagePartsHostProvider, useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { SubagentActivityContent, SubagentStatus, getActivityContent } from './SubagentActivity';
 import ResumeAuthorHeader from '~/components/Chat/Messages/Content/Parts/ResumeAuthorHeader';
@@ -33,9 +37,6 @@ import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source'
 import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
 import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
 import { isAbnormalTerminalStatus, isLiveSubagentStatus } from './status';
-import { messageFooterClasses } from '~/components/Chat/Messages/styles';
-import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
-import { ElapsedTimer } from '~/components/Chat/Messages/Elapsed';
 import { AuthorContext } from '~/Providers/AuthorContext';
 import { ChatContext } from '~/Providers/ChatContext';
 import { isEmptyContentPart } from '~/utils/messages';

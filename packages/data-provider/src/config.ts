@@ -64,6 +64,8 @@ import { ComponentTypes, SettingTypes, OptionTypes } from './generate';
 import { STATEFUL_CODE_ENVIRONMENTS } from './stateful-code';
 import { specsConfigSchema, TSpecsConfig } from './models';
 import { fileConfigSchema } from './file-config';
+import { clientLimitsSchema } from './clientLimits';
+import type { TClientLimits } from './clientLimits';
 import {
   PULL_REQUEST_PROVIDERS,
   PULL_REQUEST_BATCH_VERSION,
@@ -181,6 +183,7 @@ export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnl
   'endpoints.agents.backgroundTasks.completionResultBatchSize': 'startup',
   'endpoints.agents.backgroundTasks.completionReceiptBatching': 'startup',
   'endpoints.agents.toolApproval.hooks': 'operator',
+  'mcpSettings.oauthFailureRetentionMs': 'startup',
   'mcpSettings.catalogRecovery.maxStateEntries': 'startup',
   'mcpSettings.catalogRecovery.maxDetachedDiscoveries': 'startup',
   'mcpSettings.catalogRecovery.authorizationFenceRetryIntervalMs': 'startup',
@@ -2714,7 +2717,32 @@ export const outboundTimeoutsSchema = z.object({
   imageFetchMs: outboundTimeoutMs,
 });
 
+/** Retention for the write-only GENERAL violation log kept per user. */
+export const violationLogSchema = z.object({
+  /** Newest entries kept per user; older ones are dropped on the next append. */
+  maxEntries: z.number().int().positive().optional(),
+});
+
 export type TOutboundTimeouts = z.infer<typeof outboundTimeoutsSchema>;
+
+const lookupConcurrency = z.number().int().min(1).max(32).optional();
+
+/** Upper bounds on independent lookups a request runs at once. Omitted keys use the server
+ *  defaults (`DEFAULT_LOOKUP_CONCURRENCY` in `@librechat/api`); `1` restores serial lookups. */
+export const lookupConcurrencySchema = z.object({
+  /** Connected agents initialized together per level while discovering a handoff graph. */
+  connectedAgentLoads: lookupConcurrency,
+  /** MCP tool catalog reads when assembling an ephemeral or added agent. */
+  mcpCatalogLookups: lookupConcurrency,
+  /** Model spec skill name resolutions. */
+  skillNameLookups: lookupConcurrency,
+  /** Bundled skill file inspections before a skill is primed. */
+  skillFileInspections: lookupConcurrency,
+  /** Agent reads while building the resume snapshot of a paused run. */
+  resumeAgentLoads: lookupConcurrency,
+});
+
+export type TLookupConcurrency = z.infer<typeof lookupConcurrencySchema>;
 
 export const rateLimitSchema = z.object({
   twoFactorManagement: z
@@ -3151,6 +3179,11 @@ export const interfaceSchema = z
      *  default; a deployment that cannot use popups can turn it off and keep
      *  the docked pane. */
     artifactUndocking: z.boolean().optional(),
+    /** Asks each viewer for consent before Google Tag Manager (`ANALYTICS_GTM_ID`)
+     *  loads. A deployment that settles consent itself, such as an internal one
+     *  covered by its own policy, can set false to load the container without the
+     *  banner or the Settings toggle. */
+    analyticsConsent: z.boolean().optional(),
     feedback: z.boolean().optional(),
     currency: z
       .object({
@@ -3707,6 +3740,7 @@ export type TStartupConfig = {
   titleGenerationTiming?: 'immediate' | 'final';
   analyticsGtmId?: string;
   rum?: TRumConfig;
+  clientLimits?: TClientLimits;
   bundlerURL?: string;
   staticBundlerURL?: string;
   /** Whether the deployment has a configured RAG service. */
@@ -3760,7 +3794,12 @@ export type TStartupConfig = {
 
 export type TSharedLinkStartupInterface = Pick<
   Partial<TInterfaceConfig>,
-  'privacyPolicy' | 'termsOfService' | 'codeHighlightThrottleMs' | 'theme' | 'artifactUndocking'
+  | 'privacyPolicy'
+  | 'termsOfService'
+  | 'codeHighlightThrottleMs'
+  | 'theme'
+  | 'artifactUndocking'
+  | 'analyticsConsent'
 >;
 
 export type TSharedLinkStartupConfig = Pick<TStartupConfig, 'appTitle'> &
@@ -4386,6 +4425,7 @@ export type TToolCallPreviewsConfig = z.infer<typeof toolCallPreviewsConfigSchem
 export const configSchema = z.object({
   version: z.string(),
   telemetry: telemetrySchema.optional(),
+  clientLimits: clientLimitsSchema.optional(),
   permissions: z
     .object({
       maxWriteAttempts: permissionWriteAttemptsSchema,
@@ -4525,6 +4565,14 @@ export const configSchema = z.object({
     .object({
       allowedDomains: z.array(z.string()).optional(),
       allowedAddresses: allowedAddressesSchema,
+      /** How long a failed OAuth reconnection is remembered before its attempt count resets.
+       * Defaults to 24 hours. */
+      oauthFailureRetentionMs: z
+        .number()
+        .int()
+        .positive()
+        .max(30 * 24 * 60 * 60_000)
+        .optional(),
       catalogRecovery: z
         .object({
           discoveryBackoffMs: z
@@ -4642,6 +4690,14 @@ export const configSchema = z.object({
     })
     .optional(),
   timeouts: outboundTimeoutsSchema.optional(),
+  violationLog: violationLogSchema.optional(),
+  messages: z
+    .object({
+      /** Largest `pageSize` accepted by `GET /api/messages`. Defaults to 1000. */
+      maxPageSize: z.number().int().min(1).max(10000).optional(),
+    })
+    .optional(),
+  concurrency: lookupConcurrencySchema.optional(),
   fileConfig: fileConfigSchema.optional(),
   modelSpecs: specsConfigSchema.optional(),
   filters: filtersConfigSchema.optional(),

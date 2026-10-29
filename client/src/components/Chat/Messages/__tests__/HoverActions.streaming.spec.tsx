@@ -59,6 +59,11 @@ jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
   default: () => <div data-testid="message-icon" />,
 }));
 
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => (key: string) => key,
+}));
+
 jest.mock('~/hooks', () => {
   const useMessageProcess = jest.requireActual('~/hooks/Messages/useMessageProcess').default;
   const useMemoizedChatContext = jest.requireActual(
