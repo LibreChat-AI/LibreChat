@@ -1198,6 +1198,17 @@ const managementApiAuthSchema = z
     }
   });
 
+/** Storage work per claim transaction; shared by configuration and injected storage defaults. */
+export const channelStorageConfigSchema = z.object({
+  claimBatchSize: z.number().int().min(1).max(100).default(25),
+  maxDeliveryParts: z.number().int().min(1).max(100).default(100),
+  maxMetadataPageSize: z.number().int().min(1).max(100).default(100),
+  projectionYieldMs: z.number().int().min(100).max(60_000).default(1000),
+  maxPriorSummaryRows: z.number().int().min(1).max(10_000).default(1000),
+});
+
+export type ChannelStorageConfig = z.infer<typeof channelStorageConfigSchema>;
+
 const managementApiSchema = z.object({ auth: managementApiAuthSchema.optional() }).strict();
 
 /**
@@ -2212,6 +2223,7 @@ export const agentsEndpointSchema = baseEndpointSchema
         .optional(),
       managementApi: managementApiSchema.optional(),
       remoteApi: remoteApiSchema.optional(),
+      channels: channelStorageConfigSchema.optional(),
       /** Human-in-the-loop tool approval policy. Off by default. */
       toolApproval: toolApprovalPolicySchema,
       /** Ask User question behavior; see {@link askUserQuestionConfigSchema}. */

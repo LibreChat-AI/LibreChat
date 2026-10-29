@@ -40,6 +40,7 @@ beforeEach(async () => {
   await runAsSystem(async () => {
     await mongoose.models.ChannelRun.deleteMany({});
     await mongoose.models.ChannelLane.deleteMany({});
+    await mongoose.models.StoredResponse.deleteMany({});
   });
 });
 afterAll(async () => {
@@ -104,6 +105,7 @@ it('holds the lane until every required delivery has been confirmed', () =>
     await storage.admit(event(), 100);
     const run = (await storage.claim(tenantId, 'channel', 'worker', 101, 1000))!;
     await storage.prepareExecution(tenantId, fence(run), 102);
+    await bindTestResponse(run);
     await storage.saveSnapshot(
       tenantId,
       fence(run),
@@ -182,18 +184,11 @@ it('atomically rejects a delayed cancellation after the observed run is reclaime
   scope(async () => {
     await storage.admit(event(), 100);
     const first = (await storage.claim(tenantId, 'channel', 'worker', 101, 10))!;
-    const observed = await storage.readActiveThread(
-      tenantId,
-      'channel',
-      'C1:1',
-      'actor',
-      event().principal,
-      105,
-    );
+    const observed = await storage.readActiveThread(event(), 105);
     expect(observed?.runId).toBe(first.runId);
     const replacement = (await storage.claim(tenantId, 'channel', 'replacement', 112, 1000))!;
     expect(
-      await storage.requestCancel(tenantId, 'channel', first.runId, 'actor', {
+      await storage.requestCancel(event(), first.runId, {
         epoch: first.leaseEpoch,
         before: 105,
       }),
@@ -202,19 +197,19 @@ it('atomically rejects a delayed cancellation after the observed run is reclaime
       false,
     );
     expect(
-      await storage.requestCancel(tenantId, 'channel', first.runId, 'actor', {
+      await storage.requestCancel(event(), first.runId, {
         epoch: replacement.leaseEpoch,
         before: 105,
       }),
     ).toBe(false);
     expect(
-      await storage.requestCancel(tenantId, 'channel', first.runId, 'intruder', {
+      await storage.requestCancel(event('event', 'intruder'), first.runId, {
         epoch: replacement.leaseEpoch,
         before: 113,
       }),
     ).toBe(false);
     expect(
-      await storage.requestCancel(tenantId, 'channel', first.runId, 'actor', {
+      await storage.requestCancel(event(), first.runId, {
         epoch: replacement.leaseEpoch,
         before: 113,
       }),
@@ -225,6 +220,7 @@ async function plannedRun() {
   await storage.admit(event(), 100);
   const run = (await storage.claim(tenantId, 'channel', 'worker', 101, 10))!;
   await storage.prepareExecution(tenantId, fence(run), 102);
+  await bindTestResponse(run);
   await storage.saveSnapshot(
     tenantId,
     fence(run),
@@ -527,4 +523,259 @@ it('serializes account erasure with an already inserting channel event', () =>
     await deletion;
     expect(await mongoose.models.ChannelRun.exists({ 'principal.userId': userId })).toBeNull();
     expect(await mongoose.models.ChannelLane.exists({ userId })).toBeNull();
+  }));
+
+async function bindTestResponse(run: ChannelRunRecord, responseId = 'response') {
+  await mongoose.models.StoredResponse.create({
+    tenantId: run.tenantId === '_' ? undefined : run.tenantId,
+    userId: run.principal.userId,
+    responseId,
+    requestKey: `channel:${run.runId}`,
+    fingerprint: 'request',
+    agentId: run.agentId,
+    requestJSON: JSON.stringify({
+      model: run.agentId,
+      input: run.admission.input,
+      background: true,
+      store: true,
+    }),
+    conversationId: 'bound-conversation',
+    parentMessageId: 'bound-parent',
+    status: 'queued',
+    revision: 0,
+  });
+  return storage.bindResponse(run.tenantId, fence(run), responseId, 102);
+}
+
+it('renews the same fence idempotently without shortening a lease on reordered heartbeats', () =>
+  scope(async () => {
+    await storage.admit(event(), 100);
+    const run = (await storage.claim(tenantId, 'channel', 'worker', 101, 1000))!;
+    for (const now of [102, 102, 101])
+      expect(await storage.renew(tenantId, fence(run), now, 1000)).toBe(true);
+    expect((await storage.read(tenantId, 'channel', run.runId))?.leaseExpiresAt).toBe(1102);
+    expect(
+      await storage.renew(tenantId, { ...fence(run), epoch: run.leaseEpoch + 1 }, 103, 1000),
+    ).toBe(false);
+    expect(await storage.renew(tenantId, fence(run), 1102, 1000)).toBe(false);
+    await expect(storage.renew(tenantId, fence(run), 103, -1)).rejects.toThrow(
+      'Invalid channel lease',
+    );
+  }));
+
+it.each(['teamId', 'appId', 'externalChannelId', 'externalThreadKey', 'agentId'] as const)(
+  'isolates complete lane scope including %s in admission, lookup and cancellation',
+  (field) =>
+    scope(async () => {
+      const first = event();
+      const second = event('other');
+      if (field === 'teamId' || field === 'appId') second.admission.actor[field] = 'different';
+      else if (field === 'agentId') second.agentId = 'different';
+      else second.admission[field] = 'different';
+      const a = await storage.admit(first, 100);
+      const b = await storage.admit(second, 101);
+      expect(a.run.laneId).not.toBe(b.run.laneId);
+      const claimedA = (await storage.claim(tenantId, 'channel', 'a', 102, 1000))!;
+      const claimedB = (await storage.claim(tenantId, 'channel', 'b', 103, 1000))!;
+      expect((await storage.readActiveThread(first, 104))?.runId).toBe(claimedA.runId);
+      expect((await storage.readActiveThread(second, 104))?.runId).toBe(claimedB.runId);
+      expect(await storage.requestCancel(second, claimedA.runId)).toBe(false);
+      expect(await storage.requestCancel(first, claimedA.runId)).toBe(true);
+      const pa = await storage.prepareExecution(tenantId, fence(claimedA), 104);
+      const pb = await storage.prepareExecution(tenantId, fence(claimedB), 104);
+      expect(pa.execution?.conversationId).not.toBe(pb.execution?.conversationId);
+    }),
+);
+
+it('rejects unbound and mismatched response projections and revalidates them before cursor commit', () =>
+  scope(async () => {
+    await storage.admit(event(), 100);
+    const run = (await storage.claim(tenantId, 'channel', 'worker', 101, 1000))!;
+    await storage.prepareExecution(tenantId, fence(run), 102);
+    const snapshot = {
+      status: 'completed' as const,
+      text: 'answer',
+      elapsedMs: 1,
+      responseId: 'response',
+    };
+    await expect(storage.saveSnapshot(tenantId, fence(run), snapshot, 103)).rejects.toMatchObject({
+      code: 'invalid_transition',
+    });
+    await expect(
+      storage.saveSnapshot(tenantId, fence(run), { ...snapshot, responseId: undefined }, 103),
+    ).rejects.toMatchObject({ code: 'invalid_transition' });
+    await bindTestResponse(run);
+    for (const status of [
+      'running',
+      'requires_action',
+      'completed',
+      'failed',
+      'cancelled',
+    ] as const)
+      await expect(
+        storage.saveSnapshot(
+          tenantId,
+          fence(run),
+          { ...snapshot, status, responseId: 'other' },
+          103,
+        ),
+      ).rejects.toMatchObject({ code: 'invalid_transition' });
+    await storage.saveSnapshot(tenantId, fence(run), snapshot, 103);
+    await storage.savePlan(
+      tenantId,
+      fence(run),
+      {
+        revision: 'v1',
+        rendererVersion: 'test',
+        parts: [{ operationId: 'm', kind: 'message', required: true, text: 'answer' }],
+      },
+      104,
+    );
+    await storage.beginDelivery(tenantId, fence(run), 'm', 105);
+    await storage.settleDelivery(
+      tenantId,
+      fence(run),
+      { operationId: 'm', attempts: 1, outcome: 'confirmed', externalMessageKey: 'C1:ok' },
+      106,
+    );
+    await mongoose.models.ChannelRun.updateOne(
+      { runId: run.runId },
+      { $set: { 'snapshot.responseId': 'poison' } },
+    );
+    await expect(storage.commitDelivery(tenantId, fence(run), 107)).rejects.toMatchObject({
+      code: 'invalid_transition',
+    });
+    expect(
+      await mongoose.models.ChannelLane.findOne({ laneId: run.laneId }).lean(),
+    ).not.toHaveProperty('responseId');
+  }));
+
+it.each(['message', 'artifact'] as const)(
+  'requires %s evidence in settlement, recovery and persisted commit',
+  (kind) =>
+    scope(async () => {
+      await storage.admit(event(), 100);
+      const run = (await storage.claim(tenantId, 'channel', 'worker', 101, 10))!;
+      await storage.prepareExecution(tenantId, fence(run), 102);
+      await storage.saveSnapshot(
+        tenantId,
+        fence(run),
+        { status: 'failed', text: 'failure', elapsedMs: 1 },
+        103,
+      );
+      await storage.savePlan(
+        tenantId,
+        fence(run),
+        {
+          revision: 'v1',
+          rendererVersion: 'test',
+          parts: [
+            {
+              operationId: 'part',
+              kind,
+              required: true,
+              text: 'answer',
+              ...(kind === 'artifact' ? { artifactId: 'artifact' } : {}),
+            },
+          ],
+        },
+        104,
+      );
+      await storage.beginDelivery(tenantId, fence(run), 'part', 105);
+      if (kind === 'artifact')
+        await storage.checkpointUpload(
+          tenantId,
+          fence(run),
+          'part',
+          1,
+          { fileId: 'file', stage: 'allocated' },
+          105,
+        );
+      const receipt = { operationId: 'part', attempts: 1, outcome: 'confirmed' as const };
+      const wrong =
+        kind === 'artifact' ? { externalMessageKey: 'message' } : { externalFileId: 'file' };
+      await expect(
+        storage.settleDelivery(tenantId, fence(run), { ...receipt, ...wrong }, 106),
+      ).rejects.toMatchObject({ code: 'invalid_transition' });
+      const replacement = (await storage.claim(tenantId, 'channel', 'replacement', 112, 1000))!;
+      await expect(
+        storage.reconcileDelivery(tenantId, fence(replacement), { ...receipt, ...wrong }, 113),
+      ).rejects.toMatchObject({ code: 'invalid_transition' });
+      if (kind === 'artifact') {
+        for (const evidence of [
+          { externalFileId: 'other' },
+          { externalFileId: 'file', upload: { fileId: 'other', stage: 'uploaded' as const } },
+        ])
+          await expect(
+            storage.reconcileDelivery(
+              tenantId,
+              fence(replacement),
+              { ...receipt, ...evidence },
+              113,
+            ),
+          ).rejects.toMatchObject({ code: 'invalid_transition' });
+      }
+      const valid =
+        kind === 'artifact' ? { externalFileId: 'file' } : { externalMessageKey: 'message' };
+      await storage.reconcileDelivery(tenantId, fence(replacement), { ...receipt, ...valid }, 113);
+      await storage.reconcileDelivery(tenantId, fence(replacement), { ...receipt, ...valid }, 114);
+      await mongoose.models.ChannelRun.updateOne(
+        { runId: run.runId },
+        { $set: { receipts: [{ ...receipt, ...wrong }] } },
+      );
+      await expect(storage.commitDelivery(tenantId, fence(replacement), 115)).rejects.toMatchObject(
+        { code: 'invalid_transition' },
+      );
+      await mongoose.models.ChannelRun.updateOne(
+        { runId: run.runId },
+        { $set: { receipts: [{ ...receipt, ...valid }] } },
+      );
+      expect((await storage.commitDelivery(tenantId, fence(replacement), 116)).state).toBe(
+        'failed',
+      );
+    }),
+);
+
+it.each([undefined, null, ''])(
+  'binds tenantless responses stored with tenantId %s',
+  (storedTenant) =>
+    tenantStorage.run({}, async () => {
+      const input = { ...event(), tenantId: '_' };
+      await storage.admit(input, 100);
+      const run = (await storage.claim('_', 'channel', 'worker', 101, 1000))!;
+      await storage.prepareExecution('_', fence(run), 102);
+      await runAsSystem(async () =>
+        mongoose.models.StoredResponse.collection.insertOne({
+          ...(storedTenant === undefined ? {} : { tenantId: storedTenant }),
+          userId: 'actor',
+          agentId: 'agent',
+          responseId: 'response',
+          requestKey: `channel:${run.runId}`,
+          fingerprint: 'request',
+          requestJSON: JSON.stringify({ model: 'agent', input: 'hello', background: true }),
+          conversationId: 'canonical',
+          parentMessageId: 'parent',
+          status: 'queued',
+          revision: 0,
+        }),
+      );
+      expect(
+        (await storage.bindResponse('_', fence(run), 'response', 103)).execution?.responseId,
+      ).toBe('response');
+    }),
+);
+
+it('injects the configured claim batch without starving a later eligible lane', () =>
+  scope(async () => {
+    await storage.admit(event('first'), 100);
+    await storage.claim(tenantId, 'channel', 'active', 101, 1000);
+    for (let i = 0; i < 3; i++) await storage.admit(event(`blocked-${i}`), 102 + i);
+    const other = await storage.admit(event('ready', 'another-actor'), 106);
+    const small = createChannelRunStorage(mongoose, { claimBatchSize: 2 });
+    expect(await small.claim(tenantId, 'channel', 'small', 107, 1000)).toBeNull();
+    const large = createChannelRunStorage(mongoose, { claimBatchSize: 4 });
+    expect((await large.claim(tenantId, 'channel', 'large', 108, 1000))?.runId).toBe(
+      other.run.runId,
+    );
+    expect(() => createChannelRunStorage(mongoose, { claimBatchSize: 0 })).toThrow();
   }));

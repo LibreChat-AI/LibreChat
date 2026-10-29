@@ -173,3 +173,17 @@ it('throws for invalid sequence and database failure instead of disguising outag
     })(),
   ).rejects.toThrow();
 });
+
+it('uses the configured history work bound while retaining the newest prior rows', async () => {
+  await runAsSystem(async () =>
+    mongoose.models.ChannelRun.insertMany(Array.from({ length: 5 }, (_, i) => record(i + 1))),
+  );
+  const configured = createChannelSummaryStorage(mongoose, { maxPriorSummaryRows: 2 });
+  const rows = await tenantStorage.run({ tenantId: 'tenant' }, async () => {
+    const result: ChannelSummaryRow[] = [];
+    for await (const row of configured.priorMetrics({ ...record(6), sequence: 6 }))
+      result.push(row);
+    return result;
+  });
+  expect(rows.map((row) => row.sequence)).toEqual([5, 4]);
+});
