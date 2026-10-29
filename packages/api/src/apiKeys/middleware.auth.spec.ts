@@ -1,4 +1,5 @@
 import { Types } from 'mongoose';
+import { logger } from '@librechat/data-schemas';
 import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from 'librechat-data-provider';
 import type { NextFunction, Response } from 'express';
 import type { ApiKeyAuthDependencies } from './middleware';
@@ -24,6 +25,7 @@ function createRequest(): ApiKeyAuthRequest {
 }
 
 describe('remote Agent API key authentication', () => {
+  afterEach(() => jest.restoreAllMocks());
   describe('bound grants', () => {
     const binding = { kind: 'test-grant', id: 'grant-1' };
     function fixture(authorizeBinding?: ApiKeyAuthDependencies['authorizeBinding']) {
@@ -92,6 +94,7 @@ describe('remote Agent API key authentication', () => {
     });
 
     it('maps a grant lookup outage to a sanitized server error without authenticating', async () => {
+      const logged = jest.spyOn(logger, 'error');
       const { deps } = fixture(jest.fn().mockRejectedValue(new Error('private database details')));
       const req = createRequest();
       const { res, status, json } = createResponse();
@@ -99,6 +102,10 @@ describe('remote Agent API key authentication', () => {
 
       await createRequireApiKeyAuth(deps)(req, res, next);
 
+      expect(logged).toHaveBeenCalledWith('[requireApiKeyAuth] Error validating API key:', {
+        type: 'Error',
+      });
+      expect(JSON.stringify(logged.mock.calls)).not.toContain('private database details');
       expect(status).toHaveBeenCalledWith(500);
       expect(json).toHaveBeenCalledWith({
         error: {

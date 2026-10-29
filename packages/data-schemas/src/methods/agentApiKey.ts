@@ -58,7 +58,9 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
 
       let tenantId = getTenantId();
       if (data.binding && tenantId === SYSTEM_TENANT_ID) {
-        const owner = await mongoose.models.User.findById(data.userId).select('tenantId').lean();
+        const owner = await mongoose.models.User.findById(data.userId)
+          .select('tenantId')
+          .lean<{ tenantId?: string } | null>();
         if (!owner) throw new Error('Bound-key owner unavailable');
         tenantId = owner.tenantId || undefined;
       }
