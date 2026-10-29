@@ -112,8 +112,9 @@ export * from './code/workspace';
 export * from './types/scheduleConsent';
 
 export * from './approval';
-
+export * from './types/channels';
 export * from './types/responseReview';
+export * from './types/channelIdentity';
 
 export * from './types/channelRuns';
 

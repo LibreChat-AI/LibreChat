@@ -60,6 +60,10 @@ import {
 import { createAgentCategoryMethods, type AgentCategoryMethods } from './agentCategory';
 /* Agent API Keys */
 import { createAgentApiKeyMethods, type AgentApiKeyMethods } from './agentApiKey';
+import { createAgentChannelMethods, type AgentChannelMethods } from './channel';
+export { createChannelIdentityStorage } from './channelIdentity';
+export type { ChannelIdentityStorage } from './channelIdentity';
+export type { ChannelIdentityRecord } from '~/models/channelIdentity';
 
 export { createChannelRunStorage, ChannelRunConflict } from './channelRun';
 export { createChannelSummaryStorage, CHANNEL_SUMMARY_MAX_PRIOR_ROWS } from './channelSummary';
@@ -305,6 +309,7 @@ export type AllMethods = SubagentContentMethods &
   ToolFavoriteMethods &
   AgentCategoryMethods &
   AgentApiKeyMethods &
+  AgentChannelMethods &
   MCPServerMethods &
   CodeEnvironmentMethods &
   UserGroupMethods &
@@ -549,6 +554,7 @@ export function createMethods(
     ...createToolFavoriteMethods(mongoose),
     ...createAgentCategoryMethods(mongoose),
     ...createAgentApiKeyMethods(mongoose),
+    ...createAgentChannelMethods(mongoose),
     ...createMCPServerMethods(mongoose, {
       getSoleOwnedResourceIds: aclEntryMethods.getSoleOwnedResourceIds,
     }),
@@ -628,6 +634,7 @@ export type {
   ToolFavoriteMethods,
   AgentCategoryMethods,
   AgentApiKeyMethods,
+  AgentChannelMethods,
   MCPServerMethods,
   CodeEnvironmentMethods,
   UserGroupMethods,
