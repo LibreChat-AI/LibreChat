@@ -1,6 +1,7 @@
 import type { GenerationJobManagerClass } from '~/stream';
 import {
   enrollAgentExecution,
+  enrollResumedAgentExecution,
   AgentExecutionEnrollment,
   AgentExecutionAdmissionError,
   waitForAgentExecutionWrites,
@@ -401,7 +402,7 @@ describe('Agent execution enrollment', () => {
     await new Promise<void>((resolve) => setImmediate(resolve));
 
     await expect(manager.getJobStore().getJob('chatcmpl-tail')).resolves.toMatchObject({
-      status: 'complete',
+      status: 'running',
       providerDrained: false,
     });
     await expect(manager.getCleanupBlockingJobIdsForUser('user-1')).resolves.toEqual([
@@ -642,4 +643,133 @@ describe('Agent execution enrollment', () => {
     remaining.resolve();
     await expect(settlement).rejects.toBe(failure);
   });
+
+  async function resumed(runId: string) {
+    const seed = await enrollAgentExecution(enrollmentParams(runId), { manager });
+    const job = (await manager.getJob(runId))!;
+    return enrollResumedAgentExecution(
+      {
+        ...enrollmentParams(runId),
+        generationCreatedAt: seed.createdAt,
+        providerExecutionId: job.metadata.providerExecutionId!,
+      },
+      { manager },
+    );
+  }
+
+  it('keeps a resumed loser close local and leaves the started winner uncancelled', async () => {
+    const winner = await resumed('resumed-close-loser');
+    const job = (await manager.getJob(winner.runId))!;
+    const loser = await enrollResumedAgentExecution(
+      {
+        ...enrollmentParams(winner.runId),
+        generationCreatedAt: winner.createdAt,
+        providerExecutionId: job.metadata.providerExecutionId!,
+      },
+      { manager },
+    );
+    await winner.beginProviderExecution();
+    loser.abort(new Error('losing connection closed'));
+    await expect(loser.beginProviderExecution()).rejects.toMatchObject({ code: 'RUN_REPLACED' });
+    expect(loser.signal.aborted).toBe(true);
+    expect(winner.signal.aborted).toBe(false);
+    expect((await manager.getJob(winner.runId))?.abortController.signal.aborted).toBe(false);
+    await loser.settle();
+    expect((await manager.getJob(winner.runId))?.status).toBe('running');
+    await winner.settle();
+  });
+
+  it('forwards an attempt close only after its pending start CAS wins', async () => {
+    const execution = await resumed('resumed-close-during-cas');
+    const store = manager.getJobStore();
+    const start = store.beginProviderExecution.bind(store);
+    const gate = deferred<void>();
+    jest.spyOn(store, 'beginProviderExecution').mockImplementationOnce(async (...args) => {
+      await gate.promise;
+      return start(...args);
+    });
+    const starting = execution.beginProviderExecution();
+    const rejected = expect(starting).rejects.toMatchObject({ code: 'RUN_REPLACED' });
+    execution.abort(new Error('connection closed during start'));
+    expect((await manager.getJob(execution.runId))?.abortController.signal.aborted).toBe(false);
+    gate.resolve();
+    await rejected;
+    expect((await manager.getJob(execution.runId))?.abortController.signal.aborted).toBe(true);
+    await execution.settle(new Error('closed'));
+    expect((await store.getJob(execution.runId))?.providerDrained).toBe(true);
+  });
+
+  it('releases only the local tracker when ambiguous resumed start readback also fails', async () => {
+    const execution = await resumed('resumed-start-outage');
+    const store = manager.getJobStore();
+    jest
+      .spyOn(store, 'beginProviderExecution')
+      .mockRejectedValueOnce(new Error('start reply lost'));
+    jest.spyOn(store, 'getJob').mockRejectedValueOnce(new Error('readback unavailable'));
+    await expect(execution.beginProviderExecution()).rejects.toThrow('readback unavailable');
+    expect(execution.ownsSettlement).toBe(false);
+    const destroyStore = jest.spyOn(store, 'destroy');
+    const shutdown = manager.destroy({ settlementBudgetMs: 1000 });
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(destroyStore).toHaveBeenCalled();
+    await shutdown;
+  });
+
+  it('releases an unstarted idempotency claim after createJob fails so admission can retry', async () => {
+    const params = { ...enrollmentParams('claim-create-retry'), clientRequestId: 'client-request' };
+    jest.spyOn(manager, 'createJob').mockRejectedValueOnce(new Error('job store unavailable'));
+    await expect(enrollAgentExecution(params, { manager })).rejects.toThrow(
+      'job store unavailable',
+    );
+    const retry = await enrollAgentExecution(params, { manager });
+    await retry.beginProviderExecution();
+    await retry.settle();
+    expect((await manager.getJob(retry.runId))?.status).toBe('complete');
+  });
+
+  it.each(['success', 'failure'])(
+    'drains a recovered expired pause after late write %s while retaining its journal barrier',
+    async (outcome) => {
+      const params = {
+        ...enrollmentParams('expired-pause-tail'),
+        protocol: 'responses' as const,
+        retainTerminalPersistence: true as const,
+      };
+      const execution = await enrollAgentExecution(params, { manager });
+      await execution.beginProviderExecution();
+      const pending = action(execution.runId);
+      await execution.pauseForReview(pending, async () => {});
+      let rejectTail!: (reason: Error) => void;
+      let resolveTail!: () => void;
+      execution.track(
+        new Promise<void>((resolve, reject) => {
+          resolveTail = resolve;
+          rejectTail = reject;
+        }),
+      );
+      const settling = execution.settle();
+      const job = (await manager.getJob(execution.runId))!;
+      expect(
+        await manager.failPausePersistence(
+          execution.runId,
+          pending.actionId,
+          'expired',
+          execution.createdAt,
+          job.metadata.providerExecutionId!,
+        ),
+      ).toBe(true);
+      const failure = new Error('late artifact failed');
+      if (outcome === 'failure') rejectTail(failure);
+      else resolveTail();
+      await expect(settling).resolves.toEqual({
+        persistenceError: outcome === 'failure' ? failure : expect.any(Error),
+      });
+      expect(await manager.getJobStore().getJob(execution.runId)).toMatchObject({
+        status: 'error',
+        providerDrained: true,
+        terminalPersistencePending: true,
+      });
+      expect(await execution.confirmTerminalIdentity()).toMatchObject({ outcome: 'error' });
+    },
+  );
 });
