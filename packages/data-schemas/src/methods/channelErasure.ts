@@ -2,7 +2,7 @@ import type { ResponseOwner } from '~/models/response';
 import { createChannelRunModel, createChannelLaneModel } from '~/models/channelRun';
 
 /** The caller closes the response owner admission anchor before entering this cascade. */
-export async function eraseChannelOwner(
+export async function eraseChannelPersistenceForUser(
   mongoose: typeof import('mongoose'),
   owner: ResponseOwner,
 ): Promise<void> {
