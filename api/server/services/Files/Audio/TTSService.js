@@ -422,27 +422,66 @@ class TTSService {
 
         for (const update of updates) {
           try {
-            const response = await this.ttsRequest(
-              provider,
-              ttsSchema,
-              {
-                voice,
-                input: update.text,
-                stream: true,
-              },
-              allowedAddresses,
-            );
+            const text = update.text;
 
-            if (!shouldContinue) {
-              break;
-            }
+            if (text.length < 4096) {
+              const response = await this.ttsRequest(
+                provider,
+                ttsSchema,
+                {
+                  voice,
+                  input: text,
+                  stream: true,
+                },
+                allowedAddresses,
+              );
 
-            logger.debug(`[streamAudio] user: ${req?.user?.id} | writing audio stream`);
-            await pipeSegment(response.data, res, { end: update.isFinished });
+              if (!shouldContinue) {
+                break;
+              }
 
-            if (update.isFinished) {
-              shouldContinue = false;
-              break;
+              logger.debug(`[streamAudio] user: ${req?.user?.id} | writing audio stream`);
+              await pipeSegment(response.data, res, { end: update.isFinished });
+
+              if (update.isFinished) {
+                shouldContinue = false;
+                break;
+              }
+            } else {
+              const textChunks = splitTextIntoChunks(text, 1000);
+
+              for (let i = 0; i < textChunks.length; i++) {
+                if (!shouldContinue) {
+                  break;
+                }
+
+                const isLastChunk = i === textChunks.length - 1 && update.isFinished;
+
+                const response = await this.ttsRequest(
+                  provider,
+                  ttsSchema,
+                  {
+                    voice,
+                    input: textChunks[i].text,
+                    stream: true,
+                  },
+                  allowedAddresses,
+                );
+
+                if (!shouldContinue) {
+                  break;
+                }
+
+                logger.debug(
+                  `[streamAudio] user: ${req?.user?.id} | writing audio stream chunk ${i + 1}/${textChunks.length}`,
+                );
+                await pipeSegment(response.data, res, { end: isLastChunk });
+              }
+
+              if (update.isFinished) {
+                shouldContinue = false;
+                break;
+              }
             }
           } catch (innerError) {
             logAxiosError({

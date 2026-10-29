@@ -1,0 +1,15 @@
+{
+  "name": "document-generator-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for generating PDF and Markdown documents",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "pdfkit": "^0.19.1",
+    "marked": "^16.4.2"
+  }
+}

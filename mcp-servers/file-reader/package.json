@@ -1,0 +1,18 @@
+{
+  "name": "file-reader-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP server for reading files: PDF, DOCX, XLSX, ODT, PPTX, images, and plain text",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "mammoth": "^1.11.0",
+    "pdfjs-dist": "^5.4.624",
+    "sharp": "^0.35.3",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
+    "yauzl": "^3.2.1"
+  }
+}

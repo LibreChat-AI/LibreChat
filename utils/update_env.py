@@ -80,7 +80,7 @@ def update_env_file_with_local_env(input_file_path, output_file_path):
         print("Updated the following variables:")
         for var in updated_vars:
             print(var)
-    
+
     print(f"Processed {input_file_path} and wrote updates to {output_file_path}.")
 
 if __name__ == "__main__":
