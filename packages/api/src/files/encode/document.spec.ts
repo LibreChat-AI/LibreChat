@@ -1255,6 +1255,36 @@ describe('dedupeDocumentNames', () => {
     expect(names(contentOf(messages[0]))).toEqual(['notes', 'notes (2)']);
   });
 
+  it.each(['lazySubagentConfigs', 'subagentGraphMemberMetadata'] as const)(
+    'includes Bedrock providers in %s without resolving them',
+    (route) => {
+      const messages: Message[] = [{ content: [bedrock('notes'), bedrock('notes')] }];
+      const resolve = jest.fn();
+      const child = { provider: Providers.BEDROCK, resolve };
+      const recipients = [{ provider: Providers.OPENAI, [route]: [child] }];
+
+      dedupeDocumentNames(messages, recipients);
+
+      expect(names(contentOf(messages[0]))).toEqual(['notes', 'notes (2)']);
+      expect(resolve).not.toHaveBeenCalled();
+    },
+  );
+
+  it('handles cyclic metadata without losing distinct snapshots of the same agent', () => {
+    const child = { id: 'shared-id', provider: Providers.BEDROCK };
+    const root = {
+      id: 'shared-id',
+      provider: Providers.OPENAI,
+      lazySubagentConfigs: [] as Array<{ provider: Providers }>,
+    };
+    root.lazySubagentConfigs.push(root, child, child);
+    const messages: Message[] = [{ content: [bedrock('notes'), bedrock('notes')] }];
+
+    dedupeDocumentNames(messages, [root]);
+
+    expect(names(contentOf(messages[0]))).toEqual(['notes', 'notes (2)']);
+  });
+
   it('leaves a large replay untouched without any Bedrock recipients', () => {
     const content: PayloadContentPart[] = new Array(CONTENT_TRAVERSAL_MAX_NODES);
     const messages: Message[] = [{ content }];
@@ -1263,9 +1293,20 @@ describe('dedupeDocumentNames', () => {
       ['secondary', { provider: Providers.ANTHROPIC }],
     ]);
 
-    dedupeDocumentNames(messages, recipients.values());
+    const resolve = jest.fn();
+    const lazy = {
+      provider: Providers.GOOGLE,
+      resolve,
+      subagentGraphMemberMetadata: [{ provider: Providers.ANTHROPIC }],
+      lazySubagentConfigs: [] as Array<{ provider: Providers }>,
+    };
+    lazy.lazySubagentConfigs.push(lazy);
+    const root = { provider: Providers.OPENAI, lazySubagentConfigs: [lazy] };
+
+    dedupeDocumentNames(messages, [...recipients.values(), root]);
 
     expect(messages[0].content).toBe(content);
+    expect(resolve).not.toHaveBeenCalled();
   });
 
   it('renames repeated Bedrock document names across the payload in order', () => {

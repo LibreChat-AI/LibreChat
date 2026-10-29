@@ -15,6 +15,7 @@ import type {
   DocumentResult,
   ServerRequest,
 } from '~/types';
+import type { ReachableAgent } from '~/agents/traversal';
 import {
   CONTENT_TRAVERSAL_MAX_DEPTH,
   CONTENT_TRAVERSAL_MAX_NODES,
@@ -26,6 +27,7 @@ import {
   isAttachmentObjectNotFoundError,
 } from './utils';
 import { validatePdf, validateBedrockDocument } from '~/files/validation';
+import { collectReachableAgents } from '~/agents/traversal';
 import { runGuardedEncode } from './memoryGuard';
 
 /** The longest document name LibreChat sends to Bedrock. */
@@ -95,13 +97,14 @@ function renameDocumentParts(
   return renamed ?? parts;
 }
 
-function hasBedrockRecipient(recipients: Iterable<{ provider?: string }>): boolean {
-  for (const { provider } of recipients) {
-    if (provider === Providers.BEDROCK) {
-      return true;
-    }
-  }
-  return false;
+interface DocumentRecipient extends ReachableAgent<DocumentRecipient> {
+  readonly provider?: string;
+}
+
+function hasBedrockRecipient(recipients: Iterable<DocumentRecipient>): boolean {
+  return collectReachableAgents([...recipients]).some(
+    ({ provider }) => provider === Providers.BEDROCK,
+  );
 }
 
 /**
@@ -111,12 +114,13 @@ function hasBedrockRecipient(recipients: Iterable<{ provider?: string }>): boole
  * formatted payload in conversation order (`report`, `report (2)`), leaving the first occurrence,
  * every other kind of part, and the parts themselves untouched: a message whose documents change
  * gets a new content array. Names compare case-insensitively, as the restriction is not
- * documented to be case-sensitive. When recipients are supplied, only runs with a Bedrock
- * recipient need naming. Bedrock replay enforces traversal limits even without filters.
+ * documented to be case-sensitive. Recipient metadata includes lazy children and graph
+ * members without resolving them. Only runs with a Bedrock recipient need naming;
+ * Bedrock replay enforces traversal limits even without filters.
  */
 export function dedupeDocumentNames(
   messages: Array<{ content?: string | PayloadContentPart[] | null }>,
-  recipients?: Iterable<{ provider?: string }>,
+  recipients?: Iterable<DocumentRecipient>,
 ): void {
   if (recipients != null && !hasBedrockRecipient(recipients)) {
     return;
