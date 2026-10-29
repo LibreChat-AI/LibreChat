@@ -110,6 +110,26 @@ describe('BuiltinSection Run Code settings', () => {
   });
 });
 
+describe('BuiltinSection user toggle', () => {
+  const toggleGroup = () => screen.queryByRole('radiogroup', { name: 'com_ui_tool_toggle_label' });
+
+  test.each(['web_search', 'execute_code', 'file_search'])(
+    'offers the chat-user switch setting for %s',
+    (builtinId) => {
+      renderSection(builtinId);
+      expect(toggleGroup()).toBeInTheDocument();
+    },
+  );
+
+  test.each(['memory', 'artifacts', 'context'])(
+    'offers no chat-user switch setting for %s',
+    (builtinId) => {
+      renderSection(builtinId);
+      expect(toggleGroup()).toBeNull();
+    },
+  );
+});
+
 describe('BuiltinSection artifacts mode docs link', () => {
   const docsLink = () => screen.queryByRole('link', { name: 'com_ui_artifacts_mode_custom_docs' });
 

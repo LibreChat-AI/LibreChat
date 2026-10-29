@@ -131,12 +131,13 @@ export const graphEdgeSchema: z.ZodObject<{
     .optional(),
 });
 
-/** Per-tool options schema (defer_loading, allowed_callers, run_in_background, describe_intent) */
+/** Per-tool options schema (defer_loading, allowed_callers, run_in_background, describe_intent, user_toggle) */
 export const toolOptionsSchema: z.ZodObject<{
   defer_loading: z.ZodOptional<z.ZodBoolean>;
   allowed_callers: z.ZodOptional<z.ZodArray<EnumOf<'direct' | 'code_execution'>>>;
   run_in_background: z.ZodOptional<z.ZodBoolean>;
   describe_intent: z.ZodOptional<z.ZodBoolean>;
+  user_toggle: z.ZodOptional<EnumOf<'on' | 'off'>>;
   approval_mode: z.ZodOptional<EnumOf<'ask' | 'allow' | 'chat' | 'always'>>;
   approval_revision: z.ZodOptional<z.ZodString>;
 }> = z.object({
@@ -144,6 +145,7 @@ export const toolOptionsSchema: z.ZodObject<{
   allowed_callers: z.array(z.enum(['direct', 'code_execution'])).optional(),
   run_in_background: z.boolean().optional(),
   describe_intent: z.boolean().optional(),
+  user_toggle: z.enum(['on', 'off']).optional(),
   approval_mode: z.enum(['ask', 'allow', 'chat', 'always']).optional(),
   approval_revision: z.string().uuid().optional(),
 });

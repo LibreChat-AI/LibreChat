@@ -77,6 +77,9 @@ export interface FileSearchResource {
  */
 export type AllowedCaller = 'direct' | 'code_execution';
 
+/** Switchable by the chat user; the value is the state a new chat starts in. */
+export type UserToolToggle = 'on' | 'off';
+
 export const AGENT_TOOL_APPROVAL_MODES = ['ask', 'allow', 'chat', 'always'] as const;
 export type AgentToolApprovalMode = (typeof AGENT_TOOL_APPROVAL_MODES)[number];
 
@@ -164,6 +167,8 @@ export type ToolOptions = {
    * @default false
    */
   describe_intent?: boolean;
+  /** Chat-user switch for this tool on a saved agent. Absent = locked. */
+  user_toggle?: UserToolToggle;
 };
 
 /**

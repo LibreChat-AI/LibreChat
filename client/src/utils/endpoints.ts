@@ -1,10 +1,12 @@
 import {
+  Tools,
   Constants,
   EModelEndpoint,
   defaultEndpoints,
   modularEndpoints,
   LocalStorageKeys,
   getEndpointField,
+  getAgentToolSwitches,
   isAgentsEndpoint,
   isEphemeralAgentId,
   isAssistantsEndpoint,
@@ -392,6 +394,60 @@ export function applyModelSpecEphemeralAgent({
   }
 
   updateEphemeralAgent(key, agent);
+}
+
+export function applyAgentToolSwitchDefaults({
+  agent,
+  convoId,
+  isNewConvo,
+}: {
+  agent: Pick<t.Agent, 'tools' | 'tool_options'>;
+  convoId: string;
+  isNewConvo: boolean;
+}): t.TEphemeralAgent {
+  const switches = getAgentToolSwitches(agent);
+  const builtins = { ...switches.builtins };
+  const serverNames = Object.keys(switches.mcp);
+  let enabledServers = serverNames.filter((name) => switches.mcp[name]);
+
+  if (!isNewConvo) {
+    const storageMap: Array<[keyof typeof switches.builtins, string]> = [
+      [Tools.execute_code, LocalStorageKeys.LAST_CODE_TOGGLE_],
+      [Tools.web_search, LocalStorageKeys.LAST_WEB_SEARCH_TOGGLE_],
+      [Tools.file_search, LocalStorageKeys.LAST_FILE_SEARCH_TOGGLE_],
+    ];
+    for (const [toolKey, storagePrefix] of storageMap) {
+      if (!(toolKey in builtins)) {
+        continue;
+      }
+      const raw = getTimestampedValue(`${storagePrefix}${convoId}`);
+      if (raw === null) {
+        continue;
+      }
+      try {
+        const stored = JSON.parse(raw);
+        if (typeof stored === 'boolean') {
+          builtins[toolKey] = stored;
+        }
+      } catch {
+        // ignore parse errors
+      }
+    }
+
+    const mcpRaw = localStorage.getItem(`${LocalStorageKeys.LAST_MCP_}${convoId}`);
+    if (mcpRaw !== null && serverNames.length > 0) {
+      try {
+        const stored = JSON.parse(mcpRaw);
+        if (Array.isArray(stored)) {
+          enabledServers = serverNames.filter((name) => stored.includes(name));
+        }
+      } catch {
+        // ignore parse errors
+      }
+    }
+  }
+
+  return serverNames.length > 0 ? { ...builtins, mcp: enabledServers } : { ...builtins };
 }
 
 /**

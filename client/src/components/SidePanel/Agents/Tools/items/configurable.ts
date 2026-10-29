@@ -18,7 +18,7 @@ export function hasConfigurableSettings(item: AgentItem): boolean {
         item.id === 'memory' ||
         item.id === 'subagents' ||
         item.id === 'handoffs' ||
-        (item.id === 'web_search' && item.userProvidedAuth === true)
+        item.id === 'web_search'
       );
     case 'tool':
       return pluginNeedsAuth(item.plugin);

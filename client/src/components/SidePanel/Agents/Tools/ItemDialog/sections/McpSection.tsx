@@ -7,6 +7,7 @@ import {
   getToolApprovalConstraint,
   Constants,
   splitMCPToolKey,
+  mcpServerToggleKey,
   normalizeServerName,
   buildServerNameAliases,
   stripServerNamePrefix,
@@ -30,6 +31,7 @@ import McpOAuthDialog from '~/components/MCP/McpOAuthDialog';
 import ApprovalOption from '../../../ApprovalOption';
 import { useAgentPanelContext } from '~/Providers';
 import { getIconForItem } from '../../items/icons';
+import UserToggleSelect from '../UserToggleSelect';
 import OptionToggle from '../../../OptionToggle';
 import MCPToolItem from '../../../MCPToolItem';
 import { Collapse } from '~/components/ui';
@@ -654,6 +656,11 @@ export default function McpSection({ item }: Props) {
           </Collapse>
         </div>
       </div>
+
+      <UserToggleSelect
+        toolOptionKey={mcpServerToggleKey(serverName)}
+        labelId={`${normalizeServerName(serverName)}-user-toggle-label`}
+      />
 
       {configDialogProps && <MCPConfigDialog {...configDialogProps} />}
       <McpOAuthDialog
