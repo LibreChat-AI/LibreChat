@@ -95,6 +95,15 @@ function renameDocumentParts(
   return renamed ?? parts;
 }
 
+function hasBedrockRecipient(recipients: Iterable<{ provider?: string }>): boolean {
+  for (const { provider } of recipients) {
+    if (provider === Providers.BEDROCK) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /**
  * Bedrock rejects a request in which two documents share a name, and every turn resends the
  * documents of earlier turns (and of steers replayed with their attachments), so two uploads with
@@ -102,13 +111,14 @@ function renameDocumentParts(
  * formatted payload in conversation order (`report`, `report (2)`), leaving the first occurrence,
  * every other kind of part, and the parts themselves untouched: a message whose documents change
  * gets a new content array. Names compare case-insensitively, as the restriction is not
- * documented to be case-sensitive. Bedrock replay enforces traversal limits even without filters.
+ * documented to be case-sensitive. When recipients are supplied, only runs with a Bedrock
+ * recipient need naming. Bedrock replay enforces traversal limits even without filters.
  */
 export function dedupeDocumentNames(
   messages: Array<{ content?: string | PayloadContentPart[] | null }>,
-  provider: Providers = Providers.BEDROCK,
+  recipients?: Iterable<{ provider?: string }>,
 ): void {
-  if (provider !== Providers.BEDROCK) {
+  if (recipients != null && !hasBedrockRecipient(recipients)) {
     return;
   }
   const budget = { remaining: CONTENT_TRAVERSAL_MAX_NODES - messages.length };

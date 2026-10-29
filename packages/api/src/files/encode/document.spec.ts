@@ -1237,11 +1237,36 @@ describe('dedupeDocumentNames', () => {
       ];
       messages.length = CONTENT_TRAVERSAL_MAX_NODES + 1;
 
-      dedupeDocumentNames(messages, provider);
+      dedupeDocumentNames(messages, [{ provider }]);
 
       expect(content).not.toHaveBeenCalled();
     },
   );
+
+  it('renames documents for a Bedrock recipient after a non-Bedrock primary', () => {
+    const messages: Message[] = [{ content: [bedrock('notes'), bedrock('notes')] }];
+    const recipients = new Map([
+      ['primary', { provider: Providers.OPENAI }],
+      ['secondary', { provider: Providers.BEDROCK }],
+    ]);
+
+    dedupeDocumentNames(messages, recipients.values());
+
+    expect(names(contentOf(messages[0]))).toEqual(['notes', 'notes (2)']);
+  });
+
+  it('leaves a large replay untouched without any Bedrock recipients', () => {
+    const content: PayloadContentPart[] = new Array(CONTENT_TRAVERSAL_MAX_NODES);
+    const messages: Message[] = [{ content }];
+    const recipients = new Map([
+      ['primary', { provider: Providers.OPENAI }],
+      ['secondary', { provider: Providers.ANTHROPIC }],
+    ]);
+
+    dedupeDocumentNames(messages, recipients.values());
+
+    expect(messages[0].content).toBe(content);
+  });
 
   it('renames repeated Bedrock document names across the payload in order', () => {
     const first = bedrock('Stripe fees');
@@ -1368,9 +1393,12 @@ describe('dedupeDocumentNames', () => {
     const messages: Message[] = [{ content }];
 
     expect(() => dedupeDocumentNames(messages)).toThrow(ContentTraversalLimitError);
-    expect(() => dedupeDocumentNames(messages, Providers.BEDROCK)).toThrow(
-      ContentTraversalLimitError,
-    );
+    expect(() =>
+      dedupeDocumentNames(messages, [
+        { provider: Providers.OPENAI },
+        { provider: Providers.BEDROCK },
+      ]),
+    ).toThrow(ContentTraversalLimitError);
     expect(messages[0].content).toBe(content);
     expect(content[1].document.name).toBe('notes');
   });

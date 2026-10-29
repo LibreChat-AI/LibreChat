@@ -6439,6 +6439,9 @@ describe('AgentClient - titleConvo', () => {
       'continues a large existing %s chat with a new short message',
       async (provider) => {
         client.options.agent.provider = provider;
+        client.agentConfigs = new Map([
+          ['secondary-agent', { ...mockAgent, id: 'secondary-agent', provider: Providers.GOOGLE }],
+        ]);
         const history = Array.from({ length: 80 }, (_, index) => ({
           messageId: `history-${index}`,
           parentMessageId: index === 0 ? null : `history-${index - 1}`,
@@ -6465,49 +6468,69 @@ describe('AgentClient - titleConvo', () => {
       },
     );
 
-    it('gives every resent document a unique name before formatting', async () => {
-      client.options.agent.provider = Providers.BEDROCK;
-      const bedrockDocument = (name) => ({
-        type: 'document',
-        document: { name, format: 'pdf', source: { bytes: Buffer.from(name) } },
-      });
-      const firstQuestion = {
-        messageId: 'user-first',
-        parentMessageId: null,
-        sender: 'User',
-        isCreatedByUser: true,
-        text: 'Summarize the fees.',
-        documents: [bedrockDocument('Stripe fees')],
-      };
-      const answer = {
-        messageId: 'assistant-first',
-        parentMessageId: 'user-first',
-        sender: 'Assistant',
-        isCreatedByUser: false,
-        text: 'Here is the summary.',
-      };
-      const secondQuestion = {
-        messageId: 'user-second',
-        parentMessageId: 'assistant-first',
-        sender: 'User',
-        isCreatedByUser: true,
-        text: 'Compare with this one.',
-        documents: [bedrockDocument('Stripe fees')],
-      };
-      const messages = [firstQuestion, answer, secondQuestion];
-      client.setModelBoundStoredMessages(messages);
+    it.each(['primary', 'secondary', 'nested subagent', 'nested graph member'])(
+      'gives every resent document a unique name for a Bedrock %s',
+      async (recipient) => {
+        const bedrockAgent = {
+          ...mockAgent,
+          id: 'bedrock-recipient',
+          provider: Providers.BEDROCK,
+        };
+        if (recipient === 'primary') {
+          client.options.agent.provider = Providers.BEDROCK;
+        } else if (recipient === 'secondary') {
+          client.agentConfigs = new Map([[bedrockAgent.id, bedrockAgent]]);
+        } else if (recipient === 'nested subagent') {
+          client.options.agent.subagentAgentConfigs = [
+            { ...mockAgent, id: 'middle-agent', subagentAgentConfigs: [bedrockAgent] },
+          ];
+        } else {
+          client.options.agent.subagentGraphConfigs = [{ memberConfigs: [bedrockAgent] }];
+        }
+        const bedrockDocument = (name) => ({
+          type: 'document',
+          document: { name, format: 'pdf', source: { bytes: Buffer.from(name) } },
+        });
+        const firstQuestion = {
+          messageId: 'user-first',
+          parentMessageId: null,
+          sender: 'User',
+          isCreatedByUser: true,
+          text: 'Summarize the fees.',
+          documents: [bedrockDocument('Stripe fees')],
+        };
+        const answer = {
+          messageId: 'assistant-first',
+          parentMessageId: 'user-first',
+          sender: 'Assistant',
+          isCreatedByUser: false,
+          text: 'Here is the summary.',
+        };
+        const secondQuestion = {
+          messageId: 'user-second',
+          parentMessageId: 'assistant-first',
+          sender: 'User',
+          isCreatedByUser: true,
+          text: 'Compare with this one.',
+          documents: [bedrockDocument('Stripe fees')],
+        };
+        const messages = [firstQuestion, answer, secondQuestion];
+        client.setModelBoundStoredMessages(messages);
 
-      const result = await client.buildMessages(messages, 'user-second', {}, {});
+        const result = await client.buildMessages(messages, 'user-second', {}, {});
 
-      const names = result.prompt.flatMap((message) =>
-        Array.isArray(message.content)
-          ? message.content
-              .filter((part) => part?.type === 'document')
-              .map((part) => part.document.name)
-          : [],
-      );
-      expect(names).toEqual(['Stripe fees', 'Stripe fees (2)']);
-    });
+        const names = result.prompt.flatMap((message) =>
+          Array.isArray(message.content)
+            ? message.content
+                .filter((part) => part?.type === 'document')
+                .map((part) => part.document.name)
+            : [],
+        );
+        expect(names).toEqual(['Stripe fees', 'Stripe fees (2)']);
+        expect(firstQuestion.documents[0].document.name).toBe('Stripe fees');
+        expect(secondQuestion.documents[0].document.name).toBe('Stripe fees');
+      },
+    );
 
     it('preserves persisted source identity through both agent formatting passes', async () => {
       mockReq.config.filters = {
