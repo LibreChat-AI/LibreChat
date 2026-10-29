@@ -7,6 +7,7 @@ import {
   resolveCodeExecutionWorkspaceContext,
   supportsProgrammaticCodeExecution,
 } from './capabilities';
+import { requiresCodeWorkspaceCapabilities } from '~/agents/tools';
 
 const context: CodeExecutionContext = {
   baseUrl: 'https://bridge.example',
@@ -395,7 +396,7 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
     await expect(
       resolveCodeExecutionWorkspaceContext({
         context,
-        toolNames,
+        requiresLiveCapabilities: requiresCodeWorkspaceCapabilities(toolNames),
         persistedSelections: [{ environmentId: 'personal', workspaceId: 'project-a' }],
         environments,
         getAppConfig,
@@ -423,7 +424,7 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
     await expect(
       resolveCodeExecutionWorkspaceContext({
         context,
-        toolNames: ['skill', toolName],
+        requiresLiveCapabilities: requiresCodeWorkspaceCapabilities(['skill', toolName]),
         persistedSelections: [{ environmentId: 'personal', workspaceId: 'project-a' }],
         environments,
         getAppConfig,
@@ -438,7 +439,7 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
     await expect(
       resolveCodeExecutionWorkspaceContext({
         context,
-        toolNames: ['skill'],
+        requiresLiveCapabilities: false,
         requestedSelections: [{ environmentId: 'personal', workspaceId: 'project-b' }],
         persistedSelections: [{ environmentId: 'personal', workspaceId: 'project-a' }],
         environments,

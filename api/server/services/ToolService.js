@@ -64,6 +64,7 @@ const {
   withRequestCodeInputs,
   resolveAgentCodeExecution,
   resolveCodeExecutionWorkspaceContext,
+  requiresCodeWorkspaceCapabilities,
   resolveRunFileCodeExecutionContext,
   resolveCallerCapabilityProjectionSnapshot,
   CREATE_FILE_TOOL_NAME,
@@ -2284,7 +2285,7 @@ async function loadToolsForExecution({
     );
   const codeExecutionContext = await resolveCodeExecutionWorkspaceContext({
     context: baseCodeExecutionContext,
-    toolNames,
+    requiresLiveCapabilities: requiresCodeWorkspaceCapabilities(toolNames),
     requestedSelections: runtimeRequestBody?.codeWorkspaces,
     persistedSelections: req.resolvedConversation?.codeWorkspaces,
     environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,

@@ -12,7 +12,6 @@ import type { CodeBridgeWorkerStatus } from './bridge';
 export type { CodeWorkspaceSelectionErrorReason } from 'librechat-data-provider';
 export { CodeWorkspaceSelectionError } from './errors';
 import { CodeWorkspaceSelectionError } from './errors';
-import { isCodeFileToolName, isCodeSessionToolName } from '~/agents/tools';
 import {
   CodeBridgeStatusError,
   createCodeBridgeStatusPoller,
@@ -105,15 +104,15 @@ export async function resolveCodeExecutionWorkspaceContext({
   context,
   requestedSelections,
   persistedSelections,
-  toolNames,
+  requiresLiveCapabilities = true,
   environments,
   getAppConfig,
 }: {
   context: CodeExecutionContext;
   requestedSelections?: unknown;
   persistedSelections?: unknown;
-  /** Omit at initialization to require live capabilities; execution scopes discovery to code tools. */
-  toolNames?: readonly string[];
+  /** Only host-side execution batches may skip discovery; initialization requires it. */
+  requiresLiveCapabilities?: boolean;
   environments?: readonly CodeEnvironmentConfig[];
   getAppConfig?: CodeCapabilityConfigLoader;
 }): Promise<CodeExecutionContext> {
@@ -139,12 +138,7 @@ export async function resolveCodeExecutionWorkspaceContext({
   );
   if (selection == null) throw new CodeWorkspaceSelectionError('required');
 
-  if (
-    toolNames != null &&
-    !toolNames.some((name) => isCodeFileToolName(name) || isCodeSessionToolName(name))
-  ) {
-    return context;
-  }
+  if (!requiresLiveCapabilities) return context;
 
   let status: CodeBridgeWorkerStatus;
   try {
