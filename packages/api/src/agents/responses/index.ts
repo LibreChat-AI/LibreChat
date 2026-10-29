@@ -15,7 +15,14 @@ export {
 } from './persistence';
 export { createBackgroundResponseService } from './background';
 
+export { createResponseDecisionSubmission } from './decision';
+export { createResponseResumeValidation, createResponseResumeAdmission } from './resume';
 export { createBackgroundResponseAuthority } from './authority';
+export type {
+  ResponseDecisionDependencies,
+  ResponseDecisionResult,
+  ResponseDecisionSubmission,
+} from './decision';
 
 export { createBackgroundResponseQueue, backgroundResponseDeliveryKey } from './queue';
 export {
