@@ -4,6 +4,28 @@ import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
 import { getTransactionSupport } from '~/utils/transactions';
 import { createIndexesWithRetry } from '~/utils/retry';
+import { runAsSystem } from '~/config/tenantContext';
+
+/** Authorized missing-root recovery, restricted to one globally unique owner/conversation. */
+export async function discoverResponseOwners(
+  mongoose: typeof import('mongoose'),
+  userId: string,
+  conversationId: string,
+): Promise<ResponseOwner[]> {
+  return runAsSystem(async () => {
+    const model = createStoredResponseModel(mongoose);
+    const filter = { userId, conversationId };
+    const [tenants, tenantless] = await Promise.all([
+      model.distinct('tenantId', filter),
+      model.exists({ ...filter, tenantId: { $in: [null, ''] } }),
+    ]);
+    const owners: ResponseOwner[] = tenants
+      .filter((tenantId): tenantId is string => typeof tenantId === 'string' && tenantId !== '')
+      .map((tenantId) => ({ userId, tenantId }));
+    if (tenantless) owners.push({ userId });
+    return owners;
+  });
+}
 
 /** Retention intent is monotonic, like erasure: failed parent saves never reopen private data. */
 export function createResponseRetention(

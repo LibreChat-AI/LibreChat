@@ -41,6 +41,12 @@ import {
   MAX_AGENT_EVENT_ACTOR_TOOL_NAME_LENGTH,
 } from '~/types/convo';
 import {
+  closeResponseScopes,
+  eraseResponseRecords,
+  createResponseRetention,
+  discoverResponseOwners,
+} from './responseScope';
+import {
   activeExpirationFilter,
   buildRetentionVisibilityFilter,
   createFallbackRetentionDate,
@@ -49,18 +55,12 @@ import {
   refreshChatProjectStatsForUser,
   updateChatProjectLastConversationForUser,
 } from './chatProject';
-import {
-  closeResponseScopes,
-  eraseResponseRecords,
-  createResponseRetention,
-} from './responseScope';
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
+import { getTenantId, SYSTEM_TENANT_ID, runAsSystem } from '~/config/tenantContext';
 import { isAgentFadingTier, isAgentFadingTierEntries } from '~/utils/fading';
 import { isCompactionSemanticIndexProjection } from '~/types/compaction';
-import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { withoutMeiliIndexing } from '~/models/plugins/mongoMeili';
 import { prepareSubagentContentDeletion } from './subagentContent';
-import { createStoredResponseModel } from '~/models/response';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { decrementTagCounts } from './conversationTag';
@@ -4084,7 +4084,6 @@ export function createConversationMethods(
         .select('conversationId tenantId chatProjectId tags')
         .lean<DeletionConversation[]>();
       const recoveryConversationIds: string[] = [];
-      const responses = createStoredResponseModel(mongoose);
       const recoveryResponseScopes: DeletionConversation[] = [];
       const responseGroups = (wave: DeletionConversation[]) => {
         const groups = new Map<string | undefined, string[]>();
@@ -4118,7 +4117,7 @@ export function createConversationMethods(
          * Resume from immutable root lineage and retain the root id for message,
          * checkpoint, and tool cleanup. The message probe distinguishes that partial
          * commit from a conversation id that never existed. */
-        const [descendants, rootMessages, responseTenants, tenantlessResponse] = await Promise.all([
+        const [descendants, rootMessages, responseOwners] = await Promise.all([
           retryCascadeOperation(() =>
             Conversation.find({
               user,
@@ -4128,15 +4127,14 @@ export function createConversationMethods(
               .lean<DeletionConversation[]>(),
           ),
           getMessages({ user, conversationId: filter.conversationId }, '_id', { limit: 1 }),
-          responses.distinct('tenantId', { userId: user, conversationId: filter.conversationId }),
-          responses.exists({ userId: user, tenantId: null, conversationId: filter.conversationId }),
+          discoverResponseOwners(mongoose, user, filter.conversationId),
         ]);
-        for (const tenantId of responseTenants) {
-          if (typeof tenantId === 'string')
-            recoveryResponseScopes.push({ conversationId: filter.conversationId, tenantId });
+        for (const responseOwner of responseOwners) {
+          recoveryResponseScopes.push({
+            conversationId: filter.conversationId,
+            tenantId: responseOwner.tenantId,
+          });
         }
-        if (tenantlessResponse)
-          recoveryResponseScopes.push({ conversationId: filter.conversationId });
         if (
           descendants.length === 0 &&
           rootMessages.length === 0 &&
@@ -4264,8 +4262,12 @@ export function createConversationMethods(
       ];
 
       if (recoveryConversationIds.length > 0) {
-        await closeResponses(recoveryResponseScopes);
-        await eraseResponses(recoveryResponseScopes);
+        // Each command retains an explicit owner/partition predicate. Request tenant
+        // middleware must not replace the partitions discovered by recovery.
+        await runAsSystem(async () => {
+          await closeResponses(recoveryResponseScopes);
+          await eraseResponses(recoveryResponseScopes);
+        });
         await deps?.deleteAgentQueuedTurns?.(
           user,
           recoveryConversationIds.map((conversationId) => ({

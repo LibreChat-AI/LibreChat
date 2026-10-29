@@ -1000,3 +1000,250 @@ it.each(['owner', 'conversation', 'retention'])(
       });
     }),
 );
+
+it.each(['owner_deleted', 'conversation_deleted', 'expired'] as const)(
+  'keeps %s cleanup authority after private row removal without inventing a deadline',
+  (retirement) =>
+    scoped(async () => {
+      await storage.reserve(reservation());
+      await mongoose.models.StoredResponse.updateOne(
+        { responseId: 'resp_one' },
+        {
+          $set: {
+            generationCreatedAt: 42,
+            pendingTerminal: {
+              generationCreatedAt: 42,
+              providerExecutionId: 'initial-provider',
+              status: 'failed',
+              responseJSON: '{"private":"answer"}',
+              checkpointNamespace: 'checkpoint-one',
+              checkpointConfigJSON: '{"saver":"pinned"}',
+            },
+          },
+        },
+      );
+      if (retirement === 'expired')
+        await createResponseRetention(mongoose)(
+          owner,
+          'conversation-one',
+          new Date(Date.now() - 1000),
+        );
+      else
+        await closeResponseScopes(
+          mongoose,
+          owner,
+          retirement === 'conversation_deleted' ? ['conversation-one'] : undefined,
+        );
+      const identity = await storage.readCleanupIdentity(owner, 'resp_one');
+      expect(identity).toMatchObject({
+        retirement,
+        generationCreatedAt: 42,
+        checkpointNamespace: 'checkpoint-one',
+        checkpointConfigJSON: '{"saver":"pinned"}',
+        requiresCheckpointCleanup: true,
+      });
+      expect(identity).not.toHaveProperty('requestJSON');
+      expect(identity).not.toHaveProperty('responseJSON');
+      expect(identity).not.toHaveProperty('pendingTerminal');
+      if (retirement !== 'expired') expect(identity?.expiredAt).toBeUndefined();
+      await mongoose.models.StoredResponse.deleteOne({ responseId: 'resp_one' });
+      expect(await storage.readCleanupIdentity(owner, 'resp_one', identity!)).toEqual(identity);
+      expect(
+        await storage.readCleanupIdentity(owner, 'resp_one', {
+          ...identity!,
+          userId: 'another-owner',
+        }),
+      ).toBeNull();
+      expect(
+        await storage.readCleanupIdentity(owner, 'resp_one', {
+          ...identity!,
+          tenantId: 'another-tenant',
+        }),
+      ).toBeNull();
+      expect(
+        await storage.readCleanupIdentity(owner, 'resp_one', {
+          ...identity!,
+          responseId: 'another-response',
+        }),
+      ).toBeNull();
+    }),
+);
+
+it('requires checkpoint cleanup for an initial staged terminal without a review or retained identity', () =>
+  scoped(async () => {
+    await storage.reserve(reservation());
+    const running = await storage.publish(owner, 'resp_one', 0, {
+      status: 'in_progress',
+      generationCreatedAt: 42,
+      responseJSON: '{}',
+    });
+    expect(running.ok).toBe(true);
+    if (!running.ok) return;
+    const staged = await storage.stageTerminal(owner, 'resp_one', running.record.revision, {
+      generationCreatedAt: 42,
+      providerExecutionId: 'initial-provider',
+      status: 'failed',
+      responseJSON: '{}',
+      checkpointNamespace: 'checkpoint-one',
+      checkpointConfigJSON: '{"saver":"initial"}',
+    });
+    expect(staged.ok).toBe(true);
+    expect(await storage.readCleanupIdentity(owner, 'resp_one')).toMatchObject({
+      checkpointNamespace: 'checkpoint-one',
+      checkpointConfigJSON: '{"saver":"initial"}',
+      requiresCheckpointCleanup: true,
+    });
+  }));
+
+it.each([
+  { userId: 'another-owner' },
+  { tenantId: 'another-tenant' },
+  { responseId: 'another-response' },
+  { conversationId: 'another-conversation' },
+  { agentId: 'another-agent' },
+  { generationCreatedAt: 43 },
+])('never mixes retained checkpoint metadata from a different identity: %p', (changed) =>
+  scoped(async () => {
+    await storage.reserve(reservation());
+    await mongoose.models.StoredResponse.updateOne(
+      { responseId: 'resp_one' },
+      {
+        $set: { generationCreatedAt: 42 },
+      },
+    );
+    const identity = await storage.readCleanupIdentity(owner, 'resp_one');
+    expect(
+      await storage.readCleanupIdentity(owner, 'resp_one', {
+        ...identity!,
+        ...changed,
+        checkpointNamespace: 'wrong-checkpoint',
+        checkpointConfigJSON: 'wrong-config',
+        requiresCheckpointCleanup: true,
+      }),
+    ).toMatchObject({
+      checkpointNamespace: undefined,
+      checkpointConfigJSON: undefined,
+      requiresCheckpointCleanup: false,
+    });
+  }),
+);
+
+it('rejects a missing row with no retirement proof even when retained data claims expiry', () =>
+  scoped(async () => {
+    await storage.reserve(reservation());
+    const retained = await storage.readCleanupIdentity(owner, 'resp_one');
+    await mongoose.models.StoredResponse.deleteOne({ responseId: 'resp_one' });
+    expect(
+      await storage.readCleanupIdentity(owner, 'resp_one', {
+        ...retained!,
+        expiredAt: new Date(Date.now() - 1),
+        retirement: 'expired',
+      }),
+    ).toBeNull();
+    await closeResponseScopes(mongoose, { ...owner, userId: 'another-owner' });
+    await closeResponseScopes(mongoose, owner, ['another-conversation']);
+    expect(await storage.readCleanupIdentity(owner, 'resp_one', retained!)).toBeNull();
+  }));
+
+it('recovers and erases all legacy partitions inside an ordinary tenant request', async () => {
+  createModels(mongoose);
+  const tenants = ['tenant-a', 'tenant-b', undefined, '', null];
+  await runAsSystem(async () => {
+    for (const [index, tenantId] of tenants.entries()) {
+      const responseId = `legacy-${index}`;
+      // Distinct request keys let all tenantless legacy spellings coexist.
+      await storage.reserve(
+        reservation({ responseId, requestKey: responseId, tenantId: tenantId || undefined }),
+      );
+      if (tenantId !== undefined)
+        await mongoose.models.StoredResponse.collection.updateOne(
+          { responseId },
+          { $set: { tenantId } },
+        );
+    }
+    await storage.reserve(reservation({ userId: 'another-owner', responseId: 'unrelated-owner' }));
+    await storage.reserve(
+      reservation({
+        conversationId: 'another-conversation',
+        responseId: 'unrelated-conversation',
+        requestKey: 'unrelated-conversation',
+      }),
+    );
+  });
+  const methods = createConversationMethods(mongoose, {
+    getMessages: jest.fn(async () => []),
+    deleteMessages: jest.fn(async () => ({ acknowledged: true, deletedCount: 0 })),
+  });
+  await scoped(async () => {
+    await methods.deleteConvos(owner.userId, { conversationId: 'conversation-one' });
+    await methods.deleteConvos(
+      owner.userId,
+      { conversationId: 'conversation-one' },
+      { allowEmpty: true },
+    );
+  });
+  await runAsSystem(async () => {
+    const remaining = await mongoose.models.StoredResponse.find({}).select('responseId').lean();
+    expect(remaining.map((row) => row.responseId).sort()).toEqual([
+      'unrelated-conversation',
+      'unrelated-owner',
+    ]);
+    for (const tenantId of ['tenant-a', 'tenant-b', undefined])
+      expect(
+        await storage.reserve(reservation({ tenantId, requestKey: `late-${tenantId}` })),
+      ).toEqual({ ok: false, code: 'response_unavailable' });
+  });
+});
+
+it('keeps incomplete staged checkpoint bindings retryable instead of mixing older settings', () =>
+  scoped(async () => {
+    await storage.reserve(reservation());
+    await mongoose.models.StoredResponse.updateOne(
+      { responseId: 'resp_one' },
+      {
+        $set: {
+          generationCreatedAt: 42,
+          review: {
+            actionId: 'old-review',
+            providerExecutionId: 'old-provider',
+            expiresAt: Date.now() + 1000,
+            partialResponseJSON: '{}',
+            checkpointConfigJSON: 'old-config',
+          },
+          pendingTerminal: {
+            generationCreatedAt: 42,
+            providerExecutionId: 'new-provider',
+            status: 'failed',
+            responseJSON: '{}',
+            checkpointNamespace: 'new-checkpoint',
+          },
+        },
+      },
+    );
+    const retained = {
+      ...owner,
+      responseId: 'resp_one',
+      agentId: 'agent-one',
+      conversationId: 'conversation-one',
+      generationCreatedAt: 42,
+      checkpointNamespace: 'old-checkpoint',
+      checkpointConfigJSON: 'retained-config',
+    };
+    expect(await storage.readCleanupIdentity(owner, 'resp_one', retained)).toMatchObject({
+      checkpointNamespace: 'new-checkpoint',
+      checkpointConfigJSON: undefined,
+      requiresCheckpointCleanup: true,
+    });
+  }));
+
+it('propagates cleanup lookup outages instead of treating retained metadata as authority', () =>
+  scoped(async () => {
+    await storage.reserve(reservation());
+    const retained = await storage.readCleanupIdentity(owner, 'resp_one');
+    jest
+      .spyOn(mongoose.models.StoredResponse.collection, 'findOne')
+      .mockRejectedValueOnce(new Error('database unavailable'));
+    await expect(storage.readCleanupIdentity(owner, 'resp_one', retained!)).rejects.toThrow(
+      'database unavailable',
+    );
+  }));

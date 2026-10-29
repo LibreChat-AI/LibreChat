@@ -60,6 +60,8 @@ export type ResponseCleanupIdentity = Pick<
   | 'generationCreatedAt'
   | 'expiredAt'
 > & {
+  /** Cleanup authority only; never permission to read output or execute a provider. */
+  retirement?: 'owner_deleted' | 'conversation_deleted' | 'expired';
   checkpointNamespace?: string;
   checkpointConfigJSON?: string;
   requiresCheckpointCleanup?: boolean;
@@ -529,24 +531,58 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
           'userId tenantId responseId agentId conversationId generationCreatedAt expiredAt pendingTerminal.checkpointNamespace pendingTerminal.checkpointConfigJSON review.checkpointConfigJSON review.providerExecutionId',
         )
         .lean();
-      let source: ResponseCleanupIdentity | null = record;
-      if (
-        !source &&
+      // Retained data comes only from an internal job/receipt, never request input.
+      // Validate it even when the row exists before using any fallback checkpoint fields.
+      const matchingRetained =
         retained &&
         retained.responseId === responseId &&
         retained.userId === owner.userId &&
-        (retained.tenantId || undefined) === (owner.tenantId || undefined)
-      ) {
-        const anchor = await createResponseScopeModel(mongoose)
-          .findOne({
-            _id: responseScopeKeys(owner, retained.conversationId)[1],
-            expiredAt: { $lte: new Date() },
-          })
-          .select('expiredAt')
-          .lean();
-        if (anchor?.expiredAt) source = { ...retained, expiredAt: anchor.expiredAt };
-      }
+        (retained.tenantId || undefined) === (owner.tenantId || undefined) &&
+        (!record ||
+          (retained.conversationId === record.conversationId &&
+            retained.agentId === record.agentId &&
+            retained.generationCreatedAt === record.generationCreatedAt))
+          ? retained
+          : undefined;
+      const source = record ?? matchingRetained;
       if (!source) return null;
+      const now = new Date();
+      const [ownerKey, conversationKey] = responseScopeKeys(owner, source.conversationId);
+      const anchors = await createResponseScopeModel(mongoose)
+        .find({ _id: { $in: [ownerKey, conversationKey] } })
+        .select('closed expiredAt')
+        .lean();
+      const ownerAnchor = anchors.find((anchor) => anchor._id === ownerKey);
+      const conversationAnchor = anchors.find((anchor) => anchor._id === conversationKey);
+      const expiredAt =
+        conversationAnchor?.expiredAt &&
+        (!source.expiredAt || conversationAnchor.expiredAt < source.expiredAt)
+          ? conversationAnchor.expiredAt
+          : source.expiredAt;
+      let retirement: ResponseCleanupIdentity['retirement'];
+      if (ownerAnchor?.closed) retirement = 'owner_deleted';
+      else if (conversationAnchor?.closed) retirement = 'conversation_deleted';
+      else if (expiredAt && expiredAt <= now) retirement = 'expired';
+      // A retained deadline alone cannot prove why an authoritative row disappeared.
+      if (
+        !record &&
+        !ownerAnchor?.closed &&
+        !conversationAnchor?.closed &&
+        !(conversationAnchor?.expiredAt && conversationAnchor.expiredAt <= now)
+      )
+        return null;
+      // A staged checkpoint is one binding: never fill an incomplete terminal
+      // binding with settings from a prior review or retained provider segment.
+      const terminalCheckpoint = record?.pendingTerminal;
+      const hasTerminalCheckpoint =
+        terminalCheckpoint?.checkpointNamespace != null ||
+        terminalCheckpoint?.checkpointConfigJSON != null;
+      const checkpointNamespace = hasTerminalCheckpoint
+        ? terminalCheckpoint?.checkpointNamespace
+        : matchingRetained?.checkpointNamespace;
+      const checkpointConfigJSON = hasTerminalCheckpoint
+        ? terminalCheckpoint?.checkpointConfigJSON
+        : (record?.review?.checkpointConfigJSON ?? matchingRetained?.checkpointConfigJSON);
       const {
         userId,
         tenantId,
@@ -554,7 +590,6 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
         agentId,
         conversationId,
         generationCreatedAt,
-        expiredAt,
       } = source;
       return {
         userId,
@@ -564,20 +599,15 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
         conversationId,
         generationCreatedAt,
         expiredAt,
-        checkpointNamespace:
-          record?.pendingTerminal?.checkpointNamespace ??
-          source.checkpointNamespace ??
-          retained?.checkpointNamespace,
-        checkpointConfigJSON:
-          record?.pendingTerminal?.checkpointConfigJSON ??
-          record?.review?.checkpointConfigJSON ??
-          source.checkpointConfigJSON ??
-          retained?.checkpointConfigJSON,
-        requiresCheckpointCleanup:
-          record?.review != null ||
-          source.requiresCheckpointCleanup ||
-          retained?.requiresCheckpointCleanup ||
-          Boolean(retained?.checkpointConfigJSON),
+        retirement,
+        checkpointNamespace,
+        checkpointConfigJSON,
+        requiresCheckpointCleanup: Boolean(
+          record?.review ||
+            checkpointNamespace ||
+            checkpointConfigJSON ||
+            matchingRetained?.requiresCheckpointCleanup,
+        ),
       };
     },
     async attachDelivery(owner, responseId, deliveryKey) {
