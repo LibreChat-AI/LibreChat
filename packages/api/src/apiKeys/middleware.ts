@@ -10,6 +10,7 @@ import type { IUser, AgentApiKeyBinding } from '@librechat/data-schemas';
 import type { Types } from 'mongoose';
 import { isTwoFactorEnrollmentRequired } from '~/auth/twoFactor';
 import { getRemoteAgentPermissions } from './service';
+import { getSafeErrorMetadata } from '~/utils/errors';
 
 export interface ApiKeyAuthDependencies {
   validateAgentApiKey: (apiKey: string) => Promise<{
@@ -154,7 +155,7 @@ export function createRequireApiKeyAuth(deps: ApiKeyAuthDependencies) {
 
       next();
     } catch (error) {
-      logger.error('[requireApiKeyAuth] Error validating API key:', error);
+      logger.error('[requireApiKeyAuth] Error validating API key:', getSafeErrorMetadata(error));
       return res.status(500).json({
         error: {
           message: 'Internal server error during authentication',
