@@ -96,7 +96,12 @@ import MessagesView from '../MessagesView';
 const withChat = (ui: ReactElement) => (
   <ChatContext.Provider
     value={
-      { index: 0, latestMessageDepth: 0, messagesKey: mockMessagesKey } as unknown as ChatContract
+      {
+        index: 0,
+        isSubmitting: false,
+        latestMessageDepth: 0,
+        messagesKey: mockMessagesKey,
+      } as unknown as ChatContract
     }
   >
     {ui}

@@ -178,6 +178,17 @@ const host: MessagePartsHost = {
 const messagesHost: MessagesHost = {
   useHour12: () => false,
   renderFiles: () => null,
+  useScrolling: () => ({
+    contentRef: { current: null },
+    scrollableRef: { current: null },
+    messagesEndRef: { current: null },
+    handleSmoothToRef: () => undefined,
+    debouncedHandleScroll: () => undefined,
+    handleNearBottomChange: () => undefined,
+  }),
+  useScreenshotTarget: () => undefined,
+  useAutoScroll: () => false,
+  useConversationSeen: () => () => undefined,
 };
 
 const renderers: PartRenderers = {

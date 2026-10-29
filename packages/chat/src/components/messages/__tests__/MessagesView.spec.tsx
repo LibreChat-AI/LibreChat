@@ -53,7 +53,12 @@ function createHost(overrides: Partial<MessagesHost> = {}) {
   return { host, scrolling, reportNearBottom, useConversationSeen };
 }
 
-const contract = { index: 0, latestMessageDepth: 0, messagesKey: 'convo-1' } as ChatContract;
+const contract = {
+  index: 0,
+  isSubmitting: false,
+  latestMessageDepth: 0,
+  messagesKey: 'convo-1',
+} as ChatContract;
 
 function renderView(props: Partial<MessagesViewProps>, host: MessagesHost, chat = contract) {
   const view = (next: Partial<MessagesViewProps>) => (

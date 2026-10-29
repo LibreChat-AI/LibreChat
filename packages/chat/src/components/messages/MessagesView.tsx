@@ -17,7 +17,6 @@ import {
 import useScrollbarGutter from '../../react/messages/useScrollbarGutter';
 import { useMessagesHost } from '../../react/messages/host';
 import { useChatContext } from '../../react/chat/context';
-import { useIsSubmitting } from '../../react/submission';
 import { useMessagePartsHost } from '../../react/host';
 
 /** What the thread slot renders the conversation from. */
@@ -105,13 +104,13 @@ export default function MessagesView({
 
   useScrollbarGutter(scrollableRef);
 
-  const { index, latestMessageId, latestMessageDepth, messagesKey } = useChatContext();
+  const { index, isSubmitting, latestMessageId, latestMessageDepth, messagesKey } =
+    useChatContext();
   /** Re-arm from the conversation that owns the RENDERED tree: the app's conversation id lags
    *  the route during warm-cache navigation, and keying off it would first mount the new tree
    *  unwindowed, then narrow it after the fact, visibly unmounting rows the user is already
    *  reading. An empty tree has no message to name its owner, so the route's key stands in. */
   const treeConversationId = messagesTree?.[0]?.conversationId ?? (messagesKey || conversationId);
-  const isSubmitting = useIsSubmitting(index);
   const autoScroll = host.useAutoScroll();
 
   /** Direct measurement for the one trigger the observer cannot serve: after a messages
