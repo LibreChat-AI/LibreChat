@@ -1247,3 +1247,266 @@ it('propagates cleanup lookup outages instead of treating retained metadata as a
       'database unavailable',
     );
   }));
+
+it.each(['session', 'commit'] as const)(
+  'retries reservation after a transient capability %s failure',
+  (failure) =>
+    scoped(async () => {
+      const fresh = createResponseStorage(mongoose);
+      if (failure === 'session')
+        jest
+          .spyOn(mongoose, 'startSession')
+          .mockRejectedValueOnce(new Error('transient probe outage'));
+      else {
+        const session = await mongoose.startSession();
+        jest
+          .spyOn(session, 'commitTransaction')
+          .mockRejectedValueOnce(new Error('transient probe outage'));
+        jest.spyOn(mongoose, 'startSession').mockResolvedValueOnce(session);
+      }
+      await expect(fresh.reserve(reservation())).rejects.toThrow('transient probe outage');
+      expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(0);
+      expect(await mongoose.models.ResponseScope.countDocuments({})).toBe(0);
+      expect(await fresh.reserve(reservation())).toMatchObject({ ok: true, replayed: false });
+    }),
+);
+
+it('keeps response-bound conversation identity immutable without cancelling its work', () =>
+  scoped(async () => {
+    createModels(mongoose);
+    const methods = createConversationMethods(mongoose, {
+      getMessages: jest.fn(async () => []),
+      deleteMessages: jest.fn(async () => ({ acknowledged: true, deletedCount: 0 })),
+    });
+    await methods.saveConvo(
+      { userId: owner.userId },
+      { conversationId: 'immutable-source', endpoint: 'agents' },
+    );
+    await storage.reserve(reservation({ conversationId: 'immutable-source' }));
+    expect(
+      await methods.saveConvo(
+        { userId: owner.userId },
+        {
+          conversationId: 'immutable-source',
+          newConversationId: 'replacement',
+          endpoint: 'agents',
+        },
+      ),
+    ).toEqual({ message: 'Conversation ID cannot be replaced after persistence.' });
+    expect(
+      await mongoose.models.Conversation.exists({
+        user: owner.userId,
+        conversationId: 'immutable-source',
+      }),
+    ).not.toBeNull();
+    expect(
+      await mongoose.models.Conversation.exists({
+        user: owner.userId,
+        conversationId: 'replacement',
+      }),
+    ).toBeNull();
+    expect(await storage.read(owner, 'resp_one')).not.toHaveProperty('cancellationRequestedAt');
+    expect(
+      await storage.reserve(
+        reservation({
+          responseId: 'another',
+          requestKey: 'another',
+          conversationId: 'immutable-source',
+        }),
+      ),
+    ).toMatchObject({ ok: true });
+  }));
+
+it('fences an empty old identity and propagates retention to its replacement before admitting work', () =>
+  scoped(async () => {
+    createModels(mongoose);
+    const methods = createConversationMethods(mongoose, {
+      getMessages: jest.fn(async () => []),
+      deleteMessages: jest.fn(async () => ({ acknowledged: true, deletedCount: 0 })),
+    });
+    const expiredAt = new Date(Date.now() + 60_000);
+    expect(
+      await methods.saveConvo(
+        { userId: owner.userId, expiredAt },
+        {
+          conversationId: 'initial-source',
+          newConversationId: 'replacement',
+          endpoint: 'agents',
+        },
+      ),
+    ).toMatchObject({ conversationId: 'replacement' });
+    expect(await storage.reserve(reservation({ conversationId: 'initial-source' }))).toEqual({
+      ok: false,
+      code: 'response_unavailable',
+    });
+    expect(await storage.reserve(reservation({ conversationId: 'replacement' }))).toMatchObject({
+      ok: true,
+      record: { expiredAt },
+    });
+    await methods.deleteConvos(owner.userId, { conversationId: 'replacement' });
+    expect(await storage.read(owner, 'resp_one')).toBeNull();
+  }));
+
+it('serializes ID replacement with a reservation already inserting private data', () =>
+  scoped(async () => {
+    createModels(mongoose);
+    const methods = createConversationMethods(mongoose, {
+      getMessages: jest.fn(async () => []),
+      deleteMessages: jest.fn(async () => ({ acknowledged: true, deletedCount: 0 })),
+    });
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const collection = mongoose.models.StoredResponse.collection;
+    const insert = collection.insertOne.bind(collection);
+    const paused = jest.spyOn(collection, 'insertOne').mockImplementation(async (...args) => {
+      entered();
+      await gate;
+      return insert(...args);
+    });
+    const pending = storage.reserve(reservation({ conversationId: 'racing-source' }));
+    await started;
+    let settled = false;
+    const replacement = methods
+      .saveConvo(
+        { userId: owner.userId },
+        {
+          conversationId: 'racing-source',
+          newConversationId: 'replacement',
+          endpoint: 'agents',
+        },
+      )
+      .then((value) => {
+        settled = true;
+        return value;
+      });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(settled).toBe(false);
+    } finally {
+      release();
+      paused.mockRestore();
+    }
+    expect(await pending).toMatchObject({ ok: true });
+    expect(await replacement).toEqual({
+      message: 'Conversation ID cannot be replaced after persistence.',
+    });
+    expect(await storage.read(owner, 'resp_one')).toMatchObject({
+      conversationId: 'racing-source',
+    });
+    expect(
+      await mongoose.models.Conversation.exists({ conversationId: 'racing-source' }),
+    ).toBeNull();
+  }));
+
+it.each(['transient_read', 'missing_canary', 'failed_canary_create'] as const)(
+  'classifies capability probe errors without caching an outage: %s',
+  (kind) =>
+    scoped(async () => {
+      const db = mongoose.connection.db!;
+      const probe = db.collection('__transaction_test__');
+      const collection = db.collection.bind(db);
+      jest
+        .spyOn(db, 'collection')
+        .mockImplementation((name, options) =>
+          name === '__transaction_test__' ? probe : collection(name, options),
+        );
+      const failure =
+        kind === 'transient_read'
+          ? new Error('transient database read outage')
+          : new mongoose.mongo.MongoServerError({
+              code: 303,
+              message: 'Feature not supported: non-existent collection in transaction',
+            });
+      const read = jest.spyOn(probe, 'findOne').mockRejectedValueOnce(failure);
+      if (kind === 'failed_canary_create')
+        jest
+          .spyOn(db, 'createCollection')
+          .mockRejectedValueOnce(new Error('canary creation denied'));
+      const fresh = createResponseStorage(mongoose);
+      if (kind === 'missing_canary') {
+        expect(await fresh.reserve(reservation())).toMatchObject({ ok: true });
+        expect(read).toHaveBeenCalledTimes(2);
+      } else {
+        await expect(fresh.reserve(reservation())).rejects.toThrow(
+          kind === 'transient_read' ? 'transient database read outage' : 'canary creation denied',
+        );
+        expect(await fresh.reserve(reservation())).toMatchObject({ ok: true });
+      }
+    }),
+);
+
+it('never renames a source conversation inserted after initial assignment checked absence', () =>
+  scoped(async () => {
+    createModels(mongoose);
+    const sourceId = 'late-initial-source';
+    const collection = mongoose.models.Conversation.collection;
+    const find = collection.findOne.bind(collection);
+    let inserted = false;
+    jest.spyOn(collection, 'findOne').mockImplementation(async (...args) => {
+      const found = await find(...args);
+      if (!inserted && args[0]?.conversationId === sourceId && found == null) {
+        inserted = true;
+        await collection.insertOne({
+          user: owner.userId,
+          tenantId: owner.tenantId,
+          conversationId: sourceId,
+          endpoint: 'agents',
+          title: 'Concurrent source',
+        });
+      }
+      return found;
+    });
+    const methods = createConversationMethods(mongoose, {
+      getMessages: jest.fn(async () => []),
+      deleteMessages: jest.fn(async () => ({ acknowledged: true, deletedCount: 0 })),
+    });
+    expect(
+      await methods.saveConvo(
+        { userId: owner.userId },
+        {
+          conversationId: sourceId,
+          newConversationId: 'initial-destination',
+          endpoint: 'agents',
+        },
+      ),
+    ).toMatchObject({ conversationId: 'initial-destination' });
+    expect(
+      await mongoose.models.Conversation.findOne({ conversationId: sourceId }).lean(),
+    ).toMatchObject({ title: 'Concurrent source' });
+  }));
+
+it('retries a failed initial ID assignment without reopening its unused source scope', () =>
+  scoped(async () => {
+    createModels(mongoose);
+    const methods = createConversationMethods(mongoose, {
+      getMessages: jest.fn(async () => []),
+      deleteMessages: jest.fn(async () => ({ acknowledged: true, deletedCount: 0 })),
+    });
+    jest
+      .spyOn(mongoose.models.Conversation.collection, 'findOneAndUpdate')
+      .mockRejectedValueOnce(new Error('parent write unavailable'));
+    const input = {
+      conversationId: 'failed-initial-source',
+      newConversationId: 'retry-initial-destination',
+      endpoint: 'agents',
+    };
+    expect(await methods.saveConvo({ userId: owner.userId }, input)).toEqual({
+      message: 'Error saving conversation',
+    });
+    expect(await storage.reserve(reservation({ conversationId: input.conversationId }))).toEqual({
+      ok: false,
+      code: 'response_unavailable',
+    });
+    expect(await methods.saveConvo({ userId: owner.userId }, input)).toMatchObject({
+      conversationId: input.newConversationId,
+    });
+    expect(
+      await storage.reserve(reservation({ conversationId: input.newConversationId })),
+    ).toMatchObject({ ok: true });
+  }));
