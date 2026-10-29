@@ -1,9 +1,9 @@
 import { memo, useEffect, useState } from 'react';
 import { useAtomValue } from 'jotai';
-import { useTranslation } from 'react-i18next';
-import { submissionStartFamily } from '@librechat/chat/react';
-import { getElapsedDurationLabels } from '~/utils';
-import { useLocalize } from '~/hooks';
+import { useLocalize, useLanguage } from '@librechat/client';
+import type { NamedExoticComponent } from 'react';
+import { submissionStartFamily } from '../../react/generation';
+import { getElapsedDurationLabels } from './duration';
 
 const elapsedSeconds = (start: number): number =>
   Math.max(0, Math.floor((Date.now() - start) / 1000));
@@ -48,7 +48,11 @@ export const shouldShowElapsed = ({
  * only ever renders mid-generation (see `shouldShowElapsed`), so there is no
  * settled state for the animation to misrepresent.
  */
-const Elapsed = memo(function Elapsed({ index }: { index: number }) {
+const Elapsed: NamedExoticComponent<{ index: number }> = memo(function Elapsed({
+  index,
+}: {
+  index: number;
+}) {
   const submissionStart = useAtomValue(submissionStartFamily(index));
   return <ElapsedTimer start={submissionStart ?? undefined} />;
 });
@@ -56,9 +60,13 @@ const Elapsed = memo(function Elapsed({ index }: { index: number }) {
 /** The bare ticker behind `Elapsed`, for surfaces whose start time does not
  *  come from the chat submission store (e.g. subagent turns started by their
  *  trigger). Falls back to mount time when no start is known. */
-export const ElapsedTimer = memo(function ElapsedTimer({ start: startAt }: { start?: number }) {
+export const ElapsedTimer: NamedExoticComponent<{ start?: number }> = memo(function ElapsedTimer({
+  start: startAt,
+}: {
+  start?: number;
+}) {
   const localize = useLocalize();
-  const { i18n } = useTranslation();
+  const language = useLanguage();
   const [mountTime] = useState(() => Date.now());
   const start = startAt ?? mountTime;
   const [seconds, setSeconds] = useState(() => elapsedSeconds(start));
@@ -69,7 +77,7 @@ export const ElapsedTimer = memo(function ElapsedTimer({ start: startAt }: { sta
     return () => clearInterval(intervalId);
   }, [start]);
 
-  const labels = getElapsedDurationLabels(seconds * 1000, i18n.language);
+  const labels = getElapsedDurationLabels(seconds * 1000, language);
   /** `ps-1.5` puts the reading on the column everything else in this slot
    *  shares: the streaming dot pads the same 6px to center on the size-6
    *  header icon's axis (see `EmptyTextPart`), and the hover-button glyphs

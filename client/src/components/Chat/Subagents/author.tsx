@@ -1,9 +1,9 @@
 import { useMemo, useSyncExternalStore } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { isDocumentId } from '@librechat/chat/components';
 import { EModelEndpoint, QueryKeys, ContentTypes } from 'librechat-data-provider';
 import type { Agent, TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import { isDocumentId } from '~/components/Chat/Messages/ui/HeaderLabel';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import { useAgentsMapContext } from '~/Providers';
 import { findSubagentDispatch } from './dispatch';

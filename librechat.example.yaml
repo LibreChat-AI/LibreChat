@@ -575,6 +575,14 @@ registration:
 # messages:
 #   maxPageSize: 1000 # default: 1000
 
+# Upper bounds on independent lookups a request runs at once (1 to 32). Each omitted key keeps the default shown.
+# concurrency:
+#   connectedAgentLoads: 4 # connected agents initialized together per level of a handoff graph
+#   mcpCatalogLookups: 4 # MCP tool catalog reads when assembling an ephemeral or added agent
+#   skillNameLookups: 8 # model spec skill name resolutions
+#   skillFileInspections: 4 # bundled skill file inspections before a skill is primed
+#   resumeAgentLoads: 4 # agent reads while building the resume snapshot of a paused run
+
 # rateLimits:
 #   # Per-user MCP App browser-route limits. Each limit uses a fixed one-minute window.
 #   mcpApps:

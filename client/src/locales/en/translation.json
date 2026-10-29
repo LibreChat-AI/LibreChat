@@ -1341,7 +1341,6 @@
   "com_ui_authentication": "Authentication",
   "com_ui_authentication_type": "Authentication Type",
   "com_ui_auto": "Auto",
-  "com_ui_reasoning_for_next_message": "Reasoning for next message",
   "com_ui_reasoning_encrypted": "Reasoning (encrypted)",
   "com_ui_reasoning_encrypted_description": "The model returned its reasoning encrypted, so it cannot be shown",
   "com_ui_available_options": "Available options",

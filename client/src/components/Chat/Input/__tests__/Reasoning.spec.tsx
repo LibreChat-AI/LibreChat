@@ -103,7 +103,7 @@ describe('ReasoningControl', () => {
     );
 
     const trigger = screen.getByRole('button', {
-      name: 'com_ui_reasoning_for_next_message com_ui_medium',
+      name: 'com_ui_composer_thinking com_ui_medium',
     });
 
     fireEvent.click(trigger);
@@ -124,7 +124,7 @@ describe('ReasoningControl', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_reasoning_for_next_message/ }));
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
     const slider = screen.getByRole('slider', { name: 'com_endpoint_reasoning_effort' });
     expect(slider).toHaveAttribute('aria-valuenow', '3');
     expect(slider).toHaveAttribute('aria-valuetext', 'com_ui_medium');
@@ -146,7 +146,7 @@ describe('ReasoningControl', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_reasoning_for_next_message/ }));
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
     const dialog = screen.getByRole('dialog', { name: 'com_endpoint_reasoning_effort' });
 
     expect(dialog).toBeVisible();
@@ -164,7 +164,7 @@ describe('ReasoningControl', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_reasoning_for_next_message/ }));
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
     const slider = screen.getByRole('slider', { name: 'com_endpoint_thinking_budget' });
     expect(slider).toHaveAttribute('aria-valuemin', '128');
     expect(slider).toHaveAttribute('aria-valuemax', '32768');
@@ -194,7 +194,7 @@ describe('ReasoningControl', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_reasoning_for_next_message/ }));
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
     const input = screen.getByRole('spinbutton', { name: 'com_endpoint_thinking_budget' });
     fireEvent.change(input, { target: { value: '16' } });
     fireEvent.blur(input);
@@ -213,7 +213,7 @@ describe('ReasoningControl', () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: /com_ui_reasoning_for_next_message/ }));
+    fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
     const input = screen.getByRole('spinbutton', { name: 'com_endpoint_thinking_budget' });
     fireEvent.focus(input);
     fireEvent.blur(input);
@@ -234,7 +234,7 @@ describe('ReasoningControl', () => {
         />,
       );
 
-      fireEvent.click(screen.getByRole('button', { name: /com_ui_reasoning_for_next_message/ }));
+      fireEvent.click(screen.getByRole('button', { name: /com_ui_composer_thinking/ }));
       const input = screen.getByRole('spinbutton', { name: 'com_endpoint_thinking_budget' });
       fireEvent.change(input, { target: { value: '' } });
       fireEvent.blur(input);
@@ -399,6 +399,305 @@ describe('useComposerReasoning', () => {
     expect(reasoningStore.get(pendingReasoningOverrideFamily('staged-conversation'))).toEqual(
       staged,
     );
+  });
+
+  it('shows the level the branch last ran at until the user picks another', async () => {
+    const reasoningStore = createStore();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const rendered = renderHook(
+      ({ branchReasoning }: { branchReasoning?: TReasoningOverride }) =>
+        useComposerReasoning({
+          conversation: {
+            conversationId: 'branch-conversation',
+            endpoint: 'openAI',
+            model: 'gpt-5',
+          } as TConversation,
+          index: 0,
+          enabled: true,
+          branchReasoning,
+        }),
+      {
+        initialProps: {
+          branchReasoning: {
+            key: 'reasoning_effort',
+            value: ReasoningEffort.high,
+          } as TReasoningOverride,
+        },
+        wrapper,
+      },
+    );
+
+    await waitFor(() =>
+      expect(rendered.result.current?.value).toEqual({
+        key: 'reasoning_effort',
+        value: ReasoningEffort.high,
+      }),
+    );
+
+    act(() => {
+      rendered.result.current?.setValue({ key: 'reasoning_effort', value: ReasoningEffort.low });
+    });
+    expect(rendered.result.current?.value).toEqual({
+      key: 'reasoning_effort',
+      value: ReasoningEffort.low,
+    });
+  });
+
+  it('treats a Parameters reset as choosing the default over the branch level', async () => {
+    const reasoningStore = createStore();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const high = { key: 'reasoning_effort', value: ReasoningEffort.high } as TReasoningOverride;
+    const base = {
+      conversationId: 'reset-conversation',
+      endpoint: 'openAI',
+      model: 'gpt-5',
+    } as TConversation;
+    const rendered = renderHook(
+      ({ conversation }: { conversation: TConversation }) =>
+        useComposerReasoning({ conversation, index: 0, enabled: true, branchReasoning: high }),
+      {
+        initialProps: {
+          conversation: { ...base, reasoning_effort: ReasoningEffort.medium } as TConversation,
+        },
+        wrapper,
+      },
+    );
+    await waitFor(() => expect(rendered.result.current?.value).toEqual(high));
+
+    rendered.rerender({ conversation: base });
+
+    const reset = {
+      key: 'reasoning_effort',
+      value: rendered.result.current?.setting.default,
+    };
+    await waitFor(() =>
+      expect(
+        reasoningStore.get(
+          pendingReasoningOverrideFamily(getReasoningStateKey('reset-conversation', 0)),
+        ),
+      ).toEqual(reset),
+    );
+    expect(rendered.result.current?.value).toEqual(reset);
+  });
+
+  it('lets a Parameters edit replace the branch level, but not a conversation switch', async () => {
+    const reasoningStore = createStore();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const high = { key: 'reasoning_effort', value: ReasoningEffort.high } as TReasoningOverride;
+    const rendered = renderHook(
+      ({ conversation }: { conversation: TConversation }) =>
+        useComposerReasoning({ conversation, index: 0, enabled: true, branchReasoning: high }),
+      {
+        initialProps: {
+          conversation: {
+            conversationId: 'edited-conversation',
+            endpoint: 'openAI',
+            model: 'gpt-5',
+          } as TConversation,
+        },
+        wrapper,
+      },
+    );
+    await waitFor(() => expect(rendered.result.current?.value).toEqual(high));
+
+    rendered.rerender({
+      conversation: {
+        conversationId: 'other-conversation',
+        endpoint: 'openAI',
+        model: 'gpt-5',
+        reasoning_effort: ReasoningEffort.low,
+      } as TConversation,
+    });
+    expect(rendered.result.current?.value).toEqual(high);
+
+    rendered.rerender({
+      conversation: {
+        conversationId: 'other-conversation',
+        endpoint: 'openAI',
+        model: 'gpt-5',
+        reasoning_effort: ReasoningEffort.medium,
+      } as TConversation,
+    });
+    await waitFor(() =>
+      expect(rendered.result.current?.value).toEqual({
+        key: 'reasoning_effort',
+        value: ReasoningEffort.medium,
+      }),
+    );
+    expect(
+      reasoningStore.get(
+        pendingReasoningOverrideFamily(getReasoningStateKey('other-conversation', 0)),
+      ),
+    ).toEqual({ key: 'reasoning_effort', value: ReasoningEffort.medium });
+  });
+
+  it('does not show an inherited level while thinking is switched off', async () => {
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={createStore()}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const rendered = renderHook(
+      () =>
+        useComposerReasoning({
+          conversation: {
+            conversationId: 'thinking-off',
+            endpoint: 'anthropic',
+            model: 'claude-sonnet-4-6',
+            thinking: false,
+          } as TConversation,
+          index: 0,
+          enabled: true,
+          branchReasoning: { key: 'effort', value: 'high' } as TReasoningOverride,
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(rendered.result.current?.setting.key).toBe('effort'));
+    expect(rendered.result.current?.value?.value).not.toBe('high');
+  });
+
+  it('keeps a Parameters effort edit a parameter while thinking is switched off', async () => {
+    const reasoningStore = createStore();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const base = {
+      conversationId: 'thinking-off-edit',
+      endpoint: 'anthropic',
+      model: 'claude-sonnet-4-6',
+      thinking: false,
+    } as TConversation;
+    const rendered = renderHook(
+      ({ conversation }: { conversation: TConversation }) =>
+        useComposerReasoning({ conversation, index: 0, enabled: true }),
+      { initialProps: { conversation: { ...base, effort: 'low' } as TConversation }, wrapper },
+    );
+    await waitFor(() => expect(rendered.result.current?.setting.key).toBe('effort'));
+
+    rendered.rerender({ conversation: { ...base, effort: 'high' } as TConversation });
+
+    await waitFor(() => expect(rendered.result.current?.value?.value).toBe('high'));
+    expect(
+      reasoningStore.get(
+        pendingReasoningOverrideFamily(getReasoningStateKey('thinking-off-edit', 0)),
+      ),
+    ).toBeUndefined();
+  });
+
+  it('withdraws a staged level when thinking is switched off, but keeps one picked after', async () => {
+    const reasoningStore = createStore();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const base = {
+      conversationId: 'thinking-switch',
+      endpoint: 'anthropic',
+      model: 'claude-sonnet-4-6',
+    } as TConversation;
+    const key = getReasoningStateKey('thinking-switch', 0);
+    const high = { key: 'effort', value: 'high' } as TReasoningOverride;
+    const rendered = renderHook(
+      ({ conversation }: { conversation: TConversation }) =>
+        useComposerReasoning({ conversation, index: 0, enabled: true }),
+      { initialProps: { conversation: { ...base, thinking: true } as TConversation }, wrapper },
+    );
+    await waitFor(() => expect(rendered.result.current?.setting.key).toBe('effort'));
+    act(() => {
+      rendered.result.current?.setValue(high);
+    });
+
+    rendered.rerender({ conversation: { ...base, thinking: false } as TConversation });
+    await waitFor(() =>
+      expect(reasoningStore.get(pendingReasoningOverrideFamily(key))).toBeUndefined(),
+    );
+
+    act(() => {
+      rendered.result.current?.setValue(high);
+    });
+    rendered.rerender({ conversation: { ...base, thinking: false } as TConversation });
+    expect(reasoningStore.get(pendingReasoningOverrideFamily(key))).toEqual(high);
+  });
+
+  it('does not withdraw a level when moving to a conversation with thinking off', async () => {
+    const reasoningStore = createStore();
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={reasoningStore}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const high = { key: 'effort', value: 'high' } as TReasoningOverride;
+    const otherKey = getReasoningStateKey('thinking-off-other', 0);
+    reasoningStore.set(pendingReasoningOverrideFamily(otherKey), high);
+    const model = { endpoint: 'anthropic', model: 'claude-sonnet-4-6' };
+    const rendered = renderHook(
+      ({ conversation }: { conversation: TConversation }) =>
+        useComposerReasoning({ conversation, index: 0, enabled: true }),
+      {
+        initialProps: {
+          conversation: {
+            conversationId: 'thinking-on',
+            thinking: true,
+            ...model,
+          } as TConversation,
+        },
+        wrapper,
+      },
+    );
+    await waitFor(() => expect(rendered.result.current?.setting.key).toBe('effort'));
+
+    rendered.rerender({
+      conversation: {
+        conversationId: 'thinking-off-other',
+        thinking: false,
+        ...model,
+      } as TConversation,
+    });
+
+    await waitFor(() => expect(rendered.result.current?.value).toEqual(high));
+    expect(reasoningStore.get(pendingReasoningOverrideFamily(otherKey))).toEqual(high);
+  });
+
+  it('does not show a branch level the current model does not take', async () => {
+    const wrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={createStore()}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const rendered = renderHook(
+      () =>
+        useComposerReasoning({
+          conversation: {
+            conversationId: 'branch-conversation',
+            endpoint: 'openAI',
+            model: 'gpt-5',
+          } as TConversation,
+          index: 0,
+          enabled: true,
+          branchReasoning: { key: 'thinkingBudget', value: 4096 } as TReasoningOverride,
+        }),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(rendered.result.current?.setting.key).toBe('reasoning_effort'));
+    expect(rendered.result.current?.value?.key).toBe('reasoning_effort');
+    expect(rendered.result.current?.value?.value).not.toBe(4096);
   });
 
   it('resolves the control for an ephemeral agent from its encoded target', async () => {
@@ -845,6 +1144,43 @@ describe('useComposerReasoning: OpenRouter per-model efforts', () => {
         },
       } as MockEndpointConfig,
     };
+  });
+
+  it('keeps the branch level when the capabilities reload, not mistaking it for an edit', async () => {
+    const high = { key: 'reasoning_effort', value: ReasoningEffort.high } as TReasoningOverride;
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['low', 'high'] } } };
+    const store = createStore();
+    const storeWrapper = ({ children }: { children: ReactNode }) => (
+      <RecoilRoot>
+        <JotaiProvider store={store}>{children}</JotaiProvider>
+      </RecoilRoot>
+    );
+    const configured = { ...conversation, reasoning_effort: ReasoningEffort.low } as TConversation;
+    const rendered = renderHook(
+      () =>
+        useComposerReasoning({
+          conversation: configured,
+          index: 0,
+          enabled: true,
+          branchReasoning: high,
+        }),
+      { wrapper: storeWrapper },
+    );
+    await waitFor(() => expect(rendered.result.current?.value).toEqual(high));
+
+    mockCapabilities = undefined;
+    mockCapabilitiesLoading = true;
+    rendered.rerender();
+    expect(rendered.result.current).toBeNull();
+
+    mockCapabilities = { OpenRouter: { [model]: { efforts: ['low', 'high'] } } };
+    mockCapabilitiesLoading = false;
+    rendered.rerender();
+
+    await waitFor(() => expect(rendered.result.current?.value).toEqual(high));
+    expect(
+      store.get(pendingReasoningOverrideFamily(getReasoningStateKey('openrouter-conversation', 0))),
+    ).toBeUndefined();
   });
 
   it('offers no control while the capabilities are still loading', () => {

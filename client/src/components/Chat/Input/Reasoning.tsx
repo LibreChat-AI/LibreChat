@@ -18,6 +18,7 @@ import {
 } from 'librechat-data-provider';
 import type {
   Agent,
+  TMessage,
   SettingDefinition,
   TConversation,
   TReasoningOverride,
@@ -118,7 +119,7 @@ export function ReasoningControl({
         <Button
           variant="composer-trigger"
           disabled={disabled}
-          aria-label={`${localize('com_ui_reasoning_for_next_message')} ${displayValue}`}
+          aria-label={`${localize('com_ui_composer_thinking')} ${displayValue}`}
         >
           <BrainCircuit className="size-4" aria-hidden="true" />
           <ChevronDown className="size-3" aria-hidden="true" />
@@ -140,7 +141,7 @@ export function ReasoningControl({
                 {label}
               </div>
               <div className="text-text-secondary truncate text-xs">
-                {localize('com_ui_reasoning_for_next_message')}
+                {localize('com_ui_composer_thinking')}
               </div>
             </div>
             <Popover.Close asChild>
@@ -248,12 +249,21 @@ export function ReasoningControl({
   );
 }
 
+/** Override keys whose level also turns thinking on. */
+const THINKING_LEVEL_KEYS: ReadonlySet<string> = new Set([
+  'effort',
+  'thinkingLevel',
+  'thinkingBudget',
+]);
+
 type ComposerReasoningOptions = {
   conversation: TConversation | null;
   index: number;
   hasAddedConversation?: boolean;
   enabled?: boolean;
   blockedReasoningKeys?: ReadonlySet<string>;
+  /** The level the branch the next turn extends last ran at; shown until the user picks again. */
+  branchReasoning?: TMessage['reasoningOverride'];
 };
 
 type ComposerReasoningState = {
@@ -268,6 +278,7 @@ export function useComposerReasoning({
   hasAddedConversation = false,
   enabled = true,
   blockedReasoningKeys,
+  branchReasoning,
 }: ComposerReasoningOptions): ComposerReasoningState | null {
   const agentsMap = useAgentsMapContext();
   const { data: fetchedAgent } = useGetAgentByIdQuery(conversation?.agent_id);
@@ -420,14 +431,82 @@ export function useComposerReasoning({
     value,
   ]);
 
+  let configuredValue: unknown;
+  if (setting != null) {
+    configuredValue =
+      isAgent && agent != null
+        ? agent.model_parameters?.[setting.key]
+        : conversation?.[setting.key];
+  }
+  const configuredScope = `${reasoningStateKey}\u0000${targetFingerprint ?? ''}`;
+  const thinkingKey: string = 'thinking';
+  const thinkingOff =
+    (isAgent && agent != null ? agent.model_parameters?.[thinkingKey] : conversation?.thinking) ===
+    false;
+  /* Switching thinking off withdraws a staged level that would turn it back on; a level picked
+     after the switch is off is the user turning it on for that turn, so it stays. */
+  const previousThinking = useRef({ scope: configuredScope, off: thinkingOff });
+  useEffect(() => {
+    const previous = previousThinking.current;
+    previousThinking.current = { scope: configuredScope, off: thinkingOff };
+    if (
+      previous.scope === configuredScope &&
+      thinkingOff &&
+      !previous.off &&
+      value != null &&
+      THINKING_LEVEL_KEYS.has(value.key)
+    ) {
+      setValue(undefined);
+    }
+  }, [configuredScope, setValue, thinkingOff, value]);
+  /* The configured value changing while the conversation and target stay put is the user setting
+     the level elsewhere (the Parameters panel). It replaces the branch level the way a composer
+     pick does; otherwise the inherited level would silently outrank the edit. */
+  const previousConfigured = useRef<{ scope: string; value: unknown } | null>(null);
+  useEffect(() => {
+    /* While the capabilities load the setting is hidden, which says nothing about the configured
+       value: keep the last one seen, or its reappearance would read as an edit. */
+    if (setting == null) {
+      return;
+    }
+    const previous = previousConfigured.current;
+    previousConfigured.current = { scope: configuredScope, value: configuredValue };
+    if (
+      previous == null ||
+      previous.scope !== configuredScope ||
+      Object.is(previous.value, configuredValue)
+    ) {
+      return;
+    }
+    /* A reset removes the value; it is the user choosing the default, not leaving the choice. */
+    const editedValue = configuredValue ?? setting.default;
+    if (editedValue == null) {
+      return;
+    }
+    /* A pick turns thinking on; with the switch off, the panel's value stays a parameter. */
+    if (thinkingOff && THINKING_LEVEL_KEYS.has(setting.key)) {
+      return;
+    }
+    const edited = reasoningOverrideSchema.safeParse({ key: setting.key, value: editedValue });
+    if (edited.success && isReasoningOverrideSupported(edited.data, setting)) {
+      setValue(edited.data);
+    }
+  }, [configuredScope, configuredValue, setValue, setting, thinkingOff]);
+
   if (!available || setting == null) {
     return null;
   }
 
-  const configuredValue =
-    isAgent && agent != null ? agent.model_parameters?.[setting.key] : conversation?.[setting.key];
+  /* Mirrors the server: thinking switched off wins over a level the next turn would only inherit. */
+  const inherited =
+    branchReasoning != null &&
+    isReasoningOverrideSupported(branchReasoning, setting) &&
+    !(thinkingOff && THINKING_LEVEL_KEYS.has(branchReasoning.key))
+      ? branchReasoning
+      : undefined;
   const displayedValue =
     value ??
+    inherited ??
     reasoningOverrideSchema.safeParse({
       key: setting.key,
       value: configuredValue ?? setting.default,

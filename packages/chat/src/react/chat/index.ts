@@ -4,10 +4,14 @@ export { default as useChatHelpers } from './helpers';
 export { useAbortCleanup } from './abort';
 export { getMessageCacheIds, getMessagesConversationId } from './cache';
 export { ChatHostProvider, useChatHost } from './host';
+export { useTurns } from './turns';
 export type {
   ChatHost,
+  TurnLogger,
+  TurnServices,
   ChatTurnsParams,
   ChatMessageCache,
+  TurnCodeDecision,
   AbortStreamParams,
   AbortStreamResponse,
   ChatPaneConversation,

@@ -49,6 +49,8 @@ jest.mock('~/data-provider/Endpoints/queries', () => ({
 jest.mock('~/Providers', () => ({
   useChatContext: () => ({
     conversation: { conversationId: 'test-convo', endpoint: 'openAI', model: 'gpt-4o' },
+    latestMessageId: undefined,
+    getMessages: () => [],
   }),
 }));
 
@@ -729,7 +731,7 @@ describe('stop generating shortcut', () => {
     const second = appendComposerForm();
     first.form.dataset.chatPane = '0';
     second.form.dataset.chatPane = '1';
-    fireEvent.click(screen.getByRole('button', { name: /Reasoning for next message/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Thinking / }));
 
     for (const role of ['spinbutton', 'slider']) {
       const control = screen.getByRole(role);

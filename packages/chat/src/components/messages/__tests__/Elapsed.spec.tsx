@@ -1,9 +1,13 @@
-import React from 'react';
-import { RecoilRoot } from 'recoil';
+/**
+ * @jest-environment jsdom
+ */
 import { Provider, createStore } from 'jotai';
 import { render, screen, act } from '@testing-library/react';
-import { submissionStartFamily } from '@librechat/chat/react';
-import Elapsed, { shouldShowElapsed } from '~/components/Chat/Messages/Elapsed';
+import { submissionStartFamily } from '../../../react/generation';
+import { initEnglish } from '../../../__fixtures__/i18n';
+import Elapsed, { shouldShowElapsed } from '../Elapsed';
+
+beforeAll(initEnglish);
 
 function storeWithStart(start?: number) {
   const jotaiStore = createStore();
@@ -15,11 +19,9 @@ function storeWithStart(start?: number) {
 
 function renderElapsed(start?: number) {
   return render(
-    <RecoilRoot>
-      <Provider store={storeWithStart(start)}>
-        <Elapsed index={0} />
-      </Provider>
-    </RecoilRoot>,
+    <Provider store={storeWithStart(start)}>
+      <Elapsed index={0} />
+    </Provider>,
   );
 }
 
@@ -89,29 +91,21 @@ describe('Elapsed', () => {
     const start = Date.now() - 30_000;
     const jotaiStore = storeWithStart(start);
     const view = render(
-      <RecoilRoot>
-        <Provider store={jotaiStore}>
-          <Elapsed index={0} />
-        </Provider>
-      </RecoilRoot>,
+      <Provider store={jotaiStore}>
+        <Elapsed index={0} />
+      </Provider>,
     );
 
     expect(screen.getByTestId('stream-elapsed')).toHaveTextContent(/^30s$/);
 
-    view.rerender(
-      <RecoilRoot>
-        <Provider store={jotaiStore}>{null}</Provider>
-      </RecoilRoot>,
-    );
+    view.rerender(<Provider store={jotaiStore}>{null}</Provider>);
     expect(screen.queryByTestId('stream-elapsed')).toBeNull();
 
     advance(5_000);
     view.rerender(
-      <RecoilRoot>
-        <Provider store={jotaiStore}>
-          <Elapsed index={0} />
-        </Provider>
-      </RecoilRoot>,
+      <Provider store={jotaiStore}>
+        <Elapsed index={0} />
+      </Provider>,
     );
     expect(screen.getByTestId('stream-elapsed')).toHaveTextContent(/^35s$/);
   });
@@ -121,7 +115,7 @@ describe('Elapsed', () => {
     const timersWhileMounted = jest.getTimerCount();
     expect(timersWhileMounted).toBeGreaterThanOrEqual(1);
 
-    view.rerender(<RecoilRoot>{null}</RecoilRoot>);
+    view.unmount();
     expect(jest.getTimerCount()).toBe(timersWhileMounted - 1);
   });
 });

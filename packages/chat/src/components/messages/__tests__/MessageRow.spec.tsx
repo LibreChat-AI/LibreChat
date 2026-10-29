@@ -1,5 +1,11 @@
+/**
+ * @jest-environment jsdom
+ */
 import { render, screen } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
+import type { MessagesHost } from '../../../react/messages/host';
+import { MessagesHostProvider } from '../../../react/messages/host';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import MessageRow from '../MessageRow';
 
 jest.mock('../MessageTimestamp', () => ({
@@ -9,10 +15,12 @@ jest.mock('../MessageTimestamp', () => ({
   ),
 }));
 
-jest.mock('../../Content/Files', () => ({
-  __esModule: true,
-  default: () => <button data-testid="attached-file" />,
-}));
+beforeAll(initEnglish);
+
+const host: MessagesHost = {
+  useHour12: () => undefined,
+  renderFiles: () => <button data-testid="attached-file" />,
+};
 
 const MESSAGE_BODY = 'Message body';
 const attachedMessage = (overrides: Partial<TMessage> = {}) =>
@@ -44,25 +52,27 @@ const renderRow = ({
   outlined?: boolean;
 }) =>
   render(
-    <MessageRow
-      id="message-1"
-      message={message}
-      label={isCreatedByUser ? 'You' : 'Assistant'}
-      hoverLabel={isCreatedByUser ? undefined : 'gpt-5.6'}
-      icon={<span data-testid="message-icon" />}
-      footer={<div data-testid="message-actions" />}
-      ariaLabel={isCreatedByUser ? 'User message' : 'Assistant message'}
-      headerPrefix="Message from "
-      isCreatedByUser={isCreatedByUser}
-      hasParallelContent={hasParallelContent}
-      fullWidth={fullWidth}
-      isEditing={isEditing}
-      systemLabel={systemLabel}
-      showAuthor={showAuthor}
-      outlined={outlined}
-    >
-      <p>{MESSAGE_BODY}</p>
-    </MessageRow>,
+    <MessagesHostProvider host={host}>
+      <MessageRow
+        id="message-1"
+        message={message}
+        label={isCreatedByUser ? 'You' : 'Assistant'}
+        hoverLabel={isCreatedByUser ? undefined : 'gpt-5.6'}
+        icon={<span data-testid="message-icon" />}
+        footer={<div data-testid="message-actions" />}
+        ariaLabel={isCreatedByUser ? 'User message' : 'Assistant message'}
+        headerPrefix="Message from "
+        isCreatedByUser={isCreatedByUser}
+        hasParallelContent={hasParallelContent}
+        fullWidth={fullWidth}
+        isEditing={isEditing}
+        systemLabel={systemLabel}
+        showAuthor={showAuthor}
+        outlined={outlined}
+      >
+        <p>{MESSAGE_BODY}</p>
+      </MessageRow>
+    </MessagesHostProvider>,
   );
 
 describe('MessageRow', () => {

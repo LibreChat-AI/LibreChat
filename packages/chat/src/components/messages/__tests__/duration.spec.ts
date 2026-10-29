@@ -1,4 +1,4 @@
-import { getRunStepDurationLabels, getElapsedDurationLabels } from '../runStepDuration';
+import { getRunStepDurationLabels, getElapsedDurationLabels } from '../duration';
 
 describe('getRunStepDurationLabels', () => {
   describe('under ten seconds', () => {

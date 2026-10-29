@@ -9,9 +9,9 @@ import { useLatestMessage, useLatestMessageId } from '~/hooks/Messages/useLatest
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { messageAttachmentsMapAtom } from '~/hooks/SSE/atoms';
-import useChatFunctions from '~/hooks/Chat/useChatFunctions';
 import { getMappingOptions } from '~/hooks/Chat/outcomes';
 import { useAbortStreamMutation } from '~/data-provider';
+import useTurnServices from '~/hooks/Chat/services';
 import useNewConvo from '~/hooks/useNewConvo';
 
 /** Cache events that add, drop or rewrite a query's data. */
@@ -73,11 +73,11 @@ function useMessageCache(): ChatMessageCache {
 }
 
 /** The app's services behind `useChatHelpers`: its pane store, message query cache, turn
- *  builder, thread selection, transport and settings. */
+ *  services, thread selection, transport and settings. */
 export const appChatHost: ChatHost = {
   usePaneConversation: (index) => useChatSettings().usePaneConversationState(index),
   useNewConversation: (index) => useNewConvo(index).newConversation,
-  useTurns: (params) => useChatFunctions(params),
+  useTurnServices,
   useLatestMessage: (index, key) => useLatestMessage(index, key),
   useLatestMessageId: (index, key) => useLatestMessageId(index, key),
   useSetSiblingIdx: (parentMessageId) => useSetAtom(siblingIdxFamily(siblingKey(parentMessageId))),

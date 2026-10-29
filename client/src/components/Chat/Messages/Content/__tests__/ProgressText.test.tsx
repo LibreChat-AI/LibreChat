@@ -3,21 +3,24 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { FailedRevealContext } from '../reveal';
 import ProgressText from '../ProgressText';
 
-jest.mock('~/hooks', () => ({
-  useLocalize:
-    () =>
-    (key: string, values?: Record<string, string | number>): string => {
-      const translations: Record<string, string> = {
-        com_ui_duration_seconds: `${values?.[0]}s`,
-        com_ui_tool_preparation_time: 'Preparation',
-        com_ui_tool_call_time: 'Tool call',
-        com_ui_tool_total_time: 'Total elapsed',
-        com_ui_duration_minutes: `${values?.[0]}m ${values?.[1]}s`,
-        com_ui_duration_announced_seconds: `took ${values?.value} ${values?.count === 1 ? 'second' : 'seconds'}`,
-        com_ui_duration_announced_minutes: `took ${values?.value} ${values?.count === 1 ? 'minute' : 'minutes'}`,
-      };
-      return translations[key] ?? key;
-    },
+function mockLocalize(key: string, values?: Record<string, string | number>): string {
+  const translations: Record<string, string> = {
+    com_ui_duration_seconds: `${values?.[0]}s`,
+    com_ui_tool_preparation_time: 'Preparation',
+    com_ui_tool_call_time: 'Tool call',
+    com_ui_tool_total_time: 'Total elapsed',
+    com_ui_duration_minutes: `${values?.[0]}m ${values?.[1]}s`,
+    com_ui_duration_announced_seconds: `took ${values?.value} ${values?.count === 1 ? 'second' : 'seconds'}`,
+    com_ui_duration_announced_minutes: `took ${values?.value} ${values?.count === 1 ? 'minute' : 'minutes'}`,
+  };
+  return translations[key] ?? key;
+}
+
+jest.mock('~/hooks', () => ({ useLocalize: () => mockLocalize }));
+
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => mockLocalize,
 }));
 
 jest.mock('react-i18next', () => ({

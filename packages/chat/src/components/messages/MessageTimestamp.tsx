@@ -1,7 +1,8 @@
-import { useTranslation } from 'react-i18next';
-import useClockFormat from '~/hooks/useClockFormat';
-import { cn, getMessageTimestamp } from '~/utils';
-import useTimeTick from '~/hooks/useTimeTick';
+import { cn, useLanguage } from '@librechat/client';
+import type { ReactElement } from 'react';
+import { useMessagesHost } from '../../react/messages/host';
+import { getMessageTimestamp } from './time';
+import useTimeTick from '../../react/tick';
 
 type Timestamp = NonNullable<ReturnType<typeof getMessageTimestamp>>;
 
@@ -41,7 +42,7 @@ function RecentTimestamp({
 }: {
   value?: string | null;
   language: string;
-  hour12: boolean;
+  hour12: boolean | undefined;
   className?: string;
   revealOnHover?: boolean;
 }) {
@@ -72,10 +73,10 @@ export default function MessageTimestamp({
   value?: string | null;
   className?: string;
   revealOnHover?: boolean;
-}) {
-  const { i18n } = useTranslation();
-  const hour12 = useClockFormat();
-  const timestamp = getMessageTimestamp(value, i18n.language, hour12);
+}): ReactElement | null {
+  const language = useLanguage();
+  const hour12 = useMessagesHost().useHour12();
+  const timestamp = getMessageTimestamp(value, language, hour12);
 
   if (!timestamp) {
     return null;
@@ -85,7 +86,7 @@ export default function MessageTimestamp({
     return (
       <RecentTimestamp
         value={value}
-        language={i18n.language}
+        language={language}
         hour12={hour12}
         className={className}
         revealOnHover={revealOnHover}

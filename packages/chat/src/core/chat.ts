@@ -491,23 +491,36 @@ const recordOptimisticWrite = (
 /**
  * Undoes an optimistic write on the list as it stands now: rows it added go, rows it replaced or
  * removed come back as they were, and any other row, or one of its rows someone else wrote since,
- * stays as it is.
+ * stays as it is. A row that stays keeps the rows the write added above it, so the tree never loses
+ * the parent of a row it still lists.
  */
 const undoOptimisticWrite = (record: OptimisticWrite, current: TMessage[]): TMessage[] => {
-  const next: TMessage[] = [];
-  const kept = new Set<string>();
-  for (const message of current) {
+  const dropped = new Map<string, TMessage>();
+  const undone = current.map((message) => {
     if (record.committed.get(message.messageId) !== message) {
-      next.push(message);
-      kept.add(message.messageId);
-      continue;
+      return message;
     }
     const was = record.replaced.get(message.messageId);
-    if (was != null) {
-      next.push(was);
-      kept.add(message.messageId);
+    if (was == null) {
+      dropped.set(message.messageId, message);
+    }
+    return was;
+  });
+  for (const row of undone) {
+    let parent = row != null ? dropped.get(row.parentMessageId ?? '') : undefined;
+    while (parent != null && dropped.delete(parent.messageId)) {
+      parent = dropped.get(parent.parentMessageId ?? '');
     }
   }
+  const next: TMessage[] = [];
+  const kept = new Set<string>();
+  current.forEach((message, index) => {
+    const row = dropped.has(message.messageId) ? undefined : (undone[index] ?? message);
+    if (row != null) {
+      next.push(row);
+      kept.add(row.messageId);
+    }
+  });
   record.before.forEach((message, index) => {
     if (record.removed.has(message.messageId) && !kept.has(message.messageId)) {
       next.splice(getRestoreIndex(record.before, index, next), 0, message);
@@ -544,16 +557,22 @@ export class Chat {
   private disposed = false;
   /** Set while the chat writes the state, whose own report of that write the chat announces itself. */
   private writing = false;
+  private revision = 0;
   /**
    * The conversation this chat runs under: its id, until the server names the one it created for
    * a chat started under `new`. Every later turn addresses that one.
    */
-  private conversationId: string;
+  private conversation: string;
 
   constructor(init: ChatInit) {
     this.id = init.id;
-    this.conversationId = init.id;
+    this.conversation = init.id;
     this.init = init;
+  }
+
+  /** The conversation this chat runs under: its id, or the one the server created under `new`. */
+  get conversationId(): string {
+    return this.conversation;
   }
 
   get status(): ChatStatus {
@@ -570,6 +589,28 @@ export class Chat {
 
   get messages(): TMessage[] {
     return this.init.state.messages;
+  }
+
+  /**
+   * Counts the changes reported to subscribers, writes made to the state outside the chat
+   * included. A write can keep the same list while a message in it changed, so a snapshot keyed
+   * by this sees every write.
+   */
+  get version(): number {
+    return this.revision;
+  }
+
+  /**
+   * Replaces the message list after the writes already queued. AI SDK: the `messages` setter. A
+   * function receives the list current when it is written. The rollback of an optimistic write
+   * treats it as it treats any write made after its own.
+   */
+  setMessages(messages: TMessage[] | ((current: TMessage[]) => TMessage[])): Promise<void> {
+    return this.executor.run(() => {
+      if (!this.disposed) {
+        this.write(typeof messages === 'function' ? messages(this.messages) : messages);
+      }
+    });
   }
 
   /** Submits a user turn. Rejects while another turn of this chat is in flight. */
@@ -673,7 +714,7 @@ export class Chat {
       const prepared = await untilAborted(
         this.init.prepareRequest({
           ...request,
-          chatId: this.conversationId,
+          chatId: this.conversation,
           messages: this.messages,
         }),
         active.controller.signal,
@@ -711,7 +752,7 @@ export class Chat {
         this.init.transport.sendMessages({
           ...options,
           trigger: request.trigger,
-          chatId: this.conversationId,
+          chatId: this.conversation,
           messageId: request.messageId,
           payload: prepared.payload,
           abortSignal: signal,
@@ -861,6 +902,10 @@ export class Chat {
       if (this.markStreaming()) {
         this.notify();
       }
+      /** A listener told of that status may have disposed the chat too. */
+      if (this.disposed) {
+        return undefined;
+      }
     } else if (event.type === 'final') {
       outcome = getFinalOutcome(event.data);
     } else if (event.type === 'abort') {
@@ -938,9 +983,9 @@ export class Chat {
     if (
       conversationId &&
       conversationId !== Constants.NEW_CONVO &&
-      this.conversationId === Constants.NEW_CONVO
+      this.conversation === Constants.NEW_CONVO
     ) {
-      this.conversationId = conversationId;
+      this.conversation = conversationId;
     }
   }
 
@@ -953,13 +998,24 @@ export class Chat {
   ): void {
     const { state } = this.init;
     const status: ChatStatus = outcome.kind === 'error' ? 'error' : 'ready';
-    if (state.connection !== 'idle') {
-      state.connection = 'idle';
+    /**
+     * One terminal state, with the chat's listeners told once it is all set. A store subscriber
+     * told of a field may start the next turn, which then owns the fields this one has not set.
+     */
+    this.writing = true;
+    try {
+      if (state.connection !== 'idle') {
+        state.connection = 'idle';
+      }
+      if (!this.active && state.status !== status) {
+        state.status = status;
+      }
+      if (!this.active) {
+        state.error = outcome.kind === 'error' ? outcome.error : undefined;
+      }
+    } finally {
+      this.writing = false;
     }
-    if (state.status !== status) {
-      state.status = status;
-    }
-    state.error = outcome.kind === 'error' ? outcome.error : undefined;
     const messages = this.messages;
     let message: TMessage | undefined;
     if (responseId !== undefined) {
@@ -1039,6 +1095,7 @@ export class Chat {
   }
 
   private notify(): void {
+    this.revision += 1;
     for (const listener of this.listeners) {
       try {
         listener();

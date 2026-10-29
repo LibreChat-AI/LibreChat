@@ -943,6 +943,11 @@ export interface MessageMethods {
     limitPerThread: number;
   }): Promise<ParentSubagentTaskRecord[]>;
   getMessage(params: { user: string; messageId: string }): Promise<IMessage | null>;
+  getBranchReasoningOverride(params: {
+    user: string;
+    conversationId: string;
+    parentMessageId: string;
+  }): Promise<IMessage['reasoningOverride'] | null>;
   getMessagesByCursor(
     filter: FilterQuery<IMessage>,
     options?: {
@@ -4203,6 +4208,40 @@ export function createMessageMethods(
   }
 
   /**
+   * The reasoning level a branch runs at: the override on the nearest user message at or above
+   * `parentMessageId` that carries one, or `null` when none does. One read of the conversation's
+   * links and levels, projected to those fields; the walk itself is in memory.
+   */
+  async function getBranchReasoningOverride({
+    user,
+    conversationId,
+    parentMessageId,
+  }: {
+    user: string;
+    conversationId: string;
+    parentMessageId: string;
+  }): Promise<IMessage['reasoningOverride'] | null> {
+    const Message = mongoose.models.Message as Model<IMessage>;
+    const rows = await Message.find(
+      { user, conversationId },
+      { _id: 0, messageId: 1, parentMessageId: 1, isCreatedByUser: 1, reasoningOverride: 1 },
+    ).lean<
+      Pick<IMessage, 'messageId' | 'parentMessageId' | 'isCreatedByUser' | 'reasoningOverride'>[]
+    >();
+    const byId = new Map(rows.map((row) => [row.messageId, row]));
+    const visited = new Set<string>();
+    let current = byId.get(parentMessageId);
+    while (current != null && !visited.has(current.messageId)) {
+      visited.add(current.messageId);
+      if (current.isCreatedByUser === true && current.reasoningOverride != null) {
+        return current.reasoningOverride;
+      }
+      current = current.parentMessageId != null ? byId.get(current.parentMessageId) : undefined;
+    }
+    return null;
+  }
+
+  /**
    * Retrieves a single message from the database.
    */
   async function getMessage({ user, messageId }: { user: string; messageId: string }) {
@@ -4445,6 +4484,7 @@ export function createMessageMethods(
     getMessagesForSubagentThreadView,
     listSubagentTasksForThreads,
     getMessage,
+    getBranchReasoningOverride,
     getMessagesByCursor,
     searchMessages,
     deleteMessages,

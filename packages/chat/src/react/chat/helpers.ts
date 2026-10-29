@@ -9,6 +9,7 @@ import { abortScrollFamily } from '../generation';
 import { getMessageCacheIds } from './cache';
 import { useStopGenerating } from './stop';
 import { useChatHost } from './host';
+import { useTurns } from './turns';
 
 /**
  * Builds a pane's chat contract from the app the host supplies: its pane store, message cache,
@@ -67,7 +68,7 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
 
   const setSubmission = useSetAtom(submissionByIndex(index));
 
-  const { ask: _ask, regenerate: _regenerate } = host.useTurns({
+  const turnsParams = {
     index,
     files,
     setFiles,
@@ -78,7 +79,11 @@ export default function useChatHelpers(index = 0, paramId?: string): ChatContrac
     latestMessage,
     setSubmission,
     setConversation,
-  });
+  };
+  const { ask: _ask, regenerate: _regenerate } = useTurns(
+    turnsParams,
+    host.useTurnServices(turnsParams),
+  );
 
   const askRef = useRef(_ask);
   askRef.current = _ask;

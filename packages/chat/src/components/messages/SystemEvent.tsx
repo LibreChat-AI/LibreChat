@@ -1,6 +1,6 @@
+import { cn } from '@librechat/client';
 import { ChevronDown } from 'lucide-react';
-import type { ReactNode } from 'react';
-import { cn } from '~/utils';
+import type { ReactNode, ReactElement } from 'react';
 
 type SystemEventHeaderProps = {
   icon: ReactNode;
@@ -13,7 +13,7 @@ type SystemEventHeaderProps = {
   live?: boolean;
 };
 
-export function SystemEventIcon({ children }: { children: ReactNode }) {
+export function SystemEventIcon({ children }: { children: ReactNode }): ReactElement {
   return (
     <span
       aria-hidden="true"
@@ -36,7 +36,7 @@ export default function SystemEventHeader({
   expanded,
   warning = false,
   live = false,
-}: SystemEventHeaderProps) {
+}: SystemEventHeaderProps): ReactElement {
   return (
     <>
       {icon}

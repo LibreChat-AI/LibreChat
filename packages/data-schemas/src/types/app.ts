@@ -74,6 +74,8 @@ export interface AppConfig {
   /** Violation log retention; unset keeps the server default */
   violationLog?: TCustomConfig['violationLog'];
   messages?: TCustomConfig['messages'];
+  /** Bounds on parallel per-request lookups; unset keys fall back to the server defaults */
+  concurrency?: TCustomConfig['concurrency'];
   skillDeletion?: {
     finalizationEnabled?: boolean;
     sweepIntervalMs?: number;

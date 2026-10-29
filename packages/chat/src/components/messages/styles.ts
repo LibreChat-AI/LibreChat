@@ -1,5 +1,4 @@
-import { cn } from '~/utils';
-
+import { cn } from '@librechat/client';
 /**
  * Reveal-on-hover for a control that shares the message footer with the hover actions.
  *
@@ -73,7 +72,7 @@ export const hoverButtonClasses = ({
   isActive = false,
   isLast = false,
   className,
-}: HoverButtonStyleOptions = {}) =>
+}: HoverButtonStyleOptions = {}): string =>
   cn(
     'hover-button size-auto rounded-lg p-1.5 text-text-secondary-alt',
     'hover:text-text-primary hover:bg-surface-hover',

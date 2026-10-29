@@ -1,5 +1,14 @@
+/**
+ * @jest-environment jsdom
+ */
 import { render, screen } from '@testing-library/react';
 import HeaderLabel, { getHeaderHoverLabel, getHeaderModelName } from '../HeaderLabel';
+
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => (key: string, values?: Record<string, string>) =>
+    key === 'com_ui_message_model' ? `Model: ${values?.[0]}` : key,
+}));
 
 describe('getHeaderModelName', () => {
   it('prefers a real model over an agent document id', () => {

@@ -27,9 +27,9 @@ jest.mock('~/Providers', () => ({
   useFileMapContext: () => mockFileMap,
 }));
 
-jest.mock('~/components/Chat/Messages/ui/MessageTimestamp', () => ({
-  __esModule: true,
-  default: () => <time data-testid="steer-timestamp" />,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  MessageTimestamp: () => <time data-testid="steer-timestamp" />,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/MarkdownLite', () => ({
