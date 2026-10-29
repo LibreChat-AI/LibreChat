@@ -177,7 +177,7 @@ describe('executeAgentRun', () => {
           throw failure;
         },
       }),
-    ).resolves.toBe('done');
+    ).rejects.toBe(failure);
 
     expect(manager.completeJob).toHaveBeenCalledWith('run-1', 'Remote agent execution failed', 10);
   });
@@ -234,15 +234,17 @@ describe('executeAgentRun', () => {
     manager.markProviderExecutionDrained.mockResolvedValue(false);
     const publish = jest.fn();
     const onError = jest.fn();
-    await executeAgentRun({
-      envelope: createEnvelope(),
-      runId: 'run-1',
-      conversationId: 'conversation-1',
-      isPrincipalActive: async () => true,
-      execute: async () => 'output',
-      afterSettle: publish,
-      onSettlementError: onError,
-    });
+    await expect(
+      executeAgentRun({
+        envelope: createEnvelope(),
+        runId: 'run-1',
+        conversationId: 'conversation-1',
+        isPrincipalActive: async () => true,
+        execute: async () => 'output',
+        afterSettle: publish,
+        onSettlementError: onError,
+      }),
+    ).rejects.toThrow('drain');
     expect(publish).not.toHaveBeenCalled();
     expect(onError).toHaveBeenCalled();
   });
