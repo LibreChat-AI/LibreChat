@@ -79,6 +79,10 @@ export type FileConfig = {
   fileContextCharLimit?: number;
   serverFileSizeLimit?: number;
   avatarSizeLimit?: number;
+  officePreview?: {
+    enabled?: boolean;
+    fileSizeLimit?: number;
+  };
   clientImageResize?: {
     enabled?: boolean;
     maxWidth?: number;
