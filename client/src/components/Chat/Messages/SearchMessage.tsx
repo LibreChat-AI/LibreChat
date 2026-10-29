@@ -5,11 +5,11 @@ import {
   MessageRow,
   AuthorHeader,
   getHeaderModelName,
+  MinimalHoverButtons,
   getMessageRowWidthClass,
 } from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon } from '~/common';
-import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
 import SearchContent, { rendersMarkdownLite } from './Content/SearchContent';
 import Icon from '~/components/Chat/Messages/MessageIcon';

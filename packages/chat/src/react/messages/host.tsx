@@ -1,6 +1,6 @@
 import { createContext, useContext } from 'react';
-import type { TMessage, TForkConvoRequest } from 'librechat-data-provider';
-import type { ReactNode } from 'react';
+import type { TMessage, SearchResultData, TForkConvoRequest } from 'librechat-data-provider';
+import type { Dispatch, ReactNode, SetStateAction } from 'react';
 
 /** The viewer's fork defaults, kept across sessions. */
 export type ForkPreferences = {
@@ -24,6 +24,24 @@ export type ForkEvents = {
 /** Starts a fork of a conversation. */
 export type ForkConversation = (request: TForkConvoRequest, events: ForkEvents) => void;
 
+/** The renderer a message is displayed with: `full` for model text, `lite` for user markdown. */
+export type MarkdownVariant = 'full' | 'lite';
+
+/** What a row asks the host to copy. */
+export type MessageCopyInput = {
+  message: TMessage;
+  /** Search results the message cites, resolved into the copied text. */
+  searchResults?: { [key: string]: SearchResultData };
+  /** The renderer the row displayed the message with, when it is not the authorship default. */
+  variant?: MarkdownVariant;
+};
+
+/** A row's copy action: `copyToClipboard` flips `setIsCopied` on while the copied state shows. */
+export type MessageCopy = {
+  copyToClipboard: (setIsCopied: Dispatch<SetStateAction<boolean>>) => void;
+  canCopy: boolean;
+};
+
 /**
  * Everything the message list reads from the app: viewer preferences, and render slots for the
  * pieces of a row that have not moved into this package yet. Members are hooks or slots, called
@@ -41,9 +59,13 @@ export interface MessagesHost {
   useForkPreferences: () => ForkPreferences;
   /** Forks a conversation and opens the copy; `null` where forking is unavailable. */
   useForkConversation: () => ForkConversation | null;
+  /** Copies a message the way the app renders it; `canCopy` is `false` where copying is unavailable. */
+  useMessageCopy: (input: MessageCopyInput) => MessageCopy;
 }
 
 const noop = (): void => undefined;
+
+const fallbackMessageCopy: MessageCopy = { copyToClipboard: noop, canCopy: false };
 
 const fallbackForkPreferences: ForkPreferences = {
   option: '',
@@ -54,12 +76,14 @@ const fallbackForkPreferences: ForkPreferences = {
   setRememberOption: noop,
 };
 
-/** The host rows read outside any provider before an app registers one: locale clock, no slots, no forking. */
+/** The host rows read outside any provider before an app registers one: locale clock, no slots,
+ *  no forking, no copying. */
 const fallbackHost: MessagesHost = {
   useHour12: () => undefined,
   renderFiles: () => null,
   useForkPreferences: () => fallbackForkPreferences,
   useForkConversation: () => null,
+  useMessageCopy: () => fallbackMessageCopy,
 };
 
 const MessagesHostContext = createContext<MessagesHost | null>(null);

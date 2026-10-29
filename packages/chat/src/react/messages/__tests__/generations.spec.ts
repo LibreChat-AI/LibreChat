@@ -1,5 +1,5 @@
 import { Constants, EModelEndpoint } from 'librechat-data-provider';
-import useGenerationsByLatest from '../useGenerationsByLatest';
+import useGenerationsByLatest from '../generations';
 
 const base = {
   endpoint: EModelEndpoint.agents,
