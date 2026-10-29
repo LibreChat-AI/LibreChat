@@ -160,3 +160,7 @@ export * from './channels/authority';
 
 export * from './channels/identity';
 export * from './channels/identityHttp';
+export * from './channels/artifacts';
+export * from './channels/artifactStorage';
+
+export * from './channels/summary';
