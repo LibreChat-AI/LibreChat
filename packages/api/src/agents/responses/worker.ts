@@ -1,3 +1,4 @@
+import type { TurnConversationRequest } from '~/conversations/save';
 import { z } from 'zod';
 import jwt from 'jsonwebtoken';
 import { getTenantId, tenantStorage } from '@librechat/data-schemas';
@@ -240,12 +241,17 @@ export function createBackgroundResponseWorkerAuth(
             checkpointNamespace: result.checkpointNamespace,
           };
         }
-        const request = req as ServerRequest & Pick<ContextRequest, 'tenantId'>;
+        const request = req as ServerRequest & Pick<ContextRequest, 'tenantId'> & TurnConversationRequest;
         // findUser supplies a lean auth DTO; do not mutate its cached tenant representation.
         request.user = Object.assign({}, user, { id: record.userId, tenantId: claims.tenantId });
         request.tenantId = claims.tenantId;
         // Caller body/headers cannot replace the persisted, already validated request.
         request.body = JSON.parse(record.requestJSON);
+        if (record.expiredAt)
+          request._agentEventBindingRetention = {
+            expiredAt: record.expiredAt,
+            isTemporary: record.isTemporary,
+          };
         admitted.set(req, {
           record,
           storage: deps.storage,
