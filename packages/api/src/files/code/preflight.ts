@@ -52,6 +52,7 @@ export interface CodeOutputPreflightLimits {
 }
 
 export interface PrepareCodeOutputInput {
+  readonly signal?: AbortSignal;
   readonly file: CodeOutputArtifactFile;
   readonly sessionId?: string;
   readonly maxBytes: number;
@@ -59,6 +60,7 @@ export interface PrepareCodeOutputInput {
 }
 
 export interface PreflightCodeOutputBatchInput {
+  readonly signal?: AbortSignal;
   readonly filters?: FiltersConfig;
   readonly artifact?: CodeOutputArtifact | null;
   readonly limits: CodeOutputPreflightLimits;
@@ -129,6 +131,7 @@ export function getBoundedCodeOutputByteLimit(
 export async function preflightCodeOutputBatch(
   input: PreflightCodeOutputBatchInput,
 ): Promise<PreparedCodeOutputEntry[]> {
+  input.signal?.throwIfAborted();
   const selectedFields = getSelectedContentFields(input.filters);
   const pii = input.filters?.files?.pii;
   const inspectionActive =
@@ -170,6 +173,7 @@ export async function preflightCodeOutputBatch(
 
   let inspectedBytes = 0;
   for (let index = 0; index < entries.length; index++) {
+    input.signal?.throwIfAborted();
     const entry = entries[index];
     const remainingBytes = maxBytes - inspectedBytes;
     const transportBytes = Math.min(remainingBytes, fileSizeLimit);
@@ -188,8 +192,10 @@ export async function preflightCodeOutputBatch(
         sessionId: entry.sessionId,
         maxBytes: transportBytes,
         inspectContent: inspectionActive,
+        signal: input.signal,
       });
     } catch (error) {
+      input.signal?.throwIfAborted();
       inspectedBytes += transportBytes;
       if (inspectionActive) {
         const blockedField = getBlockedUninspectableFileField(input.filters, selectedFields);
@@ -202,6 +208,7 @@ export async function preflightCodeOutputBatch(
       continue;
     }
 
+    input.signal?.throwIfAborted();
     const preparedBytes = prepared.buffer.length;
     if (
       !Number.isFinite(preparedBytes) ||

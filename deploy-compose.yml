@@ -9,8 +9,13 @@ services:
     ports:
       - 3080:3080
     depends_on:
-      - mongodb
-      - rag_api
+      mongodb:
+        condition: service_started
+      rag_api:
+        condition: service_started
+      extraction:
+        condition: service_healthy
+    networks: [default, extraction]
     restart: always
     extra_hosts:
     - "host.docker.internal:host-gateway"
@@ -33,6 +38,7 @@ services:
       - no_proxy=${no_proxy:-localhost,127.0.0.1,::1},${NO_PROXY:-},mongodb,chat-mongodb,meilisearch,chat-meilisearch,rag_api,vectordb,host.docker.internal
       - ADMIN_PANEL_URL=${ADMIN_PANEL_URL:-http://admin.localhost}
     volumes:
+      - extraction-credentials:/run/extraction:ro
       - type: bind
         source: ./librechat.yaml
         target: /app/librechat.yaml
@@ -105,12 +111,69 @@ services:
     environment:
       - DB_HOST=vectordb
       - RAG_PORT=${RAG_PORT:-8000}
+      - RAG_EXTRACTION_URL=http://extraction:8000
+      - RAG_EXTRACTION_TOKEN_FILE=/run/extraction/token
     restart: always
+    networks: [default, extraction]
+    volumes:
+      - extraction-credentials:/run/extraction:ro
     depends_on:
-      - vectordb
+      vectordb:
+        condition: service_started
+      extraction:
+        condition: service_healthy
     env_file:
       - .env
 
+  extraction-init:
+    image: ${EXTRACTION_IMAGE:-librechat-extraction:local}
+    pull_policy: never
+    command: ['node', 'dist/provision.js']
+    healthcheck:
+      disable: true
+    restart: 'no'
+    init: true
+    user: '10001:10001'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [extraction]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 16
+    volumes:
+      - extraction-credentials:/run/extraction
+
+  extraction:
+    image: ${EXTRACTION_IMAGE:-librechat-extraction:local}
+    build:
+      context: ${EXTRACTION_BUILD_CONTEXT:-https://github.com/LibreChat-AI/code-interpreter.git#c7bfe421243c66d4d5d9c6e3d08d276586ac47bf}
+      dockerfile: packages/extraction/Dockerfile
+      target: runtime
+    pull_policy: build
+    restart: unless-stopped
+    init: true
+    user: '10001:10001'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [extraction]
+    depends_on:
+      extraction-init:
+        condition: service_completed_successfully
+    mem_limit: 768m
+    cpus: 2
+    pids_limit: 32
+    tmpfs:
+      - /jobs:rw,noexec,nosuid,nodev,size=96m,nr_inodes=1024,uid=10001,gid=10001,mode=0700
+    volumes:
+      - extraction-credentials:/run/extraction:ro
+
 volumes:
+  extraction-credentials:
   pgdata2:
   librechat-data:
+
+networks:
+  extraction:
+    internal: true

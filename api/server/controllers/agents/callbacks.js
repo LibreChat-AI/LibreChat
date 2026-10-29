@@ -75,8 +75,9 @@ async function enqueueCodeOutputBatch({
   artifactPromises,
   codeExecutionContext,
   processEntry,
+  signal,
 }) {
-  const entries = await preflightCodeOutputBatch({ req, artifact, codeExecutionContext });
+  const entries = await preflightCodeOutputBatch({ req, artifact, codeExecutionContext, signal });
   let persistenceChain = Promise.resolve();
   for (const entry of entries) {
     const current = persistenceChain
@@ -914,7 +915,14 @@ function writeAttachmentUpdate(res, streamId, attachment, expectedCreatedAt) {
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted attachments.
  * @returns {ToolEndCallback} The tool end callback.
  */
-function createToolEndCallback({ req, res, artifactPromises, streamId = null, jobCreatedAt }) {
+function createToolEndCallback({
+  req,
+  res,
+  artifactPromises,
+  streamId = null,
+  jobCreatedAt,
+  signal,
+}) {
   /**
    * @type {ToolEndCallback}
    */
@@ -1083,6 +1091,7 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null, jo
       req,
       artifact: output.artifact,
       artifactPromises,
+      signal,
       codeExecutionContext: metadata.codeExecutionContext,
       processEntry: async ({ file, sessionId, preparedBuffer, downloadFallback }) => {
         const result = await processCodeOutput({
@@ -1099,6 +1108,7 @@ function createToolEndCallback({ req, res, artifactPromises, streamId = null, jo
           bridgeWorkerId: metadata.codeExecutionContext?.bridgeWorkerId,
           preparedBuffer,
           downloadFallback,
+          signal,
         });
         const fileMetadata = addStatefulWorkspaceChange(
           result?.file ?? null,
@@ -1287,7 +1297,7 @@ function writeResponsesAttachment(res, tracker, attachment, metadata) {
  * @param {Promise<MongoFile | { filename: string; filepath: string; expires: number;} | null>[]} params.artifactPromises
  * @returns {ToolEndCallback} The tool end callback.
  */
-function createResponsesToolEndCallback({ req, res, tracker, artifactPromises }) {
+function createResponsesToolEndCallback({ req, res, tracker, artifactPromises, signal }) {
   /**
    * @type {ToolEndCallback}
    */
@@ -1457,6 +1467,7 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
       req,
       artifact: output.artifact,
       artifactPromises,
+      signal,
       codeExecutionContext: metadata.codeExecutionContext,
       processEntry: async ({ file, sessionId, preparedBuffer, downloadFallback }) => {
         const result = await processCodeOutput({
@@ -1473,6 +1484,7 @@ function createResponsesToolEndCallback({ req, res, tracker, artifactPromises })
           bridgeWorkerId: metadata.codeExecutionContext?.bridgeWorkerId,
           preparedBuffer,
           downloadFallback,
+          signal,
         });
         const fileMetadata = addStatefulWorkspaceChange(
           result?.file ?? null,

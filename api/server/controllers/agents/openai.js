@@ -870,6 +870,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
 
       const collectedUsage = [];
       const toolEndCallback = createToolEndCallback({
+        signal: execution.signal,
         req,
         res,
         artifactPromises,

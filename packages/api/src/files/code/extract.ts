@@ -3,11 +3,39 @@ import * as path from 'path';
 import * as fs from 'fs/promises';
 import { randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
+import type { ExtractionServiceConfig } from 'librechat-data-provider';
+import type { DocumentExtractor } from '~/files/extraction/client';
+import type { ExtractionFormat } from '~/files/extraction/client';
 import type { CodeArtifactCategory } from './classify';
+import {
+  createDocumentExtractor,
+  getExtractionFormat,
+  extractionText,
+} from '~/files/extraction/client';
 import { bufferToOfficeHtml, officeHtmlBucket } from '~/files/documents/html';
 import { createConcurrencyLimiter, withTimeout } from '~/utils/promise';
+import { withExtractionLifetime } from '~/files/extraction/lifetime';
 import { parseDocument } from '~/files/documents/crud';
 import { isBinaryBuffer } from '~/skills/binary';
+
+export interface ArtifactExtractionOptions {
+  extractionService?: ExtractionServiceConfig;
+  extractor?: DocumentExtractor;
+  signal?: AbortSignal;
+}
+
+async function extractSemanticText(
+  buffer: Buffer,
+  format: ExtractionFormat,
+  options: ArtifactExtractionOptions,
+): Promise<string> {
+  const extractor = options.extractor ?? createDocumentExtractor(options.extractionService);
+  const result = await withExtractionLifetime(
+    { signal: options.signal, deadlineMs: extractor.deadlineMs },
+    (signal) => extractor.extract(buffer, format, signal),
+  );
+  return extractionText(result);
+}
 
 export const MAX_TEXT_CACHE_BYTES: number = 512 * 1024;
 
@@ -183,7 +211,10 @@ const extractDocumentText = async (
   buffer: Buffer,
   name: string,
   mimeType: string,
+  options: ArtifactExtractionOptions,
 ): Promise<string | null> => {
+  const format = getExtractionFormat(name, mimeType);
+  if (format) return extractSemanticText(buffer, format, options);
   const canonicalMime = documentMimeFromExtension(name) ?? mimeType;
   const tempPath = path.join(os.tmpdir(), `code-artifact-${randomUUID()}`);
   await fs.writeFile(tempPath, buffer);
@@ -213,8 +244,9 @@ const extractDocument = async (
   buffer: Buffer,
   name: string,
   mimeType: string,
+  options: ArtifactExtractionOptions,
 ): Promise<string | null> => {
-  const text = await extractDocumentText(buffer, name, mimeType);
+  const text = await extractDocumentText(buffer, name, mimeType, options);
   return text == null ? null : truncate(text);
 };
 
@@ -299,7 +331,9 @@ export async function extractCodeArtifactText(
   name: string,
   mimeType: string,
   category: CodeArtifactCategory,
+  options: ArtifactExtractionOptions = {},
 ): Promise<string | null> {
+  options.signal?.throwIfAborted();
   if (buffer.length > MAX_TEXT_EXTRACT_BYTES) {
     return null;
   }
@@ -328,6 +362,9 @@ export async function extractCodeArtifactText(
       const html = await renderOfficeHtml(buffer, name, mimeType);
       return html;
     }
+    if (getExtractionFormat(name, mimeType) === 'pdf') {
+      return await extractDocument(buffer, name, mimeType, options);
+    }
     if (category === 'other') {
       return null;
     }
@@ -339,13 +376,14 @@ export async function extractCodeArtifactText(
        * is routed to an HTML preview bucket on the client (PDF has no
        * client routing, ODT routes to PLAIN_TEXT which renders through
        * the markdown viewer with proper escaping). Plain text is safe. */
-      return await extractDocument(buffer, name, mimeType);
+      return await extractDocument(buffer, name, mimeType, options);
     }
     /* category === 'presentation' that didn't go through the office HTML path
      * (shouldn't happen — presentation extensions use the office HTML path — but
      * defended in depth). */
     return null;
   } catch (error) {
+    options.signal?.throwIfAborted();
     logger.debug(
       `[extractCodeArtifactText] Failed to extract "${name}" (${mimeType}): ${(error as Error).message}`,
     );
@@ -371,7 +409,13 @@ export async function extractCodeArtifactInspectionText(
   name: string,
   mimeType: string,
   category: CodeArtifactCategory,
+  options: ArtifactExtractionOptions = {},
 ): Promise<CodeArtifactInspectionText> {
+  options.signal?.throwIfAborted();
+  const format = getExtractionFormat(name, mimeType);
+  if (format) {
+    return { text: await extractSemanticText(buffer, format, options), complete: true };
+  }
   const incomplete = (text: string | null = null): CodeArtifactInspectionText => ({
     text,
     complete: false,
@@ -398,7 +442,7 @@ export async function extractCodeArtifactInspectionText(
       }
       if (category === 'document') {
         try {
-          return bounded(await extractDocumentText(buffer, name, mimeType));
+          return bounded(await extractDocumentText(buffer, name, mimeType, options));
         } catch {
           // Compatibility mode can still inspect the available preview below.
         }
@@ -412,8 +456,9 @@ export async function extractCodeArtifactInspectionText(
       return incomplete();
     }
 
-    return bounded(await extractDocumentText(buffer, name, mimeType));
+    return bounded(await extractDocumentText(buffer, name, mimeType, options));
   } catch {
+    options.signal?.throwIfAborted();
     logger.debug('[extractCodeArtifactInspectionText] Artifact inspection failed');
     return incomplete();
   }

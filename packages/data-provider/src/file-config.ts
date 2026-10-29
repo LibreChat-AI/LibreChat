@@ -660,7 +660,54 @@ const skillFileConfigSchema = z.object({
   deletionCleanupConcurrency: z.number().int().positive().optional(),
 });
 
+export const extractionServiceSchema = z
+  .object({
+    url: z
+      .string()
+      .max(2048)
+      .refine((value) => {
+        if (!/^https?:\/\/[^/?#\\\s@]+\/?$/.test(value)) return false;
+        try {
+          const url = new URL(value);
+          if (!url.hostname || url.pathname !== '/' || url.username || url.password) return false;
+          return (
+            url.protocol === 'https:' ||
+            ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname) ||
+            (url.hostname === 'extraction' && url.port === '8000')
+          );
+        } catch {
+          return false;
+        }
+      }, 'Expected an HTTPS origin or local HTTP origin without credentials, path, query or fragment')
+      .default('http://extraction:8000'),
+    tokenFile: z
+      .string()
+      .min(1)
+      .max(4096)
+      .regex(/^\/[^\0\r\n]*$/)
+      .default('/run/extraction/token'),
+    deadlineMs: z.number().int().min(1).max(15000).default(12000),
+    maxInputBytes: z
+      .number()
+      .int()
+      .min(1)
+      .max(10 * megabyte)
+      .default(10 * megabyte),
+    maxTextBytes: z.number().int().min(1).max(megabyte).default(megabyte),
+    maxResponseBytes: z
+      .number()
+      .int()
+      .min(1)
+      .max(3 * megabyte)
+      .default(3 * megabyte),
+    maxSegments: z.number().int().min(1).max(128).default(128),
+  })
+  .strict();
+
+export type ExtractionServiceConfig = z.input<typeof extractionServiceSchema>;
+
 export const fileConfigSchema = z.object({
+  extractionService: extractionServiceSchema.optional(),
   /** Enable only after every replica and rollback target reads retained file destinations. */
   retainedFileCleanup: z.boolean().optional(),
   /** UTC cutoff chosen after all legacy writers and rollback targets are retired. */
@@ -1281,6 +1328,10 @@ function buildMergedFileConfig(dynamic: DynamicFileConfig | undefined): FileConf
   };
   if (!dynamic) {
     return mergedConfig;
+  }
+
+  if (dynamic.extractionService !== undefined) {
+    mergedConfig.extractionService = dynamic.extractionService;
   }
 
   if (dynamic.retainedFileCleanup !== undefined) {

@@ -285,6 +285,40 @@ describe('callTool generated-content protection', () => {
     expect(mockCreateToolCall).not.toHaveBeenCalled();
   });
 
+  it('keeps the actual HTTP owner alive through artifact cache processing', async () => {
+    const { EventEmitter } = require('node:events');
+    const req = createRequest(undefined);
+    const res = Object.assign(new EventEmitter(), createResponse(), {
+      destroyed: false,
+      writableFinished: false,
+    });
+    mockInvoke.mockResolvedValueOnce({
+      content: 'safe',
+      artifact: { session_id: 'session', files: [{ id: 'id', name: 'report.pdf' }] },
+    });
+    let admitted;
+    const started = new Promise((resolve) => {
+      admitted = resolve;
+    });
+    let owner;
+    mockProcessCodeOutput.mockImplementationOnce(({ signal }) => {
+      owner = signal;
+      admitted();
+      return new Promise((_resolve, reject) =>
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true }),
+      );
+    });
+    const pending = callTool(req, res);
+    await started;
+    res.destroyed = true;
+    res.emit('close');
+    await pending;
+    expect(owner.aborted).toBe(true);
+    expect(mockCreateToolCall).not.toHaveBeenCalled();
+    expect(res.status).not.toHaveBeenCalledWith(200);
+    expect(res.listenerCount('close')).toBe(0);
+  });
+
   it('blocks generated file metadata before downloading or persisting it', async () => {
     mockInvoke.mockResolvedValue({
       content: 'safe',

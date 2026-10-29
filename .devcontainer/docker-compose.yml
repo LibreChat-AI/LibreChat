@@ -3,6 +3,10 @@ services:
     build:
       context: ..
       dockerfile: .devcontainer/Dockerfile
+    networks: [default, extraction]
+    depends_on:
+      extraction:
+        condition: service_healthy
     # restart: always
     links:
       - mongodb
@@ -13,6 +17,7 @@ services:
     - "host.docker.internal:host-gateway"
 
     volumes:
+      - extraction-credentials:/run/extraction:ro
       # This is where VS Code should expect to find your project's source code and the value of "workspaceFolder" in .devcontainer/devcontainer.json
       - ..:/workspaces:cached
       # Uncomment the next line to use Docker from inside the container. See https://aka.ms/vscode-remote/samples/docker-from-docker-compose for details.
@@ -60,3 +65,54 @@ services:
       - MEILI_MASTER_KEY=5c71cf56d672d009e36070b5bc5e47b743535ae55c818ae3b735bb6ebfb4ba63
     volumes:
       - ./meili_data_v1.5:/meili_data
+
+  extraction-init:
+    image: ${EXTRACTION_IMAGE:-librechat-extraction:local}
+    pull_policy: never
+    command: ['node', 'dist/provision.js']
+    healthcheck:
+      disable: true
+    restart: 'no'
+    init: true
+    user: '10001:10001'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [extraction]
+    mem_limit: 128m
+    cpus: 0.25
+    pids_limit: 16
+    volumes:
+      - extraction-credentials:/run/extraction
+
+  extraction:
+    image: ${EXTRACTION_IMAGE:-librechat-extraction:local}
+    build:
+      context: ${EXTRACTION_BUILD_CONTEXT:-https://github.com/LibreChat-AI/code-interpreter.git#c7bfe421243c66d4d5d9c6e3d08d276586ac47bf}
+      dockerfile: packages/extraction/Dockerfile
+      target: runtime
+    pull_policy: build
+    restart: unless-stopped
+    init: true
+    user: '10001:10001'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    networks: [extraction]
+    depends_on:
+      extraction-init:
+        condition: service_completed_successfully
+    mem_limit: 768m
+    cpus: 2
+    pids_limit: 32
+    tmpfs:
+      - /jobs:rw,noexec,nosuid,nodev,size=96m,nr_inodes=1024,uid=10001,gid=10001,mode=0700
+    volumes:
+      - extraction-credentials:/run/extraction:ro
+
+volumes:
+  extraction-credentials:
+
+networks:
+  extraction:
+    internal: true

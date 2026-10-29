@@ -1,4 +1,4 @@
-import type { TDefaultLLMDeliveryPathConfig } from '../file-config';
+import type { ExtractionServiceConfig, TDefaultLLMDeliveryPathConfig } from '../file-config';
 import type { CodeEnvRef, CodeEnvRefMap } from '../codeEnvRef';
 import { EToolResources } from './tools';
 
@@ -58,6 +58,7 @@ export type EndpointFileConfig = {
 };
 
 export type FileConfig = {
+  extractionService?: ExtractionServiceConfig;
   /** Enable after all replicas and rollback targets support retained file destinations. */
   retainedFileCleanup?: boolean;
   vectorOwnershipTrackingStart?: string;
@@ -105,6 +106,7 @@ export type FileConfig = {
 };
 
 export type FileConfigInput = {
+  extractionService?: ExtractionServiceConfig;
   /** Fail closed on embedded-file deletion until marker-aware readers are deployed. */
   retainedFileCleanup?: boolean;
   vectorOwnershipTrackingStart?: string;

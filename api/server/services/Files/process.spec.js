@@ -1,3 +1,9 @@
+const mockDocumentExtract = jest.fn();
+jest.mock('../../../../packages/api/src/files/extraction/client', () => ({
+  ...jest.requireActual('../../../../packages/api/src/files/extraction/client'),
+  createDocumentExtractor: jest.fn(),
+}));
+
 jest.mock('uuid', () => ({ v4: jest.fn(() => 'mock-uuid') }));
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -121,6 +127,8 @@ jest.mock('@librechat/api', () => {
     },
   );
   return {
+    ...jest.requireActual('../../../../packages/api/src/files/extraction/upload'),
+    ...jest.requireActual('../../../../packages/api/src/files/extraction/commit'),
     ...jest.requireActual('../../../../packages/api/src/files/storage'),
     ...jest.requireActual('../../../../packages/api/src/files/operations'),
     ...jest.requireActual('../../../../packages/api/src/files/finalize'),
@@ -173,26 +181,8 @@ jest.mock('@librechat/api', () => {
         if (file.metadata?.codeEnvRef != null) deleters.push(getDeleteFile('execute_code'));
         await Promise.all(deleters.map((deleteFile) => deleteFile?.(req, file)));
       },
-    withStoredUploadCleanup: async (
-      { stored, resolveDeleteFile, recordExists, req, trackWrite },
-      next,
-    ) => {
-      let writeBegun = trackWrite !== true;
-      try {
-        return await next(() => {
-          writeBegun = true;
-        });
-      } catch (error) {
-        try {
-          if (!writeBegun || !(await recordExists(stored))) {
-            await resolveDeleteFile()?.(req, stored);
-          }
-        } catch {
-          /* the helper logs cleanup failures; the original error wins */
-        }
-        throw error;
-      }
-    },
+    withStoredUploadCleanup: jest.requireActual('../../../../packages/api/src/files/orphan')
+      .withStoredUploadCleanup,
     resolveStoredUploadTarget: ({ isAssistantUpload, stored, convertedImage, storageMetadata }) => {
       if (!isAssistantUpload) {
         return { source: stored.source, stored: { ...stored, ...storageMetadata } };
@@ -377,6 +367,7 @@ const makeReq = ({
     path: '/tmp/upload.bin',
     originalname: 'upload.bin',
     filename: 'upload-uuid.bin',
+    buffer: Buffer.from('uploaded bytes'),
     mimetype,
   },
   body: { model: 'gpt-4o', ...body },
@@ -424,6 +415,24 @@ const setupStoredFileUpload = (result = {}) => {
   getStrategyFunctions.mockReturnValue({ handleFileUpload });
   return handleFileUpload;
 };
+
+beforeEach(() => {
+  const client = require('../../../../packages/api/src/files/extraction/client');
+  const actual = jest.requireActual('../../../../packages/api/src/files/extraction/client');
+  mockDocumentExtract.mockReset().mockImplementation(async (bytes, format) => ({
+    version: 1,
+    operation: 'document.extract-text',
+    format,
+    inputSha256: require('node:crypto').createHash('sha256').update(bytes).digest('hex'),
+    textBytes: 14,
+    segments: [{ kind: format === 'pdf' ? 'page' : 'document', index: 1, text: 'extracted text' }],
+  }));
+  client.createDocumentExtractor.mockImplementation((config) =>
+    config?.url
+      ? actual.createDocumentExtractor(config)
+      : { maxInputBytes: 10485760, deadlineMs: 12000, extract: mockDocumentExtract },
+  );
+});
 
 describe('upload retention scheduling', () => {
   beforeEach(() => {
@@ -524,6 +533,426 @@ describe('processAgentFileUpload', () => {
     });
     mergeFileConfig.mockReturnValue(makeFileConfig());
     inspectContent.mockReturnValue(null);
+  });
+
+  describe('mandatory extraction service', () => {
+    const clientModule = require('../../../../packages/api/src/files/extraction/client');
+    let extract;
+    beforeEach(() => {
+      extract = jest.fn().mockRejectedValue(new clientModule.ExtractionServiceError('BUSY'));
+      jest
+        .spyOn(clientModule, 'createDocumentExtractor')
+        .mockReturnValue({ maxInputBytes: 10485760, extract });
+    });
+    afterEach(() => jest.restoreAllMocks());
+
+    test.each([PDF_MIME, DOCX_MIME])(
+      'never persists success or invokes local strategies after remote rejection for %s',
+      async (mimetype) => {
+        const req = makeReq({ mimetype });
+        req.file.buffer = Buffer.from('uploaded bytes');
+        req.config.fileConfig.extractionService = {};
+        await expect(
+          processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() }),
+        ).rejects.toThrow('Document extraction failed (BUSY).');
+        expect(extract).toHaveBeenCalledTimes(1);
+        expect(getStrategyFunctions).not.toHaveBeenCalled();
+        expect(db.addAgentResourceFile).not.toHaveBeenCalled();
+        expect(db.createFile).not.toHaveBeenCalled();
+        expect(mockRes.json).not.toHaveBeenCalled();
+      },
+    );
+
+    test.each([
+      ['report.pdf', 'text/plain'],
+      ['report.pdf', 'text/markdown'],
+      ['report.docx', 'text/plain'],
+      ['report.docx', 'text/markdown'],
+    ])(
+      'does not bypass filename-selected extraction for %s with %s MIME',
+      async (name, mimetype) => {
+        const { parseText } = require('@librechat/api');
+        const ragUrl = process.env.RAG_API_URL;
+        delete process.env.RAG_API_URL;
+        mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: [mimetype] }));
+        const req = makeReq({ mimetype });
+        req.file.originalname = name;
+        req.file.buffer = Buffer.from('raw text must not win');
+        req.config.fileConfig.extractionService = {};
+        try {
+          await expect(
+            processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() }),
+          ).rejects.toThrow('Document extraction failed (BUSY).');
+          expect(extract).toHaveBeenCalledTimes(1);
+          expect(parseText).not.toHaveBeenCalled();
+          expect(db.createFile).not.toHaveBeenCalled();
+        } finally {
+          if (ragUrl === undefined) delete process.env.RAG_API_URL;
+          else process.env.RAG_API_URL = ragUrl;
+        }
+      },
+    );
+
+    test('preserves ordinary native plaintext without extraction settings', async () => {
+      const { parseText } = require('@librechat/api');
+      mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: ['text/plain'] }));
+      parseText.mockResolvedValueOnce({ text: 'native plaintext', bytes: 16 });
+      const req = makeReq({ mimetype: 'text/plain' });
+      req.file.originalname = 'report.txt';
+      await processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() });
+      expect(extract).not.toHaveBeenCalled();
+      expect(parseText).toHaveBeenCalledWith(
+        expect.objectContaining({ allowNativeFallback: true }),
+      );
+      expect(db.createFile).toHaveBeenCalledWith(
+        expect.objectContaining({ text: 'native plaintext' }),
+        true,
+      );
+    });
+
+    test('retains file-type rejection before executing a filename-selected extractor', async () => {
+      const req = makeReq({ mimetype: 'text/plain' });
+      req.file.originalname = 'report.pdf';
+      req.config.fileConfig.extractionService = {};
+      await expect(
+        processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() }),
+      ).rejects.toThrow('not supported for text parsing');
+      expect(extract).not.toHaveBeenCalled();
+      expect(db.createFile).not.toHaveBeenCalled();
+    });
+
+    test('does not bypass context authorization to reach the service', async () => {
+      checkCapability.mockResolvedValue(false);
+      const req = makeReq();
+      req.config.fileConfig.extractionService = {};
+      await expect(
+        processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() }),
+      ).rejects.toThrow('context capability is disabled');
+      expect(extract).not.toHaveBeenCalled();
+      expect(db.createFile).not.toHaveBeenCalled();
+    });
+
+    test('still checks configured OCR capability before remote extraction', async () => {
+      mergeFileConfig.mockReturnValue(makeFileConfig({ ocrSupportedMimeTypes: [PDF_MIME] }));
+      checkCapability.mockImplementation(
+        async (_req, capability) => capability !== AgentCapabilities.ocr,
+      );
+      const req = makeReq({ ocrConfig: { strategy: FileSources.mistral_ocr } });
+      req.config.fileConfig.extractionService = {};
+      await expect(
+        processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() }),
+      ).rejects.toThrow('OCR capability is not enabled');
+      expect(extract).not.toHaveBeenCalled();
+      expect(db.createFile).not.toHaveBeenCalled();
+    });
+
+    test('still filters remote semantic text before persistence', async () => {
+      const req = makeReq({ filters: { files: { pii: {} } } });
+      req.file.buffer = Buffer.from('uploaded bytes');
+      req.config.fileConfig.extractionService = {};
+      extract.mockResolvedValue({
+        textBytes: 7,
+        segments: [{ kind: 'page', index: 1, text: 'PRIVATE' }],
+      });
+      inspectContent.mockReturnValueOnce({
+        label: 'private',
+        source: 'file',
+        field: 'extracted_text',
+      });
+      await processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() });
+      expect(extractFileContent).toHaveBeenCalledWith({ extractedText: 'PRIVATE' });
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(db.addAgentResourceFile).not.toHaveBeenCalled();
+      expect(db.createFile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('default extraction without fileConfig settings', () => {
+    test.each(['success', 'incompatible', 'unavailable'])(
+      'uses a real client and fails closed before mutation: %s',
+      async (mode) => {
+        const client = require('../../../../packages/api/src/files/extraction/client');
+        const actual = jest.requireActual('../../../../packages/api/src/files/extraction/client');
+        const {
+          fixture,
+          reply,
+          capabilities,
+          result,
+        } = require('../../../../packages/api/src/files/extraction/fixture.helper');
+        const req = makeReq();
+        let posts = 0;
+        const processor = await fixture((incoming, response) => {
+          incoming.resume();
+          if (incoming.method === 'GET') {
+            return reply(
+              response,
+              { ...capabilities, version: mode === 'incompatible' ? 2 : 1 },
+              mode === 'unavailable' ? 503 : 200,
+            );
+          }
+          posts++;
+          reply(response, result(req.file.buffer));
+        });
+        client.createDocumentExtractor.mockImplementationOnce((config) => {
+          expect(config).toBeUndefined();
+          return actual.createDocumentExtractor({
+            url: processor.url,
+            tokenFile: processor.tokenFile,
+          });
+        });
+        try {
+          const pending = processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() });
+          if (mode === 'success') {
+            await pending;
+            expect(posts).toBe(1);
+            expect(db.createFile).toHaveBeenCalledWith(
+              expect.objectContaining({ text: '你好!' }),
+              true,
+            );
+          } else {
+            await expect(pending).rejects.toMatchObject({
+              code: mode === 'incompatible' ? 'INCOMPATIBLE_SERVICE' : 'UNAVAILABLE',
+            });
+            expect(posts).toBe(0);
+            expect(db.createFile).not.toHaveBeenCalled();
+            expect(db.addAgentResourceFile).not.toHaveBeenCalled();
+            expect(getStrategyFunctions).not.toHaveBeenCalled();
+          }
+          expect(getStrategyFunctions).not.toHaveBeenCalledWith(FileSources.document_parser);
+          expect(mockDocumentExtract).not.toHaveBeenCalled();
+        } finally {
+          await processor.close();
+        }
+      },
+    );
+
+    test('never invokes a local fallback when the default processor is missing', async () => {
+      const client = require('../../../../packages/api/src/files/extraction/client');
+      const actual = jest.requireActual('../../../../packages/api/src/files/extraction/client');
+      const { fixture } = require('../../../../packages/api/src/files/extraction/fixture.helper');
+      const processor = await fixture(() => {});
+      await processor.close();
+      client.createDocumentExtractor.mockImplementationOnce((config) => {
+        expect(config).toBeUndefined();
+        return actual.createDocumentExtractor({
+          url: processor.url,
+          tokenFile: processor.tokenFile,
+        });
+      });
+      await expect(
+        processAgentFileUpload({ req: makeReq(), res: mockRes, metadata: makeMetadata() }),
+      ).rejects.toMatchObject({
+        code: 'UNAVAILABLE',
+        message: expect.stringContaining('Start the extraction companion'),
+      });
+      expect(getStrategyFunctions).not.toHaveBeenCalled();
+      expect(db.createFile).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('extraction service HTTP lifetime', () => {
+    test.each(['storage', 'retention', 'resource'])(
+      'cancels a remote upload during %s and cleans uncommitted state',
+      async (stage) => {
+        const { createServer, request } = require('node:http');
+        const express = require('express');
+        const disk = require('node:fs/promises');
+        const { join } = require('node:path');
+        const { tmpdir } = require('node:os');
+        const directory = await disk.mkdtemp(join(tmpdir(), 'l3-upload-'));
+        const filepath = join(directory, 'owned.pdf');
+        const unrelatedPath = join(directory, 'other-user.pdf');
+        await disk.writeFile(unrelatedPath, 'unrelated file');
+        const clientModule = require('../../../../packages/api/src/files/extraction/client');
+        const extract = jest
+          .fn()
+          .mockResolvedValue({ segments: [{ text: 'remote document' }], textBytes: 15 });
+        jest
+          .spyOn(clientModule, 'createDocumentExtractor')
+          .mockReturnValue({ maxInputBytes: 10485760, extract });
+        let releaseStorage;
+        let storageStarted;
+        const stored = new Promise((resolve) => {
+          releaseStorage = resolve;
+        });
+        const started = new Promise((resolve) => {
+          storageStarted = resolve;
+        });
+        const storageResult = {
+          bytes: 42,
+          filename: 'upload.pdf',
+          filepath,
+        };
+        const handleFileUpload = jest.fn(async () => {
+          if (stage === 'storage') {
+            storageStarted();
+            await stored;
+          }
+          await disk.writeFile(filepath, 'stored document');
+          if (stage === 'retention') setImmediate(storageStarted);
+          return storageResult;
+        });
+        if (stage === 'retention')
+          getRetentionExpiry.mockImplementationOnce(async () => {
+            await stored;
+            return {};
+          });
+        if (stage === 'resource')
+          db.addAgentResourceFile.mockImplementationOnce(async () => {
+            storageStarted();
+            await stored;
+            return {};
+          });
+        const deleteFile = jest.fn(async (_req, ref) => {
+          expect(ref.filepath).toBe(filepath);
+          await disk.unlink(ref.filepath);
+        });
+        getStrategyFunctions.mockReturnValue({ handleFileUpload, deleteFile });
+        let finish;
+        const outcome = new Promise((resolve) => {
+          finish = resolve;
+        });
+        let disconnected;
+        const closed = new Promise((resolve) => {
+          disconnected = resolve;
+        });
+        const app = express();
+        app.use(express.raw({ type: '*/*' }));
+        app.post('/upload', async (req, res) => {
+          Object.assign(req, makeReq({ interfaceConfig: { retentionMode: RetentionMode.ALL } }));
+          req.file.buffer = Buffer.from('uploaded document');
+          req.config.fileConfig.extractionService = {};
+          res.once('close', disconnected);
+          try {
+            await processAgentFileUpload({ req, res, metadata: makeMetadata() });
+            finish({ ok: true });
+          } catch (error) {
+            finish({ ok: false, code: error.code });
+          }
+        });
+        const http = createServer(app);
+        await new Promise((resolve) => http.listen(0, '127.0.0.1', resolve));
+        const caller = request({
+          hostname: '127.0.0.1',
+          port: http.address().port,
+          path: '/upload',
+          method: 'POST',
+        });
+        caller.on('error', () => {});
+        caller.end('upload');
+        try {
+          await started;
+          caller.destroy();
+          await closed;
+          releaseStorage({
+            bytes: 42,
+            filename: 'upload.pdf',
+            filepath,
+          });
+          const result = await outcome;
+          expect(result).toMatchObject({ ok: false, code: 'CANCELLED' });
+          expect(db.addAgentResourceFile).toHaveBeenCalledTimes(stage === 'resource' ? 1 : 0);
+          if (stage === 'resource') {
+            expect(db.removeAgentResourceFiles).toHaveBeenCalledWith({
+              agent_id: 'agent-abc',
+              files: [{ tool_resource: EToolResources.context, file_id: 'file-uuid-123' }],
+            });
+          }
+          expect(db.createFile).not.toHaveBeenCalled();
+          expect(deleteFile).toHaveBeenCalledWith(
+            expect.objectContaining({ user: expect.objectContaining({ id: 'user-123' }) }),
+            expect.objectContaining({
+              file_id: 'file-uuid-123',
+              filepath,
+              source: 'local',
+              user: 'user-123',
+              tenantId: 'tenant-a',
+            }),
+          );
+          await expect(disk.stat(filepath)).rejects.toMatchObject({ code: 'ENOENT' });
+          await expect(disk.readFile(unrelatedPath, 'utf8')).resolves.toBe('unrelated file');
+        } finally {
+          releaseStorage({ bytes: 42, filepath });
+          caller.destroy();
+          http.closeAllConnections();
+          await new Promise((resolve) => http.close(resolve));
+          jest.restoreAllMocks();
+          await disk.rm(directory, { recursive: true, force: true });
+        }
+      },
+    );
+
+    test('cancels extraction on a real HTTP disconnect without success persistence', async () => {
+      const { createServer, request } = require('node:http');
+      const express = require('express');
+      const {
+        fixture,
+        reply,
+        capabilities,
+      } = require('../../../../packages/api/src/files/extraction/fixture.helper');
+      const bytes = Buffer.from('uploaded document');
+      let remoteClosed = false;
+      let ready;
+      const admitted = new Promise((resolve) => {
+        ready = resolve;
+      });
+      const processor = await fixture((req, res) => {
+        req.resume();
+        if (req.method === 'GET') return reply(res, capabilities);
+        res.once('close', () => {
+          remoteClosed = true;
+        });
+        ready();
+      });
+      let finished;
+      const settled = new Promise((resolve) => {
+        finished = resolve;
+      });
+      const app = express();
+      app.use(express.raw({ type: '*/*' }));
+      app.post('/upload', async (req, res) => {
+        Object.assign(req, makeReq());
+        req.file.buffer = bytes;
+        req.config.fileConfig.extractionService = {
+          url: processor.url,
+          tokenFile: processor.tokenFile,
+        };
+        try {
+          await processAgentFileUpload({ req, res, metadata: makeMetadata() });
+          finished({ ok: true });
+        } catch (error) {
+          finished({ ok: false, code: error.code });
+        }
+      });
+      const http = createServer(app);
+      await new Promise((resolve) => http.listen(0, '127.0.0.1', resolve));
+      const caller = request({
+        hostname: '127.0.0.1',
+        port: http.address().port,
+        path: '/upload',
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+      });
+      caller.on('error', () => {});
+      caller.end('upload');
+      try {
+        await admitted;
+        caller.destroy();
+        await new Promise((resolve) => setTimeout(resolve, 75));
+        const remoteClosedAfterDisconnect = remoteClosed;
+        expect(remoteClosedAfterDisconnect).toBe(true);
+        const outcome = await settled;
+        expect(outcome).toMatchObject({ ok: false, code: 'CANCELLED' });
+        expect(db.createFile).not.toHaveBeenCalled();
+        expect(db.addAgentResourceFile).not.toHaveBeenCalled();
+        expect(getStrategyFunctions).not.toHaveBeenCalled();
+      } finally {
+        caller.destroy();
+        http.closeAllConnections();
+        await new Promise((resolve) => http.close(resolve));
+        await processor.close();
+      }
+    });
   });
 
   describe('content filtering for extracted context', () => {
@@ -654,7 +1083,7 @@ describe('processAgentFileUpload', () => {
       expect(db.createFile).not.toHaveBeenCalled();
     });
 
-    it('preserves the default-off path without inspecting extracted text', async () => {
+    it('preserves the inactive content-policy path without extra inspection', async () => {
       const req = makeReq();
 
       await processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() });
@@ -689,22 +1118,28 @@ describe('processAgentFileUpload', () => {
       ['ODS', ODS_MIME],
       ['Excel variant (msexcel)', 'application/msexcel'],
       ['Excel variant (x-msexcel)', 'application/x-msexcel'],
-    ])('uses document_parser automatically for %s when no OCR is configured', async (_, mime) => {
+    ])('uses the default semantic extractor for %s without OCR', async (_, mime) => {
       mergeFileConfig.mockReturnValue(makeFileConfig());
       const req = makeReq({ mimetype: mime, ocrConfig: null });
 
       await processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() });
 
-      expect(getStrategyFunctions).toHaveBeenCalledWith(FileSources.document_parser);
+      if ([PDF_MIME, DOCX_MIME].includes(mime)) {
+        expect(mockDocumentExtract).toHaveBeenCalledTimes(1);
+        expect(getStrategyFunctions).not.toHaveBeenCalledWith(FileSources.document_parser);
+      } else {
+        expect(getStrategyFunctions).toHaveBeenCalledWith(FileSources.document_parser);
+      }
     });
 
-    test('does not check OCR capability when using automatic document_parser fallback', async () => {
+    test('does not check OCR capability when using default isolated extraction', async () => {
       const req = makeReq({ mimetype: PDF_MIME, ocrConfig: null });
 
       await processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() });
 
       expect(checkCapability).not.toHaveBeenCalledWith(expect.anything(), AgentCapabilities.ocr);
-      expect(getStrategyFunctions).toHaveBeenCalledWith(FileSources.document_parser);
+      expect(mockDocumentExtract).toHaveBeenCalledTimes(1);
+      expect(getStrategyFunctions).not.toHaveBeenCalledWith(FileSources.document_parser);
     });
 
     test('uses the configured OCR strategy when OCR is set up for the file type', async () => {
@@ -720,7 +1155,7 @@ describe('processAgentFileUpload', () => {
       expect(getStrategyFunctions).toHaveBeenCalledWith(FileSources.mistral_ocr);
     });
 
-    test('uses document_parser as default when OCR is configured but no strategy is specified', async () => {
+    test('uses isolation when OCR has no explicit cloud strategy', async () => {
       mergeFileConfig.mockReturnValue(makeFileConfig({ ocrSupportedMimeTypes: [PDF_MIME] }));
       const req = makeReq({
         mimetype: PDF_MIME,
@@ -730,7 +1165,8 @@ describe('processAgentFileUpload', () => {
       await processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() });
 
       expect(checkCapability).toHaveBeenCalledWith(expect.anything(), AgentCapabilities.ocr);
-      expect(getStrategyFunctions).toHaveBeenCalledWith(FileSources.document_parser);
+      expect(mockDocumentExtract).toHaveBeenCalledTimes(1);
+      expect(getStrategyFunctions).not.toHaveBeenCalledWith(FileSources.document_parser);
     });
 
     test('throws when configured OCR capability is not enabled for the agent', async () => {
@@ -750,7 +1186,7 @@ describe('processAgentFileUpload', () => {
       ).rejects.toThrow('OCR capability is not enabled for Agents');
     });
 
-    test('uses document_parser (no capability check) when OCR capability returns false but no OCR config', async () => {
+    test('uses isolation without an OCR capability check when no OCR is configured', async () => {
       /* Only OCR is under test here; disabling every capability would trip the
        * separate context guard first. */
       checkCapability.mockImplementation(
@@ -761,10 +1197,11 @@ describe('processAgentFileUpload', () => {
       await processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() });
 
       expect(checkCapability).not.toHaveBeenCalledWith(expect.anything(), AgentCapabilities.ocr);
-      expect(getStrategyFunctions).toHaveBeenCalledWith(FileSources.document_parser);
+      expect(mockDocumentExtract).toHaveBeenCalledTimes(1);
+      expect(getStrategyFunctions).not.toHaveBeenCalledWith(FileSources.document_parser);
     });
 
-    test('uses document_parser when OCR is configured but the file type is not in OCR supported types', async () => {
+    test('uses isolation when configured OCR does not cover the file type', async () => {
       mergeFileConfig.mockReturnValue(makeFileConfig({ ocrSupportedMimeTypes: [PDF_MIME] }));
       const req = makeReq({
         mimetype: DOCX_MIME,
@@ -774,7 +1211,8 @@ describe('processAgentFileUpload', () => {
       await processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() });
 
       expect(checkCapability).not.toHaveBeenCalledWith(expect.anything(), AgentCapabilities.ocr);
-      expect(getStrategyFunctions).toHaveBeenCalledWith(FileSources.document_parser);
+      expect(mockDocumentExtract).toHaveBeenCalledTimes(1);
+      expect(getStrategyFunctions).not.toHaveBeenCalledWith(FileSources.document_parser);
       expect(getStrategyFunctions).not.toHaveBeenCalledWith(FileSources.mistral_ocr);
     });
 
@@ -820,6 +1258,7 @@ describe('processAgentFileUpload', () => {
     });
 
     test('fails closed without persistence when strict extracted text cannot be produced', async () => {
+      mockDocumentExtract.mockRejectedValueOnce(new Error('PRIVATE isolated extraction failure'));
       getStrategyFunctions.mockReturnValue({
         handleFileUpload: jest.fn().mockRejectedValue(new Error('PRIVATE parser failure')),
       });
@@ -857,9 +1296,7 @@ describe('processAgentFileUpload', () => {
 
       expect(db.addAgentResourceFile).not.toHaveBeenCalled();
       expect(db.createFile).not.toHaveBeenCalled();
-      expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('file_id=file-uuid-123'), {
-        type: 'Error',
-      });
+      expect(getStrategyFunctions).not.toHaveBeenCalled();
       expect(JSON.stringify(logger.error.mock.calls)).not.toContain('PRIVATE');
     });
 
@@ -931,7 +1368,7 @@ describe('processAgentFileUpload', () => {
       expect(db.createFile).not.toHaveBeenCalled();
     });
 
-    test('falls back to document_parser when configured OCR fails for a document MIME type', async () => {
+    test('falls back only to isolation when configured cloud OCR fails', async () => {
       mergeFileConfig.mockReturnValue(makeFileConfig({ ocrSupportedMimeTypes: [PDF_MIME] }));
       const failingUpload = jest.fn().mockRejectedValue(new Error('OCR API returned 500'));
       const fallbackUpload = jest
@@ -950,7 +1387,8 @@ describe('processAgentFileUpload', () => {
       ).resolves.not.toThrow();
 
       expect(getStrategyFunctions).toHaveBeenCalledWith(FileSources.mistral_ocr);
-      expect(getStrategyFunctions).toHaveBeenCalledWith(FileSources.document_parser);
+      expect(mockDocumentExtract).toHaveBeenCalledTimes(1);
+      expect(getStrategyFunctions).not.toHaveBeenCalledWith(FileSources.document_parser);
     });
 
     test('throws when both configured OCR and document_parser fallback fail', async () => {
@@ -972,10 +1410,8 @@ describe('processAgentFileUpload', () => {
     });
   });
 
-  describe('configured text (RAG) routing for document MIME types', () => {
-    const DOCX_TEXT_REGEX = [
-      /^application\/vnd\.openxmlformats-officedocument\.wordprocessingml\.document$/,
-    ];
+  describe('configured text (RAG) routing for unmigrated ODT', () => {
+    const ODT_TEXT_REGEX = [/^application\/vnd\.oasis\.opendocument\.text$/];
     let originalRagUrl;
 
     beforeEach(() => {
@@ -992,10 +1428,10 @@ describe('processAgentFileUpload', () => {
 
     test('routes a document type to RAG /text (no native fallback) when admin narrows text config and RAG is set', async () => {
       process.env.RAG_API_URL = 'http://rag-api.test';
-      mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: DOCX_TEXT_REGEX }));
+      mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: ODT_TEXT_REGEX }));
       const { parseText } = require('@librechat/api');
       parseText.mockResolvedValueOnce({ text: 'rag extracted', bytes: 13 });
-      const req = makeReq({ mimetype: DOCX_MIME, ocrConfig: null });
+      const req = makeReq({ mimetype: ODT_MIME, ocrConfig: null });
 
       await processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() });
 
@@ -1011,7 +1447,7 @@ describe('processAgentFileUpload', () => {
         makeFileConfig({ textSupportedMimeTypes: [/^[\w.-]+\/[\w.-]+$/] }),
       );
       const { parseText } = require('@librechat/api');
-      const req = makeReq({ mimetype: DOCX_MIME, ocrConfig: null });
+      const req = makeReq({ mimetype: ODT_MIME, ocrConfig: null });
 
       await processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() });
 
@@ -1021,9 +1457,9 @@ describe('processAgentFileUpload', () => {
 
     test('keeps the built-in document parser when RAG_API_URL is not configured', async () => {
       delete process.env.RAG_API_URL;
-      mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: DOCX_TEXT_REGEX }));
+      mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: ODT_TEXT_REGEX }));
       const { parseText } = require('@librechat/api');
-      const req = makeReq({ mimetype: DOCX_MIME, ocrConfig: null });
+      const req = makeReq({ mimetype: ODT_MIME, ocrConfig: null });
 
       await processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() });
 
@@ -1033,10 +1469,10 @@ describe('processAgentFileUpload', () => {
 
     test('falls back to the built-in document parser (not native text) when RAG is unavailable', async () => {
       process.env.RAG_API_URL = 'http://rag-api.test';
-      mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: DOCX_TEXT_REGEX }));
+      mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: ODT_TEXT_REGEX }));
       const { parseText } = require('@librechat/api');
       parseText.mockRejectedValueOnce(new Error('native fallback is disabled'));
-      const req = makeReq({ mimetype: DOCX_MIME, ocrConfig: null });
+      const req = makeReq({ mimetype: ODT_MIME, ocrConfig: null });
 
       await expect(
         processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() }),
@@ -1050,7 +1486,7 @@ describe('processAgentFileUpload', () => {
 
     test('fails closed when RAG and its document-parser fallback cannot extract text', async () => {
       process.env.RAG_API_URL = 'http://rag-api.test';
-      mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: DOCX_TEXT_REGEX }));
+      mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: ODT_TEXT_REGEX }));
       const { parseText } = require('@librechat/api');
       parseText.mockRejectedValueOnce(new Error('PRIVATE RAG failure'));
       getStrategyFunctions.mockReturnValue({
@@ -1064,7 +1500,7 @@ describe('processAgentFileUpload', () => {
         }
       });
       const req = makeReq({
-        mimetype: DOCX_MIME,
+        mimetype: ODT_MIME,
         filters: {
           files: {
             pii: {
@@ -1088,12 +1524,12 @@ describe('processAgentFileUpload', () => {
 
     test('surfaces a persistence failure without retrying via the document parser', async () => {
       process.env.RAG_API_URL = 'http://rag-api.test';
-      mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: DOCX_TEXT_REGEX }));
+      mergeFileConfig.mockReturnValue(makeFileConfig({ textSupportedMimeTypes: ODT_TEXT_REGEX }));
       const { parseText } = require('@librechat/api');
       parseText.mockResolvedValueOnce({ text: 'rag extracted', bytes: 13 });
       // RAG extraction succeeds, but persisting the result fails.
       db.createFile.mockRejectedValueOnce(new Error('DB down'));
-      const req = makeReq({ mimetype: DOCX_MIME, ocrConfig: null });
+      const req = makeReq({ mimetype: ODT_MIME, ocrConfig: null });
 
       await expect(
         processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() }),
@@ -1114,7 +1550,7 @@ describe('processAgentFileUpload', () => {
           filepath: 'doc://result',
         }),
       });
-      const req = makeReq({ mimetype: PDF_MIME, ocrConfig: null });
+      const req = makeReq({ mimetype: ODT_MIME, ocrConfig: null });
       const { createFile } = require('~/models');
 
       await expect(
@@ -1133,7 +1569,7 @@ describe('processAgentFileUpload', () => {
           filepath: 'doc://result',
         }),
       });
-      const req = makeReq({ mimetype: PDF_MIME, ocrConfig: null });
+      const req = makeReq({ mimetype: ODT_MIME, ocrConfig: null });
 
       await expect(
         processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() }),
@@ -1814,7 +2250,7 @@ describe('processAgentFileUpload', () => {
       );
     });
 
-    test('stores the original file durably for OCR delivery records', async () => {
+    test('stores the original file durably for default isolated document records', async () => {
       const { createFile } = require('~/models');
       const documentUpload = jest.fn().mockResolvedValue({
         text: 'ocr extracted text',
@@ -1837,11 +2273,12 @@ describe('processAgentFileUpload', () => {
 
       await processAgentFileUpload({ req, res: mockRes, metadata: makeMetadata() });
 
-      expect(documentUpload).toHaveBeenCalled();
+      expect(documentUpload).not.toHaveBeenCalled();
+      expect(mockDocumentExtract).toHaveBeenCalledTimes(1);
       expect(storageUpload).toHaveBeenCalled();
       expect(createFile).toHaveBeenCalledWith(
         expect.objectContaining({
-          text: 'ocr extracted text',
+          text: 'extracted text',
           bytes: 4096,
           filepath: '/uploads/user-123/file-uuid-123__upload.bin',
           source: FileSources.local,
@@ -3694,6 +4131,48 @@ describe('fallback text for uploads left to tools', () => {
       }),
     };
   };
+
+  test('cancels an optionally extracted document after storage without writing a record', async () => {
+    const { resolveUploadFallbackText } = require('@librechat/api');
+    const deleteFile = jest.fn().mockResolvedValue(undefined);
+    const res = { destroyed: false, writableFinished: false };
+    const req = makeReq({ mimetype: PDF_MIME });
+    req.config.fileConfig.extractionService = {};
+    resolveUploadFallbackText.mockImplementationOnce(async ({ persistence }) => {
+      persistence.select();
+      return 'remote document';
+    });
+    getStrategyFunctions.mockReturnValue({
+      deleteFile,
+      handleFileUpload: jest.fn(async () => {
+        res.destroyed = true;
+        return { bytes: 42, filepath: '/uploads/user-123/optional.pdf' };
+      }),
+    });
+    await expect(
+      processAgentFileUpload({
+        req,
+        res,
+        metadata: {
+          agent_id: 'agent-abc',
+          message_file: 'true',
+          effectiveEndpoint: 'Custom Provider',
+          file_id: 'optional-file',
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'CANCELLED' });
+    expect(db.createFile).not.toHaveBeenCalled();
+    expect(db.addAgentResourceFile).not.toHaveBeenCalled();
+    expect(deleteFile).toHaveBeenCalledWith(
+      req,
+      expect.objectContaining({
+        file_id: 'optional-file',
+        filepath: '/uploads/user-123/optional.pdf',
+        user: 'user-123',
+        tenantId: 'tenant-a',
+      }),
+    );
+  });
 
   test('stores the text a turn without a reading tool can fall back to', async () => {
     const { createFile } = require('~/models');

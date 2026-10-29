@@ -1,5 +1,5 @@
 import type { FileStorageClaim, FileProvisionCommit } from '@librechat/data-schemas';
-import type { FileDeleteStorage } from './operations';
+import type { FileDeleteStorage, FileStorageUploadObserver } from './operations';
 import {
   withFileDeletion,
   withFileProvisioning,
@@ -1062,4 +1062,136 @@ describe('deletion token recovery', () => {
     expect(operation).not.toHaveBeenCalled();
     expect([...deleting.values()]).toEqual(['foreign']);
   });
+});
+
+it('cancels accepted storage before dispatching metadata and never recovers that payload', async () => {
+  const { storage, provisioners } = setup();
+  const owner = new AbortController();
+  const cleanup = jest.fn(async () => undefined);
+  const upload = jest.fn(async (_claim: FileStorageClaim, started: FileStorageUploadObserver) => {
+    started();
+    owner.abort();
+    return result();
+  });
+  await expect(
+    withFileProvisioning({
+      file,
+      userId: 'owner',
+      storage,
+      destination: 'cancelled-output',
+      signal: owner.signal,
+      onCancelled: cleanup,
+      operation: upload,
+    }),
+  ).rejects.toMatchObject({ name: 'AbortError' });
+  expect(storage.commitFileProvision).not.toHaveBeenCalled();
+  expect(provisioners.size).toBe(0);
+  expect(cleanup).toHaveBeenCalledTimes(1);
+  expect(storage.releaseFileProvision.mock.invocationCallOrder[0]).toBeLessThan(
+    cleanup.mock.invocationCallOrder[0],
+  );
+  await storage.recovery.recover(scope, storage);
+  expect(storage.commitFileProvision).not.toHaveBeenCalled();
+});
+
+it('waits for cancelled storage cleanup before returning', async () => {
+  const { storage } = setup();
+  const owner = new AbortController();
+  const cleanupStarted = barrier(),
+    cleanupFinished = barrier();
+  let settled = false;
+  const work = withFileProvisioning({
+    file,
+    userId: 'owner',
+    storage,
+    destination: 'cancelled-output',
+    signal: owner.signal,
+    operation: async () => {
+      owner.abort();
+      return result();
+    },
+    onCancelled: async () => {
+      cleanupStarted.release();
+      await cleanupFinished.wait;
+    },
+  }).finally(() => {
+    settled = true;
+  });
+  const outcome = work.catch((error) => error);
+  await cleanupStarted.wait;
+  expect(settled).toBe(false);
+  expect(storage.commitFileProvision).not.toHaveBeenCalled();
+  cleanupFinished.release();
+  await expect(outcome).resolves.toBe(owner.signal.reason);
+});
+
+it('retains release-only recovery when a cancelled output cannot release its claim', async () => {
+  const { storage } = setup();
+  const owner = new AbortController();
+  const cleanup = jest.fn(async () => undefined);
+  storage.releaseFileProvision.mockRejectedValueOnce(new Error('release acknowledgement lost'));
+  await expect(
+    withFileProvisioning({
+      file,
+      userId: 'owner',
+      storage,
+      destination: 'cancelled-output',
+      signal: owner.signal,
+      operation: async () => {
+        owner.abort();
+        return result();
+      },
+      onCancelled: cleanup,
+    }),
+  ).rejects.toBeInstanceOf(FileProvisionPersistenceError);
+  expect(cleanup).not.toHaveBeenCalled();
+  await storage.recovery.recover(scope, storage);
+  expect(storage.commitFileProvision).not.toHaveBeenCalled();
+  expect(cleanup).toHaveBeenCalledTimes(1);
+});
+
+it('does not retract a metadata write after dispatch, including recovery retries', async () => {
+  const { storage } = setup();
+  const owner = new AbortController();
+  const cleanup = jest.fn(async () => undefined);
+  storage.commitFileProvision.mockImplementationOnce(async () => {
+    owner.abort();
+    throw new Error('commit acknowledgement lost');
+  });
+  await expect(
+    withFileProvisioning({
+      file,
+      userId: 'owner',
+      storage,
+      destination: 'committed-output',
+      signal: owner.signal,
+      operation: async () => result(),
+      onCancelled: cleanup,
+    }),
+  ).resolves.toBe('uploaded');
+  expect(storage.commitFileProvision).toHaveBeenCalledTimes(2);
+  expect(cleanup).not.toHaveBeenCalled();
+});
+
+it('cancels a late acquisition before calling storage and releases only its claim', async () => {
+  const { storage } = setup();
+  const owner = new AbortController();
+  storage.acquireFileProvision.mockImplementationOnce(async () => {
+    owner.abort();
+    return true;
+  });
+  const upload = jest.fn(async () => result());
+  await expect(
+    withFileProvisioning({
+      file,
+      userId: 'owner',
+      storage,
+      destination: 'cancelled-before-storage',
+      signal: owner.signal,
+      operation: upload,
+    }),
+  ).rejects.toMatchObject({ name: 'AbortError' });
+  expect(upload).not.toHaveBeenCalled();
+  expect(storage.commitFileProvision).not.toHaveBeenCalled();
+  expect(storage.releaseFileProvision).toHaveBeenCalledTimes(1);
 });

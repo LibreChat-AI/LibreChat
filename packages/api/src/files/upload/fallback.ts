@@ -1,16 +1,21 @@
 import { logger } from '@librechat/data-schemas';
 import { isNativelyReadableText, documentParserMimeTypes } from 'librechat-data-provider';
 import type {
+  ExtractionServiceConfig,
   FiltersConfig,
   EndpointFileConfig,
   TDefaultLLMDeliveryPath,
 } from 'librechat-data-provider';
+import type { ExtractionUploadPersistence } from '~/files/extraction/commit';
+import type { ExtractionLifetime } from '~/files/extraction/lifetime';
 import {
   extractInspectableFileText,
   getFileExtractionLogDetails,
   MAX_STORED_EXTRACTED_TEXT_BYTES,
 } from '~/files/extract';
 import { extractFileContent } from '~/protection/adapters/submissions';
+import { resolveUploadDocumentText } from '~/files/extraction/upload';
+import { assertExtractionActive } from '~/files/extraction/lifetime';
 import { hasActiveFileFieldPolicy } from '~/protection/files';
 import { parseDocument } from '~/files/documents/crud';
 import { inspectContent } from '~/protection/runtime';
@@ -90,9 +95,19 @@ export async function resolveUploadFallbackText({
   fileId,
   filters,
   extractors = builtInExtractors,
+  extractionService,
+  persistence,
+  request,
+  response,
+  signal,
   ...route
 }: Omit<UploadFallbackTextRoute, 'mimeType'> & {
   file: Express.Multer.File;
+  extractionService?: ExtractionServiceConfig;
+  persistence?: ExtractionUploadPersistence;
+  request?: ExtractionLifetime['request'];
+  response?: ExtractionLifetime['response'];
+  signal?: AbortSignal;
   fileId: string;
   filters?: FiltersConfig;
   extractors?: UploadFallbackTextExtractors;
@@ -115,12 +130,22 @@ export async function resolveUploadFallbackText({
     return undefined;
   };
   try {
+    const extract = () =>
+      plan === UPLOAD_FALLBACK_TEXT_PLANS.documentParser
+        ? extractors.parseDocument({ file })
+        : extractors.parseTextNative(file);
     const result = await extractInspectableFileText({
       filters,
       extract: () =>
-        plan === UPLOAD_FALLBACK_TEXT_PLANS.documentParser
-          ? extractors.parseDocument({ file })
-          : extractors.parseTextNative(file),
+        resolveUploadDocumentText({
+          file,
+          config: extractionService,
+          persistence,
+          request,
+          response,
+          signal,
+          extract,
+        }),
     });
     const text = result?.text;
     if (typeof text !== 'string' || text.trim().length === 0) {
@@ -138,6 +163,7 @@ export async function resolveUploadFallbackText({
     }
     return text;
   } catch (error) {
+    assertExtractionActive({ request, response, signal });
     return skip('extraction failed', error);
   }
 }

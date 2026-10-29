@@ -1,0 +1,36 @@
+name: Isolated document extraction
+
+on:
+  pull_request:
+    paths:
+      - 'packages/api/src/files/**'
+      - 'packages/data-provider/src/file-config.ts'
+      - 'scripts/extraction-*'
+      - 'docker-compose*.yml'
+      - 'deploy-compose*.yml'
+      - '.devcontainer/docker-compose.yml'
+      - '.github/workflows/extraction-client.yml'
+      - 'package-lock.json'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: extraction-client-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  extraction:
+    name: Default isolated extraction qualification
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: npm run build:data-provider
+      - run: node --test scripts/extraction-compose.test.mjs
+      - run: node scripts/extraction-container.mjs

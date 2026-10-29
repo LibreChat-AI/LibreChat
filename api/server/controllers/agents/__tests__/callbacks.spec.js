@@ -730,6 +730,34 @@ describe('createToolEndCallback', () => {
     artifactPromises = [];
   });
 
+  it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
+    '%s passes the owning run signal rather than the HTTP response lifetime',
+    async (factoryName) => {
+      const { processCodeOutput } = require('~/server/services/Files/Code/process');
+      const { preflightCodeOutputBatch } = require('~/server/services/Files/Code/preflight');
+      const signal = new AbortController().signal;
+      preflightCodeOutputBatch.mockResolvedValueOnce([
+        {
+          file: { id: 'id', name: 'report.pdf' },
+          sessionId: 'session',
+          preparedBuffer: Buffer.from('pdf'),
+        },
+      ]);
+      const callback = require('../callbacks')[factoryName]({ req, res, artifactPromises, signal });
+      const artifact = { session_id: 'session', files: [{ id: 'id', name: 'report.pdf' }] };
+      await callback(
+        { output: { name: 'execute_code', tool_call_id: 'tool', artifact } },
+        { run_id: 'run', thread_id: 'thread' },
+      );
+      expect(preflightCodeOutputBatch).toHaveBeenCalledWith(
+        expect.objectContaining({ signal, artifact }),
+      );
+      await Promise.all(artifactPromises);
+      expect(processCodeOutput).toHaveBeenCalledWith(expect.objectContaining({ signal }));
+      expect(artifactPromises).toHaveLength(1);
+    },
+  );
+
   it('preserves separate owners for final search artifacts with repeated tool-call IDs', async () => {
     const toolEndCallback = createToolEndCallback({ req, res, artifactPromises });
     for (const agentId of ['agent-a', 'agent-b']) {

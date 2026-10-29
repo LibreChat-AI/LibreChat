@@ -110,6 +110,7 @@ export function createRunArtifactSnapshotAdapter({
   ): Promise<Buffer> {
     signal?.throwIfAborted();
     const entries = await preflightCodeOutputBatch({
+      signal,
       filters: req.config?.filters,
       artifact: {
         session_id: artifact.sessionId,
@@ -123,6 +124,8 @@ export function createRunArtifactSnapshotAdapter({
           fileSizeLimit: Math.min(fileSizeLimit, maxBytes),
           inspectContent,
           determineFileType,
+          signal,
+          extractionService: req.config?.fileConfig?.extractionService,
         }),
     });
     signal?.throwIfAborted();

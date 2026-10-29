@@ -1,6 +1,7 @@
 import path from 'path';
 import * as fs from 'fs';
 import JSZip from 'jszip';
+import { ExtractionServiceError } from '../extraction/client';
 import { parseDocument } from './crud';
 
 describe('Document Parser', () => {
@@ -11,7 +12,17 @@ describe('Document Parser', () => {
       mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     } as Express.Multer.File;
 
-    const document = await parseDocument({ file });
+    const text = 'This is a sample DOCX file.\n\n';
+    const extract = jest.fn(async () => ({
+      version: 1 as const,
+      operation: 'document.extract-text' as const,
+      format: 'docx' as const,
+      inputSha256: '',
+      textBytes: Buffer.byteLength(text),
+      segments: [{ kind: 'document' as const, index: 1, text }],
+    }));
+    const document = await parseDocument({ file, extractor: { maxInputBytes: 10485760, extract } });
+    expect(extract).toHaveBeenCalledWith(expect.any(Buffer), 'docx', expect.any(AbortSignal));
 
     expect(document).toEqual({
       bytes: 29,
@@ -187,14 +198,17 @@ describe('Document Parser', () => {
       mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
     } as Express.Multer.File;
 
-    await expect(parseDocument({ file })).rejects.toThrow('No text found in document');
+    const extract = jest.fn().mockRejectedValue(new ExtractionServiceError('EMPTY_OUTPUT'));
+    await expect(
+      parseDocument({ file, extractor: { maxInputBytes: 10485760, extract } }),
+    ).rejects.toMatchObject({ code: 'EMPTY_OUTPUT' });
   });
 
   test('parseDocument() rejects files exceeding the pre-parse size limit', async () => {
     const file = {
-      originalname: 'oversized.docx',
-      path: path.join(__dirname, 'sample.docx'),
-      mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      originalname: 'oversized.xlsx',
+      path: path.join(__dirname, 'sample.xlsx'),
+      mimetype: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       size: 16 * 1024 * 1024,
     } as Express.Multer.File;
 
@@ -205,9 +219,9 @@ describe('Document Parser', () => {
 
   test('parseDocument() allows files exactly at the size limit boundary', async () => {
     const file = {
-      originalname: 'sample.docx',
-      path: path.join(__dirname, 'sample.docx'),
-      mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      originalname: 'sample.xlsx',
+      path: path.join(__dirname, 'sample.xlsx'),
+      mimetype: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
       size: 15 * 1024 * 1024,
     } as Express.Multer.File;
 

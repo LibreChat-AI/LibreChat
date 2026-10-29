@@ -217,10 +217,14 @@ const mockUpdateFile = jest.fn();
 const mockAcquireFileProvision = jest.fn(async () => true);
 const mockReleaseFileProvision = jest.fn(async () => true);
 const mockCommitFileProvision = jest.fn();
+const mockAcquireFileDeletion = jest.fn();
+const mockReleaseFileDeletion = jest.fn();
 let mockProvisionRecovery;
 jest.mock('~/server/services/Files/operations', () => ({
   getFileStorage: () => ({
     recovery: mockProvisionRecovery,
+    acquireFileDeletion: (...args) => mockAcquireFileDeletion(...args),
+    releaseFileDeletion: (...args) => mockReleaseFileDeletion(...args),
     acquireFileProvision: (...args) => mockAcquireFileProvision(...args),
     releaseFileProvision: (...args) => mockReleaseFileProvision(...args),
     commitFileProvision: (...args) => mockCommitFileProvision(...args),
@@ -316,6 +320,8 @@ describe('Code Process', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockProvisionRecovery = jest.requireActual('@librechat/api').createFileProvisionRecovery();
+    mockAcquireFileDeletion.mockReset().mockResolvedValue({ resumed: false });
+    mockReleaseFileDeletion.mockReset().mockResolvedValue(true);
     mockAcquireFileProvision.mockReset().mockResolvedValue(true);
     mockReleaseFileProvision.mockReset().mockResolvedValue(true);
     mockCommitFileProvision
@@ -346,6 +352,571 @@ describe('Code Process', () => {
     determineFileType.mockResolvedValue({ mime: 'text/plain' });
   });
 
+  describe('isolated PDF cache ownership', () => {
+    it.each(['document', 'other'])(
+      'caches exact PDF text through only the configured endpoint with inspection disabled (category=%s)',
+      async (category) => {
+        const {
+          fixture,
+          reply,
+          capabilities,
+          result,
+        } = require('../../../../../packages/api/src/files/extraction/fixture.helper');
+        const bytes = Buffer.from('PDF cache input');
+        let posts = 0;
+        const processor = await fixture((req, res) => {
+          req.resume();
+          if (req.method === 'GET') return reply(res, capabilities);
+          posts++;
+          reply(res, result(bytes));
+        });
+        const req = {
+          ...mockReq,
+          config: {
+            ...mockReq.config,
+            fileConfig: {
+              extractionService: {
+                url: processor.url,
+                tokenFile: processor.tokenFile,
+                deadlineMs: 500,
+              },
+            },
+          },
+        };
+        mockExtractCodeArtifactText.mockImplementationOnce(
+          jest.requireActual('@librechat/api').extractCodeArtifactText,
+        );
+        mockClassifyCodeArtifact.mockReturnValueOnce(category);
+        determineFileType.mockResolvedValueOnce({ mime: 'application/pdf' });
+        try {
+          const output = await processCodeOutput({
+            ...baseParams,
+            req,
+            name: 'cache.pdf',
+            preparedBuffer: bytes,
+          });
+          expect(output.file).toMatchObject({ text: '你好!', textFormat: 'text' });
+          expect(posts).toBe(1);
+          expect(mockExtractCodeArtifactInspectionText).not.toHaveBeenCalled();
+          expect(mockCommitCodeFile).toHaveBeenCalledWith(
+            expect.objectContaining({ text: '你好!' }),
+            undefined,
+          );
+        } finally {
+          await processor.close();
+        }
+      },
+    );
+  });
+
+  describe('PDF cache transport lifetime', () => {
+    it.each(['foreground', 'publication', 'combined'])(
+      'drains a cancelled %s cache operation before any byte or cache commit',
+      async (mode) => {
+        const {
+          fixture,
+          reply,
+          capabilities,
+        } = require('../../../../../packages/api/src/files/extraction/fixture.helper');
+        let ready;
+        let stopped;
+        const admitted = new Promise((resolve) => {
+          ready = resolve;
+        });
+        const closed = new Promise((resolve) => {
+          stopped = resolve;
+        });
+        const processor = await fixture((req, res) => {
+          req.resume();
+          if (req.method === 'GET') return reply(res, capabilities);
+          res.once('close', stopped);
+          ready();
+        });
+        const foreground = new AbortController();
+        const publicationOwner = new AbortController();
+        const saveBuffer = jest.fn(async () => '/uploads/attempt.pdf');
+        const publish = jest.fn();
+        const req = {
+          ...mockReq,
+          aborted: mode !== 'foreground',
+          res: { destroyed: true, writableFinished: false },
+          config: {
+            ...mockReq.config,
+            fileConfig: {
+              extractionService: {
+                url: processor.url,
+                tokenFile: processor.tokenFile,
+                deadlineMs: 5000,
+              },
+            },
+          },
+        };
+        getStrategyFunctions.mockReturnValue({ saveBuffer });
+        determineFileType.mockResolvedValueOnce({ mime: 'application/pdf' });
+        mockExtractCodeArtifactText.mockImplementationOnce(
+          jest.requireActual('@librechat/api').extractCodeArtifactText,
+        );
+        const publication =
+          mode === 'foreground'
+            ? undefined
+            : {
+                signal: publicationOwner.signal,
+                scope: {
+                  userId: 'user-123',
+                  conversationId: baseParams.conversationId,
+                  runId: 'run',
+                  executionId: 'execution',
+                  agentId: 'agent',
+                  sourceFileId: 'source',
+                },
+                provenance: {},
+                publish,
+                find: jest.fn(async () => null),
+                discard: jest.fn(async () => undefined),
+              };
+        try {
+          const pending = processCodeOutput({
+            ...baseParams,
+            req,
+            name: 'cancel.pdf',
+            preparedBuffer: Buffer.from('PDF cache input'),
+            signal: mode === 'publication' ? undefined : foreground.signal,
+            publication,
+          });
+          const outcome = pending.catch((error) => error);
+          await admitted;
+          (mode === 'foreground' ? foreground : publicationOwner).abort();
+          let timeout;
+          try {
+            await expect(
+              Promise.race([
+                outcome,
+                new Promise((_resolve, reject) => {
+                  timeout = setTimeout(
+                    () => reject(new Error('Owner cancellation did not drain cache transport')),
+                    1000,
+                  );
+                }),
+              ]),
+            ).resolves.toMatchObject({ name: 'AbortError' });
+          } finally {
+            clearTimeout(timeout);
+          }
+          await closed;
+          expect(saveBuffer).not.toHaveBeenCalled();
+          expect(mockCommitCodeFile).not.toHaveBeenCalled();
+          expect(mockCommitFileProvision).not.toHaveBeenCalled();
+          expect(publish).not.toHaveBeenCalled();
+          if (mode === 'foreground') expect(mockReleaseFileProvision).toHaveBeenCalledTimes(1);
+        } finally {
+          await processor.close();
+        }
+      },
+    );
+
+    it('uses configured limits and keeps ordinary non-cancellation cache failures safe', async () => {
+      const {
+        fixture,
+        reply,
+        capabilities,
+        result,
+      } = require('../../../../../packages/api/src/files/extraction/fixture.helper');
+      const bytes = Buffer.from('PDF input');
+      const processor = await fixture((req, res) => {
+        req.resume();
+        reply(res, req.method === 'GET' ? capabilities : result(bytes));
+      });
+      const req = {
+        ...mockReq,
+        config: {
+          ...mockReq.config,
+          fileConfig: {
+            extractionService: {
+              url: processor.url,
+              tokenFile: processor.tokenFile,
+              maxTextBytes: 1,
+            },
+          },
+        },
+      };
+      determineFileType.mockResolvedValueOnce({ mime: 'application/pdf' });
+      mockExtractCodeArtifactText.mockImplementationOnce(
+        jest.requireActual('@librechat/api').extractCodeArtifactText,
+      );
+      try {
+        const output = await processCodeOutput({
+          ...baseParams,
+          req,
+          name: 'limit.pdf',
+          preparedBuffer: bytes,
+        });
+        expect(output.file.text).toBeNull();
+        expect(mockCommitCodeFile).toHaveBeenCalledWith(
+          expect.objectContaining({ text: null }),
+          undefined,
+        );
+      } finally {
+        await processor.close();
+      }
+    });
+
+    it('applies the configured cache deadline and drains the processor before a safe null cache result', async () => {
+      const {
+        fixture,
+        reply,
+        capabilities,
+      } = require('../../../../../packages/api/src/files/extraction/fixture.helper');
+      let stopped;
+      const closed = new Promise((resolve) => {
+        stopped = resolve;
+      });
+      const processor = await fixture((req, res) => {
+        req.resume();
+        if (req.method === 'GET') return reply(res, capabilities);
+        res.once('close', stopped);
+      });
+      const guard = new AbortController();
+      const timeout = setTimeout(() => guard.abort(), 1500);
+      const req = {
+        ...mockReq,
+        config: {
+          ...mockReq.config,
+          fileConfig: {
+            extractionService: {
+              url: processor.url,
+              tokenFile: processor.tokenFile,
+              deadlineMs: 30,
+            },
+          },
+        },
+      };
+      determineFileType.mockResolvedValueOnce({ mime: 'application/pdf' });
+      mockExtractCodeArtifactText.mockImplementationOnce(
+        jest.requireActual('@librechat/api').extractCodeArtifactText,
+      );
+      try {
+        const output = await processCodeOutput({
+          ...baseParams,
+          req,
+          name: 'deadline.pdf',
+          preparedBuffer: Buffer.from('PDF input'),
+          signal: guard.signal,
+        });
+        await closed;
+        expect(output.file.text).toBeNull();
+        expect(guard.signal.aborted).toBe(false);
+      } finally {
+        clearTimeout(timeout);
+        await processor.close();
+      }
+    });
+
+    it('keeps detached harvest cache independent of the old HTTP connection', async () => {
+      const {
+        fixture,
+        reply,
+        capabilities,
+        result,
+      } = require('../../../../../packages/api/src/files/extraction/fixture.helper');
+      const bytes = Buffer.from('PDF input');
+      const processor = await fixture((req, res) => {
+        req.resume();
+        reply(res, req.method === 'GET' ? capabilities : result(bytes));
+      });
+      const req = {
+        ...mockReq,
+        aborted: true,
+        res: { destroyed: true, writableFinished: false },
+        config: {
+          ...mockReq.config,
+          fileConfig: { extractionService: { url: processor.url, tokenFile: processor.tokenFile } },
+        },
+      };
+      determineFileType.mockResolvedValueOnce({ mime: 'application/pdf' });
+      mockExtractCodeArtifactText.mockImplementationOnce(
+        jest.requireActual('@librechat/api').extractCodeArtifactText,
+      );
+      try {
+        const output = await processCodeOutput({
+          ...baseParams,
+          req,
+          name: 'detached.pdf',
+          preparedBuffer: bytes,
+          freshClaimAfter: Date.now(),
+        });
+        expect(output.file.text).toBe('你好!');
+      } finally {
+        await processor.close();
+      }
+    });
+  });
+
+  describe('PDF cache cancellation before metadata dispatch', () => {
+    it.each(['storage', 'retention'])(
+      'cleans owned bytes without committing cache metadata when cancelled during %s',
+      async (stage) => {
+        const owner = new AbortController();
+        let enter;
+        let finish;
+        const entered = new Promise((resolve) => {
+          enter = resolve;
+        });
+        const gate = new Promise((resolve) => {
+          finish = resolve;
+        });
+        const saveBuffer = jest.fn(async () => {
+          if (stage === 'storage') {
+            enter();
+            await gate;
+          }
+          return '/uploads/user-123/new-cache.pdf';
+        });
+        const deleteFile = jest.fn(async () => undefined);
+        getStrategyFunctions.mockReturnValue({ saveBuffer, deleteFile });
+        getRetentionExpiry.mockImplementationOnce(async () => {
+          if (stage === 'retention') {
+            setImmediate(enter);
+            await gate;
+          }
+          return {};
+        });
+        mockExtractCodeArtifactText.mockResolvedValueOnce('cached PDF text');
+        determineFileType.mockResolvedValueOnce({ mime: 'application/pdf' });
+        const pending = processCodeOutput({
+          ...baseParams,
+          name: 'cache.pdf',
+          preparedBuffer: Buffer.from('PDF bytes'),
+          signal: owner.signal,
+        });
+        const outcome = pending.catch((error) => error);
+        await entered;
+        owner.abort();
+        finish();
+        await expect(outcome).resolves.toMatchObject({ name: 'AbortError' });
+        expect(mockCommitCodeFile).not.toHaveBeenCalled();
+        expect(mockCommitFileProvision).not.toHaveBeenCalled();
+        expect(deleteFile).toHaveBeenCalledWith(
+          mockReq,
+          expect.objectContaining({
+            file_id: 'mock-uuid-1234',
+            filepath: '/uploads/user-123/new-cache.pdf',
+            user: 'user-123',
+            source: 'local',
+          }),
+        );
+        expect(mockReleaseFileProvision).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each(['foreground', 'publication', 'combined'])(
+      'discards only its unpublished attempt when %s ownership ends during storage',
+      async (mode) => {
+        const foreground = new AbortController(),
+          run = new AbortController();
+        const discard = jest.fn(async () => undefined);
+        const publish = jest.fn();
+        const publication = {
+          signal: run.signal,
+          scope: {
+            userId: 'user-123',
+            conversationId: baseParams.conversationId,
+            runId: 'run',
+            executionId: 'execution',
+            agentId: 'agent',
+            sourceFileId: 'source',
+          },
+          provenance: {},
+          publish,
+          discard,
+          find: jest.fn(async () => null),
+        };
+        getStrategyFunctions.mockReturnValue({
+          saveBuffer: jest.fn(async () => {
+            (mode === 'publication' ? run : foreground).abort();
+            return '/uploads/unpublished.pdf';
+          }),
+        });
+        mockExtractCodeArtifactText.mockResolvedValueOnce('cache text');
+        determineFileType.mockResolvedValueOnce({ mime: 'application/pdf' });
+        await expect(
+          processCodeOutput({
+            ...baseParams,
+            name: 'cache.pdf',
+            preparedBuffer: Buffer.from('PDF bytes'),
+            publication,
+            signal: mode === 'publication' ? undefined : foreground.signal,
+          }),
+        ).rejects.toMatchObject({ name: 'AbortError' });
+        expect(publish).not.toHaveBeenCalled();
+        expect(mockCommitFileProvision).not.toHaveBeenCalled();
+        expect(discard).toHaveBeenCalledWith(
+          expect.objectContaining({ filepath: '/uploads/unpublished.pdf' }),
+        );
+      },
+    );
+
+    it('does not delete storage already owned by a reused artifact record', async () => {
+      const owner = new AbortController();
+      mockClaimCodeFile.mockResolvedValueOnce({ file_id: 'reused-id', user: 'user-123' });
+      const deleteFile = jest.fn();
+      getStrategyFunctions.mockReturnValue({
+        saveBuffer: jest.fn(async () => {
+          owner.abort();
+          return '/uploads/existing.pdf';
+        }),
+        deleteFile,
+      });
+      mockExtractCodeArtifactText.mockResolvedValueOnce('cache text');
+      determineFileType.mockResolvedValueOnce({ mime: 'application/pdf' });
+      await expect(
+        processCodeOutput({
+          ...baseParams,
+          name: 'cache.pdf',
+          preparedBuffer: Buffer.from('PDF bytes'),
+          signal: owner.signal,
+        }),
+      ).rejects.toMatchObject({ name: 'AbortError' });
+      expect(mockCommitCodeFile).not.toHaveBeenCalled();
+      expect(mockCommitFileProvision).not.toHaveBeenCalled();
+      expect(deleteFile).not.toHaveBeenCalled();
+      expect(mockReleaseFileProvision).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['busy', 'resumed', 'failed-delete'])(
+      'preserves bytes without dispatching metadata when cancellation cleanup is %s',
+      async (mode) => {
+        const owner = new AbortController();
+        const deleteFile = jest.fn(async () => {
+          if (mode === 'failed-delete') throw new Error('delete outcome unknown');
+        });
+        getStrategyFunctions.mockReturnValue({
+          saveBuffer: jest.fn(async () => {
+            owner.abort();
+            return '/uploads/cancelled.pdf';
+          }),
+          deleteFile,
+        });
+        mockAcquireFileDeletion.mockResolvedValueOnce(
+          mode === 'busy' ? null : { resumed: mode === 'resumed' },
+        );
+        mockExtractCodeArtifactText.mockResolvedValueOnce('cache text');
+        determineFileType.mockResolvedValueOnce({ mime: 'application/pdf' });
+        await expect(
+          processCodeOutput({
+            ...baseParams,
+            name: 'cache.pdf',
+            preparedBuffer: Buffer.from('PDF bytes'),
+            signal: owner.signal,
+          }),
+        ).rejects.toMatchObject({ name: 'AbortError' });
+        expect(mockCommitFileProvision).not.toHaveBeenCalled();
+        expect(mockCommitCodeFile).not.toHaveBeenCalled();
+        expect(deleteFile).toHaveBeenCalledTimes(mode === 'failed-delete' ? 1 : 0);
+        expect(mockReleaseFileDeletion).toHaveBeenCalledTimes(mode === 'busy' ? 0 : 1);
+        if (mode !== 'busy')
+          expect(mockReleaseFileDeletion).toHaveBeenCalledWith(
+            expect.objectContaining({
+              retainDeletion: true,
+              userId: 'user-123',
+              file_id: 'mock-uuid-1234',
+            }),
+          );
+      },
+    );
+
+    it('waits for physical deletion of only its fenced uncommitted bytes', async () => {
+      const fs = require('node:fs/promises');
+      const { join } = require('node:path');
+      const directory = await fs.mkdtemp(join(require('node:os').tmpdir(), 'cache-cancel-'));
+      const owned = join(directory, 'owned.pdf'),
+        other = join(directory, 'unrelated.pdf');
+      const owner = new AbortController();
+      let enter, finish;
+      const entered = new Promise((resolve) => {
+        enter = resolve;
+      });
+      const gate = new Promise((resolve) => {
+        finish = resolve;
+      });
+      await fs.writeFile(other, 'unrelated');
+      const deleteFile = jest.fn(async (_req, file) => {
+        expect(file.filepath).toBe(owned);
+        expect(mockReleaseFileProvision).toHaveBeenCalledTimes(1);
+        expect(mockAcquireFileDeletion).toHaveBeenCalledTimes(1);
+        enter();
+        await gate;
+        await fs.unlink(file.filepath);
+      });
+      getStrategyFunctions.mockReturnValue({
+        saveBuffer: jest.fn(async () => {
+          await fs.writeFile(owned, 'new output');
+          owner.abort();
+          return owned;
+        }),
+        deleteFile,
+      });
+      mockExtractCodeArtifactText.mockResolvedValueOnce('cache text');
+      determineFileType.mockResolvedValueOnce({ mime: 'application/pdf' });
+      let settled = false;
+      const pending = processCodeOutput({
+        ...baseParams,
+        name: 'cache.pdf',
+        preparedBuffer: Buffer.from('PDF bytes'),
+        signal: owner.signal,
+      }).finally(() => {
+        settled = true;
+      });
+      const outcome = pending.catch((error) => error);
+      try {
+        await entered;
+        expect(settled).toBe(false);
+        await expect(fs.readFile(owned, 'utf8')).resolves.toBe('new output');
+        finish();
+        await expect(outcome).resolves.toMatchObject({ name: 'AbortError' });
+        await expect(fs.stat(owned)).rejects.toMatchObject({ code: 'ENOENT' });
+        await expect(fs.readFile(other, 'utf8')).resolves.toBe('unrelated');
+        expect(mockCommitFileProvision).not.toHaveBeenCalled();
+        expect(mockReleaseFileDeletion).toHaveBeenCalledWith(
+          expect.objectContaining({ retainDeletion: false }),
+        );
+      } finally {
+        finish();
+        await outcome;
+        await fs.rm(directory, { recursive: true, force: true });
+      }
+    });
+
+    it.each(['acknowledged', 'uncertain'])(
+      'retains bytes once the metadata commit was dispatched (%s)',
+      async (mode) => {
+        const owner = new AbortController();
+        const deleteFile = jest.fn();
+        getStrategyFunctions.mockReturnValue({
+          saveBuffer: jest.fn(async () => '/uploads/committed.pdf'),
+          deleteFile,
+        });
+        mockExtractCodeArtifactText.mockResolvedValueOnce('cache text');
+        determineFileType.mockResolvedValueOnce({ mime: 'application/pdf' });
+        mockCommitFileProvision.mockImplementation(async () => {
+          owner.abort();
+          if (mode === 'uncertain') throw new Error('lost commit acknowledgement');
+          return true;
+        });
+        await expect(
+          processCodeOutput({
+            ...baseParams,
+            name: 'cache.pdf',
+            preparedBuffer: Buffer.from('PDF bytes'),
+            signal: owner.signal,
+          }),
+        ).rejects.toMatchObject({ name: 'AbortError' });
+        expect(mockCommitFileProvision).toHaveBeenCalledTimes(mode === 'uncertain' ? 2 : 1);
+        expect(deleteFile).not.toHaveBeenCalled();
+        expect(mockReleaseFileProvision).toHaveBeenCalledTimes(mode === 'uncertain' ? 0 : 1);
+      },
+    );
+  });
+
   describe('code output inspection preflight', () => {
     it('derives file content from downloaded bytes without persisting anything', async () => {
       const buffer = Buffer.from('safe raw content');
@@ -373,6 +944,97 @@ describe('Code Process', () => {
       expect(mockClaimCodeFile).not.toHaveBeenCalled();
       expect(mockCommitCodeFile).not.toHaveBeenCalled();
       expect(getStrategyFunctions).not.toHaveBeenCalled();
+    });
+
+    it('closes the remote extraction connection on run abort without creating persistable output', async () => {
+      const {
+        fixture,
+        reply,
+        capabilities,
+      } = require('../../../../../packages/api/src/files/extraction/fixture.helper');
+      let ready;
+      let closed;
+      const admitted = new Promise((resolve) => {
+        ready = resolve;
+      });
+      const remoteClosed = new Promise((resolve) => {
+        closed = resolve;
+      });
+      const processor = await fixture((req, res) => {
+        req.resume();
+        if (req.method === 'GET') return reply(res, capabilities);
+        res.once('close', closed);
+        ready();
+      });
+      const controller = new AbortController();
+      const req = {
+        ...mockReq,
+        config: {
+          ...mockReq.config,
+          fileConfig: {
+            extractionService: {
+              url: processor.url,
+              tokenFile: processor.tokenFile,
+            },
+          },
+        },
+      };
+      determineFileType.mockResolvedValueOnce({ mime: 'application/pdf' });
+      mockAxios.mockResolvedValueOnce({ data: Buffer.from('PDF input') });
+      try {
+        const pending = prepareCodeOutputForInspection({
+          ...baseParams,
+          req,
+          name: 'report.pdf',
+          signal: controller.signal,
+        });
+        const rejected = pending.catch((error) => error);
+        await admitted;
+        controller.abort();
+        await expect(rejected).resolves.toMatchObject({ code: 'CANCELLED' });
+        await remoteClosed;
+        expect(mockAxios).toHaveBeenCalledWith(
+          expect.objectContaining({ signal: controller.signal }),
+        );
+        expect(mockExtractCodeArtifactRawText).not.toHaveBeenCalled();
+        expect(mockExtractCodeArtifactInspectionText).not.toHaveBeenCalled();
+        expect(mockClaimCodeFile).not.toHaveBeenCalled();
+        expect(mockCommitCodeFile).not.toHaveBeenCalled();
+      } finally {
+        await processor.close();
+      }
+    });
+
+    it('keeps detached inspection independent of the old HTTP response lifetime', async () => {
+      const {
+        fixture,
+        reply,
+        capabilities,
+        result,
+      } = require('../../../../../packages/api/src/files/extraction/fixture.helper');
+      const bytes = Buffer.from('PDF input');
+      const processor = await fixture((req, res) => {
+        req.resume();
+        reply(res, req.method === 'GET' ? capabilities : result(bytes));
+      });
+      const req = {
+        ...mockReq,
+        aborted: true,
+        res: { destroyed: true, writableFinished: false },
+        config: {
+          ...mockReq.config,
+          fileConfig: { extractionService: { url: processor.url, tokenFile: processor.tokenFile } },
+        },
+      };
+      determineFileType.mockResolvedValueOnce({ mime: 'application/pdf' });
+      mockAxios.mockResolvedValueOnce({ data: bytes });
+      try {
+        await expect(
+          prepareCodeOutputForInspection({ ...baseParams, req, name: 'report.pdf' }),
+        ).resolves.toMatchObject({ extractedTextComplete: true, file: { extractedText: '你好!' } });
+      } finally {
+        await processor.close();
+      }
     });
 
     it('persists the exact preflight buffer without downloading it again', async () => {
@@ -571,12 +1233,12 @@ describe('Code Process', () => {
       );
     });
 
-    it('cleans a stored publication attempt when classification fails before metadata commit', async () => {
+    it('does not store a publication attempt when classification fails before cache extraction', async () => {
       const { createRunArtifactPublisher } = jest.requireActual('@librechat/api');
       const discard = jest.fn(async () => undefined);
       const publishRunArtifactFile = jest.fn();
       mockClassifyCodeArtifact.mockImplementationOnce(() => {
-        throw new Error('Classification failed after storage');
+        throw new Error('Classification failed before storage');
       });
       const publish = createRunArtifactPublisher({
         claimRunArtifactFile: async () => ({ file_id: 'published-id' }),
@@ -595,14 +1257,8 @@ describe('Code Process', () => {
         }),
       ).rejects.toThrow('durable storage');
       expect(publishRunArtifactFile).not.toHaveBeenCalled();
-      expect(discard).toHaveBeenCalledWith(
-        expect.objectContaining({
-          file_id: 'mock-uuid-1234',
-          filepath: '/uploads/mock-file-path.txt',
-          metadata: undefined,
-        }),
-      );
-      expect(discard).toHaveBeenCalledTimes(1);
+      expect(discard).not.toHaveBeenCalled();
+      expect(getStrategyFunctions.mock.results.at(-1).value.saveBuffer).not.toHaveBeenCalled();
     });
 
     it('cleans a generated image cancelled after conversion without publishing it', async () => {
@@ -1112,6 +1768,7 @@ describe('Code Process', () => {
           'Makefile',
           expect.any(String),
           expect.any(String),
+          expect.any(Object),
         );
       });
 
@@ -1153,6 +1810,7 @@ describe('Code Process', () => {
           'note.txt',
           'text/plain',
           'utf8-text',
+          expect.any(Object),
         );
         expect(result.text).toBe('hello world\n');
         expect(mockCommitCodeFile).toHaveBeenCalledWith(

@@ -225,6 +225,7 @@ const downloadCodeOutputBuffer = async ({
   codeApiBaseUrl,
   executionProfile = 'default',
   bridgeWorkerId,
+  signal,
 }) => {
   const baseURL = codeApiBaseUrl ?? getCodeExecutionBaseUrl(executionProfile);
   const authHeaders = await getCodeApiAuthHeaders(req, bridgeWorkerId);
@@ -235,6 +236,7 @@ const downloadCodeOutputBuffer = async ({
       method: 'get',
       url: `${baseURL}/download/${session_id}/${id}${downloadQuery}`,
       responseType: 'arraybuffer',
+      signal,
       headers: {
         'User-Agent': 'LibreChat/1.0',
         ...authHeaders,
@@ -293,6 +295,7 @@ const prepareCodeOutputForInspection = async ({
   executionProfile = 'default',
   bridgeWorkerId,
   executionRouteKey,
+  signal,
 }) => {
   const { fileSizeLimit } = getCodeOutputFileSettings(req);
   const transportLimit =
@@ -305,6 +308,7 @@ const prepareCodeOutputForInspection = async ({
     codeApiBaseUrl,
     executionProfile,
     bridgeWorkerId,
+    signal,
   });
   cachePreparedCodeOutputBuffer({
     req,
@@ -325,6 +329,8 @@ const prepareCodeOutputForInspection = async ({
     classify: classifyCodeArtifact,
     extractRawText: extractCodeArtifactRawText,
     extractInspectionText: extractCodeArtifactInspectionText,
+    signal,
+    extractionService: req.config?.fileConfig?.extractionService,
   });
 };
 
@@ -435,12 +441,13 @@ const finalizePreview = async ({
   category,
   file_id,
   previewRevision,
+  extractionService,
 }) => {
   let text = null;
   let previewError;
   try {
     text = await withTimeout(
-      extractCodeArtifactText(buffer, leafName, mimeType, category),
+      extractCodeArtifactText(buffer, leafName, mimeType, category, { extractionService }),
       PREVIEW_FINALIZE_TIMEOUT_MS,
       `Preview extraction exceeded ${PREVIEW_FINALIZE_TIMEOUT_MS}ms`,
     );

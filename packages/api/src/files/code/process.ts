@@ -7,8 +7,13 @@ import {
   inferMimeType,
   mergeCodeEnvRef,
 } from 'librechat-data-provider';
-import type { CodeEnvRef, FileSources, getEndpointFileConfig } from 'librechat-data-provider';
-import type { CodeFileCommitData } from '@librechat/data-schemas';
+import type {
+  ExtractionServiceConfig,
+  CodeEnvRef,
+  FileSources,
+  getEndpointFileConfig,
+} from 'librechat-data-provider';
+import type { CodeFileCommitData, FileStorageMethods } from '@librechat/data-schemas';
 import type {
   CodeOutputResult,
   CodeOutputStoredFile,
@@ -24,6 +29,7 @@ import type { hasOfficeHtmlPath, getExtractedTextFormat } from './extract';
 import type { RetentionExpiry } from '~/files/retention';
 import type { extractCodeArtifactText } from './extract';
 import type { logAxiosError } from '~/utils/axios';
+import type { StoredUploadRef } from '../orphan';
 import type { ServerRequest } from '~/types';
 import { withFileProvisioning, FileProvisionPersistenceError } from '../operations';
 import { createCodeOutputPersistence } from './publication';
@@ -38,11 +44,12 @@ export type CodeOutputProcessorInput = Omit<
   freshClaimAfter?: number;
   downloadFallback?: boolean;
   publication?: CodeOutputPublication;
+  signal?: AbortSignal;
 };
 
 type DownloadInput = Pick<
   CodeOutputProcessorInput,
-  'req' | 'id' | 'session_id' | 'codeApiBaseUrl' | 'executionProfile' | 'bridgeWorkerId'
+  'req' | 'id' | 'session_id' | 'codeApiBaseUrl' | 'executionProfile' | 'bridgeWorkerId' | 'signal'
 > & { maxBytes: number };
 
 type DownloadFallbackInput = Pick<
@@ -59,7 +66,8 @@ type DownloadFallbackInput = Pick<
 > & { expiresAt: number };
 
 export interface CodeOutputProcessorDeps {
-  fileStorage: FileProvisionStorage;
+  fileStorage: FileProvisionStorage &
+    Partial<Pick<FileStorageMethods, 'acquireFileDeletion' | 'releaseFileDeletion'>>;
   getCodeOutputFileSettings: (req: ServerRequest) => {
     endpointFileConfig: ReturnType<typeof getEndpointFileConfig>;
     fileSizeLimit: number;
@@ -86,6 +94,7 @@ export interface CodeOutputProcessorDeps {
       basePath: string;
       tenantId?: string;
     }) => Promise<string>;
+    deleteFile?: (req: ServerRequest, file: StoredUploadRef) => Promise<unknown>;
   };
   determineFileType: (
     buffer: Buffer,
@@ -100,6 +109,7 @@ export interface CodeOutputProcessorDeps {
     category: CodeArtifactCategory;
     file_id: string;
     previewRevision?: string | null;
+    extractionService?: ExtractionServiceConfig;
   }) => Promise<CodeOutputStoredFile | null>;
   hasOfficeHtmlPath: typeof hasOfficeHtmlPath;
   sanitizeArtifactPath: typeof sanitizeArtifactPath;
@@ -133,6 +143,7 @@ export async function processCodeOutput(
     preparedBuffer,
     downloadFallback,
     publication,
+    signal,
   }: CodeOutputProcessorInput,
   {
     getCodeOutputFileSettings,
@@ -156,6 +167,10 @@ export async function processCodeOutput(
     logger,
   }: CodeOutputProcessorDeps,
 ): Promise<CodeOutputResult | null> {
+  const ownerSignal =
+    signal && publication?.signal && signal !== publication.signal
+      ? AbortSignal.any([signal, publication.signal])
+      : (signal ?? publication?.signal);
   const appConfig = req.config;
   const currentDate = new Date();
   const fileExt = path.extname(name).toLowerCase();
@@ -164,6 +179,7 @@ export async function processCodeOutput(
   const { endpointFileConfig, fileSizeLimit } = getCodeOutputFileSettings(req);
 
   try {
+    ownerSignal?.throwIfAborted();
     const formattedDate = currentDate.toISOString();
     if (downloadFallback === true) {
       return {
@@ -181,7 +197,9 @@ export async function processCodeOutput(
         }),
       };
     }
-    const retentionExpiryPromise = getRetentionExpiry(req);
+    const retentionExpiryPromise = Promise.resolve(getRetentionExpiry(req));
+    // Downloads or extraction can end before this independently-started lookup.
+    void retentionExpiryPromise.catch(() => undefined);
     const buffer =
       preparedBuffer ??
       (await downloadCodeOutputBuffer({
@@ -192,7 +210,9 @@ export async function processCodeOutput(
         codeApiBaseUrl,
         executionProfile,
         bridgeWorkerId,
+        signal: ownerSignal,
       }));
+    ownerSignal?.throwIfAborted();
 
     // Enforce file size limit
     if (buffer.length > fileSizeLimit) {
@@ -260,7 +280,7 @@ export async function processCodeOutput(
     const sourceDispatchedAt = freshClaimAfter ?? Date.now();
 
     const outputPersistence = createCodeOutputPersistence({
-      publication,
+      publication: publication == null ? undefined : { ...publication, signal: ownerSignal },
       claim: claimCodeFile,
       commit: commitCodeFile,
     });
@@ -273,6 +293,7 @@ export async function processCodeOutput(
       tenantId: req.user.tenantId,
       sourceDispatchedAt,
     });
+    ownerSignal?.throwIfAborted();
     const file_id = claimed.file_id;
     const isUpdate = file_id !== newFileId;
 
@@ -304,6 +325,57 @@ export async function processCodeOutput(
 
     /** Retain the completed output for token-qualified persistence after storage settles. */
     let pendingOutput: CodeOutputStoredFile | undefined;
+    let storedOutput: StoredUploadRef | undefined;
+    const trackStored = (file: CodeOutputStoredFile) => {
+      storedOutput = {
+        file_id: file.file_id,
+        filepath: file.filepath,
+        source: file.source ?? appConfig.fileStrategy,
+        storageKey: file.storageKey,
+        storageRegion: file.storageRegion,
+        user: req.user.id,
+        tenantId: req.user.tenantId,
+      };
+      outputPersistence.trackStored(file);
+    };
+    const cleanupCancelledOutput = async () => {
+      // Reused object keys may still be owned by a durable record.
+      if (!storedOutput || isUpdate) return;
+      const { acquireFileDeletion, releaseFileDeletion } = fileStorage;
+      const { deleteFile } = getStrategyFunctions(appConfig.fileStrategy);
+      if (!acquireFileDeletion || !releaseFileDeletion || !deleteFile) {
+        logger.warn('[processCodeOutput] Cancelled output storage requires cleanup');
+        return;
+      }
+      const claim = {
+        file_id,
+        userId: req.user.id,
+        tenantId: req.user.tenantId,
+        updatedAt: claimed.updatedAt,
+        token: v4(),
+      };
+      let acquired = false;
+      let retainDeletion = true;
+      try {
+        const deletion = await acquireFileDeletion(claim);
+        if (!deletion) return; // Another writer or newer record may own these bytes.
+        acquired = true;
+        if (deletion.resumed) return;
+        await deleteFile(req, storedOutput);
+        retainDeletion = false;
+      } catch {
+        logger.warn('[processCodeOutput] Cancelled output cleanup was not confirmed');
+      } finally {
+        if (acquired) {
+          try {
+            if (!(await releaseFileDeletion({ ...claim, retainDeletion })))
+              logger.warn('[processCodeOutput] Cancelled output cleanup claim was not released');
+          } catch {
+            logger.warn('[processCodeOutput] Cancelled output cleanup claim was not released');
+          }
+        }
+      }
+    };
     async function commitCodeFile(fileData: CodeOutputStoredFile): Promise<boolean> {
       pendingOutput = structuredClone(fileData);
       return true;
@@ -341,7 +413,7 @@ export async function processCodeOutput(
           storageKey: _file.storageKey,
           storageRegion: _file.storageRegion,
         });
-        outputPersistence.trackStored({
+        trackStored({
           ..._file,
           ...storageMetadata,
           file_id,
@@ -427,31 +499,6 @@ export async function processCodeOutput(
       const NAME_MAX = 255;
       const flatName = flattenArtifactPath(safeName, NAME_MAX - file_id.length - 2);
       const fileName = `${file_id}__${flatName}`;
-      onUploadStart();
-      const filepath = await saveBuffer({
-        userId: req.user.id,
-        buffer,
-        fileName,
-        basePath: 'uploads',
-        tenantId: req.user.tenantId,
-      });
-      const storageMetadata = getStorageMetadata({
-        filepath,
-        source: appConfig.fileStrategy,
-      });
-      outputPersistence.trackStored({
-        file_id,
-        filepath,
-        ...storageMetadata,
-        filename: safeName,
-        type: mimeType,
-        bytes: buffer.length,
-        user: req.user.id,
-        tenantId: req.user.tenantId,
-        conversationId,
-        source: appConfig.fileStrategy,
-      });
-
       /* `classifyCodeArtifact` and `extractCodeArtifactText` make
        * extension/bare-name decisions on the input string. With the
        * path-preserving sanitizer they can now receive a nested path like
@@ -473,6 +520,39 @@ export async function processCodeOutput(
        * — run it inline so the caller gets a fully-resolved record
        * without juggling a finalize step. */
       const expectsPreview = hasOfficeHtmlPath(leafName, mimeType);
+
+      const text = expectsPreview
+        ? null
+        : await extractCodeArtifactText(buffer, leafName, mimeType, category, {
+            extractionService: appConfig.fileConfig?.extractionService,
+            signal: ownerSignal,
+          });
+      ownerSignal?.throwIfAborted();
+
+      onUploadStart();
+      const filepath = await saveBuffer({
+        userId: req.user.id,
+        buffer,
+        fileName,
+        basePath: 'uploads',
+        tenantId: req.user.tenantId,
+      });
+      const storageMetadata = getStorageMetadata({
+        filepath,
+        source: appConfig.fileStrategy,
+      });
+      trackStored({
+        file_id,
+        filepath,
+        ...storageMetadata,
+        filename: safeName,
+        type: mimeType,
+        bytes: buffer.length,
+        user: req.user.id,
+        tenantId: req.user.tenantId,
+        conversationId,
+        source: appConfig.fileStrategy,
+      });
 
       const baseFile: CodeOutputStoredFile = {
         file_id,
@@ -530,21 +610,19 @@ export async function processCodeOutput(
               category,
               file_id: file.file_id,
               previewRevision: file.previewRevision,
+              extractionService: appConfig.fileConfig?.extractionService,
             }),
           ),
           previewRevision: file.previewRevision,
         };
       }
 
-      /* Non-office path: extraction is cheap (utf8 decode, parseDocument
-       * for PDF/ODT, or null for binaries). Run inline and return a
-       * fully-resolved record — no `finalize` needed. */
-      const text = await extractCodeArtifactText(buffer, leafName, mimeType, category);
+      /* Non-office cache text was bounded before byte storage. */
       /* `textFormat` accompanies `text` so the client can gate
        * office-HTML-bucket routing on a trusted signal — clients MUST
        * NOT inject `text` into the iframe as HTML unless `textFormat ===
        * 'html'`. RAG-uploaded `.docx` etc. arrive with plain text from
-       * mammoth.extractRawText and would otherwise be hijacked by the
+       * semantic document extraction and would otherwise be hijacked by the
        * extension-based office routing into the HTML-injection path
        * (Codex P1 review on PR #12934). null on extract failure — the
        * client treats absence as 'text' for safety. */
@@ -570,11 +648,17 @@ export async function processCodeOutput(
       }
       return { file: Object.assign(file, { messageId, toolCallId, agentId }) };
     };
-    if (publication) return await writeOutput(() => undefined);
-    return await withFileProvisioning({
+    if (publication) {
+      const value = await writeOutput(() => undefined);
+      ownerSignal?.throwIfAborted();
+      return value;
+    }
+    const value = await withFileProvisioning({
       file: { file_id, user: req.user.id, tenantId: req.user.tenantId },
       userId: req.user.id,
       storage: fileStorage,
+      signal: ownerSignal,
+      onCancelled: cleanupCancelledOutput,
       destination: JSON.stringify(['generated-output', sourceDispatchedAt, id]),
       operation: async (_claim, onUploadStart) => {
         const value = await writeOutput(onUploadStart);
@@ -591,7 +675,10 @@ export async function processCodeOutput(
         };
       },
     });
+    ownerSignal?.throwIfAborted();
+    return value;
   } catch (error) {
+    ownerSignal?.throwIfAborted();
     if (freshClaimAfter != null && error instanceof FileProvisionPersistenceError) return null;
     if (
       error != null &&

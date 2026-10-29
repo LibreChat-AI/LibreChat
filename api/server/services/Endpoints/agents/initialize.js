@@ -281,6 +281,7 @@ const initializeClientWithProvider = async ({
   const toolInputValidationErrors = new Map();
   const { contentParts, aggregateContent, stepMap } = createContentAggregator();
   const artifactToolEndCallback = createToolEndCallback({
+    signal,
     req,
     res,
     artifactPromises,

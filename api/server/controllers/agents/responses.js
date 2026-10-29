@@ -1255,6 +1255,7 @@ const executeResponse = async (envelope, { req, res }) => {
         // Artifact promises for processing tool outputs
         // Use Responses API-specific callback that emits librechat:attachment events
         const toolEndCallback = createResponsesToolEndCallback({
+          signal: execution.signal,
           req,
           res,
           tracker,
@@ -1500,6 +1501,7 @@ const executeResponse = async (envelope, { req, res }) => {
         const collectedUsage = [];
 
         const toolEndCallback = createToolEndCallback({
+          signal: execution.signal,
           req,
           res,
           artifactPromises,

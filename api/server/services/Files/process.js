@@ -40,6 +40,9 @@ const {
   getFileExtractionLogDetails,
   getUploadExtractedTextPlan,
   resolveUploadFallbackText,
+  resolveUploadDocumentText,
+  createExtractionUploadPersistence,
+  commitExtractionUpload,
   UPLOAD_EXTRACTED_TEXT_PLANS,
   MAX_STORED_EXTRACTED_TEXT_BYTES,
   inspectContent,
@@ -809,6 +812,7 @@ const filterEnabledConsumers = async (req, agentTools, roleGrants) => {
 const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
   const { file } = req;
   const appConfig = req.config;
+  const persistence = createExtractionUploadPersistence({ request: req, response: res });
   const { agent_id, tool_resource, file_id, temp_file_id = null } = metadata;
 
   let messageAttachment = isMessageFileUpload(metadata.message_file);
@@ -964,6 +968,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
      * @return {Promise<void>}
      */
     const createTextFile = async ({ text, isTranscript = false }) => {
+      persistence.assertActive();
       if (!isTranscript) {
         assertExtractedTextInspectable({
           filters: appConfig?.filters,
@@ -1034,7 +1039,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
 
       const retentionExpiry = await withStoredUploadCleanup(
         { ...storedCleanup, trackWrite: true },
-        () => retentionExpiryPromise,
+        () => persistence.wait(retentionExpiryPromise),
       );
       const fileInfo = {
         ...removeNullishValues({
@@ -1059,21 +1064,20 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
         ...retentionExpiry,
       };
 
-      const result = await withStoredUploadCleanup(
-        { ...storedCleanup, trackWrite: true },
-        async (beginWrite) => {
-          if (!messageAttachment && effectiveToolResource) {
-            await db.addAgentResourceFile({
-              file_id,
-              agent_id,
-              tool_resource: effectiveToolResource,
-              updatingUserId: req?.user?.id,
-            });
-          }
-          beginWrite();
-          return db.createFile(fileInfo, true);
+      const result = await commitExtractionUpload({
+        persistence,
+        cleanup: storedCleanup,
+        messageAttachment,
+        resource: {
+          file_id,
+          agent_id,
+          tool_resource: effectiveToolResource,
+          updatingUserId: req?.user?.id,
         },
-      );
+        addAgentResourceFile: db.addAgentResourceFile,
+        removeAgentResourceFiles: db.removeAgentResourceFiles,
+        createFile: () => db.createFile(fileInfo, true),
+      });
       sendUploadSuccess(res, sseStream, 'Agent file uploaded and processed successfully', result);
     };
 
@@ -1093,32 +1097,33 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
 
     const shouldUseOCR = shouldUseConfiguredOCR || shouldUseDocumentParser;
 
-    const resolveDocumentText = async () => {
-      if (shouldUseConfiguredOCR) {
-        try {
-          const ocrStrategy = appConfig?.ocr?.strategy ?? FileSources.document_parser;
-          const { handleFileUpload } = getStrategyFunctions(ocrStrategy);
-          return await handleFileUpload({ req, file, loadAuthValues });
-        } catch (err) {
-          const { errorMetadata } = getExtractionLogDetails(err);
+    const resolveDocumentText = () =>
+      resolveUploadDocumentText({
+        file,
+        config: appConfig?.fileConfig?.extractionService,
+        persistence,
+        request: req,
+        response: res,
+        configuredOCR: shouldUseConfiguredOCR,
+        ocrStrategy: appConfig?.ocr?.strategy,
+        configuredText: shouldUseConfiguredText,
+        extractOCR: () =>
+          getStrategyFunctions(
+            appConfig?.ocr?.strategy ?? FileSources.document_parser,
+          ).handleFileUpload({ req, file, loadAuthValues }),
+        extractDocument: () =>
+          getStrategyFunctions(FileSources.document_parser).handleFileUpload({
+            req,
+            file,
+            loadAuthValues,
+          }),
+        extractConfiguredText: () => parseText({ req, file, file_id, allowNativeFallback: false }),
+        onFailure: (source, error) =>
           logger.error(
-            `[processAgentFileUpload] Configured OCR failed for ${extractionFileLabel}, falling back to document_parser:`,
-            errorMetadata,
-          );
-        }
-      }
-      try {
-        const { handleFileUpload } = getStrategyFunctions(FileSources.document_parser);
-        return await handleFileUpload({ req, file, loadAuthValues });
-      } catch (err) {
-        const { errorMetadata } = getExtractionLogDetails(err);
-        logger.error(
-          `[processAgentFileUpload] Document parser failed for ${extractionFileLabel}:`,
-          errorMetadata,
-        );
-        throw err;
-      }
-    };
+            `[processAgentFileUpload] ${source} extraction failed for ${extractionFileLabel}:`,
+            getExtractionLogDetails(error).errorMetadata,
+          ),
+      });
 
     if (shouldUseConfiguredOCR && !(await checkCapability(req, AgentCapabilities.ocr))) {
       throw new Error('OCR capability is not enabled for Agents');
@@ -1158,36 +1163,12 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
       throw new Error(`File type ${file.mimetype} is not supported for text parsing.`);
     }
 
-    /**
-     * A document type the admin routed to configured text extraction: prefer RAG `/text`, but fall
-     * back to the built-in document parser (not raw native text) when RAG is unavailable, so a
-     * transient outage doesn't degrade a docx/pdf to unreadable bytes. Only the RAG extraction is
-     * inside the fallback catch: a downstream persistence failure (size guard, DB, agent-resource
-     * mutation) must surface as itself, not trigger a second extraction attempt.
-     */
     if (shouldUseConfiguredText) {
-      let configuredText;
-      try {
-        configuredText = await parseText({ req, file, file_id, allowNativeFallback: false });
-      } catch (err) {
-        const { errorMetadata } = getExtractionLogDetails(err);
-        logger.warn(
-          `[processAgentFileUpload] Configured RAG text extraction unavailable for ${extractionFileLabel}, using built-in document parser:`,
-          errorMetadata,
-        );
-        const documentText = await extractInspectableFileText({
-          filters: appConfig?.filters,
-          extract: resolveDocumentText,
-        });
-        if (!documentText) {
-          throw new Error(
-            `Unable to extract text from "${file.originalname}". RAG text extraction was unavailable and the built-in parser produced no result.`,
-          );
-        }
-        const { text } = documentText;
-        return await createTextFile({ text });
-      }
-      return await createTextFile({ text: configuredText.text });
+      const result = await extractInspectableFileText({
+        filters: appConfig?.filters,
+        extract: resolveDocumentText,
+      });
+      return await createTextFile({ text: result.text });
     }
 
     /* The native reader decodes whatever bytes it is given as UTF-8, which is meaningful
@@ -1198,11 +1179,19 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
     const { text } = await extractInspectableFileText({
       filters: appConfig?.filters,
       extract: () =>
-        parseText({
-          req,
+        resolveUploadDocumentText({
           file,
-          file_id,
-          allowNativeFallback: isNativelyReadableText(file.mimetype),
+          config: appConfig?.fileConfig?.extractionService,
+          persistence,
+          request: req,
+          response: res,
+          extract: () =>
+            parseText({
+              req,
+              file,
+              file_id,
+              allowNativeFallback: isNativelyReadableText(file.mimetype),
+            }),
         }),
     });
     return await createTextFile({ text });
@@ -1216,6 +1205,10 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
     destinationChosen: uploadChoiceMetadata.destinationChosen,
     isMessageAttachment: messageAttachment,
     endpointConfig,
+    extractionService: appConfig?.fileConfig?.extractionService,
+    persistence,
+    request: req,
+    response: res,
     filters: appConfig?.filters,
   });
 
@@ -1412,7 +1405,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
   };
   const retentionExpiry = await withStoredUploadCleanup(
     { ...storedCleanup, trackWrite: true },
-    () => retentionExpiryPromise,
+    () => persistence.wait(retentionExpiryPromise),
   );
   const fileInfo = {
     ...removeNullishValues({
@@ -1445,21 +1438,20 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
     ...retentionExpiry,
   };
 
-  const result = await withStoredUploadCleanup(
-    { ...storedCleanup, trackWrite: true },
-    async (beginWrite) => {
-      if (!messageAttachment && effectiveToolResource) {
-        await db.addAgentResourceFile({
-          file_id,
-          agent_id,
-          tool_resource: effectiveToolResource,
-          updatingUserId: req?.user?.id,
-        });
-      }
-      beginWrite();
-      return db.createFile(fileInfo, true);
+  const result = await commitExtractionUpload({
+    persistence,
+    cleanup: storedCleanup,
+    messageAttachment,
+    resource: {
+      file_id,
+      agent_id,
+      tool_resource: effectiveToolResource,
+      updatingUserId: req?.user?.id,
     },
-  );
+    addAgentResourceFile: db.addAgentResourceFile,
+    removeAgentResourceFiles: db.removeAgentResourceFiles,
+    createFile: () => db.createFile(fileInfo, true),
+  });
 
   sendUploadSuccess(res, sseStream, 'Agent file uploaded and processed successfully', result);
 };

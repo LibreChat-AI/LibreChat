@@ -33,6 +33,9 @@ type ProvisionRun<T> = {
   userId: string;
   storage: RawProvisionStorage;
   destination: string;
+  signal?: AbortSignal;
+  /** Runs only after accepted storage is settled and its unused claim is released. */
+  onCancelled?: () => Promise<void>;
   upload: (
     claim: FileStorageClaim,
     onUploadStart: FileStorageUploadObserver,
@@ -150,6 +153,7 @@ type ProvisionEntry = {
   commit?: FileProvisionCommit;
   attempt?: Promise<unknown>;
   recovering?: boolean;
+  cancelledCleanup?: () => Promise<void>;
 };
 
 function scopeKey(scope: FileStorageScope): string {
@@ -207,6 +211,7 @@ export function createFileProvisionRecovery(): FileProvisionRecovery {
       }
     }
     await release(entry, storage);
+    await entry.cancelledCleanup?.();
     remove(key, destination, entry);
     return entry.value;
   }
@@ -229,7 +234,8 @@ export function createFileProvisionRecovery(): FileProvisionRecovery {
   }
 
   async function run<T>(options: ProvisionRun<T>): Promise<T> {
-    const { file, userId, storage, destination, upload } = options;
+    const { file, userId, storage, destination, upload, signal, onCancelled } = options;
+    signal?.throwIfAborted();
     const scope = fileScope(file, userId);
     const key = scopeKey(scope);
     if (deletions.has(key)) throw new Error('File provisioning conflicts with deletion');
@@ -268,6 +274,7 @@ export function createFileProvisionRecovery(): FileProvisionRecovery {
       let result: FileProvisionResult<T>;
       let uploadStarted = false;
       try {
+        signal?.throwIfAborted();
         result = await upload(entry.claim, (outcome) => {
           uploadStarted = outcome !== 'rejected';
         });
@@ -284,6 +291,13 @@ export function createFileProvisionRecovery(): FileProvisionRecovery {
           // Preserve the upload error while retaining release-only recovery.
         }
         throw error;
+      }
+      if (signal?.aborted) {
+        // No metadata dispatch occurred. Never replay this cancelled payload.
+        entry.phase = 'release';
+        entry.cancelledCleanup = onCancelled;
+        await settle(key, destination, entry, storage);
+        signal.throwIfAborted();
       }
       entry.value = result.value;
       entry.hasResult = true;

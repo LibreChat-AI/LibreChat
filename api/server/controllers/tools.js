@@ -7,6 +7,8 @@ const {
   isContentFilterError,
   isActiveExpirationDate,
   getConversationExpirationDate,
+  withExtractionLifetime,
+  assertExtractionActive,
 } = require('@librechat/api');
 const {
   Tools,
@@ -185,7 +187,9 @@ const callTool = async (req, res) => {
     assertDirectToolOutputAllowed(appConfig?.filters, toolId, content);
     const hasGeneratedArtifacts = toolId === Tools.execute_code && Array.isArray(artifact?.files);
     const generatedFiles = hasGeneratedArtifacts
-      ? await preflightCodeOutputBatch({ req, artifact })
+      ? await withExtractionLifetime({ request: req, response: res, deadlineMs: false }, (signal) =>
+          preflightCodeOutputBatch({ req, artifact, signal }),
+        )
       : [];
     const toolCallData = {
       toolId,
@@ -211,17 +215,22 @@ const callTool = async (req, res) => {
     for (const { file, sessionId, preparedBuffer, downloadFallback } of generatedFiles) {
       const { id, name } = file;
       try {
-        const result = await processCodeOutput({
-          req,
-          id,
-          name,
-          messageId,
-          toolCallId,
-          conversationId,
-          session_id: sessionId,
-          preparedBuffer,
-          downloadFallback,
-        });
+        const result = await withExtractionLifetime(
+          { request: req, response: res, deadlineMs: false },
+          (signal) =>
+            processCodeOutput({
+              req,
+              id,
+              name,
+              messageId,
+              toolCallId,
+              conversationId,
+              session_id: sessionId,
+              preparedBuffer,
+              downloadFallback,
+              signal,
+            }),
+        );
         const fileMetadata = result?.file ?? null;
         const finalize = result?.finalize;
         if (!fileMetadata) {
@@ -245,6 +254,7 @@ const callTool = async (req, res) => {
         attachments.push(null);
       }
     }
+    assertExtractionActive({ request: req, response: res });
     toolCallData.attachments = attachments;
     createToolCall(toolCallData).catch((error) => {
       logger.error(`Error creating tool call: ${error.message}`);

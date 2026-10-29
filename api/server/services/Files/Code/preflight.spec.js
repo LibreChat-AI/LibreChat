@@ -66,10 +66,26 @@ describe('preflightCodeOutputBatch Code API routing', () => {
       session_id: 'session-1',
       maxBytes: 8,
       inspectContent: true,
+      signal: undefined,
       codeApiBaseUrl: 'https://code-stateful.example.com',
       executionProfile: 'stateful',
       executionRouteKey: 'stateful:route',
     });
+  });
+
+  it('carries the explicit run signal into remote artifact inspection', async () => {
+    const signal = new AbortController().signal;
+    await preflightCodeOutputBatch({
+      req: { config: {}, user: { id: 'user-1' } },
+      artifact: {},
+      signal,
+    });
+    expect(mockRunCodeOutputBatchPreflight).toHaveBeenCalledWith(
+      expect.objectContaining({ signal }),
+    );
+    expect(mockPrepareCodeOutputForInspection).toHaveBeenCalledWith(
+      expect.objectContaining({ signal }),
+    );
   });
 
   /* The batch degrades an uninspectable artifact to the download fallback and

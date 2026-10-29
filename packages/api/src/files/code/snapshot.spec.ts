@@ -1,11 +1,12 @@
 import axios from 'axios';
 import { PassThrough, Readable } from 'node:stream';
-import { FileSources } from 'librechat-data-provider';
 import { buffer as consumeBuffer } from 'node:stream/consumers';
+import { FileSources, extractionServiceSchema } from 'librechat-data-provider';
 import type { AxiosResponse, InternalAxiosRequestConfig } from 'axios';
 import type { FiltersConfig } from 'librechat-data-provider';
 import type { RunArtifactDescriptor } from './publication';
 import type { ServerRequest } from '~/types';
+import { capabilities, fixture, reply } from '../extraction/fixture.helper';
 import { createRunFileSnapshotStore } from '~/agents/files/snapshots';
 import { createRunArtifactSnapshotAdapter } from './snapshot';
 
@@ -71,6 +72,45 @@ function setup({
 }
 
 describe('createRunArtifactSnapshotAdapter', () => {
+  it('passes the configured extraction client and run cancellation to private snapshot inspection', async () => {
+    let ready: () => void = () => {};
+    let closed: () => void = () => {};
+    const admitted = new Promise<void>((resolve) => {
+      ready = resolve;
+    });
+    const stopped = new Promise<void>((resolve) => {
+      closed = resolve;
+    });
+    const processor = await fixture((req, res) => {
+      req.resume();
+      if (req.method === 'GET') return reply(res, capabilities);
+      res.once('close', closed);
+      ready();
+    });
+    const { adapter, req } = setup({
+      filters: { files: { pii: { fields: ['extracted_text'], uninspectable: 'block' } } },
+    });
+    req.config!.fileConfig!.extractionService = extractionServiceSchema.parse({
+      url: processor.url,
+      tokenFile: processor.tokenFile,
+    });
+    const controller = new AbortController();
+    try {
+      const pending = adapter.prepare(
+        { ...source, name: 'report.pdf' },
+        Buffer.from('pdf'),
+        controller.signal,
+      );
+      const rejected = pending.catch((error: unknown) => error);
+      await admitted;
+      controller.abort();
+      await expect(rejected).resolves.toMatchObject({ name: 'AbortError' });
+      await stopped;
+    } finally {
+      await processor.close();
+    }
+  });
+
   it('downloads the trusted worker route with scoped auth and encoded resource identity', async () => {
     const { adapter, transport, req, getAuthHeaders, getBaseURL } = setup();
     const controller = new AbortController();

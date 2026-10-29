@@ -10,6 +10,7 @@ import {
   MAX_TEXT_CACHE_BYTES,
   MAX_TEXT_EXTRACT_BYTES,
 } from './extract';
+import { capabilities, fixture, reply, result } from '../extraction/fixture.helper';
 import { parseDocument } from '~/files/documents/crud';
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -155,10 +156,7 @@ describe('extractCodeArtifactText', () => {
       expect(parseDocumentCalls[0]?.originalname).toBe('notes.odt');
     });
 
-    it.each([
-      ['notes.odt', 'application/zip', 'application/vnd.oasis.opendocument.text'],
-      ['report.pdf', 'application/octet-stream', 'application/pdf'],
-    ])(
+    it.each([['notes.odt', 'application/zip', 'application/vnd.oasis.opendocument.text']])(
       'passes canonical mimetype for %s when sniff returns %s (legacy parseDocument path)',
       async (name, sniffed, _canon) => {
         const parseDocumentMock = (
@@ -169,10 +167,8 @@ describe('extractCodeArtifactText', () => {
         parseDocumentMock.mockClear();
         await extractCodeArtifactText(Buffer.from('PK'), name, sniffed, 'document');
         const call = parseDocumentMock.mock.calls[0]?.[0];
-        /* PDF doesn't have an entry in `documentMimeFromExtension` so the
-         * sniffed MIME passes through unchanged. ODT does — gets
-         * canonicalized to ODT_MIME. */
-        expect(call?.file?.mimetype).toBe(_canon === 'application/pdf' ? sniffed : _canon);
+        /* ODT remains on its existing non-migrated document path. */
+        expect(call?.file?.mimetype).toBe(_canon);
       },
     );
 
@@ -391,19 +387,23 @@ describe('extractCodeArtifactText', () => {
       expect(text).toBe(small);
     });
 
-    it('falls back to parseDocument for pdf (HTML producer returns null for unsupported types)', async () => {
-      // Default mock returns null — the producer's own dispatcher would do the
-      // same for PDF since pdf has no HTML rendering. Whether we call it or
-      // skip it is an implementation detail; what matters is that PDF still
-      // routes to parseDocument and yields the docx-mock text.
-      const text = await extractCodeArtifactText(
-        Buffer.from('%PDF-1.4'),
-        'doc.pdf',
-        'application/pdf',
-        'document',
-      );
+    it('extracts PDF cache text directly from the buffer without local parser or temp-file I/O', async () => {
+      const bytes = Buffer.from('%PDF-1.4');
+      const extract = jest.fn(async () => ({
+        version: 1 as const,
+        operation: 'document.extract-text' as const,
+        format: 'pdf' as const,
+        inputSha256: '',
+        textBytes: docxText.length,
+        segments: [{ kind: 'page' as const, index: 1, text: docxText }],
+      }));
+      const text = await extractCodeArtifactText(bytes, 'doc.pdf', 'application/pdf', 'other', {
+        extractor: { maxInputBytes: 10485760, extract },
+      });
       expect(text).toBe(docxText);
-      expect(parseDocumentCalls[0]?.originalname).toBe('doc.pdf');
+      expect(extract).toHaveBeenCalledWith(bytes, 'pdf', expect.any(AbortSignal));
+      expect(parseDocumentCalls).toHaveLength(0);
+      expect(mockOfficeHtml).not.toHaveBeenCalled();
     });
 
     it('does not call the office HTML producer for plain .txt utf8-text', async () => {
@@ -555,6 +555,74 @@ describe('extractCodeArtifactInspectionText', () => {
     parseDocumentCalls.length = 0;
   });
 
+  it.each(['report.pdf', 'report.docx'])(
+    'never invokes semantic or HTML fallback for %s',
+    async (name) => {
+      const extract = jest.fn().mockRejectedValue(new Error('isolated service unavailable'));
+      await expect(
+        extractCodeArtifactInspectionText(
+          Buffer.from('document'),
+          name,
+          'text/plain',
+          'utf8-text',
+          { extractor: { maxInputBytes: 10485760, extract } },
+        ),
+      ).rejects.toThrow('isolated service unavailable');
+      expect(parseDocumentCalls).toHaveLength(0);
+      expect(mockOfficeHtml).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['pdf', 'docx'] as const)(
+    'keeps direct %s inspection on its configured client and signal',
+    async (format) => {
+      const bytes = Buffer.from('document bytes');
+      const controller = new AbortController();
+      let cancel = false;
+      let closed: () => void = () => {};
+      const stopped = new Promise<void>((resolve) => {
+        closed = resolve;
+      });
+      const processor = await fixture((req, res) => {
+        req.resume();
+        if (req.method === 'GET') return reply(res, capabilities);
+        if (!cancel) return reply(res, result(bytes, format));
+        res.once('close', closed);
+        controller.abort();
+      });
+      const options = {
+        extractionService: { url: processor.url, tokenFile: processor.tokenFile },
+        signal: controller.signal,
+      };
+      try {
+        await expect(
+          extractCodeArtifactInspectionText(
+            bytes,
+            `report.${format}`,
+            'application/octet-stream',
+            'document',
+            options,
+          ),
+        ).resolves.toEqual({ text: '你好!', complete: true });
+        cancel = true;
+        await expect(
+          extractCodeArtifactInspectionText(
+            bytes,
+            `report.${format}`,
+            'application/octet-stream',
+            'document',
+            options,
+          ),
+        ).rejects.toMatchObject({ code: 'CANCELLED' });
+        await stopped;
+        expect(parseDocumentCalls).toHaveLength(0);
+        expect(mockOfficeHtml).not.toHaveBeenCalled();
+      } finally {
+        await processor.close();
+      }
+    },
+  );
+
   it('returns complete plain text beyond the persisted preview cache limit', async () => {
     const suffix = 'BLOCK-LATE';
     const buffer = Buffer.from(`${'a'.repeat(MAX_TEXT_CACHE_BYTES + 1024)}${suffix}`);
@@ -574,8 +642,8 @@ describe('extractCodeArtifactInspectionText', () => {
   it('returns complete parsed document text when the derived output fits the inspection limit', async () => {
     const result = await extractCodeArtifactInspectionText(
       Buffer.from('%PDF'),
-      'report.pdf',
-      'application/pdf',
+      'report.odt',
+      'application/vnd.oasis.opendocument.text',
       'document',
     );
 
@@ -598,8 +666,8 @@ describe('extractCodeArtifactInspectionText', () => {
 
     const result = await extractCodeArtifactInspectionText(
       Buffer.from('%PDF'),
-      'large.pdf',
-      'application/pdf',
+      'large.odt',
+      'application/vnd.oasis.opendocument.text',
       'document',
     );
 
@@ -628,8 +696,8 @@ describe('extractCodeArtifactInspectionText', () => {
     await expect(
       extractCodeArtifactInspectionText(
         Buffer.from('%PDF'),
-        'PRIVATE-FILENAME.pdf',
-        'application/pdf',
+        'PRIVATE-FILENAME.odt',
+        'application/vnd.oasis.opendocument.text',
         'document',
       ),
     ).resolves.toEqual({ text: null, complete: false });
