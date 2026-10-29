@@ -4,6 +4,7 @@ import { Navigate, useSearchParams } from 'react-router-dom';
 import { AlertCircle, Check, Info, Minus, Search } from 'lucide-react';
 import { Button, Input, MultiSelect, Spinner, TooltipAnchor } from '@librechat/client';
 import {
+  FEEDBACK_REASON_KEYS,
   INSIGHTS_MAX_RANGE_DAYS,
   INSIGHTS_SEARCH_MAX_LENGTH,
   INSIGHTS_SEARCH_MIN_LENGTH,
@@ -27,14 +28,15 @@ import { cn } from '~/utils';
 
 type ShortcutRange = Exclude<InsightsRange, 'custom'>;
 type Localize = ReturnType<typeof useLocalize>;
-type SparklinePoint = { date: string; value: number };
+type SparklinePoint = { date: string; value: number | null };
 type CustomDateRange = { startDate: Date; endDate: Date };
 
 type KpiCardData = {
-  id: 'conversations' | 'users' | 'messages' | 'tokens';
+  id: string;
   title: string;
   description?: string;
-  value: number;
+  value: number | null;
+  format?: 'currency';
   sparkline: SparklinePoint[];
 };
 
@@ -55,6 +57,28 @@ function formatValue(value: number, locale: string) {
 
 function formatExactValue(value: number, locale: string) {
   return new Intl.NumberFormat(locale).format(value);
+}
+
+function formatSpend(value: number, locale: string) {
+  return new Intl.NumberFormat(locale, {
+    style: 'currency',
+    currency: 'USD',
+    ...(value !== 0 && Math.abs(value) < 0.01
+      ? { maximumSignificantDigits: 6 }
+      : { maximumFractionDigits: 4 }),
+  }).format(value);
+}
+
+function formatMetric(
+  value: number | null,
+  locale: string,
+  localize: Localize,
+  format?: 'currency',
+  compact = false,
+) {
+  if (value == null) return localize('com_insights_unavailable');
+  if (format === 'currency') return formatSpend(value, locale);
+  return compact ? formatValue(value, locale) : formatExactValue(value, locale);
 }
 
 function formatDate(value: string, locale: string) {
@@ -139,22 +163,25 @@ function Sparkline({
   values,
   label,
   locale,
+  format,
 }: {
   values: SparklinePoint[];
   label: string;
   locale: string;
+  format?: 'currency';
 }) {
+  const localize = useLocalize();
   const patternId = useId().replace(/:/g, '');
   const [activeIndex, setActiveIndex] = useState<number>();
   const points = useMemo(() => {
     if (values.length < 2) {
       return [];
     }
-    const maximum = Math.max(1, ...values.map((point) => point.value));
+    const maximum = Math.max(0, ...values.map((point) => point.value ?? 0)) || 1;
     return values.map((point, index) => ({
       ...point,
       x: (index / (values.length - 1)) * 300,
-      y: 52 - (point.value / maximum) * 46,
+      y: point.value == null ? 0 : 52 - (point.value / maximum) * 46,
     }));
   }, [values]);
 
@@ -162,8 +189,17 @@ function Sparkline({
     return <div className="h-14" />;
   }
 
-  const line = points.map((point) => `${point.x},${point.y}`).join(' ');
-  const area = `M 0 56 L ${points.map((point) => `${point.x} ${point.y}`).join(' L ')} L 300 56 Z`;
+  const segments: (typeof points)[] = [];
+  let segment: typeof points = [];
+  for (const point of points) {
+    if (point.value == null) {
+      if (segment.length > 0) segments.push(segment);
+      segment = [];
+    } else {
+      segment.push(point);
+    }
+  }
+  if (segment.length > 0) segments.push(segment);
   const activePoint = activeIndex == null ? undefined : points[activeIndex];
   const formatter = new Intl.DateTimeFormat(locale, {
     month: 'short',
@@ -204,14 +240,30 @@ function Sparkline({
             />
           </pattern>
         </defs>
-        <path d={area} fill={`url(#${patternId})`} />
-        <polyline
-          points={line}
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          vectorEffect="non-scaling-stroke"
-        />
+        {segments.map((part) => {
+          const first = part[0];
+          const last = part[part.length - 1];
+          const line = part.map((point) => `${point.x},${point.y}`).join(' ');
+          const area = `M ${first.x} 56 L ${part.map((point) => `${point.x} ${point.y}`).join(' L ')} L ${last.x} 56 Z`;
+          return (
+            <g key={first.date}>
+              {part.length === 1 ? (
+                <circle cx={first.x} cy={first.y} r="2" fill="currentColor" />
+              ) : (
+                <>
+                  <path d={area} fill={`url(#${patternId})`} />
+                  <polyline
+                    points={line}
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    vectorEffect="non-scaling-stroke"
+                  />
+                </>
+              )}
+            </g>
+          );
+        })}
       </svg>
       {activePoint && (
         <>
@@ -219,19 +271,21 @@ function Sparkline({
             className="bg-border-medium pointer-events-none absolute top-0 h-full w-px"
             style={{ left: `${(activePoint.x / 300) * 100}%` }}
           />
-          <span
-            className="bg-status-info ring-surface-primary pointer-events-none absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2"
-            style={{
-              left: `${(activePoint.x / 300) * 100}%`,
-              top: `${(activePoint.y / 56) * 100}%`,
-            }}
-          />
+          {activePoint.value != null && (
+            <span
+              className="bg-status-info ring-surface-primary pointer-events-none absolute size-2 -translate-x-1/2 -translate-y-1/2 rounded-full ring-2"
+              style={{
+                left: `${(activePoint.x / 300) * 100}%`,
+                top: `${(activePoint.y / 56) * 100}%`,
+              }}
+            />
+          )}
           <span
             className="border-border-light bg-surface-primary text-text-primary pointer-events-none absolute bottom-full mb-2 -translate-x-1/2 rounded-lg border px-2.5 py-1.5 text-xs whitespace-nowrap shadow-lg"
             style={{ left: `${Math.max(14, Math.min(86, (activePoint.x / 300) * 100))}%` }}
           >
             {formatter.format(new Date(activePoint.date))}{' '}
-            <strong>{formatExactValue(activePoint.value, locale)}</strong>
+            <strong>{formatMetric(activePoint.value, locale, localize, format)}</strong>
           </span>
         </>
       )}
@@ -239,11 +293,19 @@ function Sparkline({
   );
 }
 
-function KpiCard({ card, locale }: { card: KpiCardData; locale: string }) {
+function KpiCard({
+  card,
+  locale,
+  headingLevel: Heading = 'h2',
+}: {
+  card: KpiCardData;
+  locale: string;
+  headingLevel?: 'h2' | 'h3';
+}) {
   const localize = useLocalize();
   return (
     <Panel>
-      <h2 className="text-text-muted inline-flex items-center gap-1.5 text-sm font-normal">
+      <Heading className="text-text-muted inline-flex items-center gap-1.5 text-sm font-normal">
         {card.title}
         {card.description && (
           <TooltipAnchor
@@ -259,14 +321,20 @@ function KpiCard({ card, locale }: { card: KpiCardData; locale: string }) {
             }
           />
         )}
-      </h2>
-      <div className="text-text-primary mt-3 text-4xl leading-none font-semibold tabular-nums">
-        {formatValue(card.value, locale)}
+      </Heading>
+      <div
+        className={cn(
+          'text-text-primary mt-3 font-semibold break-words tabular-nums',
+          card.value == null ? 'text-base' : 'text-4xl leading-none',
+        )}
+      >
+        {formatMetric(card.value, locale, localize, card.format, true)}
       </div>
       <Sparkline
         values={card.sparkline}
         label={localize('com_insights_sparkline_accessibility', { label: card.title })}
         locale={locale}
+        format={card.format}
       />
     </Panel>
   );
@@ -545,6 +613,7 @@ function LatestConversations({
 
 export default function InsightsView() {
   const localize = useLocalize();
+  const sectionId = useId();
   const [urlSearchParams, setUrlSearchParams] = useSearchParams();
   const { i18n } = useTranslation();
   const locale = i18n.resolvedLanguage ?? i18n.language ?? 'en';
@@ -677,8 +746,74 @@ export default function InsightsView() {
         value: data.summary.totalTokens,
         sparkline: data.daily.map((row) => ({ date: row.date, value: row.totalTokens })),
       },
+      {
+        id: 'responses',
+        title: localize('com_insights_responses'),
+        value: data.summary.totalResponses,
+        sparkline: data.daily.map((row) => ({ date: row.date, value: row.responses })),
+      },
+      {
+        id: 'spend',
+        title: localize('com_insights_spend'),
+        description: localize('com_insights_spend_definition'),
+        value: data.summary.spendUSD,
+        format: 'currency',
+        sparkline: data.daily.map((row) => ({ date: row.date, value: row.spendUSD })),
+      },
     ];
   }, [data, localize]);
+
+  const outcomeCards = useMemo<KpiCardData[]>(() => {
+    if (!data) return [];
+    return [
+      {
+        id: 'completed',
+        title: localize('com_insights_completed'),
+        description: localize('com_insights_completed_definition'),
+        value: data.summary.completedResponses,
+        sparkline: data.daily.map((row) => ({ date: row.date, value: row.completedResponses })),
+      },
+      {
+        id: 'failed',
+        title: localize('com_insights_failed'),
+        description: localize('com_insights_failed_definition'),
+        value: data.summary.failedResponses,
+        sparkline: data.daily.map((row) => ({ date: row.date, value: row.failedResponses })),
+      },
+      {
+        id: 'interrupted',
+        title: localize('com_insights_interrupted'),
+        description: localize('com_insights_interrupted_definition'),
+        value: data.summary.interruptedResponses,
+        sparkline: data.daily.map((row) => ({ date: row.date, value: row.interruptedResponses })),
+      },
+    ];
+  }, [data, localize]);
+
+  const feedbackCards = useMemo<KpiCardData[]>(() => {
+    if (!data) return [];
+    return [
+      {
+        id: 'thumbs-up',
+        title: localize('com_insights_thumbs_up'),
+        value: data.summary.feedback.thumbsUp,
+        sparkline: data.daily.map((row) => ({ date: row.date, value: row.feedback.thumbsUp })),
+      },
+      {
+        id: 'thumbs-down',
+        title: localize('com_insights_thumbs_down'),
+        value: data.summary.feedback.thumbsDown,
+        sparkline: data.daily.map((row) => ({ date: row.date, value: row.feedback.thumbsDown })),
+      },
+    ];
+  }, [data, localize]);
+
+  const feedbackCategories = useMemo(() => {
+    const counts = new Map(data?.summary.feedback.categories.map(({ key, count }) => [key, count]));
+    return FEEDBACK_REASON_KEYS.map((key) => ({ key, count: counts.get(key) ?? 0 })).filter(
+      ({ count }) => count > 0,
+    );
+  }, [data]);
 
   const handleSelectDateRange = (startDate: Date, endDate: Date) => {
     if (dateRangeSelectionTimeout.current != null) {
@@ -878,14 +1013,66 @@ export default function InsightsView() {
           )}
           {data && (
             <>
-              {/** Use explicit responsive counts: one column on narrow screens,
-               *  two through mid-range, and four at xl. This avoids auto-fit's
-               *  three-plus-one orphan without making mobile cards too narrow. */}
-              <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+              <p className="text-text-secondary text-sm">
+                {localize('com_insights_last_used')}{' '}
+                {data.summary.lastUsed == null ? (
+                  <span>{localize('com_insights_no_activity')}</span>
+                ) : (
+                  <time dateTime={data.summary.lastUsed}>
+                    {new Intl.DateTimeFormat(locale, {
+                      dateStyle: 'medium',
+                      timeStyle: 'short',
+                      timeZone,
+                    }).format(new Date(data.summary.lastUsed))}
+                  </time>
+                )}
+              </p>
+              <div className="grid w-full grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
                 {kpiCards.map((card) => (
                   <KpiCard key={card.id} card={card} locale={locale} />
                 ))}
               </div>
+              <section aria-labelledby={`${sectionId}-outcomes`}>
+                <h2 id={`${sectionId}-outcomes`} className="mb-3 text-base font-semibold">
+                  {localize('com_insights_response_outcomes')}
+                </h2>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                  {outcomeCards.map((card) => (
+                    <KpiCard key={card.id} card={card} locale={locale} headingLevel="h3" />
+                  ))}
+                </div>
+              </section>
+              <section aria-labelledby={`${sectionId}-feedback`}>
+                <h2 id={`${sectionId}-feedback`} className="mb-3 text-base font-semibold">
+                  {localize('com_insights_feedback')}
+                </h2>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  {feedbackCards.map((card) => (
+                    <KpiCard key={card.id} card={card} locale={locale} headingLevel="h3" />
+                  ))}
+                </div>
+                <Panel className="mt-3">
+                  <h3 className="mb-3 text-sm font-semibold">
+                    {localize('com_insights_feedback_categories')}
+                  </h3>
+                  {feedbackCategories.length === 0 ? (
+                    <p className="text-text-secondary text-sm">
+                      {localize('com_insights_no_feedback_categories')}
+                    </p>
+                  ) : (
+                    <dl className="grid grid-cols-1 gap-x-6 gap-y-2 sm:grid-cols-2">
+                      {feedbackCategories.map(({ key, count }) => (
+                        <div key={key} className="flex items-start justify-between gap-4 text-sm">
+                          <dt>{localize(`com_ui_feedback_tag_${key}`)}</dt>
+                          <dd className="font-semibold tabular-nums">
+                            {formatExactValue(count, locale)}
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                  )}
+                </Panel>
+              </section>
               {(data.topUsers || data.churnedUsers) && (
                 <div className="grid w-full grid-cols-[repeat(auto-fit,minmax(min(100%,36.25rem),1fr))] gap-3">
                   {data.topUsers && (

@@ -2,8 +2,12 @@ import React from 'react';
 import userEvent from '@testing-library/user-event';
 import { FEEDBACK_REASON_KEYS } from 'librechat-data-provider';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { render, screen, waitFor } from '@testing-library/react';
-import type { TInsightsParams, TInsightsResponse } from 'librechat-data-provider';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import type {
+  TInsightsDailyPoint,
+  TInsightsParams,
+  TInsightsResponse,
+} from 'librechat-data-provider';
 import InsightsView from '../InsightsView';
 
 const insightsData: TInsightsResponse = {
@@ -56,11 +60,13 @@ jest.mock('~/data-provider', () => ({
 }));
 
 jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string, options?: { count?: number; name?: string }) => {
+  useLocalize: () => (key: string, options?: { count?: number; name?: string; label?: string }) => {
     if (options?.count != null) {
       return `${key}:${options.count}`;
     }
-    return options?.name ? `${key}:${options.name}` : key;
+    if (options?.name) return `${key}:${options.name}`;
+    if (options?.label) return `${key}:${options.label}`;
+    return key;
   },
   useAuthContext: () => ({ user: { id: 'user-1' } }),
   useDocumentTitle: () => undefined,
@@ -89,6 +95,28 @@ function renderView() {
       <InsightsView />
     </MemoryRouter>,
   );
+}
+
+function metricCard(title: string) {
+  const card = screen.getByRole('heading', { name: title }).closest('section');
+  if (!card) throw new Error(`Missing metric card: ${title}`);
+  return within(card);
+}
+
+function dailyPoint(date: string, spendUSD: number | null): TInsightsDailyPoint {
+  return {
+    date,
+    conversations: 1,
+    users: 1,
+    messages: 3,
+    totalTokens: 50,
+    responses: 2,
+    completedResponses: 1,
+    failedResponses: 1,
+    interruptedResponses: 0,
+    feedback: insightsData.summary.feedback,
+    spendUSD,
+  };
 }
 
 async function openAgentMenu(user: ReturnType<typeof userEvent.setup>) {
@@ -147,6 +175,125 @@ describe('InsightsView agent selection', () => {
     expect(
       screen.queryByRole('textbox', { name: 'com_insights_search_placeholder' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('shows the aggregate response, outcome, feedback and period-activity fields', () => {
+    const categoryCounts = new Map([
+      ['inaccurate', 2],
+      ['clear_well_written', 3],
+    ]);
+    mockUseInsightsQuery.mockImplementation((params) => ({
+      data: {
+        agents: insightsData.agents,
+        summary: {
+          ...insightsData.summary,
+          feedback: {
+            thumbsUp: 5,
+            thumbsDown: 2,
+            categories: FEEDBACK_REASON_KEYS.map((key) => ({
+              key,
+              count: categoryCounts.get(key) ?? 0,
+            })),
+          },
+        },
+        daily: [dailyPoint('2026-10-01', null), dailyPoint('2026-10-02', null)],
+      },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      params,
+    }));
+
+    renderView();
+
+    expect(metricCard('com_insights_responses').getByText('4')).toBeInTheDocument();
+    expect(metricCard('com_insights_completed').getByText('3')).toBeInTheDocument();
+    expect(metricCard('com_insights_failed').getByText('1')).toBeInTheDocument();
+    expect(metricCard('com_insights_interrupted').getByText('0')).toBeInTheDocument();
+    expect(metricCard('com_insights_thumbs_up').getByText('5')).toBeInTheDocument();
+    expect(metricCard('com_insights_thumbs_down').getByText('2')).toBeInTheDocument();
+    expect(screen.getByText('com_ui_feedback_tag_inaccurate').nextElementSibling).toHaveTextContent(
+      '2',
+    );
+    expect(
+      screen.getByText('com_ui_feedback_tag_clear_well_written').nextElementSibling,
+    ).toHaveTextContent('3');
+    expect(screen.queryByText('com_ui_feedback_tag_other')).not.toBeInTheDocument();
+    expect(screen.getByText('com_insights_last_used').querySelector('time')).toHaveAttribute(
+      'datetime',
+      insightsData.summary.lastUsed,
+    );
+
+    const responseTrend = metricCard('com_insights_responses').getByRole('img');
+    fireEvent.focus(responseTrend);
+    expect(within(responseTrend).getByText('2')).toBeInTheDocument();
+    expect(screen.queryByText('com_insights_latest_conversations')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [null, 'com_insights_unavailable'],
+    [0, '$0.00'],
+    [0.0045, '$0.0045'],
+    [0.0000000012, '$0.0000000012'],
+  ])('distinguishes unavailable, zero and small recorded spend: %s', (spendUSD, expected) => {
+    mockUseInsightsQuery.mockImplementation((params) => ({
+      data: { ...insightsData, summary: { ...insightsData.summary, spendUSD } },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      params,
+    }));
+
+    renderView();
+
+    expect(metricCard('com_insights_spend').getByText(expected)).toBeInTheDocument();
+  });
+
+  it('shows missing period activity and categorized feedback without inventing values', () => {
+    mockUseInsightsQuery.mockImplementation((params) => ({
+      data: { ...insightsData, summary: { ...insightsData.summary, lastUsed: null } },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      params,
+    }));
+
+    renderView();
+
+    expect(screen.getByText('com_insights_no_activity')).toBeInTheDocument();
+    expect(screen.getByText('com_insights_no_feedback_categories')).toBeInTheDocument();
+    expect(metricCard('com_insights_thumbs_up').getByText('0')).toBeInTheDocument();
+    expect(metricCard('com_insights_thumbs_down').getByText('0')).toBeInTheDocument();
+  });
+
+  it('leaves gaps in the spend trend and labels unavailable days instead of showing zero', () => {
+    const spend = [0.0001, 0.0002, null, 0.0003, 0.0004, null];
+    mockUseInsightsQuery.mockImplementation((params) => ({
+      data: {
+        ...insightsData,
+        summary: { ...insightsData.summary, spendUSD: 0.001 },
+        daily: spend.map((value, index) => dailyPoint(`2026-10-0${index + 1}`, value)),
+      },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      params,
+    }));
+
+    renderView();
+
+    const trend = metricCard('com_insights_spend').getByRole('img');
+    expect(trend.querySelectorAll('polyline')).toHaveLength(2);
+    const firstSegment = trend.querySelector('polyline');
+    const heights = firstSegment
+      ?.getAttribute('points')
+      ?.split(' ')
+      .map((point) => Number(point.split(',')[1]));
+    expect(heights).toHaveLength(2);
+    expect(Math.abs((heights?.[0] ?? 0) - (heights?.[1] ?? 0))).toBeGreaterThan(1);
+    fireEvent.focus(trend);
+    expect(within(trend).getByText('com_insights_unavailable')).toBeInTheDocument();
+    expect(within(trend).queryByText('$0.00')).not.toBeInTheDocument();
   });
 
   it('filters names without changing selection and clears search on close', async () => {
