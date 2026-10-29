@@ -192,7 +192,7 @@ describe('Agent execution enrollment', () => {
     const failure = new Error('private-artifact-details');
     enrollment.track(Promise.reject(failure));
     await enrollment.pauseForReview(action(enrollment.runId), async () => {});
-    await expect(enrollment.settle()).rejects.toBe(failure);
+    await expect(enrollment.settle()).resolves.toMatchObject({ persistenceError: failure });
     expect(enrollment.isPaused).toBe(false);
     expect(await manager.getJobStore().getJob(enrollment.runId)).toMatchObject({
       status: 'error',
@@ -382,7 +382,7 @@ describe('Agent execution enrollment', () => {
     await expect(enrollment.beginProviderExecution()).rejects.toThrow(
       'provider-start response lost',
     );
-    await expect(enrollment.settle(new Error('provider did not start'))).resolves.toBeUndefined();
+    await expect(enrollment.settle(new Error('provider did not start'))).resolves.toEqual({});
 
     await expect(manager.getJobStore().getJob('chatcmpl-start-ambiguous')).resolves.toMatchObject({
       status: 'error',
@@ -496,7 +496,7 @@ describe('Agent execution enrollment', () => {
       .spyOn(manager, 'completeJob')
       .mockRejectedValueOnce(new Error('terminal store unavailable'));
 
-    await expect(enrollment.settle()).resolves.toBeUndefined();
+    await expect(enrollment.settle()).resolves.toEqual({});
 
     expect(completeJob).toHaveBeenCalledTimes(2);
     await expect(manager.getJobStore().getJob('chatcmpl-terminal-retry')).resolves.toMatchObject({
