@@ -48,7 +48,7 @@ test.describe('fork and feedback actions', () => {
 
     await expect(page).toHaveURL(new RegExp(`/c/${conversation.conversationId}$`));
     expect(page.url()).not.toBe(sourceUrl);
-    await expect(page.getByText('Successfully forked conversation')).toBeVisible();
+    await expect(page.getByText('Successfully forked conversation', { exact: true })).toBeVisible();
     await expect(messagesView(page).getByText(reply)).toBeVisible();
   });
 

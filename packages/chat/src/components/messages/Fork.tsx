@@ -23,11 +23,18 @@ interface PopoverButtonProps {
   label: string;
 }
 
-const optionLabels: Record<ForkOptions, TranslationKeys> = {
-  [ForkOptions.DIRECT_PATH]: 'com_ui_fork_visible',
-  [ForkOptions.INCLUDE_BRANCHES]: 'com_ui_fork_branches',
-  [ForkOptions.TARGET_LEVEL]: 'com_ui_fork_all_target',
-  [ForkOptions.DEFAULT]: 'com_ui_fork_from_message',
+/** Resolved per call: a module-scope map keyed by the enum crashes hosts that mock the data provider. */
+const optionLabel = (setting: ForkOptions): TranslationKeys => {
+  switch (setting) {
+    case ForkOptions.DIRECT_PATH:
+      return 'com_ui_fork_visible';
+    case ForkOptions.INCLUDE_BRANCHES:
+      return 'com_ui_fork_branches';
+    case ForkOptions.TARGET_LEVEL:
+      return 'com_ui_fork_all_target';
+    default:
+      return 'com_ui_fork_from_message';
+  }
 };
 
 const chevronDown = (
@@ -65,14 +72,14 @@ const PopoverButton: React.FC<PopoverButtonProps> = ({
                   clearTimeout(timeoutRef.current);
                   timeoutRef.current = null;
                 }
-                setActiveSetting(optionLabels[setting]);
+                setActiveSetting(optionLabel(setting));
               }}
               onMouseLeave={() => {
                 if (timeoutRef.current) {
                   clearTimeout(timeoutRef.current);
                 }
                 timeoutRef.current = setTimeout(() => {
-                  setActiveSetting(optionLabels[ForkOptions.DEFAULT]);
+                  setActiveSetting(optionLabel(ForkOptions.DEFAULT));
                 }, 175);
               }}
               onFocus={() => {
@@ -80,14 +87,14 @@ const PopoverButton: React.FC<PopoverButtonProps> = ({
                   clearTimeout(timeoutRef.current);
                   timeoutRef.current = null;
                 }
-                setActiveSetting(optionLabels[setting]);
+                setActiveSetting(optionLabel(setting));
               }}
               onBlur={() => {
                 if (timeoutRef.current) {
                   clearTimeout(timeoutRef.current);
                 }
                 timeoutRef.current = setTimeout(() => {
-                  setActiveSetting(optionLabels[ForkOptions.DEFAULT]);
+                  setActiveSetting(optionLabel(ForkOptions.DEFAULT));
                 }, 175);
               }}
               className="border-border-medium bg-surface-secondary text-text-secondary hover:bg-surface-hover hover:text-text-primary mx-0.5 w-14 flex-1 rounded-xl border-2 transition duration-200 ease-in-out"
@@ -245,7 +252,7 @@ function Fork({
     setRememberOption: setRememberGlobal,
   } = host.useForkPreferences();
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const [activeSetting, setActiveSetting] = useState(optionLabels.default);
+  const [activeSetting, setActiveSetting] = useState(optionLabel(ForkOptions.DEFAULT));
   const popoverStore = Ariakit.usePopoverStore({
     placement: 'bottom',
   });
@@ -297,36 +304,36 @@ function Fork({
   const forkOptionsConfig = [
     {
       setting: ForkOptions.DIRECT_PATH,
-      label: localize(optionLabels[ForkOptions.DIRECT_PATH]),
+      label: localize(optionLabel(ForkOptions.DIRECT_PATH)),
       icon: <GitCommit className="h-full w-full rotate-90 p-2" aria-hidden="true" />,
       hoverTitle: (
         <>
           <GitCommit className="h-5 w-5 rotate-90" aria-hidden="true" />
-          {localize(optionLabels[ForkOptions.DIRECT_PATH])}
+          {localize(optionLabel(ForkOptions.DIRECT_PATH))}
         </>
       ),
       hoverDescription: localize('com_ui_fork_info_visible'),
     },
     {
       setting: ForkOptions.INCLUDE_BRANCHES,
-      label: localize(optionLabels[ForkOptions.INCLUDE_BRANCHES]),
+      label: localize(optionLabel(ForkOptions.INCLUDE_BRANCHES)),
       icon: <GitBranchPlus className="h-full w-full rotate-180 p-2" aria-hidden="true" />,
       hoverTitle: (
         <>
           <GitBranchPlus className="h-4 w-4 rotate-180" aria-hidden="true" />
-          {localize(optionLabels[ForkOptions.INCLUDE_BRANCHES])}
+          {localize(optionLabel(ForkOptions.INCLUDE_BRANCHES))}
         </>
       ),
       hoverDescription: localize('com_ui_fork_info_branches'),
     },
     {
       setting: ForkOptions.TARGET_LEVEL,
-      label: localize(optionLabels[ForkOptions.TARGET_LEVEL]),
+      label: localize(optionLabel(ForkOptions.TARGET_LEVEL)),
       icon: <ListTree className="h-full w-full p-2" aria-hidden="true" />,
       hoverTitle: (
         <>
           <ListTree className="h-5 w-5" aria-hidden="true" />
-          {`${localize(optionLabels[ForkOptions.TARGET_LEVEL])} (${localize('com_endpoint_default')})`}
+          {`${localize(optionLabel(ForkOptions.TARGET_LEVEL))} (${localize('com_endpoint_default')})`}
         </>
       ),
       hoverDescription: localize('com_ui_fork_info_target'),
