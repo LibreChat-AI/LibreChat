@@ -73,10 +73,10 @@ describe('revealFoldHeader', () => {
 });
 
 describe('FoldRail', () => {
-  it('does not draw a tree marker beside the tool rows', () => {
+  it('draws a tree marker beside the tool rows', () => {
     const { result } = renderHook(() => useRailHover());
     render(<FoldRail hover={result.current} expanded onCollapse={jest.fn()} />);
-    expect(screen.getByTestId('fold-rail').firstElementChild).toHaveClass('hidden');
+    expect(screen.getByTestId('fold-rail').firstElementChild).not.toHaveClass('hidden');
   });
 
   it('drops the knob when it unmounts under the pointer', () => {
