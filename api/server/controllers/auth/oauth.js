@@ -78,7 +78,10 @@ function createOAuthHandler(redirectUri = domains.client) {
         req.user.provider == 'openid' &&
         isEnabled(process.env.OPENID_REUSE_TOKENS) === true
       ) {
-        const appConfig = await getAppConfig(getAppConfigOptionsFromUser(req.user));
+        const appConfig = await getAppConfig({
+          ...getAppConfigOptionsFromUser(req.user),
+          baseOnly: true,
+        });
         await syncUserEntraGroupMemberships(
           req.user,
           req.user.tokenset.access_token,
