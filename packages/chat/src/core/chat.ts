@@ -1045,8 +1045,7 @@ export class Chat {
     }
     /** The server confirmed the stop, so this generation is over however its stream ended. */
     if (active.disconnected && this.error === active.disconnected) {
-      this.init.state.error = undefined;
-      this.init.state.status = 'ready';
+      this.clearFailure();
     }
     this.notify();
     return getStopResult(result, generation.stoppedConversationId);
@@ -1144,8 +1143,7 @@ export class Chat {
     if (this.disposed || this.active || !failed || this.error !== failed) {
       return;
     }
-    this.init.state.error = undefined;
-    this.init.state.status = 'ready';
+    this.clearFailure();
     this.notify();
   }
 
@@ -1285,8 +1283,7 @@ export class Chat {
       return getStopResult(result, generation.stoppedConversationId);
     }
     if (this.error === failed) {
-      this.init.state.error = undefined;
-      this.init.state.status = 'ready';
+      this.clearFailure();
     }
     this.notify();
     return getStopResult(result, generation.stoppedConversationId);
@@ -1328,6 +1325,20 @@ export class Chat {
   /** The endpoint a generation this chat did not start runs on, as the host selects it. */
   private resumeEndpoint(): string | undefined {
     return this.init.resumeSelection?.().endpoint ?? undefined;
+  }
+
+  /**
+   * Returns a failed chat to `ready` as one write, which the caller announces, so a store that
+   * reports each field never shows a failed status without its error.
+   */
+  private clearFailure(): void {
+    this.writing = true;
+    try {
+      this.init.state.error = undefined;
+      this.init.state.status = 'ready';
+    } finally {
+      this.writing = false;
+    }
   }
 
   /** Returns a failed chat to `ready`. AI SDK: `clearError`. */

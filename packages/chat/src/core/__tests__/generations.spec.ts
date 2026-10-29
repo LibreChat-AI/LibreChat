@@ -2626,6 +2626,50 @@ describe('Chat dropped generations a retry, a stop or a status read settles', ()
   });
 });
 
+/** A store that reports each field it is written, as a cache another hook also writes does. */
+const createReportingState = (): ChatState => {
+  const listeners = new Set<() => void>();
+  const tell = () => listeners.forEach((listener) => listener());
+  let messages: TMessage[] = [];
+  let status: ChatStatus = 'ready';
+  let error: Error | undefined;
+  let connection: ChatConnection = 'idle';
+  return {
+    get status() {
+      return status;
+    },
+    set status(next) {
+      status = next;
+      tell();
+    },
+    get error() {
+      return error;
+    },
+    set error(next) {
+      error = next;
+      tell();
+    },
+    get connection() {
+      return connection;
+    },
+    set connection(next) {
+      connection = next;
+      tell();
+    },
+    get messages() {
+      return messages;
+    },
+    replaceMessages(next) {
+      messages = next;
+      tell();
+    },
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+  };
+};
+
 describe('Chat reconnects that settle a dropped generation or a lost start', () => {
   it('a stop of a dropped generation still ends it when a reattachment to it fails before the answer', async () => {
     const h = createHarness();
@@ -2657,46 +2701,7 @@ describe('Chat reconnects that settle a dropped generation or a lost start', () 
   });
 
   it('an empty reconnect lets go of the chat before a state that reports its writes is told', async () => {
-    const listeners = new Set<() => void>();
-    const tell = () => listeners.forEach((listener) => listener());
-    let messages: TMessage[] = [];
-    let status: ChatStatus = 'ready';
-    let error: Error | undefined;
-    let connection: ChatConnection = 'idle';
-    const state: ChatState = {
-      get status() {
-        return status;
-      },
-      set status(next) {
-        status = next;
-        tell();
-      },
-      get error() {
-        return error;
-      },
-      set error(next) {
-        error = next;
-        tell();
-      },
-      get connection() {
-        return connection;
-      },
-      set connection(next) {
-        connection = next;
-        tell();
-      },
-      get messages() {
-        return messages;
-      },
-      replaceMessages(next) {
-        messages = next;
-        tell();
-      },
-      subscribe(listener) {
-        listeners.add(listener);
-        return () => listeners.delete(listener);
-      },
-    };
+    const state = createReportingState();
     const h = createHarness({ state });
     h.transport.reconnectToStream.mockResolvedValueOnce(null);
     attach(h, createStream({ streamId: 'convo-1', generationCreatedAt: 200 }));
@@ -2735,5 +2740,25 @@ describe('Chat reconnects that settle a dropped generation or a lost start', () 
     expect(h.finishes[h.finishes.length - 1]).toMatchObject({ isSettled: true });
     expect(h.chat.status).toBe('ready');
     expect((await h.chat.stop()).status).toBe('idle');
+  });
+
+  it('a stop that ends a dropped generation never shows a store a failed status without its error', async () => {
+    const h = createHarness({ state: createReportingState() });
+    await states.detached(h);
+    expect(h.chat.status).toBe('error');
+    let torn = false;
+    const unsubscribe = h.chat.subscribe(() => {
+      torn ||= h.chat.status === 'error' && h.chat.error === undefined;
+    });
+    h.transport.abort.mockResolvedValueOnce({
+      final: true,
+      conversation: {},
+    } as unknown as ChatAbortResult);
+    await h.chat.stop();
+    await flush();
+    unsubscribe();
+
+    expect(torn).toBe(false);
+    expect(h.chat.status).toBe('ready');
   });
 });
