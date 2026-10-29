@@ -13,6 +13,8 @@ const { getAppConfig } = require('~/server/services/Config');
 const db = require('~/models');
 
 const apiKeyMiddleware = createRequireApiKeyAuth({
+  authorizeBinding: (...args) =>
+    require('~/server/services/ChannelAuthority').authorizeChannelResponseKeyRequest(...args),
   validateAgentApiKey: db.validateAgentApiKey,
   findUser: db.findUser,
   isPrincipalActive: db.isAgentTriggerPrincipalActive,
