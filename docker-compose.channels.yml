@@ -1,0 +1,23 @@
+services:
+  channel-gateway:
+    profiles: [channels]
+    build:
+      context: .
+      dockerfile: packages/channel-gateway/Dockerfile
+    init: true
+    restart: unless-stopped
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      LIBRECHAT_INTERNAL_URL: http://api:${PORT:-3080}
+      CHANNEL_SERVICE_TOKEN: ${CHANNEL_SERVICE_TOKEN:-}
+      CHANNEL_TENANT_ID: ${CHANNEL_TENANT_ID:-}
+      CHANNEL_ID: ${CHANNEL_ID:-}
+      APP_TITLE: ${APP_TITLE:-LibreChat}
+      SLACK_TRANSPORT: ${SLACK_TRANSPORT:-socket_mode}
+      SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}
+      SLACK_NATIVE_SESSIONS: ${SLACK_NATIVE_SESSIONS:-false}
+      SLACK_LIFECYCLE_REACTIONS: ${SLACK_LIFECYCLE_REACTIONS:-false}
+    stop_grace_period: 10s
