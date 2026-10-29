@@ -6,7 +6,7 @@ const {
   reportLocatorTraversalFailure,
   generateCheckAccess,
   skipAgentCheck,
-  applyResumeRequest,
+  createChatResumeContext,
   GenerationJobManager,
   getSafeErrorMetadata,
   validateChatMessageIds,
@@ -38,32 +38,14 @@ const checkAgentResourceAccess = canAccessAgentFromBody({
   requiredPermission: PermissionBits.VIEW,
 });
 
-/**
- * Replay the paused turn's graph-determining config onto a resume request BEFORE the
- * rest of the chain (PII filter, agent-access, buildEndpointOption) reads it. The client
- * can't reliably re-send the ephemeral-agent config after a reload/cross-session, so the
- * server restores it from the pending action — the resume then rebuilds the SAME
- * agent/graph the run paused on (and a crafted resume can't swap the tool set). No-op for
- * every non-resume route.
- */
-const restoreResumeContext = async (req, res, next) => {
-  if (req.path !== '/resume') {
-    return next();
-  }
-  try {
-    const streamId = req.body?.conversationId;
-    if (streamId) {
-      const job = await GenerationJobManager.getJob(streamId);
-      applyResumeRequest(req, job?.metadata?.pendingAction?.resumeContext);
-    }
-  } catch (err) {
-    logger.warn('[agents/chat] Failed to restore resume context', getSafeErrorMetadata(err));
-  }
-  next();
-};
-
 router.use(validateChatMessageIds);
-router.use(restoreResumeContext);
+router.use(
+  createChatResumeContext({
+    jobs: GenerationJobManager,
+    onError: (error) =>
+      logger.warn('[agents/chat] Failed to restore resume context', getSafeErrorMetadata(error)),
+  }),
+);
 router.use(
   createMessageFilterPii({
     onTraversalFailure: reportLocatorTraversalFailure,

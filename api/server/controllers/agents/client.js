@@ -32,6 +32,7 @@ const {
   sendEvent,
   computeUsageCostUSD,
   aggregateEmittedUsage,
+  buildPersistedResponseAccounting,
   resolveAgentTokenConfig,
   buildPersistedContextUsage,
   resolveRetainedToolTokens,
@@ -43,11 +44,8 @@ const {
   PENDING_ACTION_EXPIRED_CODE,
   getTransactionsConfig,
   resolveRecursionLimit,
-  buildPendingAction,
+  captureRunPendingAction,
   toClientPendingAction,
-  captureCodeExecutionApprovalBinding,
-  captureRunToolApprovalBindings,
-  describeRememberedToolApprovals,
   computeAgentRequestFingerprint,
   computeLegacyAgentRequestFingerprint,
   getRunDiscoveredTools,
@@ -72,7 +70,6 @@ const {
   markToolApprovalAllowAlways,
   resolveRunToolApprovalAllows,
   getRunMCPToolAliases,
-  collectAllowAlwaysAliases,
   agentRunUsesCheckpointer,
   canAgentGraphPause,
   getPluginHookSource,
@@ -186,7 +183,6 @@ const {
   hasModelBoundContentProtection,
   assertResumeRuntimeContentAllowed,
   collectReachableAgents,
-  isStatefulCodeEnvironmentToolName,
   stampMcpServerIdentities,
   getDynamicToolContexts,
   getSafeErrorMetadata,
@@ -3718,6 +3714,7 @@ class AgentClient extends BaseClient {
      *   thoughtSignatures?: Record<string, string>,
      *   contextUsage?: import('librechat-data-provider').TContextUsageEvent,
      *   usage?: import('librechat-data-provider').TResponseUsage,
+     *   accounting?: import('librechat-data-provider').ResponseAccounting,
      * }} */
     const metadata = {};
     const signatures = this.collectedThoughtSignatures;
@@ -3785,6 +3782,22 @@ class AgentClient extends BaseClient {
     if (usage) {
       metadata.usage = usage;
     }
+    Object.assign(
+      metadata,
+      buildPersistedResponseAccounting({
+        collectedUsage: this.collectedUsage,
+        emittedUsage: usageEvents,
+        billingEnabled: this.options.req?.config?.interfaceConfig?.contextCost,
+        billing: {
+          pricing: {
+            getMultiplier: db.getMultiplier,
+            getCacheMultiplier: db.getCacheMultiplier,
+          },
+          getValueKey: db.getValueKey,
+          resolveEndpointTokenConfig: (entry) => this.resolveAgentEndpointTokenConfig(entry),
+        },
+      }),
+    );
     return Object.keys(metadata).length > 0 ? metadata : undefined;
   }
 
@@ -4448,18 +4461,12 @@ class AgentClient extends BaseClient {
             },
           )
         : interrupt.payload;
-    const codeExecutionBinding =
-      interrupt.payload?.type === 'tool_approval' &&
-      interrupt.payload.action_requests.some(
-        (action) =>
-          typeof action?.name === 'string' && isStatefulCodeEnvironmentToolName(action.name),
-      )
-        ? captureCodeExecutionApprovalBinding(reachableAgents)
-        : undefined;
-    const toolApprovalBindings = captureRunToolApprovalBindings(run, interruptPayload);
-    const pendingAction = buildPendingAction(
-      describeRememberedToolApprovals(interruptPayload, toolApprovalBindings, run),
-      {
+    const pendingAction = captureRunPendingAction({
+      run,
+      payload: interruptPayload,
+      agents: reachableAgents,
+      aliases: getRunMCPToolAliases(run),
+      context: {
         streamId,
         conversationId: this.conversationId,
         // runId mirrors the LangGraph checkpoint namespace when the SDK provides it
@@ -4487,11 +4494,8 @@ class AgentClient extends BaseClient {
         // reload/cross-replica resume can't reconstruct the ephemeral config client-side,
         // so the server restores it and rebuilds the same graph (and the fingerprint matches).
         resumeContext,
-        codeExecutionBinding,
-        toolApprovalAliases: collectAllowAlwaysAliases(interruptPayload, getRunMCPToolAliases(run)),
       },
-    );
-    pendingAction.toolApprovalBindings = toolApprovalBindings;
+    });
 
     // Job-replacement guard: streamId == conversationId is reused per conversation, so a
     // newer request can replace this run's job. If this (older) run hits an interrupt

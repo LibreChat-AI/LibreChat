@@ -38,6 +38,7 @@ const {
   checkBan,
   moderateText,
   requireJwtAuth,
+  requireTermsAcceptance,
   messageIpLimiter,
   configMiddleware,
   messageUserLimiter,
@@ -71,6 +72,11 @@ const {
   acknowledgeScheduledStopPersistence,
 } = require('~/server/services/Schedules');
 const responses = require('./responses');
+const {
+  reviewBackgroundResponse,
+  submitBackgroundResponseReview,
+  cancelOwnerBackgroundResponse,
+} = require('~/server/services/Responses');
 const management = require('./management');
 const skills = require('./skills');
 const openai = require('./openai');
@@ -176,6 +182,23 @@ router.use(
 );
 router.use(checkBan);
 router.use(uaParser);
+router.get('/responses/:id/review', requireTermsAcceptance, reviewBackgroundResponse);
+router.post(
+  '/responses/:id/review',
+  requireTermsAcceptance,
+  chatConfigMiddleware,
+  ...(isEnabled(LIMIT_MESSAGE_IP) ? [messageIpLimiter] : []),
+  ...(isEnabled(LIMIT_MESSAGE_USER) ? [messageUserLimiter] : []),
+  submitBackgroundResponseReview,
+);
+router.post(
+  '/responses/:id/cancel',
+  requireTermsAcceptance,
+  chatConfigMiddleware,
+  ...(isEnabled(LIMIT_MESSAGE_IP) ? [messageIpLimiter] : []),
+  ...(isEnabled(LIMIT_MESSAGE_USER) ? [messageUserLimiter] : []),
+  cancelOwnerBackgroundResponse,
+);
 
 /**
  * Stream endpoints - mounted before chatRouter to bypass rate limiters

@@ -812,6 +812,21 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
   if (hasTenantMismatch(job, req.user)) {
     return sendGenerationJson(res, 403, { error: 'Unauthorized' }, generationProtocolVersion);
   }
+  if (
+    job.metadata.channelExecution &&
+    !(await require('~/server/services/ChannelAuthority').authorizeResume({
+      job,
+      userId,
+      tenantId: req.user.tenantId,
+    }))
+  ) {
+    return sendGenerationJson(
+      res,
+      403,
+      { code: 'CHANNEL_AUTHORITY_CHANGED' },
+      generationProtocolVersion,
+    );
+  }
   generationProtocolVersion = negotiateExistingGenerationProtocol(req, job);
   if (generationCreatedAt != null && job.createdAt !== generationCreatedAt) {
     return sendGenerationJson(res, 409, { code: 'RUN_REPLACED' }, generationProtocolVersion);
