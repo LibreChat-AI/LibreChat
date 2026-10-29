@@ -1,5 +1,6 @@
 import path from 'path';
 import axios from 'axios';
+import { stat } from 'fs/promises';
 import { logger } from '@librechat/data-schemas';
 import { ErrorTypes } from 'librechat-data-provider';
 import { SERVICE_REQUEST_TIMEOUT_MS } from './timeouts';
@@ -143,23 +144,42 @@ export function checkUserKeyExpiry(expiresAt: string, endpoint: string): void {
   }
 }
 
-/** Key sources that already loaded once in this process. */
-const availableServiceKeys = new Set<string>();
+/** Key sources that loaded, by the signature of the file they loaded from. */
+const availableServiceKeys = new Map<string, string>();
+
+/**
+ * The file's modification time and size, or `inline` when `keyPath` names no readable file
+ * (stringified or base64 JSON), so a replaced or removed key file is noticed without a read.
+ */
+async function getKeySourceSignature(keyPath: string): Promise<string> {
+  try {
+    const absolutePath = path.isAbsolute(keyPath) ? keyPath : path.resolve(keyPath);
+    const stats = await stat(absolutePath);
+    return `${stats.mtimeMs}:${stats.size}`;
+  } catch {
+    return 'inline';
+  }
+}
 
 /**
  * Whether a Google service key loads from `keyPath`, for endpoint availability checks that run
- * on every endpoints config read. A source that loaded once is remembered for the life of the
- * process, so those reads stop re-reading, re-fetching and re-parsing the key; a failed load is
- * not remembered and is retried on the next call.
+ * on every endpoints config read. A file or inline source that loaded is remembered while the
+ * file's modification time and size are unchanged, so those reads stop re-reading and
+ * re-parsing the key; a changed, removed or failing source is loaded again. URL sources are
+ * fetched on every call, since nothing local says whether they changed.
  */
 export async function isServiceKeyAvailable(keyPath: string): Promise<boolean> {
-  if (availableServiceKeys.has(keyPath)) {
+  if (/^https?:\/\//.test(keyPath)) {
+    return (await loadServiceKey(keyPath)) != null;
+  }
+  const signature = await getKeySourceSignature(keyPath);
+  if (availableServiceKeys.get(keyPath) === signature) {
     return true;
   }
-  const serviceKey = await loadServiceKey(keyPath);
-  if (serviceKey == null) {
+  if ((await loadServiceKey(keyPath)) == null) {
+    availableServiceKeys.delete(keyPath);
     return false;
   }
-  availableServiceKeys.add(keyPath);
+  availableServiceKeys.set(keyPath, signature);
   return true;
 }
