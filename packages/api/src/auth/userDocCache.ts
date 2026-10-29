@@ -54,11 +54,12 @@ function isAuthUserDocCacheRedisBacked(): boolean {
 }
 
 export function getAuthUserDocCacheMode(): AuthUserDocCacheMode {
-  if (process.env.AUTH_USER_CACHE_MODE !== 'on') {
+  const configuredMode = process.env.AUTH_USER_CACHE_MODE;
+  if (configuredMode !== undefined && configuredMode !== 'on') {
     return 'off';
   }
   if (!isAuthUserDocCacheRedisBacked()) {
-    if (!warnedAuthUserDocCacheRequiresRedis) {
+    if (configuredMode === 'on' && !warnedAuthUserDocCacheRequiresRedis) {
       warnedAuthUserDocCacheRequiresRedis = true;
       logger.warn(
         '[authUserDocCache] User request burst caching requires Redis; disabling auth user cache',
