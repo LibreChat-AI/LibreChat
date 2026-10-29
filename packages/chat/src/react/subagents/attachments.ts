@@ -1,6 +1,15 @@
 import { createContext, useEffect, useMemo, useRef } from 'react';
 import { Constants } from 'librechat-data-provider';
 import { atom, useStore, useAtomValue } from 'jotai';
+import type {
+  Agents,
+  TAttachment,
+  FullToolCall,
+  TMessageContentParts,
+  SubagentAttachmentCallsResponse,
+} from 'librechat-data-provider';
+import type { Context } from 'react';
+import type { SubagentContentPart } from '../../core/subagents';
 import {
   nestedToolCallOf,
   collectNestedCalls,
@@ -9,22 +18,10 @@ import {
   rememberSubagentChildCalls,
   rememberedSubagentChildCalls,
   subagentProgressByToolCallId,
-} from '@librechat/chat/react';
-import type {
-  Agents,
-  TAttachment,
-  FullToolCall,
-  TMessageContentParts,
-  SubagentAttachmentFile,
-  SubagentAttachmentCallsResponse,
-} from 'librechat-data-provider';
-import type { SubagentContentPart } from '@librechat/chat';
-import { useSubagentAttachmentCallsQueries } from '~/data-provider';
+} from './state';
+import { getPartKeyIndex } from '../../core/content';
 
-export { collectNestedCalls };
-import { getPartKeyIndex } from '~/utils/messages';
-
-type NestedPart = TMessageContentParts | SubagentContentPart | undefined;
+export type NestedPart = TMessageContentParts | SubagentContentPart | undefined;
 /** A tool call inside a subagent run, with the scope its files may carry. */
 export type NestedCall = Agents.SubagentAttachmentCall;
 
@@ -38,7 +35,7 @@ const NO_NESTED: ReadonlyMap<NestedPart, TAttachment[]> = new Map();
  * child tool call id, which only appears inside the parent `subagent` call. The
  * message assigns them once, so every body it splits into reads one answer.
  */
-export const SubagentAttachmentsContext =
+export const SubagentAttachmentsContext: Context<ReadonlyMap<NestedPart, TAttachment[]>> =
   createContext<ReadonlyMap<NestedPart, TAttachment[]>>(NO_NESTED);
 
 /**
@@ -262,60 +259,46 @@ export function useLiveSubagentToolCalls(
 }
 
 /** The identity a stored part and its cached preview share. */
-const identityOf = (toolCallId: string, stepId?: string, agentId?: string) =>
+const identityOf = (toolCallId: string, stepId?: string, agentId?: string): string =>
   [toolCallId, stepId ?? '', agentId ?? ''].join('\u0000');
 
-/**
- * Child calls of the stored transcripts of the previewed subagent calls in `content`, for the
- * files whose owner is in doubt, keyed by the call's index in `content`. A file a background task
- * delivers after the message loaded names a child call the cached preview never hinted; while
- * `files` is not empty, the server is asked (in bounded batches) which transcript holds each.
- */
-export function useStoredSubagentHints(
+/** Whether `content` holds a subagent call whose transcript the server left out of the preview. */
+export function hasOmittedSubagentContent(
   content: ReadonlyArray<TMessageContentParts | undefined> | undefined,
-  files: SubagentAttachmentFile[],
-  conversationId: string | null | undefined,
-  messageId: string,
+): boolean {
+  return (content ?? []).some(
+    (part) => (nestedToolCallOf(part) as FullToolCall | undefined)?.subagentContentOmitted === true,
+  );
+}
+
+/**
+ * Routes the stored child calls the server returned for previewed subagent calls back to each
+ * call's index in `content`, matching a part and its cached preview by their shared identity.
+ */
+export function routeStoredSubagentHints(
+  content: ReadonlyArray<TMessageContentParts | undefined> | undefined,
+  parts: SubagentAttachmentCallsResponse['parts'],
 ): ReadonlyMap<number, NestedCall[]> {
-  const previewed = useMemo(
-    () =>
-      (content ?? []).some(
-        (part) =>
-          (nestedToolCallOf(part) as FullToolCall | undefined)?.subagentContentOmitted === true,
-      ),
-    [content],
-  );
-  const results = useSubagentAttachmentCallsQueries(
-    { conversationId: conversationId ?? '', messageId, files },
-    previewed && files.length > 0 && !!conversationId && !!messageId,
-  );
-  /** A string, so the routing changes only when an answer does. */
-  const answers = JSON.stringify(results.map((result) => result.data?.parts ?? null));
-  return useMemo(() => {
-    const parts = (
-      JSON.parse(answers) as Array<SubagentAttachmentCallsResponse['parts'] | null>
-    ).flatMap((batch) => batch ?? []);
-    if (parts.length === 0 || !previewed) {
-      return NO_LIVE_CALLS;
+  if (parts.length === 0) {
+    return NO_LIVE_CALLS;
+  }
+  const byIdentity = new Map<string, NestedCall[]>();
+  for (const entry of parts) {
+    const identity = identityOf(entry.toolCallId, entry.stepId, entry.agentId);
+    byIdentity.set(identity, [...(byIdentity.get(identity) ?? []), ...entry.calls]);
+  }
+  const byIndex = new Map<number, NestedCall[]>();
+  (content ?? []).forEach((part, index) => {
+    const toolCall = nestedToolCallOf(part) as FullToolCall | undefined;
+    if (toolCall?.subagentContentOmitted !== true || !toolCall.id) {
+      return;
     }
-    const byIdentity = new Map<string, NestedCall[]>();
-    for (const entry of parts) {
-      const identity = identityOf(entry.toolCallId, entry.stepId, entry.agentId);
-      byIdentity.set(identity, [...(byIdentity.get(identity) ?? []), ...entry.calls]);
+    const calls = byIdentity.get(
+      identityOf(toolCall.id, toolCall.stepId, (part as { agentId?: string }).agentId),
+    );
+    if (calls != null) {
+      byIndex.set(index, calls);
     }
-    const byIndex = new Map<number, NestedCall[]>();
-    (content ?? []).forEach((part, index) => {
-      const toolCall = nestedToolCallOf(part) as FullToolCall | undefined;
-      if (toolCall?.subagentContentOmitted !== true || !toolCall.id) {
-        return;
-      }
-      const calls = byIdentity.get(
-        identityOf(toolCall.id, toolCall.stepId, (part as { agentId?: string }).agentId),
-      );
-      if (calls != null) {
-        byIndex.set(index, calls);
-      }
-    });
-    return byIndex.size > 0 ? byIndex : NO_LIVE_CALLS;
-  }, [answers, previewed, content]);
+  });
+  return byIndex.size > 0 ? byIndex : NO_LIVE_CALLS;
 }
