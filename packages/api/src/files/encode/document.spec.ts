@@ -1222,6 +1222,27 @@ describe('dedupeDocumentNames', () => {
     );
   const contentOf = (message: Message) => (Array.isArray(message.content) ? message.content : []);
 
+  it.each(Object.values(Providers).filter((provider) => provider !== Providers.BEDROCK))(
+    'does not inspect replay content for %s',
+    (provider) => {
+      const content = jest.fn(() => {
+        throw new Error('Non-Bedrock content must not be traversed');
+      });
+      const messages: Message[] = [
+        {
+          get content() {
+            return content();
+          },
+        },
+      ];
+      messages.length = CONTENT_TRAVERSAL_MAX_NODES + 1;
+
+      dedupeDocumentNames(messages, provider);
+
+      expect(content).not.toHaveBeenCalled();
+    },
+  );
+
   it('renames repeated Bedrock document names across the payload in order', () => {
     const first = bedrock('Stripe fees');
     const messages: Message[] = [
