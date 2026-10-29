@@ -1202,6 +1202,7 @@ export const CHANNEL_DELIVERY_PARTS_HARD_MAX = 100;
 
 /** Storage work per claim transaction; shared by configuration and injected storage defaults. */
 export const channelStorageConfigSchema = z.object({
+  erasureBatchSize: z.number().int().min(1).max(1000).default(250),
   claimBatchSize: z.number().int().min(1).max(100).default(25),
   maxDeliveryParts: z
     .number()

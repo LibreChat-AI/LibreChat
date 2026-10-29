@@ -406,52 +406,71 @@ export function createChannelRunStorage(
       };
       const payloadHash = digest(input.admission);
       const laneId = laneKey(input);
-      return transaction(async (session) => {
-        if (!(await ownerAdmission(session))) throw new ChannelRunConflict('invalid_transition');
-        const existing = await runs().findOne(eventKey).session(session).lean();
-        if (existing) {
-          if (
-            digest(existing.admission) !== payloadHash ||
-            existing.agentId !== input.agentId ||
-            digest(existing.principal) !== digest(input.principal)
-          )
-            throw new ChannelRunConflict('event_conflict');
-          return { run: existing, duplicate: true };
-        }
-        const lane = await lanes()
-          .findOneAndUpdate(
-            { tenantId: input.tenantId, laneId },
-            {
-              $inc: { nextSequence: 1 },
-              $setOnInsert: {
-                channelId: input.channelId,
-                userId: input.principal.userId,
+      try {
+        return await transaction(async (session) => {
+          if (!(await ownerAdmission(session))) throw new ChannelRunConflict('invalid_transition');
+          const existing = await runs().findOne(eventKey).session(session).lean();
+          if (existing) {
+            if (
+              digest(existing.admission) !== payloadHash ||
+              existing.agentId !== input.agentId ||
+              digest(existing.principal) !== digest(input.principal)
+            )
+              throw new ChannelRunConflict('event_conflict');
+            return { run: existing, duplicate: true };
+          }
+          const lane = await lanes()
+            .findOneAndUpdate(
+              { tenantId: input.tenantId, laneId },
+              {
+                $inc: { nextSequence: 1 },
+                $setOnInsert: {
+                  channelId: input.channelId,
+                  userId: input.principal.userId,
+                },
               },
-            },
-            { upsert: true, new: true, session },
-          )
-          .lean();
-        if (!lane) throw new Error('Channel lane unavailable');
-        const [record] = await runs().create(
-          [
-            {
-              ...input,
-              runId: randomUUID(),
-              laneId,
-              payloadHash,
-              sequence: lane.nextSequence,
-              receivedAt: now,
-              state: 'queued',
-              leaseEpoch: 0,
-              leaseExpiresAt: 0,
-              receipts: [],
-              cancellationRequested: false,
-            },
-          ],
-          { session },
-        );
-        return { run: record.toObject(), duplicate: false };
-      });
+              { upsert: true, new: true, session },
+            )
+            .lean();
+          if (!lane) throw new Error('Channel lane unavailable');
+          const [record] = await runs().create(
+            [
+              {
+                ...input,
+                runId: randomUUID(),
+                laneId,
+                payloadHash,
+                sequence: lane.nextSequence,
+                receivedAt: now,
+                state: 'queued',
+                leaseEpoch: 0,
+                leaseExpiresAt: 0,
+                receipts: [],
+                cancellationRequested: false,
+              },
+            ],
+            { session },
+          );
+          return { run: record.toObject(), duplicate: false };
+        });
+      } catch (error) {
+        if (
+          !(error instanceof mongoose.mongo.MongoServerError) ||
+          error.code !== 11000 ||
+          (error.keyPattern?.['admission.eventId'] == null &&
+            !error.message.includes('channel_run_event_v2'))
+        )
+          throw error;
+        const existing = await runs().findOne(eventKey).lean();
+        if (!existing) throw new ChannelRunConflict('event_conflict');
+        if (
+          digest(existing.admission) !== payloadHash ||
+          existing.agentId !== input.agentId ||
+          digest(existing.principal) !== digest(input.principal)
+        )
+          throw new ChannelRunConflict('event_conflict');
+        return { run: existing, duplicate: true };
+      }
     },
     async claim(tenantId, channelId, owner, now, leaseMs) {
       if (!owner || !Number.isSafeInteger(leaseMs) || leaseMs <= 0)
@@ -602,7 +621,7 @@ export function createChannelRunStorage(
           execution: { ...execution, protocol: 'responses' as const },
           snapshot: {
             status: 'cancelled' as const,
-            text: 'Cancelled.',
+            text: '',
             elapsedMs: Math.max(0, now - run.receivedAt),
           },
         };

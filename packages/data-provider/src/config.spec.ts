@@ -3296,3 +3296,18 @@ describe('channel storage work limit', () => {
     expect(agentsEndpointSchema.safeParse({ channels: { claimBatchSize } }).success).toBe(false);
   });
 });
+
+describe('channel erasure configuration', () => {
+  it('defaults cleanup batches and exposes a deployment override', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels?.erasureBatchSize).toBe(250);
+    expect(
+      configSchema.parse({
+        version: '1.3.17',
+        endpoints: { agents: { channels: { erasureBatchSize: 12 } } },
+      }).endpoints?.agents?.channels?.erasureBatchSize,
+    ).toBe(12);
+  });
+  it.each([0, 1001, 1.5, '250'])('rejects invalid erasure batch %s', (erasureBatchSize) => {
+    expect(agentsEndpointSchema.safeParse({ channels: { erasureBatchSize } }).success).toBe(false);
+  });
+});

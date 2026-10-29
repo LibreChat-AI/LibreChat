@@ -50,3 +50,14 @@ describe('scopedCacheKey', () => {
     );
   });
 });
+
+describe('reserved channel partition', () => {
+  it('refuses to create a named-tenant cache namespace for the tenantless sentinel', () => {
+    expect(() => tenantStorage.run({ tenantId: '_' }, () => scopedCacheKey('private'))).toThrow(
+      'Reserved tenant identifier',
+    );
+    expect(tenantStorage.run({ tenantId: 'org_1' }, () => scopedCacheKey('private'))).toBe(
+      'private:org_1',
+    );
+  });
+});
