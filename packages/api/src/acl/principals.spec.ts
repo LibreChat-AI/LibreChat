@@ -1,4 +1,4 @@
-import { ensureDirectoryPrincipalUser } from './principals';
+import { ensureDirectoryPrincipalUser, syncsOnlyExistingEntraGroups } from './principals';
 
 const createMethods = () => ({
   findUserBySourceId: jest.fn().mockResolvedValue(null),
@@ -50,5 +50,22 @@ describe('ensureDirectoryPrincipalUser', () => {
       'Directory user principals must have email and idOnTheSource',
     );
     expect(methods.findUserBySourceId).not.toHaveBeenCalled();
+  });
+});
+
+describe('syncsOnlyExistingEntraGroups', () => {
+  it('defaults to false when neither setting is present', () => {
+    expect(syncsOnlyExistingEntraGroups(undefined, undefined)).toBe(false);
+  });
+
+  it('falls back to the env flag when the yaml setting is unset', () => {
+    expect(syncsOnlyExistingEntraGroups({ maxWriteAttempts: 3 }, 'true')).toBe(true);
+  });
+
+  it('lets the yaml setting override the env flag', () => {
+    expect(syncsOnlyExistingEntraGroups({ syncOnlyExistingEntraGroups: false }, 'true')).toBe(
+      false,
+    );
+    expect(syncsOnlyExistingEntraGroups({ syncOnlyExistingEntraGroups: true }, 'false')).toBe(true);
   });
 });

@@ -1845,3 +1845,6 @@ endpoints:
 #   maxWriteAttempts: 3 # Integer 1-100, including the first attempt.
 #   leaseTtlMs: 30000 # Integer 1000-600000. Sharing updates on deployments without transactions hold a per-resource lease this long between renewals.
 #   leaseWaitMs: 3000 # Integer 0-60000. How long an update waits for a contended lease before answering 409.
+#   # Login sync updates only Entra ID groups already in the database instead of creating
+#   # every group the user is in. Unset defers to ENTRA_ID_SYNC_ONLY_EXISTING_GROUPS.
+#   syncOnlyExistingEntraGroups: false

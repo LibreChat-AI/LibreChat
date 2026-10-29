@@ -4437,6 +4437,9 @@ export const configSchema = z.object({
       maxWriteAttempts: permissionWriteAttemptsSchema,
       leaseTtlMs: permissionLeaseTtlSchema,
       leaseWaitMs: permissionLeaseWaitSchema,
+      /** Login sync updates only Entra ID groups already in the database instead of creating
+       * every group the user is in. Unset defers to `ENTRA_ID_SYNC_ONLY_EXISTING_GROUPS`. */
+      syncOnlyExistingEntraGroups: z.boolean().optional(),
     })
     .optional(),
   cache: z.boolean().default(true),
