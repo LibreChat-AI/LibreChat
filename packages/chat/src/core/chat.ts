@@ -1130,6 +1130,7 @@ export class Chat {
       if (!stream && ended) {
         this.action = undefined;
         this.decisions.clear();
+        this.releasedPause = undefined;
         this.settle({ kind: 'complete', settled: { conversationId } }, active);
         return;
       }
@@ -1311,6 +1312,7 @@ export class Chat {
       this.detached = undefined;
       this.action = undefined;
       this.decisions.clear();
+      this.releasedPause = undefined;
       if (this.publishUnframedStop(result, generation)) {
         return getStopResult(result, generation.stoppedConversationId);
       }
@@ -1557,6 +1559,7 @@ export class Chat {
     this.detached = undefined;
     this.action = undefined;
     this.decisions.clear();
+    this.releasedPause = undefined;
     if (this.publishUnframedStop(result, generation)) {
       return getStopResult(result, generation.stoppedConversationId);
     }
@@ -1632,6 +1635,7 @@ export class Chat {
     }
     this.action = undefined;
     this.decisions.clear();
+    this.releasedPause = undefined;
     /** A pause a status read restored names no response this chat prepared or saw framed. */
     const unframed = {
       conversationId: generation.conversationId,
@@ -2309,6 +2313,7 @@ export class Chat {
       /** A dropped connection leaves the server's generation, and its pause, as it was. */
       this.action = undefined;
       this.decisions.clear();
+      this.releasedPause = undefined;
     }
   }
 
@@ -2398,6 +2403,7 @@ export class Chat {
        */
       this.action = undefined;
       this.decisions.clear();
+      this.releasedPause = undefined;
       /** Including an attachment that found its generation already finished. */
       const ended =
         active.stream?.generationCreatedAt ??
