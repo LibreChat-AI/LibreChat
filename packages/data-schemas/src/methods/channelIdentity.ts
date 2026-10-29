@@ -1,5 +1,7 @@
 import type { ChannelExternalIdentity } from 'librechat-data-provider';
+import type { ClientSession } from 'mongoose';
 import type { ChannelIdentityRecord } from '~/models/channelIdentity';
+import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
 import { assertChannelTenant } from './channelScope';
 export type { ChannelIdentityRecord } from '~/models/channelIdentity';
@@ -51,33 +53,58 @@ export function createChannelIdentityStorage(
       if (record.tenantId !== record.identity.tenantId)
         throw new TypeError('Channel identity tenant mismatch');
       await ensureIndexes();
-      if (expectedRevision === null) {
-        try {
-          await model().create(record);
+      if (
+        (!record.userId && record.accountLabel) ||
+        (['accepted', 'active'].includes(record.state) && !record.userId)
+      )
+        throw new TypeError('Channel account identity required');
+      const persist = async (session?: ClientSession): Promise<boolean> => {
+        if (expectedRevision === null) {
+          await model().create([record], session ? { session } : {});
           return true;
-        } catch (error) {
-          if (error && typeof error === 'object' && 'code' in error && error.code === 11000)
-            return false;
-          throw error;
         }
-      }
-      const result = await model().updateOne(
-        { tenantId: record.tenantId, linkId: record.linkId, revision: expectedRevision },
-        {
-          $set: {
-            identity: record.identity,
-            revision: record.revision,
-            state: record.state,
-            ticketHash: record.ticketHash,
-            ticketExpiresAtMs: record.ticketExpiresAtMs,
-            expiresAtMs: record.expiresAtMs,
-            ...(record.userId ? { userId: record.userId, accountLabel: record.accountLabel } : {}),
+        const result = await model().updateOne(
+          { tenantId: record.tenantId, linkId: record.linkId, revision: expectedRevision },
+          {
+            $set: {
+              identity: record.identity,
+              revision: record.revision,
+              state: record.state,
+              ticketHash: record.ticketHash,
+              ticketExpiresAtMs: record.ticketExpiresAtMs,
+              expiresAtMs: record.expiresAtMs,
+              ...(record.userId
+                ? { userId: record.userId, accountLabel: record.accountLabel }
+                : {}),
+            },
+            ...(!record.userId ? { $unset: { userId: '', accountLabel: '' } } : {}),
           },
-          ...(!record.userId ? { $unset: { userId: '', accountLabel: '' } } : {}),
-        },
-      );
-      return result.modifiedCount === 1;
+          session ? { session } : {},
+        );
+        return result.modifiedCount === 1;
+      };
+      try {
+        if (!record.userId) return await persist();
+        const admit = await prepareChannelOwnerAdmission(mongoose, {
+          userId: record.userId,
+          tenantId: record.tenantId === '_' ? undefined : record.tenantId,
+        });
+        const session = await mongoose.startSession();
+        try {
+          let saved = false;
+          await session.withTransaction(async () => {
+            saved = (await admit(session)) ? await persist(session) : false;
+          });
+          return saved;
+        } finally {
+          await session.endSession();
+        }
+      } catch (error) {
+        if (error instanceof mongoose.mongo.MongoServerError && error.code === 11000) return false;
+        throw error;
+      }
     },
+
     async revokeChannelIdentities(tenantId, channelId, revision) {
       assertChannelTenant(tenantId);
       await model().updateMany(

@@ -3,6 +3,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { ChannelIdentityRecord } from './channelIdentity';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
+import { createUserMethods } from './user';
 import { createModels } from '~/models';
 
 let mongo: MongoMemoryReplSet;
@@ -165,4 +166,57 @@ it('propagates database failures separately from absent records', () =>
     await expect(storage.readChannelLink(tenantId, 'missing')).rejects.toThrow(
       'database unavailable',
     );
+  }));
+
+it('fences an in-flight personal-link acceptance before erasing its account', () =>
+  scope(async () => {
+    const user = await mongoose.models.User.create({
+      email: 'personal-link-owner@example.com',
+      provider: 'local',
+      tenantId,
+    });
+    const userId = String(user._id);
+    await storage.saveChannelIdentity(identity(), null);
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const collection = mongoose.models.ChannelIdentity.collection;
+    const update = collection.updateOne.bind(collection);
+    const paused = jest.spyOn(collection, 'updateOne').mockImplementation(async (...args) => {
+      entered();
+      await gate;
+      return update(...args);
+    });
+    const accepted = {
+      ...identity(),
+      state: 'accepted' as const,
+      revision: 'accepted',
+      userId,
+      accountLabel: 'Private account',
+    };
+    const acceptance = storage.saveChannelIdentity(accepted, 'one');
+    await started;
+    let deleted = false;
+    const deletion = createUserMethods(mongoose)
+      .deleteUserById(userId)
+      .then((value) => {
+        deleted = true;
+        return value;
+      });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(deleted).toBe(false);
+    } finally {
+      release();
+      paused.mockRestore();
+    }
+    expect(await acceptance).toBe(true);
+    await deletion;
+    expect(await storage.readChannelLink(tenantId, 'link')).toBeNull();
+    expect(await storage.saveChannelIdentity(accepted, null)).toBe(false);
   }));
