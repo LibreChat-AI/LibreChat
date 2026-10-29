@@ -66,6 +66,8 @@ const queuedTurnLifecycle = createAgentQueuedTurnLifecycle({
 });
 
 service = createAgentTriggerService({
+  sourceDispatchers: require('../Responses').backgroundResponseSourceDispatchers,
+  authorizeSource: (...args) => require('../ChannelAuthority').authorizeTrigger(...args),
   methods,
   reclaimCheckpointDeletions: createCheckpointDeletionReclaimer((userId, tenantId) =>
     GenerationJobManager.getAccountCleanupJobIdsForUser(userId, tenantId),
