@@ -450,6 +450,13 @@ const getSettledAs = (result: ChatAbortResult): ChatStreamAbortResult['terminalS
     : undefined;
 };
 
+/** The longest delay `setTimeout` honors; a longer one fires at once. */
+const MAX_TIMER_DELAY = 2_147_483_647;
+
+/** A pause past its expiry, whose resume the server refuses. */
+const isExpired = (action: Agents.PendingAction): boolean =>
+  action.expiresAt != null && action.expiresAt <= Date.now();
+
 /**
  * What a stop hands back to the host. Steers come back only from a stop that ended the run: one
  * that settled first leaves them to its own terminal frame, and an unsaved one has none to trust.
@@ -467,6 +474,14 @@ const getStopResult = (result: ChatAbortResult, conversationId?: string): ChatSt
     ...(ended && result.pendingSteers && { pendingSteers: result.pendingSteers }),
   };
 };
+
+type PauseOrder = Pick<Agents.PendingAction, 'createdAt'>;
+
+/**
+ * Orders two pauses of one generation by when the server created them. Action ids are random, so
+ * two created in the same millisecond tie, and the one this chat received last stands.
+ */
+const comparePauses = (a: PauseOrder, b: PauseOrder): number => a.createdAt - b.createdAt;
 
 /** The ids a frame names for the conversation and the response its generation produces. */
 type FrameIdentity = { conversationId?: string | null; responseMessageId?: string };
@@ -796,8 +811,9 @@ export class Chat {
   private readonly listeners = new Set<() => void>();
   private releaseState?: () => void;
   private active?: ActiveRequest;
-  /** The pause the running generation waits on, for a tool decision or an answer. */
-  private action?: Agents.PendingAction;
+  private held?: Agents.PendingAction;
+  /** Fires at the held pause's expiry, so no later frame is needed to retire it. */
+  private expiry?: ReturnType<typeof setTimeout>;
   private generationCreatedAt?: number;
   /** The pause whose resume request is in flight, so a second submit cannot send it again. */
   private resuming?: string;
@@ -816,8 +832,12 @@ export class Chat {
   private readonly decisions = new Map<string, Agents.ToolApprovalResolution>();
   /** Pauses already resumed, or refused as over, whose replay or later status read is stale. */
   private readonly resumed = new Set<string>();
-  /** The newest generation a status read named, below which a read is stale. */
+  /** The newest generation a status read named, expired or not, below which a read is stale. */
   private newestRead?: number;
+  /** A pause a snapshot found gone, whose decisions stand if the stream reports it again. */
+  private releasedPause?: string;
+  /** The newest pause this chat saw within its generation, which an older one of that generation trails. */
+  private newestPause?: { generationCreatedAt: number } & PauseOrder;
   /** The newest start handed to the transport, whose conversation a late answer must not replace. */
   private latestStart?: ActiveRequest;
   /**
@@ -840,6 +860,45 @@ export class Chat {
   /** The conversation this chat runs under: its id, or the one the server created under `new`. */
   get conversationId(): string {
     return this.conversation;
+  }
+
+  /** The pause the running generation waits on; holding one arms its retirement at expiry. */
+  private get action(): Agents.PendingAction | undefined {
+    return this.held;
+  }
+
+  private set action(action: Agents.PendingAction | undefined) {
+    if (action === this.held) {
+      return;
+    }
+    clearTimeout(this.expiry);
+    this.expiry = undefined;
+    this.held = action;
+    if (action?.expiresAt != null && !this.disposed) {
+      this.armExpiry(action);
+    }
+  }
+
+  /** Retires `action` once its expiry passes, unless an answer to it is in flight and decides. */
+  private armExpiry(action: Agents.PendingAction): void {
+    const remaining = (action.expiresAt ?? 0) - Date.now();
+    this.expiry = setTimeout(
+      () => {
+        this.expiry = undefined;
+        if (this.held !== action || this.disposed) {
+          return;
+        }
+        if (!isExpired(action)) {
+          /** A deadline past the longest delay a timer takes is reached in steps. */
+          this.armExpiry(action);
+          return;
+        }
+        if (this.resuming !== action.actionId) {
+          this.clearAction();
+        }
+      },
+      Math.min(Math.max(remaining, 0), MAX_TIMER_DELAY),
+    );
   }
 
   get status(): ChatStatus {
@@ -1615,6 +1674,7 @@ export class Chat {
 
   private clearAction(): void {
     this.action = undefined;
+    this.releasedPause = undefined;
     this.decisions.clear();
     this.notify();
   }
@@ -1630,7 +1690,8 @@ export class Chat {
 
   /**
    * Restores a pause the server reported outside a stream, such as the status check of a reload,
-   * so its tool decisions and answers can be submitted. Refused while a request is in flight.
+   * so its tool decisions and answers can be submitted. Refused while a request is in flight; an
+   * expired pause is not restored.
    */
   restorePendingAction(action: Agents.PendingAction, generationCreatedAt: number): void {
     if (this.disposed) {
@@ -1643,10 +1704,11 @@ export class Chat {
       /** A status read before the answer landed reports a pause this chat already resumed. */
       return;
     }
-    if (this.isStaleRead(generationCreatedAt)) {
+    if (this.isStaleRead(generationCreatedAt) || this.isOlderPause(action, generationCreatedAt)) {
       return;
     }
     this.newestRead = generationCreatedAt;
+    this.seePause(action, generationCreatedAt);
     const dropped = this.detached?.target.generationCreatedAt;
     if (this.detached && (dropped == null || generationCreatedAt > dropped)) {
       /**
@@ -1660,9 +1722,25 @@ export class Chat {
      * an older one, so only an answer about the start itself clears it.
      */
     this.learnConversation(action.conversationId);
-    if (this.action?.actionId !== action.actionId) {
+    if (isExpired(action)) {
+      /**
+       * An expired pause is stale: the server will refuse its resume. It also supersedes a pause
+       * restored for an older generation, which no longer runs.
+       */
+      const superseded =
+        this.action != null &&
+        (generationCreatedAt !== this.generationCreatedAt ||
+          this.isOlderPause(this.action, generationCreatedAt));
+      if (this.action?.actionId === action.actionId || superseded) {
+        this.clearAction();
+      }
+      return;
+    }
+    if (this.action?.actionId !== action.actionId && this.releasedPause !== action.actionId) {
+      /** A pause a snapshot released keeps its decisions when a read restores it, as a frame does. */
       this.decisions.clear();
     }
+    this.releasedPause = undefined;
     this.action = action;
     this.generationCreatedAt = generationCreatedAt;
     if (this.restored?.createdAt !== generationCreatedAt) {
@@ -1777,6 +1855,8 @@ export class Chat {
       return;
     }
     this.disposed = true;
+    clearTimeout(this.expiry);
+    this.expiry = undefined;
     this.lifetime.abort(new Error('The chat was disposed'));
     const active = this.active;
     this.active = undefined;
@@ -1817,10 +1897,22 @@ export class Chat {
     if (this.active) {
       throw new Error('A turn is already in flight for this chat');
     }
+    if (this.action && isExpired(this.action) && this.resuming !== this.action.actionId) {
+      /** An expired pause whose answer failed blocks nothing: the server refuses its resume. */
+      this.clearAction();
+      /** A subscriber told the pause is gone may have disposed the chat or started its own turn. */
+      if (this.disposed) {
+        throw new Error('The chat was disposed');
+      }
+      if (this.active) {
+        throw new Error('A turn is already in flight for this chat');
+      }
+    }
     if (this.action) {
       throw new Error('A paused generation is waiting for a decision; answer or stop it first');
     }
     const active = createActiveRequest({ responseless: true });
+
     this.active = active;
     try {
       this.init.state.error = undefined;
@@ -2109,7 +2201,12 @@ export class Chat {
 
   /** Applies one event; returns the turn's outcome when the event ends it. */
   private apply(event: ChatEvent, active: ActiveRequest): Outcome | undefined {
-    /** A pause this chat already resumed is stale, so no card is drawn for it. */
+    /** A pause that expired or that this chat already resumed is stale, so no card is drawn for it. */
+    /** A replay of a pause older than one already seen in this generation is stale too. */
+    const older =
+      event.type === 'pending_action' &&
+      this.generationCreatedAt != null &&
+      this.isOlderPause(event.data, this.generationCreatedAt);
     const stale = event.type === 'pending_action' && this.isStalePause(event.data);
     const folded = stale ? undefined : this.withoutStalePause(event);
     const disconnect =
@@ -2119,7 +2216,7 @@ export class Chat {
      * The pause is reconciled before the host reducer folds the event in, so a subscriber its
      * writes notify never answers a pause the same event ended or replaced.
      */
-    this.reconcilePause(event, stale, disconnect);
+    this.reconcilePause(event, older, disconnect);
     if (folded && !this.disposed) {
       const applyEvent = this.init.applyEvent ?? defaultApplyEvent;
       applyEvent(folded, {
@@ -2161,12 +2258,26 @@ export class Chat {
   }
 
   /** What one event changes in the pause the chat holds and the decisions made for it. */
-  private reconcilePause(event: ChatEvent, stale: boolean, disconnect: boolean): void {
-    if (event.type === 'pending_action' && !stale) {
-      if (this.action?.actionId !== event.data.actionId) {
+  private reconcilePause(event: ChatEvent, older: boolean, disconnect: boolean): void {
+    if (event.type === 'sync' && event.data.resumeState) {
+      this.reconcileSnapshotPause(event.data.resumeState.pendingAction);
+    } else if (event.type === 'pending_action' && isExpired(event.data)) {
+      this.retireExpiredPause(event.data);
+    } else if (
+      event.type === 'pending_action' &&
+      !this.resumed.has(event.data.actionId) &&
+      !older
+    ) {
+      /** A pause this chat already resumed is stale when a reattached stream replays it. */
+      if (
+        this.action?.actionId !== event.data.actionId &&
+        this.releasedPause !== event.data.actionId
+      ) {
         /** A reconnect replays the same pause; decisions already made for it still stand. */
         this.decisions.clear();
       }
+      this.releasedPause = undefined;
+      this.seePause(event.data, this.generationCreatedAt);
       this.action = event.data;
     } else if (event.type === 'final') {
       this.action = undefined;
@@ -2338,8 +2449,60 @@ export class Chat {
   }
 
   /**
-   * The event the host reducer folds in: a sync snapshot drops a pause this chat already resumed,
-   * as a standalone `pending_action` frame of it would be skipped, so no card is drawn for it.
+   * Reconciles the pause with a sync snapshot, which carries the live one or none. The server sends
+   * a live pause either here or as a `pending_action` frame right after, so a snapshot without one
+   * releases the held pause, keeping its decisions in case that frame reports it again.
+   */
+  private reconcileSnapshotPause(snapshot: Agents.PendingAction | undefined): void {
+    const generation = this.generationCreatedAt;
+    if (!snapshot) {
+      if (this.action) {
+        this.releasedPause = this.action.actionId;
+        this.action = undefined;
+        this.notify();
+      }
+      return;
+    }
+    if (isExpired(snapshot)) {
+      this.retireExpiredPause(snapshot);
+      return;
+    }
+    const stale =
+      this.resumed.has(snapshot.actionId) ||
+      (generation != null && this.isOlderPause(snapshot, generation));
+    if (stale) {
+      if (this.action?.actionId === snapshot.actionId) {
+        this.clearAction();
+      }
+      return;
+    }
+    if (this.action?.actionId !== snapshot.actionId && this.releasedPause !== snapshot.actionId) {
+      this.decisions.clear();
+    }
+    this.releasedPause = undefined;
+    this.seePause(snapshot, generation);
+    this.action = snapshot;
+    this.notify();
+  }
+
+  /**
+   * An expired pause a reconnect replays or a snapshot carries is stale, as one a status read
+   * restores is, and it still supersedes an older pause of its generation that the chat holds.
+   */
+  private retireExpiredPause(expired: Agents.PendingAction): void {
+    const generation = this.generationCreatedAt;
+    this.seePause(expired, generation);
+    const held = this.action;
+    const superseded = held != null && generation != null && this.isOlderPause(held, generation);
+    if (held?.actionId === expired.actionId || superseded) {
+      this.clearAction();
+    }
+  }
+
+  /**
+   * The event the host reducer folds in: a sync snapshot drops a pause that is stale (expired,
+   * already resumed, or older than one seen), as a standalone `pending_action` frame of it would be
+   * skipped, so no card is drawn for a pause the chat does not hold.
    */
   private withoutStalePause(event: ChatEvent): ChatEvent {
     const snapshot = event.type === 'sync' ? event.data.resumeState?.pendingAction : undefined;
@@ -2353,9 +2516,32 @@ export class Chat {
     return { ...event, data: { ...event.data, resumeState } } as ChatEvent;
   }
 
-  /** Whether `action` was already resumed by this chat, so a replay of it is stale. */
+  /** Whether `action` expired, was already resumed, or trails a pause seen in its generation. */
   private isStalePause(action: Agents.PendingAction): boolean {
-    return this.resumed.has(action.actionId);
+    const generation = this.generationCreatedAt;
+    return (
+      isExpired(action) ||
+      this.resumed.has(action.actionId) ||
+      (generation != null && this.isOlderPause(action, generation))
+    );
+  }
+
+  /** Whether `action` came before a pause this chat already saw in the same generation. */
+  private isOlderPause(action: Agents.PendingAction, generationCreatedAt: number): boolean {
+    const newest = this.newestPause;
+    return (
+      newest != null &&
+      newest.generationCreatedAt === generationCreatedAt &&
+      comparePauses(action, newest) < 0
+    );
+  }
+
+  /** Records a pause of `generationCreatedAt` as the newest seen when no later one was. */
+  private seePause(action: Agents.PendingAction, generationCreatedAt: number | undefined): void {
+    if (generationCreatedAt == null || this.isOlderPause(action, generationCreatedAt)) {
+      return;
+    }
+    this.newestPause = { generationCreatedAt, createdAt: action.createdAt };
   }
 
   /** Adopts the conversation the server created for a chat started under `new`; a real id stays. */
@@ -2576,6 +2762,14 @@ export class Chat {
     } finally {
       if (this.resuming === action.actionId) {
         this.resuming = undefined;
+        const held = this.action;
+        if (held?.actionId === action.actionId && isExpired(held)) {
+          /**
+           * Its expiry passed while the answer was in flight, which then left it unresolved. A
+           * status read may have restored a copy of it meanwhile, so the held copy is the one read.
+           */
+          this.clearAction();
+        }
       }
     }
   }

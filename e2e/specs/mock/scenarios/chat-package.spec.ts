@@ -338,6 +338,106 @@ test.describe('the built @librechat/chat package', () => {
     });
   });
 
+  test('a host sees a start it stopped before the answer as possibly still running @scenario:a-host-sees-a-stopped-start-as-possibly-still-running', () => {
+    test.setTimeout(120_000);
+    const dist = resolve(repoRoot, 'packages/chat/dist');
+    expect(existsSync(dist), 'packages/chat/dist is missing: run npm run build').toBe(true);
+
+    /** The start reaches the transport and never answers; the stop cannot name the generation,
+     *  so the turn finishes as a disconnect and every later stop stays the host's to make. */
+    const probe = `
+      const { Chat } = require('@librechat/chat');
+      let messages = [];
+      const statuses = [];
+      const finishes = [];
+      const chat = new Chat({
+        id: 'convo-1',
+        state: {
+          error: undefined,
+          connection: 'idle',
+          get status() { return statuses[statuses.length - 1] || 'ready'; },
+          set status(value) { statuses.push(value); },
+          get messages() { return messages; },
+          replaceMessages(next) { messages = next; },
+        },
+        transport: {
+          sendMessages: () => new Promise(() => {}),
+          reconnectToStream: async () => null,
+          abort: async () => { throw new Error('no stop should be sent'); },
+        },
+        prepareRequest: () => ({
+          payload: { endpoint: 'agents' },
+          messages: [{ messageId: 'r1', text: '' }],
+        }),
+        onFinish: ({ isAbort, isDisconnect }) => finishes.push({ isAbort, isDisconnect }),
+      });
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      setTimeout(async () => {
+        const first = await chat.stop();
+        await sent;
+        const second = await chat.stop();
+        process.stdout.write(JSON.stringify({ first, second, finishes, status: chat.status }));
+      }, 0);
+    `;
+    const loaded = run(process.execPath, ['-e', probe], { cwd: resolve(repoRoot, 'client') });
+    expect(loaded.status, loaded.output).toBe(0);
+    expect(JSON.parse(loaded.stdout)).toEqual({
+      first: { status: 'unaddressable' },
+      second: { status: 'unaddressable' },
+      finishes: [{ isAbort: false, isDisconnect: true }],
+      status: 'error',
+    });
+  });
+
+  test('a host sees a pause retired when its expiry passes with no later frame @scenario:a-host-sees-an-expired-pause-retired-without-a-frame', () => {
+    test.setTimeout(120_000);
+    const dist = resolve(repoRoot, 'packages/chat/dist');
+    expect(existsSync(dist), 'packages/chat/dist is missing: run npm run build').toBe(true);
+
+    /** A reload restores a pause that expires shortly; nothing else arrives before it does. */
+    const probe = `
+      const { Chat } = require('@librechat/chat');
+      let messages = [];
+      const sends = [];
+      const chat = new Chat({
+        id: 'convo-1',
+        state: { error: undefined, connection: 'idle', status: 'ready',
+          get messages() { return messages; },
+          replaceMessages(next) { messages = next; } },
+        transport: {
+          sendMessages: (request) => { sends.push(request.trigger); return new Promise(() => {}); },
+          reconnectToStream: async () => null,
+          abort: async () => ({ success: true }),
+        },
+        prepareRequest: () => ({ payload: { endpoint: 'agents' } }),
+      });
+      let notified = 0;
+      chat.subscribe(() => { notified += 1; });
+      chat.restorePendingAction({
+        actionId: 'action-1', streamId: 'convo-1', conversationId: 'convo-1', createdAt: 1,
+        expiresAt: Date.now() + 50,
+        payload: { type: 'ask_user_question', question: { question: 'Which?' }, tool_call_id: 'ask-1' },
+      }, 500);
+      const held = chat.pendingAction != null;
+      const before = notified;
+      setTimeout(async () => {
+        const retired = chat.pendingAction === undefined && notified > before;
+        chat.sendMessage({ parts: [{ type: 'text', text: 'Next' }] });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        process.stdout.write(JSON.stringify({ held, retired, sends }));
+        chat.dispose();
+        process.exit(0);
+      }, 150);
+    `;
+    const loaded = run(process.execPath, ['-e', probe], { cwd: resolve(repoRoot, 'client') });
+    expect(loaded.status, loaded.output).toBe(0);
+    expect(JSON.parse(loaded.stdout)).toEqual({
+      held: true,
+      retired: true,
+      sends: ['submit-message'],
+    });
+  });
+
   test('a host answers a pause on a stream that names no generation @scenario:a-host-answers-a-pause-on-a-stream-without-a-generation', () => {
     test.setTimeout(120_000);
     const dist = resolve(repoRoot, 'packages/chat/dist');
