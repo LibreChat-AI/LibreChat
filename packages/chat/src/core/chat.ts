@@ -843,7 +843,7 @@ export class Chat {
         (opened) => opened?.close(),
       );
       /** The server answered for the conversation, so a lost start in it is no longer the caller's. */
-      this.releaseLostStart();
+      const released = this.releaseLostStart();
       if (!stream && generation.stopAnswered) {
         /** A stop still in flight decides how an empty reconnect ended. */
         await generation.stopAnswered;
@@ -862,17 +862,26 @@ export class Chat {
       const named =
         options.generationCreatedAt != null &&
         !this.endedGenerations.has(options.generationCreatedAt);
-      if (!stream && (named || dropped != null)) {
+      /** A lost start the answer released may have finished on the server, which the host reloads. */
+      if (!stream && (named || dropped != null || released)) {
         this.settle({ kind: 'complete', settled: { conversationId } }, active);
         return;
       }
       if (!stream) {
-        /** Nothing is running and nothing said it was; published as one change. */
-        if (this.status === 'submitted' || this.status === 'streaming') {
-          this.init.state.status = 'ready';
-        }
-        this.init.state.connection = 'idle';
+        /**
+         * Nothing is running and nothing said it was. The chat is let go first and the state
+         * published as one change, so a subscriber a store tells of it can start the next turn.
+         */
         this.release(active);
+        this.writing = true;
+        try {
+          if (this.status === 'submitted' || this.status === 'streaming') {
+            this.init.state.status = 'ready';
+          }
+          this.init.state.connection = 'idle';
+        } finally {
+          this.writing = false;
+        }
         this.notify();
         return;
       }
@@ -1144,11 +1153,14 @@ export class Chat {
    * Clears a lost start the server's answer for its conversation covers: one generation runs per
    * conversation, so the answer owns or superseded it. A start sent under `new` created a
    * conversation of its own, which no other answer covers, so it stays the caller's to stop.
+   * Returns whether it released one.
    */
-  private releaseLostStart(): void {
-    if (this.lostStart?.sentUnder !== Constants.NEW_CONVO) {
-      this.lostStart = undefined;
+  private releaseLostStart(): boolean {
+    if (!this.lostStart || this.lostStart.sentUnder === Constants.NEW_CONVO) {
+      return false;
     }
+    this.lostStart = undefined;
+    return true;
   }
 
   /**
@@ -1252,8 +1264,11 @@ export class Chat {
       /** A reattachment took the generation over while the stop was in flight; it ends with it. */
       return this.endStopped(active, generation, result);
     }
-    /** The dropped generation owns the chat only while no newer request does, such as a retry. */
-    const owns = () => !this.disposed && this.detached === detached && !this.active;
+    /**
+     * The dropped generation owns the chat only while no newer request does, such as a retry. A
+     * reattachment to it that failed drops it again under a new record of the same generation.
+     */
+    const owns = () => !this.disposed && this.detached?.generation === generation && !this.active;
     if (!owns()) {
       return getStopResult(result, generation.stoppedConversationId);
     }
@@ -1264,11 +1279,12 @@ export class Chat {
         return getStopResult(result, generation.stoppedConversationId);
       }
     }
+    const failed = this.detached?.error ?? detached.error;
     this.detached = undefined;
     if (this.publishUnframedStop(result, generation)) {
       return getStopResult(result, generation.stoppedConversationId);
     }
-    if (this.error === detached.error) {
+    if (this.error === failed) {
       this.init.state.error = undefined;
       this.init.state.status = 'ready';
     }

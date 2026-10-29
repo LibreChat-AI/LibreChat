@@ -2625,3 +2625,115 @@ describe('Chat dropped generations a retry, a stop or a status read settles', ()
     expect(h.transport.abort).not.toHaveBeenCalled();
   });
 });
+
+describe('Chat reconnects that settle a dropped generation or a lost start', () => {
+  it('a stop of a dropped generation still ends it when a reattachment to it fails before the answer', async () => {
+    const h = createHarness();
+    await states.detached(h);
+    let answerStop: (() => void) | undefined;
+    h.transport.abort.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answerStop = () =>
+            resolve({ success: true, aborted: 'convo-1', persistenceFailed: true });
+        }),
+    );
+    const stopping = h.chat.stop();
+    await flush();
+    h.transport.reconnectToStream.mockRejectedValueOnce(networkError());
+    await h.chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 100 });
+    await flush();
+    answerStop?.();
+    await stopping;
+    await flush();
+
+    expect(h.finishes[h.finishes.length - 1]).toMatchObject({
+      reconcileReason: 'abort_persistence_failed',
+    });
+    expect(h.chat.status).not.toBe('error');
+    h.transport.abort.mockClear();
+    expect((await h.chat.stop()).status).toBe('idle');
+    expect(h.transport.abort).not.toHaveBeenCalled();
+  });
+
+  it('an empty reconnect lets go of the chat before a state that reports its writes is told', async () => {
+    const listeners = new Set<() => void>();
+    const tell = () => listeners.forEach((listener) => listener());
+    let messages: TMessage[] = [];
+    let status: ChatStatus = 'ready';
+    let error: Error | undefined;
+    let connection: ChatConnection = 'idle';
+    const state: ChatState = {
+      get status() {
+        return status;
+      },
+      set status(next) {
+        status = next;
+        tell();
+      },
+      get error() {
+        return error;
+      },
+      set error(next) {
+        error = next;
+        tell();
+      },
+      get connection() {
+        return connection;
+      },
+      set connection(next) {
+        connection = next;
+        tell();
+      },
+      get messages() {
+        return messages;
+      },
+      replaceMessages(next) {
+        messages = next;
+        tell();
+      },
+      subscribe(listener) {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    };
+    const h = createHarness({ state });
+    h.transport.reconnectToStream.mockResolvedValueOnce(null);
+    attach(h, createStream({ streamId: 'convo-1', generationCreatedAt: 200 }));
+    let reconnecting = false;
+    let sent = false;
+    let refused: unknown;
+    const unsubscribe = h.chat.subscribe(() => {
+      reconnecting ||= h.chat.connection === 'reconnecting';
+      if (reconnecting && h.chat.connection === 'idle' && !sent) {
+        sent = true;
+        h.chat.sendMessage({ parts: [{ type: 'text', text: 'Next' }] }).catch((error: unknown) => {
+          refused = error;
+        });
+      }
+    });
+    await h.chat.resumeStream();
+    await flush();
+    unsubscribe();
+
+    expect(sent).toBe(true);
+    expect(refused).toBeUndefined();
+    expect(h.transport.sendMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('an unnamed reconnect that releases a lost start settles it for the host to reconcile', async () => {
+    const h = createHarness();
+    h.transport.sendMessages.mockRejectedValueOnce(networkError());
+    await h.chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+    expect(h.chat.status).toBe('error');
+    const finishes = h.finishes.length;
+    h.transport.reconnectToStream.mockResolvedValueOnce(null);
+    await h.chat.resumeStream({ streamId: 'convo-1' });
+    await flush();
+
+    expect(h.finishes).toHaveLength(finishes + 1);
+    expect(h.finishes[h.finishes.length - 1]).toMatchObject({ isSettled: true });
+    expect(h.chat.status).toBe('ready');
+    expect((await h.chat.stop()).status).toBe('idle');
+  });
+});
