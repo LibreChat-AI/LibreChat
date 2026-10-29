@@ -22,6 +22,10 @@ export type {
 } from './methods/response';
 export {
   createMethods,
+  createChannelRunStorage,
+  createChannelSummaryStorage,
+  CHANNEL_SUMMARY_MAX_PRIOR_ROWS,
+  ChannelRunConflict,
   createSkillDeletionPersistenceAdapter,
   AGENT_OWNER_CONTACT_RESOLVED_FIELD,
   AgentSortCursorError,
