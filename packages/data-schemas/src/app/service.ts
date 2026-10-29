@@ -232,6 +232,7 @@ export const AppService = async (params?: {
     registration,
     emailChange,
     passkeys: config.passkeys,
+    sessionToken: config.sessionToken,
     transactions,
     filteredTools,
     includedTools,

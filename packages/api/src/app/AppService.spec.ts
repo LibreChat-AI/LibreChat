@@ -79,6 +79,12 @@ describe('AppService', () => {
     expect(result?.passkeys).toEqual({ perUserMax: 2 });
   });
 
+  it('preserves the YAML session JWT header in the effective configuration', async () => {
+    const sessionToken = { header: 'x-original-authorization' };
+    expect((await AppService({ config: { sessionToken } })).sessionToken).toEqual(sessionToken);
+    expect((await AppService({ config: {} })).sessionToken).toBeUndefined();
+  });
+
   const mockSystemTools: Record<string, FunctionTool> = {
     ExampleTool: {
       type: 'function',
