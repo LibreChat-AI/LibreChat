@@ -3,7 +3,7 @@ import { ContentTypes } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react';
 import type { TMessageContentParts, Agents } from 'librechat-data-provider';
-import type { ChildActivity } from './adapters';
+import type { ChildActivity } from '@librechat/chat/react';
 import SubagentActivity, { SubagentActivityScrollSurface } from './SubagentActivity';
 import { TaskContentScopeContext } from '~/data-provider/Subagents/content';
 import { ChatSurfaceHarness } from 'test/harness';

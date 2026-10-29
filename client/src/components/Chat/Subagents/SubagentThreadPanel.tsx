@@ -21,6 +21,15 @@ import {
   subagentProgressKey,
   useSubagentProgress,
   useSubagentActivityStream,
+  adaptDurableThreadActivity,
+  adaptDurableThreadConversation,
+  adaptLivePersistedActivity,
+  mergeChildConversationTurns,
+  retainBoundedMovingWindowTurns,
+  eventSubagentSelection,
+  resolveSubagentAgentId,
+  isLiveSubagentStatus,
+  getSubagentPrompt,
 } from '@librechat/chat/react';
 import type {
   ParentSubagentTaskSummary,
@@ -42,13 +51,6 @@ import {
   useSubagentThreadQuery,
 } from '~/data-provider';
 import {
-  adaptDurableThreadActivity,
-  adaptDurableThreadConversation,
-  adaptLivePersistedActivity,
-  mergeChildConversationTurns,
-  retainBoundedMovingWindowTurns,
-} from './adapters';
-import {
   agentAuthor,
   resolveSubagentAuthor,
   isSelfSpawn as isSelfSpawnType,
@@ -65,12 +67,8 @@ import { useConfiguredFooter } from '~/components/Chat/Footer';
 import { useParentSubagents } from './ParentSubagentsProvider';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import SubagentConversation from './SubagentConversation';
-import { eventSubagentSelection } from './eventSelection';
-import { resolveSubagentAgentId } from './identity';
 import { useAgentsMapContext } from '~/Providers';
-import { isLiveSubagentStatus } from './status';
 import { cn, renderAgentAvatar } from '~/utils';
-import { getSubagentPrompt } from './prompt';
 import { useChatSurface } from './surface';
 
 const EVENT_TASK_PAGE_SIZE = 3;

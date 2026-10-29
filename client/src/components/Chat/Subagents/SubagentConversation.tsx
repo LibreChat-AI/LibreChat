@@ -9,6 +9,12 @@ import {
   CollapsibleTrigger,
 } from '@librechat/client';
 import {
+  isAbnormalTerminalStatus,
+  isLiveSubagentStatus,
+  hasTerminalOutcome,
+  standardContent,
+} from '@librechat/chat/react';
+import {
   SystemEventHeader,
   SystemEventIcon,
   systemEventHeaderClasses,
@@ -16,12 +22,11 @@ import {
   ElapsedTimer,
   MessageRow,
 } from '@librechat/chat/components';
+import type { ChildConversationTurn, ToolContentQuery } from '@librechat/chat/react';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
-import type { ToolContentQuery } from '@librechat/chat/react';
 import type { ReactNode } from 'react';
 import type { TaskContentScope } from '~/data-provider/Subagents/content';
 import type { MessagePartsHost } from '~/hooks/Chat/contract';
-import type { ChildConversationTurn } from './adapters';
 import type { TranslationKeys } from '~/hooks';
 import type { TurnAuthor } from './author';
 import {
@@ -36,12 +41,9 @@ import { useSearchResultsByTurn } from '~/hooks/Messages/useSearchResultsByTurn'
 import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source';
 import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
 import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
-import { isAbnormalTerminalStatus, isLiveSubagentStatus } from './status';
 import { AuthorContext } from '~/Providers/AuthorContext';
 import { ChatContext } from '~/Providers/ChatContext';
 import { isEmptyContentPart } from '~/utils/messages';
-import { hasTerminalOutcome } from './outcome';
-import { standardContent } from './adapters';
 import { useChatSurface } from './surface';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';

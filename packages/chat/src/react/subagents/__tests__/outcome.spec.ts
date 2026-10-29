@@ -2,7 +2,7 @@ import { File } from 'node:buffer';
 import { ContentTypes } from 'librechat-data-provider';
 import { ReadableStream, TransformStream, WritableStream } from 'node:stream/web';
 import type { SubagentThreadMessage, TMessageContentParts } from 'librechat-data-provider';
-import { hasTerminalOutcome } from './outcome';
+import { hasTerminalOutcome } from '../outcome';
 
 const outcome = (text: string, textTruncated = false): SubagentThreadMessage => ({
   messageId: 'task:assistant',
