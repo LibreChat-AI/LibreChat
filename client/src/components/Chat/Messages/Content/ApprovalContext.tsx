@@ -23,6 +23,18 @@ import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { resolveAskUserQuestionPart } from '~/utils/approval';
 import { ChatContext } from '~/Providers/ChatContext';
 
+export interface ResumeSubmitTransport {
+  submitToolApproval: (actionId: string) => void;
+  submitAskAnswer: (
+    actionId: string,
+    resolution: string | Record<string, string>,
+    opts?: { onSuccess?: () => void },
+  ) => void;
+}
+
+/** Host-owned submission for approval cards rendered outside an ordinary chat. */
+export const ResumeSubmitContext = createContext<ResumeSubmitTransport | null>(null);
+
 /** Shared read/write for the ask-answer submit status. */
 export function useAskSubmitStatus(): {
   getAskStatus: (actionId: string) => AskAnswerStatus;
@@ -155,7 +167,7 @@ export default function ApprovalProvider({
   pendingAction,
 }: {
   children: React.ReactNode;
-  pendingAction?: Agents.PendingAction | null;
+  pendingAction?: Pick<Agents.PendingAction, 'actionId' | 'payload'> | null;
 }) {
   /** Content slices keep their historical local provider so exported/read-only
    *  renderers remain self-contained. Inside a live chat, reuse the provider
@@ -172,7 +184,7 @@ function ApprovalStateProvider({
   pendingAction,
 }: {
   children: React.ReactNode;
-  pendingAction?: Agents.PendingAction | null;
+  pendingAction?: Pick<Agents.PendingAction, 'actionId' | 'payload'> | null;
 }) {
   /** actionId → (tool_call_id → resolution). Mutable refs so reads are
    *  synchronous for `isReady`/submit; `version` is threaded into the context
@@ -425,6 +437,7 @@ function ApprovalStateProvider({
  * than crashing.
  */
 export function useResumeSubmit() {
+  const transport = useContext(ResumeSubmitContext);
   const jotaiStore = useStore();
   const chatContext = useContext(ChatContext);
   const conversation = chatContext?.conversation;
@@ -578,5 +591,5 @@ export function useResumeSubmit() {
     [askMutation, buildResumeFields, setAskStatus, chatContext],
   );
 
-  return { submitToolApproval, submitAskAnswer };
+  return transport ?? { submitToolApproval, submitAskAnswer };
 }
