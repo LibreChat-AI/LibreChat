@@ -252,6 +252,8 @@ type OptimisticWrite = {
 type AnswerClaim = {
   action: Agents.PendingAction;
   generationCreatedAt?: number;
+  /** The record of the paused generation, which identifies it when no timestamp does. */
+  generation?: Generation;
   ended: boolean;
 };
 
@@ -1268,12 +1270,7 @@ export class Chat {
     const answer = this.abortOnServer(target).then((result) => {
       generation.stopped = true;
       /** A confirmed stop ends its generation, and with it an answer in flight for that generation's pause. */
-      const answered = this.answering?.generationCreatedAt;
-      if (
-        answered == null ||
-        target.generationCreatedAt == null ||
-        answered === target.generationCreatedAt
-      ) {
+      if (this.isAnsweredGeneration(generation, target.generationCreatedAt)) {
         this.endAnswer();
       }
       if (target.generationCreatedAt != null) {
@@ -1710,11 +1707,36 @@ export class Chat {
     return getStopResult(result, generation.stoppedConversationId);
   }
 
+  /** The record of the generation the held pause belongs to, as the request, drop or read keeps it. */
+  private pausedGeneration(): Generation | undefined {
+    return this.active?.generation ?? this.detached?.generation ?? this.restored?.generation;
+  }
+
   /** The conversation the paused generation's record names, which a frame may have assigned. */
   private pausedConversationId(): string | undefined {
-    const generation =
-      this.active?.generation ?? this.detached?.generation ?? this.restored?.generation;
-    return generation?.conversationId;
+    return this.pausedGeneration()?.conversationId;
+  }
+
+  /**
+   * Whether a stopped generation is the one the answer in flight belongs to: the same record, or
+   * the same timestamp when both are known. An unknown timestamp alone matches nothing.
+   */
+  private isAnsweredGeneration(
+    generation: Generation,
+    generationCreatedAt: number | undefined,
+  ): boolean {
+    const answering = this.answering;
+    if (!answering) {
+      return false;
+    }
+    if (answering.generation === generation) {
+      return true;
+    }
+    return (
+      generationCreatedAt != null &&
+      answering.generationCreatedAt != null &&
+      generationCreatedAt === answering.generationCreatedAt
+    );
   }
 
   /** The endpoint a generation this chat did not start runs on, as the host selects it. */
@@ -1756,8 +1778,11 @@ export class Chat {
       generationCreatedAt != null &&
       answering.generationCreatedAt != null &&
       generationCreatedAt > answering.generationCreatedAt;
+    /** An undated answer cannot tell its generation apart, so the pauses' own order decides. */
     const sameGeneration =
-      generationCreatedAt == null || generationCreatedAt === answering.generationCreatedAt;
+      generationCreatedAt == null ||
+      answering.generationCreatedAt == null ||
+      generationCreatedAt === answering.generationCreatedAt;
     if (later || (sameGeneration && this.isSupersededBy(answering.action, next))) {
       answering.ended = true;
     }
@@ -2782,7 +2807,12 @@ export class Chat {
       return;
     }
     this.resuming = action.actionId;
-    const claim: AnswerClaim = { action, generationCreatedAt, ended: false };
+    const claim: AnswerClaim = {
+      action,
+      generationCreatedAt,
+      generation: this.pausedGeneration(),
+      ended: false,
+    };
     this.answering = claim;
     /** Read once: the answer and the reattachment that follows it run on the same selection. */
     let selection: ReturnType<NonNullable<ChatInit['resumeSelection']>> | undefined;

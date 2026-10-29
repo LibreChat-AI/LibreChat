@@ -4826,4 +4826,87 @@ describe('Chat answers in flight and what ends their claim', () => {
     expect(h.transport.reconnectToStream).not.toHaveBeenCalled();
     expect(h.chat.pendingAction?.actionId).toBe('action-2');
   });
+
+  it('(5) a late stop answer for an undated earlier generation leaves the answer of a later one its claim', async () => {
+    const h = createHarness();
+    attach(h, createStream({ streamId: 'convo-1' }));
+    send(h);
+    await flush();
+    h.stream?.push(stepEvent);
+    await flush();
+    let answerStop: (() => void) | undefined;
+    h.transport.abort.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answerStop = () => resolve({ success: true, aborted: 'convo-1' });
+        }),
+    );
+    const stopping = h.chat.stop().catch(() => undefined);
+    await flush();
+    h.stream?.push(finalEvent());
+    await flush();
+    h.chat.restorePendingAction(askAction, 500);
+    let answer: (() => void) | undefined;
+    h.transport.resume.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answer = () =>
+            resolve({ streamId: 'convo-1', conversationId: 'convo-1', status: 'resuming' });
+        }),
+    );
+    const answering = h.chat.addToolOutput({ toolCallId: 'ask-1', output: 'A' });
+    await flush();
+    answerStop?.();
+    await stopping;
+    await flush();
+    h.transport.reconnectToStream.mockClear();
+    h.transport.reconnectToStream.mockImplementationOnce(() => new Promise(() => undefined));
+    answer?.();
+    await answering.catch(() => undefined);
+    await flush();
+
+    expect(h.transport.reconnectToStream).toHaveBeenCalledTimes(1);
+  });
+
+  it('(5) an answer to an undated pause ends when a dated replay brings a later pause that expired', async () => {
+    const h = createHarness();
+    const undated = createStream({ streamId: 'convo-1' });
+    attach(h, undated);
+    send(h);
+    await flush();
+    undated.push({ type: 'pending_action', data: askAction } as unknown as ChatEvent);
+    await flush();
+    let answer: (() => void) | undefined;
+    h.transport.resume.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answer = () =>
+            resolve({ streamId: 'convo-1', conversationId: 'convo-1', status: 'resuming' });
+        }),
+    );
+    const answering = h.chat.addToolOutput({ toolCallId: 'ask-1', output: 'A' });
+    await flush();
+    undated.push(dropEvent);
+    await flush();
+    const dated = createStream({ streamId: 'convo-1', generationCreatedAt: 700 });
+    h.transport.reconnectToStream.mockResolvedValueOnce(dated);
+    h.chat.resumeStream({ streamId: 'convo-1' }).then(
+      () => undefined,
+      () => undefined,
+    );
+    await flush();
+    dated.push({
+      type: 'pending_action',
+      data: { ...askAction, actionId: 'action-2', createdAt: 2, expiresAt: 1 },
+    } as unknown as ChatEvent);
+    await flush();
+    dated.push(dropEvent);
+    await flush();
+    h.transport.reconnectToStream.mockClear();
+    answer?.();
+    await answering.catch(() => undefined);
+    await flush();
+
+    expect(h.transport.reconnectToStream).not.toHaveBeenCalled();
+  });
 });
