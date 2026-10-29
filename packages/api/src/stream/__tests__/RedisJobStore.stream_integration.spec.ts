@@ -1,5 +1,6 @@
 import { StandardGraph } from '@librechat/agents';
 import { StepTypes, readScheduleMCPReceipts } from 'librechat-data-provider';
+import type { RedisClientType, RedisClusterType } from '@redis/client';
 import type { Agents } from 'librechat-data-provider';
 import type { Redis, Cluster } from 'ioredis';
 import type { SteerQueueItem, SteerReceipt } from '../interfaces/IJobStore';
@@ -27,6 +28,8 @@ jest.spyOn(console, 'log').mockImplementation();
 describe('RedisJobStore Integration Tests', () => {
   let originalEnv: NodeJS.ProcessEnv;
   let ioredisClient: Redis | Cluster | null = null;
+  let keyvClient: RedisClientType | RedisClusterType | null = null;
+  let keyvReady: Promise<void> | null = null;
   const testPrefix = 'Stream-Integration-Test';
 
   function buildPendingAction(streamId: string): Agents.PendingAction {
@@ -55,8 +58,10 @@ describe('RedisJobStore Integration Tests', () => {
     jest.resetModules();
 
     // Import Redis client
-    const { ioredisClient: client } = await import('../../cache/redisClients');
-    ioredisClient = client;
+    const clients = await import('../../cache/redisClients');
+    ioredisClient = clients.ioredisClient;
+    keyvClient = clients.keyvRedisClient;
+    keyvReady = clients.keyvRedisClientReady;
 
     if (!ioredisClient) {
       console.warn('Redis not available, skipping integration tests');
@@ -77,6 +82,8 @@ describe('RedisJobStore Integration Tests', () => {
   });
 
   afterAll(async () => {
+    await keyvReady;
+    if (keyvClient?.isOpen) await keyvClient.disconnect();
     if (ioredisClient) {
       try {
         // Use quit() to gracefully close - waits for pending commands
@@ -91,6 +98,208 @@ describe('RedisJobStore Integration Tests', () => {
       }
     }
     process.env = originalEnv;
+  });
+
+  test('provider guard atomically rejects stale pause and terminal writers after resume', async () => {
+    expect(ioredisClient).not.toBeNull();
+    const { RedisJobStore } = await import('../implementations/RedisJobStore');
+    const store = new RedisJobStore(ioredisClient!);
+    await store.initialize();
+    try {
+      expect(store.providerGuardedStatusTransitions).toBe(true);
+      const id = `provider-guard-${Date.now()}`;
+      const job = await store.createJob(id, 'guard-user', id, undefined, {
+        providerExecutionId: 'first-provider',
+      });
+      expect(
+        await store.transitionStatus(id, {
+          from: 'running',
+          to: 'requires_action',
+          expectCreatedAt: job.createdAt,
+          expectProviderExecutionId: 'wrong-provider',
+        }),
+      ).toBe(false);
+      expect(
+        await store.transitionStatus(id, {
+          from: 'running',
+          to: 'requires_action',
+          expectCreatedAt: job.createdAt,
+          expectProviderExecutionId: 'first-provider',
+          patch: { pendingActionId: 'review-a' },
+        }),
+      ).toBe(true);
+      expect(
+        await store.transitionStatus(id, {
+          from: 'requires_action',
+          to: 'running',
+          expectCreatedAt: job.createdAt,
+          expectActionId: 'review-a',
+          expectProviderExecutionId: 'first-provider',
+          clear: ['pendingActionId'],
+          patch: { providerExecutionId: 'second-provider' },
+        }),
+      ).toBe(true);
+      expect(
+        await store.transitionStatus(id, {
+          from: 'running',
+          to: 'requires_action',
+          expectCreatedAt: job.createdAt,
+          expectProviderExecutionId: 'first-provider',
+        }),
+      ).toBe(false);
+      expect(
+        await store.transitionStatusAndDrainSteers(id, {
+          from: 'running',
+          to: 'complete',
+          expectCreatedAt: job.createdAt,
+          expectProviderExecutionId: 'first-provider',
+        }),
+      ).toBeNull();
+      expect(await store.getJob(id)).toMatchObject({
+        status: 'running',
+        providerExecutionId: 'second-provider',
+      });
+      expect(
+        await store.transitionStatusAndDrainSteers(id, {
+          from: 'running',
+          to: 'complete',
+          expectCreatedAt: job.createdAt,
+          expectProviderExecutionId: 'second-provider',
+          patch: { completedAt: Date.now() },
+        }),
+      ).toEqual([]);
+      expect(await store.getJob(id)).toMatchObject({
+        status: 'complete',
+        providerExecutionId: 'second-provider',
+      });
+    } finally {
+      await store.destroy();
+    }
+  });
+
+  test('default job cleanup retains Responses provider proof through terminal publication', async () => {
+    expect(ioredisClient).not.toBeNull();
+    const { RedisJobStore } = await import('../implementations/RedisJobStore');
+    const { InMemoryEventTransport } = await import('../implementations/InMemoryEventTransport');
+    const { GenerationJobManagerClass } = await import('../GenerationJobManager');
+    const { executeAgentRun } = await import('../../agents/remote/host');
+    const { createAgentRunEnvelope } = await import('../../agents/envelope');
+    const manager = new GenerationJobManagerClass();
+    const store = new RedisJobStore(ioredisClient!);
+    manager.configure({ jobStore: store, eventTransport: new InMemoryEventTransport() });
+    manager.initialize();
+    const streamId = `responses-terminal-${Date.now()}`;
+    const errors: unknown[] = [];
+    let publications = 0;
+    try {
+      await executeAgentRun(
+        {
+          envelope: createAgentRunEnvelope({
+            protocol: 'responses',
+            requestId: streamId,
+            receivedAt: Date.now(),
+            principal: { id: 'user-1' },
+            payload: { model: 'agent-1', input: 'Run once', background: true, store: true },
+          }),
+          runId: streamId,
+          conversationId: streamId,
+          retainTerminalPersistence: true,
+          isPrincipalActive: async () => true,
+          execute: async () => 'Completed once',
+          afterSettle: async (execution) => {
+            const identity = await execution.confirmTerminalIdentity();
+            await store.updateJob(
+              streamId,
+              { terminalPersistenceStartedAt: Date.now() - 60_000 },
+              execution.createdAt,
+            );
+            expect(await manager.getJob(streamId)).toMatchObject({
+              status: 'complete',
+              createdAt: identity.generationCreatedAt,
+              metadata: {
+                providerExecutionId: identity.providerExecutionId,
+                providerDrained: true,
+                terminalPersistencePending: true,
+              },
+            });
+            expect(
+              await store.markProviderExecutionDrained(
+                streamId,
+                execution.createdAt,
+                'stale-provider',
+                true,
+              ),
+            ).toBe(false);
+            publications++;
+            expect(
+              await manager.finishProviderTerminalPersistence(
+                streamId,
+                identity.generationCreatedAt,
+                identity.providerExecutionId,
+                identity.ownerId,
+              ),
+            ).toBe(true);
+          },
+          onSettlementError: (error) => {
+            errors.push(error);
+          },
+        },
+        { manager },
+      );
+      expect(errors).toEqual([]);
+      expect(publications).toBe(1);
+      expect(await manager.getJob(streamId)).toBeUndefined();
+    } finally {
+      await manager.destroy();
+    }
+  });
+
+  test('records one provider-start attempt and clears its receipt when the segment resumes', async () => {
+    expect(ioredisClient).not.toBeNull();
+    const { RedisJobStore } = await import('../implementations/RedisJobStore');
+    const { ApprovalLifecycle } = await import('../ApprovalLifecycle');
+    const store = new RedisJobStore(ioredisClient!);
+    await store.initialize();
+    const id = `provider-start-owner-${Date.now()}`;
+    try {
+      expect(store.providerStartOwnership).toBe(true);
+      const job = await store.createJob(id, 'owner-user', id, undefined, {
+        providerExecutionId: 'first',
+      });
+      expect(await store.beginProviderExecution(id, job.createdAt, 'first', 'worker-one')).toBe(
+        true,
+      );
+      expect(await store.beginProviderExecution(id, job.createdAt, 'first', 'worker-two')).toBe(
+        false,
+      );
+      expect(await store.getJob(id)).toMatchObject({
+        providerExecutionOwnerId: 'worker-one',
+        providerDrained: false,
+      });
+      expect(await store.markProviderExecutionDrained(id, job.createdAt, 'first')).toBe(true);
+      const approvals = new ApprovalLifecycle(store);
+      const action = buildPendingAction(id);
+      expect(
+        await approvals.pause(id, action, {
+          expectedCreatedAt: job.createdAt,
+          expectedProviderExecutionId: 'first',
+        }),
+      ).toBe(true);
+      expect(
+        await approvals.resolve(
+          id,
+          action.actionId,
+          { providerExecutionId: 'next', providerDrained: true },
+          job.createdAt,
+          'first',
+        ),
+      ).toBe(true);
+      expect((await store.getJob(id))?.providerExecutionOwnerId).toBeUndefined();
+      expect(await store.beginProviderExecution(id, job.createdAt, 'next')).toBe(true);
+      expect((await store.getJob(id))?.providerExecutionOwnerId).toBeUndefined();
+    } finally {
+      await store.destroy();
+    }
   });
 
   test.each(['update', 'transition'] as const)(

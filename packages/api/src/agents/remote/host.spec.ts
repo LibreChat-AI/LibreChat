@@ -6,6 +6,7 @@ import { executeAgentRun } from './host';
 jest.mock('~/stream', () => ({
   GenerationJobManager: {
     createJob: jest.fn(),
+    getJobStore: jest.fn(() => ({})),
     beginProviderExecution: jest.fn(),
     completeJob: jest.fn(),
     markProviderExecutionDrained: jest.fn(),
@@ -179,5 +180,93 @@ describe('executeAgentRun', () => {
     ).resolves.toBe('done');
 
     expect(manager.completeJob).toHaveBeenCalledWith('run-1', 'Remote agent execution failed', 10);
+  });
+
+  it('journals enrollment before provider work and publishes only after drain', async () => {
+    const order: string[] = [];
+    manager.beginProviderExecution.mockImplementation(async () => {
+      order.push('provider');
+      return true;
+    });
+    manager.markProviderExecutionDrained.mockImplementation(async () => {
+      order.push('drain');
+      return true;
+    });
+    await executeAgentRun({
+      envelope: createEnvelope(),
+      runId: 'run-1',
+      conversationId: 'conversation-1',
+      isPrincipalActive: async () => true,
+      onEnrolled: async (execution) => {
+        expect(execution.createdAt).toBe(10);
+        order.push('journal');
+      },
+      execute: async () => {
+        order.push('execute');
+      },
+      afterSettle: async () => {
+        order.push('publish');
+      },
+    });
+    expect(order).toEqual(['journal', 'provider', 'execute', 'drain', 'publish']);
+  });
+
+  it('does not start provider work if durable enrollment publication fails', async () => {
+    const failure = new Error('enrollment journal unavailable');
+    const execute = jest.fn();
+    await expect(
+      executeAgentRun({
+        envelope: createEnvelope(),
+        runId: 'run-1',
+        conversationId: 'conversation-1',
+        isPrincipalActive: async () => true,
+        onEnrolled: async () => {
+          throw failure;
+        },
+        execute,
+      }),
+    ).rejects.toBe(failure);
+    expect(manager.beginProviderExecution).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('does not publish terminal success when provider drain fails', async () => {
+    manager.markProviderExecutionDrained.mockResolvedValue(false);
+    const publish = jest.fn();
+    const onError = jest.fn();
+    await executeAgentRun({
+      envelope: createEnvelope(),
+      runId: 'run-1',
+      conversationId: 'conversation-1',
+      isPrincipalActive: async () => true,
+      execute: async () => 'output',
+      afterSettle: publish,
+      onSettlementError: onError,
+    });
+    expect(publish).not.toHaveBeenCalled();
+    expect(onError).toHaveBeenCalled();
+  });
+
+  it('does not run terminal hooks for a provider-start CAS loser', async () => {
+    manager.beginProviderExecution.mockResolvedValue(false);
+    const execute = jest.fn();
+    const beforeSettle = jest.fn();
+    const afterSettle = jest.fn();
+    await expect(
+      executeAgentRun({
+        envelope: createEnvelope(),
+        runId: 'run-1',
+        conversationId: 'conversation-1',
+        isPrincipalActive: async () => true,
+        execute,
+        beforeSettle,
+        afterSettle,
+      }),
+    ).rejects.toMatchObject({ code: 'RUN_REPLACED' });
+    expect(execute).not.toHaveBeenCalled();
+    expect(beforeSettle).not.toHaveBeenCalled();
+    expect(afterSettle).not.toHaveBeenCalled();
+    expect(manager.completeJob).not.toHaveBeenCalled();
+    expect(manager.markProviderExecutionDrained).not.toHaveBeenCalled();
   });
 });

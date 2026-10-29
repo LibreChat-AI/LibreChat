@@ -54,6 +54,8 @@ export interface GenerationJobMetadata {
   promptTokens?: number;
   /** Agent that initiated the run; a HITL resume verifies it rebuilds the same agent. */
   agent_id?: string;
+  /** Verified actor-bound channel source; retained across approval/OAuth resumes. */
+  channelExecution?: { channelId: string; runId: string };
   /** Whether the originating turn was a temporary chat; a HITL resume keeps it so. */
   isTemporary?: boolean;
   /** Original server-authenticated retention deadline, serialized across replicas. */
@@ -116,6 +118,8 @@ export interface GenerationJobMetadata {
   providerExecutionId?: string;
   /** Exact provider owner that crossed its start fence. */
   providerExecutionStartedId?: string;
+  /** Private receipt for the exact request that won this segment's start CAS. */
+  providerExecutionOwnerId?: string;
   /** False only while that exact provider segment can still mutate user data. */
   providerDrained?: boolean;
   /** Terminal close has atomically stopped new steer acceptance, even if the

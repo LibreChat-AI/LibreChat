@@ -8,6 +8,25 @@
  * @see https://openresponses.org/specification
  */
 
+import type { StoredResponseRecord } from '@librechat/data-schemas';
+import type { ResponseAccounting } from 'librechat-data-provider';
+
+export type ResponseResumeAdmissionResult =
+  | {
+      ok: true;
+      record: StoredResponseRecord;
+      status: 'ready' | 'attached';
+      checkpointNamespace: string;
+    }
+  | { ok: false; code: 'response_resume_unavailable' };
+
+export type {
+  AccountingBasis,
+  AccountingModelSource,
+  ResponseAccountingCall,
+  ResponseAccounting,
+} from 'librechat-data-provider';
+
 /* =============================================================================
  * ENUMS
  * ============================================================================= */
@@ -16,7 +35,13 @@
 export type ItemStatus = 'in_progress' | 'incomplete' | 'completed';
 
 /** Response status lifecycle */
-export type ResponseStatus = 'in_progress' | 'completed' | 'failed' | 'incomplete';
+export type ResponseStatus =
+  | 'queued'
+  | 'in_progress'
+  | 'completed'
+  | 'failed'
+  | 'incomplete'
+  | 'cancelled';
 
 /** Message roles */
 export type MessageRole = 'user' | 'assistant' | 'system' | 'developer';
@@ -348,6 +373,9 @@ export interface ResponseRequest {
   /** Whether to stream the response */
   stream?: boolean;
 
+  /** Execute independently of the HTTP connection; requires durable storage. */
+  background?: boolean;
+
   /** Stream options */
   stream_options?: StreamOptions;
 
@@ -453,6 +481,18 @@ export interface TextField {
 
 /** Open Responses API Response - All required fields per spec */
 export interface Response {
+  /** Nonterminal warning: do not infer completion, cancellation or permission to replay work. */
+  recovery?: 'execution_state_unavailable';
+  /** LibreChat extension: authenticated browser review, never raw tool/OAuth secrets. */
+  required_action?: {
+    type: 'librechat_review';
+    kind: 'oauth' | 'tool_approval' | 'question';
+    action_id: string;
+    expires_at: number;
+    review_url: string;
+  };
+  /** LibreChat extension; never inferred from the Agent ID in `model`. */
+  accounting?: ResponseAccounting;
   /** Response ID */
   id: string;
 
@@ -773,6 +813,8 @@ export type ResponseEvent =
 
 /** Context for building responses */
 export interface ResponseContext {
+  /** Set only after the response and conversation writes succeed. */
+  stored?: boolean;
   /** Response ID */
   responseId: string;
   /** Model/agent ID */
