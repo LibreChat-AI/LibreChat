@@ -2609,3 +2609,61 @@ describe('syncUserEntraGroupMemberships - $pullAll on Group.memberIds', () => {
     getEntraGroupDetailsBatch.mockResolvedValue([]);
   });
 });
+
+describe('ensureGroupPrincipalExists - Entra member fetch', () => {
+  const { getGroupMembers, getGroupOwners } = require('~/server/services/GraphApiService');
+  const { Group } = require('~/db/models');
+
+  const authContext = { accessToken: 'fake-token', sub: 'sharer-sub' };
+  const principal = {
+    type: PrincipalType.GROUP,
+    name: 'Shared Group',
+    source: 'entra',
+    idOnTheSource: 'entra-shared',
+  };
+
+  beforeEach(async () => {
+    await Group.deleteMany({});
+    await Group.create({
+      name: 'Shared Group',
+      source: 'entra',
+      idOnTheSource: 'entra-shared',
+      memberIds: ['member-1', 'member-2'],
+    });
+  });
+
+  afterEach(() => {
+    delete process.env.ENTRA_ID_INCLUDE_OWNERS_AS_MEMBERS;
+    getGroupMembers.mockResolvedValue([]);
+    getGroupOwners.mockResolvedValue([]);
+  });
+
+  it('replaces the members of an existing group with the fetched members', async () => {
+    getGroupMembers.mockResolvedValue(['member-2', 'member-3']);
+
+    await ensureGroupPrincipalExists(principal, authContext);
+
+    const group = await Group.findOne({ idOnTheSource: 'entra-shared' }).lean();
+    expect(group.memberIds).toEqual(['member-2', 'member-3']);
+  });
+
+  it('keeps the members of an existing group when the member fetch fails', async () => {
+    getGroupMembers.mockResolvedValue(null);
+
+    await ensureGroupPrincipalExists(principal, authContext);
+
+    const group = await Group.findOne({ idOnTheSource: 'entra-shared' }).lean();
+    expect(group.memberIds).toEqual(['member-1', 'member-2']);
+  });
+
+  it('keeps the members of an existing group when the owner fetch fails', async () => {
+    process.env.ENTRA_ID_INCLUDE_OWNERS_AS_MEMBERS = 'true';
+    getGroupMembers.mockResolvedValue(['member-3']);
+    getGroupOwners.mockResolvedValue(null);
+
+    await ensureGroupPrincipalExists(principal, authContext);
+
+    const group = await Group.findOne({ idOnTheSource: 'entra-shared' }).lean();
+    expect(group.memberIds).toEqual(['member-1', 'member-2']);
+  });
+});

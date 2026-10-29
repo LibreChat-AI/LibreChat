@@ -368,7 +368,8 @@ const ensurePrincipalExists = async function (principal) {
 /**
  * Ensures a group principal exists in the database based on TPrincipal data
  * Creates group if it doesn't exist locally (for Entra ID groups)
- * For Entra ID groups, always synchronizes member IDs when authentication context is provided
+ * For Entra ID groups, synchronizes member IDs when authentication context is provided and the
+ * Graph fetch succeeds; a failed fetch leaves an existing group's members unchanged
  * @param {Object} principal - TPrincipal object from frontend
  * @param {string} principal.type - Must be PrincipalType.GROUP
  * @param {string} [principal.id] - Local database ID (null for Entra ID principals not yet synced)
@@ -397,26 +398,28 @@ const ensureGroupPrincipalExists = async function (principal, authContext = null
     }
 
     let memberIds = [];
+    let membersFetched = false;
     if (authContext && authContext.accessToken && authContext.sub) {
       try {
-        memberIds = await getGroupMembers(
+        const fetchedMemberIds = await getGroupMembers(
           authContext.accessToken,
           authContext.sub,
           principal.idOnTheSource,
         );
 
         // Include group owners as members if feature is enabled
-        if (isEnabled(process.env.ENTRA_ID_INCLUDE_OWNERS_AS_MEMBERS)) {
-          const ownerIds = await getGroupOwners(
+        let ownerIds = [];
+        if (fetchedMemberIds && isEnabled(process.env.ENTRA_ID_INCLUDE_OWNERS_AS_MEMBERS)) {
+          ownerIds = await getGroupOwners(
             authContext.accessToken,
             authContext.sub,
             principal.idOnTheSource,
           );
-          if (ownerIds && ownerIds.length > 0) {
-            memberIds.push(...ownerIds);
-            // Remove duplicates
-            memberIds = [...new Set(memberIds)];
-          }
+        }
+
+        if (fetchedMemberIds && ownerIds) {
+          memberIds = [...new Set([...fetchedMemberIds, ...ownerIds])];
+          membersFetched = true;
         }
       } catch (error) {
         logger.error('Failed to fetch group members from Graph API:', error);
@@ -449,7 +452,7 @@ const ensureGroupPrincipalExists = async function (principal, authContext = null
         needsUpdate = true;
       }
 
-      if (authContext && authContext.accessToken && authContext.sub) {
+      if (membersFetched) {
         updateData.memberIds = memberIds;
         needsUpdate = true;
       }
