@@ -1368,6 +1368,9 @@ describe('dedupeDocumentNames', () => {
     const messages: Message[] = [{ content }];
 
     expect(() => dedupeDocumentNames(messages)).toThrow(ContentTraversalLimitError);
+    expect(() => dedupeDocumentNames(messages, Providers.BEDROCK)).toThrow(
+      ContentTraversalLimitError,
+    );
     expect(messages[0].content).toBe(content);
     expect(content[1].document.name).toBe('notes');
   });

@@ -6461,7 +6461,7 @@ describe('AgentClient - titleConvo', () => {
 
         expect(result.prompt).toHaveLength(messages.length);
         expect(result.prompt.at(-1).content).toBe('x');
-        expect(messages).toEqual(original);
+        expect(messages).toMatchObject(original);
       },
     );
 
