@@ -7,6 +7,7 @@ import {
   MAX_MCP_APP_ACTIVE_VIEWS,
   MAX_MCP_APP_ACTION_PREVIEW_CHARS,
   resolveMCPAppCspLimits,
+  resolveMCPAppToolApprovalPolicy,
   type TMCPAppsPolicy,
   type TStartupConfig,
 } from 'librechat-data-provider';
@@ -51,6 +52,7 @@ function getPublishedPolicy(
   }
   return {
     ...policy,
+    appToolApproval: resolveMCPAppToolApprovalPolicy(policy.appToolApproval),
     cspLimits: resolveMCPAppCspLimits(policy.cspLimits),
     maxActiveViews: validLimit(
       policy.maxActiveViews,

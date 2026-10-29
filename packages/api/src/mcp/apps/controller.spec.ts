@@ -757,6 +757,23 @@ describe('createMCPAppsController', () => {
     expect(response.setHeader).toHaveBeenCalledWith('X-Frame-Options', 'DENY');
   });
 
+  it('keeps X-Frame-Options when cross-origin ancestors are not allowed', async () => {
+    const manager = makeManager();
+    const { dependencies } = makeDependencies(manager);
+    dependencies.sandboxFrameAncestors = '';
+    const controller = createMCPAppsController(dependencies);
+    const response = makeResponse();
+
+    await controller.serveMCPSandbox(
+      asHandlerRequest(makeRequest()),
+      asHandlerResponse(response),
+      jest.fn(),
+    );
+
+    expect(response.setHeader).toHaveBeenCalledWith('X-Frame-Options', 'DENY');
+    expect(response.removeHeader).not.toHaveBeenCalled();
+  });
+
   it('fails closed when trusted sandbox limits cannot be resolved', async () => {
     const manager = makeManager();
     const { dependencies } = makeDependencies(manager);
