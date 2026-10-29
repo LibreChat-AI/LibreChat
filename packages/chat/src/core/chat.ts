@@ -4,6 +4,7 @@ import type {
   TMessage,
   ChatEvent,
   UITextPart,
+  TPendingSteer,
   ChatFinalFrame,
   ChatErrorData,
   UIMessageMetadata,
@@ -16,6 +17,9 @@ import type {
   ChatConnection,
   ChatRequestOptions,
   ChatSendResult,
+  ChatAbortResult,
+  ChatAbortRequest,
+  ChatStreamAbortResult,
   ChatTransportError,
 } from './types';
 import { isRetryableNetworkError } from './resumable/start';
@@ -103,9 +107,30 @@ export type ChatFinishResult = {
    * frames or payload named, so a turn under `new` reports the conversation the server created.
    */
   conversationId?: string;
-  /** Why a settled turn's final frame carried no messages. */
+  /**
+   * Why a settled turn's final frame carried no messages. `abort_persistence_failed` means the
+   * stop was not saved, so work queued behind it must not run.
+   */
   reconcileReason?: ChatFinalFrame['reconcileReason'];
 };
+
+/**
+ * What a stop did. `stopped` ended the turn, `idle` found nothing to stop, and `unaddressable`
+ * means a generation may still run that this chat saw no frame for (a start whose response was
+ * lost, or a turn under `new` before its sync frame), so the caller stops it on its own abort path.
+ */
+export type ChatStopResult =
+  | {
+      status: 'stopped';
+      /** The conversation the server stopped, authoritative while the chat still holds `new`. */
+      conversationId?: string;
+      /** Steers the run never injected, which the host restores as queued turns. */
+      pendingSteers?: TPendingSteer[];
+    }
+  | { status: 'idle' }
+  | { status: 'unaddressable' };
+
+const unaddressable: ChatStopResult = { status: 'unaddressable' };
 
 export type ChatInit = {
   /** The conversation id, or `new` before the server created one. */
@@ -114,7 +139,7 @@ export type ChatInit = {
   transport: ChatTransport;
   /**
    * Builds the request body, and the optimistic messages, for a turn. AI SDK:
-   * `prepareSendMessagesRequest`.
+   * `prepareSendMessagesRequest`. The payload's endpoint is what a stop addresses.
    */
   prepareRequest(request: ChatPrepareRequest): ChatPreparedRequest | Promise<ChatPreparedRequest>;
   /**
@@ -144,8 +169,12 @@ type Outcome = {
   | { kind: 'error'; error: Error; disconnect: boolean }
 );
 
-/** The response a turn produces, as the frames of its generation name it. */
+/**
+ * A generation on the server as this chat knows it. It outlives the requests attached to it, so a
+ * stop and the request it ends read and write one record instead of copying its fields across.
+ */
 type Generation = {
+  endpoint?: string;
   /** The conversation the payload, the server's answer or a frame named. */
   conversationId?: string;
   /** The response this generation produces: the placeholder, then the one a frame names. */
@@ -155,6 +184,23 @@ type Generation = {
    * response yet.
    */
   responseUnknown?: boolean;
+  /** Set once the server confirmed a stop, so a stream that drops instead of ending aborts. */
+  stopped?: boolean;
+  /** The terminal status a stop answer reported for a run that had already ended on its own. */
+  settledAs?: ChatStreamAbortResult['terminalStatus'];
+  /** The stop ended the run without saving its terminal state, which a reconcile frame reports. */
+  persistenceFailed?: boolean;
+  /**
+   * The server confirmed it stopped the stream, whose abort frame carries the saved response. A
+   * request that ends without that frame leaves the host to reload what the server kept.
+   */
+  stopFramed?: boolean;
+  /** The conversation a stop's answer named, authoritative while the chat still holds `new`. */
+  stoppedConversationId?: string;
+  /** Resolves once a stop sent for this generation was answered, either way. */
+  stopAnswered?: Promise<void>;
+  /** The stop in flight or confirmed, which a second stop joins instead of sending again. */
+  stopping?: Promise<ChatAbortResult>;
   /** A turn that ended before its preparation installed a response, so it has none to report. */
   responseless?: boolean;
 };
@@ -182,15 +228,32 @@ type ActiveRequest = {
   stream?: ChatStream;
   /** The generation this request runs or attaches to. */
   generation: Generation;
-  /** Set while attaching to a generation the server answered the start with, before it attaches. */
-  attaching?: boolean;
+  /**
+   * Set while attaching to the generation the server answered the start with, before it attaches,
+   * naming the stream a stop addresses meanwhile.
+   */
+  reattach?: { streamId?: string };
   /**
    * The stream came from attaching to a running generation, whose HTTP failure ends only the
    * attachment unless the server says the generation is gone.
    */
   attached?: boolean;
+  /** The generation the start was answered with; a stream of another one starts a new record. */
+  inheritedGeneration?: number;
+  /** The error the request settled with when its connection dropped. */
+  disconnected?: Error;
   /** Set once the start was handed to the transport, so the server may be running it. */
   sent?: boolean;
+  /**
+   * The conversation the start was sent under. One sent under `new` created a conversation of its
+   * own, so no answer about another start or conversation resolves it if it is lost.
+   */
+  sentUnder?: string;
+  /**
+   * Set once the server answered for the start after it was cancelled, which can happen before the
+   * request settles, so the stop that cancelled it owes nothing for it.
+   */
+  resolved?: boolean;
   /** Resolves once the request settled and released the chat. */
   finished: Promise<void>;
   finish: () => void;
@@ -204,7 +267,7 @@ const createActiveRequest = (generation: Generation = {}): ActiveRequest => {
   return { controller: new AbortController(), generation, finished, finish };
 };
 
-/** Settles with `value`, or rejects once `signal` aborts, so a disposal never waits on it. */
+/** Settles with `value`, or rejects once `signal` aborts, so a stop never waits on it. */
 const untilAborted = <T>(value: T | Promise<T>, signal: AbortSignal): Promise<T> =>
   new Promise<T>((resolve, reject) => {
     const onAbort = () => reject(signal.reason);
@@ -289,6 +352,74 @@ const getApplyFailure = (event: ChatEvent, failure: unknown, attached: boolean):
   return terminal
     ? { kind: 'error', error, disconnect: false, settled: {} }
     : { kind: 'error', error, disconnect: true };
+};
+
+/** A run that ended on its own before a stop reached it, whose final frame never arrived. */
+const getSettledOutcome = (
+  status: ChatStreamAbortResult['terminalStatus'],
+  settled: Settled = {},
+): Outcome => {
+  if (status === 'error') {
+    return { kind: 'error', error: new Error('The response failed'), disconnect: false, settled };
+  }
+  return status === 'aborted' ? { kind: 'abort', settled } : { kind: 'complete', settled };
+};
+
+/** What a confirmed stop ends a request with when no terminal frame said otherwise. */
+const getStopOutcome = (stop: {
+  settledAs?: ChatStreamAbortResult['terminalStatus'];
+  persistenceFailed?: boolean;
+  stopFramed?: boolean;
+  /** The conversation the stop's answer named, which the host reloads. */
+  stoppedConversationId?: string;
+}): Outcome => {
+  const settled: Settled =
+    stop.stoppedConversationId != null ? { conversationId: stop.stoppedConversationId } : {};
+  if (stop.persistenceFailed) {
+    return { kind: 'abort', settled: { ...settled, reason: 'abort_persistence_failed' } };
+  }
+  if (stop.settledAs) {
+    return getSettledOutcome(stop.settledAs, settled);
+  }
+  /** Read only where no abort frame ended the request, so the saved response was never received. */
+  return stop.stopFramed ? { kind: 'abort', settled } : { kind: 'abort' };
+};
+
+/** The answer for a stop the server says found no generation, as an already-settled run. */
+const goneStop: ChatStreamAbortResult = { success: false, settled: true, code: 'NO_ACTIVE_RUN' };
+
+const isStreamAbort = (result: ChatAbortResult): result is ChatStreamAbortResult =>
+  result != null && 'success' in result;
+
+/**
+ * How a stop's answer says the run had already ended on its own: a settled stream, or an
+ * Assistants answer of `null`, which finds no run left and leaves the host to reload what it kept.
+ */
+const getSettledAs = (result: ChatAbortResult): ChatStreamAbortResult['terminalStatus'] => {
+  if (result === null) {
+    return 'complete';
+  }
+  return isStreamAbort(result) && result.settled
+    ? (result.terminalStatus ?? 'complete')
+    : undefined;
+};
+
+/**
+ * What a stop hands back to the host. Steers come back only from a stop that ended the run: one
+ * that settled first leaves them to its own terminal frame, and an unsaved one has none to trust.
+ */
+const getStopResult = (result: ChatAbortResult, conversationId?: string): ChatStopResult => {
+  if (!isStreamAbort(result)) {
+    /** An Assistants run's answer carries the conversation, which a first turn's server created. */
+    const created = result?.conversation?.conversationId ?? undefined;
+    return { status: 'stopped', ...(created != null && { conversationId: created }) };
+  }
+  const ended = !result.settled && !result.persistenceFailed;
+  return {
+    status: 'stopped',
+    ...(conversationId != null && { conversationId }),
+    ...(ended && result.pendingSteers && { pendingSteers: result.pendingSteers }),
+  };
 };
 
 /** The ids a frame names for the conversation and the response its generation produces. */
@@ -530,16 +661,6 @@ const undoOptimisticWrite = (record: OptimisticWrite, current: TMessage[]): TMes
 };
 
 /**
- * Closes the stream of a start that answered after the chat let it go. Only a disposal lets a
- * start go, and a disposed chat leaves the server's generation running, as it does an attached one.
- */
-const closeLateStart = (sent: ChatSendResult): void => {
-  if (sent.status === 'stream') {
-    sent.stream.close();
-  }
-};
-
-/**
  * One conversation's turn lifecycle, framework free. AI SDK: `AbstractChat`.
  *
  * A turn is `submitted` while the request is in flight, `streaming` from its first content event,
@@ -558,9 +679,18 @@ export class Chat {
   /** Set while the chat writes the state, whose own report of that write the chat announces itself. */
   private writing = false;
   private revision = 0;
+  /** Aborted on dispose, which ends every wait on the server so no caller outlives the chat. */
+  private readonly lifetime = new AbortController();
+  /** The newest start handed to the transport, whose conversation a late answer must not replace. */
+  private latestStart?: ActiveRequest;
+  /**
+   * A start that reached the transport and lost its response, with nothing to address it by. It
+   * stays the caller's to stop until an answer resolves that start, or one its conversation covers.
+   */
+  private lostStart?: ActiveRequest;
   /**
    * The conversation this chat runs under: its id, until the server names the one it created for
-   * a chat started under `new`. Every later turn addresses that one.
+   * a chat started under `new`. Every later start and stop addresses that one.
    */
   private conversation: string;
 
@@ -630,6 +760,299 @@ export class Chat {
     return this.request({ trigger: 'continue-message', messageId }, requestOptions);
   }
 
+  /**
+   * Stops the turn in flight. A request still starting is cancelled; an attached stream is
+   * stopped on the server, and this resolves once the stream reported its end. Rejects when the
+   * server refused the stop, leaving the stream attached. Resolves with the steers the run never
+   * injected, for the host to restore, or `unaddressable` without contacting the server when the
+   * chat holds no frame-backed identity for the generation.
+   */
+  async stop(): Promise<ChatStopResult> {
+    if (this.disposed) {
+      /** A disposed chat leaves the server's generation running, as dispose does. */
+      return { status: 'idle' };
+    }
+    const active = this.active;
+    if (!active) {
+      /** The lost start is still the caller's. */
+      return this.lostStart ? unaddressable : { status: 'idle' };
+    }
+    if (!active.stream && !active.reattach) {
+      active.controller.abort();
+      await active.finished;
+      /**
+       * A start already handed to the transport may be running on the server with no frame naming
+       * it; a late stream is stopped by `dropLateStart`, but one that never arrives is the caller's.
+       */
+      const own: ChatStopResult =
+        active.sent && !active.resolved ? unaddressable : { status: 'stopped' };
+      return this.orUnaddressed(own);
+    }
+    const { generation } = active;
+    if (!generation.endpoint) {
+      throw new Error('The generation cannot be stopped without its endpoint');
+    }
+    const streamId = active.stream?.streamId ?? active.reattach?.streamId;
+    const target = {
+      endpoint: generation.endpoint,
+      streamId,
+      generationCreatedAt: active.stream?.generationCreatedAt ?? active.inheritedGeneration,
+      abortKey: streamId == null ? this.abortKey(generation) : undefined,
+    };
+    if (!this.isAddressable(target)) {
+      return unaddressable;
+    }
+    const result = await this.stopGeneration(generation, target);
+    return this.orUnaddressed(await this.endStopped(active, generation, result));
+  }
+
+  /**
+   * A stop's answer, unless a start this chat lost may still run on the server with nothing to
+   * address it by; then the caller still owes its separate abort.
+   */
+  private orUnaddressed(result: ChatStopResult): ChatStopResult {
+    /** Only an answer about the lost start clears it, not a turn a callback started meanwhile. */
+    return this.lostStart ? unaddressable : result;
+  }
+
+  /** Sends a stop and records its answer on the generation, where every attachment reads it. */
+  private stopGeneration(
+    generation: Generation,
+    target: Omit<ChatAbortRequest, 'chatId'>,
+  ): Promise<ChatAbortResult> {
+    if (generation.stopping) {
+      return generation.stopping;
+    }
+    const since = this.latestStart;
+    const answer = this.abortOnServer(target).then((result) => {
+      generation.stopped = true;
+      /** A start sent while the stop waited may run in a conversation of its own, which wins. */
+      const adopts = !this.startsAfter(since);
+      if (isStreamAbort(result)) {
+        generation.stoppedConversationId = this.stoppedConversationId(generation, result);
+        if (adopts) {
+          this.learnConversation(generation.stoppedConversationId);
+        }
+      } else if (result && adopts) {
+        this.learnConversation(result.conversation?.conversationId);
+      }
+      generation.settledAs = getSettledAs(result);
+      if (!generation.settledAs && isStreamAbort(result) && result.persistenceFailed) {
+        generation.persistenceFailed = true;
+      }
+      generation.stopFramed =
+        isStreamAbort(result) && !generation.settledAs && !generation.persistenceFailed;
+      return result;
+    });
+    generation.stopping = answer;
+    generation.stopAnswered = answer.then(
+      () => undefined,
+      () => {
+        /** A refused stop leaves the generation running, so the next stop is sent anew. */
+        generation.stopping = undefined;
+      },
+    );
+    return answer;
+  }
+
+  /** Ends the request attached to a generation the server confirmed stopped. */
+  private async endStopped(
+    active: ActiveRequest,
+    generation: Generation,
+    result: ChatAbortResult,
+  ): Promise<ChatStopResult> {
+    const owns = () => active.generation === generation;
+    if (!owns()) {
+      /** The request moved on to another generation while the stop was in flight; that one runs on. */
+      return getStopResult(result, generation.stoppedConversationId);
+    }
+    if (result && 'runMessages' in result) {
+      await this.mergeRunMessages(result.runMessages, () => this.active === active && owns());
+      if (!owns()) {
+        /** The request opened another generation while the merge waited its turn. */
+        return getStopResult(result, generation.stoppedConversationId);
+      }
+      active.controller.abort();
+      active.stream?.close();
+    } else if (result === null || result === goneStop || generation.settledAs) {
+      /**
+       * No run was left to stop, or it had already ended on its own: the answer is the end, so the
+       * attachment closes rather than waiting on a terminal frame that may never arrive.
+       */
+      active.controller.abort();
+      active.stream?.close();
+    } else if (!active.stream && !generation.persistenceFailed) {
+      /**
+       * Still attaching: nothing will report the end, so the stop ends the request here. An
+       * unsaved stop stays attached for the reconcile frame that reports it.
+       */
+      active.controller.abort();
+    }
+    await active.finished;
+    if (this.disposed) {
+      /** A chat disposed while the stop ended its request writes no state. */
+      return getStopResult(result, generation.stoppedConversationId);
+    }
+    this.notify();
+    return getStopResult(result, generation.stoppedConversationId);
+  }
+
+  /**
+   * Drops a start that reached the server after it was cancelled. A stop also ends its generation
+   * there; a disposal leaves it running, as it does an attached one.
+   */
+  private dropLateStart(active: ActiveRequest, sent: ChatSendResult): void {
+    if (sent.status === 'stream') {
+      sent.stream.close();
+    }
+    const answered = sent.status === 'settled' || sent.status === 'replaced';
+    if (answered && sent.generationProtocolVersion === 2) {
+      /**
+       * The server finished the start on its own, or answered it with a newer generation this
+       * request does not own and leaves alone; either way its stop has nothing left to reach, and
+       * the answer names the conversation a chat started under `new` adopts.
+       */
+      if (!this.startsAfter(active)) {
+        this.learnConversation(sent.conversationId);
+      }
+      this.resolveLostStart(active);
+      return;
+    }
+    const { endpoint } = active.generation;
+    if (this.disposed || !endpoint || sent.status !== 'stream') {
+      return;
+    }
+    const { streamId, generationCreatedAt } = sent.stream;
+    const target = {
+      endpoint,
+      streamId,
+      generationCreatedAt,
+      abortKey: streamId == null ? this.abortKey(active.generation) : undefined,
+    };
+    if (!this.isAddressable(target)) {
+      /** Nothing names it; the stop already reported it unaddressable to the caller. */
+      return;
+    }
+    void this.abortOnServer(target).then(
+      () => this.resolveLostStart(active),
+      (error: unknown) =>
+        this.disposed
+          ? undefined
+          : this.callHost(
+              this.init.onError,
+              error instanceof Error ? error : new Error(String(error)),
+            ),
+    );
+  }
+
+  /**
+   * A start the chat reported lost is now answered for: its marker clears, and the failure it
+   * reported resolves unless a newer turn owns the chat.
+   */
+  private resolveLostStart(active: ActiveRequest): void {
+    active.resolved = true;
+    if (this.lostStart !== active) {
+      return;
+    }
+    this.lostStart = undefined;
+    const failed = active.disconnected;
+    if (this.disposed || this.active || !failed || this.error !== failed) {
+      return;
+    }
+    this.init.state.error = undefined;
+    this.init.state.status = 'ready';
+    this.notify();
+  }
+
+  /**
+   * Whether a start sent after `since` is still running or lost, so it may own a conversation of its own
+   * that a late answer about an older generation must not replace.
+   */
+  private startsAfter(since: ActiveRequest | undefined): boolean {
+    const latest = this.latestStart;
+    return (
+      latest != null && latest !== since && (latest === this.active || latest === this.lostStart)
+    );
+  }
+
+  /**
+   * An Assistants run's stream ends without a final frame; the stop's answer carries it as the
+   * conversation's stored messages, so they replace the list and rows the run deleted go with it.
+   * `owns` is checked when the write runs, so a turn that took over while it queued keeps its list.
+   */
+  private mergeRunMessages(runMessages: TMessage[], owns: () => boolean): Promise<void> {
+    return this.executor.run(() => {
+      if (!owns() || runMessages.length === 0) {
+        return;
+      }
+      const local = new Map(this.messages.map((message) => [message.messageId, message]));
+      this.write(runMessages.map((message) => ({ ...local.get(message.messageId), ...message })));
+    });
+  }
+
+  /**
+   * The conversation a stop that named its stream ended. The answer names only the stream, so the
+   * generation's known conversation wins; a first turn no frame named yet falls back to that
+   * stream id, which a resumable server keys by the conversation it created. A run that settled
+   * before the stop reached it names that stream as `streamId` instead of `aborted`.
+   */
+  private stoppedConversationId(
+    generation: Generation,
+    result: ChatStreamAbortResult,
+  ): string | undefined {
+    const stream = result.aborted ?? result.streamId;
+    if (stream == null) {
+      return undefined;
+    }
+    const known = generation.conversationId ?? this.conversationId;
+    return known !== Constants.NEW_CONVO ? known : stream;
+  }
+
+  /** `conversationId:responseMessageId` of a run with no resumable stream (Assistants). */
+  private abortKey(generation: Generation): string | undefined {
+    const conversationId = generation.conversationId ?? this.conversationId;
+    if (conversationId === Constants.NEW_CONVO) {
+      /** Before its sync frame, a turn under `new` has no id the server knows it by. */
+      return undefined;
+    }
+    return generation.responseId ? `${conversationId}:${generation.responseId}` : undefined;
+  }
+
+  /** Whether a stop can name the generation: by its stream, its run key, or a created chat. */
+  private isAddressable(target: Omit<ChatAbortRequest, 'chatId'>): boolean {
+    return (
+      target.streamId != null ||
+      target.abortKey != null ||
+      this.conversationId !== Constants.NEW_CONVO
+    );
+  }
+
+  /**
+   * Stops a generation on the server. A run that already reached its own end counts as stopped;
+   * a refusal rejects.
+   */
+  private async abortOnServer(target: Omit<ChatAbortRequest, 'chatId'>): Promise<ChatAbortResult> {
+    if (this.lifetime.signal.aborted) {
+      throw this.lifetime.signal.reason;
+    }
+    const result = await untilAborted(
+      this.init.transport
+        .abort({ chatId: this.conversationId, ...target })
+        .catch((error: unknown) => {
+          if (isGone(error as ChatTransportError)) {
+            /** Nothing is left to stop, so the run ended on its own and the host reloads it. */
+            return goneStop;
+          }
+          throw error;
+        }),
+      this.lifetime.signal,
+    );
+    if (result && 'success' in result && !result.success && !result.settled) {
+      throw new Error(result.error ?? 'The server refused the stop');
+    }
+    return result;
+  }
+
   /** Returns a failed chat to `ready`. AI SDK: `clearError`. */
   clearError(): void {
     if (this.status !== 'error') {
@@ -664,6 +1087,7 @@ export class Chat {
       return;
     }
     this.disposed = true;
+    this.lifetime.abort(new Error('The chat was disposed'));
     const active = this.active;
     this.active = undefined;
     active?.controller.abort();
@@ -686,7 +1110,7 @@ export class Chat {
       state.connection = 'idle';
       this.notify();
     }
-    /** Whoever waits on the request, such as its send, is released with the chat. */
+    /** Whoever waits on the request, such as its send or a stop, is released with the chat. */
     active?.finish();
     this.listeners.clear();
     this.releaseState?.();
@@ -745,9 +1169,12 @@ export class Chat {
       }
       /** Only now is the turn's response in the list, so a failure before this reports none. */
       active.generation.responseless = undefined;
+      active.generation.endpoint = prepared.payload.endpoint ?? undefined;
       active.generation.conversationId = prepared.payload.conversationId ?? undefined;
       const { signal } = active.controller;
       active.sent = true;
+      active.sentUnder = this.conversation;
+      this.latestStart = active;
       const result = await openUntilAborted(
         this.init.transport.sendMessages({
           ...options,
@@ -758,10 +1185,10 @@ export class Chat {
           abortSignal: signal,
         }),
         signal,
-        closeLateStart,
+        (sent) => this.dropLateStart(active, sent),
       );
       if (signal.aborted) {
-        closeLateStart(result);
+        this.dropLateStart(active, result);
         throw signal.reason;
       }
       if (result.status === 'replaced' && result.generationProtocolVersion !== 2) {
@@ -774,6 +1201,13 @@ export class Chat {
       }
       if (result.status !== 'stream') {
         this.learnConversation(result.conversationId);
+      }
+      if (this.lostStart?.sentUnder !== Constants.NEW_CONVO) {
+        /**
+         * The server took a start in the lost start's conversation, where one generation runs, so it
+         * owns or superseded it. One sent under `new` created a conversation no other start covers.
+         */
+        this.lostStart = undefined;
       }
       let stream: ChatStream | null = null;
       if (result.status === 'stream') {
@@ -788,12 +1222,14 @@ export class Chat {
             this.write(undoOptimisticWrite(rollback, this.messages));
           });
         }
+        /** The replacement it names, so a stream of yet another generation gets its own record. */
+        active.inheritedGeneration = result.generationCreatedAt ?? undefined;
+        active.reattach = { streamId: result.streamId };
+        active.attached = true;
         /** The replacement's response is not this turn's placeholder; its first frame names it. */
         active.generation.responseId = undefined;
         active.generation.responseUnknown = true;
         active.generation.conversationId = result.conversationId;
-        active.attaching = true;
-        active.attached = true;
         if (signal.aborted) {
           throw signal.reason;
         }
@@ -814,6 +1250,14 @@ export class Chat {
           (opened) => opened?.close(),
         );
       }
+      if (!stream && active.generation.stopAnswered) {
+        /** A stop still in flight decides how an empty reconnect ended. */
+        await active.generation.stopAnswered;
+      }
+      if (!stream && active.generation.stopped) {
+        this.settle(getStopOutcome(active.generation), active);
+        return;
+      }
       if (!stream) {
         /** The server finished the turn, or the generation replacing it, before it attached. */
         const conversationId = result.status === 'stream' ? undefined : result.conversationId;
@@ -833,11 +1277,22 @@ export class Chat {
     if (signal.aborted) {
       /** The request was cancelled while the stream was still being opened. */
       stream.close();
-      this.settle({ kind: 'abort' }, active);
+      this.settle(getStopOutcome(active.generation), active);
       return;
     }
     active.stream = stream;
-    active.attaching = undefined;
+    if (
+      active.inheritedGeneration != null &&
+      stream.generationCreatedAt != null &&
+      stream.generationCreatedAt !== active.inheritedGeneration
+    ) {
+      /**
+       * The attachment found another generation, whose response no frame has named yet. It gets
+       * its own record, so a stop of the one it was answered with does not end it.
+       */
+      const { endpoint, conversationId } = active.generation;
+      active.generation = { endpoint, conversationId, responseUnknown: true };
+    }
     let outcome: Outcome | undefined;
     /** The event this chat is applying, whose failure is the chat's, not the generation's. */
     let handling: ChatEvent | undefined;
@@ -850,6 +1305,7 @@ export class Chat {
         await this.executor.run(() => {
           if (!signal.aborted) {
             handling = event;
+            /** Recorded first, so a host that stops from the event's own callbacks names the run. */
             this.adopt(active.generation, getFrameIdentity(event));
             outcome = this.apply(event, active);
             handling = undefined;
@@ -871,6 +1327,15 @@ export class Chat {
       }
     } finally {
       stream.close();
+    }
+    const unresolved = !outcome || (outcome.kind === 'error' && outcome.disconnect);
+    if (unresolved && active.generation.stopAnswered) {
+      /** A stream that ended during a stop is settled by the server's answer to it. */
+      await active.generation.stopAnswered;
+    }
+    if (active.generation.stopped && unresolved) {
+      /** Including one the stop itself closed, whose answer may say the run had already ended. */
+      outcome = getStopOutcome(active.generation);
     }
     if (!outcome && signal.aborted) {
       outcome = { kind: 'abort' };
@@ -934,23 +1399,44 @@ export class Chat {
   }
 
   private toOutcome(error: unknown, active: ActiveRequest): Outcome {
+    if (
+      active.controller.signal.aborted &&
+      active.sent &&
+      !active.resolved &&
+      !active.stream &&
+      !active.reattach
+    ) {
+      /** A start cancelled before its answer may still run on the server, so its end is unknown. */
+      return {
+        kind: 'error',
+        error: new Error('The stop could not reach the generation, which may still be running'),
+        disconnect: true,
+      };
+    }
     if (active.controller.signal.aborted) {
-      return { kind: 'abort' };
+      return getStopOutcome(active.generation);
     }
     const failure = error instanceof Error ? error : new Error(String(error));
     /**
      * A request that never got a response may still be running on the server, and so may a
      * generation a failed attachment never reached, unless the server answered that it is gone.
      */
+    const attaching = active.reattach != null && !active.stream;
     const disconnect =
-      isRetryableNetworkError(failure) ||
-      (active.attaching === true && !isGone(failure as ChatTransportError));
+      isRetryableNetworkError(failure) || (attaching && !isGone(failure as ChatTransportError));
     return { kind: 'error', error: failure, disconnect };
   }
 
   private settle(outcome: Outcome, active: ActiveRequest): void {
     if (this.active !== active) {
       return;
+    }
+    if (outcome.kind === 'error' && outcome.disconnect) {
+      active.disconnected = outcome.error;
+      if (active.sent && !active.stream && !active.reattach && !active.resolved) {
+        /** The start may have reached the server, which answered nothing this chat can address. */
+        this.lostStart = active;
+      }
     }
     /**
      * Released and published as one change before anyone is told, so a subscriber or callback
@@ -959,7 +1445,15 @@ export class Chat {
     this.active = undefined;
     const { responseId, responseUnknown, responseless, conversationId } = active.generation;
     const named = conversationId !== Constants.NEW_CONVO ? conversationId : undefined;
-    this.publish({ ...outcome, conversationId: named }, responseId, responseUnknown, responseless);
+    /** A lost start still owed its own abort keeps the failure it reported. */
+    const owed = this.lostStart !== active ? this.lostStart?.disconnected : undefined;
+    this.publish(
+      { ...outcome, conversationId: named },
+      responseId,
+      responseUnknown,
+      responseless,
+      owed,
+    );
   }
 
   /**
@@ -995,9 +1489,11 @@ export class Chat {
     responseId: string | undefined,
     responseUnknown = false,
     responseless = false,
+    /** A failure another start reported, which this terminal state does not resolve. */
+    owed?: Error,
   ): void {
     const { state } = this.init;
-    const status: ChatStatus = outcome.kind === 'error' ? 'error' : 'ready';
+    const status: ChatStatus = outcome.kind === 'error' || owed ? 'error' : 'ready';
     /**
      * One terminal state, with the chat's listeners told once it is all set. A store subscriber
      * told of a field may start the next turn, which then owns the fields this one has not set.
@@ -1011,7 +1507,7 @@ export class Chat {
         state.status = status;
       }
       if (!this.active) {
-        state.error = outcome.kind === 'error' ? outcome.error : undefined;
+        state.error = outcome.kind === 'error' ? outcome.error : owed;
       }
     } finally {
       this.writing = false;
