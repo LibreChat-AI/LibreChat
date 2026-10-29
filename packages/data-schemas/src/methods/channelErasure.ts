@@ -1,3 +1,5 @@
+import { channelStorageConfigSchema } from 'librechat-data-provider';
+import type { ChannelStorageConfig } from 'librechat-data-provider';
 import type { ResponseOwner } from '~/models/response';
 import { createChannelRunModel, createChannelLaneModel } from '~/models/channelRun';
 
@@ -5,7 +7,9 @@ import { createChannelRunModel, createChannelLaneModel } from '~/models/channelR
 export async function eraseChannelPersistenceForUser(
   mongoose: typeof import('mongoose'),
   owner: ResponseOwner,
+  options: Pick<Partial<ChannelStorageConfig>, 'erasureBatchSize'> = {},
 ): Promise<void> {
+  const { erasureBatchSize } = channelStorageConfigSchema.parse(options);
   const tenantId = owner.tenantId || '_';
   const runs = createChannelRunModel(mongoose);
   const lanes = createChannelLaneModel(mongoose);
@@ -17,7 +21,7 @@ export async function eraseChannelPersistenceForUser(
   try {
     for await (const run of cursor) {
       batch.add(run.laneId);
-      if (batch.size === 250) {
+      if (batch.size === erasureBatchSize) {
         await lanes.deleteMany({ tenantId, laneId: { $in: [...batch] } });
         batch.clear();
       }
