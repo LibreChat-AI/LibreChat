@@ -4,12 +4,20 @@ import { useRecoilState } from 'recoil';
 import { setDefaultMessagesHost } from '@librechat/chat/react';
 import type {
   ForkEvents,
+  MessageCopy,
   MessagesHost,
+  MessageCopyInput,
   ForkPreferences,
   ForkConversation,
   MessagesScrolling,
 } from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
+import {
+  hasCopyableText,
+  useNavigateToConvo,
+  getMessageClipboardSource,
+  useCopyMessageToClipboard,
+} from '~/hooks';
 import useConversationSeen from '~/hooks/Conversations/useConversationSeen';
 import useMessageScrolling from '~/hooks/Messages/useMessageScrolling';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
@@ -18,7 +26,6 @@ import { useScreenshot } from '~/hooks/ScreenshotContext';
 import { useForkConvoMutation } from '~/data-provider';
 import useClockFormat from '~/hooks/useClockFormat';
 import { autoScrollAtom } from '~/store/autoScroll';
-import { useNavigateToConvo } from '~/hooks';
 import store from '~/store';
 
 function useAppForkPreferences(): ForkPreferences {
@@ -65,16 +72,30 @@ function useScrolling(messagesTree: TMessage[] | null | undefined): MessagesScro
   return { ...scrolling, conversationId: conversation?.conversationId };
 }
 
+function useAppMessageCopy({ message, searchResults, variant }: MessageCopyInput): MessageCopy {
+  const clipboardSource = useMemo(() => getMessageClipboardSource(message), [message]);
+  const copyToClipboard = useCopyMessageToClipboard({
+    ...clipboardSource,
+    searchResults,
+    variant: clipboardSource.variant ?? variant,
+  });
+  const canCopy = useMemo(
+    () => hasCopyableText({ ...clipboardSource, searchResults }),
+    [clipboardSource, searchResults],
+  );
+  return { copyToClipboard, canCopy };
+}
+
 /** What the message list reads from the app: the viewer's clock format and fork defaults, the
- *  fork request, its scrolling, screenshot and seen reporting, and the row pieces that still live
- *  here. Registered as the default when this module loads, so rows read it on every route, the
- *  shared view included. */
+ *  fork request, the rich-text copy, its scrolling, screenshot and seen reporting, and the row
+ *  pieces that still live here. Registered as the default when this module loads, so rows read it
+ *  on every route, the shared view included. */
 export const appMessagesHost: MessagesHost = {
   useHour12: useClockFormat,
   renderFiles: (message) => <Files message={message} />,
   useForkPreferences: useAppForkPreferences,
   useForkConversation: useAppForkConversation,
-
+  useMessageCopy: useAppMessageCopy,
   useScrolling,
   useScreenshotTarget: () => useScreenshot().screenshotTargetRef,
   useAutoScroll: () => useAtomValue(autoScrollAtom),
