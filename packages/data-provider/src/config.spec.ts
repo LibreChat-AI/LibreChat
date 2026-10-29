@@ -681,6 +681,34 @@ describe('Agent Management authentication config', () => {
     expect(result.data.endpoints?.agents?.managementApi?.auth?.clients[0].subject).toBe(subject);
   });
 
+  it('accepts a client binding without a tenant for a deployment that does not use tenants', () => {
+    const { tenantId: _tenantId, ...unscoped } = binding;
+    const result = configSchema.safeParse({
+      version: '1.0',
+      endpoints: { agents: { managementApi: { auth: { oidc: {}, clients: [unscoped] } } } },
+    });
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.endpoints?.agents?.managementApi?.auth?.clients[0]).not.toHaveProperty(
+      'tenantId',
+    );
+  });
+
+  it.each(['', '__SYSTEM__', 'tenant/a', '-tenant'])(
+    'still rejects the client binding tenant %j',
+    (tenantId) => {
+      const result = configSchema.safeParse({
+        version: '1.0',
+        endpoints: {
+          agents: { managementApi: { auth: { oidc: {}, clients: [{ ...binding, tenantId }] } } },
+        },
+      });
+
+      expect(result.success).toBe(false);
+    },
+  );
+
   it('accepts Cognito access-token validation', () => {
     const result = configSchema.safeParse({
       version: '1.0',

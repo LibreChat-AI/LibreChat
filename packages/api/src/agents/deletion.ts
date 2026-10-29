@@ -18,7 +18,7 @@ export interface AgentManagementDeleteDeps {
   getRoleByName: (roleName: string, fieldsToSelect?: string | string[]) => Promise<IRole | null>;
   getAgentWithVersionCount: (search: {
     id: string;
-    tenantId: string;
+    tenantId: string | null;
   }) => Promise<AgentManagementRecord | null>;
   checkPermission: (params: {
     userId: string;
@@ -28,7 +28,7 @@ export interface AgentManagementDeleteDeps {
     requiredPermission: PermissionBits;
   }) => Promise<boolean>;
   hasCapability: (user: IUser, capability: SystemCapability) => Promise<boolean>;
-  deleteAgent: (search: { id: string; tenantId: string }) => Promise<IAgent | null>;
+  deleteAgent: (search: { id: string; tenantId: string | null }) => Promise<IAgent | null>;
 }
 
 function sendError(res: Response, code: Parameters<typeof mapAgentManagementError>[0]) {
@@ -55,7 +55,7 @@ export function createAgentManagementDeleteHandler(
   return async function deleteAgent(req: Request, res: Response): Promise<Response> {
     try {
       const user = req.user as IUser | undefined;
-      if (!user?.id || !user.tenantId) {
+      if (!user?.id) {
         return sendError(res, 'permission_denied');
       }
 
@@ -72,7 +72,7 @@ export function createAgentManagementDeleteHandler(
 
       const agent = await deps.getAgentWithVersionCount({
         id: req.params.id,
-        tenantId: user.tenantId,
+        tenantId: user.tenantId ?? null,
       });
       if (!agent) {
         return sendError(res, 'not_found');
@@ -92,7 +92,10 @@ export function createAgentManagementDeleteHandler(
         return sendError(res, 'permission_denied');
       }
 
-      const deleted = await deps.deleteAgent({ id: req.params.id, tenantId: user.tenantId });
+      const deleted = await deps.deleteAgent({
+        id: req.params.id,
+        tenantId: user.tenantId ?? null,
+      });
       if (!deleted) {
         return sendError(res, 'not_found');
       }

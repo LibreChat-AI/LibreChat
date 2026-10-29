@@ -8,7 +8,7 @@ import type { OidcAccessTokenConfig } from '../auth/oidc';
 import type { ServerRequest } from '~/types/http';
 import type { ContextRequest } from './tenant';
 import { extractBearerToken, verifyOidcAccessToken } from '../auth/oidc';
-import { tenantContextMiddleware } from './tenant';
+import { isStrict, tenantContextMiddleware } from './tenant';
 
 export interface AgentManagementAuthDeps {
   findUser: UserMethods['findUser'];
@@ -26,6 +26,7 @@ type EnabledManagementOidc = ManagementOidc & { issuer: string };
 type PrincipalResolution =
   | { status: 'resolved'; user: IUser }
   | { status: 'missing' }
+  | { status: 'unscoped_in_strict_mode' }
   | { status: 'inactive' };
 
 class AgentManagementAuthError extends Error {
@@ -105,16 +106,25 @@ function findClientBinding(auth: ManagementAuth, clientId: string): ManagementCl
   return auth.clients.find((client) => client.enabled !== false && client.clientId === clientId);
 }
 
+/**
+ * A binding with a `tenantId` resolves a User of that tenant. A binding without one is for a
+ * deployment that does not use tenants: it resolves only a User without a tenant, in a context
+ * without one, and is refused in strict isolation mode, where every request needs a tenant.
+ */
 async function resolvePrincipal(
   binding: ManagementClient,
   deps: Pick<AgentManagementAuthDeps, 'findUser' | 'isPrincipalActive'>,
 ): Promise<PrincipalResolution> {
-  return tenantStorage.run({ tenantId: binding.tenantId }, async () => {
-    const user = await deps.findUser({ _id: binding.userId, tenantId: binding.tenantId });
+  const tenantId = binding.tenantId || undefined;
+  if (!tenantId && isStrict()) {
+    return { status: 'unscoped_in_strict_mode' };
+  }
+  return tenantStorage.run({ tenantId }, async () => {
+    const user = await deps.findUser({ _id: binding.userId, tenantId: tenantId ?? null });
     if (!user) return { status: 'missing' };
 
     const userId = String(user._id);
-    if (userId !== binding.userId.toLowerCase() || user.tenantId !== binding.tenantId) {
+    if (userId !== binding.userId.toLowerCase() || (user.tenantId || undefined) !== tenantId) {
       return { status: 'missing' };
     }
 
@@ -188,6 +198,13 @@ export function createAgentManagementAuth(deps: AgentManagementAuthDeps): Reques
       }
 
       const principal = await resolvePrincipal(binding, deps);
+      if (principal.status === 'unscoped_in_strict_mode') {
+        logger.warn(
+          '[agentManagementAuth] Client binding without a tenant is refused in strict isolation mode',
+        );
+        sendAuthenticationError(res);
+        return;
+      }
       if (principal.status === 'missing') {
         logger.warn('[agentManagementAuth] Client binding has no matching tenant user');
         sendAuthenticationError(res);

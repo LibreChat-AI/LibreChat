@@ -334,6 +334,24 @@ describe('Agent Management read handlers', () => {
     expect(response.status).toHaveBeenCalledWith(200);
   });
 
+  it('lists only Agents without a tenant for a User without a tenant', async () => {
+    const deps = makeDeps({ hasCapability: jest.fn().mockResolvedValue(true) });
+    const response = makeResponse();
+
+    await createAgentManagementReadHandlers(deps).list(
+      makeRequest({ user: { ...user, tenantId: undefined } as IUser }),
+      response,
+    );
+
+    expect(deps.getAgentManagementListByAccess).toHaveBeenCalledWith({
+      accessibleIds: null,
+      tenantId: null,
+      limit: 20,
+      after: undefined,
+    });
+    expect(response.status).toHaveBeenCalledWith(200);
+  });
+
   it('requires the same AGENTS:USE role permission as browser reads', async () => {
     const deps = makeDeps({
       getRoleByName: jest.fn().mockResolvedValue({

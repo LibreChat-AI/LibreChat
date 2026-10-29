@@ -1126,7 +1126,9 @@ const managementClientBindingSchema = z
       .min(1)
       .max(128)
       .regex(/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/, 'must be a valid tenant id')
-      .refine((tenantId) => tenantId !== '__SYSTEM__', 'system tenant is not allowed'),
+      .refine((tenantId) => tenantId !== '__SYSTEM__', 'system tenant is not allowed')
+      /** Omitted for a deployment that does not use tenants: binds a User without a tenant. */
+      .optional(),
     enabled: z.boolean().default(true),
   })
   .strict();

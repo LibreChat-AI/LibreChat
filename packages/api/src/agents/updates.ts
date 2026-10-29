@@ -27,7 +27,7 @@ export interface AgentManagementUpdateDeps {
   getRoleByName: (roleName: string, fieldsToSelect?: string | string[]) => Promise<IRole | null>;
   getAgentWithVersionCount: (search: {
     id: string;
-    tenantId: string;
+    tenantId: string | null;
   }) => Promise<AgentManagementRecord | null>;
   checkPermission: (params: {
     userId: string;
@@ -105,7 +105,7 @@ export function createAgentManagementUpdateHandler(
   return async function update(req: Request, res: Response): Promise<Response> {
     try {
       const user = req.user as IUser | undefined;
-      if (!user?.id || !user.tenantId) {
+      if (!user?.id) {
         return sendError(res, 'permission_denied');
       }
 
@@ -122,7 +122,7 @@ export function createAgentManagementUpdateHandler(
 
       const agent = await deps.getAgentWithVersionCount({
         id: req.params.id,
-        tenantId: user.tenantId,
+        tenantId: user.tenantId ?? null,
       });
       if (!agent) {
         return sendError(res, 'not_found');
