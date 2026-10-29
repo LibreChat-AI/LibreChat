@@ -1,5 +1,7 @@
+import type { ClientSession } from 'mongoose';
 import type { AgentChannelRecord, AgentChannelThreadRecord } from '~/models/channel';
 import { closeChannelScope, initializeChannelScope, touchChannelScope } from './channelScope';
+import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
 
 export type { AgentChannelRecord, AgentChannelThreadRecord } from '~/models/channel';
@@ -61,11 +63,36 @@ export function createAgentChannelMethods(
   const ensureThreadIndexes = createChannelIndexGate(() => [threads()]);
   const secrets = '+encryptedBotToken +encryptedSigningSecret +encryptedApiKey +apiKeyId';
 
+  async function ownerWrite<T>(
+    createdBy: string,
+    tenantId: string | undefined,
+    write: (session: ClientSession) => Promise<T>,
+  ): Promise<T> {
+    const admit = await prepareChannelOwnerAdmission(mongoose, { userId: createdBy, tenantId });
+    const session = await mongoose.startSession();
+    try {
+      let result: T | undefined;
+      await session.withTransaction(async () => {
+        if (!(await admit(session))) throw new Error('Channel owner unavailable');
+        result = await write(session);
+      });
+      if (result === undefined) throw new Error('Channel write did not commit');
+      return result;
+    } finally {
+      await session.endSession();
+    }
+  }
+
   return {
     async createAgentChannel(input: AgentChannelRecord): Promise<AgentChannelRecord> {
       await ensureIndexes();
-      const record = await channel().create(input);
-      return record.toObject();
+      await initializeChannelScope(mongoose, input.tenantId, input.channelId);
+      return ownerWrite(input.createdBy, input.tenantId, async (session) => {
+        if (!(await touchChannelScope(mongoose, input.tenantId, input.channelId, session)))
+          throw new Error('Channel admission closed');
+        const [record] = await channel().create([input], { session });
+        return record.toObject();
+      });
     },
     async listAgentChannels(agentId: string): Promise<AgentChannelRecord[]> {
       return channel().find({ agentId }).sort({ createdAt: 1 }).lean();
@@ -144,19 +171,32 @@ export function createAgentChannelMethods(
     ): Promise<AgentChannelRecord | null> {
       if (expectedStatus === 'deleting' && update.status && update.status !== 'deleting')
         return null;
-      return channel()
-        .findOneAndUpdate(
-          {
-            channelId,
-            createdBy,
-            status: expectedStatus ?? { $ne: 'deleting' },
-            ...(expectedRevision ? { revision: expectedRevision } : {}),
-          },
-          { $set: update },
-          { new: true },
-        )
-        .select(secrets)
-        .lean();
+      const write = async (session?: ClientSession): Promise<AgentChannelRecord | null> =>
+        channel()
+          .findOneAndUpdate(
+            {
+              channelId,
+              createdBy,
+              status: expectedStatus ?? { $ne: 'deleting' },
+              ...(expectedRevision ? { revision: expectedRevision } : {}),
+            },
+            { $set: update },
+            { new: true, ...(session ? { session } : {}) },
+          )
+          .select(secrets)
+          .lean();
+      if (
+        update.status === 'active' ||
+        update.encryptedBotToken ||
+        update.encryptedSigningSecret ||
+        update.encryptedApiKey ||
+        update.apiKeyId
+      ) {
+        const parent = await channel().findOne({ channelId, createdBy }).select('tenantId').lean();
+        if (!parent) return null;
+        return ownerWrite(createdBy, parent.tenantId, write);
+      }
+      return write();
     },
     async deleteAgentChannel(channelId: string, createdBy: string): Promise<boolean> {
       const deleting = await channel()
