@@ -76,7 +76,10 @@ test.describe('long conversations', () => {
       .scrollIntoViewIfNeeded();
     await expect(latest).not.toBeInViewport();
 
-    const scrollControl = page.getByRole('button', { name: 'Scroll to bottom' });
+    /** The thread's own control, not the navigation rail's end marker, which shares its name. */
+    const scrollControl = page
+      .getByRole('button', { name: 'Scroll to bottom' })
+      .and(page.locator(':not([data-msg-id])'));
     await expect(scrollControl).toBeEnabled();
     await scrollControl.click();
 
