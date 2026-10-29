@@ -5,6 +5,29 @@
  * @see https://openresponses.org/specification
  */
 
+export {
+  ResponsePersistenceError,
+  selectResponseHistory,
+  selectStoredResponse,
+  buildResponseInputChain,
+  projectResponseMessage,
+  resolveResponseContinuation,
+} from './persistence';
+
+export {
+  createResponseAccountingCollector,
+  createApplicationBillingQuote,
+  buildCollectedResponseAccounting,
+  buildPersistedResponseAccounting,
+} from './accounting';
+export type { AccountingQuote, AccountingCollectorOptions } from './accounting';
+export type {
+  AccountingBasis,
+  AccountingModelSource,
+  ResponseAccountingCall,
+  ResponseAccounting,
+} from './types';
+
 // Types
 export type {
   // Enums
