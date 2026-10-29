@@ -1007,6 +1007,7 @@ function omitResolvedFileLocators(
   depth = 0,
   state?: {
     readonly seen: WeakMap<object, unknown>;
+    readonly omittedRootKeys?: ReadonlySet<string>;
     visited: number;
   },
 ): unknown {
@@ -1076,6 +1077,9 @@ function omitResolvedFileLocators(
     };
 
     for (const [key, child] of entries) {
+      if (depth === 0 && traversal.omittedRootKeys?.has(key)) {
+        continue;
+      }
       if (resolvedFile != null && key === 'file_id') {
         continue;
       }
@@ -1121,6 +1125,7 @@ export function omitResolvedCanonicalFileLocators<T>(
   resolvedFilesById: ReadonlyMap<string, CanonicalFileInspectionFile>,
   context: {
     readonly messageCount?: number;
+    readonly omittedRootKeys?: ReadonlySet<string>;
     readonly onTraversalFailure?: LocatorTraversalReporter;
   } = {},
 ): T {
@@ -1128,7 +1133,11 @@ export function omitResolvedCanonicalFileLocators<T>(
     return input;
   }
   try {
-    return omitResolvedFileLocators(input, resolvedFilesById) as T;
+    return omitResolvedFileLocators(input, resolvedFilesById, 0, {
+      seen: new WeakMap<object, unknown>(),
+      omittedRootKeys: context.omittedRootKeys,
+      visited: 0,
+    }) as T;
   } catch (error) {
     if (error instanceof ContentTraversalLimitError && error.diagnostics != null) {
       context.onTraversalFailure?.({
