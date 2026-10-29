@@ -24,6 +24,8 @@ export interface GenerationJobMetadata {
   /** Immutable per-generation saver scope. LangGraph's root `checkpoint_ns`
    * remains empty; the checkpointer adapter maps this scope into storage. */
   checkpointNamespace?: string;
+  /** Server-pinned saver settings retained for expired background-response cleanup. */
+  responseCheckpointConfigJSON?: string;
   /** Immutable generation protocol. Missing on legacy records means v1. */
   generationProtocolVersion?: 1 | 2;
   earlyBufferOverflow?: EarlyBufferOverflowState;

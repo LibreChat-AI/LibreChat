@@ -338,6 +338,7 @@ describe('RedisJobStore', () => {
       compact: true,
       isTemporary: false,
       retentionExpiresAt: '2030-01-01T00:00:00.000Z',
+      responseCheckpointConfigJSON: '{"type":"mongo","checkpointCollectionName":"responses"}',
       agentEventDeliveryKey: 'completion-delivery-1',
       agentEventInvocationKey: 'original-delivery-1',
       agentEventInvocationGenerationCreatedAt: 987654,
@@ -457,6 +458,7 @@ describe('RedisJobStore', () => {
       agent_id: 'agent-1',
       isTemporary: false,
       retentionExpiresAt: '2030-01-01T00:00:00.000Z',
+      responseCheckpointConfigJSON: '{"type":"mongo","checkpointCollectionName":"responses"}',
       scheduleId: 'schedule-1',
       scheduleMCPCompletion: {
         scheduleId: 'original-schedule',
@@ -526,6 +528,7 @@ describe('RedisJobStore', () => {
       agent_id: 'agent-1',
       isTemporary: '0',
       retentionExpiresAt: '2030-01-01T00:00:00.000Z',
+      responseCheckpointConfigJSON: '{"type":"mongo","checkpointCollectionName":"responses"}',
       scheduleId: 'schedule-1',
       scheduledFor: '2026-08-17T12:00:00.000Z',
       scheduleConfigRevision: '4',

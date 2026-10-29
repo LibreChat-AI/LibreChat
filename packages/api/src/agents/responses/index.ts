@@ -13,6 +13,17 @@ export {
   projectResponseMessage,
   resolveResponseContinuation,
 } from './persistence';
+export { createBackgroundResponseService } from './background';
+
+export { createBackgroundResponseAuthority } from './authority';
+
+export { createBackgroundResponseQueue, backgroundResponseDeliveryKey } from './queue';
+export {
+  createBackgroundResponseWorkerAuth,
+  mintBackgroundResponseWorkerToken,
+  mintResponseResumeWorkerToken,
+} from './worker';
+export type { BackgroundResponseDependencies, BackgroundResponseResult } from './background';
 
 export {
   createResponseAccountingCollector,
