@@ -154,3 +154,9 @@ export type * from './types';
 export * from './tools/approval';
 
 export * from './mcp/approval';
+export * from './channels/service';
+
+export * from './channels/authority';
+
+export * from './channels/identity';
+export * from './channels/identityHttp';
