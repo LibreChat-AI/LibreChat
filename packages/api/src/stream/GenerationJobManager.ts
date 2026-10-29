@@ -8491,11 +8491,9 @@ class GenerationJobManagerClass {
     if (this.shuttingDown) {
       return false;
     }
-    /** Opened before the CAS and closed only on a definitive `false`. A rejected reply is
-     *  ambiguous — the store may already have committed `providerDrained: false` — and every
-     *  caller treats it that way, running or cleaning up and recording the drain either way.
-     *  Leaving the tracker open makes shutdown wait for that record instead of tearing the
-     *  transport down underneath it; the deadline still bounds the wait if it never comes. */
+    /** Legacy ambiguous starts retain their shutdown tracker until settlement. A resumed
+     * attempt instead owns provider work only after its exact durable start receipt is
+     * confirmed; otherwise it releases its local tracker without recording a drain. */
     // A duplicate local attempt must not close the winner's shared shutdown tracker.
     if (!this.openProviderExecution(streamId, expectedCreatedAt, providerExecutionId)) return false;
     let started: boolean;
