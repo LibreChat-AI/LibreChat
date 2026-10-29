@@ -12,7 +12,13 @@ import type {
   TTraceRecordParams,
   TTraceRecordDetail,
 } from './types/traces';
+import type {
+  ChannelIdentityClient,
+  ChannelIdentityResult,
+  ChannelLinkView,
+} from './types/channelIdentity';
 import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
+import type { AgentChannel, ActivateAgentChannel, SlackChannelManifest } from './types/channels';
 import type { ScheduleMCPConsentView, ConfirmScheduleMCPConsent } from './types/scheduleConsent';
 import type { CodeSetupAttempt, CodeSetupApprovalRequest } from './codeSetup';
 import type { TFileConfig } from './file-config';
@@ -42,6 +48,10 @@ import request from './request';
 import * as s from './schemas';
 import * as r from './roles';
 
+export function listAgentChannels(agentId: string): Promise<AgentChannel[]> {
+  return request.get(endpoints.agentChannels(agentId));
+}
+
 export function getResponseReview(responseId: string): Promise<ResponseReviewView> {
   return request.get(endpoints.responseReview(responseId));
 }
@@ -68,6 +78,62 @@ export async function submitResponseReviewDecision(
     throw new Error('Response decision acknowledgement is unavailable');
   return receipt.data;
 }
+
+export function createAgentChannel(
+  agentId: string,
+  credentialMode: AgentChannel['credentialMode'] = 'shared',
+): Promise<AgentChannel> {
+  return request.post(endpoints.agentChannels(agentId), { type: 'slack', credentialMode });
+}
+
+export function getAgentChannelManifest(
+  agentId: string,
+  channelId: string,
+): Promise<SlackChannelManifest> {
+  return request.get(`${endpoints.agentChannels(agentId, channelId)}/manifest`);
+}
+
+export function activateAgentChannel(
+  agentId: string,
+  channelId: string,
+  input: ActivateAgentChannel,
+): Promise<AgentChannel> {
+  return request.patch(endpoints.agentChannels(agentId, channelId), input);
+}
+
+export function disableAgentChannel(agentId: string, channelId: string): Promise<AgentChannel> {
+  return request.patch(endpoints.agentChannels(agentId, channelId), { status: 'disabled' });
+}
+
+export function changeAgentChannelMode(
+  agentId: string,
+  channelId: string,
+  credentialMode: AgentChannel['credentialMode'],
+  revision: string,
+): Promise<AgentChannel> {
+  return request.patch(endpoints.agentChannels(agentId, channelId), { credentialMode, revision });
+}
+
+export function deleteAgentChannel(agentId: string, channelId: string): Promise<void> {
+  return request.delete(endpoints.agentChannels(agentId, channelId));
+}
+
+export const channelIdentityClient: ChannelIdentityClient = {
+  preview: (ticket): Promise<ChannelIdentityResult<ChannelLinkView>> =>
+    request.post(`${endpoints.apiBaseUrl()}/api/channels/links/preview`, { ticket }),
+  accept: ({ ticket, expectedRevision }): Promise<ChannelIdentityResult<ChannelLinkView>> =>
+    request.post(`${endpoints.apiBaseUrl()}/api/channels/links/accept`, {
+      ticket,
+      revision: expectedRevision,
+    }),
+  list: (): Promise<ChannelLinkView[]> =>
+    request.get(`${endpoints.apiBaseUrl()}/api/channels/links`),
+  revoke: (linkId, revision): Promise<ChannelIdentityResult<ChannelLinkView>> =>
+    request.deleteWithOptions(
+      `${endpoints.apiBaseUrl()}/api/channels/links/${encodeURIComponent(linkId)}`,
+      { data: { revision } },
+    ),
+};
 
 export function getInsights(params: TInsightsParams = {}): Promise<TInsightsResponse> {
   const query = new URLSearchParams();

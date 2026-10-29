@@ -1048,6 +1048,11 @@ export default function AgentPanel() {
             <AgentConfig
               instructionsPromptStatus={instructionsPromptStatus}
               onRetryInstructionsPrompt={retryInstructionsPrompt}
+              showChannels={
+                agentsConfig?.channels?.enabled === true &&
+                (!isPersistedAgent || (!permissionsLoading && hasPermission(PermissionBits.SHARE)))
+              }
+              channelsAgentId={isPersistedAgent ? current_agent_id! : undefined}
             />
           )}
           {canEditAgent && !agentQuery.isInitialLoading && activePanel === Panel.advanced && (
