@@ -155,12 +155,14 @@ export * from './tools/approval';
 
 export * from './mcp/approval';
 export * from './channels/service';
-
+export * from './channels/runs';
 export * from './channels/authority';
-
+export * from './channels/execution';
+export * from './channels/responses';
+export * from './channels/credentials';
 export * from './channels/identity';
 export * from './channels/identityHttp';
 export * from './channels/artifacts';
 export * from './channels/artifactStorage';
-
+export * from './channels/cleanup';
 export * from './channels/summary';
