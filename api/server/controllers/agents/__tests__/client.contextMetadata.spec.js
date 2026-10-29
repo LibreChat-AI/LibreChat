@@ -56,9 +56,11 @@ function buildMeta({
   latestToolCallIds,
   contentParts,
   maxRetainedToolCountChars,
+  collectedUsage,
 }) {
   const self = {
     collectedThoughtSignatures: null,
+    collectedUsage,
     usageEmitSink: usageEvents,
     stepLimitReached,
     contentParts,
@@ -76,6 +78,48 @@ function buildMeta({
 describe('AgentClient.buildResponseMetadata — snapshot persistence + summary marker', () => {
   beforeEach(() => {
     mockResolveRetainedToolTokens.mockReset();
+  });
+
+  it('persists actual parent and child models after generation cache cleanup without inventing a price', () => {
+    const meta = buildMeta({
+      usageEvents: [primary],
+      collectedUsage: [
+        { ...primary, provider: 'openAI', model: 'parent-model', agentId: 'parent-agent' },
+        {
+          input_tokens: 20,
+          output_tokens: 8,
+          provider: 'anthropic',
+          model: 'child-model',
+          usage_type: 'subagent',
+          agentId: 'child-agent',
+        },
+      ],
+    });
+
+    expect(meta.accounting).toMatchObject({
+      status: 'unavailable',
+      currency: 'USD',
+      coverage: 'none',
+    });
+    expect(meta.accounting).not.toHaveProperty('amount');
+    expect(meta.accounting.calls).toEqual([
+      expect.objectContaining({
+        provider: 'openAI',
+        model: 'parent-model',
+        modelSource: 'runtime_reported',
+        usageType: 'message',
+        inputTokens: 10,
+        outputTokens: 5,
+      }),
+      expect.objectContaining({
+        provider: 'anthropic',
+        model: 'child-model',
+        modelSource: 'runtime_reported',
+        usageType: 'subagent',
+        inputTokens: 20,
+        outputTokens: 8,
+      }),
+    ]);
   });
 
   it('persists the snapshot when a primary usage follows it (normal turn)', () => {

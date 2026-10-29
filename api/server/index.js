@@ -86,7 +86,17 @@ const { capabilityContextMiddleware } = require('./middleware/roles/capabilities
 const createValidateImageRequest = require('./middleware/validateImageRequest');
 const { initializeGitHubSkillSync } = require('./services/Skills/sync');
 const { startSkillDeletionSweep } = require('./services/Skills/deletion');
-const { initializeAgentTriggerService } = require('./services/Agents/triggers');
+const {
+  initializeAgentTriggerService,
+  enqueueAgentTrigger,
+} = require('./services/Agents/triggers');
+const { initializeBackgroundResponses } = require('./services/Responses');
+const {
+  initializeChannelFeedback,
+  stopChannelFeedback,
+  initializeChannelCleanup,
+  stopChannelCleanup,
+} = require('./services/Channels');
 const { resumeAgentEventDetachedAction } = require('./services/Agents/detachedActionResume');
 const { initializeScheduleEngine, recordExpiredScheduleApproval } = require('./services/Schedules');
 const { jwtLogin, ldapLogin, passportLogin } = require('~/strategies');
@@ -477,6 +487,7 @@ const startServer = async () => {
   app.use('/api/roles', routes.roles);
   app.use('/api/agents/chat', rejectChatStartsUntilReady);
   app.use('/api/agents', routes.agents);
+  app.use('/api/channels', routes.channels);
   app.use('/api/banner', routes.banner);
   app.use('/api/memories', routes.memories);
   app.use('/api/schedules', rejectScheduleWritesUntilReady, routes.schedules);
@@ -546,6 +557,7 @@ const startServer = async () => {
       if (inspectFlags || isEnabled(process.env.MEM_DIAG)) {
         memoryDiagnostics.start();
       }
+      initializeBackgroundResponses(server.address(), enqueueAgentTrigger);
       await initializeAgentTriggerService({
         address: server.address(),
         completionResultBatchSize:
@@ -556,6 +568,10 @@ const startServer = async () => {
         idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
       });
       const scheduleEngineArmed = (await initializeScheduleEngine()) != null;
+      await initializeChannelFeedback();
+      registerShutdownTask('channel feedback export', stopChannelFeedback, { priority: 100 });
+      registerShutdownTask('channel authority cleanup', stopChannelCleanup, { priority: 100 });
+      await initializeChannelCleanup();
       scheduleEngineState = scheduleEngineArmed ? 'armed' : 'unavailable';
       if (!scheduleEngineArmed) {
         // Terminal, not transient: arming is attempted once, so schedule writes are refused
