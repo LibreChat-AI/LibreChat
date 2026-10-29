@@ -248,6 +248,13 @@ type OptimisticWrite = {
   removed: Set<string>;
 };
 
+/** An answer in flight, which a later pause or the end of its generation ends. */
+type AnswerClaim = {
+  action: Agents.PendingAction;
+  generationCreatedAt?: number;
+  ended: boolean;
+};
+
 type DetachedGeneration = {
   error: Error;
   target: Omit<ChatAbortRequest, 'chatId'>;
@@ -833,6 +840,13 @@ export class Chat {
   private generationCreatedAt?: number;
   /** The pause whose resume request is in flight, so a second submit cannot send it again. */
   private resuming?: string;
+  /**
+   * The claim of the newest answer in flight: its pause and generation, against which a later pause
+   * is judged to replace it, and whether its generation ended or a newer pause replaced it. Expiry,
+   * a snapshot that releases the pause and a stale replay only hide it, so they leave it live. Each
+   * answer keeps its own claim, so a newer answer never revives an ended one.
+   */
+  private answering?: AnswerClaim;
   private disposed = false;
   /** Set while the chat writes the state, whose own report of that write the chat announces itself. */
   private writing = false;
@@ -889,6 +903,10 @@ export class Chat {
     }
     clearTimeout(this.expiry);
     this.expiry = undefined;
+    if (action && this.answering && action.actionId !== this.answering.action.actionId) {
+      /** A newer pause replaced the one an answer is in flight for. */
+      this.answering.ended = true;
+    }
     this.held = action;
     if (action?.expiresAt != null && !this.disposed) {
       this.armExpiry(action);
@@ -1082,6 +1100,9 @@ export class Chat {
     try {
       if (superseded || (retire != null && this.action?.actionId === retire)) {
         /** A restored pause belongs to the generation it was restored with, not this one. */
+        if (superseded) {
+          this.endAnswer();
+        }
         this.clearAction();
       }
       this.setConnection('reconnecting');
@@ -1246,6 +1267,15 @@ export class Chat {
     const since = this.latestStart;
     const answer = this.abortOnServer(target).then((result) => {
       generation.stopped = true;
+      /** A confirmed stop ends its generation, and with it an answer in flight for that generation's pause. */
+      const answered = this.answering?.generationCreatedAt;
+      if (
+        answered == null ||
+        target.generationCreatedAt == null ||
+        answered === target.generationCreatedAt
+      ) {
+        this.endAnswer();
+      }
       if (target.generationCreatedAt != null) {
         this.endedGenerations.add(target.generationCreatedAt);
       }
@@ -1706,12 +1736,31 @@ export class Chat {
     }
   }
 
-  /** Whether `action` is the held pause, or the one a snapshot released while nothing replaced it. */
-  private holdsPause(action: Agents.PendingAction): boolean {
-    if (this.action) {
-      return this.action.actionId === action.actionId;
+  /** Ends the claim of an answer in flight: its generation ended, so a continuation has nothing to follow. */
+  private endAnswer(): void {
+    if (this.answering) {
+      this.answering.ended = true;
     }
-    return this.releasedPause === action.actionId;
+  }
+
+  /**
+   * Ends that claim when `next` replaces the pause being answered: a pause of a later generation,
+   * or a later one of the same generation, whether or not the chat still shows the answered one.
+   */
+  private replaceAnswer(next: Agents.PendingAction, generationCreatedAt: number | undefined): void {
+    const answering = this.answering;
+    if (!answering || next.actionId === answering.action.actionId) {
+      return;
+    }
+    const later =
+      generationCreatedAt != null &&
+      answering.generationCreatedAt != null &&
+      generationCreatedAt > answering.generationCreatedAt;
+    const sameGeneration =
+      generationCreatedAt == null || generationCreatedAt === answering.generationCreatedAt;
+    if (later || (sameGeneration && this.isSupersededBy(answering.action, next))) {
+      answering.ended = true;
+    }
   }
 
   private assertNotResuming(action: Agents.PendingAction): void {
@@ -1782,6 +1831,8 @@ export class Chat {
         this.action != null &&
         (generationCreatedAt !== this.generationCreatedAt ||
           this.isSupersededBy(this.action, action));
+      /** An expired pause of a later generation, or a later one of this generation, replaces it. */
+      this.replaceAnswer(action, generationCreatedAt);
       if (this.action?.actionId === action.actionId || superseded) {
         this.clearAction();
       }
@@ -1961,6 +2012,10 @@ export class Chat {
     }
     if (this.action) {
       throw new Error('A paused generation is waiting for a decision; answer or stop it first');
+    }
+    if (this.answering && !this.answering.ended) {
+      /** An answer the server may accept still owns the generation, even when its pause is hidden. */
+      throw new Error('An answer to the paused generation is still in flight');
     }
     const active = createActiveRequest({ responseless: true });
 
@@ -2190,6 +2245,7 @@ export class Chat {
       this.generationCreatedAt = stream.generationCreatedAt;
       if (this.action && previous != null && previous !== stream.generationCreatedAt) {
         /** A restored pause belongs to the generation it was restored with, not this one. */
+        this.endAnswer();
         this.clearAction();
       }
     }
@@ -2427,6 +2483,7 @@ export class Chat {
       this.action = undefined;
       this.decisions.clear();
       this.releasedPause = undefined;
+      this.endAnswer();
       /** Including an attachment that found its generation already finished. */
       const ended =
         active.stream?.generationCreatedAt ??
@@ -2547,6 +2604,8 @@ export class Chat {
     this.seePause(expired, generation);
     const held = this.action;
     const superseded = held != null && generation != null && this.isSupersededBy(held, expired);
+    /** A later pause of the generation replaces the answered one, even though it already expired. */
+    this.replaceAnswer(expired, generation);
     if (held?.actionId === expired.actionId || superseded) {
       this.clearAction();
     }
@@ -2723,6 +2782,8 @@ export class Chat {
       return;
     }
     this.resuming = action.actionId;
+    const claim: AnswerClaim = { action, generationCreatedAt, ended: false };
+    this.answering = claim;
     /** Read once: the answer and the reattachment that follows it run on the same selection. */
     let selection: ReturnType<NonNullable<ChatInit['resumeSelection']>> | undefined;
     try {
@@ -2747,10 +2808,11 @@ export class Chat {
       /** The answer names the conversation, which a chat started under `new` adopts either way. */
       this.learnConversation(result.conversationId);
       /**
-       * A pause stopped or replaced while the request was in flight is no longer this one's. One a
-       * snapshot only released still is: the server took its answer, so its continuation runs.
+       * A pause stopped, replaced or ended with its generation while the request was in flight is
+       * no longer this one's. One that only expired or that a snapshot released still is: the server
+       * took its answer, so its continuation runs.
        */
-      if (!this.holdsPause(action)) {
+      if (claim.ended) {
         return;
       }
       const reattach = this.active && !this.active.stream ? this.active.reattach : undefined;
@@ -2814,7 +2876,7 @@ export class Chat {
         throw error;
       }
       const ambiguous = isRetryableNetworkError(failure);
-      if (ambiguous && !this.active && !this.disposed && this.holdsPause(action)) {
+      if (ambiguous && !this.active && !this.disposed && !claim.ended) {
         /**
          * The answer may have reached the server, which then runs the generation again. It stays
          * addressable through a reattachment, which finds the continuation, the pause or the end.
@@ -2836,6 +2898,9 @@ export class Chat {
       }
       throw error;
     } finally {
+      if (this.answering === claim) {
+        this.answering = undefined;
+      }
       if (this.resuming === action.actionId) {
         this.resuming = undefined;
         const held = this.action;
