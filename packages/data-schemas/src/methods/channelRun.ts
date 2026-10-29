@@ -134,6 +134,12 @@ export interface ChannelRunStorage {
     receipt: Omit<ChannelRunProgress, 'rendererVersion' | 'text'>,
     now: number,
   ): Promise<ChannelRunRecord>;
+  reconcileProgress(
+    tenantId: string,
+    fence: ChannelRunFence,
+    receipt: Pick<ChannelRunProgress, 'revision' | 'attempts' | 'externalMessageKey'>,
+    now: number,
+  ): Promise<ChannelRunRecord>;
   beginDelivery(
     tenantId: string,
     fence: ChannelRunFence,
@@ -144,6 +150,13 @@ export interface ChannelRunStorage {
     tenantId: string,
     fence: ChannelRunFence,
     receipt: ChannelDeliveryReceipt,
+    now: number,
+  ): Promise<ChannelRunRecord>;
+  /** Confirm a previously uncertain send only after verifying its provider receipt. Never resends. */
+  reconcileDelivery(
+    tenantId: string,
+    fence: ChannelRunFence,
+    receipt: ChannelDeliveryReceipt & { outcome: 'confirmed' },
     now: number,
   ): Promise<ChannelRunRecord>;
   checkpointUpload(
@@ -166,6 +179,7 @@ export interface ChannelRunStorage {
     channelId: string,
     runId: string,
     externalUserId: string,
+    observed?: { epoch: number; before: number },
   ): Promise<boolean>;
   findDeliveredReply(
     tenantId: string,
@@ -175,7 +189,20 @@ export interface ChannelRunStorage {
 }
 
 const digest = (value: object): string =>
-  createHash('sha256').update(JSON.stringify(value)).digest('hex');
+  createHash('sha256')
+    .update(
+      JSON.stringify(value, (_key, item: unknown) =>
+        item != null && typeof item === 'object' && !Array.isArray(item)
+          ? Object.fromEntries(
+              Object.entries(item).sort(([a], [b]) => {
+                if (a === b) return 0;
+                return a < b ? -1 : 1;
+              }),
+            )
+          : item,
+      ),
+    )
+    .digest('hex');
 function laneKey(
   tenantId: string,
   channelId: string,
@@ -191,11 +218,32 @@ function laneKey(
     externalUserId,
     revision: principal.channelRevision,
     linkRevision: principal.linkRevision ?? null,
+    linkId: principal.linkId ?? null,
   });
 }
 const activeStates = ['queued', 'executing', 'requires_action', 'delivering', 'blocked'];
 /** Bounds transaction work independently of backlog size, not an operator retry policy. */
 const claimBatchSize = 25;
+
+/** Evidence is verified by the transport; storage binds it to the exact uncertain attempt. */
+function assertReconciliation(
+  previous: Omit<ChannelDeliveryReceipt, 'operationId'> | undefined,
+  receipt: Pick<ChannelDeliveryReceipt, 'attempts' | 'externalMessageKey' | 'externalFileId'>,
+): void {
+  if (
+    !previous ||
+    !['unknown', 'confirmed'].includes(previous.outcome) ||
+    previous.attempts !== receipt.attempts ||
+    (!receipt.externalMessageKey && !receipt.externalFileId) ||
+    (previous.externalMessageKey && previous.externalMessageKey !== receipt.externalMessageKey) ||
+    (previous.externalFileId && previous.externalFileId !== receipt.externalFileId) ||
+    (previous.upload && previous.upload.fileId !== receipt.externalFileId) ||
+    (previous.outcome === 'confirmed' &&
+      (previous.externalMessageKey !== receipt.externalMessageKey ||
+        previous.externalFileId !== receipt.externalFileId))
+  )
+    throw new ChannelRunConflict('invalid_transition');
+}
 
 function authorityLost(run: ChannelRunRecord): Partial<ChannelRunRecord> {
   return {
@@ -306,7 +354,7 @@ export function createChannelRunStorage(mongoose: typeof import('mongoose')): Ch
     if (
       request.model !== run.agentId ||
       request.input !== run.admission.input ||
-      request.previous_response_id !== previous ||
+      (run.execution.responseId == null && request.previous_response_id !== previous) ||
       request.background !== true ||
       request.store === false
     )
@@ -393,7 +441,12 @@ export function createChannelRunStorage(mongoose: typeof import('mongoose')): Ch
       return transaction(async (session) => {
         const existing = await runs().findOne(eventKey).session(session).lean();
         if (existing) {
-          if (existing.payloadHash !== payloadHash) throw new ChannelRunConflict('event_conflict');
+          if (
+            digest(existing.admission) !== payloadHash ||
+            existing.agentId !== input.agentId ||
+            digest(existing.principal) !== digest(input.principal)
+          )
+            throw new ChannelRunConflict('event_conflict');
           return { run: existing, duplicate: true };
         }
         const lane = await lanes()
@@ -459,6 +512,7 @@ export function createChannelRunStorage(mongoose: typeof import('mongoose')): Ch
                 sequence: { $lt: run.sequence },
                 state: { $in: activeStates },
               })
+              .hint('channel_run_active_predecessor')
               .session(session))
           ) {
             await runs().updateOne(
@@ -794,6 +848,47 @@ export function createChannelRunStorage(mongoose: typeof import('mongoose')): Ch
         };
       });
     },
+    async reconcileProgress(tenantId, fence, receipt, now) {
+      return mutate(tenantId, fence, now, async (run) => {
+        if (run.progress?.revision !== receipt.revision || !receipt.externalMessageKey)
+          throw new ChannelRunConflict('invalid_transition');
+        assertReconciliation(run.progress, receipt);
+        return {
+          progress: {
+            ...run.progress,
+            outcome: 'confirmed' as const,
+            externalMessageKey: receipt.externalMessageKey,
+            retryAt: undefined,
+            errorCode: undefined,
+          },
+        };
+      });
+    },
+    async reconcileDelivery(tenantId, fence, receipt, now) {
+      return mutate(tenantId, fence, now, async (run) => {
+        const previous = run.receipts.find((part) => part.operationId === receipt.operationId);
+        if (
+          !run.plan?.parts.some((part) => part.operationId === receipt.operationId) ||
+          receipt.outcome !== 'confirmed'
+        )
+          throw new ChannelRunConflict('invalid_transition');
+        assertReconciliation(previous, receipt);
+        return {
+          receipts: run.receipts.map((part) =>
+            part.operationId === receipt.operationId
+              ? {
+                  ...part,
+                  outcome: 'confirmed' as const,
+                  externalMessageKey: receipt.externalMessageKey,
+                  externalFileId: receipt.externalFileId,
+                  retryAt: undefined,
+                  errorCode: undefined,
+                }
+              : part,
+          ),
+        };
+      });
+    },
     async checkpointUpload(tenantId, fence, operationId, attempts, upload, now) {
       return mutate(tenantId, fence, now, async (run) => {
         const previous = run.receipts.find((part) => part.operationId === operationId);
@@ -919,7 +1014,14 @@ export function createChannelRunStorage(mongoose: typeof import('mongoose')): Ch
         })
         .lean();
     },
-    async requestCancel(tenantId, channelId, runId, externalUserId) {
+    async requestCancel(tenantId, channelId, runId, externalUserId, observed) {
+      if (
+        observed &&
+        (!Number.isSafeInteger(observed.epoch) ||
+          observed.epoch < 0 ||
+          !Number.isFinite(observed.before))
+      )
+        throw new ChannelRunConflict('invalid_transition');
       const result = await runs().updateOne(
         {
           tenantId,
@@ -927,6 +1029,13 @@ export function createChannelRunStorage(mongoose: typeof import('mongoose')): Ch
           runId,
           'admission.actor.externalUserId': externalUserId,
           state: { $in: ['queued', 'executing', 'requires_action'] },
+          ...(observed
+            ? {
+                leaseEpoch: observed.epoch,
+                claimCheckedAt: { $lte: observed.before },
+                receivedAt: { $lte: observed.before },
+              }
+            : {}),
         },
         { $set: { cancellationRequested: true } },
       );
