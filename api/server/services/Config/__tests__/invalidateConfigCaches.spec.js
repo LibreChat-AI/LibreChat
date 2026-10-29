@@ -62,14 +62,16 @@ jest.mock('@librechat/api', () => ({
 // ── Tests ──────────────────────────────────────────────────────────────
 
 const { getAppConfig, invalidateConfigCaches } = require('../app');
-const { initializeMessageBudget } = require('~/models');
+const { initializeMessageBudget, initializeChannelStorageConfig } = require('~/models');
 // Capture module-composition calls before clearMocks resets the spy history.
 const budgetInitializations = [...initializeMessageBudget.mock.calls];
+const channelInitializations = [...initializeChannelStorageConfig.mock.calls];
 const invalidationOptions = mockCreateConfigCacheInvalidation.mock.calls[0][0];
 const pubSubOptions = mockCreateRedisPubSub.mock.calls[0][0];
 
 test('Config supplies its actual reader exactly once during composition', () => {
   expect(budgetInitializations).toEqual([[getAppConfig]]);
+  expect(channelInitializations).toEqual([[getAppConfig]]);
 });
 
 describe('invalidateConfigCaches', () => {
