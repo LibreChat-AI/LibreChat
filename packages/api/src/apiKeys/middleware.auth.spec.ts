@@ -1,6 +1,7 @@
 import { Types } from 'mongoose';
 import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from 'librechat-data-provider';
 import type { NextFunction, Response } from 'express';
+import type { ApiKeyAuthDependencies } from './middleware';
 import type { ApiKeyAuthRequest } from './middleware';
 import { createRequireApiKeyAuth } from './middleware';
 
@@ -23,6 +24,95 @@ function createRequest(): ApiKeyAuthRequest {
 }
 
 describe('remote Agent API key authentication', () => {
+  describe('bound grants', () => {
+    const binding = { kind: 'test-grant', id: 'grant-1' };
+    function fixture(authorizeBinding?: ApiKeyAuthDependencies['authorizeBinding']) {
+      const userId = new Types.ObjectId();
+      const keyId = new Types.ObjectId();
+      const user = { _id: userId, provider: 'openid' };
+      const deps: ApiKeyAuthDependencies = {
+        validateAgentApiKey: jest.fn().mockResolvedValue({ userId, keyId, binding }),
+        findUser: jest.fn().mockResolvedValue(user),
+        isPrincipalActive: jest.fn().mockResolvedValue(true),
+        authorizeBinding,
+      };
+      return { deps, user, userId, keyId };
+    }
+
+    it.each(['missing', 'unknown'] as const)('denies a %s grant handler', async (handler) => {
+      const authorize = handler === 'unknown' ? jest.fn().mockResolvedValue(false) : undefined;
+      const { deps } = fixture(authorize);
+      const req = createRequest();
+      const { res, status, json } = createResponse();
+      const next = jest.fn();
+
+      await createRequireApiKeyAuth(deps)(req, res, next);
+
+      expect(status).toHaveBeenCalledWith(403);
+      expect(json).toHaveBeenCalledWith({
+        error: {
+          message: 'API key authority is unavailable',
+          type: 'permission_error',
+          code: 'api_key_authority_changed',
+        },
+      });
+      expect(req.user).toBeUndefined();
+      expect(req.apiKeyId).toBeUndefined();
+      expect(next).not.toHaveBeenCalled();
+    });
+
+    it('admits only after the handler authorizes the exact key, grant, user and request', async () => {
+      const authorize = jest.fn().mockResolvedValue(true);
+      const { deps, user, userId, keyId } = fixture(authorize);
+      const req = createRequest();
+      const { res, status } = createResponse();
+      const next = jest.fn();
+
+      await createRequireApiKeyAuth(deps)(req, res, next);
+
+      expect(authorize).toHaveBeenCalledTimes(1);
+      expect(authorize).toHaveBeenCalledWith({ keyId: String(keyId), binding, user, request: req });
+      expect(req.user?.id).toBe(String(userId));
+      expect(req.apiKeyId).toEqual(keyId);
+      expect(next).toHaveBeenCalledTimes(1);
+      expect(status).not.toHaveBeenCalled();
+    });
+
+    it('does not apply the grant handler to ordinary personal keys', async () => {
+      const authorize = jest.fn().mockResolvedValue(false);
+      const { deps, userId, keyId } = fixture(authorize);
+      deps.validateAgentApiKey = jest.fn().mockResolvedValue({ userId, keyId });
+      const { res } = createResponse();
+      const next = jest.fn();
+
+      await createRequireApiKeyAuth(deps)(createRequest(), res, next);
+
+      expect(authorize).not.toHaveBeenCalled();
+      expect(next).toHaveBeenCalledTimes(1);
+    });
+
+    it('maps a grant lookup outage to a sanitized server error without authenticating', async () => {
+      const { deps } = fixture(jest.fn().mockRejectedValue(new Error('private database details')));
+      const req = createRequest();
+      const { res, status, json } = createResponse();
+      const next = jest.fn();
+
+      await createRequireApiKeyAuth(deps)(req, res, next);
+
+      expect(status).toHaveBeenCalledWith(500);
+      expect(json).toHaveBeenCalledWith({
+        error: {
+          message: 'Internal server error during authentication',
+          type: 'server_error',
+          code: 'internal_error',
+        },
+      });
+      expect(req.user).toBeUndefined();
+      expect(req.apiKeyId).toBeUndefined();
+      expect(next).not.toHaveBeenCalled();
+    });
+  });
+
   it('rejects a valid key while account deletion is fenced', async () => {
     const userId = new Types.ObjectId();
     const middleware = createRequireApiKeyAuth({
