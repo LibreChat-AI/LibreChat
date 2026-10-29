@@ -4380,4 +4380,35 @@ describe('Chat pauses a sync frame carries or releases while an answer is in fli
     expect(sync.data.pendingEvents).toEqual([{ type: 'text', text: 'x' }]);
     expect(h.chat.pendingAction).toBeUndefined();
   });
+
+  it('an answer accepted after the generation of its released pause finished starts no continuation', async () => {
+    const h = createHarness();
+    h.chat.restorePendingAction(askAction, 500);
+    let answer: (() => void) | undefined;
+    h.transport.resume.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answer = () =>
+            resolve({ streamId: 'convo-1', conversationId: 'convo-1', status: 'resuming' });
+        }),
+    );
+    const answering = h.chat.addToolOutput({ toolCallId: 'ask-1', output: 'A' });
+    await flush();
+    const stream = await reattach(h);
+    stream.push({
+      type: 'sync',
+      data: { sync: true, resumeState: { runSteps: [] } },
+    } as unknown as ChatEvent);
+    await flush();
+    stream.push(finalEvent());
+    await flush();
+    const finishes = h.finishes.length;
+    h.transport.reconnectToStream.mockClear();
+    answer?.();
+    await answering;
+    await flush();
+
+    expect(h.transport.reconnectToStream).not.toHaveBeenCalled();
+    expect(h.finishes).toHaveLength(finishes);
+  });
 });
