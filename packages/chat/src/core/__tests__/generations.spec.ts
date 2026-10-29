@@ -3107,6 +3107,27 @@ describe('Chat lost starts across conversations and turns a retirement starts', 
     await queued;
     expect(h.finishes).toHaveLength(1);
   });
+
+  it.each([
+    ['under `new`, which a retry in another conversation does not resolve', 'new', 'unaddressable'],
+    ['in a known conversation, which a retry the server takes there resolves', 'convo-1', 'idle'],
+  ])('a lost start %s', async (_label, id, after) => {
+    const h = createHarness({ id });
+    h.transport.sendMessages.mockRejectedValueOnce(networkError());
+    await h.chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+    const retry = createStream({ streamId: 'convo-9', generationCreatedAt: 200 });
+    h.transport.sendMessages.mockResolvedValueOnce({ status: 'stream', stream: retry });
+    const sent = h.chat.sendMessage({ parts: [{ type: 'text', text: 'Again' }] });
+    await flush();
+    retry.push({
+      type: 'sync',
+      data: { conversationId: 'convo-9', responseMessage: placeholder },
+    } as ChatEvent);
+    retry.push(finalEvent());
+    await sent;
+
+    expect((await h.chat.stop()).status).toBe(after);
+  });
 });
 
 /** Table 1: every pause transition, the pause it leaves held, and the decisions it keeps. */
@@ -3381,6 +3402,124 @@ describe('Chat lost-start resolution', () => {
     await drive(h);
 
     expect((await h.chat.stop()).status).toBe(expected);
+  });
+
+  it('after the second of two starts under `new` answers late, the first is still owed', async () => {
+    const h = createHarness({ id: 'new' });
+    const answers: Array<(result: ChatSendResult) => void> = [];
+    h.transport.sendMessages.mockImplementation(
+      () =>
+        new Promise<ChatSendResult>((resolve) => {
+          answers.push(resolve);
+        }),
+    );
+    for (const text of ['Hi', 'Again']) {
+      const sent = h.chat.sendMessage({ parts: [{ type: 'text', text }] });
+      await flush();
+      expect((await h.chat.stop()).status).toBe('unaddressable');
+      await sent;
+    }
+    answers[1]?.({ status: 'settled', conversationId: 'convo-8', generationProtocolVersion: 2 });
+    await flush();
+
+    expect(h.chat.status).toBe('error');
+    expect(h.chat.error).toBeDefined();
+    expect((await h.chat.stop()).status).toBe('unaddressable');
+  });
+
+  it('after a start answers settled just before its stop, nothing is owed', async () => {
+    const h = createHarness();
+    let answer: ((result: ChatSendResult) => void) | undefined;
+    h.transport.sendMessages.mockImplementationOnce(
+      () =>
+        new Promise<ChatSendResult>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const sent = h.chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+    await flush();
+    answer?.({ status: 'settled', conversationId: 'convo-1', generationProtocolVersion: 2 });
+    const stopped = await h.chat.stop();
+    await sent;
+    await flush();
+
+    expect(stopped.status).not.toBe('unaddressable');
+    expect(h.chat.status).toBe('ready');
+    expect((await h.chat.stop()).status).toBe('idle');
+  });
+
+  it('after a lost start under `new` answers late while its retry runs, the retry keeps its conversation', async () => {
+    const h = createHarness({ id: 'new' });
+    let answer: ((result: ChatSendResult) => void) | undefined;
+    h.transport.sendMessages.mockImplementationOnce(
+      () =>
+        new Promise<ChatSendResult>((resolve) => {
+          answer = resolve;
+        }),
+    );
+    const first = h.chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+    await flush();
+    expect((await h.chat.stop()).status).toBe('unaddressable');
+    await first;
+
+    const stream = createStream({ streamId: 'convo-2', generationCreatedAt: 200 });
+    h.transport.sendMessages.mockResolvedValueOnce({ status: 'stream', stream });
+    const retried = h.chat.sendMessage({ parts: [{ type: 'text', text: 'Again' }] });
+    await flush();
+    answer?.({ status: 'settled', conversationId: 'convo-1', generationProtocolVersion: 2 });
+    await flush();
+    stream.push({
+      type: 'sync',
+      data: { conversationId: 'convo-2', responseMessage: placeholder },
+    } as ChatEvent);
+    stream.push(finalEvent());
+    await retried;
+
+    expect(h.chat.conversationId).toBe('convo-2');
+  });
+
+  it('after a stop of a dropped first turn under `new` answers while its retry runs, the retry keeps its conversation', async () => {
+    const h = createHarness({ id: 'new' });
+    const dropped = createStream({ streamId: 'convo-1', generationCreatedAt: 100 });
+    h.transport.sendMessages.mockResolvedValueOnce({ status: 'stream', stream: dropped });
+    const first = h.chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+    await flush();
+    dropped.push(dropEvent);
+    await first;
+    await flush();
+
+    let answerStop: (() => void) | undefined;
+    h.transport.abort.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          answerStop = () => resolve({ success: true, aborted: 'convo-1' });
+        }),
+    );
+    const stopping = h.chat.stop();
+    await flush();
+    const stream = createStream({ streamId: 'convo-2', generationCreatedAt: 200 });
+    h.transport.sendMessages.mockResolvedValueOnce({ status: 'stream', stream });
+    const retried = h.chat.sendMessage({ parts: [{ type: 'text', text: 'Again' }] });
+    await flush();
+    answerStop?.();
+    await stopping;
+    await flush();
+    stream.push({
+      type: 'sync',
+      data: { conversationId: 'convo-2', responseMessage: placeholder },
+    } as ChatEvent);
+    stream.push(finalEvent());
+    await retried;
+
+    expect(h.chat.conversationId).toBe('convo-2');
+  });
+
+  it('after the cancelled start answers late that the server already finished it', async () => {
+    const h = createHarness();
+    await states.starting(h);
+    await events.lateSettled(h);
+
+    expect(h.after).toBe('idle');
   });
 });
 
