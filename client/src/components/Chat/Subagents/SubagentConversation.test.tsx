@@ -8,9 +8,8 @@ import type {
   TMessage,
   TMessageContentParts,
 } from 'librechat-data-provider';
-import type { ChildConversationTurn } from '@librechat/chat/react';
+import type { ChildConversationTurn, TurnAuthor } from '@librechat/chat/react';
 import type { ChatContract } from '~/hooks/Chat/contract';
-import type { TurnAuthor } from './author';
 import SubagentConversation from './SubagentConversation';
 import { ChatContext } from '~/Providers/ChatContext';
 import { ChatSurfaceHarness } from 'test/harness';

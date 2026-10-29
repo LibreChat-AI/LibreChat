@@ -12,6 +12,7 @@ import type {
 import type { TMessage } from 'librechat-data-provider';
 import useConversationSeen from '~/hooks/Conversations/useConversationSeen';
 import useMessageScrolling from '~/hooks/Messages/useMessageScrolling';
+import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import Files from '~/components/Chat/Messages/Content/Files';
 import { useScreenshot } from '~/hooks/ScreenshotContext';
 import { useForkConvoMutation } from '~/data-provider';
@@ -78,6 +79,7 @@ export const appMessagesHost: MessagesHost = {
   useScreenshotTarget: () => useScreenshot().screenshotTargetRef,
   useAutoScroll: () => useAtomValue(autoScrollAtom),
   useConversationSeen,
+  renderMessageIcon: (props) => <MessageIcon {...props} />,
 };
 
 setDefaultMessagesHost(appMessagesHost);

@@ -31,6 +31,12 @@ import {
   isLiveSubagentStatus,
   getSubagentPrompt,
   useParentSubagents,
+  agentAuthor,
+  resolveSubagentAuthor,
+  isSelfSpawn as isSelfSpawnType,
+  resolveChildAgent,
+  readableSubagentType,
+  useParentAuthor,
 } from '@librechat/chat/react';
 import type {
   ParentSubagentTaskSummary,
@@ -51,14 +57,6 @@ import {
   useSubagentControlMutation,
   useSubagentThreadQuery,
 } from '~/data-provider';
-import {
-  agentAuthor,
-  resolveSubagentAuthor,
-  isSelfSpawn as isSelfSpawnType,
-  resolveChildAgent,
-  readableSubagentType,
-  useParentAuthor,
-} from './author';
 import SubagentActivity, { SubagentActivityScrollSurface } from './SubagentActivity';
 import ApprovalProvider from '~/components/Chat/Messages/Content/ApprovalContext';
 import { TaskContentScopeContext } from '~/data-provider/Subagents/content';

@@ -127,6 +127,7 @@ export {
   useMessagesHost,
   MessagesHostProvider,
   setDefaultMessagesHost,
+  MessageIconSlot,
 } from './react/messages/host';
 export type {
   ForkEvents,
@@ -135,6 +136,8 @@ export type {
   ForkConversation,
   MessagesScrolling,
   ReportNearBottom,
+  MessageIconData,
+  MessageIconProps,
 } from './react/messages/host';
 export {
   SoleToolContext,

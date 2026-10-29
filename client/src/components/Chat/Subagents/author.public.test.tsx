@@ -1,10 +1,11 @@
 import { RecoilRoot } from 'recoil';
 import { render, screen, waitFor } from '@testing-library/react';
+import { agentAuthor, messageAuthor } from '@librechat/chat/react';
 import { dataService, EModelEndpoint } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TMessage } from 'librechat-data-provider';
 import { ShareContext } from '~/Providers/ShareContext';
-import { agentAuthor, messageAuthor } from './author';
+import '~/Providers/MessagesHostContext';
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
