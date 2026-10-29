@@ -4354,4 +4354,30 @@ describe('Chat pauses a sync frame carries or releases while an answer is in fli
 
     expect(h.transport.reconnectToStream).toHaveBeenCalledTimes(1);
   });
+
+  it('a stale pause buffered in the sync frame never reaches the host reducer', async () => {
+    const folded: ChatEvent[] = [];
+    const h = createHarness({ applyEvent: (event) => folded.push(event) });
+    const stream = await reattach(h);
+    const expired = { ...askAction, expiresAt: 1 } as Agents.PendingAction;
+    stream.push({
+      type: 'sync',
+      data: {
+        sync: true,
+        resumeState: { runSteps: [] },
+        pendingEvents: [
+          { event: 'on_pending_action', data: expired },
+          { type: 'text', text: 'x' },
+        ],
+      },
+    } as unknown as ChatEvent);
+    await flush();
+
+    const sync = folded.find((event) => event.type === 'sync') as Extract<
+      ChatEvent,
+      { type: 'sync' }
+    >;
+    expect(sync.data.pendingEvents).toEqual([{ type: 'text', text: 'x' }]);
+    expect(h.chat.pendingAction).toBeUndefined();
+  });
 });

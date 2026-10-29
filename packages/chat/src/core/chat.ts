@@ -2524,20 +2524,34 @@ export class Chat {
   }
 
   /**
-   * The event the host reducer folds in: a sync snapshot drops a pause that is stale (expired,
-   * already resumed, or older than one seen), as a standalone `pending_action` frame of it would be
-   * skipped, so no card is drawn for a pause the chat does not hold.
+   * The event the host reducer folds in: a sync frame drops a pause that is stale (expired,
+   * already resumed, or older than one seen), from its snapshot and from the frames it buffers, as a
+   * standalone `pending_action` frame of it would be skipped, so no card is drawn for a pause the
+   * chat does not hold.
    */
   private withoutStalePause(event: ChatEvent): ChatEvent {
-    const snapshot = event.type === 'sync' ? getSnapshotPause(event.data) : undefined;
-    if (event.type !== 'sync' || !snapshot) {
+    if (event.type !== 'sync') {
       return event;
     }
-    if (!this.isStalePause(snapshot)) {
+    const { resumeState, pendingEvents } = event.data;
+    const snapshot = resumeState?.pendingAction;
+    const staleSnapshot = snapshot != null && this.isStalePause(snapshot);
+    const live = pendingEvents?.filter(
+      (frame) =>
+        !('event' in frame) ||
+        frame.event !== ApprovalEvents.ON_PENDING_ACTION ||
+        !this.isStalePause(frame.data),
+    );
+    const staleBuffered = live != null && live.length !== pendingEvents?.length;
+    if (!staleSnapshot && !staleBuffered) {
       return event;
     }
-    const resumeState = { ...event.data.resumeState, pendingAction: undefined };
-    return { ...event, data: { ...event.data, resumeState } } as ChatEvent;
+    const data = {
+      ...event.data,
+      ...(staleSnapshot && { resumeState: { ...resumeState, pendingAction: undefined } }),
+      ...(staleBuffered && { pendingEvents: live }),
+    };
+    return { ...event, data } as ChatEvent;
   }
 
   /** Whether `action` expired, was already resumed, or trails a pause seen in its generation. */
