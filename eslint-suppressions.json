@@ -55,11 +55,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/ChatView.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/ExportAndShareMenu.tsx": {
     "design/disabled-recipe": {
       "count": 1
