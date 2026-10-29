@@ -105,4 +105,4 @@ export type {
 export { default as ChatPane } from './components/pane/ChatPane';
 export { getChatPaneView } from './components/pane/view';
 export type { ChatPaneProps } from './components/pane/ChatPane';
-export type { ChatPaneView } from './components/pane/view';
+export type { ChatPaneView, ChatPaneColumn } from './components/pane/view';

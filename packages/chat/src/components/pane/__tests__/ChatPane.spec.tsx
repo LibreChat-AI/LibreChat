@@ -17,7 +17,7 @@ function renderPane(props: Partial<ChatPaneProps> = {}, lift = 0) {
   const pane = (next: Partial<ChatPaneProps>) => (
     <Provider store={jotaiStore}>
       <ChatPane
-        view="messages"
+        view={{ isLanding: false, column: 'messages' }}
         heading="Deploy checklist"
         header={<div data-testid="header" />}
         messages={<ol aria-label="Messages" />}
@@ -32,6 +32,8 @@ function renderPane(props: Partial<ChatPaneProps> = {}, lift = 0) {
   return { ...result, rerenderPane: (next: Partial<ChatPaneProps>) => result.rerender(pane(next)) };
 }
 
+const LANDING = { isLanding: true, column: 'landing' } as const;
+
 const paneColumn = (container: HTMLElement) =>
   container.querySelector('[data-chat-pane="0"]') as HTMLElement;
 const composerBand = (container: HTMLElement) =>
@@ -39,16 +41,20 @@ const composerBand = (container: HTMLElement) =>
 
 describe('getChatPaneView', () => {
   it.each([
-    [{ conversationId: undefined, hasMessages: false, isLoading: false }, 'landing'],
-    [{ conversationId: Constants.NEW_CONVO, hasMessages: false, isLoading: true }, 'landing'],
-    [{ conversationId: 'convo-1', hasMessages: false, isLoading: true }, 'loading'],
-    [{ conversationId: undefined, hasMessages: false, isLoading: true }, 'loading'],
-    [{ conversationId: 'convo-1', hasMessages: false, isLoading: false }, 'loading'],
-    [{ conversationId: Constants.NEW_CONVO, hasMessages: true, isLoading: true }, 'loading'],
-    [{ conversationId: 'convo-1', hasMessages: true, isLoading: false }, 'messages'],
-    [{ conversationId: Constants.NEW_CONVO, hasMessages: true, isLoading: false }, 'messages'],
-  ] as const)('%o shows %s', (input, view) => {
-    expect(getChatPaneView(input)).toBe(view);
+    [{ conversationId: undefined, hasMessages: false, isLoading: false }, true, 'landing'],
+    [{ conversationId: Constants.NEW_CONVO, hasMessages: false, isLoading: true }, true, 'landing'],
+    [{ conversationId: undefined, hasMessages: false, isLoading: true }, true, 'loading'],
+    [{ conversationId: 'convo-1', hasMessages: false, isLoading: true }, false, 'loading'],
+    [{ conversationId: 'convo-1', hasMessages: false, isLoading: false }, false, 'loading'],
+    [{ conversationId: Constants.NEW_CONVO, hasMessages: true, isLoading: true }, false, 'loading'],
+    [{ conversationId: 'convo-1', hasMessages: true, isLoading: false }, false, 'messages'],
+    [
+      { conversationId: Constants.NEW_CONVO, hasMessages: true, isLoading: false },
+      false,
+      'messages',
+    ],
+  ] as const)('%o lays out landing=%s and shows %s', (input, isLanding, column) => {
+    expect(getChatPaneView(input)).toEqual({ isLanding, column });
   });
 });
 
@@ -76,7 +82,7 @@ describe('ChatPane', () => {
   });
 
   it('centres the welcome screen and its starters without a scroll container', () => {
-    const { container } = renderPane({ view: 'landing' });
+    const { container } = renderPane({ view: LANDING });
 
     expect(screen.getByText('Welcome')).toBeInTheDocument();
     expect(screen.queryByRole('list', { name: 'Messages' })).not.toBeInTheDocument();
@@ -87,11 +93,20 @@ describe('ChatPane', () => {
   });
 
   it('shows a spinner in place of the column while loading', () => {
-    renderPane({ view: 'loading' });
+    renderPane({ view: { isLanding: false, column: 'loading' } });
 
     expect(screen.queryByRole('list', { name: 'Messages' })).not.toBeInTheDocument();
     expect(screen.queryByText('Welcome')).not.toBeInTheDocument();
     expect(screen.getByRole('textbox', { name: 'Message' })).toBeInTheDocument();
+  });
+
+  it('keeps the welcome layout under the spinner while a new session loads', () => {
+    const { container } = renderPane({ view: { isLanding: true, column: 'loading' } });
+
+    expect(screen.queryByText('Welcome')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Starter' })).toBeInTheDocument();
+    expect(paneColumn(container)).toHaveClass('scrollbar-gutter-spacer', 'flex-1');
+    expect(paneColumn(container)).not.toHaveClass('overflow-y-auto');
   });
 
   it('replaces the composer with a note for a conversation the reader cannot continue', () => {
@@ -108,13 +123,13 @@ describe('ChatPane', () => {
     expect(screen.getByText('Project Atlas')).toBeInTheDocument();
     expect(paneColumn(container)).toHaveClass('pt-9');
 
-    rerenderPane({ badge, view: 'landing' });
+    rerenderPane({ badge, view: LANDING });
     expect(screen.queryByText('Project Atlas')).not.toBeInTheDocument();
     expect(paneColumn(container)).not.toHaveClass('pt-9');
   });
 
   it('lifts the welcome column by the room an open composer popover needs', () => {
-    const { container } = renderPane({ view: 'landing' }, 120);
+    const { container } = renderPane({ view: LANDING }, 120);
     expect(paneColumn(container).style.transform).toBe('translateY(-120px)');
   });
 
@@ -153,10 +168,10 @@ describe('ChatPane', () => {
       return <section aria-label="Column">{children}</section>;
     }
     const renderColumn = (column: ReactNode) => <Wrapper>{column}</Wrapper>;
-    const { rerenderPane } = renderPane({ view: 'landing', renderColumn });
+    const { rerenderPane } = renderPane({ view: LANDING, renderColumn });
 
     expect(screen.getByRole('region', { name: 'Column' })).toHaveTextContent('Welcome');
-    rerenderPane({ view: 'messages', renderColumn });
+    rerenderPane({ view: { isLanding: false, column: 'messages' }, renderColumn });
     expect(screen.getByRole('region', { name: 'Column' })).toContainElement(
       screen.getByRole('list', { name: 'Messages' }),
     );

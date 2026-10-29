@@ -2,13 +2,13 @@ import { useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { cn, Spinner } from '@librechat/client';
 import type { ReactElement, ReactNode, RefObject } from 'react';
-import type { ChatPaneView } from './view';
+import type { ChatPaneColumn, ChatPaneView } from './view';
 import { composerLiftFamily } from '../../react/lift';
 
 export type ChatPaneProps = {
   /** The pane's index among the open panes; scopes pane-local state such as the composer lift. */
   index?: number;
-  /** Which column to show; `getChatPaneView` derives it from the session. */
+  /** The layout and the column to show; `getChatPaneView` derives both from the session. */
   view: ChatPaneView;
   /** The page's visually hidden heading: the conversation title or the new-chat label. */
   heading: string;
@@ -17,9 +17,9 @@ export type ChatPaneProps = {
   /** A strip pinned above the message column, such as the conversation's project. The column
    *  leaves room for it below the header. */
   badge?: ReactNode;
-  /** The message list, shown when `view` is `messages`. */
+  /** The message list, shown when the column is `messages`. */
   messages?: ReactNode;
-  /** The welcome screen, shown when `view` is `landing`. */
+  /** The welcome screen, shown when the column is `landing`. */
   landing?: ReactNode;
   /** Wraps whichever column is showing, so a provider it needs stays mounted across views. */
   renderColumn?: (column: ReactNode) => ReactNode;
@@ -47,7 +47,7 @@ function LoadingSpinner(): ReactElement {
   );
 }
 
-const columns: Record<ChatPaneView, (props: ChatPaneProps) => ReactNode> = {
+const columns: Record<ChatPaneColumn, (props: ChatPaneProps) => ReactNode> = {
   loading: () => <LoadingSpinner />,
   landing: ({ landing }) => landing,
   messages: ({ messages }) => messages,
@@ -73,11 +73,11 @@ export default function ChatPane(props: ChatPaneProps): ReactElement {
     footer,
     renderMascot,
   } = props;
-  const isLanding = view === 'landing';
+  const { isLanding } = view;
   /** Room an open composer popover needs below the composer; see the atom. */
   const composerLift = useAtomValue(composerLiftFamily(index));
   const bandRef = useRef<HTMLDivElement>(null);
-  const column = columns[view](props);
+  const column = columns[view.column](props);
 
   return (
     <>

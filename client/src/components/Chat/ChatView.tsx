@@ -95,7 +95,7 @@ function ChatViewPane({
     isLoading,
     hasMessages: messagesTree != null && messagesTree.length > 0,
   });
-  const isLandingPage = view === 'landing';
+  const { isLanding: isLandingPage } = view;
 
   /** The welcome screen carries the full footer unless the deployment turned it
    *  off; otherwise a footer bar renders only for configured content. */
