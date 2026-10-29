@@ -4258,3 +4258,37 @@ describe('Chat pauses the server refused to resume', () => {
     expect(h.chat.pendingAction).toBeUndefined();
   });
 });
+
+describe('Chat pauses created in the same millisecond', () => {
+  const held = { ...askAction, actionId: 'action-1', createdAt: 5 } as Agents.PendingAction;
+  const expired = {
+    ...askAction,
+    actionId: 'action-2',
+    createdAt: 5,
+    expiresAt: 1,
+  } as Agents.PendingAction;
+
+  it('an expired successor a status read reports retires the held pause it ties', () => {
+    const h = createHarness();
+    h.chat.restorePendingAction(held, 500);
+    h.chat.restorePendingAction(expired, 500);
+
+    expect(h.chat.pendingAction).toBeUndefined();
+  });
+
+  it('an expired successor a reattached stream replays retires the held pause it ties', async () => {
+    const h = createHarness();
+    h.chat.restorePendingAction(held, 500);
+    const stream = createStream({ streamId: 'convo-1', generationCreatedAt: 500 });
+    h.transport.reconnectToStream.mockResolvedValueOnce(stream);
+    h.chat.resumeStream({ streamId: 'convo-1', generationCreatedAt: 500 }).then(
+      () => undefined,
+      () => undefined,
+    );
+    await flush();
+    stream.push({ type: 'pending_action', data: expired } as unknown as ChatEvent);
+    await flush();
+
+    expect(h.chat.pendingAction).toBeUndefined();
+  });
+});
