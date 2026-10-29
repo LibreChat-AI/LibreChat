@@ -12,7 +12,6 @@ import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { getMappingOptions } from '~/hooks/Chat/outcomes';
 import useTurnServices from '~/hooks/Chat/services';
-import { useResumeOnLoad } from '~/hooks/SSE';
 import useNewConvo from '~/hooks/useNewConvo';
 
 /** Cache events that add, drop or rewrite a query's data. */
@@ -124,9 +123,6 @@ export const appChatHost: ChatHost = {
   useFeedbackEnabled: () => useChatSettings().config.feedbackEnabled,
   getMappingOptions,
   useMessages,
-  useSessionEffects: ({ index, conversationId, chat, isSettled }) => {
-    useResumeOnLoad(conversationId, chat.getMessages, index, isSettled);
-  },
 };
 
 export { ChatHostProvider, useChatHost } from '@librechat/chat/react';

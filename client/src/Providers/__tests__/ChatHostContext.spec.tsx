@@ -3,16 +3,8 @@ import { MemoryRouter } from 'react-router-dom';
 import { renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, QueryKeys, dataService } from 'librechat-data-provider';
-import type { ChatContract } from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import { appChatHost } from '../ChatHostContext';
-
-const mockUseResumeOnLoad = jest.fn();
-
-/** Resume owns the transport; the host only hands it the session's values. */
-jest.mock('~/hooks/SSE', () => ({
-  useResumeOnLoad: (...args: unknown[]) => mockUseResumeOnLoad(...args),
-}));
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -75,22 +67,5 @@ describe('appChatHost.useMessages', () => {
     expect(result.current.messages).toBeNull();
     expect(result.current.isFetching).toBe(false);
     expect(getMessages).not.toHaveBeenCalled();
-  });
-});
-
-describe('appChatHost.useSessionEffects', () => {
-  it('runs resume on load against the session contract', () => {
-    const chat = { getMessages: jest.fn() } as unknown as ChatContract;
-
-    renderHook(() =>
-      appChatHost.useSessionEffects({
-        index: 1,
-        conversationId: 'convo-1',
-        chat,
-        isSettled: true,
-      }),
-    );
-
-    expect(mockUseResumeOnLoad).toHaveBeenCalledWith('convo-1', chat.getMessages, 1, true);
   });
 });

@@ -62,7 +62,6 @@ const createHost = (conversation: TConversation | null): ChatHost => ({
   useFeedbackEnabled: () => false,
   getMappingOptions: () => ({}),
   useMessages: () => ({ messages: null, isLoading: false, isFetching: false }),
-  useSessionEffects: noop,
 });
 
 const INDEX = 0;

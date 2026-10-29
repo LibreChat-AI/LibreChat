@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { submissionByIndex, useIsSubmitting } from '../submission';
 import useQueuedTurnReveal from '../steering/useQueuedTurnReveal';
 import useQueueDrain from '../steering/useQueueDrain';
+import { useResumeOnLoad } from '../stream/resume/load';
 import useAdaptiveSSE from '../stream/adaptive';
 import { ChatContext } from './context';
 import useChatHelpers from './helpers';
@@ -51,12 +52,7 @@ export function ChatSessionProvider({
   /** Resume waits for messages to load AND the warm-cache background revalidation to settle:
    *  a stale invalidated cache mounts with isLoading false while the refetch is in flight, and
    *  resume must not build from (or race) it. */
-  host.useSessionEffects({
-    index,
-    conversationId,
-    chat,
-    isSettled: !isLoading && !isFetching,
-  });
+  useResumeOnLoad(conversationId, chat.getMessages, index, !isLoading && !isFetching);
 
   /** Shows a server-owned queued follow-up as the next user turn as soon as its predecessor
    *  completes, ahead of the receipt and active-job polls. */

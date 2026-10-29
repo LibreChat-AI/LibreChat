@@ -14,6 +14,7 @@ import { ChatHostProvider } from '../host';
 const mockUseChatHelpers = jest.fn();
 const mockUseQueueDrain = jest.fn();
 const mockUseAdaptiveSSE = jest.fn();
+const mockUseResumeOnLoad = jest.fn();
 const mockRevealQueuedTurn = jest.fn();
 
 /** The contract and the queue have specs of their own; here they only witness the order and
@@ -30,6 +31,9 @@ jest.mock('../../stream/adaptive', () => ({
   __esModule: true,
   default: (...args: unknown[]) => mockUseAdaptiveSSE(...args),
 }));
+jest.mock('../../stream/resume/load', () => ({
+  useResumeOnLoad: (...args: unknown[]) => mockUseResumeOnLoad(...args),
+}));
 jest.mock('../../steering/useQueueDrain', () => ({
   __esModule: true,
   default: (...args: unknown[]) => mockUseQueueDrain(...args),
@@ -44,9 +48,8 @@ const contract = {
 
 function createHost(query: ChatMessagesQuery) {
   const useMessages = jest.fn((): ChatMessagesQuery => query);
-  const useSessionEffects = jest.fn();
-  const host = { useMessages, useSessionEffects } as unknown as ChatHost;
-  return { host, useMessages, useSessionEffects };
+  const host = { useMessages } as unknown as ChatHost;
+  return { host, useMessages };
 }
 
 function renderSession(host: ChatHost, pane = jest.fn(() => <Probe />)) {
@@ -99,22 +102,13 @@ describe('ChatSessionProvider', () => {
   it('serves the contract and runs the stream, resume and queue drain against it', () => {
     const submission = { conversation: {} } as TSubmission;
     getDefaultStore().set(submissionByIndex(1), submission);
-    const { host, useSessionEffects } = createHost({
-      messages,
-      isLoading: false,
-      isFetching: false,
-    });
+    const { host } = createHost({ messages, isLoading: false, isFetching: false });
     renderSession(host);
 
     expect(mockUseChatHelpers).toHaveBeenCalledWith(1, 'convo-1');
     expect(served).toBe(contract);
     expect(mockUseAdaptiveSSE).toHaveBeenLastCalledWith(submission, contract, false, 1);
-    expect(useSessionEffects).toHaveBeenLastCalledWith({
-      index: 1,
-      conversationId: 'convo-1',
-      chat: contract,
-      isSettled: true,
-    });
+    expect(mockUseResumeOnLoad).toHaveBeenLastCalledWith('convo-1', contract.getMessages, 1, true);
     expect(mockUseQueueDrain).toHaveBeenCalledWith(
       1,
       'convo-1',
@@ -127,12 +121,10 @@ describe('ChatSessionProvider', () => {
     ['loading', { isLoading: true, isFetching: true }],
     ['revalidating a warm cache', { isLoading: false, isFetching: true }],
   ])('holds resume back while %s', (_label, state) => {
-    const { host, useSessionEffects } = createHost({ messages: null, ...state });
+    const { host } = createHost({ messages: null, ...state });
     renderSession(host);
 
-    expect(useSessionEffects).toHaveBeenLastCalledWith(
-      expect.objectContaining({ isSettled: false }),
-    );
+    expect(mockUseResumeOnLoad).toHaveBeenLastCalledWith('convo-1', contract.getMessages, 1, false);
   });
 
   it('runs the stream and resume after the contract and before the drain', () => {
@@ -143,7 +135,7 @@ describe('ChatSessionProvider', () => {
     });
     mockUseQueueDrain.mockImplementation(() => order.push('drain'));
     mockUseAdaptiveSSE.mockImplementation(() => order.push('stream'));
-    const { host, useMessages, useSessionEffects } = createHost({
+    const { host, useMessages } = createHost({
       messages,
       isLoading: false,
       isFetching: false,
@@ -152,7 +144,7 @@ describe('ChatSessionProvider', () => {
       order.push('messages');
       return { messages, isLoading: false, isFetching: false };
     });
-    useSessionEffects.mockImplementation(() => order.push('resume'));
+    mockUseResumeOnLoad.mockImplementation(() => order.push('resume'));
     renderSession(host);
 
     expect(order.slice(0, 5)).toEqual(['messages', 'contract', 'stream', 'resume', 'drain']);

@@ -158,15 +158,6 @@ export type ChatMessagesQuery = {
   isFetching: boolean;
 };
 
-/** What a pane's session hands its effects each render. */
-export type ChatSessionEffectsParams = {
-  index: number;
-  conversationId?: string;
-  chat: ChatContract;
-  /** The messages finished loading and no revalidation is in flight. */
-  isSettled: boolean;
-};
-
 /**
  * What `useChatHelpers` needs from the app that hosts it. Members named `use*` are hooks, called
  * unconditionally by the chat hook, so the host can back each one with its own router, query
@@ -198,13 +189,6 @@ export interface ChatHost {
     conversationId: string | undefined,
     options: { isStreaming: boolean },
   ): ChatMessagesQuery;
-  /**
-   * Runs the pane's resume on load.
-   *
-   * @deprecated On arrival: a bridge to the app's `useResumeOnLoad` until it moves into this
-   * package (#17565), after which the session calls it itself and this member is removed.
-   */
-  useSessionEffects(params: ChatSessionEffectsParams): void;
 }
 
 const ChatHostContext = createContext<ChatHost | null>(null);
