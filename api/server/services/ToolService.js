@@ -48,7 +48,8 @@ const {
   buildServerNameAliases,
   findShadowedServerNames,
   isNormalizationSensitiveName,
-  AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE,
+  createExpectedMCPToolsUnavailableError,
+  createMCPToolsFailureContext,
   isFatalAgentInitializationError,
   codeExecutionAuthHeaders,
   createLaneGitRecorder,
@@ -788,21 +789,6 @@ const isExpectedMCPTool = (toolName) =>
   toolName?.includes(Constants.mcp_delimiter) &&
   !toolName.startsWith(mcpServerPinPrefix) &&
   !isActionTool(toolName);
-const createExpectedMCPToolsUnavailableError = (agentName, cause) => {
-  const subject = agentName ? `Agent "${agentName}"` : 'The agent';
-  const error = new Error(
-    `${subject} is configured to use MCP tools, but none are available. Verify that the MCP server is connected and this agent can access its selected tools, then try again.`,
-  );
-  error.name = 'AgentToolInitializationError';
-  error.code = AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE;
-  error.status = 503;
-  error.statusCode = 503;
-  if (cause != null) {
-    error.cause = cause;
-  }
-  return error;
-};
-
 /** Checks if a tool name is a known built-in tool */
 const isBuiltInTool = (toolName) =>
   Boolean(
@@ -1438,6 +1424,7 @@ async function loadToolDefinitionsWrapper({
     }
   }
 
+  const mcpToolsFailure = createMCPToolsFailureContext(agent.name);
   if (pendingOAuthServers.size > 0 && (res || streamId)) {
     const serverNames = Array.from(pendingOAuthServers);
     logger.info(
@@ -1473,6 +1460,7 @@ async function loadToolDefinitionsWrapper({
           mcpApps,
         });
 
+        mcpToolsFailure.recordOAuthResult(result);
         if (result?.availableTools && Object.keys(result.availableTools).length > 0) {
           rememberMCPAvailableTools(serverName, result.availableTools);
           logger.info('[Tool Definitions] MCP OAuth completed; tools available');
@@ -1532,7 +1520,7 @@ async function loadToolDefinitionsWrapper({
   }
 
   if (hasExpectedMCPTools && mcpResolution?.resolvedToolCount === 0) {
-    throw createExpectedMCPToolsUnavailableError(agent.name);
+    throw mcpToolsFailure.createError();
   }
 
   /** @type {Record<string, string>} */
