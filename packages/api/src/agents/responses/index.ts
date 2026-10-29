@@ -15,6 +15,7 @@ export {
 } from './persistence';
 export { createBackgroundResponseService } from './background';
 
+export { createResponseExecutionRuntime } from './runtime';
 export { createResponseDecisionSubmission } from './decision';
 export { createResponseResumeValidation, createResponseResumeAdmission } from './resume';
 export { createBackgroundResponseAuthority } from './authority';
@@ -23,7 +24,7 @@ export type {
   ResponseDecisionResult,
   ResponseDecisionSubmission,
 } from './decision';
-
+export { pauseResponseForReview, type ResponsePauseDependencies } from './pause';
 export { createBackgroundResponseQueue, backgroundResponseDeliveryKey } from './queue';
 export {
   createBackgroundResponseWorkerAuth,
