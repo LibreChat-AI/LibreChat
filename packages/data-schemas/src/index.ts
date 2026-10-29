@@ -130,6 +130,7 @@ export {
   runAsSystem,
   scopedCacheKey,
   SYSTEM_TENANT_ID,
+  isReservedTenantId,
 } from './config/tenantContext';
 export type { TenantContext } from './config/tenantContext';
 export {

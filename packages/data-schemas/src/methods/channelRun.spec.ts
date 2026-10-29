@@ -1175,3 +1175,116 @@ it('replays exact settled transport acknowledgements without opening another att
     ).rejects.toMatchObject({ code: 'invalid_transition' });
     expect((await storage.commitDelivery(tenantId, fence(run), 109)).state).toBe('delivered');
   }));
+
+it('refuses every named underscore context before it can read or mutate tenantless runs', async () => {
+  const input = { ...event(), tenantId: '_' };
+  const { run } = await tenantStorage.run({}, async () => storage.admit(input, 100));
+  for (const action of [
+    () => storage.read('_', 'channel', run.runId),
+    () => storage.claim('_', 'channel', 'worker', 101, 1000),
+    () => storage.listPendingMetadata(undefined, 10),
+    () => storage.requestCancel(input, run.runId),
+    () => storage.readActiveThread(input, 101),
+    () => storage.findDeliveredReply(input, 'C1:reply'),
+  ])
+    await expect(tenantStorage.run({ tenantId: '_' }, async () => action())).rejects.toThrow(
+      'Reserved tenant identifier',
+    );
+  expect(
+    await tenantStorage.run({}, async () => storage.read('_', 'channel', run.runId)),
+  ).toMatchObject({ state: 'queued', leaseEpoch: 0, cancellationRequested: false });
+});
+
+it('rejects persisting a real user in the reserved channel partition', () =>
+  runAsSystem(async () => {
+    await expect(
+      mongoose.models.User.create({
+        email: 'reserved-tenant@example.com',
+        provider: 'local',
+        tenantId: '_',
+      }),
+    ).rejects.toThrow('Reserved tenant identifier');
+  }));
+
+it.each(['principal', 'agent'] as const)(
+  'normalizes concurrent %s conflicts on one provider event',
+  (kind) =>
+    scope(async () => {
+      const first = event();
+      const second = event();
+      if (kind === 'principal') second.principal.userId = 'different-owner';
+      else second.agentId = 'different-agent';
+      const results = await Promise.allSettled([
+        storage.admit(first, 100),
+        storage.admit(second, 100),
+      ]);
+      expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+      const failure = results.find((result) => result.status === 'rejected');
+      expect(failure).toMatchObject({
+        status: 'rejected',
+        reason: { name: 'ChannelRunConflict', code: 'event_conflict' },
+      });
+      expect(await mongoose.models.ChannelRun.countDocuments({ tenantId })).toBe(1);
+      expect(await mongoose.models.ChannelLane.countDocuments({ tenantId })).toBe(1);
+    }),
+);
+
+it('injects account erasure work bounds before closing admission', () =>
+  scope(async () => {
+    const user = await mongoose.models.User.create({
+      email: 'configured-erasure@example.com',
+      provider: 'local',
+      tenantId,
+    });
+    const userId = String(user._id);
+    for (let i = 0; i < 3; i++) {
+      const input = event(`erase-${i}`);
+      input.principal.userId = userId;
+      input.admission.externalThreadKey = `thread-${i}`;
+      await storage.admit(input, 100 + i);
+    }
+    await mongoose.models.ChannelLane.updateMany({ userId }, { $unset: { userId: 1 } });
+    const getConfig = jest.fn(async () => ({ erasureBatchSize: 1 }));
+    const deleted = jest.spyOn(mongoose.models.ChannelLane, 'deleteMany');
+    try {
+      await createUserMethods(mongoose, { getChannelStorageConfig: getConfig }).deleteUserById(
+        userId,
+      );
+      const batches = deleted.mock.calls
+        .map(([filter]) => filter as { laneId?: { $in?: string[] } })
+        .filter((filter) => filter?.laneId?.$in);
+      expect(batches).toHaveLength(3);
+      for (const batch of batches) expect(batch?.laneId?.$in).toHaveLength(1);
+      expect(getConfig).toHaveBeenCalledTimes(1);
+    } finally {
+      deleted.mockRestore();
+    }
+  }));
+
+it('fails a bad erasure configuration before closing the account owner fence', () =>
+  scope(async () => {
+    const user = await mongoose.models.User.create({
+      email: 'bad-erasure-config@example.com',
+      provider: 'local',
+      tenantId,
+    });
+    const userId = String(user._id);
+    await expect(
+      createUserMethods(mongoose, {
+        getChannelStorageConfig: async () => ({ erasureBatchSize: 0 }),
+      }).deleteUserById(userId),
+    ).rejects.toThrow();
+    const input = event();
+    input.principal.userId = userId;
+    await expect(storage.admit(input, 100)).resolves.toMatchObject({ duplicate: false });
+  }));
+
+it('persists cancellation as language-neutral status without presentation copy', () =>
+  scope(async () => {
+    await storage.admit(event(), 100);
+    const run = (await storage.claim(tenantId, 'channel', 'worker', 101, 1000))!;
+    await storage.prepareExecution(tenantId, fence(run), 102);
+    await storage.requestCancel(event(), run.runId);
+    const result = await storage.finishUnstartedResponseCancellation(tenantId, fence(run), 103);
+    expect(result.snapshot).toMatchObject({ status: 'cancelled', text: '' });
+  }));
