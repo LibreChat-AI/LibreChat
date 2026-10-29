@@ -51,10 +51,6 @@ export class PatternConfigurationError extends Error {
   }
 }
 
-export function isPatternConfigurationError(error: unknown): error is PatternConfigurationError {
-  return error instanceof PatternConfigurationError;
-}
-
 export interface PatternContentInspectorResourceCost {
   readonly customPatterns: number;
   readonly validCustomPatterns: number;
@@ -360,12 +356,6 @@ export function getPatternContentInspectorPreflightCost(
     regexCharacters: snapshot.regexCharacters,
     regexes: snapshot.regexes,
   };
-}
-
-export function getPatternContentInspectorResourceCost(
-  config: PatternContentInspectorConfig | MessageFilterPiiConfig,
-): PatternContentInspectorResourceCost {
-  return prepareConfig(config).cost;
 }
 
 function findingFor(

@@ -14,8 +14,8 @@ import {
 import type { TConversation } from 'librechat-data-provider';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import { useArchiveAllConversationsMutation } from '~/data-provider';
+import useNewChat from '~/hooks/Conversations/useNewChat';
 import { isTemporaryConversation } from '~/utils';
-import useNewChat from '~/hooks/Chat/useNewChat';
 import { NotificationSeverity } from '~/common';
 import { useLocalize } from '~/hooks';
 

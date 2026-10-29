@@ -115,7 +115,7 @@ function PluginAuthForm({
 
   return (
     <form className="flex w-full flex-col" method="POST" onSubmit={submit}>
-      <div className="flex max-h-[40vh] flex-col gap-4 overflow-y-auto pr-1">
+      <div className="flex max-h-[40vh] flex-col gap-4 overflow-y-auto pe-1">
         {authConfig.map((config: TPluginAuthConfig, i: number) => {
           const authField = config.authField.split('||')[0];
           const isOptional = config.optional === true;

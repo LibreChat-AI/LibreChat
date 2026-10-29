@@ -527,19 +527,3 @@ export async function readFileAsBuffer(
   const content = await readFile(filePath);
   return { content, bytes };
 }
-
-/**
- * Reads a JSON file asynchronously
- *
- * @param filePath - Path to the JSON file to read
- * @param options - Options for reading the file
- * @returns Promise resolving to the parsed JSON object
- * @throws Error if the file cannot be read or parsed
- */
-export async function readJsonFile<T = unknown>(
-  filePath: string,
-  options: Omit<ReadFileOptions, 'encoding'> = {},
-): Promise<T> {
-  const { content } = await readFileAsString(filePath, { ...options, encoding: 'utf8' });
-  return JSON.parse(content);
-}

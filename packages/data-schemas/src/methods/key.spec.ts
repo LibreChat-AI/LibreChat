@@ -67,3 +67,14 @@ describe('user provider keys', () => {
     });
   });
 });
+
+describe('user key indexes', () => {
+  it('reads a user key by user and name through an index', async () => {
+    await mongoose.models.Key.syncIndexes();
+    await methods.updateUserKey({ userId, name: 'openAI', value: 'sk-test' });
+
+    const plan = await mongoose.models.Key.find({ userId, name: 'openAI' }).explain();
+
+    expect(JSON.stringify(plan)).toContain('"IXSCAN"');
+  });
+});

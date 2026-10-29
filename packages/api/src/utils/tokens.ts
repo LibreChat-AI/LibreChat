@@ -1,10 +1,5 @@
 import z from 'zod';
-import {
-  EModelEndpoint,
-  supportsContext1m,
-  supportsOutput128k,
-  gptPointReleaseFamily,
-} from 'librechat-data-provider';
+import { EModelEndpoint, supportsContext1m, gptPointReleaseFamily } from 'librechat-data-provider';
 import type { EndpointTokenConfig, TokenConfig } from '~/types';
 
 /**
@@ -152,6 +147,8 @@ const googleModels = {
   'gemini-3.6-flash': 1048576,
   'gemini-3.7-flash': 1048576,
   'gemini-3.8-flash': 1048576,
+  /** Shared across input, thinking and output; output is still capped by `maxOutputTokens`. */
+  'gemini-4-argon': 1048576,
 };
 
 const anthropicModels = {
@@ -173,6 +170,8 @@ const anthropicModels = {
   'claude-3.7-sonnet': 200000,
   'claude-4': 200000,
   'claude-haiku-4-5': 200000,
+  'claude-haiku-5-5': 1000000,
+  'claude-haiku-5.5': 1000000,
   'claude-opus-4': 200000,
   'claude-opus-4-5': 200000,
   'claude-sonnet-4': 200000,
@@ -201,10 +200,6 @@ const anthropicModels = {
 };
 
 const ANTHROPIC_CONTEXT_1M = 1000000;
-const ANTHROPIC_OUTPUT_128K = 128000;
-const ANTHROPIC_SONNET_4_6_PLUS_OUTPUT = 128000;
-const ANTHROPIC_SONNET_4_6_PLUS_PATTERN =
-  /(?:claude-sonnet[-.]?4[-.]?(?:[6-9]|\d{2})|claude[-.]?4[-.]?(?:[6-9]|\d{2})[-.]?sonnet)(?=$|[^0-9])/;
 
 function usesAnthropicContextMap(endpoint: EModelEndpoint): boolean {
   return (
@@ -221,23 +216,6 @@ function getAnthropicContext1m(modelName: string, endpoint: EModelEndpoint): num
     return undefined;
   }
   return ANTHROPIC_CONTEXT_1M;
-}
-
-function getAnthropicSonnet46PlusOutput(
-  modelName: string,
-  endpoint: EModelEndpoint,
-): number | undefined {
-  if (endpoint !== EModelEndpoint.anthropic || !ANTHROPIC_SONNET_4_6_PLUS_PATTERN.test(modelName)) {
-    return undefined;
-  }
-  return ANTHROPIC_SONNET_4_6_PLUS_OUTPUT;
-}
-
-function getAnthropicOutput128k(modelName: string, endpoint: EModelEndpoint): number | undefined {
-  if (!usesAnthropicContextMap(endpoint) || !supportsOutput128k(modelName)) {
-    return undefined;
-  }
-  return ANTHROPIC_OUTPUT_128K;
 }
 
 const deepseekModels = {
@@ -520,87 +498,6 @@ export const maxTokensMap: Record<string, Record<string, number>> = {
   [EModelEndpoint.bedrock]: bedrockModels,
 };
 
-export const modelMaxOutputs = {
-  o1: 32268, // -500 from max: 32,768
-  'o1-mini': 65136, // -500 from max: 65,536
-  'o1-preview': 32268, // -500 from max: 32,768
-  'gpt-5': 128000,
-  'gpt-5.1': 128000,
-  'gpt-5.2': 128000,
-  'gpt-5.3': 128000,
-  'gpt-5.4': 128000,
-  'gpt-5.4-pro': 128000,
-  'gpt-5.4-mini': 128000,
-  'gpt-5.4-nano': 128000,
-  'gpt-5.5': 128000,
-  'gpt-5.5-pro': 128000,
-  'gpt-5.6': 128000,
-  'gpt-5.6-terra': 128000,
-  'gpt-5.6-luna': 128000,
-  'gpt-6-astra': 128000,
-  'gpt-6-sol': 128000,
-  'gpt-6-luna': 128000,
-  'chat-latest': 128000,
-  'gpt-5-mini': 128000,
-  'gpt-5-nano': 128000,
-  'gpt-5-pro': 128000,
-  'gpt-5.2-pro': 128000,
-  'gpt-oss-20b': 131000,
-  'gpt-oss-120b': 131000,
-  system_default: 32000,
-};
-
-/** Outputs from https://docs.anthropic.com/en/docs/about-claude/models/all-models#model-names */
-const anthropicMaxOutputs = {
-  'claude-3-haiku': 4096,
-  'claude-3-sonnet': 4096,
-  'claude-3-opus': 4096,
-  'claude-haiku-4-5': 64000,
-  'claude-sonnet-4': 64000,
-  'claude-sonnet-4-6': 128000,
-  'claude-sonnet-4.6': 128000,
-  'claude-sonnet-4-7': 128000,
-  'claude-sonnet-4.7': 128000,
-  'claude-sonnet-4-8': 128000,
-  'claude-sonnet-4.8': 128000,
-  'claude-sonnet-4-9': 128000,
-  'claude-sonnet-4.9': 128000,
-  'claude-sonnet-5': 128000,
-  'claude-opus-4': 32000,
-  'claude-opus-4-5': 64000,
-  'claude-opus-4-6': 128000,
-  'claude-opus-4-7': 128000,
-  'claude-opus-4-8': 128000,
-  'claude-opus-5-5': 128000,
-  'claude-opus-5.5': 128000,
-  'claude-opus-5': 128000,
-  'claude-fable-5': 128000,
-  'claude-mythos-5': 128000,
-  'claude-fable-5-1': 128000,
-  'claude-mythos-5-1': 128000,
-  'claude-3.5-sonnet': 8192,
-  'claude-3-5-sonnet': 8192,
-  'claude-3.7-sonnet': 128000,
-  'claude-3-7-sonnet': 128000,
-};
-
-/** Outputs from https://api-docs.deepseek.com/quick_start/pricing */
-const deepseekMaxOutputs = {
-  deepseek: 8000, // deepseek-chat default: 4K, max: 8K
-  'deepseek-chat': 8000,
-  'deepseek-reasoner': 64000, // default: 32K, max: 64K
-  'deepseek-r1': 64000,
-  'deepseek-v3': 8000,
-  'deepseek.r1': 64000,
-};
-
-export const maxOutputTokensMap: Record<string, Record<string, number>> = {
-  [EModelEndpoint.anthropic]: anthropicMaxOutputs,
-  [EModelEndpoint.azureOpenAI]: modelMaxOutputs,
-  [EModelEndpoint.openAI]: { ...modelMaxOutputs, ...deepseekMaxOutputs },
-  [EModelEndpoint.custom]: { ...modelMaxOutputs, ...deepseekMaxOutputs },
-};
-
 /**
  * Any model-keyed map. Matching reads keys only and never inspects a value, so
  * the value type is deliberately open rather than a union that every caller has
@@ -742,41 +639,6 @@ export function getModelMaxTokens(
 }
 
 /**
- * Retrieves the maximum output tokens for a given model name.
- *
- * @param modelName - The name of the model to look up.
- * @param endpoint - The endpoint (default is 'openAI').
- * @param [endpointTokenConfig] - Token Config for current endpoint to use for max tokens lookup
- * @returns The maximum output tokens for the given model or undefined if no match is found.
- */
-export function getModelMaxOutputTokens(
-  modelName: string,
-  endpoint: EModelEndpoint = EModelEndpoint.openAI,
-  endpointTokenConfig?: EndpointTokenConfig,
-): number | undefined {
-  /** Partial override fallback — see getModelMaxTokens */
-  if (endpointTokenConfig != null) {
-    const overrideValue = getModelTokenValue(modelName, endpointTokenConfig, 'output');
-    if (overrideValue != null) {
-      return overrideValue;
-    }
-  }
-  const output128kValue = getAnthropicOutput128k(modelName, endpoint);
-  if (output128kValue != null) {
-    return output128kValue;
-  }
-  const sonnet46PlusValue = getAnthropicSonnet46PlusOutput(modelName, endpoint);
-  if (sonnet46PlusValue != null) {
-    return sonnet46PlusValue;
-  }
-  return getModelTokenValue(
-    modelName,
-    maxOutputTokensMap[endpoint as keyof typeof maxOutputTokensMap],
-    'output',
-  );
-}
-
-/**
  * Retrieves the model name key for a given model name input. If the exact model name isn't found,
  * it searches for partial matches within the model name, checking keys in reverse order.
  *
@@ -816,29 +678,14 @@ export function matchModelName(
   return matchedPattern || modelName;
 }
 
-export const modelSchema: z.ZodObject<
-  {
-    id: z.ZodString;
-    pricing: z.ZodObject<
-      {
-        prompt: z.ZodString;
-        completion: z.ZodString;
-      },
-      'strip',
-      z.ZodTypeAny,
-      {
-        prompt: string;
-        completion: string;
-      },
-      {
-        prompt: string;
-        completion: string;
-      }
-    >;
-    context_length: z.ZodNumber;
-  },
-  'strip'
-> = z.object({
+export const modelSchema: z.ZodObject<{
+  id: z.ZodString;
+  pricing: z.ZodObject<{
+    prompt: z.ZodString;
+    completion: z.ZodString;
+  }>;
+  context_length: z.ZodNumber;
+}> = z.object({
   id: z.string(),
   pricing: z.object({
     prompt: z.string(),
@@ -847,54 +694,9 @@ export const modelSchema: z.ZodObject<
   context_length: z.number(),
 });
 
-export const inputSchema: z.ZodObject<
-  {
-    data: z.ZodArray<
-      z.ZodObject<
-        {
-          id: z.ZodString;
-          pricing: z.ZodObject<
-            {
-              prompt: z.ZodString;
-              completion: z.ZodString;
-            },
-            'strip',
-            z.ZodTypeAny,
-            {
-              prompt: string;
-              completion: string;
-            },
-            {
-              prompt: string;
-              completion: string;
-            }
-          >;
-          context_length: z.ZodNumber;
-        },
-        'strip',
-        z.ZodTypeAny,
-        {
-          id: string;
-          pricing: {
-            prompt: string;
-            completion: string;
-          };
-          context_length: number;
-        },
-        {
-          id: string;
-          pricing: {
-            prompt: string;
-            completion: string;
-          };
-          context_length: number;
-        }
-      >,
-      'many'
-    >;
-  },
-  'strip'
-> = z.object({
+export const inputSchema: z.ZodObject<{
+  data: z.ZodArray<typeof modelSchema>;
+}> = z.object({
   data: z.array(modelSchema),
 });
 

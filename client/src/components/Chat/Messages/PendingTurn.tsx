@@ -1,22 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
+import {
+  SubRow,
+  messageFooterClasses,
+  useQueuedTurnPortal,
+  MessageRow,
+} from '@librechat/chat/components';
+import {
+  hasRevealSuccessor,
+  buildRevealedMessage,
+  revealedQueuedTurnFamily,
+} from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import type { RefObject } from 'react';
 import type { TMessageIcon } from '~/common';
-import { buildRevealedMessage, hasRevealSuccessor } from '~/hooks/Chat/useQueuedTurnReveal';
-import { useQueuedTurnPortal } from '~/components/Chat/Steering/QueuedTurnPortal';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from '~/utils';
-import { messageFooterClasses } from '~/components/Chat/Messages/styles';
-import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
-import { revealedQueuedTurnFamily } from '~/store/steer';
 import { useAuthContext } from '~/hooks/AuthContext';
 import MarkdownLite from './Content/MarkdownLite';
 import { useChatContext } from '~/Providers';
 import Container from './Content/Container';
 import { useLocalize } from '~/hooks';
-import SubRow from './SubRow';
 import { cn } from '~/utils';
 import store from '~/store';
 
@@ -113,6 +118,7 @@ export default function PendingTurn({
     >
       <div className="m-auto justify-center px-4 py-3 sm:px-0">
         <MessageRow
+          message={message}
           icon={<MessageIcon iconData={iconData} />}
           label={label}
           timestamp={reveal.revealedAt}

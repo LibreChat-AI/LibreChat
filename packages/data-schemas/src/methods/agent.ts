@@ -672,6 +672,12 @@ export interface AgentDeps {
 }
 
 /** Plain projection used to discover runnable agent graphs without exposing Mongoose. */
+/** The agent fields a models list reads. */
+export type AgentModelSummary = Pick<
+  IAgent,
+  '_id' | 'id' | 'name' | 'description' | 'provider' | 'author'
+> & { createdAt?: Date };
+
 export interface AgentGraphNode {
   id: string;
   provider: string;
@@ -1068,6 +1074,9 @@ export function createAgentMethods(
   createAgent: (agentData: Record<string, unknown>) => Promise<IAgent>;
   getAgentIdsByMCPServerName: (serverName: string) => Promise<Types.ObjectId[]>;
   getAgentsWithMCPServerNames: () => Promise<Array<Pick<IAgent, '_id' | 'mcpServerNames'>>>;
+  getAgentModelSummaries: (
+    agentIds: Array<Types.ObjectId | string>,
+  ) => Promise<AgentModelSummary[]>;
   updateAgent: (
     searchParameter: FilterQuery<IAgent>,
     updateData: Record<string, unknown>,
@@ -1413,6 +1422,17 @@ export function createAgentMethods(
       Array<Pick<IAgent, '_id'>>
     >();
     return agents.map((agent) => agent._id);
+  }
+
+  /** Loads only the fields a models list shows, never the unbounded `versions` history. */
+  async function getAgentModelSummaries(
+    agentIds: Array<Types.ObjectId | string>,
+  ): Promise<AgentModelSummary[]> {
+    const Agent = mongoose.models.Agent as Model<IAgent>;
+    return await Agent.find(
+      { _id: { $in: agentIds } },
+      { id: 1, name: 1, description: 1, provider: 1, author: 1, createdAt: 1 },
+    ).lean<AgentModelSummary[]>();
   }
 
   /** Returns every agent with a non-empty `mcpServerNames`, so access
@@ -2752,6 +2772,7 @@ export function createAgentMethods(
     createAgent,
     getAgentIdsByMCPServerName,
     getAgentsWithMCPServerNames,
+    getAgentModelSummaries,
     updateAgent,
     updateAgentAvatar,
     deleteAgent,

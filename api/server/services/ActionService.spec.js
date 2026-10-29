@@ -1,3 +1,4 @@
+const { inspect } = require('util');
 const dataSchemas = require('@librechat/data-schemas');
 const { logger } = dataSchemas;
 const { Constants, actionDelimiter, actionDomainSeparator } = require('librechat-data-provider');
@@ -557,6 +558,56 @@ describe('createActionTool OAuth abort identity', () => {
     };
   }
 
+  it.each(['oauth', 'oauth_refresh'])('does not log raw %s failures', async (flowType) => {
+    const secret = 'sentinel-oauth-credential';
+    const error = Object.assign(new Error(secret), {
+      config: { data: `client_secret=${secret}&refresh_token=${secret}` },
+      response: { status: 400, data: { refresh_token: secret } },
+    });
+    const { requestBuilder, preparedExecutor } = oauthToolFixture();
+    const refreshToken = await dataSchemas.encryptV2('refresh-token');
+    mockFindToken.mockImplementation(async ({ type }) =>
+      flowType === 'oauth_refresh' && type === 'oauth_refresh' ? { token: refreshToken } : null,
+    );
+    mockActionFlowManager.createFlowWithHandler.mockImplementation(
+      async (_flowId, type, handler) => {
+        if (type === 'oauth_refresh') {
+          throw error;
+        }
+        return handler();
+      },
+    );
+    mockActionFlowManager.createFlow.mockRejectedValue(error);
+
+    const actionTool = await createActionTool({
+      userId: 'action-user',
+      res: {},
+      action: oauthAction,
+      requestBuilder,
+      encrypted: {
+        oauth_client_id: 'encrypted-client-id',
+        oauth_client_secret: 'encrypted-client-secret',
+      },
+      streamId: 'action-oauth-stream',
+    });
+
+    const result = await actionTool._call({}, callConfig(new AbortController().signal));
+
+    expect(result).toContain('Failed to authenticate OAuth tool');
+    expect(logger.error).toHaveBeenCalledWith('Failed to authenticate OAuth tool', {
+      type: 'Error',
+      status: 400,
+    });
+    if (flowType === 'oauth_refresh') {
+      expect(logger.error).toHaveBeenCalledWith('Failed to refresh token, requesting new login:', {
+        type: 'Error',
+        status: 400,
+      });
+    }
+    expect(inspect(logger.error.mock.calls, { depth: null })).not.toContain(secret);
+    expect(preparedExecutor.execute).not.toHaveBeenCalled();
+  });
+
   it('does not request a fresh login when a stopped run detaches from a refresh', async () => {
     const { requestBuilder, preparedExecutor } = oauthToolFixture();
     /** No access token but a live refresh token: the branch that waits on the
@@ -962,5 +1013,54 @@ describe('backward-compatible tool name matching', () => {
 
       expect(tool1).toBe(tool2);
     });
+  });
+});
+
+describe('createActionTool request budget', () => {
+  it('passes the configured timeout and the run abort signal to the action call', async () => {
+    const preparedExecutor = { execute: jest.fn().mockResolvedValue({ data: { ok: true } }) };
+    const requestBuilder = {
+      createExecutor: jest.fn(() => ({ setParams: jest.fn(() => preparedExecutor) })),
+    };
+    const actionTool = await createActionTool({
+      userId: 'action-user',
+      res: {},
+      action: { action_id: 'action-1', metadata: { domain: 'https://api.example.com' } },
+      requestBuilder,
+      timeoutMs: 5_000,
+    });
+    const { signal } = new AbortController();
+
+    await actionTool._call({}, { signal });
+
+    expect(preparedExecutor.execute).toHaveBeenCalledWith(
+      expect.objectContaining({ timeout: 5_000, signal }),
+    );
+  });
+
+  it('reports a call that hit its deadline as a timeout, not as a stopped run', async () => {
+    const canceled = Object.assign(new Error('canceled'), {
+      code: 'ERR_CANCELED',
+      config: {
+        timeoutErrorMessage:
+          'Exceeded timeouts.actionsMs (5 ms); raise it in librechat.yaml if this upstream is legitimately slow',
+        signal: { reason: new DOMException('timed out', 'TimeoutError') },
+      },
+    });
+    const preparedExecutor = { execute: jest.fn().mockRejectedValue(canceled) };
+    const requestBuilder = {
+      createExecutor: jest.fn(() => ({ setParams: jest.fn(() => preparedExecutor) })),
+    };
+    const actionTool = await createActionTool({
+      userId: 'action-user',
+      res: {},
+      action: { action_id: 'action-1', metadata: { domain: 'https://api.example.com' } },
+      requestBuilder,
+      timeoutMs: 5,
+    });
+
+    const result = await actionTool._call({}, {});
+
+    expect(result).toContain('timeouts.actionsMs (5 ms)');
   });
 });

@@ -22,7 +22,7 @@ export default function DisplayUsernameMessages() {
         id="UsernameDisplay"
         checked={UsernameDisplay}
         onCheckedChange={handleCheckedChange}
-        className="ml-4"
+        className="ms-4"
         data-testid="UsernameDisplay"
         aria-labelledby="user-name-display-label"
       />

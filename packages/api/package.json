@@ -1,6 +1,6 @@
 {
   "name": "@librechat/api",
-  "version": "1.7.52",
+  "version": "1.7.55",
   "type": "commonjs",
   "description": "MCP services for LibreChat",
   "main": "dist/index.cjs",
@@ -48,11 +48,7 @@
     "b:build:dev": "bun run b:clean && bun run tsdown && bun run openapi:copy",
     "openapi:generate": "cross-env TS_NODE_PROJECT=tsconfig.openapi.json ts-node -r tsconfig-paths/register src/openapi/generate.ts --write",
     "openapi:test": "node openapi/router.smoke.cjs",
-    "openapi:check": "cross-env TS_NODE_PROJECT=tsconfig.openapi.json ts-node -r tsconfig-paths/register src/openapi/generate.ts --check",
-    "start:everything-sse": "node -r dotenv/config --loader ./tsconfig-paths-bootstrap.mjs --experimental-specifier-resolution=node ./src/examples/everything/sse.ts",
-    "start:everything": "node -r dotenv/config --loader ./tsconfig-paths-bootstrap.mjs --experimental-specifier-resolution=node ./src/demo/everything.ts",
-    "start:filesystem": "node -r dotenv/config --loader ./tsconfig-paths-bootstrap.mjs --experimental-specifier-resolution=node ./src/demo/filesystem.ts",
-    "start:servers": "node -r dotenv/config --loader ./tsconfig-paths-bootstrap.mjs --experimental-specifier-resolution=node ./src/demo/servers.ts"
+    "openapi:check": "cross-env TS_NODE_PROJECT=tsconfig.openapi.json ts-node -r tsconfig-paths/register src/openapi/generate.ts --check"
   },
   "repository": {
     "type": "git",
@@ -66,7 +62,6 @@
   "homepage": "https://librechat.ai",
   "devDependencies": {
     "@babel/preset-env": "^7.29.5",
-    "@babel/preset-react": "^7.18.6",
     "@babel/preset-typescript": "^7.21.0",
     "@langchain/langgraph": "^1.4.5",
     "@types/bun": "^1.2.15",
@@ -78,7 +73,6 @@
     "@types/multer": "^1.4.13",
     "@types/node": "^24.12.4",
     "@types/node-fetch": "^2.6.13",
-    "@types/react": "^18.2.18",
     "@types/sanitize-html": "^2.16.1",
     "@types/supertest": "^7.2.0",
     "@types/yauzl": "^2.10.3",
@@ -102,7 +96,7 @@
     "winston": "^3.17.0",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "yauzl": "^3.2.1",
-    "zod-openapi": "^4.2.4"
+    "zod-openapi": "^6.0.2"
   },
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
@@ -115,20 +109,18 @@
     "@aws-sdk/cloudfront-signer": "^3.1036.0",
     "@aws-sdk/credential-providers": "^3.1045.0",
     "@aws-sdk/s3-request-presigner": "^3.758.0",
-    "@azure/identity": "^4.13.1",
-    "@azure/search-documents": "^12.0.0",
+    "@azure/identity": "^4.14.0",
     "@azure/storage-blob": "^12.30.0",
-    "@google/genai": "^2.8.0",
     "@keyv/redis": "5.1.6",
-    "@librechat/agents": "^4.0.4",
+    "@librechat/agents": "^4.1.1",
     "@librechat/data-schemas": "*",
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/instrumentation-express": "^0.56.0",
     "@opentelemetry/instrumentation-http": "^0.207.0",
     "@opentelemetry/instrumentation-ioredis": "^0.55.0",
     "@opentelemetry/instrumentation-mongodb": "^0.60.0",
-    "@opentelemetry/instrumentation-mongoose": "^0.54.0",
+    "@opentelemetry/instrumentation-mongoose": "^0.67.0",
     "@opentelemetry/instrumentation-undici": "^0.18.0",
     "@opentelemetry/resources": "^2.6.1",
     "@opentelemetry/sdk-node": "^0.218.0",
@@ -138,9 +130,10 @@
     "@smithy/node-http-handler": "^4.4.5",
     "ai-tokenizer": "^1.0.6",
     "axios": "^1.20.0",
+    "bcryptjs": "^2.4.3",
     "connect-redis": "^8.1.0",
     "dedent": "^1.5.3",
-    "dompurify": "^3.4.16",
+    "dompurify": "^3.4.17",
     "eventsource": "^3.0.2",
     "express": "^5.1.0",
     "express-session": "^1.18.2",
@@ -170,11 +163,12 @@
     "prom-client": "^15.1.3",
     "rate-limit-redis": "^4.2.0",
     "re2js": "^2.8.6",
-    "sanitize-html": "^2.17.7",
-    "sharp": "^0.35.4",
-    "undici": "^7.29.0",
+    "sanitize-html": "^2.18.1",
+    "sharp": "^0.35.5",
+    "undici": "^7.30.1",
     "yauzl": "^3.2.1",
-    "zod": "^3.22.4"
+    "zod": "^4.6.7",
+    "zod-to-json-schema": "^3.25.1"
   },
   "dependencies": {
     "@langchain/langgraph-checkpoint": "^1.1.2",
@@ -184,7 +178,9 @@
     "croner": "^10.0.1",
     "express-rate-limit": "^8.5.1",
     "helmet": "^8.3.0",
+    "protobufjs": "^7.6.5",
     "proxy-from-env": "^2.1.0",
-    "re2js": "^2.8.6"
+    "re2js": "^2.8.6",
+    "@librechat/code": "file:../../vendor/code"
   }
 }

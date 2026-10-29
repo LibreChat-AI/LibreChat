@@ -1,10 +1,25 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { useAtomValue, getDefaultStore } from 'jotai';
+import { RecoilRoot, useSetRecoilState } from 'recoil';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { RecoilRoot, useRecoilValue, useSetRecoilState } from 'recoil';
+import { useChat, resumeRequestsAtom } from '@librechat/chat/react';
+import { useChatHelpers, useResumableSSE } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Tools, QueryKeys, ContentTypes, EModelEndpoint, request } from 'librechat-data-provider';
+import {
+  activeGenerationCreatedAtByConvoId,
+  activeGenerationProtocolVersionByConvoId,
+  queuedMessagesByConvoId,
+  pendingSteersByConvoId,
+  resetSteerFamilies,
+  submissionByIndex,
+  clearSubmissions,
+  resetQueueFamilies,
+  useSteerReclaim,
+  useSteerEscalate,
+  useSteering,
+} from '@librechat/chat/react';
 import type {
   TEnqueueAgentQueuedTurnRequest,
   TSubmission,
@@ -12,23 +27,20 @@ import type {
   ChatTransportOptions,
   ChatTransportRequest,
 } from 'librechat-data-provider';
+import type { PendingSteer } from '@librechat/chat';
 import type { MutableSnapshot } from 'recoil';
 import type { StreamStatusResponse } from '~/data-provider';
 import type { ChatContract } from '~/hooks/Chat/contract';
 import type { Transport } from '~/hooks/Chat/contract';
-import type { PendingSteer } from '~/hooks/Chat/queue';
-import { queuedMessagesByConvoId, resetQueueFamilies } from '~/hooks/Chat/queue';
+import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
+import { usePaneConversation, usePaneConversationState } from '~/routes/ChatSettings';
 import { ChatTransportContext } from '~/Providers/ChatTransportContext';
 import { ChatContext, useChatContext } from '~/Providers/ChatContext';
 import { startupConfigKey } from '~/data-provider/Endpoints/queries';
-import { useSteerReclaim } from '~/hooks/Chat/useSteerCancel';
-import useSteerEscalate from '~/hooks/Chat/useSteerEscalate';
-import useResumableSSE from '~/hooks/SSE/useResumableSSE';
 import useResumeOnLoad from '~/hooks/SSE/useResumeOnLoad';
-import useChatHelpers from '~/hooks/Chat/useChatHelpers';
-import { resumeRequestsAtom } from '~/hooks/Chat/resume';
-import useSteering from '~/hooks/Chat/useSteering';
-import { useChat } from '~/hooks/Chat/facade';
+import { StreamHostTestProvider } from 'test/streamHost';
+import { SteerHostTestProvider } from 'test/steerHost';
+import { ChatHostTestProvider } from 'test/chatHost';
 import useSSE from '~/hooks/SSE/useSSE';
 import store from '~/store';
 
@@ -79,6 +91,13 @@ function createFakeTransport(overrides: Partial<Transport> = {}) {
   return { transport, streams, sends };
 }
 
+const chatSettings = {
+  ...defaultChatSettings,
+  usePaneConversation,
+  usePaneConversationState,
+  auth: { token: 'test-token', isAuthenticated: true },
+};
+
 function createWrapper(
   transport: Transport,
   seed?: (state: MutableSnapshot) => void,
@@ -100,9 +119,17 @@ function createWrapper(
               seed?.(state);
             }}
           >
-            <ChatTransportContext.Provider value={transport}>
-              {children}
-            </ChatTransportContext.Provider>
+            <SteerHostTestProvider>
+              <ChatHostTestProvider>
+                <StreamHostTestProvider>
+                  <ChatSettingsContext.Provider value={chatSettings}>
+                    <ChatTransportContext.Provider value={transport}>
+                      {children}
+                    </ChatTransportContext.Provider>
+                  </ChatSettingsContext.Provider>
+                </StreamHostTestProvider>
+              </ChatHostTestProvider>
+            </SteerHostTestProvider>
           </RecoilRoot>
         </QueryClientProvider>
       </MemoryRouter>
@@ -147,8 +174,8 @@ const seedSteerableRun = ({ set }: MutableSnapshot) => {
     conversationId: 'convo-1',
     endpoint: 'agents',
   } as TConversation);
-  set(store.activeGenerationCreatedAtByConvoId('convo-1'), 1000);
-  set(store.activeGenerationProtocolVersionByConvoId('convo-1'), 2);
+  getDefaultStore().set(activeGenerationCreatedAtByConvoId('convo-1'), 1000);
+  getDefaultStore().set(activeGenerationProtocolVersionByConvoId('convo-1'), 2);
 };
 
 /** The running turn: queued follow-ups chain off its in-flight response. */
@@ -192,7 +219,14 @@ function ChatHost({ children }: { children: React.ReactNode }) {
   return <ChatContext.Provider value={helpers}>{children}</ChatContext.Provider>;
 }
 
-beforeEach(() => resetQueueFamilies());
+beforeEach(() => {
+  resetQueueFamilies();
+  resetSteerFamilies();
+});
+
+afterEach(() => {
+  clearSubmissions(getDefaultStore());
+});
 
 describe('chat transport boundary', () => {
   describe('send (agents)', () => {
@@ -275,8 +309,8 @@ describe('chat transport boundary', () => {
         conversationId: 'convo-1',
         endpoint: 'agents',
       } as TConversation);
-      set(store.activeGenerationCreatedAtByConvoId('convo-1'), 1000);
-      set(store.activeGenerationProtocolVersionByConvoId('convo-1'), 2);
+      getDefaultStore().set(activeGenerationCreatedAtByConvoId('convo-1'), 1000);
+      getDefaultStore().set(activeGenerationProtocolVersionByConvoId('convo-1'), 2);
     };
 
     it('stops a resumable generation through the host transport', async () => {
@@ -383,7 +417,7 @@ describe('chat transport boundary', () => {
     };
     const seedPendingSteer = (snapshot: MutableSnapshot) => {
       seedSteerableRun(snapshot);
-      snapshot.set(store.pendingSteersByConvoId('convo-1'), [pendingSteer]);
+      getDefaultStore().set(pendingSteersByConvoId('convo-1'), [pendingSteer]);
     };
 
     it('withdraws a waiting steer through the host transport', async () => {
@@ -391,7 +425,7 @@ describe('chat transport boundary', () => {
       const { result } = renderHook(
         () => ({
           reclaim: useSteerReclaim('convo-1'),
-          pending: useRecoilValue(store.pendingSteersByConvoId('convo-1')),
+          pending: useAtomValue(pendingSteersByConvoId('convo-1')),
         }),
         { wrapper: createWrapper(fake.transport, seedPendingSteer) },
       );
@@ -421,7 +455,7 @@ describe('chat transport boundary', () => {
       const { result } = renderHook(
         () => ({
           escalate: useSteerEscalate('convo-1'),
-          pending: useRecoilValue(store.pendingSteersByConvoId('convo-1')),
+          pending: useAtomValue(pendingSteersByConvoId('convo-1')),
         }),
         { wrapper: createWrapper(fake.transport, seedPendingSteer) },
       );
@@ -511,7 +545,7 @@ describe('chat transport boundary', () => {
     const useResumablePane = () => {
       const helpers = useChatContext();
       useResumeOnLoad('convo-1', helpers.getMessages, 0, true);
-      const submission = useRecoilValue(store.submissionByIndex(0));
+      const submission = useAtomValue(submissionByIndex(0));
       useResumableSSE(submission, helpers, false, 0);
       const showConversation = useSetRecoilState(store.conversationByIndex(0));
       return { ...useChat(), showConversation };
@@ -741,6 +775,24 @@ describe('chat transport boundary', () => {
       await waitFor(() => expect(result.current.status).toBe('error'));
       expect(result.current.error?.message).toContain('Generation failed');
     });
+
+    it('reports a failure on a stream reattached without resume state', async () => {
+      const fake = createFakeTransport();
+      const { result } = renderPane(fake.transport);
+      await waitFor(() => expect(statusReads()).toBe(1));
+      /** An older server answers a running job without the turn it belongs to. */
+      status = { active: true, streamId: 'convo-1', status: 'running', createdAt: 2000 };
+      await act(async () => {
+        await result.current.resumeStream();
+      });
+      await waitFor(() => expect(fake.streams).toHaveLength(1));
+
+      status = { active: false, status: 'error', createdAt: 2000 };
+      act(() => fake.streams[0].options.onEvent({ type: 'error', data: { message: 'x' } }));
+
+      await waitFor(() => expect(result.current.status).toBe('error'));
+      expect(result.current.error?.message).toContain('x');
+    });
   });
 
   describe('useChat', () => {
@@ -753,7 +805,7 @@ describe('chat transport boundary', () => {
      */
     const usePane = () => {
       const helpers = useChatContext();
-      const submission = useRecoilValue(store.submissionByIndex(0));
+      const submission = useAtomValue(submissionByIndex(0));
       useResumableSSE(submission, helpers, false, 0);
       const steering = useSteering({
         consumeDraft,

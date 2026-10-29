@@ -1,9 +1,10 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { renderHook, act } from '@testing-library/react';
+import { Provider as JotaiProvider, createStore } from 'jotai';
+import { pendingManualSkillsByConvoId } from '@librechat/chat/react';
 import { ArtifactModes, PermissionTypes } from 'librechat-data-provider';
 import usePaletteEntries from '../usePaletteEntries';
-import store from '~/store';
 
 /**
  * What the palette is offered, before it decides how to draw it. Every row here
@@ -119,12 +120,23 @@ const allCapabilities = {
   skillsEnabled: true,
 };
 
-const wrapper = ({ children }: { children: React.ReactNode }) => (
-  <RecoilRoot>{children}</RecoilRoot>
-);
+/** A fresh Jotai store per render, so a skill staged by one test never reaches the next. */
+const stagedWrapper = (skills: string[] = []) => {
+  const jotaiStore = createStore();
+  jotaiStore.set(pendingManualSkillsByConvoId('convo-1'), skills);
+  return function StagedWrapper({ children }: { children: React.ReactNode }) {
+    return (
+      <JotaiProvider store={jotaiStore}>
+        <RecoilRoot>{children}</RecoilRoot>
+      </JotaiProvider>
+    );
+  };
+};
 
 const entries = (agentId?: string | null) =>
-  renderHook(() => usePaletteEntries({ conversationId: 'convo-1', agentId }), { wrapper });
+  renderHook(() => usePaletteEntries({ conversationId: 'convo-1', agentId }), {
+    wrapper: stagedWrapper(),
+  });
 
 const keysOf = (result: { current: Array<{ key: string }> }) =>
   result.current.map((item) => item.key);
@@ -168,7 +180,7 @@ describe('usePaletteEntries', () => {
           catalogEnabled: true,
           catalogOpenRevision: revision,
         }),
-      { wrapper, initialProps: { revision: 1 } },
+      { wrapper: stagedWrapper(), initialProps: { revision: 1 } },
     );
 
     expect(refetch).not.toHaveBeenCalled();
@@ -373,7 +385,7 @@ describe('usePaletteEntries', () => {
             conversationId: 'convo-1',
             favoriteKeys: new Set(['skill:s2']),
           }),
-        { wrapper },
+        { wrapper: stagedWrapper() },
       );
       expect(keysOf(result).filter((key) => key.startsWith('skill:'))).toEqual([
         'skill:s2',
@@ -391,15 +403,7 @@ describe('usePaletteEntries', () => {
       const { result } = renderHook(
         () => usePaletteEntries({ conversationId: 'convo-1', agentId: null }),
         {
-          wrapper: ({ children }: { children: React.ReactNode }) => (
-            <RecoilRoot
-              initializeState={({ set }) =>
-                set(store.pendingManualSkillsByConvoId('convo-1'), ['writer'])
-              }
-            >
-              {children}
-            </RecoilRoot>
-          ),
+          wrapper: stagedWrapper(['writer']),
         },
       );
       expect(result.current.find((item) => item.key === 'skill:s1')?.active).toBe(true);
@@ -427,15 +431,7 @@ describe('usePaletteEntries', () => {
       const { result } = renderHook(
         () => usePaletteEntries({ conversationId: 'convo-1', agentId: null }),
         {
-          wrapper: ({ children }: { children: React.ReactNode }) => (
-            <RecoilRoot
-              initializeState={({ set }) =>
-                set(store.pendingManualSkillsByConvoId('convo-1'), ['writer'])
-              }
-            >
-              {children}
-            </RecoilRoot>
-          ),
+          wrapper: stagedWrapper(['writer']),
         },
       );
 
@@ -523,7 +519,7 @@ describe('usePaletteEntries', () => {
             enabled: true,
             toolsEnabled: false,
           }),
-        { wrapper },
+        { wrapper: stagedWrapper() },
       );
 
       expect(keysOf(result)).toEqual(['skill:s2']);

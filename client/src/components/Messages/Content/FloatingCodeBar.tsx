@@ -24,12 +24,12 @@ const FloatingCodeBar: React.FC<FloatingCodeBarProps> = React.memo(
     return (
       <div
         className={cn(
-          'absolute bottom-2 right-2 flex items-center gap-2 font-sans text-xs text-text-secondary transition-opacity duration-150',
+          'text-text-secondary absolute inset-e-2 bottom-2 flex items-center gap-2 font-sans text-xs transition-opacity duration-150',
           isVisible ? 'opacity-100' : 'pointer-events-none opacity-0',
         )}
       >
         {plugin === true ? (
-          <InfoIcon className="flex h-4 w-4 gap-2 text-text-secondary" />
+          <InfoIcon className="text-text-secondary flex h-4 w-4 gap-2" />
         ) : (
           <>
             {allowExecution === true && (

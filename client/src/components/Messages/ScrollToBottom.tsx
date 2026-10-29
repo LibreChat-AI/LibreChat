@@ -37,7 +37,7 @@ const ScrollToBottom = forwardRef<HTMLDivElement, Props>(
       >
         {/* The composer's own column, so the control stacks over the send
             button one row down: the same end inset (`me-2`, mirroring Send's
-            `mr-2`) and, through `icon-theme` + `round`, the same control
+            `me-2`) and, through `icon-theme` + `round`, the same control
             geometry as every button in the composer's action row. */}
         <div
           className={cn(

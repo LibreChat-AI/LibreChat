@@ -40,22 +40,22 @@ jest.mock('~/components/Chat/PullRequest', () => ({
     return mockHookState.pullRequest;
   },
 }));
-jest.mock('~/hooks/Chat/useMultiConvo', () => ({
+jest.mock('~/hooks/Conversations/useMultiConvo', () => ({
   __esModule: true,
   default: () => mockHookState.multiConvo,
 }));
-jest.mock('~/hooks/Chat/useTemporaryChat', () => ({
+jest.mock('~/hooks/Conversations/useTemporaryChat', () => ({
   __esModule: true,
   default: () => mockHookState.temporary,
 }));
-jest.mock('~/hooks/Chat/useBookmarkItems', () => ({
+jest.mock('~/hooks/Sharing/useBookmarkItems', () => ({
   __esModule: true,
   default: (args: { enabled?: boolean } = {}) => {
     mockBookmarkArgs.push(args);
     return mockHookState.bookmarks;
   },
 }));
-jest.mock('~/hooks/Chat/useChatOptions', () => ({
+jest.mock('~/hooks/Sharing/useChatOptions', () => ({
   __esModule: true,
   default: () => mockHookState.exportShare,
 }));

@@ -937,6 +937,14 @@ describe('formatMemoryContext', () => {
     expect(memoryInstructions).not.toMatch(/librechat/i);
   });
 
+  it('omits the empty-store notice when the caller opts out of announcing it', () => {
+    expect(formatMemoryContext('', { announceEmpty: false })).toBeUndefined();
+    expect(formatMemoryContext(undefined, { announceEmpty: false })).toBeUndefined();
+    expect(formatMemoryContext('name: Danny', { announceEmpty: false })).toBe(
+      `${memoryInstructions}\n\n# Existing memory about the user:\nname: Danny`,
+    );
+  });
+
   it('includes existing memories without losing the capability guidance', () => {
     expect(formatMemoryContext('name: Danny')).toBe(
       `${memoryInstructions}\n\n# Existing memory about the user:\nname: Danny`,

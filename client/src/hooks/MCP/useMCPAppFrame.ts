@@ -37,6 +37,7 @@ export type MCPAppFrameState = {
   status: MCPAppFrameStatus;
   kind: MCPAppFrameKind;
   height: number;
+  width?: number;
   attempt: number;
   canRetry: boolean;
   sandboxUrl?: string;
@@ -89,6 +90,7 @@ export function useMCPAppFrame(
   const { enabled: mcpAppsEnabled, sandboxUrl: configuredSandboxUrl } = useMCPAppsPolicy();
   const [status, setStatus] = useState<MCPAppFrameStatus>('loading');
   const [height, setHeight] = useState<number | undefined>(undefined);
+  const [width, setWidth] = useState<number | undefined>(undefined);
   const [attempt, setAttempt] = useState(0);
   const sandboxUrl = useMemo(() => getMCPSandboxUrl(configuredSandboxUrl), [configuredSandboxUrl]);
   const inlineHtml = useMemo(
@@ -102,6 +104,7 @@ export function useMCPAppFrame(
   useEffect(() => {
     setStatus('loading');
     setHeight(undefined);
+    setWidth(undefined);
   }, [resourceKey, inlineHtml, resource?.serverBinding]);
 
   const kind: MCPAppFrameKind = useMemo(() => {
@@ -131,12 +134,16 @@ export function useMCPAppFrame(
   const onSizeChanged = useCallback(
     (params: { height?: number; width?: number }) => {
       const clamped = clampAppViewHeight(params.height, { max: maxHeight });
-      if (clamped == null) {
-        return;
+      const reportedWidth = params.width;
+      const validWidth =
+        typeof reportedWidth === 'number' && Number.isFinite(reportedWidth) && reportedWidth > 0;
+      if (validWidth) setWidth(Math.ceil(reportedWidth));
+      if (clamped == null && !validWidth) return;
+      if (clamped != null) {
+        setHeight(clamped);
+        onHeightChange?.(clamped);
       }
-      setHeight(clamped);
       setStatus((prev) => (prev === 'tornDown' ? prev : 'ready'));
-      onHeightChange?.(clamped);
     },
     [maxHeight, onHeightChange],
   );
@@ -162,6 +169,7 @@ export function useMCPAppFrame(
     canRetryRef.current = false;
     setStatus('loading');
     setHeight(undefined);
+    setWidth(undefined);
     setAttempt((current) => current + 1);
   }, []);
 
@@ -187,6 +195,7 @@ export function useMCPAppFrame(
     status,
     kind,
     height: height ?? defaultHeight,
+    width,
     attempt,
     canRetry,
     sandboxUrl: mcpAppsEnabled ? sandboxUrl : undefined,

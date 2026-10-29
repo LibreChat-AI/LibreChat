@@ -15,7 +15,7 @@ import { TFeedback, feedbackSchema } from './feedback';
 import { CODE_APPROVAL_MODES } from './code/approval';
 import { Tools } from './types/tools';
 
-export const isUUID = z.string().uuid();
+export const isUUID = z.guid();
 
 export enum AuthType {
   OVERRIDE_AUTH = 'override_auth',
@@ -647,6 +647,8 @@ const DEFAULT_MAX_OUTPUT = 8192 as const;
 const LEGACY_ANTHROPIC_MAX_OUTPUT = 4096 as const;
 const CLAUDE_SONNET_128K_OUTPUT_PATTERN =
   /claude-sonnet[-.]?(?:4[-.]?(?:[6-9]|\d{2})|[5-9]|\d{2,})(?=$|[^0-9])/;
+const CLAUDE_HAIKU_128K_OUTPUT_PATTERN =
+  /claude-haiku[-.]?(?:5[-.]?(?:[5-9]|\d{2})|[6-9]|\d{2,})(?=$|[^0-9])/;
 
 /**
  * Claude "Mythos-class" model families — new top-level classes (peers of
@@ -707,7 +709,10 @@ export const anthropicSettings = {
         return ANTHROPIC_MAX_OUTPUT;
       }
 
-      if (CLAUDE_SONNET_128K_OUTPUT_PATTERN.test(modelName)) {
+      if (
+        CLAUDE_SONNET_128K_OUTPUT_PATTERN.test(modelName) ||
+        CLAUDE_HAIKU_128K_OUTPUT_PATTERN.test(modelName)
+      ) {
         return ANTHROPIC_MAX_OUTPUT;
       }
 
@@ -740,7 +745,10 @@ export const anthropicSettings = {
         return value;
       }
 
-      if (CLAUDE_SONNET_128K_OUTPUT_PATTERN.test(modelName)) {
+      if (
+        CLAUDE_SONNET_128K_OUTPUT_PATTERN.test(modelName) ||
+        CLAUDE_HAIKU_128K_OUTPUT_PATTERN.test(modelName)
+      ) {
         if (value > ANTHROPIC_MAX_OUTPUT) {
           return ANTHROPIC_MAX_OUTPUT;
         }
@@ -972,7 +980,7 @@ export const tMessageSchema = z.object({
   iconURL: z.string().nullable().optional(),
   feedback: feedbackSchema.optional(),
   /** metadata */
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
   /** Output tokens for assistant messages, calibrated prompt-side estimate for user messages */
   tokenCount: z.number().optional(),
   contextMeta: z
@@ -1165,7 +1173,10 @@ const DocumentType: z.ZodType<DocumentTypeValue> = z.lazy(() =>
     z.number(),
     z.string(),
     z.array(z.lazy(() => DocumentType)),
-    z.record(z.lazy(() => DocumentType)),
+    z.record(
+      z.string(),
+      z.lazy(() => DocumentType),
+    ),
   ]),
 );
 
@@ -1301,7 +1312,7 @@ export const tConversationSchema = z.object({
   additional_instructions: z.string().optional(),
   append_current_datetime: z.boolean().optional(),
   /** Used to overwrite active conversation settings when saving a Preset */
-  presetOverride: z.record(z.unknown()).optional(),
+  presetOverride: z.record(z.string(), z.unknown()).optional(),
   stop: z.array(z.string()).optional(),
   /* frontend components */
   greeting: z.string().optional(),

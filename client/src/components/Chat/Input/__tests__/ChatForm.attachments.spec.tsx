@@ -1,11 +1,14 @@
 import React, { Profiler, useMemo, useState } from 'react';
+import { filesFamily, isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import '@testing-library/jest-dom';
 import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
+import { getDefaultStore, useAtom } from 'jotai';
 import { RecoilRoot, useRecoilState } from 'recoil';
 import userEvent from '@testing-library/user-event';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { BrowserRouter as Router } from 'react-router-dom';
+import { pendingQuotesByConvoId } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { QueryKeys, FileSources, EModelEndpoint } from 'librechat-data-provider';
 import { render, screen, within, waitFor, fireEvent } from '@testing-library/react';
@@ -16,6 +19,7 @@ import { getDraft, getPendingDraftId, setDraft } from '~/utils';
 import { ChatContext, ChatFormProvider } from '~/Providers';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import * as FileContainer from '../Files/FileContainer';
+import { SteerHostTestProvider } from 'test/steerHost';
 import ChatForm from '../ChatForm';
 import store from '~/store';
 
@@ -88,8 +92,8 @@ class StubImage {
 let commits = 0;
 
 function Harness() {
-  const [files, setFiles] = useRecoilState(store.filesByIndex(0));
-  const [isSubmitting, setIsSubmitting] = useRecoilState(store.isSubmittingFamily(0));
+  const [files, setFiles] = useAtom(filesFamily(0));
+  const [isSubmitting, setIsSubmitting] = useAtom(isSubmittingFamily(0));
   /* ChatView owns this read and passes it in; the harness stands in for it. */
   const [speechSettingsInitialized] = useRecoilState(store.speechSettingsInitialized);
   const [, setFilesLoading] = useState(false);
@@ -121,8 +125,6 @@ function Harness() {
         },
         regenerate: () => undefined,
         setSiblingIdx: () => undefined,
-        showPopover: false,
-        setShowPopover: () => undefined,
         abortScroll: false,
         setAbortScroll: () => undefined,
         preset: null,
@@ -169,24 +171,26 @@ function renderComposer({
   queryClient.setQueryData<TFile[]>([QueryKeys.files], []);
   queryClient.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.openAI]: { order: 0 } });
 
+  getDefaultStore().set(pendingQuotesByConvoId(conversation.conversationId ?? ''), quotes);
   return render(
     <QueryClientProvider client={queryClient}>
       <RecoilRoot
         initializeState={({ set }) => {
-          set(store.isSubmittingFamily(0), submitting);
+          getDefaultStore().set(isSubmittingFamily(0), submitting);
           set(store.speechSettingsInitialized, speechSettingsInitialized);
-          set(store.pendingQuotesByConvoId(conversation.conversationId ?? ''), quotes);
         }}
       >
-        <Router>
-          <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
-            <DndProvider backend={HTML5Backend}>
-              <main>
-                <Harness />
-              </main>
-            </DndProvider>
-          </AuthContextProvider>
-        </Router>
+        <SteerHostTestProvider>
+          <Router>
+            <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
+              <DndProvider backend={HTML5Backend}>
+                <main>
+                  <Harness />
+                </main>
+              </DndProvider>
+            </AuthContextProvider>
+          </Router>
+        </SteerHostTestProvider>
       </RecoilRoot>
     </QueryClientProvider>,
   );
@@ -196,6 +200,11 @@ const sendButton = () => screen.getByTestId('send-button');
 const attach = (container: HTMLElement, file: File) =>
   userEvent.upload(container.querySelector('input[type="file"]') as HTMLInputElement, file);
 const image = () => new File(['image-bytes'], 'cat.png', { type: 'image/png' });
+
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+  getDefaultStore().set(filesFamily(0), new Map());
+});
 
 describe('ChatForm attachments', () => {
   beforeEach(() => {

@@ -54,6 +54,10 @@ const {
   getRemainingShutdownMs,
   registerBackgroundTaskShutdown,
   configureServerTimeouts,
+  createReadinessHandler,
+  keyvRedisClient,
+  ioredisClient,
+  cacheConfig,
   setupGracefulShutdown,
   updateInterfacePermissions,
   configureMessageFilterRegexValidator,
@@ -65,6 +69,8 @@ const {
   waitForKeyvRedisClient,
   warnOnUnreachableDeliveryPaths,
   createCodeApiUploadRegistry,
+  createRequestSanitizer,
+  reportEndpointOverrides,
 } = require('@librechat/api');
 const { connectDb, indexSync } = require('~/db');
 const {
@@ -72,12 +78,14 @@ const {
   sweepOrphanedPreviews,
   getRoleByName,
   seedDatabase,
+  listAllConfigs,
   recordAuditEntry,
 } = require('~/models');
 const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
 const { capabilityContextMiddleware } = require('./middleware/roles/capabilities');
 const createValidateImageRequest = require('./middleware/validateImageRequest');
 const { initializeGitHubSkillSync } = require('./services/Skills/sync');
+const { startSkillDeletionSweep } = require('./services/Skills/deletion');
 const { initializeAgentTriggerService } = require('./services/Agents/triggers');
 const { resumeAgentEventDetachedAction } = require('./services/Agents/detachedActionResume');
 const { initializeScheduleEngine, recordExpiredScheduleApproval } = require('./services/Schedules');
@@ -89,7 +97,7 @@ const initializeMCPs = require('./services/initializeMCPs');
 const { configureSubagentTaskRouting } = require('./services/Endpoints/agents/subagentThreadStore');
 const configureSocialLogins = require('./socialLogins');
 const createSpaFallback = require('./utils/fallback');
-const { getAppConfig } = require('./services/Config');
+const { getAppConfig, rederiveEndpoints } = require('./services/Config');
 const staticCache = require('./utils/staticCache');
 const noIndex = require('./middleware/noIndex');
 const agentEventMethods = require('~/models');
@@ -262,6 +270,7 @@ const startServer = async () => {
     additionalSkills: getDeploymentPluginSkills(),
   });
   initializeGitHubSkillSync(appConfig);
+  startSkillDeletionSweep(appConfig.skillDeletion);
   startExpiredFileSweep({ appConfig, loadAppConfig: getAppConfig });
   // Register any programmatic tool-approval policy hooks declared in
   // `endpoints.agents.toolApproval.hooks`. Honor the `enabled` kill switch: when tool
@@ -348,12 +357,14 @@ const startServer = async () => {
 
   app.get('/health', (_req, res) => res.status(200).send('OK'));
   app.get('/livez', (_req, res) => res.status(200).send('OK'));
-  app.get('/readyz', (_req, res) => {
-    if (!serverReady) {
-      return res.status(503).send('NOT_READY');
-    }
-    return res.status(200).send('OK');
-  });
+  app.get(
+    '/readyz',
+    createReadinessHandler(() => serverReady, {
+      useRedis: cacheConfig.USE_REDIS,
+      ioredis: ioredisClient,
+      keyv: keyvRedisClient,
+    }),
+  );
 
   /* Middleware */
   app.use(requestContextMiddleware);
@@ -377,7 +388,7 @@ const startServer = async () => {
     next();
   });
 
-  app.use(mongoSanitize());
+  app.use(createRequestSanitizer(mongoSanitize));
   app.use(cors());
   app.use(cookieParser());
 
@@ -520,6 +531,14 @@ const startServer = async () => {
       await runAsSystem(async () => {
         await initializeMCPs();
         await initializeOAuthReconnectManager();
+      });
+      /** Logs only, so readiness never waits on reading every config document. */
+      reportEndpointOverrides({
+        listConfigs: () => runAsSystem(() => listAllConfigs()),
+        baseYaml: appConfig?.config ?? {},
+        rederiveEndpoints,
+      }).catch((err) => {
+        logger.error('[config] Failed to report endpoint overrides:', err);
       });
       await checkMigrations();
 

@@ -1,6 +1,15 @@
 import { SafeSearchTypes, SearchProviders, ScraperProviders } from 'librechat-data-provider';
 import type { TCustomConfig } from 'librechat-data-provider';
-import { loadWebSearchConfig, webSearchAuth, getWebSearchKeys } from './web';
+import {
+  webSearchAuth,
+  getWebSearchKeys,
+  loadWebSearchConfig,
+  webSearchUrlApiKeys,
+  unbindWebSearchKeys,
+  webSearchPairedFields,
+  isStoredWebSearchValue,
+  getRebindingWebSearchKeys,
+} from './web';
 
 describe('loadWebSearchConfig', () => {
   describe('firecrawlVersion', () => {
@@ -251,5 +260,262 @@ describe('webSearchAuth', () => {
 
     expect(keys.filter((key) => key === 'keenableApiKey')).toHaveLength(1);
     expect(keys).toContain('keenableApiUrl');
+  });
+
+  it('pairs every service URL with the API key of a service that reads both', () => {
+    const services = Object.values(webSearchAuth).flatMap((category) => Object.values(category));
+    const urlKeys = getWebSearchKeys().filter((key) => key.endsWith('Url'));
+
+    expect([...webSearchUrlApiKeys.keys()].sort()).toEqual([...urlKeys].sort());
+    for (const [urlKey, apiKey] of webSearchUrlApiKeys) {
+      expect(services.some((service) => urlKey in service && apiKey in service)).toBe(true);
+    }
+  });
+});
+
+describe('isStoredWebSearchValue', () => {
+  it.each(['https://searx.example.com', 'sk-literal-0001', 'v3:00:ff'])(
+    'counts %s as stored in config',
+    (value) => {
+      expect(isStoredWebSearchValue(value)).toBe(true);
+    },
+  );
+
+  it.each(['', '   ', 'user_provided', ' user_provided ', '${SEARXNG_API_KEY}', undefined, 5])(
+    'does not count %p as stored in config',
+    (value) => {
+      expect(isStoredWebSearchValue(value)).toBe(false);
+    },
+  );
+});
+
+describe('unbindWebSearchKeys', () => {
+  /** Merge positions by field; an unlisted field comes from the base config. */
+  const layers = (byField: Partial<Record<string, number>>) => (field: string) => byField[field];
+
+  it('lists every paired URL and key once', () => {
+    expect(new Set(webSearchPairedFields).size).toBe(webSearchPairedFields.length);
+    expect([...webSearchPairedFields].sort()).toEqual(
+      [...new Set([...webSearchUrlApiKeys.keys(), ...webSearchUrlApiKeys.values()])].sort(),
+    );
+  });
+
+  it('drops a stored key whose stored URL a later layer set', () => {
+    const webSearch = {
+      searxngInstanceUrl: 'https://attacker.example.com',
+      searxngApiKey: 'sx-base-secret-0001',
+      serperApiKey: 'serper-literal-0001',
+    };
+
+    const result = unbindWebSearchKeys(webSearch, layers({ searxngInstanceUrl: 1 }));
+
+    expect(result.webSearch).toEqual({
+      searxngInstanceUrl: 'https://attacker.example.com',
+      serperApiKey: 'serper-literal-0001',
+    });
+    expect(result.unbound).toEqual([{ url: 'searxngInstanceUrl', apiKey: 'searxngApiKey' }]);
+    expect(webSearch.searxngApiKey).toBe('sx-base-secret-0001');
+  });
+
+  it('drops a key a layer stores for a stored URL it inherits', () => {
+    const webSearch = { keenableApiUrl: 'https://k.example.com', keenableApiKey: 'kn-0001' };
+
+    const result = unbindWebSearchKeys(webSearch, layers({ keenableApiKey: 2 }));
+
+    expect(result.webSearch).toEqual({ keenableApiUrl: 'https://k.example.com' });
+    expect(result.unbound).toEqual([{ url: 'keenableApiUrl', apiKey: 'keenableApiKey' }]);
+  });
+
+  it('keeps a stored key the layer that set its URL also stored', () => {
+    const webSearch = { keenableApiUrl: 'https://k.example.com', keenableApiKey: 'kn-0001' };
+
+    const result = unbindWebSearchKeys(webSearch, layers({ keenableApiUrl: 1, keenableApiKey: 1 }));
+
+    expect(result.webSearch).toBe(webSearch);
+    expect(result.unbound).toEqual([]);
+  });
+
+  it.each([
+    { name: 'points it at an environment reference', url: '${OTHER_SERVICE_URL}' },
+    { name: 'blanks it', url: '' },
+    { name: 'sets it to null', url: null },
+    { name: 'leaves it to users', url: 'user_provided' },
+    { name: 'removes it', url: undefined },
+  ])('drops a stored key when a later layer $name', ({ url }) => {
+    const webSearch = { firecrawlApiUrl: url, firecrawlApiKey: 'fc-literal-0001' };
+
+    const result = unbindWebSearchKeys(
+      webSearch,
+      layers({ firecrawlApiKey: 0, firecrawlApiUrl: 1 }),
+    );
+
+    expect(result.webSearch).not.toHaveProperty('firecrawlApiKey');
+    expect(result.unbound).toEqual([{ url: 'firecrawlApiUrl', apiKey: 'firecrawlApiKey' }]);
+  });
+
+  it('keeps a stored key written over an inherited environment URL', () => {
+    const webSearch = {
+      firecrawlApiUrl: '${FIRECRAWL_API_URL}',
+      firecrawlApiKey: 'fc-literal-0001',
+      jinaApiUrl: '${JINA_API_URL}',
+      jinaApiKey: 'jina-literal-0001',
+    };
+
+    const result = unbindWebSearchKeys(
+      webSearch,
+      layers({ firecrawlApiKey: 1, jinaApiUrl: 0, jinaApiKey: 2 }),
+    );
+
+    expect(result.webSearch).toBe(webSearch);
+    expect(result.unbound).toEqual([]);
+  });
+
+  it('leaves environment and user keys to the runtime rules', () => {
+    const webSearch = {
+      searxngInstanceUrl: 'https://searx.example.com',
+      searxngApiKey: '${SEARXNG_API_KEY}',
+      jinaApiUrl: 'https://jina.example.com',
+      jinaApiKey: 'user_provided',
+    };
+
+    const result = unbindWebSearchKeys(webSearch, layers({ searxngInstanceUrl: 1, jinaApiUrl: 1 }));
+
+    expect(result.webSearch).toBe(webSearch);
+    expect(result.unbound).toEqual([]);
+  });
+
+  it('drops a shared key when either of its URLs comes from another layer', () => {
+    const webSearch = {
+      tavilySearchUrl: 'https://tavily.example.com/search',
+      tavilyExtractUrl: 'https://elsewhere.example.com/extract',
+      tavilyApiKey: 'tvly-0001',
+    };
+
+    const result = unbindWebSearchKeys(
+      webSearch,
+      layers({ tavilySearchUrl: 0, tavilyApiKey: 0, tavilyExtractUrl: 1 }),
+    );
+
+    expect(result.webSearch).toEqual({
+      tavilySearchUrl: 'https://tavily.example.com/search',
+      tavilyExtractUrl: 'https://elsewhere.example.com/extract',
+    });
+    expect(result.unbound).toEqual([{ url: 'tavilyExtractUrl', apiKey: 'tavilyApiKey' }]);
+  });
+});
+
+describe('getRebindingWebSearchKeys', () => {
+  const STORED_KEY = 'v3:00112233445566778899aabbccddeeff:abcdef';
+  const stored = {
+    searxngInstanceUrl: 'https://searx.example.com',
+    searxngApiKey: STORED_KEY,
+    serperApiKey: STORED_KEY,
+  };
+  const SEARXNG = [{ url: 'searxngInstanceUrl', apiKey: 'searxngApiKey' }];
+
+  it.each([
+    { name: 'changes it', url: 'https://attacker.example.com' },
+    { name: 'points it at an environment reference', url: '${SEARXNG_INSTANCE_URL}' },
+    { name: 'blanks it', url: '' },
+    { name: 'tombstones it', url: null },
+    { name: 'leaves it to users', url: 'user_provided' },
+  ])('lists a stored key the write kept when it $name', ({ url }) => {
+    const next = { ...stored, searxngInstanceUrl: url };
+
+    expect(getRebindingWebSearchKeys(stored, next, new Set(['searxngInstanceUrl']))).toEqual(
+      SEARXNG,
+    );
+  });
+
+  it('lists a stored key whose URL the write removes', () => {
+    const next = { searxngApiKey: STORED_KEY, serperApiKey: STORED_KEY };
+
+    expect(getRebindingWebSearchKeys(stored, next, new Set())).toEqual(SEARXNG);
+  });
+
+  it('lists a URL a write adds beside a key the document already stores', () => {
+    const keyOnly = { firecrawlApiKey: STORED_KEY };
+    const next = { ...keyOnly, firecrawlApiUrl: '${FIRECRAWL_API_URL}' };
+
+    expect(getRebindingWebSearchKeys(keyOnly, next, new Set(['firecrawlApiUrl']))).toEqual([
+      { url: 'firecrawlApiUrl', apiKey: 'firecrawlApiKey' },
+    ]);
+  });
+
+  it.each([
+    { name: 'a literal URL replaces it', url: 'https://keenable.example.com' },
+    { name: 'it names another variable', url: '${OTHER_SERVICE_URL}' },
+  ])('lists a key beside an environment URL when $name', ({ url }) => {
+    const fromEnv = { keenableApiUrl: '${KEENABLE_API_URL}', keenableApiKey: STORED_KEY };
+    const next = { ...fromEnv, keenableApiUrl: url };
+
+    expect(getRebindingWebSearchKeys(fromEnv, next, new Set(['keenableApiUrl']))).toEqual([
+      { url: 'keenableApiUrl', apiKey: 'keenableApiKey' },
+    ]);
+  });
+
+  it('lists the shared Tavily key once per changed URL', () => {
+    const tavily = {
+      tavilySearchUrl: 'https://tavily.example.com/search',
+      tavilyExtractUrl: 'https://tavily.example.com/extract',
+      tavilyApiKey: STORED_KEY,
+    };
+    const next = { ...tavily, tavilyExtractUrl: 'https://elsewhere.example.com/extract' };
+
+    expect(getRebindingWebSearchKeys(tavily, next, new Set())).toEqual([
+      { url: 'tavilyExtractUrl', apiKey: 'tavilyApiKey' },
+    ]);
+  });
+
+  const moved = { ...stored, searxngInstanceUrl: 'https://attacker.example.com' };
+  it.each([
+    {
+      name: 'the write enters the key again beside the new URL',
+      before: stored,
+      next: { ...moved, searxngApiKey: 'sx-new-key' },
+      written: ['searxngInstanceUrl', 'searxngApiKey'],
+    },
+    {
+      name: 'the write clears the key',
+      before: stored,
+      next: { ...moved, searxngApiKey: '' },
+      written: ['searxngInstanceUrl', 'searxngApiKey'],
+    },
+    {
+      name: 'the key becomes an environment reference',
+      before: stored,
+      next: { ...moved, searxngApiKey: '${SEARXNG_API_KEY}' },
+      written: ['searxngInstanceUrl', 'searxngApiKey'],
+    },
+    {
+      name: 'the URL is spelled differently',
+      before: stored,
+      next: { ...stored, searxngInstanceUrl: ' HTTPS://Searx.Example.com ' },
+      written: ['searxngInstanceUrl'],
+    },
+    {
+      name: 'the same environment reference is written again',
+      before: { ...stored, searxngInstanceUrl: '${SEARXNG_INSTANCE_URL}' },
+      next: { ...stored, searxngInstanceUrl: ' ${SEARXNG_INSTANCE_URL}' },
+      written: ['searxngInstanceUrl'],
+    },
+    {
+      name: 'a tombstoned URL is blanked instead',
+      before: { ...stored, searxngInstanceUrl: null },
+      next: { ...stored, searxngInstanceUrl: '  ' },
+      written: ['searxngInstanceUrl'],
+    },
+    {
+      name: 'only another field changes',
+      before: stored,
+      next: { ...stored, safeSearch: 2 },
+      written: ['safeSearch'],
+    },
+  ])('lists nothing when $name', ({ before, next, written }) => {
+    expect(getRebindingWebSearchKeys(before, next, new Set(written))).toEqual([]);
+  });
+
+  it('lists nothing when no web search section remains', () => {
+    expect(getRebindingWebSearchKeys(stored, undefined, new Set())).toEqual([]);
   });
 });

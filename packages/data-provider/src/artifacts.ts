@@ -3086,3 +3086,48 @@ export const shadcnComponents = {
   tooltip: tooltip,
   useToast: useToast,
 };
+
+/**
+ * The shadcn/ui sources mounted into every React artifact, keyed by the file name a
+ * component imports from `/components/ui/<name>`. The artifacts prompt lists these keys,
+ * so the model is only told about imports that resolve.
+ */
+export const artifactUIComponents: Readonly<Record<string, string>> = {
+  accordion: accordian,
+  'alert-dialog': alertDialog,
+  alert,
+  avatar,
+  badge,
+  breadcrumb,
+  button,
+  calendar,
+  card,
+  carousel,
+  checkbox,
+  collapsible,
+  dialog,
+  drawer,
+  'dropdown-menu': dropdownMenu,
+  input,
+  label,
+  menubar: menuBar,
+  'navigation-menu': navigationMenu,
+  pagination,
+  popover,
+  progress,
+  'radio-group': radioGroup,
+  select,
+  separator,
+  skeleton,
+  slider,
+  switch: switchComponent,
+  table,
+  tabs,
+  textarea,
+  toast,
+  toaster,
+  'toggle-group': toggleGroup,
+  toggle,
+  tooltip,
+  'use-toast': useToast,
+};

@@ -47,9 +47,9 @@ export default function MarketplaceItem({
     >
       <div className="flex w-full min-w-0 items-center gap-2 px-1 py-1">
         <div className="flex h-5 w-5 shrink-0 items-center justify-center">
-          <LayoutGrid className="h-5 w-5 text-text-primary" aria-hidden="true" />
+          <LayoutGrid className="text-text-primary h-5 w-5" aria-hidden="true" />
         </div>
-        <span className="truncate text-left">{label}</span>
+        <span className="truncate text-start">{label}</span>
       </div>
     </MenuItem>
   );

@@ -305,8 +305,8 @@ export default function ActionsInput({
 
       <OGDialog open={isSchemaDialogOpen} onOpenChange={setIsSchemaDialogOpen}>
         <OGDialogContent className="flex h-[85vh] max-h-[85vh] w-11/12 max-w-5xl flex-col gap-3 p-5">
-          <OGDialogHeader className="space-y-0 pr-10">
-            <OGDialogTitle className="text-left text-sm font-medium">
+          <OGDialogHeader className="space-y-0 pe-10">
+            <OGDialogTitle className="text-start text-sm font-medium">
               {localize('com_ui_schema')}
             </OGDialogTitle>
             <OGDialogDescription className="sr-only">

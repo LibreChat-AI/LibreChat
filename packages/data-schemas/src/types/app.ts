@@ -69,6 +69,20 @@ export interface AppConfig {
   /** Web search configuration */
   webSearch?: TCustomConfig['webSearch'];
   githubCompare?: TCustomConfig['githubCompare'];
+  /** Outbound call budgets; unset keys fall back to the server defaults */
+  timeouts?: TCustomConfig['timeouts'];
+  /** Violation log retention; unset keeps the server default */
+  violationLog?: TCustomConfig['violationLog'];
+  messages?: TCustomConfig['messages'];
+  /** Bounds on parallel per-request lookups; unset keys fall back to the server defaults */
+  concurrency?: TCustomConfig['concurrency'];
+  skillDeletion?: {
+    finalizationEnabled?: boolean;
+    sweepIntervalMs?: number;
+    claimLeaseMs?: number;
+    batchSize?: number;
+    recheckIntervalMs?: number;
+  };
   /** Source-scoped content filter configuration */
   filters?: FiltersConfig;
   /** Message filter configuration (PII and future filter types) */
@@ -132,12 +146,14 @@ export interface AppConfig {
   endpoints?: {
     /** Admin exemption list of host:port pairs that bypass the SSRF private-IP block */
     allowedAddresses?: string[];
+    /** How long the admin config catalog reuses a scope's model lists, in milliseconds */
+    catalogModelsTtlMs?: number;
     /** OpenAI endpoint configuration */
     openAI?: Partial<TEndpoint>;
     /** Google endpoint configuration */
     google?: Partial<TEndpoint>;
     /** Bedrock endpoint configuration */
-    bedrock?: Partial<TEndpoint>;
+    bedrock?: Partial<TEndpoint> & { availableRegions?: string[] };
     /** Anthropic endpoint configuration with optional Vertex AI support */
     anthropic?: Partial<TAnthropicEndpoint> & {
       /** Validated Vertex AI configuration */

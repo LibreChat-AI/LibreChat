@@ -65,8 +65,9 @@ Three primitives keep corners of their own outside that scale: the menu panel (`
 `tabRadius` (0.185rem, through `rounded-theme-tab`). The defaults are the corners they always drew.
 
 The composer's popovers read `popoverRadius` (1rem, `rounded-theme-popover`), the model selector's
-panel `menuPanelRadius` (0.75rem, `rounded-theme-menu-panel`) and the send and stop buttons
-`composerActionRadius` (a full circle, `rounded-theme-composer-action`), so a theme can bring them
+panel and the form-control pickers `menuPanelRadius` (0.75rem, `rounded-theme-menu-panel`), the
+date range picker `compactPanelRadius` (0.5rem, `rounded-theme-compact-panel`) and the send and
+stop buttons `composerActionRadius` (a full circle, `rounded-theme-composer-action`), so a theme can bring them
 onto `menuRadius` or a square corner without moving the control or surface radii. An inline code
 chip in Markdown takes its weight from `inlineCodeWeight` (600).
 
@@ -391,11 +392,11 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
   the dialog's close icon, `h-theme-field-lg` (`fieldHeightLg`) the large `title`
   input, and `h-theme-target` the switch's hit area, and `min-w-theme-tab` (`tabMinWidth`, `0` to size a tab by its label) the tab
   trigger. `min-w-theme-list` and `max-h-theme-list` (`listMinWidth`, `0` to size the list by
-  its trigger, and `listMaxHeight`, 8 to 40rem or `none`) bound the Select's list, which never
+  its trigger, and `listMaxHeight`, 8 to 40rem or `none`) bound a field `Dropdown`'s list, which never
   grows past the room the popper leaves between its trigger and the viewport's edge, so `none`
   drops the fixed cap and keeps only that one. Every default is the size the primitive drew before. The icon and checkbox roles
-  are bounded to the room their layouts leave: `iconSize` 0.75 to 1.25rem, `iconSizeMd` (the
-  exported Dialog's close glyph) 1.25 to 1.5rem, `iconSizeLg` 1 to 2rem, `checkboxSize` 1 to
+  are bounded to the room their layouts leave: `iconSize` 0.75 to 1.25rem, `iconSizeMd` (read by
+  `size-theme-icon-md`; no shared primitive uses it today) 1.25 to 1.5rem, `iconSizeLg` 1 to 2rem, `checkboxSize` 1 to
   1.5rem. The target floor (`h-theme-target`, `min-h-theme-target`, `min-w-theme-target`) is
   a fixed 24px, WCAG 2.5.8's minimum, not a role, so a theme cannot lower it. The Button's
   `xs`, `lg`, `compact` and `icon-sm` heights and `fieldHeightLg` reject a value under 24px;
@@ -468,10 +469,12 @@ Each status family has a foreground, a `-subtle` background, a `-border`, and a
 - `text-xs` to `text-3xl` - Sizes and line heights read `textXs`..`text3xl` and
   `leadingXs`..`leading3xl`, in the app and in a consumer alike; the defaults are
   Tailwind's own values.
-- `bg-scrim` / `bg-scrim-alert` / `bg-scrim-modal` - The OGDialog, AlertDialog
-  and Dialog scrims: `surface-overlay` at the `scrimOpacity`,
-  `alertScrimOpacity` and `modalScrimOpacity` appearance roles (80%, 90% and
-  65% by default). A bundled scrim dims the page and never lifts it.
+- `bg-scrim` / `bg-scrim-alert` / `bg-scrim-modal` - The OGDialog and
+  AlertDialog scrims, plus a third for a consumer's own modal: `surface-overlay`
+  at the `scrimOpacity`, `alertScrimOpacity` and `modalScrimOpacity` appearance
+  roles (80%, 90% and 65% by default). No bundled dialog draws `bg-scrim-modal`
+  since the legacy `Dialog` was removed; the role stays so released themes keep
+  loading. A bundled scrim dims the page and never lifts it.
 - `theme-destructive-soft:` - A variant for a `destructive-soft` Button's tint (the inline delete or revoke; a dialog's confirming `destructive` button stays solid): the
   button paints a 10% tint of the destructive surface under the destructive ink
   when the theme's `destructiveStyle` is `soft`. The default `fill` keeps the
@@ -610,7 +613,7 @@ function ThemeToggle() {
 - `'high-contrast-dark'` - Accessibility mode: white on black, WCAG AAA
 
 High contrast applies the built-in `highContrastTheme` definition
-(`themes/highContrast.ts`), which outranks a deployment's custom theme, and adds
+(`packages/data-provider/src/themes/highContrast.ts`), which outranks a deployment's custom theme, and adds
 a `high-contrast` class to `<html>` for the CSS-only variables the token layer
 cannot reach.
 
@@ -678,11 +681,8 @@ const { theme, setTheme } = useContext(ThemeContext);
 packages/client/src/theme/
 ├── context/
 │   └── ThemeProvider.tsx    # Main theme provider
-├── types/
-│   └── index.ts            # TypeScript interfaces
 ├── themes/
-│   ├── default.ts          # Light theme colors
-│   ├── dark.ts             # Dark theme colors
+│   ├── clickhouse.ts       # The bundled ClickHouse theme
 │   └── index.ts            # Theme exports
 ├── utils/
 │   ├── applyTheme.ts       # Apply CSS variables
@@ -691,6 +691,11 @@ packages/client/src/theme/
 ├── README.md               # This documentation
 └── index.ts               # Main exports
 ```
+
+The theme types, the resolver (`registry.ts`), the default, dark and high contrast palettes and
+`describeResolvedTheme` live in `packages/data-provider/src/themes`, so the server resolves a
+deployment's inline `interface.theme` for the shell's first paint with the same code the client
+runs. This package re-exports them.
 
 ### CSS Variable Format
 

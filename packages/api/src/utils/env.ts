@@ -5,6 +5,7 @@ import type { IUser } from '@librechat/data-schemas';
 import type { RequestBody } from '~/types';
 import {
   OPENID_TOKEN_FIELDS,
+  OPENID_CREDENTIAL_PLACEHOLDER_PATTERN,
   isOpenIDTokenValid,
   extractOpenIDTokenInfo,
   processOpenIDPlaceholders,
@@ -169,17 +170,6 @@ const RESOLVABLE_PLACEHOLDER_PATTERN = new RegExp(
     .join('|'),
   'g',
 );
-
-/**
- * The subset of OpenID placeholders that cannot resolve without a usable token
- * set. Identity metadata (`USER_ID`, `USER_EMAIL`, `USER_NAME`) comes from the
- * user document and `EXPIRES_AT` is only ever a hint, so those must keep their
- * pre-existing literal-then-strip behaviour when the token set is invalid
- * rather than raising re-auth. Non-global so `exec` stays stateless, and
- * unknown names are excluded so a typo stays literal and diagnosable.
- */
-const OPENID_CREDENTIAL_PLACEHOLDER_PATTERN =
-  /\{\{LIBRECHAT_OPENID_(?:ACCESS_TOKEN|ID_TOKEN|TOKEN)\}\}/;
 
 /**
  * The credential placeholders that specifically need a usable *access* token, which is all
@@ -554,74 +544,6 @@ export function processMCPEnv(params: {
   }
 
   return newObj;
-}
-
-/**
- * Recursively processes a value, replacing placeholders in strings while preserving structure
- * @param value - The value to process (can be string, number, boolean, array, object, etc.)
- * @param options - Processing options
- * @returns The processed value with the same structure
- */
-function processValue(
-  value: unknown,
-  options: {
-    customUserVars?: Record<string, string>;
-    user?: IUser;
-    body?: RequestBody;
-  },
-): unknown {
-  if (typeof value === 'string') {
-    return processSingleValue({
-      originalValue: value,
-      customUserVars: options.customUserVars,
-      user: options.user,
-      body: options.body,
-    });
-  }
-
-  if (Array.isArray(value)) {
-    return value.map((item) => processValue(item, options));
-  }
-
-  if (value !== null && typeof value === 'object') {
-    const processed: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(value)) {
-      processed[key] = processValue(val, options);
-    }
-    return processed;
-  }
-
-  return value;
-}
-
-/**
- * Recursively resolves placeholders in a nested object structure while preserving types.
- * Only processes string values - leaves numbers, booleans, arrays, and nested objects intact.
- *
- * @param options - Configuration object
- * @param options.obj - The object to process
- * @param options.user - Optional user object for replacing user field placeholders
- * @param options.body - Optional request body object for replacing body field placeholders
- * @param options.customUserVars - Optional custom user variables to replace placeholders
- * @returns The processed object with placeholders replaced in string values
- */
-export function resolveNestedObject<T = unknown>(options?: {
-  obj: T | undefined;
-  user?: Partial<IUser> | { id: string };
-  body?: RequestBody;
-  customUserVars?: Record<string, string>;
-}): T {
-  const { obj, user, body, customUserVars } = options ?? {};
-
-  if (!obj) {
-    return obj as T;
-  }
-
-  return processValue(obj, {
-    customUserVars,
-    user: user as IUser,
-    body,
-  }) as T;
 }
 
 /**

@@ -11,7 +11,7 @@ const { compile } = require('tailwindcss');
 const tailwindPreset = require('../../tailwind.preset.cjs');
 const packageConfig = require('../../tailwind.config.js');
 const packageJson = require('../../package.json');
-const { defaultAppearance, themeAppearanceProperties } = require('./registry');
+const { defaultAppearance, themeAppearanceProperties } = require('librechat-data-provider');
 
 const packageRoot = path.resolve(__dirname, '../..');
 
@@ -94,6 +94,27 @@ describe('LibreChat Tailwind preset', () => {
     expect(rule(css, 'animate-loading-dot')).toContain('1.2s ease-in-out');
   });
 
+  it('negates the switch thumb travel so an RTL track can mirror it', async () => {
+    const css = await generate(['-translate-x-theme-switch-travel']);
+
+    expect(rule(css, '-translate-x-theme-switch-travel')).toContain('--theme-switch-width');
+    expect(rule(css, '-translate-x-theme-switch-travel')).toContain('* -1)');
+  });
+
+  it('mirrors the switch thumb by the element direction, not any RTL ancestor', async () => {
+    const candidate = 'dir-rtl:data-[state=checked]:-translate-x-theme-switch-travel';
+    const css = await generate([candidate]);
+    const [modern, fallback] = css.split('@supports not selector(:dir(rtl))');
+
+    /** Tailwind's `rtl:` also matches `[dir="rtl"] *`, which reaches into an LTR island. */
+    expect(modern).toContain(':dir(rtl)');
+    expect(modern).toContain('--theme-switch-width');
+    expect(modern).not.toContain("[dir='rtl']");
+    /** Only a browser without `:dir()` falls back to the attribute. */
+    expect(fallback).toContain('@container style(--dir-fallback: rtl)');
+    expect(fallback).toContain('--theme-switch-width');
+  });
+
   it('generates every component animation and its keyframes together', async () => {
     const names = ['loading-dot', 'accordion-down', 'accordion-up', 'caret-blink'];
     const css = await generate(names.map((name) => `animate-${name}`));
@@ -163,6 +184,11 @@ describe('LibreChat Tailwind preset', () => {
       ['rounded-theme-checkbox', '--theme-checkbox-radius', defaultAppearance.checkboxRadius],
       ['rounded-theme-menu-panel', '--theme-menu-panel-radius', defaultAppearance.menuPanelRadius],
       [
+        'rounded-theme-compact-panel',
+        '--theme-compact-panel-radius',
+        defaultAppearance.compactPanelRadius,
+      ],
+      [
         'rounded-theme-composer-action',
         '--theme-composer-action-radius',
         defaultAppearance.composerActionRadius,
@@ -221,9 +247,7 @@ describe('LibreChat Tailwind preset', () => {
       expect(css).toContain(`var(${property}, ${fallback})`);
     });
 
-    expect(rule(css, 'max-h-theme-list')).toContain(
-      'var(--radix-select-content-available-height, 100dvh)',
-    );
+    expect(rule(css, 'max-h-theme-list')).toContain('var(--popover-available-height, 100dvh)');
 
     /** The tap-target floor is the role's reason to exist, so the floor itself is asserted
      *  rather than only the control-height variable it is built from. */
@@ -330,6 +354,7 @@ describe('LibreChat Tailwind preset', () => {
       menuShadow: 'shadowLg',
       popoverRadius: 'radius2xl',
       menuPanelRadius: 'radiusXl',
+      compactPanelRadius: 'radiusLg',
       composerActionRadius: 'roundControlRadius',
       authControlRadius: 'radius2xl',
       authActionHeight: 'buttonHeight',

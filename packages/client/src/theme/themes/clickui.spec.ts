@@ -2,8 +2,9 @@ import { createElement } from 'react';
 import { join } from 'path';
 import { readFileSync } from 'fs';
 import { cleanup, fireEvent, render } from '@testing-library/react';
+import { resolveTheme, themeAppearanceProperties } from 'librechat-data-provider';
+import type { IThemeAppearance, IThemeRGB, ThemeMode } from 'librechat-data-provider';
 import type { ReactElement } from 'react';
-import type { IThemeAppearance, IThemeRGB, ThemeMode } from '../types';
 import {
   Table,
   TableBody,
@@ -13,7 +14,6 @@ import {
   TableRow,
 } from '../../components/Table';
 import { OGDialog, OGDialogContent, OGDialogTitle } from '../../components/OriginalDialog';
-import { resolveTheme, themeAppearanceProperties } from '../registry';
 import { Tabs, TabsList, TabsTrigger } from '../../components/Tabs';
 import { Checkbox } from '../../components/Checkbox';
 import { Button } from '../../components/Button';
@@ -610,6 +610,7 @@ const appearanceSources: Partial<Record<keyof IThemeAppearance, string>> = {
   menuRadius: 'click.genericMenu.panel.radii.all',
   popoverRadius: 'click.genericMenu.panel.radii.all',
   menuPanelRadius: 'click.genericMenu.panel.radii.all',
+  compactPanelRadius: 'click.genericMenu.panel.radii.all',
   composerActionRadius: 'click.button.radii.all',
   authControlRadius: 'click.button.radii.all',
   inlineCodeWeight: 'typography.font.weights.2',

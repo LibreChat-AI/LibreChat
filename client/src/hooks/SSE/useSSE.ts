@@ -1,8 +1,9 @@
 import { useEffect, useState } from 'react';
 import { v4 } from 'uuid';
-import { useSetRecoilState } from 'recoil';
 import { useStore, useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
+import { abortScrollFamily, showStopButtonByIndex } from '@librechat/chat/react';
+import { startedAsNewConversation, buildCreatedInitialResponse } from '@librechat/chat';
 import { StepEvents, createPayload, removeNullishValues } from 'librechat-data-provider';
 import type {
   Agents,
@@ -18,17 +19,15 @@ import type {
 import type { EventHandlerParams } from './useEventHandlers';
 import type { TResData, TFinalResData } from '~/common';
 import { clearComposerDrafts, applyPendingAction, findPendingActionMessageIndex } from '~/utils';
-import { startedAsNewConversation, buildCreatedInitialResponse } from './useEventHandlers';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
-import { abortScrollFamily, showStopButtonByIndex } from '~/store/generation';
-import { useGetStartupConfig, useGetUserBalance } from '~/data-provider';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
+import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { reopenTermsOnRefusal } from '~/utils/terms';
-import { useAuthContext } from '~/hooks/AuthContext';
+import { useGetUserBalance } from '~/data-provider';
 import useEventHandlers from './useEventHandlers';
 import useUsageHandler from './useUsageHandler';
 import useLocalize from '~/hooks/useLocalize';
-import store from '~/store';
+import { activeRunFamily } from './atoms';
 
 type ChatHelpers = Pick<
   EventHandlerParams,
@@ -48,9 +47,10 @@ export default function useSSE(
   runIndex = 0,
 ) {
   const jotaiStore = useStore();
-  const setActiveRunId = useSetRecoilState(store.activeRunFamily(runIndex));
+  const setActiveRunId = useSetAtom(activeRunFamily(runIndex));
 
-  const { token, isAuthenticated } = useAuthContext();
+  const { auth, config } = useChatSettings();
+  const { token, isAuthenticated = false } = auth;
   const transport = useChatTransport();
   const [completed, setCompleted] = useState(new Set());
   const setAbortScroll = useSetAtom(abortScrollFamily(runIndex));
@@ -87,10 +87,8 @@ export default function useSSE(
 
   const queryClient = useQueryClient();
   const localize = useLocalize();
-  const { data: startupConfig } = useGetStartupConfig();
-  const balanceQuery = useGetUserBalance({
-    enabled: !!isAuthenticated && startupConfig?.balance?.enabled,
-  });
+  const { balanceEnabled = false } = config;
+  const balanceQuery = useGetUserBalance({ enabled: isAuthenticated && balanceEnabled });
   const {
     bindResponse,
     contextHandler,
@@ -145,7 +143,7 @@ export default function useSSE(
         setIsSubmitting(false);
         setShowStopButton(false);
       }
-      (startupConfig?.balance?.enabled ?? false) && balanceQuery.refetch();
+      balanceEnabled && balanceQuery.refetch();
       console.log('final', data);
     };
 
@@ -213,7 +211,7 @@ export default function useSSE(
     const handleError = (data: ChatErrorData | null | undefined) => {
       console.log('error in server stream.');
       const termsRefused = reopenTermsOnRefusal(queryClient, data);
-      (startupConfig?.balance?.enabled ?? false) && balanceQuery.refetch();
+      balanceEnabled && balanceQuery.refetch();
       resetLive(currentSubmission);
       if (data === undefined) {
         setIsSubmitting(false);

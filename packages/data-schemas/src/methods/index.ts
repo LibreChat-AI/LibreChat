@@ -1,5 +1,15 @@
+import { createSubagentContentMethods, type SubagentContentMethods } from './subagentContent';
+export type {
+  SubagentContentScope,
+  SubagentContentHead,
+  SubagentContentBatch,
+  SubagentContentMethods,
+  SubagentContentAppendResult,
+} from './subagentContent';
 import type { ToolApprovalGrantStorage } from 'librechat-data-provider';
 import type { ScheduleMCPConsentStorage } from './scheduleConsent';
+import type { ClearFileCodeEnvRefsParams } from '~/types/file';
+import type { FileStorageMethods } from './fileStorage';
 import { createToolApprovalGrantMethods } from './toolApprovalGrant';
 import { createScheduleMCPConsentStorage } from './scheduleConsent';
 export { createScheduleMCPConsentStorage } from './scheduleConsent';
@@ -7,6 +17,7 @@ export type { ScheduleMCPConsentStorage, ScheduleConsentSnapshot } from './sched
 import type {
   FileMethods,
   FileOwnerScope,
+  ClearFileEmbeddingsParams,
   AvailableProjectFileRecord,
   AvailableProjectFilesOptions,
   AvailableProjectFilesResult,
@@ -34,7 +45,9 @@ import { createTokenMethods, type TokenMethods } from './token';
 import { createTokenListMethods, type TokenListMethods } from './tokenList';
 import { createRoleMethods, RoleConflictError } from './role';
 import { createKeyMethods, type KeyMethods } from './key';
+import { createFileStorageMethods } from './fileStorage';
 import { createFileMethods } from './file';
+export { createFileStorageMethods } from './fileStorage';
 /* Memories */
 import { createMemoryMethods, type MemoryMethods } from './memory';
 /* Tool Favorites */
@@ -146,6 +159,7 @@ import {
   validateSkillDescription,
   deriveStructuredFrontmatterFields,
   inferSkillFileCategory,
+  filterExistingSkillIds,
   type SkillMethods,
   type SkillDeps,
   type CreateSkillInput,
@@ -178,6 +192,7 @@ import {
   type AgentEventActorReceiptStorageMetrics,
 } from './triggerDelivery';
 import { createSkillSyncMethods, type SkillSyncMethods } from './skillSync';
+import { createSkillLifecycleMethods, type SkillLifecycleMethods } from './skillLifecycle';
 import type {
   SkillSyncStatusInput,
   SkillSyncCredentialSummary,
@@ -194,6 +209,7 @@ import {
 } from './agent';
 /* Config */
 import { createConfigMethods, type ConfigMethods } from './config';
+import { createPrincipalMethods, type PrincipalMethods } from './principal';
 import {
   createMCPAuthorityMethods,
   MCPAuthorityProofError,
@@ -238,19 +254,27 @@ export {
   validateSkillDescription,
   deriveStructuredFrontmatterFields,
   inferSkillFileCategory,
+  filterExistingSkillIds,
 };
 export { AUDIT_SCHEMA_VERSION, MAX_AUDIT_EXPORT_ROWS, MAX_AUDIT_LOG_LIMIT, MAX_AUDIT_VERIFY_ROWS };
 export { MAX_TOOL_FAVORITES };
 export { AgentTriggerDeliveryConflictError };
 export type { PromptGroupListParams };
 export { AGENT_OWNER_CONTACT_RESOLVED_FIELD, AgentSortCursorError } from './agent';
+export { createSkillDeletionPersistenceAdapter } from './skillDeletionAdapter';
+export type {
+  SkillDeletionRecord,
+  SkillUploadIntentRecord,
+  SkillDeletionFileRecord,
+} from './skillDeletionAdapter';
 export {
   AgentQueuedTurnCapacityError,
   AgentQueuedTurnConflictError,
   AgentQueuedTurnLaneRetiredError,
 };
 
-export type AllMethods = ToolApprovalGrantStorage &
+export type AllMethods = SubagentContentMethods &
+  ToolApprovalGrantStorage &
   UserMethods &
   SessionMethods &
   TokenMethods &
@@ -262,6 +286,7 @@ export type AllMethods = ToolApprovalGrantStorage &
   RoleMethods &
   KeyMethods &
   FileMethods &
+  FileStorageMethods &
   MemoryMethods &
   ToolFavoriteMethods &
   AgentCategoryMethods &
@@ -292,12 +317,14 @@ export type AllMethods = ToolApprovalGrantStorage &
   PromptMethods &
   SkillMethods &
   SkillSyncMethods &
+  SkillLifecycleMethods &
   AgentTriggerDeliveryMethods &
   AgentQueuedTurnMethods &
   ScheduleMCPConsentStorage &
   ScheduleMethods &
   AgentMethods &
   ConfigMethods &
+  PrincipalMethods &
   MCPAuthorityMethods &
   InsightsMethods;
 
@@ -498,10 +525,12 @@ export function createMethods(
     ...createRefreshTokenBridgeMethods(mongoose),
     ...createOpenIDRefreshFlightMethods(mongoose),
     ...createResourceLockMethods(mongoose),
+    ...createSubagentContentMethods(mongoose),
     ...createPasskeyMethods(mongoose),
     ...roleMethods,
     ...createKeyMethods(mongoose),
     ...createFileMethods(mongoose),
+    ...createFileStorageMethods(mongoose),
     ...createMemoryMethods(mongoose),
     ...createToolFavoriteMethods(mongoose),
     ...createAgentCategoryMethods(mongoose),
@@ -537,6 +566,7 @@ export function createMethods(
     ...promptMethods,
     ...skillMethods,
     ...createSkillSyncMethods(mongoose),
+    ...createSkillLifecycleMethods(mongoose),
     ...agentTriggerDeliveryMethods,
     ...agentQueuedTurnMethods,
     ...createScheduleMethods(mongoose),
@@ -545,6 +575,7 @@ export function createMethods(
     ...agentMethods,
     /* Config */
     ...createConfigMethods(mongoose),
+    ...createPrincipalMethods(mongoose),
     /* MCP authority proofs */
     ...createMCPAuthorityMethods(mongoose),
     /* Insights */
@@ -571,8 +602,11 @@ export type {
   KeyMethods,
   MemoryMethods,
   FileMethods,
+  FileStorageMethods,
   FileOwnerScope,
   AvailableProjectFileRecord,
+  ClearFileCodeEnvRefsParams,
+  ClearFileEmbeddingsParams,
   AvailableProjectFilesOptions,
   AvailableProjectFilesResult,
   ProjectFileRecord,
@@ -629,6 +663,7 @@ export type {
   SkillSyncCredentialSummary,
   UpsertSkillSyncCredentialInput,
   SkillSyncMethods,
+  SkillLifecycleMethods,
   AgentTriggerDeliveryMethods,
   AgentQueuedTurnMethods,
   AgentTriggerProducerLeaseStatus,
@@ -640,6 +675,7 @@ export type {
   AgentGraphAccess,
   AgentGraphAccessContext,
   ConfigMethods,
+  PrincipalMethods,
   MCPAuthorityMethods,
   MCPAuthorityMethodHooks,
   MCPAuthorityConfigSourceDocument,

@@ -6,6 +6,7 @@ import {
   ContentTypes,
   ToolCallTypes,
   imageGenTools,
+  isOpaqueReasoning,
   isImageVisionTool,
   hasToolCallPreview,
   getToolCallPreviewRevision,
@@ -646,6 +647,9 @@ const renderers: PartRenderers = {
       if (reasoning.trim() === '' && part.reasoning_unavailable === true) {
         return <ReasoningMarker label={part.reasoning_label} />;
       }
+      if (isOpaqueReasoning(reasoning)) {
+        return <ReasoningMarker encrypted />;
+      }
       return (
         <Reasoning
           partKeyIndex={getPartKeyIndex(part, partIndex ?? 0)}
@@ -677,7 +681,7 @@ const renderers: PartRenderers = {
       const failed = part.status === 'failed' || part.status === 'partial';
       return (
         <div
-          className={`my-1 pl-1 text-sm break-words italic ${failed ? 'text-text-warning' : 'text-text-secondary'}`}
+          className={`my-1 ps-1 text-sm break-words italic ${failed ? 'text-text-warning' : 'text-text-secondary'}`}
         >
           {display}
         </div>

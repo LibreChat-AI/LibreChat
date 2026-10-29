@@ -231,6 +231,8 @@ async function gracefulExit(code = 0) {
             ),
           findMCPServerViewerEntries: (serverId) =>
             runInUserTenant(async () => methods.findMCPServerViewerEntries(serverId)),
+          findMCPServerViewerUserIds: (entries) =>
+            runInUserTenant(async () => methods.findMCPServerViewerUserIds(entries)),
           invalidateMCPServerTools: (serverName) =>
             invalidateCachedTools({ userId: uid, serverName }),
           /** The CLI has no MCP registry or live connections, so shared users get local token and cache cleanup. */
@@ -256,13 +258,14 @@ async function gracefulExit(code = 0) {
               runInUserTenant(async () =>
                 invalidateCachedTools({ userId: candidateId, serverName }),
               ),
-            uninstallOAuthMCP: (candidateId, pluginKey, cleanupConfig, serverConfig) =>
+            uninstallOAuthMCP: (candidateId, pluginKey, cleanupConfig, serverConfig, teardown) =>
               runInUserTenant(async () =>
                 cleanupMCPServerOAuth({
                   userId: candidateId,
                   pluginKey,
                   appConfig: cleanupConfig,
                   serverConfigOverride: serverConfig,
+                  teardown,
                   dependencies: {
                     flowManager: getFlowStateManager(getLogStores(CacheKeys.FLOWS)),
                     oauthHandler: MCPOAuthHandler,

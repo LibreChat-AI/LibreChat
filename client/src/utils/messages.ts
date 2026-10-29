@@ -1,24 +1,23 @@
+import { isEmptyContentPart } from '@librechat/chat/react';
+import { QueryKeys, Constants, buildTree, ContentTypes } from 'librechat-data-provider';
 import {
-  QueryKeys,
-  Constants,
-  buildTree,
-  ContentTypes,
-  isEphemeralAgentId,
-  getEphemeralSender,
-  appendAgentIdSuffix,
-  encodeEphemeralAgentId,
-} from 'librechat-data-provider';
-import type {
-  Agents,
-  TMessage,
-  TConversation,
-  TEndpointsConfig,
-  TMessageContentParts,
-} from 'librechat-data-provider';
+  hasStreamStartFailed,
+  stripStreamedIndexStamps,
+  createDualMessageContent,
+  STREAM_START_FAILED_METADATA_KEY,
+} from '@librechat/chat';
+import type { Agents, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { QueryClient } from '@tanstack/react-query';
 import type { LocalizeFunction, TMessageProps } from '~/common';
 
-export const STREAM_START_FAILED_METADATA_KEY = 'streamStartFailed';
+export {
+  isEmptyContentPart,
+  hasStreamStartFailed,
+  stripStreamedIndexStamps,
+  createDualMessageContent,
+  STREAM_START_FAILED_METADATA_KEY,
+};
+export const TEXT_KEY_DIVIDER = '|||';
 
 /** A locally submitted user row is not canonical until the server acknowledges it. */
 export function isUnacknowledgedUserMessage(message: TMessage): boolean {
@@ -78,54 +77,23 @@ export const getMessageBranchSiblingParentIds = (
   }
 
   const parentIds = new Set<string | null>();
-  const collectBranchParents = (
-    siblings: TMessage[] | undefined,
-    parentMessageId: string | null | undefined,
-  ) => {
-    if (!siblings?.length) {
-      return;
+  const stack = [{ siblings: messagesTree, parentMessageId: rootSiblingKey, index: 0 }];
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    if (frame.index === 0 && frame.siblings.length > 1) {
+      parentIds.add(frame.parentMessageId ?? null);
     }
-
-    if (siblings.length > 1) {
-      parentIds.add(parentMessageId ?? null);
+    const message = frame.siblings[frame.index++];
+    if (!message) {
+      stack.pop();
+      continue;
     }
-
-    for (const message of siblings) {
-      collectBranchParents(message.children, message.messageId);
+    if (message.children?.length) {
+      stack.push({ siblings: message.children, parentMessageId: message.messageId, index: 0 });
     }
-  };
-
-  collectBranchParents(messagesTree, rootSiblingKey);
+  }
   return Array.from(parentIds);
 };
-
-/**
- * True when a resumed run's user-message slot is a compaction ANCHOR rather than
- * a turn the run created.
- *
- * A compaction submits no user turn: the slot names the LEAF it summarizes up
- * to, which the server projects as identity only (`projectCompactionAnchor` —
- * id, conversation, empty text, and no parent). Every other run publishes the
- * turn it created, parent included (`getPreliminaryUserMessage`), so the absent
- * parent is what separates the two.
- *
- * The anchor's author cannot separate them: Compact runs on whatever leaf the
- * branch ends with and `canCompact` does not restrict its author, so the anchor
- * is an assistant answer on one branch and a user message on the next (see
- * `isUserInitiatedCompaction`). Testing for a non-user row recognized only the
- * first kind and left the second rewritten on every re-attach.
- */
-export const isCompactionAnchorProjection = (
-  userMessage?: {
-    messageId?: string;
-    parentMessageId?: string | null;
-    text?: string | null;
-  } | null,
-): boolean =>
-  userMessage?.messageId != null &&
-  userMessage.messageId !== '' &&
-  userMessage.parentMessageId == null &&
-  (userMessage.text == null || userMessage.text === '');
 
 export const getBranchSiblingIndexesForTarget = (
   messages: TMessage[] | null | undefined,
@@ -142,38 +110,37 @@ export const getBranchSiblingIndexesForTarget = (
   }
 
   const branchIndexes: BranchSiblingIndex[] = [];
-  const findTargetPath = (
-    siblings: TMessage[] | undefined,
-    parentMessageId: string | null | undefined,
-  ): boolean => {
-    if (!siblings?.length) {
-      return false;
+  const stack = [
+    { siblings: messagesTree, parentMessageId: rootSiblingKey, index: 0, branchCount: 0 },
+  ];
+  while (stack.length > 0) {
+    const frame = stack[stack.length - 1];
+    const index = frame.index++;
+    const message = frame.siblings[index];
+    if (!message) {
+      stack.pop();
+      continue;
     }
-
-    for (let index = 0; index < siblings.length; index++) {
-      const message = siblings[index];
-      if (!message) {
-        continue;
-      }
-
-      const isTarget = message.messageId === targetMessageId;
-      const childHasTarget = findTargetPath(message.children, message.messageId);
-      if (isTarget || childHasTarget) {
-        if (siblings.length > 1) {
-          branchIndexes.unshift({
-            parentMessageId,
-            siblingIdx: siblings.length - index - 1,
-          });
-        }
-        return true;
-      }
+    branchIndexes.length = frame.branchCount;
+    if (frame.siblings.length > 1) {
+      branchIndexes.push({
+        parentMessageId: frame.parentMessageId,
+        siblingIdx: frame.siblings.length - index - 1,
+      });
     }
-
-    return false;
-  };
-
-  findTargetPath(messagesTree, rootSiblingKey);
-  return branchIndexes;
+    if (message.messageId === targetMessageId) {
+      return branchIndexes;
+    }
+    if (message.children?.length) {
+      stack.push({
+        siblings: message.children,
+        parentMessageId: message.messageId,
+        index: 0,
+        branchCount: branchIndexes.length,
+      });
+    }
+  }
+  return [];
 };
 
 export const getLatestText = (message?: TMessage | null, includeIndex?: boolean): string => {
@@ -237,25 +204,6 @@ const getPartToolCall = (part: TMessageContentParts): Agents.ToolCall | undefine
   part.type === ContentTypes.TOOL_CALL
     ? (part[ContentTypes.TOOL_CALL] as Agents.ToolCall | undefined)
     : undefined;
-
-/** Slots the persistence compaction leaves nothing behind for: the
- * dual-message `type: ''` placeholders, text/think parts that never received a
- * delta, and tool calls missing their `tool_call` payload. */
-export const isEmptyContentPart = (part: TMessageContentParts): boolean => {
-  if (!part.type) {
-    return true;
-  }
-  if (part.type === ContentTypes.TEXT) {
-    return getPartTextValue(part.text).length === 0;
-  }
-  if (part.type === ContentTypes.THINK) {
-    return getPartTextValue(part.think).length === 0;
-  }
-  if (part.type === ContentTypes.TOOL_CALL) {
-    return getPartToolCall(part) == null;
-  }
-  return false;
-};
 
 /** One side extending the other is the same part observed at two moments —
  * a flushed tail or a server-side trim — while divergent content is a
@@ -395,32 +343,6 @@ export const preserveStreamedContentIdentity = (
   return stamped ?? finalContent;
 };
 
-/**
- * Drops the client-only `streamedIndex` stamps from a content array. An
- * edited resubmission retains the settled prefix and appends the rerun's
- * parts at the prefix LENGTH — a stamp at or above that length would collide
- * with an appended part's key — so the retained prefix reverts to physical
- * identity for the rerun. Returns the input untouched when nothing is
- * stamped.
- */
-export function stripStreamedIndexStamps(content: TMessageContentParts[]): TMessageContentParts[];
-export function stripStreamedIndexStamps(content: TMessage['content']): TMessage['content'];
-export function stripStreamedIndexStamps(content: TMessage['content']): TMessage['content'] {
-  if (!content?.length) {
-    return content;
-  }
-  let changed = false;
-  const next = content.map((part) => {
-    if (part == null || part.streamedIndex === undefined) {
-      return part;
-    }
-    changed = true;
-    const { streamedIndex: _streamedIndex, ...rest } = part;
-    return rest as TMessageContentParts;
-  });
-  return changed ? next : content;
-}
-
 /** Render-identity index for content-part keys: the streamed position stamped
  * by the final handler survives the sparse→compact swap; everything else keys
  * by the live index. Coordinate logic (edit indexes, phase bounds, cursor)
@@ -428,16 +350,7 @@ export function stripStreamedIndexStamps(content: TMessage['content']): TMessage
 export const getPartKeyIndex = (part: TMessageContentParts | undefined, idx: number): number =>
   part?.streamedIndex ?? idx;
 
-/**
- * Whether a draft message has enough content to submit: non-whitespace
- * text, or at least one attached file. Lets users send a file without
- * having to type a placeholder message alongside it.
- */
-export const isSubmittableMessage = (text?: string | null, fileCount = 0): boolean =>
-  (text ?? '').trim() !== '' || fileCount > 0;
-
-export const hasStreamStartFailed = (message?: Pick<TMessage, 'metadata'> | null): boolean =>
-  message?.metadata?.[STREAM_START_FAILED_METADATA_KEY] === true;
+export { isSubmittableMessage } from '@librechat/chat';
 
 export const markStreamStartFailedMetadata = (
   metadata?: TMessage['metadata'],
@@ -561,225 +474,8 @@ export const getHeaderPrefixForScreenReader = (
     : `${localize('com_ui_response')}${suffix}: `;
 };
 
-export type MessageTimestamp = {
-  /** Localized relative time, e.g. "2 hours ago". */
-  relative: string;
-  /** Localized absolute date and time, e.g. "Jun 12, 2026, 3:42 PM". */
-  absolute: string;
-  /** ISO 8601 string for the `<time>` element's `dateTime` attribute. */
-  iso: string;
-  /**
-   * True when the message is recent enough that the relative form ("10 minutes ago")
-   * reads better than the absolute date. Past this window the absolute date is clearer.
-   */
-  isRecent: boolean;
-};
-
-/** Below this age the relative form is preferred over the absolute date. */
-const RECENT_THRESHOLD_MS = 24 * 60 * 60 * 1000;
-
-/** Returns true when `value` parses to a valid date. */
-export const isValidTimestamp = (value?: string | null): value is string => {
-  if (!value) {
-    return false;
-  }
-  return !Number.isNaN(new Date(value).getTime());
-};
-
-const RELATIVE_TIME_DIVISIONS: { amount: number; unit: Intl.RelativeTimeFormatUnit }[] = [
-  { amount: 60, unit: 'second' },
-  { amount: 60, unit: 'minute' },
-  { amount: 24, unit: 'hour' },
-  { amount: 7, unit: 'day' },
-  { amount: 4.34524, unit: 'week' },
-  { amount: 12, unit: 'month' },
-  { amount: Number.POSITIVE_INFINITY, unit: 'year' },
-];
-
-/**
- * Intl formatters are expensive to construct and every message row formats its
- * timestamp on each render, so they are built once per locale (and clock format).
- */
-const resolvedLocales = new Map<string, string | undefined>();
-const relativeFormatters = new Map<string, Intl.RelativeTimeFormat>();
-const absoluteFormatters = new Map<string, Intl.DateTimeFormat>();
-
-/** Returns the locale only when it is a syntactically valid BCP-47 tag, else undefined. */
-const resolveLocale = (locale?: string): string | undefined => {
-  if (!locale) {
-    return undefined;
-  }
-  if (resolvedLocales.has(locale)) {
-    return resolvedLocales.get(locale);
-  }
-  let resolved: string | undefined;
-  try {
-    Intl.DateTimeFormat.supportedLocalesOf(locale);
-    resolved = locale;
-  } catch {
-    resolved = undefined;
-  }
-  resolvedLocales.set(locale, resolved);
-  return resolved;
-};
-
-const getRelativeFormatter = (locale?: string): Intl.RelativeTimeFormat => {
-  const key = locale ?? '';
-  let formatter = relativeFormatters.get(key);
-  if (!formatter) {
-    formatter = new Intl.RelativeTimeFormat(locale, { numeric: 'auto' });
-    relativeFormatters.set(key, formatter);
-  }
-  return formatter;
-};
-
-const getAbsoluteFormatter = (locale?: string, hour12?: boolean): Intl.DateTimeFormat => {
-  const key = `${locale ?? ''}|${String(hour12)}`;
-  let formatter = absoluteFormatters.get(key);
-  if (!formatter) {
-    formatter = new Intl.DateTimeFormat(locale, {
-      dateStyle: 'medium',
-      timeStyle: 'short',
-      hour12,
-    });
-    absoluteFormatters.set(key, formatter);
-  }
-  return formatter;
-};
-
-const formatRelativeTime = (from: Date, to: Date, locale?: string): string => {
-  const formatter = getRelativeFormatter(locale);
-  let duration = (from.getTime() - to.getTime()) / 1000;
-  for (const division of RELATIVE_TIME_DIVISIONS) {
-    if (Math.abs(duration) < division.amount) {
-      return formatter.format(Math.round(duration), division.unit);
-    }
-    duration /= division.amount;
-  }
-  return formatter.format(Math.round(duration), 'year');
-};
-
-/**
- * Formats a message timestamp into locale-aware relative and absolute strings.
- * Returns null when the value is missing or unparseable, so callers can skip
- * rendering the timestamp entirely.
- */
-export const getMessageTimestamp = (
-  value?: string | null,
-  locale?: string,
-  hour12?: boolean,
-): MessageTimestamp | null => {
-  if (!isValidTimestamp(value)) {
-    return null;
-  }
-
-  const date = new Date(value);
-  const now = new Date(Date.now());
-  const safeLocale = resolveLocale(locale);
-
-  return {
-    iso: date.toISOString(),
-    relative: formatRelativeTime(date, now, safeLocale),
-    absolute: getAbsoluteFormatter(safeLocale, hour12).format(date),
-    isRecent: Math.abs(now.getTime() - date.getTime()) < RECENT_THRESHOLD_MS,
-  };
-};
-
-/**
- * Creates initial content parts for dual message display with agent-based grouping.
- * Sets up primary and added agent content parts with agentId for column rendering.
- *
- * @param primaryConvo - The primary conversation configuration
- * @param addedConvo - The added conversation configuration
- * @param endpointsConfig - Endpoints configuration for getting model display labels
- * @param modelSpecs - Model specs list for getting spec labels
- * @returns Array of content parts with agentId for side-by-side rendering
- */
-export const createDualMessageContent = (
-  primaryConvo: TConversation,
-  addedConvo: TConversation,
-  endpointsConfig?: TEndpointsConfig,
-  modelSpecs?: { name: string; label?: string }[],
-): TMessageContentParts[] => {
-  // For real agents (agent_id starts with "agent_"), use agent_id directly
-  // Otherwise create ephemeral ID from endpoint/model
-  let primaryAgentId: string;
-  if (primaryConvo.agent_id && !isEphemeralAgentId(primaryConvo.agent_id)) {
-    primaryAgentId = primaryConvo.agent_id;
-  } else {
-    const primaryEndpoint = primaryConvo.endpoint;
-    const primaryModel = primaryConvo.model ?? '';
-    // Look up model spec for label fallback
-    const primarySpec =
-      primaryConvo.spec != null && primaryConvo.spec !== ''
-        ? modelSpecs?.find((s) => s.name === primaryConvo.spec)
-        : undefined;
-    const primarySender = getEphemeralSender({
-      modelLabel: primaryConvo.modelLabel,
-      specLabel: primarySpec?.label,
-      modelDisplayLabel: primaryEndpoint
-        ? endpointsConfig?.[primaryEndpoint]?.modelDisplayLabel
-        : undefined,
-    });
-    primaryAgentId = encodeEphemeralAgentId({
-      endpoint: primaryEndpoint ?? '',
-      model: primaryModel,
-      sender: primarySender,
-    });
-  }
-
-  // Both agents run in parallel, so they share the same groupId
-  const parallelGroupId = 1;
-
-  // Use empty type - these are just placeholders to establish agentId/groupId
-  // The actual type will be set when real content arrives from the server
-  const primaryContent = {
-    type: '' as const,
-    agentId: primaryAgentId,
-    groupId: parallelGroupId,
-  };
-
-  // For added agent, use agent_id if it's a real agent (starts with "agent_")
-  // Otherwise create ephemeral ID with index suffix
-  // Always append index suffix for added agent to distinguish from primary (even if same agent_id)
-  let addedAgentId: string;
-  if (addedConvo.agent_id && !isEphemeralAgentId(addedConvo.agent_id)) {
-    // Append suffix to distinguish from primary agent (matches ephemeral format)
-    addedAgentId = appendAgentIdSuffix(addedConvo.agent_id, 1);
-  } else {
-    const addedEndpoint = addedConvo.endpoint;
-    const addedModel = addedConvo.model ?? '';
-    // Look up model spec for label fallback
-    const addedSpec =
-      addedConvo.spec != null && addedConvo.spec !== ''
-        ? modelSpecs?.find((s) => s.name === addedConvo.spec)
-        : undefined;
-    const addedSender = getEphemeralSender({
-      modelLabel: addedConvo.modelLabel,
-      specLabel: addedSpec?.label,
-      modelDisplayLabel: addedEndpoint
-        ? endpointsConfig?.[addedEndpoint]?.modelDisplayLabel
-        : undefined,
-    });
-    addedAgentId = encodeEphemeralAgentId({
-      endpoint: addedEndpoint ?? '',
-      model: addedModel,
-      sender: addedSender,
-      index: 1,
-    });
-  }
-
-  // Use empty type - placeholder to establish agentId/groupId
-  const addedContent = {
-    type: '' as const,
-    agentId: addedAgentId,
-    groupId: parallelGroupId,
-  };
-
-  // Cast through unknown since these are placeholder objects with empty type
-  // that will be replaced by real content with proper types from the server
-  return [primaryContent, addedContent] as unknown as TMessageContentParts[];
-};
+export { isValidTimestamp, getMessageTimestamp } from '@librechat/chat/components';
+export type { MessageTimestamp } from '@librechat/chat/components';
 
 export function areMessageFilesEqual(prevFiles?: TMessage['files'], nextFiles?: TMessage['files']) {
   if (prevFiles === nextFiles) {

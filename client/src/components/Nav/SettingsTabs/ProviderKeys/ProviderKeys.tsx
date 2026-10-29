@@ -45,7 +45,7 @@ export default function ProviderKeys() {
           className="text-text-primary focus-visible:ring-text-primary w-11/12 max-w-2xl shadow-2xl focus-visible:ring-2 focus-visible:ring-inset"
           aria-describedby={undefined}
         >
-          <OGDialogHeader className="space-y-0 pr-8 text-left">
+          <OGDialogHeader className="space-y-0 pe-8 text-start">
             <div className="flex items-center gap-1.5">
               <OGDialogTitle>{localize('com_ui_settings_label_provider_api_keys')}</OGDialogTitle>
               <InfoHoverCard text={localize('com_ui_provider_api_keys_description')} />

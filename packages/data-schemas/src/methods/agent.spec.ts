@@ -630,6 +630,31 @@ describe('Agent Methods', () => {
       expect(nodes[0]).not.toHaveProperty('_id');
     });
 
+    test('getAgentModelSummaries loads only the models list fields', async () => {
+      const { agentId, authorId } = createTestIds();
+      const agent = await createAgent({
+        id: agentId,
+        name: 'Listed Agent',
+        description: 'shown in the models list',
+        provider: 'test',
+        model: 'test-model',
+        author: authorId,
+      });
+
+      const summaries = await methods.getAgentModelSummaries([agent._id]);
+
+      expect(summaries).toHaveLength(1);
+      expect(summaries[0]).toMatchObject({
+        id: agentId,
+        name: 'Listed Agent',
+        description: 'shown in the models list',
+        provider: 'test',
+      });
+      expect(Object.keys(summaries[0]).sort()).toEqual(
+        ['_id', 'author', 'createdAt', 'description', 'id', 'name', 'provider'].sort(),
+      );
+    });
+
     describe('MCP server name candidate lookups', () => {
       test('getAgentsWithMCPServerNames returns only agents with a non-empty list, projected', async () => {
         const { agentId, authorId } = createTestIds();

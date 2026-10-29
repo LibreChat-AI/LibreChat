@@ -7,7 +7,7 @@ import {
   FileSources,
   getCodeEnvRefs,
   canToolResourceConsume,
-  hasToolResourceProvisioning,
+  hasToolResourceDestination,
 } from 'librechat-data-provider';
 import type {
   AgentToolResources,
@@ -21,6 +21,7 @@ import type { FilterQuery, QueryOptions, ProjectionType } from 'mongoose';
 import type { CodeExecutionContext } from './execution';
 import type { ServerRequest } from '~/types';
 
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { TOOL_RESOURCE_KEYS } from './orphans';
 
 /** Removes runtime-only file records before persisted Agent resources enter tool initialization. */
@@ -87,6 +88,31 @@ export type TCheckSessionsAlive = (params: {
 /** Loads CODE_API_KEY for a user. Call once per request. */
 export type TLoadCodeApiKey = (userId: string) => Promise<string>;
 
+/**
+ * Records the agent's namespace on legacy embedded files already confirmed to have vectors
+ * there, and returns the ids it recorded.
+ */
+export type TAdoptLegacySearchEmbeddings = (params: {
+  files: Array<{ file_id: string; user: string; tenantId?: string }>;
+  agentId: string;
+}) => Promise<string[]>;
+
+/**
+ * Whether the vector store holds chunks of a file in an entity's namespace. Records from
+ * before namespaces were tracked say only that a file was embedded somewhere, so this is
+ * the evidence that decides whether embedding it again would store a second copy.
+ */
+export type THasEntityEmbeddings = (params: {
+  userId: string;
+  file_id: string;
+  entity_id: string;
+  query: string;
+  timeoutMs?: number;
+}) => Promise<boolean>;
+
+/** How long priming waits on a legacy File Search check before embedding the file anyway. */
+const DEFAULT_LEGACY_SEARCH_PROBE_TIMEOUT_MS = 5000;
+
 /** State computed during primeResources for lazy provisioning at tool invocation time */
 export type ProvisionState = {
   /** Files that need uploading to the code execution environment */
@@ -104,6 +130,9 @@ export type ProvisionState = {
    *  another agent's setup file to this conversation, and provisioning it here would put
    *  it in a namespace this agent's other users can read. */
   agentScopedFileIds: Set<string>;
+  /** Files an attached workspace's attachment note already describes; the queued-file note
+   *  leaves them out rather than pointing at a second location. */
+  describedFileIds?: Set<string>;
 };
 
 /**
@@ -201,7 +230,8 @@ export const isAgentScopedFile = (file: Pick<TFile, 'context'>): boolean =>
  * setup file attached to a second agent is embedded under the first agent's entity, so
  * trusting the flag registers it for a namespace that holds none of its vectors and the
  * search returns nothing. Records embedded before namespaces were tracked carry no entity
- * list and are re-embedded once per namespace, which repairs the record as it goes.
+ * list and are re-embedded once per namespace, which repairs the record as it goes, unless
+ * the vector store confirms the vectors are already there (see isUnrecordedSearchFile).
  */
 const isEmbeddedForNamespace = (file: TFile, namespaceId?: string): boolean => {
   if (!isAgentScopedFile(file)) {
@@ -209,6 +239,23 @@ const isEmbeddedForNamespace = (file: TFile, namespaceId?: string): boolean => {
   }
   return namespaceId != null && file.metadata?.embeddedEntities?.includes(namespaceId) === true;
 };
+
+/**
+ * Whether an embedded File Search file of the active agent records no embedding for its
+ * namespace. Records from before namespaces were tracked can hold vectors there regardless:
+ * a file another agent embedded first lists only that agent, while this agent's own older
+ * vectors went unrecorded. Only the vector store can say; see THasEntityEmbeddings.
+ */
+const isUnrecordedSearchFile = (
+  file: TFile,
+  agentId: string,
+  membership?: ReadonlyMap<EToolResources, ReadonlySet<string>>,
+): boolean =>
+  isAgentScopedFile(file) &&
+  file.embedded === true &&
+  !isEmbeddedForNamespace(file, agentId) &&
+  file.file_id != null &&
+  membership?.get(EToolResources.file_search)?.has(file.file_id) === true;
 
 /** The scope a code upload would be filed under this turn, mirroring what
  *  provisionToCodeEnv records: an agent's own resource file belongs to the agent, and
@@ -409,6 +456,9 @@ const computeProvisionState = async ({
   codeBridgeWorkerId,
   agentScopedFileIds,
   persistedResourceMembership,
+  adoptLegacySearchEmbeddings,
+  hasEntityEmbeddings,
+  legacySearchProbeTimeoutMs = DEFAULT_LEGACY_SEARCH_PROBE_TIMEOUT_MS,
   staleSafeWindowMs,
 }: {
   req?: ServerRequest;
@@ -429,6 +479,9 @@ const computeProvisionState = async ({
   loadCodeApiKey?: TLoadCodeApiKey;
   /** Which resource each persisted file is filed under, before categorization mutates it. */
   persistedResourceMembership?: ReadonlyMap<EToolResources, ReadonlySet<string>>;
+  adoptLegacySearchEmbeddings?: TAdoptLegacySearchEmbeddings;
+  hasEntityEmbeddings?: THasEntityEmbeddings;
+  legacySearchProbeTimeoutMs?: number;
   staleSafeWindowMs?: number;
 }): Promise<ProvisionState | undefined> => {
   if (!enabledToolResources || enabledToolResources.size === 0 || attachments.length === 0) {
@@ -446,17 +499,8 @@ const computeProvisionState = async ({
     return choice == null ? true : choice;
   };
 
-  /** A chooser upload may still be provisioned for the destination it was filed under,
-   *  which is how an inherited search file gets vectors in a duplicated agent's namespace.
-   *  The destinations it carries no reference for were declined, not deferred. */
-  /** What the record itself shows about where it was sent. A message attachment is never
-   *  in the agent's resources, so a reference or an embedding is the only evidence that
-   *  the chooser picked that destination, and it is proof: nothing else creates one. */
-  /* The predicate the turn's delivery decision reads too, so a file this queue has yet to
-   * provision is never one the prompt withheld its text for. */
-  const carriesEvidenceFor = (file: TFile, resourceType: EToolResources): boolean =>
-    hasToolResourceProvisioning(file, resourceType);
-
+  /* Search intent survives vector cleanup without claiming the vectors still exist.
+   * A chooser's other destinations remain declined unless membership or a copy proves them. */
   const allowsResource = (file: TFile, resourceType: EToolResources): boolean => {
     if (!cameFromChooser(file)) {
       return true;
@@ -464,7 +508,7 @@ const computeProvisionState = async ({
     const isPersistedResource =
       file.file_id != null &&
       persistedResourceMembership?.get(resourceType)?.has(file.file_id) === true;
-    return isPersistedResource || carriesEvidenceFor(file, resourceType);
+    return isPersistedResource || hasToolResourceDestination(file, resourceType);
   };
   const provisionable = attachments.filter(
     (file) =>
@@ -481,6 +525,72 @@ const computeProvisionState = async ({
   if (!needsCodeEnv && !needsVectorDB) {
     return undefined;
   }
+
+  /* Started before the liveness probe, with which it shares nothing. Adoption only spares a
+   * re-embed, so a failure at any step leaves the files queued rather than failing priming. */
+  const legacySearchFiles =
+    needsVectorDB && agentId != null && resourcePrincipal?.id != null
+      ? provisionable.filter((file) =>
+          isUnrecordedSearchFile(file, agentId, persistedResourceMembership),
+        )
+      : [];
+  const adoptLegacy = async (): Promise<Set<string>> => {
+    if (
+      agentId == null ||
+      resourcePrincipal?.id == null ||
+      !hasEntityEmbeddings ||
+      !adoptLegacySearchEmbeddings
+    ) {
+      return new Set();
+    }
+    const present = await Promise.all(
+      legacySearchFiles.map((file) =>
+        hasEntityEmbeddings({
+          userId: resourcePrincipal.id as string,
+          file_id: file.file_id,
+          entity_id: agentId,
+          query: file.filename || file.file_id,
+          timeoutMs: legacySearchProbeTimeoutMs,
+        }).catch((error) => {
+          logger.error(
+            `[primeResources] Could not check legacy embeddings for file ${file.file_id}`,
+            getSafeErrorMetadata(error),
+          );
+          return false;
+        }),
+      ),
+    );
+    const confirmed = legacySearchFiles.filter((_file, index) => present[index]);
+    if (confirmed.length === 0) {
+      return new Set();
+    }
+    /* The vector store has confirmed the vectors, so this turn uses them whether or not the
+     * namespace is recorded; recording only spares the next turn the same check. */
+    await adoptLegacySearchEmbeddings({
+      files: confirmed.map((file) => ({
+        file_id: file.file_id,
+        user: String(file.user),
+        ...(file.tenantId ? { tenantId: file.tenantId } : {}),
+      })),
+      agentId,
+    }).catch((error) => {
+      logger.error(
+        '[primeResources] Failed to record legacy File Search namespaces',
+        getSafeErrorMetadata(error),
+      );
+    });
+    return new Set(confirmed.map((file) => file.file_id));
+  };
+  const legacyAdoption: Promise<Set<string>> =
+    legacySearchFiles.length > 0
+      ? adoptLegacy().catch((error) => {
+          logger.error(
+            '[primeResources] Failed to adopt legacy File Search embeddings',
+            getSafeErrorMetadata(error),
+          );
+          return new Set<string>();
+        })
+      : Promise.resolve(new Set<string>());
 
   const activeCodeRouteKey = codeRouteKey ?? 'default';
 
@@ -529,6 +639,15 @@ const computeProvisionState = async ({
       bridgeWorkerId: codeBridgeWorkerId,
       staleSafeWindowMs,
     });
+  }
+
+  const adopted = await legacyAdoption;
+  for (const file of provisionable) {
+    if (agentId != null && adopted.has(file.file_id)) {
+      const recorded = new Set(file.metadata?.embeddedEntities ?? []);
+      recorded.add(agentId);
+      file.metadata = { ...file.metadata, embeddedEntities: [...recorded] };
+    }
   }
 
   const scopedIds = agentScopedFileIds ?? new Set<string>();
@@ -657,6 +776,8 @@ export const primeResources = async ({
   loadCodeApiKey,
   provisionCandidates,
   screenPersistentFiles,
+  adoptLegacySearchEmbeddings,
+  hasEntityEmbeddings,
   codeRouteKey,
   codeBaseUrl,
   codeExecutionProfile,
@@ -687,6 +808,10 @@ export const primeResources = async ({
    *  and a configuration or policy change since they were attached would otherwise let
    *  their bytes reach the model, the Code API or RAG. */
   screenPersistentFiles?: (files: Array<TFile>) => Array<TFile>;
+  /** Records the agent's namespace on legacy File Search embeddings confirmed to be there. */
+  adoptLegacySearchEmbeddings?: TAdoptLegacySearchEmbeddings;
+  /** Asks the vector store whether a legacy file's chunks are in the agent's namespace. */
+  hasEntityEmbeddings?: THasEntityEmbeddings;
   /** The code deployment this turn will execute on, which decides whether an existing
    *  sandbox reference is usable here. */
   codeRouteKey?: string;
@@ -930,6 +1055,9 @@ export const primeResources = async ({
         codeBridgeWorkerId,
         agentScopedFileIds: persistedResourceFileIds,
         persistedResourceMembership,
+        adoptLegacySearchEmbeddings,
+        hasEntityEmbeddings,
+        legacySearchProbeTimeoutMs: appConfig?.fileConfig?.legacySearchProbeTimeoutMs,
         staleSafeWindowMs: appConfig?.fileConfig?.codeEnvLivenessSafeWindowMs,
       });
       return {
@@ -996,6 +1124,9 @@ export const primeResources = async ({
       codeBridgeWorkerId,
       agentScopedFileIds: persistedResourceFileIds,
       persistedResourceMembership,
+      adoptLegacySearchEmbeddings,
+      hasEntityEmbeddings,
+      legacySearchProbeTimeoutMs: appConfig?.fileConfig?.legacySearchProbeTimeoutMs,
       staleSafeWindowMs: appConfig?.fileConfig?.codeEnvLivenessSafeWindowMs,
     });
 

@@ -1,3 +1,4 @@
+import { Types } from 'mongoose';
 import { FileSources } from 'librechat-data-provider';
 import type { Response } from 'express';
 import { createSkillUploadHandler } from './upload';
@@ -25,13 +26,25 @@ const originalFile = {
 function harness() {
   const skill = deferred<Awaited<ReturnType<UploadDeps['getSkillById']>>>();
   const file = deferred<Awaited<ReturnType<UploadDeps['getSkillFileByPath']>>>();
-  const saveBuffer = jest.fn(async () => '/uploads/replacement');
+  const saveBuffer = jest.fn(async ({ userId, fileName }) => `/uploads/${userId}/${fileName}`);
+  const deleteFile = jest.fn(async () => undefined);
   const deps = {
     getSkillById: jest.fn(() => skill.promise),
     getSkillFileByPath: jest.fn(() => file.promise),
-    upsertSkillFile: jest.fn(async () => ({ ...originalFile, file_id: 'saved' })),
+    upsertSkillFile: jest.fn(async (row) => ({
+      ...originalFile,
+      file_id: row.file_id,
+      filepath: row.filepath,
+    })),
     resolveStorage: jest.fn(() => ({ source: FileSources.local, saveBuffer })),
-    getStrategyFunctions: jest.fn(() => ({})),
+    getStrategyFunctions: jest.fn(() => ({ deleteFile })),
+    reserveSkillUploadIntent: jest.fn(async (input) => ({
+      ...input,
+      skillId: new Types.ObjectId(),
+      author: new Types.ObjectId(),
+      state: 'uploading' as const,
+    })),
+    transitionSkillUploadIntent: jest.fn(async () => true),
   } satisfies UploadDeps;
   const req = {
     params: { id: 'skill-id', relativePath: ['references', 'guide.md'] },
@@ -47,10 +60,31 @@ function harness() {
   const res = {} as Response;
   res.status = jest.fn(() => res);
   res.json = jest.fn(() => res);
-  return { skill, file, deps, saveBuffer, req, res, handler: createSkillUploadHandler(deps) };
+  return {
+    skill,
+    file,
+    deps,
+    saveBuffer,
+    deleteFile,
+    req,
+    res,
+    handler: createSkillUploadHandler(deps),
+  };
 }
 
 describe('skill upload lookup ordering', () => {
+  it('leaves old-blob cleanup to the durable persistence queue after browser replacement', async () => {
+    const h = harness();
+    const pending = h.handler(h.req, h.res);
+    h.skill.resolve({ source: 'inline' });
+    h.file.resolve(originalFile);
+    await pending;
+    expect(h.res.status).toHaveBeenCalledWith(200);
+    expect(h.deps.upsertSkillFile).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedFileId: 'original' }),
+    );
+    expect(h.deleteFile).not.toHaveBeenCalled();
+  });
   it.each(['skill', 'file'] as const)(
     'starts both privileged lookups before either resolves (%s first)',
     async (first) => {
@@ -90,6 +124,25 @@ describe('skill upload lookup ordering', () => {
     await pending;
     expect(h.res.status).toHaveBeenCalledWith(200);
   });
+
+  it.each(['reservation', 'persistence'] as const)(
+    'reports a deletion race during %s as a conflict',
+    async (stage) => {
+      const h = harness();
+      const error = Object.assign(new Error('Internal deletion state'), { code: 'SKILL_DELETING' });
+      if (stage === 'reservation') h.deps.reserveSkillUploadIntent.mockRejectedValueOnce(error);
+      else h.deps.upsertSkillFile.mockRejectedValueOnce(error);
+
+      const pending = h.handler(h.req, h.res);
+      h.skill.resolve({ source: 'inline' });
+      h.file.resolve(originalFile);
+      await pending;
+
+      expect(h.res.status).toHaveBeenCalledWith(409);
+      expect(h.res.json).toHaveBeenCalledWith({ error: 'SKILL_DELETING' });
+      if (stage === 'reservation') expect(h.saveBuffer).not.toHaveBeenCalled();
+    },
+  );
 
   it.each(['missing', 'managed', 'conflict', 'lookup failure'] as const)(
     'does not store bytes for %s',

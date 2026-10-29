@@ -43,6 +43,9 @@ export function ParentSubagentsProvider({
   children: React.ReactNode;
 }) {
   const queryClient = useQueryClient();
+  const parent = useContext(ParentSubagentsContext);
+  const inherited =
+    parent.conversationId === conversationId && parent.discoveryEnabled ? parent : null;
   // Observe already-loaded history without fetching it or rerendering on streamed text.
   const { data: hasAgentHistory = false } = useQuery<TMessage[], unknown, boolean>(
     [QueryKeys.messages, conversationId],
@@ -70,7 +73,7 @@ export function ParentSubagentsProvider({
   }
   const { data, refetch, isError } = useParentSubagentsQuery(
     conversationId,
-    { enabled: discoveryEnabled },
+    { enabled: discoveryEnabled && inherited == null },
     isSubmitting,
   );
   const refresh = useCallback(async () => {
@@ -78,6 +81,7 @@ export function ParentSubagentsProvider({
     return result.data;
   }, [refetch]);
   const value = useMemo<ParentSubagentsContextValue>(() => {
+    if (inherited != null) return inherited;
     const byMessageId = new Map<string, ParentSubagentSummary[]>();
     const byThreadId = new Map<string, ParentSubagentSummary>();
     for (const child of data?.children ?? []) {
@@ -94,7 +98,7 @@ export function ParentSubagentsProvider({
       });
     }
     return { conversationId, byMessageId, byThreadId, refresh, isError, discoveryEnabled };
-  }, [conversationId, data, refresh, isError, discoveryEnabled]);
+  }, [conversationId, data, refresh, isError, discoveryEnabled, inherited]);
 
   return (
     <ParentSubagentsContext.Provider value={value}>{children}</ParentSubagentsContext.Provider>

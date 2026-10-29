@@ -1194,6 +1194,43 @@ describe('Message Operations', () => {
       expect(result?.langfuseRunId).toBe('run-1');
     });
 
+    it('returns the temporary flag with feedback updates', async () => {
+      await saveMessage({ ...mockCtx, isTemporary: true }, mockMessageData);
+
+      const result = await updateMessage(mockCtx.userId, {
+        messageId: 'msg123',
+        feedback: { rating: 'thumbsDown', tag: undefined },
+      });
+
+      expect(result?.isTemporary).toBe(true);
+    });
+
+    it('reads a legacy deadline-only row as temporary with feedback updates', async () => {
+      const expiredAt = new Date(Date.now() + 60 * 60 * 1000);
+      await Message.collection.insertMany([
+        { ...mockMessageData, user: mockCtx.userId, expiredAt },
+        {
+          ...mockMessageData,
+          messageId: 'msg-permanent',
+          user: mockCtx.userId,
+          isTemporary: false,
+          expiredAt,
+        },
+      ]);
+
+      const legacy = await updateMessage(mockCtx.userId, {
+        messageId: 'msg123',
+        feedback: { rating: 'thumbsDown', tag: undefined },
+      });
+      const permanent = await updateMessage(mockCtx.userId, {
+        messageId: 'msg-permanent',
+        feedback: { rating: 'thumbsDown', tag: undefined },
+      });
+
+      expect(legacy?.isTemporary).toBe(true);
+      expect(permanent?.isTemporary).toBe(false);
+    });
+
     it('should throw an error if message is not found', async () => {
       await expect(
         updateMessage(mockCtx.userId, { messageId: 'nonexistent', text: 'Test' }),
@@ -3220,6 +3257,51 @@ describe('Message Operations', () => {
   });
 
   describe('getMessagesForSubagentThreadView', () => {
+    it('projects recovery enrollment without exposing private journal metadata', async () => {
+      const conversationId = uuidv4();
+      for (const captured of [false, true, 'deleted'] as const) {
+        await saveMessage(mockCtx, {
+          messageId: `captured-${captured}:user`,
+          conversationId,
+          user: 'user123',
+          text: 'Input',
+          ...(captured
+            ? {
+                subagentContent: {
+                  version: 1 as const,
+                  throughSequence: 12,
+                  ...(captured === 'deleted' ? { deleted: true } : {}),
+                },
+              }
+            : {}),
+        });
+      }
+      const messages = await getMessagesForSubagentThreadView({
+        user: 'user123',
+        conversationId,
+        limit: 3,
+        textCodePointLimit: 100,
+      });
+      expect(messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            messageId: 'captured-true:user',
+            contentRecoveryAvailable: true,
+          }),
+          expect.objectContaining({
+            messageId: 'captured-false:user',
+            contentRecoveryAvailable: false,
+          }),
+          expect.objectContaining({
+            messageId: 'captured-deleted:user',
+            contentRecoveryAvailable: false,
+          }),
+        ]),
+      );
+      expect(JSON.stringify(messages)).not.toContain('subagentContent');
+      expect(JSON.stringify(messages)).not.toContain('throughSequence');
+    });
+
     it('bounds text in MongoDB before returning the public projection', async () => {
       const conversationId = uuidv4();
       await saveMessage(mockCtx, {
@@ -3561,8 +3643,8 @@ describe('Message Operations', () => {
           ),
       );
       for (const receipt of message.subagentTask?.controlReceipts ?? []) {
-        expect(Buffer.byteLength(receipt.message ?? '', 'utf8')).toBeLessThanOrEqual(512);
-        expect(receipt.messageTruncated).toBe(true);
+        expect(receipt.message).toHaveLength(4_096);
+        expect(receipt.messageTruncated).not.toBe(true);
         expect(receipt).not.toHaveProperty('fingerprint');
       }
       expect(message.subagentTask).not.toHaveProperty('attemptKey');
@@ -3678,6 +3760,113 @@ describe('Message Operations', () => {
       expect(messages[0]).not.toHaveProperty('subagentTranscript');
       expect(messages[0].subagentTranscriptProjectionTruncated).toBe(true);
     });
+
+    it.each([1, 2] as const)(
+      'uses projection version %s with steering-aware legacy catch-up',
+      async (version) => {
+        const conversationId = uuidv4();
+        const transcript = JSON.stringify([
+          { type: 'human', data: { content: 'Initial task' } },
+          { type: 'ai', data: { content: 'Before guidance' } },
+          {
+            type: 'human',
+            data: { content: 'Guidance', additional_kwargs: { injected: true, source: 'steer' } },
+          },
+          { type: 'ai', data: { content: 'After guidance' } },
+        ]);
+        const projection = JSON.stringify([
+          { type: 'writing', text: 'Earlier incomplete projection' },
+        ]);
+        await saveMessage(mockCtx, {
+          messageId: 'task-steering:assistant',
+          conversationId,
+          user: 'user123',
+          text: 'Final',
+          subagentTranscript: {
+            taskId: 'task-steering',
+            mode: 'replace',
+            messagesJson: transcript,
+          },
+          subagentActivityProjection: {
+            taskId: 'task-steering',
+            version,
+            activityJson: projection,
+            truncated: false,
+          },
+        });
+        const [message] = await getMessagesForSubagentThreadView({
+          user: 'user123',
+          conversationId,
+          selectedTaskId: 'task-steering',
+          limit: 1,
+          textCodePointLimit: 8192,
+        });
+        if (version === 1) {
+          expect(message.subagentTranscript?.messagesJson).toBe(transcript);
+          expect(message.subagentActivityProjectionJson).toBe(projection);
+        } else {
+          expect(message.subagentActivityProjectionJson).toBe(projection);
+          expect(message.subagentTranscript).toBeUndefined();
+        }
+      },
+    );
+
+    it.each([undefined, 'task-long'] as const)(
+      'retains the legacy fallback beside bounded steering history with selected task %s',
+      async (selectedTaskId) => {
+        const conversationId = uuidv4();
+        const prompt = 'Long current task. '.repeat(575);
+        const projection = JSON.stringify([
+          { type: 'reasoning', text: 'Retained current reasoning.' },
+          { type: 'writing', text: 'Retained current activity.' },
+        ]);
+        const transcript = JSON.stringify([
+          { type: 'human', data: { content: 'Previous task.' } },
+          {
+            type: 'human',
+            data: {
+              content: 'Previous guidance.',
+              additional_kwargs: { injected: true, source: 'steer' },
+            },
+          },
+          { type: 'human', data: { content: prompt } },
+          { type: 'ai', data: { content: 'Current activity.' } },
+        ]);
+        await saveMessage(mockCtx, {
+          messageId: 'task-long:user',
+          conversationId,
+          user: 'user123',
+          text: prompt,
+          isCreatedByUser: true,
+        });
+        await saveMessage(mockCtx, {
+          messageId: 'task-long:assistant',
+          parentMessageId: 'task-long:user',
+          conversationId,
+          user: 'user123',
+          text: 'Result',
+          subagentTranscript: { taskId: 'task-long', mode: 'replace', messagesJson: transcript },
+          subagentActivityProjection: {
+            taskId: 'task-long',
+            version: 1,
+            activityJson: projection,
+            truncated: false,
+          },
+        });
+        const records = await getMessagesForSubagentThreadView({
+          user: 'user123',
+          conversationId,
+          selectedTaskId,
+          limit: 3,
+          textCodePointLimit: 8192,
+        });
+        const input = records.find((message) => message.messageId === 'task-long:user');
+        const assistant = records.find((message) => message.messageId === 'task-long:assistant');
+        expect(input?.textProjectionTruncated).toBe(true);
+        expect(assistant?.subagentActivityProjectionJson).toBe(projection);
+        expect(assistant?.subagentTranscript?.messagesJson).toBe(transcript);
+      },
+    );
 
     it('prefers the bounded settlement projection without materializing its private transcript', async () => {
       const conversationId = uuidv4();
@@ -3978,6 +4167,28 @@ describe('Message Operations', () => {
   });
 
   describe('deleteMessages', () => {
+    it('does not discover journals for an exact ordinary message id', async () => {
+      const messageId = uuidv4();
+      await saveMessage(mockCtx, {
+        messageId,
+        conversationId: uuidv4(),
+        user: 'user123',
+        text: 'Ordinary chat',
+      });
+      const find = jest.spyOn(Message, 'find');
+      const journalDelete = jest.spyOn(mongoose.models.SubagentContent, 'deleteMany');
+      try {
+        await expect(deleteMessages({ user: 'user123', messageId })).resolves.toMatchObject({
+          deletedCount: 1,
+        });
+        expect(find).not.toHaveBeenCalled();
+        expect(journalDelete).not.toHaveBeenCalled();
+      } finally {
+        find.mockRestore();
+        journalDelete.mockRestore();
+      }
+    });
+
     it('should delete messages with the correct filter', async () => {
       // Save some messages for different users
       await saveMessage(mockCtx, mockMessageData);
@@ -4974,6 +5185,39 @@ describe('Message Operations', () => {
         },
       });
     };
+
+    it('keeps expired receipt replay private while denying public body reads', async () => {
+      const conversationId = uuidv4();
+      await createTaskInput(conversationId);
+      await recordSubagentTaskControlReceipt({
+        userId: 'user123',
+        conversationId,
+        taskId: 'task-1',
+        receipt: {
+          invocationId: 'expired-read',
+          fingerprint: 'private',
+          controlId: 'control',
+          action: 'steer',
+          status: 'accepted',
+          message: 'retained body',
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+      const identity = {
+        userId: 'user123',
+        conversationId,
+        taskId: 'task-1',
+        invocationId: 'expired-read',
+      };
+      expect(await getSubagentTaskControlReceipt({ ...identity, activeOnly: true })).not.toBeNull();
+      await Message.updateOne(
+        { user: 'user123', conversationId, messageId: 'task-1:user' },
+        { $set: { expiredAt: new Date(Date.now() - 1000) } },
+      );
+      expect(await getSubagentTaskControlReceipt({ ...identity, activeOnly: true })).toBeNull();
+      expect(await getSubagentTaskControlReceipt(identity)).not.toBeNull();
+    });
 
     it('advances one invocation monotonically and enforces ownership', async () => {
       const conversationId = uuidv4();

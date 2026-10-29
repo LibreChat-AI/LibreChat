@@ -121,7 +121,7 @@ export function FailedRevealPill({
   }
   let showFailedKey: TranslationKeys = 'com_ui_show_failed_n_of_n';
   if (count === 1 && total === 1) {
-    showFailedKey = 'com_ui_show_failed_one_of_one';
+    showFailedKey = 'com_ui_show_failed_single';
   } else if (count === 1) {
     showFailedKey = 'com_ui_show_failed_one_of_n';
   }

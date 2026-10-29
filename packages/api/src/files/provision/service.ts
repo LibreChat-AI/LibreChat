@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { randomUUID } from 'node:crypto';
 import { pipeline } from 'node:stream/promises';
 import { logger } from '@librechat/data-schemas';
 import { getCodeBaseURL } from '@librechat/agents';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   FileSources,
   getCodeEnvRefs,
@@ -13,6 +13,7 @@ import {
 } from 'librechat-data-provider';
 import type { CodeEnvRef, CodeEnvRefMap, TFile } from 'librechat-data-provider';
 import type { Readable } from 'node:stream';
+import type { FileStorageUploadObserver } from '../operations';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { CodeEnvIdentity } from '~/files/code/identity';
 import type { CodeApiRateLimitBudget } from '~/utils';
@@ -52,6 +53,7 @@ export interface ProvisionDeps {
     file_id: string;
     entity_id?: string;
     signal?: AbortSignal;
+    onUploadStart?: FileStorageUploadObserver;
   }) => Promise<{ embedded?: boolean } | undefined>;
   loadAuthValues: (params: {
     userId: string;
@@ -88,6 +90,11 @@ export interface CodeEnvReferenceSetResult {
   codeEnvRefs?: CodeEnvRefMap;
 }
 
+export interface StoredFileDigest {
+  sha256: string;
+  bytes: number;
+}
+
 export interface ProvisionService {
   loadCodeApiKey: (userId: string) => Promise<string | undefined>;
   provisionToCodeEnv: (params: {
@@ -98,6 +105,7 @@ export interface ProvisionService {
     sandboxFilename?: string;
     signal?: AbortSignal;
     rateLimitBudget?: CodeApiRateLimitBudget;
+    onUploadStart?: FileStorageUploadObserver;
   }) => Promise<{
     referenceSet: CodeEnvReferenceSetResult;
     refUpdate: CodeEnvRefUpdate;
@@ -110,12 +118,15 @@ export interface ProvisionService {
     entity_id?: string;
     existingStream?: Readable;
     signal?: AbortSignal;
+    onUploadStart?: FileStorageUploadObserver;
   }) => Promise<{ embedded: boolean; fileUpdate: ProvisionFileUpdate | null }>;
-  checkCodeEnvFileAlive: (params: {
+  /** SHA-256 and length of the stored bytes, the same bytes a code-environment upload sends;
+   *  null when the file's storage cannot be streamed. */
+  digestFile: (params: {
+    req: ServerRequest;
     file: TFile;
-    apiKey?: string;
-    req?: ServerRequest;
-  }) => Promise<boolean>;
+    signal?: AbortSignal;
+  }) => Promise<StoredFileDigest | null>;
   checkSessionsAlive: (params: {
     files: TFile[];
     apiKey?: string;
@@ -191,22 +202,6 @@ export function createProvisionService({
       signal.throwIfAborted();
     }
     return stream;
-  }
-
-  /** Uses managed bearer auth when available, otherwise the configured legacy API key. */
-  async function buildCodeApiHeaders({
-    apiKey,
-    req,
-  }: {
-    apiKey?: string;
-    req?: ServerRequest;
-  }): Promise<Record<string, string>> {
-    const authHeaders = await getCodeApiAuthHeaders(req);
-    return {
-      'User-Agent': 'LibreChat/1.0',
-      ...(authHeaders.Authorization == null && apiKey ? { 'X-API-Key': apiKey } : {}),
-      ...authHeaders,
-    };
   }
 
   /**
@@ -286,6 +281,7 @@ export function createProvisionService({
     sandboxFilename: requestedSandboxFilename,
     signal,
     rateLimitBudget,
+    onUploadStart,
   }: {
     req: ServerRequest;
     file: TFile;
@@ -294,6 +290,7 @@ export function createProvisionService({
     sandboxFilename?: string;
     signal?: AbortSignal;
     rateLimitBudget?: CodeApiRateLimitBudget;
+    onUploadStart?: FileStorageUploadObserver;
   }) {
     signal?.throwIfAborted();
     const { handleFileUpload: uploadCodeEnvFile } = getStrategyFunctions(FileSources.execute_code);
@@ -346,10 +343,11 @@ export function createProvisionService({
           ...(route?.baseUrl ? { codeApiBaseUrl: route.baseUrl } : {}),
           executionProfile,
           signal,
+          onUploadStart,
         }),
     });
-    signal?.throwIfAborted();
 
+    /* A successful upload must reach pointer persistence even if cancellation just arrived. */
     /* Merge rather than overwrite: the eager upload path persists the same shape via
      * mergeCodeEnvRef, so both the legacy pointer and the route-keyed map stay in sync
      * and pointers for other Code API routes survive re-provisioning. */
@@ -399,6 +397,7 @@ export function createProvisionService({
     file,
     entity_id,
     existingStream,
+    onUploadStart,
     signal,
   }: {
     req: ServerRequest;
@@ -406,6 +405,7 @@ export function createProvisionService({
     entity_id?: string;
     existingStream?: Readable;
     signal?: AbortSignal;
+    onUploadStart?: FileStorageUploadObserver;
   }): Promise<{ embedded: boolean; fileUpdate: { file_id: string; embedded?: boolean } | null }> {
     /* Unique per attempt: two concurrent requests provisioning the same file_id would
      * otherwise share one path, and the first to finish unlinks it while the second is
@@ -444,8 +444,8 @@ export function createProvisionService({
         file_id: file.file_id,
         entity_id,
         signal,
+        onUploadStart,
       });
-      signal?.throwIfAborted();
 
       const embedded = embeddingResult?.embedded ?? false;
 
@@ -463,54 +463,6 @@ export function createProvisionService({
       } catch {
         // Ignore cleanup errors
       }
-    }
-  }
-
-  /**
-   * Check if a single code env file is still alive by querying its session.
-   *
-   * @param {object} params
-   * @param {import('librechat-data-provider').TFile} params.file - File with metadata.codeEnvRef
-   * @param {string} [params.apiKey] - Legacy CODE_API_KEY, when configured
-   * @param {object} [params.req] - Request used to mint JWT code auth, when enabled
-   * @returns {Promise<boolean>} true if the file is still accessible in the code env
-   */
-  async function checkCodeEnvFileAlive({
-    file,
-    apiKey,
-    req,
-  }: {
-    file: TFile;
-    apiKey?: string;
-    req?: ServerRequest;
-  }): Promise<boolean> {
-    const ref = file.metadata?.codeEnvRef;
-    if (!ref?.storage_session_id || !ref?.file_id) {
-      return false;
-    }
-
-    try {
-      const baseURL = getCodeBaseURL();
-      const response = await getAxios()({
-        method: 'get',
-        url: `${baseURL}/files/${ref.storage_session_id}`,
-        params: { detail: 'summary' },
-        headers: await buildCodeApiHeaders({ apiKey, req }),
-        httpAgent: codeServerHttpAgent,
-        httpsAgent: codeServerHttpsAgent,
-        timeout: 5000,
-      });
-
-      const found = (response.data as Array<{ fileId?: string }> | undefined)?.some(
-        (f) => f.fileId === ref.file_id,
-      );
-      return !!found;
-    } catch (error) {
-      logAxiosError({
-        message: `[checkCodeEnvFileAlive] Error checking file "${file.filename}": ${(error as Error).message}`,
-        error,
-      });
-      return false;
     }
   }
 
@@ -686,11 +638,41 @@ export function createProvisionService({
     await Promise.allSettled(sessionChecks);
     return aliveFileIds;
   }
+  async function digestFile({
+    req,
+    file,
+    signal,
+  }: {
+    req: ServerRequest;
+    file: TFile;
+    signal?: AbortSignal;
+  }): Promise<StoredFileDigest | null> {
+    const stream = await getStorageStream(file, req, signal);
+    if (stream == null) {
+      return null;
+    }
+    const hash = createHash('sha256');
+    let bytes = 0;
+    const abort = () => stream.destroy(signal?.reason instanceof Error ? signal.reason : undefined);
+    signal?.addEventListener('abort', abort, { once: true });
+    try {
+      for await (const chunk of stream) {
+        const buffer: Buffer = typeof chunk === 'string' ? Buffer.from(chunk) : chunk;
+        hash.update(buffer);
+        bytes += buffer.byteLength;
+      }
+    } finally {
+      signal?.removeEventListener('abort', abort);
+    }
+    signal?.throwIfAborted();
+    return { sha256: hash.digest('hex'), bytes };
+  }
+
   return {
     loadCodeApiKey,
     provisionToCodeEnv,
     provisionToVectorDB,
-    checkCodeEnvFileAlive,
+    digestFile,
     checkSessionsAlive,
   };
 }

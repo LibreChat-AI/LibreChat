@@ -1,5 +1,6 @@
 import * as React from 'react';
 import * as Ariakit from '@ariakit/react';
+import useDirection, { inlineSide } from '~/hooks/Nav/useDirection';
 import { cn } from '~/utils';
 
 export interface CustomMenuProps extends Ariakit.MenuButtonProps<'div'> {
@@ -32,10 +33,13 @@ export const CustomMenu = React.forwardRef<HTMLDivElement, CustomMenuProps>(func
 ) {
   const parent = Ariakit.useMenuContext();
   const searchable = searchValue != null || !!onSearch || !!combobox;
+  /** Submenus open toward the inline end, away from the sidebar, in either direction;
+   *  Ariakit also derives the open/close arrow keys from this physical side. */
+  const direction = useDirection();
 
   const menuStore = Ariakit.useMenuStore({
     showTimeout: 100,
-    placement: parent ? 'right' : 'left',
+    placement: inlineSide(direction, parent ? 'end' : 'start'),
     defaultOpen: defaultOpen,
   });
   const isOpen = menuStore.useState('open');
@@ -72,7 +76,7 @@ export const CustomMenu = React.forwardRef<HTMLDivElement, CustomMenuProps>(func
         unmountOnHide
         gutter={parent ? -4 : 4}
         className={cn(
-          parent ? 'animate-popover-left ml-3' : 'animate-popover',
+          parent ? 'animate-popover-left ms-3' : 'animate-popover',
           'z-40 flex max-h-[min(28.125rem,var(--popover-available-height))] w-full outline-hidden!',
           'border-border-menu rounded-theme-menu-panel w-[var(--menu-width,auto)] min-w-[min(18.75rem,90vw)] flex-col overflow-auto border',
           'bg-surface-menu text-text-primary text-sm shadow-lg',
@@ -96,7 +100,7 @@ export const CustomMenu = React.forwardRef<HTMLDivElement, CustomMenuProps>(func
                     )}
                   />
                   {comboboxLabel && (
-                    <label className="text-text-secondary peer-[:not(:placeholder-shown)]:bg-surface-menu pointer-events-none absolute top-2.5 left-2.5 text-sm transition-all duration-200 peer-[:not(:placeholder-shown)]:-top-1.5 peer-[:not(:placeholder-shown)]:left-1.5 peer-[:not(:placeholder-shown)]:text-xs sm:top-1.5">
+                    <label className="text-text-secondary peer-[:not(:placeholder-shown)]:bg-surface-menu pointer-events-none absolute inset-s-2.5 top-2.5 text-sm transition-all duration-200 peer-[:not(:placeholder-shown)]:inset-s-1.5 peer-[:not(:placeholder-shown)]:-top-1.5 peer-[:not(:placeholder-shown)]:text-xs sm:top-1.5">
                       {comboboxLabel}
                     </label>
                   )}
@@ -160,7 +164,7 @@ export const CustomMenuItem = React.forwardRef<HTMLDivElement, CustomMenuItemPro
          *  bg-presentation, which resolves to the same value as
          *  surface-secondary in dark and within 3/255 of it in light, so an
          *  active item styled that way cannot render against its own popover. */
-        'relative flex w-full min-w-0 cursor-default scroll-m-1 scroll-mt-[calc(var(--combobox-height,0px)+var(--label-height,0.25rem))] items-center gap-2 rounded-lg px-2 py-1 outline-hidden! hover:bg-surface-hover aria-disabled:opacity-25 aria-selected:bg-surface-hover data-[active-item]:bg-surface-hover data-[active-item]:text-text-primary sm:text-sm before:absolute before:bottom-1 before:left-0 before:top-1 before:w-0.5 before:rounded-full before:bg-transparent data-[active-item]:before:bg-text-primary',
+        'relative flex w-full min-w-0 cursor-default scroll-m-1 scroll-mt-[calc(var(--combobox-height,0px)+var(--label-height,0.25rem))] items-center gap-2 rounded-lg px-2 py-1 outline-hidden! hover:bg-surface-hover aria-disabled:opacity-25 aria-selected:bg-surface-hover data-[active-item]:bg-surface-hover data-[active-item]:text-text-primary sm:text-sm before:absolute before:bottom-1 before:inset-s-0 before:top-1 before:w-0.5 before:rounded-full before:bg-transparent data-[active-item]:before:bg-text-primary',
         props.className,
       ),
     };

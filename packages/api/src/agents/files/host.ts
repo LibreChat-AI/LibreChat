@@ -1,9 +1,13 @@
 import { EToolResources, getCodeEnvRefs } from 'librechat-data-provider';
 import type { CodeEnvFile, SubagentExecutionContext } from '@librechat/agents';
 import type { Agent, TFile } from 'librechat-data-provider';
+import type {
+  THasEntityEmbeddings,
+  TFilterFilesByAgentAccess,
+  TAdoptLegacySearchEmbeddings,
+} from '~/agents/resources';
 import type { ProvisionCallbackDeps, ProvisionToolContext } from '~/files/provision/callback';
 import type { ToolEndCallback, ToolEndCallbackMetadata } from '~/agents/handlers';
-import type { TFilterFilesByAgentAccess } from '~/agents/resources';
 import type { RunFileSession, RunFileSessionDeps } from './session';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { ServerRequest } from '~/types';
@@ -103,12 +107,17 @@ export function createRunFileHost<TContext extends RunFileToolContext>({
   audit?: RunFileSessionDeps['audit'];
   provisioning: Pick<
     ProvisionCallbackDeps,
+    | 'fileStorage'
     | 'provisionToCodeEnv'
     | 'provisionToVectorDB'
     | 'updateFile'
     | 'updateCodeEnvRef'
     | 'addEmbeddedEntity'
-  >;
+  > & {
+    /** Lets setup files whose namespace is unrecorded be confirmed instead of embedded again. */
+    hasEntityEmbeddings?: THasEntityEmbeddings;
+    adoptLegacySearchEmbeddings?: TAdoptLegacySearchEmbeddings;
+  };
 }): RunFileHost<TContext> {
   const user = req.user;
   if (user == null) throw new Error('Run file sharing requires an authenticated user.');
@@ -342,6 +351,8 @@ export function createRunFileHost<TContext extends RunFileToolContext>({
           attachments: Promise.resolve(currentFiles),
           requestFileSet: new Set(currentFiles.map((file) => file.file_id)),
           tool_resources: source.agent.tool_resources,
+          hasEntityEmbeddings: provisioning.hasEntityEmbeddings,
+          adoptLegacySearchEmbeddings: provisioning.adoptLegacySearchEmbeddings,
           enabledToolResources: resolveResendToolResources({
             tools: source.agent.tools ?? [],
             codeEnvAvailable: source.codeEnvAvailable === true,

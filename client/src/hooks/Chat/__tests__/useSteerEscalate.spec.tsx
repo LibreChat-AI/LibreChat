@@ -1,13 +1,18 @@
 import React from 'react';
-import { RecoilRoot, useRecoilValue } from 'recoil';
+import { RecoilRoot } from 'recoil';
 import { getDefaultStore, useAtomValue } from 'jotai';
+import { useSteerEscalate } from '@librechat/chat/react';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import type { MutableSnapshot } from 'recoil';
-import type { PendingSteer } from '~/hooks/Chat/queue';
+import {
+  escalatingSteerFamily,
+  activeGenerationCreatedAtByConvoId,
+  activeGenerationProtocolVersionByConvoId,
+  pendingSteersByConvoId,
+  resetSteerFamilies,
+} from '@librechat/chat/react';
+import type { PendingSteer } from '@librechat/chat';
 import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
-import { escalatingSteerFamily } from '~/store/steer';
-import useSteerEscalate from '../useSteerEscalate';
-import store from '~/store';
+import { SteerHostTestProvider } from 'test/steerHost';
 
 const mockArmMutateAsync = jest.fn();
 const mockShowToast = jest.fn();
@@ -52,33 +57,34 @@ function setup({
   activeGenerationProtocolVersion = 2,
   steers = [pending()],
 }: SetupOptions = {}) {
-  const initializeState = (snapshot: MutableSnapshot) => {
-    snapshot.set(store.pendingSteersByConvoId(CONVO_ID), steers);
-    if (activeGenerationCreatedAt != null) {
-      snapshot.set(store.activeGenerationCreatedAtByConvoId(CONVO_ID), activeGenerationCreatedAt);
-    }
-    snapshot.set(
-      store.activeGenerationProtocolVersionByConvoId(CONVO_ID),
-      activeGenerationProtocolVersion,
-    );
-  };
+  const jotaiStore = getDefaultStore();
+  jotaiStore.set(pendingSteersByConvoId(CONVO_ID), steers);
+  if (activeGenerationCreatedAt != null) {
+    jotaiStore.set(activeGenerationCreatedAtByConvoId(CONVO_ID), activeGenerationCreatedAt);
+  }
+  jotaiStore.set(
+    activeGenerationProtocolVersionByConvoId(CONVO_ID),
+    activeGenerationProtocolVersion,
+  );
   const wrapper = ({ children }: { children: React.ReactNode }) => (
-    <RecoilRoot initializeState={initializeState}>
-      <ChatSettingsContext.Provider
-        value={{
-          ...defaultChatSettings,
-          config: { ...defaultChatSettings.config, steerArmConfirmationTimeoutMs },
-        }}
-      >
-        {children}
-      </ChatSettingsContext.Provider>
+    <RecoilRoot>
+      <SteerHostTestProvider>
+        <ChatSettingsContext.Provider
+          value={{
+            ...defaultChatSettings,
+            config: { ...defaultChatSettings.config, steerArmConfirmationTimeoutMs },
+          }}
+        >
+          {children}
+        </ChatSettingsContext.Provider>
+      </SteerHostTestProvider>
     </RecoilRoot>
   );
 
   return renderHook(
     () => ({
       escalate: useSteerEscalate(CONVO_ID),
-      steers: useRecoilValue(store.pendingSteersByConvoId(CONVO_ID)),
+      steers: useAtomValue(pendingSteersByConvoId(CONVO_ID)),
       escalating: useAtomValue(escalatingSteerFamily(CONVO_ID)),
     }),
     { wrapper },
@@ -88,6 +94,7 @@ function setup({
 describe('useSteerEscalate', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    resetSteerFamilies();
     act(() => getDefaultStore().set(escalatingSteerFamily(CONVO_ID), false));
     steerArmConfirmationTimeoutMs = undefined;
   });

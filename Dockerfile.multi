@@ -1,5 +1,5 @@
 # Dockerfile.multi
-# v0.8.8
+# v0.8.9-rc1
 
 # Set configurable max-old-space-size with default
 ARG NODE_MAX_OLD_SPACE_SIZE=6144
@@ -10,11 +10,11 @@ ARG BUILD_BRANCH=
 ARG BUILD_DATE=
 
 # Base for all builds
-FROM node:24.16.0-alpine AS base-min
+FROM node:24.22.1-alpine AS base-min
 ARG NPM_CI_TIMEOUT_SECONDS=1500
 ARG NPM_CI_ATTEMPTS=2
 RUN apk upgrade --no-cache
-RUN apk add --no-cache jemalloc
+RUN apk add --no-cache bash jemalloc
 # Set environment variable to use jemalloc
 ENV LD_PRELOAD=/usr/lib/libjemalloc.so.2
 # Disable dependency installation analytics before any npm lifecycle scripts run.
@@ -28,6 +28,7 @@ RUN npm config set fetch-retry-maxtimeout 600000 && \
 COPY package*.json ./
 COPY packages/data-provider/package*.json ./packages/data-provider/
 COPY packages/api/package*.json ./packages/api/
+COPY vendor/code ./vendor/code
 COPY packages/data-schemas/package*.json ./packages/data-schemas/
 COPY packages/client/package*.json ./packages/client/
 COPY packages/chat/package*.json ./packages/chat/

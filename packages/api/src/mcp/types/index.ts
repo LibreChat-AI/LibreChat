@@ -10,19 +10,13 @@ import {
 } from 'librechat-data-provider';
 import type {
   EmbeddedResource,
-  ListToolsResult,
   ResourceLink,
   ImageContent,
   AudioContent,
   TextContent,
   Tool,
 } from '@modelcontextprotocol/sdk/types.js';
-import type {
-  SearchResultData,
-  UIResource,
-  TPlugin,
-  TMCPAppOperationLimits,
-} from 'librechat-data-provider';
+import type { SearchResultData, UIResource, TMCPAppOperationLimits } from 'librechat-data-provider';
 import type { TokenMethods, IUser } from '@librechat/data-schemas';
 import type { LCTool } from '@librechat/agents';
 import type {
@@ -70,8 +64,6 @@ export interface LCFunctionTool {
 }
 
 export type LCAvailableTools = Record<string, LCFunctionTool>;
-export type LCManifestTool = TPlugin;
-export type LCToolManifest = TPlugin[];
 export interface MCPPrompt {
   name: string;
   description?: string;
@@ -83,7 +75,6 @@ export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'err
 export type OAuthHandledSource = 'silent-refresh' | 'interactive';
 
 export type MCPTool = Tool;
-export type MCPToolListResponse = ListToolsResult;
 export type ToolContentPart =
   | TextContent
   | ImageContent
@@ -359,6 +350,39 @@ export interface OAuthConnectionOptions extends UserConnectionContext {
 export interface MCPConnectionTarget {
   serverConfig: ParsedServerConfig;
   connectionOwner: 'operator' | 'principal';
+}
+
+/** The acting user a principal-scoped MCP decision is made for. */
+export interface MCPPrincipal {
+  userId: string;
+  role?: string;
+  /**
+   * The user's `idOnTheSource` as the request already loaded it, `null` for a local user.
+   * Supplied together with `role`, it lets the principal's config read skip a user lookup.
+   */
+  idOnTheSource?: string | null;
+}
+
+/** The acting user as the request loaded it, for principal-scoped registry lookups and checkout. */
+export interface MCPLookupUser {
+  id?: string;
+  role?: string;
+  idOnTheSource?: string | null;
+}
+
+/**
+ * How a principal-scoped registry lookup (one that names a user) treats the
+ * librechat.yaml servers that principal's resolved config hides.
+ *
+ * Hiding is an access boundary: the registry resolves the hidden set itself from
+ * a strict read of the principal's config, failing closed, and a principal-scoped
+ * lookup never returns a hidden server unless `includeHidden` opts out.
+ */
+export interface MCPServerLookupOptions {
+  /** Skip hiding, for cleanup that must still reach every server, such as token revocation. */
+  includeHidden?: boolean;
+  /** See {@link MCPPrincipal.idOnTheSource}; pass `req.user.idOnTheSource` when the caller has it. */
+  idOnTheSource?: string | null;
 }
 
 type MCPConnectionTargetInput =

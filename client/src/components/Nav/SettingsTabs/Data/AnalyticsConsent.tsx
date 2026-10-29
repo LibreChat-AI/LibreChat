@@ -26,7 +26,7 @@ export default function AnalyticsConsentToggle() {
       <Switch
         checked={consent === 'granted'}
         onCheckedChange={(checked: boolean) => setConsent(checked ? 'granted' : 'denied')}
-        className="ml-4"
+        className="ms-4"
         aria-labelledby={labelId}
         aria-describedby={descriptionId}
         data-testid="analytics-consent-switch"

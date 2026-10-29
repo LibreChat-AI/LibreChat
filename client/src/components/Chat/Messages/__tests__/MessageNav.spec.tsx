@@ -266,6 +266,17 @@ afterEach(() => {
 });
 
 describe('MessageNav', () => {
+  it('queries the rendered destination instead of the lagging conversation context', () => {
+    const { scrollable } = buildDom([]);
+    render(<MessageNav conversationId="destination" scrollableRef={{ current: scrollable }} />);
+
+    expect(mockUseGetMessagesByConvoId).toHaveBeenCalledWith(
+      'destination',
+      { enabled: true },
+      { isStreaming: false },
+    );
+  });
+
   describe('rendering threshold', () => {
     it('renders nothing when there are 0 messages', () => {
       const { container } = renderNav([]);

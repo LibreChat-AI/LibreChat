@@ -58,6 +58,7 @@ const {
   createCodeApiUploadRegistry,
   cacheConfig,
   createClusteredFileSweep,
+  createRequestSanitizer,
 } = require('@librechat/api');
 const { connectDb, indexSync } = require('~/db');
 const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
@@ -65,6 +66,7 @@ const { capabilityContextMiddleware } = require('./middleware/roles/capabilities
 const createValidateImageRequest = require('./middleware/validateImageRequest');
 const { startExpiredFileSweep } = require('./services/Files/process');
 const { initializeGitHubSkillSync } = require('./services/Skills/sync');
+const { startSkillDeletionSweep } = require('./services/Skills/deletion');
 const { initializeAgentTriggerService } = require('./services/Agents/triggers');
 const { resumeAgentEventDetachedAction } = require('./services/Agents/detachedActionResume');
 const {
@@ -495,23 +497,24 @@ if (cluster.isMaster) {
       logger.error('[sweepOrphanedPreviews] Background sweep failed:', err);
     });
 
-    /** Initialize app configuration */
-    const appConfig = await getAppConfig();
+    /**
+     * Boot reads librechat.yaml only, as `server/index.js` does. File storage, skill sync and
+     * deletion, the expired-file sweep, tool-approval hooks and the other worker-wide settings
+     * below are fixed for the process lifetime, so DB `__base__` overrides must not decide them.
+     */
+    const appConfig = await getAppConfig({ baseOnly: true });
     initializeFileStorage(appConfig);
     initializeGitHubSkillSync(appConfig);
+    startSkillDeletionSweep(appConfig.skillDeletion);
     // Register configured tool-approval policy hooks (mirrors the standard startup path).
-    // Honors the `enabled` kill switch; hooks are base-config-only, registered process-wide.
-    // Read from the BASE config specifically — `appConfig` above (getAppConfig() with no
-    // principal) still merges DB `__base__` overrides, which must not drive which hook
-    // modules load in every worker (matches api/server/index.js's baseOnly usage).
-    const baseAppConfig = await getAppConfig({ baseOnly: true });
-    await configureSubagentTaskRouting(baseAppConfig?.endpoints?.agents?.subagentActivity);
+    // Honors the `enabled` kill switch; hooks are registered process-wide.
+    await configureSubagentTaskRouting(appConfig?.endpoints?.agents?.subagentActivity);
     registerBackgroundTaskShutdown({
-      interruptGraceMs: baseAppConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
+      interruptGraceMs: appConfig?.endpoints?.agents?.backgroundTasks?.shutdownInterruptGraceMs,
       getBudgetMs: clusterShutdownBudgetMs,
     });
-    configureAgentEventRuntime(baseAppConfig?.endpoints?.agents?.eventDriven);
-    const toolApproval = baseAppConfig?.endpoints?.agents?.toolApproval;
+    configureAgentEventRuntime(appConfig?.endpoints?.agents?.eventDriven);
+    const toolApproval = appConfig?.endpoints?.agents?.toolApproval;
     await loadToolApprovalHooks(toolApproval?.enabled ? toolApproval.hooks : undefined, {
       basePath: path.resolve(__dirname, '../..'),
     });
@@ -552,13 +555,13 @@ if (cluster.isMaster) {
        so the answer is the deployment's base configuration, like index.js. */
     indexHTML = injectConfiguredFooterBootstrap(indexHTML, {
       customFooter: process.env.CUSTOM_FOOTER,
-      landingFooter: baseAppConfig?.interfaceConfig?.landingFooter,
+      landingFooter: appConfig?.interfaceConfig?.landingFooter,
     });
 
-    indexHTML = injectColorModeHandoff(indexHTML, baseAppConfig?.interfaceConfig?.colorModeFromUrl);
+    indexHTML = injectColorModeHandoff(indexHTML, appConfig?.interfaceConfig?.colorModeFromUrl);
     const indexShell = createDeploymentThemeShell(
       indexHTML,
-      baseAppConfig?.interfaceConfig?.theme,
+      appConfig?.interfaceConfig?.theme,
       readBundledThemeBoot(appConfig.paths.dist),
     );
 
@@ -612,7 +615,7 @@ if (cluster.isMaster) {
       next();
     });
 
-    app.use(mongoSanitize());
+    app.use(createRequestSanitizer(mongoSanitize));
     app.use(cors());
     app.use(cookieParser());
 
@@ -730,12 +733,12 @@ if (cluster.isMaster) {
         await initializeAgentTriggerService({
           address: server.address(),
           completionResultBatchSize:
-            baseAppConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
+            appConfig?.endpoints?.agents?.backgroundTasks?.completionResultBatchSize,
           completionReceiptBatching:
-            baseAppConfig?.endpoints?.agents?.backgroundTasks?.completionReceiptBatching,
+            appConfig?.endpoints?.agents?.backgroundTasks?.completionReceiptBatching,
           deadLetterRetentionDays:
-            baseAppConfig?.endpoints?.agents?.eventDriven?.deadLetterRetentionDays,
-          idlePolling: baseAppConfig?.endpoints?.agents?.eventDriven?.idlePolling,
+            appConfig?.endpoints?.agents?.eventDriven?.deadLetterRetentionDays,
+          idlePolling: appConfig?.endpoints?.agents?.eventDriven?.idlePolling,
         });
       } catch (initErr) {
         logger.error(`Worker ${process.pid} post-listen initialization failed:`, initErr);

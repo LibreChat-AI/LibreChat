@@ -21,6 +21,7 @@ export * from './morph';
 export * from './forms';
 export * from './roles';
 export * from './errors';
+export * from './promptErrors';
 export * from './agents';
 export * from './drafts';
 export * from './convos';
@@ -51,7 +52,25 @@ export * from './groupToolCalls';
 export * from './toolLabels';
 export * from './favoritesError';
 export * from './approval';
-export * from './steer';
+export {
+  getSteerPart,
+  applySteerPart,
+  MAX_QUOTE_COUNT,
+  dedupeSteersById,
+  insertQueuedOrigin,
+  resolveRunEndTarget,
+  mergeRestagedQuotes,
+  carriedSteerContext,
+  appendAppliedSteerIds,
+  findSteerMessageIndex,
+  collectAppliedSteerIds,
+  resolveAbortSteerTarget,
+  findResponseMessageIndex,
+  collectDroppedSteerQuotes,
+  isLegacyDeliveryUncertain,
+  collectQuotelessAppliedSteerIds,
+} from '@librechat/chat';
+export type { SteerCarriedContext } from '@librechat/chat';
 export * from './pane';
 export * from './activityLabels';
 export * from './agentModelSelection';

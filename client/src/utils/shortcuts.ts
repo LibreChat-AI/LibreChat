@@ -321,6 +321,23 @@ export function resolveComposerKeyDown(
   return 'none';
 }
 
+/**
+ * A `submitMessage` chord rebound off Enter. The window-level handler yields
+ * it in every editing field but the composer, so an answer field that submits
+ * like the composer has to act on it itself; Enter chords go through
+ * `resolveComposerKeyDown`.
+ */
+export function isReboundSubmitChord(
+  e: KeyChordSource,
+  ctx: Pick<ComposerKeyContext, 'shortcutsEnabled' | 'submitOverride'>,
+): boolean {
+  const { submitOverride } = ctx;
+  if (!ctx.shortcutsEnabled || submitOverride == null || submitOverride.key === 'Enter') {
+    return false;
+  }
+  return bindingsMatch(bindingFromEvent(e), submitOverride);
+}
+
 export function isCancelKey(e: KeyboardEvent): boolean {
   return e.key === 'Escape' && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey;
 }

@@ -49,7 +49,7 @@ function SourceFaviconStack({ sources }: { sources: ValidSource[] }) {
           className={cn(
             'border-border-medium bg-surface-secondary relative flex items-center justify-center rounded-full border',
             'h-[1.375rem] w-[1.375rem]',
-            i > 0 && '-ml-2.5',
+            i > 0 && '-ms-2.5',
           )}
           style={{ zIndex: MAX_VISIBLE_FAVICONS - i }}
         >
@@ -295,7 +295,7 @@ export default function WebSearch({
                   variant="quiet"
                   size="icon"
                   className={cn(
-                    'ml-auto size-auto cursor-help rounded-md p-1 opacity-0',
+                    'ms-auto size-auto cursor-help rounded-md p-1 opacity-0',
                     'group-focus-within/websearch:opacity-100 group-hover/websearch:opacity-100',
                     'focus-visible:opacity-100',
                   )}
@@ -384,7 +384,7 @@ export default function WebSearch({
                             </span>
                           )}
                         </span>
-                        <span className="shrink-0 text-right">
+                        <span className="shrink-0 text-end">
                           <span className="text-text-secondary text-2xs block">{domain}</span>
                           {source.date && (
                             <span className="text-text-secondary text-3xs block">

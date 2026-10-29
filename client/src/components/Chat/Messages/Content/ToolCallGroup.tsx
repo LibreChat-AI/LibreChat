@@ -1,5 +1,5 @@
 import { useState, useRef, useMemo, useEffect, useContext, useCallback } from 'react';
-import { Tools, Constants, ContentTypes } from 'librechat-data-provider';
+import { Tools, Constants, ContentTypes, isOpaqueReasoning } from 'librechat-data-provider';
 import { ChevronDown, ListChecks, MessageCircleQuestion, TriangleAlert, Users } from 'lucide-react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { PartWithIndex } from './ParallelContent';
@@ -739,12 +739,16 @@ export default function ToolCallGroup({
                           const reasoning =
                             typeof think === 'string' ? think : (think?.value ?? '');
                           /** A detached-subagent projection carries an empty THINK
-                           *  part flagged `reasoning_unavailable`, which `Part`
-                           *  renders as a `ReasoningMarker`. `ReasoningCompact` has
-                           *  no text to show and returns null, so the marker has to
+                           *  part flagged `reasoning_unavailable`, and encrypted
+                           *  reasoning has no readable text; `Part` renders both as a
+                           *  `ReasoningMarker`. `ReasoningCompact` would show the
+                           *  encoded payload or return null, so the marker has to
                            *  keep going through the standalone path or it vanishes
                            *  the moment its call joins a group. */
-                          if (reasoning.trim() === '' && part.reasoning_unavailable === true) {
+                          if (
+                            (reasoning.trim() === '' && part.reasoning_unavailable === true) ||
+                            isOpaqueReasoning(reasoning)
+                          ) {
                             return renderPart(
                               part,
                               idx,

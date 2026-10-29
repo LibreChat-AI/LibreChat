@@ -8,8 +8,9 @@
  * here; these cover the page before and without a theme definition.
  *
  * The roles are written against the primitive scales under `:root`, so a host that redefines a
- * step after this import retints every role that reads it. `themes/default.ts`, `themes/dark.ts`
- * and `registry.ts` carry the same values for the runtime, and `defaults.spec.ts` holds them equal.
+ * step after this import retints every role that reads it. `default.ts`, `dark.ts` and
+ * `registry.ts` under `packages/data-provider/src/themes` carry the same values for the runtime,
+ * and `defaults.spec.ts` holds them equal.
  */
 :root {
   --white: 255 255 255;
@@ -260,6 +261,7 @@ html {
   --theme-menu-radius: 0.7rem;
   --theme-popover-radius: var(--theme-radius-2xl, 1rem);
   --theme-menu-panel-radius: var(--theme-radius-xl, 0.75rem);
+  --theme-compact-panel-radius: var(--theme-radius-lg, 0.5rem);
   --theme-composer-action-radius: var(--theme-round-control-radius, 9999px);
   --theme-inline-code-weight: 600;
   --theme-tooltip-radius: 0.275rem;

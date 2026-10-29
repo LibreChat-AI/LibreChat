@@ -3,50 +3,21 @@ const axios = require('axios');
 const FormData = require('form-data');
 const { logger } = require('@librechat/data-schemas');
 const { FileSources } = require('librechat-data-provider');
-const { logAxiosError, generateShortLivedToken } = require('@librechat/api');
+const {
+  logAxiosError,
+  generateShortLivedToken,
+  createVectorFileDeleter,
+  dispatchFileStorageOperation,
+} = require('@librechat/api');
 
-/**
- * Deletes a file from the vector database. This function takes a file object, constructs the full path, and
- * verifies the path's validity before deleting the file. If the path is invalid, an error is thrown.
- *
- * @param {ServerRequest} req - The request object from Express.
- * @param {MongoFile} file - The file object to be deleted. It should have a `filepath` property that is
- *                           a string representing the path of the file relative to the publicPath.
- *
- * @returns {Promise<void>}
- *          A promise that resolves when the file has been successfully deleted, or throws an error if the
- *          file path is invalid or if there is an error in deletion.
- */
-const deleteVectors = async (req, file) => {
-  if (!file.embedded || !process.env.RAG_API_URL) {
-    return;
-  }
-  try {
-    const jwtToken = generateShortLivedToken(req.user.id);
-
-    return await axios.delete(`${process.env.RAG_API_URL}/documents`, {
-      headers: {
-        Authorization: `Bearer ${jwtToken}`,
-        'Content-Type': 'application/json',
-        accept: 'application/json',
-      },
-      data: [file.file_id],
-    });
-  } catch (error) {
-    logAxiosError({
-      error,
-      message: 'Error deleting vectors',
-    });
-    if (
-      error.response &&
-      error.response.status !== 404 &&
-      (error.response.status < 200 || error.response.status >= 300)
-    ) {
-      logger.warn('Error deleting vectors, file will not be deleted');
-      throw new Error(error.message || 'An error occurred during file deletion.');
-    }
-  }
-};
+const deleteVectors = (req, file) =>
+  createVectorFileDeleter({
+    baseUrl: process.env.RAG_API_URL,
+    httpClient: axios,
+    generateToken: generateShortLivedToken,
+    ownershipTrackingStart: req.config?.fileConfig?.vectorOwnershipTrackingStart,
+    namespaceConcurrency: req.config?.fileConfig?.vectorDeletionConcurrency,
+  })(req, file);
 
 /**
  * Uploads a file to the configured Vector database
@@ -64,7 +35,15 @@ const deleteVectors = async (req, file) => {
  *            - filepath: The path where the file is saved.
  *            - bytes: The size of the file in bytes.
  */
-async function uploadVectors({ req, file, file_id, entity_id, storageMetadata, signal }) {
+async function uploadVectors({
+  req,
+  file,
+  file_id,
+  entity_id,
+  storageMetadata,
+  signal,
+  onUploadStart,
+}) {
   if (!process.env.RAG_API_URL) {
     throw new Error('RAG_API_URL not defined');
   }
@@ -85,14 +64,16 @@ async function uploadVectors({ req, file, file_id, entity_id, storageMetadata, s
 
     const formHeaders = formData.getHeaders();
 
-    const response = await axios.post(`${process.env.RAG_API_URL}/embed`, formData, {
-      ...(signal ? { signal } : {}),
-      headers: {
-        Authorization: `Bearer ${jwtToken}`,
-        accept: 'application/json',
-        ...formHeaders,
-      },
-    });
+    const response = await dispatchFileStorageOperation(onUploadStart, () =>
+      axios.post(`${process.env.RAG_API_URL}/embed`, formData, {
+        ...(signal ? { signal } : {}),
+        headers: {
+          Authorization: `Bearer ${jwtToken}`,
+          accept: 'application/json',
+          ...formHeaders,
+        },
+      }),
+    );
 
     const responseData = response.data;
     logger.debug('Response from embedding file', responseData);
@@ -116,7 +97,7 @@ async function uploadVectors({ req, file, file_id, entity_id, storageMetadata, s
       error,
       message: 'Error uploading vectors',
     });
-    throw new Error(error.message || 'An error occurred during file upload.');
+    throw new Error(error.message || 'An error occurred during file upload.', { cause: error });
   }
 }
 

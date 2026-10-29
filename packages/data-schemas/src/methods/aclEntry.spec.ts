@@ -12,7 +12,9 @@ import {
   createAclEntryMethods,
   permissionBitSupersets,
 } from './aclEntry';
+import { tenantStorage } from '~/config/tenantContext';
 import aclEntrySchema from '~/schema/aclEntry';
+import logger from '~/config/winston';
 
 let mongoServer: MongoMemoryServer;
 let AclEntry: mongoose.Model<t.IAclEntry>;
@@ -959,6 +961,182 @@ describe('AclEntry Model Tests', () => {
         principalId: new mongoose.Types.ObjectId(),
       });
       expect(result.deletedCount).toBe(0);
+    });
+  });
+
+  describe('deletePrincipalAclEntries', () => {
+    const grantTo = (principalType: PrincipalType, principalId: string | mongoose.Types.ObjectId) =>
+      methods.grantPermission(
+        principalType,
+        principalId,
+        ResourceType.AGENT,
+        new mongoose.Types.ObjectId(),
+        PermissionBits.VIEW,
+        grantedById,
+      );
+    const remainingIds = async () =>
+      (await AclEntry.find({}).select('_id').lean()).map(({ _id }) => _id.toString()).sort();
+
+    it("removes a role's platform-level entries outside a tenant, never a tenant role's of that name", async () => {
+      await grantTo(PrincipalType.ROLE, 'editor');
+      const unclaimed = await grantTo(PrincipalType.ROLE, 'editor');
+      const tenant = await grantTo(PrincipalType.ROLE, 'editor');
+      const other = await grantTo(PrincipalType.ROLE, 'other');
+      await AclEntry.collection.updateOne({ _id: unclaimed?._id }, { $set: { tenantId: '' } });
+      await AclEntry.collection.updateOne({ _id: tenant?._id }, { $set: { tenantId: 'tenant-a' } });
+
+      await methods.deletePrincipalAclEntries({
+        principalType: PrincipalType.ROLE,
+        principalId: 'editor',
+      });
+
+      expect(await remainingIds()).toEqual([tenant?._id.toString(), other?._id.toString()].sort());
+    });
+
+    it("removes only the active tenant's role entries inside it", async () => {
+      const platform = await grantTo(PrincipalType.ROLE, 'editor');
+      const tenant = await grantTo(PrincipalType.ROLE, 'editor');
+      await AclEntry.collection.updateOne({ _id: tenant?._id }, { $set: { tenantId: 'tenant-a' } });
+
+      await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+        methods.deletePrincipalAclEntries({
+          principalType: PrincipalType.ROLE,
+          principalId: 'editor',
+        }),
+      );
+
+      expect(await remainingIds()).toEqual([platform?._id.toString()]);
+    });
+
+    it('removes a group principal entries by id, whichever tenant holds them', async () => {
+      const groupId = new mongoose.Types.ObjectId();
+      const tenant = await grantTo(PrincipalType.GROUP, groupId);
+      const other = await grantTo(PrincipalType.GROUP, new mongoose.Types.ObjectId());
+      await AclEntry.collection.updateOne({ _id: tenant?._id }, { $set: { tenantId: 'tenant-a' } });
+
+      await methods.deletePrincipalAclEntries({
+        principalType: PrincipalType.GROUP,
+        principalId: groupId,
+      });
+
+      expect(await remainingIds()).toEqual([other?._id.toString()]);
+    });
+  });
+
+  describe('moveAclEntriesToPrincipal', () => {
+    const grantToRole = (roleName: string, bits: number) =>
+      methods.grantPermission(
+        PrincipalType.ROLE,
+        roleName,
+        ResourceType.AGENT,
+        new mongoose.Types.ObjectId(),
+        bits,
+        grantedById,
+      );
+
+    const entriesOf = (roleName: string) =>
+      AclEntry.find({ principalType: PrincipalType.ROLE, principalId: roleName }).lean();
+
+    it('re-keys a role principal entries to the new name, keeping identity and bits', async () => {
+      const viewed = await grantToRole('editor', PermissionBits.VIEW);
+      await grantToRole('editor', PermissionBits.EDIT);
+      await grantToRole('other', PermissionBits.VIEW);
+
+      const moved = await methods.moveAclEntriesToPrincipal(PrincipalType.ROLE, 'editor', 'writer');
+
+      expect(moved).toHaveLength(2);
+      expect(await entriesOf('editor')).toHaveLength(0);
+      const writer = await entriesOf('writer');
+      expect(writer.map((entry) => entry._id.toString()).sort()).toEqual([...moved].sort());
+      expect(writer.find((entry) => entry._id.equals(viewed?._id))?.permBits).toBe(
+        PermissionBits.VIEW,
+      );
+      expect(await entriesOf('other')).toHaveLength(1);
+    });
+
+    it('moves back only the entries a move returned', async () => {
+      await grantToRole('editor', PermissionBits.VIEW);
+      const writerBefore = await grantToRole('writer', PermissionBits.EDIT);
+
+      const moved = await methods.moveAclEntriesToPrincipal(PrincipalType.ROLE, 'editor', 'writer');
+      await methods.moveAclEntriesToPrincipal(PrincipalType.ROLE, 'writer', 'editor', {
+        ids: moved,
+      });
+
+      expect((await entriesOf('editor')).map((entry) => entry._id.toString())).toEqual(moved);
+      expect((await entriesOf('writer')).map((entry) => entry._id.toString())).toEqual([
+        writerBefore?._id.toString(),
+      ]);
+    });
+
+    it('returns nothing for a principal without entries', async () => {
+      expect(
+        await methods.moveAclEntriesToPrincipal(PrincipalType.ROLE, 'nobody', 'writer'),
+      ).toEqual([]);
+    });
+
+    it('moves only platform-level entries without a tenant context', async () => {
+      const platform = await grantToRole('editor', PermissionBits.VIEW);
+      const tenant = await grantToRole('editor', PermissionBits.EDIT);
+      await AclEntry.collection.updateOne({ _id: tenant?._id }, { $set: { tenantId: 'tenant-a' } });
+
+      const moved = await methods.moveAclEntriesToPrincipal(PrincipalType.ROLE, 'editor', 'writer');
+
+      expect(moved).toEqual([platform?._id.toString()]);
+      expect((await entriesOf('editor')).map((entry) => entry._id.toString())).toEqual([
+        tenant?._id.toString(),
+      ]);
+    });
+
+    it('moves unclaimed entries as platform-level, and only the active tenant entries inside one', async () => {
+      const absent = await grantToRole('editor', PermissionBits.VIEW);
+      const unclaimed = await grantToRole('editor', PermissionBits.EDIT);
+      const tenant = await grantToRole('editor', PermissionBits.DELETE);
+      await AclEntry.collection.updateOne({ _id: unclaimed?._id }, { $set: { tenantId: null } });
+      await AclEntry.collection.updateOne({ _id: tenant?._id }, { $set: { tenantId: 'tenant-a' } });
+
+      const platformMoved = await methods.moveAclEntriesToPrincipal(
+        PrincipalType.ROLE,
+        'editor',
+        'writer',
+      );
+      const tenantMoved = await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+        methods.moveAclEntriesToPrincipal(PrincipalType.ROLE, 'editor', 'author'),
+      );
+
+      expect([...platformMoved].sort()).toEqual(
+        [absent?._id.toString(), unclaimed?._id.toString()].sort(),
+      );
+      expect(tenantMoved).toEqual([tenant?._id.toString()]);
+      expect(await entriesOf('editor')).toHaveLength(0);
+    });
+
+    it('logs the entry ids, never the error text, when the undo of a failed move fails too', async () => {
+      const entry = await grantToRole('editor', PermissionBits.VIEW);
+      const failure = new Error('write interrupted');
+      const updateMany = jest
+        .spyOn(AclEntry, 'updateMany')
+        .mockRejectedValueOnce(failure)
+        .mockRejectedValueOnce(new Error('undo failed near {"principalId":"editor"}'));
+      const logged = jest.spyOn(logger, 'error').mockReturnValue(logger);
+
+      await expect(
+        methods.moveAclEntriesToPrincipal(PrincipalType.ROLE, 'editor', 'writer'),
+      ).rejects.toBe(failure);
+      updateMany.mockRestore();
+
+      expect(logged).toHaveBeenCalledWith(
+        '[moveAclEntriesToPrincipal] undo after a failed move failed',
+        {
+          principalType: PrincipalType.ROLE,
+          fromPrincipalId: 'editor',
+          toPrincipalId: 'writer',
+          entryIds: entry?._id.toString(),
+          errName: 'Error',
+          errCode: null,
+        },
+      );
+      logged.mockRestore();
     });
   });
 

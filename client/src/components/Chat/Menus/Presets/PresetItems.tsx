@@ -241,7 +241,7 @@ const PresetItems: FC<{
                         variant="ghost"
                         shape="theme"
                         type="button"
-                        className="h-auto min-w-0 flex-1 justify-start gap-1 p-2 text-left text-xs font-normal hover:bg-transparent focus-visible:ring-offset-0"
+                        className="h-auto min-w-0 flex-1 justify-start gap-1 p-2 text-start text-xs font-normal hover:bg-transparent focus-visible:ring-offset-0"
                         onClick={() => onSelectPreset(preset)}
                         aria-label={presetTitle}
                         data-testid={`preset-item-${presetId}`}

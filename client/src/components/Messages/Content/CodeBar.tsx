@@ -22,7 +22,7 @@ const CodeBar: React.FC<CodeBarProps> = React.memo(
           {lang}
         </span>
         {plugin === true ? (
-          <InfoIcon className="text-text-secondary ml-auto flex h-4 w-4 gap-2" />
+          <InfoIcon className="text-text-secondary ms-auto flex h-4 w-4 gap-2" />
         ) : (
           <div className="flex items-center justify-center gap-2">
             {allowExecution === true && (

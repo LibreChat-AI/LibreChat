@@ -14,9 +14,10 @@ import {
 } from '~/stream/GenerationJobManager';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { registerChunkPublicationCapability } from '~/stream/internal/chunkPublication';
-import { buildPendingAction, buildToolApprovalPayload } from '~/agents/hitl/policy';
 import { GenerationPublicationFencedError } from '~/stream/interfaces/IJobStore';
+import { buildToolApprovalPayload } from '~/agents/hitl/__fixtures__/approval';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
+import { buildPendingAction } from '~/agents/hitl/policy';
 
 function createTelemetry(): jest.Mocked<AgentStartupTelemetry> {
   return {
@@ -3070,6 +3071,40 @@ describe('GenerationJobManager startup telemetry', () => {
       }),
     );
     subscription?.unsubscribe();
+    await manager.destroy();
+  });
+
+  it('runs the terminal cleanup hook after the reconciliation is stored and before cleanup', async () => {
+    const jobStore = new InMemoryJobStore({ ttlAfterComplete: 60_000 });
+    const manager = new GenerationJobManagerClass();
+    manager.configure({
+      jobStore,
+      eventTransport: new InMemoryEventTransport(),
+      isRedis: false,
+      cleanupOnComplete: false,
+    });
+    manager.initialize();
+    const streamId = 'stream-error-cleanup-hook';
+    const job = await manager.createJob(streamId, 'user-1');
+    const finishTerminalJob = jest.spyOn(manager, 'finishTerminalJob');
+    let seenFinalEvent: string | undefined;
+    const beforeTerminalCleanup = jest.fn(async () => {
+      expect(finishTerminalJob).not.toHaveBeenCalled();
+      seenFinalEvent = (await jobStore.getJob(streamId))?.finalEvent;
+    });
+
+    await expect(
+      manager.completeJob(streamId, 'initialization failed', job.createdAt, {
+        beforeErrorPublication: async () => {
+          throw new Error('message store unavailable');
+        },
+        beforeTerminalCleanup,
+      }),
+    ).resolves.toBe(true);
+
+    expect(beforeTerminalCleanup).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(seenFinalEvent ?? '{}')).toMatchObject({ reconcile: true });
+    expect(finishTerminalJob).toHaveBeenCalledTimes(1);
     await manager.destroy();
   });
 

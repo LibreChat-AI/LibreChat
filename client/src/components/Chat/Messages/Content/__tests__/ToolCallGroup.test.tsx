@@ -601,6 +601,28 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.queryByTestId('compact-reasoning')).not.toBeInTheDocument();
   });
 
+  it('delegates an encrypted-reasoning part to the standalone renderer', () => {
+    const encryptedPart = {
+      type: ContentTypes.THINK,
+      [ContentTypes.THINK]: Buffer.from(
+        Array.from({ length: 900 }, (_, i) => (i * 37 + 3) % 256),
+      ).toString('base64'),
+    } as TMessageContentParts;
+
+    renderGroup({
+      ...baseProps,
+      parts: [
+        { part: makePart('t1'), idx: 0 },
+        { part: encryptedPart, idx: 1 },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^Fetch_image/ }));
+
+    expect(screen.getByTestId('inner-1')).toBeInTheDocument();
+    expect(screen.queryByTestId('compact-reasoning')).not.toBeInTheDocument();
+  });
+
   it('unmounts tool bodies after a collapsed group finishes transitioning', () => {
     renderGroup(baseProps);
 
@@ -1894,7 +1916,7 @@ describe('ToolCallGroup failure fast path', () => {
     expect(header).not.toHaveClass('text-text-primary');
     fireEvent.click(header);
     expect(header).toHaveClass('text-text-primary');
-    expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('pl-6');
+    expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('ps-6');
   });
 
   it('collapses from its rail, showing the knob on its header while the rail is hovered', () => {

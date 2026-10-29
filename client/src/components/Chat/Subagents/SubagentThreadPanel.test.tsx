@@ -15,6 +15,7 @@ import { activeSubagentPanel, subagentProgressByToolCallId, subagentProgressKey 
 import { initSubagentAggregatorState, initSubagentTickerState } from '~/utils/subagentContent';
 import { ChatSurfaceHarness, testChatSurface } from 'test/harness';
 import SubagentThreadPanel from './SubagentThreadPanel';
+import { useOpenSubagentPanel } from './surface';
 import { getDraft } from '~/utils';
 
 const mockUseSubagentThreadQuery = jest.fn();
@@ -30,6 +31,7 @@ const mockUseSubagentActivityStream = jest.fn();
 const mockForkMutate = jest.fn();
 const mockControlMutate = jest.fn();
 const mockNavigateToConvo = jest.fn();
+const mockNavigate = jest.fn();
 const mockShowToast = jest.fn();
 const mockGetSubagentThread = jest.fn();
 const mockApprovalProviderMounted = jest.fn();
@@ -73,6 +75,11 @@ function Root({
     </QueryClientProvider>
   );
 }
+
+jest.mock('react-router-dom', () => ({
+  ...jest.requireActual('react-router-dom'),
+  useNavigate: () => mockNavigate,
+}));
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -189,7 +196,7 @@ jest.mock('./SubagentActivity', () => ({
   SubagentActivityScrollSurface: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="shared-scroll-surface">{children}</div>
   ),
-  default: ({
+  default: function MockActivity({
     activity,
     activityId,
     state,
@@ -204,35 +211,43 @@ jest.mock('./SubagentActivity', () => ({
     activityId?: string;
     state: string;
     onCancelControl?: (controlId: string) => void;
-  }) => (
-    <div
-      data-testid="shared-activity"
-      data-activity-id={activityId}
-      data-state={state}
-      data-status={activity.status}
-      data-can-withdraw={onCancelControl != null ? 'true' : 'false'}
-    >
-      {activity.prompt}
-      {activity.items.map((item, index) => (
-        <span key={index}>{item.text ?? item.type}</span>
-      ))}
-      {activity.controls?.map((control) => (
-        <span key={control.invocationId}>{control.status}</span>
-      ))}
-      {onCancelControl != null && (
-        <button
-          type="button"
-          data-testid="withdraw-control"
-          onClick={() => onCancelControl('control-1')}
-        />
-      )}
-    </div>
-  ),
+  }) {
+    const { useContext } = jest.requireActual<typeof import('react')>('react');
+    const { TaskContentScopeContext } = jest.requireActual<
+      typeof import('~/data-provider/Subagents/content')
+    >('~/data-provider/Subagents/content');
+    const scope = useContext(TaskContentScopeContext);
+    return (
+      <div
+        data-testid="shared-activity"
+        data-receipt-scope={JSON.stringify(scope)}
+        data-activity-id={activityId}
+        data-state={state}
+        data-status={activity.status}
+        data-can-withdraw={onCancelControl != null ? 'true' : 'false'}
+      >
+        {activity.prompt}
+        {activity.items.map((item, index) => (
+          <span key={index}>{item.text ?? item.type}</span>
+        ))}
+        {activity.controls?.map((control) => (
+          <span key={control.invocationId}>{control.status}</span>
+        ))}
+        {onCancelControl != null && (
+          <button
+            type="button"
+            data-testid="withdraw-control"
+            onClick={() => onCancelControl('control-1')}
+          />
+        )}
+      </div>
+    );
+  },
 }));
 
 jest.mock('./SubagentConversation', () => ({
   __esModule: true,
-  default: ({
+  default: function MockConversation({
     turns,
     author,
     parentAuthor,
@@ -244,36 +259,45 @@ jest.mock('./SubagentConversation', () => ({
     parentAuthor: { name: string };
     turns: Array<{
       taskId: string;
+      outcome?: { text: string };
       trigger: { summary: string };
       activity: { items: Array<{ text?: string }>; activityTruncated?: boolean };
     }>;
     stateByTask?: ReadonlyMap<string, string>;
     detailStateByTask?: ReadonlyMap<string, string>;
     onLoadTurnDetails?: (taskId: string) => void;
-  }) => (
-    <div
-      data-testid="subagent-conversation"
-      data-state={turns[0] == null ? undefined : stateByTask?.get(turns[0].taskId)}
-      data-author={author.name}
-      data-parent-author={parentAuthor.name}
-    >
-      {author.icon}
-      {turns.map((turn) => (
-        <div key={turn.taskId} data-testid="conversation-turn">
-          {turn.trigger.summary}
-          {turn.activity.items.map((item, index) => (
-            <span key={index}>{item.text}</span>
-          ))}
-          {turn.activity.activityTruncated === true && onLoadTurnDetails != null && (
-            <button type="button" onClick={() => onLoadTurnDetails(turn.taskId)}>
-              {`load-${turn.taskId}`}
-            </button>
-          )}
-          {detailStateByTask?.get(turn.taskId)}
-        </div>
-      ))}
-    </div>
-  ),
+  }) {
+    const { useContext } = jest.requireActual<typeof import('react')>('react');
+    const { TaskContentScopeContext } = jest.requireActual<
+      typeof import('~/data-provider/Subagents/content')
+    >('~/data-provider/Subagents/content');
+    const scope = useContext(TaskContentScopeContext);
+    return (
+      <div
+        data-testid="subagent-conversation"
+        data-receipt-scope={JSON.stringify(scope)}
+        data-state={turns[0] == null ? undefined : stateByTask?.get(turns[0].taskId)}
+        data-author={author.name}
+        data-parent-author={parentAuthor.name}
+      >
+        {author.icon}
+        {turns.map((turn) => (
+          <div key={turn.taskId} data-testid="conversation-turn" data-outcome={turn.outcome?.text}>
+            {turn.trigger.summary}
+            {turn.activity.items.map((item, index) => (
+              <span key={index}>{item.text}</span>
+            ))}
+            {turn.activity.activityTruncated === true && onLoadTurnDetails != null && (
+              <button type="button" onClick={() => onLoadTurnDetails(turn.taskId)}>
+                {`load-${turn.taskId}`}
+              </button>
+            )}
+            {detailStateByTask?.get(turn.taskId)}
+          </div>
+        ))}
+      </div>
+    );
+  },
 }));
 
 /** The shared composer's own Enter contract, for the mock to fall back on when
@@ -444,6 +468,7 @@ jest.mock('@librechat/client', () => ({
 
 jest.mock('lucide-react', () => ({
   AlertCircle: () => null,
+  ArrowUpRight: () => null,
   CornerUpLeft: () => null,
   CheckCircle2: () => null,
   Clock: () => null,
@@ -525,6 +550,7 @@ describe('SubagentThreadPanel', () => {
     mockForkMutate.mockClear();
     mockControlMutate.mockClear();
     mockNavigateToConvo.mockClear();
+    mockNavigate.mockClear();
     mockShowToast.mockClear();
     mockGetSubagentThread.mockReset();
     mockRefreshParentChildren.mockClear();
@@ -536,6 +562,94 @@ describe('SubagentThreadPanel', () => {
     jest.restoreAllMocks();
   });
 
+  it.each([false, true])(
+    'provides the exact durable receipt scope with conversation projection=%s',
+    (projected) => {
+      mockUseSubagentThreadQuery.mockReturnValue({
+        data: {
+          ...completedView,
+          messages: projected ? completedView.messages : [],
+          turns: projected ? completedTurns : undefined,
+        },
+        isLoading: false,
+        isError: false,
+        isReadinessPending: false,
+      });
+      render(
+        <Root>
+          <SubagentThreadPanel selection={selection} />
+        </Root>,
+      );
+      const surface =
+        screen.queryByTestId('shared-activity') ?? screen.getByTestId('subagent-conversation');
+      expect(surface).toHaveAttribute(
+        'data-receipt-scope',
+        JSON.stringify({
+          parentConversationId: selection.parentConversationId,
+          threadId: 'child-thread',
+          taskId: 'task',
+        }),
+      );
+    },
+  );
+
+  it('isolates historical event receipt scopes from the selected task', () => {
+    const child: ParentSubagentSummary = {
+      threadId: 'child-thread',
+      parentMessageId: 'parent-message',
+      subagentType: 'researcher',
+      subagentKind: 'agent',
+      title: 'Worker',
+      origin: 'event',
+      actorId: 'actor',
+      status: 'completed',
+      latestTaskId: 'task',
+      tasks: [
+        { taskId: 'task', status: 'completed' },
+        { taskId: 'earlier', status: 'completed' },
+      ],
+      tasksTruncated: false,
+    };
+    mockParentChildrenByThread = new Map([[child.threadId, child]]);
+    mockParentChildrenByMessage = new Map([['parent-message', [child]]]);
+    mockUseSubagentThreadQuery.mockReturnValue({
+      data: { ...completedView, turns: undefined },
+      isLoading: false,
+      isError: false,
+      isReadinessPending: false,
+    });
+    render(
+      <Root>
+        <SubagentThreadPanel
+          selection={{
+            ...selection,
+            event: { actorId: 'actor', progressKey: 'event-task:child-thread:task' },
+          }}
+        />
+      </Root>,
+    );
+    expect(
+      screen
+        .getAllByTestId('shared-activity')
+        .map((surface) => JSON.parse(surface.getAttribute('data-receipt-scope')!)),
+    ).toEqual([
+      { parentConversationId: 'parent-conversation', threadId: 'child-thread', taskId: 'earlier' },
+      { parentConversationId: 'parent-conversation', threadId: 'child-thread', taskId: 'task' },
+    ]);
+  });
+
+  it('does not provide private receipt scope for a foreground activity without a durable task', () => {
+    mockUseSubagentThreadQuery.mockReturnValue({ isLoading: false, isError: false });
+    render(
+      <Root>
+        <SubagentThreadPanel selection={{ ...selection, durable: undefined }} />
+      </Root>,
+    );
+    expect(screen.getByTestId('subagent-conversation')).toHaveAttribute(
+      'data-receipt-scope',
+      'null',
+    );
+  });
   it.each(['agent-1', 'missing-agent', 'self'])(
     'resolves the saved foreground identity %s in the panel',
     (subagentType) => {
@@ -1205,6 +1319,254 @@ describe('SubagentThreadPanel', () => {
       /** A non-agent type is a readable name of its own, not an agent to look up. */
       expect(screen.getByRole('heading', { name: 'agent-1' })).toBeInTheDocument();
       expect(document.querySelector('img[src="/analyst.png"]')).toBeNull();
+    },
+  );
+
+  it('focuses the panel when the same task is explicitly reopened', () => {
+    mockUseSubagentThreadQuery.mockReturnValue({
+      data: completedView,
+      isLoading: false,
+      isError: false,
+      isReadinessPending: false,
+    });
+    const openTaskLabel = 'Open task';
+    const OpenPanel = () => {
+      const open = useOpenSubagentPanel();
+      return (
+        <button type="button" onClick={() => open?.(selection)}>
+          {openTaskLabel}
+        </button>
+      );
+    };
+    render(
+      <Root>
+        <input aria-label="Main chat draft" />
+        <OpenPanel />
+        <SubagentThreadPanel selection={selection} />
+      </Root>,
+    );
+    screen.getByLabelText('Main chat draft').focus();
+    fireEvent.click(screen.getByRole('button', { name: 'Open task' }));
+    expect(screen.getByRole('region', { name: 'com_ui_subagent_thread_panel' })).toHaveFocus();
+  });
+
+  it.each(['same', 'different'] as const)(
+    'returns focus to the latest opener after explicitly opening the %s task',
+    async (target) => {
+      mockUseSubagentThreadQuery.mockReturnValue({
+        data: completedView,
+        isLoading: false,
+        isError: false,
+        isReadinessPending: false,
+      });
+      const firstOpener = document.createElement('button');
+      const latestOpener = document.createElement('button');
+      firstOpener.id = 'first-opener';
+      latestOpener.id = 'latest-opener';
+      document.body.append(firstOpener, latestOpener);
+      firstOpener.focus();
+      const nextSelection: ActiveSubagentPanel =
+        target === 'same'
+          ? selection
+          : {
+              ...selection,
+              parentMessageId: 'unloaded-message',
+              toolCallId: 'other-call',
+              durable: { threadId: 'other-thread', taskId: 'other-task' },
+            };
+      const openTaskLabel = 'Open task';
+      const PanelHost = () => {
+        const selected = useAtomValue(activeSubagentPanel);
+        const open = useOpenSubagentPanel();
+        return (
+          <>
+            <button
+              type="button"
+              onClick={() => {
+                latestOpener.focus();
+                open?.(nextSelection);
+              }}
+            >
+              {openTaskLabel}
+            </button>
+            {selected != null && <SubagentThreadPanel selection={selected} />}
+          </>
+        );
+      };
+      try {
+        render(
+          <Root seed={(store) => store.set(activeSubagentPanel, selection)}>
+            <PanelHost />
+          </Root>,
+        );
+        const panel = screen.getByRole('region', { name: 'com_ui_subagent_thread_panel' });
+        expect(panel).toHaveFocus();
+        fireEvent.click(screen.getByRole('button', { name: openTaskLabel }));
+        expect(screen.getByRole('region', { name: 'com_ui_subagent_thread_panel' })).toBe(panel);
+        expect(panel).toHaveFocus();
+        fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
+        await waitFor(() => expect(latestOpener).toHaveFocus());
+        expect(firstOpener).not.toHaveFocus();
+      } finally {
+        firstOpener.remove();
+        latestOpener.remove();
+      }
+    },
+  );
+
+  describe.each([false, true])('focus return with mobile = %s', (mobile) => {
+    it.each([
+      'available',
+      'hidden',
+      'inert',
+      'aria-hidden',
+      'aria-disabled',
+      'disabled',
+      'removed',
+    ])(
+      'prefers the explicit opener when it is %s, otherwise falls back to the message card',
+      async (openerState) => {
+        mockIsMobile = mobile;
+        mockUseSubagentThreadQuery.mockReturnValue({
+          data: completedView,
+          isLoading: false,
+          isError: false,
+          isReadinessPending: false,
+        });
+        const disclosure = document.createElement('button');
+        const messageCard = document.createElement('button');
+        disclosure.id = 'popup-opener';
+        disclosure.dataset.testid = 'header-background-tasks-button';
+        messageCard.id = 'loaded-message-card';
+        messageCard.dataset.subagentToolCall = selection.toolCallId;
+        messageCard.dataset.subagentParentMessage = selection.parentMessageId;
+        messageCard.dataset.subagentPartIndex = String(selection.partIndex);
+        document.body.append(disclosure, messageCard);
+        disclosure.focus();
+        const PanelHost = () => {
+          const selected = useAtomValue(activeSubagentPanel);
+          return selected == null ? null : <SubagentThreadPanel selection={selected} />;
+        };
+        try {
+          render(
+            <Root seed={(store) => store.set(activeSubagentPanel, selection)}>
+              <PanelHost />
+            </Root>,
+          );
+          if (openerState === 'removed') disclosure.remove();
+          else if (openerState === 'disabled') disclosure.disabled = true;
+          else if (openerState !== 'available') {
+            disclosure.setAttribute(openerState, openerState.startsWith('aria-') ? 'true' : '');
+          }
+          fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
+          const destination = openerState === 'available' ? disclosure : messageCard;
+          await waitFor(() => expect(destination).toHaveFocus());
+        } finally {
+          disclosure.remove();
+          messageCard.remove();
+        }
+      },
+    );
+  });
+
+  it('does not steal main-chat focus when the selected task advances', () => {
+    mockUseSubagentThreadQuery.mockReturnValue({
+      data: completedView,
+      isLoading: false,
+      isError: false,
+      isReadinessPending: false,
+    });
+    const tree = (taskId: string) => (
+      <Root>
+        <input aria-label="Main chat draft" />
+        <SubagentThreadPanel
+          selection={{ ...selection, durable: { threadId: 'child-thread', taskId } }}
+        />
+      </Root>
+    );
+    const view = render(tree('task'));
+    const composer = screen.getByLabelText('Main chat draft');
+    composer.focus();
+    view.rerender(tree('next-task'));
+    expect(composer).toHaveFocus();
+  });
+
+  it('only navigates to the parent chat when explicitly requested', () => {
+    mockUseSubagentThreadQuery.mockReturnValue({
+      data: completedView,
+      isLoading: false,
+      isError: false,
+      isReadinessPending: false,
+    });
+    render(
+      <Root>
+        <SubagentThreadPanel selection={selection} />
+      </Root>,
+    );
+    expect(screen.getByRole('region', { name: 'com_ui_subagent_thread_panel' })).toHaveFocus();
+    expect(mockNavigate).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_go_to_parent' }));
+    expect(mockNavigate).toHaveBeenCalledWith('/c/parent-conversation');
+  });
+
+  it('returns focus to the task disclosure when its originating call is not loaded', async () => {
+    mockUseSubagentThreadQuery.mockReturnValue({
+      data: completedView,
+      isLoading: false,
+      isError: false,
+      isReadinessPending: false,
+    });
+    const disclosure = document.createElement('button');
+    disclosure.dataset.testid = 'header-background-tasks-button';
+    document.body.append(disclosure);
+    disclosure.focus();
+    try {
+      render(
+        <Root>
+          <SubagentThreadPanel selection={selection} />
+        </Root>,
+      );
+      expect(screen.getByRole('region', { name: 'com_ui_subagent_thread_panel' })).toHaveFocus();
+      fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
+      await waitFor(() => expect(disclosure).toHaveFocus());
+      expect(mockNavigateToConvo).not.toHaveBeenCalled();
+    } finally {
+      disclosure.remove();
+    }
+  });
+
+  it.each(['hidden', 'inert', 'aria-hidden', 'disabled'])(
+    'skips an originating trigger blocked by %s when returning focus',
+    async (blocked) => {
+      mockUseSubagentThreadQuery.mockReturnValue({
+        data: completedView,
+        isLoading: false,
+        isError: false,
+        isReadinessPending: false,
+      });
+      const disclosure = document.createElement('button');
+      const group = document.createElement('section');
+      const trigger = document.createElement('button');
+      trigger.dataset.subagentToolCall = 'tool-call';
+      trigger.dataset.subagentParentMessage = 'parent-message';
+      trigger.dataset.subagentPartIndex = '2';
+      if (blocked === 'disabled') trigger.disabled = true;
+      else group.setAttribute(blocked, blocked === 'aria-hidden' ? 'true' : '');
+      group.append(trigger);
+      document.body.append(disclosure, group);
+      disclosure.focus();
+      try {
+        render(
+          <Root>
+            <SubagentThreadPanel selection={selection} />
+          </Root>,
+        );
+        fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
+        await waitFor(() => expect(disclosure).toHaveFocus());
+      } finally {
+        disclosure.remove();
+        group.remove();
+      }
     },
   );
 
@@ -3208,6 +3570,69 @@ describe('SubagentThreadPanel', () => {
     },
   );
 
+  it.each(['latest window', 'empty window', 'selected trigger only'] as const)(
+    'carries the exact durable answer into a selected task outside the %s',
+    (window) => {
+      const outcome = {
+        messageId: 'task-old:assistant',
+        parentMessageId: 'task-old:user',
+        role: 'assistant' as const,
+        text: 'Durable historical answer.',
+      };
+      const turn = {
+        taskId: window === 'selected trigger only' ? 'task-old' : 'task-new',
+        trigger: { kind: 'parent_continuation' as const, summary: 'Window trigger' },
+        status: 'completed' as const,
+        activity: [],
+        activityTruncated: false,
+        messages: [],
+      };
+      mockUseSubagentThreadQuery.mockReturnValue({
+        data: {
+          ...completedView,
+          messages: [
+            outcome,
+            { ...outcome, messageId: 'another-task:assistant', text: 'Unrelated answer' },
+          ],
+          turns: window === 'empty window' ? [] : [turn],
+        },
+        isLoading: false,
+        isError: false,
+        isReadinessPending: false,
+      });
+      const selected: ActiveSubagentPanel = {
+        ...selection,
+        durable: { threadId: 'child-thread', taskId: 'task-old' },
+      };
+      render(
+        <Root>
+          <SubagentThreadPanel selection={selected} />
+        </Root>,
+      );
+      const outcomes = screen
+        .getAllByTestId('conversation-turn')
+        .map((row) => row.getAttribute('data-outcome'))
+        .filter(Boolean);
+      expect(outcomes).toEqual(['Durable historical answer.']);
+    },
+  );
+
+  it('does not attribute a retained previous-task response to the newly selected task', () => {
+    mockUseSubagentThreadQuery.mockReturnValue({
+      data: { ...completedView, turns: [] },
+      isPreviousData: true,
+      isLoading: false,
+      isError: false,
+      isReadinessPending: false,
+    });
+    render(
+      <Root>
+        <SubagentThreadPanel selection={selection} />
+      </Root>,
+    );
+    expect(screen.getByTestId('conversation-turn')).not.toHaveAttribute('data-outcome');
+  });
+
   it('loads an exact older turn projection only after the local disclosure is opened', async () => {
     const truncatedView: SubagentThreadView = {
       ...completedView,
@@ -3350,7 +3775,7 @@ describe('SubagentThreadPanel', () => {
       </Root>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_load_earlier_activity' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
     await waitFor(() => expect(screen.getAllByTestId('conversation-turn')).toHaveLength(2));
     expect(mockGetSubagentThread).toHaveBeenCalledWith(
       'parent-conversation',
@@ -3392,7 +3817,7 @@ describe('SubagentThreadPanel', () => {
         <SubagentThreadPanel selection={selection} />
       </Root>,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_load_earlier_activity' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
 
     mockUseSubagentThreadQuery.mockReturnValue({
       data: {
@@ -3448,9 +3873,7 @@ describe('SubagentThreadPanel', () => {
 
     expect(screen.queryByText('Displaced result')).not.toBeInTheDocument();
     await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: 'com_ui_subagent_load_earlier_activity' }),
-      ).toBeEnabled(),
+      expect(screen.getByRole('button', { name: 'com_ui_load_more' })).toBeEnabled(),
     );
   });
 
@@ -3482,11 +3905,9 @@ describe('SubagentThreadPanel', () => {
       </Root>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_load_earlier_activity' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
     await waitFor(() => expect(screen.getByRole('button', { name: 'com_ui_retry' })).toBeEnabled());
-    expect(
-      screen.queryByRole('button', { name: 'com_ui_subagent_load_earlier_activity' }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_load_more' })).not.toBeInTheDocument();
   });
 
   it('shows a compact inaccessible-history boundary when no recovery cursor exists', () => {
@@ -3519,9 +3940,7 @@ describe('SubagentThreadPanel', () => {
     expect(
       screen.getByRole('status', { name: 'com_ui_subagent_thread_history_truncated' }),
     ).toHaveTextContent('•••');
-    expect(
-      screen.queryByRole('button', { name: 'com_ui_subagent_load_earlier_activity' }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_load_more' })).not.toBeInTheDocument();
   });
 
   it('preserves an unrecoverable boundary while loading later cursor pages', async () => {
@@ -3559,7 +3978,7 @@ describe('SubagentThreadPanel', () => {
       </Root>,
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_load_earlier_activity' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
     await waitFor(() =>
       expect(mockGetSubagentThread).toHaveBeenLastCalledWith(
         'parent-conversation',
@@ -3568,7 +3987,7 @@ describe('SubagentThreadPanel', () => {
         'older:assistant',
       ),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_load_earlier_activity' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
     await waitFor(() =>
       expect(mockGetSubagentThread).toHaveBeenLastCalledWith(
         'parent-conversation',
@@ -3772,7 +4191,7 @@ describe('SubagentThreadPanel', () => {
         <SubagentThreadPanel selection={selectionA} />
       </Root>,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_load_earlier_activity' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
     rerender(
       <Root>
         <SubagentThreadPanel selection={selectionB} />
@@ -3784,11 +4203,9 @@ describe('SubagentThreadPanel', () => {
       </Root>,
     );
     await waitFor(() =>
-      expect(
-        screen.getByRole('button', { name: 'com_ui_subagent_load_earlier_activity' }),
-      ).toBeEnabled(),
+      expect(screen.getByRole('button', { name: 'com_ui_load_more' })).toBeEnabled(),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_load_earlier_activity' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
     await waitFor(() => expect(screen.getByText('Fresh older result')).toBeInTheDocument());
 
     await act(async () => {
@@ -3863,7 +4280,7 @@ describe('SubagentThreadPanel', () => {
         <SubagentThreadPanel selection={selection} />
       </Root>,
     );
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_load_earlier_activity' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
     await waitFor(() => expect(screen.getAllByTestId('conversation-turn')).toHaveLength(3));
 
     latestView = {
@@ -3884,7 +4301,7 @@ describe('SubagentThreadPanel', () => {
     expect(screen.getByText('New result')).toBeInTheDocument();
     expect(screen.getByText('Newest result')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_load_earlier_activity' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
     await waitFor(() =>
       expect(mockGetSubagentThread).toHaveBeenLastCalledWith(
         'parent-conversation',
@@ -3907,7 +4324,7 @@ describe('SubagentThreadPanel', () => {
     );
     await waitFor(() => expect(screen.getAllByTestId('conversation-turn')).toHaveLength(7));
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_subagent_load_earlier_activity' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_load_more' }));
     await waitFor(() =>
       expect(mockGetSubagentThread).toHaveBeenLastCalledWith(
         'parent-conversation',
@@ -3955,9 +4372,7 @@ describe('SubagentThreadPanel', () => {
       expect.stringContaining('Final live result'),
       expect.stringContaining('Ultimate live result'),
     ]);
-    expect(
-      screen.queryByRole('button', { name: 'com_ui_subagent_load_earlier_activity' }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_load_more' })).not.toBeInTheDocument();
   });
 
   it('does not accumulate displaced latest-window turns before history is requested', async () => {

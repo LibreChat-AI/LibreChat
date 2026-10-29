@@ -117,10 +117,10 @@ describe('Image', () => {
     it('aligns only explicitly marked images to the right', () => {
       const { rerender } = render(<Image {...defaultProps} />);
       const wrapper = screen.getByRole('button').parentElement;
-      expect(wrapper).not.toHaveClass('ml-auto');
+      expect(wrapper).not.toHaveClass('ms-auto');
 
       rerender(<Image {...defaultProps} alignRight />);
-      expect(wrapper).toHaveClass('ml-auto');
+      expect(wrapper).toHaveClass('ms-auto');
     });
 
     it('applies custom className to the button wrapper', () => {

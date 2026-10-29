@@ -78,13 +78,17 @@ function InputRenderer({ input }: { input: string }) {
     }
     // Valid JSON but not a plain object (array, string, number, boolean) — render formatted
     return (
-      <pre className="text-text-primary text-xs whitespace-pre-wrap">
+      <pre dir="ltr" className="text-text-primary text-xs whitespace-pre-wrap">
         {typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2)}
       </pre>
     );
   } catch {
     // Not JSON — render as plain text
-    return <pre className="text-text-primary text-xs whitespace-pre-wrap">{input}</pre>;
+    return (
+      <pre dir="ltr" className="text-text-primary text-xs whitespace-pre-wrap">
+        {input}
+      </pre>
+    );
   }
 }
 

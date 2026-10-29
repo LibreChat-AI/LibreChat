@@ -3,6 +3,7 @@ const path = require('path');
 const axios = require('axios');
 const {
   deleteRagFile,
+  createLocalFileDeleter,
   stripCacheBust,
   writeLocalFile,
   assertRemoteFileURL,
@@ -12,7 +13,6 @@ const {
   saveLocalBuffer: saveBufferToLocalPath,
 } = require('@librechat/api');
 const { logger } = require('@librechat/data-schemas');
-const { EModelEndpoint } = require('librechat-data-provider');
 const { resizeImageBuffer } = require('~/server/services/Files/images/resize');
 const { getBufferMetadata } = require('~/server/utils');
 const paths = require('~/config/paths');
@@ -114,100 +114,7 @@ async function getLocalFileURL({ fileName, basePath = 'images' }) {
   return path.posix.join('/', basePath, fileName);
 }
 
-/**
- * Validates that a filepath is strictly contained within a subdirectory under a base path,
- * using path.relative to prevent prefix-collision bypasses.
- *
- * @param {ServerRequest} req - The request object from Express. It should contain a `user` property with an `id`.
- * @param {string} base - The base directory path.
- * @param {string} subfolder - The subdirectory under the base path.
- * @param {string} filepath - The complete file path to be validated.
- *
- * @returns {boolean}
- *          Returns true if the filepath is within the specified base and subfolder, false otherwise.
- */
-const isValidPath = (req, base, subfolder, filepath) => {
-  const normalizedBase = path.resolve(base, subfolder, req.user.id);
-  const normalizedFilepath = path.resolve(filepath);
-  const rel = path.relative(normalizedBase, normalizedFilepath);
-  return !rel.startsWith('..') && !path.isAbsolute(rel) && !rel.includes(`..${path.sep}`);
-};
-
-/**
- * @param {string} filepath
- */
-/**
- * A file whose bytes are still on disk must not be reported as deleted: callers use the resolved
- * promise to decide that a record may lose its metadata and its agent references. Storage that was
- * already gone is the one benign case, and `processDeleteRequest` treats it as deleted by design.
- */
-const unlinkFile = async (filepath) => {
-  try {
-    await fs.promises.unlink(filepath);
-  } catch (error) {
-    if (error?.code === 'ENOENT') {
-      logger.warn('Local file was already missing during delete:', error);
-      return;
-    }
-    logger.error('Error deleting file:', error);
-    throw error;
-  }
-};
-
-/**
- * Deletes a file from the filesystem. This function takes a file object, constructs the full path, and
- * verifies the path's validity before deleting the file. If the path is invalid, an error is thrown.
- *
- * @param {ServerRequest} req - The request object from Express.
- * @param {MongoFile} file - The file object to be deleted. It should have a `filepath` property that is
- *                           a string representing the path of the file relative to the publicPath.
- *
- * @returns {Promise<void>}
- *          A promise that resolves when the file has been successfully deleted, or throws an error if the
- *          file path is invalid or if there is an error in deletion.
- */
-const deleteLocalFile = async (req, file) => {
-  const appConfig = req.config;
-  const { publicPath, uploads } = appConfig.paths;
-
-  /** Filepath stripped of query parameters (e.g., ?manual=true, ?v=<timestamp>) */
-  const cleanFilepath = stripCacheBust(file.filepath);
-
-  await deleteRagFile({ userId: req.user.id, file });
-
-  if (cleanFilepath.startsWith(`/uploads/${req.user.id}`)) {
-    const userUploadDir = path.join(uploads, req.user.id);
-    const basePath = cleanFilepath.split(`/uploads/${req.user.id}/`)[1];
-
-    if (!basePath) {
-      throw new Error(`Invalid file path: ${cleanFilepath}`);
-    }
-
-    const filepath = path.join(userUploadDir, basePath);
-
-    const rel = path.relative(userUploadDir, filepath);
-    if (rel.startsWith('..') || path.isAbsolute(rel) || rel.includes(`..${path.sep}`)) {
-      throw new Error(`Invalid file path: ${cleanFilepath}`);
-    }
-
-    await unlinkFile(filepath);
-    return;
-  }
-
-  const parts = cleanFilepath.split(path.sep);
-  const subfolder = parts[1];
-  if (!subfolder && parts[0] === EModelEndpoint.agents) {
-    logger.warn(`Agent File ${file.file_id} is missing filepath, may have been deleted already`);
-    return;
-  }
-  const filepath = path.join(publicPath, cleanFilepath);
-
-  if (!isValidPath(req, publicPath, subfolder, filepath)) {
-    throw new Error('Invalid file path');
-  }
-
-  await unlinkFile(filepath);
-};
+const deleteLocalFile = (req, file) => createLocalFileDeleter({ deleteRagFile, logger })(req, file);
 
 /**
  * Uploads a file to the specified upload directory.

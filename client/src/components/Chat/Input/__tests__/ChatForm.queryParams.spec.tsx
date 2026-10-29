@@ -1,21 +1,27 @@
 import React, { useMemo, useState } from 'react';
+import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
-import { RecoilRoot, useRecoilState } from 'recoil';
 import { HTML5Backend } from 'react-dnd-html5-backend';
-import { Provider as JotaiProvider, createStore } from 'jotai';
 import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import { act, render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, useNavigate, useLocation } from 'react-router-dom';
+import { filesFamily, isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
+import { Provider as JotaiProvider, createStore, getDefaultStore, useAtom } from 'jotai';
+import {
+  activeGenerationCreatedAtByConvoId,
+  activeGenerationProtocolVersionByConvoId,
+  showStopButtonByIndex,
+} from '@librechat/chat/react';
 import type { TConversation } from 'librechat-data-provider';
 import type { Transport } from '~/hooks/Chat/contract';
 import type { ChatFormValues } from '~/common';
 import { ChatTransportContext, defaultChatTransport } from '~/Providers/ChatTransportContext';
 import { getNewConversationDraftId, getDraft, setDraft } from '~/utils/drafts';
 import { ChatContext, ChatFormProvider } from '~/Providers';
-import { showStopButtonByIndex } from '~/store/generation';
 import { AuthContextProvider } from '~/hooks/AuthContext';
+import { SteerHostTestProvider } from 'test/steerHost';
 import { startupConfigKey } from '~/data-provider';
 import ChatForm from '../ChatForm';
 import store from '~/store';
@@ -52,8 +58,8 @@ function Harness({
   onAsk?: typeof ask;
   speechSettingsInitialized?: boolean;
 }) {
-  const [files, setFiles] = useRecoilState(store.filesByIndex(0));
-  const [isSubmitting] = useRecoilState(store.isSubmittingFamily(0));
+  const [files, setFiles] = useAtom(filesFamily(0));
+  const [isSubmitting] = useAtom(isSubmittingFamily(0));
   const [, setFilesLoading] = useState(false);
   const methods = useForm<ChatFormValues>({ defaultValues: { text: '' } });
   const chatHelpers = useMemo<React.ContextType<typeof ChatContext>>(
@@ -74,14 +80,15 @@ function Harness({
       messagesKey: 'new',
       latestMessageId: undefined,
       latestMessageDepth: undefined,
+      subscribeMessages: () => () => undefined,
+      getMessagesRevision: () => 0,
       useLiveAttachments: () => ({}),
+      getMappingOptions: () => ({}),
       feedbackEnabled: false,
       setMessages: () => undefined,
       ask: onAsk,
       regenerate: () => undefined,
       setSiblingIdx: () => undefined,
-      showPopover: false,
-      setShowPopover: () => undefined,
       abortScroll: false,
       setAbortScroll: () => undefined,
       preset: null,
@@ -167,6 +174,8 @@ function mountComposer(
   const jotaiStore = createStore();
   if (liveRun) {
     jotaiStore.set(showStopButtonByIndex(0), true);
+    jotaiStore.set(activeGenerationCreatedAtByConvoId(conversation.conversationId ?? ''), 1000);
+    jotaiStore.set(activeGenerationProtocolVersionByConvoId(conversation.conversationId ?? ''), 2);
   }
   const wrapper = ({ children }: { children: React.ReactNode }) => (
     <QueryClientProvider client={queryClient}>
@@ -174,15 +183,7 @@ function mountComposer(
         <RecoilRoot
           initializeState={({ set }) => {
             if (liveRun) {
-              set(store.isSubmittingFamily(0), true);
-              set(
-                store.activeGenerationCreatedAtByConvoId(conversation.conversationId ?? ''),
-                1000,
-              );
-              set(
-                store.activeGenerationProtocolVersionByConvoId(conversation.conversationId ?? ''),
-                2,
-              );
+              jotaiStore.set(isSubmittingFamily(0), true);
             }
             if (speechSettingsInitialized) {
               set(store.engineSTT, 'external');
@@ -190,14 +191,16 @@ function mountComposer(
             }
           }}
         >
-          <MemoryRouter initialEntries={[`${pathname}?${query}`]}>
-            <NavigationBridge />
-            <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
-              <ChatTransportContext.Provider value={transport}>
-                <DndProvider backend={HTML5Backend}>{children}</DndProvider>
-              </ChatTransportContext.Provider>
-            </AuthContextProvider>
-          </MemoryRouter>
+          <SteerHostTestProvider>
+            <MemoryRouter initialEntries={[`${pathname}?${query}`]}>
+              <NavigationBridge />
+              <AuthContextProvider authConfig={{ loginRedirect: '', test: true }}>
+                <ChatTransportContext.Provider value={transport}>
+                  <DndProvider backend={HTML5Backend}>{children}</DndProvider>
+                </ChatTransportContext.Provider>
+              </AuthContextProvider>
+            </MemoryRouter>
+          </SteerHostTestProvider>
         </RecoilRoot>
       </JotaiProvider>
     </QueryClientProvider>
@@ -214,6 +217,10 @@ function mountComposer(
   );
   return { ...view, navigate: (to: string) => navigate(to), getLocation: () => location };
 }
+
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+});
 
 describe('ChatForm URL submission', () => {
   beforeEach(() => {

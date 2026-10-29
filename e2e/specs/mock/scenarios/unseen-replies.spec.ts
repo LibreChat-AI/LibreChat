@@ -491,6 +491,7 @@ test.describe('unseen replies', () => {
     const id = conversationId();
     const title = `Withheld reply ${id.slice(0, 8)}`;
     const replyAt = new Date(Date.now() - 2_000);
+    let completedReplyAt: Date;
     await page.addInitScript(() => {
       const constructions: string[] = [];
       const calls: string[] = [];
@@ -506,8 +507,8 @@ test.describe('unseen replies', () => {
         }
         close() {}
         onclick: (() => void) | null = null;
-        constructor() {
-          constructions.push('notification');
+        constructor(_title: string, options?: NotificationOptions) {
+          constructions.push(options?.tag ?? '');
         }
       }
       Object.defineProperty(window, 'Notification', {
@@ -569,11 +570,19 @@ test.describe('unseen replies', () => {
         await second.bringToFront();
         await unfocus(page);
         await sendMessageAndWaitForCompletion(second, `E2E_REPLY:withheld-${id.slice(0, 8)}`);
-        await restoreUnreadBaseline(id, now(), replyAt);
+        const completed = await readConversation(id);
+        if (completed?.lastResponseAt == null) throw new Error('Reply timestamp was not saved');
+        completedReplyAt = new Date(completed.lastResponseAt);
+        await restoreUnreadBaseline(id, completedReplyAt, replyAt);
       } finally {
         await second.evaluate(() => window.dispatchEvent(new Event('blur'))).catch(() => {});
         await second.close();
       }
+      /* The reply tab may collapse the shared sidebar; observe the arrival before granting. */
+      await openSidebar(page);
+      await expect(row.locator('span[aria-hidden="true"].bg-status-info')).toBeVisible({
+        timeout: 45_000,
+      });
       await expect
         .poll(() =>
           page.evaluate(
@@ -589,23 +598,19 @@ test.describe('unseen replies', () => {
           window as Window & { __grantNotificationPermission: () => void }
         ).__grantNotificationPermission();
       });
-      await restoreUnreadBaseline(id, now(), replyAt);
-      /* `sidebarExpanded` is stored per browser, so the reply tab's own mobile shell closed this
-         list while it was open. Looking at the list again is what a reader does, and it is where
-         the dot has to show. */
-      await openSidebar(page);
-      await expect(row.locator('span[aria-hidden="true"].bg-status-info')).toBeVisible({
-        timeout: 45_000,
-      });
+      await restoreUnreadBaseline(id, completedReplyAt, replyAt);
+      /* Other scenarios leave unseen history for this user; only this reply must notify once. */
       await expect
         .poll(() =>
           page.evaluate(
-            () =>
-              (window as Window & { __notificationConstructions: string[] })
-                .__notificationConstructions,
+            (conversationId) =>
+              (
+                window as Window & { __notificationConstructions: string[] }
+              ).__notificationConstructions.filter((tag) => tag === conversationId),
+            id,
           ),
         )
-        .toEqual(['notification']);
+        .toEqual([id]);
     } finally {
       await cleanup(id);
     }

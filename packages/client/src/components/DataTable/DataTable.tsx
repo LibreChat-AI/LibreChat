@@ -599,7 +599,7 @@ function DataTable<TData extends Record<string, unknown>, TValue>({
       aria-label={localize('com_ui_data_table')}
     >
       {showToolbar && (
-        <div className="border-border-light flex w-full shrink-0 items-center gap-2 border-b pr-2 md:gap-3">
+        <div className="border-border-light flex w-full shrink-0 items-center gap-2 border-b pe-2 md:gap-3">
           {shouldShowSearch && <DataTableSearch value={searchTerm} onChange={setSearchTerm} />}
           {customActionsRenderer &&
             customActionsRenderer({

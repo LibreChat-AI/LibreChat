@@ -1,7 +1,7 @@
 import React from 'react';
 import { createHash } from 'crypto';
+import { RecoilRoot } from 'recoil';
 import { createStore, Provider } from 'jotai';
-import { RecoilRoot, useRecoilCallback } from 'recoil';
 import { renderHook, act } from '@testing-library/react';
 import {
   Constants,
@@ -25,8 +25,8 @@ import {
   takeRegisteredSubagentProgressKeys,
   subagentParentStreamOpenByToolCallId,
 } from '~/components/Chat/Subagents/state';
-import { ptcTraceByToolCallId, ptcTraceKey } from '~/store/ptc';
-import { sandboxStartingByToolCallId } from '~/store/sandbox';
+import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
+import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import useStepHandler from '~/hooks/SSE/useStepHandler';
 
 /**
@@ -478,12 +478,7 @@ function run(hook: typeof useStepHandler, row: Row) {
         onSkillAuthoringComplete: () => log.callbacks.push('skill'),
         onSubagentIndexChange: (id) => log.callbacks.push(`subagent-index:${id}`),
       }),
-      readPtc: useRecoilCallback(
-        ({ snapshot }) =>
-          (key: string) =>
-            snapshot.getLoadable(ptcTraceByToolCallId(key)).getValue(),
-        [],
-      ),
+      readPtc: (key: string) => store.get(ptcTraceByToolCallId(key)),
     }),
     { wrapper },
   );

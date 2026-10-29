@@ -2,6 +2,7 @@ import type { AxiosResponse } from 'axios';
 import type axios from 'axios';
 import type { logAxiosError } from '~/utils/axios';
 import type { isEnabled } from '~/utils/common';
+import { getOutboundTimeoutMs, outboundRequestBudget } from '~/utils/timeouts';
 
 interface ContextFile {
   embedded?: boolean;
@@ -18,7 +19,7 @@ type SearchResults = [SearchHit, number][];
 type ContextResponse = AxiosResponse<string | SearchResults>;
 
 interface RagContextOptions {
-  req: { user: { id: string } };
+  req: { user: { id: string }; config?: { timeouts?: { ragMs?: number } } };
   userMessageContent?: string;
   ragApiUrl?: string;
   fullContextSetting?: string;
@@ -64,12 +65,15 @@ export function createRagContextHandlers({
   const canSemanticSearch =
     typeof userMessageContent === 'string' && userMessageContent.trim().length > 0;
 
+  const timeout = getOutboundTimeoutMs(req.config, 'ragMs');
+
   const query = async (file: ContextFile): Promise<ContextResponse> => {
     if (useFullContext) {
       return httpClient.get<string>(`${ragApiUrl}/documents/${file.file_id}/context`, {
         headers: {
           Authorization: `Bearer ${jwtToken}`,
         },
+        ...outboundRequestBudget(timeout, 'ragMs'),
       });
     }
 
@@ -85,6 +89,7 @@ export function createRagContextHandlers({
           Authorization: `Bearer ${jwtToken}`,
           'Content-Type': 'application/json',
         },
+        ...outboundRequestBudget(timeout, 'ragMs'),
       },
     );
   };

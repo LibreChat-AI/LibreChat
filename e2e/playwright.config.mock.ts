@@ -516,8 +516,15 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,
   workers: 1,
+  /** In CI the JSON results land beside the HTML report (reporters end in order, after the HTML
+   *  reporter has replaced its folder), so the report artifact also carries the per-file
+   *  timings `.github/scripts/playwright-shards.mjs record` rebuilds the shard plan from. */
   reporter: process.env.CI
-    ? [['html', { outputFolder: reportPath, open: 'never' }], ['line']]
+    ? [
+        ['html', { outputFolder: reportPath, open: 'never' }],
+        ['line'],
+        ['json', { outputFile: path.join(reportPath, 'results.json') }],
+      ]
     : [['html', { outputFolder: reportPath }], ['list']],
   use: {
     baseURL,

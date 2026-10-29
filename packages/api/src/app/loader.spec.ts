@@ -182,3 +182,99 @@ describe('createCustomConfigLoader interface.theme', () => {
     });
   });
 });
+
+describe('createCustomConfigLoader policy links', () => {
+  const originalConfigPath = process.env.CONFIG_PATH;
+  let warn: jest.SpyInstance;
+  let exit: jest.SpyInstance;
+
+  beforeEach(() => {
+    warn = jest.spyOn(logger, 'warn');
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    jest.spyOn(logger, 'info').mockImplementation(() => logger);
+    exit = jest.spyOn(process, 'exit').mockImplementation((code) => {
+      throw new Error(`process.exit(${code})`);
+    });
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (originalConfigPath === undefined) {
+      delete process.env.CONFIG_PATH;
+    } else {
+      process.env.CONFIG_PATH = originalConfigPath;
+    }
+  });
+
+  const load = async (name: string, mode: 'startup' | 'reload' = 'startup') => {
+    process.env.CONFIG_PATH = path.join(__dirname, '__fixtures__', 'links', `${name}.yaml`);
+    return createLoader()(false, { mode });
+  };
+
+  it.each(['startup', 'reload'] as const)(
+    'drops a link that is not http(s), mailto:, tel: or relative and still loads on %s',
+    async (mode) => {
+      const config = await load('unsafe', mode);
+
+      expect(exit).not.toHaveBeenCalled();
+      expect(config?.interface).toEqual({
+        modelSelect: true,
+        privacyPolicy: { openNewTab: true },
+        termsOfService: { modalAcceptance: true },
+      });
+      expect(warnings(warn)).toContain('- interface.privacyPolicy.externalUrl');
+      expect(warnings(warn)).toContain('- interface.termsOfService.externalUrl');
+      expect(warnings(warn)).not.toContain('javascript');
+    },
+  );
+
+  it('keeps mailto: and http(s) links as written, without warnings', async () => {
+    const config = await load('contact');
+
+    expect(config?.interface).toEqual({
+      privacyPolicy: { externalUrl: 'mailto:privacy@example.com' },
+      termsOfService: { externalUrl: 'https://example.com/terms' },
+    });
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe('createCustomConfigLoader remote fetch failures', () => {
+  const originalConfigPath = process.env.CONFIG_PATH;
+
+  beforeEach(() => {
+    process.env.CONFIG_PATH = 'https://config.example/librechat.yaml';
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    if (originalConfigPath === undefined) {
+      delete process.env.CONFIG_PATH;
+    } else {
+      process.env.CONFIG_PATH = originalConfigPath;
+    }
+  });
+
+  const loaderFor = (error: unknown) =>
+    createCustomConfigLoader({
+      loadLocal: loadYaml,
+      defaultConfigPath: fixture('valid'),
+      redactConfig: (config: TCustomConfig) => config,
+      fetchRemote: async () => {
+        throw error;
+      },
+    });
+
+  it('fails startup when the remote config fetch times out', async () => {
+    const timeout = Object.assign(new Error('timeout of 10000ms exceeded'), {
+      code: 'ECONNABORTED',
+    });
+    await expect(loaderFor(timeout)()).rejects.toThrow(/Timed out fetching the remote config/);
+  });
+
+  it('keeps returning null for other remote fetch failures', async () => {
+    const refused = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
+    await expect(loaderFor(refused)()).resolves.toBeNull();
+  });
+});

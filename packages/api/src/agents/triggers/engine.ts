@@ -101,7 +101,6 @@ export interface AgentTriggerDeliveryRecord {
   coalesceKey?: string;
   coalesceFrom?: Date;
   coalesceUntil?: Date;
-  batchSize?: number;
   batchBytes?: number;
   batchMemberIds?: Array<{ toString(): string } | string>;
   batchRootId?: { toString(): string } | string;

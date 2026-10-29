@@ -979,6 +979,15 @@ describe('getEndpointFileConfig', () => {
       expect(merged.skills?.fileSizeLimit).toBe(50 * 1024 * 1024);
     });
 
+    it('defaults whole-Skill deletion concurrency and preserves configured overrides', () => {
+      expect(mergeFileConfig(undefined).skills?.deletionCleanupConcurrency).toBe(8);
+      const parsed = fileConfigSchema.parse({ skills: { deletionCleanupConcurrency: 3 } });
+      expect(mergeFileConfig(parsed).skills?.deletionCleanupConcurrency).toBe(3);
+      expect(
+        fileConfigSchema.safeParse({ skills: { deletionCleanupConcurrency: 0 } }).success,
+      ).toBe(false);
+    });
+
     it.each([0, -1, 1.5])('rejects invalid rollback concurrency %s', (concurrency) => {
       expect(
         fileConfigSchema.safeParse({ skills: { importCleanupConcurrency: concurrency } }).success,
@@ -1776,6 +1785,36 @@ describe('mergeFileConfig clientImageResize', () => {
   });
 });
 
+describe('fileConfig stt', () => {
+  it('keeps stt.supportedMimeTypes when librechat.yaml is validated', () => {
+    const result = fileConfigSchema.safeParse({
+      stt: { supportedMimeTypes: ['^audio/(ogg|webm)$'] },
+    });
+    expect(result.success).toBe(true);
+    expect(result.success && result.data.stt).toEqual({
+      supportedMimeTypes: ['^audio/(ogg|webm)$'],
+    });
+  });
+
+  it('rejects an stt MIME pattern that is not a valid regex', () => {
+    const result = fileConfigSchema.safeParse({ stt: { supportedMimeTypes: ['('] } });
+    expect(result.success).toBe(false);
+  });
+
+  it('replaces the default stt MIME types with the configured ones', () => {
+    const merged = mergeFileConfig({ stt: { supportedMimeTypes: ['^audio/ogg$'] } });
+    const types = merged.stt?.supportedMimeTypes ?? [];
+    expect(merged.checkType?.('audio/ogg', types)).toBe(true);
+    expect(merged.checkType?.('audio/mpeg', types)).toBe(false);
+  });
+
+  it('keeps the default stt MIME types when stt is not configured', () => {
+    const merged = mergeFileConfig({ serverFileSizeLimit: 100 });
+    const types = merged.stt?.supportedMimeTypes ?? [];
+    expect(merged.checkType?.('audio/mpeg', types)).toBe(true);
+  });
+});
+
 describe('fileConfigSchema clientImageResize', () => {
   it.each(['maxWidth', 'maxHeight'] as const)('rejects a non-positive %s', (dimension) => {
     const result = fileConfigSchema.safeParse({
@@ -2241,4 +2280,40 @@ describe('mergeFileConfig memoization', () => {
     expect(mergeFileConfig(dynamic)).not.toBe(before);
     expect(mergeFileConfig(undefined)).not.toBe(beforeStatic);
   });
+});
+
+describe('retained file cleanup rollout', () => {
+  it('defaults to retaining embedded files until readers are upgraded', () => {
+    expect(mergeFileConfig(undefined).retainedFileCleanup).toBe(false);
+    expect(mergeFileConfig({}).retainedFileCleanup).toBe(false);
+  });
+
+  it('accepts an explicit activation only after marker-aware reader rollout', () => {
+    expect(mergeFileConfig({ retainedFileCleanup: true }).retainedFileCleanup).toBe(true);
+    expect(mergeFileConfig({ retainedFileCleanup: false }).retainedFileCleanup).toBe(false);
+  });
+});
+
+describe('vector erasure rollout and concurrency settings', () => {
+  it('leaves ownership trust disabled until an operator sets the post-upgrade cutoff', () => {
+    expect(mergeFileConfig(undefined).vectorOwnershipTrackingStart).toBeUndefined();
+    expect(mergeFileConfig(undefined).vectorDeletionConcurrency).toBe(4);
+    const config = fileConfigSchema.parse({
+      vectorOwnershipTrackingStart: '2026-10-26T21:00:00.000Z',
+      vectorDeletionConcurrency: 2,
+    });
+    expect(mergeFileConfig(config)).toEqual(expect.objectContaining(config));
+  });
+  it.each(['not-a-date', '', '2026-10-26'])(
+    'rejects a non-UTC rollout cutoff: %j',
+    (vectorOwnershipTrackingStart) => {
+      expect(fileConfigSchema.safeParse({ vectorOwnershipTrackingStart }).success).toBe(false);
+    },
+  );
+  it.each([0, -1, 1.5, 17])(
+    'rejects unsafe namespace concurrency: %s',
+    (vectorDeletionConcurrency) => {
+      expect(fileConfigSchema.safeParse({ vectorDeletionConcurrency }).success).toBe(false);
+    },
+  );
 });

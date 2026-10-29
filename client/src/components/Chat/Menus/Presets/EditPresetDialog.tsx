@@ -191,7 +191,7 @@ const EditPresetDialog = ({
           {/* PopoverButtons section */}
           <div className="flex w-full">
             <PopoverButtons
-              buttonClass="ml-0 w-full border border-border-medium p-2 h-[2.5rem] justify-center mt-0"
+              buttonClass="ms-0 w-full border border-border-medium p-2 h-[2.5rem] justify-center mt-0"
               iconClass="hidden lg:block w-4"
               endpoint={endpoint}
               endpointType={endpointType}

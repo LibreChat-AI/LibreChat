@@ -5,9 +5,12 @@ const fetch = require('node-fetch');
 const { logger } = require('@librechat/data-schemas');
 const {
   deleteRagFile,
+  createOwnedBlobFileDeleter,
+  extractFirebaseBlobPath,
   getFirebaseStorage,
   assertRemoteFileURL,
   getSafeErrorMetadata,
+  getOutboundTimeoutMs,
   getRemoteFileFetchMaxBytes,
   getRemoteFileFetchTimeoutMs,
   assertRemoteFileContentLength,
@@ -153,26 +156,6 @@ async function saveBufferToFirebase({ userId, buffer, fileName, basePath = 'imag
  * @param {string} urlString - The Firebase Storage URL.
  * @returns {string} The decoded file path.
  */
-function extractFirebaseFilePath(urlString) {
-  try {
-    const url = new URL(urlString);
-    const pathRegex = /\/o\/(.+?)(\?|$)/;
-    const match = url.pathname.match(pathRegex);
-
-    if (match && match[1]) {
-      return decodeURIComponent(match[1]);
-    }
-
-    return '';
-  } catch {
-    logger.debug(
-      '[extractFirebaseFilePath] Failed to extract Firebase file path from URL, returning empty string',
-    );
-    // If URL parsing fails, return an empty string
-    return '';
-  }
-}
-
 /**
  * Deletes a file from Firebase storage. This function determines the filepath from the
  * Firebase storage URL via regex for deletion. Validated by the user's ID.
@@ -185,23 +168,13 @@ function extractFirebaseFilePath(urlString) {
  *          A promise that resolves when the file has been successfully deleted from Firebase storage.
  *          Throws an error if there is an issue with deletion.
  */
-const deleteFirebaseFile = async (req, file) => {
-  await deleteRagFile({ userId: req.user.id, file });
-
-  const fileName = extractFirebaseFilePath(file.filepath);
-  if (!fileName.includes(req.user.id)) {
-    throw new Error('Invalid file path');
-  }
-  try {
-    await deleteFile('', fileName);
-  } catch (error) {
-    logger.error('Error deleting file from Firebase:', error);
-    if (error.code === 'storage/object-not-found') {
-      return;
-    }
-    throw error;
-  }
-};
+const deleteFirebaseFile = (req, file) =>
+  createOwnedBlobFileDeleter({
+    extractPath: extractFirebaseBlobPath,
+    deleteBlob: (filepath) => deleteFile('', filepath),
+    isMissing: (error) => error?.code === 'storage/object-not-found',
+    deleteRagFile,
+  })(req, file);
 
 /**
  * Uploads a file to Firebase Storage.
@@ -246,11 +219,11 @@ async function uploadFileToFirebase({ req, file, file_id }) {
 /**
  * Retrieves a readable stream for a file from Firebase storage.
  *
- * @param {ServerRequest} _req
+ * @param {ServerRequest} req
  * @param {string} filepath - The filepath.
  * @returns {Promise<ReadableStream>} A readable stream of the file.
  */
-async function getFirebaseFileStream(_req, filepath, { signal } = {}) {
+async function getFirebaseFileStream(req, filepath, { signal } = {}) {
   try {
     const storage = getFirebaseStorage();
     if (!storage) {
@@ -261,6 +234,8 @@ async function getFirebaseFileStream(_req, filepath, { signal } = {}) {
       method: 'get',
       url: filepath,
       responseType: 'stream',
+      /** Idle socket time only: a long download that keeps flowing is not cut off. */
+      timeout: getOutboundTimeoutMs(req?.config, 'imageFetchMs'),
       signal,
     });
 

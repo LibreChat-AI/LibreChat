@@ -21,6 +21,7 @@ import {
 } from './types';
 import {
   hasAlwaysOnThinking,
+  hasAdaptiveHaikuThinking,
   hasBetweenToolsThinkingFloor,
   supportsPromptCache,
   supportsAdaptiveThinking,
@@ -1772,6 +1773,12 @@ function applyModelFamilyDefaults(
       .filter(
         (setting) => !['thinkingBudget', 'temperature', 'topP', 'topK'].includes(setting.key),
       );
+  }
+  /** Haiku 5.5+ keeps the toggle ("off" sends `disabled`) but rejects budgets and sampling. */
+  if (hasAdaptiveHaikuThinking(model)) {
+    return settings.filter(
+      (setting) => !['thinkingBudget', 'temperature', 'topP', 'topK'].includes(setting.key),
+    );
   }
   const modelAwareSettings =
     endpoint === EModelEndpoint.google

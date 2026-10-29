@@ -21,7 +21,7 @@ const sourceToClassname = {
 };
 
 const defaultClassName =
-  'absolute right-0 bottom-0 rounded-full p-[0.15rem] text-text-secondary transition-colors';
+  'absolute inset-e-0 bottom-0 rounded-full p-[0.15rem] text-text-secondary transition-colors';
 
 export default function SourceIcon({
   source,

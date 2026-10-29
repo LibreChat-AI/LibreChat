@@ -16,6 +16,9 @@ jest.mock('@librechat/api', () => {
   return {
     createTermsBlockCheck: actualApi.createTermsBlockCheck,
     skipUntilTermsAccepted: actualApi.skipUntilTermsAccepted,
+    createSkillDeletionService: actualApi.createSkillDeletionService,
+    createSkillBlobReserver: actualApi.createSkillBlobReserver,
+    createSkillBufferWriter: actualApi.createSkillBufferWriter,
     createSkillSyncTriggerOrchestrator: actualApi.createSkillSyncTriggerOrchestrator,
     createGitHubSkillSyncRunner: jest.fn((deps) => {
       mockRunnerDeps = deps;
@@ -60,6 +63,7 @@ jest.mock('@librechat/api', () => {
 });
 
 jest.mock('@librechat/data-schemas', () => ({
+  createSkillDeletionPersistenceAdapter: jest.fn(() => ({})),
   logger: {
     error: jest.fn(),
     warn: jest.fn(),

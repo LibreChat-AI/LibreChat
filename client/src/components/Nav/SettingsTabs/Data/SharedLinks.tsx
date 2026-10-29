@@ -333,7 +333,7 @@ export default function SharedLinks() {
                 className="flex w-full flex-col items-center gap-2"
               >
                 <div className="grid w-full items-center gap-2">
-                  <Label htmlFor="dialog-confirm-delete" className="text-left text-sm font-medium">
+                  <Label htmlFor="dialog-confirm-delete" className="text-start text-sm font-medium">
                     <Trans
                       i18nKey="com_ui_delete_confirm_strong"
                       values={{ title: deleteRow?.title }}

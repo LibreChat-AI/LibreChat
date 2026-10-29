@@ -1,14 +1,14 @@
 import fs from 'fs';
 import path from 'path';
-import type { IThemeRGB } from './types';
 import {
+  darkTheme,
+  defaultTheme,
   defaultBrands,
   defaultAppearance,
   darkAppearanceDefaults,
   themeAppearanceProperties,
-} from './registry';
-import { defaultTheme } from './themes/default';
-import { darkTheme } from './themes/dark';
+} from 'librechat-data-provider';
+import type { IThemeRGB } from 'librechat-data-provider';
 
 const stylesheet = fs.readFileSync(path.resolve(__dirname, 'defaults.css'), 'utf8');
 
@@ -95,6 +95,7 @@ const stockAliases: Partial<
   menuShadow: 'shadowLg',
   popoverRadius: 'radius2xl',
   menuPanelRadius: 'radiusXl',
+  compactPanelRadius: 'radiusLg',
   composerActionRadius: 'roundControlRadius',
   authControlRadius: 'radius2xl',
   authActionHeight: 'buttonHeight',

@@ -82,7 +82,7 @@ export default function Background({ toolIds, switchId, labelKey, infoKey }: Pro
           id={switchId}
           checked={enabled}
           onCheckedChange={handleChange}
-          className="ml-4"
+          className="ms-4"
           data-testid={switchId}
           aria-label={localize(labelKey)}
         />

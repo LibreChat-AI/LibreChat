@@ -58,6 +58,7 @@ const chatLiteralAttributes = {
 export default [
   {
     ignores: [
+      'vendor/code/**/*',
       'client/dist/**/*',
       'client/public/**/*',
       'client/coverage/**/*',
@@ -355,6 +356,10 @@ export default [
             'submitting',
             'result-streaming',
             'result-thinking',
+            'shimmer',
+            'tool-status-text',
+            'message-render',
+            'message-timestamp',
           ],
         },
       ],
@@ -471,7 +476,7 @@ export default [
     files: ['**/*.ts', '**/*.tsx'],
     // Package, E2E, and root integration tests are not part of the client
     // TypeScript project. They still get the recommended rules above.
-    ignores: ['packages/**/*', 'client/vite.config.ts', 'e2e/**/*', 'src/tests/**/*'],
+    ignores: ['packages/**/*', 'client/vite.config.ts', 'e2e/**/*'],
     plugins: {
       '@typescript-eslint': typescriptEslintEslintPlugin,
       jest: fixupPluginRules(jest),

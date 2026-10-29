@@ -1,17 +1,22 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { QueryKeys } from 'librechat-data-provider';
+import { STEER_ICON } from '@librechat/chat/components';
 import { Provider, createStore, useAtomValue } from 'jotai';
+import { liveAppliedSteerIdsAtom } from '@librechat/chat/react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TMessage } from 'librechat-data-provider';
-import { STEER_ICON } from '~/components/Chat/Steering/identity';
-import { liveAppliedSteerIdsAtom } from '~/store/steer';
 import SteerPart from '../SteerPart';
 import store from '~/store';
 
 let mockShareContext: { isSharedConvo?: boolean; shareId?: string } = {};
 let mockFileMap: Record<string, { llmDeliveryPath?: 'provider' | 'text' | 'none' }> = {};
+
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLocalize: () => (key: string) => key,
+}));
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
@@ -22,9 +27,9 @@ jest.mock('~/Providers', () => ({
   useFileMapContext: () => mockFileMap,
 }));
 
-jest.mock('~/components/Chat/Messages/ui/MessageTimestamp', () => ({
-  __esModule: true,
-  default: () => <time data-testid="steer-timestamp" />,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  MessageTimestamp: () => <time data-testid="steer-timestamp" />,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/MarkdownLite', () => ({
@@ -199,7 +204,7 @@ describe('SteerPart presentation', () => {
 
     expect(images).toHaveLength(2);
     expect(imageGroup).toContainElement(images[1]);
-    expect(imageGroup).toHaveClass('ml-auto', 'flex-wrap', 'justify-end');
+    expect(imageGroup).toHaveClass('ms-auto', 'flex-wrap', 'justify-end');
     expect(imageGroup?.parentElement).toHaveClass('w-full');
     expect(imageGroup).not.toContainElement(screen.getByTestId('steer-file'));
     expect(screen.getByTestId('steer-file')).toHaveTextContent('notes.pdf');
@@ -334,4 +339,25 @@ describe('SteerPart receipt settling', () => {
     expect(checks()).toHaveClass('text-text-secondary');
     expect(checks()).not.toHaveClass(STEER_ICON);
   });
+});
+
+it('keeps an unsuccessful guidance body and timestamp without a waiting or applied receipt', () => {
+  const queryClient = new QueryClient();
+  queryClient.setQueryData([QueryKeys.endpoints], {});
+  render(
+    <QueryClientProvider client={queryClient}>
+      <RecoilRoot>
+        <SteerPart
+          steer="unsuccessful guidance"
+          steerId="failed"
+          createdAt={1}
+          receiptState={null}
+        />
+      </RecoilRoot>
+    </QueryClientProvider>,
+  );
+  expect(screen.getByText('unsuccessful guidance')).toBeVisible();
+  expect(screen.getByTestId('steer-timestamp')).toBeInTheDocument();
+  expect(screen.queryByTestId('steer-receipt')).not.toBeInTheDocument();
+  queryClient.clear();
 });

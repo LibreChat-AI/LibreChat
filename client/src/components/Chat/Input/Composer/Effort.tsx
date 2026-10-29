@@ -1,4 +1,4 @@
-import { memo, useRef, useMemo, useState, useEffect, useCallback, useLayoutEffect } from 'react';
+import { memo, useRef, useMemo, useState, useEffect, useCallback } from 'react';
 import { CircleHelp } from 'lucide-react';
 import { Constants, reasoningOverrideSchema } from 'librechat-data-provider';
 import {
@@ -184,11 +184,10 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
       : -1;
   const restoreIndex = rememberedIndex >= 0 ? rememberedIndex : 0;
   const shownIndex = activeIndex >= 0 ? activeIndex : restoreIndex;
-  const initialShownIndex = useRef(shownIndex);
-
-  useLayoutEffect(() => {
-    stopRefs.current[initialShownIndex.current]?.focus();
-  }, []);
+  /* Where the popover's own autofocus lands on open. In the separate mode no
+     level is checked, so it starts on the pressed toggle that names that mode
+     rather than on an unchecked, unlabelled stop. */
+  const initialFocus = useRef({ index: shownIndex, ungraded: isUngraded && ungradedValue != null });
 
   const select = useCallback(
     (nextValue: string) => {
@@ -477,6 +476,11 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
                  between them. In the ungraded mode no level is checked, so the one that
                  would be restored takes the tab stop. */
               tabIndex={index === shownIndex ? 0 : -1}
+              data-autofocus={
+                !initialFocus.current.ungraded && index === initialFocus.current.index
+                  ? true
+                  : undefined
+              }
               onKeyDown={(event) => {
                 const step = ARROW_STEP[event.key];
                 if (step === undefined) {
@@ -529,6 +533,7 @@ function Effort({ setting, conversation, value, onChange }: EffortProps) {
             {ungradedValue != null && (
               <Button
                 variant="pill-toggle"
+                data-autofocus={initialFocus.current.ungraded ? true : undefined}
                 aria-pressed={isUngraded}
                 onClick={() => select(isUngraded ? levels[restoreIndex] : ungradedValue)}
               >

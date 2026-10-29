@@ -167,7 +167,7 @@ export default function BackgroundTaskCall({
                     <ul
                       tabIndex={0}
                       aria-label={localize('com_ui_background_tasks')}
-                      className="focus-visible:ring-focus-subtle flex max-h-96 flex-col gap-2 overflow-y-auto pr-1 focus-visible:ring-2 focus-visible:outline-none"
+                      className="focus-visible:ring-focus-subtle flex max-h-96 flex-col gap-2 overflow-y-auto pe-1 focus-visible:ring-2 focus-visible:outline-none"
                     >
                       {display.tasks.map((task) => (
                         <li key={task.taskId}>

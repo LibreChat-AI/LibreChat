@@ -47,7 +47,7 @@ jest.mock('~/hooks', () => ({
  * escapes the `~/hooks` mock above. Mirrors its contract closely enough that
  * the panel-switch assertions still exercise the `onNewChat` wiring.
  */
-jest.mock('~/hooks/Chat/useNewChat', () => ({
+jest.mock('~/hooks/Conversations/useNewChat', () => ({
   __esModule: true,
   default: ({ onNewChat }: { onNewChat?: () => void } = {}) => ({
     newConversation: mockNewConversation,

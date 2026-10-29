@@ -255,7 +255,7 @@ function EnvironmentWorkspaces({
                     value={value}
                     checked={currentCheckout === value}
                     hideOnClick={hideOnClick}
-                    className={cn(menuItemClasses(currentCheckout === value), 'pl-8')}
+                    className={cn(menuItemClasses(currentCheckout === value), 'ps-8')}
                     onChange={() =>
                       value === 'auto'
                         ? onSelect(
@@ -391,7 +391,7 @@ function GitContext({
                     className="text-text-secondary mt-0.5 size-4 shrink-0"
                     aria-hidden="true"
                   />
-                  <span className="min-w-0 flex-1 text-left">
+                  <span className="min-w-0 flex-1 text-start">
                     <span className="text-text-primary block text-sm font-medium">
                       {localize(label)}
                     </span>
@@ -842,7 +842,7 @@ export default function CodeWorkspaceMenu({
                 }}
               >
                 <Monitor className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
-                <span className="text-text-primary min-w-0 flex-1 truncate text-left text-sm">
+                <span className="text-text-primary min-w-0 flex-1 truncate text-start text-sm">
                   {candidate.name ?? candidate.id}
                 </span>
                 {workspace.mode === 'attached' && environmentIds.has(candidate.id) && (
@@ -953,7 +953,7 @@ export default function CodeWorkspaceMenu({
                   className={menuItemClasses()}
                 >
                   <ConfirmIcon className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
-                  <span className="text-text-primary min-w-0 flex-1 truncate text-left text-sm font-medium">
+                  <span className="text-text-primary min-w-0 flex-1 truncate text-start text-sm font-medium">
                     {transitionText.label}
                   </span>
                 </Ariakit.MenuItem>
@@ -970,7 +970,7 @@ export default function CodeWorkspaceMenu({
                     className="text-text-secondary mt-0.5 size-4 shrink-0"
                     aria-hidden="true"
                   />
-                  <div className="min-w-0 flex-1 text-left">
+                  <div className="min-w-0 flex-1 text-start">
                     <div className="text-text-primary truncate text-sm font-medium">
                       {localize('com_ui_code_workspace_detach')}
                     </div>
