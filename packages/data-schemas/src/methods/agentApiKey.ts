@@ -4,6 +4,7 @@ import type {
   AgentApiKeyCreateData,
   AgentApiKeyListItem,
   IAgentApiKey,
+  AgentApiKeyBinding,
 } from '~/types';
 import { hashToken, getRandomValues } from '~/crypto';
 import logger from '~/config/winston';
@@ -13,9 +14,11 @@ const API_KEY_LENGTH = 32;
 
 export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
   createAgentApiKey: (data: AgentApiKeyCreateData) => Promise<AgentApiKeyCreateResult>;
-  validateAgentApiKey: (
-    apiKey: string,
-  ) => Promise<{ userId: Types.ObjectId; keyId: Types.ObjectId } | null>;
+  validateAgentApiKey: (apiKey: string) => Promise<{
+    userId: Types.ObjectId;
+    keyId: Types.ObjectId;
+    binding?: AgentApiKeyBinding;
+  } | null>;
   listAgentApiKeys: (userId: string | Types.ObjectId) => Promise<AgentApiKeyListItem[]>;
   deleteAgentApiKey: (
     keyId: string | Types.ObjectId,
@@ -27,18 +30,21 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
     userId: string | Types.ObjectId,
   ) => Promise<AgentApiKeyListItem | null>;
 } {
-  async function generateApiKey(): Promise<{ key: string; keyHash: string; keyPrefix: string }> {
+  async function generateApiKey(
+    bound: boolean,
+  ): Promise<{ key: string; keyHash: string; keyPrefix: string }> {
     const randomPart = await getRandomValues(API_KEY_LENGTH);
-    const key = `${API_KEY_PREFIX}${randomPart}`;
-    const keyHash = await hashToken(key);
-    const keyPrefix = key.slice(0, 8);
+    const key = `${bound ? 'sk-bound-' : API_KEY_PREFIX}${randomPart}`;
+    // Old replicas hash the raw token and therefore cannot authenticate a grant they cannot enforce.
+    const keyHash = await hashToken(bound ? `bound:${key}` : key);
+    const keyPrefix = key.slice(0, bound ? 16 : 8);
     return { key, keyHash, keyPrefix };
   }
 
   async function createAgentApiKey(data: AgentApiKeyCreateData): Promise<AgentApiKeyCreateResult> {
     try {
       const AgentApiKey = mongoose.models.AgentApiKey;
-      const { key, keyHash, keyPrefix } = await generateApiKey();
+      const { key, keyHash, keyPrefix } = await generateApiKey(data.binding != null);
 
       const apiKeyDoc = await AgentApiKey.create({
         userId: data.userId,
@@ -46,6 +52,7 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
         keyHash,
         keyPrefix,
         expiresAt: data.expiresAt || undefined,
+        ...(data.binding ? { binding: data.binding } : {}),
       });
 
       return {
@@ -62,17 +69,20 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
     }
   }
 
-  async function validateAgentApiKey(
-    apiKey: string,
-  ): Promise<{ userId: Types.ObjectId; keyId: Types.ObjectId } | null> {
+  async function validateAgentApiKey(apiKey: string): Promise<{
+    userId: Types.ObjectId;
+    keyId: Types.ObjectId;
+    binding?: AgentApiKeyBinding;
+  } | null> {
     const AgentApiKey = mongoose.models.AgentApiKey;
-    const keyHash = await hashToken(apiKey);
+    const keyHash = await hashToken(apiKey.startsWith('sk-bound-') ? `bound:${apiKey}` : apiKey);
 
     const keyDoc = (await AgentApiKey.findOne({ keyHash }).lean()) as IAgentApiKey | null;
 
     if (!keyDoc) {
       return null;
     }
+    if (apiKey.startsWith('sk-bound-') !== (keyDoc.binding != null)) return null;
 
     if (keyDoc.expiresAt && new Date(keyDoc.expiresAt) < new Date()) {
       return null;
@@ -87,6 +97,7 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
     return {
       userId: keyDoc.userId,
       keyId: keyDoc._id as Types.ObjectId,
+      ...(keyDoc.binding ? { binding: keyDoc.binding } : {}),
     };
   }
 
@@ -158,6 +169,7 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
         lastUsedAt: keyDoc.lastUsedAt,
         expiresAt: keyDoc.expiresAt,
         createdAt: keyDoc.createdAt,
+        ...(keyDoc.binding ? { binding: keyDoc.binding } : {}),
       };
     } catch (error) {
       logger.error('[getAgentApiKeyById] Error getting API key:', error);
