@@ -26,9 +26,9 @@ export function buildGenerationStartedResponse(input: {
 export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): JobMetadataPatch {
   const patch: JobMetadataPatch = {};
   if (metadata.terminalPersistenceOwner !== undefined)
-    patch.terminalPersistenceOwner = parseTerminalPersistenceOwner(
-      metadata.terminalPersistenceOwner,
-    );
+    patch.terminalPersistenceOwner = parseTerminalPersistenceOwner(metadata.terminalPersistenceOwner);
+  if (metadata.responseCheckpointConfigJSON !== undefined)
+    patch.responseCheckpointConfigJSON = metadata.responseCheckpointConfigJSON;
   if (metadata.responseMessageId) {
     patch.responseMessageId = metadata.responseMessageId;
   }
