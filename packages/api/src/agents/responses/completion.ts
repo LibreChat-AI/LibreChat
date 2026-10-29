@@ -1,198 +1,262 @@
-import { EModelEndpoint } from 'librechat-data-provider';
-import type { AppConfig } from '@librechat/data-schemas';
-import type { Response as HttpResponse } from 'express';
-import type { TurnConversationRequest, ConversationWriteContext } from '~/conversations/save';
-import type { PersistedReply, ReplyAnnouncement } from '~/conversations/announce';
-import type { getLangfuseTraceMessageFields } from '~/langfuse/destinations';
-import type { ConversationCodeEnvironmentDecision } from '~/code/decision';
-import type { Response, Usage, ResponseAccounting } from './types';
-import type { ForegroundResponseTerminal } from './foreground';
-import type { InternalMessage } from './service';
-import {
-  saveForegroundResponseInputs,
-  projectStoredResponseMessage,
-  requireResponseStorageWrite,
-} from './foreground';
-import { resolvePersistableCodeEnvironmentDecision } from '~/code/decision';
-import { getConversationWriteContext } from '~/conversations/save';
-import { isTemporaryTurn } from '~/conversations/retention';
-import { sendResponsesErrorResponse } from './service';
+import { isDeepStrictEqual } from 'node:util';
+import type {
+  ResponseStorage,
+  StoredResponseRecord,
+  ResponseTerminalReceipt,
+  ResponseMutationResult,
+} from '@librechat/data-schemas';
+import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 
-interface CompletionRequest
-  extends Omit<TurnConversationRequest, 'config' | 'resolvedConversation'> {
-  config?: AppConfig;
-  resolvedConversation?:
-    | (ReturnType<typeof resolvePersistableCodeEnvironmentDecision> & {
-        conversationId?: string;
-        isTemporary?: boolean;
-        expiredAt?: Date;
-      })
-    | null;
+export interface ResponseCompletionDependencies {
+  storage: ResponseStorage;
+  cleanupCheckpoint: (record: StoredResponseRecord, namespace: string) => Promise<void>;
+  releaseExecution?: (
+    record: StoredResponseRecord,
+    receipt?: ResponseTerminalReceipt,
+  ) => Promise<void>;
 }
-type InputMessage = Parameters<
-  Parameters<typeof saveForegroundResponseInputs<ConversationWriteContext>>[1]['saveMessage']
->[1];
-type OutputMessage = ReturnType<typeof projectStoredResponseMessage> & {
-  messageId: string;
-  conversationId: string;
-  isCreatedByUser: false;
-  sender: string;
-  endpoint: string;
-  model: string;
-  finish_reason: string;
-  tokenCount?: number;
+
+function terminal(record: StoredResponseRecord): boolean {
+  return ['completed', 'failed', 'incomplete', 'cancelled'].includes(record.status);
+}
+
+type ExecutionReleaseIdentity = Pick<
+  StoredResponseRecord,
+  | 'userId'
+  | 'tenantId'
+  | 'responseId'
+  | 'agentId'
+  | 'conversationId'
+  | 'generationCreatedAt'
+  | 'expiredAt'
+  | 'status'
+> & {
+  resume?: Pick<NonNullable<StoredResponseRecord['resume']>, 'state' | 'providerExecutionId'>;
+  review?: Pick<NonNullable<StoredResponseRecord['review']>, 'providerExecutionId'>;
 };
-interface StoredReply extends PersistedReply {
-  conversationId: string;
-  messageId: string;
-}
-interface CompletionDependencies {
-  saveMessage: (
-    context: ConversationWriteContext,
-    message: InputMessage | OutputMessage,
-    options: { context: string },
-  ) => Promise<StoredReply | null>;
-  saveConvo: (
-    context: ConversationWriteContext,
-    fields: ReturnType<typeof resolvePersistableCodeEnvironmentDecision> & {
-      conversationId: string;
-      endpoint: string;
-      agent_id: string;
-      title?: string;
-      model?: string;
-    },
-    options: { context: string; initialAgentId: string | null },
-  ) => Promise<unknown>;
-  announceReply: (announcement: ReplyAnnouncement) => Promise<unknown>;
-  resolveTitle: (request: CompletionRequest, candidate: string) => string | null;
-  traceFields: typeof getLangfuseTraceMessageFields;
+
+/** Release transient provider proof only after its canonical terminal result is durable. */
+export function createResponseExecutionRelease(
+  jobs: Pick<GenerationJobManagerClass, 'getJob' | 'finishProviderTerminalPersistence'>,
+): (
+  record: ExecutionReleaseIdentity,
+  receipt?: Pick<ResponseTerminalReceipt, 'providerExecutionId' | 'ownerId'>,
+) => Promise<void> {
+  return async (record, receipt) => {
+    if (
+      !['completed', 'failed', 'incomplete', 'cancelled'].includes(record.status) &&
+      !(record.expiredAt && record.expiredAt.getTime() <= Date.now())
+    )
+      throw new Error('Response terminal publication is unavailable');
+    if (record.generationCreatedAt == null) return;
+    const job = await jobs.getJob(record.responseId);
+    if (!job) return;
+    const expectedProvider =
+      receipt?.providerExecutionId ??
+      (record.resume?.state === 'admitted'
+        ? record.resume.providerExecutionId
+        : record.review?.providerExecutionId);
+    if (
+      job.createdAt !== record.generationCreatedAt ||
+      job.metadata.userId !== record.userId ||
+      job.metadata.tenantId !== record.tenantId ||
+      job.metadata.agent_id !== record.agentId ||
+      job.metadata.endpoint !== 'responses' ||
+      job.metadata.responseMessageId !== record.responseId ||
+      job.metadata.conversationId !== record.conversationId ||
+      !['complete', 'error', 'aborted'].includes(job.status) ||
+      job.metadata.providerDrained !== true ||
+      !job.metadata.providerExecutionId ||
+      (expectedProvider != null && job.metadata.providerExecutionId !== expectedProvider) ||
+      (receipt != null && job.metadata.providerExecutionOwnerId !== receipt.ownerId)
+    )
+      throw new Error('Response terminal execution identity changed');
+    const released = await jobs.finishProviderTerminalPersistence(
+      record.responseId,
+      record.generationCreatedAt,
+      job.metadata.providerExecutionId,
+      receipt?.ownerId ?? job.metadata.providerExecutionOwnerId,
+    );
+    if (!released) throw new Error('Response terminal execution release is unavailable');
+  };
 }
 
-/** Own storage ordering and transport selection in the same typed completion boundary. */
-export function stageForegroundResponse(
-  {
-    terminal,
-    request,
-    response,
-    conversationId,
-    agentId,
-    agent,
-    codeEnvironmentDecision,
-    messages,
-    parentMessageId,
-    visibleOutputTokens,
-    transport,
-  }: {
-    terminal: ForegroundResponseTerminal<StoredReply>;
-    request: CompletionRequest;
-    response: Response;
-    conversationId: string;
-    agentId: string;
-    agent: { id?: string; name?: string; model?: string };
-    codeEnvironmentDecision?: ConversationCodeEnvironmentDecision;
-    messages: (InternalMessage & { messageId: string; parentMessageId: string })[];
-    parentMessageId: string;
-    visibleOutputTokens?: number;
-    transport:
-      | { type: 'json'; response: HttpResponse }
-      | {
-          type: 'stream';
-          response: HttpResponse;
-          finalize: (usage?: Usage, accounting?: ResponseAccounting, response?: Response) => void;
-          fail: Parameters<ForegroundResponseTerminal<StoredReply>['stage']>[0]['fail'];
-        };
-  },
-  deps: CompletionDependencies,
-): void {
-  terminal.stage({
-    response,
-    save: async (result) => {
-      const context = getConversationWriteContext(request);
-      const title = deps.resolveTitle(request, agent.name || 'Open Responses Conversation');
-      await requireResponseStorageWrite(
-        deps.saveConvo(
-          context,
-          {
-            conversationId,
-            endpoint: EModelEndpoint.agents,
-            agent_id: agentId,
-            ...resolvePersistableCodeEnvironmentDecision({
-              conversationId,
-              decision: codeEnvironmentDecision,
-              conversation:
-                request.resolvedConversation?.conversationId != null
-                  ? {
-                      conversationId: request.resolvedConversation.conversationId,
-                      codeEnvironmentMode: request.resolvedConversation.codeEnvironmentMode,
-                      codeWorkspaces: request.resolvedConversation.codeWorkspaces,
-                    }
-                  : undefined,
-            }),
-            ...(title != null && { title }),
-            model: agent.model,
-          },
-          {
-            context: 'Responses API - save conversation',
-            initialAgentId: agent.id === agentId ? agentId : null,
-          },
-        ),
-        { conversationId },
+function assertReceipt(record: StoredResponseRecord, receipt: ResponseTerminalReceipt): void {
+  let response: unknown;
+  try {
+    response = JSON.parse(receipt.responseJSON);
+  } catch {
+    throw new Error('Response terminal receipt is invalid');
+  }
+  if (
+    receipt.generationCreatedAt !== record.generationCreatedAt ||
+    !response ||
+    typeof response !== 'object' ||
+    !('id' in response) ||
+    response.id !== record.responseId ||
+    !('model' in response) ||
+    response.model !== record.agentId ||
+    !('status' in response) ||
+    response.status !== receipt.status ||
+    !('object' in response) ||
+    response.object !== 'response' ||
+    !('output' in response) ||
+    !Array.isArray(response.output) ||
+    (receipt.checkpointConfigJSON != null && !receipt.checkpointNamespace) ||
+    !('background' in response) ||
+    response.background !== true ||
+    !('store' in response) ||
+    response.store !== true
+  )
+    throw new Error('Response terminal receipt identity changed');
+}
+
+function sameExecution(
+  previous: StoredResponseRecord,
+  current: StoredResponseRecord,
+  receipt: ResponseTerminalReceipt,
+): boolean {
+  const provider =
+    current.resume?.state === 'admitted'
+      ? current.resume.providerExecutionId
+      : current.review?.providerExecutionId;
+  return (
+    current.userId === previous.userId &&
+    current.tenantId === previous.tenantId &&
+    current.responseId === previous.responseId &&
+    current.agentId === previous.agentId &&
+    current.sourceKeyId === previous.sourceKeyId &&
+    current.conversationId === previous.conversationId &&
+    current.generationCreatedAt === receipt.generationCreatedAt &&
+    (provider == null || provider === receipt.providerExecutionId) &&
+    isDeepStrictEqual(current.review, previous.review) &&
+    isDeepStrictEqual(current.resume, previous.resume)
+  );
+}
+
+/** Persist a post-drain result before cleanup, then retry only cleanup/publication, never execution. */
+export function createResponseCompletion(deps: ResponseCompletionDependencies) {
+  async function discardExpired(record: StoredResponseRecord, receipt: ResponseTerminalReceipt) {
+    const identity =
+      record.expiredAt && record.expiredAt.getTime() <= Date.now()
+        ? record
+        : await deps.storage.readCleanupIdentity(record, record.responseId, record);
+    if (!identity?.expiredAt || identity.expiredAt.getTime() > Date.now()) return null;
+    const expired = { ...record, ...identity };
+    if (receipt.checkpointNamespace)
+      await deps.cleanupCheckpoint(
+        { ...expired, pendingTerminal: receipt },
+        receipt.checkpointNamespace,
       );
-      await saveForegroundResponseInputs(
-        { context, conversationId, messages, agentId },
-        { saveMessage: deps.saveMessage },
+    await deps.releaseExecution?.(expired, receipt);
+    return {
+      ...expired,
+      requestJSON: '',
+      responseJSON: undefined,
+      review: undefined,
+      resume: undefined,
+      pendingTerminal: undefined,
+      status: receipt.status,
+    };
+  }
+  async function finish(record: StoredResponseRecord): Promise<StoredResponseRecord> {
+    const receipt = record.pendingTerminal;
+    if (!receipt) {
+      if (terminal(record)) await deps.releaseExecution?.(record);
+      return record;
+    }
+    assertReceipt(record, receipt);
+    if (receipt.checkpointNamespace)
+      await deps.cleanupCheckpoint(record, receipt.checkpointNamespace);
+    let current: StoredResponseRecord | null;
+    try {
+      const result = await deps.storage.finishTerminal(
+        record,
+        record.responseId,
+        record.revision,
+        receipt,
       );
-      const traceFields = await deps.traceFields(request.config, result.id, {
-        isTemporary: isTemporaryTurn(request),
-      });
-      return requireResponseStorageWrite(
-        deps.saveMessage(
-          context,
-          {
-            messageId: result.id,
-            conversationId,
-            ...projectStoredResponseMessage(result, parentMessageId),
-            isCreatedByUser: false,
-            ...traceFields,
-            sender: 'Agent',
-            endpoint: EModelEndpoint.agents,
-            model: agentId,
-            finish_reason: result.status === 'completed' ? 'stop' : result.status,
-            tokenCount: visibleOutputTokens ?? result.usage?.output_tokens,
-          },
-          { context: 'Responses API - save assistant response' },
-        ),
-        { conversationId, messageId: result.id },
-      ).then((saved) => {
-        if (!saved) throw new Error('Response write returned no reply');
-        return saved;
-      });
-    },
-    afterStore: async (reply) => {
-      await deps.announceReply({
-        userId: request.user?.id,
-        conversationId,
-        reply,
-        context: 'Responses API - announce stored reply',
-      });
-    },
-    fail: (failure) => {
-      if (transport.type === 'stream') return transport.fail(failure);
-      sendResponsesErrorResponse(
-        transport.response,
-        failure.status,
-        failure.message,
-        'server_error',
-        failure.code,
-      );
-    },
-    publish: (result) => {
-      if (transport.type === 'json') {
-        transport.response.json(result);
-        return;
+      current = result.ok ? result.record : await deps.storage.read(record, record.responseId);
+    } catch (error) {
+      current = await deps.storage.read(record, record.responseId);
+      if (!current) {
+        const expired = await discardExpired(record, receipt);
+        if (expired) return expired;
       }
-      transport.finalize(result.usage ?? undefined, result.accounting, result);
-      transport.response.end();
+      if (
+        !current ||
+        current.status !== receipt.status ||
+        current.generationCreatedAt !== receipt.generationCreatedAt ||
+        current.responseJSON !== receipt.responseJSON ||
+        current.pendingTerminal
+      )
+        throw error;
+    }
+    if (!current) {
+      const expired = await discardExpired(record, receipt);
+      if (expired) return expired;
+      throw new Error('Response terminal journal is unavailable');
+    }
+    if (terminal(current)) await deps.releaseExecution?.(current, receipt);
+    return current;
+  }
+  return {
+    finish,
+    async stageAndFinish(
+      record: StoredResponseRecord,
+      receipt: ResponseTerminalReceipt,
+    ): Promise<StoredResponseRecord> {
+      assertReceipt(record, receipt);
+      if (record.expiredAt && record.expiredAt.getTime() <= Date.now()) {
+        return (await discardExpired(record, receipt))!;
+      }
+      let retried = false;
+      while (true) {
+        let staged: ResponseMutationResult;
+        try {
+          staged = await deps.storage.stageTerminal(
+            record,
+            record.responseId,
+            record.revision,
+            receipt,
+          );
+        } catch (error) {
+          const current = await deps.storage.read(record, record.responseId);
+          if (!current) {
+            const expired = await discardExpired(record, receipt);
+            if (expired) return expired;
+          }
+          const saved = current?.pendingTerminal;
+          if (
+            !current ||
+            !saved ||
+            saved.generationCreatedAt !== receipt.generationCreatedAt ||
+            saved.providerExecutionId !== receipt.providerExecutionId ||
+            saved.ownerId !== receipt.ownerId ||
+            saved.responseJSON !== receipt.responseJSON ||
+            saved.status !== receipt.status ||
+            saved.checkpointNamespace !== receipt.checkpointNamespace ||
+            saved.checkpointConfigJSON !== receipt.checkpointConfigJSON
+          )
+            throw error;
+          return finish(current);
+        }
+        if (staged.ok) return finish(staged.record);
+        const current = await deps.storage.read(record, record.responseId);
+        if (!current) {
+          const expired = await discardExpired(record, receipt);
+          if (expired) return expired;
+        }
+        if (!current || !sameExecution(record, current, receipt))
+          throw new Error('Response terminal receipt publication conflicted');
+        if (terminal(current)) return finish(current);
+        if (retried || current.pendingTerminal)
+          throw new Error('Response terminal receipt publication conflicted');
+        // Polling may update only the displayed review projection after provider drain.
+        // Keep the storage CAS and retry its new revision without changing execution authority.
+        retried = true;
+        record = current;
+      }
     },
-  });
+  };
 }
