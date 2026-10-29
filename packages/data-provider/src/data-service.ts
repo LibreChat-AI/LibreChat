@@ -1,5 +1,11 @@
 import type { AxiosResponse } from 'axios';
 import type {
+  ResponseReviewView,
+  ResponseCancelReceipt,
+  ResponseReviewDecision,
+  ResponseReviewDecisionReceipt,
+} from './types/responseReview';
+import type {
   TTracePage,
   TTracePageParams,
   TTraceAvailability,
@@ -12,6 +18,10 @@ import type { CodeSetupAttempt, CodeSetupApprovalRequest } from './codeSetup';
 import type { TFileConfig } from './file-config';
 import type * as tl from './types/tools';
 import type * as t from './types';
+import {
+  responseReviewDecisionReceiptSchema,
+  responseCancelReceiptSchema,
+} from './types/responseReview';
 import { codeSetupAttemptSchema, codeSetupApprovalRequestSchema } from './codeSetup';
 import { TOOL_CALL_PREVIEWS_PARAM, TOOL_CALL_PREVIEWS_VERSION } from './previews';
 import * as permissions from './accessPermissions';
@@ -31,6 +41,33 @@ import * as config from './config';
 import request from './request';
 import * as s from './schemas';
 import * as r from './roles';
+
+export function getResponseReview(responseId: string): Promise<ResponseReviewView> {
+  return request.get(endpoints.responseReview(responseId));
+}
+
+export async function cancelOwnerResponse(responseId: string): Promise<ResponseCancelReceipt> {
+  const body: unknown = await request.post(endpoints.responseCancel(responseId), {});
+  const receipt = responseCancelReceiptSchema.safeParse(body);
+  if (!receipt.success || receipt.data.id !== responseId)
+    throw new Error('Response cancellation acknowledgement is unavailable');
+  return receipt.data;
+}
+
+export async function submitResponseReviewDecision(
+  responseId: string,
+  decision: ResponseReviewDecision,
+): Promise<ResponseReviewDecisionReceipt> {
+  const body: unknown = await request.post(endpoints.responseReview(responseId), decision);
+  const receipt = responseReviewDecisionReceiptSchema.safeParse(body);
+  if (
+    !receipt.success ||
+    receipt.data.responseId !== responseId ||
+    receipt.data.actionId !== decision.actionId
+  )
+    throw new Error('Response decision acknowledgement is unavailable');
+  return receipt.data;
+}
 
 export function getInsights(params: TInsightsParams = {}): Promise<TInsightsResponse> {
   const query = new URLSearchParams();
