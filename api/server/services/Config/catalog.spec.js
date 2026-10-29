@@ -3,7 +3,11 @@ jest.mock('@librechat/api', () => ({
   fetchModels: jest.fn(),
 }));
 jest.mock('./app');
-jest.mock('~/models', () => ({ getUserKeyValues: jest.fn(), initializeMessageBudget: jest.fn() }));
+jest.mock('~/models', () => ({
+  getUserKeyValues: jest.fn(),
+  initializeMessageBudget: jest.fn(),
+  initializeChannelStorageConfig: jest.fn(),
+}));
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
   logger: { debug: jest.fn(), error: jest.fn(), warn: jest.fn(), info: jest.fn() },
