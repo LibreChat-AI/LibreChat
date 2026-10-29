@@ -38,6 +38,7 @@ export interface ChannelRunRecord extends Omit<ChannelRunView, 'revision'> {
 
 export interface ChannelLaneRecord {
   tenantId: string;
+  userId: string;
   channelId: string;
   laneId: string;
   nextSequence: number;
@@ -120,6 +121,7 @@ export function createChannelRunModel(
     { timestamps: true, minimize: false },
   );
   schema.index({ tenantId: 1, runId: 1 }, { unique: true });
+  schema.index({ tenantId: 1, 'principal.userId': 1 });
   schema.index(
     { tenantId: 1, channelId: 1, 'admission.actor.teamId': 1, 'admission.eventId': 1 },
     { unique: true },
@@ -154,6 +156,7 @@ export function createChannelLaneModel(
   const schema = new Schema<ChannelLaneRecord>(
     {
       tenantId: { type: String, required: true },
+      userId: { type: String, required: true },
       channelId: { type: String, required: true },
       laneId: { type: String, required: true },
       nextSequence: { type: Number, required: true, default: 0 },
@@ -164,6 +167,7 @@ export function createChannelLaneModel(
     { timestamps: true },
   );
   schema.index({ tenantId: 1, laneId: 1 }, { unique: true });
+  schema.index({ tenantId: 1, userId: 1 });
   applyTenantIsolation(schema);
   return mongoose.models.ChannelLane ?? mongoose.model<ChannelLaneRecord>('ChannelLane', schema);
 }
