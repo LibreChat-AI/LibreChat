@@ -156,8 +156,8 @@ test.describe('activity fold', () => {
       .filter({ has: page.getByTestId('tool-call').filter({ hasText: /^Failed:/ }) });
     const groupRail = groupPanel.locator('> div > [data-testid="fold-rail"]');
     const groupHeader = groupPanel.locator('xpath=preceding-sibling::div[1]').getByRole('button');
-    await expect(groupRail.locator('svg')).toBeHidden();
-    await expect(phaseRail.locator('svg')).toBeHidden();
+    await expect(groupRail.locator('svg')).toBeVisible();
+    await expect(phaseRail.locator('svg')).toBeVisible();
     await expect(knobs).toHaveCount(0);
     await groupRail.hover();
     await expect(knobs).toHaveCount(1);
