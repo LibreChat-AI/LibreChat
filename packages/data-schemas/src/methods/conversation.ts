@@ -45,6 +45,7 @@ import {
   eraseResponseRecords,
   createResponseRetention,
   discoverResponseOwners,
+  createResponseConversationReplacement,
 } from './responseScope';
 import {
   activeExpirationFilter,
@@ -677,6 +678,7 @@ export function createConversationMethods(
   deps?: ConversationMethodDeps,
 ): ConversationMethods {
   const retainResponses = createResponseRetention(mongoose);
+  const prepareResponseReplacement = createResponseConversationReplacement(mongoose);
   let legacyReceiptExpiryCursor: Types.ObjectId | undefined;
 
   /**
@@ -2593,24 +2595,33 @@ export function createConversationMethods(
 
       const responseDeadline =
         update.expiredAt instanceof Date ? update.expiredAt : retentionOnInsert?.expiredAt;
-      if (responseDeadline) {
+      const replacingConversationId = newConversationId && newConversationId !== conversationId;
+      if (responseDeadline || replacingConversationId) {
         const stored = await Conversation.findOne({ user: userId, conversationId })
           .select('tenantId expiredAt')
           .lean<Pick<IConversation, 'tenantId' | 'expiredAt'>>();
-        const deadline =
-          stored?.expiredAt && stored.expiredAt < responseDeadline
-            ? stored.expiredAt
-            : responseDeadline;
         const contextTenant = getTenantId();
-        await retainResponses(
-          {
-            userId,
-            tenantId:
-              stored?.tenantId ?? (contextTenant === SYSTEM_TENANT_ID ? undefined : contextTenant),
-          },
-          conversationId,
-          deadline,
-        );
+        const responseOwner = {
+          userId,
+          tenantId:
+            stored?.tenantId ?? (contextTenant === SYSTEM_TENANT_ID ? undefined : contextTenant),
+        };
+        // Conversation IDs are shared foreign keys for messages, approvals, jobs
+        // and checkpoints. newConversationId assigns an initial ID, never renames
+        // a persisted conversation independently of those resources.
+        if (
+          replacingConversationId &&
+          (stored || !(await prepareResponseReplacement(responseOwner, conversationId)))
+        ) {
+          return { message: 'Conversation ID cannot be replaced after persistence.' };
+        }
+        const deadline = responseDeadline ?? stored?.expiredAt;
+        if (deadline)
+          await retainResponses(
+            responseOwner,
+            newConversationId || conversationId,
+            stored?.expiredAt && stored.expiredAt < deadline ? stored.expiredAt : deadline,
+          );
       }
 
       const createdAtOnInsert =
@@ -2685,6 +2696,9 @@ export function createConversationMethods(
       const baseFilter = {
         conversationId,
         user: userId,
+        // Initial ID assignment must never match a source inserted after the
+        // absence check. Upsert may create the new ID, but cannot rename that row.
+        ...(replacingConversationId ? { _id: { $exists: false } } : {}),
         ...(metadata?.titleSource === 'generated' && {
           titleSetByUser: { $ne: true },
           title: { $in: [null, '', 'New Chat'] },
