@@ -1,5 +1,6 @@
 import { useRef, useMemo, useState, useEffect, useCallback } from 'react';
 import { useToastContext } from '@librechat/client';
+import type { SpeechConnection } from './useSpeechToTextRealtime';
 import type { TAskFunction } from '~/common';
 import useGetAudioSettings from './useGetAudioSettings';
 import { useChatFormContext } from '~/Providers';
@@ -8,7 +9,9 @@ import useSpeechToText from './useSpeechToText';
 import { globalAudioId } from '~/common';
 import useLocalize from '../useLocalize';
 
-const isExternalSTT = (speechToTextEndpoint: string) => speechToTextEndpoint === 'external';
+/** Engines that report only the dictated words, so the pre-recording draft is prefixed here. */
+const isExternalSTT = (speechToTextEndpoint: string) =>
+  speechToTextEndpoint === 'external' || speechToTextEndpoint === 'realtime';
 
 /** How the in-flight transcription should be spent once recording ends. */
 type StopMode = 'compose' | 'send' | 'cancel';
@@ -26,6 +29,8 @@ export interface Dictation {
   stopToComposer: () => void;
   /** Transcribe and send in one action. */
   stopAndSend: () => void;
+  /** Set while a live session is still connecting or is recovering a dropped connection. */
+  connection: SpeechConnection;
 }
 
 /**
@@ -204,14 +209,12 @@ export default function useDictation({
       setSettling(false);
     }
   }, []);
-  const { isListening, isLoading, startRecording, stopRecording, abortRecording } = useSpeechToText(
-    setText,
-    onTranscriptionComplete,
-    onTranscriptionSettled,
-    autoSendText,
-  );
+  const { isListening, isLoading, startRecording, stopRecording, abortRecording, connection } =
+    useSpeechToText(setText, onTranscriptionComplete, onTranscriptionSettled, autoSendText);
 
   const active = isListening === true;
+  /** A live take counts from when audio can reach the provider, not from the click. */
+  const recording = active && connection !== 'connecting';
 
   /* Bridges the gap between the recorder being told to stop and the upload
      starting: `isListening` clears synchronously, while the recorder's own
@@ -220,13 +223,13 @@ export default function useDictation({
      control it had put away flashes back in and out again. */
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
-    if (!active) {
+    if (!recording) {
       setElapsed(0);
       return;
     }
     const timer = setInterval(() => setElapsed((value) => value + 1), 1000);
     return () => clearInterval(timer);
-  }, [active]);
+  }, [recording]);
 
   /* The engines only report a completed transcription when Auto Send Text is
      configured, so an explicit stop-and-send cannot wait for that callback:
@@ -339,9 +342,11 @@ export default function useDictation({
       cancel,
       stopToComposer,
       stopAndSend,
+      connection: active ? connection : null,
     }),
     [
       active,
+      connection,
       discarded,
       disabled,
       isLoading,

@@ -164,6 +164,7 @@ export enum MutationKeys {
   refreshToken = 'refreshToken',
   avatarUpload = 'avatarUpload',
   speechToText = 'speechToText',
+  realtimeTranscription = 'realtimeTranscription',
   textToSpeech = 'textToSpeech',
   assistantAvatarUpload = 'assistantAvatarUpload',
   agentAvatarUpload = 'agentAvatarUpload',

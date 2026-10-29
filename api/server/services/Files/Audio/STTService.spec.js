@@ -36,6 +36,7 @@ jest.mock('@librechat/api', () => ({
   })),
   applyAxiosProxyConfig: jest.fn(),
   resolveConfigSecret: jest.fn((value) => value),
+  getTranscriptionHints: jest.fn(() => ({})),
   applySSRFSafeAgentIfDirect: jest.fn(),
   contentFilterBlockResponse: jest.fn((finding) => ({
     error: 'content_filter_block',
@@ -61,11 +62,13 @@ jest.mock('~/server/services/Config', () => ({ getAppConfig: jest.fn() }));
 
 const fs = require('fs').promises;
 const axios = require('axios');
+const FormData = require('form-data');
 const { logger } = require('@librechat/data-schemas');
 const {
   inspectContent,
   extractFileContent,
   getSafeErrorMetadata,
+  getTranscriptionHints,
   contentFilterBlockResponse,
   contentFilterUninspectableResponse,
   getBlockedUninspectableFileField,
@@ -146,6 +149,77 @@ describe('STTService.getProviderSchema provider detection', () => {
   });
 });
 
+describe('STTService.openAIProvider request fields', () => {
+  const service = new STTService();
+  const audio = Buffer.from('audio');
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it('builds the hint fields from the schema, its model, and the user language', () => {
+    const schema = {
+      apiKey: 'sk',
+      model: 'gpt-transcribe',
+      prompt: 'Retail and software terms.',
+      keywords: ['LibreChat'],
+      languages: ['de', 'en'],
+    };
+    getTranscriptionHints.mockReturnValueOnce({
+      prompt: 'Retail and software terms.',
+      keywords: ['LibreChat'],
+      languages: ['de'],
+    });
+
+    const [url, data, headers] = service.openAIProvider(schema, audio, {}, 'de-DE');
+
+    expect(getTranscriptionHints).toHaveBeenCalledWith(schema, 'gpt-transcribe', 'de-DE');
+    expect(url).toBe('https://api.openai.com/v1/audio/transcriptions');
+    expect(data).toEqual({
+      file: audio,
+      model: 'gpt-transcribe',
+      prompt: 'Retail and software terms.',
+      keywords: ['LibreChat'],
+      languages: ['de'],
+    });
+    expect(headers).toEqual({ 'Content-Type': 'multipart/form-data', Authorization: 'Bearer sk' });
+  });
+
+  it('sends the singular language the hints resolve for older models', () => {
+    getTranscriptionHints.mockReturnValueOnce({ language: 'en' });
+
+    const [, data] = service.openAIProvider({ apiKey: 'sk', model: 'whisper-1' }, audio, {}, 'en');
+
+    expect(data).toEqual({ file: audio, model: 'whisper-1', language: 'en' });
+  });
+});
+
+describe('STTService.sttRequest response parsing', () => {
+  const service = new STTService();
+  service.providerStrategies.openai = service.openAIProvider;
+  const request = {
+    audioBuffer: Buffer.from('audio'),
+    audioFile: { mimetype: 'audio/webm' },
+    language: '',
+  };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it.each([
+    ['detected-language metadata', { text: ' Bonjour. ', languages: [{ code: 'fr' }] }],
+    ['an empty detection result', { text: ' Bonjour. ', languages: [] }],
+    ['a plain response', { text: ' Bonjour. ' }],
+  ])('returns the trimmed text from a response with %s', async (_label, responseData) => {
+    axios.post.mockResolvedValueOnce({ status: 200, data: responseData });
+
+    await expect(
+      service.sttRequest('openai', { apiKey: 'sk', model: 'gpt-transcribe' }, request),
+    ).resolves.toBe('Bonjour.');
+  });
+});
+
 describe('STT audio format validation with MIME normalization', () => {
   const acceptedFormats = ['flac', 'mp3', 'mp4', 'mpeg', 'mpga', 'm4a', 'ogg', 'wav', 'webm'];
 
@@ -215,8 +289,14 @@ describe('STT error disclosure protection', () => {
   it('does not log a submitted invalid language value', () => {
     const submittedLanguage = 'PRIVATE-LANGUAGE@example.com';
     const service = new STTService();
+    FormData.mockImplementationOnce(() => ({ append: jest.fn(), getHeaders: () => ({}) }));
 
-    service.openAIProvider({ model: 'whisper-1' }, Buffer.from('audio'), {}, submittedLanguage);
+    service.azureOpenAIProvider(
+      { apiKey: 'key' },
+      Buffer.from('audio'),
+      { originalname: 'audio.webm', mimetype: 'audio/webm' },
+      submittedLanguage,
+    );
 
     expect(logger.warn).toHaveBeenCalledWith(expect.stringContaining('Invalid language format'));
     expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(submittedLanguage);

@@ -59,7 +59,7 @@ export default function useSpeechSettingsInit(isAuthenticated: boolean) {
       logger.log('Initializing speech settings from config:', data);
 
       Object.entries(data).forEach(([key, value]) => {
-        if (key === 'sttExternal' || key === 'ttsExternal') return;
+        if (key === 'sttExternal' || key === 'sttRealtime' || key === 'ttsExternal') return;
 
         if (localStorage.getItem(key) !== null) return;
 
@@ -74,10 +74,16 @@ export default function useSpeechSettingsInit(isAuthenticated: boolean) {
     const configuredEngineSTT = hasSavedEngineSTT ? engineSTT : data?.engineSTT;
     const configuredEngineTTS = hasSavedEngineTTS ? engineTTS : data?.engineTTS;
     const sttExternalUnavailable = data?.sttExternal != null && !data.sttExternal;
+    const sttRealtimeUnavailable = data?.sttRealtime != null && !data.sttRealtime;
     const ttsExternalUnavailable = data?.ttsExternal != null && !data.ttsExternal;
 
     if (sttExternalUnavailable && configuredEngineSTT === STTEndpoints.external) {
       setEngineSTT(STTEndpoints.browser);
+    }
+    /* Live rides on the external provider, so recorded transcription is the closest
+       fallback when an admin removes the realtime block but keeps the provider. */
+    if (sttRealtimeUnavailable && configuredEngineSTT === STTEndpoints.realtime) {
+      setEngineSTT(sttExternalUnavailable ? STTEndpoints.browser : STTEndpoints.external);
     }
     if (ttsExternalUnavailable && configuredEngineTTS === TTSEndpoints.external) {
       setEngineTTS(TTSEndpoints.browser);

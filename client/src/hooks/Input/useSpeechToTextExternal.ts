@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { useRecoilState } from 'recoil';
 import { useToastContext } from '@librechat/client';
 import { useSpeechToTextMutation } from '~/data-provider';
+import { monitorSilence } from './silence';
 import store from '~/store';
 
 export const getBestSupportedMimeType = (
@@ -42,8 +43,8 @@ const useSpeechToTextExternal = (
 ) => {
   const { showToast } = useToastContext();
   const audioStream = useRef<MediaStream | null>(null);
-  const animationFrameIdRef = useRef<number | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
+  /** Ends the Auto Transcribe silence monitor; set only while one is running. */
+  const stopSilenceRef = useRef<(() => void) | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 
   const audioChunksRef = useRef<Blob[]>([]);
@@ -161,43 +162,6 @@ const useSpeechToTextExternal = (
     }
   };
 
-  const monitorSilence = (stream: MediaStream, stopRecording: () => void) => {
-    /* Held so it can be closed again: without this the ref below is never
-       assigned, its guard is always true, and every take leaves another audio
-       context open until the browser refuses to grant one. */
-    const audioContext = new AudioContext();
-    audioContextRef.current = audioContext;
-    const audioStreamSource = audioContext.createMediaStreamSource(stream);
-    const analyser = audioContext.createAnalyser();
-    analyser.minDecibels = minDecibels;
-    audioStreamSource.connect(analyser);
-
-    const bufferLength = analyser.frequencyBinCount;
-    const domainData = new Uint8Array(bufferLength);
-    let lastSoundTime = Date.now();
-
-    const detectSound = () => {
-      analyser.getByteFrequencyData(domainData);
-      const isSoundDetected = domainData.some((value) => value > 0);
-
-      if (isSoundDetected) {
-        lastSoundTime = Date.now();
-      }
-
-      const timeSinceLastSound = Date.now() - lastSoundTime;
-      const isOverSilenceThreshold = timeSinceLastSound > 3000;
-
-      if (isOverSilenceThreshold) {
-        stopRecording();
-        return;
-      }
-
-      animationFrameIdRef.current = window.requestAnimationFrame(detectSound);
-    };
-
-    animationFrameIdRef.current = window.requestAnimationFrame(detectSound);
-  };
-
   /** Stops and drops the capture this hook owns; safe to call more than once. */
   const releaseAudioStream = () => {
     audioStream.current?.getTracks().forEach((track) => track.stop());
@@ -242,8 +206,11 @@ const useSpeechToTextExternal = (
         });
         mediaRecorderRef.current.addEventListener('stop', handleStop);
         mediaRecorderRef.current.start(100);
-        if (!audioContextRef.current && autoTranscribeAudio && speechToText) {
-          monitorSilence(audioStream.current, stopRecording);
+        if (!stopSilenceRef.current && autoTranscribeAudio && speechToText) {
+          stopSilenceRef.current = monitorSilence(audioStream.current, {
+            minDecibels,
+            onSilence: stopRecording,
+          });
         }
         setIsListening(true);
       } catch (error) {
@@ -260,13 +227,10 @@ const useSpeechToTextExternal = (
     }
   };
 
-  /** Releases the silence monitor's audio graph; safe to call more than once. */
-  const closeAudioContext = () => {
-    const context = audioContextRef.current;
-    audioContextRef.current = null;
-    if (context != null && context.state !== 'closed') {
-      void context.close().catch(() => undefined);
-    }
+  /** Releases the silence monitor's frame loop and audio graph; safe to call more than once. */
+  const stopSilenceMonitor = () => {
+    stopSilenceRef.current?.();
+    stopSilenceRef.current = null;
   };
 
   const stopRecording = () => {
@@ -279,12 +243,7 @@ const useSpeechToTextExternal = (
 
       audioStream.current?.getTracks().forEach((track) => track.stop());
       audioStream.current = null;
-
-      if (animationFrameIdRef.current !== null) {
-        window.cancelAnimationFrame(animationFrameIdRef.current);
-        animationFrameIdRef.current = null;
-      }
-      closeAudioContext();
+      stopSilenceMonitor();
 
       setIsListening(false);
     } else {
@@ -328,12 +287,7 @@ const useSpeechToTextExternal = (
 
     audioStream.current?.getTracks().forEach((track) => track.stop());
     audioStream.current = null;
-
-    if (animationFrameIdRef.current !== null) {
-      window.cancelAnimationFrame(animationFrameIdRef.current);
-      animationFrameIdRef.current = null;
-    }
-    closeAudioContext();
+    stopSilenceMonitor();
 
     setIsListening(false);
   };
@@ -364,16 +318,8 @@ const useSpeechToTextExternal = (
       audioStream.current?.getTracks().forEach((track) => track.stop());
       audioStream.current = null;
 
-      if (animationFrameIdRef.current !== null) {
-        window.cancelAnimationFrame(animationFrameIdRef.current);
-        animationFrameIdRef.current = null;
-      }
-
-      const context = audioContextRef.current;
-      audioContextRef.current = null;
-      if (context != null && context.state !== 'closed') {
-        void context.close().catch(() => undefined);
-      }
+      stopSilenceRef.current?.();
+      stopSilenceRef.current = null;
     };
   }, []);
 

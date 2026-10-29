@@ -1,3 +1,5 @@
+import type { SpeechConnection } from './useSpeechToTextRealtime';
+import useSpeechToTextRealtime from './useSpeechToTextRealtime';
 import useSpeechToTextExternal from './useSpeechToTextExternal';
 import useSpeechToTextBrowser from './useSpeechToTextBrowser';
 import useGetAudioSettings from './useGetAudioSettings';
@@ -15,9 +17,12 @@ const useSpeechToText = (
   startRecording: (takeId?: number) => void | Promise<void>;
   /** Ends capture without producing a transcript. */
   abortRecording: () => void;
+  /** Set while a live session is still being established or recovering. */
+  connection: SpeechConnection;
 } => {
   const { speechToTextEndpoint } = useGetAudioSettings();
   const externalSpeechToText = speechToTextEndpoint === 'external';
+  const realtimeSpeechToText = speechToTextEndpoint === 'realtime';
 
   const {
     isListening: speechIsListeningBrowser,
@@ -45,6 +50,24 @@ const useSpeechToText = (
     autoSendText,
   );
 
+  const realtime = useSpeechToTextRealtime(
+    setText,
+    onTranscriptionComplete,
+    onTranscriptionSettled,
+    autoSendText,
+  );
+
+  if (realtimeSpeechToText) {
+    return {
+      isLoading: realtime.isLoading,
+      isListening: realtime.isListening,
+      stopRecording: realtime.stopRecording,
+      startRecording: realtime.startRecording,
+      abortRecording: realtime.abortRecording,
+      connection: realtime.connection,
+    };
+  }
+
   const isListening = externalSpeechToText ? speechIsListeningExternal : speechIsListeningBrowser;
   const isLoading = externalSpeechToText ? speechIsLoadingExternal : speechIsLoadingBrowser;
 
@@ -65,6 +88,7 @@ const useSpeechToText = (
     stopRecording,
     startRecording,
     abortRecording,
+    connection: null,
   };
 };
 

@@ -1757,6 +1757,22 @@ export const useSpeechToTextMutation = (
   });
 };
 
+/* Live speech to text: trades the browser's WebRTC offer for the provider's answer */
+export const useRealtimeTranscriptionMutation = (
+  options?: t.RealtimeTranscriptionOptions,
+): UseMutationResult<
+  t.RealtimeTranscriptionResponse,
+  unknown,
+  t.RealtimeTranscriptionRequest,
+  unknown
+> => {
+  return useMutation([MutationKeys.realtimeTranscription], {
+    mutationFn: (variables: t.RealtimeTranscriptionRequest) =>
+      dataService.createRealtimeTranscription(variables),
+    ...(options || {}),
+  });
+};
+
 /* Text to speech */
 export const useTextToSpeechMutation = (
   options?: t.TextToSpeechOptions,

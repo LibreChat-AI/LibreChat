@@ -9,7 +9,7 @@ import useDictation from '../useDictation';
  * request, sent by the setting, or thrown away, against both engines.
  */
 
-let mockSpeechEndpoint: 'browser' | 'external';
+let mockSpeechEndpoint: 'browser' | 'external' | 'realtime';
 let mockSetTextCallback: (text: string) => void;
 let mockOnTranscriptionComplete: (text: string) => void;
 let mockOnTranscriptionSettled: () => void;
@@ -18,6 +18,7 @@ const mockStop = jest.fn();
 const mockAbort = jest.fn();
 let mockIsListening: boolean;
 let mockIsLoading: boolean;
+let mockConnection: 'connecting' | 'reconnecting' | null;
 
 jest.mock('../useSpeechToText', () => ({
   __esModule: true,
@@ -35,6 +36,7 @@ jest.mock('../useSpeechToText', () => ({
       startRecording: mockStart,
       stopRecording: mockStop,
       abortRecording: mockAbort,
+      connection: mockConnection,
     };
   },
 }));
@@ -135,6 +137,7 @@ describe('useDictation', () => {
     mockSpeechEndpoint = 'browser';
     mockIsListening = false;
     mockIsLoading = false;
+    mockConnection = null;
   });
 
   afterEach(() => {
@@ -451,6 +454,77 @@ describe('useDictation', () => {
     act(() => mockOnTranscriptionComplete('new words'));
 
     expect(currentText()).toBe('my unsent draft new words');
+  });
+
+  describe('live dictation', () => {
+    beforeEach(() => {
+      mockSpeechEndpoint = 'realtime';
+    });
+
+    it('writes live text after the draft that was there before recording', () => {
+      const { result, rerender, currentText } = setup({ draft: 'Dear team,' });
+      act(() => result.current.start());
+      mockIsListening = true;
+      act(() => rerender());
+
+      act(() => mockSetTextCallback('the build'));
+      expect(currentText()).toBe('Dear team, the build');
+      act(() => mockSetTextCallback('the build is green'));
+      expect(currentText()).toBe('Dear team, the build is green');
+    });
+
+    it('auto-sends the live transcript with the draft in front of it', async () => {
+      const { result, rerender } = setup({ draft: 'Dear team,', autoSendText: 0 });
+      act(() => result.current.start());
+      mockIsListening = true;
+      act(() => rerender());
+
+      act(() => result.current.stopToComposer());
+      await settle(rerender);
+      act(() => mockOnTranscriptionComplete('the build is green'));
+
+      expect(ask).toHaveBeenCalledWith({ text: 'Dear team, the build is green' });
+    });
+
+    it('reports the connection and starts the clock only once audio can flow', () => {
+      const { result, rerender } = setup();
+      act(() => result.current.start());
+      mockIsListening = true;
+      mockConnection = 'connecting';
+      act(() => rerender());
+
+      expect(result.current.active).toBe(true);
+      expect(result.current.connection).toBe('connecting');
+      act(() => {
+        jest.advanceTimersByTime(3000);
+      });
+      expect(result.current.elapsed).toBe(0);
+
+      mockConnection = null;
+      act(() => rerender());
+      act(() => {
+        jest.advanceTimersByTime(2000);
+      });
+      expect(result.current.connection).toBeNull();
+      expect(result.current.elapsed).toBe(2);
+
+      mockConnection = 'reconnecting';
+      act(() => rerender());
+      expect(result.current.connection).toBe('reconnecting');
+    });
+
+    it('lets a take be stopped or cancelled while it is still connecting', () => {
+      const { result, rerender } = setup();
+      act(() => result.current.start());
+      mockIsListening = true;
+      mockConnection = 'connecting';
+      act(() => rerender());
+
+      act(() => result.current.stopToComposer());
+      expect(mockStop).toHaveBeenCalledTimes(1);
+      act(() => result.current.cancel());
+      expect(mockAbort).toHaveBeenCalledTimes(1);
+    });
   });
 
   /* A run in flight has nothing to send into, so the take is refused outright.
