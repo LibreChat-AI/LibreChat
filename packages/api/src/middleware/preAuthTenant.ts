@@ -50,6 +50,12 @@ export function preAuthTenantMiddleware(req: Request, res: Response, next: NextF
   }
 
   const rejection = rejectTenantHeader(tenantId);
+  if (rejection === 'reserved') {
+    runWithTenantContext(requestContext, () =>
+      res.status(400).json({ error: 'Reserved tenant identifier' }),
+    );
+    return;
+  }
   if (rejection === 'system') {
     runWithTenantContext(requestContext, () => {
       logger.warn('[preAuthTenant] Rejected __SYSTEM__ sentinel in X-Tenant-Id header', {
