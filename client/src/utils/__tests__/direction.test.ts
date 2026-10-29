@@ -55,6 +55,24 @@ describe('strongDirection', () => {
     expect(strongDirection('\u200E \u0645\u0631\u062D\u0628\u0627')).toBe('ltr');
   });
 
+  it('skips the text of a matched isolate', () => {
+    expect(strongDirection('\u2067hello\u2069\u0645\u0631\u062D\u0628\u0627')).toBe('rtl');
+    expect(strongDirection('\u2066\u05E9\u05DC\u05D5\u05DD\u2069 hello')).toBe('ltr');
+    expect(strongDirection('\u2068\u200F\u2069 hello')).toBe('ltr');
+  });
+
+  it('skips nested isolates up to the outermost matching PDI', () => {
+    expect(strongDirection('\u2066a\u2067\u05D0\u2069b\u2069\u0645\u0631\u062D\u0628\u0627')).toBe(
+      'rtl',
+    );
+    expect(strongDirection('\u2068\u2066\u2069hello\u2069\u05E9\u05DC\u05D5\u05DD')).toBe('rtl');
+  });
+
+  it('runs an unmatched isolate to the end of the text', () => {
+    expect(strongDirection('\u2067hello \u0645\u0631\u062D\u0628\u0627')).toBeNull();
+    expect(strongDirection('\u2069hello')).toBe('ltr');
+  });
+
   it('skips digits and punctuation before the first letter', () => {
     expect(strongDirection('1. \u0661\u0662 (\u0645\u0631\u062D\u0628\u0627)')).toBe('rtl');
     expect(strongDirection('42 - \u2022 hello')).toBe('ltr');

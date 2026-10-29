@@ -14,14 +14,31 @@ const NOT_STRONG =
 const LTR_MARK = /[\u0CBF-\u0CC6\u{11A07}-\u{11A08}\u{11C3F}]/u;
 /** Nonspacing and enclosing marks (NSM) and controls (BN, B, S, WS) are never strong. */
 const SKIP = /[\p{Mn}\p{Me}\p{Cc}]/u;
+/** LRI, RLI and FSI open an isolate; PDI closes the innermost one. */
+const ISOLATE_OPEN = /[\u2066-\u2068]/u;
+const ISOLATE_CLOSE = '\u2069';
 
 /**
  * Direction of the first strongly directional character, or null when the text has none,
  * as the browser's `dir="auto"` resolves it: a character of bidi class R or AL is
  * right-to-left, L is left-to-right, and digits, punctuation, symbols and marks are skipped.
+ * As in UAX #9 rule P2, characters inside an isolate are skipped up to its matching PDI, and an
+ * isolate with no matching PDI runs to the end of the text.
  */
 export const strongDirection = (text: string): 'ltr' | 'rtl' | null => {
+  let isolates = 0;
   for (const char of text) {
+    if (ISOLATE_OPEN.test(char)) {
+      isolates++;
+      continue;
+    }
+    if (char === ISOLATE_CLOSE) {
+      isolates = Math.max(0, isolates - 1);
+      continue;
+    }
+    if (isolates > 0) {
+      continue;
+    }
     if (LTR_MARK.test(char)) {
       return 'ltr';
     }
