@@ -20,6 +20,18 @@ beforeAll(initEnglish);
 const host: MessagesHost = {
   useHour12: () => undefined,
   renderFiles: () => <button data-testid="attached-file" />,
+
+  useScrolling: () => ({
+    contentRef: { current: null },
+    scrollableRef: { current: null },
+    messagesEndRef: { current: null },
+    handleSmoothToRef: () => undefined,
+    debouncedHandleScroll: () => undefined,
+    handleNearBottomChange: () => undefined,
+  }),
+  useScreenshotTarget: () => ({ current: null }),
+  useAutoScroll: () => false,
+  useConversationSeen: () => () => undefined,
 };
 
 const MESSAGE_BODY = 'Message body';
