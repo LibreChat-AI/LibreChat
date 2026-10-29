@@ -883,14 +883,49 @@ describe('useSubagentActivityStream', () => {
     jest.useRealTimers();
   });
 
-  it('stops for good when the activity route refuses the task', () => {
+  it.each([403, 410])(
+    'stops for good when the activity route refuses the task with %s',
+    (status) => {
+      jest.useFakeTimers();
+      const { unmount } = renderHook(() => useSubagentActivityStream(selection), { wrapper });
+
+      act(() => {
+        streams[0].refuse(status);
+      });
+      expect(streams[0].close).toHaveBeenCalled();
+      act(() => jest.advanceTimersByTime(60_000));
+      expect(streams).toHaveLength(1);
+
+      unmount();
+      jest.useRealTimers();
+    },
+  );
+
+  it('keeps attaching through 404s while the child thread is still being reserved', () => {
     jest.useFakeTimers();
     const { unmount } = renderHook(() => useSubagentActivityStream(selection), { wrapper });
 
+    for (let attempt = 0; attempt < 12; attempt++) {
+      const before = streams.length;
+      act(() => {
+        streams[before - 1].refuse(404);
+      });
+      act(() => jest.advanceTimersByTime(5_000));
+      expect(streams).toHaveLength(before + 1);
+    }
+
+    unmount();
+    jest.useRealTimers();
+  });
+
+  it('stops on a 404 once the readiness window has passed', () => {
+    jest.useFakeTimers();
+    const { unmount } = renderHook(() => useSubagentActivityStream(selection), { wrapper });
+
+    act(() => jest.advanceTimersByTime(60_000));
     act(() => {
       streams[0].refuse(404);
     });
-    expect(streams[0].close).toHaveBeenCalled();
     act(() => jest.advanceTimersByTime(60_000));
     expect(streams).toHaveLength(1);
 

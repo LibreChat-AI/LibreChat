@@ -34,8 +34,12 @@ const readyReaders = new Map<string, number>();
 const INITIAL_RECONNECT_MS = 500;
 const MAX_RECONNECT_MS = 5_000;
 /** Reconnects in a row that deliver no live update before the feed gives up; the durable
- *  thread query keeps polling, so the panel still converges on the stored transcript. */
+ *  thread query keeps polling, so the panel still converges on the stored transcript.
+ *  Internal retry hygiene with that fallback, not an operator lever, so not in configSchema. */
 const MAX_IDLE_RECONNECTS = 8;
+/** A child opened before its thread is reserved answers 404 until preparation finishes; the
+ *  durable thread query treats that as pending for the same window, so the feed does too. */
+const CHILD_READY_WINDOW_MS = 60_000;
 
 /** A refusal no retry can clear: the task is gone or not the viewer's. 401 arrives here only
  *  after the transport's own refresh failed; 408 and 429 are worth retrying. */
@@ -155,6 +159,7 @@ export function useSubagentActivityStream(
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let retryAttempt = 0;
     let idleReconnects = 0;
+    const readinessDeadline = Date.now() + CHILD_READY_WINDOW_MS;
     let disposed = false;
     let terminal = false;
 
@@ -174,6 +179,10 @@ export function useSubagentActivityStream(
         if (event.type === 'error') {
           setReady(true);
           refreshContent();
+          if (event.status === 404 && Date.now() < readinessDeadline) {
+            reconnect(true);
+            return;
+          }
           if (isRefusal(event.status)) {
             terminal = true;
             closeCurrent();
@@ -277,14 +286,14 @@ export function useSubagentActivityStream(
       transport.reconnectToStream({ url: endpoint }, { signal: next.signal, onEvent });
     };
 
-    const reconnect = () => {
+    const reconnect = (pending = false) => {
       if (disposed || terminal || retryTimer != null) return;
       closeCurrent();
-      if (idleReconnects >= MAX_IDLE_RECONNECTS) {
+      if (!pending && idleReconnects >= MAX_IDLE_RECONNECTS) {
         terminal = true;
         return;
       }
-      idleReconnects += 1;
+      if (!pending) idleReconnects += 1;
       const delay = Math.min(INITIAL_RECONNECT_MS * 2 ** retryAttempt, MAX_RECONNECT_MS);
       retryAttempt += 1;
       retryTimer = setTimeout(connect, delay);
