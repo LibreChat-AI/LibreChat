@@ -2564,75 +2564,127 @@ describe('User parameter passing tests', () => {
       expect(mockGetMCPManager).not.toHaveBeenCalled();
     });
 
-    it('fences resumable tool-call OAuth events to the owning job epoch', async () => {
-      const mockUser = { id: 'epoch-tool-user', role: 'USER' };
-      const mockRes = { write: jest.fn(), flush: jest.fn() };
-      const streamId = 'epoch-tool-stream';
-      const jobCreatedAt = 5678;
-      const { getRoleByName } = require('~/models');
-      getRoleByName.mockResolvedValue({
-        permissions: {
-          [PermissionTypes.MCP_SERVERS]: {
-            [Permissions.USE]: true,
-          },
-        },
-      });
-      const flowManager = {
-        getFlowState: jest.fn().mockResolvedValue(null),
-        createFlowWithHandler: jest.fn(async (_flowId, _type, handler) => handler()),
-        failFlow: jest.fn(),
-      };
-      mockGetFlowStateManager.mockReturnValue(flowManager);
-      mockGetMCPManager.mockReturnValue({
-        callTool: jest.fn(async ({ oauthStart, oauthEnd }) => {
-          await oauthStart('https://auth.example.com/tool-call');
-          await oauthEnd();
-          return ['ok', null];
-        }),
-      });
-
-      const mcpTool = await createMCPTool({
-        res: mockRes,
-        user: mockUser,
-        toolKey: `test-tool${D}epoch-tool-server`,
-        provider: 'openai',
-        userMCPAuthMap: {},
-        availableTools: {
-          [`test-tool${D}epoch-tool-server`]: {
-            function: {
-              description: 'Epoch-fenced tool',
-              parameters: { type: 'object', properties: {} },
+    it.each(['consent', 'cancel', 'timeout'])(
+      'projects mid-tool reauthentication through the real generation manager and clears it after %s',
+      async (outcome) => {
+        const mockUser = { id: 'epoch-tool-user', role: 'USER' };
+        const mockRes = { write: jest.fn(), flush: jest.fn() };
+        const streamId = 'epoch-tool-stream';
+        const controller = new AbortController();
+        const { GenerationJobManagerClass, InMemoryJobStore, InMemoryEventTransport } =
+          jest.requireActual('@librechat/api');
+        const manager = new GenerationJobManagerClass();
+        manager.configure({
+          jobStore: new InMemoryJobStore({ ttlAfterComplete: 60000 }),
+          eventTransport: new InMemoryEventTransport(),
+          isRedis: false,
+        });
+        manager.initialize();
+        const { createdAt: jobCreatedAt } = await manager.createJob(
+          streamId,
+          mockUser.id,
+          streamId,
+        );
+        GenerationJobManager.emitChunk.mockImplementation((...args) => manager.emitChunk(...args));
+        const { getRoleByName } = require('~/models');
+        getRoleByName.mockResolvedValue({
+          permissions: {
+            [PermissionTypes.MCP_SERVERS]: {
+              [Permissions.USE]: true,
             },
           },
-        },
-        streamId,
-        jobCreatedAt,
-      });
+        });
+        const flowManager = {
+          getFlowState: jest.fn().mockResolvedValue(null),
+          createFlowWithHandler: jest.fn(async (_flowId, _type, handler) => handler()),
+          failFlow: jest.fn(),
+        };
+        mockGetFlowStateManager.mockReturnValue(flowManager);
+        mockGetMCPManager.mockReturnValue({
+          callTool: jest.fn(async ({ oauthStart, oauthEnd, toolName, toolArguments }) => {
+            expect(toolName).toBe('test-tool');
+            expect(toolArguments).toEqual({});
+            await oauthStart('https://auth.example.com/tool-call');
+            const pending = await manager.getResumeState(streamId);
+            expect(pending.pendingOAuthPrompts).toHaveLength(1);
+            expect(pending.pendingOAuthPrompts[0]).toMatchObject({
+              toolName: `oauth${D}epoch-tool-server`,
+              toolCallId: 'oauth:tool-call-epoch',
+            });
+            expect(pending.pendingOAuthPrompts[0].expiresAt).toBeGreaterThan(Date.now());
+            expect(pending.pendingOAuthPrompts[0].stepId).not.toBe('step-epoch');
+            if (outcome === 'cancel') {
+              controller.abort();
+              await manager.abortJob(streamId, { expectedCreatedAt: jobCreatedAt });
+              throw new DOMException('Cancelled fixture', 'AbortError');
+            }
+            if (outcome === 'timeout') throw new Error('OAuth fixture timed out');
+            await oauthEnd();
+            expect((await manager.getResumeState(streamId)).pendingOAuthPrompts).toBeUndefined();
+            return ['ok', null];
+          }),
+        });
 
-      await mcpTool.invoke(
-        {},
-        {
-          configurable: { user: mockUser },
-          metadata: {
-            provider: 'openai',
-            thread_id: 'thread-epoch',
-            run_id: 'run-epoch',
+        const mcpTool = await createMCPTool({
+          res: mockRes,
+          user: mockUser,
+          toolKey: `test-tool${D}epoch-tool-server`,
+          provider: 'openai',
+          userMCPAuthMap: {},
+          availableTools: {
+            [`test-tool${D}epoch-tool-server`]: {
+              function: {
+                description: 'Epoch-fenced tool',
+                parameters: { type: 'object', properties: {} },
+              },
+            },
           },
-          toolCall: {
-            id: 'tool-call-epoch',
-            stepId: 'step-epoch',
-            name: 'test-tool',
-            type: 'tool_call',
-          },
-        },
-      );
+          streamId,
+          jobCreatedAt,
+        });
 
-      expect(GenerationJobManager.emitChunk).toHaveBeenCalledTimes(2);
-      for (const [emittedStreamId, , options] of GenerationJobManager.emitChunk.mock.calls) {
-        expect(emittedStreamId).toBe(streamId);
-        expect(options).toEqual({ expectedCreatedAt: jobCreatedAt });
-      }
-    });
+        try {
+          const invocation = mcpTool.invoke(
+            {},
+            {
+              signal: controller.signal,
+              configurable: { user: mockUser },
+              metadata: {
+                provider: 'openai',
+                thread_id: 'thread-epoch',
+                run_id: 'run-epoch',
+              },
+              toolCall: {
+                id: 'tool-call-epoch',
+                stepId: 'step-epoch',
+                name: 'test-tool',
+                type: 'tool_call',
+              },
+            },
+          );
+          if (outcome === 'consent') await invocation;
+          else await expect(invocation).rejects.toThrow();
+          const settled = await manager.getResumeState(streamId);
+          if (outcome === 'cancel') expect(settled).toBeNull();
+          else expect(settled.pendingOAuthPrompts).toBeUndefined();
+
+          expect(GenerationJobManager.emitChunk).toHaveBeenCalledTimes(3);
+          for (const [emittedStreamId, , options] of GenerationJobManager.emitChunk.mock.calls) {
+            expect(emittedStreamId).toBe(streamId);
+            expect(options).toEqual({ expectedCreatedAt: jobCreatedAt });
+          }
+          const [, start] = GenerationJobManager.emitChunk.mock.calls[0];
+          const [, delta] = GenerationJobManager.emitChunk.mock.calls[1];
+          await manager.createJob(streamId, mockUser.id, streamId);
+          await manager.emitChunk(streamId, start, { expectedCreatedAt: jobCreatedAt });
+          await manager.emitChunk(streamId, delta, { expectedCreatedAt: jobCreatedAt });
+          expect((await manager.getResumeState(streamId)).pendingOAuthPrompts).toBeUndefined();
+        } finally {
+          GenerationJobManager.emitChunk.mockReset();
+          await manager.destroy();
+        }
+      },
+    );
 
     it('should reuse request-scoped MCP permission checks across tool executions', async () => {
       const mockUser = { id: 'mcp-allowed-user', role: 'USER' };
