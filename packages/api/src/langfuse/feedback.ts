@@ -15,6 +15,9 @@ export type LangfuseFeedbackMetadata = Record<string, string | number | boolean 
 
 export type SendFeedbackScoreParams = {
   traceId: string;
+  /** Stable source-specific identity; omitted for the existing browser feedback score. */
+  scoreId?: string;
+  signal?: AbortSignal;
   sampled?: boolean;
   destinationIds?: string[];
   feedback?: LangfuseFeedback | null;
@@ -64,11 +67,16 @@ function cleanMetadata(
   );
 }
 
-async function deleteScore(destination: LangfuseScoreDestination, scoreId: string): Promise<void> {
+async function deleteScore(
+  destination: LangfuseScoreDestination,
+  scoreId: string,
+  signal?: AbortSignal,
+): Promise<void> {
   const res = await fetch(
     `${destination.baseUrl}/api/public/scores/${encodeURIComponent(scoreId)}`,
     {
       method: 'DELETE',
+      signal,
       headers: mergeHeaders(destination.headers, { Authorization: destination.authorization }),
       ...redirectPolicyFor(destination.headers),
     },
@@ -81,9 +89,11 @@ async function deleteScore(destination: LangfuseScoreDestination, scoreId: strin
 async function createScore(
   destination: LangfuseScoreDestination,
   payload: LangfuseScorePayload,
+  signal?: AbortSignal,
 ): Promise<void> {
   const res = await fetch(`${destination.baseUrl}/api/public/scores`, {
     method: 'POST',
+    signal,
     headers: mergeHeaders(destination.headers, {
       Authorization: destination.authorization,
       'Content-Type': 'application/json',
@@ -124,6 +134,8 @@ function buildScorePayload({
 
 export async function sendFeedbackScore({
   traceId,
+  scoreId: requestedScoreId,
+  signal,
   sampled,
   destinationIds,
   feedback,
@@ -145,14 +157,16 @@ export async function sendFeedbackScore({
     return;
   }
 
-  const scoreId = `feedback-${traceId}`;
+  const scoreId = requestedScoreId ?? `feedback-${traceId}`;
   const payload = feedback?.rating
     ? buildScorePayload({ scoreId, traceId, feedback, metadata, observationId })
     : undefined;
 
   const results = await Promise.allSettled(
     destinations.map((destination) =>
-      payload ? createScore(destination, payload) : deleteScore(destination, scoreId),
+      payload
+        ? createScore(destination, payload, signal)
+        : deleteScore(destination, scoreId, signal),
     ),
   );
   const failures: string[] = [];

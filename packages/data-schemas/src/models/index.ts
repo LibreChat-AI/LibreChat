@@ -1,3 +1,8 @@
+import {
+  createChannelReplyModel,
+  createChannelFeedbackEventModel,
+  createChannelFeedbackModel,
+} from './channelFeedback';
 import { createAgentQueuedTurnModel, createAgentQueuedTurnSequenceModel } from './queuedTurn';
 import { createAgentChannelModel, createAgentChannelThreadModel } from './channel';
 import { createChannelRunModel, createChannelLaneModel } from './channelRun';
@@ -81,6 +86,9 @@ export function createModels(mongoose: typeof import('mongoose')): {
   ChannelIdentity: ReturnType<typeof createChannelIdentityModel>;
   ChannelRun: ReturnType<typeof createChannelRunModel>;
   ChannelLane: ReturnType<typeof createChannelLaneModel>;
+  ChannelReply: ReturnType<typeof createChannelReplyModel>;
+  ChannelFeedbackEvent: ReturnType<typeof createChannelFeedbackEventModel>;
+  ChannelFeedback: ReturnType<typeof createChannelFeedbackModel>;
   AgentCategory: ReturnType<typeof createAgentCategoryModel>;
   MCPServer: ReturnType<typeof createMCPServerModel>;
   Role: ReturnType<typeof createRoleModel>;
@@ -143,6 +151,9 @@ export function createModels(mongoose: typeof import('mongoose')): {
     ChannelIdentity: createChannelIdentityModel(mongoose),
     ChannelRun: createChannelRunModel(mongoose),
     ChannelLane: createChannelLaneModel(mongoose),
+    ChannelReply: createChannelReplyModel(mongoose),
+    ChannelFeedbackEvent: createChannelFeedbackEventModel(mongoose),
+    ChannelFeedback: createChannelFeedbackModel(mongoose),
     AgentCategory: createAgentCategoryModel(mongoose),
     MCPServer: createMCPServerModel(mongoose),
     Role: createRoleModel(mongoose),

@@ -64,7 +64,9 @@ import { createAgentChannelMethods, type AgentChannelMethods } from './channel';
 export { createChannelIdentityStorage } from './channelIdentity';
 export type { ChannelIdentityStorage } from './channelIdentity';
 export type { ChannelIdentityRecord } from '~/models/channelIdentity';
-
+export { createChannelFeedbackStorage } from './channelFeedback';
+export type { ChannelFeedbackStorage } from './channelFeedback';
+export type { ChannelFeedbackEventRecord, ChannelFeedbackLedger } from '~/models/channelFeedback';
 export { createChannelRunStorage, ChannelRunConflict } from './channelRun';
 export { createChannelSummaryStorage, CHANNEL_SUMMARY_MAX_PRIOR_ROWS } from './channelSummary';
 export type {
