@@ -1243,6 +1243,26 @@ describe('dedupeDocumentNames', () => {
     },
   );
 
+  it('stops recipient traversal as soon as Bedrock naming is required', () => {
+    const descendants = jest.fn(() => {
+      throw new Error('Bedrock descendants must not be read');
+    });
+    const recipients = [
+      {
+        provider: Providers.BEDROCK,
+        get lazySubagentConfigs() {
+          return descendants();
+        },
+      },
+    ];
+    const messages: Message[] = [{ content: [bedrock('notes'), bedrock('notes')] }];
+
+    dedupeDocumentNames(messages, recipients);
+
+    expect(names(contentOf(messages[0]))).toEqual(['notes', 'notes (2)']);
+    expect(descendants).not.toHaveBeenCalled();
+  });
+
   it('renames documents for a Bedrock recipient after a non-Bedrock primary', () => {
     const messages: Message[] = [{ content: [bedrock('notes'), bedrock('notes')] }];
     const recipients = new Map([

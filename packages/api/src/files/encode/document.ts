@@ -27,7 +27,7 @@ import {
   isAttachmentObjectNotFoundError,
 } from './utils';
 import { validatePdf, validateBedrockDocument } from '~/files/validation';
-import { collectReachableAgents } from '~/agents/traversal';
+import { someReachableAgent } from '~/agents/traversal';
 import { runGuardedEncode } from './memoryGuard';
 
 /** The longest document name LibreChat sends to Bedrock. */
@@ -101,10 +101,12 @@ interface DocumentRecipient extends ReachableAgent<DocumentRecipient> {
   readonly provider?: string;
 }
 
+function isBedrockRecipient({ provider }: DocumentRecipient): boolean {
+  return provider === Providers.BEDROCK;
+}
+
 function hasBedrockRecipient(recipients: Iterable<DocumentRecipient>): boolean {
-  return collectReachableAgents([...recipients]).some(
-    ({ provider }) => provider === Providers.BEDROCK,
-  );
+  return someReachableAgent(recipients, isBedrockRecipient);
 }
 
 /**
