@@ -115,4 +115,6 @@ export * from './approval';
 
 export * from './types/responseReview';
 
+export * from './types/channelRuns';
+
 export * from './codeSetup';
