@@ -26,6 +26,7 @@ export type {
 export {
   createMethods,
   createChannelIdentityStorage,
+  createChannelFeedbackStorage,
   createChannelRunStorage,
   createChannelSummaryStorage,
   CHANNEL_SUMMARY_MAX_PRIOR_ROWS,
