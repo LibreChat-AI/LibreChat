@@ -126,7 +126,7 @@ export default function useNewChat({
   const files = useAtomValue(filesFamily(index));
   const { saveDrafts } = useChatSettings();
   const { data: fileList } = useGetFiles<TFile[]>();
-  const { data: fileConfig } = useGetFileConfig();
+  const { data: fileConfig, isSuccess: hasFileConfig } = useGetFileConfig();
   const retryLimit = fileConfig?.deletionRetryLimit;
   const { mutateAsync } = useDeleteFilesMutation();
   /** The cleanup pass runs on a timer nobody asked for, so it reports nothing: a storage failure
@@ -179,13 +179,17 @@ export default function useNewChat({
 
   useEffect(() => {
     const retained = takeRetainedFileDeletions();
-    if ((pendingDiscardIds.length === 0 && retained.length === 0) || fileList == null) {
+    if (
+      (pendingDiscardIds.length === 0 && retained.length === 0) ||
+      fileList == null ||
+      !hasFileConfig
+    ) {
       return;
     }
     /** Another mounted instance is already running this pass. Ask for a later one rather than
      * dropping the work: whatever it does not resolve has to be revisited by someone. */
     if (!beginRetainedDeletionPass()) {
-      scheduleRetainedFileDeletionRetry();
+      scheduleRetainedFileDeletionRetry(pendingDiscardIds.length > 0);
       return;
     }
     const attempt = async () => {
@@ -285,6 +289,7 @@ export default function useNewChat({
     index,
     mutateAsyncSilently,
     retainedGeneration,
+    hasFileConfig,
     retryLimit,
     setPendingDiscardIds,
   ]);

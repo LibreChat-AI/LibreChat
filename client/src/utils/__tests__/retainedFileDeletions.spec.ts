@@ -304,6 +304,42 @@ describe('bounded file deletion retries', () => {
     }
   });
 
+  it('preserves a deferred discard wakeup when the other pane drains the retained queue', async () => {
+    jest.useFakeTimers();
+    const queue = await import('../files');
+    try {
+      queue.claimFileDeletionRetries([record]);
+      const listener = jest.fn();
+      const unsubscribe = queue.subscribeRetainedFileDeletions(listener);
+      queue.scheduleRetainedFileDeletionRetry(true);
+      queue.settleFileDeletionRetries([record], new Set());
+      expect(queue.takeRetainedFileDeletions()).toEqual([]);
+      jest.advanceTimersByTime(5_000);
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(jest.getTimerCount()).toBe(0);
+      unsubscribe();
+    } finally {
+      queue.clearRetainedFileDeletions();
+      jest.useRealTimers();
+    }
+  });
+
+  it('wakes deferred work even when the claimed pass had no resolvable payload', async () => {
+    jest.useFakeTimers();
+    const queue = await import('../files');
+    try {
+      const listener = jest.fn();
+      const unsubscribe = queue.subscribeRetainedFileDeletions(listener);
+      queue.scheduleRetainedFileDeletionRetry(true);
+      jest.advanceTimersByTime(5_000);
+      expect(listener).toHaveBeenCalledTimes(1);
+      unsubscribe();
+    } finally {
+      queue.clearRetainedFileDeletions();
+      jest.useRealTimers();
+    }
+  });
+
   it('migrates the remount queue only once and preserves an existing retry budget', async () => {
     const queue = await import('../files');
     queue.claimFileDeletionRetries([record]);

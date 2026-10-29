@@ -734,10 +734,6 @@ const retainedFileDeletionListeners = new Set<() => void>();
 const persistRetainedFileDeletions = (): void => {
   if (retainedFileDeletions.size === 0) {
     retainedRetryDelayMs = RETAINED_RETRY_BASE_DELAY_MS;
-    if (retainedRetryTimer != null) {
-      clearTimeout(retainedRetryTimer);
-      retainedRetryTimer = null;
-    }
   }
   try {
     if (retainedFileDeletions.size === 0) {
@@ -775,8 +771,12 @@ const bindOnlineRetainedRetry = (): void => {
 };
 
 /** Wake unchanged queues after a failure, with backoff between automatic attempts. */
-export const scheduleRetainedFileDeletionRetry = (): void => {
-  if (retainedRetryTimer != null || retainedFileDeletions.size === 0 || !retentionOpen) {
+export const scheduleRetainedFileDeletionRetry = (pendingDiscard = false): void => {
+  if (
+    retainedRetryTimer != null ||
+    (retainedFileDeletions.size === 0 && !pendingDiscard) ||
+    !retentionOpen
+  ) {
     return;
   }
   bindOnlineRetainedRetry();
