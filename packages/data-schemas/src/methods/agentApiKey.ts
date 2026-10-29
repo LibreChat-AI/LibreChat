@@ -1,3 +1,4 @@
+import type { ClientSession } from 'mongoose';
 import type { Types } from 'mongoose';
 import type {
   AgentApiKeyCreateResult,
@@ -6,11 +7,20 @@ import type {
   IAgentApiKey,
   AgentApiKeyBinding,
 } from '~/types';
+import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { prepareChannelOwnerAdmission } from './channelOwner';
+import { createChannelIndexGate } from './channelIndexes';
 import { hashToken, getRandomValues } from '~/crypto';
 import logger from '~/config/winston';
 
 const API_KEY_PREFIX = 'sk-';
 const API_KEY_LENGTH = 32;
+
+async function keyDigest(key: string, bound: boolean): Promise<string> {
+  const digest = await hashToken(bound ? `bound:${key}` : key);
+  // Legacy validators produce only hex digests, even for attacker-chosen wrappers.
+  return bound ? `bound-v1:${digest}` : digest;
+}
 
 export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
   createAgentApiKey: (data: AgentApiKeyCreateData) => Promise<AgentApiKeyCreateResult>;
@@ -30,13 +40,13 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
     userId: string | Types.ObjectId,
   ) => Promise<AgentApiKeyListItem | null>;
 } {
+  const ensureBoundKeyIndexes = createChannelIndexGate(() => [mongoose.models.AgentApiKey]);
   async function generateApiKey(
     bound: boolean,
   ): Promise<{ key: string; keyHash: string; keyPrefix: string }> {
     const randomPart = await getRandomValues(API_KEY_LENGTH);
     const key = `${bound ? 'sk-bound-' : API_KEY_PREFIX}${randomPart}`;
-    // Old replicas hash the raw token and therefore cannot authenticate a grant they cannot enforce.
-    const keyHash = await hashToken(bound ? `bound:${key}` : key);
+    const keyHash = await keyDigest(key, bound);
     const keyPrefix = key.slice(0, bound ? 16 : 8);
     return { key, keyHash, keyPrefix };
   }
@@ -46,17 +56,47 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
       const AgentApiKey = mongoose.models.AgentApiKey;
       const { key, keyHash, keyPrefix } = await generateApiKey(data.binding != null);
 
-      const apiKeyDoc = await AgentApiKey.create({
+      let tenantId = getTenantId();
+      if (data.binding && tenantId === SYSTEM_TENANT_ID) {
+        const owner = await mongoose.models.User.findById(data.userId).select('tenantId').lean();
+        if (!owner) throw new Error('Bound-key owner unavailable');
+        tenantId = owner.tenantId || undefined;
+      }
+      const record = {
         userId: data.userId,
         name: data.name,
         keyHash,
         keyPrefix,
         expiresAt: data.expiresAt || undefined,
         ...(data.binding ? { binding: data.binding } : {}),
-      });
+        ...(data.binding && tenantId ? { tenantId } : {}),
+      };
+      const persist = async (session?: ClientSession): Promise<IAgentApiKey> => {
+        const [created] = await AgentApiKey.create([record], session ? { session } : {});
+        return created;
+      };
+      let apiKeyDoc: IAgentApiKey;
+      if (data.binding) {
+        await ensureBoundKeyIndexes();
+        const admit = await prepareChannelOwnerAdmission(mongoose, {
+          userId: String(data.userId),
+          tenantId,
+        });
+        const session = await mongoose.startSession();
+        try {
+          const created = await session.withTransaction(async () => {
+            if (!(await admit(session))) throw new Error('Bound-key owner unavailable');
+            return persist(session);
+          });
+          if (!created) throw new Error('Bound-key write did not commit');
+          apiKeyDoc = created;
+        } finally {
+          await session.endSession();
+        }
+      } else apiKeyDoc = await persist();
 
       return {
-        id: apiKeyDoc._id.toString(),
+        id: String(apiKeyDoc._id),
         name: apiKeyDoc.name,
         keyPrefix,
         key,
@@ -75,7 +115,7 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
     binding?: AgentApiKeyBinding;
   } | null> {
     const AgentApiKey = mongoose.models.AgentApiKey;
-    const keyHash = await hashToken(apiKey.startsWith('sk-bound-') ? `bound:${apiKey}` : apiKey);
+    const keyHash = await keyDigest(apiKey, apiKey.startsWith('sk-bound-'));
 
     const keyDoc = (await AgentApiKey.findOne({ keyHash }).lean()) as IAgentApiKey | null;
 

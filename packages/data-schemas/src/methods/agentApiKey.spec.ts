@@ -1,16 +1,18 @@
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { createAgentApiKeyMethods } from './agentApiKey';
+import { runAsSystem } from '~/config/tenantContext';
+import { createUserMethods } from './user';
 import { createModels } from '~/models';
 import { hashToken } from '~/crypto';
 
-let mongoServer: MongoMemoryServer;
+let mongoServer: MongoMemoryReplSet;
 let methods: ReturnType<typeof createAgentApiKeyMethods>;
 const userId = new mongoose.Types.ObjectId();
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create();
-  await mongoose.connect(mongoServer.getUri());
+  mongoServer = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
+  await mongoose.connect(mongoServer.getUri(), { autoIndex: false });
   createModels(mongoose);
   methods = createAgentApiKeyMethods(mongoose);
 });
@@ -34,7 +36,7 @@ describe('validateAgentApiKey', () => {
       .lean<{ keyHash: string } | null>();
 
     expect(created.key).toMatch(/^sk-bound-[a-f0-9]{64}$/);
-    expect(stored?.keyHash).toBe(await hashToken(`bound:${created.key}`));
+    expect(stored?.keyHash).toBe(`bound-v1:${await hashToken(`bound:${created.key}`)}`);
     expect(stored?.keyHash).not.toBe(await hashToken(created.key));
     expect(
       await mongoose.models.AgentApiKey.findOne({ keyHash: await hashToken(created.key) }),
@@ -125,4 +127,100 @@ describe('validateAgentApiKey', () => {
 
     await expect(methods.validateAgentApiKey('lc-any')).rejects.toThrow('connection reset');
   });
+});
+
+it('keeps every attacker-chosen public wrapper outside the legacy validator digest namespace', async () => {
+  const created = await methods.createAgentApiKey({
+    userId,
+    name: 'legacy-namespace',
+    binding: { kind: 'grant', id: 'one' },
+  });
+  const legacyLookup = async (token: string) =>
+    mongoose.models.AgentApiKey.findOne({ keyHash: await hashToken(token) }).lean();
+  for (const token of [
+    created.key,
+    `bound:${created.key}`,
+    `bound-v1:${created.key}`,
+    `bound:bound:${created.key}`,
+  ]) {
+    expect(await legacyLookup(token)).toBeNull();
+    if (token !== created.key) expect(await methods.validateAgentApiKey(token)).toBeNull();
+  }
+  const ordinary = await methods.createAgentApiKey({ userId, name: 'legacy-control' });
+  expect(await legacyLookup(ordinary.key)).not.toBeNull();
+  expect(await methods.validateAgentApiKey(created.key)).toMatchObject({ binding: { id: 'one' } });
+});
+
+it('serializes bound-key creation with final account erasure', async () => {
+  const user = await mongoose.models.User.create({
+    email: 'bound-key-owner@example.com',
+    provider: 'local',
+  });
+  const ownerId = String(user._id);
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const collection = mongoose.models.AgentApiKey.collection;
+  const insert = collection.insertOne.bind(collection);
+  const paused = jest.spyOn(collection, 'insertOne').mockImplementation(async (...args) => {
+    entered();
+    await gate;
+    return insert(...args);
+  });
+  const creating = methods.createAgentApiKey({
+    userId: ownerId,
+    name: 'in-flight',
+    binding: { kind: 'grant', id: 'one' },
+  });
+  await started;
+  let deleted = false;
+  const deleting = createUserMethods(mongoose)
+    .deleteUserById(ownerId)
+    .then((value) => {
+      deleted = true;
+      return value;
+    });
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(deleted).toBe(false);
+  } finally {
+    release();
+    paused.mockRestore();
+  }
+  const created = await creating;
+  await deleting;
+  expect(await methods.validateAgentApiKey(created.key)).toBeNull();
+  expect(await mongoose.models.AgentApiKey.exists({ userId: user._id })).toBeNull();
+  await expect(
+    methods.createAgentApiKey({
+      userId: ownerId,
+      name: 'late',
+      binding: { kind: 'grant', id: 'one' },
+    }),
+  ).rejects.toThrow('owner unavailable');
+});
+
+it('uses the real owner partition when a system operation issues a bound grant', async () => {
+  const user = await runAsSystem(async () =>
+    mongoose.models.User.create({
+      email: 'system-bound-key-owner@example.com',
+      provider: 'local',
+      tenantId: 'owner-tenant',
+    }),
+  );
+  const created = await runAsSystem(async () =>
+    methods.createAgentApiKey({
+      userId: String(user._id),
+      name: 'system-grant',
+      binding: { kind: 'grant', id: 'one' },
+    }),
+  );
+  expect(
+    await runAsSystem(async () => mongoose.models.AgentApiKey.findById(created.id).lean()),
+  ).toMatchObject({ tenantId: 'owner-tenant' });
 });
