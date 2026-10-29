@@ -125,6 +125,10 @@ export function createChannelRunModel(
     { unique: true },
   );
   schema.index({ tenantId: 1, laneId: 1, sequence: 1 }, { unique: true });
+  schema.index(
+    { tenantId: 1, laneId: 1, state: 1, sequence: 1 },
+    { name: 'channel_run_active_predecessor' },
+  );
   schema.index({ tenantId: 1, channelId: 1, state: 1, leaseExpiresAt: 1, receivedAt: 1 });
   schema.index(
     {
