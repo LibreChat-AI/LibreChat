@@ -924,6 +924,8 @@ export class Chat {
       conversationId?: string;
       /** The endpoint an answer already resolved, so its continuation does not ask the host again. */
       endpoint?: string;
+      /** A pause the server refused to resume, retired once this reattachment owns the chat. */
+      retire?: string;
     } & ChatRequestOptions,
     continuation: boolean,
   ): Promise<void> {
@@ -939,7 +941,7 @@ export class Chat {
       return;
     }
     /** The host's selection is read before any marker changes, so a throw leaves them all as they were. */
-    const { endpoint: resolved, ...reattachOptions } = options;
+    const { endpoint: resolved, retire, ...reattachOptions } = options;
     const selected = resolved ?? this.resumeEndpoint();
     if (this.active || this.disposed) {
       /** The host's selection may have started a turn or disposed the chat, which then owns it. */
@@ -1003,7 +1005,7 @@ export class Chat {
     const { conversationId = generation.conversationId ?? this.conversationId, ...request } =
       reattachOptions;
     try {
-      if (superseded) {
+      if (superseded || (retire != null && this.action?.actionId === retire)) {
         /** A restored pause belongs to the generation it was restored with, not this one. */
         this.clearAction();
       }
@@ -2522,13 +2524,15 @@ export class Chat {
         if (probing) {
           /**
            * Started while the pause still names its generation, so a subscriber cannot take the
-           * chat first and the reattachment settles or replaces the pause by what it finds.
+           * chat first; the reattachment retires the refused pause once it owns the chat, and then
+           * settles or replaces it by what it finds.
            */
           this.reattach(
             {
               streamId: action.streamId,
               endpoint: selection?.endpoint ?? undefined,
               conversationId: action.conversationId ?? this.pausedConversationId(),
+              retire: action.actionId,
             },
             false,
           ).catch((probe: unknown) =>

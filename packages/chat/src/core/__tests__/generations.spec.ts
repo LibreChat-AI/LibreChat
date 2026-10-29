@@ -3749,3 +3749,25 @@ describe('Chat reconnects that settle a dropped generation or a lost start', () 
     expect(h.chat.status).toBe('ready');
   });
 });
+
+describe('Chat pauses the server refused to resume', () => {
+  it('a refused pause stays retired when the probe that follows it fails on the network', async () => {
+    const h = createHarness();
+    h.chat.restorePendingAction(askAction, 500);
+    h.transport.resume.mockRejectedValueOnce(
+      Object.assign(new Error('gone'), { response: { status: 404 } }),
+    );
+    h.transport.reconnectToStream.mockRejectedValueOnce(networkError());
+    await expect(h.chat.addToolOutput({ toolCallId: 'ask-1', output: 'A' })).rejects.toThrow();
+    await flush();
+
+    expect(h.chat.pendingAction).toBeUndefined();
+    attach(h, createStream({ streamId: 'convo-1', generationCreatedAt: 600 }));
+    let refused: unknown;
+    h.chat.sendMessage({ parts: [{ type: 'text', text: 'Next' }] }).catch((error: unknown) => {
+      refused = error;
+    });
+    await flush();
+    expect(refused).toBeUndefined();
+  });
+});
