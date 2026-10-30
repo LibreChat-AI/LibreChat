@@ -150,6 +150,7 @@ describe('detectArtifactTypeFromFile', () => {
     ['report.docx', TOOL_ARTIFACT_TYPES.DOCX],
     ['data.csv', TOOL_ARTIFACT_TYPES.SPREADSHEET],
     ['workbook.xlsx', TOOL_ARTIFACT_TYPES.SPREADSHEET],
+    ['macros.xlsm', TOOL_ARTIFACT_TYPES.SPREADSHEET],
     ['legacy.xls', TOOL_ARTIFACT_TYPES.SPREADSHEET],
     ['sheet.ods', TOOL_ARTIFACT_TYPES.SPREADSHEET],
     ['slides.pptx', TOOL_ARTIFACT_TYPES.PRESENTATION],

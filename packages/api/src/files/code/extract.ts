@@ -168,6 +168,8 @@ const documentMimeFromExtension = (name: string): string | null => {
       return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
     case '.xlsx':
       return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    case '.xlsm':
+      return 'application/vnd.ms-excel.sheet.macroEnabled.12';
     case '.xls':
       return 'application/vnd.ms-excel';
     case '.ods':
