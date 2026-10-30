@@ -352,3 +352,19 @@ it(
     expect(stored).toMatchObject({ state: 'active', revision: linked.revision });
   }),
 );
+
+it.each(['http://192.168.1.50:3080', 'https://example.test/?unsafe=1', 'not-a-url'])(
+  'defers unsafe link origin validation until issuance and persists no ticket: %s',
+  (origin) =>
+    scoped(async () => {
+      const disabled = createChannelIdentityService({
+        ...dependencies,
+        publicBaseUrl: origin,
+        channelIsCurrent: async () => false,
+      });
+      expect(await disabled.issue(identity)).toEqual({ ok: false, error: { code: 'changed' } });
+      const enabled = createChannelIdentityService({ ...dependencies, publicBaseUrl: origin });
+      await expect(enabled.issue(identity)).rejects.toThrow();
+      expect(await mongoose.models.ChannelIdentity.countDocuments({})).toBe(0);
+    })(),
+);
