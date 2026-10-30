@@ -1,5 +1,4 @@
 import { channelConfigSchema } from 'librechat-data-provider';
-import type { ChannelRunStorage } from '@librechat/data-schemas';
 import type { ChannelConfig } from 'librechat-data-provider';
 import type { RequestHandler } from 'express';
 import type { ChannelFeedbackWorkerDependencies } from './feedbackWorker';
@@ -13,14 +12,13 @@ export interface ChannelFeedbackRuntimeDependencies {
   getConfig: () => Promise<ChannelConfig | undefined>;
   hostDeps: Omit<
     ChannelFeedbackHostDependencies,
-    'runs' | 'maxConflictRetries' | 'exportTimeoutMs' | 'exportLeaseMs' | 'exportRetryMs'
+    'getConfig' | 'maxConflictRetries' | 'exportTimeoutMs' | 'exportLeaseMs' | 'exportRetryMs'
   >;
   workerDeps: Omit<
     ChannelFeedbackWorkerDependencies,
     'feedback' | 'batchSize' | 'intervalMs' | 'maxIdleIntervalMs'
   >;
   guard: ChannelServiceGuard;
-  runs: Pick<ChannelRunStorage, 'findDeliveredReply'>;
 }
 
 export interface ChannelFeedbackRuntime {
@@ -67,7 +65,7 @@ export function createChannelFeedbackRuntime(
         const settings = config.feedback;
         const feedback = createChannelFeedbackHost({
           ...deps.hostDeps,
-          runs: deps.runs,
+          getConfig: async () => (await deps.getConfig()) ?? { enabled: false },
           maxConflictRetries: settings.maxConflictRetries,
           exportTimeoutMs: settings.exportTimeoutMs,
           exportLeaseMs: settings.exportLeaseMs,
@@ -76,13 +74,12 @@ export function createChannelFeedbackRuntime(
         worker = createChannelFeedbackWorker({
           ...deps.workerDeps,
           feedback,
-          batchSize: settings.batchSize,
+          batchSize: Math.min(settings.batchSize, config.maxMetadataPageSize),
           intervalMs: settings.intervalMs,
           maxIdleIntervalMs: settings.maxIdleIntervalMs,
         });
         handlers = createChannelFeedbackHandlers({
           guard: deps.guard,
-          runs: deps.runs,
           feedback,
           wake: () => worker?.wake(),
         });

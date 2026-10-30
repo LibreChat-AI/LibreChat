@@ -1,12 +1,11 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import request from 'supertest';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createModels,
   createMethods,
   createChannelFeedbackStorage,
-  createChannelRunStorage,
   tenantStorage,
   runAsSystem,
   getTenantId,
@@ -24,13 +23,14 @@ import { createChannelHandlers } from './service';
 
 const tenantId = 'tenant-a';
 const serviceToken = 'local-channel-feedback-test-token-32-characters';
-let mongo: MongoMemoryServer;
+let mongo: MongoMemoryReplSet;
 let app: express.Express;
 let db: ReturnType<typeof createMethods>;
 let feedback: ReturnType<typeof createChannelFeedbackHost>;
 let deps: ChannelFeedbackHostDependencies;
 let config: AppConfig;
 let central: boolean | null;
+let runtimeEnabled: boolean;
 const scope = <T>(work: () => Promise<T>) => tenantStorage.run({ tenantId }, work);
 const event = {
   eventId: 'Ev1',
@@ -48,7 +48,10 @@ const post = (body: object = event) =>
     .send(body);
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  mongo = await MongoMemoryReplSet.create({
+    replSet: { count: 1 },
+    instanceOpts: [{ args: ['--nounixsocket'] }],
+  });
   await mongoose.connect(mongo.getUri());
   createModels(mongoose);
   db = createMethods(mongoose);
@@ -71,13 +74,16 @@ beforeEach(async () => {
       'ChannelFeedback',
       'ChannelFeedbackEvent',
       'Message',
+      'ChannelScope',
+      'ResponseScope',
     ])
       await mongoose.models[name].deleteMany({});
   });
   central = true;
+  runtimeEnabled = true;
   config = {
     interfaceConfig: { feedback: true },
-    endpoints: { agents: { channels: { enabled: true } } },
+    endpoints: { agents: {} },
   } as AppConfig;
   await scope(async () => {
     await db.createAgentChannel({
@@ -117,6 +123,8 @@ beforeEach(async () => {
         input: 'hello',
       },
       execution: {
+        protocol: 'responses',
+        responseId: 'message-a',
         requestId: 'request-a',
         conversationId: 'conversation-a',
         parentMessageId: 'parent-a',
@@ -148,10 +156,9 @@ beforeEach(async () => {
   });
   deps = {
     channels: db,
-    runs: createChannelRunStorage(mongoose),
+    getConfig: async () => ({ enabled: runtimeEnabled }),
     storage: createChannelFeedbackStorage(mongoose),
     getAppConfig: async () => config,
-    getMessage: (filter) => db.getMessage(filter),
     currentTracePolicy: async () =>
       central === null ? null : { centralTraceExportEnabled: central },
     sendScore: jest.fn().mockResolvedValue(undefined),
@@ -172,7 +179,6 @@ beforeEach(async () => {
   });
   const handlers = createChannelFeedbackHandlers({
     guard: channel.service,
-    runs: deps.runs,
     feedback,
   });
   app = express();
@@ -358,4 +364,181 @@ test('durable worker enumerates only metadata in system context then exports wit
   await worker.start();
   await worker.stop();
   expect(observed).toEqual([SYSTEM_TENANT_ID, tenantId]);
+});
+
+it('resolves delivered source metadata once and reuses the mapping on redelivery', async () => {
+  const read = jest.spyOn(deps.storage, 'readReplySource');
+  const history = jest.spyOn(mongoose.models.ChannelRun, 'findOne');
+  await post().expect(200);
+  await post().expect(200);
+  expect(read).toHaveBeenCalledTimes(1);
+  expect(history).not.toHaveBeenCalled();
+  const source = await scope(() =>
+    deps.storage.readReplySource(
+      {
+        tenantId,
+        channelId: 'channel-a',
+        channelRevision: 'rev-1',
+        teamId: 'T1',
+        agentId: 'agent-a',
+      },
+      event.externalMessageKey,
+    ),
+  );
+  expect(source).toMatchObject({ messageId: 'message-a', principalId: 'user-a' });
+  for (const field of ['text', 'admission', 'execution', 'encryptedApiKey', '_id'])
+    expect(source).not.toHaveProperty(field);
+});
+
+it.each([
+  'unbound',
+  'response_changed',
+  'foreign_owner',
+  'foreign_conversation',
+  'expired',
+  'user_message',
+  'unconfirmed',
+] as const)('rejects %s source provenance without admitting feedback', async (change) => {
+  await scope(async () => {
+    if (change === 'unbound')
+      await mongoose.models.ChannelRun.updateOne(
+        { runId: 'run-a' },
+        { $unset: { 'execution.responseId': '' } },
+      );
+    if (change === 'response_changed')
+      await mongoose.models.ChannelRun.updateOne(
+        { runId: 'run-a' },
+        { $set: { 'execution.responseId': 'another-response' } },
+      );
+    if (change === 'foreign_owner')
+      await mongoose.models.Message.updateOne(
+        { messageId: 'message-a' },
+        { $set: { user: 'another-owner' } },
+      );
+    if (change === 'foreign_conversation')
+      await mongoose.models.Message.updateOne(
+        { messageId: 'message-a' },
+        { $set: { conversationId: 'another-conversation' } },
+      );
+    if (change === 'expired')
+      await mongoose.models.Message.updateOne(
+        { messageId: 'message-a' },
+        { $set: { expiredAt: new Date(0) } },
+      );
+    if (change === 'user_message')
+      await mongoose.models.Message.updateOne(
+        { messageId: 'message-a' },
+        { $set: { isCreatedByUser: true } },
+      );
+    if (change === 'unconfirmed')
+      await mongoose.models.ChannelRun.updateOne(
+        { runId: 'run-a' },
+        { $set: { 'receipts.0.outcome': 'unknown' } },
+      );
+  });
+  await post().expect(404, { error: 'mapping_not_found' });
+  expect(await scope(() => mongoose.models.ChannelFeedbackEvent.countDocuments({}))).toBe(0);
+  expect(deps.sendScore).not.toHaveBeenCalled();
+});
+
+it('carries the original deadline through delayed source configuration and rejects a late dispatch', async () => {
+  await post().expect(200);
+  let clock = 1000;
+  let enter!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let principalLookups = 0;
+  deps.now = () => clock;
+  deps.getAppConfig = async (_tenant, principalId) => {
+    if (principalId && ++principalLookups === 2) {
+      enter();
+      await gate;
+    }
+    return config;
+  };
+  const oldHost = createChannelFeedbackHost(deps);
+  const old = scope(() => oldHost.flush(tenantId, 10)).then(
+    () => undefined,
+    (error) => error,
+  );
+  await entered;
+  clock += 2001;
+  await post({
+    ...event,
+    eventId: 'new-negative',
+    eventTimestampUs: event.eventTimestampUs + 1,
+    reaction: '-1',
+  }).expect(200);
+  await scope(() => createChannelFeedbackHost(deps).flush(tenantId, 10));
+  release();
+  expect(await old).toMatchObject({ message: 'Channel feedback export timed out' });
+  expect(deps.sendScore).toHaveBeenCalledTimes(1);
+  expect(jest.mocked(deps.sendScore).mock.calls[0][0].feedback).toEqual({ rating: 'thumbsDown' });
+  expect(
+    await scope(() => deps.storage.pendingChannelFeedbackExports(tenantId, clock, 10)),
+  ).toHaveLength(0);
+});
+
+it('rechecks source authority after delayed configuration before dispatching to the provider', async () => {
+  await post().expect(200);
+  let enter!: () => void;
+  let release!: () => void;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  deps.getAppConfig = async (_tenant, principalId) => {
+    if (principalId) {
+      enter();
+      await gate;
+    }
+    return config;
+  };
+  const exportResult = scope(() => feedback.flush(tenantId, 10)).then(
+    () => undefined,
+    (error) => error,
+  );
+  await entered;
+  await scope(() => mongoose.models.Message.deleteOne({ messageId: 'message-a', user: 'user-a' }));
+  release();
+  expect(await exportResult).toMatchObject({ message: 'Channel feedback authority changed' });
+  expect(deps.sendScore).not.toHaveBeenCalled();
+});
+
+it('honors the source principal feedback override before durable event admission', async () => {
+  deps.getAppConfig = async (_tenant, principalId) =>
+    principalId === 'user-a'
+      ? ({
+          ...config,
+          interfaceConfig: { ...config.interfaceConfig, feedback: false },
+        } as AppConfig)
+      : config;
+  await post().expect(403, { error: 'forbidden' });
+  expect(await scope(() => mongoose.models.ChannelFeedbackEvent.countDocuments({}))).toBe(0);
+  expect(deps.sendScore).not.toHaveBeenCalled();
+});
+
+it('rechecks a source principal override before export and retries only after re-enablement', async () => {
+  await post().expect(200);
+  let enabled = false;
+  deps.getAppConfig = async (_tenant, principalId) =>
+    principalId === 'user-a' && !enabled
+      ? ({
+          ...config,
+          interfaceConfig: { ...config.interfaceConfig, feedback: false },
+        } as AppConfig)
+      : config;
+  await scope(() => feedback.flush(tenantId, 10));
+  expect(deps.sendScore).not.toHaveBeenCalled();
+  enabled = true;
+  await scope(() => mongoose.models.ChannelFeedback.updateMany({}, { $set: { retryAtMs: 0 } }));
+  await scope(() => feedback.flush(tenantId, 10));
+  expect(deps.sendScore).toHaveBeenCalledTimes(1);
 });

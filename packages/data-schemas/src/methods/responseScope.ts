@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ClientSession } from 'mongoose';
 import type { ResponseOwner } from '~/models/response';
+import { eraseChannelFeedbackForOwner } from './channelFeedbackErasure';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
 import { getTransactionSupport } from '~/utils/transactions';
@@ -134,6 +135,7 @@ export async function eraseResponseRecords(
   owner: ResponseOwner,
   conversationIds?: readonly string[],
 ): Promise<void> {
+  await eraseChannelFeedbackForOwner(mongoose, owner, conversationIds);
   await createStoredResponseModel(mongoose).deleteMany({
     ...responseOwnerFilter(owner),
     ...(conversationIds ? { conversationId: { $in: conversationIds } } : {}),
