@@ -17,7 +17,6 @@ const {
   getReferencedQuotes,
   resolveTitleTiming,
   GenerationJobManager,
-  resolveChannelExecutionMetadata,
   getTrustedNewConversationId,
   buildGenerationStartedResponse,
   createConvoPersistenceSignal,
@@ -1690,7 +1689,6 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         idempotencyClaimToken: ownedIdempotencyClaim.claimToken,
       }),
       initialMetadata: {
-        ...resolveChannelExecutionMetadata(req),
         conversationId,
         generationProtocolVersion,
         endpoint: endpointOption.endpoint,

@@ -261,8 +261,6 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').getTrustedNewConversationId(...args),
   buildGenerationStartedResponse: (...args) =>
     jest.requireActual('@librechat/api').buildGenerationStartedResponse(...args),
-  resolveChannelExecutionMetadata: (...args) =>
-    jest.requireActual('@librechat/api').resolveChannelExecutionMetadata(...args),
   getPreliminaryResponseMessageId: jest.requireActual(
     '../../../../../packages/api/src/utils/message',
   ).getPreliminaryResponseMessageId,
@@ -596,39 +594,6 @@ describe('ResumableAgentController resume metadata', () => {
     mockSettleAgentEventActorSuspension.mockResolvedValue({ status: 'settled' });
   });
 
-  it('persists the validated channel marker received through signed trigger ingress', async () => {
-    const { generateAgentTriggerToken } = jest.requireActual('@librechat/api');
-    const channelExecution = { channelId: 'channel:team/频道', runId: 'event.run:1' };
-    const req = {
-      user: { id: 'user-123' },
-      headers: {
-        'x-lc-agent-trigger': '1',
-        authorization: `Bearer ${generateAgentTriggerToken('user-123')}`,
-      },
-      body: {
-        text: 'Run a channel event',
-        messageId: 'incoming-user-message',
-        conversationId: 'conversation-123',
-        channelExecution,
-        endpointOption: { endpoint: 'agents', modelOptions: { model: 'agent-1' } },
-      },
-      config: {},
-    };
-    await AgentController(
-      req,
-      createResumableResponse(),
-      jest.fn(),
-      jest.fn().mockRejectedValue(new Error('stop after enrollment')),
-      null,
-    );
-    expect(mockGenerationJobManager.createJob).toHaveBeenCalledWith(
-      'conversation-123',
-      'user-123',
-      'conversation-123',
-      expect.objectContaining({ initialMetadata: expect.objectContaining({ channelExecution }) }),
-    );
-  });
-
   it.each([true, false])(
     'reserves conversation and acknowledges the canonical reply for trusted trigger: %s',
     async (trusted) => {
@@ -646,6 +611,8 @@ describe('ResumableAgentController resume metadata', () => {
           conversationId: 'new',
           newConversationId: reserved,
           clientRequestId: 'stable-channel-request',
+          channelExecution: { channelId: 'unconsumed-channel', runId: 'unconsumed-run' },
+          terminalPersistenceOwner: 'external',
           endpointOption: { endpoint: 'agents', modelOptions: { model: 'agent-1' } },
         },
         config: {},
@@ -671,6 +638,8 @@ describe('ResumableAgentController resume metadata', () => {
         }),
       );
       expect(options.initialMetadata.responseMessageId).toEqual(expect.any(String));
+      expect(options.initialMetadata).not.toHaveProperty('channelExecution');
+      expect(options.initialMetadata).not.toHaveProperty('terminalPersistenceOwner');
     },
   );
 

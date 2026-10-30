@@ -98,7 +98,7 @@ import { toClientPendingAction } from '~/agents/hitl/policy';
 import { markAbortedCompactionContent } from '~/agents/compaction';
 import { ApprovalLifecycle, pausePersistenceActionId } from './ApprovalLifecycle';
 import { projectPendingMCPOAuthPrompts } from '~/mcp/oauth/resume';
-import { sanitizeJobMetadata, hasSourceTerminalAction } from './metadata';
+import { sanitizeJobMetadata } from './metadata';
 
 /** Terminal error surfaced to a client still attached when its approval window lapses. */
 const APPROVAL_EXPIRED_ERROR = 'Approval expired before a decision was made';
@@ -715,6 +715,7 @@ export interface TerminalJobClaim {
   /** The winner must durably publish either its normal FINAL or a
    * reconciliation payload before cleanup may remove the job. */
   readonly persistencePending?: true;
+  readonly terminalPersistenceOwner?: 'external';
   /** Exact queued + claimed steers atomically parked by the winning CAS. */
   readonly drainedSteers: readonly SteerQueueItem[];
 }
@@ -1412,9 +1413,9 @@ class GenerationJobManagerClass {
     ) {
       return jobData;
     }
-    /** Responses publishes its terminal result in the canonical response journal. Chat's
-     * reconciliation frame cannot substitute for that write or release the provider proof. */
-    if (jobData.endpoint === 'responses' && jobData.providerDrained === true) return jobData;
+    /** A persisted external journal owner must publish its canonical result. Generic
+     * reconciliation cannot substitute for that write or release its provider proof. */
+    if (jobData.terminalPersistenceOwner === 'external') return jobData;
     const startedAt =
       jobData.terminalPersistenceStartedAt ?? jobData.completedAt ?? jobData.createdAt;
     if (Date.now() - startedAt < TERMINAL_PERSISTENCE_TIMEOUT_MS) {
@@ -2473,7 +2474,7 @@ class GenerationJobManagerClass {
                 completedAt: Date.now(),
                 error: message,
                 finalEvent: JSON.stringify(finalEvent),
-                ...(hasSourceTerminalAction(job) &&
+                ...(job.agentEventDeliveryKey != null &&
                   this.terminalHostActionHandler != null && {
                     terminalHostActionPending: true,
                   }),
@@ -3147,7 +3148,6 @@ class GenerationJobManagerClass {
         // Surface whether the turn was temporary so a resume keeps it non-persisted.
         isTemporary: jobData.isTemporary,
         retentionExpiresAt: jobData.retentionExpiresAt,
-        channelExecution: jobData.channelExecution,
         agentEventDeliveryKey: jobData.agentEventDeliveryKey,
         agentEventInvocationKey: jobData.agentEventInvocationKey,
         agentEventInvocationGenerationCreatedAt: jobData.agentEventInvocationGenerationCreatedAt,
@@ -3186,6 +3186,7 @@ class GenerationJobManagerClass {
         idempotencyClientRequestId: jobData.idempotencyClientRequestId,
         agentEventLegacyTurnToken: jobData.agentEventLegacyTurnToken,
         terminalPersistencePending: jobData.terminalPersistencePending,
+        terminalPersistenceOwner: jobData.terminalPersistenceOwner,
         terminalHostActionPending: jobData.terminalHostActionPending,
         terminalPersistenceStartedAt: jobData.terminalPersistenceStartedAt,
         // Surface the pending review so status/resume routes built on the
@@ -4082,6 +4083,8 @@ class GenerationJobManagerClass {
       );
       return null;
     }
+    const externalPersistence = jobData.terminalPersistenceOwner === 'external';
+    const persistencePending = options.persistencePending === true || externalPersistence;
     const failedPauseActionId = options.failedPauseActionId;
     if (
       options.expectedProviderExecutionId != null &&
@@ -4146,11 +4149,11 @@ class GenerationJobManagerClass {
       patch: {
         completedAt,
         ...(terminalError != null && { error: terminalError }),
-        ...(hasSourceTerminalAction(jobData) &&
+        ...(jobData.agentEventDeliveryKey != null &&
           this.terminalHostActionHandler != null && {
             terminalHostActionPending: true,
           }),
-        ...(options.persistencePending === true && {
+        ...(persistencePending && {
           terminalPersistencePending: true,
           terminalPersistenceStartedAt: completedAt,
         }),
@@ -4179,9 +4182,10 @@ class GenerationJobManagerClass {
       ...(jobData.userId != null && { userId: jobData.userId }),
       status,
       ...(terminalError != null && { error: terminalError }),
-      ...(options.persistencePending === true && {
+      ...(persistencePending && {
         persistencePending: true as const,
       }),
+      ...(externalPersistence && { terminalPersistenceOwner: 'external' as const }),
       drainedSteers: Object.freeze([...drainedSteers]),
     });
     this.terminalClaimRuntimes.set(claim, runtime ?? null);
@@ -4225,6 +4229,8 @@ class GenerationJobManagerClass {
     if (!this.terminalClaimRuntimes.has(claim) || claim.persistencePending !== true) {
       throw new Error('Terminal persistence claim was not issued by this manager');
     }
+    if (claim.terminalPersistenceOwner === 'external')
+      throw new Error('External terminal journal owns publication');
 
     const { streamId, createdAt } = claim;
     const claimedRuntime = this.terminalClaimRuntimes.get(claim) ?? undefined;
@@ -4634,24 +4640,27 @@ class GenerationJobManagerClass {
       let persistenceFinalized = false;
       try {
         await beforeErrorPublication();
-        persistenceFinalized = await this.jobStore.finalizeTerminalPersistence(
-          streamId,
-          claim.createdAt,
-          JSON.stringify(
-            buildTerminalPersistenceReconcile({
-              createdAt: claim.createdAt,
-              conversationId: claim.conversationId,
-              status: claim.status,
-            }),
-          ),
-        );
+        persistenceFinalized =
+          claim.terminalPersistenceOwner === 'external' ||
+          (await this.jobStore.finalizeTerminalPersistence(
+            streamId,
+            claim.createdAt,
+            JSON.stringify(
+              buildTerminalPersistenceReconcile({
+                createdAt: claim.createdAt,
+                conversationId: claim.conversationId,
+                status: claim.status,
+              }),
+            ),
+          ));
       } catch (persistenceError) {
         logger.error(
           `[GenerationJobManager] Failed required error persistence for ${streamId}:`,
           persistenceError,
         );
         try {
-          await this.publishTerminalClaim(claim, null);
+          if (claim.terminalPersistenceOwner !== 'external')
+            await this.publishTerminalClaim(claim, null);
         } catch (publishError) {
           logger.error(
             `[GenerationJobManager] Failed to publish error persistence reconciliation for ${streamId}:`,
@@ -4864,6 +4873,9 @@ class GenerationJobManagerClass {
      * resolution wins `requires_action -> running`. The returned batch is the
      * exact queued/claimed set parked by the winning abort, so the final event
      * can restore it without a second read or a recovery race. */
+    const externalPersistence =
+      options?.retainTerminalPersistence === true ||
+      jobData.terminalPersistenceOwner === 'external';
     const terminalPersistenceStartedAt = Date.now();
     let transitionFrom = abortableStatus;
     let drainedSteers: SteerQueueItem[] | null = null;
@@ -4883,7 +4895,8 @@ class GenerationJobManagerClass {
           completedAt: terminalPersistenceStartedAt,
           terminalPersistencePending: true,
           terminalPersistenceStartedAt,
-          ...(hasSourceTerminalAction(jobData) &&
+          ...(externalPersistence && { terminalPersistenceOwner: 'external' as const }),
+          ...(jobData.agentEventDeliveryKey != null &&
             this.terminalHostActionHandler != null && {
               terminalHostActionPending: true,
             }),
@@ -4956,6 +4969,7 @@ class GenerationJobManagerClass {
       ...(jobData.userId != null && { userId: jobData.userId }),
       status: 'aborted',
       persistencePending: true,
+      ...(externalPersistence && { terminalPersistenceOwner: 'external' as const }),
       drainedSteers: Object.freeze([...drainedSteers]),
     });
     this.terminalClaimRuntimes.set(terminalClaim, runtime ?? null);
@@ -5120,7 +5134,7 @@ class GenerationJobManagerClass {
         );
       }
 
-      if (options?.retainTerminalPersistence)
+      if (externalPersistence)
         return {
           ...abortResult,
           finalEvent: null,
@@ -5139,7 +5153,7 @@ class GenerationJobManagerClass {
       };
     } finally {
       try {
-        const mustDrainForTerminalEvidence = hasSourceTerminalAction(jobData);
+        const mustDrainForTerminalEvidence = jobData.agentEventDeliveryKey != null;
         if (options?.awaitProviderDrain || mustDrainForTerminalEvidence) {
           await this.waitForProviderDrainIfRequired(streamId, jobData);
           await this.persistAgentEventRunStepEvidence(streamId, jobData);
@@ -5793,7 +5807,7 @@ class GenerationJobManagerClass {
             // frame was lost is delivered promptly, while the hard deadline
             // still recovers a crashed owner.
             scheduleTerminalPersistenceCheck(
-              terminalJob.endpoint === 'responses' && terminalJob.providerDrained === true
+              terminalJob.terminalPersistenceOwner === 'external'
                 ? 1000
                 : Math.min(1000, remaining),
             );
@@ -9350,7 +9364,7 @@ class GenerationJobManagerClass {
   ): Promise<void> {
     try {
       await this.approvalExpiredHandler?.(streamId, job);
-      if (hasSourceTerminalAction(job)) {
+      if (job.agentEventDeliveryKey != null) {
         await this.terminalHostActionHandler?.(
           streamId,
           job,
@@ -9376,7 +9390,7 @@ class GenerationJobManagerClass {
     job: SerializableJobData,
   ): Promise<boolean> {
     try {
-      if (hasSourceTerminalAction(job)) {
+      if (job.agentEventDeliveryKey != null) {
         await this.terminalHostActionHandler?.(
           streamId,
           job,

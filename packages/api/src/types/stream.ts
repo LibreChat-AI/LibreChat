@@ -55,8 +55,6 @@ export interface GenerationJobMetadata {
   promptTokens?: number;
   /** Agent that initiated the run; a HITL resume verifies it rebuilds the same agent. */
   agent_id?: string;
-  /** Verified actor-bound channel source; retained across approval/OAuth resumes. */
-  channelExecution?: { channelId: string; runId: string };
   /** Whether the originating turn was a temporary chat; a HITL resume keeps it so. */
   isTemporary?: boolean;
   /** Original server-authenticated retention deadline, serialized across replicas. */
@@ -132,6 +130,8 @@ export interface GenerationJobMetadata {
   idempotencyClientRequestId?: string;
   /** Normal FINAL publication is waiting on required durable abort work. */
   terminalPersistencePending?: boolean;
+  /** Server-enrolled external journal owns final publication and barrier release. */
+  terminalPersistenceOwner?: 'external';
   terminalHostActionPending?: boolean;
   terminalPersistenceStartedAt?: number;
   /** Set when the job is paused for human review (status === 'requires_action') */

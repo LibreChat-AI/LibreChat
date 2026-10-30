@@ -184,4 +184,99 @@ describe('execution host persistence authority', () => {
       });
     },
   );
+
+  it('runs the owned pause hook once after a committed barrier release loses its acknowledgement', async () => {
+    const finish = manager.approvals.finishPausePersistence.bind(manager.approvals);
+    const release = jest
+      .spyOn(manager.approvals, 'finishPausePersistence')
+      .mockImplementationOnce(async (...args) => {
+        expect(await finish(...args)).toBe(true);
+        throw new Error('lost pause release acknowledgement');
+      });
+    const action = buildPendingAction(
+      { type: 'ask_user_question', question: { question: 'Choose' } },
+      {
+        streamId: 'released-pause',
+        responseMessageId: 'released-pause',
+        conversationId: 'conversation',
+        runId: 'released-pause',
+        ttlMs: 60_000,
+      },
+    );
+    const afterPause = jest.fn();
+    const afterSettle = jest.fn();
+    await expect(
+      executeAgentRun(
+        {
+          envelope,
+          runId: 'released-pause',
+          conversationId: 'conversation',
+          retainTerminalPersistence: true,
+          isPrincipalActive: async () => true,
+          execute: async (execution) => {
+            await execution.pauseForReview(action, async () => {});
+            return 'paused';
+          },
+          afterPause,
+          afterSettle,
+        },
+        { manager },
+      ),
+    ).resolves.toBe('paused');
+    expect(release).toHaveBeenCalledTimes(1);
+    expect(afterPause).toHaveBeenCalledTimes(1);
+    expect(afterSettle).not.toHaveBeenCalled();
+    expect(await manager.getJobStore().getJob('released-pause')).toMatchObject({
+      status: 'requires_action',
+      pendingActionId: action.actionId,
+      terminalPersistencePending: false,
+      providerDrained: true,
+    });
+  });
+
+  it('does not let generic terminal publication release an external journal claim', async () => {
+    const job = await manager.createJob('external-claim', 'user', 'conversation', {
+      initialMetadata: { endpoint: 'responses', terminalPersistenceOwner: 'external' },
+    });
+    const claim = await manager.claimTerminalJob(
+      job.streamId,
+      'complete',
+      undefined,
+      job.createdAt,
+    );
+    expect(claim).toMatchObject({ persistencePending: true, terminalPersistenceOwner: 'external' });
+    if (!claim) throw new Error('Missing terminal claim');
+    await expect(manager.publishTerminalClaim(claim, null)).rejects.toThrow(
+      'External terminal journal owns publication',
+    );
+    await manager.finishTerminalJob(claim);
+    expect((await manager.getJob(job.streamId))?.metadata.terminalPersistencePending).toBe(true);
+    await expect(
+      manager.finishProviderTerminalPersistence(
+        job.streamId,
+        job.createdAt,
+        job.metadata.providerExecutionId!,
+      ),
+    ).resolves.toBe(true);
+    expect((await manager.getJob(job.streamId))?.metadata.terminalPersistencePending).toBe(false);
+  });
+
+  it.each([false, true])(
+    'keeps the external barrier through a generic required-error callback (fails: %s)',
+    async (fails) => {
+      const job = await manager.createJob('external-error', 'user', 'conversation', {
+        initialMetadata: { endpoint: 'responses', terminalPersistenceOwner: 'external' },
+      });
+      const finalize = jest.spyOn(manager.getJobStore(), 'finalizeTerminalPersistence');
+      await expect(
+        manager.completeJob(job.streamId, 'execution_failed', job.createdAt, {
+          beforeErrorPublication: async () => {
+            if (fails) throw new Error('required write unavailable');
+          },
+        }),
+      ).resolves.toBe(true);
+      expect(finalize).not.toHaveBeenCalled();
+      expect((await manager.getJob(job.streamId))?.metadata.terminalPersistencePending).toBe(true);
+    },
+  );
 });

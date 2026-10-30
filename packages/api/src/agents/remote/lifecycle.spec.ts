@@ -238,6 +238,39 @@ describe('Agent execution enrollment', () => {
     expect(enrollment.isPaused).toBe(true);
   });
 
+  it.each(['provider', 'action', 'epoch', 'barrier', 'outage'] as const)(
+    'does not reconcile an ambiguous pause release with changed %s proof',
+    async (change) => {
+      const enrollment = await enrollAgentExecution(enrollmentParams('release-proof'), { manager });
+      await enrollment.beginProviderExecution();
+      const pending = action(enrollment.runId);
+      await enrollment.pauseForReview(pending, async () => {});
+      const finish = manager.approvals.finishPausePersistence.bind(manager.approvals);
+      const store = manager.getJobStore();
+      jest
+        .spyOn(manager.approvals, 'finishPausePersistence')
+        .mockImplementationOnce(async (...args) => {
+          expect(await finish(...args)).toBe(true);
+          if (change === 'outage')
+            jest.spyOn(store, 'getJob').mockRejectedValueOnce(new Error('readback unavailable'));
+          else
+            await store.updateJob(
+              enrollment.runId,
+              {
+                ...(change === 'provider' && { providerExecutionId: 'another-provider' }),
+                ...(change === 'action' && { pendingActionId: 'another-action' }),
+                ...(change === 'epoch' && { createdAt: enrollment.createdAt + 1 }),
+                ...(change === 'barrier' && { terminalPersistencePending: true }),
+              },
+              enrollment.createdAt,
+            );
+          throw new Error('lost release acknowledgement');
+        });
+      await expect(enrollment.settle()).rejects.toThrow();
+      expect(enrollment.isPaused).toBe(false);
+    },
+  );
+
   it('cannot pause or terminalize a resumed provider segment from an old callback', async () => {
     const enrollment = await enrollAgentExecution(enrollmentParams('resp-pause-stale-provider'), {
       manager,

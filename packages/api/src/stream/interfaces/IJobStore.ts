@@ -312,6 +312,8 @@ export interface SerializableJobData {
    * response / pruning HITL state. No normal terminal payload may be exposed
    * while true. */
   terminalPersistencePending?: boolean;
+  /** Server-enrolled external journal owns final publication and barrier release. */
+  terminalPersistenceOwner?: 'external';
   /** Crash-recovery deadline basis for `terminalPersistencePending`. */
   terminalPersistenceStartedAt?: number;
 
@@ -348,8 +350,6 @@ export interface SerializableJobData {
   isTemporary?: boolean;
   /** Original server-authenticated retention deadline, serialized across replicas. */
   retentionExpiresAt?: string;
-  /** Trusted Channels source, persisted with the generation across replicas. */
-  channelExecution?: { channelId: string; runId: string };
   agentEventDeliveryKey?: string;
   /** Original actor invocation when an internal completion delivery owns this generation. */
   agentEventInvocationKey?: string;
@@ -502,12 +502,12 @@ export type JobMetadataPatch = Partial<
     | 'conversationId'
     | 'userMessage'
     | 'endpoint'
+    | 'terminalPersistenceOwner'
     | 'iconURL'
     | 'model'
     | 'agent_id'
     | 'isTemporary'
     | 'retentionExpiresAt'
-    | 'channelExecution'
     | 'agentEventDeliveryKey'
     | 'agentEventInvocationKey'
     | 'agentEventInvocationGenerationCreatedAt'

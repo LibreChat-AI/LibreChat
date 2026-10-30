@@ -712,9 +712,6 @@ async function startRun(
           isContinued: false,
           isRegenerate: false,
           clientRequestId: context.idempotencyKey,
-          ...(envelope.event.source.type === 'channel' && {
-            channelExecution: { channelId: envelope.event.source.id, runId: envelope.event.id },
-          }),
           generationProtocolVersion: 2,
           ...(readyPreparation?.admissionSource != null && {
             agentContinuationAdmission: readyPreparation.admissionSource,
