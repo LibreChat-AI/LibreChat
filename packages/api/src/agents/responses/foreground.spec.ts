@@ -1,7 +1,9 @@
 import express from 'express';
 import request from 'supertest';
 import mongoose from 'mongoose';
+import { formatAgentMessages } from '@librechat/agents';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import { ToolMessage } from '@librechat/agents/langchain/messages';
 import { createModels, createMethods, tenantStorage, runAsSystem } from '@librechat/data-schemas';
 import type { Response } from './types';
 import {
@@ -158,6 +160,72 @@ it('stores canonical tool history and accounting, resolves the returned response
       usage: response.usage,
     });
     expect(read.body.output).toEqual(response.output);
+  }));
+
+it('retains submitted system/assistant tool replay provenance in the next selected history', () =>
+  scoped(async () => {
+    const context = { userId: owner.userId };
+    await requireResponseStorageWrite(
+      db.saveConvo(context, { conversationId, endpoint: 'agents' }),
+      { conversationId },
+    );
+    const chain = buildResponseInputChain(
+      [
+        { role: 'system' as const, content: 'Caller context' },
+        {
+          role: 'assistant' as const,
+          content: [
+            {
+              type: 'tool_call',
+              tool_call: {
+                id: 'replay-call',
+                name: 'lookup',
+                args: '{}',
+                output: 'caller-tool-result',
+              },
+            },
+          ],
+        },
+        { role: 'user' as const, content: 'Continue' },
+      ],
+      '00000000-0000-0000-0000-000000000000',
+    );
+    await saveForegroundResponseInputs(
+      { context, conversationId, messages: chain.messages, agentId: 'agent' },
+      db,
+    );
+    const response = result();
+    await requireResponseStorageWrite(
+      db.saveMessage(context, {
+        messageId: responseId,
+        conversationId,
+        ...projectStoredResponseMessage(response, chain.parentMessageId),
+        isCreatedByUser: false,
+        sender: 'Agent',
+      }),
+      { conversationId, messageId: responseId },
+    );
+    const history = await loadForegroundResponseHistory(
+      { conversationId, userId: owner.userId, previousResponseId: responseId },
+      db,
+    );
+    expect(history.map((message) => message.role)).toEqual([
+      'system',
+      'assistant',
+      'user',
+      'assistant',
+    ]);
+    expect(history.slice(0, 3).every((message) => message.isUserSubmitted === true)).toBe(true);
+    const sdk = formatAgentMessages(history, undefined, new Set(['lookup']));
+    expect(
+      sdk.messages
+        .filter((message) => message instanceof ToolMessage)
+        .map((message) => message.content),
+    ).toContain('caller-tool-result');
+    const read = await request(appFor())
+      .get('/' + chain.messages[1].messageId)
+      .expect(404);
+    expect(JSON.stringify(read.body)).not.toContain('caller-tool-result');
   }));
 
 it('returns 404 for a foreign tenant or erased conversation without disclosing stored output', () =>

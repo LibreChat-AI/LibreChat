@@ -217,7 +217,11 @@ export function createStoredForegroundResponseReader(
       const selected = responseId.startsWith('resp_')
         ? await deps.getMessage({ user: userId, messageId: responseId })
         : undefined;
-      if (selected && (selected.isCreatedByUser || !selected.conversationId)) return missing();
+      if (
+        selected &&
+        (selected.isCreatedByUser || selected.isUserSubmitted || !selected.conversationId)
+      )
+        return missing();
       const conversationId = selected?.conversationId ?? responseId;
       const [conversation, messages] = await Promise.all([
         deps.getConvo(userId, conversationId),
