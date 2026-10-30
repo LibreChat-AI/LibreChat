@@ -2722,11 +2722,17 @@ describe('createResponse controller', () => {
     let originals;
     let originalRun;
     let originalContextualize;
+    let originalToolEnd;
     beforeEach(() => {
       const api = require('@librechat/api');
       const actual = jest.requireActual('@librechat/api');
       originals = new Map(names.map((name) => [name, api[name].getMockImplementation()]));
       for (const name of names) api[name].mockImplementation(actual[name]);
+      const sdk = require('@librechat/agents');
+      originalToolEnd = sdk.ToolEndHandler.getMockImplementation();
+      sdk.ToolEndHandler.mockImplementation(
+        (...args) => new (jest.requireActual('@librechat/agents').ToolEndHandler)(...args),
+      );
       originalRun = api.createRun.getMockImplementation();
       const callbacks = require('~/server/controllers/agents/callbacks');
       originalContextualize = callbacks.contextualizeModelUsage.getMockImplementation();
@@ -2764,6 +2770,17 @@ describe('createResponse controller', () => {
               },
             },
           });
+          await customHandlers.on_tool_end.handle(
+            'on_tool_end',
+            {
+              output: new (require('@librechat/agents/langchain/messages').ToolMessage)({
+                content: 'retained-tool-result',
+                tool_call_id: 'call',
+              }),
+            },
+            {},
+            { toolCallStepIds: new Map([['call', 'step-tool']]) },
+          );
           customHandlers.on_message_delta.handle('on_message_delta', {
             delta: { content: [{ type: 'text', text: 'Answer' }] },
           });
@@ -2787,6 +2804,7 @@ describe('createResponse controller', () => {
       const api = require('@librechat/api');
       for (const [name, implementation] of originals) api[name].mockImplementation(implementation);
       api.createRun.mockImplementation(originalRun);
+      require('@librechat/agents').ToolEndHandler.mockImplementation(originalToolEnd);
       require('~/server/controllers/agents/callbacks').contextualizeModelUsage.mockImplementation(
         originalContextualize,
       );
@@ -2858,6 +2876,20 @@ describe('createResponse controller', () => {
             stream ? 'createResponsesToolEndCallback' : 'createToolEndCallback'
           ],
         ).toHaveBeenCalled();
+        const callbacks = require('~/server/controllers/agents/callbacks');
+        const artifactCallback =
+          callbacks[
+            stream ? 'createResponsesToolEndCallback' : 'createToolEndCallback'
+          ].mock.results.at(-1).value;
+        expect(artifactCallback).toHaveBeenCalledWith(
+          expect.objectContaining({ output: expect.objectContaining({ tool_call_id: 'call' }) }),
+          expect.objectContaining({ stepId: 'step-tool' }),
+        );
+        expect(
+          response.output.filter(
+            (item) => item.type === 'function_call_output' && item.call_id === 'call',
+          ),
+        ).toHaveLength(1);
         expect(mockRecordCollectedUsage).toHaveBeenCalledTimes(1);
       },
     );
