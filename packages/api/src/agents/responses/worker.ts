@@ -1,4 +1,3 @@
-import { responseTenantId, isResponseTenantId } from './scope';
 import { z } from 'zod';
 import jwt from 'jsonwebtoken';
 import { getTenantId, tenantStorage } from '@librechat/data-schemas';
@@ -9,6 +8,7 @@ import type { ResponseResumeAdmissionResult } from './types';
 import type { ContextRequest } from '~/middleware/tenant';
 import type { ServerRequest } from '~/types/http';
 import { checkpointOwnerNamespacePrefix } from '~/stream/checkpoints';
+import { responseTenantId, isResponseTenantId } from './scope';
 import { tenantContextMiddleware } from '~/middleware/tenant';
 
 const audience = 'librechat-responses-worker';
