@@ -30,6 +30,10 @@ const {
   buildMCPAuthRunStepDeltaEvent,
   buildMCPAuthRunStepCompletedEvent,
   createMCPReauthenticationPrompt,
+  createMCPAuthStepEmitter,
+  createMCPAuthDeltaEmitter,
+  createMCPAuthEndEmitter,
+  createOAuthCallback,
   isUserSourced,
   hasCustomUserVars,
   checkAccessWithRequestCache,
@@ -610,22 +614,8 @@ function isEmptyObjectSchema(jsonSchema) {
  * @param {string | null} [params.streamId] - The stream ID for resumable mode.
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted events.
  */
-function createRunStepDeltaEmitter({ res, stepId, toolCall, streamId = null, jobCreatedAt }) {
-  /**
-   * @param {string} authURL - The URL to redirect the user for OAuth authentication.
-   * @param {{ expiresAt?: number }} [options]
-   * @returns {Promise<void>}
-   */
-  return async function (authURL, options) {
-    const eventData = buildMCPAuthRunStepDeltaEvent({ authURL, stepId, toolCall, options });
-    if (streamId) {
-      await GenerationJobManager.emitChunk(streamId, eventData, {
-        expectedCreatedAt: jobCreatedAt,
-      });
-    } else {
-      sendEvent(res, eventData);
-    }
-  };
+function createRunStepDeltaEmitter(options) {
+  return createMCPAuthDeltaEmitter({ ...options, sendEvent, jobs: GenerationJobManager });
 }
 
 /**
@@ -639,25 +629,8 @@ function createRunStepDeltaEmitter({ res, stepId, toolCall, streamId = null, job
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted events.
  * @returns {() => Promise<void>}
  */
-function createRunStepEmitter({
-  res,
-  runId,
-  stepId,
-  toolCall,
-  index,
-  streamId = null,
-  jobCreatedAt,
-}) {
-  return async function () {
-    const eventData = buildMCPAuthRunStepEvent({ runId, stepId, toolCall, index });
-    if (streamId) {
-      await GenerationJobManager.emitChunk(streamId, eventData, {
-        expectedCreatedAt: jobCreatedAt,
-      });
-    } else {
-      sendEvent(res, eventData);
-    }
-  };
+function createRunStepEmitter(options) {
+  return createMCPAuthStepEmitter({ ...options, sendEvent, jobs: GenerationJobManager });
 }
 
 /**
@@ -713,21 +686,8 @@ function createOAuthStart({ flowId, flowManager, callback }) {
  * @param {string | null} [params.streamId] - The stream ID for resumable mode.
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted events.
  */
-function createOAuthEnd({ res, stepId, toolCall, streamId = null, jobCreatedAt }) {
-  return async function () {
-    const eventData = buildMCPAuthRunStepCompletedEvent({
-      stepId,
-      toolCall: { ...toolCall, output: 'OAuth authentication ended', type: 'tool_call' },
-    });
-    if (streamId) {
-      await GenerationJobManager.emitChunk(streamId, eventData, {
-        expectedCreatedAt: jobCreatedAt,
-      });
-    } else {
-      sendEvent(res, eventData);
-    }
-    logger.debug('Sent OAuth authentication ended to client');
-  };
+function createOAuthEnd(options) {
+  return createMCPAuthEndEmitter({ ...options, sendEvent, jobs: GenerationJobManager });
 }
 
 /**
@@ -736,12 +696,6 @@ function createOAuthEnd({ res, stepId, toolCall, streamId = null, jobCreatedAt }
  * @param {(authURL: string, options?: { expiresAt?: number }) => Promise<void>} params.runStepDeltaEmitter
  * @returns {(authURL: string, options?: { expiresAt?: number }) => Promise<void>}
  */
-function createOAuthCallback({ runStepEmitter, runStepDeltaEmitter }) {
-  return async function (authURL, options) {
-    await runStepEmitter();
-    await runStepDeltaEmitter(authURL, options);
-  };
-}
 
 function resolveToolCallUserId({ effectiveUser, capturedUser, invocationUserId, serverConfig }) {
   const identityBoundCredential =
@@ -1365,6 +1319,7 @@ function createToolInstance({
       const flowId = `${serverName}:oauth_login:${config.metadata.thread_id}:${config.metadata.run_id}`;
       const oauthPrompt = createMCPReauthenticationPrompt({
         serverName,
+        logger,
         toolCallId: toolCall.id,
         stepId,
         runId: config.metadata.run_id,

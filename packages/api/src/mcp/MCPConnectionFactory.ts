@@ -1,3 +1,4 @@
+import { invokeOAuthStart } from './oauth/publication';
 import { createHash } from 'crypto';
 import { logger, getTenantId, tenantStorage } from '@librechat/data-schemas';
 import type { OAuthClientInformation } from '@modelcontextprotocol/sdk/shared/auth.js';
@@ -1716,7 +1717,7 @@ export class MCPConnectionFactory {
     return expiresAt > Date.now() ? expiresAt : undefined;
   }
 
-  /** Invoke while fenced, but let callers release the lease before awaiting the handler. */
+  /** Keep URL publication fenced; authorization completion happens after releasing the lease. */
   private async beginOAuthStart(
     flowId: string,
     authorizationUrl: string,
@@ -1732,10 +1733,8 @@ export class MCPConnectionFactory {
       expiresAt == null
     )
       throw new Error('OAuth prompt publication is no longer current');
-    const completed = this.oauthStart?.(authorizationUrl, { expiresAt }) ?? Promise.resolve();
-    // A handler can complete authorization, which reacquires the publication lease.
-    // Observe early rejection while release is pending; the caller still awaits the result.
-    void completed.catch(() => undefined);
+    const { published, completed } = invokeOAuthStart(this.oauthStart, authorizationUrl, { expiresAt });
+    await published;
     return { completed };
   }
 
