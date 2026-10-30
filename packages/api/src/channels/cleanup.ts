@@ -15,6 +15,9 @@ export interface ChannelCleanupDependencies {
   >;
   resolvePrincipal: ChannelRunDependencies['resolvePrincipal'];
   retireForAuthorityLoss: ChannelRunDependencies['retireForAuthorityLoss'];
+  isCredentialCurrent: (
+    run: Parameters<ChannelRunDependencies['retireForAuthorityLoss']>[0],
+  ) => Promise<boolean>;
   deleteApiKey: (id: string, userId: string) => Promise<boolean>;
   getConfig: () => Promise<ChannelConfig | undefined>;
   onError: (error: unknown) => void;
@@ -44,10 +47,11 @@ export function createChannelCleanupRuntime(deps: ChannelCleanupDependencies) {
           scan: async () => {
             if (stopped) return true;
             const config = channelConfigSchema.parse((await deps.getConfig()) ?? {});
+            const pageSize = Math.min(config.cleanup.batchSize, config.maxMetadataPageSize);
             const [runs, deleting] = await runAsSystem(() =>
               Promise.all([
-                deps.storage.listPendingMetadata(runCursor, config.cleanup.batchSize),
-                deps.channels.listDeletingAgentChannels(channelCursor, config.cleanup.batchSize),
+                deps.storage.listPendingMetadata(runCursor, pageSize),
+                deps.channels.listDeletingAgentChannels(channelCursor, pageSize),
               ]),
             );
             runCursor = runs.next;
@@ -55,55 +59,62 @@ export function createChannelCleanupRuntime(deps: ChannelCleanupDependencies) {
             let idle = !runs.next && !deleting.next;
             for (const target of runs.runs) {
               if (stopped) break;
-              await tenantStorage.run({ tenantId: target.tenantId }, async () => {
-                try {
-                  const run = await deps.storage.read(
-                    target.tenantId,
-                    target.channelId,
-                    target.runId,
-                  );
-                  if (!run) return;
-                  const channel = await deps.channels.getAgentChannelMetadata(target.channelId);
-                  if (
-                    config.enabled &&
-                    channel &&
-                    (await hasChannelRunAuthority(channel, run, deps.resolvePrincipal))
-                  )
-                    return;
-                  const claimed = await deps.storage.claimAuthorityLost(
-                    run,
-                    owner,
-                    now(),
-                    config.leaseMs,
-                  );
-                  if (!claimed) return;
-                  idle = false;
-                  if ((await deps.retireForAuthorityLoss(claimed)) !== 'stopped') return;
-                  await deps.storage.finishAuthorityLost(
-                    claimed.tenantId,
-                    {
-                      runId: claimed.runId,
+              await tenantStorage.run(
+                { tenantId: target.tenantId === '_' ? undefined : target.tenantId },
+                async () => {
+                  try {
+                    const run = await deps.storage.read(
+                      target.tenantId,
+                      target.channelId,
+                      target.runId,
+                    );
+                    if (!run) return;
+                    const channel = await deps.channels.getAgentChannelMetadata(target.channelId);
+                    if (
+                      config.enabled &&
+                      channel &&
+                      (await hasChannelRunAuthority(channel, run, deps.resolvePrincipal)) &&
+                      (await deps.isCredentialCurrent(run))
+                    )
+                      return;
+                    const claimed = await deps.storage.claimAuthorityLost(
+                      run,
                       owner,
-                      epoch: claimed.leaseEpoch,
-                    },
-                    now(),
-                  );
-                } catch (error) {
-                  idle = false;
-                  deps.onError(error);
-                }
-              });
+                      now(),
+                      config.leaseMs,
+                    );
+                    if (!claimed) return;
+                    idle = false;
+                    if ((await deps.retireForAuthorityLoss(claimed)) !== 'stopped') return;
+                    await deps.storage.finishAuthorityLost(
+                      claimed.tenantId,
+                      {
+                        runId: claimed.runId,
+                        owner,
+                        epoch: claimed.leaseEpoch,
+                      },
+                      now(),
+                    );
+                  } catch (error) {
+                    idle = false;
+                    deps.onError(error);
+                  }
+                },
+              );
             }
             for (const target of deleting.channels) {
               if (stopped) break;
-              await tenantStorage.run({ tenantId: target.tenantId ?? '_' }, async () => {
+              await tenantStorage.run({ tenantId: target.tenantId || undefined }, async () => {
                 try {
                   const channel = await deps.channels.getAgentChannelMetadata(target.channelId);
                   if (channel?.status !== 'deleting') return;
                   if (channel.apiKeyId)
                     await deps.deleteApiKey(channel.apiKeyId, channel.createdBy);
-                  if (await deps.channels.deleteAgentChannel(channel.channelId, channel.createdBy))
-                    idle = false;
+                  const result = await deps.channels.deleteAgentChannel(
+                    channel.channelId,
+                    channel.createdBy,
+                  );
+                  if (result.status !== 'not_found') idle = false;
                 } catch (error) {
                   idle = false;
                   deps.onError(error);

@@ -13,10 +13,16 @@ import type {
 } from '@librechat/data-schemas';
 import type { Response } from '~/agents/responses/types';
 import {
+  createResponseCompletion,
+  createResponseExecutionConfirmation,
+  createResponseExecutionRelease,
+} from '~/agents/responses/completion';
+import {
   buildPendingBackgroundResponse,
   createBackgroundResponseService,
 } from '~/agents/responses/background';
 import { createChannelResponseProjection } from './responses';
+import { GenerationJobManager } from '~/stream';
 
 let mongo: MongoMemoryReplSet;
 let storage: ResponseStorage;
@@ -99,6 +105,12 @@ function fixture() {
   const cancel = jest.fn(async () => {});
   const service = createBackgroundResponseService({
     storage,
+    recoverTerminal: createResponseCompletion({
+      storage,
+      cleanupCheckpoint: async () => {},
+      confirmExecution: createResponseExecutionConfirmation(GenerationJobManager),
+      releaseExecution: createResponseExecutionRelease(GenerationJobManager),
+    }).finish,
     authorize: async () => authorized,
     enqueue: async () => {
       throw new Error('Projection must not enqueue');
