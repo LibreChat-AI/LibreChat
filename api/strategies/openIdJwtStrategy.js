@@ -10,6 +10,7 @@ const {
   findOpenIDUser,
   getOpenIdEmail,
   getOpenIdIssuer,
+  getOpenIdResource,
   normalizeOpenIdIssuer,
   buildAuthUserDocCacheKey,
   getAuthUserDocCacheMode,
@@ -35,11 +36,15 @@ function decodeJwtExpiry(token) {
   }
 }
 
-const parseOpenIdAudiences = () =>
-  (process.env.OPENID_AUDIENCE ?? '')
+/** `OPENID_AUDIENCE` values plus the `OPENID_RESOURCE` indicator, which RFC 8707 providers issue as `aud` */
+const parseOpenIdAudiences = () => {
+  const audiences = (process.env.OPENID_AUDIENCE ?? '')
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean);
+  const resource = getOpenIdResource();
+  return resource ? [...audiences, resource] : audiences;
+};
 
 const getOpenIdJwtAudience = () => {
   const audiences = [process.env.OPENID_CLIENT_ID, ...parseOpenIdAudiences()].filter(Boolean);
