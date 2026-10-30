@@ -53,8 +53,6 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').getTrustedNewConversationId(...args),
   buildGenerationStartedResponse: (...args) =>
     jest.requireActual('@librechat/api').buildGenerationStartedResponse(...args),
-  resolveChannelExecutionMetadata: (...args) =>
-    jest.requireActual('@librechat/api').resolveChannelExecutionMetadata(...args),
   savePrivateTextMessage: (save, _req, ...args) => save(...args),
   savePrivateTextErrorTurn: (...args) =>
     jest.requireActual('@librechat/api').savePrivateTextErrorTurn(...args),

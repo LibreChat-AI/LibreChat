@@ -109,4 +109,4 @@ export type { GenerationSettledSource, GenerationSettledWaitOptions } from './se
 
 export type { GenerationSettlementState } from './interfaces/IJobStore';
 
-export { resolveChannelExecutionMetadata, buildGenerationStartedResponse } from './metadata';
+export { buildGenerationStartedResponse } from './metadata';
