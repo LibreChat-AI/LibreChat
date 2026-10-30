@@ -1,3 +1,4 @@
+import type { ClientSession } from 'mongoose';
 import type {
   ResponseOwner,
   StoredResponseRecord,
@@ -6,6 +7,7 @@ import type {
   ResponseResumeIntent,
   ResponseTerminalReceipt,
 } from '~/models/response';
+import type { ResponseTurnWrites } from './responseTurn';
 import {
   responseScopeKeys,
   responseOwnerFilter,
@@ -17,6 +19,7 @@ import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
 import { getTransactionSupport } from '~/utils/transactions';
 import { activeExpirationFilter } from '~/utils/retention';
+import { materializeResponseTurn } from './responseTurn';
 import { createIndexesWithRetry } from '~/utils/retry';
 
 export type {
@@ -166,6 +169,7 @@ export interface ResponseStorage {
     responseId: string,
     revision: number,
     receipt: ResponseTerminalReceipt,
+    writes?: ResponseTurnWrites,
   ): Promise<ResponseMutationResult>;
   publishReview(
     owner: ResponseOwner,
@@ -227,6 +231,7 @@ export function sameResponseTerminalReceipt(
     ownerId: a.ownerId === b.ownerId,
     status: a.status === b.status,
     responseJSON: a.responseJSON === b.responseJSON,
+    turnJSON: a.turnJSON === b.turnJSON,
     checkpointNamespace: a.checkpointNamespace === b.checkpointNamespace,
     checkpointConfigJSON: a.checkpointConfigJSON === b.checkpointConfigJSON,
   };
@@ -240,6 +245,7 @@ function terminalReceipt(receipt: ResponseTerminalReceipt): ResponseTerminalRece
     ...(receipt.ownerId == null ? {} : { ownerId: receipt.ownerId }),
     status: receipt.status,
     responseJSON: receipt.responseJSON,
+    ...(receipt.turnJSON == null ? {} : { turnJSON: receipt.turnJSON }),
     ...(receipt.checkpointNamespace == null
       ? {}
       : { checkpointNamespace: receipt.checkpointNamespace }),
@@ -259,6 +265,7 @@ function terminalFilter(prefix: string, receipt: ResponseTerminalReceipt): Recor
     ownerId: receipt.ownerId,
     status: receipt.status,
     responseJSON: receipt.responseJSON,
+    turnJSON: receipt.turnJSON,
     checkpointNamespace: receipt.checkpointNamespace,
     checkpointConfigJSON: receipt.checkpointConfigJSON,
   };
@@ -281,7 +288,10 @@ function terminalProviderFilter(receipt: ResponseTerminalReceipt) {
 }
 
 /** Authorization precedes this storage boundary; every read/write remains owner- and tenant-scoped. */
-export function createResponseStorage(mongoose: typeof import('mongoose')): ResponseStorage {
+export function createResponseStorage(
+  mongoose: typeof import('mongoose'),
+  options?: { getMCPAppMessageBudget?: () => Promise<number | undefined> },
+): ResponseStorage {
   const model = createStoredResponseModel(mongoose);
   let indexPromise: Promise<void> | undefined;
   let transactionSupport: boolean | null = null;
@@ -310,36 +320,83 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
     ...ownerScope(owner),
     $and: [activeExpirationFilter<StoredResponseRecord>()],
   });
+  async function commitInOpenScope<T>(
+    owner: ResponseOwner,
+    responseId: string,
+    apply: (session: ClientSession, record: StoredResponseRecord) => Promise<T>,
+    conflict: T,
+  ): Promise<T> {
+    transactionSupport = await getTransactionSupport(mongoose, transactionSupport);
+    if (!transactionSupport) throw new Error('Response publication requires transactions');
+    const current = await model.findOne({ ...scope(owner), responseId }).lean();
+    if (!current) return conflict;
+    const keys = responseScopeKeys(owner, current.conversationId);
+    await initializeResponseScopes(mongoose, keys);
+    const session = await mongoose.startSession();
+    try {
+      let result = conflict;
+      await session.withTransaction(async () => {
+        result = conflict;
+        const scopes = createResponseScopeModel(mongoose);
+        for (const key of keys) {
+          const touched = await scopes.updateOne(
+            { _id: key, closed: false, $and: [activeExpirationFilter()] },
+            { $inc: { revision: 1 } },
+            { session },
+          );
+          if (touched.matchedCount !== 1) return;
+        }
+        const record = await model
+          .findOne({ ...scope(owner), responseId })
+          .session(session)
+          .lean();
+        if (record) result = await apply(session, record);
+      });
+      return result;
+    } finally {
+      await session.endSession();
+    }
+  }
   return {
     async prepareTerminal(owner, responseId, guard, receipt) {
       if (guard.execution.generationCreatedAt !== receipt.generationCreatedAt)
         return { ok: false, code: 'response_conflict' };
       const execution = responseExecutionFilter(guard);
       const preparedTerminal = terminalReceipt(receipt);
-      const record = await model
-        .findOneAndUpdate(
-          {
-            ...scope(owner),
-            responseId,
-            ...execution,
-            status: { $in: active },
-            preparedTerminal: { $exists: false },
-            pendingTerminal: { $exists: false },
-            ...terminalProviderFilter(receipt),
-          },
-          { $set: { preparedTerminal }, $inc: { revision: 1 } },
-          { new: true, runValidators: true },
-        )
-        .lean();
-      if (record) return { ok: true, record };
-      const existing = await model.findOne({ ...scope(owner), responseId, ...execution }).lean();
-      if (
-        existing?.preparedTerminal &&
-        !existing.pendingTerminal &&
-        sameResponseTerminalReceipt(existing.preparedTerminal, preparedTerminal)
-      )
-        return { ok: true, record: existing };
-      return { ok: false, code: 'response_conflict' };
+      return commitInOpenScope<ResponseMutationResult>(
+        owner,
+        responseId,
+        async (session) => {
+          const record = await model
+            .findOneAndUpdate(
+              {
+                ...scope(owner),
+                responseId,
+                ...execution,
+                status: { $in: active },
+                preparedTerminal: { $exists: false },
+                pendingTerminal: { $exists: false },
+                ...terminalProviderFilter(receipt),
+              },
+              { $set: { preparedTerminal }, $inc: { revision: 1 } },
+              { new: true, runValidators: true, session },
+            )
+            .lean();
+          if (record) return { ok: true, record };
+          const existing = await model
+            .findOne({ ...scope(owner), responseId, ...execution })
+            .session(session)
+            .lean();
+          if (
+            existing?.preparedTerminal &&
+            !existing.pendingTerminal &&
+            sameResponseTerminalReceipt(existing.preparedTerminal, preparedTerminal)
+          )
+            return { ok: true, record: existing };
+          return { ok: false, code: 'response_conflict' };
+        },
+        { ok: false, code: 'response_conflict' },
+      );
     },
     async stageTerminal(owner, responseId, guard, receipt, promotion) {
       const prepared = promotion?.receipt;
@@ -348,6 +405,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
         (prepared.generationCreatedAt !== receipt.generationCreatedAt ||
           prepared.providerExecutionId !== receipt.providerExecutionId ||
           prepared.ownerId !== receipt.ownerId ||
+          prepared.turnJSON !== receipt.turnJSON ||
           prepared.checkpointNamespace !== receipt.checkpointNamespace ||
           prepared.checkpointConfigJSON !== receipt.checkpointConfigJSON)
       )
@@ -359,67 +417,115 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
         return { ok: false, code: 'response_conflict' };
       const execution = typeof guard === 'number' ? undefined : responseExecutionFilter(guard);
       const pendingTerminal = terminalReceipt(receipt);
-      const record = await model
-        .findOneAndUpdate(
-          {
-            ...scope(owner),
-            responseId,
-            ...(execution ?? { revision: guard }),
-            generationCreatedAt: receipt.generationCreatedAt,
-            status: { $in: active },
-            pendingTerminal: { $exists: false },
-            ...(promotion
-              ? {
-                  ...terminalFilter('preparedTerminal', promotion.receipt),
-                  cancellationRequestedAt: promotion.cancellationRequestedAt ?? { $exists: false },
-                }
-              : { preparedTerminal: { $exists: false } }),
-            ...terminalProviderFilter(receipt),
-          },
-          { $set: { pendingTerminal }, $unset: { preparedTerminal: 1 }, $inc: { revision: 1 } },
-          { new: true, runValidators: true },
-        )
-        .lean();
-      if (record) return { ok: true, record };
-      const existing = await model.findOne({ ...scope(owner), responseId, ...execution }).lean();
-      if (
-        existing?.generationCreatedAt === receipt.generationCreatedAt &&
-        existing.pendingTerminal &&
-        sameResponseTerminalReceipt(existing.pendingTerminal, pendingTerminal)
-      )
-        return { ok: true, record: existing };
-      return { ok: false, code: 'response_conflict' };
+      return commitInOpenScope<ResponseMutationResult>(
+        owner,
+        responseId,
+        async (session) => {
+          const record = await model
+            .findOneAndUpdate(
+              {
+                ...scope(owner),
+                responseId,
+                ...(execution ?? { revision: guard }),
+                generationCreatedAt: receipt.generationCreatedAt,
+                status: { $in: active },
+                pendingTerminal: { $exists: false },
+                ...(promotion
+                  ? {
+                      ...terminalFilter('preparedTerminal', promotion.receipt),
+                      cancellationRequestedAt: promotion.cancellationRequestedAt ?? {
+                        $exists: false,
+                      },
+                    }
+                  : { preparedTerminal: { $exists: false } }),
+                ...terminalProviderFilter(receipt),
+              },
+              { $set: { pendingTerminal }, $unset: { preparedTerminal: 1 }, $inc: { revision: 1 } },
+              { new: true, runValidators: true, session },
+            )
+            .lean();
+          if (record) return { ok: true, record };
+          const existing = await model
+            .findOne({ ...scope(owner), responseId, ...execution })
+            .session(session)
+            .lean();
+          if (
+            existing?.generationCreatedAt === receipt.generationCreatedAt &&
+            existing.pendingTerminal &&
+            sameResponseTerminalReceipt(existing.pendingTerminal, pendingTerminal)
+          )
+            return { ok: true, record: existing };
+          return { ok: false, code: 'response_conflict' };
+        },
+        { ok: false, code: 'response_conflict' },
+      );
     },
-    async finishTerminal(owner, responseId, revision, receipt) {
-      const record = await model
-        .findOneAndUpdate(
-          {
-            ...scope(owner),
-            responseId,
-            revision,
-            generationCreatedAt: receipt.generationCreatedAt,
-            status: { $in: active },
-            'pendingTerminal.generationCreatedAt': receipt.generationCreatedAt,
-            'pendingTerminal.providerExecutionId': receipt.providerExecutionId,
-            'pendingTerminal.ownerId': receipt.ownerId ?? { $exists: false },
-            'pendingTerminal.status': receipt.status,
-            'pendingTerminal.responseJSON': receipt.responseJSON,
-            'pendingTerminal.checkpointNamespace': receipt.checkpointNamespace ?? {
-              $exists: false,
-            },
-            'pendingTerminal.checkpointConfigJSON': receipt.checkpointConfigJSON ?? {
-              $exists: false,
-            },
-          },
-          {
-            $set: { status: receipt.status, responseJSON: receipt.responseJSON },
-            $unset: { pendingTerminal: 1, preparedTerminal: 1 },
-            $inc: { revision: 1 },
-          },
-          { new: true },
-        )
-        .lean();
-      return record ? { ok: true, record } : { ok: false, code: 'response_conflict' };
+    async finishTerminal(owner, responseId, revision, receipt, writes) {
+      if (
+        (receipt.turnJSON != null) !== (writes != null) ||
+        (writes &&
+          (writes.intentJSON !== receipt.turnJSON || writes.context.userId !== owner.userId))
+      )
+        throw new Error('Response canonical projection identity changed');
+      // Resolve operator configuration before opening the database transaction.
+      const budget = writes ? await options?.getMCPAppMessageBudget?.() : undefined;
+      return commitInOpenScope<ResponseMutationResult>(
+        owner,
+        responseId,
+        async (session, current) => {
+          if (
+            current.revision !== revision ||
+            current.generationCreatedAt !== receipt.generationCreatedAt ||
+            !active.includes(current.status) ||
+            !current.pendingTerminal ||
+            !sameResponseTerminalReceipt(current.pendingTerminal, receipt)
+          )
+            return { ok: false, code: 'response_conflict' };
+          if (writes) {
+            if (
+              writes.conversation.conversationId !== current.conversationId ||
+              writes.messages[writes.messages.length - 1]?.messageId !== current.responseId ||
+              writes.messages.some((message) => message.conversationId !== current.conversationId)
+            )
+              throw new Error('Response canonical history identity changed');
+            await materializeResponseTurn(
+              mongoose,
+              session,
+              {
+                ...writes,
+                context: {
+                  ...writes.context,
+                  ...(current.isTemporary === true ? { isTemporary: true } : {}),
+                  ...(current.expiredAt &&
+                  (!writes.context.expiredAt || current.expiredAt < writes.context.expiredAt)
+                    ? { expiredAt: current.expiredAt }
+                    : {}),
+                },
+              },
+              async () => budget,
+            );
+          }
+          const record = await model
+            .findOneAndUpdate(
+              {
+                ...scope(owner),
+                responseId,
+                revision,
+                ...terminalFilter('pendingTerminal', receipt),
+              },
+              {
+                $set: { status: receipt.status, responseJSON: receipt.responseJSON },
+                $unset: { pendingTerminal: 1, preparedTerminal: 1 },
+                $inc: { revision: 1 },
+              },
+              { new: true, session },
+            )
+            .lean();
+          if (!record) throw new Error('Response publication changed during materialization');
+          return { ok: true, record };
+        },
+        { ok: false, code: 'response_conflict' },
+      );
     },
     async publishReview(owner, responseId, guard, generationCreatedAt, review, responseJSON) {
       if (typeof guard !== 'number' && guard.execution.generationCreatedAt !== generationCreatedAt)
@@ -715,7 +821,10 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
       }
     },
     async read(owner, responseId) {
-      return model.findOne({ ...scope(owner), responseId }).lean();
+      const record = await model.findOne({ ...scope(owner), responseId }).lean();
+      if (record && (await isResponseScopeClosed(mongoose, owner, record.conversationId)))
+        return null;
+      return record;
     },
     async readCleanupIdentity(owner, responseId, retained) {
       const record = await model

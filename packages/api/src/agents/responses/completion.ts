@@ -8,6 +8,7 @@ import type {
   ResponseCleanupIdentity,
 } from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
+import { projectCanonicalResponseTurn } from './turnProjection';
 import { responseTenantId } from './scope';
 
 /** A retirement result carries cleanup authority only and must never render private output. */
@@ -277,6 +278,23 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
     };
   }
   async function finish(record: StoredResponseRecord): Promise<ResponseCompletionRecord> {
+    const authority = record.pendingTerminal ?? record.preparedTerminal;
+    if (authority) {
+      const retired = await readRetirement(record, authority);
+      if (retired) {
+        if (record.preparedTerminal && (await deps.confirmExecution(record, authority)) == null)
+          return redactRetirement(retired);
+        const discarded = await discardRetired(record, authority);
+        if (discarded) return discarded;
+      }
+    } else {
+      const identity = await deps.storage.readCleanupIdentity(record, record.responseId, record);
+      if (identity?.retirement) {
+        const retired = redactRetirement({ ...record, retirement: identity.retirement });
+        if (terminal(record)) await deps.releaseExecution(retired);
+        return retired;
+      }
+    }
     const receipt = record.pendingTerminal;
     if (!receipt) {
       if (terminal(record)) {
@@ -323,6 +341,7 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
         record.responseId,
         record.revision,
         receipt,
+        projectCanonicalResponseTurn(record, receipt),
       );
       current = result.ok ? result.record : await deps.storage.read(record, record.responseId);
     } catch (error) {
@@ -396,6 +415,7 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
     stageAndFinish,
     async prepare(record, receipt) {
       assertReceipt(record, receipt);
+      projectCanonicalResponseTurn(record, receipt);
       try {
         const staged = await deps.storage.prepareTerminal(
           record,

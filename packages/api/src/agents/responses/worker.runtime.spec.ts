@@ -30,12 +30,14 @@ import {
 import { buildPendingBackgroundResponse, createBackgroundResponseService } from './background';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
+import { createResponseContext, convertInputToMessages } from './service';
 import { createResponseExecutionRuntime } from './runtime';
 import { enrollAgentExecution } from '../remote/lifecycle';
+import { createResponsePersistence } from './foreground';
 import { createResponseResumeAdmission } from './resume';
+import { buildResponseInputChain } from './persistence';
 import { createAgentRunEnvelope } from '../envelope';
 import { buildPendingAction } from '../hitl/policy';
-import { createResponseContext } from './service';
 import { executeAgentRun } from '../remote/host';
 import { GenerationJobManager } from '~/stream';
 import { createResponseTurn } from './turn';
@@ -65,6 +67,8 @@ beforeEach(async () => {
   await runAsSystem(async () => {
     await mongoose.models.StoredResponse.deleteMany({});
     await mongoose.models.ResponseScope?.deleteMany({});
+    await mongoose.models.Message.deleteMany({});
+    await mongoose.models.Conversation.deleteMany({});
   });
   user = new mongoose.models.User({
     _id: owner.userId,
@@ -86,7 +90,7 @@ beforeEach(async () => {
         store: true,
         background: true,
       }),
-      conversationId: 'conversation',
+      conversationId: '1cb257b0-56a6-40a6-b096-cd6e05f26963',
       parentMessageId: 'root',
     });
     if (!result.ok) throw new Error('Reservation failed');
@@ -327,7 +331,7 @@ describe('background Responses execution handoff', () => {
       expect(await GenerationJobManager.getJob(record.responseId)).toBeUndefined();
     },
   );
-  it('publishes a safe failure when a required background terminal save fails', async () => {
+  it('publishes a safe failure when a required background projection preparation fails', async () => {
     let finish!: () => void;
     const finished = new Promise<void>((resolve) => {
       finish = resolve;
@@ -380,7 +384,9 @@ describe('background Responses execution handoff', () => {
                 saveMessage,
                 announceReply: async () => {},
                 resolveTitle: () => null,
-                traceFields: async () => ({ langfuseSampled: false }),
+                traceFields: async () => {
+                  throw new Error('private database failure');
+                },
               },
             );
           },
@@ -744,156 +750,263 @@ describe('background Responses execution handoff', () => {
     expect(await GenerationJobManager.getJob(record.responseId)).toBeUndefined();
   });
 
-  it('keeps final output private until provider drain and prevents a retried HTTP request starting another run', async () => {
-    let markPrepared!: () => void;
-    let failPreparation!: (error: unknown) => void;
-    let executionError: unknown;
-    const preparation = new Promise<void>((resolve, reject) => {
-      markPrepared = resolve;
-      failPreparation = reject;
-    });
-    preparation.catch(() => {});
-    let release!: () => void;
-    const trailingWrite = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    let settled!: () => void;
-    const finished = new Promise<void>((resolve) => {
-      settled = resolve;
-    });
-    const prepare = storage.prepareTerminal.bind(storage);
-    const prepareWithConcurrentProgress = jest
-      .spyOn(storage, 'prepareTerminal')
-      .mockImplementationOnce(async (...args) => {
-        for (let step = 0; step < 30; step++) {
-          const current = (await storage.read(owner, record.responseId))!;
-          const projected = await storage.publish(owner, current.responseId, current.revision, {
-            status: 'in_progress',
-            responseJSON: JSON.stringify({
-              ...buildPendingBackgroundResponse(current),
+  it.each([false, true])(
+    'keeps final output private until drain and recovers canonical materialization (outage=%s)',
+    async (materializationOutage) => {
+      let markPrepared!: () => void;
+      let failPreparation!: (error: unknown) => void;
+      let executionError: unknown;
+      const settlementErrors: unknown[] = [];
+      const preparation = new Promise<void>((resolve, reject) => {
+        markPrepared = resolve;
+        failPreparation = reject;
+      });
+      preparation.catch(() => {});
+      let release!: () => void;
+      const trailingWrite = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let settled!: () => void;
+      const finished = new Promise<void>((resolve) => {
+        settled = resolve;
+      });
+      const prepare = storage.prepareTerminal.bind(storage);
+      const prepareWithConcurrentProgress = jest
+        .spyOn(storage, 'prepareTerminal')
+        .mockImplementationOnce(async (...args) => {
+          for (let step = 0; step < 30; step++) {
+            const current = (await storage.read(owner, record.responseId))!;
+            const projected = await storage.publish(owner, current.responseId, current.revision, {
               status: 'in_progress',
-              metadata: { progress: step },
-            }),
-          });
-          expect(projected.ok).toBe(true);
-        }
-        return prepare(...args);
-      });
-    let starts = 0;
-    const { app } = fixture(async (req, res) => {
-      const runtime = createResponseExecutionRuntime(req, res, {
-        getMessage: async () => null,
-        jobs: GenerationJobManager,
-      });
-      const envelope = createAgentRunEnvelope({
-        protocol: 'responses',
-        requestId: record.responseId,
-        receivedAt: Date.now(),
-        principal: { id: owner.userId, tenantId: owner.tenantId },
-        payload: req.body,
-      });
-      try {
-        await executeAgentRun({
-          envelope,
-          runId: runtime.responseId,
-          conversationId: record.conversationId,
-          connection: runtime.connection,
-          ...runtime.hooks,
-          isPrincipalActive: async () => true,
-          execute: async (execution) => {
-            starts++;
-            execution.track(trailingWrite);
-            await runtime.completion!.prepare({
-              ...buildPendingBackgroundResponse(record),
-              status: 'completed',
-              output: [
-                {
-                  type: 'message',
-                  role: 'assistant',
-                  status: 'completed',
-                  id: 'message',
-                  content: [
-                    {
-                      type: 'output_text',
-                      text: '# Exact final answer',
-                      annotations: [],
-                      logprobs: [],
-                    },
-                  ],
-                },
-              ],
+              responseJSON: JSON.stringify({
+                ...buildPendingBackgroundResponse(current),
+                status: 'in_progress',
+                metadata: { progress: step },
+              }),
             });
-            markPrepared();
-          },
+            expect(projected.ok).toBe(true);
+          }
+          const result = await prepare(...args);
+          markPrepared();
+          return result;
         });
-      } catch (error) {
-        executionError = error;
-        failPreparation(error);
-        if (!res.writableEnded) res.status(409).json({ code: 'failed' });
-      } finally {
-        settled();
-      }
-    });
-    const token = mintBackgroundResponseWorkerToken(record, secret);
-    const first = await request(app)
-      .post('/')
-      .set('x-lc-response-worker', '1')
-      .auth(token, { type: 'bearer' })
-      .send({});
-    expect(first.status).toBe(202);
-    try {
-      await preparation;
-      const recovery = createResponseCompletion({
-        storage,
-        cleanupCheckpoint: async () => {},
-        confirmExecution: createResponseExecutionConfirmation(GenerationJobManager),
-        releaseExecution: createResponseExecutionRelease(GenerationJobManager),
+      let starts = 0;
+      const announce = jest.fn(async () => {
+        expect((await storage.read(owner, record.responseId))?.status).toBe('completed');
+        expect(
+          await mongoose.models.Message.findOne({
+            user: owner.userId,
+            messageId: record.responseId,
+          }),
+        ).not.toBeNull();
       });
-      const service = createBackgroundResponseService({
-        storage,
-        authorize: async () => true,
-        resolveContinuation: async () => ({
-          conversationId: record.conversationId,
-          parentMessageId: record.parentMessageId,
-        }),
-        enqueue: async () => {
-          throw new Error('Prepared work must not be enqueued again');
-        },
-        observe: async () => {
-          throw new Error('Prepared work must go to its completion owner');
-        },
-        recoverTerminal: recovery.finish,
-        cancel: async () => {},
+      const { app } = fixture(async (req, res) => {
+        const runtime = createResponseExecutionRuntime(req, res, {
+          getMessage: async () => null,
+          jobs: GenerationJobManager,
+        });
+        const turn = createResponseTurn({
+          runtime,
+          context: createResponseContext(req.body, record.responseId),
+          requestedStore: true,
+          logger: { error: jest.fn() },
+        });
+        const methods = createMethods(mongoose);
+        const envelope = createAgentRunEnvelope({
+          protocol: 'responses',
+          requestId: record.responseId,
+          receivedAt: Date.now(),
+          principal: { id: owner.userId, tenantId: owner.tenantId },
+          payload: req.body,
+        });
+        try {
+          await executeAgentRun({
+            envelope,
+            runId: runtime.responseId,
+            conversationId: record.conversationId,
+            connection: runtime.connection,
+            ...turn.hooks,
+            isPrincipalActive: async () => true,
+            onSettlementError: (error) => {
+              settlementErrors.push(error);
+            },
+            execute: async (execution) => {
+              starts++;
+              execution.track(trailingWrite);
+              await turn.stage(
+                {
+                  run: { getInterrupt: () => undefined },
+                  execution,
+                  agents: [],
+                  request: { user: { id: owner.userId }, body: {} },
+                  conversationId: record.conversationId,
+                  agentId: record.agentId,
+                  agent: { id: record.agentId },
+                  ...buildResponseInputChain(
+                    convertInputToMessages(JSON.parse(record.requestJSON).input),
+                    record.parentMessageId,
+                  ),
+                  transport: { type: 'json', response: res },
+                  response: {
+                    ...buildPendingBackgroundResponse(record),
+                    status: 'completed',
+                    output: [
+                      {
+                        type: 'message',
+                        role: 'assistant',
+                        status: 'completed',
+                        id: 'message',
+                        content: [
+                          {
+                            type: 'output_text',
+                            text: '# Exact final answer',
+                            annotations: [],
+                            logprobs: [],
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                },
+                {
+                  saveConvo: methods.saveConvo,
+                  saveMessage: async (...args) => {
+                    const saved = await methods.saveMessage(...args);
+                    return saved
+                      ? { messageId: saved.messageId, conversationId: saved.conversationId }
+                      : null;
+                  },
+                  announceReply: announce,
+                  resolveTitle: () => null,
+                  traceFields: async () => ({ langfuseSampled: false }),
+                },
+              );
+            },
+          });
+        } catch (error) {
+          executionError = error;
+          failPreparation(error);
+          if (!res.writableEnded) res.status(409).json({ code: 'failed' });
+        } finally {
+          settled();
+        }
       });
-      const visible = await scope(() => service.retrieve(owner, record.responseId));
-      expect(visible).toMatchObject({ ok: true, response: { status: 'in_progress' } });
-      expect(JSON.stringify(visible)).not.toContain('# Exact final answer');
-      const beforeDrain = (await scope(() => storage.read(owner, record.responseId)))!;
-      expect(beforeDrain.preparedTerminal).toBeDefined();
-      expect(beforeDrain.pendingTerminal).toBeUndefined();
-      expect((await scope(async () => storage.read(owner, record.responseId)))?.status).toBe(
-        'in_progress',
-      );
-      const duplicate = await request(app)
+      const token = mintBackgroundResponseWorkerToken(record, secret);
+      const first = await request(app)
         .post('/')
         .set('x-lc-response-worker', '1')
         .auth(token, { type: 'bearer' })
         .send({});
-      expect(duplicate.status).toBe(409);
-      expect(duplicate.body.code).toBe('RUN_ALREADY_ADMITTED');
-      expect(starts).toBe(1);
-    } finally {
-      release();
-    }
-    await finished;
-    expect(executionError).toBeUndefined();
-    const saved = await scope(async () => storage.read(owner, record.responseId));
-    expect(prepareWithConcurrentProgress).toHaveBeenCalledTimes(1);
-    prepareWithConcurrentProgress.mockRestore();
-    expect(saved?.status).toBe('completed');
-    expect(saved?.preparedTerminal).toBeUndefined();
-    expect(JSON.parse(saved!.responseJSON!).output[0].content[0].text).toBe('# Exact final answer');
-  });
+      expect(first.status).toBe(202);
+      try {
+        await preparation;
+        expect(announce).not.toHaveBeenCalled();
+        expect(
+          await scope(() =>
+            mongoose.models.Message.findOne({
+              user: owner.userId,
+              messageId: record.responseId,
+            }).lean(),
+          ),
+        ).toBeNull();
+        const recovery = createResponseCompletion({
+          storage,
+          cleanupCheckpoint: async () => {},
+          confirmExecution: createResponseExecutionConfirmation(GenerationJobManager),
+          releaseExecution: createResponseExecutionRelease(GenerationJobManager),
+        });
+        const service = createBackgroundResponseService({
+          storage,
+          authorize: async () => true,
+          resolveContinuation: async () => ({
+            conversationId: record.conversationId,
+            parentMessageId: record.parentMessageId,
+          }),
+          enqueue: async () => {
+            throw new Error('Prepared work must not be enqueued again');
+          },
+          observe: async () => {
+            throw new Error('Prepared work must go to its completion owner');
+          },
+          recoverTerminal: recovery.finish,
+          cancel: async () => {},
+        });
+        const visible = await scope(() => service.retrieve(owner, record.responseId));
+        expect(visible).toMatchObject({ ok: true, response: { status: 'in_progress' } });
+        expect(JSON.stringify(visible)).not.toContain('# Exact final answer');
+        const beforeDrain = (await scope(() => storage.read(owner, record.responseId)))!;
+        expect(beforeDrain.preparedTerminal).toBeDefined();
+        expect(beforeDrain.pendingTerminal).toBeUndefined();
+        expect((await scope(async () => storage.read(owner, record.responseId)))?.status).toBe(
+          'in_progress',
+        );
+        const duplicate = await request(app)
+          .post('/')
+          .set('x-lc-response-worker', '1')
+          .auth(token, { type: 'bearer' })
+          .send({});
+        expect(duplicate.status).toBe(409);
+        expect(duplicate.body.code).toBe('RUN_ALREADY_ADMITTED');
+        expect(starts).toBe(1);
+        if (materializationOutage) {
+          jest
+            .spyOn(mongoose.models.Conversation, 'findOneAndUpdate')
+            .mockImplementationOnce(() => {
+              throw new Error('Canonical materialization temporarily unavailable');
+            });
+        }
+      } finally {
+        release();
+      }
+      await finished;
+      if (materializationOutage) {
+        expect(settlementErrors).toHaveLength(1);
+        const pending = (await scope(() => storage.read(owner, record.responseId)))!;
+        expect(pending.status).toBe('in_progress');
+        expect(pending.pendingTerminal?.status).toBe('completed');
+        expect(pending.pendingTerminal?.responseJSON).toContain('# Exact final answer');
+        expect(
+          await scope(() => mongoose.models.Message.countDocuments({ user: owner.userId })),
+        ).toBe(0);
+        expect(announce).not.toHaveBeenCalled();
+        const recovery = createResponseCompletion({
+          storage,
+          cleanupCheckpoint: async () => {},
+          confirmExecution: createResponseExecutionConfirmation(GenerationJobManager),
+          releaseExecution: createResponseExecutionRelease(GenerationJobManager),
+        });
+        await scope(() => recovery.finish(pending));
+      }
+      if (materializationOutage)
+        expect(executionError).toMatchObject({
+          message: 'Canonical materialization temporarily unavailable',
+        });
+      else expect(executionError).toBeUndefined();
+      expect(announce).toHaveBeenCalledTimes(materializationOutage ? 0 : 1);
+      const committedMessage = await scope(() =>
+        mongoose.models.Message.findOne({
+          user: owner.userId,
+          messageId: record.responseId,
+        }).lean(),
+      );
+      expect(committedMessage).toMatchObject({
+        text: '# Exact final answer',
+        finish_reason: 'stop',
+        unfinished: false,
+      });
+      expect(
+        await scope(() => mongoose.models.Message.countDocuments({ user: owner.userId })),
+      ).toBe(2);
+      const saved = await scope(async () => storage.read(owner, record.responseId));
+      expect(prepareWithConcurrentProgress).toHaveBeenCalledTimes(1);
+      prepareWithConcurrentProgress.mockRestore();
+      expect(saved?.status).toBe('completed');
+      expect(saved?.preparedTerminal).toBeUndefined();
+      expect(JSON.parse(saved!.responseJSON!).output[0].content[0].text).toBe(
+        '# Exact final answer',
+      );
+    },
+  );
 
   it('recovers runtime terminal publication failure without executing the provider again', async () => {
     let done!: () => void;
@@ -1149,10 +1262,58 @@ describe('background Responses execution handoff', () => {
             ...runtime.hooks,
             isPrincipalActive: async () => true,
             execute: async (execution) => {
-              await runtime.completion!.prepare({
+              const response = {
                 ...buildPendingBackgroundResponse(record),
-                status: 'completed',
-              });
+                status: 'completed' as const,
+                output: [
+                  {
+                    type: 'message' as const,
+                    role: 'assistant' as const,
+                    status: 'completed' as const,
+                    id: 'candidate-message',
+                    content: [
+                      {
+                        type: 'output_text' as const,
+                        text: 'Candidate answer',
+                        annotations: [],
+                        logprobs: [],
+                      },
+                    ],
+                  },
+                ],
+              };
+              const methods = createMethods(mongoose);
+              const persistence = createResponsePersistence(
+                {
+                  request: { user: { id: owner.userId }, body: {} },
+                  conversationId: record.conversationId,
+                  agentId: record.agentId,
+                  agent: { id: record.agentId },
+                  ...buildResponseInputChain(
+                    convertInputToMessages(JSON.parse(record.requestJSON).input),
+                    record.parentMessageId,
+                  ),
+                },
+                {
+                  saveConvo: methods.saveConvo,
+                  saveMessage: async (...args) => {
+                    const saved = await methods.saveMessage(...args);
+                    return saved
+                      ? { messageId: saved.messageId, conversationId: saved.conversationId }
+                      : null;
+                  },
+                  announceReply: async () => {},
+                  resolveTitle: () => null,
+                  traceFields: async () => ({ langfuseSampled: false }),
+                },
+              );
+              await runtime.completion!.prepare(response, await persistence.prepare(response));
+              expect(
+                await mongoose.models.Message.findOne({
+                  user: owner.userId,
+                  messageId: record.responseId,
+                }),
+              ).toBeNull();
               if (mode === 'stop')
                 await GenerationJobManager.abortJob(runtime.responseId, {
                   expectedCreatedAt: execution.createdAt,
@@ -1181,6 +1342,40 @@ describe('background Responses execution handoff', () => {
       expect(saved.status).toBe(mode === 'stop' ? 'cancelled' : 'failed');
       expect(saved.responseJSON).not.toContain('private provider diagnostics');
       expect(saved.pendingTerminal).toBeUndefined();
+      const readApp = express();
+      const methods = createMethods(mongoose);
+      readApp.use((req, _res, next) => {
+        Object.assign(req, { user: { id: owner.userId } });
+        tenantStorage.run(owner, next);
+      });
+      // Exercise the built export wired by the CJS controller, against the actual committed rows.
+      const compiled = jest.requireActual<{
+        createStoredForegroundResponseReader: typeof import('./stored').createStoredForegroundResponseReader;
+      }>('@librechat/api');
+      readApp.get(
+        '/:id',
+        compiled.createStoredForegroundResponseReader({ ...methods, logger: { error: jest.fn() } }),
+      );
+      const read = await request(readApp)
+        .get('/' + record.responseId)
+        .expect(200);
+      expect(read.body.status).toBe(saved.status);
+      expect(read.body.background).toBe(true);
+      expect(read.body.error).toEqual(JSON.parse(saved.responseJSON!).error);
+      expect(JSON.stringify(read.body)).not.toContain('private provider diagnostics');
+
+      expect(
+        await scope(() =>
+          mongoose.models.Message.findOne({
+            user: owner.userId,
+            messageId: record.responseId,
+          }).lean(),
+        ),
+      ).toMatchObject({
+        text: 'Candidate answer',
+        finish_reason: mode === 'stop' ? 'cancelled' : 'failed',
+        unfinished: false,
+      });
     },
   );
 });

@@ -54,6 +54,8 @@ export interface ResponseTerminalReceipt {
   ownerId?: string;
   status: 'completed' | 'failed' | 'incomplete' | 'cancelled';
   responseJSON: string;
+  /** Private immutable projection facts for canonical history recovery. */
+  turnJSON?: string;
   checkpointNamespace?: string;
   /** Server-pinned saver settings, including initial failures before a review exists. */
   checkpointConfigJSON?: string;
@@ -102,6 +104,7 @@ export function createStoredResponseModel(
         enum: ['completed', 'failed', 'incomplete', 'cancelled'],
       },
       responseJSON: { type: String, required: true },
+      turnJSON: String,
       checkpointNamespace: String,
       checkpointConfigJSON: String,
     },

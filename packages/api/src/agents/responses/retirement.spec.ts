@@ -241,15 +241,85 @@ it('drains through the retained journal after conversation erasure closes admiss
       { conversationId: 'conversation' },
       {
         beforeDelete: async () => {
-          expect((await storage.read(owner, f.responseId))?.cancellationRequestedAt).toEqual(
-            expect.any(Number),
-          );
+          expect(await storage.read(owner, f.responseId)).toBeNull();
+          expect(await storage.readCleanupIdentity(owner, f.responseId)).toMatchObject({
+            retirement: 'conversation_deleted',
+          });
+          expect(
+            (
+              await mongoose.models.StoredResponse.findOne({
+                userId: owner.userId,
+                responseId: f.responseId,
+              }).lean<StoredResponseRecord>()
+            )?.cancellationRequestedAt,
+          ).toEqual(expect.any(Number));
           expect(await f.retire(owner, f.responseId)).toBe('stopped');
         },
       },
     );
     expect(await storage.read(owner, f.responseId)).toBeNull();
     expect(await jobs.getJob(f.responseId)).toBeUndefined();
+  }));
+
+it('cleans a scope closed inside the outer drain callback without recursively aborting or publishing', () =>
+  scoped(async () => {
+    const f = await fixture();
+    createModels(mongoose);
+    await mongoose.models.Conversation.create({
+      conversationId: 'conversation',
+      user: owner.userId,
+      tenantId: owner.tenantId,
+      endpoint: 'agents',
+    });
+    const db = createMethods(mongoose);
+    await jobs.updateMetadata(
+      f.responseId,
+      { checkpointNamespace: 'scope-drain', responseCheckpointConfigJSON: '{"type":"memory"}' },
+      f.execution.createdAt,
+    );
+    const cleanup = jest.fn(async () => {
+      expect((await jobs.getJob(f.responseId))?.metadata.providerDrained).toBe(true);
+    });
+    const retire = createResponseRetirement({
+      storage,
+      jobs,
+      cleanupCheckpoint: cleanup,
+      recoverTerminal: f.completion.finish,
+    });
+    jest
+      .mocked(jobs.abortJob)
+      .mockReset()
+      .mockImplementationOnce((id, options) =>
+        GenerationJobManagerClass.prototype.abortJob.call(jobs, id, {
+          ...options,
+          beforePublish: async (result) => {
+            await f.execution.settle();
+            await expect(
+              db.deleteConvos(
+                owner.userId,
+                { conversationId: 'conversation' },
+                {
+                  beforeDelete: async () => {
+                    throw new Error('Erasure interrupted after closure');
+                  },
+                },
+              ),
+            ).rejects.toThrow('Erasure interrupted after closure');
+            await options?.beforePublish?.(result);
+          },
+        }),
+      );
+    expect(await retire(owner, f.responseId)).toBe('stopped');
+    expect(jobs.abortJob).toHaveBeenCalledTimes(1);
+    expect(cleanup).toHaveBeenCalled();
+    expect(await jobs.getJob(f.responseId)).toBeUndefined();
+    expect(await storage.read(owner, f.responseId)).toBeNull();
+    const stored = await mongoose.models.StoredResponse.findOne({
+      userId: owner.userId,
+      responseId: f.responseId,
+    }).lean<StoredResponseRecord>();
+    expect(stored?.status).toBe('in_progress');
+    expect(stored?.pendingTerminal).toBeUndefined();
   }));
 
 it('does not relabel an already-completed provider as cancelled before its canonical publication', () =>
