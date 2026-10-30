@@ -410,3 +410,132 @@ describe('actor-bound review handling', () => {
     expect(payload.get('blocks')).toContain('Review in LibreChat');
   });
 });
+
+describe('bounded recoverable review presentation', () => {
+  test.each([201, 2000])(
+    'keeps a %i-character free-text question outside the short input label',
+    (size) => {
+      const reference = ref();
+      const pending = question(reference.expiresAt);
+      if (pending.payload.type !== 'ask_user_question') throw new Error();
+      pending.payload.question = { question: 'Q'.repeat(size) };
+      const modal = reviewModal(reference, pending)!;
+      expect(modal.blocks).toContainEqual({
+        type: 'section',
+        text: { type: 'plain_text', text: 'Q'.repeat(size) },
+      });
+      expect(modal.blocks.filter((block) => block.type === 'input')).toEqual([
+        expect.objectContaining({ label: { type: 'plain_text', text: 'Your answer' } }),
+      ]);
+    },
+  );
+  test('a large saved batch has a bounded receipt and retries only the same complete decision', async () => {
+    const { backend, slack, flow } = setup();
+    const reference = ref();
+    const pending = action(reference.expiresAt);
+    if (pending.payload.type !== 'tool_approval') throw new Error();
+    pending.payload.action_requests = Array.from({ length: 100 }, (_, i) => ({
+      name: `tool_${i}`,
+      arguments: {},
+      tool_call_id: `call_${i}`,
+    }));
+    const saved: ResponseReviewDecision = {
+      actionId: 'action',
+      decisions: pending.payload.action_requests.map((call) => ({
+        tool_call_id: call.tool_call_id,
+        decision: 'reject',
+        scope: 'once',
+      })),
+    };
+    const review = {
+      url: 'https://chat.example/review',
+      actionId: 'action',
+      pendingAction: pending,
+      pendingDecision: { intentId: 'saved', decision: saved },
+    };
+    backend.mockImplementation(async () => json(review));
+    await flow.control(
+      'channel_run_review',
+      JSON.stringify({ runId: 'run', revision: 'r1' }),
+      interaction(),
+      bundle,
+    );
+    const modal = JSON.parse(
+      new URLSearchParams(String(slack.mock.calls[0][1]?.body)).get('view')!,
+    );
+    expect(modal.blocks.length).toBeLessThanOrEqual(100);
+    expect(JSON.stringify(modal.blocks)).toContain('declined: 100');
+    const updated = await flow.submit(submission(reference), bundle);
+    expect(updated.response_action).toBe('update');
+    if (updated.response_action !== 'update') throw new Error();
+    expect(updated.view.blocks.length).toBeLessThanOrEqual(99);
+    backend.mockReset().mockResolvedValueOnce(json(review)).mockResolvedValueOnce(receipt());
+    const savedReference = { ...reference, savedIntentId: 'saved' };
+    await flow.submit(submission(savedReference), bundle);
+    expect(JSON.parse(String(backend.mock.calls[1][1]?.body)).decision).toEqual(saved);
+  });
+  test.each(['question', 'tool'] as const)(
+    'validation identifies a later invalid %s input',
+    async (kind) => {
+      const { backend, flow } = setup();
+      const reference = ref();
+      const pending = action(reference.expiresAt);
+      const input = submission(reference);
+      if (kind === 'tool') {
+        if (pending.payload.type !== 'tool_approval') throw new Error();
+        pending.payload.action_requests.push({
+          name: 'second',
+          arguments: {},
+          tool_call_id: 'second',
+        });
+        pending.payload.review_configs.push({
+          action_name: 'second',
+          tool_call_id: 'second',
+          allowed_decisions: ['approve', 'reject'],
+        });
+      } else {
+        pending.payload = {
+          type: 'ask_user_question',
+          question: { question: 'First' },
+          questions: [
+            { id: 'a', question: 'First' },
+            { id: 'b', question: 'Second', options: [{ label: 'One', value: 'one' }] },
+          ],
+        };
+        input.view!.values = { question_0_text: { answer: { value: 'first answered' } } };
+      }
+      backend.mockResolvedValueOnce(json({ actionId: 'action', pendingAction: pending }));
+      const result = await flow.submit(input, bundle);
+      expect(result.response_action).toBe('errors');
+      if (result.response_action !== 'errors') throw new Error();
+      expect(Object.keys(result.errors)).toEqual([kind === 'tool' ? 'tool_1' : 'question_1']);
+      expect(backend).toHaveBeenCalledTimes(1);
+    },
+  );
+  test('a rejected modal open falls back to the actor-private browser link without submitting a decision', async () => {
+    const { backend, slack, flow } = setup();
+    const reference = ref();
+    backend.mockResolvedValueOnce(
+      json({
+        url: 'https://chat.example/review',
+        actionId: 'action',
+        pendingAction: action(reference.expiresAt),
+      }),
+    );
+    slack.mockResolvedValueOnce(json({ ok: false, error: 'invalid_arguments' }));
+    await flow.control(
+      'channel_run_review',
+      JSON.stringify({ runId: 'run', revision: 'r1' }),
+      interaction(),
+      bundle,
+    );
+    expect(slack.mock.calls.map(([url]) => String(url).split('/').at(-1))).toEqual([
+      'views.open',
+      'chat.postEphemeral',
+    ]);
+    const notification = new URLSearchParams(String(slack.mock.calls[1][1]?.body));
+    expect(notification.get('user')).toBe('U1');
+    expect(notification.get('blocks')).toContain('https://chat.example/review');
+    expect(backend).toHaveBeenCalledTimes(1);
+  });
+});
