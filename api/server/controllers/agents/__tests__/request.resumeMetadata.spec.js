@@ -257,6 +257,8 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  resolveChannelExecutionMetadata: (...args) =>
+    jest.requireActual('@librechat/api').resolveChannelExecutionMetadata(...args),
   getPreliminaryResponseMessageId: jest.requireActual(
     '../../../../../packages/api/src/utils/message',
   ).getPreliminaryResponseMessageId,
@@ -588,6 +590,39 @@ describe('ResumableAgentController resume metadata', () => {
     mockGetAgentEventActorDetachedAction.mockResolvedValue(null);
     mockClaimAgentEventActorSuspension.mockResolvedValue({ status: 'claimed' });
     mockSettleAgentEventActorSuspension.mockResolvedValue({ status: 'settled' });
+  });
+
+  it('persists the validated channel marker received through signed trigger ingress', async () => {
+    const { generateAgentTriggerToken } = jest.requireActual('@librechat/api');
+    const channelExecution = { channelId: 'channel-1', runId: 'channel-run-1' };
+    const req = {
+      user: { id: 'user-123' },
+      headers: {
+        'x-lc-agent-trigger': '1',
+        authorization: `Bearer ${generateAgentTriggerToken('user-123')}`,
+      },
+      body: {
+        text: 'Run a channel event',
+        messageId: 'incoming-user-message',
+        conversationId: 'conversation-123',
+        channelExecution,
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'agent-1' } },
+      },
+      config: {},
+    };
+    await AgentController(
+      req,
+      createResumableResponse(),
+      jest.fn(),
+      jest.fn().mockRejectedValue(new Error('stop after enrollment')),
+      null,
+    );
+    expect(mockGenerationJobManager.createJob).toHaveBeenCalledWith(
+      'conversation-123',
+      'user-123',
+      'conversation-123',
+      expect.objectContaining({ initialMetadata: expect.objectContaining({ channelExecution }) }),
+    );
   });
 
   it.each([
