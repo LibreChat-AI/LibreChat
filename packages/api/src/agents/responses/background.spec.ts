@@ -1,7 +1,7 @@
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { createResponseStorage, tenantStorage, runAsSystem } from '@librechat/data-schemas';
-import type { ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
+import type { ResponseStorage, StoredResponseRecord, ResponseOwner } from '@librechat/data-schemas';
 import type { BackgroundResponseDependencies } from './background';
 import type { ResponsesRunEnvelope } from '../envelope';
 import type { Response } from './types';
@@ -217,3 +217,72 @@ it.each([{ store: false }, { stream: true }, { background: false }])(
       expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(0);
     }),
 );
+
+it.each(['queued', 'pending', 'completed'] as const)(
+  'reauthorizes the original source key before replaying a %s record with a replacement key',
+  (state) =>
+    scope(async () => {
+      const { deps, service, deliveries } = fixture();
+      const allowed = new Set(['key-a', 'key-b']);
+      const authorize = jest.fn(
+        async (_owner: ResponseOwner, _agent: string, key?: string) =>
+          key != null && allowed.has(key),
+      );
+      deps.authorize = authorize;
+      expect((await service.create(envelope(), 'same-request', 'key-a')).ok).toBe(true);
+      let record = [...deliveries.values()][0];
+      const response = completed(record);
+      if (state === 'completed') {
+        expect(
+          (
+            await storage.publish(owner, record.responseId, record.revision, {
+              status: 'completed',
+              responseJSON: JSON.stringify(response),
+            })
+          ).ok,
+        ).toBe(true);
+      } else if (state === 'pending') {
+        const running = await storage.publish(owner, record.responseId, record.revision, {
+          status: 'in_progress',
+          generationCreatedAt: 10,
+          responseJSON: JSON.stringify({ ...response, status: 'in_progress' }),
+        });
+        if (!running.ok) throw new Error('Publication failed');
+        record = running.record;
+        expect(
+          (
+            await storage.stageTerminal(owner, record.responseId, record.revision, {
+              generationCreatedAt: 10,
+              providerExecutionId: 'provider',
+              status: 'completed',
+              responseJSON: JSON.stringify(response),
+            })
+          ).ok,
+        ).toBe(true);
+      }
+      deliveries.clear();
+      deps.enqueue = jest.fn();
+      deps.observe = jest.fn();
+      deps.recoverTerminal = jest.fn();
+      allowed.delete('key-a');
+      authorize.mockClear();
+      expect(await service.create(envelope(), 'same-request', 'key-b')).toEqual({
+        ok: false,
+        status: 403,
+        code: 'permission_denied',
+      });
+      expect(authorize.mock.calls.map((call) => call[2])).toEqual(['key-b', 'key-a']);
+      expect(deps.enqueue).not.toHaveBeenCalled();
+      expect(deps.observe).not.toHaveBeenCalled();
+      expect(deps.recoverTerminal).not.toHaveBeenCalled();
+      expect(deliveries.size).toBe(0);
+    }),
+);
+
+it('does not add a second source-authority lookup for a newly reserved response', () =>
+  scope(async () => {
+    const { deps, service } = fixture();
+    deps.authorize = jest.fn().mockResolvedValue(true);
+    expect((await service.create(envelope(), 'new-request', 'key')).ok).toBe(true);
+    expect(deps.authorize).toHaveBeenCalledTimes(1);
+  }));

@@ -1,19 +1,22 @@
 import type { ResponseOwner, ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { ResponseCheckpointIdentity } from './checkpoint';
+import type { ResponseCompletionRecord } from './completion';
 import { createResponseCompletion, createResponseExecutionRelease } from './completion';
 import { buildPendingBackgroundResponse } from './background';
 
 export interface ResponseRetirementDependencies {
   storage: ResponseStorage;
-  jobs: Pick<GenerationJobManagerClass, 'getJob' | 'abortJob'> &
-    Partial<Pick<GenerationJobManagerClass, 'finishProviderTerminalPersistence'>>;
+  jobs: Pick<
+    GenerationJobManagerClass,
+    'getJob' | 'abortJob' | 'finishProviderTerminalPersistence'
+  >;
   /** Required before a durably paused response may publish cancellation. Must be idempotent. */
   cleanupCheckpoint?: (
     record: ResponseCheckpointIdentity,
     checkpointNamespace: string,
   ) => Promise<void>;
-  recoverTerminal?: (record: StoredResponseRecord) => Promise<StoredResponseRecord>;
+  recoverTerminal?: (record: StoredResponseRecord) => Promise<ResponseCompletionRecord>;
   now?: () => number;
 }
 
@@ -26,12 +29,15 @@ export function createResponseRetirement(
 ): (owner: ResponseOwner, responseId: string) => Promise<'stopped' | 'pending'> {
   const recover =
     deps.recoverTerminal ??
-    (deps.cleanupCheckpoint
-      ? createResponseCompletion({
-          storage: deps.storage,
-          cleanupCheckpoint: deps.cleanupCheckpoint,
-        }).finish
-      : undefined);
+    createResponseCompletion({
+      storage: deps.storage,
+      cleanupCheckpoint:
+        deps.cleanupCheckpoint ??
+        (async () => {
+          throw new Error('Response checkpoint cleanup unavailable');
+        }),
+      releaseExecution: createResponseExecutionRelease(deps.jobs),
+    }).finish;
   return async (owner, responseId) => {
     let record = await deps.storage.requestCancellation(
       owner,
@@ -60,7 +66,10 @@ export function createResponseRetirement(
             }
           : undefined;
       const identity = await deps.storage.readCleanupIdentity(owner, responseId, retained);
-      if (!identity?.expiredAt || identity.expiredAt.getTime() > (deps.now ?? Date.now)())
+      if (
+        !identity?.retirement &&
+        !(identity?.expiredAt && identity.expiredAt.getTime() <= (deps.now ?? Date.now)())
+      )
         throw new Error('Response retirement identity unavailable');
       if (!job) return identity.generationCreatedAt == null ? 'stopped' : 'pending';
       if (
@@ -93,8 +102,6 @@ export function createResponseRetirement(
           );
         }
       };
-      if (!deps.jobs.finishProviderTerminalPersistence)
-        throw new Error('Response terminal execution release is unavailable');
       await deps.jobs.abortJob(responseId, {
         expectedCreatedAt: identity.generationCreatedAt,
         awaitProviderDrain: true,
@@ -113,11 +120,10 @@ export function createResponseRetirement(
       return 'stopped';
     }
     if (terminal(record)) {
-      await recover?.(record);
+      await recover(record);
       return 'stopped';
     }
     if (record.pendingTerminal) {
-      if (!recover) return 'pending';
       return terminal(await recover(record)) ? 'stopped' : 'pending';
     }
     if (record.generationCreatedAt == null) {
@@ -134,7 +140,10 @@ export function createResponseRetirement(
       if (cancelled.ok) return 'stopped';
       record = await deps.storage.read(owner, responseId);
       if (!record) throw new Error('Response disappeared during retirement');
-      if (terminal(record)) return 'stopped';
+      if (terminal(record)) {
+        await recover(record);
+        return 'stopped';
+      }
     }
     const job = await deps.jobs.getJob(responseId);
     if (!job) return 'pending';
@@ -158,7 +167,6 @@ export function createResponseRetirement(
       const stopped = await deps.jobs.getJob(responseId);
       const proof = stopped?.metadata;
       if (
-        !recover ||
         stopped?.status !== 'aborted' ||
         !proof ||
         proof.providerDrained !== true ||
@@ -208,7 +216,7 @@ export function createResponseRetirement(
         const staged = await deps.storage.stageTerminal(
           owner,
           responseId,
-          current.revision,
+          { execution: current },
           receipt,
         );
         if (!staged.ok) throw new Error('Response retirement receipt conflicted');
@@ -233,16 +241,15 @@ export function createResponseRetirement(
     // Runtime publication includes provider drain and trailing writes; a missing job alone is not proof.
     let settled = await deps.storage.read(owner, responseId);
     if (settled && terminal(settled)) {
-      await recover?.(settled);
+      await recover(settled);
       return 'stopped';
     }
-    if (settled?.pendingTerminal && recover)
-      return terminal(await recover(settled)) ? 'stopped' : 'pending';
+    if (settled?.pendingTerminal) return terminal(await recover(settled)) ? 'stopped' : 'pending';
     // A repeated Stop can recover a failed runtime receipt only from the exact retained,
     // aborted and drained provider. Completed jobs and absent jobs are not cancellation proof.
     await stageCancellation();
     settled = await deps.storage.read(owner, responseId);
-    if (settled?.pendingTerminal && recover) settled = await recover(settled);
+    if (settled?.pendingTerminal) settled = await recover(settled);
     return settled && terminal(settled) ? 'stopped' : 'pending';
   };
 }

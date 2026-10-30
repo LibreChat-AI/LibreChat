@@ -8,7 +8,10 @@ import type {
   AgentApiKeyBinding,
 } from '@librechat/data-schemas';
 
+import { isTwoFactorEnrollmentRequired } from '~/auth/twoFactor';
+
 export interface BackgroundResponseAuthorityDependencies {
+  enrollmentRequired?: typeof isTwoFactorEnrollmentRequired;
   findUser: (userId: string) => Promise<IUser | null>;
   getKey: (
     keyId: string,
@@ -49,7 +52,8 @@ export function createBackgroundResponseAuthority(deps: BackgroundResponseAuthor
         !user ||
         String(user._id) !== owner.userId ||
         user.tenantId !== owner.tenantId ||
-        !user.role
+        !user.role ||
+        (deps.enrollmentRequired ?? isTwoFactorEnrollmentRequired)(user)
       )
         return false;
       const [key, role, config, active, permissions] = await Promise.all([
