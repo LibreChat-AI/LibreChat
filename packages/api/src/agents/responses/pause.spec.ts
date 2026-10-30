@@ -75,6 +75,27 @@ const conversationId = 'sdk-pause-conversation';
 const scoped = <T>(work: () => Promise<T>) => tenantStorage.run(owner, work);
 const checkpointer = { type: 'mongo' as const, ttl: 3600 };
 
+function initializedReviewAgent(id: string): Parameters<typeof createRun>[0]['agents'][number] {
+  return {
+    id,
+    name: id,
+    description: null,
+    created_at: 1,
+    avatar: null,
+    provider: 'openAI',
+    model: 'fixture',
+    model_parameters: {
+      temperature: null,
+      maxContextTokens: null,
+      max_context_tokens: null,
+      max_output_tokens: null,
+      top_p: null,
+      frequency_penalty: null,
+      presence_penalty: null,
+    },
+  };
+}
+
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({
     replSet: { count: 1 },
@@ -1084,197 +1105,274 @@ it('refuses a missing durable checkpoint before publishing a review action', () 
     await f.execution.settle(new Error('Checkpoint unavailable'));
   }));
 
-it('replays a real SDK checkpoint through authenticated HTTP and the actual runtime publisher', () =>
-  scoped(async () => {
-    const f = await setup();
-    const prefix = createResponseAggregator();
-    prefix.addText('Before the checkpoint. ');
-    prefix.toolCalls.set('ask-environment', {
-      id: 'ask-environment',
-      name: 'ask_user_question',
-      arguments: JSON.stringify({
-        questions: [{ id: 'environment', question: 'Which environment?' }],
-      }),
-    });
-    const priorAccounting = createResponseAccountingCollector({
-      quote: () => ({ amount: '0.1', basis: 'application_billing' }),
-    });
-    priorAccounting.record({ input_tokens: 7, output_tokens: 7 });
-    const partial = {
-      ...f.partial,
-      output: buildAggregatedResponse({ responseId, model: 'agent', createdAt: 1 }, prefix).output,
-      usage: {
-        input_tokens: 7,
-        output_tokens: 7,
-        total_tokens: 14,
-        input_tokens_details: { cached_tokens: 0 },
-        output_tokens_details: { reasoning_tokens: 0 },
-      },
-      accounting: priorAccounting.snapshot(),
-    };
-    expect(
-      await pauseResponseForReview({ ...f, partial, visibleOutputTokens: 7, checkpointer }, f.deps),
-    ).toBe(true);
-    await f.execution.settle();
-    const paused = (await storage.read(owner, responseId))!;
-    const reserved = await storage.reserveResume(
-      owner,
-      responseId,
-      {
-        generationCreatedAt: f.execution.createdAt,
-        intentId: 'http-sdk-intent',
-        actionId: paused.review!.actionId,
-        previousProviderExecutionId: paused.review!.providerExecutionId,
-        providerExecutionId: 'http-sdk-provider',
-        fingerprint: 'owner-answer',
-        decisionJSON: JSON.stringify({
-          actionId: paused.review!.actionId,
-          answers: { environment: 'staging' },
+it.each([
+  'completed',
+  'aborted',
+  'thrown',
+  'added_eager',
+  'added_lazy',
+  'added_graph',
+  'added_graph_config',
+] as const)(
+  'replays a real SDK checkpoint through authenticated HTTP and the actual runtime publisher (%s)',
+  (mode) =>
+    scoped(async () => {
+      const f = await setup();
+      const prefix = createResponseAggregator();
+      prefix.addText('Before the checkpoint. ');
+      prefix.toolCalls.set('ask-environment', {
+        id: 'ask-environment',
+        name: 'ask_user_question',
+        arguments: JSON.stringify({
+          questions: [{ id: 'environment', question: 'Which environment?' }],
         }),
-        resolutionJSON: JSON.stringify({ answers: { environment: 'staging' } }),
-      },
-      Date.now(),
-    );
-    if (!reserved.ok) throw new Error('Missing HTTP SDK intent');
-    const admit = createResponseResumeAdmission({
-      storage,
-      jobs: manager,
-      authorize: async () => true,
-      validate: async () => ({ ok: true, provenance: {} }),
-    });
-    const secret = 'isolated-sdk-http-resume-secret';
-    const user = new mongoose.models.User({
-      _id: owner.userId,
-      tenantId: owner.tenantId,
-      email: 'sdk-resume@example.test',
-    });
-    const errors: unknown[] = [];
-    let finish!: () => void;
-    const finished = new Promise<void>((resolve) => {
-      finish = resolve;
-    });
-    const app = express();
-    app.use(express.json());
-    app.use(
-      createBackgroundResponseWorkerAuth(
-        {
-          storage,
-          signingSecret: () => secret,
-          findUser: async () => user,
-          authorize: async (record) => record.sourceKeyId === 'key',
-          admitResume: (record, _user, intentId) => admit(record, responseId, intentId),
-          onError: (error) => {
-            errors.push(error);
-          },
-        },
-        (_req, res) => {
-          res.status(401).end();
-        },
-      ),
-    );
-    app.post('/', async (req, res) => {
-      const runtime = createResponseExecutionRuntime(req, res, {
-        getMessage: async () => null,
-        jobs: manager,
       });
+      const priorAccounting = createResponseAccountingCollector({
+        quote: () => ({ amount: '0.1', basis: 'application_billing' }),
+      });
+      priorAccounting.record({ input_tokens: 7, output_tokens: 7 });
+      const partial = {
+        ...f.partial,
+        output: buildAggregatedResponse({ responseId, model: 'agent', createdAt: 1 }, prefix)
+          .output,
+        usage: {
+          input_tokens: 7,
+          output_tokens: 7,
+          total_tokens: 14,
+          input_tokens_details: { cached_tokens: 0 },
+          output_tokens_details: { reasoning_tokens: 0 },
+        },
+        accounting: priorAccounting.snapshot(),
+      };
       expect(
-        runtime.inputChain({
-          messages: [{ messageId: 'fresh-duplicate-must-not-save' }],
-          parentMessageId: 'fresh-duplicate-must-not-save',
-        }),
-      ).toEqual({
-        messages: [],
-        parentMessageId: 'original-user-message',
+        await pauseResponseForReview(
+          { ...f, partial, visibleOutputTokens: 7, checkpointer },
+          f.deps,
+        ),
+      ).toBe(true);
+      await f.execution.settle();
+      const paused = (await storage.read(owner, responseId))!;
+      const reserved = await storage.reserveResume(
+        owner,
+        responseId,
+        {
+          generationCreatedAt: f.execution.createdAt,
+          intentId: 'http-sdk-intent',
+          actionId: paused.review!.actionId,
+          previousProviderExecutionId: paused.review!.providerExecutionId,
+          providerExecutionId: 'http-sdk-provider',
+          fingerprint: 'owner-answer',
+          decisionJSON: JSON.stringify({
+            actionId: paused.review!.actionId,
+            answers: { environment: 'staging' },
+          }),
+          resolutionJSON: JSON.stringify({ answers: { environment: 'staging' } }),
+        },
+        Date.now(),
+      );
+      if (!reserved.ok) throw new Error('Missing HTTP SDK intent');
+      const admit = createResponseResumeAdmission({
+        storage,
+        jobs: manager,
+        authorize: async () => true,
+        validate: async () => ({ ok: true, provenance: {} }),
       });
-      expect(await runtime.graphOptions([])).toMatchObject({
-        sessionStartSource: 'resume',
-        discoveredToolNames: ['retained_lookup'],
-        reviewedToolApprovals: { decisions: [] },
+      const secret = 'isolated-sdk-http-resume-secret';
+      const user = new mongoose.models.User({
+        _id: owner.userId,
+        tenantId: owner.tenantId,
+        email: 'sdk-resume@example.test',
       });
-      const envelope = createAgentRunEnvelope({
-        protocol: 'responses',
-        requestId: responseId,
-        receivedAt: Date.now(),
-        principal: { id: owner.userId, tenantId: owner.tenantId },
-        payload: req.body,
+      const errors: unknown[] = [];
+      let finish!: () => void;
+      const finished = new Promise<void>((resolve) => {
+        finish = resolve;
       });
-      try {
-        await executeAgentRun(
+      const app = express();
+      app.use(express.json());
+      app.use(
+        createBackgroundResponseWorkerAuth(
           {
-            envelope,
-            runId: responseId,
-            conversationId,
-            ...runtime.hooks,
-            isPrincipalActive: async () => true,
-            execute: async () => {
-              const aggregator = createResponseAggregator();
-              runtime.seedAggregator(aggregator);
-              const rebuilt = await f.buildRun(createAggregatorEventHandlers(aggregator));
-              await runtime.processRun(rebuilt, { messages: [] }, f.config);
-              const accounting = createResponseAccountingCollector({
-                quote: () => ({ amount: '0.2', basis: 'application_billing' }),
-              });
-              accounting.record({
-                input_tokens: aggregator.usage.inputTokens,
-                output_tokens: aggregator.usage.outputTokens,
-              });
-              expect(runtime.visibleOutputTokens(aggregator.usage.outputTokens)).toBe(12);
-              res.json(
-                runtime.composeResponse(
-                  buildAggregatedResponse(
-                    createResponseContext(envelope.payload, responseId),
-                    aggregator,
-                    undefined,
-                    accounting.snapshot(),
-                  ),
-                ),
-              );
-            },
-            onSettlementError: (error) => {
+            storage,
+            signingSecret: () => secret,
+            findUser: async () => user,
+            authorize: async (record) => record.sourceKeyId === 'key',
+            admitResume: (record, _user, intentId) => admit(record, responseId, intentId),
+            onError: (error) => {
               errors.push(error);
             },
           },
-          { manager },
+          (_req, res) => {
+            res.status(401).end();
+          },
+        ),
+      );
+      app.post('/', async (req, res) => {
+        const runtime = createResponseExecutionRuntime(req, res, {
+          getMessage: async () => null,
+          jobs: manager,
+        });
+        expect(
+          runtime.inputChain({
+            messages: [{ messageId: 'fresh-duplicate-must-not-save' }],
+            parentMessageId: 'fresh-duplicate-must-not-save',
+          }),
+        ).toEqual({
+          messages: [],
+          parentMessageId: 'original-user-message',
+        });
+        expect(await runtime.graphOptions([])).toMatchObject({
+          sessionStartSource: 'resume',
+          discoveredToolNames: ['retained_lookup'],
+          reviewedToolApprovals: { decisions: [] },
+        });
+        const envelope = createAgentRunEnvelope({
+          protocol: 'responses',
+          requestId: responseId,
+          receivedAt: Date.now(),
+          principal: { id: owner.userId, tenantId: owner.tenantId },
+          payload: req.body,
+        });
+        try {
+          await executeAgentRun(
+            {
+              envelope,
+              runId: responseId,
+              conversationId,
+              ...runtime.hooks,
+              isPrincipalActive: async () => true,
+              execute: async (execution) => {
+                if (mode === 'aborted') {
+                  await manager.abortJob(responseId, { expectedCreatedAt: execution.createdAt });
+                  return;
+                }
+                if (mode === 'thrown') throw new Error('Private resumed provider failure');
+                if (mode.startsWith('added_')) {
+                  const root = initializedReviewAgent('agent');
+                  const child = initializedReviewAgent('added-child');
+                  const expanded = {
+                    ...root,
+                    subagentAgentConfigs: mode === 'added_eager' ? [child] : undefined,
+                    lazySubagentConfigs:
+                      mode === 'added_lazy'
+                        ? [{ ...child, configId: 'added-child', resolve: async () => child }]
+                        : undefined,
+                    subagentGraphMemberMetadata: mode === 'added_graph' ? [child] : undefined,
+                    subagentGraphConfigs:
+                      mode === 'added_graph_config'
+                        ? [
+                            {
+                              definition: {
+                                type: 'added-graph',
+                                name: 'Added graph',
+                                description: 'Added member',
+                                agent_ids: ['added-child'],
+                                edges: [],
+                                entry_agent_id: 'added-child',
+                                result_agent_id: 'added-child',
+                              },
+                              memberConfigs: [child],
+                            },
+                          ]
+                        : undefined,
+                  };
+                  await runtime.graphOptions([expanded]);
+                  throw new Error('Expanded graph reached execution');
+                }
+                const aggregator = createResponseAggregator();
+                runtime.seedAggregator(aggregator);
+                const rebuilt = await f.buildRun(createAggregatorEventHandlers(aggregator));
+                await runtime.processRun(rebuilt, { messages: [] }, f.config);
+                const accounting = createResponseAccountingCollector({
+                  quote: () => ({ amount: '0.2', basis: 'application_billing' }),
+                });
+                accounting.record({
+                  input_tokens: aggregator.usage.inputTokens,
+                  output_tokens: aggregator.usage.outputTokens,
+                });
+                expect(runtime.visibleOutputTokens(aggregator.usage.outputTokens)).toBe(12);
+                res.json(
+                  runtime.composeResponse(
+                    buildAggregatedResponse(
+                      createResponseContext(envelope.payload, responseId),
+                      aggregator,
+                      undefined,
+                      accounting.snapshot(),
+                    ),
+                  ),
+                );
+              },
+              onSettlementError: (error) => {
+                errors.push(error);
+              },
+            },
+            { manager },
+          );
+        } catch (error) {
+          errors.push(error);
+          if (!res.writableEnded) res.status(409).end();
+        } finally {
+          finish();
+        }
+      });
+      await request(app)
+        .post('/')
+        .set('x-lc-response-worker', '1')
+        .auth(mintResponseResumeWorkerToken(reserved.record, secret), { type: 'bearer' })
+        .send({ answers: { environment: 'attacker override' }, model: 'wrong-agent' })
+        .expect(202);
+      await finished;
+      if (mode === 'completed' || mode === 'aborted') expect(errors).toEqual([]);
+      else {
+        expect(errors).toHaveLength(1);
+        expect((errors[0] as Error).message).toBe(
+          mode === 'thrown'
+            ? 'Private resumed provider failure'
+            : 'Response resume participants changed',
         );
-      } catch (error) {
-        errors.push(error);
-        if (!res.writableEnded) res.status(409).end();
-      } finally {
-        finish();
       }
-    });
-    await request(app)
-      .post('/')
-      .set('x-lc-response-worker', '1')
-      .auth(mintResponseResumeWorkerToken(reserved.record, secret), { type: 'bearer' })
-      .send({ answers: { environment: 'attacker override' }, model: 'wrong-agent' })
-      .expect(202);
-    await finished;
-    expect(errors).toEqual([]);
-    const complete = (await storage.read(owner, responseId))!;
-    expect(complete).toMatchObject({
-      status: 'completed',
-      generationCreatedAt: f.execution.createdAt,
-    });
-    const response = JSON.parse(complete.responseJSON!);
-    expect(response).toMatchObject({
-      id: responseId,
-      model: 'agent',
-      status: 'completed',
-      background: true,
-      store: true,
-    });
-    expect(JSON.stringify(response.output)).toContain('staging');
-    expect(JSON.stringify(response.output)).not.toContain('attacker override');
-    expect(JSON.stringify(response.output)).toContain('Before the checkpoint.');
-    expect(
-      response.output.filter((item: { type: string }) => item.type === 'function_call_output'),
-    ).toHaveLength(1);
-    expect(response.usage).toMatchObject({ input_tokens: 12, output_tokens: 12, total_tokens: 24 });
-    expect(response.accounting).toMatchObject({ status: 'available', amount: '0.3' });
-    expect(f.modelCalls()).toBe(2);
-    expect(await (await getAgentCheckpointer(checkpointer))!.getTuple(f.config)).toBeUndefined();
-  }));
+      let status = 'failed';
+      if (mode === 'completed') status = 'completed';
+      else if (mode === 'aborted') status = 'cancelled';
+      const complete = (await storage.read(owner, responseId))!;
+      expect(complete).toMatchObject({
+        status,
+        generationCreatedAt: f.execution.createdAt,
+      });
+      const response = JSON.parse(complete.responseJSON!);
+      expect(response).toMatchObject({
+        id: responseId,
+        model: 'agent',
+        status,
+        background: true,
+        store: true,
+      });
+      if (mode === 'completed') {
+        expect(JSON.stringify(response.output)).toContain('staging');
+        expect(JSON.stringify(response.output)).not.toContain('attacker override');
+        expect(JSON.stringify(response.output)).toContain('Before the checkpoint.');
+        expect(
+          response.output.filter((item: { type: string }) => item.type === 'function_call_output'),
+        ).toHaveLength(1);
+        expect(response.usage).toMatchObject({
+          input_tokens: 12,
+          output_tokens: 12,
+          total_tokens: 24,
+        });
+        expect(response.accounting).toMatchObject({ status: 'available', amount: '0.3' });
+        expect(f.modelCalls()).toBe(2);
+      } else {
+        expect(response.output).toEqual(partial.output);
+        expect(response.usage).toEqual(partial.usage);
+        expect(response.accounting).toEqual(partial.accounting);
+        expect(response.required_action).toBeUndefined();
+        expect(JSON.stringify(response)).not.toContain('Private resumed provider failure');
+        expect(f.modelCalls()).toBe(1);
+        expect(f.toolExecutions()).toBe(0);
+      }
+      expect(await (await getAgentCheckpointer(checkpointer))!.getTuple(f.config)).toBeUndefined();
+    }),
+);
 
 it('uses production validation for a real retained question and rejects changed graph, project, access and checkpoint', () =>
   scoped(async () => {
@@ -1578,6 +1676,10 @@ it('persists a session approval before compiling the resumed SDK graph and avoid
             ...runtime.hooks,
             isPrincipalActive: async () => true,
             execute: async () => {
+              await expect(
+                runtime.graphOptions([initializedReviewAgent('added-child')]),
+              ).rejects.toThrow('Response resume participants changed');
+              expect(writes).not.toHaveBeenCalled();
               const options = await runtime.graphOptions([]);
               expect(writes).toHaveBeenCalledTimes(1);
               expect(options.toolApprovalAllows).toEqual(['review_lookup']);
