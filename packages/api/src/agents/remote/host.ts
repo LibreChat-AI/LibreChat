@@ -73,55 +73,64 @@ export async function executeAgentRun<Result>(
       execution?.abort();
     }) ?? (() => undefined);
 
-  try {
-    const enrollment = {
-      runId,
-      userId: envelope.principal.userId,
-      conversationId,
-      agentId,
-      protocol: envelope.protocol,
-      clientRequestId,
-      retainTerminalPersistence,
-      isPrincipalActive,
-    };
-    execution =
-      resume == null
-        ? await enrollAgentExecution(enrollment, deps)
-        : await enrollResumedAgentExecution(
-            { ...enrollment, ...resume, tenantId: envelope.principal.tenantId },
-            deps,
-          );
-    if (responseClosed || connection?.isClosed() === true) {
-      execution.abort();
-    }
-    await onEnrolled?.(execution);
-    await execution.beginProviderExecution();
-    return await execute(execution);
-  } catch (error) {
-    executionError = error;
-    if (handleExecutionError != null) {
-      return await handleExecutionError(error, execution?.signal);
-    }
-    throw error;
-  } finally {
-    removeCloseListener();
-    if (execution != null) {
-      try {
-        if (execution.ownsSettlement) await beforeSettle?.(execution, executionError);
-      } catch (error) {
-        executionError ??= error;
-        settlementFailure = error;
+  // Capture the provider/renderer outcome; mandatory persistence settles before it escapes.
+  const run = async (): Promise<Result> => {
+    try {
+      const enrollment = {
+        runId,
+        userId: envelope.principal.userId,
+        conversationId,
+        agentId,
+        protocol: envelope.protocol,
+        clientRequestId,
+        retainTerminalPersistence,
+        isPrincipalActive,
+      };
+      execution =
+        resume == null
+          ? await enrollAgentExecution(enrollment, deps)
+          : await enrollResumedAgentExecution(
+              { ...enrollment, ...resume, tenantId: envelope.principal.tenantId },
+              deps,
+            );
+      if (responseClosed || connection?.isClosed() === true) {
+        execution.abort();
       }
-      try {
-        const settled = await execution.settle(executionError);
-        settlementFailure ??= settled.persistenceError;
-        executionError ??= settled.persistenceError;
-        if (execution.ownsSettlement) await afterSettle?.(execution, executionError);
-        if (settlementFailure != null) throw settlementFailure;
-      } catch (error) {
-        onSettlementError?.(error);
-        throw error;
+      await onEnrolled?.(execution);
+      await execution.beginProviderExecution();
+      return await execute(execution);
+    } catch (error) {
+      executionError = error;
+      if (handleExecutionError != null) {
+        return await handleExecutionError(error, execution?.signal);
       }
+      throw error;
+    } finally {
+      removeCloseListener();
+    }
+  };
+  const outcome = await run().then(
+    (value) => ({ ok: true as const, value }),
+    (error: unknown) => ({ ok: false as const, error }),
+  );
+  if (execution != null) {
+    try {
+      if (execution.ownsSettlement) await beforeSettle?.(execution, executionError);
+    } catch (error) {
+      executionError ??= error;
+      settlementFailure = error;
+    }
+    try {
+      const settled = await execution.settle(executionError);
+      settlementFailure ??= settled.persistenceError;
+      executionError ??= settled.persistenceError;
+      if (execution.ownsSettlement) await afterSettle?.(execution, executionError);
+      if (settlementFailure != null) throw settlementFailure;
+    } catch (error) {
+      onSettlementError?.(error);
+      throw error;
     }
   }
+  if (!outcome.ok) throw outcome.error;
+  return outcome.value;
 }
