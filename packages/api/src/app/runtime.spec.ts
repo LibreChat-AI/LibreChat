@@ -62,7 +62,7 @@ describe('applyLoadedConfig', () => {
     });
     const stored = new Map<string, unknown>();
     const cache = {
-      get: async (key: string) => stored.get(key),
+      get: jest.fn(async (key: string) => stored.get(key)),
       set: jest.fn(async (key: string, value: unknown) => {
         stored.set(key, value);
       }),
@@ -122,6 +122,30 @@ describe('applyLoadedConfig', () => {
     expect(Error.stackTraceLimit).toBe(processDefault);
     expect(getConfigDigest()).toMatch(/^[0-9a-f]{12}$/);
     expect(getConfigDigest()).not.toBe(first);
+  });
+
+  it('initializes local runtime settings before serving a serialized shared base cache', async () => {
+    const publisher = createRuntime();
+    const published = await publisher.getAppConfig({ baseOnly: true });
+    const digest = getConfigDigest();
+    const cached = JSON.parse(JSON.stringify(published));
+    applyStackTraceLimit(undefined);
+    resetConfigDigestForTests();
+
+    const restarted = createRuntime();
+    restarted.cache.get.mockResolvedValue(cached);
+    const local = await restarted.getAppConfig({ baseOnly: true });
+
+    expect(restarted.buildConfig).toHaveBeenCalledTimes(1);
+    expect(local).not.toBe(cached);
+    expect(Error.stackTraceLimit).toBe(25);
+    expect(getConfigDigest()).toBe(digest);
+
+    restarted.setText('version: 1.3.18\ntelemetry:\n  stackTraceLimit: 60\n');
+    restarted.buildConfig.mockRejectedValueOnce(new Error('reload failed'));
+    await expect(restarted.reloadBaseConfig()).resolves.toMatchObject({ ok: false });
+    expect(Error.stackTraceLimit).toBe(25);
+    expect(getConfigDigest()).toBe(digest);
   });
 
   it.each(['validation', 'tools scan', 'AppService', 'tool cache', 'base cache'])(

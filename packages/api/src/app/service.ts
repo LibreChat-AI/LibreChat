@@ -904,9 +904,11 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
    * subagent cap) end with the newest librechat.yaml rather than whichever read finished last.
    */
   async function loadBase(refresh?: boolean): Promise<BaseConfigLoad> {
-    const cached = (await cache.get(BASE_CONFIG_KEY)) as AppConfig | undefined;
+    // A shared cache cannot initialize this process's YAML-derived runtime settings.
+    const cached = lastGoodBaseConfig
+      ? ((await cache.get(BASE_CONFIG_KEY)) as AppConfig | undefined)
+      : undefined;
     if (cached) {
-      lastGoodBaseConfig ??= cached;
       if (!refresh) {
         return { config: cached };
       }
