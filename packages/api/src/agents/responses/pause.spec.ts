@@ -35,6 +35,11 @@ import {
   mintBackgroundResponseWorkerToken,
 } from './worker';
 import {
+  createResponseCompletion,
+  createResponseExecutionRelease,
+  createResponseExecutionConfirmation,
+} from './completion';
+import {
   buildPendingAction,
   computeAgentRequestFingerprint,
   computeLegacyAgentRequestFingerprint,
@@ -47,7 +52,6 @@ import {
 import { buildEffectiveToolApprovalPolicy, markToolApprovalAllowAlways } from '../hitl/allow';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { createResponseResumeAdmission, createResponseResumeValidation } from './resume';
-import { createResponseCompletion, createResponseExecutionRelease } from './completion';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { createAskUserQuestionTool } from '../hitl/askUserQuestionTool';
 import { createResponseAccountingCollector } from './accounting';
@@ -65,13 +69,14 @@ import { GenerationJobManagerClass } from '~/stream';
 import { createAgentRunEnvelope } from '../envelope';
 import { pauseResponseForReview } from './pause';
 import { executeAgentRun } from '../remote/host';
+import { createResponseTurn } from './turn';
 
 let mongo: MongoMemoryReplSet;
 let storage: ResponseStorage;
 let manager: GenerationJobManagerClass;
 const owner = { userId: '000000000000000000000012', tenantId: 'sdk-pause-tenant' };
 const responseId = 'resp_sdk_pause';
-const conversationId = 'sdk-pause-conversation';
+const conversationId = 'd2a56ba6-7a13-4f8d-bf2c-8e4f46b40ec3';
 const scoped = <T>(work: () => Promise<T>) => tenantStorage.run(owner, work);
 const checkpointer = { type: 'mongo' as const, ttl: 3600 };
 
@@ -96,6 +101,50 @@ function initializedReviewAgent(id: string): Parameters<typeof createRun>[0]['ag
   };
 }
 
+function sdkTurn(
+  runtime: ResponseExecutionRuntime,
+  payload: Parameters<typeof createResponseContext>[0],
+) {
+  return createResponseTurn({
+    runtime,
+    context: createResponseContext(payload, responseId),
+    requestedStore: true,
+    logger: { error: jest.fn() },
+  });
+}
+
+function stageSDKTurn(
+  turn: ReturnType<typeof createResponseTurn>,
+  input: Omit<
+    Parameters<ReturnType<typeof createResponseTurn>['stage']>[0],
+    'agents' | 'conversationId' | 'agentId' | 'agent' | 'messages' | 'parentMessageId' | 'request'
+  > & { request: ServerRequest },
+) {
+  const methods = createMethods(mongoose);
+  return turn.stage(
+    {
+      ...input,
+      request: { ...input.request, body: { isTemporary: false } },
+      agents: [],
+      conversationId,
+      agentId: input.response.model,
+      agent: { id: input.response.model, name: 'SDK Test Agent' },
+      messages: [],
+      parentMessageId: 'original-user-message',
+    },
+    {
+      saveConvo: methods.saveConvo,
+      saveMessage: async (...args) => {
+        const saved = await methods.saveMessage(...args);
+        return saved ? { conversationId: saved.conversationId, messageId: saved.messageId } : null;
+      },
+      announceReply: async () => {},
+      resolveTitle: () => null,
+      traceFields: async () => ({ langfuseSampled: false }),
+    },
+  );
+}
+
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({
     replSet: { count: 1 },
@@ -110,6 +159,8 @@ beforeEach(async () => {
   await runAsSystem(async () => {
     await mongoose.models.StoredResponse.deleteMany({});
     await mongoose.models.ResponseScope?.deleteMany({});
+    await mongoose.models.Conversation.deleteMany({ user: owner.userId, conversationId });
+    await mongoose.models.Message.deleteMany({ user: owner.userId, conversationId });
   });
   manager = new GenerationJobManagerClass();
   manager.configure({
@@ -277,7 +328,8 @@ async function setup(
     run.Graph.overrideModel = model;
     return run;
   };
-  const run = await buildRun();
+  const initialAggregator = createResponseAggregator();
+  const run = await buildRun(createAggregatorEventHandlers(initialAggregator));
   const input = { messages: [new HumanMessage('Ask which environment.')] };
   if (processRun) await processRun(run, input, config);
   else await run.processStream(input, config);
@@ -318,6 +370,7 @@ async function setup(
     execution,
     record,
     partial,
+    visibleOutputTokens: initialAggregator.usage.outputTokens,
     config,
     deps,
     modelCalls: () => modelCalls,
@@ -622,6 +675,7 @@ it.each(['cleanup', 'stage'] as const)(
         const completion = createResponseCompletion({
           storage,
           cleanupCheckpoint: cleanup,
+          confirmExecution: createResponseExecutionConfirmation(manager),
           releaseExecution: createResponseExecutionRelease(manager),
         });
         return createResponseRetirement({
@@ -1212,6 +1266,7 @@ it.each([
           getMessage: async () => null,
           jobs: manager,
         });
+        const turn = sdkTurn(runtime, req.body);
         expect(
           runtime.inputChain({
             messages: [{ messageId: 'fresh-duplicate-must-not-save' }],
@@ -1239,7 +1294,7 @@ it.each([
               envelope,
               runId: responseId,
               conversationId,
-              ...runtime.hooks,
+              ...turn.hooks,
               isPrincipalActive: async () => true,
               execute: async (execution) => {
                 if (mode === 'aborted') {
@@ -1291,16 +1346,19 @@ it.each([
                   output_tokens: aggregator.usage.outputTokens,
                 });
                 expect(runtime.visibleOutputTokens(aggregator.usage.outputTokens)).toBe(12);
-                res.json(
-                  runtime.composeResponse(
-                    buildAggregatedResponse(
-                      createResponseContext(envelope.payload, responseId),
-                      aggregator,
-                      undefined,
-                      accounting.snapshot(),
-                    ),
+                await stageSDKTurn(turn, {
+                  request: req as ServerRequest,
+                  run: rebuilt,
+                  execution,
+                  response: buildAggregatedResponse(
+                    createResponseContext(envelope.payload, responseId),
+                    aggregator,
+                    undefined,
+                    accounting.snapshot(),
                   ),
-                );
+                  visibleOutputTokens: aggregator.usage.outputTokens,
+                  transport: { type: 'json', response: res },
+                });
               },
               onSettlementError: (error) => {
                 errors.push(error);
@@ -1657,6 +1715,7 @@ it('persists a session approval before compiling the resumed SDK graph and avoid
         jobs: manager,
         addConvoToolApprovalAllows: writes,
       });
+      const turn = sdkTurn(runtime, req.body);
       try {
         await expect(runtime.graphOptions([])).rejects.toThrow(
           'Response remembered approval ownership unavailable',
@@ -1673,9 +1732,9 @@ it('persists a session approval before compiling the resumed SDK graph and avoid
             }),
             runId: responseId,
             conversationId,
-            ...runtime.hooks,
+            ...turn.hooks,
             isPrincipalActive: async () => true,
-            execute: async () => {
+            execute: async (execution) => {
               await expect(
                 runtime.graphOptions([initializedReviewAgent('added-child')]),
               ).rejects.toThrow('Response resume participants changed');
@@ -1687,14 +1746,24 @@ it('persists a session approval before compiling the resumed SDK graph and avoid
               expect((req as ServerRequest).resolvedConversation).toBeUndefined();
               const saved = await methods.getConvo(owner.userId, conversationId);
               expect(saved?.toolApprovalAllows).toEqual(['review_lookup']);
-              const rebuilt = await f.buildRun(undefined, options.toolApprovalAllows);
+              const aggregator = createResponseAggregator();
+              runtime.seedAggregator(aggregator);
+              const rebuilt = await f.buildRun(
+                createAggregatorEventHandlers(aggregator),
+                options.toolApprovalAllows,
+              );
               await runtime.processRun(rebuilt, { messages: [] }, f.config);
               expect(rebuilt.getInterrupt()).toBeUndefined();
-              res.json({
-                ...buildPendingBackgroundResponse(paused),
-                status: 'completed',
-                output: [],
-                completed_at: Math.floor(Date.now() / 1000),
+              await stageSDKTurn(turn, {
+                request: req as ServerRequest,
+                run: rebuilt,
+                execution,
+                response: buildAggregatedResponse(
+                  createResponseContext(req.body, responseId),
+                  aggregator,
+                ),
+                visibleOutputTokens: aggregator.usage.outputTokens,
+                transport: { type: 'json', response: res },
               });
             },
           },
