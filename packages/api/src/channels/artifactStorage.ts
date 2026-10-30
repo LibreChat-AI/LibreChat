@@ -1,13 +1,14 @@
 import { FileSources } from 'librechat-data-provider';
-import type { AppConfig, ChannelRunRecord, RunArtifactFile } from '@librechat/data-schemas';
+import type { AppConfig, ChannelRunRecord, ResponseArtifactFile } from '@librechat/data-schemas';
 import type { Readable } from 'node:stream';
+import { isChannelArtifactExpired } from './artifacts';
 import { resolveDownloadPath } from '~/storage/path';
 
 /** Only the request fields used by supported storage readers, never an authenticated HTTP request. */
 export interface ChannelArtifactStorageRequest {
   config: AppConfig;
   user: { id: string };
-  tenantId: string;
+  tenantId?: string;
 }
 
 export interface ChannelArtifactStorageDependencies {
@@ -25,7 +26,7 @@ export interface ChannelArtifactStorageDependencies {
 
 export interface ChannelArtifactReader {
   readFile: (
-    file: RunArtifactFile,
+    file: ResponseArtifactFile,
     run: ChannelRunRecord,
     signal: AbortSignal,
   ) => Promise<Readable | null>;
@@ -39,19 +40,19 @@ const supportedSources = new Set<string>([
   FileSources.firebase,
 ]);
 
-/** Input files must already be authorized by listRunArtifacts for the exact saved response. */
+/** Input files must already be authorized by readResponseArtifacts for the exact saved response. */
 export function createChannelArtifactReader(
   deps: ChannelArtifactStorageDependencies,
 ): ChannelArtifactReader {
   return {
     async readFile(file, run, signal) {
-      const expiresAt = file.expiredAt == null ? undefined : new Date(file.expiredAt).getTime();
+      const expired = isChannelArtifactExpired(file);
       if (
         !run.execution ||
         file.user !== run.principal.userId ||
-        (file.tenantId ?? '_') !== run.tenantId ||
+        (file.tenantId || '_') !== (run.tenantId || '_') ||
         file.conversationId !== run.execution.conversationId ||
-        (expiresAt !== undefined && (!Number.isFinite(expiresAt) || expiresAt <= Date.now())) ||
+        expired ||
         !file.source ||
         !supportedSources.has(file.source)
       ) {
@@ -62,11 +63,15 @@ export function createChannelArtifactReader(
       if (!path) return null;
       const config = await deps.getConfig(run);
       signal.throwIfAborted();
-      if (!config) return null;
+      if (!config || isChannelArtifactExpired(file)) return null;
       const strategy = deps.getStrategyFunctions(file.source);
       if (!strategy?.getDownloadStream) return null;
       return strategy.getDownloadStream(
-        { config, user: { id: run.principal.userId }, tenantId: run.tenantId },
+        {
+          config,
+          user: { id: run.principal.userId },
+          tenantId: run.tenantId === '_' ? undefined : run.tenantId || undefined,
+        },
         path,
         { signal },
       );

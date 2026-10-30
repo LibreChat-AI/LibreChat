@@ -173,7 +173,7 @@ it('normalizes only the default tenant sentinel without admitting a named tenant
   expect(stream).not.toBeNull();
   stream?.destroy();
   expect(getDownloadStream).toHaveBeenCalledWith(
-    { config, user: { id: 'user-a' }, tenantId: '_' },
+    { config, user: { id: 'user-a' }, tenantId: undefined },
     file.filepath,
     { signal },
   );

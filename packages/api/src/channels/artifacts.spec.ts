@@ -1,8 +1,8 @@
 import mongoose from 'mongoose';
 import { Readable } from 'node:stream';
 import { createHash } from 'node:crypto';
-import { FileSources } from 'librechat-data-provider';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import { FileSources, FileContext } from 'librechat-data-provider';
 import { createModels, createMethods, tenantStorage, runAsSystem } from '@librechat/data-schemas';
 import type {
   ChannelRunRecord,
@@ -73,7 +73,23 @@ afterAll(async () => {
   await mongo?.stop();
 });
 beforeEach(async () => {
-  await runAsSystem(() => mongoose.models.File.deleteMany({}));
+  await runAsSystem(() =>
+    Promise.all([mongoose.models.File.deleteMany({}), mongoose.models.Message.deleteMany({})]),
+  );
+  await tenantStorage.run({ tenantId: scope.tenantId ?? undefined }, () =>
+    mongoose.models.Message.create({
+      user: userId,
+      tenantId: scope.tenantId,
+      conversationId: scope.conversationId,
+      messageId: scope.runId,
+      isCreatedByUser: false,
+      sender: 'Agent',
+      endpoint: 'agents',
+      model: 'agent-a',
+      text: 'Owned response',
+      attachments: [],
+    }),
+  );
   contentByFile.clear();
   limits = { artifactMaxBytes: 10000, artifactMaxFiles: 3, artifactReadTimeoutMs: 1000 };
   run = {
@@ -106,15 +122,17 @@ beforeEach(async () => {
     },
     execution: {
       requestId: 'request-a',
+      responseId: scope.runId,
+      protocol: 'responses',
       conversationId: 'conversation-a',
       parentMessageId: 'parent-a',
     },
     snapshot: { responseId: 'response-a', status: 'completed', text: 'answer', elapsedMs: 1 },
   };
   deps = {
-    listFiles: (identity) =>
+    readArtifacts: (identity, query) =>
       tenantStorage.run({ tenantId: identity.tenantId ?? undefined }, () =>
-        db.listRunArtifacts(identity),
+        db.readResponseArtifacts(identity, query),
       ),
     readFile: jest.fn(async (file) => Readable.from([contentByFile.get(file.file_id)!])),
     limits: async () => limits,
@@ -196,6 +214,15 @@ it('rejects unknown identifiers before storage and rejects changed bytes even at
 it('resolves default tenant artifacts without matching files in a named tenant', async () => {
   const file = await publish('default tenant', { ...scope, tenantId: undefined });
   await publish('named tenant');
+  await runAsSystem(() =>
+    mongoose.models.Message.collection.insertOne({
+      user: userId,
+      conversationId: scope.conversationId,
+      messageId: scope.runId,
+      isCreatedByUser: false,
+      attachments: [],
+    }),
+  );
   const defaultRun = { ...run, tenantId: '_' };
   const listed = await service.list(defaultRun, defaultRun.snapshot!);
   expect(listed.artifacts).toHaveLength(1);
@@ -289,7 +316,7 @@ it('destroys timed out or invalid streams, reports unavailable and keeps the tex
 });
 
 it('does not resolve files for incomplete or missing responses, but propagates database failures', async () => {
-  const listFiles = jest.spyOn(deps, 'listFiles');
+  const readArtifacts = jest.spyOn(deps, 'readArtifacts');
   expect(await service.list(run, { ...run.snapshot!, status: 'running' })).toEqual({
     artifacts: [],
     unavailable: false,
@@ -298,7 +325,169 @@ it('does not resolve files for incomplete or missing responses, but propagates d
     artifacts: [],
     unavailable: false,
   });
-  expect(listFiles).not.toHaveBeenCalled();
-  listFiles.mockRejectedValueOnce(new Error('database unavailable'));
+  expect(readArtifacts).not.toHaveBeenCalled();
+  readArtifacts.mockRejectedValueOnce(new Error('database unavailable'));
   await expect(service.list(run, run.snapshot!)).rejects.toThrow('database unavailable');
+});
+
+it('binds both catalog and stored content to the exact execution response', async () => {
+  await publish();
+  await expect(
+    service.list(run, { ...run.snapshot!, responseId: 'previous-response' }),
+  ).rejects.toMatchObject({ code: 'artifact_changed' });
+  const listed = await service.list(run, run.snapshot!);
+  run.snapshot!.artifacts = listed.artifacts;
+  run.execution!.responseId = 'another-response';
+  await expect(service.content(run, listed.artifacts[0].artifactId)).rejects.toMatchObject({
+    code: 'artifact_changed',
+  });
+});
+
+it('includes only generated attachments referenced by the owned response and projects bounded reader metadata', async () => {
+  await tenantStorage.run({ tenantId: scope.tenantId ?? undefined }, async () => {
+    for (let index = 0; index < 8; index++) {
+      const id = `ordinary-${index}`;
+      await mongoose.models.File.create({
+        file_id: id,
+        user: userId,
+        tenantId: scope.tenantId,
+        conversationId: scope.conversationId,
+        filename: `${id}.txt`,
+        filepath: `/uploads/${id}`,
+        type: 'text/plain',
+        source: FileSources.local,
+        bytes: 6,
+        context: FileContext.execute_code,
+        text: 'private extracted text',
+      });
+      contentByFile.set(id, Buffer.from('result'));
+    }
+    await mongoose.models.Message.updateOne(
+      { messageId: scope.runId, user: userId },
+      {
+        $set: {
+          attachments: Array.from({ length: 7 }, (_, index) => ({ file_id: `ordinary-${index}` })),
+        },
+      },
+    );
+    const catalog = await db.readResponseArtifacts(scope, { kind: 'list', limit: 3 });
+    expect(catalog).toHaveLength(3);
+    for (const file of catalog!) {
+      expect(file).not.toHaveProperty('text');
+      expect(file).not.toHaveProperty('metadata');
+      expect(file).not.toHaveProperty('_id');
+    }
+  });
+  limits.artifactMaxFiles = 2;
+  const listed = await service.list(run, run.snapshot!);
+  expect(listed.unavailable).toBe(true);
+  expect(listed.artifacts).toHaveLength(2);
+  expect(listed.artifacts.every((file) => !file.artifactId.startsWith('ordinary-7:'))).toBe(true);
+  run.snapshot!.artifacts = listed.artifacts;
+  limits.artifactMaxFiles = 1;
+  expect((await service.content(run, listed.artifacts[1].artifactId)).bytes.toString()).toBe(
+    'result',
+  );
+});
+
+it('refuses expired response retention for generated files and answer fallbacks', async () => {
+  await publish();
+  const listed = await service.list(run, run.snapshot!);
+  run.snapshot!.artifacts = listed.artifacts;
+  await tenantStorage.run({ tenantId: scope.tenantId ?? undefined }, () =>
+    mongoose.models.Message.updateOne(
+      { messageId: scope.runId, user: userId },
+      { $set: { expiredAt: new Date(Date.now() - 1) } },
+    ),
+  );
+  await expect(service.content(run, listed.artifacts[0].artifactId)).rejects.toMatchObject({
+    code: 'artifact_unavailable',
+  });
+  run.snapshot!.text = '```text\nanswer\n```';
+  expect(await service.list(run, run.snapshot!)).toEqual({ artifacts: [], unavailable: true });
+});
+
+it('bounds stream acquisition even when its reader ignores cancellation and destroys late streams', async () => {
+  await publish();
+  limits.artifactReadTimeoutMs = 15;
+  run.snapshot!.text = '```text\nanswer\n```';
+  let deliver!: (stream: Readable) => void;
+  const stalled = new Promise<Readable>((resolve) => {
+    deliver = resolve;
+  });
+  jest.mocked(deps.readFile).mockReturnValueOnce(stalled);
+  const listed = await service.list(run, run.snapshot!);
+  expect(listed.unavailable).toBe(true);
+  expect(listed.artifacts[0].filename).toBe('agent-response.md');
+  const late = new Readable({
+    read() {},
+    destroy(_error, callback) {
+      callback(new Error('late cleanup failure'));
+    },
+  });
+  deliver(late);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  expect(late.destroyed).toBe(true);
+});
+
+it('rejects invalid catalog bounds and cross-tenant contexts rather than hiding query failures', async () => {
+  for (const limit of [0, 22, 1.5, Number.MAX_SAFE_INTEGER]) {
+    await expect(deps.readArtifacts(scope, { kind: 'list', limit })).rejects.toThrow('page size');
+  }
+  await expect(
+    tenantStorage.run({ tenantId: 'tenant-b' }, () =>
+      db.readResponseArtifacts(scope, { kind: 'authorize' }),
+    ),
+  ).rejects.toThrow('authenticated scope');
+  await expect(
+    deps.readArtifacts({ ...scope, tenantId: '_' }, { kind: 'authorize' }),
+  ).rejects.toThrow('Reserved tenant identifier');
+});
+
+it('requires the actual response attachment and rejects expired, foreign-owner and foreign-conversation generated files', async () => {
+  const attachmentIds: string[] = [];
+  await runAsSystem(async () => {
+    for (const [id, extra] of [
+      ['allowed-generated', {}],
+      ['unreferenced-generated', {}],
+      ['expired-generated', { expiresAt: new Date(0) }],
+      ['foreign-owner', { user: new mongoose.Types.ObjectId() }],
+      ['foreign-conversation', { conversationId: 'other' }],
+      ['foreign-tenant', { tenantId: 'tenant-b' }],
+    ] as const) {
+      await mongoose.models.File.collection.insertOne({
+        file_id: id,
+        user: new mongoose.Types.ObjectId(userId),
+        tenantId: scope.tenantId,
+        conversationId: scope.conversationId,
+        filename: id,
+        filepath: '/uploads/result',
+        bytes: 6,
+        type: 'text/plain',
+        source: FileSources.local,
+        context: FileContext.execute_code,
+        ...extra,
+      });
+      if (id !== 'unreferenced-generated') attachmentIds.push(id);
+    }
+  });
+  await tenantStorage.run({ tenantId: scope.tenantId ?? undefined }, () =>
+    mongoose.models.Message.updateOne(
+      { messageId: scope.runId, user: userId },
+      { $set: { attachments: attachmentIds.map((file_id) => ({ file_id })) } },
+    ),
+  );
+  expect(
+    (await deps.readArtifacts(scope, { kind: 'list', limit: 21 }))?.map((file) => file.file_id),
+  ).toEqual(['allowed-generated']);
+  expect(
+    await deps.readArtifacts(scope, { kind: 'file', fileId: 'unreferenced-generated' }),
+  ).toEqual([]);
+  await tenantStorage.run({ tenantId: scope.tenantId ?? undefined }, () =>
+    mongoose.models.Message.updateOne(
+      { messageId: scope.runId, user: userId },
+      { $set: { isCreatedByUser: true } },
+    ),
+  );
+  expect(await deps.readArtifacts(scope, { kind: 'authorize' })).toBeNull();
 });

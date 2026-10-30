@@ -58,12 +58,12 @@ export function createChannelSummaryTraceResolver(
     async canViewSession(run) {
       const source = await deps.findUser(run.principal.userId);
       const id = source?.id ?? source?._id?.toString();
-      if (!source || id !== run.principal.userId || (source.tenantId ?? '_') !== run.tenantId)
+      if (!source || id !== run.principal.userId || (source.tenantId || '_') !== run.tenantId)
         return false;
       const user: CapabilityUser = {
         id,
         role: source.role ?? '',
-        tenantId: source.tenantId ?? undefined,
+        tenantId: source.tenantId || undefined,
         idOnTheSource: source.idOnTheSource ?? null,
       };
       const langfuse = configCapability('langfuse');
@@ -117,7 +117,13 @@ async function session(
   run: ChannelRunRecord,
   snapshot: ChannelRunSnapshot,
 ): Promise<ChannelRunSummary['session']> {
-  if (!deps || !snapshot.responseId || !run.execution?.conversationId) return undefined;
+  if (
+    !deps ||
+    !snapshot.responseId ||
+    !run.execution?.conversationId ||
+    run.execution.responseId !== snapshot.responseId
+  )
+    return undefined;
   if (!(await deps.canViewSession(run))) return undefined;
   const message = await deps.getMessage({
     tenantId: run.tenantId,
@@ -128,10 +134,13 @@ async function session(
   if (
     !message ||
     message.user !== run.principal.userId ||
-    (message.tenantId ?? '_') !== run.tenantId ||
+    (message.tenantId || '_') !== run.tenantId ||
     message.conversationId !== run.execution.conversationId ||
     message.messageId !== snapshot.responseId ||
     message.isCreatedByUser !== false ||
+    (message.expiredAt != null &&
+      (!Number.isFinite(new Date(message.expiredAt).getTime()) ||
+        new Date(message.expiredAt).getTime() <= Date.now())) ||
     message.langfuseSampled !== true ||
     !message.langfuseDestinationIds?.length
   )
@@ -164,7 +173,16 @@ export function createChannelSummaryService(deps: ChannelSummaryDependencies): {
 } {
   return {
     async summarize(run, snapshot) {
-      if (run.snapshot?.summary) return run.snapshot.summary;
+      const present = async (metrics: ChannelRunSummary): Promise<ChannelRunSummary> => {
+        const { session: _previous, ...current } = metrics;
+        try {
+          const link = await session(deps.trace, run, snapshot);
+          return link ? { ...current, session: link } : current;
+        } catch {
+          return current;
+        }
+      };
+      if (run.snapshot?.summary) return present(run.snapshot.summary);
       if (!Number.isSafeInteger(run.sequence) || run.sequence < 1)
         throw new Error('Invalid channel summary sequence');
       let observedRuns = 0;
@@ -188,6 +206,12 @@ export function createChannelSummaryService(deps: ChannelSummaryDependencies): {
         const accounting = value.accounting;
         if (
           usage &&
+          accounting &&
+          Array.isArray(accounting.calls) &&
+          accounting.calls.length > 0 &&
+          accounting.calls.every(
+            (call) => call.reason === 'priced' || call.reason === 'pricing_unavailable',
+          ) &&
           safeCount(usage.inputTokens) &&
           safeCount(usage.outputTokens) &&
           safeCount(usage.totalTokens) &&
@@ -237,14 +261,7 @@ export function createChannelSummaryService(deps: ChannelSummaryDependencies): {
         elapsedMs: metric(safeCount(elapsedMs) ? elapsedRuns : 0, run.sequence, elapsedMs),
         tokens: metric(safeCount(tokens.totalTokens) ? tokenRuns : 0, run.sequence, tokens),
       };
-      // Optional diagnostics must not withhold an otherwise valid answer or broaden trace access.
-      try {
-        const link = await session(deps.trace, run, snapshot);
-        if (link) summary.session = link;
-      } catch {
-        // Unavailable policy/config/message lookup means no session link.
-      }
-      return summary;
+      return present(summary);
     },
   };
 }
