@@ -25,6 +25,7 @@ async function setup(
     metadata?: Partial<GenerationJobMetadata>;
     expiresAt?: number;
     prompt?: boolean;
+    now?: () => number;
   } = {},
 ) {
   const jobs = new GenerationJobManagerClass();
@@ -43,6 +44,7 @@ async function setup(
       initialMetadata: {
         tenantId,
         conversationId,
+        isNewConversation: true,
         endpoint: EModelEndpoint.agents,
         agent_id: 'agent-clock',
         model: 'test-model',
@@ -89,7 +91,7 @@ async function setup(
     >()
     .mockResolvedValue(options.stored ?? null);
   const logger = { error: jest.fn() };
-  const handler = createGetConversationHandler({ getConvo, jobs, logger });
+  const handler = createGetConversationHandler({ getConvo, jobs, logger, now: options.now });
   const app = express();
   app.get('/:conversationId', async (req, res) => {
     await handler(
@@ -119,7 +121,9 @@ test('recovers a real first-turn OAuth job without writing draft history or expo
     updatedAt: new Date(job.createdAt).toISOString(),
   });
   expect(getConvo).toHaveBeenCalledWith(owner.id, conversationId);
-  expect(stateSpy).toHaveBeenCalledWith(conversationId, job.createdAt);
+  expect(stateSpy).toHaveBeenCalledWith(conversationId, undefined, {
+    readIf: expect.any(Function),
+  });
   expect(JSON.stringify(result.body)).not.toMatch(/authorize|authURL|protected clock/);
 });
 
@@ -132,10 +136,80 @@ test.each([undefined, ''])('normalizes the application tenant alias %s', async (
   expect(result.body.conversationId).toBe(conversationId);
 });
 
+test('recovers a first turn while its captured retention deadline is still live', async () => {
+  const { app } = await setup({
+    metadata: { retentionExpiresAt: new Date(Date.now() + 60_000).toISOString() },
+  });
+  const result = await request(app).get(`/${conversationId}`);
+  expect(result.status).toBe(200);
+});
+
+test.each([
+  { isNewConversation: false },
+  { isNewConversation: undefined },
+  { retentionExpiresAt: new Date(0).toISOString() },
+  { retentionExpiresAt: 'invalid' },
+])('denies ineligible metadata before reading private resume content: %j', async (metadata) => {
+  const { app, store } = await setup({ metadata });
+  const snapshot = jest.spyOn(store, 'getRunSteps');
+  await request(app).get(`/${conversationId}`).expect(404);
+  expect(snapshot).not.toHaveBeenCalled();
+});
+
+test.each(['abort', 'retention', 'provenance'] as const)(
+  'rechecks %s eligibility after reading the resume snapshot',
+  async (change) => {
+    const { app, jobs, job, store } = await setup();
+    const read = store.getRunSteps.bind(store);
+    jest.spyOn(store, 'getRunSteps').mockImplementationOnce(async (...args) => {
+      const steps = await read(...args);
+      if (change === 'abort') {
+        await jobs.abortJob(conversationId, { expectedCreatedAt: job.createdAt });
+      } else {
+        await jobs.updateMetadata(
+          conversationId,
+          change === 'retention'
+            ? { retentionExpiresAt: new Date(0).toISOString() }
+            : { isNewConversation: false },
+          job.createdAt,
+        );
+      }
+      return steps;
+    });
+    const result = await request(app).get(`/${conversationId}`);
+    expect(result.status).toBe(404);
+  },
+);
+
+test('rejects retention expiry during the snapshot while the OAuth prompt is still live', async () => {
+  const startedAt = Date.now();
+  let now = startedAt;
+  const { app, store } = await setup({
+    now: () => now,
+    metadata: { retentionExpiresAt: new Date(startedAt + 60_000).toISOString() },
+    expiresAt: startedAt + 3_600_000,
+  });
+  const read = store.getRunSteps.bind(store);
+  jest.spyOn(store, 'getRunSteps').mockImplementationOnce(async (...args) => {
+    const steps = await read(...args);
+    now = startedAt + 120_000;
+    return steps;
+  });
+  const result = await request(app).get(`/${conversationId}`);
+  expect(result.status).toBe(404);
+});
+
+test('denies another owner before reading private resume content', async () => {
+  const { app, store } = await setup({ user: { ...owner, id: 'other-owner' } });
+  const snapshot = jest.spyOn(store, 'getRunSteps');
+  await request(app).get(`/${conversationId}`).expect(404);
+  expect(snapshot).not.toHaveBeenCalled();
+});
+
 test('returns established history unchanged without a generation lookup', async () => {
   const stored = { conversationId, title: 'Established history', endpoint: EModelEndpoint.agents };
   const { app, jobs } = await setup({ stored });
-  const lookup = jest.spyOn(jobs, 'getJob');
+  const lookup = jest.spyOn(jobs, 'getResumeState');
   const result = await request(app).get(`/${conversationId}`).expect(200);
   expect(result.body).toEqual(stored);
   expect(lookup).not.toHaveBeenCalled();
@@ -156,7 +230,7 @@ test('does not recover hidden subagent history through the top-level route', asy
       },
     },
   });
-  const lookup = jest.spyOn(jobs, 'getJob');
+  const lookup = jest.spyOn(jobs, 'getResumeState');
   await request(app).get(`/${conversationId}`).expect(404);
   expect(lookup).not.toHaveBeenCalled();
 });
@@ -165,6 +239,20 @@ test.each([
   ['another owner', { user: { id: 'other-owner', tenantId: owner.tenantId } }],
   ['same owner in another tenant', { user: { ...owner, tenantId: 'tenant-b' } }],
   ['temporary chat', { metadata: { isTemporary: true } }],
+  ['established turn with missing history', { metadata: { isNewConversation: false } }],
+  ['legacy job without first-turn proof', { metadata: { isNewConversation: undefined } }],
+  ['expired retention', { metadata: { retentionExpiresAt: new Date(0).toISOString() } }],
+  ['invalid retention', { metadata: { retentionExpiresAt: 'not-a-deadline' } }],
+  ['empty retention', { metadata: { retentionExpiresAt: '' } }],
+  ['missing originating message', { metadata: { userMessage: undefined } }],
+  [
+    'empty originating message identity',
+    {
+      metadata: {
+        userMessage: { messageId: '', conversationId },
+      },
+    },
+  ],
   ['another endpoint', { metadata: { endpoint: 'openAI' } }],
   ['missing agent', { metadata: { agent_id: undefined } }],
   [
@@ -206,9 +294,10 @@ test('does not recover an aborted job', async () => {
 });
 
 test('does not return a replacement generations state', async () => {
-  const { app, jobs, job } = await setup();
-  const originalRead = jobs.getResumeState.bind(jobs);
-  jest.spyOn(jobs, 'getResumeState').mockImplementationOnce(async (...args) => {
+  const { app, jobs, job, store } = await setup();
+  const originalRead = store.getRunSteps.bind(store);
+  jest.spyOn(store, 'getRunSteps').mockImplementationOnce(async (...args) => {
+    const steps = await originalRead(...args);
     await jobs.completeJob(conversationId, undefined, job.createdAt);
     jest.spyOn(Date, 'now').mockReturnValue(job.createdAt + 100);
     const replacement = await tenantStorage.run(
@@ -216,21 +305,21 @@ test('does not return a replacement generations state', async () => {
       () => jobs.createJob(conversationId, owner.id, conversationId),
     );
     expect(replacement.createdAt).not.toBe(job.createdAt);
-    return originalRead(...args);
+    return steps;
   });
   expect((await request(app).get(`/${conversationId}`)).status).toBe(404);
 });
 
 test('does not query generation storage for a malformed missing conversation ID', async () => {
   const { app, jobs } = await setup();
-  const lookup = jest.spyOn(jobs, 'getJob');
+  const lookup = jest.spyOn(jobs, 'getResumeState');
   await request(app).get('/not-a-uuid').expect(404);
   expect(lookup).not.toHaveBeenCalled();
 });
 
 test('does not turn a storage outage into a missing-conversation redirect or leak diagnostics', async () => {
-  const { app, jobs } = await setup();
-  jest.spyOn(jobs, 'getJob').mockRejectedValueOnce(new Error('secret-token provider payload'));
+  const { app, store } = await setup();
+  jest.spyOn(store, 'getJob').mockRejectedValueOnce(new Error('secret-token provider payload'));
   const result = await request(app).get(`/${conversationId}`).expect(500);
   expect(result.body).toEqual({ error: 'conversation_load_failed' });
 });
@@ -238,7 +327,7 @@ test('does not turn a storage outage into a missing-conversation redirect or lea
 test('does not attempt recovery after a database lookup failure', async () => {
   const { app, jobs, getConvo } = await setup();
   getConvo.mockRejectedValueOnce(new Error('secret-token query payload'));
-  const lookup = jest.spyOn(jobs, 'getJob');
+  const lookup = jest.spyOn(jobs, 'getResumeState');
   const result = await request(app).get(`/${conversationId}`).expect(500);
   expect(result.body).toEqual({ error: 'conversation_load_failed' });
   expect(lookup).not.toHaveBeenCalled();

@@ -276,7 +276,10 @@ describe('GenerationJobManager Integration Tests', () => {
       };
       const stepId = 'oauth-step';
       try {
-        const job = await manager.createJob(streamId, 'oauth-user', streamId);
+        const job = await manager.createJob(streamId, 'oauth-user', streamId, {
+          initialMetadata: { isNewConversation: true },
+        });
+        expect((await peer.getJob(streamId))?.metadata.isNewConversation).toBe(true);
         const ownership = { expectedCreatedAt: job.createdAt, durable: true };
         await manager.emitChunk(
           streamId,
