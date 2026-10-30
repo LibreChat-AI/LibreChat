@@ -1,14 +1,12 @@
-import { getSafeErrorMetadata } from '~/utils/errors';
-import { invokeOAuthStart } from './publication';
-import { getMCPOAuthLeaseId } from './tokens';
 import { logger, getTenantId } from '@librechat/data-schemas';
-
 import type { MCPOAuthFlowMetadata, MCPOAuthTokens } from './types';
 import type { FlowStateManager } from '~/flow/manager';
 import type { FlowState } from '~/flow/types';
 import type * as t from '~/mcp/types';
-
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { PENDING_STALE_MS } from '~/flow/manager';
+import { invokeOAuthStart } from './publication';
+import { getMCPOAuthLeaseId } from './tokens';
 import { MCPOAuthHandler } from './handler';
 
 const MCP_OAUTH_FLOW_TYPE = 'mcp_oauth';
@@ -132,16 +130,25 @@ export class OAuthLifecycleRelay {
   private readonly logPrefix: string;
 
   public readonly start: t.OAuthStartHandler = async (authURL, options) => {
-    const publications = Array.from(this.oauthStarts, (handler) => this.emit(handler, authURL, options));
+    const publications = Array.from(this.oauthStarts, (handler) =>
+      this.emit(handler, authURL, options),
+    );
     const published = await Promise.allSettled(publications.map((entry) => entry.published));
-    const failed = published.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+    const failed = published.filter(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
     for (const result of failed)
-      logger.warn(`${this.logPrefix} Failed to publish OAuth prompt`, getSafeErrorMetadata(result.reason));
+      logger.warn(
+        `${this.logPrefix} Failed to publish OAuth prompt`,
+        getSafeErrorMetadata(result.reason),
+      );
     if (publications.length > 0 && failed.length === publications.length) throw failed[0].reason;
     // The outer flow lease covers every listener's publication, never its authorization callback.
     options?.onPublished?.();
     const completed = await Promise.allSettled(publications.map((entry) => entry.completed));
-    const errors = completed.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+    const errors = completed.filter(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
     if (completed.length > 0 && errors.length === completed.length) throw errors[0].reason;
   };
 
@@ -152,7 +159,10 @@ export class OAuthLifecycleRelay {
       try {
         await this.emitEnd(oauthEnd);
       } catch (error) {
-        logger.warn(`${this.logPrefix} Failed to notify OAuth completion listener`, getSafeErrorMetadata(error));
+        logger.warn(
+          `${this.logPrefix} Failed to notify OAuth completion listener`,
+          getSafeErrorMetadata(error),
+        );
       }
     }
   };
@@ -178,7 +188,10 @@ export class OAuthLifecycleRelay {
         try {
           await this.emitEnd(oauthEnd);
         } catch (error) {
-          logger.warn(`${this.logPrefix} Failed to re-issue OAuth completion`, getSafeErrorMetadata(error));
+          logger.warn(
+            `${this.logPrefix} Failed to re-issue OAuth completion`,
+            getSafeErrorMetadata(error),
+          );
         }
       }
       return;
@@ -201,7 +214,10 @@ export class OAuthLifecycleRelay {
       publication = this.emit(oauthStart, replay.authURL, replay.options);
       await publication.published;
     } catch (error) {
-      logger.warn(`${this.logPrefix} Failed to re-issue pending OAuth URL`, getSafeErrorMetadata(error));
+      logger.warn(
+        `${this.logPrefix} Failed to re-issue pending OAuth URL`,
+        getSafeErrorMetadata(error),
+      );
     } finally {
       await lease.release();
     }
@@ -209,7 +225,10 @@ export class OAuthLifecycleRelay {
       try {
         await publication.completed;
       } catch (error) {
-        logger.warn(`${this.logPrefix} OAuth listener completion failed`, getSafeErrorMetadata(error));
+        logger.warn(
+          `${this.logPrefix} OAuth listener completion failed`,
+          getSafeErrorMetadata(error),
+        );
       }
     }
   }
@@ -224,7 +243,9 @@ export class OAuthLifecycleRelay {
     const publication = invokeOAuthStart(oauthStart, authURL, { expiresAt: options?.expiresAt });
     return {
       ...publication,
-      published: publication.published.then(() => { this.emittedAuthUrls.set(oauthStart, authURL); }),
+      published: publication.published.then(() => {
+        this.emittedAuthUrls.set(oauthStart, authURL);
+      }),
     };
   }
 

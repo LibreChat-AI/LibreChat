@@ -177,7 +177,11 @@ export function updateContent(
   const oauth = isOAuthToolCallName(incoming?.name);
   const content = message.content ?? [];
   // Ordinary messages keep the indexed writer's existing allocation and traversal behavior.
-  if (!oauth && !isOAuthToolCallContent(content[content.length - 1]) && !isOAuthToolCallContent(content[index]))
+  if (
+    !oauth &&
+    !isOAuthToolCallContent(content[content.length - 1]) &&
+    !isOAuthToolCallContent(content[index])
+  )
     return writeContent(message, index, contentPart, finalUpdate, metadata);
 
   let nativeLength = content.length;
@@ -195,13 +199,23 @@ export function updateContent(
     if (part.type !== ContentTypes.TOOL_CALL || !('tool_call' in part)) return false;
     const call = part.tool_call;
     if (incoming?.id) return call?.id === incoming.id;
-    if (incoming?.stepId) return call != null && 'stepId' in call && call.stepId === incoming.stepId;
+    if (incoming?.stepId)
+      return call != null && 'stepId' in call && call.stepId === incoming.stepId;
     return call != null && 'name' in call && call.name === incoming?.name;
   });
   if (!oauth && position < 0) {
-    const result = writeContent({ ...message, content: native }, index, contentPart, finalUpdate, metadata);
-    const active = auxiliary.filter((part) =>
-      part.type === ContentTypes.TOOL_CALL && 'tool_call' in part && Boolean(part.tool_call?.auth),
+    const result = writeContent(
+      { ...message, content: native },
+      index,
+      contentPart,
+      finalUpdate,
+      metadata,
+    );
+    const active = auxiliary.filter(
+      (part) =>
+        part.type === ContentTypes.TOOL_CALL &&
+        'tool_call' in part &&
+        Boolean(part.tool_call?.auth),
     );
     return { ...result, content: [...(result.content ?? []), ...active] };
   }

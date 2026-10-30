@@ -21,7 +21,7 @@ afterEach(async () => {
 async function setup(
   options: {
     stored?: Pick<TConversation, 'conversationId' | 'subagentThread'>;
-    user?: typeof owner | null;
+    user?: { id: string; tenantId?: string } | null;
     metadata?: Partial<GenerationJobMetadata>;
     expiresAt?: number;
     prompt?: boolean;
@@ -36,10 +36,12 @@ async function setup(
   });
   jobs.initialize();
   managers.push(jobs);
-  const job = await tenantStorage.run({ tenantId: owner.tenantId, userId: owner.id }, () =>
+  const tenantId =
+    options.metadata && 'tenantId' in options.metadata ? options.metadata.tenantId : owner.tenantId;
+  const job = await tenantStorage.run({ tenantId: tenantId || undefined, userId: owner.id }, () =>
     jobs.createJob(conversationId, owner.id, conversationId, {
       initialMetadata: {
-        tenantId: owner.tenantId,
+        tenantId,
         conversationId,
         endpoint: EModelEndpoint.agents,
         agent_id: 'agent-clock',
@@ -119,6 +121,14 @@ test('recovers a real first-turn OAuth job without writing draft history or expo
   expect(getConvo).toHaveBeenCalledWith(owner.id, conversationId);
   expect(stateSpy).toHaveBeenCalledWith(conversationId, job.createdAt);
   expect(JSON.stringify(result.body)).not.toMatch(/authorize|authURL|protected clock/);
+});
+
+test.each([undefined, ''])('normalizes the application tenant alias %s', async (tenantId) => {
+  const { app } = await setup({
+    user: { id: owner.id, tenantId },
+    metadata: { tenantId: tenantId === '' ? undefined : '' },
+  });
+  await request(app).get(`/${conversationId}`).expect(200);
 });
 
 test('returns established history unchanged without a generation lookup', async () => {

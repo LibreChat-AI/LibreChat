@@ -1,9 +1,11 @@
-import { getSafeErrorMetadata } from '~/utils/errors';
 import { Constants, Time } from 'librechat-data-provider';
 import { GraphEvents, StepTypes } from '@librechat/agents';
+import type { ServerResponse } from 'node:http';
+import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { OAuthStartHandler } from '../types';
 import type * as t from '~/types';
 import { buildOAuthToolCallName, splitMCPToolKey } from '~/mcp/utils';
+import { getSafeErrorMetadata } from '~/utils/errors';
 
 export type OAuthPromptOptions = {
   expiresAt?: number;
@@ -242,9 +244,9 @@ export function buildMCPAuthRunStepCompletedEvent({
 }
 
 interface OAuthEventTransport {
-  res: import('node:http').ServerResponse;
-  sendEvent: (res: import('node:http').ServerResponse, event: t.ServerSentEvent) => void;
-  jobs: Pick<import('~/stream/GenerationJobManager').GenerationJobManagerClass, 'emitChunk'>;
+  res: ServerResponse;
+  sendEvent: (res: ServerResponse, event: t.ServerSentEvent) => void;
+  jobs: Pick<GenerationJobManagerClass, 'emitChunk'>;
   streamId?: string | null;
   jobCreatedAt?: number;
 }
@@ -271,7 +273,8 @@ export function createMCPAuthStepEmitter(
 }
 
 export function createMCPAuthDeltaEmitter(
-  input: OAuthEventTransport & Pick<Parameters<typeof buildMCPAuthRunStepDeltaEvent>[0], 'stepId' | 'toolCall'>,
+  input: OAuthEventTransport &
+    Pick<Parameters<typeof buildMCPAuthRunStepDeltaEvent>[0], 'stepId' | 'toolCall'>,
 ): OAuthStartHandler {
   const emit = createOAuthEventEmitter(input);
   return (authURL, options) => emit(buildMCPAuthRunStepDeltaEvent({ ...input, authURL, options }));
@@ -281,8 +284,11 @@ export function createMCPAuthEndEmitter(
   input: OAuthEventTransport & Parameters<typeof buildMCPAuthRunStepCompletedEvent>[0],
 ): () => Promise<void> {
   const emit = createOAuthEventEmitter(input);
-  return () => emit(buildMCPAuthRunStepCompletedEvent({
-    ...input,
-    toolCall: { ...input.toolCall, output: 'OAuth authentication ended', type: 'tool_call' },
-  }));
+  return () =>
+    emit(
+      buildMCPAuthRunStepCompletedEvent({
+        ...input,
+        toolCall: { ...input.toolCall, output: 'OAuth authentication ended', type: 'tool_call' },
+      }),
+    );
 }

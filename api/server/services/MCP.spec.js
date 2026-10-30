@@ -1558,7 +1558,7 @@ describe('User parameter passing tests', () => {
       ]);
       for (const [emittedStreamId, , options] of GenerationJobManager.emitChunk.mock.calls) {
         expect(emittedStreamId).toBe(streamId);
-        expect(options).toEqual({ expectedCreatedAt: jobCreatedAt });
+        expect(options).toEqual({ expectedCreatedAt: jobCreatedAt, durable: true });
       }
     });
 
@@ -2671,7 +2671,7 @@ describe('User parameter passing tests', () => {
           expect(GenerationJobManager.emitChunk).toHaveBeenCalledTimes(3);
           for (const [emittedStreamId, , options] of GenerationJobManager.emitChunk.mock.calls) {
             expect(emittedStreamId).toBe(streamId);
-            expect(options).toEqual({ expectedCreatedAt: jobCreatedAt });
+            expect(options).toEqual({ expectedCreatedAt: jobCreatedAt, durable: true });
           }
           const [, start] = GenerationJobManager.emitChunk.mock.calls[0];
           const [, delta] = GenerationJobManager.emitChunk.mock.calls[1];

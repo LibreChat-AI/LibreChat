@@ -40,7 +40,7 @@ export function createGetConversationHandler(deps: ConversationDependencies) {
         job.streamId !== conversationId ||
         job.metadata.conversationId !== conversationId ||
         job.metadata.userId !== req.user.id ||
-        job.metadata.tenantId !== req.user.tenantId ||
+        (job.metadata.tenantId || undefined) !== (req.user.tenantId || undefined) ||
         job.metadata.endpoint !== EModelEndpoint.agents ||
         !job.metadata.agent_id ||
         job.metadata.isTemporary === true ||
