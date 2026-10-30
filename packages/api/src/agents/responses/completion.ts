@@ -25,7 +25,8 @@ export interface ResponseCompletion {
 export interface ResponseCompletionDependencies {
   storage: ResponseStorage;
   cleanupCheckpoint: (record: StoredResponseRecord, namespace: string) => Promise<void>;
-  releaseExecution?: (
+  /** Required and idempotent: transient provider ownership survives until canonical publication. */
+  releaseExecution: (
     record: StoredResponseRecord,
     receipt?: ResponseTerminalReceipt,
   ) => Promise<void>;
@@ -153,6 +154,8 @@ function sameExecution(
 
 /** Persist a post-drain result before cleanup, then retry only cleanup/publication, never execution. */
 export function createResponseCompletion(deps: ResponseCompletionDependencies): ResponseCompletion {
+  if (typeof deps.cleanupCheckpoint !== 'function' || typeof deps.releaseExecution !== 'function')
+    throw new Error('Response completion cleanup and release owners are unavailable');
   async function discardRetired(record: StoredResponseRecord, receipt: ResponseTerminalReceipt) {
     const identity = await deps.storage.readCleanupIdentity(record, record.responseId, {
       ...record,
@@ -185,7 +188,7 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
         },
         namespace,
       );
-    await deps.releaseExecution?.(retired, receipt);
+    await deps.releaseExecution(retired, receipt);
     return {
       ...retired,
       requestJSON: '',
@@ -199,7 +202,7 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
   async function finish(record: StoredResponseRecord): Promise<ResponseCompletionRecord> {
     const receipt = record.pendingTerminal;
     if (!receipt) {
-      if (terminal(record)) await deps.releaseExecution?.(record);
+      if (terminal(record)) await deps.releaseExecution(record);
       return record;
     }
     assertReceipt(record, receipt);
@@ -234,7 +237,7 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
       if (expired) return expired;
       throw new Error('Response terminal journal is unavailable');
     }
-    if (terminal(current)) await deps.releaseExecution?.(current, receipt);
+    if (terminal(current)) await deps.releaseExecution(current, receipt);
     return current;
   }
   return {
