@@ -194,7 +194,7 @@ export function createAgentChannelMethods(
               channelId,
               createdBy,
               status: expectedStatus ?? { $ne: 'deleting' },
-              ...(expectedRevision ? { revision: expectedRevision } : {}),
+              ...(expectedRevision !== undefined ? { revision: expectedRevision } : {}),
             },
             { $set: update },
             { new: true, ...(session ? { session } : {}) },

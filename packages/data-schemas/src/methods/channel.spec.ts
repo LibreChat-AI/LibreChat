@@ -545,3 +545,28 @@ it.each([tenantId, undefined])(
       expect(await methods.deleteAgentChannel('channel', ownerId)).toBe(true);
     }),
 );
+
+it('treats an empty revision as an exact CAS token rather than an absent guard', () =>
+  scope(async () => {
+    await methods.createAgentChannel({ ...channel(), revision: '' });
+    const updates = await Promise.all(
+      ['one', 'two', 'three', 'four'].map((revision) =>
+        methods.updateAgentChannel('channel', 'owner', { revision }, undefined, ''),
+      ),
+    );
+    const winners = updates.filter((record) => record !== null);
+    expect(winners).toHaveLength(1);
+    expect((await methods.getAgentChannel('channel'))?.revision).toBe(winners[0]?.revision);
+    expect(
+      await methods.updateAgentChannel('channel', 'owner', { revision: 'stale' }, undefined, ''),
+    ).toBeNull();
+    expect(
+      await methods.updateAgentChannel(
+        'channel',
+        'owner',
+        { status: 'disabled' },
+        undefined,
+        undefined,
+      ),
+    ).toMatchObject({ status: 'disabled' });
+  }));

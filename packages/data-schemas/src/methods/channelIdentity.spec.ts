@@ -1,9 +1,9 @@
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { ChannelIdentityRecord } from './channelIdentity';
+import { closeChannelScope, retireChannelScope } from './channelScope';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
-import { closeChannelScope } from './channelScope';
 import { createUserMethods } from './user';
 import { createModels } from '~/models';
 
@@ -279,4 +279,172 @@ it('serializes live identity insertion with channel closure', () =>
     expect(await storage.saveChannelIdentity({ ...identity(), revision: 'late' }, 'one')).toBe(
       false,
     );
+  }));
+
+const identityStates = ['pending', 'accepted', 'active', 'revoked'] as const;
+function inState(state: ChannelIdentityRecord['state'], suffix: string): ChannelIdentityRecord {
+  const base = identity();
+  return {
+    ...base,
+    state,
+    linkId: `link-${suffix}`,
+    ticketHash: `hash-${suffix}`,
+    revision: `revision-${suffix}`,
+    ...(['accepted', 'active'].includes(state) ? { userId: 'owner' } : {}),
+    identity: { ...base.identity, externalUserId: `external-${suffix}` },
+  };
+}
+
+it.each(identityStates)('fences new %s records after complete channel retirement', (state) =>
+  scope(async () => {
+    await storage.saveChannelIdentity(identity(), null);
+    await retireChannelScope(mongoose, tenantId, 'channel');
+    expect(await storage.saveChannelIdentity(inState(state, state), null)).toBe(false);
+    expect(
+      await mongoose.models.ChannelIdentity.countDocuments({
+        tenantId,
+        'identity.channelId': 'channel',
+      }),
+    ).toBe(0);
+  }),
+);
+
+it.each(identityStates)('fences full %s replacements after admission closes', (state) =>
+  scope(async () => {
+    await storage.saveChannelIdentity(identity(), null);
+    await closeChannelScope(mongoose, tenantId, 'channel');
+    expect(
+      await storage.saveChannelIdentity(
+        {
+          ...identity(),
+          state,
+          revision: `closed-${state}`,
+          ticketHash: `replacement-${state}`,
+          ...(['accepted', 'active'].includes(state) ? { userId: 'owner' } : {}),
+        },
+        'one',
+      ),
+    ).toBe(false);
+    expect(await storage.readChannelLink(tenantId, 'link')).toMatchObject({
+      state: 'pending',
+      revision: 'one',
+      ticketHash: 'private-hash',
+    });
+  }),
+);
+
+it.each(['owner-a', 'owner-b'])(
+  'clears an omitted label when replacing account metadata for %s',
+  (userId) =>
+    scope(async () => {
+      await storage.saveChannelIdentity(
+        { ...identity(), state: 'active', userId: 'owner-a', accountLabel: 'Private Alice' },
+        null,
+      );
+      expect(
+        await storage.saveChannelIdentity(
+          { ...identity(), state: 'active', userId, revision: 'next' },
+          'one',
+        ),
+      ).toBe(true);
+      const stored = await storage.readChannelLink(tenantId, 'link');
+      expect(stored).toMatchObject({ userId, revision: 'next' });
+      expect(stored).not.toHaveProperty('accountLabel');
+    }),
+);
+
+it('preserves an explicitly supplied empty label and clears account metadata on full revocation', () =>
+  scope(async () => {
+    await storage.saveChannelIdentity(
+      { ...identity(), state: 'active', userId: 'owner', accountLabel: 'Private Alice' },
+      null,
+    );
+    expect(
+      await storage.saveChannelIdentity(
+        {
+          ...identity(),
+          state: 'active',
+          userId: 'owner',
+          accountLabel: '',
+          revision: 'empty-label',
+        },
+        'one',
+      ),
+    ).toBe(true);
+    expect((await storage.readChannelLink(tenantId, 'link'))?.accountLabel).toBe('');
+    expect(
+      await storage.saveChannelIdentity(
+        { ...identity(), state: 'revoked', revision: 'revoked' },
+        'empty-label',
+      ),
+    ).toBe(true);
+    const revoked = await storage.readChannelLink(tenantId, 'link');
+    expect(revoked).not.toHaveProperty('userId');
+    expect(revoked).not.toHaveProperty('accountLabel');
+  }));
+
+it.each(['channelId', 'teamId', 'externalUserId', 'agentId'] as const)(
+  'keeps the external identity anchor %s immutable during CAS replacement',
+  (field) =>
+    scope(async () => {
+      await storage.saveChannelIdentity(identity(), null);
+      const replacement = identity();
+      replacement.identity = { ...replacement.identity, [field]: `different-${field}` };
+      replacement.revision = 'moved';
+      expect(await storage.saveChannelIdentity(replacement, 'one')).toBe(false);
+      expect(await storage.readChannelLink(tenantId, 'link')).toMatchObject({
+        identity: identity().identity,
+        revision: 'one',
+      });
+    }),
+);
+
+it('cannot move a revoked full record out of a closed channel to escape retirement', () =>
+  scope(async () => {
+    await storage.saveChannelIdentity(identity(), null);
+    await closeChannelScope(mongoose, tenantId, 'channel');
+    const replacement = {
+      ...identity(),
+      state: 'revoked' as const,
+      revision: 'moved',
+      identity: { ...identity().identity, channelId: 'other-channel' },
+    };
+    expect(await storage.saveChannelIdentity(replacement, 'one')).toBe(false);
+    await retireChannelScope(mongoose, tenantId, 'channel');
+    expect(await mongoose.models.ChannelIdentity.countDocuments({ tenantId })).toBe(0);
+  }));
+
+it('serializes revoked insertion with retirement and erases its private payload before returning', () =>
+  scope(async () => {
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const collection = mongoose.models.ChannelIdentity.collection;
+    const insert = collection.insertOne.bind(collection);
+    const paused = jest.spyOn(collection, 'insertOne').mockImplementation(async (...args) => {
+      entered();
+      await gate;
+      return insert(...args);
+    });
+    const insertion = storage.saveChannelIdentity(inState('revoked', 'revoked-race'), null);
+    await started;
+    let retired = false;
+    const retirement = retireChannelScope(mongoose, tenantId, 'channel').then(() => {
+      retired = true;
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(retired).toBe(false);
+    } finally {
+      release();
+      paused.mockRestore();
+    }
+    expect(await insertion).toBe(true);
+    await retirement;
+    expect(await mongoose.models.ChannelIdentity.countDocuments({ tenantId })).toBe(0);
   }));

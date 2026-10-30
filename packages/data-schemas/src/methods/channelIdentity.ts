@@ -11,10 +11,12 @@ export interface ChannelIdentityStorage {
   readChannelTicket(tenantId: string, ticketHash: string): Promise<ChannelIdentityRecord | null>;
   readChannelLink(tenantId: string, linkId: string): Promise<ChannelIdentityRecord | null>;
   listChannelLinks(tenantId: string, userId: string): Promise<ChannelIdentityRecord[]>;
+  /** Full private replacement; every state joins the open channel fence and exact identity CAS. */
   saveChannelIdentity(
     record: ChannelIdentityRecord,
     expectedRevision: string | null,
   ): Promise<boolean>;
+  /** Existing-row authority reduction only: no inserts or private-field replacements. */
   revokeChannelIdentities(tenantId: string, channelId: string, revision: string): Promise<void>;
 }
 
@@ -54,46 +56,57 @@ export function createChannelIdentityStorage(
         throw new TypeError('Channel identity tenant mismatch');
       await ensureIndexes();
       if (
-        (!record.userId && record.accountLabel) ||
+        (!record.userId && record.accountLabel != null) ||
         (['accepted', 'active'].includes(record.state) && !record.userId)
       )
         throw new TypeError('Channel account identity required');
-      const persist = async (session?: ClientSession): Promise<boolean> => {
+      // This API replaces a complete private record; omitted optional fields are cleared.
+      const fields: Omit<ChannelIdentityRecord, 'tenantId' | 'linkId'> = {
+        identity: record.identity,
+        revision: record.revision,
+        state: record.state,
+        ticketHash: record.ticketHash,
+        ticketExpiresAtMs: record.ticketExpiresAtMs,
+        expiresAtMs: record.expiresAtMs,
+        ...(record.userId ? { userId: record.userId } : {}),
+        ...(record.accountLabel != null ? { accountLabel: record.accountLabel } : {}),
+      };
+      const absent = {
+        ...(!record.userId ? { userId: '' } : {}),
+        ...(record.accountLabel == null ? { accountLabel: '' } : {}),
+      };
+      const persist = async (session: ClientSession): Promise<boolean> => {
         if (expectedRevision === null) {
-          await model().create([record], session ? { session } : {});
+          await model().create([{ tenantId: record.tenantId, linkId: record.linkId, ...fields }], {
+            session,
+          });
           return true;
         }
         const result = await model().updateOne(
-          { tenantId: record.tenantId, linkId: record.linkId, revision: expectedRevision },
           {
-            $set: {
-              identity: record.identity,
-              revision: record.revision,
-              state: record.state,
-              ticketHash: record.ticketHash,
-              ticketExpiresAtMs: record.ticketExpiresAtMs,
-              expiresAtMs: record.expiresAtMs,
-              ...(record.userId
-                ? { userId: record.userId, accountLabel: record.accountLabel }
-                : {}),
-            },
-            ...(!record.userId ? { $unset: { userId: '', accountLabel: '' } } : {}),
+            tenantId: record.tenantId,
+            linkId: record.linkId,
+            revision: expectedRevision,
+            'identity.tenantId': record.identity.tenantId,
+            'identity.channelId': record.identity.channelId,
+            'identity.teamId': record.identity.teamId,
+            'identity.externalUserId': record.identity.externalUserId,
+            'identity.agentId': record.identity.agentId,
           },
-          session ? { session } : {},
+          { $set: fields, ...(Object.keys(absent).length ? { $unset: absent } : {}) },
+          { session },
         );
         return result.modifiedCount === 1;
       };
       try {
-        const live = ['pending', 'accepted', 'active'].includes(record.state);
-        if (live)
-          await initializeChannelScope(mongoose, record.tenantId, record.identity.channelId);
+        // Every full save can create/replace private data, including revoked records.
+        await initializeChannelScope(mongoose, record.tenantId, record.identity.channelId);
         const admit = record.userId
           ? await prepareChannelOwnerAdmission(mongoose, {
               userId: record.userId,
               tenantId: record.tenantId === '_' ? undefined : record.tenantId,
             })
           : undefined;
-        if (!live && !admit) return await persist();
         const session = await mongoose.startSession();
         try {
           let saved = false;
@@ -103,7 +116,6 @@ export function createChannelIdentityStorage(
               return;
             }
             if (
-              live &&
               !(await touchChannelScope(
                 mongoose,
                 record.tenantId,
