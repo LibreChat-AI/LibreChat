@@ -88,10 +88,7 @@ export function createAgentChannelMethods(
     }
   }
 
-  async function beginDeletion(
-    channelId: string,
-    createdBy: string,
-  ): Promise<AgentChannelRecord | null> {
+  async function beginDeletion(channelId: string, createdBy: string) {
     const deleting = await channel()
       .findOneAndUpdate({ channelId, createdBy }, { $set: { status: 'deleting' } }, { new: true })
       .select(secrets)
