@@ -351,7 +351,7 @@ it.each([false, true])(
               parentMessageId: 'original-user-message',
             }).messages,
           ).toHaveLength(1);
-          expect(runtime.graphOptions()).toMatchObject({ hitlCapable: true });
+          expect(await runtime.graphOptions()).toMatchObject({ hitlCapable: true });
           const f = await setup(
             async (execution) => {
               await runtime.hooks.onEnrolled!(execution);
@@ -399,7 +399,8 @@ it.each([false, true])(
               await runtime.hooks.afterSettle!(f.execution, error);
             });
           await f.execution.settle();
-          await runtime.hooks.afterSettle!(f.execution, undefined);
+          if (f.execution.isPaused) await runtime.hooks.afterPause!(f.execution);
+          else await runtime.hooks.afterSettle!(f.execution, undefined);
           expect(f.execution.isPaused).toBe(!failPersistence);
           expect(f.modelCalls()).toBe(1);
         } catch (error) {
@@ -739,7 +740,7 @@ it.each(['unchanged', 'environment', 'definition', 'workspace'] as const)(
               isPrincipalActive: async () => true,
               execute: async (execution) => {
                 expect(
-                  runtime.graphOptions([rebuiltAgent]).reviewedToolApprovals?.decisions,
+                  (await runtime.graphOptions([rebuiltAgent])).reviewedToolApprovals?.decisions,
                 ).toEqual(decisions);
                 const rebuilt = await f.buildRun();
                 await runtime.processRun(rebuilt, { messages: [] }, f.config);
@@ -1125,7 +1126,7 @@ it('replays a real SDK checkpoint through authenticated HTTP and the actual runt
         messages: [],
         parentMessageId: 'original-user-message',
       });
-      expect(runtime.graphOptions([])).toMatchObject({
+      expect(await runtime.graphOptions([])).toMatchObject({
         sessionStartSource: 'resume',
         discoveredToolNames: ['retained_lookup'],
         reviewedToolApprovals: { decisions: [] },

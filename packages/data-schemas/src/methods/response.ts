@@ -640,7 +640,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
         .lean();
       // Retained data comes only from an internal job/receipt, never request input.
       // Validate it even when the row exists before using any fallback checkpoint fields.
-      const matchingRetained =
+      const retainedCandidate =
         retained &&
         retained.responseId === responseId &&
         retained.userId === owner.userId &&
@@ -648,10 +648,11 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
         (!record ||
           (retained.conversationId === record.conversationId &&
             retained.agentId === record.agentId &&
-            retained.generationCreatedAt === record.generationCreatedAt))
+            (record.generationCreatedAt == null ||
+              retained.generationCreatedAt === record.generationCreatedAt)))
           ? retained
           : undefined;
-      const source = record ?? matchingRetained;
+      const source = record ?? retainedCandidate;
       if (!source) return null;
       const now = new Date();
       const [ownerKey, conversationKey] = responseScopeKeys(owner, source.conversationId);
@@ -678,6 +679,9 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
         !(conversationAnchor?.expiredAt && conversationAnchor.expiredAt <= now)
       )
         return null;
+      const matchingRetained = retainedCandidate && (!record ||
+        retainedCandidate.generationCreatedAt === record.generationCreatedAt ||
+        (retirement && record.generationCreatedAt == null)) ? retainedCandidate : undefined;
       // A staged checkpoint is one binding: never fill an incomplete terminal
       // binding with settings from a prior review or retained provider segment.
       const terminalCheckpoint = record?.pendingTerminal;
@@ -704,7 +708,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
         responseId: id,
         agentId,
         conversationId,
-        generationCreatedAt,
+        generationCreatedAt: generationCreatedAt ?? (retirement ? matchingRetained?.generationCreatedAt : undefined),
         expiredAt,
         retirement,
         checkpointNamespace,
