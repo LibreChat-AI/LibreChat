@@ -61,7 +61,7 @@ afterAll(async () => {
   await mongo?.stop();
 });
 
-async function fixture(principal: ResponseOwner = owner) {
+async function fixture(principal: ResponseOwner = owner, retainTerminalPersistence = true) {
   const responseId = 'resp_running_stop';
   const execution = await enrollAgentExecution(
     {
@@ -70,7 +70,7 @@ async function fixture(principal: ResponseOwner = owner) {
       conversationId: 'conversation',
       agentId: 'agent',
       protocol: 'responses',
-      retainTerminalPersistence: true,
+      retainTerminalPersistence,
       isPrincipalActive: async () => true,
     },
     { manager: jobs },
@@ -253,7 +253,7 @@ it('repeated Stop recovers a running runtime receipt failure without a paused re
 
 it('preserves ordinary abort publication and default cleanup when retention is not requested', () =>
   scoped(async () => {
-    const f = await fixture();
+    const f = await fixture(owner, false);
     const publishChat = jest.spyOn(jobs, 'publishTerminalClaim');
     expect(await jobs.abortJob(f.responseId, { awaitProviderDrain: true })).toMatchObject({
       success: true,
