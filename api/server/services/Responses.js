@@ -21,7 +21,7 @@ const db = require('~/models');
 
 let enqueueResponse;
 const dependencies = {
-  storage: createResponseStorage(mongoose),
+  storage: createResponseStorage(mongoose, { getMCPAppMessageBudget: db.getMCPAppMessageBudget }),
   jobs: GenerationJobManager,
   publicBaseURL: process.env.DOMAIN_CLIENT,
   findUser: (userId) => db.findUser({ _id: userId }),
