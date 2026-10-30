@@ -317,14 +317,16 @@ describe('terminal projection boundary', () => {
       const claim = await manager.claimTerminalJob(streamId, 'complete', undefined, job.createdAt, {
         persistencePending: true,
       });
-      await manager.publishTerminalClaim(claim!, { final: true } as FinalEvent);
+      expect(claim).not.toBeNull();
 
-      /** Overwrite with the shape an older producer stored. */
-      await jobStore.updateJob(
-        streamId,
-        { finalEvent: JSON.stringify(buildUnsanitizedFinal()) },
-        job.createdAt,
-      );
+      /** Seed the legacy durable reply without publishing a competing modern FINAL. */
+      expect(
+        await jobStore.finalizeTerminalPersistence(
+          streamId,
+          job.createdAt,
+          JSON.stringify(buildUnsanitizedFinal()),
+        ),
+      ).toBe(true);
       const rawStored = await jobStore.getJob(streamId);
       expect(rawStored!.finalEvent).toContain(TRANSIENT_BODY);
 
