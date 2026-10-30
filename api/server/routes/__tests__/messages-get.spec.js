@@ -59,6 +59,8 @@ jest.mock('@librechat/api', () => {
     /** The real helper, without loading the rest of the package this suite mocks around. */
     withoutTraceRefs: jest.requireActual('../../../../packages/api/src/langfuse/trace.ts')
       .withoutTraceRefs,
+    getLiteLLMBranchMetadata: jest.requireActual('../../../../packages/api/src/agents/litellm.ts')
+      .getLiteLLMBranchMetadata,
     /** Mirrors the real parse (default 25, ceiling 1000) without loading the config service. */
     awaitPageSize: jest.fn((pageSize) => pageSize),
     resolveMessagesPageSize: jest.fn(async (_user, raw) => {
@@ -434,6 +436,62 @@ describe('message route conversation ownership filters', () => {
     /** Server-private state stays in the database; normal reads strip it, so must this response. */
     expect(response.body).not.toHaveProperty('contextMeta');
     expect(response.body.messageId).toBe(savedMessage.messageId);
+  });
+
+  describe('routed-model attribution', () => {
+    const PRIMARY = 'AnthropicClaude__litellm-model-router___Claude';
+    const ADDED = 'AnthropicClaude__litellm-model-router___Claude____1';
+    const branch = async (agentId, metadata) => {
+      getMessage.mockResolvedValue({
+        messageId: 'source-message',
+        conversationId: 'convo-1',
+        parentMessageId: 'parent-1',
+        isCreatedByUser: false,
+        metadata,
+        content: [
+          { type: 'text', text: 'Primary content', agentId: PRIMARY },
+          { type: 'text', text: 'Added content', agentId: ADDED },
+        ],
+      });
+      saveMessage.mockImplementation(async (_ctx, message) => message);
+      const response = await request(app)
+        .post('/api/messages/branch')
+        .send({ messageId: 'source-message', agentId });
+      expect(response.status).toBe(201);
+      return { saved: saveMessage.mock.calls[0][1], body: response.body };
+    };
+    const routed = {
+      litellmModelName: 'bedrock/claude-haiku',
+      litellmRoutedModelSpec: 'router-a',
+      litellmAgentModels: [{ agentId: ADDED, modelName: 'bedrock/claude-opus', spec: 'router-b' }],
+      usage: { total: 1 },
+    };
+
+    it("keeps the primary column's served model on its branch", async () => {
+      const { saved, body } = await branch(PRIMARY, routed);
+
+      expect(saved.metadata).toEqual({
+        litellmModelName: 'bedrock/claude-haiku',
+        litellmRoutedModelSpec: 'router-a',
+      });
+      expect(body.metadata).toEqual(saved.metadata);
+    });
+
+    it("labels an added column's branch with its own model, not the primary's", async () => {
+      const { saved } = await branch(ADDED, routed);
+
+      expect(saved.metadata).toEqual({
+        litellmModelName: 'bedrock/claude-opus',
+        litellmRoutedModelSpec: 'router-b',
+      });
+    });
+
+    it('adds no metadata when the branched column has nothing captured', async () => {
+      const { litellmAgentModels: _omitted, ...primaryOnly } = routed;
+      const { saved } = await branch(ADDED, primaryOnly);
+
+      expect(saved).not.toHaveProperty('metadata');
+    });
   });
 
   it('does not hydrate branch files for an inert file policy', async () => {

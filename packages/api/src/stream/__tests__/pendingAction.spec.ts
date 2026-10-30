@@ -324,6 +324,20 @@ describe('ApprovalLifecycle via GenerationJobManager.approvals (in-memory)', () 
       expect(repaused?.metadata.contextMeta).toBeUndefined();
     });
 
+    test('persists served LiteLLM models with the pause and clears them on an empty re-pause', async () => {
+      const streamId = 'stream-pause-litellm-models';
+      await manager.createJob(streamId, 'user-1');
+      const firstAction = buildAction(streamId);
+      const litellmModels = [{ agentId: 'agent.v1____1', modelName: 'bedrock/claude-haiku' }];
+
+      expect(await manager.approvals.pause(streamId, firstAction, { litellmModels })).toBe(true);
+      expect((await manager.getJob(streamId))?.metadata.litellmModels).toEqual(litellmModels);
+
+      expect(await manager.approvals.resolve(streamId, firstAction.actionId)).toBe(true);
+      expect(await manager.approvals.pause(streamId, buildAction(streamId))).toBe(true);
+      expect((await manager.getJob(streamId))?.metadata.litellmModels).toBeUndefined();
+    });
+
     test('does not write a stale pause or discoveries onto a replacement job', async () => {
       const streamId = 'stream-pause-replaced';
       const original = await manager.createJob(streamId, 'user-1');

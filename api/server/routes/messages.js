@@ -37,6 +37,7 @@ const {
   resolveMessagesPageSize,
   awaitPageSize,
   withMessageToolCallPreviews,
+  getLiteLLMBranchMetadata,
 } = require('@librechat/api');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
 const { getAppConfig } = require('~/server/services/Config');
@@ -357,6 +358,7 @@ router.post('/branch', configMiddleware, async (req, res) => {
     }
 
     const newMessageId = uuidv4();
+    const litellmMetadata = getLiteLLMBranchMetadata(sourceMessage.metadata, agentId);
     /** @type {import('librechat-data-provider').TMessage} */
     const newMessage = {
       messageId: newMessageId,
@@ -371,6 +373,8 @@ router.post('/branch', configMiddleware, async (req, res) => {
       // Server-private context meta (calibration and fading tier) travels with the branch so
       // the next turn seeds its pruner the same way it would from the source response.
       ...(sourceMessage.contextMeta != null && { contextMeta: sourceMessage.contextMeta }),
+      // The branched column's routed model, as the message-level fields it is labeled from.
+      ...(litellmMetadata != null && { metadata: litellmMetadata }),
       ...(typeof sourceMessage.isUserSubmitted === 'boolean' && {
         isUserSubmitted: sourceMessage.isUserSubmitted,
       }),

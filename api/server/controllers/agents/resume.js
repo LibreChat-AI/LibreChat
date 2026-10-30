@@ -1983,6 +1983,8 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       // Seed the rebuilt pruner from the tier and calibration captured at the pause, so the
       // resumed segment keeps historical tool results byte-identical to the paused one.
       client.seedContextMeta?.(job.metadata?.contextMeta);
+      // Keep the served model of agents that finished before the pause; they do not rerun.
+      client.litellmModelCapture?.restore(job.metadata?.litellmModels);
       if (client.contentParts) {
         GenerationJobManager.setContentParts(streamId, client.contentParts, job.createdAt);
       }

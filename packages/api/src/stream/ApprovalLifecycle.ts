@@ -12,6 +12,7 @@ import type {
 } from '~/stream/interfaces/IJobStore';
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { AuthoredSkillBinding } from '~/agents/authored';
+import type { LiteLLMModelSnapshotEntry } from '~/types/stream';
 import {
   JobStatusTransitionDeadlineError,
   isPendingActionExpired,
@@ -39,6 +40,8 @@ export interface ApprovalPauseOptions {
   compactionSemanticIndex?: ICompactionSemanticIndexProjection;
   /** Calibration and fading state at the pause; seeds the resumed run's pruner. */
   contextMeta?: IAgentEventActorContextMeta;
+  /** Each top-level agent's LiteLLM-served model so far; restored into the resumed run. */
+  litellmModels?: LiteLLMModelSnapshotEntry[];
   /** Generation identity observed by the interrupted run. */
 
   expectedCreatedAt?: number;
@@ -125,6 +128,7 @@ export class ApprovalLifecycle {
     const activityPhaseSnapshot = options.activityPhaseSnapshot;
     const compactionSemanticIndex = options.compactionSemanticIndex;
     const contextMeta = options.contextMeta;
+    const litellmModels = options.litellmModels;
     /** The normal receipt TTL matches a running job, but a review pause can
      * live for 24h or an explicit later expiry. The store extends every
      * receipt in the SAME CAS that closes running enqueues: a separate pass
@@ -135,6 +139,13 @@ export class ApprovalLifecycle {
         ? Math.ceil((pendingAction.expiresAt - Date.now()) / 1000) + 60
         : 0,
     );
+    const staleOnRepause: Array<'contextMeta' | 'litellmModels'> = [];
+    if (contextMeta == null) {
+      staleOnRepause.push('contextMeta');
+    }
+    if (litellmModels == null || litellmModels.length === 0) {
+      staleOnRepause.push('litellmModels');
+    }
     const persistenceStartedAt = Date.now();
     let ok: boolean;
     try {
@@ -159,13 +170,14 @@ export class ApprovalLifecycle {
           ...(activityPhaseSnapshot != null ? { activityPhaseSnapshot } : {}),
           ...(compactionSemanticIndex != null ? { compactionSemanticIndex } : {}),
           ...(contextMeta != null ? { contextMeta } : {}),
+          ...(litellmModels != null && litellmModels.length > 0 ? { litellmModels } : {}),
           ...(options.agentEventSuspension != null
             ? { agentEventSuspension: options.agentEventSuspension }
             : {}),
         },
         /** A re-pause with nothing persistable must not leave the previous
-         * segment's calibration and tier on the job for the next resume. */
-        ...(contextMeta == null ? { clear: ['contextMeta' as const] } : {}),
+         * segment's calibration and tier, or served models, on the job for the next resume. */
+        ...(staleOnRepause.length > 0 ? { clear: staleOnRepause } : {}),
         expectCreatedAt: expectedCreatedAt,
         notAfterMs: pendingAction.expiresAt,
         steerReceiptTtlSeconds: pauseReceiptTtl,

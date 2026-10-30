@@ -11,6 +11,7 @@ import type { Agents, TMessage, TMessageContentParts } from 'librechat-data-prov
 import type { BranchSiblingIndex } from '@librechat/chat';
 import type { QueryClient } from '@tanstack/react-query';
 import type { LocalizeFunction, TMessageProps } from '~/common';
+import { getLiteLLMModelName } from './litellm';
 
 export {
   isEmptyContentPart,
@@ -478,6 +479,10 @@ export function areMessageFieldsEqual(
     prevMsg.model === nextMsg.model &&
     prevMsg.endpoint === nextMsg.endpoint &&
     prevMsg.iconURL === nextMsg.iconURL &&
+    /** Replaces the sender in the row header once the final response lands. */
+    getLiteLLMModelName(prevMsg) === getLiteLLMModelName(nextMsg) &&
+    /** Relabels the added-convo columns once the final response lands. */
+    prevMsg.metadata?.litellmAgentModels === nextMsg.metadata?.litellmAgentModels &&
     prevMsg.feedback?.rating === nextMsg.feedback?.rating &&
     areMessageFilesEqual(prevMsg.files, nextMsg.files) &&
     (prevMsg.attachments?.length ?? 0) === (nextMsg.attachments?.length ?? 0) &&

@@ -15,6 +15,7 @@ import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { ReplayLimits, ReplayPublication } from '../internal/replay';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
+import type { LiteLLMModelSnapshotEntry } from '~/types/stream';
 import type { RecoveredSteerPayload } from '../SteerRecovery';
 import type { AuthoredSkillBinding } from '~/agents/authored';
 import type { MCPRuntimeRequestBody } from '~/mcp/types';
@@ -214,6 +215,9 @@ export interface SerializableJobData {
   compactionSemanticIndex?: ICompactionSemanticIndexProjection;
   /** Calibration and fading state captured atomically with a HITL pause, so a resume seeds its rebuilt pruner from the same tier. */
   contextMeta?: IAgentEventActorContextMeta;
+  /** Each top-level agent's LiteLLM-served model at a HITL pause, so a resume keeps the
+   *  served model of agents that finished before the pause and are not rerun. */
+  litellmModels?: LiteLLMModelSnapshotEntry[];
   /**
    * Whether the replica that OWNS this generation can seal mid-stream
    * (`PreemptBoundary` wiring). Recorded at createJob because the steer route
@@ -527,6 +531,7 @@ export type JobMetadataPatch = Partial<
     | 'activityPhaseSnapshot'
     | 'compactionSemanticIndex'
     | 'contextMeta'
+    | 'litellmModels'
     | 'preemptCapable'
     | 'steerQuotesCapable'
     | 'steerQuotesExecutionId'

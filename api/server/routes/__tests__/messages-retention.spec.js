@@ -32,6 +32,8 @@ jest.mock('@librechat/api', () => ({
   isSubagentThreadWriteBlocked: jest.fn().mockResolvedValue(false),
   requireFeedbackEnabled: (req, res, next) => next(),
   applyForcedRetention: jest.fn(),
+  getLiteLLMBranchMetadata: jest.requireActual('../../../../packages/api/src/agents/litellm.ts')
+    .getLiteLLMBranchMetadata,
 }));
 
 jest.mock('@librechat/data-schemas', () => ({

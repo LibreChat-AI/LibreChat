@@ -64,6 +64,7 @@ function createHost(overrides: Partial<MessagePartsHost> = {}): MessagePartsHost
       setMessages: jest.fn(),
     }),
     useMessagesAsk: () => jest.fn(),
+    useRoutedModelLabel: () => undefined,
     ...overrides,
   };
 }

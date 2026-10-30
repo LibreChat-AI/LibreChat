@@ -250,6 +250,7 @@ const ContentRender = memo(function ContentRender({
               isSubmitting={isSubmitting}
               isCreatedByUser={msg.isCreatedByUser}
               createdAt={msg.createdAt ?? msg.clientTimestamp}
+              metadata={msg.metadata}
               foldLiveActivity={!autoExpandTools}
               showThinking={showThinking}
               conversationId={conversation?.conversationId}

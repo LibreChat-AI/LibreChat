@@ -17,6 +17,12 @@ import type { AuthoredSkillBinding } from '~/agents/authored';
 import type { MCPRuntimeRequestBody } from '../mcp/types';
 import type { ServerSentEvent } from './events';
 
+/** One top-level agent's LiteLLM-served model, as carried across a HITL pause. */
+export interface LiteLLMModelSnapshotEntry {
+  agentId: string;
+  modelName: string;
+}
+
 export interface GenerationJobMetadata {
   userId: string;
   tenantId?: string;
@@ -108,6 +114,9 @@ export interface GenerationJobMetadata {
   compactionSemanticIndex?: ICompactionSemanticIndexProjection;
   /** Calibration and fading state captured atomically with a HITL pause, so a resume seeds its rebuilt pruner from the same tier. */
   contextMeta?: IAgentEventActorContextMeta;
+  /** Each top-level agent's LiteLLM-served model at a HITL pause, so a resume keeps the
+   *  served model of agents that finished before the pause and are not rerun. */
+  litellmModels?: LiteLLMModelSnapshotEntry[];
   /** See `SerializableJobData.preemptCapable`. */
   preemptCapable?: boolean;
   /** See `SerializableJobData.steerQuotesCapable`. */

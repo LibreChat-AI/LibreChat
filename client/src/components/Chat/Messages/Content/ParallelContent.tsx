@@ -1,6 +1,11 @@
 import { memo, useMemo, Fragment } from 'react';
 import { ContentTypes } from 'librechat-data-provider';
-import type { TMessageContentParts, SearchResultData, TAttachment } from 'librechat-data-provider';
+import type {
+  TMessage,
+  TAttachment,
+  SearchResultData,
+  TMessageContentParts,
+} from 'librechat-data-provider';
 import {
   getActivityLabelPart,
   getActivityLabelText,
@@ -177,6 +182,8 @@ type ParallelColumnsProps = {
   groupId: number;
   messageId: string;
   createdAt?: string | null;
+  /** The message's metadata, where each column header reads its routed model. */
+  metadata?: TMessage['metadata'];
   isSubmitting: boolean;
   lastContentIdx: number;
   conversationId?: string | null;
@@ -191,6 +198,7 @@ export const ParallelColumns = memo(function ParallelColumns({
   groupId,
   messageId,
   createdAt,
+  metadata,
   conversationId,
   isSubmitting,
   lastContentIdx,
@@ -223,6 +231,7 @@ export const ParallelColumns = memo(function ParallelColumns({
               agentId={agentId}
               messageId={messageId}
               createdAt={createdAt}
+              metadata={metadata}
               isSubmitting={isSubmitting}
               conversationId={conversationId}
             />
@@ -255,6 +264,8 @@ type ParallelContentRendererProps = {
   content?: Array<TMessageContentParts | undefined>;
   messageId: string;
   createdAt?: string | null;
+  /** The message's metadata, where each column header reads its routed model. */
+  metadata?: TMessage['metadata'];
   conversationId?: string | null;
   attachments?: TAttachment[];
   searchResults?: { [key: string]: SearchResultData };
@@ -284,6 +295,7 @@ export const ParallelContentRenderer = memo(function ParallelContentRenderer({
   content,
   messageId,
   createdAt,
+  metadata,
   conversationId,
   attachments,
   searchResults,
@@ -353,6 +365,7 @@ export const ParallelContentRenderer = memo(function ParallelContentRenderer({
             groupId={groupId}
             messageId={messageId}
             createdAt={createdAt}
+            metadata={metadata}
             renderPart={renderPart}
             isSubmitting={isSubmitting}
             conversationId={conversationId}

@@ -57,6 +57,7 @@ import type { TerminalSteerHook, SteerPreemption } from '~/agents/steering/runti
 import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent';
 import type { ScheduledMCPPolicyError } from '~/schedules/authorization/policy';
 import type { ScheduleMCPExecution } from '~/schedules/authorization/execution';
+import type { LiteLLMCaptureAgent, LiteLLMModelSink } from '~/agents/litellm';
 import type { ModelErrorTrackerCallback } from '~/agents/failures/tracker';
 import type { ToolInputValidationError } from '~/agents/toolValidation';
 import type { ResolvedToolApprovalHook } from '~/agents/hitl/hooks';
@@ -136,6 +137,7 @@ import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { createStepBudgetHook } from '~/agents/stepBudget';
 import { buildHITLRunWiring } from '~/agents/hitl/runtime';
 import { buildLangfuseConfig } from '~/langfuse/config';
+import { captureLiteLLMModel } from '~/agents/litellm';
 import { applyTestRunHook } from '~/agents/testHook';
 import { frameDynamicInstructions } from './tail';
 import { isUserProvided } from '~/utils/common';
@@ -1900,6 +1902,30 @@ function buildIsolatedAgentInputs(
   return childInputs;
 }
 
+/**
+ * A self-spawned child runs on its parent's inputs, the SDK's shallow copy of them when
+ * the config carries none. A parent whose model calls record LiteLLM's served model
+ * would otherwise hand the child its capturing `fetch`, and the child's calls would
+ * overwrite or clear the parent's served model while the parent's answer streams. Give
+ * the self config that same copy (or its sanitized `agentInputs`) with the parent's
+ * uncaptured client options, which keep any custom `fetch` underneath the capture.
+ * Call once the parent's inputs are final, since the copy is taken here.
+ */
+function releaseSelfSpawnFromLiteLLMCapture(
+  agentInput: AgentInputs,
+  uncapturedClientOptions: NonNullable<AgentInputs['clientOptions']>,
+): void {
+  for (const config of agentInput.subagentConfigs ?? []) {
+    if (!('self' in config) || config.self !== true) {
+      continue;
+    }
+    config.agentInputs = {
+      ...(config.agentInputs ?? agentInput),
+      clientOptions: uncapturedClientOptions,
+    };
+  }
+}
+
 function buildSubagentConfigs(
   agent: RunAgent,
   agentInput: AgentInputs,
@@ -2148,6 +2174,7 @@ export async function createRun({
   fadingTiers,
   appConfig,
   subagentUsageSink,
+  getLiteLLMModelSink,
   subagentTasks,
   runFiles,
   steering,
@@ -2254,6 +2281,14 @@ export async function createRun({
    * Switch to the `RunConfig` pick once the dependency is bumped.
    */
   subagentUsageSink?: (event: SubagentUsageEvent) => void;
+  /**
+   * Called once per top-level agent (never subagents) for the sink that receives
+   * the `x-litellm-model-name` response header of that agent's model calls
+   * (OpenAI-compatible clients only); the latest call wins. Each agent gets its own
+   * sink, so one agent cannot overwrite another's model. Returning undefined skips
+   * capture for that agent.
+   */
+  getLiteLLMModelSink?: (agent: LiteLLMCaptureAgent) => LiteLLMModelSink | undefined;
   /** Host-owned detached-subagent task store and trusted parent-thread scope. */
   subagentTasks?: SubagentTaskConfig;
   /** Run-scoped file authorization and child context, supplied by the host. */
@@ -2391,7 +2426,15 @@ export async function createRun({
   }
 
   const preparedCodeFileAgents = new WeakSet(codeFileAgents.values());
-  const buildAgentInput = (agent: RunAgent, opts: { isSubagent?: boolean } = {}): AgentInputs => {
+  /** Each LiteLLM-captured agent's client options without the capture, for its self-spawned child. */
+  const uncapturedClientOptions = new WeakMap<
+    AgentInputs,
+    NonNullable<AgentInputs['clientOptions']>
+  >();
+  const buildAgentInput = (
+    agent: RunAgent,
+    opts: { isSubagent?: boolean; litellmModelSink?: LiteLLMModelSink } = {},
+  ): AgentInputs => {
     if (!preparedCodeFileAgents.has(agent)) {
       if (agent.provisionState) agent.provisionState.codeEnvDestinations = undefined;
       codeFileAgents.set(agent.id, agent);
@@ -2623,6 +2666,14 @@ export async function createRun({
     }
 
     const reasoningKey = getReasoningKey(provider, llmConfig, agent.endpoint, agent.reasoningKey);
+    /** Copy, never mutate: `configuration` is shared with `agent.model_parameters`. */
+    const clientOptions =
+      opts.litellmModelSink != null && isPlainObject(llmConfig.configuration)
+        ? {
+            ...llmConfig,
+            configuration: captureLiteLLMModel(llmConfig.configuration, opts.litellmModelSink),
+          }
+        : llmConfig;
     const agentInput: AgentInputs = {
       provider,
       endpoint: agent.endpoint ?? provider,
@@ -2630,7 +2681,7 @@ export async function createRun({
       toolDefinitions,
       agentId: agent.id,
       tools,
-      clientOptions: llmConfig,
+      clientOptions,
       instructions: systemContent,
       additional_instructions:
         frameDynamicInstructions({
@@ -2664,6 +2715,9 @@ export async function createRun({
        * broken). Inline the field in the literal once the dependency is bumped.
        */
       (agentInput as AgentInputs & { graphTools?: GenericTool[] }).graphTools = graphTools;
+    }
+    if (clientOptions !== llmConfig) {
+      uncapturedClientOptions.set(agentInput, llmConfig);
     }
     return agentInput;
   };
@@ -2712,7 +2766,7 @@ export async function createRun({
     enqueueSubagentChildren(config, pendingConfigs, visitedConfigIds, false, false);
   }
   for (const agent of agents) {
-    const agentInput = buildAgentInput(agent);
+    const agentInput = buildAgentInput(agent, { litellmModelSink: getLiteLLMModelSink?.(agent) });
     if (summarizeOnly && agent === agents[0]) {
       agentInput.summarizeOnly = true;
     }
@@ -2742,6 +2796,10 @@ export async function createRun({
           agent.id,
         ),
       }).toolDefinitions;
+    }
+    const uncaptured = uncapturedClientOptions.get(agentInput);
+    if (uncaptured != null) {
+      releaseSelfSpawnFromLiteLLMCapture(agentInput, uncaptured);
     }
     agentInputs.push(agentInput);
   }

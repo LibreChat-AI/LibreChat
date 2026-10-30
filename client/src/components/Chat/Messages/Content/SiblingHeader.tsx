@@ -17,6 +17,8 @@ type SiblingHeaderProps = {
   messageId?: string;
   /** ISO timestamp of the parent message */
   createdAt?: string | null;
+  /** The parent message's metadata, where this column's routed model is saved */
+  metadata?: TMessage['metadata'];
   /** The conversationId */
   conversationId?: string | null;
   /** Whether a submission is in progress */
@@ -31,12 +33,15 @@ export default function SiblingHeader({
   agentId,
   messageId,
   createdAt,
+  metadata,
   conversationId,
   isSubmitting,
 }: SiblingHeaderProps) {
   const agentsMap = useAgentsMapContext();
   const localize = useLocalize();
-  const showToast = useMessagePartsHost().useToast();
+  const host = useMessagePartsHost();
+  const showToast = host.useToast();
+  const routedModelLabel = host.useRoutedModelLabel({ agentId, metadata });
 
   const branchMessage = useBranchMessageMutation(conversationId ?? null, {
     onSuccess: () => {
@@ -120,7 +125,9 @@ export default function SiblingHeader({
             agent={agent || undefined}
           />
         </div>
-        <span className="text-text-primary truncate text-sm font-medium">{displayName}</span>
+        <span className="text-text-primary truncate text-sm font-medium">
+          {routedModelLabel ?? displayName}
+        </span>
         <MessageTimestamp value={createdAt} />
       </div>
       <button

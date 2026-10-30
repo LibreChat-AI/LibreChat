@@ -1500,6 +1500,26 @@ endpoints:
 #       preset:
 #         endpoint: "openAI"
 #         model: "gpt-4o-mini"
+#
+#     # Example 6: A LiteLLM router model. With `litellmRoutedModel.showOnResponses`,
+#     # each response is labeled with the model LiteLLM actually served it with
+#     # (its `x-litellm-model-name` response header) instead of the router's name.
+#     # `labels` maps served model names to display labels; unmapped names show as-is.
+#     - name: "litellm-claude-model-router"
+#       label: "Claude Auto"
+#       group: "litellm"
+#       litellmRoutedModel:
+#         showOnResponses: true
+#         labels:
+#           - model: "bedrock/us.anthropic.claude-opus-4-6-v1"
+#             label: "Claude Opus 4.6"
+#           - model: "bedrock/us.anthropic.claude-haiku-5-5"
+#             label: "Claude Haiku 5.5"
+#           - model: "bedrock/us.anthropic.claude-sonnet-5"
+#             label: "Claude Sonnet 5"
+#       preset:
+#         endpoint: "Claude"
+#         model: "litellm-claude-model-router"
 
 # Automatic conversation summarization (optional)
 # summarization:

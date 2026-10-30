@@ -32,6 +32,7 @@ import {
   useOptionalMessagesOperations,
 } from '~/Providers';
 import { getAppPartRenderers } from '~/components/Chat/Messages/Content/Parts/slots';
+import useRoutedModelLabel from '~/hooks/Messages/useRoutedModelLabel';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
@@ -153,6 +154,7 @@ export const appMessagePartsHost: MessagePartsHost = {
   useLiveAppliedSteer: useAppLiveAppliedSteer,
   useMessagesEditing: useAppMessagesEditing,
   useMessagesAsk: () => useOptionalMessagesOperations().ask,
+  useRoutedModelLabel,
 };
 
 setDefaultMessagePartsHost(appMessagePartsHost);
