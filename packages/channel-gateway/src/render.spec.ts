@@ -346,7 +346,21 @@ describe('accounting and actor-lane summary', () => {
     const context = durableSlackMessage(part, rendererVersion).blocks?.find(
       (block) => block.type === 'context',
     );
-    expect(JSON.stringify(context)).toContain('View session');
+    expect(JSON.stringify(context)).not.toContain('View session');
+    const plan = makeSlackPlan(view);
+    expect(plan.parts.filter((part) => part.traceUrl)).toEqual([
+      expect.objectContaining({
+        kind: 'message',
+        required: false,
+        traceUrl: 'https://chat.example.com/c/session',
+      }),
+    ]);
+    expect(
+      plan.parts
+        .filter((part) => part.required)
+        .map((part) => JSON.stringify(part))
+        .join(),
+    ).not.toContain('https://chat.example.com/c/session');
     expect(JSON.stringify(context)).toContain('known $0.04');
     view.snapshot!.summary.throughSequence = 4;
     expect(makeSlackPlan(view).parts[0].text).toContain('Your thread: totals unavailable');
@@ -384,4 +398,63 @@ describe('accounting and actor-lane summary', () => {
     expect(message.text).toContain('Your thread');
     expect(JSON.stringify(message.blocks)).not.toContain('Your thread');
   });
+});
+
+describe('presentation boundaries', () => {
+  it.each([
+    '`__init__ [docs](./README.md)`',
+    '``a `tick` __init__ [docs](./README.md)``',
+    '```md\n[docs](./README.md) __init__\n```',
+    '~~~md\n[docs](./README.md) __init__\n~~~',
+    '````md\n``` __init__ [docs](./README.md)\n````',
+    '```md\n[docs](./README.md) __init__',
+  ])('preserves literal code %s in native blocks and escaped fallback', (code) => {
+    expect(safeMrkdwn(code)).toBe(code);
+    expect(renderAgentAnswer(code)[0].blocks).toEqual([{ type: 'markdown', text: code }]);
+    const document = renderSlackDocument(code);
+    expect(JSON.stringify(document)).toContain('__init__');
+    expect(JSON.stringify(document)).toContain('[docs](./README.md)');
+  });
+  it.each(['&'.repeat(12000), '🙂'.repeat(12000), '<'.repeat(12000)])(
+    'bounds converted native fallback, including expanding text',
+    (answer) => {
+      const view = run();
+      view.snapshot!.text = answer;
+      for (const part of makeSlackPlan(view, true).parts) {
+        expect(part.text.length).toBeLessThanOrEqual(40000);
+        expect(Buffer.byteLength(part.text)).toBeLessThanOrEqual(39000);
+        expect(() => durableSlackMessage(part, rendererVersion)).not.toThrow();
+      }
+    },
+  );
+});
+
+test('legacy required footer recovery removes embedded trace capability while preserving answer and metrics', () => {
+  const url = 'https://chat.example.com/c/session';
+  const part = {
+    operationId: 'old:reply:0',
+    kind: 'message' as const,
+    required: true,
+    text: `Answer\n\n_This run · ID old_\n_This run: Cost unavailable_\n<${url}|View session>`,
+    presentation: {
+      format: presentationFormat,
+      payload: JSON.stringify([
+        { type: 'section', text: { type: 'mrkdwn', text: 'Answer' } },
+        {
+          type: 'context',
+          elements: [
+            { type: 'mrkdwn', text: `Cost unavailable · Run old · <${url}|View session>` },
+          ],
+        },
+      ]),
+    },
+  };
+  const snapshot = structuredClone(part);
+  for (const version of ['slack-structured-v2', 'slack-structured-v3', 'slack-structured-v4']) {
+    const message = durableSlackMessage(part, version);
+    expect(JSON.stringify(message)).not.toContain(url);
+    expect(message.text).toContain('Answer');
+    expect(message.text).toContain('Cost unavailable');
+  }
+  expect(part).toEqual(snapshot);
 });

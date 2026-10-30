@@ -11,7 +11,7 @@ import type {
   ResponseAccounting,
 } from 'librechat-data-provider';
 
-export const rendererVersion = 'slack-structured-v4';
+export const rendererVersion = 'slack-structured-v5';
 export const presentationFormat = 'slack-blocks-v1';
 export const artifactFailureNotice =
   'One or more attachments could not be confirmed. The answer is preserved; uncertain uploads will not be duplicated automatically.';
@@ -19,6 +19,7 @@ const chunkLimit = 39_000;
 const presentationLimit = 64_000;
 const supportedStructured = new Set([
   rendererVersion,
+  'slack-structured-v4',
   'slack-structured-v3',
   'slack-structured-v2',
 ]);
@@ -104,9 +105,38 @@ export function supportedRenderer(version: string): boolean {
   return version === 'slack-text-v1' || supportedStructured.has(version);
 }
 
+/** Legacy plans embedded session links in required footers; never replay that capability. */
+function legacyMessage(text: string, blocks?: SlackBlock[]): SlackMessage {
+  const footer = text.lastIndexOf('\n\n_This run · ID ');
+  const fallback =
+    footer < 0
+      ? text
+      : text.slice(0, footer) + text.slice(footer).replace(/\n<[^>\r\n]+\|View session>/g, '');
+  return {
+    text: fallback,
+    ...(blocks
+      ? {
+          blocks: blocks.map((block) =>
+            block.type === 'context'
+              ? {
+                  ...block,
+                  elements: block.elements.map((element) => ({
+                    ...element,
+                    text: element.text.replace(/ · <[^>\r\n]+\|View session>/g, ''),
+                  })),
+                }
+              : block,
+          ),
+        }
+      : {}),
+  };
+}
+
 export function durableSlackMessage(part: ChannelDeliveryPart, renderer: string): SlackMessage {
   if (!part.presentation) {
-    return { text: part.text };
+    return renderer === rendererVersion || part.traceUrl
+      ? { text: part.text }
+      : legacyMessage(part.text);
   }
   if (
     !supportedStructured.has(renderer) ||
@@ -116,7 +146,10 @@ export function durableSlackMessage(part: ChannelDeliveryPart, renderer: string)
     throw new Error('Unsupported durable presentation');
   }
   try {
-    return { text: part.text, blocks: blocksSchema.parse(JSON.parse(part.presentation.payload)) };
+    const blocks = blocksSchema.parse(JSON.parse(part.presentation.payload));
+    return renderer === rendererVersion || part.traceUrl
+      ? { text: part.text, blocks }
+      : legacyMessage(part.text, blocks);
   } catch {
     throw new Error('Invalid persisted Slack blocks');
   }
@@ -141,27 +174,64 @@ function displayUrl(raw: string): boolean {
   }
 }
 
-function sanitizedLinks(value: string): string {
+/** Recognize literal spans before any prose transformation, including unfinished fences. */
+function transformProse(
+  value: string,
+  prose: (text: string) => string,
+  code = (text: string) => text,
+): string {
+  const starts = /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)|`+/gm;
+  let cursor = 0;
+  let result = '';
+  let start: RegExpExecArray | null;
+  while ((start = starts.exec(value))) {
+    const marker = start[1];
+    let end = -1;
+    if (marker) {
+      const closing = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}[ \t]*(?:\n|$)`, 'gm');
+      closing.lastIndex = starts.lastIndex;
+      const match = closing.exec(value);
+      end = match ? closing.lastIndex : value.length;
+    } else {
+      const closing = /`+/g;
+      closing.lastIndex = starts.lastIndex;
+      let match: RegExpExecArray | null;
+      while ((match = closing.exec(value))) {
+        if (match[0].length === start[0].length) {
+          end = closing.lastIndex;
+          break;
+        }
+      }
+    }
+    if (end < 0) continue;
+    result += prose(value.slice(cursor, start.index)) + code(value.slice(start.index, end));
+    cursor = end;
+    starts.lastIndex = end;
+  }
+  return result + prose(value.slice(cursor));
+}
+
+function sanitizeProseLinks(value: string): string {
   return value.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (match, label: string, url: string) =>
     displayUrl(url) ? match : label,
   );
 }
 
+function sanitizedLinks(value: string): string {
+  return transformProse(value, sanitizeProseLinks);
+}
+
 export function safeMrkdwn(value: string): string {
-  const escaped = escapeSlackText(sanitizedLinks(value));
-  // Code is literal; prose conversion must not rewrite code examples.
-  return escaped
-    .split(/(```[\s\S]*?```)/g)
-    .map((part, index) =>
-      index % 2
-        ? part
-        : part
-            .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<$2|$1>')
-            .replace(/\*\*([^*]+)\*\*/g, '*$1*')
-            .replace(/__([^_]+)__/g, '*$1*')
-            .replace(/^#{1,6}\s+(.+)$/gm, '*$1*'),
-    )
-    .join('');
+  return transformProse(
+    value,
+    (prose) =>
+      escapeSlackText(sanitizeProseLinks(prose))
+        .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<$2|$1>')
+        .replace(/\*\*([^*]+)\*\*/g, '*$1*')
+        .replace(/__([^_]+)__/g, '*$1*')
+        .replace(/^#{1,6}\s+(.+)$/gm, '*$1*'),
+    escapeSlackText,
+  );
 }
 
 /** Byte limits are stricter than Slack's character limits and never split a code point. */
@@ -233,11 +303,12 @@ export function renderSlackDocument(markdown: string): SlackMessage[] {
   for (let index = 0; index < lines.length; ) {
     const line = lines[index];
     const trimmed = line.trim();
-    if (/^(```|~~~)/.test(trimmed)) {
-      const marker = trimmed.slice(0, 3);
+    const marker = /^(`{3,}|~{3,})/.exec(trimmed)?.[0];
+    if (marker) {
+      const closing = new RegExp(`^${marker[0]}{${marker.length},}[ \t]*$`);
       const code: string[] = [];
       index++;
-      while (index < lines.length && !lines[index].trim().startsWith(marker)) {
+      while (index < lines.length && !closing.test(lines[index].trim())) {
         code.push(lines[index++]);
       }
       if (index < lines.length) {
@@ -317,7 +388,9 @@ export function renderAgentAnswer(value: string): SlackMessage[] {
   if (!value.trim() || !withinCharacters(value, 12_000) || /<[@!#]/.test(value)) {
     return renderSlackDocument(value);
   }
-  return [{ text: safeMrkdwn(value), blocks: [{ type: 'markdown', text: sanitizedLinks(value) }] }];
+  const fallback = safeMrkdwn(value);
+  if (Buffer.byteLength(fallback) > chunkLimit) return renderSlackDocument(value);
+  return [{ text: fallback, blocks: [{ type: 'markdown', text: sanitizedLinks(value) }] }];
 }
 
 const decimal = /^(0|[1-9][0-9]{0,63})(\.[0-9]{1,18})?$/;
@@ -506,13 +579,7 @@ function appendFooter(parts: SlackMessage[], run: ChannelRunView): void {
     Boolean,
   );
   const summary = snapshot.summary;
-  const session =
-    validSummary(summary, run.sequence) &&
-    summary.session &&
-    safeSummarySessionURL(summary.session.url)
-      ? summary.session.url
-      : undefined;
-  let line = labels.join(' · ') + (session ? ` · <${session}|View session>` : '');
+  let line = labels.join(' · ');
   const details = threadDetails(run);
   if (!validSummary(summary, run.sequence) || summary.expectedRuns > 1) {
     line += '\n' + details.slice(0, 2).join(' · ');
@@ -522,7 +589,7 @@ function appendFooter(parts: SlackMessage[], run: ChannelRunView): void {
       ? ` · ${snapshot.usage.totalTokens} tokens (${snapshot.usage.inputTokens} in / ${snapshot.usage.outputTokens} out)`
       : '';
   const fallback = safeMrkdwn(
-    `\n\n_This run · ID ${id}${elapsed ? ' · ' + elapsed : ''}${usage}_\n_This run: ${accountingDescription(snapshot.accounting)}_\n_${details.join(' · ')}_${session ? `\n[View session](${session})` : ''}`,
+    `\n\n_This run · ID ${id}${elapsed ? ' · ' + elapsed : ''}${usage}_\n_This run: ${accountingDescription(snapshot.accounting)}_\n_${details.join(' · ')}_`,
   );
   let last = parts[parts.length - 1];
   if (
@@ -628,6 +695,17 @@ export function makeSlackPlan(run: ChannelRunView, native = false): ChannelDeliv
         : {}),
     };
   });
+  const summary = snapshot.summary;
+  const traceUrl = validSummary(summary, run.sequence) && summary.session?.url;
+  if (traceUrl && safeSummarySessionURL(traceUrl)) {
+    parts.push({
+      operationId: `${run.runId}:trace:0`,
+      kind: 'message',
+      required: false,
+      text: safeMrkdwn(`[View session](${traceUrl})`),
+      traceUrl,
+    });
+  }
   const seen = new Set<string>();
   let invalid = false;
   if (snapshot.status === 'completed') {
