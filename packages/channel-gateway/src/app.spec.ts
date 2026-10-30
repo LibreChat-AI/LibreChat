@@ -150,6 +150,7 @@ describe('durable Slack ingress', () => {
     expect(JSON.parse(String(backend.mock.calls[1][1]?.body))).toEqual({
       actor: { teamId: 'T1', appId: 'A1', externalUserId: 'U1' },
       externalThreadKey: 'C1:1792999999.5',
+      externalChannelId: 'C1',
       eventAt: 1793000001123,
     });
   });
@@ -545,3 +546,60 @@ describe('signed webhook boundary', () => {
     expect(backend.mock.calls.every(([url]) => String(url).includes('/service/slack/'))).toBe(true);
   });
 });
+
+test.each([false, true])(
+  'pending modal work owns ingress capacity until settlement (failure=%s)',
+  async (fail) => {
+    const { app, backend } = setup();
+    let release!: () => void;
+    const waiting = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let reads = 0;
+    const reference = {
+      runId: 'run',
+      revision: 'r1',
+      actionId: 'action',
+      channelId: 'C1',
+      actorId: 'U1',
+      expiresAt: Date.now() + 60000,
+    };
+    backend.mockImplementation(async () => {
+      reads++;
+      await waiting;
+      if (fail) throw new Error('outage');
+      return json({
+        actionId: 'action',
+        pendingAction: {
+          actionId: 'action',
+          expiresAt: reference.expiresAt,
+          payload: { type: 'ask_user_question', question: { question: 'Answer this' } },
+        },
+      });
+    });
+    const body = {
+      type: 'view_submission',
+      team: { id: 'T1' },
+      api_app_id: 'A1',
+      user: { id: 'U1' },
+      view: {
+        callback_id: 'channel_native_review',
+        private_metadata: JSON.stringify(reference),
+        state: { values: {} },
+      },
+    };
+    const pending = Array.from({ length: 64 }, () => app.dispatch(body, true, undefined, bundle));
+    for (let attempt = 0; attempt < 20 && reads < 64; attempt++)
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    try {
+      expect(reads).toBe(64);
+      await expect(app.dispatch(envelope(), false, undefined, bundle)).rejects.toThrow('capacity');
+    } finally {
+      release();
+      await Promise.all(pending);
+    }
+    await expect(
+      app.dispatch(envelope({ bot_id: 'bot' }), false, undefined, bundle),
+    ).resolves.toBeUndefined();
+  },
+);

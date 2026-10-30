@@ -565,3 +565,16 @@ test('Stop and cancel retain the complete external-channel scope at the service 
     { actor, revision: run.revision, externalChannelId: 'C1' },
   ]);
 });
+
+test('exposes only the approved trace-unavailable code for a409; other diagnostics stay private', async () => {
+  const transport = jest
+    .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+    .mockResolvedValueOnce(json({ error: 'trace_unavailable', secret: 'private' }, 409))
+    .mockResolvedValueOnce(json({ error: 'private-database-error', secret: 'private' }, 409));
+  const client = new ChannelClient(config, transport);
+  await expect(client.claim('worker')).rejects.toMatchObject({
+    status: 409,
+    code: 'trace_unavailable',
+  });
+  await expect(client.claim('worker')).rejects.toMatchObject({ status: 409, code: '' });
+});

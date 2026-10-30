@@ -5,7 +5,7 @@ import type {
   ChannelDeliveryReceipt,
   ChannelRunView,
 } from 'librechat-data-provider';
-import type { ChannelBundle, Lease, Logger, ResponseGrant } from './types';
+import type { ChannelBundle, Lease, Logger, ResponseGrant, ResponsePreparation } from './types';
 import { ChannelWorker, progressText } from './worker';
 import { ChannelClient } from './client';
 import { makeSlackPlan } from './render';
@@ -107,8 +107,9 @@ function fixture() {
     renew?: () => Promise<Response>;
     response?: () => Promise<Response>;
     slack?: (method: string, body: URLSearchParams) => Promise<Response>;
-    prepare?: () => ResponseGrant;
+    prepare?: () => ResponsePreparation;
     checkpoint?: () => Promise<Response>;
+    begin?: (body: MutationBody) => Response | undefined;
   } = {};
   const snapshot = () => structuredClone(state);
   const backend = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>(
@@ -141,7 +142,7 @@ function fixture() {
       }
       if (path.endsWith('/renew')) {
         if (hooks.renew) return hooks.renew();
-        return json({ ...lease, run: snapshot(), leaseExpiresAt: Date.now() + 90 });
+        return json({ fence: lease.fence, leaseExpiresAt: Date.now() + 90 });
       }
       if (path.endsWith('/yield')) {
         controller.abort();
@@ -197,6 +198,8 @@ function fixture() {
           },
         });
       } else if (path.endsWith('/delivery/begin')) {
+        const intercepted = hooks.begin?.(body);
+        if (intercepted) return intercepted;
         const receipt = state.receipts.find((item) => item.operationId === body.operationId);
         if (!receipt) throw new Error('Missing begin fixture');
         receipt.outcome = 'inflight';
@@ -606,7 +609,6 @@ describe('durable Channels worker', () => {
     f.config.SLACK_NATIVE_SESSIONS = true;
     f.state.cancellationRequested = true;
     f.hooks.prepare = () => ({
-      ...f.grant,
       settled: {
         ...f.state,
         state: 'delivering',
@@ -669,5 +671,98 @@ describe('durable Channels worker', () => {
     ]);
     expect(f.paths().filter((path) => path.endsWith('/yield'))).toHaveLength(1);
     expect(f.paths().some((path) => path.endsWith('/commit'))).toBe(false);
+  });
+});
+
+describe('optional delivery and uncertain execution boundaries', () => {
+  function trace(f: ReturnType<typeof fixture>) {
+    const part = {
+      operationId: 'run-1:trace:0',
+      kind: 'message' as const,
+      required: false,
+      text: '<https://chat.example.com/session|View session>',
+      traceUrl: 'https://chat.example.com/session',
+    };
+    f.state.plan!.parts.push(part);
+    f.state.receipts.push({ operationId: part.operationId, outcome: 'planned', attempts: 0 });
+    return part;
+  }
+  test('an exhausted optional message cannot hold a confirmed required answer or cause a repost', async () => {
+    const f = fixture();
+    f.savedPlan();
+    f.state.receipts[0].outcome = 'confirmed';
+    f.state.plan!.parts.push({
+      operationId: 'notice',
+      kind: 'message',
+      required: false,
+      text: 'Attachment unavailable',
+    });
+    f.state.receipts.push({
+      operationId: 'notice',
+      outcome: 'retryable',
+      attempts: 5,
+      retryAt: Date.now() + 60000,
+    });
+    await f.execute();
+    expect(f.state.state).toBe('delivered');
+    expect(f.slackRequests).toHaveLength(0);
+  });
+  test('a trace omitted by the latest view after answer delivery is skipped before receipt lookup', async () => {
+    const f = fixture();
+    f.savedPlan();
+    const part = trace(f);
+    f.hooks.slack = async () => {
+      f.state.plan!.parts = f.state.plan!.parts.filter((p) => p.operationId !== part.operationId);
+      f.state.receipts = f.state.receipts.filter((p) => p.operationId !== part.operationId);
+      return slackOK({ channel: 'C1', ts: '123.789' });
+    };
+    await f.execute();
+    expect(f.state.state).toBe('delivered');
+    expect(f.slackRequests).toHaveLength(1);
+    expect(f.slackRequests[0].body.get('text')).not.toContain(part.traceUrl);
+  });
+  test.each(['trace_unavailable', 'stale_fence'])(
+    'only the exact trace authority outcome is skippable: %s',
+    async (code) => {
+      const f = fixture();
+      f.savedPlan();
+      f.state.receipts[0].outcome = 'confirmed';
+      const part = trace(f);
+      f.hooks.begin = (body) =>
+        body.operationId === part.operationId ? json({ error: code }, 409) : undefined;
+      if (code === 'trace_unavailable') {
+        await f.execute();
+        expect(f.state.state).toBe('delivered');
+      } else {
+        await expect(f.execute()).rejects.toThrow('HTTP 409');
+        expect(f.state.state).toBe('delivering');
+      }
+      expect(f.slackRequests).toHaveLength(0);
+    },
+  );
+  test('native status success still publishes recovery guidance and suppresses stale review controls', async () => {
+    const f = fixture();
+    f.config.SLACK_NATIVE_SESSIONS = true;
+    f.hooks.advance = () => {
+      f.state.state = 'requires_action';
+      f.state.snapshot = {
+        status: 'requires_action',
+        text: '',
+        elapsedMs: 10,
+        responseId: 'resp_test',
+        recovery: 'execution_state_unavailable',
+        pendingAction: { actionId: 'stale', kind: 'tool_approval', expiresAt: Date.now() + 60000 },
+      };
+    };
+    await f.worker.run(f.controller.signal);
+    const warning = f.slackRequests.find((r) => r.method === 'chat.postMessage')!;
+    expect(warning.body.get('text')).toContain('do not repeat actions');
+    expect(warning.body.get('text')).toContain('reconcile');
+    expect(warning.body.get('blocks')).not.toContain('channel_run_review');
+    expect(f.slackRequests.some((r) => r.method === 'agents.sessions.setStatus')).toBe(true);
+    expect(f.paths().some((p) => p.endsWith('/yield'))).toBe(true);
+    f.state.cancellationRequested = true;
+    expect(progressText(f.state)).toContain('Cancellation requested.');
+    expect(progressText(f.state)).toContain('do not repeat actions');
   });
 });

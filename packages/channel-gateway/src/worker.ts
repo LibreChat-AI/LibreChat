@@ -23,6 +23,7 @@ export function terminalSnapshot(run: ChannelRunView): boolean {
 export function pendingReview(run: ChannelRunView): boolean {
   const pending = run.snapshot?.pendingAction;
   return (
+    !run.snapshot?.recovery &&
     run.snapshot?.status === 'requires_action' &&
     !!pending?.actionId &&
     pending.expiresAt > Date.now() &&
@@ -36,9 +37,12 @@ export function progressText(run: ChannelRunView): string {
     if (run.snapshot?.status === 'cancelled') return 'Cancelled.';
     return ':warning: Failed.';
   }
-  if (run.cancellationRequested) return 'Cancellation requested.';
   if (run.snapshot?.recovery === 'execution_state_unavailable')
-    return ':warning: This request’s execution status is unavailable, possibly after a restart. Sign-in may be saved, but continuation and completion are not confirmed. Check the result; do not repeat actions that may already have run. If this stays unavailable, ask an administrator to reconcile the request before retrying. Stop requests cancellation, not proof that work has stopped.';
+    return (
+      (run.cancellationRequested ? 'Cancellation requested. ' : '') +
+      ':warning: This request’s execution status is unavailable, possibly after a restart. Sign-in may be saved, but continuation and completion are not confirmed. Check the result; do not repeat actions that may already have run. If this stays unavailable, ask an administrator to reconcile the request before retrying. Stop requests cancellation, not proof that work has stopped.'
+    );
+  if (run.cancellationRequested) return 'Cancellation requested.';
   if (run.snapshot?.status === 'requires_action')
     return pendingReview(run)
       ? '⏸ Your input is needed. Open the private review to continue.'
@@ -241,7 +245,8 @@ export class ChannelWorker {
           }
         }
       }
-      if (native && !current.progress && !pendingReview(current)) return current;
+      if (native && !current.progress && !pendingReview(current) && !current.snapshot?.recovery)
+        return current;
       const updated = await this.progress(current, fence, bundle, signal, check, lastProgressWrite);
       if (
         updated.progress?.revision !== current.progress?.revision ||
@@ -338,6 +343,13 @@ export class ChannelWorker {
     const renderer = run.plan.rendererVersion;
     for (const part of run.plan.parts) {
       check();
+      const traceAvailable = () =>
+        !part.traceUrl ||
+        run.plan?.parts.some(
+          (current) =>
+            current.operationId === part.operationId && current.traceUrl === part.traceUrl,
+        );
+      if (!traceAvailable()) continue;
       if (part.kind === 'artifact')
         run = await this.artifact(run, fence, part, bundle, signal, check);
       else {
@@ -356,17 +368,30 @@ export class ChannelWorker {
         let receipt = deliveryReceipt(run, part.operationId);
         if (
           receipt.outcome === 'confirmed' ||
-          (!part.required && ['unknown', 'permanent_failure'].includes(receipt.outcome))
+          (!part.required &&
+            (['unknown', 'permanent_failure'].includes(receipt.outcome) || receipt.attempts >= 5))
         )
           continue;
         this.retryable(receipt);
         const message = durableSlackMessage(part, renderer);
-        run = await this.client.mutate(
-          fence,
-          'delivery/begin',
-          { operationId: part.operationId },
-          signal,
-        );
+        try {
+          run = await this.client.mutate(
+            fence,
+            'delivery/begin',
+            { operationId: part.operationId },
+            signal,
+          );
+        } catch (error) {
+          if (
+            part.traceUrl &&
+            error instanceof ServiceError &&
+            error.status === 409 &&
+            error.code === 'trace_unavailable'
+          )
+            continue;
+          throw error;
+        }
+        if (!traceAvailable()) continue;
         receipt = deliveryReceipt(run, part.operationId);
         if (receipt.outcome !== 'inflight') throw new Error('Delivery begin not persisted');
         check();

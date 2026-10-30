@@ -122,7 +122,10 @@ export class ChannelClient {
       let code = '';
       try {
         const failure: { error?: string } = JSON.parse(bytes.toString());
-        if (response.status === 403 && failure.error === 'channel_link_required')
+        if (
+          (response.status === 403 && failure.error === 'channel_link_required') ||
+          (response.status === 409 && failure.error === 'trace_unavailable')
+        )
           code = failure.error;
       } catch {
         /* Untrusted error bodies are never exposed. */
