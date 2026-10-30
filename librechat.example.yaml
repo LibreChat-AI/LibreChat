@@ -201,11 +201,10 @@ projects:
 
 # Custom interface configuration
 interface:
-  # Agent Insights configuration. Omit this section to leave existing enablement unchanged.
-  # DT uses aggregate statistics only: keep showDetails false, including for admins.
-  # insights:
-  #   enabled: true
-  #   showDetails: false
+  insights:
+    enabled: true
+    showDetails: false
+
   customWelcome: 'Welcome to LibreChat! Enjoy your experience.'
   # What heads the welcome screen when an agent, assistant or model spec is selected (default: entity).
   # 'entity' shows its name; 'greeting' shows the time-of-day greeting (or customWelcome) with the

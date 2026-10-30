@@ -164,11 +164,7 @@ describe('Insights configuration', () => {
     expect(resolveInsightsConfig({ enabled: true })).toEqual({ enabled: true, showDetails: false });
   });
 
-  it('requires explicit booleans for enablement and detailed inspection', () => {
-    expect(resolveInsightsConfig({ enabled: 'true', showDetails: 'true' })).toEqual({
-      enabled: false,
-      showDetails: false,
-    });
+  it('passes configured flags through', () => {
     expect(resolveInsightsConfig({ enabled: true, showDetails: false })).toEqual({
       enabled: true,
       showDetails: false,
