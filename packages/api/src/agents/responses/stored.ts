@@ -55,6 +55,25 @@ const accounting: z.ZodType<ResponseAccounting> = z.object({
   ),
 });
 const receiptSchema = z.object({
+  status: z
+    .enum(['queued', 'in_progress', 'completed', 'failed', 'incomplete', 'cancelled'])
+    .optional(),
+  background: z.boolean().optional(),
+  error: z
+    .object({
+      type: z.enum([
+        'server_error',
+        'invalid_request',
+        'not_found',
+        'model_error',
+        'too_many_requests',
+      ]),
+      code: z.string().optional(),
+      message: z.string(),
+      param: z.string().optional(),
+    })
+    .nullable()
+    .optional(),
   accounting: accounting.optional(),
   usage: totals
     .extend({
@@ -260,6 +279,11 @@ export function createStoredForegroundResponseReader(
         receipt.success && receipt.data.accounting
           ? receipt.data.accounting
           : createResponseAccountingCollector().snapshot();
+      if (receipt.success) {
+        response.status = receipt.data.status ?? response.status;
+        response.background = receipt.data.background ?? response.background;
+        response.error = receipt.data.error ?? null;
+      }
       response.previous_response_id = receipt.success ? receipt.data.previousResponseId : null;
       response.created_at = receipt.success
         ? receipt.data.createdAt

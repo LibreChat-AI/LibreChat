@@ -1057,7 +1057,11 @@ it('retains the cleanup journal but cannot replay a closed conversation through 
       closeResponseScopes(mongoose, owner, ['conversation-one']),
       closeResponseScopes(mongoose, owner, ['conversation-one']),
     ]);
-    expect(await storage.read(owner, 'resp_one')).toMatchObject({ responseId: 'resp_one' });
+    expect(await storage.read(owner, 'resp_one')).toBeNull();
+    expect(await storage.readCleanupIdentity(owner, 'resp_one')).toMatchObject({
+      responseId: 'resp_one',
+      retirement: 'conversation_deleted',
+    });
     expect(await storage.reserve(reservation({ conversationId: 'fresh-conversation' }))).toEqual({
       ok: false,
       code: 'response_unavailable',
@@ -1914,3 +1918,135 @@ it.each(['live', 'owner_deleted', 'conversation_deleted', 'expired'] as const)(
       }
     }),
 );
+
+it.each(['owner', 'conversation'] as const)(
+  'fences both terminal phases and private reads in the %s anchor-close to cancellation gap',
+  (kind) =>
+    scoped(async () => {
+      await storage.reserve(reservation());
+      const enrolled = await storage.publish(owner, 'resp_one', 0, {
+        status: 'in_progress',
+        responseJSON: '{}',
+        generationCreatedAt: 17,
+      });
+      if (!enrolled.ok) throw new Error('Enrollment failed');
+      const outcome: ResponseTerminalReceipt = {
+        generationCreatedAt: 17,
+        providerExecutionId: 'provider-gap',
+        status: 'completed',
+        responseJSON: '{"private":"answer"}',
+      };
+      const prepared = await storage.prepareTerminal(
+        owner,
+        'resp_one',
+        { execution: enrolled.record },
+        outcome,
+      );
+      if (!prepared.ok) throw new Error('Preparation failed');
+      const updateMany = jest
+        .spyOn(mongoose.models.StoredResponse, 'updateMany')
+        .mockImplementationOnce(() => {
+          throw new Error('Erasure interrupted after durable anchor closure');
+        });
+      await expect(
+        closeResponseScopes(
+          mongoose,
+          owner,
+          kind === 'conversation' ? ['conversation-one'] : undefined,
+        ),
+      ).rejects.toThrow('Erasure interrupted');
+      updateMany.mockRestore();
+      expect(await storage.read(owner, 'resp_one')).toBeNull();
+      expect(
+        await storage.stageTerminal(owner, 'resp_one', { execution: prepared.record }, outcome, {
+          receipt: outcome,
+        }),
+      ).toEqual({ ok: false, code: 'response_conflict' });
+      const identity = await storage.readCleanupIdentity(owner, 'resp_one');
+      expect(identity?.retirement).toBe(
+        kind === 'owner' ? 'owner_deleted' : 'conversation_deleted',
+      );
+      expect(JSON.stringify(identity)).not.toContain('answer');
+      expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(1);
+    }),
+);
+
+it('cannot finish a pending terminal receipt after scope closure even when physical erasure fails', () =>
+  scoped(async () => {
+    await storage.reserve(reservation());
+    const enrolled = await storage.publish(owner, 'resp_one', 0, {
+      status: 'in_progress',
+      responseJSON: '{}',
+      generationCreatedAt: 17,
+    });
+    if (!enrolled.ok) throw new Error('Enrollment failed');
+    const outcome: ResponseTerminalReceipt = {
+      generationCreatedAt: 17,
+      providerExecutionId: 'provider-pending',
+      status: 'completed',
+      responseJSON: '{"private":"answer"}',
+    };
+    const pending = await storage.stageTerminal(
+      owner,
+      'resp_one',
+      { execution: enrolled.record },
+      outcome,
+    );
+    if (!pending.ok) throw new Error('Staging failed');
+    await closeResponseScopes(mongoose, owner, ['conversation-one']);
+    const erase = jest
+      .spyOn(mongoose.models.StoredResponse, 'deleteMany')
+      .mockImplementationOnce(() => {
+        throw new Error('Physical erasure temporarily unavailable');
+      });
+    await expect(eraseResponseRecords(mongoose, owner)).rejects.toThrow('Physical erasure');
+    erase.mockRestore();
+    expect(
+      await storage.finishTerminal(owner, 'resp_one', pending.record.revision, outcome),
+    ).toEqual({ ok: false, code: 'response_conflict' });
+    expect(await storage.read(owner, 'resp_one')).toBeNull();
+    expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(1);
+  }));
+
+it('does not return an aborted attempt success when the transaction retries after scope closure', () =>
+  scoped(async () => {
+    await storage.reserve(reservation());
+    const enrolled = await storage.publish(owner, 'resp_one', 0, {
+      status: 'in_progress',
+      responseJSON: '{}',
+      generationCreatedAt: 17,
+    });
+    if (!enrolled.ok) throw new Error('Enrollment failed');
+    const outcome: ResponseTerminalReceipt = {
+      generationCreatedAt: 17,
+      providerExecutionId: 'provider-retry',
+      status: 'completed',
+      responseJSON: '{"private":"answer"}',
+    };
+    const session = await mongoose.startSession();
+    const start = jest.spyOn(mongoose, 'startSession').mockResolvedValueOnce(session);
+    const commit = jest.spyOn(session, 'commitTransaction').mockImplementationOnce(async () => {
+      await session.abortTransaction();
+      await closeResponseScopes(mongoose, owner, ['conversation-one']);
+      const error = new mongoose.mongo.MongoServerError({
+        message: 'Retry transaction after closure',
+      });
+      error.addErrorLabel('TransientTransactionError');
+      throw error;
+    });
+    try {
+      expect(
+        await storage.stageTerminal(owner, 'resp_one', { execution: enrolled.record }, outcome),
+      ).toEqual({ ok: false, code: 'response_conflict' });
+      expect(commit).toHaveBeenCalledTimes(2);
+      expect(await storage.read(owner, 'resp_one')).toBeNull();
+      const stored = await mongoose.models.StoredResponse.findOne({
+        responseId: 'resp_one',
+      }).lean();
+      expect(stored).toMatchObject({ status: 'in_progress' });
+      expect(stored).not.toHaveProperty('pendingTerminal');
+    } finally {
+      start.mockRestore();
+      commit.mockRestore();
+    }
+  }));
