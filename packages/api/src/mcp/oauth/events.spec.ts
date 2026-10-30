@@ -1,4 +1,11 @@
-import { createMCPReauthenticationPrompt } from './events';
+import { Socket } from 'node:net';
+import { IncomingMessage, ServerResponse } from 'node:http';
+import { logger as systemLogger } from '@librechat/data-schemas';
+import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
+import { createMCPReauthenticationPrompt, createMCPAuthStepEmitter } from './events';
+import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
+import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
+import { createOAuthCallback, invokeOAuthStart } from './publication';
 
 function fixture(toolCallId?: string, stepId?: string) {
   const start = jest.fn(async () => {});
@@ -88,3 +95,57 @@ it.each([false, true])(
     expect(f.end).toHaveBeenCalledTimes(2);
   },
 );
+
+it('rejects publication before the URL when durable step evidence fails, without exposing storage or logger diagnostics', async () => {
+  const secret = 'private query body and credential';
+  const internalDiagnostics = jest
+    .spyOn(systemLogger, 'error')
+    .mockImplementation(() => systemLogger);
+  const saveRunSteps = jest.fn().mockRejectedValue(new Error(secret));
+  const store = Object.assign(new InMemoryJobStore(), { saveRunSteps });
+  const manager = new GenerationJobManagerClass();
+  manager.configure({ jobStore: store, eventTransport: new InMemoryEventTransport() });
+  manager.initialize();
+  const socket = new Socket();
+  const res = new ServerResponse(new IncomingMessage(socket));
+  const logger = {
+    warn: jest.fn(() => {
+      throw new Error('private logger failure');
+    }),
+  };
+  try {
+    const streamId = 'oauth-publication-failure';
+    const job = await manager.createJob(streamId, 'user', streamId);
+    const url = jest.fn().mockResolvedValue(undefined);
+    const start = createOAuthCallback({
+      runStepEmitter: createMCPAuthStepEmitter({
+        res,
+        logger,
+        streamId,
+        jobCreatedAt: job.createdAt,
+        jobs: manager,
+        sendEvent: jest.fn(),
+        runId: 'response',
+        stepId: 'oauth-step',
+        index: 0,
+        toolCall: { id: 'oauth:call', name: 'oauth_mcp_clock', type: 'tool_call_chunk' },
+      }),
+      runStepDeltaEmitter: url,
+    });
+    const publication = invokeOAuthStart(start, 'https://auth.example/authorize');
+    const expected = {
+      code: 'oauth_prompt_publication_unavailable',
+      message: 'MCP sign-in prompt is unavailable. Please try again.',
+    };
+    await expect(publication.published).rejects.toMatchObject(expected);
+    await expect(publication.completed).rejects.toMatchObject(expected);
+    expect(url).not.toHaveBeenCalled();
+    expect(saveRunSteps).toHaveBeenCalled();
+    expect(JSON.stringify(logger.warn.mock.calls)).not.toContain(secret);
+    expect(JSON.stringify(internalDiagnostics.mock.calls)).not.toContain(secret);
+  } finally {
+    socket.destroy();
+    await manager.destroy();
+    internalDiagnostics.mockRestore();
+  }
+});

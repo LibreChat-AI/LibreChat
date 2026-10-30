@@ -7208,8 +7208,7 @@ class GenerationJobManagerClass {
         eventData as Record<string, unknown>,
         runtime.createdAt,
       );
-      if (options?.durable === true)
-        await this.persistRunStepEvidence(streamId, runtime.createdAt);
+      if (options?.durable === true) await this.persistRunStepEvidence(streamId, runtime.createdAt);
     }
 
     /**
@@ -8041,7 +8040,7 @@ class GenerationJobManagerClass {
       void this.queueJobWrite(this.runStepWriteQueues, streamId, () =>
         this.jobStore.saveRunSteps!(streamId, snapshot, expectedCreatedAt),
       ).catch((err) => {
-        logger.error(`[GenerationJobManager] Failed to save run steps:`, err);
+        logger.error(`[GenerationJobManager] Failed to save run steps:`, getSafeErrorMetadata(err));
       });
     }
   }

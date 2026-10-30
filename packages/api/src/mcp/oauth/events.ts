@@ -7,6 +7,26 @@ import type * as t from '~/types';
 import { buildOAuthToolCallName, splitMCPToolKey } from '~/mcp/utils';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
+interface Diagnostics {
+  warn: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void;
+}
+
+function warnSafely(logger: Diagnostics | undefined, message: string, error: unknown): void {
+  try {
+    logger?.warn(message, getSafeErrorMetadata(error));
+  } catch {
+    // Diagnostics cannot become a tool or publication outcome.
+  }
+}
+
+class OAuthPromptPublicationError extends Error {
+  readonly code = 'oauth_prompt_publication_unavailable';
+  constructor() {
+    super('MCP sign-in prompt is unavailable. Please try again.');
+    this.name = 'OAuthPromptPublicationError';
+  }
+}
+
 export type OAuthPromptOptions = {
   expiresAt?: number;
 };
@@ -35,7 +55,7 @@ export function createMCPReauthenticationPrompt({
   logger,
 }: {
   serverName: string;
-  logger?: { warn: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void };
+  logger?: Diagnostics;
   toolCallId?: string;
   stepId?: string;
   runId: string;
@@ -68,11 +88,7 @@ export function createMCPReauthenticationPrompt({
         pending = false;
       } catch (error) {
         // Keep the prompt retryable without replacing an already-performed tool's outcome.
-        try {
-          logger?.warn('[MCP OAuth] Prompt retirement unavailable', getSafeErrorMetadata(error));
-        } catch {
-          // Diagnostic transport cannot become the tool outcome either.
-        }
+        warnSafely(logger, '[MCP OAuth] Prompt retirement unavailable', error);
       }
     })();
     try {
@@ -244,6 +260,7 @@ export function buildMCPAuthRunStepCompletedEvent({
 }
 
 interface OAuthEventTransport {
+  logger?: Diagnostics;
   res: ServerResponse;
   sendEvent: (res: ServerResponse, event: t.ServerSentEvent) => void;
   jobs: Pick<GenerationJobManagerClass, 'emitChunk'>;
@@ -253,15 +270,20 @@ interface OAuthEventTransport {
 
 function createOAuthEventEmitter(transport: OAuthEventTransport) {
   return async (event: t.ServerSentEvent): Promise<void> => {
-    if (!transport.streamId) {
-      transport.sendEvent(transport.res, event);
-      return;
+    try {
+      if (!transport.streamId) {
+        transport.sendEvent(transport.res, event);
+        return;
+      }
+      if (transport.jobCreatedAt == null) throw new OAuthPromptPublicationError();
+      await transport.jobs.emitChunk(transport.streamId, event, {
+        expectedCreatedAt: transport.jobCreatedAt,
+        durable: true,
+      });
+    } catch (error) {
+      warnSafely(transport.logger, '[MCP OAuth] Prompt publication unavailable', error);
+      throw new OAuthPromptPublicationError();
     }
-    if (transport.jobCreatedAt == null) throw new Error('OAuth prompt generation is unavailable');
-    await transport.jobs.emitChunk(transport.streamId, event, {
-      expectedCreatedAt: transport.jobCreatedAt,
-      durable: true,
-    });
   };
 }
 
