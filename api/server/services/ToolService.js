@@ -29,11 +29,7 @@ const {
   getReplayablePendingMCPOAuthStarts,
   getMCPServerNamesFromTools,
   createMCPOAuthDeferral,
-  buildMCPAuthToolCall,
-  buildMCPAuthStepId,
-  buildMCPAuthRunStepEvent,
-  buildMCPAuthRunStepDeltaEvent,
-  buildMCPAuthRunStepCompletedEvent,
+  createMCPInitializationOAuthPrompts,
   inspectContentWithTraversal,
   ContentFilterError,
   assertModelBoundContent,
@@ -1039,9 +1035,15 @@ async function loadToolDefinitionsWrapper({
   const flowManager = getFlowStateManager(flowsCache);
   const pendingOAuthServers = new Set();
   const pendingOAuthStarts = new Map();
-  const emittedOAuthStarts = new Map();
-  const oauthToolCallIds = new Map();
-  const oauthStepIndexes = new Map();
+  const initializationOAuth = createMCPInitializationOAuthPrompts({
+    userId: req.user.id,
+    res,
+    sendEvent,
+    jobs: GenerationJobManager,
+    streamId,
+    jobCreatedAt,
+    logger,
+  });
   /** @type {Record<string, import('@librechat/api').LCAvailableTools>} */
   const mcpAvailableTools = {};
   const requestScopedConnections = getMCPRequestContext(req, res);
@@ -1066,83 +1068,6 @@ async function loadToolDefinitionsWrapper({
       return;
     }
     mcpAvailableTools[serverName] = availableTools;
-  };
-
-  const createOAuthEmitter = (serverName, index) => {
-    return async (authURL, options) => {
-      if (emittedOAuthStarts.get(serverName) === authURL) {
-        return;
-      }
-      emittedOAuthStarts.set(serverName, authURL);
-
-      const flowId =
-        oauthToolCallIds.get(serverName) ?? `${req.user.id}:${serverName}:${Date.now()}`;
-      const stepId = buildMCPAuthStepId(serverName);
-      oauthToolCallIds.set(serverName, flowId);
-      oauthStepIndexes.set(serverName, index);
-      const toolCall = buildMCPAuthToolCall({
-        id: flowId,
-        serverName,
-      });
-
-      const runStepEvent = buildMCPAuthRunStepEvent({ stepId, toolCall, index });
-      const runStepDeltaEvent = buildMCPAuthRunStepDeltaEvent({
-        authURL,
-        stepId,
-        toolCall,
-        options,
-      });
-
-      if (streamId) {
-        await GenerationJobManager.emitChunk(streamId, runStepEvent, {
-          expectedCreatedAt: jobCreatedAt,
-        });
-        await GenerationJobManager.emitChunk(streamId, runStepDeltaEvent, {
-          expectedCreatedAt: jobCreatedAt,
-        });
-      } else if (res && !res.writableEnded) {
-        sendEvent(res, runStepEvent);
-        sendEvent(res, runStepDeltaEvent);
-      } else {
-        logger.warn('[Tool Definitions] Cannot emit MCP OAuth event', {
-          hasStreamId: Boolean(streamId),
-          hasResponse: Boolean(res),
-          responseEnded: Boolean(res?.writableEnded),
-        });
-      }
-    };
-  };
-
-  const createOAuthEndEmitter = (serverName) => {
-    return async () => {
-      const stepId = buildMCPAuthStepId(serverName);
-      const toolCall = buildMCPAuthToolCall({
-        id: oauthToolCallIds.get(serverName),
-        args: '',
-        output: 'OAuth authentication completed',
-        serverName,
-        type: 'tool_call',
-      });
-      const runStepCompletedEvent = buildMCPAuthRunStepCompletedEvent({
-        stepId,
-        toolCall,
-        index: oauthStepIndexes.get(serverName) ?? 0,
-      });
-
-      if (streamId) {
-        await GenerationJobManager.emitChunk(streamId, runStepCompletedEvent, {
-          expectedCreatedAt: jobCreatedAt,
-        });
-      } else if (res && !res.writableEnded) {
-        sendEvent(res, runStepCompletedEvent);
-      } else {
-        logger.warn('[Tool Definitions] Cannot emit MCP OAuth completion', {
-          hasStreamId: Boolean(streamId),
-          hasResponse: Boolean(res),
-          responseEnded: Boolean(res?.writableEnded),
-        });
-      }
-    };
   };
 
   const getPendingOAuthStartForEmit = async (serverName) => {
@@ -1441,48 +1366,51 @@ async function loadToolDefinitionsWrapper({
       `[Tool Definitions] MCP OAuth required for ${serverNames.length} server(s); emitting events and waiting`,
     );
 
-    const oauthWaitPromises = serverNames.map(async (serverName, index) => {
-      try {
-        const pendingOAuthStart = await getPendingOAuthStartForEmit(serverName);
-        const oauthStart = createOAuthEmitter(serverName, index);
-        if (pendingOAuthStart) {
-          await oauthStart(pendingOAuthStart.authURL, pendingOAuthStart.options);
-        }
+    const oauthWaitPromises = serverNames.map((serverName, index) => {
+      const oauthPrompt = initializationOAuth.forServer(serverName, index);
+      return oauthPrompt.run(async () => {
+        try {
+          const pendingOAuthStart = await getPendingOAuthStartForEmit(serverName);
+          const oauthStart = oauthPrompt.start;
+          if (pendingOAuthStart) {
+            await oauthStart(pendingOAuthStart.authURL, pendingOAuthStart.options);
+          }
 
-        const result = await reinitMCPServer({
-          signal,
-          user: req.user,
-          streamId,
-          jobCreatedAt,
-          serverName,
-          configServers,
-          userMCPAuthMap,
-          flowManager,
-          requestBody: runtimeRequestBody,
-          returnOnOAuth: false,
-          oauthStart,
-          oauthEnd: createOAuthEndEmitter(serverName),
-          connectionTimeout: Time.TWO_MINUTES,
-          upstreamTokenProvider,
-          upstreamTokenProviderResolver,
-          oboIdentityContext,
-          recoveryPolicy: appConfig?.mcpSettings?.catalogRecovery,
-          mcpApps,
-        });
+          const result = await reinitMCPServer({
+            signal,
+            user: req.user,
+            streamId,
+            jobCreatedAt,
+            serverName,
+            configServers,
+            userMCPAuthMap,
+            flowManager,
+            requestBody: runtimeRequestBody,
+            returnOnOAuth: false,
+            oauthStart,
+            oauthEnd: oauthPrompt.end,
+            connectionTimeout: Time.TWO_MINUTES,
+            upstreamTokenProvider,
+            upstreamTokenProviderResolver,
+            oboIdentityContext,
+            recoveryPolicy: appConfig?.mcpSettings?.catalogRecovery,
+            mcpApps,
+          });
 
-        if (result?.availableTools && Object.keys(result.availableTools).length > 0) {
-          rememberMCPAvailableTools(serverName, result.availableTools);
-          logger.info('[Tool Definitions] MCP OAuth completed; tools available');
-          return { serverName, success: true };
+          if (result?.availableTools && Object.keys(result.availableTools).length > 0) {
+            rememberMCPAvailableTools(serverName, result.availableTools);
+            logger.info('[Tool Definitions] MCP OAuth completed; tools available');
+            return { serverName, success: true };
+          }
+          return { serverName, success: false };
+        } catch (error) {
+          if (isFatalAgentInitializationError(error, { signal })) {
+            throw error;
+          }
+          logger.debug('[Tool Definitions] MCP OAuth wait failed for one server');
+          return { serverName, success: false };
         }
-        return { serverName, success: false };
-      } catch (error) {
-        if (isFatalAgentInitializationError(error, { signal })) {
-          throw error;
-        }
-        logger.debug('[Tool Definitions] MCP OAuth wait failed for one server');
-        return { serverName, success: false };
-      }
+      });
     });
 
     const results = await Promise.all(oauthWaitPromises);

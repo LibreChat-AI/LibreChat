@@ -1524,43 +1524,64 @@ describe('User parameter passing tests', () => {
       expect(mockReinitMCPServer.mock.calls[0][0].user).toBe(mockUser);
     });
 
-    it('fences resumable tool-loading OAuth events to the owning job epoch', async () => {
-      const mockUser = { id: 'epoch-loading-user', name: 'Epoch Loading User' };
-      const mockRes = { write: jest.fn(), flush: jest.fn() };
-      const streamId = 'epoch-loading-stream';
-      const jobCreatedAt = 1234;
-      const flowManager = {
-        getFlowState: jest.fn().mockResolvedValue(null),
-        createFlowWithHandler: jest.fn(async (_flowId, _type, handler) => handler()),
-        failFlow: jest.fn(),
-      };
-      mockGetFlowStateManager.mockReturnValue(flowManager);
-      mockReinitMCPServer.mockImplementation(async ({ oauthStart }) => {
-        await oauthStart('https://auth.example.com/loading');
-        return { tools: [], availableTools: {} };
-      });
-
-      await createMCPTools({
-        res: mockRes,
-        user: mockUser,
-        serverName: 'epoch-loading-server',
-        provider: 'openai',
-        userMCPAuthMap: {},
-        config: { type: 'stdio' },
-        streamId,
-        jobCreatedAt,
-      });
-
-      expect(GenerationJobManager.emitChunk).toHaveBeenCalledTimes(2);
-      expect(GenerationJobManager.emitChunk.mock.calls.map(([, event]) => event.event)).toEqual([
-        'on_run_step',
-        'on_run_step_delta',
-      ]);
-      for (const [emittedStreamId, , options] of GenerationJobManager.emitChunk.mock.calls) {
-        expect(emittedStreamId).toBe(streamId);
-        expect(options).toEqual({ expectedCreatedAt: jobCreatedAt, durable: true });
-      }
-    });
+    it.each(['success', 'legacy', 'failure', 'cancelled', 'none', 'retirement_failure'])(
+      'owns the complete startup OAuth lifecycle and job epoch: %s',
+      async (outcome) => {
+        const mockUser = { id: `epoch-loading-${outcome}`, name: 'Epoch Loading User' };
+        const mockRes = { write: jest.fn(), flush: jest.fn() };
+        const streamId = `epoch-loading-stream-${outcome}`;
+        const jobCreatedAt = 1234;
+        const controller = new AbortController();
+        const failure = new Error(`original ${outcome}`);
+        const flowManager = {
+          getFlowState: jest.fn().mockResolvedValue(null),
+          createFlowWithHandler: jest.fn(async (_flowId, _type, handler) => handler()),
+          failFlow: jest.fn(),
+        };
+        mockGetFlowStateManager.mockReturnValue(flowManager);
+        if (outcome === 'retirement_failure') {
+          GenerationJobManager.emitChunk.mockImplementation(async (_stream, event) => {
+            if (event.event === 'on_run_step_completed') throw new Error('private storage failure');
+          });
+        }
+        mockReinitMCPServer.mockImplementation(async ({ oauthStart, oauthEnd }) => {
+          if (outcome !== 'none') await oauthStart('https://auth.example.com/loading');
+          if (outcome === 'success') await oauthEnd();
+          if (outcome === 'cancelled') controller.abort(failure);
+          if (outcome === 'failure' || outcome === 'cancelled') throw failure;
+          return { tools: [], availableTools: {} };
+        });
+        const result = createMCPTools({
+          res: mockRes,
+          user: mockUser,
+          serverName: `epoch-loading-server-${outcome}`,
+          provider: 'openai',
+          userMCPAuthMap: {},
+          config: { type: 'stdio' },
+          signal: controller.signal,
+          streamId,
+          jobCreatedAt,
+        });
+        if (outcome === 'failure' || outcome === 'cancelled')
+          await expect(result).rejects.toBe(failure);
+        else await expect(result).resolves.toEqual([]);
+        const emissions = GenerationJobManager.emitChunk.mock.calls;
+        expect(emissions.map(([, event]) => event.event)).toEqual(
+          outcome === 'none' ? [] : ['on_run_step', 'on_run_step_delta', 'on_run_step_completed'],
+        );
+        for (const [emittedStreamId, , options] of emissions) {
+          expect(emittedStreamId).toBe(streamId);
+          expect(options).toEqual({ expectedCreatedAt: jobCreatedAt, durable: true });
+        }
+        if (outcome !== 'none') {
+          const opened = emissions[0][1].data;
+          const completed = emissions[2][1].data.result;
+          expect(completed.id).toBe(opened.id);
+          expect(completed.tool_call.id).toBe(opened.stepDetails.tool_calls[0].id);
+          expect(completed.tool_call.name).toBe(opened.stepDetails.tool_calls[0].name);
+        }
+      },
+    );
 
     it('does not fail shared OAuth flows when tool loading is aborted', async () => {
       const mockUser = { id: 'tenant-user', name: 'Tenant User' };
