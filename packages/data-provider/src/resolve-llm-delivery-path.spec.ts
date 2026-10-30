@@ -1110,6 +1110,188 @@ describe('resolveTurnLLMDeliveryPath', () => {
   });
 });
 
+describe('resolveTurnLLMDeliveryPath with preferFileSearch', () => {
+  const endpoint = 'anthropic';
+  const pdf = {
+    type: 'application/pdf',
+    text: 'x',
+    llmDeliveryPath: 'provider',
+    metadata: { destinationChosen: false },
+  };
+  const docx = {
+    type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    text: 'x',
+    llmDeliveryPath: 'text',
+    metadata: { destinationChosen: false },
+  };
+  const search: TurnFileConsumers = { executeCode: false, fileSearch: true };
+  const prefer: EndpointFileConfig = { preferFileSearch: true };
+
+  it('routes an inferred PDF to File Search when the turn runs it', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: pdf,
+        consumers: search,
+        endpoint,
+        endpointConfig: prefer,
+      }),
+    ).toBe('none');
+  });
+
+  it('routes an inferred text-route document to File Search', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: docx,
+        consumers: search,
+        endpoint,
+        endpointConfig: prefer,
+      }),
+    ).toBe('none');
+  });
+
+  it('leaves spreadsheets to Run Code when the turn has it', () => {
+    const xlsx = {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      text: 'x',
+      llmDeliveryPath: 'text',
+      metadata: { destinationChosen: false },
+    };
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: xlsx,
+        consumers: { executeCode: true, fileSearch: true },
+        endpoint,
+        endpointConfig: prefer,
+      }),
+    ).toBe('text');
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: xlsx,
+        consumers: search,
+        endpoint,
+        endpointConfig: prefer,
+      }),
+    ).toBe('none');
+  });
+
+  it('keeps plain text and code inline', () => {
+    for (const type of ['text/x-python', 'application/json']) {
+      expect(
+        resolveTurnLLMDeliveryPath({
+          file: {
+            type,
+            text: 'x',
+            llmDeliveryPath: 'text',
+            metadata: { destinationChosen: false },
+          },
+          consumers: search,
+          endpoint,
+          endpointConfig: prefer,
+        }),
+      ).toBe('text');
+    }
+  });
+
+  it('keeps the model route when the turn runs no File Search', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: pdf,
+        consumers: { executeCode: true, fileSearch: false },
+        endpoint,
+        endpointConfig: prefer,
+      }),
+    ).toBe('provider');
+  });
+
+  it('keeps the model route when consumers are unknown', () => {
+    expect(resolveTurnLLMDeliveryPath({ file: pdf, endpoint, endpointConfig: prefer })).toBe(
+      'provider',
+    );
+  });
+
+  it('is off unless configured', () => {
+    for (const endpointConfig of [{}, { preferFileSearch: false }]) {
+      expect(
+        resolveTurnLLMDeliveryPath({ file: pdf, consumers: search, endpoint, endpointConfig }),
+      ).toBe('provider');
+    }
+  });
+
+  it('leaves images to the provider', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: { ...pdf, type: 'image/png' },
+        consumers: search,
+        endpoint,
+        endpointConfig: prefer,
+      }),
+    ).toBe('provider');
+  });
+
+  it('keeps a destination the user chose', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: { ...pdf, metadata: { destinationChosen: true } },
+        consumers: search,
+        endpoint,
+        endpointConfig: prefer,
+      }),
+    ).toBe('provider');
+  });
+
+  it('is ignored under the legacy chooser', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: pdf,
+        consumers: search,
+        endpoint,
+        endpointConfig: { preferFileSearch: true, legacyFileUploadUX: true },
+      }),
+    ).toBe('provider');
+  });
+
+  it('leaves records predating routing alone', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: { type: 'application/pdf', text: 'x', metadata: { destinationChosen: false } },
+        consumers: search,
+        endpoint,
+        endpointConfig: prefer,
+      }),
+    ).toBeUndefined();
+  });
+
+  it("keeps an agent's own file on its route", () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: { ...docx, context: 'agents' },
+        consumers: search,
+        endpoint,
+        endpointConfig: prefer,
+      }),
+    ).toBe('text');
+  });
+
+  it('outranks the text fallback for an un-embedded file', () => {
+    const file = { ...pdf, llmDeliveryPath: 'none' };
+    const endpointConfig: EndpointFileConfig = {
+      defaultLLMDeliveryPath: { overrides: { 'application/pdf': 'none' } },
+      textFallbackWithoutTools: true,
+    };
+    expect(resolveTurnLLMDeliveryPath({ file, consumers: search, endpoint, endpointConfig })).toBe(
+      'text',
+    );
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file,
+        consumers: search,
+        endpoint,
+        endpointConfig: { ...endpointConfig, preferFileSearch: true },
+      }),
+    ).toBe('none');
+  });
+});
+
 describe('retained code destination', () => {
   it('preserves chosen code intent without claiming the deleted copy exists', () => {
     const file: TurnDeliveryFile = {

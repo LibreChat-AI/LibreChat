@@ -653,6 +653,7 @@ export const endpointFileConfigSchema = z.object({
   defaultLLMDeliveryPath: defaultLLMDeliveryPathSchema.optional(),
   legacyFileUploadUX: z.boolean().optional(),
   textFallbackWithoutTools: z.boolean().optional(),
+  preferFileSearch: z.boolean().optional(),
 });
 
 const skillFileConfigSchema = z.object({
@@ -710,6 +711,7 @@ export const fileConfigSchema = z.object({
   defaultLLMDeliveryPath: defaultLLMDeliveryPathSchema.optional(),
   legacyFileUploadUX: z.boolean().optional(),
   textFallbackWithoutTools: z.boolean().optional(),
+  preferFileSearch: z.boolean().optional(),
 });
 
 export type TFileConfig = z.infer<typeof fileConfigSchema>;
@@ -1066,6 +1068,7 @@ function mergeWithDefault(
     legacyFileUploadUX: endpointConfig.legacyFileUploadUX ?? defaultConfig.legacyFileUploadUX,
     textFallbackWithoutTools:
       endpointConfig.textFallbackWithoutTools ?? defaultConfig.textFallbackWithoutTools,
+    preferFileSearch: endpointConfig.preferFileSearch ?? defaultConfig.preferFileSearch,
   };
 }
 
@@ -1158,6 +1161,7 @@ export function getEndpointFileConfig(params: {
     legacyFileUploadUX: mergedFileConfig.legacyFileUploadUX ?? baseDefaultConfig.legacyFileUploadUX,
     textFallbackWithoutTools:
       mergedFileConfig.textFallbackWithoutTools ?? baseDefaultConfig.textFallbackWithoutTools,
+    preferFileSearch: mergedFileConfig.preferFileSearch ?? baseDefaultConfig.preferFileSearch,
   };
   const userDefaultConfig = mergedFileConfig.endpoints.default;
   const defaultConfig = userDefaultConfig
@@ -1313,6 +1317,10 @@ function buildMergedFileConfig(dynamic: DynamicFileConfig | undefined): FileConf
     mergedConfig.textFallbackWithoutTools = dynamic.textFallbackWithoutTools;
   }
 
+  if (dynamic.preferFileSearch !== undefined) {
+    mergedConfig.preferFileSearch = dynamic.preferFileSearch;
+  }
+
   if (dynamic.serverFileSizeLimit !== undefined) {
     mergedConfig.serverFileSizeLimit = mbToBytes(dynamic.serverFileSizeLimit);
   }
@@ -1456,6 +1464,10 @@ function buildMergedFileConfig(dynamic: DynamicFileConfig | undefined): FileConf
 
     if (dynamicEndpoint.textFallbackWithoutTools !== undefined) {
       mergedEndpoint.textFallbackWithoutTools = dynamicEndpoint.textFallbackWithoutTools;
+    }
+
+    if (dynamicEndpoint.preferFileSearch !== undefined) {
+      mergedEndpoint.preferFileSearch = dynamicEndpoint.preferFileSearch;
     }
   }
 

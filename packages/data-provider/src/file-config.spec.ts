@@ -2116,6 +2116,63 @@ describe('textFallbackWithoutTools config merging', () => {
   });
 });
 
+describe('preferFileSearch config merging', () => {
+  const resolveFor = (dynamic: Parameters<typeof mergeFileConfig>[0], endpoint: string) =>
+    getEndpointFileConfig({ fileConfig: mergeFileConfig(dynamic), endpoint }).preferFileSearch;
+
+  it('is off unless configured', () => {
+    expect(mergeFileConfig(undefined).preferFileSearch).toBeUndefined();
+    expect(resolveFor(undefined, EModelEndpoint.openAI)).toBeUndefined();
+    expect(resolveFor({ endpoints: { default: {} } }, EModelEndpoint.openAI)).toBeUndefined();
+  });
+
+  it('accepts the setting at the top level and on an endpoint', () => {
+    expect(
+      fileConfigSchema.safeParse({
+        preferFileSearch: true,
+        endpoints: { openAI: { preferFileSearch: false } },
+      }).success,
+    ).toBe(true);
+    expect(fileConfigSchema.safeParse({ preferFileSearch: 'yes' }).success).toBe(false);
+  });
+
+  it('reaches an endpoint configured for it', () => {
+    expect(
+      resolveFor(
+        { endpoints: { [EModelEndpoint.openAI]: { preferFileSearch: true } } },
+        EModelEndpoint.openAI,
+      ),
+    ).toBe(true);
+  });
+
+  it('is inherited from the top level and from the default endpoint', () => {
+    expect(resolveFor({ preferFileSearch: true }, EModelEndpoint.anthropic)).toBe(true);
+    expect(resolveFor({ endpoints: { default: { preferFileSearch: true } } }, 'MyGateway')).toBe(
+      true,
+    );
+  });
+
+  it('lets an endpoint turn off what it would inherit', () => {
+    expect(
+      resolveFor(
+        {
+          endpoints: {
+            default: { preferFileSearch: true },
+            [EModelEndpoint.openAI]: { preferFileSearch: false },
+          },
+        },
+        EModelEndpoint.openAI,
+      ),
+    ).toBe(false);
+  });
+
+  it('reaches a custom endpoint by its own name', () => {
+    expect(resolveFor({ endpoints: { Anthropic: { preferFileSearch: true } } }, 'Anthropic')).toBe(
+      true,
+    );
+  });
+});
+
 describe('agent attachment context limits', () => {
   it('keeps the turn-memory ceiling separate from agent upload storage', () => {
     expect(baseFileConfig.fileContextSizeLimit).toBe(128 * 1024 * 1024);

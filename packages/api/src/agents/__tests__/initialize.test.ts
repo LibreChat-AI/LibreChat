@@ -6399,6 +6399,12 @@ describe('initializeAgent tool-routed text fallback', () => {
     fileSearchAvailable = true,
     fileContextCharLimit,
     useResponsesApi,
+    preferFileSearch,
+    queuedForSearch = false,
+    extraQueued,
+    agentScoped = false,
+    loadedToolDefinitions,
+    requestFiles,
   }: {
     tools: string[];
     csv: IMongoFile;
@@ -6410,16 +6416,23 @@ describe('initializeAgent tool-routed text fallback', () => {
     fileSearchAvailable?: boolean;
     fileContextCharLimit?: number;
     useResponsesApi?: boolean;
+    preferFileSearch?: boolean;
+    queuedForSearch?: boolean;
+    extraQueued?: IMongoFile[];
+    agentScoped?: boolean;
+    loadedToolDefinitions?: Array<{ name: string }>;
+    requestFiles?: IMongoFile[];
   }) {
+    const attached = requestFiles ?? [csv];
     const { filterFilesByEndpointRuntimeConfig } = jest.requireMock('~/files') as {
       filterFilesByEndpointRuntimeConfig: jest.Mock;
     };
     const { agent, req, res, loadTools, db } = createMocks({
       provider,
       overrideProvider,
-      loadedToolDefinitions: tools.includes(EToolResources.file_search)
-        ? [{ name: EToolResources.file_search }]
-        : [],
+      loadedToolDefinitions:
+        loadedToolDefinitions ??
+        (tools.includes(EToolResources.file_search) ? [{ name: EToolResources.file_search }] : []),
     });
     if (useResponsesApi != null) {
       mockGetProviderConfig.mockReturnValue({
@@ -6430,12 +6443,20 @@ describe('initializeAgent tool-routed text fallback', () => {
       });
     }
     (primeResources as jest.Mock).mockImplementationOnce(async ({ attachments }) => {
-      const files = await attachments;
+      const files = (await attachments) ?? [];
       return {
         attachments: files,
         requestAttachments: files,
         agentContextAttachments: [],
         tool_resources: {},
+        ...(queuedForSearch && {
+          provisionState: {
+            codeEnvFiles: [],
+            vectorDBFiles: [...files, ...(extraQueued ?? [])],
+            aliveFileIds: new Set<string>(),
+            agentScopedFileIds: new Set(agentScoped ? files.map((f: IMongoFile) => f.file_id) : []),
+          },
+        }),
       };
     });
     agent.tools = tools;
@@ -6447,12 +6468,13 @@ describe('initializeAgent tool-routed text fallback', () => {
           [provider]: {
             defaultLLMDeliveryPath: { overrides: { 'text/csv': 'none' } },
             textFallbackWithoutTools,
+            ...(preferFileSearch != null && { preferFileSearch }),
             ...(supportedMimeTypes != null && { supportedMimeTypes }),
           },
         },
       },
     } as unknown as ServerRequest['config'];
-    (db.getFiles as jest.Mock).mockResolvedValueOnce([csv]);
+    (db.getFiles as jest.Mock).mockResolvedValueOnce(attached);
     filterFilesByEndpointRuntimeConfig.mockImplementationOnce(
       (_config: ServerRequest['config'], { files }: { files: IMongoFile[] }) => files,
     );
@@ -6463,7 +6485,7 @@ describe('initializeAgent tool-routed text fallback', () => {
         res,
         agent,
         loadTools,
-        requestFiles: [csv],
+        requestFiles: attached,
         codeEnvAvailable: true,
         fileSearchAvailable,
         endpointOption: { endpoint: EModelEndpoint.agents },
@@ -6472,7 +6494,7 @@ describe('initializeAgent tool-routed text fallback', () => {
       },
       db,
     );
-    return { result, filterFilesByEndpointRuntimeConfig };
+    return { result, filterFilesByEndpointRuntimeConfig, loadTools };
   }
 
   it.each([true, false])(
@@ -6647,6 +6669,123 @@ describe('initializeAgent tool-routed text fallback', () => {
       expect.objectContaining({ files: [csv] }),
     );
     expect(result.fileConsumers).toEqual({ executeCode: true, fileSearch: false });
+  });
+
+  describe('preferFileSearch', () => {
+    beforeEach(() => {
+      /* Earlier tests can leave unconsumed one-shot mocks that would shadow this suite's. */
+      (primeResources as jest.Mock)
+        .mockReset()
+        .mockResolvedValue({ attachments: [], tool_resources: undefined });
+      (
+        jest.requireMock('~/files') as { filterFilesByEndpointRuntimeConfig: jest.Mock }
+      ).filterFilesByEndpointRuntimeConfig.mockReset();
+    });
+
+    const pdf = {
+      file_id: 'pdf-file',
+      filename: 'report.pdf',
+      type: 'application/pdf',
+      context: 'message_attachment',
+      llmDeliveryPath: 'provider',
+      metadata: { destinationChosen: false },
+    } as IMongoFile;
+    const base = {
+      tools: [EToolResources.file_search],
+      provider: EModelEndpoint.anthropic as string,
+      csv: pdf,
+    };
+    const ids = (files?: Array<{ file_id: string }>) => files?.map((f) => f.file_id);
+
+    it('routes a request PDF to File Search and lists it for the tool', async () => {
+      const { result, loadTools } = await initializeWith({
+        ...base,
+        preferFileSearch: true,
+        queuedForSearch: true,
+      });
+      expect(result.requestAttachments?.[0].llmDeliveryPath).toBe('none');
+      expect(ids(loadTools.mock.calls[0][0].tool_resources.file_search.files)).toEqual([
+        'pdf-file',
+      ]);
+      expect(ids(result.tool_resources?.file_search?.files)).toEqual(['pdf-file']);
+    });
+
+    it('keeps a request PDF inline without the preference', async () => {
+      const { result } = await initializeWith({
+        ...base,
+        preferFileSearch: false,
+        queuedForSearch: true,
+      });
+      expect(result.requestAttachments?.[0].llmDeliveryPath).not.toBe('none');
+      expect(result.tool_resources?.file_search?.files).toBeUndefined();
+    });
+
+    it('does not list a chosen search file without the preference', async () => {
+      const chosen = {
+        ...pdf,
+        llmDeliveryPath: 'none',
+        metadata: { destinationChosen: true, searchDestination: true },
+      } as IMongoFile;
+      const { result } = await initializeWith({ ...base, csv: chosen, queuedForSearch: true });
+      expect(result.tool_resources?.file_search?.files).toBeUndefined();
+    });
+
+    it('does not list a chosen search file with the preference', async () => {
+      const chosen = {
+        ...pdf,
+        llmDeliveryPath: 'none',
+        metadata: { destinationChosen: true, searchDestination: true },
+      } as IMongoFile;
+      const { result } = await initializeWith({
+        ...base,
+        csv: chosen,
+        preferFileSearch: true,
+        queuedForSearch: true,
+      });
+      expect(result.tool_resources?.file_search?.files).toBeUndefined();
+    });
+
+    it('does not list an inferred search-routed file without the preference', async () => {
+      const inferred = {
+        ...pdf,
+        type: 'text/csv',
+        llmDeliveryPath: 'none',
+      } as IMongoFile;
+      const { result } = await initializeWith({ ...base, csv: inferred, queuedForSearch: true });
+      expect(result.tool_resources?.file_search?.files).toBeUndefined();
+    });
+
+    it('lists a queued history file', async () => {
+      const { result } = await initializeWith({
+        ...base,
+        preferFileSearch: true,
+        queuedForSearch: true,
+        requestFiles: [],
+        extraQueued: [{ ...pdf, file_id: 'old-pdf' } as IMongoFile],
+      });
+      expect(ids(result.tool_resources?.file_search?.files)).toEqual(['old-pdf']);
+    });
+
+    it("does not list the agent's own queued files", async () => {
+      const { result } = await initializeWith({
+        ...base,
+        preferFileSearch: true,
+        queuedForSearch: true,
+        agentScoped: true,
+      });
+      expect(result.tool_resources?.file_search?.files).toBeUndefined();
+    });
+
+    it('returns to inline delivery when File Search does not load', async () => {
+      const { result } = await initializeWith({
+        ...base,
+        preferFileSearch: true,
+        queuedForSearch: true,
+        loadedToolDefinitions: [],
+      });
+      expect(result.fileConsumers?.fileSearch).toBe(false);
+      expect(result.requestAttachments?.[0].llmDeliveryPath).not.toBe('none');
+    });
   });
 });
 

@@ -1521,6 +1521,12 @@ endpoints:
 #   # Existing files without extracted text are not backfilled. Paused runs retain encoded text
 #   # and conservatively count referenced fallback text against current limits on resume.
 #   textFallbackWithoutTools: false
+#   # Send message attachments that name no destination to File Search instead of the prompt,
+#   # on turns whose agent runs File Search: PDF, Office and similar documents (never plain
+#   # text or code, images, audio or video; spreadsheets stay with Run Code when the agent
+#   # has it). Embedded on first search. Requires the RAG API.
+#   # Off by default; also configurable per endpoint (endpoint wins). Ignored with legacyFileUploadUX.
+#   preferFileSearch: false
 #   fileContextSizeLimit: 128  # Maximum aggregate model-bound attachment size in one agent turn (MB)
 #   fileContextCharLimit: 1000000  # Maximum aggregate extracted-text characters in one agent turn
 #   endpoints:

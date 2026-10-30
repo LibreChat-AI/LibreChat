@@ -3,6 +3,7 @@ import type { EndpointFileConfig, FileConfig, RegexLike } from './types/files';
 import type { CodeEnvReferenceSet } from './codeEnvRef';
 import type { TEndpoint } from './config';
 import {
+  excelMimeTypes,
   retrievalMimeTypes,
   isExplicitMimeConfig,
   isBedrockDocumentType,
@@ -19,6 +20,7 @@ import {
 import { normalizeEndpointName } from './utils';
 import { EToolResources } from './types/tools';
 import { getCodeEnvRefs } from './codeEnvRef';
+import { FileContext } from './types/files';
 
 /**
  * The native provider a custom endpoint declares, when it declares one. A custom endpoint
@@ -424,6 +426,8 @@ export interface TurnDeliveryFile {
   text?: string | null;
   /** Stored as an upload-time inference, so any string may be read back. */
   llmDeliveryPath?: string | null;
+  /** Where the record came from; an agent's own files are never message attachments. */
+  context?: string | null;
   /** Whether a vector store holds this file, which is what lets file search serve it.
    *  Records predating namespace tracking carry only this flag. */
   embedded?: boolean | null;
@@ -443,6 +447,9 @@ export interface TurnDeliveryFile {
 
 const isLLMDeliveryPath = (value: unknown): value is TDefaultLLMDeliveryPath =>
   value === 'provider' || value === 'text' || value === 'none';
+
+const isSpreadsheetMimeType = (mimeType: string): boolean =>
+  excelMimeTypes.test(mimeType) || mimeType === 'application/vnd.oasis.opendocument.spreadsheet';
 
 /** Whether a record's stored route was inferred at upload, so each turn resolves it again. */
 export function hasInferredLLMDeliveryPath(file: TurnDeliveryFile): boolean {
@@ -464,6 +471,11 @@ export function hasInferredLLMDeliveryPath(file: TurnDeliveryFile): boolean {
  * under no tool, so enabling file search would otherwise withhold the text for a vector store
  * that never received the file. Run Code is judged by the tool set: see
  * {@link hasTurnFileConsumer}.
+ *
+ * Where the endpoint enables `preferFileSearch` and this turn runs File Search, an inferred
+ * route for a message attachment of a document type File Search can index, and that is not
+ * plain text, is `none`. Initialization lists the file for the tool, and the tool embeds it on
+ * the first search.
  */
 export function resolveTurnLLMDeliveryPath(
   routing: Partial<TurnDeliveryRouting> | undefined,
@@ -477,6 +489,22 @@ export function resolveTurnLLMDeliveryPath(
   /* Conversion changes the stored type, so use the type routing originally saw. */
   const mimeType = file.metadata?.routingMimeType ?? file.type ?? '';
   const path = resolveUploadLLMDeliveryPath({ mimeType, ...routing });
+  /* The preference outranks the text fallback below: an un-embedded upload is exactly the
+   * file it targets, and initialization lists it for the tool before the first search.
+   * Plain text and code stay inline, where the model reads them whole; an agent's own
+   * files keep their context route, and spreadsheets stay with Run Code when this turn has
+   * it, since code reads them whole where search only samples rows. */
+  if (
+    endpointConfig?.preferFileSearch === true &&
+    endpointConfig.legacyFileUploadUX !== true &&
+    consumers?.fileSearch === true &&
+    !(consumers.executeCode && isSpreadsheetMimeType(mimeType)) &&
+    file.context !== FileContext.agents &&
+    !isNativelyReadableText(mimeType) &&
+    canToolResourceConsume(EToolResources.file_search, mimeType)
+  ) {
+    return 'none';
+  }
   const hasFallbackText = typeof file.text === 'string' && file.text.length > 0;
   if (
     path === 'none' &&

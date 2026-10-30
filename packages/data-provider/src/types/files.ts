@@ -55,6 +55,11 @@ export type EndpointFileConfig = {
   /** Delivers the text extracted at upload for a file routed to tools (`none`) on a turn that
    *  runs no tool able to read it. Off by default, which leaves such a file out of the prompt. */
   textFallbackWithoutTools?: boolean;
+  /** In unified upload mode, sends a message attachment with no chosen destination to File
+   *  Search instead of the prompt on a turn whose agent runs File Search, for document types
+   *  File Search can index and the model cannot read as plain text. Off by default. Ignored
+   *  under `legacyFileUploadUX`. */
+  preferFileSearch?: boolean;
 };
 
 export type FileConfig = {
@@ -103,6 +108,11 @@ export type FileConfig = {
   /** Delivers the text extracted at upload for a file routed to tools (`none`) on a turn that
    *  runs no tool able to read it. Off by default, which leaves such a file out of the prompt. */
   textFallbackWithoutTools?: boolean;
+  /** In unified upload mode, sends a message attachment with no chosen destination to File
+   *  Search instead of the prompt on a turn whose agent runs File Search, for document types
+   *  File Search can index and the model cannot read as plain text. Off by default. Ignored
+   *  under `legacyFileUploadUX`. */
+  preferFileSearch?: boolean;
 };
 
 export type FileConfigInput = {
@@ -146,6 +156,11 @@ export type FileConfigInput = {
   /** Delivers the text extracted at upload for a file routed to tools (`none`) on a turn that
    *  runs no tool able to read it. Off by default, which leaves such a file out of the prompt. */
   textFallbackWithoutTools?: boolean;
+  /** In unified upload mode, sends a message attachment with no chosen destination to File
+   *  Search instead of the prompt on a turn whose agent runs File Search, for document types
+   *  File Search can index and the model cannot read as plain text. Off by default. Ignored
+   *  under `legacyFileUploadUX`. */
+  preferFileSearch?: boolean;
 };
 
 /** The immutable origin of a file explicitly published from an agent execution. */
