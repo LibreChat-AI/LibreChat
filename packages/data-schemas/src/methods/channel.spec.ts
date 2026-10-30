@@ -22,6 +22,8 @@ const channel = (): AgentChannelRecord => ({
   type: 'slack',
   status: 'active',
   credentialMode: 'shared',
+  revision: 'one',
+  slack: { teamId: 'T1', appId: 'A1', botUserId: 'B1' },
 });
 const event = () => ({
   tenantId,
@@ -287,8 +289,27 @@ it('redacts deleted-owner credentials while retaining a retry anchor for other p
       encryptedApiKey: 'private-key',
       apiKeyId: 'private-key-id',
     });
+    await createChannelIdentityStorage(mongoose).saveChannelIdentity(
+      {
+        ...linkRecord(tenantId, 'channel', 'other-link'),
+        userId: 'other-principal',
+        identity: {
+          ...linkRecord(tenantId, 'channel', 'other-link').identity,
+          externalUserId: 'U1',
+        },
+      },
+      null,
+    );
     const other = await runs.admit(
-      { ...event(), principal: { ...event().principal, userId: 'other-principal' } },
+      {
+        ...event(),
+        principal: {
+          ...event().principal,
+          userId: 'other-principal',
+          linkId: 'other-link',
+          linkRevision: 'one',
+        },
+      },
       100,
     );
     await methods.getOrCreateAgentChannelThread('channel', 'thread');
@@ -508,7 +529,16 @@ it.each([tenantId, undefined])(
         {
           ...event(),
           tenantId: partition,
-          principal: { userId: 'linked-user', channelRevision: 'one' },
+          principal: {
+            userId: 'linked-user',
+            channelRevision: 'one',
+            linkId: 'active',
+            linkRevision: 'one',
+          },
+          admission: {
+            ...event().admission,
+            actor: { ...event().admission.actor, externalUserId: 'active' },
+          },
         },
         100,
       );
