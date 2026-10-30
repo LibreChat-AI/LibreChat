@@ -100,7 +100,7 @@ export async function pauseResponseForReview(
       ...buildPendingBackgroundResponse(current),
       status: 'in_progress' as const,
     };
-    const published = await deps.storage.publishReview(
+    const publication: Parameters<ResponseStorage['publishReview']> = [
       current,
       current.responseId,
       { execution: current },
@@ -124,7 +124,16 @@ export async function pauseResponseForReview(
         }),
       },
       JSON.stringify(publicResponse),
-    );
+    ];
+    let published;
+    try {
+      published = await deps.storage.publishReview(...publication);
+    } catch {
+      // The write may have committed despite a lost acknowledgement. Reuse the exact
+      // receipt and execution guard: storage reconciles it without republishing or
+      // overriding cancellation, retirement, a newer review, or admitted resume.
+      published = await deps.storage.publishReview(...publication);
+    }
     if (!published.ok) throw new Error('Response pause journal publication failed');
   });
 }

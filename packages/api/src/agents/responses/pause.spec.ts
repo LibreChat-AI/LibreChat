@@ -1741,3 +1741,64 @@ it.each([
     await f.execution.settle(new Error('Invalid private witness'));
   }),
 );
+
+it.each(['before_commit', 'after_commit'] as const)(
+  'reconciles an ambiguous SDK pause publication %s without repeating provider work',
+  (failure) =>
+    scoped(async () => {
+      const f = await setup();
+      const original = storage.publishReview.bind(storage);
+      const publish = jest.spyOn(storage, 'publishReview');
+      publish.mockImplementationOnce(async (...args) => {
+        if (failure === 'after_commit') expect((await original(...args)).ok).toBe(true);
+        throw new Error('Injected lost database acknowledgement');
+      });
+      expect(await pauseResponseForReview({ ...f, checkpointer }, f.deps)).toBe(true);
+      await f.execution.settle();
+      expect(publish).toHaveBeenCalledTimes(2);
+      expect(publish.mock.calls[1]).toEqual(publish.mock.calls[0]);
+      expect(f.unfinishedWrites()).toBe(1);
+      expect(f.modelCalls()).toBe(1);
+      expect(f.execution.isPaused).toBe(true);
+      const saved = (await storage.read(owner, responseId))!;
+      expect(saved.status).toBe('requires_action');
+      expect(saved.review).toEqual(publish.mock.calls[0][4]);
+      expect(saved.revision).toBe(f.record.revision + 1);
+    }),
+);
+
+it.each(['cancelled', 'erased', 'replaced', 'outage'] as const)(
+  'does not reconcile an ambiguous SDK pause after %s',
+  (failure) =>
+    scoped(async () => {
+      const f = await setup();
+      const original = storage.publishReview.bind(storage);
+      const publish = jest.spyOn(storage, 'publishReview');
+      publish.mockImplementationOnce(async (...args) => {
+        if (failure !== 'outage') expect((await original(...args)).ok).toBe(true);
+        if (failure === 'cancelled')
+          await storage.requestCancellation(owner, responseId, Date.now());
+        if (failure === 'erased') await mongoose.models.StoredResponse.deleteOne({ responseId });
+        if (failure === 'replaced')
+          await mongoose.models.StoredResponse.updateOne(
+            { responseId },
+            { $set: { 'review.actionId': 'newer-action' } },
+          );
+        throw new Error('Injected ambiguous publication');
+      });
+      if (failure === 'outage')
+        publish.mockImplementation(async () => {
+          throw new Error('Injected persistent database outage');
+        });
+      await expect(pauseResponseForReview({ ...f, checkpointer }, f.deps)).rejects.toThrow();
+      expect(publish).toHaveBeenCalledTimes(2);
+      expect(publish.mock.calls[1]).toEqual(publish.mock.calls[0]);
+      expect(f.unfinishedWrites()).toBe(1);
+      expect(f.modelCalls()).toBe(1);
+      const saved = await storage.read(owner, responseId);
+      if (failure === 'erased') expect(saved).toBeNull();
+      if (failure === 'cancelled') expect(saved?.cancellationRequestedAt).toBeDefined();
+      if (failure === 'replaced') expect(saved?.review?.actionId).toBe('newer-action');
+      if (failure === 'outage') expect(saved?.review).toBeUndefined();
+    }),
+);
