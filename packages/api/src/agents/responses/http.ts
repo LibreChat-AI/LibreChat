@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { Request, RequestHandler, Response as HttpResponse } from 'express';
-import type { ResponseOwner, ResponseStorage } from '@librechat/data-schemas';
+import type { ResponseOwner } from '@librechat/data-schemas';
 import type { createBackgroundResponseService, BackgroundResponseResult } from './background';
 import type { ServerRequest } from '~/types/http';
 import { validateResponseRequest, sendResponsesErrorResponse } from './service';
@@ -9,8 +9,8 @@ import { getBackgroundResponseWorkerRecord } from './worker';
 import { responseTenantId } from './scope';
 
 export interface BackgroundResponseHttpDependencies {
-  storage: ResponseStorage;
   service: (req: Request) => ReturnType<typeof createBackgroundResponseService>;
+  /** Foreground-only fallback; canonical background history remains journal-owned. */
   ordinary: { create: RequestHandler; retrieve: RequestHandler };
   onError: (error: unknown) => void;
 }
@@ -106,9 +106,9 @@ export function createBackgroundResponseHttpHandlers(deps: BackgroundResponseHtt
       if (!principal)
         return void sendResponsesErrorResponse(res, 401, 'Unauthorized', 'invalid_request');
       try {
-        if (!(await deps.storage.read(principal, req.params.id)))
-          return deps.ordinary.retrieve(req, res, next);
-        return send(res, await deps.service(req).retrieve(principal, req.params.id));
+        const result = await deps.service(req).lookup(principal, req.params.id);
+        if (result == null) return deps.ordinary.retrieve(req, res, next);
+        return send(res, result);
       } catch (error) {
         return unavailable(res, error);
       }
