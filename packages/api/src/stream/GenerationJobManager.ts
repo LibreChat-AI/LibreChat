@@ -4042,10 +4042,14 @@ class GenerationJobManagerClass {
     if (job.agentEventDeliveryKey == null) {
       return;
     }
+    await this.persistRunStepEvidence(streamId, job.createdAt);
+  }
+
+  private async persistRunStepEvidence(streamId: string, createdAt: number): Promise<void> {
     const buffered = this.runStepBuffers?.get(streamId);
-    if (buffered?.createdAt === job.createdAt && this.jobStore.saveRunSteps != null) {
+    if (buffered?.createdAt === createdAt && this.jobStore.saveRunSteps != null) {
       await this.queueJobWrite(this.runStepWriteQueues, streamId, () =>
-        this.jobStore.saveRunSteps!(streamId, [...buffered.steps], job.createdAt),
+        this.jobStore.saveRunSteps!(streamId, [...buffered.steps], createdAt),
       );
     }
   }
@@ -7158,6 +7162,8 @@ class GenerationJobManagerClass {
         eventData as Record<string, unknown>,
         runtime.createdAt,
       );
+      if (options?.durable === true)
+        await this.persistRunStepEvidence(streamId, runtime.createdAt);
     }
 
     /**
