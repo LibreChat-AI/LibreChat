@@ -7,7 +7,7 @@ import {
   tenantStorage,
   runAsSystem,
 } from '@librechat/data-schemas';
-import type { ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
+import type { ResponseStorage, StoredResponseRecord, ResponseOwner } from '@librechat/data-schemas';
 import type { AgentTriggerService, AgentTriggerDeliveryPersistence } from '../triggers/service';
 import {
   createBackgroundResponseQueue,
@@ -70,9 +70,9 @@ beforeEach(async () => {
   });
 });
 
-async function reserve(): Promise<StoredResponseRecord> {
+async function reserve(principal: ResponseOwner = owner): Promise<StoredResponseRecord> {
   const result = await storage.reserve({
-    ...owner,
+    ...principal,
     responseId: 'resp_queue',
     requestKey: 'key',
     fingerprint: 'request',
@@ -405,3 +405,45 @@ it('rejects an old delivery after a newer provider segment has paused for a diff
     });
     expect(execute).not.toHaveBeenCalled();
   }));
+
+it.each([null, ''])(
+  'dispatches a legacy tenantless stored response %p through the actual trigger queue',
+  async (tenantId) => {
+    const principal = { userId: owner.userId };
+    await tenantStorage.run(principal, async () => {
+      const execute = jest.fn().mockResolvedValue({ status: 'started', generationCreatedAt: 100 });
+      const queue = createBackgroundResponseQueue({
+        storage,
+        enqueue: (...args) => service!.enqueue(...args),
+        authorize: async () => true,
+        execute,
+      });
+      service = createAgentTriggerService({
+        methods: persistence(),
+        sourceDispatchers: queue.sourceDispatchers,
+        deliveryOptions: { tickMs: 10 },
+      });
+      await service.initialize({ address: { address: '127.0.0.1', family: 'IPv4', port: 3088 } });
+      const saved = await reserve(principal);
+      const key = queue.deliveryKey(saved);
+      await mongoose.models.StoredResponse.collection.updateOne(
+        { responseId: saved.responseId },
+        { $set: { tenantId } },
+      );
+      const legacy = await storage.read(principal, saved.responseId);
+      if (!legacy) throw new Error('Legacy fixture missing');
+      expect(queue.deliveryKey(legacy)).toBe(key);
+      const attached = await storage.attachDelivery(principal, legacy.responseId, key);
+      if (!attached.ok) throw new Error('Attach failed');
+      await queue.enqueue(attached.record);
+      for (let attempt = 0; attempt < 100 && execute.mock.calls.length === 0; attempt++)
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(execute.mock.calls[0][0]).toMatchObject({
+        userId: principal.userId,
+        tenantId,
+        responseId: saved.responseId,
+      });
+    });
+  },
+);

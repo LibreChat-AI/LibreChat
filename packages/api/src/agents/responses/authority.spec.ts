@@ -4,11 +4,11 @@ import type { BackgroundResponseAuthorityDependencies } from './authority';
 import { createBackgroundResponseAuthority } from './authority';
 
 const owner = { userId: 'background-owner', tenantId: 'background-tenant' };
-function fixture() {
+function fixture(options: { tenantId?: string | null } = { tenantId: owner.tenantId }) {
   const user = {
     _id: owner.userId,
     role: 'USER',
-    tenantId: owner.tenantId,
+    tenantId: options.tenantId,
     provider: 'local',
     twoFactorEnabled: false,
   };
@@ -84,3 +84,30 @@ it('preserves federated policy exceptions and tenant isolation', async () => {
     ),
   ).toBe(false);
 });
+
+it.each([undefined, null, ''])(
+  'accepts a legacy tenantless user field %p without changing named authority',
+  async (tenantId) => {
+    const { deps, authorize } = fixture({ tenantId });
+    deps.enrollmentRequired = () => false;
+    const principal = { userId: owner.userId };
+    expect(await tenantStorage.run(principal, () => authorize(principal, 'agent', 'key'))).toBe(
+      true,
+    );
+    const loaded = await deps.findUser(principal.userId);
+    if (!loaded) throw new Error('Fixture missing user');
+    jest.mocked(deps.findUser).mockClear();
+    expect(await authorize({ ...principal, tenantId: '' }, 'agent', 'key', loaded)).toBe(true);
+    expect(deps.findUser).not.toHaveBeenCalled();
+    expect(await authorize(owner, 'agent', 'key', loaded)).toBe(false);
+  },
+);
+
+it.each(['_', '__SYSTEM__'])(
+  'rejects internal owner partition %p before principal lookup',
+  async (tenantId) => {
+    const { deps, authorize } = fixture({ tenantId });
+    expect(await authorize({ ...owner, tenantId }, 'agent', 'key')).toBe(false);
+    expect(deps.findUser).not.toHaveBeenCalled();
+  },
+);

@@ -1,3 +1,4 @@
+import { responseTenantId, isResponseTenantId } from './scope';
 import { z } from 'zod';
 import jwt from 'jsonwebtoken';
 import { getTenantId, tenantStorage } from '@librechat/data-schemas';
@@ -16,7 +17,7 @@ const resumePurpose = 'responses_resume';
 const baseClaims = z.object({
   responseId: z.string().min(1),
   userId: z.string().min(1),
-  tenantId: z.string().min(1).optional(),
+  tenantId: z.string().min(1).refine(isResponseTenantId).optional(),
   sourceKeyId: z.string().min(1),
 });
 const claimsSchema = z.discriminatedUnion('purpose', [
@@ -56,14 +57,22 @@ export function mintResponseResumeWorkerToken(
   record: StoredResponseRecord,
   secret: string,
 ): string {
-  if (!record.sourceKeyId || !secret || !record.resume || record.generationCreatedAt == null)
+  if (
+    !record.sourceKeyId ||
+    !secret ||
+    !record.resume ||
+    record.generationCreatedAt == null ||
+    !isResponseTenantId(record.tenantId)
+  )
     throw new Error('Response resume worker authority unavailable');
   return jwt.sign(
     {
       purpose: resumePurpose,
       responseId: record.responseId,
       userId: record.userId,
-      ...(record.tenantId == null ? {} : { tenantId: record.tenantId }),
+      ...(responseTenantId(record.tenantId) == null
+        ? {}
+        : { tenantId: responseTenantId(record.tenantId) }),
       sourceKeyId: record.sourceKeyId,
       intentId: record.resume.intentId,
       generationCreatedAt: record.generationCreatedAt,
@@ -79,14 +88,16 @@ export function mintBackgroundResponseWorkerToken(
   record: StoredResponseRecord,
   secret: string,
 ): string {
-  if (!record.sourceKeyId || !secret)
+  if (!record.sourceKeyId || !secret || !isResponseTenantId(record.tenantId))
     throw new Error('Background response worker authority unavailable');
   return jwt.sign(
     {
       purpose,
       responseId: record.responseId,
       userId: record.userId,
-      ...(record.tenantId == null ? {} : { tenantId: record.tenantId }),
+      ...(responseTenantId(record.tenantId) == null
+        ? {}
+        : { tenantId: responseTenantId(record.tenantId) }),
       sourceKeyId: record.sourceKeyId,
     },
     secret,
@@ -130,8 +141,8 @@ export function createBackgroundResponseWorkerAuth(
     }
     const contextTenant = getTenantId();
     if (
-      claims.tenantId === '__SYSTEM__' ||
-      (contextTenant != null && contextTenant !== claims.tenantId)
+      responseTenantId(contextTenant) != null &&
+      responseTenantId(contextTenant) !== claims.tenantId
     )
       return deny();
     try {
@@ -145,7 +156,10 @@ export function createBackgroundResponseWorkerAuth(
           !record ||
           !user ||
           String(user._id) !== record.userId ||
-          user.tenantId !== record.tenantId ||
+          !isResponseTenantId(user.tenantId) ||
+          !isResponseTenantId(record.tenantId) ||
+          responseTenantId(user.tenantId) !== claims.tenantId ||
+          responseTenantId(record.tenantId) !== claims.tenantId ||
           record.sourceKeyId !== claims.sourceKeyId ||
           !(await deps.authorize(record, user))
         )
@@ -172,7 +186,8 @@ export function createBackgroundResponseWorkerAuth(
           if (
             record.responseId !== claims.responseId ||
             record.userId !== claims.userId ||
-            record.tenantId !== claims.tenantId ||
+            !isResponseTenantId(record.tenantId) ||
+            responseTenantId(record.tenantId) !== claims.tenantId ||
             record.sourceKeyId !== claims.sourceKeyId ||
             record.generationCreatedAt !== claims.generationCreatedAt ||
             record.agentId !== original.agentId ||
@@ -197,9 +212,9 @@ export function createBackgroundResponseWorkerAuth(
           };
         }
         const request = req as ServerRequest & Pick<ContextRequest, 'tenantId'>;
-        user.id = record.userId;
-        request.user = user;
-        request.tenantId = record.tenantId;
+        // findUser supplies a lean auth DTO; do not mutate its cached tenant representation.
+        request.user = Object.assign({}, user, { id: record.userId, tenantId: claims.tenantId });
+        request.tenantId = claims.tenantId;
         // Caller body/headers cannot replace the persisted, already validated request.
         request.body = JSON.parse(record.requestJSON);
         admitted.set(req, {

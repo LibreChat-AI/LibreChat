@@ -1,3 +1,4 @@
+import { responseTenantId, isResponseTenantId } from './scope';
 import { PermissionBits, Permissions, PermissionTypes } from 'librechat-data-provider';
 import { getTenantId, SYSTEM_TENANT_ID, tenantStorage } from '@librechat/data-schemas';
 import type {
@@ -38,20 +39,22 @@ export function createBackgroundResponseAuthority(deps: BackgroundResponseAuthor
     sourceKeyId?: string,
     loadedUser?: IUser,
   ): Promise<boolean> => {
-    if (!sourceKeyId) return false;
+    if (!sourceKeyId || !isResponseTenantId(owner.tenantId)) return false;
+    const tenantId = responseTenantId(owner.tenantId);
     const currentTenant = getTenantId();
     if (
       currentTenant != null &&
       currentTenant !== SYSTEM_TENANT_ID &&
-      currentTenant !== owner.tenantId
+      responseTenantId(currentTenant) !== tenantId
     )
       return false;
-    return tenantStorage.run({ tenantId: owner.tenantId, userId: owner.userId }, async () => {
+    return tenantStorage.run({ tenantId, userId: owner.userId }, async () => {
       const user = loadedUser ?? (await deps.findUser(owner.userId));
       if (
         !user ||
         String(user._id) !== owner.userId ||
-        user.tenantId !== owner.tenantId ||
+        !isResponseTenantId(user.tenantId) ||
+        responseTenantId(user.tenantId) !== tenantId ||
         !user.role ||
         (deps.enrollmentRequired ?? isTwoFactorEnrollmentRequired)(user)
       )
@@ -66,7 +69,12 @@ export function createBackgroundResponseAuthority(deps: BackgroundResponseAuthor
       const remote = config.endpoints?.agents?.remoteApi;
       if (
         key?.binding &&
-        !(await deps.authorizeBinding?.(key.binding, sourceKeyId, owner, agentId))
+        !(await deps.authorizeBinding?.(
+          key.binding,
+          sourceKeyId,
+          { userId: owner.userId, tenantId },
+          agentId,
+        ))
       )
         return false;
       return Boolean(
