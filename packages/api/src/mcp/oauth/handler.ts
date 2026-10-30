@@ -1319,7 +1319,9 @@ export class MCPOAuthHandler {
           );
         } else if (metadata.resourceMetadata.resource) {
           resource = new URL(metadata.resourceMetadata.resource);
-          logger.debug(`[MCPOAuth] Resource URL for flow ${flowId}: ${resource.toString()}`);
+          logger.debug(
+            `[MCPOAuth] Resource URL for flow ${flowId}: ${sanitizeUrlForLogging(resource)}`,
+          );
         }
       }
 
