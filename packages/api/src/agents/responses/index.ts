@@ -16,11 +16,17 @@ export {
 
 export {
   createResponseAccountingCollector,
+  captureResponseAccountingUsage,
   createApplicationBillingQuote,
   buildCollectedResponseAccounting,
   buildPersistedResponseAccounting,
 } from './accounting';
-export type { AccountingQuote, AccountingCollectorOptions } from './accounting';
+export type {
+  AccountingQuote,
+  AccountingCollectorOptions,
+  AccountingInvocationIdentity,
+  CollectedResponseAccountingUsage,
+} from './accounting';
 export type {
   AccountingBasis,
   AccountingModelSource,

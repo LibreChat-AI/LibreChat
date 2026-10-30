@@ -3,6 +3,8 @@ import type { AccountingQuote } from './accounting';
 import type { PricingFns } from '../transactions';
 import {
   buildCollectedResponseAccounting,
+  combineResponseAccounting,
+  captureResponseAccountingUsage,
   buildPersistedResponseAccounting,
   createApplicationBillingQuote,
   createResponseAccountingCollector,
@@ -226,9 +228,9 @@ describe('Responses accounting', () => {
     expect(result.coverage).toBe('partial');
     expect(result).not.toHaveProperty('amount');
     expect(result.calls.map((call) => [call.model, call.usageType, call.modelSource])).toEqual([
-      ['gpt-4o', 'message', 'runtime_reported'],
-      ['child-model', 'subagent', 'runtime_reported'],
-      ['label-model', 'activity-label', 'runtime_reported'],
+      ['gpt-4o', 'message', 'unknown'],
+      ['child-model', 'subagent', 'unknown'],
+      ['label-model', 'activity-label', 'unknown'],
     ]);
   });
 });
@@ -273,5 +275,101 @@ describe('application-billing quotes', () => {
       resolveEndpointTokenConfig: () => ({ custom: { prompt: 2, completion: 4, context: 1000 } }),
     });
     expect(quote({ ...usage, model: 'custom' })?.basis).toBe('application_billing');
+  });
+});
+
+describe('accounting lineage and invocation receipts', () => {
+  const priced = () => {
+    const collector = createResponseAccountingCollector({
+      quote: () => ({ amount: '0.25', basis: 'application_billing' }),
+    });
+    collector.record(usage);
+    return collector.snapshot();
+  };
+  it('never upgrades missing historical coverage over arbitrarily many priced continuations', () => {
+    let result = combineResponseAccounting(undefined, priced());
+    for (let segment = 0; segment < 5; segment++) {
+      result = combineResponseAccounting(result, priced());
+      expect(result).toMatchObject({
+        status: 'unavailable',
+        coverage: 'partial',
+        reason: 'partial_coverage',
+      });
+      expect(result).not.toHaveProperty('amount');
+    }
+    expect(result.calls).toHaveLength(6);
+    const resumed = createResponseAccountingCollector({
+      seed: result,
+      quote: () => ({ amount: '0.1', basis: 'application_billing' }),
+    });
+    resumed.record(usage);
+    expect(resumed.snapshot()).toMatchObject({
+      status: 'unavailable',
+      coverage: 'partial',
+      reason: 'partial_coverage',
+    });
+  });
+  it('retains incomplete coverage even when a later segment has conflicting usage', () => {
+    const conflict = createResponseAccountingCollector({
+      quote: () => ({ amount: '0.25', basis: 'application_billing' }),
+    });
+    conflict.record(usage, undefined, undefined, 'call');
+    conflict.record({ ...usage, input_tokens: 999 }, undefined, undefined, 'call');
+    const combined = combineResponseAccounting(
+      combineResponseAccounting(undefined, priced()),
+      conflict.snapshot(),
+    );
+    expect(combineResponseAccounting(combined, priced())).toMatchObject({
+      status: 'unavailable',
+      coverage: 'partial',
+      reason: 'conflicting_usage',
+    });
+  });
+  it('preserves complete priced folds and original historical quotes', () => {
+    expect(
+      combineResponseAccounting(combineResponseAccounting(priced(), priced()), priced()),
+    ).toMatchObject({ status: 'available', coverage: 'complete', amount: '0.75' });
+    const old = priced();
+    const resumed = createResponseAccountingCollector({
+      seed: old,
+      quote: () => ({ amount: '1', basis: 'application_billing' }),
+    });
+    resumed.record(usage);
+    expect(resumed.snapshot()).toMatchObject({ status: 'available', amount: '1.25' });
+    expect(old.amount).toBe('0.25');
+  });
+  it.each([
+    [
+      { __invoked_model: 'runtime' },
+      { clientOptions: { model: 'configured' } },
+      'runtime',
+      'runtime_reported',
+    ],
+    [{}, { clientOptions: { model: 'configured' } }, 'provider', 'provider_reported'],
+  ] as const)(
+    'preserves captured invocation identity after billing flattens it: %s',
+    (metadata, context, model, modelSource) => {
+      const raw = { ...usage, model: 'provider' };
+      const captured = captureResponseAccountingUsage(raw, metadata, context);
+      captured.model = 'billing-fallback';
+      const result = buildCollectedResponseAccounting([captured], []);
+      expect(result.calls[0]).toMatchObject({ model, modelSource });
+      expect(raw.model).toBe('provider');
+    },
+  );
+  it('captures configured-only provenance instead of upgrading it to runtime-reported', () => {
+    const captured = captureResponseAccountingUsage(
+      { input_tokens: 1, output_tokens: 1 },
+      undefined,
+      { clientOptions: { model: 'configured' } },
+    );
+    captured.model = 'configured';
+    expect(buildCollectedResponseAccounting([captured], []).calls[0]).toMatchObject({
+      model: 'configured',
+      modelSource: 'configured',
+    });
+    expect(
+      buildCollectedResponseAccounting([{ ...usage, model: 'legacy-flat' }], []).calls[0],
+    ).toMatchObject({ model: 'legacy-flat', modelSource: 'unknown' });
   });
 });
