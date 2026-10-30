@@ -2,13 +2,13 @@ import { memo, useMemo, useState, useEffect, useCallback } from 'react';
 import {
   SteerReceipt,
   FileContainer,
+  MessageQuotes,
   CollapsibleText,
   MessageTimestamp,
 } from '@librechat/chat/components';
 import type { SteerReceiptState } from '@librechat/chat/components';
 import type { TFile, TMessage } from 'librechat-data-provider';
 import FilePreviewDialog from '~/components/Chat/Messages/Content/FilePreviewDialog';
-import MessageQuotes from '~/components/Chat/Messages/Content/MessageQuotes';
 import { cn, hydrateFileDeliveryMetadata, usesImagePreview } from '~/utils';
 import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';

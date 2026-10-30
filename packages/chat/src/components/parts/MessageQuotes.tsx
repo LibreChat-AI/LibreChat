@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import { TextQuote } from 'lucide-react';
-import { useLocalize } from '~/hooks';
+import { useLocalize } from '@librechat/client';
+import type { ReactNode, NamedExoticComponent } from 'react';
 
 /**
  * Renders the verbatim excerpts a user quoted on a submitted message as
@@ -12,7 +13,7 @@ import { useLocalize } from '~/hooks';
  * `quotes={message.quotes}` and the references survive reload and history
  * renders, mirroring how `SkillPills` reads `message.manualSkills`.
  */
-function MessageQuotes({ quotes }: { quotes?: string[] }) {
+function MessageQuotes({ quotes }: { quotes?: string[] }): ReactNode {
   const localize = useLocalize();
 
   if (!quotes || quotes.length === 0) {
@@ -43,4 +44,6 @@ function MessageQuotes({ quotes }: { quotes?: string[] }) {
   );
 }
 
-export default memo(MessageQuotes);
+const MemoizedMessageQuotes: NamedExoticComponent<{ quotes?: string[] }> = memo(MessageQuotes);
+
+export default MemoizedMessageQuotes;

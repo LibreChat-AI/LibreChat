@@ -4,7 +4,12 @@ import { useStore, useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { startedAsNewConversation, buildCreatedInitialResponse } from '@librechat/chat';
 import { StepEvents, createPayload, removeNullishValues } from 'librechat-data-provider';
-import { useUsageHandler, abortScrollFamily, showStopButtonByIndex } from '@librechat/chat/react';
+import {
+  useUsageHandler,
+  abortScrollFamily,
+  showStopButtonByIndex,
+  pendingApprovalActionFamily,
+} from '@librechat/chat/react';
 import type {
   Agents,
   TMessage,
@@ -19,7 +24,6 @@ import type {
 import type { EventHandlerParams } from './useEventHandlers';
 import type { TResData, TFinalResData } from '~/common';
 import { clearComposerDrafts, applyPendingAction, findPendingActionMessageIndex } from '~/utils';
-import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { reopenTermsOnRefusal } from '~/utils/terms';

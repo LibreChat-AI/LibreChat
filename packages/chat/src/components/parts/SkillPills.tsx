@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import { Pin, ScrollText } from 'lucide-react';
-import { useLocalize } from '~/hooks';
+import { useLocalize } from '@librechat/client';
+import type { ReactNode, NamedExoticComponent } from 'react';
 
 /**
  * Origin tag driving the pill variant:
@@ -25,13 +26,12 @@ export type SkillPillsSource = 'manual' | 'always-apply';
  * and pills survive page reloads / history renders. The `source` prop picks
  * the icon variant so both flavors render from the same component.
  */
-function SkillPills({
-  skills,
-  source = 'manual',
-}: {
+interface SkillPillsProps {
   skills?: string[];
   source?: SkillPillsSource;
-}) {
+}
+
+function SkillPills({ skills, source = 'manual' }: SkillPillsProps): ReactNode {
   const localize = useLocalize();
 
   if (!skills || skills.length === 0) {
@@ -64,4 +64,6 @@ function SkillPills({
   );
 }
 
-export default memo(SkillPills);
+const MemoizedSkillPills: NamedExoticComponent<SkillPillsProps> = memo(SkillPills);
+
+export default MemoizedSkillPills;

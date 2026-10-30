@@ -1,6 +1,6 @@
 import { Check } from 'lucide-react';
-import { Button } from '@librechat/client';
-import { cn } from '~/utils';
+import { cn, Button } from '@librechat/client';
+import type { ReactNode } from 'react';
 
 export interface AskOption {
   label: string;
@@ -42,7 +42,7 @@ export default function AskOptions({
   optionRefs?: React.MutableRefObject<(HTMLButtonElement | null)[]>;
   listRef?: React.RefObject<HTMLDivElement>;
   className?: string;
-}) {
+}): ReactNode {
   return (
     <div ref={listRef} className={className}>
       {options.map((option, index) => {

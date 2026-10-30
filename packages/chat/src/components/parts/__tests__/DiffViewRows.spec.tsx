@@ -1,9 +1,12 @@
+/**
+ * @jest-environment jsdom
+ */
+import { cn } from '@librechat/client';
 import { render } from '@testing-library/react';
 import DiffView, { parseUnifiedDiff } from '../DiffView';
-import { cn } from '~/utils';
 
-jest.mock('~/utils', () => {
-  const actual = jest.requireActual('~/utils');
+jest.mock('@librechat/client', () => {
+  const actual = jest.requireActual('@librechat/client');
   return { ...actual, cn: jest.fn(actual.cn) };
 });
 

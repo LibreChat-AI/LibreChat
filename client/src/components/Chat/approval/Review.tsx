@@ -2,8 +2,13 @@ import { memo, useEffect, useMemo } from 'react';
 import { useAtom, useAtomValue } from 'jotai';
 import { isCancelKey } from '@librechat/chat';
 import { Button, TooltipAnchor } from '@librechat/client';
-import { useComposerOverlay } from '@librechat/chat/react';
+import { buildApprovalPreview, buildApprovalPreviews } from '@librechat/chat';
 import { ChevronDown, ChevronUp, ShieldQuestion, TriangleAlert } from 'lucide-react';
+import {
+  useComposerOverlay,
+  approvalPanelOpenFamily,
+  pendingApprovalActionFamily,
+} from '@librechat/chat/react';
 import type { Agents } from 'librechat-data-provider';
 import type { KeyboardEvent, RefObject } from 'react';
 import type { TranslationKeys } from '~/hooks';
@@ -11,11 +16,6 @@ import {
   useApprovalContext,
   useResumeSubmit,
 } from '~/components/Chat/Messages/Content/ApprovalContext';
-import {
-  approvalPanelOpenFamily,
-  pendingApprovalActionFamily,
-} from '~/components/Chat/approval/state';
-import { buildApprovalPreview, buildApprovalPreviews } from '~/components/Chat/approval/preview';
 import ToolApproval from '~/components/Chat/Messages/Content/ToolApproval';
 import { useLocalize } from '~/hooks';
 

@@ -155,6 +155,17 @@ export type {
 export { boundIntentLabel, getToolCallIntent, useToolCallIntent } from './react/parts/intent';
 export { default as useFollowScroll } from './react/parts/useFollowScroll';
 export { default as useRowHandoff } from './react/parts/handoff';
+export {
+  askAnswerTextAtom,
+  useAskAnswerHost,
+  askSubmitStatusAtom,
+  askAnswerCheckedAtom,
+  AskAnswerHostProvider,
+  askAnswerSelectionAtom,
+  collapsedAskActionsAtom,
+  releasedComposerTextAtom,
+} from './react/parts/ask';
+export type { AskAnswerStatus, ReleasedComposerStash } from './react/parts/ask';
 export { useFilesHost, FilesHostProvider } from './react/files';
 export type { FilesHost } from './react/files';
 export { default as useReducedMotion } from './react/motion';
