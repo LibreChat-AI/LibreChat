@@ -213,3 +213,5 @@ export { createClientToolHandoff, type ClientToolHandoff } from './clientTools';
 
 export * from './foreground';
 export * from './stored';
+
+export * from './completion';

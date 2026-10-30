@@ -9,6 +9,7 @@ import {
   createApplicationBillingQuote,
   createResponseAccountingCollector,
 } from './accounting';
+import { computeUsageCostUSD } from '../usage';
 
 const usage: UsageMetadata = {
   input_tokens: 100,
@@ -132,17 +133,21 @@ describe('Responses accounting', () => {
     });
   });
 
-  it('quotes handoffs using their own agent configuration rather than the primary model', () => {
+  it('quotes handoffs using their billed model while retaining invocation provenance', () => {
     const quote = jest.fn((): AccountingQuote => ({ amount: '0', basis: 'application_billing' }));
     const collector = createResponseAccountingCollector({ quote });
     collector.record(usage, { __invoked_model: 'handoff-model' }, { agentId: 'handoff-agent' });
     expect(quote).toHaveBeenCalledWith(
       expect.objectContaining({
-        model: 'handoff-model',
+        model: usage.model,
         agentId: 'handoff-agent',
       }),
     );
-    expect(collector.snapshot()).toMatchObject({ status: 'available', amount: '0' });
+    expect(collector.snapshot()).toMatchObject({
+      status: 'available',
+      amount: '0',
+      calls: [expect.objectContaining({ model: 'handoff-model', modelSource: 'runtime_reported' })],
+    });
   });
 
   it('dedupes stable model response IDs but not distinct identical calls', () => {
@@ -299,6 +304,42 @@ describe('application-billing quotes', () => {
         input_token_details: { cache_read: 20, cache_creation: 10, cache_creation_1h: 5 },
       }),
     ).toEqual({ amount: '0.000280000000', basis: 'application_billing' });
+  });
+
+  it('prices the configured billing alias while preserving the provider identity', () => {
+    const endpoint = { 'billed-alias': { prompt: 2, completion: 4, context: 1000 } };
+    const collector = createResponseAccountingCollector({
+      quote: createApplicationBillingQuote({
+        pricing,
+        getValueKey: () => undefined,
+        resolveEndpointTokenConfig: (entry) =>
+          entry.provider === 'custom-endpoint' ? endpoint : undefined,
+      }),
+    });
+    collector.record({
+      ...usage,
+      model: 'billed-alias',
+      provider: 'custom-endpoint',
+      accountingIdentity: {
+        model: 'provider-model',
+        provider: 'openAI',
+        modelSource: 'provider_reported',
+      },
+    });
+    expect(collector.snapshot()).toMatchObject({
+      status: 'available',
+      basis: 'application_billing',
+      calls: [
+        expect.objectContaining({ model: 'provider-model', provider: 'openAI', reason: 'priced' }),
+      ],
+    });
+    expect(Number(collector.snapshot().amount)).toBe(
+      computeUsageCostUSD(
+        { ...usage, model: 'billed-alias', provider: 'custom-endpoint' },
+        pricing,
+        endpoint,
+      ),
+    );
   });
 
   it('supports explicit endpoint prices for nonstandard models', () => {

@@ -145,8 +145,6 @@ export function createResponseAccountingCollector(options: AccountingCollectorOp
         usage?.accountingIdentity ?? invocationIdentity(usage, metadata, context);
       const normalized: UsageMetadata = {
         ...usage,
-        model,
-        provider,
         agentId: context?.agentId || usage?.agentId,
         usage_type: usage?.usage_type === 'subagent' ? 'subagent' : undefined,
       };

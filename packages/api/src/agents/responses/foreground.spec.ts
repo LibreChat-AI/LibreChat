@@ -18,8 +18,14 @@ import {
   createResponseAggregator,
   buildAggregatedResponse,
 } from './service';
+import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { buildResponseInputChain, resolveResponseContinuation } from './persistence';
+import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
+import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import { createStoredForegroundResponseReader } from './stored';
+import { stopUserGenerations } from '~/user/generations';
+import { createAgentRunEnvelope } from '../envelope';
+import { executeAgentRun } from '../remote/host';
 
 const owner = { userId: '507f1f77bcf86cd799439011', tenantId: 'foreground' };
 const conversationId = '43528be3-42bb-47b8-b0e8-7cc02ef32f45';
@@ -127,6 +133,30 @@ function appFor(
   app.get('/:id', createStoredForegroundResponseReader({ ...db, logger, ...overrides }));
   return app;
 }
+
+it.each([conversationId, responseId])('preserves legacy tokenCount usage for %s', (id) =>
+  scoped(async () => {
+    await db.saveConvo({ userId: owner.userId }, { conversationId, endpoint: 'agents' });
+    await db.saveMessage(
+      { userId: owner.userId },
+      {
+        messageId: responseId,
+        conversationId,
+        text: 'Legacy reply',
+        isCreatedByUser: false,
+        tokenCount: 17,
+        sender: 'Agent',
+        endpoint: 'agents',
+        model: 'agent',
+      },
+    );
+    const read = await request(appFor())
+      .get('/' + id)
+      .expect(200);
+    expect(read.body.usage).toMatchObject({ input_tokens: 0, output_tokens: 17, total_tokens: 17 });
+    expect(read.body.accounting).toMatchObject({ status: 'unavailable', calls: [] });
+  }),
+);
 
 it('stores canonical tool history and accounting, resolves the returned response ID and retrieves that exact turn', () =>
   scoped(async () => {
@@ -279,6 +309,53 @@ it.each([null, undefined, { message: 'database unavailable' }, { conversationId:
   },
 );
 
+async function settleTerminal(
+  terminal: Pick<
+    ReturnType<typeof createForegroundResponseTerminal>,
+    'beforeSettle' | 'afterSettle' | 'onSettlementError'
+  >,
+  outcome: 'complete' | 'error' | 'aborted' = 'complete',
+): Promise<void> {
+  const manager = new GenerationJobManagerClass();
+  manager.configure({
+    jobStore: new InMemoryJobStore(),
+    eventTransport: new InMemoryEventTransport(),
+  });
+  manager.initialize();
+  try {
+    await executeAgentRun(
+      {
+        envelope: createAgentRunEnvelope({
+          protocol: 'responses',
+          requestId: 'terminal-unit',
+          receivedAt: Date.now(),
+          principal: { id: owner.userId },
+          payload: { model: 'agent', input: '' },
+        }),
+        runId: responseId,
+        conversationId,
+        captureTerminalOutcome: true,
+        isPrincipalActive: async () => true,
+        execute: async (execution) => {
+          if (outcome === 'error') throw new Error('provider failed');
+          if (outcome === 'aborted')
+            await manager.abortJob(responseId, {
+              expectedCreatedAt: execution.createdAt,
+              awaitProviderDrain: false,
+            });
+        },
+        handleExecutionError: () => undefined,
+        beforeSettle: terminal.beforeSettle,
+        afterSettle: terminal.afterSettle,
+        onSettlementError: terminal.onSettlementError,
+      },
+      { manager },
+    );
+  } finally {
+    await manager.destroy();
+  }
+}
+
 it.each([true, false])(
   'publishes storage truth after settlement and keeps notification failure separate: requested=%s',
   async (requestedStore) => {
@@ -297,7 +374,7 @@ it.each([true, false])(
       publish,
     });
     expect(publish).not.toHaveBeenCalled();
-    await terminal.afterSettle({ terminalOutcome: 'complete' }, undefined);
+    await settleTerminal(terminal);
     expect(saveResult).toHaveBeenCalledTimes(requestedStore ? 1 : 0);
     expect(publish).toHaveBeenCalledWith(expect.objectContaining({ store: requestedStore }));
     expect(JSON.stringify(logger.error.mock.calls)).not.toContain('private-secret');
@@ -317,7 +394,7 @@ it('retains provider output but reports store false on a failed optional save', 
     },
     publish,
   });
-  await terminal.afterSettle({ terminalOutcome: 'complete' }, undefined);
+  await settleTerminal(terminal);
   expect(publish).toHaveBeenCalledWith({ ...response, store: false });
 });
 
@@ -333,13 +410,141 @@ it.each(['error', 'cancelled'])(
     const saveResult = jest.fn();
     const publish = jest.fn();
     terminal.stage({ fail: jest.fn(), response, save: saveResult, publish });
-    const controller = new AbortController();
-    if (outcome === 'cancelled') controller.abort();
-    await terminal.afterSettle(
-      { terminalOutcome: outcome === 'cancelled' ? 'aborted' : 'error' },
-      outcome === 'error' ? new Error('provider failed') : undefined,
-    );
+    await settleTerminal(terminal, outcome === 'cancelled' ? 'aborted' : 'error');
     expect(saveResult).not.toHaveBeenCalled();
     expect(publish).not.toHaveBeenCalled();
   },
 );
+
+it('cannot restage a completed foreground result and repeat persistence', async () => {
+  const response = result();
+  const terminal = createForegroundResponseTerminal({
+    context: createResponseContext({ model: 'agent', input: '' }, response.id),
+    requestedStore: true,
+    logger,
+  });
+  const saveResult = jest.fn(async () => ({ conversationId, messageId: response.id }));
+  const publish = jest.fn();
+  const frame = { response, save: saveResult, publish, fail: jest.fn() };
+  terminal.stage(frame);
+  await settleTerminal(terminal);
+  expect(() => terminal.stage(frame)).toThrow('already staged');
+  expect(saveResult).toHaveBeenCalledTimes(1);
+  expect(publish).toHaveBeenCalledTimes(1);
+});
+
+it('fails closed if a caller skips the tracked-write phase', async () => {
+  const response = result();
+  const terminal = createForegroundResponseTerminal({
+    context: createResponseContext({ model: 'agent', input: '' }, response.id),
+    requestedStore: true,
+    logger,
+  });
+  const saveResult = jest.fn();
+  const publish = jest.fn();
+  const fail = jest.fn();
+  terminal.stage({ response, save: saveResult, publish, fail });
+  await terminal.afterSettle({ terminalOutcome: 'complete' }, undefined);
+  expect(saveResult).not.toHaveBeenCalled();
+  expect(publish).not.toHaveBeenCalled();
+  expect(fail).toHaveBeenCalledWith(
+    expect.objectContaining({ code: 'response_execution_unavailable' }),
+  );
+});
+
+it('keeps foreground storage inside the account-erasure cleanup barrier', () =>
+  scoped(async () => {
+    const manager = new GenerationJobManagerClass();
+    manager.configure({
+      jobStore: new InMemoryJobStore(),
+      eventTransport: new InMemoryEventTransport(),
+    });
+    manager.initialize();
+    let enteredSave!: () => void;
+    let releaseSave!: () => void;
+    const saving = new Promise<void>((resolve) => {
+      enteredSave = resolve;
+    });
+    const writeGate = new Promise<void>((resolve) => {
+      releaseSave = resolve;
+    });
+    const response = result();
+    const terminal = createForegroundResponseTerminal({
+      context: createResponseContext({ model: 'agent', input: '' }, response.id),
+      requestedStore: true,
+      logger,
+    });
+    const publish = jest.fn();
+    const run = executeAgentRun(
+      {
+        envelope: createAgentRunEnvelope({
+          protocol: 'responses',
+          requestId: 'erase-foreground',
+          receivedAt: Date.now(),
+          principal: { id: owner.userId, tenantId: owner.tenantId },
+          payload: { model: 'agent', input: 'input' },
+        }),
+        runId: response.id,
+        conversationId,
+        captureTerminalOutcome: true,
+        isPrincipalActive: db.isSubagentOwnerAdmissible,
+        execute: async () => {
+          terminal.stage({
+            response,
+            save: async (value) => {
+              enteredSave();
+              await writeGate;
+              return save(value);
+            },
+            publish,
+            fail: jest.fn(),
+          });
+        },
+        beforeSettle: terminal.beforeSettle,
+        afterSettle: terminal.afterSettle,
+        onSettlementError: terminal.onSettlementError,
+      },
+      { manager },
+    );
+    void run.catch(() => undefined);
+    let cleanup: Promise<void> | undefined;
+    try {
+      await saving;
+      expect(await manager.getCleanupBlockingJobIdsForUser(owner.userId, owner.tenantId)).toContain(
+        response.id,
+      );
+      let enteredAbort!: () => void;
+      const stopping = new Promise<void>((resolve) => {
+        enteredAbort = resolve;
+      });
+      const abort = manager.abortJob.bind(manager);
+      jest.spyOn(manager, 'abortJob').mockImplementation(async (...args) => {
+        enteredAbort();
+        return abort(...args);
+      });
+      let erased = false;
+      cleanup = (async () => {
+        await db.beginAgentTriggerUserDeletion(owner.userId, new Date());
+        await stopUserGenerations(owner.userId, owner.tenantId, manager);
+        await db.deleteConvos(owner.userId, {}, { allowEmpty: true });
+        await db.deleteMessages({ user: owner.userId });
+        await db.deleteUserById(owner.userId);
+        erased = true;
+      })();
+      void cleanup.catch(() => undefined);
+      await stopping;
+      expect(erased).toBe(false);
+      releaseSave();
+      await Promise.all([run, cleanup]);
+      expect(publish).not.toHaveBeenCalled();
+      await runAsSystem(async () => {
+        expect(await mongoose.models.Message.countDocuments({ user: owner.userId })).toBe(0);
+        expect(await mongoose.models.Conversation.countDocuments({ user: owner.userId })).toBe(0);
+        expect(await mongoose.models.User.countDocuments({ _id: owner.userId })).toBe(0);
+      });
+    } finally {
+      releaseSave();
+      await Promise.allSettled([run, cleanup ?? Promise.resolve()]);
+      await manager.destroy();
+    }
+  }));

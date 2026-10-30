@@ -93,6 +93,7 @@ interface SavedMessage extends StoredResponseMessage {
   content?: unknown[];
   metadata?: Record<string, unknown>;
   model?: string;
+  tokenCount?: number;
 }
 interface SavedConversation {
   createdAt?: Date | string;
@@ -243,7 +244,18 @@ export function createStoredForegroundResponseReader(
         output(message),
         receipt.success ? receipt.data.outputLayout : undefined,
       );
-      response.usage = receipt.success ? receipt.data.usage : null;
+      const legacyTokens = count.safeParse(message.tokenCount);
+      response.usage = null;
+      if (receipt.success) response.usage = receipt.data.usage;
+      else if (legacyTokens.success) {
+        response.usage = {
+          input_tokens: 0,
+          output_tokens: legacyTokens.data,
+          total_tokens: legacyTokens.data,
+          input_tokens_details: { cached_tokens: 0 },
+          output_tokens_details: { reasoning_tokens: 0 },
+        };
+      }
       response.accounting =
         receipt.success && receipt.data.accounting
           ? receipt.data.accounting
