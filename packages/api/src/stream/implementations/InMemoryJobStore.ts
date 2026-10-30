@@ -788,6 +788,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
     if (terminalPersistencePending) {
       if (!['complete', 'error', 'aborted'].includes(job.status)) return false;
       job.terminalPersistencePending = true;
+      job.terminalPersistenceOwner = 'external';
       job.terminalPersistenceStartedAt ??= Date.now();
     }
     job.providerDrained = true;

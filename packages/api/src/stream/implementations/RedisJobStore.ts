@@ -63,9 +63,9 @@ import { parseScheduleMCPCompletion } from '~/schedules/authorization/continuati
 import { instrumentIORedisClient, RedisUseCases } from '~/cache/redisTelemetry';
 import { RecoveredSteerPayloadMismatchError } from '~/stream/SteerRecovery';
 import { SCHEDULE_MCP_FAILURE_PATCH_LUA } from '../scheduleFailure';
+import { parseTerminalPersistenceOwner } from '~/stream/metadata';
 import { createCheckpointNamespace } from '~/stream/checkpoints';
 import { createToolTimingTracker } from '~/agents/toolTiming';
-import { parseChannelExecution } from '~/stream/metadata';
 import { evalScript } from '~/cache/redisScript';
 
 const CLIENT_REQUEST_ID_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/;
@@ -734,7 +734,7 @@ const PROVIDER_DRAIN_LUA =
   'if ARGV[3] == "1" then ' +
   'local status = redis.call("HGET", KEYS[1], "status") ' +
   'if status ~= "complete" and status ~= "error" and status ~= "aborted" then return 0 end ' +
-  'redis.call("HSET", KEYS[1], "terminalPersistencePending", "1") ' +
+  'redis.call("HSET", KEYS[1], "terminalPersistencePending", "1", "terminalPersistenceOwner", "external") ' +
   'redis.call("HSETNX", KEYS[1], "terminalPersistenceStartedAt", ARGV[4]) end ' +
   'redis.call("HSET", KEYS[1], "providerDrained", "1") return 1';
 
@@ -5690,6 +5690,7 @@ export class RedisJobStore implements IJobStoreV2 {
       sender: data.sender || undefined,
       syncSent: data.syncSent === '1',
       finalEvent: data.finalEvent || undefined,
+      terminalPersistenceOwner: parseTerminalPersistenceOwner(data.terminalPersistenceOwner),
       terminalPersistencePending:
         data.terminalPersistencePending != null
           ? data.terminalPersistencePending === '1'
@@ -5704,9 +5705,6 @@ export class RedisJobStore implements IJobStoreV2 {
       agent_id: data.agent_id || undefined,
       isTemporary: data.isTemporary != null ? data.isTemporary === '1' : undefined,
       retentionExpiresAt: data.retentionExpiresAt || undefined,
-      channelExecution: parseChannelExecution(
-        data.channelExecution === undefined ? undefined : JSON.parse(data.channelExecution),
-      ),
       agentEventDeliveryKey: data.agentEventDeliveryKey || undefined,
       agentEventInvocationKey: data.agentEventInvocationKey || undefined,
       agentEventInvocationGenerationCreatedAt: data.agentEventInvocationGenerationCreatedAt

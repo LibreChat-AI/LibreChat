@@ -127,7 +127,7 @@ function expectExecutionError(error: unknown, expected: Partial<AgentTriggerExec
 
 describe('createAgentTriggerExecutionHost fire adapter', () => {
   it.each(['fire', 'continue'] as const)(
-    'carries a channel source marker and retains its exact reply ID: %s',
+    'retains exact reply identity without a parallel chat-channel lane: %s',
     async (mode) => {
       const original = mode === 'fire' ? createFireEnvelope() : createContinueEnvelope();
       const envelope = {
@@ -149,9 +149,9 @@ describe('createAgentTriggerExecutionHost fire adapter', () => {
       );
       const result = await createAgentTriggerExecutionHost(deps(fetcher)).dispatch(envelope);
       expect(result).toMatchObject({ responseMessageId: 'saved-reply-1' });
-      expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).toMatchObject({
-        channelExecution: { channelId: 'channel-1', runId: 'channel-run-1' },
-      });
+      expect(JSON.parse(String(fetcher.mock.calls[0][1]?.body))).not.toHaveProperty(
+        'channelExecution',
+      );
     },
   );
 

@@ -417,15 +417,32 @@ export class AgentExecutionEnrollment {
         ))
       )
         throw new Error('Agent approval provider drain could not be confirmed');
-      if (
-        !(await this.manager.approvals.finishPausePersistence(
+      let releaseError: unknown;
+      let released = false;
+      try {
+        released = await this.manager.approvals.finishPausePersistence(
           this.runId,
           actionId,
           this.createdAt,
           this.providerExecutionId,
-        ))
-      )
-        throw new Error('Agent approval persistence could not be confirmed');
+        );
+      } catch (error) {
+        releaseError = error;
+      }
+      if (!released) {
+        const current = await this.manager.getJobStore().getJob(this.runId);
+        if (
+          current?.createdAt !== this.createdAt ||
+          current.status !== 'requires_action' ||
+          current.providerExecutionId !== this.providerExecutionId ||
+          current.providerExecutionOwnerId !== this.ownerId ||
+          current.providerDrained !== true ||
+          current.terminalPersistencePending === true ||
+          current.pendingActionId !== actionId ||
+          current.pendingAction?.actionId !== actionId
+        )
+          throw releaseError ?? new Error('Agent approval persistence could not be confirmed');
+      }
       this.paused = true;
       return {};
     } catch (error) {
@@ -497,6 +514,7 @@ export async function enrollAgentExecution(
         endpoint: protocol,
         model: agentId,
         responseMessageId: runId,
+        ...(params.retainTerminalPersistence && { terminalPersistenceOwner: 'external' as const }),
       },
     });
   } catch (error) {
@@ -544,7 +562,9 @@ export async function enrollResumedAgentExecution(
     job.metadata.conversationId !== params.conversationId ||
     job.metadata.endpoint !== params.protocol ||
     job.metadata.responseMessageId !== params.runId ||
-    job.metadata.providerExecutionId !== params.providerExecutionId
+    job.metadata.providerExecutionId !== params.providerExecutionId ||
+    Boolean(params.retainTerminalPersistence) !==
+      (job.metadata.terminalPersistenceOwner === 'external')
   )
     throw new AgentExecutionAdmissionError(
       'Resumed agent execution identity changed',

@@ -5,32 +5,12 @@ import {
 import type { JobMetadataPatch } from './interfaces/IJobStore';
 import type { GenerationJobMetadata } from '~/types';
 import { parseScheduleMCPCompletion } from '~/schedules/authorization/continuation';
-import { isAgentTriggerRequest } from '~/crypto/jwt';
 
-export function parseChannelExecution(value: unknown): GenerationJobMetadata['channelExecution'] {
+/** Trusted persisted capability, not an endpoint or caller-body inference. */
+export function parseTerminalPersistenceOwner(value: unknown): 'external' | undefined {
   if (value === undefined) return undefined;
-  if (
-    value == null ||
-    typeof value !== 'object' ||
-    Array.isArray(value) ||
-    Object.keys(value).length !== 2 ||
-    !('channelId' in value) ||
-    !('runId' in value) ||
-    typeof value.channelId !== 'string' ||
-    !value.channelId ||
-    typeof value.runId !== 'string' ||
-    !value.runId
-  )
-    throw new Error('channel_execution_invalid');
-  return { channelId: value.channelId, runId: value.runId };
-}
-
-/** Source IDs are opaque; both normal settlement and abort use the same owner predicate. */
-export function hasSourceTerminalAction(metadata: {
-  agentEventDeliveryKey?: string;
-  channelExecution?: GenerationJobMetadata['channelExecution'];
-}): boolean {
-  return metadata.agentEventDeliveryKey != null || metadata.channelExecution != null;
+  if (value !== 'external') throw new Error('terminal_persistence_owner_invalid');
+  return value;
 }
 
 /** The acknowledgement carries the reply ID already reserved for this generation. */
@@ -43,21 +23,12 @@ export function buildGenerationStartedResponse(input: {
   return { ...input, status: 'started' };
 }
 
-/** Body markers acquire authority only at the signed server-trigger ingress. */
-export function resolveChannelExecutionMetadata(request: {
-  headers?: Record<string, string | string[] | undefined>;
-  body?: { channelExecution?: unknown };
-}): Pick<GenerationJobMetadata, 'channelExecution'> {
-  if (request.body?.channelExecution === undefined) return {};
-  if (!isAgentTriggerRequest(request)) throw new Error('channel_execution_forbidden');
-  return { channelExecution: parseChannelExecution(request.body.channelExecution) };
-}
-
 export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): JobMetadataPatch {
   const patch: JobMetadataPatch = {};
-  if (metadata.channelExecution !== undefined) {
-    patch.channelExecution = parseChannelExecution(metadata.channelExecution);
-  }
+  if (metadata.terminalPersistenceOwner !== undefined)
+    patch.terminalPersistenceOwner = parseTerminalPersistenceOwner(
+      metadata.terminalPersistenceOwner,
+    );
   if (metadata.responseMessageId) {
     patch.responseMessageId = metadata.responseMessageId;
   }
