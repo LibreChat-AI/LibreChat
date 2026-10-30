@@ -6,6 +6,7 @@ import {
   isBedrockDocumentType,
 } from 'librechat-data-provider';
 import type { FileConfig, EndpointFileConfig } from 'librechat-data-provider';
+import { isProviderDocumentCandidate } from './utils';
 
 /**
  * Mirrors the categorization logic from BaseClient.processAttachments.
@@ -49,10 +50,7 @@ function categorizeFile(
   } else if (file.type?.startsWith('audio/')) {
     return 'audios';
   } else if (
-    file.type &&
-    mergedFileConfig &&
-    endpointFileConfig?.supportedMimeTypes &&
-    mergedFileConfig.checkType?.(file.type, endpointFileConfig.supportedMimeTypes)
+    isProviderDocumentCandidate(file.type, mergedFileConfig, endpointFileConfig?.supportedMimeTypes)
   ) {
     return 'documents';
   }
@@ -184,5 +182,62 @@ describe('processAttachments — supportedMimeTypes routing logic', () => {
     const { merged, epConfig } = resolveConfig(['.*']);
     const result = categorizeFile({ type: 'text/csv', embedded: true }, false, merged, epConfig);
     expect(result).toBe('skipped');
+  });
+
+  describe('inherited default supportedMimeTypes', () => {
+    /** An endpoint with no `supportedMimeTypes` of its own inherits the built-in list. */
+    const inherited = () => {
+      const merged = mergeFileConfig({ endpoints: { [endpoint]: { fileLimit: 5 } } });
+      return { merged, epConfig: getEndpointFileConfig({ fileConfig: merged, endpoint }) };
+    };
+
+    it.each([
+      'application/zip',
+      'application/x-zip-compressed',
+      'application/x-tar',
+      'application/epub+zip',
+    ])('does not opt archive %s into the provider document path', (type) => {
+      const { merged, epConfig } = inherited();
+      expect(merged.checkType?.(type, epConfig?.supportedMimeTypes ?? [])).toBe(true);
+      expect(categorizeFile({ type }, false, merged, epConfig)).toBe('skipped');
+    });
+
+    it.each([
+      'application/sql',
+      'application/x-sh',
+      'application/json',
+      'text/plain',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ])('keeps routing %s to documents', (type) => {
+      const { merged, epConfig } = inherited();
+      expect(categorizeFile({ type }, false, merged, epConfig)).toBe('documents');
+    });
+
+    it('keeps images, PDF, audio and video on their own branches', () => {
+      const { merged, epConfig } = inherited();
+      expect(categorizeFile({ type: 'image/png' }, false, merged, epConfig)).toBe('images');
+      expect(categorizeFile({ type: 'application/pdf' }, false, merged, epConfig)).toBe(
+        'documents',
+      );
+      expect(categorizeFile({ type: 'audio/mp3' }, false, merged, epConfig)).toBe('audios');
+      expect(categorizeFile({ type: 'video/mp4' }, false, merged, epConfig)).toBe('videos');
+    });
+
+    it('keeps Bedrock document types for Bedrock', () => {
+      const { merged, epConfig } = inherited();
+      const docx = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+      expect(categorizeFile({ type: docx }, true, merged, epConfig)).toBe('documents');
+    });
+  });
+
+  it('should skip textual types an explicit allowlist leaves out', () => {
+    const { merged, epConfig } = resolveConfig(['^image/.*', '^application/pdf$']);
+    expect(categorizeFile({ type: 'application/sql' }, false, merged, epConfig)).toBe('skipped');
+  });
+
+  it('should route zip to documents when an explicit allowlist lists it', () => {
+    const { merged, epConfig } = resolveConfig(['^application/zip$']);
+    expect(categorizeFile({ type: 'application/zip' }, false, merged, epConfig)).toBe('documents');
   });
 });
