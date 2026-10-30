@@ -1,7 +1,7 @@
 const path = require('path');
 const {
   loadYaml,
-  applyLoadedConfig,
+  recordLoadedConfig,
   redactConfigSecretMaps,
   createCustomConfigLoader,
 } = require('@librechat/api');
@@ -13,5 +13,5 @@ module.exports = createCustomConfigLoader({
   loadLocal: loadYaml,
   defaultConfigPath,
   redactConfig: redactConfigSecretMaps,
-  onLoad: applyLoadedConfig,
+  onLoad: recordLoadedConfig,
 });

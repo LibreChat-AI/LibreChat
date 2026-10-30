@@ -1,8 +1,16 @@
+import type { AppConfig } from '@librechat/data-schemas';
 import type { LoadedCustomConfig } from './loader';
 import { setConfigDigest } from '~/telemetry/digest';
 
 /** The limit the process had before config first set one: 10, or `--stack-trace-limit`. */
 let processStackTraceLimit: number | undefined;
+
+const loadedDigests = new WeakMap<object, string>();
+
+/** Stages file identity without changing the running configuration. */
+export function recordLoadedConfig({ config, digest }: LoadedCustomConfig): void {
+  loadedDigests.set(config, digest);
+}
 
 /**
  * Sets `Error.stackTraceLimit` for errors created from now on. With no limit it restores the
@@ -13,8 +21,11 @@ export function applyStackTraceLimit(limit: number | undefined): void {
   Error.stackTraceLimit = limit ?? processStackTraceLimit;
 }
 
-/** Process-wide effects of the librechat.yaml that just loaded, at startup and on reload. */
-export function applyLoadedConfig({ config, digest }: LoadedCustomConfig): void {
-  applyStackTraceLimit(config.telemetry?.stackTraceLimit);
-  setConfigDigest(digest);
+/** Applies process-wide settings only once the YAML-derived base config is published. */
+export function applyLoadedConfig({ config }: AppConfig): void {
+  applyStackTraceLimit(config?.telemetry?.stackTraceLimit);
+  const digest = config && loadedDigests.get(config);
+  if (digest) {
+    setConfigDigest(digest);
+  }
 }

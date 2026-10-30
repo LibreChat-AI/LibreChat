@@ -3292,6 +3292,10 @@ describe('DEPLOYMENT_ONLY_CONFIG_PATHS', () => {
     });
   });
 
+  it('keeps the process-wide stack limit deployment-only', () => {
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS['telemetry.stackTraceLimit']).toBe('operator');
+  });
+
   it('overlaps neither the base-only sections nor the base-only paths', () => {
     const baseOnly = new Set<string>([...BASE_ONLY_CONFIG_SECTIONS, ...BASE_ONLY_CONFIG_PATHS]);
     for (const path of Object.keys(DEPLOYMENT_ONLY_CONFIG_PATHS)) {

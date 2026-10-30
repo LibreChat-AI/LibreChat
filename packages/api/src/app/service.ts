@@ -478,6 +478,8 @@ interface CacheStore {
 export interface AppConfigServiceDeps {
   /** Load the base AppConfig from YAML + AppService processing. */
   loadBaseConfig: (mode?: CustomConfigLoadMode) => Promise<AppConfig | undefined>;
+  /** Synchronous process-wide effects, after tools and the current base config publish. */
+  onBaseConfigPublished?: (config: AppConfig) => void;
   /** Cache tools after base config is loaded. */
   setCachedTools: (tools: Record<string, unknown>) => Promise<void>;
   /** Get a cache store by key. */
@@ -696,6 +698,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
 } {
   const {
     loadBaseConfig,
+    onBaseConfigPublished,
     setCachedTools,
     getCache,
     cacheKeys,
@@ -874,6 +877,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
       await cache.delete(BASE_CONFIG_KEY);
       return baseConfig;
     }
+    onBaseConfigPublished?.(loaded);
     lastGoodBaseConfig = baseConfig;
     return baseConfig;
   }

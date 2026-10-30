@@ -168,6 +168,7 @@ export type DeploymentOnlyConfigReason = 'startup' | 'operator' | 'unused';
  * a stored override had no effect rather than a dangerous one.
  */
 export const DEPLOYMENT_ONLY_CONFIG_PATHS: Readonly<Record<string, DeploymentOnlyConfigReason>> = {
+  'telemetry.stackTraceLimit': 'operator',
   rateLimits: 'operator',
   cloudfront: 'operator',
   permissions: 'operator',
