@@ -1,3 +1,5 @@
+import { channelStorageConfigSchema } from 'librechat-data-provider';
+import type { ChannelStorageConfig } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { AgentChannelRecord } from '~/models/channel';
 import { retireAgentChannel, initializeChannelScope, touchChannelScope } from './channelScope';
@@ -20,6 +22,11 @@ export type AgentChannelMetadata = Pick<
   | 'slack'
   | 'apiKeyId'
 >;
+
+export type AgentChannelDeletionResult =
+  | { status: 'deleted' }
+  | { status: 'pending_drain' }
+  | { status: 'not_found' };
 
 export interface AgentChannelMethods {
   createAgentChannel(input: AgentChannelRecord): Promise<AgentChannelRecord>;
@@ -49,11 +56,12 @@ export interface AgentChannelMethods {
     channelId: string,
     createdBy: string,
   ): Promise<AgentChannelRecord | null>;
-  deleteAgentChannel(channelId: string, createdBy: string): Promise<boolean>;
+  deleteAgentChannel(channelId: string, createdBy: string): Promise<AgentChannelDeletionResult>;
 }
 
 export function createAgentChannelMethods(
   mongoose: typeof import('mongoose'),
+  getStorageConfig: () => Promise<Partial<ChannelStorageConfig>> = async () => ({}),
 ): AgentChannelMethods {
   const channel = () => mongoose.model<AgentChannelRecord>('AgentChannel');
   const threads = () => createAgentChannelThreadModel(mongoose);
@@ -78,6 +86,17 @@ export function createAgentChannelMethods(
     } finally {
       await session.endSession();
     }
+  }
+
+  async function validateMetadataPage(cursor: string | undefined, limit: number): Promise<void> {
+    if (
+      !Number.isSafeInteger(limit) ||
+      limit < 1 ||
+      (cursor !== undefined && (typeof cursor !== 'string' || !mongoose.isValidObjectId(cursor)))
+    )
+      throw new Error('Invalid channel metadata page');
+    const limits = channelStorageConfigSchema.parse(await getStorageConfig());
+    if (limit > limits.maxMetadataPageSize) throw new Error('Invalid channel metadata page');
   }
 
   async function beginDeletion(channelId: string, createdBy: string) {
@@ -108,14 +127,7 @@ export function createAgentChannelMethods(
       return channel().find({ agentId }).sort({ createdAt: 1 }).lean();
     },
     async listAgentChannelTenants(cursor, limit) {
-      if (
-        !Number.isSafeInteger(limit) ||
-        limit < 1 ||
-        limit > 100 ||
-        (cursor && !mongoose.isValidObjectId(cursor))
-      ) {
-        throw new Error('Invalid channel metadata page');
-      }
+      await validateMetadataPage(cursor, limit);
       const records = await channel()
         .find(cursor ? { _id: { $gt: cursor } } : {})
         .select({ _id: 1, tenantId: 1 })
@@ -152,13 +164,7 @@ export function createAgentChannelMethods(
         .lean();
     },
     async listDeletingAgentChannels(cursor, limit) {
-      if (
-        !Number.isSafeInteger(limit) ||
-        limit < 1 ||
-        limit > 100 ||
-        (cursor && !mongoose.isValidObjectId(cursor))
-      )
-        throw new Error('Invalid deleting channel page');
+      await validateMetadataPage(cursor, limit);
       await ensureIndexes();
       const records = await channel()
         .find({ status: 'deleting', ...(cursor ? { _id: { $gt: cursor } } : {}) })
@@ -204,9 +210,12 @@ export function createAgentChannelMethods(
       });
     },
     beginAgentChannelDeletion: beginDeletion,
-    async deleteAgentChannel(channelId: string, createdBy: string): Promise<boolean> {
+    async deleteAgentChannel(
+      channelId: string,
+      createdBy: string,
+    ): Promise<AgentChannelDeletionResult> {
       const deleting = await beginDeletion(channelId, createdBy);
-      if (!deleting) return false;
+      if (!deleting) return { status: 'not_found' };
       if (
         await mongoose.models.ChannelRun.exists({
           channelId,
@@ -214,7 +223,7 @@ export function createAgentChannelMethods(
           state: { $in: ['queued', 'executing', 'requires_action', 'delivering', 'blocked'] },
         })
       )
-        return false;
+        return { status: 'pending_drain' };
       // Keep the deleting parent available for a retry if dependent cleanup fails.
       await threads().deleteMany({ channelId, tenantId: deleting.tenantId || { $in: [null, ''] } });
       const result = await channel().deleteOne({
@@ -222,7 +231,7 @@ export function createAgentChannelMethods(
         createdBy,
         status: 'deleting',
       });
-      return result.deletedCount > 0;
+      return { status: result.deletedCount > 0 ? 'deleted' : 'not_found' };
     },
   };
 }
