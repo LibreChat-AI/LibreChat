@@ -393,10 +393,14 @@ it('requires the retirement operation for deletion transitions and blocks update
       methods.createAgentChannel({ ...channel(), channelId: 'invalid-create', status: 'deleting' }),
     ).rejects.toThrow('requires retirement');
     expect(await methods.getAgentChannel('invalid-create')).toBeNull();
-    await methods.createAgentChannel(channel());
+    await methods.createAgentChannel({ ...channel(), apiKeyId: 'original-key' });
     expect(await methods.updateAgentChannel('channel', 'owner', { status: 'deleting' })).toBeNull();
     expect((await methods.getAgentChannel('channel'))?.status).toBe('active');
     await runs.admit(event(), 100);
+    expect(await methods.beginAgentChannelDeletion('channel', 'owner')).toMatchObject({
+      status: 'deleting',
+      apiKeyId: 'original-key',
+    });
     expect(await methods.deleteAgentChannel('channel', 'owner')).toBe(false);
     expect(
       await methods.updateAgentChannel(
