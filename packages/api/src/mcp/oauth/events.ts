@@ -6,6 +6,7 @@ import type { OAuthStartHandler } from '../types';
 import type * as t from '~/types';
 import { buildOAuthToolCallName, splitMCPToolKey } from '~/mcp/utils';
 import { getSafeErrorMetadata } from '~/utils/errors';
+import { createOAuthCallback } from './publication';
 
 interface Diagnostics {
   warn: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void;
@@ -266,6 +267,58 @@ interface OAuthEventTransport {
   jobs: Pick<GenerationJobManagerClass, 'emitChunk'>;
   streamId?: string | null;
   jobCreatedAt?: number;
+}
+
+/** One initialization owner per server, shared by reconnect and pending-flow discovery. */
+export function createMCPInitializationOAuthPrompts(
+  transport: OAuthEventTransport & { userId: string },
+): {
+  forServer: (
+    serverName: string,
+    index?: number,
+  ) => ReturnType<typeof createMCPReauthenticationPrompt>;
+} {
+  const prompts = new Map<string, ReturnType<typeof createMCPReauthenticationPrompt>>();
+  return {
+    forServer(serverName, index = 0) {
+      const existing = prompts.get(serverName);
+      if (existing) return existing;
+      let publishedURL: string | undefined;
+      const prompt = createMCPReauthenticationPrompt({
+        serverName,
+        logger: transport.logger,
+        toolCallId: `${transport.userId}:${serverName}:${Date.now()}`,
+        runId: String(Constants.USE_PRELIM_RESPONSE_MESSAGE_ID),
+        createStart: (step) => {
+          const delta = createMCPAuthDeltaEmitter({ ...transport, ...step });
+          const publish = createOAuthCallback({
+            runStepEmitter: createMCPAuthStepEmitter({ ...transport, ...step, index }),
+            runStepDeltaEmitter: async (authURL, options) => {
+              await delta(authURL, options);
+              // Record publication before acknowledgement can reenter completion.
+              publishedURL = authURL;
+            },
+          });
+          return async (authURL, options) => {
+            if (publishedURL === authURL) {
+              options?.onPublished?.();
+              return;
+            }
+            await publish(authURL, options);
+          };
+        },
+        createEnd: (step) => {
+          const retire = createMCPAuthEndEmitter({ ...transport, ...step, index });
+          return async () => {
+            await retire();
+            publishedURL = undefined;
+          };
+        },
+      });
+      prompts.set(serverName, prompt);
+      return prompt;
+    },
+  };
 }
 
 function createOAuthEventEmitter(transport: OAuthEventTransport) {
