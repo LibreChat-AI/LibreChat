@@ -615,7 +615,7 @@ export function _resetOverrideStrictCache(): void {
   _warnedNoTenantInStrictMode = false;
 }
 
-/** Versioned so older heads cannot supply override entries built under a stale tenant ID. */
+/** Versioned so older heads cannot supply entries built without the local base identity. */
 function overrideCacheKey(
   role: string | undefined,
   userId: string | undefined,
@@ -625,7 +625,7 @@ function overrideCacheKey(
   const tenant = tenantId ? `${tenantId}:tenant` : '__default__:global';
   const principal =
     userId && role ? `${role}:${userId}` : userId || role || BASE_CONFIG_PRINCIPAL_ID;
-  return `_OVERRIDE_:${tenant}:${principal}:tenant-v1:${scopeVersion}`;
+  return `_OVERRIDE_:${tenant}:${principal}:base-v2:${scopeVersion}`;
 }
 
 /**
@@ -713,6 +713,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
   const cache = getCache(cacheKeys.APP_CONFIG);
   const envAllowlist = parseEnvAllowlist(overrideEnvAllowlist);
   const envPolicies = new WeakMap<AppConfig, Map<string, EnvReferencePolicy>>();
+  const scopeVersions = new WeakMap<AppConfig, string>();
   const warnRebinding = createRebindingWarner();
   const runtimeConfigs = new WeakMap<AppConfig, AppConfig>();
 
@@ -1055,14 +1056,14 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
       }
     };
 
-    const scopeVersion = createHash('sha256')
-      .update(
-        JSON.stringify([
-          baseConfig.endpoints?.custom?.map(({ name, tenantId }) => [name, tenantId]),
-          baseConfig.config?.endpoints?.custom?.map(({ name, tenantId }) => [name, tenantId]),
-        ]),
-      )
-      .digest('hex');
+    let scopeVersion = scopeVersions.get(baseConfig);
+    if (!scopeVersion) {
+      // Hash once per local base, including derived settings and override policy, never values in keys.
+      scopeVersion = createHash('sha256')
+        .update(JSON.stringify([baseConfig, rederiveEndpoints, overrideEnvAllowlist]))
+        .digest('hex');
+      scopeVersions.set(baseConfig, scopeVersion);
+    }
     const cacheKey = overrideCacheKey(role, userId, cacheTenantId, scopeVersion);
     /**
      * The key names a role and user, not a principal set: principals resolved elsewhere are

@@ -172,6 +172,53 @@ describe('applyLoadedConfig', () => {
     expect(getConfigDigest()).not.toBe(digest);
   });
 
+  it('partitions serialized merged caches by local base and reuses identical bases', async () => {
+    const values = new Map<string, string>();
+    const cache = {
+      get: async (key: string) => {
+        const value = values.get(key);
+        return value ? JSON.parse(value) : undefined;
+      },
+      set: async (key: string, value: unknown) => {
+        values.set(key, JSON.stringify(value));
+      },
+      delete: async (key: string) => values.delete(key),
+    };
+    const first = createRuntime(cache);
+    first.setText(
+      'version: 1.3.18\ntelemetry:\n  stackTraceLimit: 25\nmemory:\n  disabled: true\n',
+    );
+    await first.getAppConfig({ baseOnly: true });
+    const firstDigest = getConfigDigest();
+    const second = createRuntime(cache);
+    second.setText(
+      'version: 1.3.18\ntelemetry:\n  stackTraceLimit: 60\nmemory:\n  disabled: false\n',
+    );
+    await second.getAppConfig({ role: 'USER' });
+
+    const local = await first.getAppConfig({ role: 'USER' });
+    expect(local.config.telemetry?.stackTraceLimit).toBe(25);
+    expect(local.memory?.disabled).toBe(true);
+    expect([...values.keys()].filter((key) => key.startsWith('_OVERRIDE_'))).toHaveLength(2);
+
+    const identical = createRuntime(cache);
+    identical.setText(
+      'version: 1.3.18\ntelemetry:\n  stackTraceLimit: 25\nmemory:\n  disabled: true\n',
+    );
+    expect((await identical.getAppConfig({ role: 'USER' })).memory?.disabled).toBe(true);
+    expect(getConfigDigest()).toBe(firstDigest);
+    expect([...values.keys()].filter((key) => key.startsWith('_OVERRIDE_'))).toHaveLength(2);
+
+    identical.setText(
+      'version: 1.3.18\ntelemetry:\n  stackTraceLimit: 40\nmemory:\n  disabled: false\n',
+    );
+    await identical.clearAppConfigCache();
+    expect((await identical.getAppConfig({ role: 'USER' })).memory?.disabled).toBe(false);
+    expect(Error.stackTraceLimit).toBe(40);
+    expect(getConfigDigest()).not.toBe(firstDigest);
+    expect([...values.keys()].filter((key) => key.startsWith('_OVERRIDE_'))).toHaveLength(3);
+  });
+
   it('keeps last-good telemetry when the real Redis adapter rejects SET, then retries', async () => {
     jest.spyOn(logger, 'error').mockImplementation(() => logger);
     const server = await startRespServer();
