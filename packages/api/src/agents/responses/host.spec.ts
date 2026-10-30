@@ -135,6 +135,7 @@ async function fixture(
   };
   const errors: unknown[] = [];
   const inputs: unknown[] = [];
+  const ordinaryRetrievals: string[] = [];
   let browserUser: IUser | undefined = user;
   let browserMode: 'owner' | 'trigger' | 'key' = 'owner';
   let generate: (
@@ -250,7 +251,8 @@ async function fixture(
         },
       });
     },
-    retrieve: (_req, res) => {
+    retrieve: (req, res) => {
+      ordinaryRetrievals.push(req.params.id);
       res.status(404).json({ error: { code: 'ordinary_response_not_found' } });
     },
   });
@@ -336,6 +338,7 @@ async function fixture(
     inputs,
     config,
     errors,
+    ordinaryRetrievals,
     readUntil,
     setBrowserUser: (value?: IUser) => {
       browserUser = value;
@@ -869,6 +872,8 @@ it('creates, executes and retrieves a background response through HTTP, real aut
 it.each([RetentionMode.ALL, RetentionMode.EPHEMERAL])(
   'captures %s retention before storing a new private background request',
   async (retentionMode) => {
+    const retention = jest.spyOn(db, 'getConvoRetention');
+    cleanup.push(async () => retention.mockRestore());
     const f = await fixture();
     f.config.interfaceConfig = {
       retentionMode,
@@ -880,6 +885,7 @@ it.each([RetentionMode.ALL, RetentionMode.EPHEMERAL])(
       .auth(f.credential.key, { type: 'bearer' })
       .send({ model: 'agent', input: 'retained private', background: true });
     expect(created.status).toBe(202);
+    expect(retention).not.toHaveBeenCalled();
     const row = await scoped(() =>
       storage.read({ userId: String(user._id), tenantId }, created.body.id),
     );
@@ -898,6 +904,8 @@ it.each([RetentionMode.ALL, RetentionMode.EPHEMERAL])(
 );
 
 it('inherits the existing temporary parent deadline instead of renewing its retention window', async () => {
+  const retention = jest.spyOn(db, 'getConvoRetention');
+  cleanup.push(async () => retention.mockRestore());
   const f = await fixture();
   f.config.interfaceConfig = {
     retentionMode: RetentionMode.ALL,
@@ -925,6 +933,8 @@ it('inherits the existing temporary parent deadline instead of renewing its rete
       previous_response_id: conversationId,
     });
   expect(created.status).toBe(202);
+  expect(retention).toHaveBeenCalledTimes(1);
+  expect(retention).toHaveBeenCalledWith(String(user._id), conversationId);
   expect(
     await scoped(() => storage.read({ userId: String(user._id), tenantId }, created.body.id)),
   ).toMatchObject({ expiredAt, isTemporary: true, conversationId });
@@ -1222,6 +1232,8 @@ it('does not let a new valid key resurrect an original revoked credential grant'
     .get(`/api/agents/v1/responses/${created.body.id}`)
     .auth(replacement.key, { type: 'bearer' });
   expect(result.status).toBe(404);
+  expect(result.body.error.code).toBe('response_not_found');
+  expect(f.ordinaryRetrievals).toEqual([]);
 });
 
 it('preserves ordinary synchronous Responses and defaults background execution off when disabled', async () => {
@@ -1264,6 +1276,49 @@ async function reserveUnstarted(credentialId: string) {
   if (!result.ok) throw new Error('Reservation failed');
   return result.record;
 }
+
+it('loads the journal once per poll and uses ordinary retrieval only for absent readable records', async () => {
+  const f = await fixture();
+  const record = await reserveUnstarted(f.credential.id);
+  const read = jest.spyOn(storage, 'read');
+  try {
+    await f.client
+      .get(`/api/agents/v1/responses/${record.responseId}`)
+      .auth(f.credential.key, { type: 'bearer' })
+      .expect(200);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(f.ordinaryRetrievals).toEqual([]);
+    read.mockClear();
+    const ordinary = await f.client
+      .get('/api/agents/v1/responses/resp_ordinary_fixture')
+      .auth(f.credential.key, { type: 'bearer' })
+      .expect(404);
+    expect(ordinary.body.error.code).toBe('ordinary_response_not_found');
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(f.ordinaryRetrievals).toEqual(['resp_ordinary_fixture']);
+  } finally {
+    read.mockRestore();
+  }
+});
+
+it('keeps journal outages out of the ordinary fallback and returns a safe retryable error', async () => {
+  const f = await fixture();
+  const read = jest
+    .spyOn(storage, 'read')
+    .mockRejectedValueOnce(new Error('private journal query'));
+  try {
+    const result = await f.client
+      .get('/api/agents/v1/responses/resp_unavailable')
+      .auth(f.credential.key, { type: 'bearer' })
+      .expect(503);
+    expect(result.body.error.code).toBe('response_service_unavailable');
+    expect(JSON.stringify(result.body)).not.toContain('private journal query');
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(f.ordinaryRetrievals).toEqual([]);
+  } finally {
+    read.mockRestore();
+  }
+});
 
 it('cancels an unstarted response durably and prevents a delayed worker from starting the provider', async () => {
   const f = await fixture();
