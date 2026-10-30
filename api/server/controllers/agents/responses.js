@@ -70,7 +70,6 @@ const {
   createResponseAccountingSnapshot,
   withResponsePersistenceErrors,
   writeDone,
-  buildResponse,
   generateResponseId,
   isValidationFailure,
   emitResponseCreated,
