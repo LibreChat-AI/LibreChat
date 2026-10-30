@@ -1,7 +1,12 @@
+import { Keyv } from 'keyv';
+import KeyvRedis from '@keyv/redis';
+import { createClient } from '@redis/client';
 import { logger, AppService } from '@librechat/data-schemas';
 import type { TCustomConfig } from 'librechat-data-provider';
+import type { AppConfigServiceDeps } from './service';
 import { applyLoadedConfig, recordLoadedConfig, applyStackTraceLimit } from './runtime';
 import { getConfigDigest, resetConfigDigestForTests } from '~/telemetry/digest';
+import { startRespServer } from '~/cache/__tests__/resp.helper';
 import { createCustomConfigLoader } from './loader';
 import { createAppConfigService } from './service';
 
@@ -51,7 +56,7 @@ describe('applyLoadedConfig', () => {
     }
   });
 
-  function createRuntime() {
+  function createRuntime(baseCache?: ReturnType<AppConfigServiceDeps['getCache']>) {
     process.env.CONFIG_PATH = '/virtual/librechat.yaml';
     let text = 'version: 1.3.18\ntelemetry:\n  stackTraceLimit: 25\n';
     const load = createCustomConfigLoader({
@@ -79,7 +84,7 @@ describe('applyLoadedConfig', () => {
       },
       onBaseConfigPublished: applyLoadedConfig,
       setCachedTools,
-      getCache: () => cache,
+      getCache: () => baseCache ?? cache,
       cacheKeys: { APP_CONFIG: 'app_config' },
       getApplicableConfigs: async () => [],
       getUserPrincipals: async () => [],
@@ -146,6 +151,59 @@ describe('applyLoadedConfig', () => {
     await expect(restarted.reloadBaseConfig()).resolves.toMatchObject({ ok: false });
     expect(Error.stackTraceLimit).toBe(25);
     expect(getConfigDigest()).toBe(digest);
+  });
+
+  it('keeps local YAML and runtime identity when another process replaces the shared base', async () => {
+    const runtime = createRuntime();
+    const local = await runtime.getAppConfig({ baseOnly: true });
+    const digest = getConfigDigest();
+    runtime.cache.get.mockResolvedValue({ config: { telemetry: { stackTraceLimit: 60 } } });
+
+    expect(await runtime.getAppConfig({ baseOnly: true })).toBe(local);
+    expect(Error.stackTraceLimit).toBe(25);
+    expect(getConfigDigest()).toBe(digest);
+    expect(runtime.buildConfig).toHaveBeenCalledTimes(1);
+
+    runtime.setText('version: 1.3.18\ntelemetry:\n  stackTraceLimit: 40\n');
+    await runtime.clearAppConfigCache();
+    const reloaded = await runtime.getAppConfig({ baseOnly: true });
+    expect(reloaded.config.telemetry?.stackTraceLimit).toBe(40);
+    expect(Error.stackTraceLimit).toBe(40);
+    expect(getConfigDigest()).not.toBe(digest);
+  });
+
+  it('keeps last-good telemetry when the real Redis adapter rejects SET, then retries', async () => {
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    const server = await startRespServer();
+    const client = createClient({ url: server.url, socket: { reconnectStrategy: false } });
+    const adapter = new KeyvRedis(client, { throwOnErrors: true });
+    const cache = new Keyv({ store: adapter, namespace: 'APP_CONFIG', throwOnErrors: true });
+    cache.on('error', () => undefined);
+    try {
+      await client.connect();
+      const runtime = createRuntime({
+        get: (key) => cache.get(key),
+        set: (key, value) => cache.set(key, value),
+        delete: (key) => cache.delete(key),
+      });
+      const lastGood = await runtime.getAppConfig({ baseOnly: true });
+      const digest = getConfigDigest();
+      runtime.setText('version: 1.3.18\ntelemetry:\n  stackTraceLimit: 60\n');
+      server.readonly = true;
+
+      await expect(runtime.reloadBaseConfig()).resolves.toMatchObject({ ok: false });
+      expect(await runtime.getAppConfig({ baseOnly: true })).toBe(lastGood);
+      expect(Error.stackTraceLimit).toBe(25);
+      expect(getConfigDigest()).toBe(digest);
+
+      server.readonly = false;
+      await expect(runtime.reloadBaseConfig()).resolves.toEqual({ ok: true });
+      expect(Error.stackTraceLimit).toBe(60);
+      expect(getConfigDigest()).not.toBe(digest);
+    } finally {
+      client.destroy();
+      await server.close();
+    }
   });
 
   it.each([

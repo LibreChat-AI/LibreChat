@@ -757,6 +757,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     return policy;
   }
   let lastGoodBaseConfig: AppConfig | undefined;
+  let publishedBaseGeneration = -1;
   let baseConfigFlight: { promise: Promise<BaseConfigLoad>; generation: number } | undefined;
 
   /**
@@ -842,6 +843,8 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
       await cache.delete(BASE_CONFIG_KEY).catch((deleteError: unknown) => {
         logger.error('[ensureBaseConfig] Failed to drop an overtaken restoration:', deleteError);
       });
+    } else {
+      publishedBaseGeneration = generation;
     }
     return lastGood;
   }
@@ -881,6 +884,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     }
     onBaseConfigPublished?.(loaded);
     lastGoodBaseConfig = baseConfig;
+    publishedBaseGeneration = generation;
     return baseConfig;
   }
 
@@ -906,14 +910,9 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
    * subagent cap) end with the newest librechat.yaml rather than whichever read finished last.
    */
   async function loadBase(refresh?: boolean): Promise<BaseConfigLoad> {
-    // A shared cache cannot initialize this process's YAML-derived runtime settings.
-    const cached = lastGoodBaseConfig
-      ? ((await cache.get(BASE_CONFIG_KEY)) as AppConfig | undefined)
-      : undefined;
-    if (cached) {
-      if (!refresh) {
-        return { config: cached };
-      }
+    // Another process's cached YAML cannot replace this process's runtime configuration.
+    if (!refresh && lastGoodBaseConfig && publishedBaseGeneration === baseGeneration) {
+      return { config: lastGoodBaseConfig };
     }
 
     const generation = baseGeneration;
