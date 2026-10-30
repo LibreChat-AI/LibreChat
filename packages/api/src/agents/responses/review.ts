@@ -6,6 +6,7 @@ import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { Response } from './types';
 import { buildPendingBackgroundResponse } from './background';
 import { toClientPendingAction } from '../hitl/policy';
+import { responseTenantId } from './scope';
 
 export interface ResponseReviewDependencies {
   jobs: Pick<GenerationJobManagerClass, 'getJob' | 'getResumeState'>;
@@ -54,7 +55,7 @@ export function createResponseReview(deps: ResponseReviewDependencies) {
       !['running', 'requires_action'].includes(job.status) ||
       job.createdAt !== record.generationCreatedAt ||
       job.metadata.userId !== record.userId ||
-      job.metadata.tenantId !== record.tenantId ||
+      responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
       job.metadata.agent_id !== record.agentId ||
       job.metadata.endpoint !== 'responses' ||
       job.metadata.responseMessageId !== record.responseId ||
