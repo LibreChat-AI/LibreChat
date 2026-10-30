@@ -74,7 +74,7 @@ export const SoleToolContext: Context<boolean | undefined> = createContext<boole
 );
 
 /** A generated enclosing title names exactly one call, replacing its settled row. */
-export const GeneratedToolLabelContext = createContext(false);
+export const GeneratedToolLabelContext: Context<boolean> = createContext(false);
 
 /** Set by a tool group for its own rows: true when the group holds exactly one
  *  tool call, whatever the phase around it holds. `SoleToolContext` lets the

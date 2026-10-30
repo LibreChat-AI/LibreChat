@@ -1,4 +1,3 @@
-import CommandTime from './CommandTime';
 import { useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import copy from 'copy-to-clipboard';
 import { Button } from '@librechat/client';
@@ -27,6 +26,7 @@ import { OutputRenderer } from '../ToolOutput';
 import { ERROR_PATTERNS } from './ExecuteCode';
 import { AttachmentGroup } from './Attachment';
 import PtcToolTrace from './PtcToolTrace';
+import CommandTime from './CommandTime';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 

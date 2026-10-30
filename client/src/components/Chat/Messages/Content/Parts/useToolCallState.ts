@@ -1,4 +1,3 @@
-import { useFailedReveal } from '../reveal';
 import { useCallback, useContext } from 'react';
 import {
   GeneratedToolLabelContext,
@@ -13,6 +12,7 @@ import type { ToolCallPhase } from '~/utils/toolCallPhase';
 import { isError } from '~/components/Chat/Messages/Content/ToolOutput';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { useProgress, useExpandCollapse } from '~/hooks';
+import { useFailedReveal } from '../reveal';
 
 interface ToolCallState {
   showCode: boolean;

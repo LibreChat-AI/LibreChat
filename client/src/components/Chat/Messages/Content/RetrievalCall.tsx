@@ -1,6 +1,7 @@
 import { useMemo, useState, useCallback, useContext } from 'react';
 import { Tools } from 'librechat-data-provider';
 import { TooltipAnchor } from '@librechat/client';
+import { useRowHandoff } from '@librechat/chat/react';
 import { FileText, FileSpreadsheet, FileCode, FileImage, File } from 'lucide-react';
 import {
   toolPanelSpacingClassName,
@@ -18,7 +19,6 @@ import { sortPagesByRelevance, cn } from '~/utils';
 import { useToolPreparation } from './preparation';
 import { useGetFiles } from '~/data-provider';
 import ProgressText from './ProgressText';
-import useRowHandoff from '@librechat/chat/react';
 
 interface FileSource {
   fileId: string;

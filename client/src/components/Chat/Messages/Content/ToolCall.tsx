@@ -1,4 +1,3 @@
-import { useFailedReveal } from './reveal';
 import React, { useMemo, useState, useEffect, useContext, useCallback } from 'react';
 import { Button } from '@librechat/client';
 import { hasToolParams } from '@librechat/chat';
@@ -28,6 +27,7 @@ import { isToolCallPreparing, useToolPreparation } from './preparation';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { MCPAppViews } from '~/components/MCPUIResource';
+import { useFailedReveal } from './reveal';
 import { AttachmentGroup } from './Parts';
 import ToolCallInfo from './ToolCallInfo';
 import ProgressText from './ProgressText';

@@ -1,4 +1,3 @@
-import CommandTime from './CommandTime';
 import { useMemo } from 'react';
 import { SquareTerminal } from 'lucide-react';
 import { TOOL_ROW_CLASSES, BareStatus, Stdout } from '@librechat/chat/components';
@@ -16,6 +15,7 @@ import useToolCallState from './useToolCallState';
 import CodeWindowHeader from './CodeWindowHeader';
 import { AttachmentGroup } from './Attachment';
 import PtcToolTrace from './PtcToolTrace';
+import CommandTime from './CommandTime';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 

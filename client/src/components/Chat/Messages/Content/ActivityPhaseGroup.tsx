@@ -1,6 +1,7 @@
 import { memo, useId, useCallback, useEffect, useMemo, useRef, useState, useContext } from 'react';
 import { useAtomValue } from 'jotai';
 import { ContentTypes } from 'librechat-data-provider';
+import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { Check, CircleX, Lightbulb, ChevronDown, TriangleAlert } from 'lucide-react';
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '@librechat/chat/components';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
@@ -34,7 +35,6 @@ import useThrottledValue from '~/hooks/Messages/useThrottledValue';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { getActivityLabelText } from '~/utils/activityLabels';
-import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { MessageSurfaceContext } from '../ui/surface';
 import { StackedToolIcons } from './ToolOutput';

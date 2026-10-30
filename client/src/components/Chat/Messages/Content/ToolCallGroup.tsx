@@ -1,8 +1,12 @@
 import { useState, useRef, useMemo, useEffect, useContext, useCallback } from 'react';
-import { LoneGroupContext, SoleToolContext } from '@librechat/chat/react';
 import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import { Tools, Constants, ContentTypes, isOpaqueReasoning } from 'librechat-data-provider';
 import { ChevronDown, ListChecks, MessageCircleQuestion, TriangleAlert, Users } from 'lucide-react';
+import {
+  LoneGroupContext,
+  SoleToolContext,
+  GeneratedToolLabelContext,
+} from '@librechat/chat/react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { PartWithIndex } from './ParallelContent';
 import type { ToolMeta } from './outcome';
@@ -30,7 +34,6 @@ import {
   useFailedRevealTrigger,
 } from './reveal';
 import { useLocalize, useExpandCollapse, scheduleMessageContentLayoutReconcile } from '~/hooks';
-import { LoneGroupContext, SoleToolContext, GeneratedToolLabelContext } from '@librechat/chat/react';
 import { ASK_USER_QUESTION, getSubmittedAskAnswer } from '~/utils/approval';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
