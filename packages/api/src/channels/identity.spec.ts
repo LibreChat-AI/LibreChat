@@ -1,7 +1,8 @@
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createModels,
+  createMethods,
   createChannelIdentityStorage,
   runAsSystem,
   tenantStorage,
@@ -10,7 +11,8 @@ import type { ChannelExternalIdentity, ChannelIdentityResult } from 'librechat-d
 import type { ChannelIdentityDependencies } from './identity';
 import { createChannelIdentityService } from './identity';
 
-let mongo: MongoMemoryServer;
+let mongo: MongoMemoryReplSet;
+let db: ReturnType<typeof createMethods>;
 let clock: number;
 let allowed: boolean;
 let allowedUsers: Set<string>;
@@ -35,9 +37,13 @@ const scoped = (test: () => Promise<void>) => () =>
   tenantStorage.run({ tenantId: identity.tenantId }, test);
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  mongo = await MongoMemoryReplSet.create({
+    replSet: { count: 1 },
+    instanceOpts: [{ args: ['--nounixsocket'] }],
+  });
   await mongoose.connect(mongo.getUri());
   createModels(mongoose);
+  db = createMethods(mongoose);
   await mongoose.models.ChannelIdentity.init();
 }, 60_000);
 afterAll(async () => {
@@ -45,7 +51,25 @@ afterAll(async () => {
   await mongo?.stop();
 });
 beforeEach(async () => {
-  await runAsSystem(() => mongoose.models.ChannelIdentity.deleteMany({}));
+  await runAsSystem(() =>
+    Promise.all(
+      ['ChannelIdentity', 'AgentChannel', 'ChannelScope', 'ResponseScope'].map((name) =>
+        mongoose.models[name].deleteMany({}),
+      ),
+    ),
+  );
+  await tenantStorage.run({ tenantId: identity.tenantId }, () =>
+    db.createAgentChannel({
+      channelId: identity.channelId,
+      agentId: identity.agentId,
+      createdBy: 'creator',
+      type: 'slack',
+      status: 'active',
+      credentialMode: 'per_user',
+      revision: identity.channelRevision,
+      slack: { teamId: identity.teamId, appId: 'A1', botUserId: 'UBOT' },
+    }),
+  );
   clock = 1_000_000;
   allowed = true;
   allowedUsers = new Set([principal.userId]);
@@ -272,5 +296,59 @@ it(
       ok: false,
       error: { code: 'expired' },
     });
+  }),
+);
+
+it(
+  'replaces a link only after its original principal becomes ineligible',
+  scoped(async () => {
+    const { accepted } = await accept();
+    const linked = value(await service.confirm(identity, accepted.linkId, accepted.revision));
+    expect(await service.issue(identity)).toEqual({ ok: false, error: { code: 'already_linked' } });
+    allowedUsers.delete(principal.userId);
+    const actor = value(await service.inspectActor(identity));
+    expect(actor?.state).toBe('unavailable');
+    expect((await service.list(principal))[0].state).toBe('unavailable');
+    const replacement = value(await service.issue(identity));
+    const next = { ...principal, userId: 'replacement-user', accountLabel: 'Replacement account' };
+    allowedUsers.add(next.userId);
+    const ticket = new URL(replacement.url).hash.slice(1);
+    const preview = value(await service.preview(next, ticket));
+    const acceptedNext = value(await service.accept(next, ticket, preview.revision));
+    value(await service.confirm(identity, acceptedNext.linkId, acceptedNext.revision));
+    expect(value(await service.resolve(identity)).userId).toBe(next.userId);
+    expect(await service.resolve(identity, linked.revision)).toEqual({
+      ok: false,
+      error: { code: 'changed' },
+    });
+  }),
+);
+
+it(
+  'does not list a prior channel revision as an active identity',
+  scoped(async () => {
+    const { accepted } = await accept();
+    value(await service.confirm(identity, accepted.linkId, accepted.revision));
+    currentRevision = 'changed-channel-revision';
+    expect((await service.list(principal))[0].state).toBe('unavailable');
+    expect(await service.inspectActor({ ...identity, channelRevision: currentRevision })).toEqual({
+      ok: true,
+      value: null,
+    });
+  }),
+);
+
+it(
+  'propagates eligibility outages without replacing or revoking canonical consent',
+  scoped(async () => {
+    const { accepted } = await accept();
+    const linked = value(await service.confirm(identity, accepted.linkId, accepted.revision));
+    dependencies.canUse = async () => {
+      throw new Error('eligibility unavailable');
+    };
+    await expect(service.issue(identity)).rejects.toThrow('eligibility unavailable');
+    await expect(service.list(principal)).rejects.toThrow('eligibility unavailable');
+    const stored = await dependencies.storage.readChannelIdentity(identity);
+    expect(stored).toMatchObject({ state: 'active', revision: linked.revision });
   }),
 );
