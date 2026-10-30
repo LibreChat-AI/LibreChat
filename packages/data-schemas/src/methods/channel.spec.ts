@@ -1,7 +1,9 @@
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import type { ChannelIdentityRecord } from '~/models/channelIdentity';
 import type { AgentChannelRecord } from './channel';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
+import { createChannelIdentityStorage } from './channelIdentity';
 import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
 import { createUserMethods } from './user';
@@ -48,6 +50,7 @@ beforeEach(async () =>
     for (const name of [
       'AgentChannel',
       'AgentChannelThread',
+      'ChannelIdentity',
       'ChannelScope',
       'ChannelRun',
       'ChannelLane',
@@ -72,11 +75,11 @@ it('builds unique connection indexes before concurrent first writes', () =>
 it('builds mapping indexes and serializes concurrent first mappings', () =>
   scope(async () => {
     await methods.createAgentChannel(channel());
-    await Promise.all(
-      Array.from({ length: 8 }, () =>
-        methods.putAgentChannelThread('channel', 'thread', 'conversation'),
-      ),
+    const mappings = await Promise.all(
+      Array.from({ length: 8 }, () => methods.getOrCreateAgentChannelThread('channel', 'thread')),
     );
+    expect(new Set(mappings.map((mapping) => mapping.conversationId)).size).toBe(1);
+    expect(mappings[0].conversationId).toMatch(/^[0-9a-f-]{36}$/);
     expect(
       await mongoose.models.AgentChannelThread.countDocuments({
         channelId: 'channel',
@@ -84,8 +87,11 @@ it('builds mapping indexes and serializes concurrent first mappings', () =>
       }),
     ).toBe(1);
     expect(await methods.getAgentChannelThread('channel', 'thread')).toMatchObject({
-      conversationId: 'conversation',
+      conversationId: mappings[0].conversationId,
     });
+    expect((await methods.getOrCreateAgentChannelThread('channel', 'thread')).conversationId).toBe(
+      mappings[0].conversationId,
+    );
   }));
 
 it('keeps a deleting parent until admitted work drains and rejects delayed admissions', () =>
@@ -155,13 +161,15 @@ it('drains a concurrent mapping write before erasing mappings and the parent', (
       release = resolve;
     });
     const collection = mongoose.models.AgentChannelThread.collection;
-    const update = collection.updateOne.bind(collection);
-    const paused = jest.spyOn(collection, 'updateOne').mockImplementation(async (...args) => {
-      entered();
-      await gate;
-      return update(...args);
-    });
-    const mapping = methods.putAgentChannelThread('channel', 'thread', 'conversation');
+    const update = collection.findOneAndUpdate.bind(collection);
+    const paused = jest
+      .spyOn(collection, 'findOneAndUpdate')
+      .mockImplementation(async (...args) => {
+        entered();
+        await gate;
+        return update(...args);
+      });
+    const mapping = methods.getOrCreateAgentChannelThread('channel', 'thread');
     await started;
     let finished = false;
     const deletion = methods.deleteAgentChannel('channel', 'owner').then((result) => {
@@ -178,7 +186,7 @@ it('drains a concurrent mapping write before erasing mappings and the parent', (
     await mapping;
     expect(await deletion).toBe(true);
     expect(await methods.getAgentChannelThread('channel', 'thread')).toBeNull();
-    await expect(methods.putAgentChannelThread('channel', 'late', 'conversation')).rejects.toThrow(
+    await expect(methods.getOrCreateAgentChannelThread('channel', 'late')).rejects.toThrow(
       'authority unavailable',
     );
   }));
@@ -186,7 +194,7 @@ it('drains a concurrent mapping write before erasing mappings and the parent', (
 it('leaves deletion retryable after dependent erasure fails', () =>
   scope(async () => {
     await methods.createAgentChannel(channel());
-    await methods.putAgentChannelThread('channel', 'thread', 'conversation');
+    await methods.getOrCreateAgentChannelThread('channel', 'thread');
     jest
       .spyOn(mongoose.models.AgentChannelThread.collection, 'deleteMany')
       .mockRejectedValueOnce(new Error('mapping erasure failed'));
@@ -283,7 +291,7 @@ it('redacts deleted-owner credentials while retaining a retry anchor for other p
       { ...event(), principal: { ...event().principal, userId: 'other-principal' } },
       100,
     );
-    await methods.putAgentChannelThread('channel', 'thread', 'conversation');
+    await methods.getOrCreateAgentChannelThread('channel', 'thread');
     await createUserMethods(mongoose).deleteUserById(userId);
     const parent = await methods.getAgentChannel('channel');
     expect(parent).toMatchObject({ status: 'deleting' });
@@ -319,7 +327,7 @@ it('keeps account erasure retryable after connection mapping cleanup fails', () 
       createdBy: userId,
       encryptedBotToken: 'private-token',
     });
-    await methods.putAgentChannelThread('channel', 'thread', 'conversation');
+    await methods.getOrCreateAgentChannelThread('channel', 'thread');
     jest
       .spyOn(mongoose.models.AgentChannelThread.collection, 'deleteMany')
       .mockRejectedValueOnce(new Error('mapping store unavailable'));
@@ -330,3 +338,206 @@ it('keeps account erasure retryable after connection mapping cleanup fails', () 
     await expect(users.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
     expect(await methods.getAgentChannel('channel')).toBeNull();
   }));
+
+function linkRecord(
+  partition: string,
+  channelId: string,
+  linkId: string,
+  state: ChannelIdentityRecord['state'] = 'active',
+): ChannelIdentityRecord {
+  return {
+    tenantId: partition,
+    linkId,
+    revision: 'one',
+    state,
+    ticketHash: `hash-${linkId}`,
+    ticketExpiresAtMs: Date.now() + 60_000,
+    expiresAtMs: Date.now() + 120_000,
+    ...(state === 'pending' ? {} : { userId: 'linked-user', accountLabel: 'Linked user' }),
+    identity: {
+      tenantId: partition,
+      channelId,
+      channelRevision: 'one',
+      teamId: 'T1',
+      externalUserId: linkId,
+      agentId: 'agent',
+    },
+  };
+}
+
+it('preserves a previously persisted conversation as the immutable thread identity', () =>
+  scope(async () => {
+    await methods.createAgentChannel(channel());
+    await mongoose.models.AgentChannelThread.create({
+      tenantId,
+      channelId: 'channel',
+      externalThreadKey: 'legacy-thread',
+      conversationId: 'legacy-conversation',
+    });
+    const mappings = await Promise.all(
+      Array.from({ length: 6 }, () =>
+        methods.getOrCreateAgentChannelThread('channel', 'legacy-thread'),
+      ),
+    );
+    expect(mappings.every((mapping) => mapping.conversationId === 'legacy-conversation')).toBe(
+      true,
+    );
+    expect((await methods.getAgentChannelThread('channel', 'legacy-thread'))?.conversationId).toBe(
+      'legacy-conversation',
+    );
+  }));
+
+it('requires the retirement operation for deletion transitions and blocks updates of deleting rows', () =>
+  scope(async () => {
+    await expect(
+      methods.createAgentChannel({ ...channel(), channelId: 'invalid-create', status: 'deleting' }),
+    ).rejects.toThrow('requires retirement');
+    expect(await methods.getAgentChannel('invalid-create')).toBeNull();
+    await methods.createAgentChannel(channel());
+    expect(await methods.updateAgentChannel('channel', 'owner', { status: 'deleting' })).toBeNull();
+    expect((await methods.getAgentChannel('channel'))?.status).toBe('active');
+    await runs.admit(event(), 100);
+    expect(await methods.deleteAgentChannel('channel', 'owner')).toBe(false);
+    expect(
+      await methods.updateAgentChannel(
+        'channel',
+        'owner',
+        { encryptedBotToken: 'late-secret' },
+        'deleting',
+      ),
+    ).toBeNull();
+    expect(
+      await methods.updateAgentChannel('channel', 'owner', { revision: 'late' }, 'deleting'),
+    ).toBeNull();
+    expect(await methods.getAgentChannel('channel')).not.toHaveProperty('encryptedBotToken');
+  }));
+
+it('retires every linked identity before completing direct channel deletion', () =>
+  scope(async () => {
+    await methods.createAgentChannel(channel());
+    const identities = createChannelIdentityStorage(mongoose);
+    for (const state of ['pending', 'accepted', 'active'] as const) {
+      expect(
+        await identities.saveChannelIdentity(linkRecord(tenantId, 'channel', state, state), null),
+      ).toBe(true);
+    }
+    expect(await methods.deleteAgentChannel('channel', 'owner')).toBe(true);
+    expect(await identities.listChannelLinks(tenantId, 'linked-user')).toEqual([]);
+    expect(
+      await mongoose.models.ChannelIdentity.countDocuments({
+        tenantId,
+        'identity.channelId': 'channel',
+      }),
+    ).toBe(0);
+    expect(
+      await identities.saveChannelIdentity(
+        linkRecord(tenantId, 'channel', 'late', 'pending'),
+        null,
+      ),
+    ).toBe(false);
+  }));
+
+it('keeps identity retirement failure retryable without reopening admission', () =>
+  scope(async () => {
+    await methods.createAgentChannel(channel());
+    const identities = createChannelIdentityStorage(mongoose);
+    await identities.saveChannelIdentity(linkRecord(tenantId, 'channel', 'link'), null);
+    jest
+      .spyOn(mongoose.models.ChannelIdentity.collection, 'deleteMany')
+      .mockRejectedValueOnce(new Error('identity cleanup unavailable'));
+    await expect(methods.deleteAgentChannel('channel', 'owner')).rejects.toThrow(
+      'identity cleanup unavailable',
+    );
+    expect((await methods.getAgentChannel('channel'))?.status).toBe('deleting');
+    expect(
+      await identities.saveChannelIdentity(
+        linkRecord(tenantId, 'channel', 'late', 'pending'),
+        null,
+      ),
+    ).toBe(false);
+    expect(await methods.deleteAgentChannel('channel', 'owner')).toBe(true);
+    expect(await identities.listChannelLinks(tenantId, 'linked-user')).toEqual([]);
+  }));
+
+it.each([tenantId, undefined])(
+  'erases other principals links for an account-owned channel in partition %s',
+  (activeTenant) =>
+    tenantStorage.run({ tenantId: activeTenant }, async () => {
+      const partition = activeTenant ?? '_';
+      const user = await mongoose.models.User.create({
+        email: `channel-cascade-${partition}@example.com`,
+        provider: 'local',
+        tenantId: activeTenant,
+      });
+      const ownerId = String(user._id);
+      await methods.createAgentChannel({
+        ...channel(),
+        tenantId: activeTenant,
+        createdBy: ownerId,
+        credentialMode: 'per_user',
+      });
+      await methods.createAgentChannel({
+        ...channel(),
+        tenantId: activeTenant,
+        channelId: 'other-channel',
+        createdBy: 'other-owner',
+      });
+      const identities = createChannelIdentityStorage(mongoose);
+      for (const state of ['pending', 'accepted', 'active'] as const) {
+        expect(
+          await identities.saveChannelIdentity(
+            linkRecord(partition, 'channel', state, state),
+            null,
+          ),
+        ).toBe(true);
+      }
+      await identities.saveChannelIdentity(
+        linkRecord(partition, 'other-channel', 'other-channel-link'),
+        null,
+      );
+      await runAsSystem(async () => {
+        await mongoose.models.ChannelIdentity.create(
+          linkRecord('foreign-tenant', 'channel', 'foreign-link'),
+        );
+      });
+      const admitted = await runs.admit(
+        {
+          ...event(),
+          tenantId: partition,
+          principal: { userId: 'linked-user', channelRevision: 'one' },
+        },
+        100,
+      );
+      await createUserMethods(mongoose).deleteUserById(ownerId);
+      expect((await methods.getAgentChannel('channel'))?.status).toBe('deleting');
+      expect(
+        (await identities.listChannelLinks(partition, 'linked-user')).map((link) => link.linkId),
+      ).toEqual(['other-channel-link']);
+      expect(
+        await identities.saveChannelIdentity(
+          linkRecord(partition, 'channel', 'late', 'pending'),
+          null,
+        ),
+      ).toBe(false);
+      expect(
+        await mongoose.models.ChannelIdentity.countDocuments({
+          tenantId: partition,
+          'identity.channelId': 'channel',
+        }),
+      ).toBe(0);
+      await runAsSystem(async () => {
+        expect(
+          await mongoose.models.ChannelIdentity.countDocuments({
+            tenantId: 'foreign-tenant',
+            linkId: 'foreign-link',
+          }),
+        ).toBe(1);
+      });
+      expect(await runs.read(partition, 'channel', admitted.run.runId)).not.toBeNull();
+      await mongoose.models.ChannelRun.updateOne(
+        { runId: admitted.run.runId },
+        { $set: { state: 'cancelled' } },
+      );
+      expect(await methods.deleteAgentChannel('channel', ownerId)).toBe(true);
+    }),
+);

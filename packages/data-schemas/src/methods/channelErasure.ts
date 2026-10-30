@@ -4,7 +4,7 @@ import type { ResponseOwner } from '~/models/response';
 import { createAgentChannelModel, createAgentChannelThreadModel } from '~/models/channel';
 import { createChannelRunModel, createChannelLaneModel } from '~/models/channelRun';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
-import { closeChannelScope } from './channelScope';
+import { retireChannelScope } from './channelScope';
 
 /** Validate operation configuration before the caller closes irreversible admission fences. */
 export function resolveChannelErasureConfig(
@@ -66,7 +66,7 @@ export async function eraseChannelPersistenceForUser(
           },
         },
       );
-      await closeChannelScope(mongoose, connection.tenantId, connection.channelId);
+      await retireChannelScope(mongoose, connection.tenantId, connection.channelId);
       await threads.deleteMany({ channelId: connection.channelId, tenantId: partition });
       if (
         !(await runs.exists({
