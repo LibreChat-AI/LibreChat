@@ -7,7 +7,7 @@ import {
   tenantStorage,
   runAsSystem,
 } from '@librechat/data-schemas';
-import type { ResponseStorage } from '@librechat/data-schemas';
+import type { ResponseStorage, ResponseOwner } from '@librechat/data-schemas';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { createResponseCompletion, createResponseExecutionRelease } from './completion';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
@@ -61,12 +61,12 @@ afterAll(async () => {
   await mongo?.stop();
 });
 
-async function fixture() {
+async function fixture(principal: ResponseOwner = owner) {
   const responseId = 'resp_running_stop';
   const execution = await enrollAgentExecution(
     {
       runId: responseId,
-      userId: owner.userId,
+      userId: principal.userId,
       conversationId: 'conversation',
       agentId: 'agent',
       protocol: 'responses',
@@ -76,7 +76,7 @@ async function fixture() {
     { manager: jobs },
   );
   const reserved = await storage.reserve({
-    ...owner,
+    ...principal,
     responseId,
     requestKey: 'original-request',
     fingerprint: 'original',
@@ -87,7 +87,7 @@ async function fixture() {
     requestJSON: JSON.stringify({ model: 'agent', input: 'Test', background: true, store: true }),
   });
   if (!reserved.ok) throw new Error('Reservation failed');
-  const running = await storage.publish(owner, responseId, 0, {
+  const running = await storage.publish(principal, responseId, 0, {
     status: 'in_progress',
     generationCreatedAt: execution.createdAt,
     responseJSON: JSON.stringify({
@@ -345,4 +345,30 @@ it.each(['owner', 'conversation'] as const)(
       expect(await jobs.getJob(f.responseId)).toBeUndefined();
       expect(await storage.read(owner, f.responseId)).toBeNull();
     }),
+);
+
+it.each([null, ''])(
+  'retires and releases real provider state for legacy persisted tenant %p',
+  async (tenantId) => {
+    const principal = { userId: new mongoose.Types.ObjectId().toString() };
+    await tenantStorage.run(principal, async () => {
+      await mongoose.models.User.create({
+        _id: principal.userId,
+        email: 'legacy-stop@example.com',
+        provider: 'local',
+      });
+      const f = await fixture(principal);
+      await mongoose.models.StoredResponse.collection.updateOne(
+        { responseId: f.responseId, userId: principal.userId },
+        { $set: { tenantId } },
+      );
+      const record = await storage.read(principal, f.responseId);
+      expect(record?.tenantId).toBe(tenantId);
+      expect((await jobs.getJob(f.responseId))?.metadata.tenantId).toBeUndefined();
+      expect(await f.retire(principal, f.responseId)).toBe('stopped');
+      expect((await storage.read(principal, f.responseId))?.status).toBe('cancelled');
+      expect(await jobs.getJob(f.responseId)).toBeUndefined();
+      expect(await f.retire(principal, f.responseId)).toBe('stopped');
+    });
+  },
 );
