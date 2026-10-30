@@ -1383,3 +1383,48 @@ it('persists cancellation as language-neutral status without presentation copy',
     const result = await storage.finishUnstartedResponseCancellation(tenantId, fence(run), 103);
     expect(result.snapshot).toMatchObject({ status: 'cancelled', text: '' });
   }));
+
+it('allocates separate canonical conversations for identical timestamps in different external channels', () =>
+  scope(async () => {
+    const first = event('first-channel');
+    first.admission.externalThreadKey = '123.456';
+    const second = event('second-channel');
+    second.admission.externalThreadKey = '123.456';
+    second.admission.externalChannelId = 'C2';
+    const [a, b] = await Promise.all([storage.admit(first, 100), storage.admit(second, 100)]);
+    expect(a.run.laneId).not.toBe(b.run.laneId);
+    const claimedA = (await storage.claim(tenantId, 'channel', 'a', 101, 1000))!;
+    const claimedB = (await storage.claim(tenantId, 'channel', 'b', 102, 1000))!;
+    const prepared = await Promise.all([
+      storage.prepareExecution(tenantId, fence(claimedA), 103),
+      storage.prepareExecution(tenantId, fence(claimedB), 103),
+    ]);
+    expect(new Set(prepared.map((run) => run.execution!.conversationId)).size).toBe(2);
+    expect(
+      prepared.every(
+        (run) => run.execution!.parentMessageId === '00000000-0000-0000-0000-000000000000',
+      ),
+    ).toBe(true);
+    expect(new Set(prepared.map((run) => run.admission.externalThreadKey))).toEqual(
+      new Set(['123.456']),
+    );
+    expect(new Set(prepared.map((run) => run.admission.externalChannelId))).toEqual(
+      new Set(['C1', 'C2']),
+    );
+  }));
+
+it('returns one canonical conversation across racing preparation retries in the same actor lane', () =>
+  scope(async () => {
+    await storage.admit(event(), 100);
+    const claimed = (await storage.claim(tenantId, 'channel', 'worker', 101, 1000))!;
+    const attempts = await Promise.all(
+      Array.from({ length: 8 }, () => storage.prepareExecution(tenantId, fence(claimed), 102)),
+    );
+    const saved = await storage.read(tenantId, 'channel', claimed.runId);
+    expect(new Set(attempts.map((run) => run.execution!.conversationId))).toEqual(
+      new Set([saved!.execution!.conversationId]),
+    );
+    expect(new Set(attempts.map((run) => run.execution!.requestId))).toEqual(
+      new Set([claimed.runId]),
+    );
+  }));
