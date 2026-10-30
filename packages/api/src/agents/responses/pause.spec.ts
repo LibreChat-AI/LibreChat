@@ -911,6 +911,7 @@ it('executes reviewed SDK tool calls once across two same-epoch pauses', () =>
           runId: responseId,
           conversationId,
           isPrincipalActive: async () => true,
+          retainTerminalPersistence: true,
           resume: {
             generationCreatedAt: f.execution.createdAt,
             providerExecutionId: record.resume!.providerExecutionId,
@@ -1003,6 +1004,7 @@ it('rebuilds the pinned SDK graph from the captured Mongo checkpoint and consume
         runId: responseId,
         conversationId,
         isPrincipalActive: async () => true,
+        retainTerminalPersistence: true,
         resume: {
           generationCreatedAt: f.execution.createdAt,
           providerExecutionId: 'sdk-resumed-provider',
@@ -1420,6 +1422,7 @@ it('uses production validation for a real retained question and rejects changed 
         runId: responseId,
         conversationId,
         isPrincipalActive: async () => true,
+        retainTerminalPersistence: true,
         resume: {
           generationCreatedAt: job.createdAt,
           providerExecutionId: current.resume!.providerExecutionId,
