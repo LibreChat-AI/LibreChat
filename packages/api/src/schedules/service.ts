@@ -779,7 +779,8 @@ export function createSchedulesService(
     // VIEW with the manage:agents bypass); shared with the create/update precheck
     // so the two never diverge.
     agentAccess: (agentId, user) => deps.resolveAgentFireAccess(agentId, user),
-    // Ownership IS existence for a chat project, so one lookup answers both. Failing
+    // The lookup resolves only projects the user owns or was shared, so one lookup answers
+    // both existence and access; a revoked share reads as missing. Failing
     // closed here would auto-disable a schedule on a transient Mongo blip, so a read
     // error propagates instead: the fire fails and is retried like any other error.
     projectAccess: async (projectId, user) =>

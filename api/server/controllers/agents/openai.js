@@ -669,6 +669,11 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
         },
         dbMethods,
       );
+      /** This path initializes the agent from a runtime rather than `req`, but file
+       *  search reads the turn's server-resolved project from the request: copy it over
+       *  so a shared project's files are searched in their owner's scope. */
+      req.chatProjectContext = agentRuntime.chatProjectContext;
+      req.chatProjectFiles = agentRuntime.chatProjectFiles;
 
       /**
        * Per-agent tool-execution context map, keyed by agentId.

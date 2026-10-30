@@ -3253,6 +3253,17 @@ export const interfaceSchema = z
       ])
       .optional(),
     /**
+     * Chat Project sharing. Projects themselves are always available; these keys only
+     * seed whether users may share a project with others (`share`) or with everyone
+     * (`public`). Project limits live in the top-level `projects` block.
+     */
+    projects: z
+      .object({
+        share: z.boolean().optional(),
+        public: z.boolean().optional(),
+      })
+      .optional(),
+    /**
      * What the reply-alert capabilities may do on this deployment. Each field gates a
      * capability rather than setting it: the preferences themselves stay per device, because
      * notification permission and audio output belong to the machine the reader sits at.
@@ -3464,6 +3475,10 @@ export const interfaceSchema = z
       share: true,
       public: true,
       snapshotFiles: true,
+    },
+    projects: {
+      share: false,
+      public: false,
     },
     replyNotifications: {
       tabBadge: true,

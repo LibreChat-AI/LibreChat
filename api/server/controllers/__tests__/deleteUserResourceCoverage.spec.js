@@ -18,6 +18,7 @@ const HANDLED_RESOURCE_TYPES = {
   [ResourceType.MCPSERVER]: 'deleteUserMCPServers',
   [ResourceType.SKILL]: 'deleteUserSkills',
   [ResourceType.SHARED_LINK]: 'deleteAllSharedLinksWithCleanup',
+  [ResourceType.CHAT_PROJECT]: 'deleteUserChatProjects',
 };
 
 /**

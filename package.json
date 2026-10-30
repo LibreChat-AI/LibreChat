@@ -156,6 +156,8 @@
     "migrate:shared-link-permissions:dry-run": "node config/migrate-shared-link-permissions.js --dry-run",
     "migrate:shared-link-permissions": "node config/migrate-shared-link-permissions.js",
     "migrate:shared-link-permissions:batch": "node config/migrate-shared-link-permissions.js --batch-size=50",
+    "migrate:chat-project-permissions:dry-run": "node config/migrate-chat-project-permissions.js --dry-run",
+    "migrate:chat-project-permissions": "node config/migrate-chat-project-permissions.js",
     "migrate:orphaned-agent-files:dry-run": "node config/migrate-orphaned-agent-files.js --dry-run",
     "migrate:orphaned-agent-files": "node config/migrate-orphaned-agent-files.js",
     "migrate:orphaned-agent-files:batch": "node config/migrate-orphaned-agent-files.js --batch-size=50",

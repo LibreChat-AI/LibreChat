@@ -3774,5 +3774,12 @@
   "com_ui_code_setup_approve": "Approve setup",
   "com_ui_code_setup_deny": "Deny setup",
   "com_ui_code_setup_saving": "Saving your decision…",
-  "com_ui_terms_accept_failed": "Could not accept the terms. Please try again."
+  "com_ui_terms_accept_failed": "Could not accept the terms. Please try again.",
+  "com_ui_project_role_viewer_desc": "Can see the project's instructions and files and start their own chats in it",
+  "com_ui_project_role_editor_desc": "Can also edit the project's name, description, and instructions",
+  "com_ui_project_role_owner_desc": "Full control over the project, including its files, sharing, and deletion",
+  "com_ui_project_shared": "Shared with you",
+  "com_ui_project_shared_with_you": "Shared with you. You can start chats here; your chats stay private.",
+  "com_ui_project_shared_with_you_edit": "Shared with you. You can edit this project; your chats stay private.",
+  "com_ui_share_project": "Share project"
 }

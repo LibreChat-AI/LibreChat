@@ -415,6 +415,12 @@ interface:
   #   share: true
   #   public: true # Allows users to toggle "share with everyone" for their links. Whether anonymous access is permitted is controlled by ALLOW_SHARED_LINKS_PUBLIC.
   #   snapshotFiles: true # Snapshot files referenced by a shared chat so viewers can preview/download them via the link. Enabled by default; the SHARED_LINKS_SNAPSHOT_FILES env var overrides this.
+  # Chat Project sharing. Projects themselves are always available; these only seed whether
+  # users may share a project with others (share) or with everyone (public). Project limits
+  # live in the separate top-level `projects` block.
+  # projects:
+  #   share: false
+  #   public: false
   # mcpServers:
   #   # Poll only while MCP controls are visible, in milliseconds (0 disables polling).
   #   toolsRefreshInterval: 300000

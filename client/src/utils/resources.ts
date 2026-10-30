@@ -81,6 +81,18 @@ export const RESOURCE_CONFIGS: Partial<Record<ResourceType, ResourceConfig>> = {
     getManageMessage: (name?: string) => `Manage access for ${name || 'shared link'}`,
     getCopyUrlMessage: () => 'Share link copied',
   },
+  [ResourceType.CHAT_PROJECT]: {
+    resourceType: ResourceType.CHAT_PROJECT,
+    defaultViewerRoleId: AccessRoleIds.CHAT_PROJECT_VIEWER,
+    defaultEditorRoleId: AccessRoleIds.CHAT_PROJECT_EDITOR,
+    defaultOwnerRoleId: AccessRoleIds.CHAT_PROJECT_OWNER,
+    getResourceUrl: (projectId: string) => `${window.location.origin}/projects/${projectId}`,
+    getResourceName: (name?: string) => (name && name !== '' ? name : 'project'),
+    getShareMessage: (name?: string) => (name && name !== '' ? name : 'project'),
+    getManageMessage: (name?: string) =>
+      `Manage permissions for ${name && name !== '' ? name : 'project'}`,
+    getCopyUrlMessage: () => 'Project URL copied',
+  },
 };
 
 export const getResourceConfig = (resourceType: ResourceType): ResourceConfig | undefined => {

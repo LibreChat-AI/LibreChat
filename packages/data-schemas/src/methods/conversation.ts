@@ -650,6 +650,16 @@ export interface ConversationMethods {
 export interface ConversationMethodDeps
   extends Pick<MessageMethods, 'getMessages' | 'deleteMessages'> {
   searchMessages?: MessageMethods['searchMessages'];
+  /**
+   * Whether the user may use a project for their own chats: they own it or it was shared
+   * with them. Without it, only the user's own projects are accepted.
+   */
+  hasChatProjectAccess?: (user: string, projectId: string) => Promise<boolean>;
+  /**
+   * Ids of every project the user can currently use (owned or shared). Lets the "unassigned"
+   * chat list keep a chat whose project was unshared from the user, instead of hiding it.
+   */
+  listAccessibleChatProjectIds?: (user: string) => Promise<string[]>;
   deleteAgentQueuedTurns?: (
     user: string,
     conversations: Array<{ conversationId: string; tenantId?: string; allTenants?: true }>,
@@ -669,6 +679,16 @@ export function createConversationMethods(
   deps?: ConversationMethodDeps,
 ): ConversationMethods {
   let legacyReceiptExpiryCursor: Types.ObjectId | undefined;
+
+  async function canUseChatProject(user: string, projectId: string): Promise<boolean> {
+    if (deps?.hasChatProjectAccess) {
+      return deps.hasChatProjectAccess(user, projectId);
+    }
+    const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument>;
+    return (
+      (await ChatProject.exists({ _id: new mongoose.Types.ObjectId(projectId), user })) != null
+    );
+  }
 
   /**
    * Stamps a real assistant reply with a strictly increasing server value.
@@ -2503,12 +2523,7 @@ export function createConversationMethods(
       delete unsetFields.chatProjectId;
       if (metadata?.noUpsert !== true && typeof candidate === 'string') {
         if (isValidObjectIdString(candidate)) {
-          const ChatProject = mongoose.models.ChatProject as Model<IChatProjectDocument>;
-          const project = await ChatProject.exists({
-            _id: new mongoose.Types.ObjectId(candidate),
-            user: userId,
-          });
-          if (project != null) {
+          if (await canUseChatProject(userId, candidate)) {
             chatProjectIdOnInsert = candidate;
           }
         }
@@ -3417,6 +3432,18 @@ export function createConversationMethods(
         for (const project of owned) {
           ownedProjects.add(`${project.user}:${project._id.toString()}`);
         }
+        /** A fork or duplicate of a chat in a shared project stays in that project. */
+        if (deps?.hasChatProjectAccess) {
+          await Promise.all(
+            [...candidatePairs.entries()]
+              .filter(([key]) => !ownedProjects.has(key))
+              .map(async ([key, { user, projectId }]) => {
+                if (await deps.hasChatProjectAccess!(user, projectId)) {
+                  ownedProjects.add(key);
+                }
+              }),
+          );
+        }
       }
 
       /**
@@ -3671,9 +3698,17 @@ export function createConversationMethods(
     }
 
     if (projectId === 'unassigned') {
-      filters.push({
-        $or: [{ chatProjectId: null }, { chatProjectId: { $exists: false } }],
-      } as FilterQuery<IConversation>);
+      const unassigned: FilterQuery<IConversation>[] = [
+        { chatProjectId: null },
+        { chatProjectId: { $exists: false } },
+      ];
+      /** A chat in a project the user can no longer see, such as one unshared from them,
+       *  belongs back in their unassigned list rather than nowhere. */
+      if (deps?.listAccessibleChatProjectIds) {
+        const accessible = await deps.listAccessibleChatProjectIds(user);
+        unassigned.push({ chatProjectId: { $nin: accessible } } as FilterQuery<IConversation>);
+      }
+      filters.push({ $or: unassigned } as FilterQuery<IConversation>);
     } else if (projectId) {
       filters.push({ chatProjectId: projectId } as FilterQuery<IConversation>);
     }
