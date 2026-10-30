@@ -64,3 +64,20 @@ test('sampling and central-export suppression still apply to explicit channel sc
   });
   expect(fetchMock).not.toHaveBeenCalled();
 });
+
+test('checks the original export deadline again after asynchronous destination resolution', async () => {
+  let checks = 0;
+  const expired = new Error('Original feedback attempt expired');
+  await expect(
+    sendFeedbackScore({
+      traceId: 'trace',
+      scoreId: 'bounded-channel-score',
+      feedback: { rating: 'thumbsUp' },
+      assertActive: () => {
+        if (++checks === 2) throw expired;
+      },
+    }),
+  ).rejects.toBe(expired);
+  expect(checks).toBe(2);
+  expect(fetchMock).not.toHaveBeenCalled();
+});

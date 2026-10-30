@@ -64,6 +64,7 @@ export function createChannelReplyModel(
 ): Model<ChannelReplyMapping> {
   const schema = mappingSchema();
   schema.index({ tenantId: 1, channelId: 1, teamId: 1, externalMessageKey: 1 }, { unique: true });
+  schema.index({ tenantId: 1, principalId: 1, conversationId: 1 });
   applyTenantIsolation(schema);
   return (
     mongoose.models.ChannelReply ?? mongoose.model<ChannelReplyMapping>('ChannelReply', schema)
@@ -100,6 +101,8 @@ export function createChannelFeedbackEventModel(
   );
   schema.index({ tenantId: 1, channelId: 1, eventId: 1 }, { unique: true });
   schema.index({ tenantId: 1, processed: 1, createdAt: 1 });
+  schema.index({ tenantId: 1, ledgerKey: 1, 'event.eventTimestampUs': -1, 'event.eventId': -1 });
+  schema.index({ tenantId: 1, 'mapping.principalId': 1, 'mapping.conversationId': 1 });
   applyTenantIsolation(schema);
   return (
     mongoose.models.ChannelFeedbackEvent ??
@@ -112,6 +115,7 @@ export function createChannelFeedbackModel(
 ): Model<ChannelFeedbackLedger> {
   const vote = new Schema<ChannelFeedbackVote>(
     {
+      reaction: String,
       externalMessageKey: { type: String, required: true },
       rating: { type: String, enum: ['thumbsUp', 'thumbsDown'], required: true },
       active: { type: Boolean, required: true },
@@ -139,6 +143,8 @@ export function createChannelFeedbackModel(
   );
   schema.index({ tenantId: 1, key: 1 }, { unique: true });
   schema.index({ tenantId: 1, exportStatus: 1, retryAtMs: 1 });
+  schema.index({ tenantId: 1, 'mapping.principalId': 1, 'mapping.conversationId': 1 });
+  schema.index({ tenantId: 1, 'mapping.channelId': 1 });
   applyTenantIsolation(schema);
   return (
     mongoose.models.ChannelFeedback ??

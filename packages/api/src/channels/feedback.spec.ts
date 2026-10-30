@@ -1,7 +1,8 @@
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createModels,
+  createMethods,
   createChannelFeedbackStorage,
   runAsSystem,
   tenantStorage,
@@ -11,10 +12,11 @@ import type {
   ChannelReplyMapping,
   ChannelReactionEvent,
 } from 'librechat-data-provider';
+import type { ChannelFeedbackStorage } from '@librechat/data-schemas';
 import type { ChannelFeedbackDependencies } from './feedback';
 import { createChannelFeedbackService, normalizeChannelRating } from './feedback';
 
-let mongo: MongoMemoryServer;
+let mongo: MongoMemoryReplSet;
 let service: ReturnType<typeof createChannelFeedbackService>;
 let deps: ChannelFeedbackDependencies;
 let clock: number;
@@ -31,7 +33,7 @@ const mapping: ChannelReplyMapping = {
   externalMessageKey: 'C1:123.456',
   runId: 'run-a',
   responseId: 'response-a',
-  messageId: 'message-a',
+  messageId: 'response-a',
   conversationId: 'conversation-a',
   principalId: 'user-a',
   traceId: 'trace-a',
@@ -56,7 +58,10 @@ const event = (
 });
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  mongo = await MongoMemoryReplSet.create({
+    replSet: { count: 1 },
+    instanceOpts: [{ args: ['--nounixsocket'] }],
+  });
   await mongoose.connect(mongo.getUri());
   createModels(mongoose);
   await Promise.all(
@@ -72,18 +77,47 @@ afterAll(async () => {
 beforeEach(async () => {
   await runAsSystem(() =>
     Promise.all(
-      ['ChannelReply', 'ChannelFeedback', 'ChannelFeedbackEvent'].map((name) =>
-        mongoose.models[name].deleteMany({}),
-      ),
+      [
+        'ChannelReply',
+        'ChannelFeedback',
+        'ChannelFeedbackEvent',
+        'AgentChannel',
+        'ChannelScope',
+        'ResponseScope',
+        'Message',
+      ].map((name) => mongoose.models[name].deleteMany({})),
     ),
   );
+  await tenantStorage.run({ tenantId: actor.tenantId }, async () => {
+    await createMethods(mongoose).createAgentChannel({
+      tenantId: actor.tenantId,
+      channelId: actor.channelId,
+      agentId: actor.agentId,
+      revision: actor.channelRevision,
+      createdBy: mapping.principalId,
+      type: 'slack',
+      status: 'active',
+      credentialMode: 'shared',
+      slack: { teamId: actor.teamId, appId: 'A1', botUserId: 'BOT' },
+    });
+    await mongoose.models.Message.create({
+      tenantId: actor.tenantId,
+      user: mapping.principalId,
+      messageId: mapping.messageId,
+      conversationId: mapping.conversationId,
+      isCreatedByUser: false,
+      sender: 'Agent',
+      endpoint: 'agents',
+      model: actor.agentId,
+      text: 'answer',
+    });
+  });
   clock = 1000;
   enabled = true;
   deps = {
     storage: createChannelFeedbackStorage(mongoose),
     canRecord: async () => enabled,
-    resolveReply: async (_actor, runId, key) =>
-      runId === mapping.runId ? { ...mapping, externalMessageKey: key } : null,
+    resolveReply: async (_actor, key) => ({ ...mapping, externalMessageKey: key }),
     sendScore: jest.fn().mockResolvedValue(undefined),
     maxConflictRetries: 10,
     exportTimeoutMs: 500,
@@ -93,7 +127,7 @@ beforeEach(async () => {
   };
   service = createChannelFeedbackService(deps);
   await tenantStorage.run({ tenantId: actor.tenantId }, () =>
-    service.mapReply(actor, mapping.runId, mapping.externalMessageKey),
+    service.mapReply(actor, mapping.externalMessageKey),
   );
 });
 
@@ -152,7 +186,7 @@ it(
 it(
   'orders reactions per message so old removals and overflow chunks do not erase newer votes',
   scoped(async () => {
-    await service.mapReply(actor, mapping.runId, 'C1:123.457');
+    await service.mapReply(actor, 'C1:123.457');
     await service.record(actor, event('e1', 100));
     await service.record(actor, event('e2', 200, { externalMessageKey: 'C1:123.457' }));
     expect(await service.record(actor, event('e3', 300, { action: 'removed' }))).toMatchObject({
@@ -182,11 +216,7 @@ it(
       error: { code: 'mapping_not_found' },
     });
     expect(
-      await service.mapReply(
-        { ...actor, teamId: 'other' },
-        mapping.runId,
-        mapping.externalMessageKey,
-      ),
+      await service.mapReply({ ...actor, teamId: 'other' }, mapping.externalMessageKey),
     ).toEqual({ ok: false, error: { code: 'mapping_not_found' } });
     expect(await service.record(actor, event('e2', Number.MAX_SAFE_INTEGER + 1))).toEqual({
       ok: false,
@@ -227,16 +257,121 @@ it(
 it(
   'recovers an admitted event after projection interruption using the same durable receipt',
   scoped(async () => {
-    const original = deps.storage.markChannelFeedbackEvent.bind(deps.storage);
-    const mark = jest
-      .spyOn(deps.storage, 'markChannelFeedbackEvent')
-      .mockRejectedValueOnce(new Error('database interrupted'));
+    const original = deps.storage.withAuthority.bind(deps.storage);
+    let interrupted = true;
+    const scopedAuthority: ChannelFeedbackStorage['withAuthority'] = <T>(
+      source: ChannelReplyMapping,
+      work: (storage: ChannelFeedbackStorage) => Promise<T>,
+    ): Promise<T> =>
+      original(source, (active) => {
+        if (!interrupted) return work(active);
+        interrupted = false;
+        return work({
+          ...active,
+          markChannelFeedbackEvent: async () => {
+            throw new Error('database interrupted');
+          },
+        });
+      });
+    jest.spyOn(deps.storage, 'withAuthority').mockImplementation(scopedAuthority);
     await expect(service.record(actor, event('e1', 100))).rejects.toThrow('database interrupted');
-    mark.mockImplementation(original);
     await service.recover(actor.tenantId, 10);
     expect(await deps.storage.pendingChannelFeedbackEvents(actor.tenantId, 10)).toHaveLength(0);
     expect(
       (await deps.storage.pendingChannelFeedbackExports(actor.tenantId, clock, 10))[0].revision,
     ).toBe(1);
+  }),
+);
+
+it.each(['current', 'legacy'] as const)(
+  'keeps distinct skin-tone slots and canonical aliases (%s)',
+  (mode) =>
+    tenantStorage.run({ tenantId: actor.tenantId }, async () => {
+      await service.record(actor, event('tone-two', 100, { reaction: 'thumbsup::skin-tone-2' }));
+      await service.record(actor, event('tone-three', 200, { reaction: 'thumbsup::skin-tone-3' }));
+      if (mode === 'legacy') {
+        const record = (
+          await deps.storage.pendingChannelFeedbackExports(actor.tenantId, clock, 10)
+        )[0];
+        const { reaction: _identity, ...collapsed } = record.votes.find(
+          (vote) => vote.eventId === 'tone-three',
+        )!;
+        await mongoose.models.ChannelFeedback.updateOne(
+          { tenantId: actor.tenantId, key: record.key },
+          { $set: { votes: [collapsed] } },
+        );
+      }
+      expect(
+        await service.record(
+          actor,
+          event('remove-two', 300, { reaction: '+1::skin-tone-2', action: 'removed' }),
+        ),
+      ).toMatchObject({ ok: true, value: { feedback: { rating: 'thumbsUp' } } });
+      const record = (
+        await deps.storage.pendingChannelFeedbackExports(actor.tenantId, clock, 10)
+      )[0];
+      expect(record.votes).toHaveLength(2);
+      expect(record.votes.find((vote) => vote.reaction === 'thumbsup::skin-tone-2')?.active).toBe(
+        false,
+      );
+      expect(record.votes.find((vote) => vote.reaction === 'thumbsup::skin-tone-3')?.active).toBe(
+        true,
+      );
+    }),
+);
+
+it(
+  'prevents a delayed exporter from overwriting a newer vote after lease takeover',
+  scoped(async () => {
+    await service.record(actor, event('positive', 100));
+    let enter!: () => void;
+    let release!: (allowed: boolean) => void;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const gate = new Promise<boolean>((resolve) => {
+      release = resolve;
+    });
+    let first = true;
+    deps.canRecord = async () => {
+      if (!first) return true;
+      first = false;
+      enter();
+      return gate;
+    };
+    const old = service.flush(actor.tenantId, 10).then(
+      () => undefined,
+      (error) => error,
+    );
+    await entered;
+    clock += 2001;
+    await service.record(actor, event('negative', 200, { reaction: '-1' }));
+    await createChannelFeedbackService(deps).flush(actor.tenantId, 10);
+    release(true);
+    expect(await old).toMatchObject({ message: 'Channel feedback export timed out' });
+    expect(deps.sendScore).toHaveBeenCalledTimes(1);
+    expect(jest.mocked(deps.sendScore).mock.calls[0][0].feedback).toEqual({ rating: 'thumbsDown' });
+    const records = await mongoose.models.ChannelFeedback.find({ tenantId: actor.tenantId }).lean();
+    expect(records).toHaveLength(1);
+    expect(records[0]).toMatchObject({ rating: 'thumbsDown', revision: 2, exportStatus: 'sent' });
+  }),
+);
+
+it(
+  'bounds an uncooperative policy lookup and retries its durable receipt later',
+  scoped(async () => {
+    await service.record(actor, event('positive', 100));
+    deps.exportTimeoutMs = 15;
+    deps.canRecord = () => new Promise<boolean>(() => {});
+    const bounded = createChannelFeedbackService(deps);
+    await expect(bounded.flush(actor.tenantId, 10)).rejects.toThrow('timed out');
+    expect(deps.sendScore).not.toHaveBeenCalled();
+    expect(
+      await deps.storage.pendingChannelFeedbackExports(actor.tenantId, clock, 10),
+    ).toHaveLength(0);
+    clock += 2001;
+    deps.canRecord = async () => true;
+    await bounded.flush(actor.tenantId, 10);
+    expect(deps.sendScore).toHaveBeenCalledTimes(1);
   }),
 );

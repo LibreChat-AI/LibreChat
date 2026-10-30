@@ -27,6 +27,8 @@ export {
   createMethods,
   createChannelIdentityStorage,
   createChannelFeedbackStorage,
+  ChannelFeedbackAuthorityError,
+  CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX,
   createChannelRunStorage,
   createChannelSummaryStorage,
   CHANNEL_SUMMARY_MAX_PRIOR_ROWS,

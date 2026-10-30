@@ -30,8 +30,8 @@ export function createChannelFeedbackWorker(
       const page = await runAsSystem(async () => deps.listChannels(cursor, deps.batchSize));
       cursor = page.next;
       let idle = !page.next;
-      for (const tenantId of new Set(page.channels.map((channel) => channel.tenantId ?? '_'))) {
-        await tenantStorage.run({ tenantId }, async () => {
+      for (const tenantId of new Set(page.channels.map((channel) => channel.tenantId || '_'))) {
+        await tenantStorage.run({ tenantId: tenantId === '_' ? undefined : tenantId }, async () => {
           try {
             const recovered = await deps.feedback.recover(tenantId, deps.batchSize);
             const exported = await deps.feedback.flush(tenantId, deps.batchSize);
