@@ -66,6 +66,7 @@ jest.mock('@librechat/client', () => ({
     displayValue,
     setValue,
     SelectIcon,
+    iconSide = 'left',
   }: {
     ariaLabel: string;
     selectId?: string;
@@ -74,6 +75,7 @@ jest.mock('@librechat/client', () => ({
     displayValue?: string;
     setValue: (value: string) => void;
     SelectIcon?: React.ReactNode;
+    iconSide?: 'left' | 'right';
   }) => (
     <div>
       {/* Mirrors the real combobox's current-value text for the Prompt dropdown only,
@@ -92,11 +94,19 @@ jest.mock('@librechat/client', () => ({
         value={selectedValue}
         onChange={(event) => setValue(event.target.value)}
       >
-        {items.map((item) => (
-          <option key={item.value} value={item.value}>
-            {item.label}
-          </option>
-        ))}
+        {items.map((item) => {
+          // Mirrors the real option's label/badge DOM order, which `iconSide` controls,
+          // so a test can read the accessible name to confirm which side the badge is on.
+          const badgeMarker =
+            selectId === 'instructions-prompt-group' && item.icon != null ? '○langfuse' : '';
+          const optionLabel =
+            iconSide === 'right' ? `${item.label}${badgeMarker}` : `${badgeMarker}${item.label}`;
+          return (
+            <option key={item.value} value={item.value}>
+              {optionLabel}
+            </option>
+          );
+        })}
       </select>
       {selectId === 'instructions-prompt-group' &&
         items.map((item) => (
@@ -246,6 +256,64 @@ describe('InstructionsPromptFields', () => {
     });
   });
 
+  it('resets a native exact selection to Production when switching to a Langfuse group', () => {
+    mockLangfuseEnabled = true;
+    mockGroupsQuery.data = [
+      group(),
+      group({ _id: 'group2', source: 'langfuse', name: 'Langfuse group' }),
+    ];
+    let methods: UseFormReturn<AgentForm> | undefined;
+    render(
+      <Harness
+        defaultInstructionsPrompt={{
+          source: 'native',
+          groupId: 'group1',
+          selection: { type: 'exact', promptId: 'p1' },
+        }}
+        onMethods={(m) => (methods = m)}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'com_ui_prompt' }), {
+      target: { value: 'group2' },
+    });
+
+    expect(methods?.getValues('instructionsPrompt')).toEqual({
+      source: 'langfuse',
+      groupId: 'group2',
+      selection: { type: 'production' },
+    });
+  });
+
+  it('resets a Langfuse exact selection to Production when switching to a native group', () => {
+    mockLangfuseEnabled = true;
+    mockGroupsQuery.data = [
+      group(),
+      group({ _id: 'group2', source: 'langfuse', name: 'Langfuse group' }),
+    ];
+    let methods: UseFormReturn<AgentForm> | undefined;
+    render(
+      <Harness
+        defaultInstructionsPrompt={{
+          source: 'langfuse',
+          groupId: 'group2',
+          selection: { type: 'exact', version: 3 },
+        }}
+        onMethods={(m) => (methods = m)}
+      />,
+    );
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'com_ui_prompt' }), {
+      target: { value: 'group1' },
+    });
+
+    expect(methods?.getValues('instructionsPrompt')).toEqual({
+      source: 'native',
+      groupId: 'group1',
+      selection: { type: 'production' },
+    });
+  });
+
   it('shows a cloud badge icon for a Langfuse group and none for a native group', () => {
     mockLangfuseEnabled = true;
     mockGroupsQuery.data = [group(), group({ _id: 'group2', source: 'langfuse' })];
@@ -284,6 +352,18 @@ describe('InstructionsPromptFields', () => {
       .querySelector('[role="img"]');
     expect(selectIconBadge).toBeInTheDocument();
     expect(selectIconBadge).not.toHaveAttribute('tabindex');
+  });
+
+  it("puts the Langfuse badge after the group name, so the option's accessible name starts with the group name", () => {
+    mockLangfuseEnabled = true;
+    mockGroupsQuery.data = [
+      group(),
+      group({ _id: 'group2', source: 'langfuse', name: 'Langfuse group' }),
+    ];
+    render(<Harness />);
+
+    const option = screen.getByRole('option', { name: /^Langfuse group/ });
+    expect(option).toHaveValue('group2');
   });
 
   describe('the rollout switch', () => {
@@ -442,6 +522,12 @@ describe('InstructionsPromptFields', () => {
         groupId: 'group1',
         selection: { type: 'production' },
       });
+      // The saved Langfuse link stays listed even once it's no longer the current
+      // selection: the "keep visible" check is keyed off the saved link, not the live value.
+      const options = Array.from(
+        screen.getByRole('combobox', { name: 'com_ui_prompt' }).querySelectorAll('option'),
+      ).map((option) => (option as HTMLOptionElement).value);
+      expect(options).toEqual(['group1', 'group2']);
     });
 
     it('still allows removing a disabled Langfuse link', () => {
@@ -624,6 +710,24 @@ describe('InstructionsPromptFields', () => {
     });
   });
 
+  it('shows a loading state for the Version dropdown while revisions are loading', () => {
+    mockGroupsQuery.data = [group()];
+    mockRevisionsQuery.isLoading = true;
+    render(
+      <Harness
+        defaultInstructionsPrompt={{
+          source: 'native',
+          groupId: 'group1',
+          selection: { type: 'production' },
+        }}
+      />,
+    );
+
+    expect(
+      screen.getByRole('group', { name: 'com_agents_instructions_prompt_version_label' }),
+    ).toHaveTextContent('com_ui_loading');
+  });
+
   it('disables the Version dropdown until a prompt group is selected', () => {
     mockGroupsQuery.data = [group()];
     render(<Harness />);
@@ -677,7 +781,7 @@ describe('InstructionsPromptFields', () => {
     });
   });
 
-  it('disables Retry while a revisions retry is already in flight, so a repeated click does nothing', () => {
+  it('marks Retry aria-disabled while a revisions retry is already in flight, so a repeated click does nothing', () => {
     mockGroupsQuery.data = [group()];
     mockRevisionsQuery.isError = true;
     mockRevisionsQuery.error = new Error('network down');
@@ -693,7 +797,7 @@ describe('InstructionsPromptFields', () => {
     );
 
     const retryButton = screen.getByRole('button', { name: 'com_ui_retry' });
-    expect(retryButton).toBeDisabled();
+    expect(retryButton).toHaveAttribute('aria-disabled', 'true');
     fireEvent.click(retryButton);
     expect(mockRevisionsQuery.refetch).not.toHaveBeenCalled();
   });

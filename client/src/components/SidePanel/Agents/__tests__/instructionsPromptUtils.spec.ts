@@ -175,7 +175,7 @@ describe('buildPromptVersionOptions', () => {
       });
     });
 
-    it('appends the saved pinned version, labelled as missing, when it matches no revision', () => {
+    it('appends the saved pinned version, labelled as missing with the version number, when it matches no revision', () => {
       const options = buildPromptVersionOptions(
         langfuseData(revisions),
         {
@@ -187,7 +187,7 @@ describe('buildPromptVersionOptions', () => {
 
       expect(options[options.length - 1]).toEqual({
         value: 'v9',
-        label: 'com_agents_instructions_prompt_version_missing',
+        label: 'com_agents_instructions_prompt_langfuse_version_missing:{"0":"9"}',
         selection: { type: 'exact', version: 9 },
       });
     });

@@ -1,6 +1,8 @@
 import { scopedCacheKey } from '@librechat/data-schemas';
 import type {
   FiltersConfig,
+  DeepPartial,
+  TAgentsEndpoint,
   AgentInstructionsPrompt,
   AgentInstructionsPromptSelection,
   RestrictedAgentInstructionsPrompt,
@@ -42,11 +44,11 @@ export type LinkedInstructionsResult =
   | { status: 'resolved'; prompt: string; facts: LinkedInstructionsFacts }
   | { status: 'unavailable'; reason: LinkedInstructionsUnavailableReason };
 
-export type LinkedInstructionsConfig = {
-  timeoutMs?: number;
-  native?: { cacheTtlMs?: number };
-  langfuse?: { enabled?: boolean };
-};
+/** Deep-partial, so a config literal built by hand (tests, a partial override) stays
+ *  assignable without supplying every default `agentsEndpointSchema` applies on parse. */
+export type LinkedInstructionsConfig = DeepPartial<
+  NonNullable<TAgentsEndpoint['linkedInstructions']>
+>;
 
 /** Never records usage itself; call `.recordUse(facts)` once initialization succeeds. */
 export type ResolveLinkedInstructions = ((input: {

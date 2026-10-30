@@ -1255,6 +1255,8 @@ export type NativePromptSelection = { type: 'production' } | { type: 'exact'; pr
 
 export type LangfusePromptSelection = { type: 'production' } | { type: 'exact'; version: number };
 
+export type PromptSelection = NativePromptSelection | LangfusePromptSelection;
+
 /** `GET /api/prompts/groups/:groupId/resolve`. Native resolves the group's
  *  production; Langfuse fetches text content live, by label `production` or
  *  an exact `version`, with no cache. */

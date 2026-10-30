@@ -1795,6 +1795,35 @@ describe('GET /api/prompts/groups/:groupId/revisions', () => {
 
     expect(response.body.source).toBe('native');
   });
+
+  it('returns 403 for a role without PROMPTS USE, before the group VIEW check', async () => {
+    const { group } = await createAccessiblePromptGroup({
+      name: 'Revisions no-PROMPTS-USE group',
+      prompt: 'Native text',
+    });
+    // getRoleByName's mock returns null for any role besides USER/ADMIN, so this
+    // role carries no PROMPTS.USE grant even though the user has group VIEW access.
+    const noUseUser = await User.create({
+      name: 'No Prompts Use',
+      email: 'no-prompts-use@example.com',
+      role: 'NoPromptsUseRole',
+    });
+    await grantPermission({
+      principalType: PrincipalType.USER,
+      principalId: noUseUser._id,
+      resourceType: ResourceType.PROMPTGROUP,
+      resourceId: group._id,
+      accessRoleId: AccessRoleIds.PROMPTGROUP_VIEWER,
+      grantedBy: testUsers.owner._id,
+    });
+    setTestUser(app, noUseUser);
+
+    const response = await request(app)
+      .get(`/api/prompts/groups/${group._id}/revisions`)
+      .expect(403);
+
+    expect(response.body).toEqual({ message: 'Forbidden: Insufficient permissions' });
+  });
 });
 
 describe('Externally managed (Langfuse) prompt groups are read-only', () => {

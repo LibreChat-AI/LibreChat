@@ -6,6 +6,7 @@ import {
   SystemRoles,
   DEFAULT_CACHE_CLEAR_TIMEOUT_MS,
 } from 'librechat-data-provider';
+import type { TPromptGroupSource } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type {
   PromptGroupRecord,
@@ -254,7 +255,7 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
         return res.status(400).send({ code: 'invalid_request' });
       }
       const version = parsedVersion.data;
-      const buildReference = (source: 'native' | 'langfuse'): PromptReference | null => {
+      const buildReference = (source: TPromptGroupSource): PromptReference | null => {
         if (version == null) {
           return source === 'langfuse'
             ? { source: 'langfuse', selection: { type: 'production' } }
@@ -314,7 +315,10 @@ export function createPromptHandlers(deps: PromptHandlersDeps): PromptHandlers {
           const { status, body } = toLangfusePromptErrorResponse(error);
           return res.status(status).send(body);
         }
-        logger.error('Error listing prompt revisions', error);
+        logger.error('Error listing prompt revisions', getSafeErrorMetadata(error));
+        if (isPromptStoreError(error, 'read')) {
+          return res.status(404).send({ code: 'not_found' });
+        }
         return res.status(500).send({ message: 'Error listing prompt revisions' });
       }
     },

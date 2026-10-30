@@ -1,18 +1,14 @@
 import axios from 'axios';
 import { InstructionsPromptErrorCode } from 'librechat-data-provider';
 import type {
+  PromptSelection,
   TPromptGroupSource,
   AgentInstructionsPrompt,
+  LangfusePromptSelection,
   RestrictedAgentInstructionsPrompt,
-  AgentInstructionsPromptSelection,
-  LangfuseAgentInstructionsPromptSelection,
   TPromptRevisionChoicesResponse,
 } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
-
-export type PromptRevisionSelection =
-  | AgentInstructionsPromptSelection
-  | LangfuseAgentInstructionsPromptSelection;
 
 /** Narrows a link field to the restricted stub the server returns when the editor
  *  cannot VIEW the linked group. The stub carries no `groupId`, so callers must
@@ -25,19 +21,19 @@ export const isRestrictedInstructionsPrompt = (
 export type PromptVersionOption = {
   value: string;
   label: string;
-  selection: PromptRevisionSelection;
+  selection: PromptSelection;
 };
 
 /** Narrows a selection to the Langfuse shape by the absence of `promptId`, the native-only field. */
 export function isLangfuseSelection(
-  selection: PromptRevisionSelection | undefined,
-): selection is LangfuseAgentInstructionsPromptSelection | undefined {
+  selection: PromptSelection | undefined,
+): selection is LangfusePromptSelection | undefined {
   return selection == null || !('promptId' in selection);
 }
 
 export function selectionValue(
   source: TPromptGroupSource | undefined,
-  selection: PromptRevisionSelection | undefined,
+  selection: PromptSelection | undefined,
 ): string {
   if (selection == null || selection.type !== 'exact') {
     return 'production';
@@ -54,7 +50,7 @@ export function selectionValue(
 /** Appends the saved selection as "no longer available" if it matches no listed revision. */
 export function buildPromptVersionOptions(
   data: TPromptRevisionChoicesResponse,
-  selection: PromptRevisionSelection | undefined,
+  selection: PromptSelection | undefined,
   localize: (key: TranslationKeys, vars?: Record<string, unknown>) => string,
 ): PromptVersionOption[] {
   let productionLabel = localize('com_ui_production');
@@ -89,11 +85,13 @@ export function buildPromptVersionOptions(
   if (selection != null && selection.type !== 'production') {
     const selectedValue = selectionValue(data.source, selection);
     if (!options.some((option) => option.value === selectedValue)) {
-      options.push({
-        value: selectedValue,
-        label: localize('com_agents_instructions_prompt_version_missing'),
-        selection,
-      });
+      const label =
+        'version' in selection
+          ? localize('com_agents_instructions_prompt_langfuse_version_missing', {
+              0: String(selection.version),
+            })
+          : localize('com_agents_instructions_prompt_version_missing');
+      options.push({ value: selectedValue, label, selection });
     }
   }
 
@@ -131,8 +129,8 @@ export function getRevisionsLoadErrorKey(error: unknown): TranslationKeys {
   if (status === 403) {
     return 'com_agents_instructions_prompt_forbidden';
   }
-  const code = axios.isAxiosError(error)
-    ? (error.response?.data as { code?: unknown } | undefined)?.code
+  const code = axios.isAxiosError<{ code?: unknown }>(error)
+    ? error.response?.data?.code
     : undefined;
   const isSourceUnavailable =
     (status === 404 && code === 'not_available') ||

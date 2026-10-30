@@ -2,11 +2,11 @@ import { useMemo } from 'react';
 import { Controller, useFormContext } from 'react-hook-form';
 import { Button, Label, ControlCombobox } from '@librechat/client';
 import type {
+  PromptSelection,
   TPromptGroupSource,
   LangfuseAgentInstructionsPromptSelection,
 } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import type { PromptRevisionSelection } from './instructionsPromptUtils';
 import type { TranslationKeys } from '~/hooks';
 import type { AgentForm } from '~/common';
 import {
@@ -54,8 +54,14 @@ export function LoadError({
           variant="outline"
           size="sm"
           className="w-fit"
-          onClick={onRetry}
-          disabled={retrying}
+          onClick={() => {
+            // aria-disabled, not disabled: keeps focus on the button while a retry is in flight.
+            if (retrying) {
+              return;
+            }
+            onRetry();
+          }}
+          aria-disabled={retrying}
         >
           {localize('com_ui_retry')}
         </Button>
@@ -84,8 +90,8 @@ function VersionSelect({
 }: {
   groupId: string;
   source?: TPromptGroupSource;
-  selection?: PromptRevisionSelection;
-  onSelect: (selection: PromptRevisionSelection) => void;
+  selection?: PromptSelection;
+  onSelect: (selection: PromptSelection) => void;
   /** True for a saved Langfuse link while the switch is off. */
   disabled?: boolean;
 }) {
@@ -175,7 +181,7 @@ function VersionSelect({
 
 export default function InstructionsPromptFields() {
   const localize = useLocalize();
-  const { control } = useFormContext<AgentForm>();
+  const { control, formState } = useFormContext<AgentForm>();
   const { agentsConfig } = useAgentPanelContext();
   const langfuseEnabled = agentsConfig?.linkedInstructions?.langfuse?.enabled === true;
   const groupsQuery = useGetAllPromptGroups();
@@ -208,10 +214,17 @@ export default function InstructionsPromptFields() {
         const linkSource: TPromptGroupSource | undefined = selectedGroup?.source ?? link?.source;
         const linkedGroupMissing = groupId !== '' && !groupsFailed && selectedGroup == null;
         const isDisabledLangfuseLink = !langfuseEnabled && linkSource === 'langfuse';
-        // Keep the already-linked Langfuse group visible even while the switch is off.
+        // Keyed off the saved link, not the live form value: the live groupId moves to the
+        // newly picked group as soon as the user changes it, which would otherwise drop the
+        // saved Langfuse group from the list on the very selection meant to keep it visible.
+        const savedInstructionsPrompt = formState.defaultValues?.instructionsPrompt;
+        const savedGroupId =
+          savedInstructionsPrompt != null && 'groupId' in savedInstructionsPrompt
+            ? savedInstructionsPrompt.groupId
+            : undefined;
         const visibleGroups = langfuseEnabled
           ? groups
-          : groups.filter((group) => group.source !== 'langfuse' || group._id === groupId);
+          : groups.filter((group) => group.source !== 'langfuse' || group._id === savedGroupId);
         // A restricted stub has no `groupId`, so the display value comes from this label.
         const groupDisplayValue = isRestrictedInstructionsPrompt(field.value)
           ? localize('com_agents_instructions_prompt_restricted_title')
@@ -275,6 +288,7 @@ export default function InstructionsPromptFields() {
                   <PromptSourceBadge source="langfuse" interactive={false} />
                 ) : undefined
               }
+              iconSide="right"
               ariaLabel={localize('com_ui_prompt')}
               isCollapsed={false}
               showCarat={true}

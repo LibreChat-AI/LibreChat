@@ -907,7 +907,6 @@ describe('createPromptHandlers resolvePrompt', () => {
     await handlers.resolvePrompt(resolveReq(), res);
 
     expect(res.statusCode).toBe(502);
-    expect(res.statusCode).not.toBe(401);
     expect(res.body).toEqual({ code: 'unauthorized' });
     expect(errorSpy).toHaveBeenCalled();
   });
@@ -1163,12 +1162,11 @@ describe('createPromptHandlers listRevisions', () => {
     await handlers.listRevisions(revisionsReq(), res);
 
     expect(res.statusCode).toBe(502);
-    expect(res.statusCode).not.toBe(401);
     expect(res.body).toEqual({ code: 'unauthorized' });
     expect(errorSpy).toHaveBeenCalled();
   });
 
-  it('maps a thrown read PromptStoreError to the generic 500, not a 404', async () => {
+  it('maps a thrown read PromptStoreError to 404 not_found', async () => {
     jest.spyOn(logger, 'error').mockImplementation(() => logger);
     const listRevisions = jest
       .fn()
@@ -1178,8 +1176,8 @@ describe('createPromptHandlers listRevisions', () => {
 
     await handlers.listRevisions(revisionsReq(), res);
 
-    expect(res.statusCode).toBe(500);
-    expect(res.body).toEqual({ message: 'Error listing prompt revisions' });
+    expect(res.statusCode).toBe(404);
+    expect(res.body).toEqual({ code: 'not_found' });
   });
 
   it('returns 500 for an unexpected thrown error', async () => {
@@ -1192,7 +1190,7 @@ describe('createPromptHandlers listRevisions', () => {
 
     expect(res.statusCode).toBe(500);
     expect(res.body).toEqual({ message: 'Error listing prompt revisions' });
-    expect(errorSpy).toHaveBeenCalledWith('Error listing prompt revisions', expect.any(Error));
+    expect(errorSpy).toHaveBeenCalledWith('Error listing prompt revisions', { type: 'Error' });
   });
 });
 

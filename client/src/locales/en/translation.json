@@ -293,6 +293,7 @@
   "com_agents_instructions_prompt_error_unavailable": "This prompt selection isn't available right now.",
   "com_agents_instructions_prompt_error_validation_failed": "Couldn't validate the linked prompt. Please try again.",
   "com_agents_instructions_prompt_forbidden": "You don't have access to the prompt library.",
+  "com_agents_instructions_prompt_langfuse_version_missing": "Version {{0}} (no longer available)",
   "com_agents_instructions_prompt_load_error": "Couldn't load prompts.",
   "com_agents_instructions_prompt_not_found": "Prompt not found",
   "com_agents_instructions_prompt_production_version": "Production (Version {{0}})",
