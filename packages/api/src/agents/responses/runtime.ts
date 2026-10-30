@@ -1,4 +1,5 @@
 import { responseTenantId } from './scope';
+import { createResponseRetirement } from './retirement';
 import { checkpointerSchema, responseReviewDecisionSchema } from 'librechat-data-provider';
 import type { ResponseTerminalReceipt, StoredResponseRecord } from '@librechat/data-schemas';
 import type { Request, Response as HttpResponse } from 'express';
@@ -114,7 +115,7 @@ export interface ResponseExecutionRuntime {
   connection?: AgentExecutionConnection;
   hooks: Pick<
     ExecuteAgentRunParams<unknown>,
-    'onEnrolled' | 'afterSettle' | 'clientRequestId' | 'resume' | 'retainTerminalPersistence'
+    'onEnrolled' | 'afterPause' | 'afterSettle' | 'clientRequestId' | 'resume' | 'retainTerminalPersistence'
   >;
   processRun: (
     run: Pick<Run<IState>, 'processStream' | 'resume'>,
@@ -132,7 +133,7 @@ export function createResponseExecutionRuntime(
   res: HttpResponse,
   continuation: Parameters<typeof resolveResponseContinuation>[2] & {
     generateResponseId?: () => string;
-    jobs?: Pick<GenerationJobManagerClass, 'getJob' | 'finishProviderTerminalPersistence'> &
+    jobs?: Pick<GenerationJobManagerClass, 'getJob' | 'abortJob' | 'finishProviderTerminalPersistence'> &
       Partial<Pick<GenerationJobManagerClass, 'updateMetadata'>>;
     pluginHookSource?: MarkToolApprovalAllowAlwaysOptions['pluginHookSource'];
     toolApprovalStorage?: Parameters<typeof createRun>[0]['toolApprovalStorage'];
@@ -213,7 +214,7 @@ export function createResponseExecutionRuntime(
   }
   const hooks: Pick<
     ExecuteAgentRunParams<unknown>,
-    'onEnrolled' | 'afterSettle' | 'clientRequestId' | 'resume' | 'retainTerminalPersistence'
+    'onEnrolled' | 'afterPause' | 'afterSettle' | 'clientRequestId' | 'resume' | 'retainTerminalPersistence'
   > = admission
     ? {
         retainTerminalPersistence: true,
@@ -290,40 +291,60 @@ export function createResponseExecutionRuntime(
             store: true,
           });
         },
+        afterPause: async (execution) => {
+          if (!execution.isPaused || !execution.ownsSettlement)
+            throw new Error('Background response pause ownership changed');
+          const current = await admission.storage.read(admission.record, admission.record.responseId);
+          if (current && current.generationCreatedAt !== execution.createdAt)
+            throw new Error('Background response pause identity changed');
+          if (current && current.cancellationRequestedAt == null && !['completed', 'failed', 'cancelled', 'incomplete'].includes(current.status)) return;
+          if (!current) {
+            const identity = await admission.storage.readCleanupIdentity(admission.record, admission.record.responseId,
+              { ...admission.record, generationCreatedAt: execution.createdAt, ...checkpoint });
+            if (!identity?.retirement || identity.generationCreatedAt !== execution.createdAt)
+              throw new Error('Background response pause retirement identity unavailable');
+            const job = await continuation.jobs!.getJob(admission.record.responseId);
+            if (!job) {
+              // The owned settled pause proves local drain; this permits only checkpoint cleanup.
+              if (identity.requiresCheckpointCleanup) {
+                if (!identity.checkpointNamespace || !identity.checkpointConfigJSON)
+                  throw new Error('Background response pause checkpoint identity unavailable');
+                await cleanupResponseCheckpoint({ ...identity, pendingTerminal: identity }, identity.checkpointNamespace);
+              }
+              return;
+            }
+          }
+          const stopped = await createResponseRetirement({
+            storage: admission.storage, jobs: continuation.jobs!, cleanupCheckpoint: cleanupResponseCheckpoint,
+          })(admission.record, admission.record.responseId);
+          if (stopped !== 'stopped') throw new Error('Background response pause retirement is pending');
+        },
         afterSettle: async (execution, error) => {
           let current = await admission.storage.read(admission.record, admission.record.responseId);
-          if (!current) {
-            const identity = await admission.storage.readCleanupIdentity(
-              admission.record,
-              admission.record.responseId,
-              admission.record,
+          const completion = createResponseCompletion({
+            storage: admission.storage,
+            cleanupCheckpoint: cleanupResponseCheckpoint,
+            releaseExecution: createResponseExecutionRelease(continuation.jobs!),
+          });
+          if (!current || current.generationCreatedAt == null) {
+            const retired = await admission.storage.readCleanupIdentity(
+              admission.record, admission.record.responseId,
+              { ...admission.record, generationCreatedAt: execution.createdAt, ...checkpoint },
             );
-            if (identity?.expiredAt && identity.expiredAt.getTime() <= Date.now())
-              current = { ...admission.record, ...identity };
-            else if (
-              admission.record.expiredAt &&
-              admission.record.expiredAt.getTime() <= Date.now()
-            )
-              current = admission.record;
+            if (retired?.retirement && retired.generationCreatedAt === execution.createdAt)
+              current = { ...admission.record, ...retired };
+            else if (current?.status === 'cancelled' && current.cancellationRequestedAt != null && current.generationCreatedAt == null) {
+              // Stop won the enrollment CAS. This exact local attempt must still release its drain proof.
+              await completion.finish({ ...current, generationCreatedAt: execution.createdAt });
+              return;
+            }
           }
-          if (
-            current?.status === 'cancelled' &&
-            current.generationCreatedAt == null &&
-            current.cancellationRequestedAt != null
-          )
-            return;
-          // Enrollment may lose to expiry before its epoch can be published; this execution
-          // still owns draining its server-enrolled job, never permission to restart it.
-          if (
-            current?.expiredAt &&
-            current.expiredAt.getTime() <= Date.now() &&
-            current.generationCreatedAt == null
-          )
-            current = { ...current, generationCreatedAt: execution.createdAt };
           if (!current || current.generationCreatedAt !== execution.createdAt)
             throw new Error('Background response settlement identity changed');
-          if (['completed', 'failed', 'cancelled', 'incomplete'].includes(current.status)) return;
-          if (execution.isPaused) return;
+          if (['completed', 'failed', 'cancelled', 'incomplete'].includes(current.status)) {
+            await completion.finish(current);
+            return;
+          }
           const identity = await execution.confirmTerminalIdentity();
           // Normal manager teardown aborts the local signal too; only durable outcome/intent classifies Stop.
           const cancelled =
@@ -360,11 +381,7 @@ export function createResponseExecutionRuntime(
                 message: 'The Agent could not complete this request.',
               },
             };
-          const completion = createResponseCompletion({
-            storage: admission.storage,
-            cleanupCheckpoint: cleanupResponseCheckpoint,
-            releaseExecution: createResponseExecutionRelease(continuation.jobs!),
-          });
+
           admission.record = await completion.stageAndFinish(current, {
             ...identity,
             status: final.status,
@@ -450,11 +467,20 @@ export function createResponseExecutionRuntime(
         throw new Error('Response checkpoint storage settings changed');
       const reviewedAgents = collectReachableAgents<ReviewAgentNode>(agents);
       assertCodeExecutionApprovalBinding(action.codeExecutionBinding, reviewedAgents);
+      const participants = new Set([admission.record.agentId, ...reviewedAgents.map((agent) => agent.id)]);
+      if (!action.resumeAgentIds?.length || action.resumeAgentIds.some((id) => !participants.has(id)))
+        throw new Error('Response resume participants changed');
       const decision = responseReviewDecisionSchema.parse(
         JSON.parse(admission.record.resume?.decisionJSON ?? 'null'),
       );
       if (decision.actionId !== action.actionId)
         throw new Error('Response reviewed action changed');
+      const discovered = action.resumeContext?.discoveredToolNames;
+      if (
+        discovered != null &&
+        (!Array.isArray(discovered) || discovered.some((name) => typeof name !== 'string'))
+      )
+        throw new Error('Response discovered tools are unavailable');
       if (
         decision.decisions?.some((item) => item.decision === 'approve' && item.scope === 'session')
       ) {
@@ -465,7 +491,14 @@ export function createResponseExecutionRuntime(
           !enrolledExecution?.ownsSettlement ||
           enrolledExecution.createdAt !== record.generationCreatedAt ||
           !job ||
+          job.status !== 'running' ||
           job.createdAt !== record.generationCreatedAt ||
+          job.metadata.userId !== record.userId ||
+          responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
+          job.metadata.agent_id !== record.agentId ||
+          job.metadata.endpoint !== 'responses' ||
+          job.metadata.conversationId !== record.conversationId ||
+          job.metadata.responseMessageId !== record.responseId ||
           job.metadata.providerExecutionId !== resume.providerExecutionId ||
           job.metadata.providerExecutionStartedId !== resume.providerExecutionId ||
           !job.metadata.providerExecutionOwnerId
@@ -491,12 +524,6 @@ export function createResponseExecutionRuntime(
         });
         rememberedTools = [...new Set([...rememberedTools, ...persisted])];
       }
-      const discovered = action.resumeContext?.discoveredToolNames;
-      if (
-        discovered != null &&
-        (!Array.isArray(discovered) || discovered.some((name) => typeof name !== 'string'))
-      )
-        throw new Error('Response discovered tools are unavailable');
       return {
         hitlCapable,
         ...policy(),
