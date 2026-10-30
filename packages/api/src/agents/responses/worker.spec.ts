@@ -1,7 +1,7 @@
 import express from 'express';
+import jwt from 'jsonwebtoken';
 import request from 'supertest';
 import mongoose from 'mongoose';
-import jwt from 'jsonwebtoken';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createModels,
@@ -12,7 +12,6 @@ import {
   getTenantId,
 } from '@librechat/data-schemas';
 import type { ResponseStorage } from '@librechat/data-schemas';
-import { createBackgroundResponseEnvelope, createResponseResumeEnvelope } from './queue';
 import type { ServerRequest } from '~/types/http';
 import {
   createBackgroundResponseWorkerAuth,
@@ -20,6 +19,7 @@ import {
   mintResponseResumeWorkerToken,
   getBackgroundResponseWorkerRecord,
 } from './worker';
+import { createBackgroundResponseEnvelope, createResponseResumeEnvelope } from './queue';
 
 const secret = 'worker-test-secret';
 const userId = new mongoose.Types.ObjectId().toString();

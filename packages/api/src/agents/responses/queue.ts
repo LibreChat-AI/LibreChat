@@ -1,4 +1,3 @@
-import { responseTenantId, isResponseTenantId } from './scope';
 import {
   AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2,
   AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1,
@@ -13,6 +12,7 @@ import {
   parseAgentTriggerEnvelope,
 } from '../triggers/envelope';
 import { prepareAgentTriggerDelivery } from '../triggers/delivery';
+import { responseTenantId, isResponseTenantId } from './scope';
 import { AgentTriggerExecutionError } from '../triggers/host';
 
 export const BACKGROUND_RESPONSE_SOURCE = 'responses';
