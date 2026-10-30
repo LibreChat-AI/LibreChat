@@ -5704,7 +5704,9 @@ export class RedisJobStore implements IJobStoreV2 {
       promptTokens: data.promptTokens ? parseInt(data.promptTokens, 10) : undefined,
       agent_id: data.agent_id || undefined,
       isTemporary: data.isTemporary != null ? data.isTemporary === '1' : undefined,
-      retentionExpiresAt: data.retentionExpiresAt || undefined,
+      isNewConversation:
+        data.isNewConversation != null ? data.isNewConversation === '1' : undefined,
+      retentionExpiresAt: data.retentionExpiresAt ?? undefined,
       responseCheckpointConfigJSON: data.responseCheckpointConfigJSON || undefined,
       agentEventDeliveryKey: data.agentEventDeliveryKey || undefined,
       agentEventInvocationKey: data.agentEventInvocationKey || undefined,

@@ -349,6 +349,8 @@ export interface SerializableJobData {
    * resume request can't be trusted to re-send the flag.
    */
   isTemporary?: boolean;
+  /** Server-established first turn; absence does not authorize a draft projection. */
+  isNewConversation?: boolean;
   /** Original server-authenticated retention deadline, serialized across replicas. */
   retentionExpiresAt?: string;
   agentEventDeliveryKey?: string;
@@ -508,6 +510,7 @@ export type JobMetadataPatch = Partial<
     | 'model'
     | 'agent_id'
     | 'isTemporary'
+    | 'isNewConversation'
     | 'retentionExpiresAt'
     | 'responseCheckpointConfigJSON'
     | 'agentEventDeliveryKey'
