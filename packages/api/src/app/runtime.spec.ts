@@ -63,14 +63,14 @@ describe('applyLoadedConfig', () => {
     const stored = new Map<string, unknown>();
     const cache = {
       get: jest.fn(async (key: string) => stored.get(key)),
-      set: jest.fn(async (key: string, value: unknown) => {
+      set: jest.fn(async (key: string, value: unknown): Promise<boolean | void> => {
         stored.set(key, value);
       }),
       delete: async (key: string) => stored.delete(key),
     };
     const formatTools = jest.fn(() => ({}));
     const buildConfig = jest.fn(AppService);
-    const setCachedTools = jest.fn(async () => {});
+    const setCachedTools = jest.fn(async (): Promise<boolean | void> => {});
     const service = createAppConfigService({
       loadBaseConfig: async (mode) => {
         const config = (await load(false, { mode })) ?? {};
@@ -148,41 +148,50 @@ describe('applyLoadedConfig', () => {
     expect(getConfigDigest()).toBe(digest);
   });
 
-  it.each(['validation', 'tools scan', 'AppService', 'tool cache', 'base cache'])(
-    'keeps the last good digest and limit when %s fails',
-    async (stage) => {
-      jest.spyOn(logger, 'error').mockImplementation(() => logger);
-      const runtime = createRuntime();
-      const lastGood = await runtime.getAppConfig({ baseOnly: true });
-      const digest = getConfigDigest();
-      runtime.setText('version: 1.3.18\ntelemetry:\n  stackTraceLimit: 60\n');
-      const failure = new Error('publication failed');
-      if (stage === 'validation') {
-        runtime.setText('version: 1.3.18\ntelemetry:\n  stackTraceLimit: 0\n');
-      } else if (stage === 'tools scan') {
-        runtime.formatTools.mockImplementationOnce(() => {
-          throw failure;
-        });
-      } else if (stage === 'AppService') {
-        runtime.buildConfig.mockRejectedValueOnce(failure);
-      } else if (stage === 'tool cache') {
-        runtime.setCachedTools.mockRejectedValueOnce(failure);
-      } else {
-        runtime.cache.set.mockRejectedValueOnce(failure);
-      }
+  it.each([
+    'validation',
+    'tools scan',
+    'AppService',
+    'tool cache',
+    'base cache',
+    'tool cache refusal',
+    'base cache refusal',
+  ])('keeps the last good digest and limit when %s fails', async (stage) => {
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    const runtime = createRuntime();
+    const lastGood = await runtime.getAppConfig({ baseOnly: true });
+    const digest = getConfigDigest();
+    runtime.setText('version: 1.3.18\ntelemetry:\n  stackTraceLimit: 60\n');
+    const failure = new Error('publication failed');
+    if (stage === 'validation') {
+      runtime.setText('version: 1.3.18\ntelemetry:\n  stackTraceLimit: 0\n');
+    } else if (stage === 'tools scan') {
+      runtime.formatTools.mockImplementationOnce(() => {
+        throw failure;
+      });
+    } else if (stage === 'AppService') {
+      runtime.buildConfig.mockRejectedValueOnce(failure);
+    } else if (stage === 'tool cache') {
+      runtime.setCachedTools.mockRejectedValueOnce(failure);
+    } else if (stage === 'base cache') {
+      runtime.cache.set.mockRejectedValueOnce(failure);
+    } else if (stage === 'tool cache refusal') {
+      runtime.setCachedTools.mockResolvedValueOnce(false);
+    } else {
+      runtime.cache.set.mockResolvedValueOnce(false);
+    }
 
-      await expect(runtime.reloadBaseConfig()).resolves.toMatchObject({ ok: false });
+    await expect(runtime.reloadBaseConfig()).resolves.toMatchObject({ ok: false });
 
-      expect(await runtime.getAppConfig({ baseOnly: true })).toBe(lastGood);
-      expect(getConfigDigest()).toBe(digest);
-      expect(Error.stackTraceLimit).toBe(25);
+    expect(await runtime.getAppConfig({ baseOnly: true })).toBe(lastGood);
+    expect(getConfigDigest()).toBe(digest);
+    expect(Error.stackTraceLimit).toBe(25);
 
-      runtime.setText('version: 1.3.18\ntelemetry:\n  stackTraceLimit: 40\n');
-      await expect(runtime.reloadBaseConfig()).resolves.toEqual({ ok: true });
-      expect(Error.stackTraceLimit).toBe(40);
-      expect(getConfigDigest()).not.toBe(digest);
-    },
-  );
+    runtime.setText('version: 1.3.18\ntelemetry:\n  stackTraceLimit: 40\n');
+    await expect(runtime.reloadBaseConfig()).resolves.toEqual({ ok: true });
+    expect(Error.stackTraceLimit).toBe(40);
+    expect(getConfigDigest()).not.toBe(digest);
+  });
 
   it('does not apply a config overtaken by a clear during publication', async () => {
     const runtime = createRuntime();

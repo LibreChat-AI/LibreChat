@@ -481,7 +481,7 @@ export interface AppConfigServiceDeps {
   /** Synchronous process-wide effects, after tools and the current base config publish. */
   onBaseConfigPublished?: (config: AppConfig) => void;
   /** Cache tools after base config is loaded. */
-  setCachedTools: (tools: Record<string, unknown>) => Promise<void>;
+  setCachedTools: (tools: Record<string, unknown>) => Promise<boolean | void>;
   /** Get a cache store by key. */
   getCache: (key: string) => CacheStore;
   /** The CacheKeys constants from librechat-data-provider. */
@@ -866,13 +866,15 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     if (generation !== baseGeneration) {
       return baseConfig;
     }
-    if (baseConfig.availableTools) {
-      await setCachedTools(baseConfig.availableTools);
+    if (baseConfig.availableTools && (await setCachedTools(baseConfig.availableTools)) === false) {
+      throw new Error('Tool cache refused base configuration publication.');
     }
     if (generation !== baseGeneration) {
       return baseConfig;
     }
-    await cache.set(BASE_CONFIG_KEY, baseConfig);
+    if ((await cache.set(BASE_CONFIG_KEY, baseConfig)) === false) {
+      throw new Error('Base cache refused configuration publication.');
+    }
     if (generation !== baseGeneration) {
       await cache.delete(BASE_CONFIG_KEY);
       return baseConfig;
