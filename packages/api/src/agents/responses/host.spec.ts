@@ -1,6 +1,7 @@
 import express from 'express';
 import request from 'supertest';
 import mongoose from 'mongoose';
+import { networkInterfaces } from 'node:os';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { PermissionBits, FileSources, RetentionMode } from 'librechat-data-provider';
 import {
@@ -36,15 +37,18 @@ import { createResponseExecutionRuntime } from './runtime';
 import { createBackgroundResponsesHost } from './host';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { createAgentRunEnvelope } from '../envelope';
+import { selfOriginFromAddress } from '~/app/origin';
 import { buildPendingAction } from '../hitl/policy';
 import { executeAgentRun } from '../remote/host';
 import { GenerationJobManager } from '~/stream';
+import { createResponseTurn } from './turn';
 
 let mongo: MongoMemoryReplSet;
+let jobStore: InMemoryJobStore;
 let db: ReturnType<typeof createMethods>;
 let storage: ResponseStorage;
 let user: IUser;
-const tenantId = 'responses-host-test';
+let tenantId: string | undefined = 'responses-host-test';
 const scoped = <T>(work: () => Promise<T>) => tenantStorage.run({ tenantId }, work);
 const cleanup: Array<() => Promise<void>> = [];
 
@@ -59,6 +63,7 @@ beforeAll(async () => {
   storage = createResponseStorage(mongoose);
 });
 beforeEach(async () => {
+  tenantId = 'responses-host-test';
   await runAsSystem(async () => {
     await Promise.all(
       [
@@ -68,6 +73,8 @@ beforeEach(async () => {
         'AgentTriggerLaneSequence',
         'AgentTriggerUserPurge',
         'AgentApiKey',
+        'Conversation',
+        'Message',
         'User',
       ].map((name) => mongoose.models[name].deleteMany({})),
     );
@@ -81,8 +88,9 @@ beforeEach(async () => {
       tenantId,
     }),
   );
+  jobStore = new InMemoryJobStore({ ttlAfterComplete: 60000 });
   GenerationJobManager.configure({
-    jobStore: new InMemoryJobStore({ ttlAfterComplete: 60000 }),
+    jobStore,
     eventTransport: new InMemoryEventTransport(),
     cleanupOnComplete: false,
   });
@@ -113,6 +121,7 @@ function persistence(): AgentTriggerDeliveryPersistence {
 async function fixture(
   decisions?: BackgroundResponsesHostDependencies['decisions'],
   interactive?: BackgroundResponsesHostDependencies['interactive'],
+  listenAddress = '127.0.0.1',
 ) {
   const config: AppConfig = {
     config: {},
@@ -126,11 +135,11 @@ async function fixture(
   const inputs: unknown[] = [];
   let browserUser: IUser | undefined = user;
   let browserMode: 'owner' | 'trigger' | 'key' = 'owner';
-  let generate = async (
-    _signal: AbortSignal,
-    _context: { streamId: string | null; jobCreatedAt?: number },
-    _execution: AgentExecutionEnrollment,
-  ) => '# Real Responses lifecycle';
+  let generate: (
+    signal: AbortSignal,
+    context: { streamId: string | null; jobCreatedAt?: number },
+    execution: AgentExecutionEnrollment,
+  ) => Promise<string | { paused: true }> = async () => '# Real Responses lifecycle';
   const host = createBackgroundResponsesHost({
     decisions,
     interactive,
@@ -173,28 +182,62 @@ async function fixture(
         jobs: GenerationJobManager,
       });
       const continuation = await runtime.resolveContinuation(envelope);
+      const turn = createResponseTurn({
+        runtime,
+        context: createResponseContext(envelope.payload, runtime.responseId),
+        requestedStore: true,
+        logger: { error: (message, metadata) => errors.push({ message, metadata }) },
+      });
       await executeAgentRun({
         envelope,
         runId: runtime.responseId,
         conversationId: continuation.conversationId,
         connection: runtime.connection,
-        ...runtime.hooks,
+        ...turn.hooks,
+        captureTerminalOutcome: true,
         isPrincipalActive: async () => true,
         execute: async (execution) => {
           inputs.push(envelope.payload);
           const text = await generate(execution.signal, runtime.toolContext(execution), execution);
+          if (typeof text !== 'string') return;
           const aggregator = createResponseAggregator();
           aggregator.addText(text);
-          res.json({
-            ...buildAggregatedResponse(
-              createResponseContext(envelope.payload, runtime.responseId),
-              aggregator,
-            ),
-            store: true,
-          });
+          await turn.stage(
+            {
+              request: {
+                ...(req as ServerRequest),
+                body: { isTemporary: envelope.payload.isTemporary },
+              },
+              run: { getInterrupt: () => undefined, getRunMessages: () => [] },
+              execution,
+              agents: [],
+              response: buildAggregatedResponse(
+                createResponseContext(envelope.payload, runtime.responseId),
+                aggregator,
+              ),
+              conversationId: continuation.conversationId,
+              agentId: envelope.payload.model,
+              agent: { id: envelope.payload.model, name: 'HTTP Test Agent' },
+              messages: [],
+              parentMessageId: continuation.parentMessageId,
+              transport: { type: 'json', response: res },
+            },
+            {
+              saveConvo: db.saveConvo,
+              saveMessage: async (...args) => {
+                const saved = await db.saveMessage(...args);
+                return saved
+                  ? { conversationId: saved.conversationId, messageId: saved.messageId }
+                  : null;
+              },
+              announceReply: async () => {},
+              resolveTitle: () => null,
+              traceFields: async () => ({ langfuseSampled: false }),
+            },
+          );
         },
         handleExecutionError: () => {
-          res.status(409).json({ error: { code: 'execution_failed' } });
+          if (!res.writableEnded) res.status(409).json({ error: { code: 'execution_failed' } });
         },
         onSettlementError: (error) => {
           errors.push(error);
@@ -234,7 +277,7 @@ async function fixture(
   router.post('/:id/cancel', handlers.cancel);
   app.use('/api/agents/v1/responses', router);
   const server: Server = await new Promise((resolve) => {
-    const listener = app.listen(0, '127.0.0.1', () => resolve(listener));
+    const listener = app.listen(0, listenAddress, () => resolve(listener));
   });
   cleanup.push(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
@@ -250,7 +293,9 @@ async function fixture(
   const credential = await scoped(async () =>
     db.createAgentApiKey({ userId: user._id, name: 'background-test' }),
   );
-  const client = request(server);
+  const origin = selfOriginFromAddress(server.address());
+  if (!origin) throw new Error('Missing initialized HTTP listener');
+  const client = request(origin);
   async function readUntil(id: string, status: string) {
     let observed: { httpStatus: number; status?: string; errorCode?: string } | undefined;
     const failure = () =>
@@ -626,7 +671,7 @@ it('does not publish a completed response while its provider has durably paused 
       }))
     )
       throw new Error('Pause admission failed');
-    return 'This candidate must not become a completed public response.';
+    return { paused: true };
   });
   const created = await f.client
     .post('/api/agents/v1/responses')
@@ -659,7 +704,12 @@ it('does not publish a completed response while its provider has durably paused 
     completed_at: null,
     required_action: { type: 'librechat_review', kind: 'question' },
   });
-  expect(JSON.stringify(observed.body)).not.toContain('This candidate');
+  const paused = await scoped(() =>
+    storage.read({ userId: String(user._id), tenantId }, created.body.id),
+  );
+  expect(paused?.preparedTerminal).toBeUndefined();
+  expect(paused?.pendingTerminal).toBeUndefined();
+  expect(f.inputs).toHaveLength(1);
   expect(f.errors).toEqual([]);
   const cancelled = await f.client
     .post(`/api/agents/v1/responses/${created.body.id}/cancel`)
@@ -1229,3 +1279,108 @@ it('does not turn a missing admitted job into a fabricated stop confirmation', a
   );
   expect((await scoped(() => storage.read(record, record.responseId)))?.status).toBe('in_progress');
 });
+
+it('denies an idempotent POST replay through a replacement key after the original key is revoked', async () => {
+  const f = await fixture();
+  const body = { model: 'agent', input: 'Original credential output', background: true };
+  const created = await f.client
+    .post('/api/agents/v1/responses')
+    .auth(f.credential.key, { type: 'bearer' })
+    .set('Idempotency-Key', 'original-source')
+    .send(body)
+    .expect(202);
+  await f.readUntil(created.body.id, 'completed');
+  const replacement = await scoped(() =>
+    db.createAgentApiKey({ userId: user._id, name: 'replacement' }),
+  );
+  await scoped(() => db.deleteAgentApiKey(f.credential.id, String(user._id)));
+  const replay = await f.client
+    .post('/api/agents/v1/responses')
+    .auth(replacement.key, { type: 'bearer' })
+    .set('Idempotency-Key', 'original-source')
+    .send(body)
+    .expect(403);
+  expect(JSON.stringify(replay.body)).not.toContain('# Real Responses lifecycle');
+  expect(f.inputs).toHaveLength(1);
+  expect(f.errors).toEqual([]);
+});
+
+it('reports a deterministic envelope depth error as a safe invalid request', async () => {
+  const f = await fixture();
+  let nested: Record<string, unknown> = {};
+  for (let depth = 0; depth < 70; depth++) nested = { nested };
+  const result = await f.client
+    .post('/api/agents/v1/responses')
+    .auth(f.credential.key, { type: 'bearer' })
+    .send({
+      model: 'agent',
+      input: 'Sensitive submitted input',
+      background: true,
+      metadata: nested,
+    })
+    .expect(400);
+  expect(JSON.stringify(result.body)).not.toContain('Sensitive submitted input');
+  expect(f.inputs).toEqual([]);
+  expect(f.errors).toEqual([]);
+});
+
+it('preserves the native recovery marker when a retained paused execution is unavailable', async () => {
+  const f = await fixture();
+  const { owner, id } = await ownerPause(f.credential.id);
+  const job = await GenerationJobManager.getJob(id);
+  expect(job).toBeDefined();
+  expect(await jobStore.deleteJob(id, job!.createdAt)).toBe(true);
+  const view = await scoped(() => f.host.readInteractiveReview(owner, id));
+  expect(view).toMatchObject({
+    responseId: id,
+    recovery: 'execution_state_unavailable',
+    oauth: [],
+  });
+});
+
+const concreteInterface = Object.values(networkInterfaces())
+  .flat()
+  .find((entry) => entry?.family === 'IPv4' && !entry.internal)?.address;
+if (concreteInterface) {
+  it('executes through the capable listener bound only to a concrete interface', async () => {
+    const f = await fixture(undefined, undefined, concreteInterface);
+    const created = await f.client
+      .post('/api/agents/v1/responses')
+      .auth(f.credential.key, { type: 'bearer' })
+      .send({ model: 'agent', input: 'Concrete listener', background: true })
+      .expect(202);
+    expect((await f.readUntil(created.body.id, 'completed')).body.output[0].content[0].text).toBe(
+      '# Real Responses lifecycle',
+    );
+    expect(f.errors).toEqual([]);
+  });
+} else {
+  it.skip('requires a concrete network interface for listener integration', () => {
+    expect(concreteInterface).toBeDefined();
+  });
+}
+
+it.each([undefined, null, ''])(
+  'executes a trusted legacy tenantless owner with tenant %s',
+  async (legacyTenant) => {
+    tenantId = undefined;
+    user = await runAsSystem(() =>
+      mongoose.models.User.create({
+        email: 'tenantless-response-host@example.test',
+        role: 'USER',
+        provider: 'local',
+        tenantId: legacyTenant,
+      }),
+    );
+    const f = await fixture();
+    const created = await f.client
+      .post('/api/agents/v1/responses')
+      .auth(f.credential.key, { type: 'bearer' })
+      .send({ model: 'agent', input: 'Legacy tenantless owner', background: true })
+      .expect(202);
+    expect((await f.readUntil(created.body.id, 'completed')).body.output[0].content[0].text).toBe(
+      '# Real Responses lifecycle',
+    );
+    expect(f.errors).toEqual([]);
+  },
+);
