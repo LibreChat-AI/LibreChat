@@ -455,7 +455,7 @@ export function createResponseExecutionRuntime(
     completion:
       admission && completion && settle
         ? {
-            async prepare(response) {
+            async prepare(response, turnJSON) {
               if (
                 !enrolledExecution ||
                 candidate ||
@@ -470,6 +470,7 @@ export function createResponseExecutionRuntime(
                 ...enrolledExecution.getPersistenceIdentity(),
                 status: prepared.status,
                 responseJSON: JSON.stringify(prepared),
+                ...(turnJSON == null ? {} : { turnJSON }),
                 ...(checkpoint ??
                   (admission.resume && admission.record.review?.checkpointConfigJSON
                     ? {
@@ -484,6 +485,14 @@ export function createResponseExecutionRuntime(
             },
             afterSettle: async (execution, error) => {
               await settle(execution, error);
+              if (
+                !admission.record.preparedTerminal &&
+                !admission.record.pendingTerminal &&
+                !('retirement' in admission.record) &&
+                admission.record.responseJSON &&
+                ['completed', 'failed', 'incomplete', 'cancelled'].includes(admission.record.status)
+              )
+                return JSON.parse(admission.record.responseJSON) as Response;
             },
           }
         : undefined,

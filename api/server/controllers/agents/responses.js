@@ -81,8 +81,6 @@ const {
   validateResponseRequest,
   buildAggregatedResponse,
   buildResponsesUsage,
-  createResponseAccountingCollector,
-  createApplicationBillingQuote,
   createResponseAggregator,
   sendResponsesErrorResponse,
   createResponsesEventHandlers,
@@ -908,19 +906,6 @@ const executeResponse = async (envelope, { req, res }) => {
           byAgentId: endpointTokenConfigByAgentId,
           fallback: primaryConfig.endpointTokenConfig,
         });
-      const accounting = createResponseAccountingCollector({
-        quote:
-          typeof db.getValueKey === 'function'
-            ? createApplicationBillingQuote({
-                pricing: {
-                  getMultiplier: db.getMultiplier,
-                  getCacheMultiplier: db.getCacheMultiplier,
-                },
-                getValueKey: db.getValueKey,
-                resolveEndpointTokenConfig,
-              })
-            : undefined,
-      });
       const runAgents = [primaryConfig, ...handoffAgentConfigs.values()];
       const initialSessions = buildInitialToolSessions({ agents: runAgents });
       const modelBoundAgentsById = new Map();
@@ -1192,12 +1177,6 @@ const executeResponse = async (envelope, { req, res }) => {
             handle: (event, data, metadata, graph) => {
               responsesHandlers.on_chat_model_end.handle(event, data);
               const usage = getModelEndUsage(data?.output);
-              accounting.record(
-                usage,
-                metadata,
-                graph?.getAgentContext?.(metadata),
-                data?.output?.id,
-              );
               if (usage) {
                 const agentContext = graph?.getAgentContext?.(metadata);
                 const taggedUsage = contextualizeModelUsage(usage, metadata, agentContext);
@@ -1248,9 +1227,7 @@ const executeResponse = async (envelope, { req, res }) => {
           clientToolNames: clientTools.clientToolNames,
           /** Bills subagent child-run model calls (reported outside the
            *  streamEvents loop) into the same collectedUsage array. */
-          subagentUsageSink: createSubagentUsageSink(collectedUsage, (usage) =>
-            accounting.record(usage),
-          ),
+          subagentUsageSink: createSubagentUsageSink(collectedUsage),
         });
 
         if (!run) {
@@ -1432,12 +1409,6 @@ const executeResponse = async (envelope, { req, res }) => {
             handle: (event, data, metadata, graph) => {
               aggregatorHandlers.on_chat_model_end.handle(event, data);
               const usage = getModelEndUsage(data?.output);
-              accounting.record(
-                usage,
-                metadata,
-                graph?.getAgentContext?.(metadata),
-                data?.output?.id,
-              );
               if (usage) {
                 const agentContext = graph?.getAgentContext?.(metadata);
                 const taggedUsage = contextualizeModelUsage(usage, metadata, agentContext);
@@ -1485,9 +1456,7 @@ const executeResponse = async (envelope, { req, res }) => {
           clientToolNames: clientTools.clientToolNames,
           /** Bills subagent child-run model calls (reported outside the
            *  streamEvents loop) into the same collectedUsage array. */
-          subagentUsageSink: createSubagentUsageSink(collectedUsage, (usage) =>
-            accounting.record(usage),
-          ),
+          subagentUsageSink: createSubagentUsageSink(collectedUsage),
         });
 
         if (!run) {
