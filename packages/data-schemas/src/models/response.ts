@@ -11,6 +11,8 @@ export type StoredResponseStatus =
   | 'queued'
   | 'in_progress'
   | 'requires_action'
+  /** Private terminal protocol phase; legacy active-only writers cannot finalize it. */
+  | 'materializing'
   | 'completed'
   | 'failed'
   | 'incomplete'
@@ -131,6 +133,7 @@ export function createStoredResponseModel(
           'queued',
           'in_progress',
           'requires_action',
+          'materializing',
           'completed',
           'failed',
           'incomplete',

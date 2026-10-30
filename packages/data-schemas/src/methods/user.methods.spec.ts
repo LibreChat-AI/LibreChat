@@ -2422,7 +2422,7 @@ describe('private response cleanup before account deletion', () => {
     });
   });
 
-  it('preserves the account on cleanup failure and allows a retry', async () => {
+  it('preserves the account for retry while fencing responses after cleanup failure', async () => {
     const { userId, model } = await createResponses();
     jest
       .spyOn(model.collection, 'deleteMany')
@@ -2431,10 +2431,13 @@ describe('private response cleanup before account deletion', () => {
     await expect(methods.deleteUserById(userId)).rejects.toThrow('response-store down');
     expect(deletion).not.toHaveBeenCalled();
     expect(await User.exists({ _id: userId })).not.toBeNull();
-    expect(await createResponseStorage(mongoose).read({ userId }, 'response-0')).not.toBeNull();
+    // Failed cleanup retains bytes for retry, but committed erasure intent stays closed.
+    expect(await model.findOne({ userId, responseId: 'response-0' }).lean()).not.toBeNull();
+    expect(await createResponseStorage(mongoose).read({ userId }, 'response-0')).toBeNull();
     await methods.updateUser(userId, { name: 'Still usable' });
     expect((await User.findById(userId).lean())?.name).toBe('Still usable');
     await expect(methods.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
+    expect(await model.findOne({ userId, responseId: 'response-0' }).lean()).toBeNull();
   });
 
   it('uses the account tenant when deletion runs under system authority', async () => {
