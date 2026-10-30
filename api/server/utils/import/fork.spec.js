@@ -669,6 +669,72 @@ describe('duplicateConversation', () => {
     expect(bulkSaveMessages).not.toHaveBeenCalled();
     expect(bulkIncrementTagCounts).not.toHaveBeenCalled();
   });
+
+  test('keeps deeper branches when a regenerated reply is the newest message', async () => {
+    // q1 → a1 → q2 → a2, plus a shallower sibling a1' of a1 that is newest.
+    const branchedMessages = [
+      {
+        messageId: 'q1',
+        parentMessageId: Constants.NO_PARENT,
+        text: 'q1',
+        isCreatedByUser: true,
+        createdAt: '2021-01-01T00:00:00.000Z',
+      },
+      {
+        messageId: 'a1',
+        parentMessageId: 'q1',
+        text: 'a1',
+        isCreatedByUser: false,
+        createdAt: '2021-01-01T00:01:00.000Z',
+      },
+      {
+        messageId: 'q2',
+        parentMessageId: 'a1',
+        text: 'q2',
+        isCreatedByUser: true,
+        createdAt: '2021-01-01T00:02:00.000Z',
+      },
+      {
+        messageId: 'a2',
+        parentMessageId: 'q2',
+        text: 'a2',
+        isCreatedByUser: false,
+        createdAt: '2021-01-01T00:03:00.000Z',
+      },
+      {
+        messageId: 'a1-prime',
+        parentMessageId: 'q1',
+        text: "a1'",
+        isCreatedByUser: false,
+        createdAt: '2021-01-01T00:04:00.000Z',
+      },
+    ];
+    getMessages.mockResolvedValue(branchedMessages);
+
+    await duplicateConversation({
+      userId: 'user1',
+      conversationId: 'abc123',
+    });
+
+    const savedTexts = bulkSaveMessages.mock.calls[0][0].map((message) => message.text);
+    expect(savedTexts).toEqual(expect.arrayContaining(['q1', 'a1', 'q2', 'a2', "a1'"]));
+    expect(savedTexts).toHaveLength(branchedMessages.length);
+  });
+
+  test('duplicates an empty conversation without throwing', async () => {
+    getMessages.mockResolvedValue([]);
+
+    await expect(
+      duplicateConversation({
+        userId: 'user1',
+        conversationId: 'abc123',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        messages: [],
+      }),
+    );
+  });
 });
 
 describe('forkSharedConversation', () => {
