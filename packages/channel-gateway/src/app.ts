@@ -112,7 +112,7 @@ export class GatewayApp {
         };
         if (callback.type === 'view_closed') return;
         if (callback.type === 'view_submission')
-          return this.review.submit(interaction, bundle, signal);
+          return await this.review.submit(interaction, bundle, signal);
         const action = callback.actions?.[0];
         if (!action) throw new Error('Missing Slack action');
         if (action.action_id === 'channel_feedback') {
@@ -219,6 +219,7 @@ export class GatewayApp {
               event.actor,
               event.externalThreadKey,
               event.eventAt,
+              event.externalChannelId,
               signal,
             );
             this.log.info(
