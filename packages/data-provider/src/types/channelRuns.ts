@@ -111,6 +111,8 @@ export interface ChannelDeliveryPart {
   text: string;
   /** Provider-defined, versioned JSON presentation; immutable alongside the text fallback. */
   presentation?: { format: string; payload: string };
+  /** Optional diagnostic operation; reauthorized independently of immutable answer delivery. */
+  traceUrl?: string;
   /** Opaque server-authorized artifact identity; never an arbitrary URL or disk path. */
   artifactId?: string;
 }

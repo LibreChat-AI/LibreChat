@@ -64,7 +64,7 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
     if (binding.kind !== 'channel_run') return null;
     const [channelId, runId, extra] = binding.id.split('/');
     if (!channelId || !runId || extra != null) return null;
-    const run = await deps.storage.read(owner.tenantId ?? '_', channelId, runId);
+    const run = await deps.storage.read(owner.tenantId || '_', channelId, runId);
     if (
       !run ||
       run.principal.userId !== owner.userId ||
@@ -78,22 +78,31 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
       return null;
     return run;
   }
+  async function isCurrent(run: ChannelRunRecord): Promise<boolean> {
+    const execution = run.execution;
+    if (!execution?.apiKeyId) return true;
+    if (execution.protocol !== 'responses' || !execution.encryptedApiKey) return false;
+    const key = await deps.getKey(execution.apiKeyId, run.principal.userId);
+    const binding = bindingFor(run);
+    return Boolean(
+      key &&
+        key.id === execution.apiKeyId &&
+        key.binding?.kind === binding.kind &&
+        key.binding.id === binding.id &&
+        (key.expiresAt == null ||
+          (Number.isFinite(new Date(key.expiresAt).getTime()) &&
+            new Date(key.expiresAt).getTime() > now())),
+    );
+  }
   async function reveal(run: ChannelRunRecord): Promise<string> {
     const execution = run.execution;
     if (!execution?.apiKeyId || !execution.encryptedApiKey)
       throw new Error('Response credential unavailable');
-    const key = await deps.getKey(execution.apiKeyId, run.principal.userId);
-    const binding = bindingFor(run);
-    if (
-      !key ||
-      key.binding?.kind !== binding.kind ||
-      key.binding.id !== binding.id ||
-      (key.expiresAt != null && key.expiresAt.getTime() <= now())
-    )
-      throw new Error('Response credential authority changed');
+    if (!(await isCurrent(run))) throw new Error('Response credential authority changed');
     return deps.decrypt(execution.encryptedApiKey);
   }
   return {
+    isCurrent: (run: ChannelRunRecord): Promise<boolean> => isCurrent(run),
     async provision(run: ChannelRunRecord): Promise<string> {
       if (run.execution?.apiKeyId) return reveal(run);
       if (
@@ -123,8 +132,19 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
         );
       } catch (error) {
         const currentRun = await deps.storage.read(run.tenantId, run.channelId, run.runId);
-        if (currentRun?.execution?.apiKeyId !== key.id) {
-          await deps.deleteKey(key.id, run.principal.userId);
+        const winner = currentRun?.execution;
+        const sameAdmission =
+          currentRun &&
+          winner?.apiKeyId &&
+          winner.encryptedApiKey &&
+          winner.protocol === 'responses' &&
+          currentRun.principal.userId === run.principal.userId &&
+          currentRun.agentId === run.agentId &&
+          winner.requestId === run.execution.requestId &&
+          currentRun.leaseOwner === run.leaseOwner &&
+          currentRun.leaseEpoch === run.leaseEpoch;
+        if (!sameAdmission) {
+          if (winner?.apiKeyId !== key.id) await deps.deleteKey(key.id, run.principal.userId);
           throw error;
         }
         saved = currentRun;

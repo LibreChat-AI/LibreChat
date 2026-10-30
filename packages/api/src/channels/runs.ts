@@ -106,9 +106,11 @@ const planBody = z
                 text: z.string().max(40_000),
                 presentation: presentationSchema.optional(),
                 artifactId: id.optional(),
+                traceUrl: z.string().url().optional(),
               })
               .strict()
-              .refine((part) => !part.presentation || part.kind === 'message'),
+              .refine((part) => !part.presentation || part.kind === 'message')
+              .refine((part) => !part.traceUrl || (part.kind === 'message' && !part.required)),
           )
           .min(1)
           .max(100),
@@ -167,6 +169,16 @@ const settleBody = z
   })
   .strict();
 
+function withoutSession(summary: ChannelRunSummary): ChannelRunSummary {
+  const { session: _previous, ...metrics } = summary;
+  return metrics;
+}
+class ChannelDisclosureError extends Error {
+  constructor(readonly code: 'channel_authority_changed' | 'trace_unavailable') {
+    super(code);
+  }
+}
+
 /** Service projection deliberately omits execution credentials and internal principal identifiers. */
 export function channelRunView(run: ChannelRunRecord): ChannelRunView {
   return {
@@ -176,10 +188,20 @@ export function channelRunView(run: ChannelRunRecord): ChannelRunView {
     state: run.state,
     admission: run.admission,
     sequence: run.sequence,
-    snapshot: run.snapshot,
+    snapshot: run.snapshot
+      ? {
+          ...run.snapshot,
+          ...(run.snapshot.summary ? { summary: withoutSession(run.snapshot.summary) } : {}),
+        }
+      : undefined,
     progress: run.progress,
-    plan: run.plan,
-    receipts: run.receipts,
+    plan: run.plan
+      ? { ...run.plan, parts: run.plan.parts.filter((part) => !part.traceUrl) }
+      : undefined,
+    receipts: run.receipts.filter(
+      (receipt) =>
+        !run.plan?.parts.find((part) => part.operationId === receipt.operationId)?.traceUrl,
+    ),
     cancellationRequested: run.cancellationRequested,
   };
 }
@@ -230,6 +252,32 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
   async function hasAuthority(channel: AgentChannelRecord, run: ChannelRunRecord) {
     return hasChannelRunAuthority(channel, run, deps.resolvePrincipal);
   }
+  async function presentRun(
+    channel: AgentChannelRecord,
+    run: ChannelRunRecord,
+  ): Promise<ChannelRunView> {
+    const view = channelRunView(run);
+    let traceUrl: string | undefined;
+    if (run.snapshot?.summary && deps.summarize) {
+      try {
+        traceUrl = (await deps.summarize(run, run.snapshot)).session?.url;
+      } catch {
+        /* Diagnostic metadata is optional; frozen business metrics remain available. */
+      }
+      if (traceUrl && view.snapshot?.summary)
+        view.snapshot.summary = { ...view.snapshot.summary, session: { url: traceUrl } };
+    }
+    if (!(await hasAuthority(channel, run)))
+      throw new ChannelDisclosureError('channel_authority_changed');
+    if (run.plan) {
+      const parts = run.plan.parts.filter((part) => !part.traceUrl || part.traceUrl === traceUrl);
+      view.plan = { ...run.plan, parts };
+      view.receipts = run.receipts.filter((receipt) =>
+        parts.some((part) => part.operationId === receipt.operationId),
+      );
+    }
+    return view;
+  }
   async function retireAuthorityLost(
     run: ChannelRunRecord,
     fence: Parameters<ChannelRunStorage['markAuthorityLost']>[1],
@@ -244,6 +292,12 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       try {
         await handler(req, res, channel);
       } catch (error) {
+        if (error instanceof ChannelDisclosureError) {
+          res
+            .status(error.code === 'channel_authority_changed' ? 403 : 409)
+            .json({ error: error.code });
+          return;
+        }
         if (
           error instanceof ChannelRunConflict ||
           error instanceof ChannelArtifactError ||
@@ -336,6 +390,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         .object({
           actor: actorSchema,
           externalThreadKey: id,
+          externalChannelId: id,
           eventAt: z.number().int().positive().max(now()),
         })
         .strict()
@@ -344,7 +399,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         res.status(400).json({ error: 'invalid_run_action' });
         return;
       }
-      const { actor, externalThreadKey, eventAt } = parsed.data;
+      const { actor, externalThreadKey, externalChannelId, eventAt } = parsed.data;
       if (actor.teamId !== channel.slack?.teamId || actor.appId !== channel.slack?.appId) {
         res.status(403).json({ error: 'channel_action_forbidden' });
         return;
@@ -354,24 +409,22 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         res.status(403).json({ error: 'channel_authority_changed' });
         return;
       }
-      const run = await deps.storage.readActiveThread(
-        channel.tenantId ?? '_',
-        channel.channelId,
-        externalThreadKey,
-        actor.externalUserId,
+      const scope = {
+        tenantId: channel.tenantId || '_',
+        channelId: channel.channelId,
+        agentId: channel.agentId,
         principal,
-        eventAt,
-      );
+        admission: { actor, externalThreadKey, externalChannelId },
+      };
+      const run = await deps.storage.readActiveThread(scope, eventAt);
       if (!run || !(await hasAuthority(channel, run))) {
         res.json({ cancellationRequested: false });
         return;
       }
-      const accepted = await deps.storage.requestCancel(
-        channel.tenantId ?? '_',
-        channel.channelId,
-        run.runId,
-        actor.externalUserId,
-      );
+      const accepted = await deps.storage.requestCancel(scope, run.runId, {
+        epoch: run.leaseEpoch,
+        before: eventAt,
+      });
       res.status(accepted ? 202 : 200).json({ cancellationRequested: accepted });
     }),
     review: guarded(async (req, res, channel) => {
@@ -391,9 +444,9 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       }
       const url = new URL(
         run.execution.protocol === 'responses'
-          ? `/responses/${encodeURIComponent(run.execution.responseId!)}/review`
-          : `/c/${encodeURIComponent(run.execution.conversationId)}`,
-        deps.publicBaseUrl,
+          ? `responses/${encodeURIComponent(run.execution.responseId!)}/review`
+          : `c/${encodeURIComponent(run.execution.conversationId)}`,
+        `${deps.publicBaseUrl.replace(/\/+$/, '')}/`,
       );
       const view =
         run.execution.protocol === 'responses' &&
@@ -451,12 +504,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
     cancel: guarded(async (req, res, channel) => {
       const run = await actionRun(req, res, channel);
       if (!run) return;
-      const accepted = await deps.storage.requestCancel(
-        channel.tenantId ?? '_',
-        channel.channelId,
-        run.runId,
-        run.admission.actor.externalUserId,
-      );
+      const accepted = await deps.storage.requestCancel(run, run.runId);
       res
         .status(accepted ? 202 : 409)
         .json(accepted ? { cancellationRequested: true } : { error: 'run_not_cancellable' });
@@ -521,7 +569,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         return;
       }
       res.json({
-        run: channelRunView(run),
+        run: await presentRun(channel, run),
         fence: { runId: run.runId, owner: run.leaseOwner, epoch: run.leaseEpoch },
         leaseExpiresAt: run.leaseExpiresAt,
       });
@@ -570,7 +618,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
           binding.fence,
           now(),
         );
-        res.json({ settled: channelRunView(settled) });
+        res.json({ settled: await presentRun(channel, settled) });
         return;
       }
       if (run.cancellationRequested && !run.execution.responseId) {
@@ -619,7 +667,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         parsed.data.responseId,
         now(),
       );
-      res.json(channelRunView(run));
+      res.json(await presentRun(channel, run));
     }),
     advance: guarded(async (req, res, channel) => {
       const parsed = fenceBody.safeParse(req.body);
@@ -628,7 +676,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       const { fence } = binding;
       let run = binding.run;
       if (run.plan || ['delivered', 'failed', 'cancelled'].includes(run.state)) {
-        res.json(channelRunView(run));
+        res.json(await presentRun(channel, run));
         return;
       }
       run = await deps.storage.prepareExecution(channel.tenantId ?? '_', fence, now());
@@ -671,7 +719,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         now(),
         result.generationCreatedAt,
       );
-      res.json(channelRunView(run));
+      res.json(await presentRun(channel, run));
     }),
     plan: guarded(async (req, res, channel) => {
       const parsed = planBody.safeParse(req.body);
@@ -693,8 +741,16 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         res.status(400).json({ error: 'invalid_artifact_reference' });
         return;
       }
+      const currentView = await presentRun(channel, binding.run);
+      if (
+        parsed.data.plan.parts.some(
+          (part) => part.traceUrl && part.traceUrl !== currentView.snapshot?.summary?.session?.url,
+        )
+      )
+        throw new ChannelDisclosureError('trace_unavailable');
       res.json(
-        channelRunView(
+        await presentRun(
+          channel,
           await deps.storage.savePlan(
             channel.tenantId ?? '_',
             binding.fence,
@@ -714,7 +770,8 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       if (!binding) return;
       const { revision, rendererVersion, text } = parsed.data;
       res.json(
-        channelRunView(
+        await presentRun(
+          channel,
           await deps.storage.planProgress(
             channel.tenantId ?? '_',
             binding.fence,
@@ -733,7 +790,8 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       const binding = await bound(req, res, channel, parsed.data.fence);
       if (!binding) return;
       res.json(
-        channelRunView(
+        await presentRun(
+          channel,
           await deps.storage.beginProgress(
             channel.tenantId ?? '_',
             binding.fence,
@@ -757,7 +815,8 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         return;
       }
       res.json(
-        channelRunView(
+        await presentRun(
+          channel,
           await deps.storage.settleProgress(
             channel.tenantId ?? '_',
             binding.fence,
@@ -775,8 +834,19 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       }
       const binding = await bound(req, res, channel, parsed.data.fence);
       if (!binding) return;
+      const part = binding.run.plan?.parts.find(
+        (item) => item.operationId === parsed.data.operationId,
+      );
+      if (
+        part?.traceUrl &&
+        !(await presentRun(channel, binding.run)).plan?.parts.some(
+          (item) => item.operationId === part.operationId,
+        )
+      )
+        throw new ChannelDisclosureError('trace_unavailable');
       res.json(
-        channelRunView(
+        await presentRun(
+          channel,
           await deps.storage.beginDelivery(
             channel.tenantId ?? '_',
             binding.fence,
@@ -795,7 +865,8 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       const binding = await bound(req, res, channel, parsed.data.fence);
       if (!binding) return;
       res.json(
-        channelRunView(
+        await presentRun(
+          channel,
           await deps.storage.checkpointUpload(
             channel.tenantId ?? '_',
             binding.fence,
@@ -848,7 +919,8 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         return;
       }
       res.json(
-        channelRunView(
+        await presentRun(
+          channel,
           await deps.storage.settleDelivery(
             channel.tenantId ?? '_',
             binding.fence,
@@ -863,7 +935,8 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       const binding = await bound(req, res, channel, parsed.success ? parsed.data.fence : null);
       if (!binding) return;
       res.json(
-        channelRunView(
+        await presentRun(
+          channel,
           await deps.storage.commitDelivery(channel.tenantId ?? '_', binding.fence, now()),
         ),
       );
