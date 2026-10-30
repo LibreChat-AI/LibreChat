@@ -1,12 +1,11 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import request from 'supertest';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { channelConfigSchema } from 'librechat-data-provider';
 import {
   createModels,
   createMethods,
-  createChannelRunStorage,
   createChannelFeedbackStorage,
   tenantStorage,
   runAsSystem,
@@ -14,9 +13,10 @@ import {
 import type { AppConfig } from '@librechat/data-schemas';
 import type { ChannelFeedbackRuntimeDependencies } from './feedbackRuntime';
 import { createChannelFeedbackRuntime } from './feedbackRuntime';
+import { createChannelFeedbackWorker } from './feedbackWorker';
 import { createChannelHandlers } from './service';
 
-let mongo: MongoMemoryServer;
+let mongo: MongoMemoryReplSet;
 let deps: ChannelFeedbackRuntimeDependencies;
 let runtime: ReturnType<typeof createChannelFeedbackRuntime>;
 let app: express.Express;
@@ -39,7 +39,10 @@ const post = () =>
     .send(reaction);
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  mongo = await MongoMemoryReplSet.create({
+    replSet: { count: 1 },
+    instanceOpts: [{ args: ['--nounixsocket'] }],
+  });
   await mongoose.connect(mongo.getUri());
   createModels(mongoose);
 }, 60000);
@@ -48,7 +51,13 @@ afterAll(async () => {
   await mongo?.stop();
 });
 beforeEach(async () => {
-  await runAsSystem(async () => mongoose.models.AgentChannel.deleteMany({}));
+  await runAsSystem(() =>
+    Promise.all(
+      ['AgentChannel', 'ChannelScope', 'ResponseScope'].map((name) =>
+        mongoose.models[name].deleteMany({}),
+      ),
+    ),
+  );
   const db = createMethods(mongoose);
   await tenantStorage.run({ tenantId }, async () =>
     db.createAgentChannel({
@@ -75,16 +84,14 @@ beforeEach(async () => {
   deps = {
     getConfig: async () => channelConfigSchema.parse({ enabled }),
     guard: guarded.service,
-    runs: createChannelRunStorage(mongoose),
     hostDeps: {
       channels: db,
       storage: createChannelFeedbackStorage(mongoose),
       getAppConfig: async () =>
         ({
           interfaceConfig: { feedback: true },
-          endpoints: { agents: { channels: { enabled } } },
+          endpoints: { agents: {} },
         }) as AppConfig,
-      getMessage: (filter) => db.getMessage(filter),
       currentTracePolicy: async () => null,
       sendScore: jest.fn().mockResolvedValue(undefined),
     },
@@ -151,4 +158,33 @@ test('invalid timeout/lease relationship never starts a recovery worker', async 
   await expect(runtime.initialize()).rejects.toThrow('export lease longer than its timeout');
   await post().expect(503);
   expect(deps.workerDeps.listChannels).not.toHaveBeenCalled();
+});
+
+test('normalizes default tenants only at the feedback worker application boundary', async () => {
+  const contexts: Array<{ partition: string; tenantId?: string }> = [];
+  const onError = jest.fn();
+  const worker = createChannelFeedbackWorker({
+    listChannels: async () => ({ channels: [{}, { tenantId: 'named' }] }),
+    feedback: {
+      recover: async (partition) => {
+        contexts.push({ partition, tenantId: tenantStorage.getStore()?.tenantId });
+        return 0;
+      },
+      flush: async () => 0,
+    },
+    batchSize: 1,
+    intervalMs: 60000,
+    maxIdleIntervalMs: 60000,
+    onError,
+  });
+  try {
+    await worker.start();
+  } finally {
+    await worker.stop();
+  }
+  expect(contexts).toEqual([
+    { partition: '_', tenantId: undefined },
+    { partition: 'named', tenantId: 'named' },
+  ]);
+  expect(onError).not.toHaveBeenCalled();
 });

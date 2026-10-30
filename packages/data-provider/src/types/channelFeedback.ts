@@ -33,6 +33,8 @@ export interface ChannelReplyMapping {
 }
 
 export interface ChannelFeedbackVote {
+  /** Canonical emoji alias with its skin-tone variant. Absent only in legacy ledgers. */
+  reaction?: string;
   externalMessageKey: string;
   rating: ChannelRating;
   active: boolean;
