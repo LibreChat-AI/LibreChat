@@ -10,6 +10,7 @@ import type { ServerRequest } from '~/types';
 import {
   collectToolCallIds,
   countRetainedToolTokens,
+  countFormattedMessageTokens,
   createCachedTokenCounter,
   payloadParser,
   prependQuotes,
@@ -548,5 +549,44 @@ describe('applyAttachmentOnlyText', () => {
     applyAttachmentOnlyText(message, withFiles);
 
     expect(message.content).toBe('');
+  });
+});
+
+describe('countFormattedMessageTokens document parts', () => {
+  const data = 'A'.repeat(750_000);
+  const count = (part: object, encoding: 'claude' | 'o200k_base') =>
+    countFormattedMessageTokens({ content: [part] }, encoding);
+  const anthropicPdf = {
+    type: 'document',
+    source: { type: 'base64', media_type: 'application/pdf', data },
+  };
+
+  it.each(['claude', 'o200k_base'] as const)(
+    'counts an OpenAI file part PDF like the Anthropic block (%s)',
+    (encoding) => {
+      const filePart = {
+        type: 'file',
+        file: { file_data: `data:application/pdf;base64,${data}`, filename: 'a.pdf' },
+      };
+      expect(count(filePart, encoding)).toBe(count(anthropicPdf, encoding));
+    },
+  );
+
+  it('prices a 10-page PDF file part at page rates for claude', () => {
+    const filePart = { type: 'file', file: { file_data: `data:application/pdf;base64,${data}` } };
+    expect(count(filePart, 'claude')).toBeGreaterThanOrEqual(20_000);
+  });
+
+  it.each(['claude', 'o200k_base'] as const)(
+    'counts a Responses input_file PDF like the Anthropic block (%s)',
+    (encoding) => {
+      const inputFile = { type: 'input_file', file_data: `data:application/pdf;base64,${data}` };
+      expect(count(inputFile, encoding)).toBe(count(anthropicPdf, encoding));
+    },
+  );
+
+  it('keeps the flat fallback for a non-PDF file part', () => {
+    const csv = { type: 'file', file: { file_data: `data:text/csv;base64,${data}` } };
+    expect(count(csv, 'claude')).toBe(count({ type: 'file', file: {} }, 'claude'));
   });
 });
