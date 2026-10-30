@@ -1,3 +1,4 @@
+import { responseTenantId } from './scope';
 import { z } from 'zod';
 import type { StoredResponseRecord, ResponseStorage } from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
@@ -68,7 +69,7 @@ function createResponseWorkerTransport(
       !job ||
       job.createdAt !== current.generationCreatedAt ||
       job.metadata.userId !== current.userId ||
-      job.metadata.tenantId !== current.tenantId ||
+      responseTenantId(job.metadata.tenantId) !== responseTenantId(current.tenantId) ||
       job.metadata.agent_id !== current.agentId ||
       job.metadata.conversationId !== current.conversationId ||
       job.metadata.responseMessageId !== current.responseId ||
