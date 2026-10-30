@@ -1790,13 +1790,15 @@ describe('ToolService - Action Capability Gating', () => {
 
       expect(runStepEvents.map((event) => event.data.index)).toEqual([0, 1]);
       expect(authDeltaEvents.map((event) => event.data.id)).toEqual([
-        'step_oauth_login_ELI',
-        'step_oauth_login_Vespa',
+        expect.stringContaining('step_oauth_login_ELI:oauth:'),
+        expect.stringContaining('step_oauth_login_Vespa:oauth:'),
       ]);
-      expect(completionEvents.map((event) => event.data.result.id)).toEqual([
-        'step_oauth_login_ELI',
-        'step_oauth_login_Vespa',
-      ]);
+      expect(completionEvents.map((event) => event.data.result.id)).toEqual(
+        authDeltaEvents.map((event) => event.data.id),
+      );
+      expect(completionEvents.map((event) => event.data.result.tool_call.id)).toEqual(
+        runStepEvents.map((event) => event.data.stepDetails.tool_calls[0].id),
+      );
     });
 
     it('numbers the pending MCP OAuth login steps in the order the loader looked the servers up', async () => {
@@ -1862,7 +1864,7 @@ describe('ToolService - Action Capability Gating', () => {
         mockSendEvent.mock.calls
           .map(([, event]) => event)
           .filter((event) => event.data?.stepDetails?.type === 'tool_calls')
-          .map((event) => [event.data.id, event.data.index]),
+          .map((event) => [event.data.id.split(':oauth:')[0], event.data.index]),
       );
       expect(stepIndexes).toEqual({ step_oauth_login_ELI: 0, step_oauth_login_Vespa: 1 });
     });
@@ -2172,7 +2174,7 @@ describe('ToolService - Action Capability Gating', () => {
       ]);
       for (const [emittedStreamId, , options] of mockEmitChunk.mock.calls) {
         expect(emittedStreamId).toBe(streamId);
-        expect(options).toEqual({ expectedCreatedAt: jobCreatedAt });
+        expect(options).toEqual({ expectedCreatedAt: jobCreatedAt, durable: true });
       }
       for (const [reinitInput] of reinitMCPServer.mock.calls) {
         expect(reinitInput).toEqual(expect.objectContaining({ streamId, jobCreatedAt }));
@@ -2294,7 +2296,7 @@ describe('ToolService - Action Capability Gating', () => {
         expect.objectContaining({
           event: 'on_run_step',
           data: expect.objectContaining({
-            id: `step_oauth_login_${serverName}`,
+            id: expect.stringContaining(`step_oauth_login_${serverName}:oauth:`),
           }),
         }),
       );
@@ -2303,7 +2305,7 @@ describe('ToolService - Action Capability Gating', () => {
         expect.objectContaining({
           event: 'on_run_step_delta',
           data: expect.objectContaining({
-            id: `step_oauth_login_${serverName}`,
+            id: expect.stringContaining(`step_oauth_login_${serverName}:oauth:`),
             delta: expect.objectContaining({
               auth: authorizationUrl,
             }),
@@ -2370,7 +2372,7 @@ describe('ToolService - Action Capability Gating', () => {
         expect.objectContaining({
           event: 'on_run_step_delta',
           data: expect.objectContaining({
-            id: `step_oauth_login_${serverName}`,
+            id: expect.stringContaining(`step_oauth_login_${serverName}:oauth:`),
             delta: expect.objectContaining({
               auth: authorizationUrl,
             }),
@@ -2426,6 +2428,13 @@ describe('ToolService - Action Capability Gating', () => {
       controller.abort(reason);
 
       await expect(loading).rejects.toBe(reason);
+      const events = mockSendEvent.mock.calls.map(([, event]) => event);
+      const opening = events.find((event) => event.event === 'on_run_step');
+      const completion = events.find((event) => event.event === 'on_run_step_completed');
+      expect(completion?.data.result.id).toBe(opening?.data.id);
+      expect(completion?.data.result.tool_call.id).toBe(opening?.data.stepDetails.tool_calls[0].id);
+      expect(opening).toBeDefined();
+      expect(completion).toBeDefined();
     });
 
     it('should re-emit pending MCP OAuth prompts when selected MCP tools are already concrete', async () => {
@@ -2475,7 +2484,7 @@ describe('ToolService - Action Capability Gating', () => {
         expect.objectContaining({
           event: 'on_run_step_delta',
           data: expect.objectContaining({
-            id: `step_oauth_login_${serverName}`,
+            id: expect.stringContaining(`step_oauth_login_${serverName}:oauth:`),
             delta: expect.objectContaining({
               auth: authorizationUrl,
             }),
@@ -2524,7 +2533,7 @@ describe('ToolService - Action Capability Gating', () => {
         expect.objectContaining({
           event: 'on_run_step_delta',
           data: expect.objectContaining({
-            id: `step_oauth_login_${serverName}`,
+            id: expect.stringContaining(`step_oauth_login_${serverName}:oauth:`),
             delta: expect.objectContaining({
               auth: authorizationUrl,
             }),
@@ -2576,7 +2585,7 @@ describe('ToolService - Action Capability Gating', () => {
         expect.objectContaining({
           event: 'on_run_step_delta',
           data: expect.objectContaining({
-            id: `step_oauth_login_${serverName}`,
+            id: expect.stringContaining(`step_oauth_login_${serverName}:oauth:`),
             delta: expect.objectContaining({
               auth: authorizationUrl,
             }),
