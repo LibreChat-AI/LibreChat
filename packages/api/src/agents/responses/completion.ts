@@ -18,8 +18,16 @@ import { getConversationWriteContext } from '~/conversations/save';
 import { isTemporaryTurn } from '~/conversations/retention';
 import { sendResponsesErrorResponse } from './service';
 
-interface CompletionRequest extends TurnConversationRequest {
+interface CompletionRequest
+  extends Omit<TurnConversationRequest, 'config' | 'resolvedConversation'> {
   config?: AppConfig;
+  resolvedConversation?:
+    | (ReturnType<typeof resolvePersistableCodeEnvironmentDecision> & {
+        conversationId?: string;
+        isTemporary?: boolean;
+        expiredAt?: Date;
+      })
+    | null;
 }
 type InputMessage = Parameters<
   Parameters<typeof saveForegroundResponseInputs<ConversationWriteContext>>[1]['saveMessage']
