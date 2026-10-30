@@ -21,6 +21,16 @@ describe('trusted channel execution metadata', () => {
     expect(parseChannelExecution(marker)).not.toBe(marker);
   });
 
+  test.each(['channel:team', 'channel.with.dots', 'channel/team', '频道', 'x'.repeat(512)])(
+    'preserves an opaque admitted identifier: %s',
+    (id) => {
+      expect(parseChannelExecution({ channelId: id, runId: id })).toEqual({
+        channelId: id,
+        runId: id,
+      });
+    },
+  );
+
   test.each([
     null,
     [],
@@ -28,8 +38,8 @@ describe('trusted channel execution metadata', () => {
     'run',
     { ...marker, userId: 'other' },
     { channelId: '', runId: 'run' },
+    { channelId: 'channel', runId: '' },
     { channelId: 'channel', runId: 1 },
-    { channelId: 'channel', runId: 'x'.repeat(257) },
   ])('rejects a malformed stored marker: %#', (value) => {
     expect(() => parseChannelExecution(value)).toThrow('channel_execution_invalid');
   });
@@ -50,6 +60,7 @@ describeRedis('channel metadata through actual Redis and reconstructed managers'
       jobStore: new RedisJobStore(redis),
       eventTransport: new InMemoryEventTransport(),
       isRedis: true,
+      cleanupOnComplete: false,
     });
     managers.push(result);
     return result;
@@ -95,6 +106,38 @@ describeRedis('channel metadata through actual Redis and reconstructed managers'
     );
     expect((await reader.getJob(id))?.metadata.channelExecution).toEqual(marker);
   });
+
+  test.each(['complete', 'error', 'abort'] as const)(
+    'recovers channel %s obligations through a reconstructed Redis manager',
+    async (outcome) => {
+      const writer = manager();
+      const reader = manager();
+      writer.setTerminalHostActionHandler(async () => {
+        throw new Error('source temporarily unavailable');
+      });
+      const recovered = jest.fn().mockResolvedValue(undefined);
+      reader.setTerminalHostActionHandler(recovered);
+      const id = randomUUID();
+      const opaque = { channelId: 'channel:team/频道', runId: 'event.run:1' };
+      const job = await writer.createJob(id, 'owner', id, {
+        initialMetadata: { channelExecution: opaque },
+      });
+      if (outcome === 'abort') await writer.abortJob(id, { expectedCreatedAt: job.createdAt });
+      else
+        await writer.completeJob(
+          id,
+          outcome === 'error' ? 'execution_failed' : undefined,
+          job.createdAt,
+        );
+      expect((await reader.getJob(id))?.metadata.terminalHostActionPending).toBe(true);
+      await expect(reader.retryTerminalHostAction(id, job.createdAt + 1)).resolves.toBe(false);
+      await expect(reader.retryTerminalHostAction(id, job.createdAt)).resolves.toBe(true);
+      expect(recovered).toHaveBeenCalledTimes(1);
+      expect(recovered.mock.calls[0][1].channelExecution).toEqual(opaque);
+      await reader.retryTerminalHostAction(id, job.createdAt);
+      expect(recovered).toHaveBeenCalledTimes(1);
+    },
+  );
 
   test.each(['{invalid', JSON.stringify({ ...marker, userId: 'injected' })])(
     'fails closed on a malformed Redis marker: %#',
