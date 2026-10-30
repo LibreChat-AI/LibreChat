@@ -77,8 +77,8 @@ export type ResponseResumeResult =
   | { ok: true; record: StoredResponseRecord; replayed: boolean }
   | { ok: false; code: 'resume_conflict' };
 
-/** A drained execution's authority is independent of polling's projection revision. */
-export type ResponseTerminalGuard =
+/** Canonical execution writes are independent of polling's projection revision. */
+export type ResponseExecutionGuard =
   | number
   | {
       execution: Pick<
@@ -87,15 +87,13 @@ export type ResponseTerminalGuard =
       >;
     };
 
-function terminalExecutionFilter(guard: Exclude<ResponseTerminalGuard, number>) {
-  const { execution } = guard;
-  const filter: Record<string, unknown> = {
-    agentId: execution.agentId,
-    sourceKeyId: execution.sourceKeyId ?? { $exists: false },
-    conversationId: execution.conversationId,
-    generationCreatedAt: execution.generationCreatedAt,
-  };
-  const review = execution.review;
+/** Compatibility name for existing terminal producers. */
+export type ResponseTerminalGuard = ResponseExecutionGuard;
+
+function responseReviewFilter(
+  review: ResponseReviewCheckpoint | undefined,
+): Record<string, unknown> {
+  const filter: Record<string, unknown> = {};
   if (review) {
     const fields: Record<
       keyof ResponseReviewCheckpoint,
@@ -114,6 +112,18 @@ function terminalExecutionFilter(guard: Exclude<ResponseTerminalGuard, number>) 
     for (const [key, value] of Object.entries(fields))
       filter[`review.${key}`] = value ?? { $exists: false };
   } else filter.review = { $exists: false };
+  return filter;
+}
+
+function responseExecutionFilter(guard: Exclude<ResponseExecutionGuard, number>) {
+  const { execution } = guard;
+  const filter: Record<string, unknown> = {
+    agentId: execution.agentId,
+    sourceKeyId: execution.sourceKeyId ?? { $exists: false },
+    conversationId: execution.conversationId,
+    generationCreatedAt: execution.generationCreatedAt,
+    ...responseReviewFilter(execution.review),
+  };
   const resume = execution.resume;
   if (resume) {
     const fields: Record<
@@ -153,7 +163,7 @@ export interface ResponseStorage {
   publishReview(
     owner: ResponseOwner,
     responseId: string,
-    revision: number,
+    guard: ResponseExecutionGuard,
     generationCreatedAt: number,
     review: ResponseReviewCheckpoint,
     responseJSON: string,
@@ -249,7 +259,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
         guard.execution.generationCreatedAt !== receipt.generationCreatedAt
       )
         return { ok: false, code: 'response_conflict' };
-      const execution = typeof guard === 'number' ? undefined : terminalExecutionFilter(guard);
+      const execution = typeof guard === 'number' ? undefined : responseExecutionFilter(guard);
       const pendingTerminal: ResponseTerminalReceipt = {
         generationCreatedAt: receipt.generationCreatedAt,
         providerExecutionId: receipt.providerExecutionId,
@@ -329,13 +339,41 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
         .lean();
       return record ? { ok: true, record } : { ok: false, code: 'response_conflict' };
     },
-    async publishReview(owner, responseId, revision, generationCreatedAt, review, responseJSON) {
+    async publishReview(owner, responseId, guard, generationCreatedAt, review, responseJSON) {
+      if (typeof guard !== 'number' && guard.execution.generationCreatedAt !== generationCreatedAt)
+        return { ok: false, code: 'response_conflict' };
+      const execution = typeof guard === 'number' ? undefined : responseExecutionFilter(guard);
+      const receiptFilter =
+        typeof guard === 'number'
+          ? undefined
+          : {
+              ...scope(owner),
+              responseId,
+              generationCreatedAt,
+              agentId: guard.execution.agentId,
+              sourceKeyId: guard.execution.sourceKeyId ?? { $exists: false },
+              conversationId: guard.execution.conversationId,
+              ...responseReviewFilter(review),
+              status: 'requires_action',
+              resume: { $exists: false },
+              pendingTerminal: { $exists: false },
+              cancellationRequestedAt: { $exists: false },
+            };
+      if (
+        typeof guard !== 'number' &&
+        guard.execution.review?.actionId === review.actionId &&
+        guard.execution.review.providerExecutionId === review.providerExecutionId &&
+        guard.execution.resume == null
+      ) {
+        const existing = await model.findOne(receiptFilter).lean();
+        return existing ? { ok: true, record: existing } : { ok: false, code: 'response_conflict' };
+      }
       const record = await model
         .findOneAndUpdate(
           {
             ...scope(owner),
             responseId,
-            revision,
+            ...(execution ?? { revision: guard }),
             generationCreatedAt,
             status: { $in: ['in_progress', 'requires_action'] },
             pendingTerminal: { $exists: false },
@@ -381,7 +419,10 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
           { new: true, runValidators: true },
         )
         .lean();
-      return record ? { ok: true, record } : { ok: false, code: 'response_conflict' };
+      if (record) return { ok: true, record };
+      if (!receiptFilter) return { ok: false, code: 'response_conflict' };
+      const existing = await model.findOne(receiptFilter).lean();
+      return existing ? { ok: true, record: existing } : { ok: false, code: 'response_conflict' };
     },
     async reserveResume(owner, responseId, input, now) {
       if (!Number.isFinite(now) || now <= 0) throw new TypeError('Invalid resume reservation time');
