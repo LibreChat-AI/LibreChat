@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import { createHash, randomUUID } from 'node:crypto';
+import {
+  ChannelFeedbackAuthorityError,
+  CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX,
+} from '@librechat/data-schemas';
 import type {
   ChannelFeedbackActor,
   ChannelFeedbackResult,
@@ -23,11 +27,13 @@ export interface ChannelFeedbackDependencies {
   /** Resolves persisted run ownership and canonical message/trace provenance, not supplied IDs. */
   resolveReply: (
     actor: ChannelFeedbackActor,
-    runId: string,
     externalMessageKey: string,
   ) => Promise<ChannelReplyMapping | null>;
   /** Host supplies effective appConfig and current export policy; must honor input.signal. */
-  sendScore: (input: SendFeedbackScoreParams, mapping: ChannelReplyMapping) => Promise<void>;
+  sendScore: (
+    input: SendFeedbackScoreParams & { assertActive: () => void },
+    mapping: ChannelReplyMapping,
+  ) => Promise<void>;
   maxConflictRetries: number;
   exportTimeoutMs: number;
   exportLeaseMs: number;
@@ -58,6 +64,10 @@ export function normalizeChannelRating(reaction: string): ChannelRating | null {
   return null;
 }
 
+function reactionIdentity(reaction: string): string {
+  return reaction.replace(/^\+1(?=::|$)/, 'thumbsup').replace(/^-1(?=::|$)/, 'thumbsdown');
+}
+
 function later(
   a: Pick<ChannelFeedbackVote, 'eventTimestampUs' | 'eventId'>,
   b: Pick<ChannelFeedbackVote, 'eventTimestampUs' | 'eventId'>,
@@ -74,13 +84,15 @@ export function projectChannelReaction(
   event: ChannelReactionEvent,
   rating: ChannelRating,
 ): { votes: ChannelFeedbackVote[]; rating: ChannelRating | null; changed: boolean } {
+  const reaction = reactionIdentity(event.reaction);
   const index = votes.findIndex(
-    (vote) => vote.externalMessageKey === event.externalMessageKey && vote.rating === rating,
+    (vote) => vote.externalMessageKey === event.externalMessageKey && vote.reaction === reaction,
   );
   if (index >= 0 && !later(event, votes[index]))
     return { votes, rating: latestRating(votes), changed: false };
   const next = [...votes];
   const vote: ChannelFeedbackVote = {
+    reaction,
     externalMessageKey: event.externalMessageKey,
     rating,
     active: event.action === 'added',
@@ -132,66 +144,91 @@ export function createChannelFeedbackService(deps: ChannelFeedbackDependencies) 
   async function project(
     record: ChannelFeedbackEventRecord,
   ): Promise<ChannelFeedbackResult<ChannelFeedbackView>> {
-    let ledger = await deps.storage.ensureChannelFeedback({
-      tenantId: record.tenantId,
-      key: record.ledgerKey,
-      mapping: record.mapping,
-      externalUserId: record.event.externalUserId,
-      scoreId: `channel-feedback-${record.ledgerKey}`,
-      votes: [],
-      revision: 0,
-      rating: null,
-      exportStatus: 'sent',
-      retryAtMs: 0,
-    });
-    for (let attempt = 0; attempt < deps.maxConflictRetries; attempt++) {
-      const next = projectChannelReaction(ledger.votes, record.event, record.rating);
-      if (!next.changed) {
-        await deps.storage.markChannelFeedbackEvent(record);
-        return { ok: true, value: response(ledger) };
-      }
-      const updated: ChannelFeedbackLedger = {
-        ...ledger,
-        votes: next.votes,
-        rating: next.rating,
-        revision: ledger.revision + 1,
-        exportStatus: 'pending',
-      };
-      if (await deps.storage.saveChannelFeedback(updated, ledger.revision)) {
-        await deps.storage.markChannelFeedbackEvent(record);
-        return { ok: true, value: response(updated) };
-      }
-      const current = await deps.storage.getChannelFeedback(record.tenantId, record.ledgerKey);
-      if (!current) throw new Error('Channel feedback ledger disappeared during projection');
-      ledger = current;
+    if (!(await deps.canRecord(record.mapping))) return failure('forbidden');
+    try {
+      return await deps.storage.withAuthority(record.mapping, async (storage) => {
+        let ledger = await storage.ensureChannelFeedback({
+          tenantId: record.tenantId,
+          key: record.ledgerKey,
+          mapping: record.mapping,
+          externalUserId: record.event.externalUserId,
+          scoreId: `channel-feedback-${record.ledgerKey}`,
+          votes: [],
+          revision: 0,
+          rating: null,
+          exportStatus: 'sent',
+          retryAtMs: 0,
+        });
+        for (let attempt = 0; attempt < deps.maxConflictRetries; attempt++) {
+          const legacy = ledger.votes.some((vote) => !vote.reaction);
+          const votes = legacy
+            ? await storage.rebuildVotes(
+                record.tenantId,
+                record.ledgerKey,
+                ledger.votes.map((vote) => vote.eventId),
+              )
+            : ledger.votes;
+          if (!votes) return failure('changed');
+          if (votes.length > CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX) return failure('capacity');
+          const next = projectChannelReaction(votes, record.event, record.rating);
+          if (next.votes.length > CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX) return failure('capacity');
+          if (!next.changed && !legacy) {
+            await storage.markChannelFeedbackEvent(record);
+            return { ok: true, value: response(ledger) };
+          }
+          const updated: ChannelFeedbackLedger = {
+            ...ledger,
+            votes: next.votes,
+            rating: next.rating,
+            revision: ledger.revision + 1,
+            exportStatus: 'pending',
+          };
+          if (await storage.saveChannelFeedback(updated, ledger.revision)) {
+            await storage.markChannelFeedbackEvent(record);
+            return { ok: true, value: response(updated) };
+          }
+          const current = await storage.getChannelFeedback(record.tenantId, record.ledgerKey);
+          if (!current) throw new Error('Channel feedback ledger disappeared during projection');
+          ledger = current;
+        }
+        return failure('changed');
+      });
+    } catch (error) {
+      if (error instanceof ChannelFeedbackAuthorityError) return failure('forbidden');
+      throw error;
     }
-    return failure('changed');
   }
-  return {
-    async mapReply(
-      actor: ChannelFeedbackActor,
-      runId: string,
-      externalMessageKey: string,
-    ): Promise<ChannelFeedbackResult<ChannelReplyMapping>> {
-      if (!(await deps.canRecord(actor))) return failure('forbidden');
-      const mapping = await deps.resolveReply(actor, runId, externalMessageKey);
-      if (
-        !mapping ||
-        !matches(actor, mapping) ||
-        mapping.runId !== runId ||
-        mapping.externalMessageKey !== externalMessageKey
-      )
-        return failure('mapping_not_found');
+  async function mapAuthorized(
+    actor: ChannelFeedbackActor,
+    externalMessageKey: string,
+  ): Promise<ChannelFeedbackResult<ChannelReplyMapping>> {
+    const mapping = await deps.resolveReply(actor, externalMessageKey);
+    if (!mapping || !matches(actor, mapping) || mapping.externalMessageKey !== externalMessageKey)
+      return failure('mapping_not_found');
+    try {
       const stored = await deps.storage.putChannelReply(mapping);
       if (
         !matches(actor, stored) ||
-        stored.runId !== runId ||
+        stored.runId !== mapping.runId ||
         stored.responseId !== mapping.responseId ||
         stored.messageId !== mapping.messageId ||
         stored.principalId !== mapping.principalId
       )
         return failure('event_conflict');
       return { ok: true, value: stored };
+    } catch (error) {
+      if (error instanceof ChannelFeedbackAuthorityError) return failure('forbidden');
+      throw error;
+    }
+  }
+
+  return {
+    async mapReply(
+      actor: ChannelFeedbackActor,
+      externalMessageKey: string,
+    ): Promise<ChannelFeedbackResult<ChannelReplyMapping>> {
+      if (!(await deps.canRecord(actor))) return failure('forbidden');
+      return mapAuthorized(actor, externalMessageKey);
     },
     async record(
       actor: ChannelFeedbackActor,
@@ -207,8 +244,13 @@ export function createChannelFeedbackService(deps: ChannelFeedbackDependencies) 
           ok: true,
           value: { messageId: '', conversationId: '', feedback: null, ignored: true },
         };
-      const mapping = await deps.storage.getChannelReply(actor, event.externalMessageKey);
-      if (!mapping) return failure('mapping_not_found');
+      let mapping = await deps.storage.getChannelReply(actor, event.externalMessageKey);
+      if (!mapping) {
+        const resolved = await mapAuthorized(actor, event.externalMessageKey);
+        if (!resolved.ok) return resolved;
+        mapping = resolved.value;
+      }
+      if (!(await deps.canRecord(mapping))) return failure('forbidden');
       const ledgerKey = digest([
         actor.tenantId,
         actor.channelId,
@@ -228,25 +270,32 @@ export function createChannelFeedbackService(deps: ChannelFeedbackDependencies) 
         event.reaction,
         event.action,
       ]);
-      const admitted = await deps.storage.admitChannelFeedbackEvent({
-        tenantId: actor.tenantId,
-        channelId: actor.channelId,
-        eventId: event.eventId,
-        digest: eventDigest,
-        ledgerKey,
-        event,
-        mapping,
-        rating,
-        processed: false,
-      });
+      let admitted: ChannelFeedbackEventRecord;
+      try {
+        admitted = await deps.storage.admitChannelFeedbackEvent({
+          tenantId: actor.tenantId,
+          channelId: actor.channelId,
+          eventId: event.eventId,
+          digest: eventDigest,
+          ledgerKey,
+          event,
+          mapping,
+          rating,
+          processed: false,
+        });
+      } catch (error) {
+        if (error instanceof ChannelFeedbackAuthorityError) return failure('forbidden');
+        throw error;
+      }
       if (admitted.digest !== eventDigest) return failure('event_conflict');
       return project(admitted);
     },
     /** Recover accepted receipts after a process exits between admission and projection. */
     async recover(tenantId: string, limit: number): Promise<number> {
       const events = await deps.storage.pendingChannelFeedbackEvents(tenantId, limit);
-      for (const event of events) await project(event);
-      return events.length;
+      let processed = 0;
+      for (const event of events) if ((await project(event)).ok) processed++;
+      return processed;
     },
     /** Durable retry state is not tied to the incoming Slack request's lifetime. */
     async flush(tenantId: string, limit: number): Promise<number> {
@@ -254,49 +303,95 @@ export function createChannelFeedbackService(deps: ChannelFeedbackDependencies) 
       let processed = 0;
       for (const candidate of pending) {
         const leaseId = randomUUID();
-        const record = await deps.storage.claimChannelFeedbackExport(
-          tenantId,
-          candidate.key,
-          leaseId,
-          now(),
-          now() + deps.exportLeaseMs,
-        );
+        const startedAt = now();
+        const leaseUntil = startedAt + deps.exportLeaseMs;
+        let record: ChannelFeedbackLedger | null;
+        try {
+          record = await deps.storage.claimChannelFeedbackExport(
+            candidate,
+            leaseId,
+            startedAt,
+            leaseUntil,
+          );
+        } catch (error) {
+          if (error instanceof ChannelFeedbackAuthorityError) continue;
+          throw error;
+        }
         if (!record) continue;
         processed += 1;
         let success = false;
+        const controller = new AbortController();
+        const deadline = Math.min(
+          startedAt + deps.exportTimeoutMs,
+          record.leaseUntilMs ?? leaseUntil,
+        );
+        const remaining = deadline - now();
+        const timeout = setTimeout(
+          () => controller.abort(new Error('Channel feedback export timed out')),
+          Math.max(0, remaining),
+        );
+        let rejectDeadline!: (error: unknown) => void;
+        const expired = new Promise<never>((_resolve, reject) => {
+          rejectDeadline = reject;
+        });
+        const abort = () => rejectDeadline(controller.signal.reason);
+        controller.signal.addEventListener('abort', abort, { once: true });
+        const assertDeadline = () => {
+          if (now() >= deadline && !controller.signal.aborted)
+            controller.abort(new Error('Channel feedback export timed out'));
+          controller.signal.throwIfAborted();
+        };
+        let exportFailure: { cause: unknown } | undefined;
         try {
-          const enabled = await deps.canRecord(record.mapping);
-          if (!enabled) continue;
-          await deps.sendScore(
-            {
-              scoreId: record.scoreId,
-              traceId: record.mapping.traceId,
-              isTemporary: record.mapping.isTemporary,
-              sampled: record.mapping.sampled,
-              destinationIds: record.mapping.destinationIds,
-              centralTraceExportEnabled: record.mapping.centralTraceExportEnabled,
-              feedback: record.rating ? { rating: record.rating } : null,
-              metadata: {
-                source: 'channel',
-                channelId: record.mapping.channelId,
-                messageId: record.mapping.messageId,
-                conversationId: record.mapping.conversationId,
-                actorId: record.key,
-                channelFeedbackRevision: record.revision,
+          const attempt = async () => {
+            assertDeadline();
+            const enabled = await deps.canRecord(record.mapping);
+            assertDeadline();
+            if (!enabled) return false;
+            await deps.sendScore(
+              {
+                scoreId: record.scoreId,
+                traceId: record.mapping.traceId,
+                isTemporary: record.mapping.isTemporary,
+                sampled: record.mapping.sampled,
+                destinationIds: record.mapping.destinationIds,
+                centralTraceExportEnabled: record.mapping.centralTraceExportEnabled,
+                feedback: record.rating ? { rating: record.rating } : null,
+                metadata: {
+                  source: 'channel',
+                  channelId: record.mapping.channelId,
+                  messageId: record.mapping.messageId,
+                  conversationId: record.mapping.conversationId,
+                  actorId: record.key,
+                  channelFeedbackRevision: record.revision,
+                },
+                signal: controller.signal,
+                assertActive: assertDeadline,
               },
-              signal: AbortSignal.timeout(deps.exportTimeoutMs),
-            },
-            record.mapping,
-          );
-          success = true;
+              record.mapping,
+            );
+            assertDeadline();
+            return true;
+          };
+          success = await Promise.race([attempt(), expired]);
+        } catch (cause) {
+          exportFailure = { cause };
         } finally {
+          clearTimeout(timeout);
+          controller.signal.removeEventListener('abort', abort);
+        }
+        try {
           await deps.storage.finishChannelFeedbackExport(
             record,
             leaseId,
             success,
             now() + (success ? 0 : deps.exportRetryMs),
+            now(),
           );
+        } catch (error) {
+          if (!(error instanceof ChannelFeedbackAuthorityError)) throw error;
         }
+        if (exportFailure) throw exportFailure.cause;
       }
       return processed;
     },

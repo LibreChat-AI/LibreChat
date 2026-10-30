@@ -18,6 +18,8 @@ export type SendFeedbackScoreParams = {
   /** Stable source-specific identity; omitted for the existing browser feedback score. */
   scoreId?: string;
   signal?: AbortSignal;
+  /** Internal dispatch fence for callers holding a bounded export lease. Never serialized. */
+  assertActive?: () => void;
   sampled?: boolean;
   destinationIds?: string[];
   feedback?: LangfuseFeedback | null;
@@ -136,6 +138,7 @@ export async function sendFeedbackScore({
   traceId,
   scoreId: requestedScoreId,
   signal,
+  assertActive,
   sampled,
   destinationIds,
   feedback,
@@ -145,6 +148,8 @@ export async function sendFeedbackScore({
   centralTraceExportEnabled,
   isTemporary,
 }: SendFeedbackScoreParams): Promise<void> {
+  assertActive?.();
+  signal?.throwIfAborted();
   if (!traceId || !isLangfuseTraceAllowed(appConfig, isTemporary)) {
     return;
   }
@@ -153,6 +158,8 @@ export async function sendFeedbackScore({
   const destinations = (
     await getScoreDestinations(appConfig, traceId, sampled, { centralTraceExportEnabled })
   ).filter(({ id }) => destinationIdSet == null || (id != null && destinationIdSet.has(id)));
+  assertActive?.();
+  signal?.throwIfAborted();
   if (destinations.length === 0) {
     return;
   }
