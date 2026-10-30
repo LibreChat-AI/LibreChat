@@ -23,6 +23,8 @@ export type StepEvent =
   | { event: StepEvents.ON_SUMMARIZE_DELTA; data: Agents.SummarizeDeltaEvent }
   | { event: StepEvents.ON_SUMMARIZE_COMPLETE; data: Agents.SummarizeCompleteEvent }
   | { event: StepEvents.ON_SUBAGENT_UPDATE; data: SubagentUpdateEvent }
+  | { event: StepEvents.ON_ELICITATION; data: Agents.ElicitationEvent }
+  | { event: StepEvents.ON_ELICITATION_RESOLVED; data: Agents.ElicitationResolvedEvent }
   | { event: StepEvents.ON_SANDBOX_STARTING; data: SandboxStartingEvent }
   | { event: StepEvents.ON_PTC_TOOL_CALL; data: PtcToolCallEvent };
 
