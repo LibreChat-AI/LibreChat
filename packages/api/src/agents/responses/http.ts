@@ -4,8 +4,9 @@ import type { ResponseOwner, ResponseStorage } from '@librechat/data-schemas';
 import type { createBackgroundResponseService, BackgroundResponseResult } from './background';
 import type { ServerRequest } from '~/types/http';
 import { validateResponseRequest, sendResponsesErrorResponse } from './service';
+import { createAgentRunEnvelope, AgentRunEnvelopeError } from '../envelope';
 import { getBackgroundResponseWorkerRecord } from './worker';
-import { createAgentRunEnvelope } from '../envelope';
+import { responseTenantId } from './scope';
 
 export interface BackgroundResponseHttpDependencies {
   storage: ResponseStorage;
@@ -16,7 +17,7 @@ export interface BackgroundResponseHttpDependencies {
 
 function owner(req: Request): ResponseOwner | null {
   const user = (req as ServerRequest).user;
-  return user?.id ? { userId: user.id, tenantId: user.tenantId } : null;
+  return user?.id ? { userId: user.id, tenantId: responseTenantId(user.tenantId) } : null;
 }
 
 function send(res: HttpResponse, result: BackgroundResponseResult, accepted = false): void {
@@ -90,6 +91,13 @@ export function createBackgroundResponseHttpHandlers(deps: BackgroundResponseHtt
           true,
         );
       } catch (error) {
+        if (error instanceof AgentRunEnvelopeError)
+          return void sendResponsesErrorResponse(
+            res,
+            400,
+            'Invalid response request.',
+            'invalid_request',
+          );
         return unavailable(res, error);
       }
     },

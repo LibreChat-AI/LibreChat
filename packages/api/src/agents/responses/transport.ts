@@ -1,18 +1,22 @@
 import { z } from 'zod';
+import { isIP } from 'node:net';
 import type { StoredResponseRecord, ResponseStorage } from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { BackgroundResponseQueueDependencies } from './queue';
+import type { BoundAddress } from '~/app/origin';
 import {
   mintBackgroundResponseWorkerToken,
   mintResponseResumeWorkerToken,
   RESPONSE_WORKER_TOKEN_EXPIRED,
 } from './worker';
 import { AgentTriggerExecutionError } from '../triggers/host';
+import { selfOriginFromAddress } from '~/app/origin';
 import { responseTenantId } from './scope';
 
 export interface BackgroundResponseTransportDependencies {
   storage: ResponseStorage;
-  getOrigin: () => string;
+  /** A BoundAddress must come from the capable process's initialized server.address(). */
+  getOrigin: () => string | BoundAddress;
   signingSecret: () => string;
   acknowledgementTimeoutMs: (record: StoredResponseRecord) => Promise<number>;
   fetch?: (
@@ -96,12 +100,17 @@ function createResponseWorkerTransport(
     status: 'started' | 'resumed' | 'settled';
     generationCreatedAt?: number;
   }> => {
-    const origin = new URL(deps.getOrigin());
+    const listener = deps.getOrigin();
+    const initialized = typeof listener !== 'string';
+    const localOrigin = initialized ? selfOriginFromAddress(listener) : listener;
+    if (!localOrigin || (initialized && !isIP(listener.address)))
+      throw new Error('Background Responses requires the capable local listener');
+    const origin = new URL(localOrigin);
     if (
       !['http:', 'https:'].includes(origin.protocol) ||
       origin.username ||
       origin.password ||
-      !['127.0.0.1', '::1', '[::1]', 'localhost'].includes(origin.hostname)
+      (!initialized && !['127.0.0.1', '::1', '[::1]', 'localhost'].includes(origin.hostname))
     )
       throw new Error('Background Responses requires the capable local listener');
     const timeoutMs = await deps.acknowledgementTimeoutMs(record);
