@@ -379,12 +379,7 @@ export class AgentExecutionEnrollment {
             terminal.status !== 'aborted')
         )
           throw new Error('Agent terminal outcome could not be confirmed');
-        terminalOutcome =
-          terminal.status === 'aborted'
-            ? 'aborted'
-            : terminal.status === 'error'
-              ? 'error'
-              : 'complete';
+        terminalOutcome = terminal.status;
       } catch (error) {
         // Disposition readback cannot strand an already-finished provider's drain tracker.
         outcomeError = error;
