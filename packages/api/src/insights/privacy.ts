@@ -14,7 +14,6 @@ function toAggregateFeedback(feedback: TInsightsFeedback): TInsightsFeedback {
   };
 }
 
-/** Only these aggregate fields may cross the API boundary when inspection is disabled. */
 export function toAggregateInsightsResponse(
   insights: TInsightsResponse,
 ): TInsightsAggregateResponse {

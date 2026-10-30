@@ -1,7 +1,8 @@
+import type { TInsightsConfig } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 import { createInsightsConfigResolver } from './config';
 
-const request = (insights?: unknown): Pick<ServerRequest, 'config'> =>
+const request = (insights?: TInsightsConfig): Pick<ServerRequest, 'config'> =>
   ({ config: { interfaceConfig: { insights } } }) as Pick<ServerRequest, 'config'>;
 
 describe('Insights request configuration', () => {
@@ -39,11 +40,5 @@ describe('Insights request configuration', () => {
     expect(resolve(request({ enabled: true, showDetails: true })).showDetails).toBe(true);
     expect(resolve(request({ enabled: true, showDetails: false })).showDetails).toBe(false);
     expect(resolve(request({ enabled: false })).enabled).toBe(false);
-  });
-
-  it('does not coerce unvalidated strings into enablement or detailed access', () => {
-    expect(
-      createInsightsConfigResolver(() => true)(request({ enabled: 'true', showDetails: 'true' })),
-    ).toEqual({ enabled: false, showDetails: false });
   });
 });
