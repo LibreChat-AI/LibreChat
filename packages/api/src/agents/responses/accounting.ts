@@ -71,11 +71,16 @@ function invocationIdentity(
 }
 
 export function captureResponseAccountingUsage(
-  usage: UsageMetadata | undefined,
+  usage: CollectedResponseAccountingUsage | undefined,
   metadata?: InvocationMetadata,
   context?: InvocationContext | null,
 ): CollectedResponseAccountingUsage {
-  return { ...usage, accountingIdentity: invocationIdentity(usage, metadata, context) };
+  return {
+    ...usage,
+    accountingIdentity: {
+      ...(usage?.accountingIdentity ?? invocationIdentity(usage, metadata, context)),
+    },
+  };
 }
 
 /** Missing historical accounting cannot be repaired by appending later priced calls. */
