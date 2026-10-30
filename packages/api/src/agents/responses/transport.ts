@@ -1,10 +1,10 @@
-import { responseTenantId } from './scope';
 import { z } from 'zod';
 import type { StoredResponseRecord, ResponseStorage } from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { BackgroundResponseQueueDependencies } from './queue';
 import { mintBackgroundResponseWorkerToken, mintResponseResumeWorkerToken } from './worker';
 import { AgentTriggerExecutionError } from '../triggers/host';
+import { responseTenantId } from './scope';
 
 export interface BackgroundResponseTransportDependencies {
   storage: ResponseStorage;

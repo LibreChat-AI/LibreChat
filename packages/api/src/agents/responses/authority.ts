@@ -1,4 +1,3 @@
-import { responseTenantId, isResponseTenantId } from './scope';
 import { PermissionBits, Permissions, PermissionTypes } from 'librechat-data-provider';
 import { getTenantId, SYSTEM_TENANT_ID, tenantStorage } from '@librechat/data-schemas';
 import type {
@@ -8,8 +7,8 @@ import type {
   ResponseOwner,
   AgentApiKeyBinding,
 } from '@librechat/data-schemas';
-
 import { isTwoFactorEnrollmentRequired } from '~/auth/twoFactor';
+import { responseTenantId, isResponseTenantId } from './scope';
 
 export interface BackgroundResponseAuthorityDependencies {
   enrollmentRequired?: typeof isTwoFactorEnrollmentRequired;
