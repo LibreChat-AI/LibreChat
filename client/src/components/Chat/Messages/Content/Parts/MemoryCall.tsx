@@ -72,7 +72,7 @@ export default function MemoryCall({
 
   return (
     <>
-      <BareStatus active={bare} text={finishedText} />
+      <BareStatus phase={phase} active={bare} text={finishedText} />
       {!bare && (
         <div className="relative my-1 flex h-5 shrink-0 items-center gap-2.5" ref={rowRef}>
           <ProgressText
@@ -97,7 +97,7 @@ export default function MemoryCall({
         </div>
       )}
       <div style={expandStyle}>
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {(hasPanel || phase === 'failed') && (
             <div
               className={cn(

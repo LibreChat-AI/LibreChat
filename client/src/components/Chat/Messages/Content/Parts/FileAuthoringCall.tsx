@@ -209,7 +209,7 @@ export default function FileAuthoringCall({
 
   return (
     <>
-      <BareStatus active={bare} text={finishedText} />
+      <BareStatus phase={phase} active={bare} text={finishedText} />
       {!bare && (
         <div className={TOOL_ROW_CLASSES} ref={rowRef}>
           <ProgressText
@@ -238,7 +238,7 @@ export default function FileAuthoringCall({
         </div>
       )}
       <div style={expandStyle}>
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {!!preview && (
             <div
               className={cn(

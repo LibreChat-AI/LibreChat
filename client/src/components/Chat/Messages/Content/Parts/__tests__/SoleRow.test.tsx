@@ -7,9 +7,11 @@ import FileAuthoringCall from '../FileAuthoringCall';
 import ReadFileCall from '../ReadFileCall';
 import MemoryCall from '../MemoryCall';
 import SkillCall from '../SkillCall';
+import BashCall from '../BashCall';
 
 jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
+  useLocalize: () => (key: string, values?: Record<string, string>) =>
+    key === 'com_ui_duration_seconds' ? `${values?.[0]}s` : key,
   useProgress: (initialProgress: number) => initialProgress,
   useExpandCollapse: (isExpanded: boolean) => ({
     style: { display: 'grid', gridTemplateRows: isExpanded ? '1fr' : '0fr' },
@@ -180,4 +182,35 @@ it('keeps an empty named skill row under a generated title', () => {
     </GeneratedToolLabelContext.Provider>,
   );
   expect(screen.getByTestId('progress-text')).toBeInTheDocument();
+});
+
+it('uses a generated title for a failed file tool with an error panel', () => {
+  renderSole(
+    <GeneratedToolLabelContext.Provider value>
+      <ReadFileCall
+        initialProgress={1}
+        isSubmitting={false}
+        args={{ path: 'config.ts' }}
+        output="Error: tool call failed: missing file"
+        runStepStatus="failed"
+      />
+    </GeneratedToolLabelContext.Provider>,
+  );
+  expect(screen.queryByTestId('progress-text')).not.toBeInTheDocument();
+});
+
+it('shows a command duration in seconds even when its row is replaced by a title', () => {
+  renderSole(
+    <GeneratedToolLabelContext.Provider value>
+      <BashCall
+        initialProgress={1}
+        isSubmitting={false}
+        args={{ command: 'echo hi' }}
+        output="hi"
+        runStepStatus="completed"
+        runStepDurationMs={10200}
+      />
+    </GeneratedToolLabelContext.Provider>,
+  );
+  expect(screen.getByText('10.2s')).toBeInTheDocument();
 });

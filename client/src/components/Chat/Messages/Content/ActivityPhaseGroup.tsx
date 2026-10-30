@@ -126,7 +126,7 @@ function LiveLine({ text }: { text: string }) {
   return <span className="shimmer max-w-full truncate align-top">{text}</span>;
 }
 
-const PhaseLabel = memo(function PhaseLabel({
+export const PhaseLabel = memo(function PhaseLabel({
   text,
   animate,
   source,
@@ -801,7 +801,7 @@ export default function ActivityPhaseGroup({
       >
         {shouldRenderBody && (
           <div
-            className={cn('overflow-hidden', FOLD_RAIL_CLASSES)}
+            className={cn('min-h-0 overflow-hidden', FOLD_RAIL_CLASSES)}
             ref={expandRef}
             data-fold-panel=""
           >

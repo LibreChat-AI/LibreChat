@@ -365,7 +365,7 @@ export default function WebSearch({
         </div>
         {hasSourceData && (
           <div style={sourceExpandStyle} onTransitionEnd={handleTransitionEnd}>
-            <div className="overflow-hidden" ref={sourceExpandRef}>
+            <div className="min-h-0 overflow-hidden" ref={sourceExpandRef}>
               {shouldRenderBody && (
                 <div
                   className={cn(

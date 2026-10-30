@@ -495,7 +495,7 @@ export default function RetrievalCall({
         </div>
       )}
       <div style={expandStyle}>
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {hasExpandableContent && (
             <div className={cn(toolPanelSpacingClassName, 'flex flex-col gap-2')}>
               {displayResults.map((item, i) => {

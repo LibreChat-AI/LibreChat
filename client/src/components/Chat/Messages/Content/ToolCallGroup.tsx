@@ -38,10 +38,12 @@ import {
 } from './reveal';
 import { useLocalize, useExpandCollapse, scheduleMessageContentLayoutReconcile } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
+import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import { ToolAuthWarning, ToolAuthWarningContext } from './auth';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup, ReasoningCompact } from './Parts';
 import { MCPAppViews } from '~/components/MCPUIResource';
+import { PhaseLabel } from './ActivityPhaseGroup';
 import { StackedToolIcons } from './ToolOutput';
 import { mapAttachments } from '~/utils/map';
 import { getSourceDomains } from './sources';
@@ -52,6 +54,8 @@ interface ToolCallGroupProps {
   isSubmitting: boolean;
   isLast: boolean;
   showThinking: boolean;
+  /** Prose after this batch ends its streaming expansion window. */
+  followedByAnswer?: boolean;
   renderPart: (
     part: TMessageContentParts,
     idx: number,
@@ -90,6 +94,7 @@ export default function ToolCallGroup({
   isSubmitting,
   isLast,
   showThinking,
+  followedByAnswer = false,
   renderPart,
   lastContentIdx,
   groupAttachments,
@@ -101,6 +106,7 @@ export default function ToolCallGroup({
   parentPhaseOwnsFailurePill = false,
 }: ToolCallGroupProps) {
   const localize = useLocalize();
+  const smoothStreaming = useSmoothStreaming();
   const mcpIconMap = useMCPIconMap();
   const mcpServerNames = useMCPServerNames();
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -336,6 +342,7 @@ export default function ToolCallGroup({
     !autoExpand &&
     !(showThinking && hasReasoning) &&
     allCompleted &&
+    (!isSubmitting || labelSettled || followedByAnswer) &&
     (count >= 1 || activityLabelText.length > 0);
   const suppressAutoExpand = withinActivityPhase && !hasPendingApproval;
   const initialState = initialExpansionState?.userOverride === true ? initialExpansionState : null;
@@ -685,7 +692,7 @@ export default function ToolCallGroup({
             role="status"
             title={groupLabel}
           >
-            {groupLabel}
+            <PhaseLabel text={groupLabel} animate={smoothStreaming} />
           </span>
           {visibleGroupDetail && (
             <span
@@ -719,7 +726,7 @@ export default function ToolCallGroup({
       >
         {(flattenGroup || shouldRenderBody) && (
           <div
-            className={cn('overflow-hidden', !flattenGroup && FOLD_RAIL_CLASSES)}
+            className={cn('min-h-0 overflow-hidden', !flattenGroup && FOLD_RAIL_CLASSES)}
             ref={expandRef}
             data-fold-panel={flattenGroup ? undefined : ''}
           >
@@ -733,10 +740,14 @@ export default function ToolCallGroup({
             <ToolAuthWarningContext.Provider value>
               <FailedRevealContext.Provider value={revealValue}>
                 <GeneratedToolLabelContext.Provider
-                  value={count === 1 && (activityLabelText.length > 0 || generatedPhaseLabel)}
+                  value={
+                    count === 1 &&
+                    !hasReasoning &&
+                    (activityLabelText.length > 0 || generatedPhaseLabel)
+                  }
                 >
-                  <LoneGroupContext.Provider value={count === 1}>
-                    <SoleToolContext.Provider value={phaseSole ?? count === 1}>
+                  <LoneGroupContext.Provider value={count === 1 && !hasReasoning}>
+                    <SoleToolContext.Provider value={!hasReasoning && (phaseSole ?? count === 1)}>
                       <div className="flex flex-col py-0.5">
                         {parts.map(({ part, idx }, partIndex) => {
                           if (part.type === ContentTypes.THINK) {
@@ -785,11 +796,22 @@ export default function ToolCallGroup({
                               />
                             );
                           }
-                          return renderPart(
-                            part,
-                            idx,
-                            isLast && idx === lastContentIdx,
-                            handleToolExpand,
+                          return (
+                            <div
+                              key={`tool-${getPartKeyIndex(part, idx)}`}
+                              className={cn(
+                                isSubmitting &&
+                                  smoothStreaming &&
+                                  'animate-in fade-in-0 slide-in-from-top-1 duration-200 motion-reduce:animate-none',
+                              )}
+                            >
+                              {renderPart(
+                                part,
+                                idx,
+                                isLast && idx === lastContentIdx,
+                                handleToolExpand,
+                              )}
+                            </div>
                           );
                         })}
                       </div>
