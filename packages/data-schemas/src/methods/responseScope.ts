@@ -218,6 +218,7 @@ export async function closeResponseScopes(
       status: { $in: ['queued', 'in_progress', 'requires_action'] },
       cancellationRequestedAt: { $exists: false },
       pendingTerminal: { $exists: false },
+      preparedTerminal: { $exists: false },
     },
     { $set: { cancellationRequestedAt: Date.now() } },
   );

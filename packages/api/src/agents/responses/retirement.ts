@@ -2,7 +2,11 @@ import type { ResponseOwner, ResponseStorage, StoredResponseRecord } from '@libr
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { ResponseCheckpointIdentity } from './checkpoint';
 import type { ResponseCompletionRecord } from './completion';
-import { createResponseCompletion, createResponseExecutionRelease } from './completion';
+import {
+  createResponseCompletion,
+  createResponseExecutionRelease,
+  createResponseExecutionConfirmation,
+} from './completion';
 import { buildPendingBackgroundResponse } from './background';
 import { responseTenantId } from './scope';
 
@@ -32,6 +36,7 @@ export function createResponseRetirement(
     deps.recoverTerminal ??
     createResponseCompletion({
       storage: deps.storage,
+      confirmExecution: createResponseExecutionConfirmation(deps.jobs),
       cleanupCheckpoint:
         deps.cleanupCheckpoint ??
         (async () => {
@@ -186,7 +191,7 @@ export function createResponseRetirement(
       const current = await deps.storage.read(owner, responseId);
       if (!current || current.generationCreatedAt !== epoch)
         throw new Error('Response retirement journal changed');
-      if (terminal(current) || current.pendingTerminal) return;
+      if (terminal(current) || current.pendingTerminal || current.preparedTerminal) return;
       if (current.cancellationRequestedAt == null)
         throw new Error('Response cancellation intent is unavailable');
       if (current.review && (!proof.checkpointNamespace || !deps.cleanupCheckpoint)) return;
@@ -245,12 +250,13 @@ export function createResponseRetirement(
       await recover(settled);
       return 'stopped';
     }
-    if (settled?.pendingTerminal) return terminal(await recover(settled)) ? 'stopped' : 'pending';
+    if (settled?.pendingTerminal || settled?.preparedTerminal)
+      return terminal(await recover(settled)) ? 'stopped' : 'pending';
     // A repeated Stop can recover a failed runtime receipt only from the exact retained,
     // aborted and drained provider. Completed jobs and absent jobs are not cancellation proof.
     await stageCancellation();
     settled = await deps.storage.read(owner, responseId);
-    if (settled?.pendingTerminal) settled = await recover(settled);
+    if (settled?.pendingTerminal || settled?.preparedTerminal) settled = await recover(settled);
     return settled && terminal(settled) ? 'stopped' : 'pending';
   };
 }
