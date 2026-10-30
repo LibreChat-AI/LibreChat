@@ -573,3 +573,87 @@ it('uses the same full-record schema validation on insertion and replacement', (
       ticketHash: 'private-hash',
     });
   }));
+
+it('allows only the current owner revision to withdraw consent after the channel closes', () =>
+  scope(async () => {
+    const record = {
+      ...identity(),
+      state: 'active' as const,
+      userId: 'owner-a',
+      accountLabel: 'Account A',
+    };
+    expect(await storage.saveChannelIdentity(record, null)).toBe(true);
+    await closeChannelScope(mongoose, tenantId, 'channel');
+    const owner = { tenantId, userId: 'owner-a', linkId: 'link', revision: 'one' };
+    expect(
+      await storage.revokeChannelIdentity({ ...owner, userId: 'owner-b' }, 'wrong-owner'),
+    ).toBe(false);
+    expect(
+      await storage.revokeChannelIdentity({ ...owner, revision: 'stale' }, 'wrong-revision'),
+    ).toBe(false);
+    expect(await storage.revokeChannelIdentity(owner, 'withdrawn')).toBe(true);
+    expect(await storage.readChannelLink(tenantId, 'link')).toMatchObject({
+      ...record,
+      state: 'revoked',
+      revision: 'withdrawn',
+    });
+    expect(
+      await storage.saveChannelIdentity({ ...record, revision: 'resurrected' }, 'withdrawn'),
+    ).toBe(false);
+  }));
+
+it('converges concurrent owner revocations on one immutable revision transition', () =>
+  scope(async () => {
+    const record = { ...identity(), state: 'active' as const, userId: 'owner-a' };
+    await storage.saveChannelIdentity(record, null);
+    const owner = { tenantId, userId: 'owner-a', linkId: 'link', revision: 'one' };
+    const results = await Promise.all(
+      ['withdraw-a', 'withdraw-b'].map((revision) =>
+        storage.revokeChannelIdentity(owner, revision),
+      ),
+    );
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(await storage.readChannelLink(tenantId, 'link')).toMatchObject({ state: 'revoked' });
+  }));
+
+it('never recreates consent after erasure wins between its lookup and revocation write', () =>
+  scope(async () => {
+    await storage.saveChannelIdentity({ ...identity(), state: 'active', userId: 'owner-a' }, null);
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const collection = mongoose.models.ChannelIdentity.collection;
+    const read = collection.findOne.bind(collection);
+    const paused = jest.spyOn(collection, 'findOne').mockImplementationOnce(async (...args) => {
+      const result = await read(...args);
+      entered();
+      await gate;
+      return result;
+    });
+    const revocation = storage.revokeChannelIdentity(
+      { tenantId, userId: 'owner-a', linkId: 'link', revision: 'one' },
+      'withdrawn',
+    );
+    try {
+      await started;
+      await retireAgentChannel(mongoose, {
+        tenantId,
+        channelId: 'channel',
+        createdBy: 'connection-owner',
+      });
+      expect(await mongoose.models.ChannelIdentity.countDocuments({ tenantId })).toBe(0);
+      release();
+      expect(await revocation).toBe(false);
+      expect(await mongoose.models.ChannelIdentity.countDocuments({ tenantId })).toBe(0);
+      expect(await mongoose.models.ChannelScope.countDocuments({ closed: true })).toBe(1);
+    } finally {
+      release();
+      paused.mockRestore();
+      await revocation;
+    }
+  }));
