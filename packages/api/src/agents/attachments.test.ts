@@ -950,11 +950,50 @@ describe('planInlineAttachmentBudget', () => {
     ).toBe(475_000);
   });
 
+  it('prices a PDF by its pages and text, as Bedrock measured them', () => {
+    const measured = (bytes: number, pageCount: number, textChars: number) => ({
+      type: 'application/pdf',
+      bytes,
+      metadata: { pageCount, textChars },
+    });
+    const big = estimateAttachmentTokens(measured(2_400_000, 40, 271_780), 'provider');
+    const small = estimateAttachmentTokens(measured(300_000, 10, 67_870), 'provider');
+    expect(big).toBe(172_712);
+    expect(small).toBe(43_148);
+    expect(Math.abs(big - 171_779) / 171_779).toBeLessThan(0.05);
+    expect(Math.abs(small - 43_318) / 43_318).toBeLessThan(0.05);
+  });
+
+  it('never prices a measured PDF below its size, which pruning still counts', () => {
+    expect(
+      estimateAttachmentTokens(
+        { type: 'application/pdf', bytes: 14_708_922, metadata: { pageCount: 14, textChars: 0 } },
+        'provider',
+      ),
+    ).toBe(524_000);
+  });
+
+  it('does not read pages from text, which may be OCR markdown', () => {
+    const text = ('a'.repeat(100) + '\n').repeat(2_400);
+    expect(
+      estimateAttachmentTokens({ type: 'application/pdf', bytes: 2_400_000, text }, 'provider'),
+    ).toBe(86_000);
+  });
+
   it('moves the largest until the rest fit', () => {
     const expected = Array.from({ length: 10 }, (_, i) => `p${i}`).sort();
     const consumers = { executeCode: true, fileSearch: true };
     expect([...plan(pdfs, consumers)].sort()).toEqual(expected);
     expect([...plan([...pdfs].reverse(), consumers)].sort()).toEqual(expected);
+  });
+
+  it('moves measured PDFs the size estimate would have kept', () => {
+    const measured = pdfs.slice(0, 5).map((file) => ({
+      ...file,
+      metadata: { ...file.metadata, pageCount: 40, textChars: 271_780 },
+    }));
+    const consumers = { executeCode: true, fileSearch: true };
+    expect([...plan(measured, consumers)].sort()).toEqual(['p0', 'p1', 'p2']);
   });
 
   it('refuses a turn that cannot fit the window', () => {

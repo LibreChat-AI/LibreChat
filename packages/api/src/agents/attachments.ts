@@ -24,6 +24,11 @@ import { extractFileContext } from '~/files';
 
 export const BASE64_BYTES_PER_PDF_PAGE = 75_000;
 export const PDF_TOKENS_PER_PAGE_CLAUDE = 2000;
+/** A PDF the provider reads costs each page's image plus its extracted text (Anthropic PDF
+ *  support). Fitted to Bedrock Converse, claude-sonnet-5-5, 2026-10-30: 40 pages / 271,780
+ *  chars = 171,779 tokens and 10 pages / 67,870 chars = 43,318, both within 1%. */
+export const PDF_TOKENS_PER_RENDERED_PAGE = 1_600;
+export const PDF_CHARS_PER_TOKEN = 2.5;
 
 type FileWithId = {
   file_id?: string | null;
@@ -787,17 +792,33 @@ export async function buildAgentScopedContext({
   return new Map(entries.filter(([, context]) => Boolean(context)));
 }
 
-/** Prompt tokens an attachment costs before encoding: a PDF sent as a file by the larger of
- *  its base64 page count (priced as client.ts prices the block) and its extracted text;
- *  anything else by its extracted text, else its size. */
+/** Prompt tokens an attachment costs before encoding. A PDF sent as a file costs the larger of
+ *  its base64 page count and its text, raised to its pages and extracted characters when upload
+ *  counted them. It never goes below the size estimate, which the encoded-block count before
+ *  pruning (`client.ts`) still uses. Anything else is priced by its extracted text, else its size. */
 export function estimateAttachmentTokens(
-  file: { type?: string | null; bytes?: number | null; text?: string | null },
+  file: {
+    type?: string | null;
+    bytes?: number | null;
+    text?: string | null;
+    /* `& object` keeps files whose metadata has other keys assignable (weak-type check). */
+    metadata?: ({ pageCount?: number | null; textChars?: number | null } & object) | null;
+  },
   path: string | undefined,
 ): number {
   const textTokens = Math.ceil((file.text?.length ?? 0) / 4);
   if (path === 'provider' && file.type === 'application/pdf') {
     const pages = Math.max(1, Math.ceil(((file.bytes ?? 0) * 4) / 3 / BASE64_BYTES_PER_PDF_PAGE));
-    return Math.max(pages * PDF_TOKENS_PER_PAGE_CLAUDE, textTokens);
+    const sizeTokens = Math.max(pages * PDF_TOKENS_PER_PAGE_CLAUDE, textTokens);
+    const pageCount = file.metadata?.pageCount ?? 0;
+    if (pageCount <= 0) {
+      return sizeTokens;
+    }
+    const chars = file.metadata?.textChars ?? 0;
+    return Math.max(
+      sizeTokens,
+      pageCount * PDF_TOKENS_PER_RENDERED_PAGE + Math.ceil(chars / PDF_CHARS_PER_TOKEN),
+    );
   }
   return file.text ? textTokens : Math.ceil((file.bytes ?? 0) / 4);
 }
@@ -812,7 +833,11 @@ export const INLINE_ATTACHMENT_CONTEXT_SHARE = 0.5;
  * when what stays cannot fit `limitTokens`, so the turn is refused before anything is sent.
  */
 export function planInlineAttachmentBudget<
-  T extends TurnDeliveryFile & { file_id: string; bytes?: number | null },
+  T extends TurnDeliveryFile & {
+    file_id: string;
+    bytes?: number | null;
+    metadata?: { pageCount?: number | null; textChars?: number | null } | null;
+  },
 >(
   files: readonly T[],
   {

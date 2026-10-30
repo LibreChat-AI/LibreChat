@@ -130,6 +130,7 @@ jest.mock('@librechat/api', () => {
     parseText: jest.fn().mockResolvedValue({ text: '', bytes: 0 }),
     /** Stores no fallback text unless a test opts in; its own rules are covered in packages/api. */
     resolveUploadFallbackText: jest.fn(async () => undefined),
+    measurePdf: jest.fn(async () => undefined),
     MAX_STORED_EXTRACTED_TEXT_BYTES: 15 * 1024 * 1024,
     processAudioFile: jest.fn(),
     extractInspectableFileText: jest.fn(async ({ extract }) => extract()),
@@ -3751,6 +3752,117 @@ describe('fallback text for uploads left to tools', () => {
       }),
     };
   };
+
+  const useAutomaticPolicy = () =>
+    mergeFileConfig.mockReturnValue({
+      ...makeFileConfig(),
+      endpoints: {
+        'Custom Provider': {
+          defaultLLMDeliveryPath: { fallback: 'none' },
+          textFallbackWithoutTools: true,
+          llmDeliveryPolicy: 'automatic',
+        },
+      },
+    });
+
+  const uploadPdf = () => {
+    const req = makeReq({ mimetype: PDF_MIME, ocrConfig: null });
+    req.body.endpoint = EModelEndpoint.agents;
+    return {
+      req,
+      upload: processAgentFileUpload({
+        req,
+        res: mockRes,
+        metadata: {
+          agent_id: 'agent-abc',
+          message_file: 'true',
+          file_id: 'file-uuid-pdf',
+          effectiveEndpoint: 'Custom Provider',
+        },
+      }),
+    };
+  };
+
+  test('records the pages and text size of a PDF without fallback text', async () => {
+    const { createFile } = require('~/models');
+    const { measurePdf } = require('@librechat/api');
+    useAutomaticPolicy();
+    setupStoredFileUpload();
+    measurePdf.mockResolvedValueOnce({ pageCount: 40, textChars: 271_780 });
+
+    const { req, upload } = uploadPdf();
+    await upload;
+
+    expect(measurePdf).toHaveBeenCalledWith(req.file);
+    expect(createFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ pageCount: 40, textChars: 271_780 }),
+      }),
+      true,
+    );
+  });
+
+  test('takes pages and characters from fallback text instead of parsing again', async () => {
+    const { createFile } = require('~/models');
+    const { measurePdf, resolveUploadFallbackText } = require('@librechat/api');
+    useAutomaticPolicy();
+    setupStoredFileUpload();
+    resolveUploadFallbackText.mockResolvedValueOnce('page one\n');
+
+    const { upload } = uploadPdf();
+    await upload;
+
+    expect(measurePdf).not.toHaveBeenCalled();
+    expect(createFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ pageCount: 1, textChars: 9 }),
+      }),
+      true,
+    );
+  });
+
+  test('does not measure a PDF on a classic endpoint', async () => {
+    const { createFile } = require('~/models');
+    const { measurePdf } = require('@librechat/api');
+    setupStoredFileUpload();
+
+    const { upload } = uploadPdf();
+    await upload;
+
+    expect(measurePdf).not.toHaveBeenCalled();
+    expect(createFile.mock.calls[0][0].metadata).not.toHaveProperty('pageCount');
+  });
+
+  test.each([
+    [
+      'a non-PDF',
+      { mimetype: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+      'true',
+      undefined,
+    ],
+    ['a PDF whose destination was chosen', {}, 'true', 'execute_code'],
+  ])('does not measure %s', async (_name, fileOpts, messageFile, toolResource) => {
+    const { createFile } = require('~/models');
+    const { measurePdf } = require('@librechat/api');
+    useAutomaticPolicy();
+    setupStoredFileUpload();
+    const req = makeReq({ mimetype: PDF_MIME, ocrConfig: null, ...fileOpts });
+    req.body.endpoint = EModelEndpoint.agents;
+    await processAgentFileUpload({
+      req,
+      res: mockRes,
+      metadata: {
+        agent_id: 'agent-abc',
+        message_file: messageFile,
+        tool_resource: toolResource,
+        file_id: 'file-uuid-pdf',
+        effectiveEndpoint: 'Custom Provider',
+      },
+    });
+
+    expect(measurePdf).not.toHaveBeenCalled();
+    expect(createFile.mock.calls[0][0].metadata ?? {}).not.toHaveProperty('pageCount');
+  });
 
   test('stores the text a turn without a reading tool can fall back to', async () => {
     const { createFile } = require('~/models');
