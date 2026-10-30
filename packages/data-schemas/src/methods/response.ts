@@ -378,7 +378,13 @@ export function createResponseStorage(
                 pendingTerminal: { $exists: false },
                 ...terminalProviderFilter(receipt),
               },
-              { $set: { preparedTerminal }, $inc: { revision: 1 } },
+              {
+                $set: {
+                  preparedTerminal,
+                  ...(receipt.turnJSON != null ? { status: 'materializing' } : {}),
+                },
+                $inc: { revision: 1 },
+              },
               { new: true, runValidators: true, session },
             )
             .lean();
@@ -389,6 +395,9 @@ export function createResponseStorage(
             .lean();
           if (
             existing?.preparedTerminal &&
+            (receipt.turnJSON != null
+              ? existing.status === 'materializing'
+              : active.includes(existing.status)) &&
             !existing.pendingTerminal &&
             sameResponseTerminalReceipt(existing.preparedTerminal, preparedTerminal)
           )
@@ -428,7 +437,7 @@ export function createResponseStorage(
                 responseId,
                 ...(execution ?? { revision: guard }),
                 generationCreatedAt: receipt.generationCreatedAt,
-                status: { $in: active },
+                status: promotion && receipt.turnJSON != null ? 'materializing' : { $in: active },
                 pendingTerminal: { $exists: false },
                 ...(promotion
                   ? {
@@ -440,7 +449,14 @@ export function createResponseStorage(
                   : { preparedTerminal: { $exists: false } }),
                 ...terminalProviderFilter(receipt),
               },
-              { $set: { pendingTerminal }, $unset: { preparedTerminal: 1 }, $inc: { revision: 1 } },
+              {
+                $set: {
+                  pendingTerminal,
+                  ...(receipt.turnJSON != null ? { status: 'materializing' } : {}),
+                },
+                $unset: { preparedTerminal: 1 },
+                $inc: { revision: 1 },
+              },
               { new: true, runValidators: true, session },
             )
             .lean();
@@ -452,6 +468,9 @@ export function createResponseStorage(
           if (
             existing?.generationCreatedAt === receipt.generationCreatedAt &&
             existing.pendingTerminal &&
+            (receipt.turnJSON != null
+              ? existing.status === 'materializing'
+              : active.includes(existing.status)) &&
             sameResponseTerminalReceipt(existing.pendingTerminal, pendingTerminal)
           )
             return { ok: true, record: existing };
@@ -476,7 +495,9 @@ export function createResponseStorage(
           if (
             current.revision !== revision ||
             current.generationCreatedAt !== receipt.generationCreatedAt ||
-            !active.includes(current.status) ||
+            (receipt.turnJSON != null
+              ? current.status !== 'materializing'
+              : !active.includes(current.status)) ||
             !current.pendingTerminal ||
             !sameResponseTerminalReceipt(current.pendingTerminal, receipt)
           )
@@ -937,6 +958,8 @@ export function createResponseStorage(
       return record ? { ok: true, record } : { ok: false, code: 'response_conflict' };
     },
     async publish(owner, responseId, revision, update) {
+      // This private phase can only be entered atomically with its terminal receipt.
+      if (update.status === 'materializing') return { ok: false, code: 'response_conflict' };
       if (
         update.generationCreatedAt != null &&
         (!Number.isSafeInteger(update.generationCreatedAt) || update.generationCreatedAt <= 0)
@@ -991,7 +1014,7 @@ export function createResponseStorage(
         {
           ...scope(owner),
           responseId,
-          status: { $in: active },
+          status: { $in: [...active, 'materializing'] },
           cancellationRequestedAt: { $exists: false },
           pendingTerminal: { $exists: false },
         },

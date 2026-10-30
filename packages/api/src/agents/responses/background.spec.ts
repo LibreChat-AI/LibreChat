@@ -15,7 +15,7 @@ import {
   createResponseAggregator,
   createResponseContext,
 } from './service';
-import { createBackgroundResponseService } from './background';
+import { createBackgroundResponseService, buildPendingBackgroundResponse } from './background';
 import { createResponseCompletion } from './completion';
 import { createAgentRunEnvelope } from '../envelope';
 
@@ -511,4 +511,25 @@ it('rejects JavaScript composition without a completion or execution-release own
     ]),
   ).toThrow('cleanup and release owners');
   expect(await runAsSystem(() => mongoose.models.StoredResponse.countDocuments({}))).toBe(0);
+});
+
+it('renders a private materialization phase without leaking its persisted status or intent', () => {
+  const record = {
+    responseId: 'resp_private',
+    agentId: 'agent',
+    status: 'materializing',
+    requestJSON: JSON.stringify({ model: 'agent', input: 'Hello', background: true, store: true }),
+    createdAt: new Date(),
+    preparedTerminal: { responseJSON: 'private candidate', turnJSON: 'private history' },
+  } as StoredResponseRecord;
+  const response = buildPendingBackgroundResponse(record);
+  expect(response).toMatchObject({
+    status: 'in_progress',
+    output: [],
+    background: true,
+    store: true,
+  });
+  expect(JSON.stringify(response)).not.toContain('materializing');
+  expect(JSON.stringify(response)).not.toContain('private candidate');
+  expect(JSON.stringify(response)).not.toContain('private history');
 });

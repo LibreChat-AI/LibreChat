@@ -938,7 +938,7 @@ describe('background Responses execution handoff', () => {
         expect(beforeDrain.preparedTerminal).toBeDefined();
         expect(beforeDrain.pendingTerminal).toBeUndefined();
         expect((await scope(async () => storage.read(owner, record.responseId)))?.status).toBe(
-          'in_progress',
+          'materializing',
         );
         const duplicate = await request(app)
           .post('/')
@@ -962,7 +962,7 @@ describe('background Responses execution handoff', () => {
       if (materializationOutage) {
         expect(settlementErrors).toHaveLength(1);
         const pending = (await scope(() => storage.read(owner, record.responseId)))!;
-        expect(pending.status).toBe('in_progress');
+        expect(pending.status).toBe('materializing');
         expect(pending.pendingTerminal?.status).toBe('completed');
         expect(pending.pendingTerminal?.responseJSON).toContain('# Exact final answer');
         expect(

@@ -68,7 +68,8 @@ export function buildPendingBackgroundResponse(
   context.createdAt = Math.floor(record.createdAt.getTime() / 1000);
   return {
     ...buildAggregatedResponse(context, createResponseAggregator()),
-    status: 'queued',
+    // A private terminal phase is already enrolled; never expose its database status.
+    status: record.status === 'materializing' ? 'in_progress' : 'queued',
     completed_at: null,
     output: [],
     usage: null,
