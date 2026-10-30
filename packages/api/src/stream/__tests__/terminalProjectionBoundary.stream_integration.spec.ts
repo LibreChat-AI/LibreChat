@@ -349,12 +349,12 @@ describe('terminal projection boundary', () => {
             delivered.push(event);
           },
         );
-        expect(subscription).not.toBeNull();
-        await new Promise((resolve) => setTimeout(resolve, 250));
+        // A completed replay may retire its subscription before attachment returns.
+        await waitFor(() => delivered.length > 0, 'legacy terminal replay');
 
         expect(delivered).toHaveLength(1);
         expectSafeTerminalEvent(delivered[0]);
-        subscription!.unsubscribe();
+        subscription?.unsubscribe();
       } finally {
         await replica.destroy();
         await replicaSubscriber.quit().catch(() => undefined);
