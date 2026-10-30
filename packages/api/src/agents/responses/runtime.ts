@@ -1,3 +1,4 @@
+import { responseTenantId } from './scope';
 import { checkpointerSchema, responseReviewDecisionSchema } from 'librechat-data-provider';
 import type { ResponseTerminalReceipt, StoredResponseRecord } from '@librechat/data-schemas';
 import type { Request, Response as HttpResponse } from 'express';
@@ -77,7 +78,7 @@ export interface ResponseExecutionRuntime {
   };
   graphOptions: (
     agents?: Parameters<typeof createRun>[0]['agents'],
-  ) => Pick<
+  ) => Promise<Pick<
     Parameters<typeof createRun>[0],
     | 'hitlCapable'
     | 'discoveredToolNames'
@@ -85,7 +86,7 @@ export interface ResponseExecutionRuntime {
     | 'sessionStartSource'
     | 'toolApprovalStorage'
     | 'toolApprovalAllows'
-  >;
+  >>;
   seedAggregator: (aggregator: ResponseAggregator | null) => void;
   composeResponse: (response: Response) => Response;
   visibleOutputTokens: (current: number) => number;
@@ -149,7 +150,8 @@ export function createResponseExecutionRuntime(
     resolveCheckpointerConfig((req as ServerRequest).config?.endpoints?.agents?.checkpointer)
       .type === 'mongo';
   let checkpoint: { checkpointNamespace: string; checkpointConfigJSON: string } | undefined;
-  let reviewedAgents: ReviewAgentNode[] | undefined;
+  let enrolledExecution: AgentExecutionEnrollment | undefined;
+  let rememberedTools: string[] = [];
   let responseParentMessageId: string | undefined;
   let prefix: Response | undefined;
   const seeded = new WeakSet<ResponseAggregator>();
@@ -225,6 +227,7 @@ export function createResponseExecutionRuntime(
             }
           : {}),
         onEnrolled: async (execution) => {
+          enrolledExecution = execution;
           const current = await admission.storage.read(
             admission.record,
             admission.record.responseId,
@@ -401,20 +404,26 @@ export function createResponseExecutionRuntime(
       if (prior) seedResponseAggregator(aggregator, prior);
       seeded.add(aggregator);
     },
-    graphOptions(agents) {
+    async graphOptions(agents) {
       const hitlCapable = interactive;
       const request = req as ServerRequest;
-      const policy = hitlCapable
+      const policy = () => hitlCapable
         ? {
             toolApprovalStorage: continuation.toolApprovalStorage,
             toolApprovalAllows: resolveRunToolApprovalAllows(
               request.config?.endpoints?.agents?.toolApproval,
-              request.resolvedConversation,
+              {
+                conversationId: admission!.record.conversationId,
+                toolApprovalAllows: [...new Set([
+                  ...resolveRunToolApprovalAllows(request.config?.endpoints?.agents?.toolApproval, request.resolvedConversation, admission!.record.conversationId),
+                  ...rememberedTools,
+                ])],
+              },
               admission!.record.conversationId,
             ),
           }
         : {};
-      if (!admission?.resume) return { hitlCapable, ...policy };
+      if (!admission?.resume) return { hitlCapable, ...policy() };
       const action: Agents.PendingAction = JSON.parse(
         admission.record.review?.pendingActionJSON ?? 'null',
       );
@@ -439,13 +448,49 @@ export function createResponseExecutionRuntime(
         current.checkpointWritesCollectionName !== retained.checkpointWritesCollectionName
       )
         throw new Error('Response checkpoint storage settings changed');
-      reviewedAgents = collectReachableAgents<ReviewAgentNode>(agents);
+      const reviewedAgents = collectReachableAgents<ReviewAgentNode>(agents);
       assertCodeExecutionApprovalBinding(action.codeExecutionBinding, reviewedAgents);
       const decision = responseReviewDecisionSchema.parse(
         JSON.parse(admission.record.resume?.decisionJSON ?? 'null'),
       );
       if (decision.actionId !== action.actionId)
         throw new Error('Response reviewed action changed');
+      if (
+        decision.decisions?.some((item) => item.decision === 'approve' && item.scope === 'session')
+      ) {
+        const { record, resume } = admission;
+        const job = await continuation.jobs?.getJob(record.responseId);
+        if (
+          !continuation.addConvoToolApprovalAllows ||
+          !enrolledExecution?.ownsSettlement ||
+          enrolledExecution.createdAt !== record.generationCreatedAt ||
+          !job ||
+          job.createdAt !== record.generationCreatedAt ||
+          job.metadata.providerExecutionId !== resume.providerExecutionId ||
+          job.metadata.providerExecutionStartedId !== resume.providerExecutionId ||
+          !job.metadata.providerExecutionOwnerId
+        )
+          throw new Error('Response remembered approval ownership unavailable');
+        const request = req as ServerRequest;
+        const persisted = await recordToolApprovalAllows({
+          userId: record.userId,
+          conversationId: record.conversationId,
+          policy: request.config?.endpoints?.agents?.toolApproval,
+          pendingAction: action,
+          resolutions: decision.decisions,
+          agents: reviewedAgents,
+          hookContext: {
+            userId: record.userId,
+            tenantId: responseTenantId(record.tenantId),
+            conversationId: record.conversationId,
+            appConfig: request.config,
+          },
+          pluginHookSource: continuation.pluginHookSource,
+          request,
+          addConvoToolApprovalAllows: continuation.addConvoToolApprovalAllows,
+        });
+        rememberedTools = [...new Set([...rememberedTools, ...persisted])];
+      }
       const discovered = action.resumeContext?.discoveredToolNames;
       if (
         discovered != null &&
@@ -454,7 +499,7 @@ export function createResponseExecutionRuntime(
         throw new Error('Response discovered tools are unavailable');
       return {
         hitlCapable,
-        ...policy,
+        ...policy(),
         sessionStartSource: 'resume',
         ...(Array.isArray(discovered) ? { discoveredToolNames: discovered } : {}),
         reviewedToolApprovals: {
@@ -509,7 +554,7 @@ export function createResponseExecutionRuntime(
                       ),
                       hookContext: {
                         userId: admission.record.userId,
-                        tenantId: admission.record.tenantId,
+                        tenantId: responseTenantId(admission.record.tenantId),
                         conversationId: admission.record.conversationId,
                         appConfig: request.config,
                       },
@@ -521,6 +566,7 @@ export function createResponseExecutionRuntime(
               run: input.run,
               payload,
               agents,
+              resumeAgentIds: [...new Set([admission.record.agentId, ...agents.map((agent) => agent.id).filter((id): id is string => typeof id === 'string' && id.length > 0)])],
               aliases,
               context: {
                 streamId: admission.record.responseId,
@@ -560,7 +606,7 @@ export function createResponseExecutionRuntime(
           job.status !== 'running' ||
           job.createdAt !== record.generationCreatedAt ||
           job.metadata.userId !== record.userId ||
-          job.metadata.tenantId !== record.tenantId ||
+          responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
           job.metadata.agent_id !== record.agentId ||
           job.metadata.endpoint !== 'responses' ||
           job.metadata.responseMessageId !== record.responseId ||
@@ -612,43 +658,6 @@ export function createResponseExecutionRuntime(
       )
         throw new Error('Response resume checkpoint identity unavailable');
       const resolution: unknown = JSON.parse(record.resume.resolutionJSON);
-      const action: Agents.PendingAction = JSON.parse(record.review.pendingActionJSON ?? 'null');
-      const decision = responseReviewDecisionSchema.parse(
-        JSON.parse(record.resume.decisionJSON ?? 'null'),
-      );
-      if (
-        decision.decisions?.some((item) => item.decision === 'approve' && item.scope === 'session')
-      ) {
-        const job = await continuation.jobs?.getJob(record.responseId);
-        if (
-          !continuation.addConvoToolApprovalAllows ||
-          !reviewedAgents ||
-          !job ||
-          job.createdAt !== record.generationCreatedAt ||
-          job.metadata.providerExecutionId !== resume.providerExecutionId ||
-          job.metadata.providerExecutionStartedId !== resume.providerExecutionId ||
-          !job.metadata.providerExecutionOwnerId
-        )
-          throw new Error('Response remembered approval ownership unavailable');
-        const request = req as ServerRequest;
-        await recordToolApprovalAllows({
-          userId: record.userId,
-          conversationId: record.conversationId,
-          policy: request.config?.endpoints?.agents?.toolApproval,
-          pendingAction: action,
-          resolutions: decision.decisions,
-          agents: reviewedAgents,
-          hookContext: {
-            userId: record.userId,
-            tenantId: record.tenantId,
-            conversationId: record.conversationId,
-            appConfig: request.config,
-          },
-          pluginHookSource: continuation.pluginHookSource,
-          request,
-          addConvoToolApprovalAllows: continuation.addConvoToolApprovalAllows,
-        });
-      }
       return run.resume(
         resolution,
         {
@@ -695,7 +704,7 @@ export function createResponseExecutionRuntime(
       const record = admission.record;
       if (
         envelope.principal.userId !== record.userId ||
-        envelope.principal.tenantId !== record.tenantId ||
+        responseTenantId(envelope.principal.tenantId) !== responseTenantId(record.tenantId) ||
         envelope.payload.model !== record.agentId
       )
         throw new Error('Background response principal changed');

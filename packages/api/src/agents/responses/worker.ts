@@ -241,7 +241,9 @@ export function createBackgroundResponseWorkerAuth(
             checkpointNamespace: result.checkpointNamespace,
           };
         }
-        const request = req as ServerRequest & Pick<ContextRequest, 'tenantId'> & TurnConversationRequest;
+        const request = req as ServerRequest &
+          Pick<ContextRequest, 'tenantId'> &
+          TurnConversationRequest;
         // findUser supplies a lean auth DTO; do not mutate its cached tenant representation.
         request.user = Object.assign({}, user, { id: record.userId, tenantId: claims.tenantId });
         request.tenantId = claims.tenantId;

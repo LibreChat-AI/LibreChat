@@ -1,3 +1,4 @@
+import { responseTenantId } from './scope';
 import type { ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
 import type { Agents, TCheckpointerConfig } from 'librechat-data-provider';
 import type { RunInterruptResult } from '@librechat/agents';
@@ -48,7 +49,7 @@ export async function pauseResponseForReview(
     job.status !== 'running' ||
     !providerExecutionId ||
     job.metadata.userId !== record.userId ||
-    job.metadata.tenantId !== record.tenantId ||
+    responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
     job.metadata.agent_id !== record.agentId ||
     job.metadata.endpoint !== 'responses' ||
     job.metadata.conversationId !== record.conversationId ||
@@ -95,7 +96,7 @@ export async function pauseResponseForReview(
     const published = await deps.storage.publishReview(
       current,
       current.responseId,
-      current.revision,
+      { execution: current },
       execution.createdAt,
       {
         actionId: action.actionId,
