@@ -22,12 +22,10 @@ const {
   createChannelSummaryStorage,
 } = require('@librechat/data-schemas');
 const mongoose = require('mongoose');
-const { channelConfigSchema } = require('librechat-data-provider');
-const { getAppConfig } = require('~/server/services/Config');
 const { getHeldCapabilities } = require('~/server/middleware/roles/capabilities');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const db = require('~/models');
-const { storage, authority, responseCredentials } = require('./ChannelAuthority');
+const { storage, authority, responseCredentials, policy } = require('./ChannelAuthority');
 const {
   readBackgroundResponse,
   cancelBackgroundResponse,
@@ -37,15 +35,12 @@ const {
 } = require('./Responses');
 
 const responseStorage = createResponseStorage(mongoose);
-const getChannelConfig = async () =>
-  channelConfigSchema.parse(
-    (await getAppConfig({ baseOnly: true })).endpoints?.agents?.channels ?? {},
-  );
+const getChannelConfig = policy.config;
 
 const handlers = createChannelHandlers({
   db,
   serviceToken: () => process.env.CHANNEL_SERVICE_TOKEN,
-  config: async () => (await getAppConfig({ baseOnly: true })).endpoints?.agents?.channels,
+  config: policy.requestConfig,
   getAgent: (id) => db.getAgent({ id }),
   deleteApiKey: db.deleteAgentApiKey,
   verifySlackToken: verifySlackChannelToken,
@@ -65,12 +60,11 @@ const execution = createChannelExecutionAdapter({
   }),
 });
 const artifactReader = createChannelArtifactReader({
-  getConfig: (run) =>
-    getAppConfig({ tenantId: run.tenantId, userId: run.principal.userId, failClosed: true }),
+  getConfig: policy.runConfig,
   getStrategyFunctions,
 });
 const artifacts = createChannelArtifactService({
-  listFiles: db.listRunArtifacts,
+  readArtifacts: db.readResponseArtifacts,
   readFile: artifactReader.readFile,
   limits: getChannelConfig,
 });
@@ -79,14 +73,7 @@ const summary = createChannelSummaryService({
   trace: createChannelSummaryTraceResolver({
     findUser: (id) => db.findUser({ _id: id }),
     getHeldCapabilities,
-    getConfig: async (run) =>
-      (
-        await getAppConfig({
-          tenantId: run.tenantId,
-          userId: run.principal.userId,
-          failClosed: true,
-        })
-      ).langfuse,
+    getConfig: policy.traceConfig,
     getMessage: (scope) => db.getMessage(scope),
     getMessages: db.getMessages,
   }),
@@ -110,6 +97,7 @@ const cleanup = createChannelCleanupRuntime({
   resolvePrincipal: authority.resolvePrincipal,
   retireForAuthorityLoss: execution.retireForAuthorityLoss,
   deleteApiKey: db.deleteAgentApiKey,
+  isCredentialCurrent: responseCredentials.isCurrent,
   getConfig: getChannelConfig,
   onError: (error) =>
     logger.error('[Channels] Cleanup recovery failed', getSafeErrorMetadata(error)),
@@ -120,14 +108,12 @@ const identityHandlers = createChannelIdentityHandlers({
 });
 const feedback = createChannelFeedbackRuntime({
   guard: handlers.service,
-  runs: storage,
   getConfig: getChannelConfig,
   hostDeps: {
     channels: db,
     storage: createChannelFeedbackStorage(mongoose),
-    getAppConfig: (tenantId) => getAppConfig({ tenantId, failClosed: true }),
-    getMessage: (filter) => db.getMessage(filter),
-    currentTracePolicy: async () => null,
+    getAppConfig: policy.appConfig,
+    currentTracePolicy: policy.tracePolicy,
     sendScore: sendFeedbackScore,
   },
   workerDeps: {
@@ -149,7 +135,4 @@ module.exports = {
   initializeChannelCleanup: cleanup.initialize,
   stopChannelCleanup: cleanup.stop,
   identity: authority.identity,
-  authorizeTrigger: authority.authorizeTrigger,
-  authorizeGeneration: authority.authorizeGeneration,
-  authorizeResume: authority.authorizeResume,
 };

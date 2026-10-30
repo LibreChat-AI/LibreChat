@@ -75,10 +75,9 @@ const mockSaveMessage = jest.fn();
 const mockSaveConvo = jest.fn();
 const mockAppendConvoMessageReference = jest.fn();
 const mockIsAgentTriggerPrincipalActive = jest.fn();
-const mockAuthorizeChannelGeneration = jest.fn();
-jest.mock('~/server/services/ChannelAuthority', () => ({
-  authorizeGeneration: (...args) => mockAuthorizeChannelGeneration(...args),
-}));
+jest.mock('~/server/services/ChannelAuthority', () => {
+  throw new Error('Ordinary chat must not import channel Responses authority');
+});
 const mockIsSubagentOwnerAdmissible = jest.fn();
 const mockAcquireEventChildGenerationLease = jest.fn();
 const mockIsScheduleFireRequest = jest.fn();
@@ -268,10 +267,6 @@ jest.mock('@librechat/api', () => ({
   getPreliminaryResponseMessageId: jest.requireActual(
     '../../../../../packages/api/src/utils/message',
   ).getPreliminaryResponseMessageId,
-  admitChannelGeneration: (...args) =>
-    jest.requireActual('@librechat/api').admitChannelGeneration(...args),
-  getTrustedNewConversationId: (...args) =>
-    jest.requireActual('@librechat/api').getTrustedNewConversationId(...args),
   savePrivateTextMessage: (save, _req, ...args) => save(...args),
   savePrivateTextErrorTurn: (...args) =>
     jest.requireActual('@librechat/api').savePrivateTextErrorTurn(...args),
@@ -510,7 +505,6 @@ describe('ResumableAgentController resume metadata', () => {
     mockGetFiles.mockReset().mockResolvedValue([]);
     mockGetMessages.mockResolvedValue([]);
     mockIsAgentTriggerPrincipalActive.mockResolvedValue(true);
-    mockAuthorizeChannelGeneration.mockReset().mockResolvedValue(true);
     mockIsSubagentOwnerAdmissible.mockResolvedValue(true);
     mockAcquireEventChildGenerationLease.mockResolvedValue(jest.fn());
     mockIsScheduleFireRequest.mockImplementation((req) => req?._isScheduledFire === true);
@@ -1011,58 +1005,8 @@ describe('ResumableAgentController resume metadata', () => {
     expect(mockCheckAndIncrementPendingRequest).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['revoked', false, 403, 'CHANNEL_AUTHORITY_CHANGED'],
-    ['unavailable', new Error('private database diagnostic'), 503, 'CHANNEL_AUTHORITY_UNAVAILABLE'],
-  ])(
-    'rejects %s channel authority before claiming a generation or concurrency slot',
-    async (_name, authority, status, code) => {
-      if (authority instanceof Error) {
-        mockAuthorizeChannelGeneration.mockRejectedValue(authority);
-      } else {
-        mockAuthorizeChannelGeneration.mockResolvedValue(authority);
-      }
-      const req = {
-        _isAgentTrigger: true,
-        user: { id: 'user-123', tenantId: 'tenant-a' },
-        body: {
-          text: 'Hello',
-          conversationId: 'conversation-123',
-          clientRequestId: 'channel-request',
-          channelExecution: { channelId: 'channel-a', runId: 'run-a' },
-          endpointOption: {
-            endpoint: 'agents',
-            agent_id: 'agent-a',
-            modelOptions: { model: 'gpt-4.1' },
-          },
-        },
-        config: {},
-      };
-      const res = createResumableResponse();
-      const initializeClient = jest.fn();
-
-      await AgentController(req, res, jest.fn(), initializeClient, null);
-
-      expect(mockAuthorizeChannelGeneration).toHaveBeenCalledWith({
-        channelExecution: req.body.channelExecution,
-        userId: 'user-123',
-        tenantId: 'tenant-a',
-        conversationId: 'conversation-123',
-        agentId: 'agent-a',
-        clientRequestId: 'channel-request',
-      });
-      expect(res.status).toHaveBeenCalledWith(status);
-      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ code }));
-      expect(JSON.stringify(res.json.mock.calls)).not.toContain('private database diagnostic');
-      expect(mockGenerationJobManager.claimGeneration).not.toHaveBeenCalled();
-      expect(mockCheckAndIncrementPendingRequest).not.toHaveBeenCalled();
-      expect(mockGenerationJobManager.createJob).not.toHaveBeenCalled();
-      expect(initializeClient).not.toHaveBeenCalled();
-    },
-  );
-
   it.each([true, false])(
-    'persists channel identity and exact reply ID only for verified triggers (%s)',
+    'ignores channel execution body fields on ordinary chat, including trusted triggers (%s)',
     async (isTrigger) => {
       mockGetConvo.mockResolvedValue({
         user: 'user-123',
@@ -1097,17 +1041,10 @@ describe('ResumableAgentController resume metadata', () => {
       );
       expect(mockGenerationJobManager.createJob).toHaveBeenCalled();
       const metadata = mockGenerationJobManager.createJob.mock.calls[0][3].initialMetadata;
-      if (isTrigger) {
-        expect(mockAuthorizeChannelGeneration).toHaveBeenCalledTimes(1);
-        expect(metadata.channelExecution).toEqual(req.body.channelExecution);
-        expect(res.json).toHaveBeenCalledWith(
-          expect.objectContaining({ responseMessageId: metadata.responseMessageId }),
-        );
-      } else {
-        expect(mockAuthorizeChannelGeneration).not.toHaveBeenCalled();
-        expect(metadata.channelExecution).toBeUndefined();
-        expect(res.json.mock.calls.every(([body]) => body.responseMessageId == null)).toBe(true);
-      }
+      expect(metadata.channelExecution).toBeUndefined();
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ responseMessageId: metadata.responseMessageId }),
+      );
     },
   );
 
@@ -2453,7 +2390,6 @@ describe('ResumableAgentController resume metadata', () => {
           conversationId: 'new',
           newConversationId: reserved,
           clientRequestId: 'trigger-reserved-id',
-          channelExecution: { channelId: 'channel-a', runId: 'run-a' },
           endpointOption: {
             endpoint: 'agents',
             agent_id: 'agent-a',
@@ -2471,13 +2407,9 @@ describe('ResumableAgentController resume metadata', () => {
       expect(streamId).toBe(conversationId);
       if (trusted) {
         expect(conversationId).toBe(reserved);
-        expect(mockAuthorizeChannelGeneration).toHaveBeenCalledWith(
-          expect.objectContaining({ conversationId: reserved }),
-        );
       } else {
         expect(conversationId).not.toBe(reserved);
         expect(conversationId).toMatch(/^[0-9a-f-]{36}$/);
-        expect(mockAuthorizeChannelGeneration).not.toHaveBeenCalled();
       }
     },
   );

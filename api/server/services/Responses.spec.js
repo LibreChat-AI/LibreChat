@@ -90,38 +90,40 @@ describe('Responses resume permission composition', () => {
   });
 
   it('delegates bound-key authority to Channels and still denies unknown bindings', async () => {
-    const { createBackgroundResponseAuthority } = require('@librechat/api');
-    const dependencies = createBackgroundResponseAuthority.mock.calls[0][0];
-    expect(dependencies.authorizeBinding).toEqual(expect.any(Function));
-    const createAuthority = jest.requireActual(
-      '../../../packages/api/src/agents/responses/authority',
-    ).createBackgroundResponseAuthority;
-    const key = { binding: { kind: 'uninstalled-source', id: 'source' } };
-    const authorize = createAuthority({
-      ...dependencies,
-      findUser: async () => ({ _id: 'owner', tenantId: 'tenant', role: 'USER' }),
-      getKey: async () => key,
-      getRole: async () => ({
-        permissions: { [PermissionTypes.REMOTE_AGENTS]: { [Permissions.USE]: true } },
-      }),
-      getConfig: async () => ({
-        endpoints: { agents: { remoteApi: { background: { enabled: true } } } },
-      }),
-      getAgentPermissions: async () => PermissionBits.VIEW,
-      isPrincipalActive: async () => true,
+    const { tenantStorage } = jest.requireActual('@librechat/data-schemas');
+    return tenantStorage.run({ tenantId: 'tenant' }, async () => {
+      const { createBackgroundResponseAuthority } = require('@librechat/api');
+      const dependencies = createBackgroundResponseAuthority.mock.calls[0][0];
+      expect(dependencies.authorizeBinding).toEqual(expect.any(Function));
+      const createAuthority =
+        jest.requireActual('@librechat/api').createBackgroundResponseAuthority;
+      const key = { binding: { kind: 'uninstalled-source', id: 'source' } };
+      const authorize = createAuthority({
+        ...dependencies,
+        findUser: async () => ({ _id: 'owner', tenantId: 'tenant', role: 'USER' }),
+        getKey: async () => key,
+        getRole: async () => ({
+          permissions: { [PermissionTypes.REMOTE_AGENTS]: { [Permissions.USE]: true } },
+        }),
+        getConfig: async () => ({
+          endpoints: { agents: { remoteApi: { background: { enabled: true } } } },
+        }),
+        getAgentPermissions: async () => PermissionBits.VIEW,
+        isPrincipalActive: async () => true,
+      });
+      const owner = { userId: 'owner', tenantId: 'tenant' };
+      await expect(authorize(owner, 'agent', 'key')).resolves.toBe(false);
+      expect(mockAuthorizeChannelResponseKeySource).toHaveBeenCalledWith(
+        key.binding,
+        'key',
+        owner,
+        'agent',
+      );
+      mockAuthorizeChannelResponseKeySource.mockClear();
+      delete key.binding;
+      await expect(authorize(owner, 'agent', 'key')).resolves.toBe(true);
+      expect(mockAuthorizeChannelResponseKeySource).not.toHaveBeenCalled();
     });
-    const owner = { userId: 'owner', tenantId: 'tenant' };
-    await expect(authorize(owner, 'agent', 'key')).resolves.toBe(false);
-    expect(mockAuthorizeChannelResponseKeySource).toHaveBeenCalledWith(
-      key.binding,
-      'key',
-      owner,
-      'agent',
-    );
-    mockAuthorizeChannelResponseKeySource.mockClear();
-    delete key.binding;
-    await expect(authorize(owner, 'agent', 'key')).resolves.toBe(true);
-    expect(mockAuthorizeChannelResponseKeySource).not.toHaveBeenCalled();
   });
 
   it('uses the startup-injected queue without importing the trigger composition', async () => {
