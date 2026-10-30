@@ -86,7 +86,7 @@ test.describe('the shared type checker', () => {
       fakeBun(bin, log, 0, 1);
       const failing = typecheck(bin, project);
       expect(failing.status, 'a failing bun check passed the run').toBe(1);
-      expect(logged(log)).toContain(`check --no-script -p ${project}`);
+      expect(logged(log)).toContain(`check -p ${project}`);
       expect(failing.output).not.toContain('falling back to tsc');
 
       fakeBun(bin, log, 0, 0);
@@ -124,7 +124,7 @@ test.describe('the shared type checker', () => {
       expect(result.output).toContain('TS2322');
       expect(result.status).not.toBe(0);
       expect(logged(log), 'bun check ran although Bun reported no check command').not.toContain(
-        `check --no-script -p`,
+        `check -p`,
       );
     } finally {
       rmSync(dir, { force: true, recursive: true });
@@ -152,11 +152,11 @@ test.describe('the shared type checker', () => {
       const checked = logged(log)
         .trim()
         .split('\n')
-        .filter((line) => line.includes(': check --no-script') && !line.includes('--help'));
+        .filter((line) => line.includes(': check') && !line.includes('--help'));
       expect(checked.sort()).toEqual(
         [
-          ...projects.map((path) => `${join(repoRoot, path)}: check --no-script`),
-          `${join(repoRoot, 'packages/chat')}: check --no-script -p test/tsconfig.json`,
+          ...projects.map((path) => `${join(repoRoot, path)}: check`),
+          `${join(repoRoot, 'packages/chat')}: check -p test/tsconfig.json`,
         ].sort(),
       );
 

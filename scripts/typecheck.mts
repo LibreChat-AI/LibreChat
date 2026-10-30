@@ -27,7 +27,7 @@ function hasBunCheck(): boolean {
 /** Resolves the checker to run, or null when neither Bun nor `typescript` is available. */
 export function resolveTypecheck(root: string): TypecheckCommand | null {
   if (hasBunCheck()) {
-    return { checker: 'bun', command: 'bun', args: ['check', '--no-script'] };
+    return { checker: 'bun', command: 'bun', args: ['check'] };
   }
   try {
     const tsc = createRequire(import.meta.url).resolve('typescript/bin/tsc', { paths: [root] });
