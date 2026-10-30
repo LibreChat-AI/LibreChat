@@ -1312,6 +1312,7 @@ describe('MCPConnectionFactory', () => {
       expect(mockMCPOAuthHandler.initiateOAuthFlow).toHaveBeenCalled();
       expect(oauthStart).toHaveBeenCalledWith('https://auth.example.com/fresh-authorize', {
         expiresAt: expect.any(Number),
+        onPublished: expect.any(Function),
       });
       expect(oauthStart).not.toHaveBeenCalledWith(
         expect.stringContaining('resource='),
@@ -1413,6 +1414,7 @@ describe('MCPConnectionFactory', () => {
         expect(mockMCPOAuthHandler.initiateOAuthFlow).toHaveBeenCalled();
         expect(oauthStart).toHaveBeenCalledWith('https://auth.example.com/fresh-authorize', {
           expiresAt: expect.any(Number),
+          onPublished: expect.any(Function),
         });
         expect(oauthStart).not.toHaveBeenCalledWith(
           'https://auth.example.com/old-authorize',
@@ -1541,6 +1543,7 @@ describe('MCPConnectionFactory', () => {
         if (state === 'current') {
           expect(oauthStart).toHaveBeenCalledWith(authorizationUrl, {
             expiresAt: storedAt + PENDING_STALE_MS,
+            onPublished: expect.any(Function),
           });
           expect(storedAt + PENDING_STALE_MS).toBeGreaterThan(Date.now());
         } else expect(oauthStart).not.toHaveBeenCalled();
@@ -1647,6 +1650,7 @@ describe('MCPConnectionFactory', () => {
 
       expect(oauthOptions.oauthStart).toHaveBeenCalledWith('https://auth.example.com', {
         expiresAt: persistedCreatedAt + PENDING_STALE_MS,
+        onPublished: expect.any(Function),
       });
       expect(mockConnectionInstance.emit).toHaveBeenCalledWith(
         'oauthFailed',
@@ -1972,6 +1976,7 @@ describe('MCPConnectionFactory', () => {
       expect(mockFlowManager.initFlow).toHaveBeenCalled();
       expect(oauthOptions.oauthStart).toHaveBeenCalledWith('https://auth.example.com', {
         expiresAt: expect.any(Number),
+        onPublished: expect.any(Function),
       });
       // The background monitor error should be logged, not silently swallowed
       expect(mockLogger.debug).toHaveBeenCalledWith(
@@ -2480,6 +2485,7 @@ describe('MCPConnectionFactory', () => {
         expect(mockConnectionInstance.emit).toHaveBeenCalledWith('oauthHandled', 'silent-refresh');
         expect(oauthStart).toHaveBeenCalledWith('https://auth.example.com', {
           expiresAt: expect.any(Number),
+          onPublished: expect.any(Function),
         });
         expect(mockConnectionInstance.emit).toHaveBeenCalledWith(
           'oauthFailed',
@@ -3902,6 +3908,7 @@ describe('MCPConnectionFactory', () => {
       expect(staleOAuthStart).not.toHaveBeenCalled();
       expect(liveOAuthStart).toHaveBeenCalledWith('https://auth.example.com', {
         expiresAt: expect.any(Number),
+        onPublished: expect.any(Function),
       });
       expect(handlers.oauthReauthenticationRequired.length).toBe(1);
 
