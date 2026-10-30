@@ -348,3 +348,49 @@ describe('authorized artifact content', () => {
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 });
+
+test('renewal returns only the renewed fence and deadline, without inventing a run snapshot', async () => {
+  const renewed = { fence, leaseExpiresAt: Date.now() + 60_000 };
+  const transport = jest
+    .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+    .mockResolvedValue(json(renewed));
+  const value = await new ChannelClient(config, transport).renew(fence);
+  expect(value).toEqual(renewed);
+  expect(value).not.toHaveProperty('run');
+});
+
+test('preparation distinguishes canonical settlement from execution credentials', async () => {
+  const settled = {
+    ...run,
+    state: 'delivering' as const,
+    cancellationRequested: true,
+    snapshot: { status: 'cancelled' as const, text: '', elapsedMs: 0 },
+  };
+  const transport = jest
+    .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+    .mockResolvedValueOnce(json({ settled }))
+    .mockResolvedValueOnce(json(grant));
+  const client = new ChannelClient(config, transport);
+  const first = await client.prepare(fence);
+  if (!first.settled) throw new Error('Expected canonical unstarted cancellation');
+  expect(first.settled).toEqual(settled);
+  expect(first).not.toHaveProperty('apiKey');
+  const next = await client.prepare(fence);
+  if (next.settled) throw new Error('Expected credential-bearing preparation');
+  expect(next.apiKey).toBe(grant.apiKey);
+  expect(transport).toHaveBeenCalledTimes(2);
+});
+
+test('Stop and cancel retain the complete external-channel scope at the service boundary', async () => {
+  const transport = jest
+    .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+    .mockImplementation(async () => json({ cancellationRequested: true }));
+  const client = new ChannelClient(config, transport);
+  const actor = run.admission.actor;
+  await client.stop(actor, 'C1:123.456', 1234, 'C1');
+  await client.cancel(run.runId, actor, run.revision, 'C1');
+  expect(transport.mock.calls.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+    { actor, externalThreadKey: 'C1:123.456', externalChannelId: 'C1', eventAt: 1234 },
+    { actor, revision: run.revision, externalChannelId: 'C1' },
+  ]);
+});

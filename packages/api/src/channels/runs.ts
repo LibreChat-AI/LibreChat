@@ -2,6 +2,9 @@ import { z } from 'zod';
 import { ChannelRunConflict } from '@librechat/data-schemas';
 import { responseReviewDecisionSchema } from 'librechat-data-provider';
 import type {
+  ChannelRunLease,
+  ChannelRunLeaseRenewal,
+  ChannelResponsePreparation,
   ChannelRunPrincipal,
   ChannelRunAdmission,
   ChannelRunView,
@@ -600,9 +603,9 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       }
       res.json({
         run: await presentRun(channel, run),
-        fence: { runId: run.runId, owner: run.leaseOwner, epoch: run.leaseEpoch },
+        fence: { runId: run.runId, owner: run.leaseOwner!, epoch: run.leaseEpoch },
         leaseExpiresAt: run.leaseExpiresAt,
-      });
+      } satisfies ChannelRunLease);
     }),
     renew: guarded(async (req, res, channel) => {
       const parsed = fenceBody.safeParse(req.body);
@@ -614,7 +617,10 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         res.status(409).json({ error: 'stale_fence' });
         return;
       }
-      res.json({ fence: binding.fence, leaseExpiresAt: at + leaseMs });
+      res.json({
+        fence: binding.fence,
+        leaseExpiresAt: at + leaseMs,
+      } satisfies ChannelRunLeaseRenewal);
     }),
     yieldLease: guarded(async (req, res, channel) => {
       const parsed = fenceBody.safeParse(req.body);
@@ -648,7 +654,9 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
           binding.fence,
           now(),
         );
-        res.json({ settled: await presentRun(channel, settled) });
+        res.json({
+          settled: await presentRun(channel, settled),
+        } satisfies ChannelResponsePreparation);
         return;
       }
       if (run.cancellationRequested && !run.execution.responseId) {
@@ -685,7 +693,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
             ? {}
             : { previous_response_id: run.execution!.parentMessageId }),
         },
-      });
+      } satisfies ChannelResponsePreparation);
     }),
     bindResponse: guarded(async (req, res, channel) => {
       const parsed = z.object({ fence: fenceSchema, responseId: id }).strict().safeParse(req.body);

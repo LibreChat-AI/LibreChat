@@ -253,6 +253,7 @@ beforeEach(async () => {
   app.post('/service/:channelId/runs/claim', runs.claim);
   app.post('/service/:channelId/runs/stop-thread', runs.stopThread);
   app.post('/service/:channelId/runs/:runId/yield', runs.yieldLease);
+  app.post('/service/:channelId/runs/:runId/renew', runs.renew);
   app.post('/service/:channelId/runs/:runId/advance', runs.advance);
   app.post('/service/:channelId/runs/:runId/response/prepare', runs.prepareResponse);
   app.post('/service/:channelId/runs/:runId/response/bind', runs.bindResponse);
@@ -1658,5 +1659,34 @@ it(
         'agent',
       ),
     ).toBe(false);
+  }),
+);
+
+it(
+  'returns distinct claim, renewal and pre-credential cancellation contracts through real handlers',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    expect(Object.keys(claimed.body).sort()).toEqual(['fence', 'leaseExpiresAt', 'run']);
+    const base = `runs/${admitted.body.runId}`;
+    const renewed = await post(`${base}/renew`).send({ fence: claimed.body.fence }).expect(200);
+    expect(Object.keys(renewed.body).sort()).toEqual(['fence', 'leaseExpiresAt']);
+    expect(renewed.body.fence).toEqual(claimed.body.fence);
+    await post(`${base}/cancel`)
+      .send({ actor: event().actor, revision: 'revision-1', externalChannelId: 'C1' })
+      .expect(202);
+    const prepared = await post(`${base}/response/prepare`)
+      .send({ fence: claimed.body.fence })
+      .expect(200);
+    expect(Object.keys(prepared.body)).toEqual(['settled']);
+    expect(prepared.body.settled).toMatchObject({
+      runId: admitted.body.runId,
+      state: 'delivering',
+      cancellationRequested: true,
+      snapshot: { status: 'cancelled' },
+    });
+    expect(responseCredential).not.toHaveBeenCalled();
+    expect(invoked).toHaveLength(0);
   }),
 );

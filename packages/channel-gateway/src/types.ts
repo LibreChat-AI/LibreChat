@@ -1,9 +1,4 @@
-import type {
-  AgentChannel,
-  ChannelRunView,
-  ChannelRunFence,
-  ResponseReviewView,
-} from 'librechat-data-provider';
+import type { AgentChannel, ResponseReviewView } from 'librechat-data-provider';
 
 export interface ChannelBundle {
   channel: AgentChannel & {
@@ -13,24 +8,12 @@ export interface ChannelBundle {
   credentials: { botToken: string; signingSecret?: string };
   agent: { id: string; name?: string };
 }
-export interface Lease {
-  run: ChannelRunView;
-  fence: ChannelRunFence;
-  leaseExpiresAt: number;
-}
-export interface ResponseGrant {
-  settled?: ChannelRunView;
-  apiKey: string;
-  requestKey: string;
-  responseId?: string;
-  request: {
-    model: string;
-    input: string;
-    background: true;
-    store: true;
-    previous_response_id?: string;
-  };
-}
+export type {
+  ChannelRunLease as Lease,
+  ChannelRunLeaseRenewal as LeaseRenewal,
+  ChannelResponseGrant as ResponseGrant,
+  ChannelResponsePreparation as ResponsePreparation,
+} from 'librechat-data-provider';
 export interface Review {
   url: string;
   actionId: string;
