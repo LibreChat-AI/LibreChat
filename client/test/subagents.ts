@@ -1,11 +1,11 @@
 import type { SubagentUpdateEvent } from 'librechat-data-provider';
-import type { SubagentContentPart, SubagentTickerLine } from '~/utils/subagentContent';
+import type { SubagentContentPart, SubagentTickerLine } from '@librechat/chat';
 import {
   foldSubagentEvent,
   initSubagentTickerState,
   foldSubagentEventIntoTicker,
   initSubagentAggregatorState,
-} from '~/utils/subagentContent';
+} from '@librechat/chat';
 
 /** Folds a whole event stream through the incremental aggregator the live UI uses. */
 export function aggregateSubagentContent(events: SubagentUpdateEvent[]): SubagentContentPart[] {

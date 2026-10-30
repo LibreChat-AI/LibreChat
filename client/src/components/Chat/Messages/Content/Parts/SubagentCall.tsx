@@ -1,30 +1,29 @@
 import { useCallback, useContext, useEffect, useMemo, useReducer, useRef } from 'react';
 import { useSetAtom } from 'jotai';
 import { ChevronRight, Users } from 'lucide-react';
-import { useToolCallIntent } from '@librechat/chat/react';
 import { FOLD_GLYPH_CLASS } from '@librechat/chat/components';
-import { parseSubagentBackgroundHandle } from '@librechat/chat';
 import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
+import { parseSubagentBackgroundHandle, tailOverflowDirection } from '@librechat/chat';
+import {
+  activeSubagentPanel,
+  subagentProgressKey,
+  useSubagentProgress,
+  useToolCallIntent,
+} from '@librechat/chat/react';
 import type {
   PartMetadata,
   TAttachment,
   TMessage,
   TMessageContentParts,
 } from 'librechat-data-provider';
-import type { SubagentContentPreview } from '~/components/Chat/Subagents/state';
-import type { SubagentTickerLine } from '~/utils/subagentContent';
-import {
-  activeSubagentPanel,
-  subagentProgressKey,
-  useSubagentProgress,
-} from '~/components/Chat/Subagents/state';
+import type { SubagentContentPreview } from '@librechat/chat/react';
+import type { SubagentTickerLine } from '@librechat/chat';
 import { useParentSubagents } from '~/components/Chat/Subagents/ParentSubagentsProvider';
 import { isSelfSpawn as isSelfSpawnType } from '~/components/Chat/Subagents/author';
 import { resolveSubagentAgentId } from '~/components/Chat/Subagents/identity';
 import { subagentStatusLabelKey } from '~/components/Chat/Subagents/status';
 import { useOpenSubagentPanel } from '~/components/Chat/Subagents/surface';
 import { getSubagentPrompt } from '~/components/Chat/Subagents/prompt';
-import { tailOverflowDirection } from '~/utils/subagentContent';
 import { MessageContext } from '~/Providers/MessageContext';
 import { useShareContext } from '~/Providers/ShareContext';
 import MessageIcon from '~/components/Share/MessageIcon';

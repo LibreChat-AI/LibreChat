@@ -52,7 +52,7 @@ async function selectAgent(page: Page, name: string): Promise<void> {
 }
 
 test.describe('detached subagent activity', () => {
-  test('streams two child runs into the shared panel and restores terminal activity', async ({
+  test('streams two child runs into the shared panel and restores terminal activity @scenario:subagent-panel-streams-child-activity-once', async ({
     page,
   }) => {
     test.setTimeout(120_000);
@@ -226,6 +226,43 @@ async function assertFullToolDetails(
   await expect(details.getByText(history.payload(label, index), { exact: true })).toBeVisible();
 }
 
+/**
+ * Where the steer sits relative to the text before and after it, in document
+ * order within its conversation. Each text is matched by the innermost element
+ * holding exactly that text, so the check reads the same whether the turn is
+ * still streaming (words split into `[data-lc-fade]` spans) or has settled.
+ */
+async function steerPlacement(
+  steer: Locator,
+  before: string,
+  after: string,
+): Promise<{ before: boolean; after: boolean }> {
+  return steer.evaluate(
+    (node, texts) => {
+      const root = node.closest('[data-subagent-conversation]');
+      const find = (text: string): Element | undefined => {
+        if (root == null) return undefined;
+        return [...root.querySelectorAll('*')].find(
+          (element) =>
+            element.textContent === text &&
+            ![...element.children].some((child) => child.textContent === text),
+        );
+      };
+      const preceding = find(texts.before);
+      const following = find(texts.after);
+      return {
+        before:
+          preceding != null &&
+          Boolean(preceding.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING),
+        after:
+          following != null &&
+          Boolean(node.compareDocumentPosition(following) & Node.DOCUMENT_POSITION_FOLLOWING),
+      };
+    },
+    { before, after },
+  );
+}
+
 async function openHistoryChild(page: Page, label: string): Promise<Locator> {
   const card = page.locator(`[data-subagent-tool-call="${history.dispatchId(label)}"]`);
   await expect
@@ -259,7 +296,9 @@ async function historyThreadPath(
 
 test.describe('subagent chat retained-history parity', () => {
   for (const mode of ['normal chat', 'late open', 'cold reload'] as const) {
-    const name = `${mode} restores over-capacity history while running and completes once`;
+    const scenario =
+      mode === 'late open' ? ' @scenario:subagent-panel-replays-history-then-goes-live' : '';
+    const name = `${mode} restores over-capacity history while running and completes once${scenario}`;
     test(name, async ({ page, browser, baseURL }, testInfo) => {
       test.setTimeout(120_000);
       const prefix = `history-${mode.replaceAll(' ', '-')}`;
@@ -432,51 +471,12 @@ test.describe('subagent chat retained-history parity', () => {
           await expect(
             surface.getByText('Message shortened for display.', { exact: true }),
           ).toHaveCount(0);
-          const precedingText = history.liveText(label);
-          expect(
-            await steer.evaluate((node, text) => {
-              const root = node.closest('[data-subagent-conversation]')!;
-              const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
-              let current: Node | null;
-              while ((current = walker.nextNode())) {
-                if (
-                  current.textContent === text &&
-                  current instanceof HTMLElement &&
-                  current.children.length === 0
-                ) {
-                  return Boolean(
-                    current.compareDocumentPosition(node) & Node.DOCUMENT_POSITION_FOLLOWING,
-                  );
-                }
-              }
-              return false;
-            }, precedingText),
-          ).toBe(true);
-          const completion = surface.getByText(history.completionText(label), { exact: true });
-          expect(
-            await steer.evaluate(
-              (node, completedText) => {
-                const walker = document.createTreeWalker(
-                  node.closest('[data-subagent-conversation]')!,
-                  NodeFilter.SHOW_ELEMENT,
-                );
-                let current: Node | null;
-                while ((current = walker.nextNode())) {
-                  if (
-                    current.textContent === completedText &&
-                    current instanceof HTMLElement &&
-                    current.children.length === 0
-                  ) {
-                    return Boolean(
-                      node.compareDocumentPosition(current) & Node.DOCUMENT_POSITION_FOLLOWING,
-                    );
-                  }
-                }
-                return false;
-              },
-              await completion.textContent(),
-            ),
-          ).toBe(true);
+          const placement = { before: true, after: true };
+          const live = history.liveText(label);
+          const completed = history.completionText(label);
+          expect(await steerPlacement(steer, live, completed)).toEqual(placement);
+          await expect(surface.locator('[data-lc-fade]')).toHaveCount(0, { timeout: 20_000 });
+          expect(await steerPlacement(steer, live, completed)).toEqual(placement);
         }
 
         if (mode !== 'normal chat') {

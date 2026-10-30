@@ -1,18 +1,17 @@
 import { useMemo } from 'react';
-import { useAtomValue, useSetAtom } from 'jotai';
+import { useSetAtom } from 'jotai';
 import { Constants, QueryKeys } from 'librechat-data-provider';
 import { hashQueryKey, useQueryClient } from '@tanstack/react-query';
 import type { ChatHost, ChatMessageCache, ChatMessagesQuery } from '@librechat/chat/react';
+import type { TMessage, TAgentQueuedTurnReceipt } from 'librechat-data-provider';
 import type { QueryClient, QueryCacheNotifyEvent } from '@tanstack/react-query';
-import type { TMessage } from 'librechat-data-provider';
 import { useLatestMessage, useLatestMessageId } from '~/hooks/Messages/useLatestMessage';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { useAbortStreamMutation, useGetMessagesByConvoId } from '~/data-provider';
+import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
-import { messageAttachmentsMapAtom } from '~/hooks/SSE/atoms';
 import { getMappingOptions } from '~/hooks/Chat/outcomes';
 import useTurnServices from '~/hooks/Chat/services';
-import { useResumeOnLoad } from '~/hooks/SSE';
 import useNewConvo from '~/hooks/useNewConvo';
 
 /** Cache events that add, drop or rewrite a query's data. */
@@ -65,6 +64,19 @@ export function createMessageCache(queryClient: QueryClient): ChatMessageCache {
     refetchStreamStatus: (conversationId) => {
       queryClient.invalidateQueries({ queryKey: ['streamStatus', conversationId] });
     },
+    invalidateMessages: (conversationId) => {
+      queryClient.invalidateQueries({ queryKey: [QueryKeys.messages, conversationId] });
+    },
+    messagesUpdatedAt: (conversationId) =>
+      queryClient.getQueryState([QueryKeys.messages, conversationId])?.dataUpdatedAt,
+    reloadMessages: async (conversationId) => {
+      await queryClient.refetchQueries(
+        { queryKey: [QueryKeys.messages, conversationId], exact: true },
+        { throwOnError: true },
+      );
+    },
+    readQueuedTurns: (conversationId) =>
+      queryClient.getQueryData<TAgentQueuedTurnReceipt[]>(agentQueuedTurnsQueryKey(conversationId)),
   };
 }
 
@@ -108,13 +120,9 @@ export const appChatHost: ChatHost = {
    *  render and would defeat the contract's memo. */
   useAbortStream: () => useAbortStreamMutation().mutateAsync,
   useMessageCache,
-  useLiveAttachments: () => useAtomValue(messageAttachmentsMapAtom),
   useFeedbackEnabled: () => useChatSettings().config.feedbackEnabled,
   getMappingOptions,
   useMessages,
-  useSessionEffects: ({ index, conversationId, chat, isSettled }) => {
-    useResumeOnLoad(conversationId, chat.getMessages, index, isSettled);
-  },
 };
 
 export { ChatHostProvider, useChatHost } from '@librechat/chat/react';

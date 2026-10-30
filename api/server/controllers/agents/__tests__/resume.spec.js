@@ -3389,6 +3389,22 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       expect(client.resumeCompletion).toHaveBeenCalledWith(expect.objectContaining({ runSteps }));
     });
 
+    it('restores authored skills only from the claimed generation metadata', async () => {
+      const authoredSkills = [
+        { agentId: 'agent-1', name: 'new-skill', id: '507f1f77bcf86cd799439011', primed: true },
+      ];
+      mockGenerationJobManager.getJob.mockResolvedValue(
+        makeToolApprovalJob({ metadata: { authoredSkills } }),
+      );
+      await post({ ...approveBody(), authoredSkills: [{ name: 'untrusted' }] });
+      await settled;
+      await flush();
+      const client = await mockInitializeClient.mock.results[0].value.then((r) => r.client);
+      expect(client.resumeCompletion).toHaveBeenCalledWith(
+        expect.objectContaining({ authoredSkills }),
+      );
+    });
+
     it('reapplies retained ask answers before resuming a later tool approval', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue(
         makeToolApprovalJob({

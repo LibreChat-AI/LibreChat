@@ -1,9 +1,9 @@
 import { useContext, useMemo, useState } from 'react';
 import { Button, TextareaAutosize, TooltipAnchor } from '@librechat/client';
 import { ChevronDown, MessageCircleQuestion, TriangleAlert } from 'lucide-react';
+import { isCancelKey, isReboundSubmitChord, resolveComposerKeyDown } from '@librechat/chat';
 import type { Agents } from 'librechat-data-provider';
 import type { KeyboardEvent } from 'react';
-import { isCancelKey, isReboundSubmitChord, resolveComposerKeyDown } from '~/utils/shortcuts';
 import { useApprovalContext, useAskSubmitStatus, useResumeSubmit } from './ApprovalContext';
 import { splitOtherOption, ASK_USER_DECLINED_ANSWER } from '~/utils/approval';
 import { useOptionalChatSurface } from '~/components/Chat/Subagents/surface';

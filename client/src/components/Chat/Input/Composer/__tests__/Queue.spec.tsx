@@ -43,6 +43,7 @@ jest.mock('@librechat/client', () => {
   );
   IconButton.displayName = 'IconButton';
   return {
+    ...jest.requireActual('@librechat/client'),
     Button: ({ children, ...props }: { children?: React.ReactNode } & Record<string, unknown>) =>
       ReactActual.createElement('button', { type: 'button', ...props }, children),
     IconButton,
@@ -93,6 +94,8 @@ jest.mock('@librechat/client', () => {
         ? ReactActual.cloneElement(render, props)
         : ReactActual.createElement('span', props, children),
     useMediaQuery: () => true,
+    useLocalize: () => (key: string, options?: Record<string, string | number>) =>
+      options ? `${key}:${options.count ?? options['0']}` : key,
     useToastContext: () => ({ showToast: mockShowToast }),
   };
 });

@@ -1,0 +1,32 @@
+import { memo } from 'react';
+import type { NamedExoticComponent } from 'react';
+import type { ComposerHintState } from './hint';
+import useComposerHint from './hint';
+
+/** Scoped per pane: split view mounts one composer per index, and a shared id
+ *  would point every textarea's `aria-describedby` at the first pane's hint. */
+export const composerHintId = (index: number): string => `composer-hint-${index}`;
+
+/**
+ * The composer's accessible description: whatever the current state affords
+ * (during-run modifiers, upload progress, a paused question). It is visually
+ * hidden and the textarea points at it via `aria-describedby`; no visible row is
+ * rendered under the composer. An `aria-live` region here would re-announce on
+ * every keystroke as the hint flips between idle and typing, so the description
+ * channel carries it instead.
+ */
+type HintsProps = ComposerHintState & { index: number };
+
+function Hints({ index, enterToSend, ...state }: HintsProps): React.JSX.Element {
+  const hint = useComposerHint({ ...state, enterToSend });
+
+  return (
+    <span id={composerHintId(index)} className="sr-only">
+      {hint.text}
+    </span>
+  );
+}
+
+const MemoHints: NamedExoticComponent<HintsProps> = memo(Hints);
+
+export default MemoHints;

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { findRerunParent } from '@librechat/chat';
 import { Alert, Button, TextareaAutosize } from '@librechat/client';
 import { useUpdateMessageContentMutation } from 'librechat-data-provider/react-query';
+import { findRerunParent, getPartText, isEditablePart, withPartText } from '@librechat/chat';
 import {
   ContentTypes,
   findMessageById,
@@ -9,7 +9,6 @@ import {
 } from 'librechat-data-provider';
 import type { TMessageContentParts } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import { getPartText, isEditablePart, withPartText } from './editableParts';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
 import { useLocalize } from '~/hooks';

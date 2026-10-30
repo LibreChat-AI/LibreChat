@@ -7,6 +7,7 @@ import {
   resolveCodeExecutionWorkspaceContext,
   supportsProgrammaticCodeExecution,
 } from './capabilities';
+import { requiresCodeWorkspaceCapabilities } from '~/agents/tools';
 
 const context: CodeExecutionContext = {
   baseUrl: 'https://bridge.example',
@@ -379,6 +380,74 @@ describe('resolveCodeExecutionWorkspaceContext', () => {
       }),
     );
   }
+
+  it.each([
+    ['skill'],
+    ['tool_search'],
+    ['web_search'],
+    ['lookup_mcp_example'],
+    ['skill', 'lookup_mcp_example'],
+    [],
+  ])('does not probe worker status for host-only tools: %j', async (...toolNames) => {
+    const fetchSpy = jest
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new DOMException('Status request timed out', 'TimeoutError'));
+
+    await expect(
+      resolveCodeExecutionWorkspaceContext({
+        context,
+        requiresLiveCapabilities: requiresCodeWorkspaceCapabilities(toolNames),
+        persistedSelections: [{ environmentId: 'personal', workspaceId: 'project-a' }],
+        environments,
+        getAppConfig,
+      }),
+    ).resolves.toBe(context);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(getAppConfig).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    'bash_tool',
+    'execute_code',
+    'run_tools_with_bash',
+    'run_tools_with_code',
+    'read_file',
+    'create_file',
+    'edit_file',
+    'search_workspace',
+    'list_workspace_files',
+  ])('still validates live workspace capabilities for %s', async (toolName) => {
+    const fetchSpy = jest
+      .spyOn(globalThis, 'fetch')
+      .mockRejectedValue(new DOMException('Status request timed out', 'TimeoutError'));
+
+    await expect(
+      resolveCodeExecutionWorkspaceContext({
+        context,
+        requiresLiveCapabilities: requiresCodeWorkspaceCapabilities(['skill', toolName]),
+        persistedSelections: [{ environmentId: 'personal', workspaceId: 'project-a' }],
+        environments,
+        getAppConfig,
+      }),
+    ).rejects.toMatchObject({ reason: 'worker_unavailable' });
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it('still enforces the sealed selection for host-only tools', async () => {
+    const fetchSpy = jest.spyOn(globalThis, 'fetch');
+
+    await expect(
+      resolveCodeExecutionWorkspaceContext({
+        context,
+        requiresLiveCapabilities: false,
+        requestedSelections: [{ environmentId: 'personal', workspaceId: 'project-b' }],
+        persistedSelections: [{ environmentId: 'personal', workspaceId: 'project-a' }],
+        environments,
+        getAppConfig,
+      }),
+    ).rejects.toMatchObject({ reason: 'locked' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
 
   it('binds the exact advertised workspace and its operation ceiling', async () => {
     jest.spyOn(globalThis, 'fetch').mockResolvedValue(

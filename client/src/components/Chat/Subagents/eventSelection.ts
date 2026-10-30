@@ -1,5 +1,5 @@
 import type { ParentSubagentSummary } from 'librechat-data-provider';
-import type { ActiveSubagentPanel } from './state';
+import type { ActiveSubagentPanel } from '@librechat/chat/react';
 
 export const eventTaskProgressKey = (threadId: string, taskId: string) =>
   `event-task:${threadId}:${taskId}`;

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAtom } from 'jotai';
+import { activeSubagentPanel } from '@librechat/chat/react';
 import { OGDialog, OGDialogContent, OGDialogHeader, OGDialogTitle } from '@librechat/client';
 import type { TMessage } from 'librechat-data-provider';
 import {
@@ -15,7 +16,6 @@ import SubagentConversation from './SubagentConversation';
 import { adaptLivePersistedActivity } from './adapters';
 import { resolveSubagentAgentId } from './identity';
 import { useAgentsMapContext } from '~/Providers';
-import { activeSubagentPanel } from './state';
 import { useLocalize } from '~/hooks';
 
 /** Public-share fallback for subagent activity already embedded in the shared message payload. */

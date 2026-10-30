@@ -1,14 +1,13 @@
 import React from 'react';
 import { useSetAtom } from 'jotai';
 import { RecoilRoot, useSetRecoilState } from 'recoil';
-import { isSubmittingFamily } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { activeSubagentPanel, isSubmittingFamily } from '@librechat/chat/react';
 import type { TConversation } from 'librechat-data-provider';
 import type { JotaiStore } from 'test/harness';
 import type { Artifact } from '~/common';
 import { prepareUndockedDocument } from '~/components/Artifacts/undockedWindow';
-import { activeSubagentPanel } from '~/components/Chat/Subagents/state';
 import { undockedArtifacts } from '~/components/Artifacts/state';
 import { ChatSurfaceHarness } from 'test/harness';
 import Presentation from './Presentation';

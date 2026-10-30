@@ -1,4 +1,5 @@
 import React, { memo, useMemo, useRef, useEffect } from 'react';
+import { strongDirection } from '@librechat/chat';
 import { PermissionTypes, Permissions, apiBaseUrl } from 'librechat-data-provider';
 import type { Element, ElementContent } from 'hast';
 import {
@@ -12,7 +13,6 @@ import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useCodeBlockContext, useMediaContext } from '~/Providers';
 import CodeBlock from '~/components/Messages/Content/CodeBlock';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
-import { strongDirection } from '~/utils/direction';
 import { useFileDownload } from '~/data-provider';
 import { useLocalize } from '~/hooks';
 

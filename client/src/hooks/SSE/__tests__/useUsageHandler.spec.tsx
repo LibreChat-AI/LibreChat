@@ -1,5 +1,6 @@
 import { getDefaultStore } from 'jotai';
 import { renderHook } from '@testing-library/react';
+import { useUsageHandler } from '@librechat/chat/react';
 import { Constants, reconcileContextUsageFromEvent } from 'librechat-data-provider';
 import type { TMessage, TContextUsageEvent, TTokenUsageEvent } from 'librechat-data-provider';
 import {
@@ -15,7 +16,6 @@ import {
   pendingSubagentUsageFamily,
 } from '~/components/Chat/Input/TokenUsage/store';
 import { buildIndex, sumTotalUsage, sumBranch, clearIndex } from '~/utils/tokens';
-import useUsageHandler from '~/hooks/SSE/useUsageHandler';
 
 /** Mirrors a real web-search + summarization turn: calibration pinned at 5
  *  inflated messageTokens to 187471 (used 213375), while the call's true prompt

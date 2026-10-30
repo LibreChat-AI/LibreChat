@@ -2,6 +2,7 @@ import { useCallback, useId, useMemo, useState } from 'react';
 import { useSetAtom } from 'jotai';
 import { Button, cn } from '@librechat/client';
 import { Bot, ChevronDown } from 'lucide-react';
+import { activeSubagentPanel } from '@librechat/chat/react';
 import { getMessageRowWidthClass } from '@librechat/chat/components';
 import type { ParentSubagentSummary } from 'librechat-data-provider';
 import { isLiveSubagentStatus, subagentStatusDotClass, subagentStatusLabelKey } from './status';
@@ -9,7 +10,6 @@ import { useChatSurface, useOpenSubagentPanel } from './surface';
 import { useParentSubagents } from './ParentSubagentsProvider';
 import { eventSubagentSelection } from './eventSelection';
 import { useAgentsMapContext } from '~/Providers';
-import { activeSubagentPanel } from './state';
 import { renderAgentAvatar } from '~/utils';
 import { useLocalize } from '~/hooks';
 

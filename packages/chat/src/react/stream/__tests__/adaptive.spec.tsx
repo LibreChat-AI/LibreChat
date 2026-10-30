@@ -18,6 +18,17 @@ const host: StreamHost = {
     throw new Error('the resumable binding is replaced in this spec');
   },
   useLegacyStream,
+  useTransport: () => null,
+  useQueuedTurnReceipts: () => ({ data: undefined, dataUpdatedAt: 0 }),
+  useActiveJobs: () => ({ data: undefined, dataUpdatedAt: 0 }),
+  extendActiveJobsGrace: () => undefined,
+  useStreamStatus: () => ({
+    data: undefined,
+    dataUpdatedAt: 0,
+    isSuccess: false,
+    isFetching: false,
+  }),
+  useResumeSettings: () => ({ configLoaded: true, conversation: null }),
 };
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (

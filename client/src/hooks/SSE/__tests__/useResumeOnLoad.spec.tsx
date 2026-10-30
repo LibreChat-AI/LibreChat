@@ -1,4 +1,5 @@
 import { RecoilRoot } from 'recoil';
+import { useResumeOnLoad } from '@librechat/chat/react';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, ContentTypes, QueryKeys, RetentionMode } from 'librechat-data-provider';
@@ -33,8 +34,9 @@ import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import { usePaneConversation } from '~/routes/ChatSettings';
+import { StreamHostTestProvider } from 'test/streamHost';
 import { SteerHostTestProvider } from 'test/steerHost';
-import useResumeOnLoad from '../useResumeOnLoad';
+import { ChatHostTestProvider } from 'test/chatHost';
 import store from '~/store';
 
 const mockUseStreamStatus = jest.fn();
@@ -212,24 +214,28 @@ function renderUseResumeOnLoad({
       <JotaiProvider store={jotaiStore}>
         <RecoilRoot initializeState={initializeState}>
           <SteerHostTestProvider>
-            <SubmissionProbe />
-            <SubmissionStartProbe />
-            <SiblingIndexProbe />
-            <PendingSteersProbe />
-            <QueuedMessagesProbe />
-            <ChatSettingsContext.Provider
-              value={{
-                ...defaultChatSettings,
-                usePaneConversation,
-                config: {
-                  ...defaultChatSettings.config,
-                  retentionMode: mockStartupConfig?.interface?.retentionMode,
-                  loaded: mockStartupConfigSettled,
-                },
-              }}
-            >
-              {children}
-            </ChatSettingsContext.Provider>
+            <ChatHostTestProvider>
+              <StreamHostTestProvider>
+                <SubmissionProbe />
+                <SubmissionStartProbe />
+                <SiblingIndexProbe />
+                <PendingSteersProbe />
+                <QueuedMessagesProbe />
+                <ChatSettingsContext.Provider
+                  value={{
+                    ...defaultChatSettings,
+                    usePaneConversation,
+                    config: {
+                      ...defaultChatSettings.config,
+                      retentionMode: mockStartupConfig?.interface?.retentionMode,
+                      loaded: mockStartupConfigSettled,
+                    },
+                  }}
+                >
+                  {children}
+                </ChatSettingsContext.Provider>
+              </StreamHostTestProvider>
+            </ChatHostTestProvider>
           </SteerHostTestProvider>
         </RecoilRoot>
       </JotaiProvider>

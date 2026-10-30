@@ -10,6 +10,7 @@ import type {
   TEndpointOption,
   TEphemeralAgent,
   TEndpointsConfig,
+  TAgentQueuedTurnReceipt,
   UIMappingOptions,
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
@@ -138,6 +139,14 @@ export type ChatMessageCache = {
   refetchActiveJobs: () => void;
   /** Marks a conversation's stream status stale. */
   refetchStreamStatus: (conversationId: string) => void;
+  /** Marks a conversation's messages stale; only mounted readers refetch. */
+  invalidateMessages: (conversationId: string) => void;
+  /** When a conversation's messages were last fetched, if they ever were. */
+  messagesUpdatedAt: (conversationId: string) => number | undefined;
+  /** Refetches a conversation's messages; rejects when the fetch fails. */
+  reloadMessages: (conversationId: string) => Promise<void>;
+  /** The server's queued-turn receipts last read for a conversation. */
+  readQueuedTurns: (conversationId: string) => TAgentQueuedTurnReceipt[] | undefined;
 };
 
 /** A conversation's messages as the app's data layer loads them. */
@@ -147,15 +156,6 @@ export type ChatMessagesQuery = {
   isLoading: boolean;
   /** A load or background revalidation is in flight. */
   isFetching: boolean;
-};
-
-/** What a pane's session hands its effects each render. */
-export type ChatSessionEffectsParams = {
-  index: number;
-  conversationId?: string;
-  chat: ChatContract;
-  /** The messages finished loading and no revalidation is in flight. */
-  isSettled: boolean;
 };
 
 /**
@@ -179,8 +179,6 @@ export interface ChatHost {
   /** Stops a resumable generation. */
   useAbortStream(): (params: AbortStreamParams) => Promise<AbortStreamResponse>;
   useMessageCache(): ChatMessageCache;
-  /** Attachments delivered by message id ahead of the message cache. Stable across renders. */
-  useLiveAttachments(): Record<string, TAttachment[] | undefined>;
   /** Whether message feedback controls are on. */
   useFeedbackEnabled(): boolean;
   /** The app's tool outcome rules for viewing one message; see {@link ChatContract}. */
@@ -191,13 +189,6 @@ export interface ChatHost {
     conversationId: string | undefined,
     options: { isStreaming: boolean },
   ): ChatMessagesQuery;
-  /**
-   * Runs the pane's resume on load.
-   *
-   * @deprecated On arrival: a bridge to the app's `useResumeOnLoad` until it moves into this
-   * package (#17565), after which the session calls it itself and this member is removed.
-   */
-  useSessionEffects(params: ChatSessionEffectsParams): void;
 }
 
 const ChatHostContext = createContext<ChatHost | null>(null);

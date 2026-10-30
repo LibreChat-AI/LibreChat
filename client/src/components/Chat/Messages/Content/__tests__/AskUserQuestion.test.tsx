@@ -1,8 +1,8 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { fireEvent, render, screen } from '@testing-library/react';
+import type { ShortcutBinding } from '@librechat/chat';
 import type { Agents } from 'librechat-data-provider';
-import type { ShortcutBinding } from '~/utils/shortcuts';
 import { ChatSurfaceProvider } from '~/components/Chat/Subagents/surface';
 import { ASK_USER_DECLINED_ANSWER } from '~/utils/approval';
 import ApprovalProvider from '../ApprovalContext';

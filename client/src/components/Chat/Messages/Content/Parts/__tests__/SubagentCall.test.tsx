@@ -4,6 +4,17 @@ import { useAtomValue, useStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
 import { FOLD_GLYPH_SELECTOR } from '@librechat/chat/components';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  activeSubagentPanel,
+  subagentProgressByToolCallId,
+  subagentProgressKey,
+} from '@librechat/chat/react';
+import {
+  foldSubagentEvent,
+  foldSubagentEventIntoTicker,
+  initSubagentAggregatorState,
+  initSubagentTickerState,
+} from '@librechat/chat';
 import type {
   PartMetadata,
   TAttachment,
@@ -15,19 +26,8 @@ import type {
   SubagentAggregatorState,
   SubagentContentPart,
   SubagentTickerState,
-} from '~/utils/subagentContent';
-import type { ActiveSubagentPanel, SubagentProgress } from '~/components/Chat/Subagents/state';
-import {
-  foldSubagentEvent,
-  foldSubagentEventIntoTicker,
-  initSubagentAggregatorState,
-  initSubagentTickerState,
-} from '~/utils/subagentContent';
-import {
-  activeSubagentPanel,
-  subagentProgressByToolCallId,
-  subagentProgressKey,
-} from '~/components/Chat/Subagents/state';
+} from '@librechat/chat';
+import type { ActiveSubagentPanel, SubagentProgress } from '@librechat/chat/react';
 import SubagentCall, { SUBAGENT_TICKER_THROTTLE_MS } from '../SubagentCall';
 import { MessageContext } from '~/Providers/MessageContext';
 import { FailedRevealContext } from '../../reveal';

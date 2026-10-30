@@ -2,9 +2,9 @@ import { useEffect, useState } from 'react';
 import { v4 } from 'uuid';
 import { useStore, useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
-import { abortScrollFamily, showStopButtonByIndex } from '@librechat/chat/react';
 import { startedAsNewConversation, buildCreatedInitialResponse } from '@librechat/chat';
 import { StepEvents, createPayload, removeNullishValues } from 'librechat-data-provider';
+import { useUsageHandler, abortScrollFamily, showStopButtonByIndex } from '@librechat/chat/react';
 import type {
   Agents,
   TMessage,
@@ -25,7 +25,6 @@ import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { reopenTermsOnRefusal } from '~/utils/terms';
 import { useGetUserBalance } from '~/data-provider';
 import useEventHandlers from './useEventHandlers';
-import useUsageHandler from './useUsageHandler';
 import useLocalize from '~/hooks/useLocalize';
 import { activeRunFamily } from './atoms';
 

@@ -71,7 +71,7 @@ export {
   collectQuotelessAppliedSteerIds,
 } from '@librechat/chat';
 export type { SteerCarriedContext } from '@librechat/chat';
-export * from './pane';
+export { getChatPane, getFocusedChatPane, isFocusedChatPane } from '@librechat/chat';
 export * from './activityLabels';
 export * from './agentModelSelection';
 export * from './runStepDuration';

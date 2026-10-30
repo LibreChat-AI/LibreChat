@@ -1,10 +1,12 @@
 import path from 'path';
 import axios from 'axios';
+import { stat } from 'fs/promises';
 import { ErrorTypes } from 'librechat-data-provider';
-import { checkUserKeyExpiry, loadServiceKey } from './key';
+import { checkUserKeyExpiry, isServiceKeyAvailable, loadServiceKey } from './key';
 import { readFileAsString } from './files';
 
 jest.mock('fs');
+jest.mock('fs/promises', () => ({ stat: jest.fn() }));
 jest.mock('axios');
 jest.mock('@librechat/data-schemas', () => ({
   logger: {
@@ -187,6 +189,65 @@ describe('loadServiceKey', () => {
 
     const result = await loadServiceKey(invalidBase64);
     expect(result).toBeNull();
+  });
+});
+
+describe('isServiceKeyAvailable', () => {
+  const statMock = stat as jest.Mock;
+  const validKey = { content: JSON.stringify({ project_id: 'p' }), bytes: 16 };
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    statMock.mockResolvedValue({ ino: 7, ctimeMs: 1, mtimeMs: 1, size: 16 });
+  });
+
+  it('reads an unchanged key file once it has loaded, and retries one that failed', async () => {
+    const keyPath = '/secrets/remembered.json';
+    (readFileAsString as jest.Mock)
+      .mockRejectedValueOnce(new Error('ENOENT'))
+      .mockResolvedValueOnce(validKey);
+
+    await expect(isServiceKeyAvailable(keyPath)).resolves.toBe(false);
+    await expect(isServiceKeyAvailable(keyPath)).resolves.toBe(true);
+    await expect(isServiceKeyAvailable(keyPath)).resolves.toBe(true);
+
+    expect(readFileAsString).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops advertising a key file that was replaced with invalid JSON or removed', async () => {
+    const keyPath = '/secrets/rotated.json';
+    (readFileAsString as jest.Mock)
+      .mockResolvedValueOnce(validKey)
+      .mockResolvedValueOnce({ content: '{not json', bytes: 9 });
+
+    await expect(isServiceKeyAvailable(keyPath)).resolves.toBe(true);
+
+    statMock.mockResolvedValue({ ino: 7, ctimeMs: 2, mtimeMs: 2, size: 9 });
+    await expect(isServiceKeyAvailable(keyPath)).resolves.toBe(false);
+
+    statMock.mockRejectedValue(Object.assign(new Error('ENOENT'), { code: 'ENOENT' }));
+    (readFileAsString as jest.Mock).mockRejectedValueOnce(new Error('ENOENT'));
+    await expect(isServiceKeyAvailable(keyPath)).resolves.toBe(false);
+  });
+
+  it('rechecks a key file whose permissions changed without a content change', async () => {
+    const keyPath = '/secrets/chmodded.json';
+    (readFileAsString as jest.Mock)
+      .mockResolvedValueOnce(validKey)
+      .mockRejectedValueOnce(Object.assign(new Error('EACCES'), { code: 'EACCES' }));
+
+    await expect(isServiceKeyAvailable(keyPath)).resolves.toBe(true);
+    statMock.mockResolvedValue({ ino: 7, ctimeMs: 3, mtimeMs: 1, size: 16 });
+    await expect(isServiceKeyAvailable(keyPath)).resolves.toBe(false);
+  });
+
+  it('fetches a URL key source on every call', async () => {
+    (axios.get as jest.Mock).mockResolvedValue({ data: { project_id: 'p' } });
+
+    await expect(isServiceKeyAvailable('https://keys.example.com/sa.json')).resolves.toBe(true);
+    await expect(isServiceKeyAvailable('https://keys.example.com/sa.json')).resolves.toBe(true);
+
+    expect(axios.get).toHaveBeenCalledTimes(2);
   });
 });
 

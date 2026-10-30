@@ -1,9 +1,9 @@
 import { createContext, useContext, useMemo } from 'react';
 import { useSetAtom } from 'jotai';
+import { activeSubagentPanel, subagentPanelFocusRequest } from '@librechat/chat/react';
+import type { ActiveSubagentPanel } from '@librechat/chat/react';
 import type { ReactNode } from 'react';
 import type { ComposerBindings } from '~/hooks/Input/useComposerBindings';
-import type { ActiveSubagentPanel } from './state';
-import { activeSubagentPanel, subagentPanelFocusRequest } from './state';
 
 /**
  * Everything this feature needs from the application hosting it, and nothing

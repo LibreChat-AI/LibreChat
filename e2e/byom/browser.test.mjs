@@ -2,7 +2,7 @@ import test from 'node:test';
 import { runInNewContext } from 'node:vm';
 import assert from 'node:assert/strict';
 import { initializeBrowser } from './browser.mjs';
-import { resolveComposerKeyDown } from '../../client/src/utils/shortcuts.ts';
+import { resolveComposerKeyDown } from '../../packages/chat/src/core/shortcuts.ts';
 
 const enter = { key: 'Enter', ctrlKey: false, metaKey: false, altKey: false, shiftKey: false };
 const context = {

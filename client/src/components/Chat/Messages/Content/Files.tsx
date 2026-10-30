@@ -1,7 +1,7 @@
 import { useMemo, useState, useCallback, memo } from 'react';
+import { FileContainer } from '@librechat/chat/components';
 import type { TFile, TMessage } from 'librechat-data-provider';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import FileContainer from '~/components/Chat/Input/Files/FileContainer';
 import { usesImagePreview, hydrateFileDeliveryMetadata } from '~/utils';
 import FilePreviewDialog from './FilePreviewDialog';
 import { useShareContext } from '~/Providers';

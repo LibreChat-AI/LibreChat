@@ -1,15 +1,6 @@
 import { createContext, useEffect, useMemo, useRef } from 'react';
 import { Constants } from 'librechat-data-provider';
 import { atom, useStore, useAtomValue } from 'jotai';
-import type {
-  Agents,
-  TAttachment,
-  FullToolCall,
-  TMessageContentParts,
-  SubagentAttachmentFile,
-  SubagentAttachmentCallsResponse,
-} from 'librechat-data-provider';
-import type { SubagentContentPart } from '~/utils/subagentContent';
 import {
   nestedToolCallOf,
   collectNestedCalls,
@@ -18,7 +9,16 @@ import {
   rememberSubagentChildCalls,
   rememberedSubagentChildCalls,
   subagentProgressByToolCallId,
-} from './state';
+} from '@librechat/chat/react';
+import type {
+  Agents,
+  TAttachment,
+  FullToolCall,
+  TMessageContentParts,
+  SubagentAttachmentFile,
+  SubagentAttachmentCallsResponse,
+} from 'librechat-data-provider';
+import type { SubagentContentPart } from '@librechat/chat';
 import { useSubagentAttachmentCallsQueries } from '~/data-provider';
 
 export { collectNestedCalls };

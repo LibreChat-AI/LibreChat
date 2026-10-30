@@ -35,7 +35,7 @@ const mockState = {
     return getDefaultStore().get(filesFamily(0));
   },
   set files(files: Map<string, LiveFile>) {
-    getDefaultStore().set(filesFamily(0), files as Map<string, ExtendedFile>);
+    act(() => getDefaultStore().set(filesFamily(0), files as Map<string, ExtendedFile>));
   },
   retainedDeletions: [] as { file_id: string; filepath: string; source: string }[],
   markedPasteIds: [] as string[],
@@ -46,6 +46,7 @@ const mockState = {
   foreignLiveAttachmentIds: [] as string[],
   foreignDraftedIds: [] as string[],
   retainedPassInFlight: false,
+  fileConfig: { deletionRetryLimit: 5 } as { deletionRetryLimit: number } | undefined,
   persistedPendingDiscardIds: [] as string[],
   retainedListener: null as (() => void) | null,
   pendingDiscardListener: null as (() => void) | null,
@@ -121,6 +122,19 @@ jest.mock('~/utils', () => ({
     };
   },
   takeRetainedFileDeletions: () => mockState.retainedDeletions,
+  claimFileDeletionRetries: (records: typeof mockState.retainedDeletions) => {
+    const unique = Array.from(new Map(records.map((record) => [record.file_id, record])).values());
+    mockState.retainedDeletions = unique;
+    return unique;
+  },
+  settleFileDeletionRetries: (
+    _records: typeof mockState.retainedDeletions,
+    failed: Set<string>,
+  ) => {
+    mockState.retainedDeletions = mockState.retainedDeletions.filter((record) =>
+      failed.has(record.file_id),
+    );
+  },
   clearRetainedFileDeletion: (fileId: string) => {
     mockState.retainedDeletions = mockState.retainedDeletions.filter(
       (record) => record.file_id !== fileId,
@@ -128,7 +142,8 @@ jest.mock('~/utils', () => ({
   },
   failedFileIdsFrom: (result: { failedFileIds?: string[] } | void) =>
     result != null && Array.isArray(result.failedFileIds) ? result.failedFileIds : [],
-  scheduleRetainedFileDeletionRetry: () => mockScheduleRetainedRetry(),
+  scheduleRetainedFileDeletionRetry: (pendingDiscard?: boolean) =>
+    mockScheduleRetainedRetry(pendingDiscard),
   isPastedTextFileMarked: (fileId: string) => mockState.markedPasteIds.includes(fileId),
   isPasteSubmitted: (fileId: string) => mockState.submittedPasteIds.includes(fileId),
   collectLiveAttachmentIds: ({ excludeOwnPane }: { excludeOwnPane?: number | 'tab' } = {}) =>
@@ -209,6 +224,7 @@ jest.mock('~/utils', () => ({
 jest.mock('~/data-provider', () => ({
   useGetFiles: () => ({ data: mockState.fileList }),
   useDeleteFilesMutation: () => ({ mutateAsync: mockDeleteFiles }),
+  useGetFileConfig: () => ({ data: mockState.fileConfig, isSuccess: mockState.fileConfig != null }),
 }));
 
 jest.mock('~/store', () => ({
@@ -255,6 +271,7 @@ describe('useNewChat', () => {
     mockState.foreignLiveAttachmentIds = [];
     mockState.foreignDraftedIds = [];
     mockState.retainedPassInFlight = false;
+    mockState.fileConfig = { deletionRetryLimit: 5 };
     mockScheduleRetainedRetry.mockClear();
   });
 
@@ -694,6 +711,32 @@ describe('useNewChat', () => {
       ],
     });
     expect(mockState.retainedDeletions).toHaveLength(0);
+  });
+
+  it('waits for the configured budget before claiming restored cleanup work', async () => {
+    mockState.fileConfig = undefined;
+    mockState.fileList = [];
+    mockState.retainedDeletions = [
+      { file_id: 'retained-file', filepath: '/uploads/file.txt', source: 'local' },
+    ];
+    const { rerender } = renderHook(() => useNewChat());
+    await act(async () => undefined);
+    expect(mockDeleteFiles).not.toHaveBeenCalled();
+    expect(mockState.retainedDeletions).toHaveLength(1);
+    mockState.fileConfig = { deletionRetryLimit: 10 };
+    await act(async () => rerender());
+    expect(mockDeleteFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('asks for a deferred wakeup when another mounted pane owns the cleanup pass', () => {
+    mockState.retainedPassInFlight = true;
+    mockState.persistedPendingDiscardIds = ['late-paste'];
+    mockState.fileList = [
+      { file_id: 'late-paste', filepath: '/uploads/late.txt', source: 'local' },
+    ];
+    renderHook(() => useNewChat());
+    expect(mockDeleteFiles).not.toHaveBeenCalled();
+    expect(mockScheduleRetainedRetry).toHaveBeenCalledWith(true);
   });
 
   it('keeps retained deletions when the retried request fails again', async () => {

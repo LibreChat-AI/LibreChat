@@ -6,3 +6,5 @@ export * from './command';
 export * from './routing';
 export * from './params';
 export * from './rerunParent';
+export * from './splitMarkdown';
+export * from './editableParts';

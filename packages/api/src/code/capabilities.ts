@@ -104,12 +104,15 @@ export async function resolveCodeExecutionWorkspaceContext({
   context,
   requestedSelections,
   persistedSelections,
+  requiresLiveCapabilities = true,
   environments,
   getAppConfig,
 }: {
   context: CodeExecutionContext;
   requestedSelections?: unknown;
   persistedSelections?: unknown;
+  /** Only host-side execution batches may skip discovery; initialization requires it. */
+  requiresLiveCapabilities?: boolean;
   environments?: readonly CodeEnvironmentConfig[];
   getAppConfig?: CodeCapabilityConfigLoader;
 }): Promise<CodeExecutionContext> {
@@ -134,6 +137,8 @@ export async function resolveCodeExecutionWorkspaceContext({
     ({ environmentId }) => environmentId === context.environmentId,
   );
   if (selection == null) throw new CodeWorkspaceSelectionError('required');
+
+  if (!requiresLiveCapabilities) return context;
 
   let status: CodeBridgeWorkerStatus;
   try {

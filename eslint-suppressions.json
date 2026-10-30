@@ -104,50 +104,9 @@
       "count": 2
     }
   },
-  "client/src/components/Chat/Input/EscalateNowButton.tsx": {
-    "design/disabled-recipe": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Input/Files/DragDropOverlay.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 3
-    }
-  },
-  "client/src/components/Chat/Input/Files/FileUpload.tsx": {
-    "shadcn/no-restyle": {
-      "count": 11
-    },
-    "shadcn/require-static-classes": {
-      "count": 2
-    }
-  },
-  "client/src/components/Chat/Input/Files/ImagePreview.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 3
-    }
-  },
   "client/src/components/Chat/Input/Files/MyFilesModal.tsx": {
     "shadcn/no-restyle": {
       "count": 2
-    }
-  },
-  "client/src/components/Chat/Input/Files/PastedTextDialog.tsx": {
-    "shadcn/no-restyle": {
-      "count": 2
-    }
-  },
-  "client/src/components/Chat/Input/Files/ProgressCircle.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
-  "client/src/components/Chat/Input/Files/SourceIcon.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
     }
   },
   "client/src/components/Chat/Input/Files/Table/ColumnVisibilityDropdown.tsx": {
@@ -184,11 +143,6 @@
     },
     "shadcn/require-static-classes": {
       "count": 3
-    }
-  },
-  "client/src/components/Chat/Input/QuoteButton.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
     }
   },
   "client/src/components/Chat/Input/TokenUsage/Breakdown.tsx": {
@@ -1411,6 +1365,52 @@
       "count": 9
     },
     "shadcn/require-static-classes": {
+      "count": 1
+    }
+  },
+  "packages/chat/src/components/composer/EscalateNowButton.tsx": {
+    "design/disabled-recipe": {
+      "count": 1
+    }
+  },
+  "packages/chat/src/components/composer/QuoteButton.tsx": {
+    "shadcn/no-inline-styles": {
+      "count": 1
+    }
+  },
+  "packages/chat/src/components/composer/files/DragDropOverlay.tsx": {
+    "shadcn/no-inline-styles": {
+      "count": 3
+    }
+  },
+  "packages/chat/src/components/composer/files/FileUpload.tsx": {
+    "shadcn/no-restyle": {
+      "count": 11
+    },
+    "shadcn/require-static-classes": {
+      "count": 2
+    }
+  },
+  "packages/chat/src/components/composer/files/ImagePreview.tsx": {
+    "shadcn/no-inline-styles": {
+      "count": 3
+    }
+  },
+  "packages/chat/src/components/composer/files/PastedTextDialog.tsx": {
+    "shadcn/no-restyle": {
+      "count": 2
+    }
+  },
+  "packages/chat/src/components/composer/files/ProgressCircle.tsx": {
+    "shadcn/no-arbitrary-values": {
+      "count": 1
+    },
+    "shadcn/no-inline-styles": {
+      "count": 1
+    }
+  },
+  "packages/chat/src/components/composer/files/SourceIcon.tsx": {
+    "shadcn/no-arbitrary-values": {
       "count": 1
     }
   },

@@ -2,6 +2,7 @@ import React, { useState, useMemo, useCallback, memo } from 'react';
 import { Copy, Check } from 'lucide';
 import { useAtomValue } from 'jotai';
 import { useRecoilState } from 'recoil';
+import { hasEditablePart } from '@librechat/chat';
 import { hoverButtonClasses } from '@librechat/chat/components';
 import { revealedQueuedTurnFamily } from '@librechat/chat/react';
 import { getSpeechText, findMessageById, isUserInitiatedCompaction } from 'librechat-data-provider';
@@ -16,7 +17,6 @@ import {
 import type { TConversation, TMessage, TFeedback } from 'librechat-data-provider';
 import { useMessagesIsSubmitting, useOptionalMessagesOperations } from '~/Providers';
 import { useGenerationsByLatest, useLocalize } from '~/hooks';
-import { hasEditablePart } from './Content/editableParts';
 import { Fork } from '~/components/Conversations';
 import MessageAudio from './MessageAudio';
 import Feedback from './Feedback';

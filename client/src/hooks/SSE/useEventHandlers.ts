@@ -5,6 +5,7 @@ import { buildRecoveryPreset } from '@librechat/chat';
 import { useQueryClient } from '@tanstack/react-query';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
+  useStepHandler,
   submissionStartFamily,
   getReasoningStateKey,
   pendingQuotesByConvoId,
@@ -19,7 +20,6 @@ import { getFailedCodeDecisionRequest } from '~/hooks/Agents/codeDecision';
 import { shouldResetSubagentAtomsOnConversationChange } from './cleanup';
 import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
 import useContentHandler from '~/hooks/SSE/useContentHandler';
-import useStepHandler from '~/hooks/SSE/useStepHandler';
 import { useApplyAgentTemplate } from '~/hooks/Agents';
 import { useLiveAnnouncer } from '~/Providers';
 import useTurnHandlers from './opening';

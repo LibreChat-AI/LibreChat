@@ -366,6 +366,9 @@ describe('RedisJobStore', () => {
       preserveForScheduleReconcile: true,
       promptTokens: 0,
       discoveredTools: [],
+      authoredSkills: [
+        { agentId: 'a', name: 'new-skill', id: '507f1f77bcf86cd799439011', primed: true },
+      ],
       contextMeta: {
         calibrationRatio: 1.25,
         encoding: 'claude',
@@ -478,6 +481,9 @@ describe('RedisJobStore', () => {
       preserveForScheduleReconcile: true,
       promptTokens: 0,
       discoveredTools: [],
+      authoredSkills: [
+        { agentId: 'a', name: 'new-skill', id: '507f1f77bcf86cd799439011', primed: true },
+      ],
       contextMeta: {
         calibrationRatio: 1.25,
         encoding: 'claude',
@@ -537,6 +543,9 @@ describe('RedisJobStore', () => {
       preserveForScheduleReconcile: '1',
       promptTokens: '0',
       discoveredTools: '[]',
+      authoredSkills: JSON.stringify([
+        { agentId: 'a', name: 'new-skill', id: '507f1f77bcf86cd799439011', primed: true },
+      ]),
       resolvedAskUserQuestions: JSON.stringify([
         {
           request: { question: 'Deploy where?' },

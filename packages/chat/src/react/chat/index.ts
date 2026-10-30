@@ -18,7 +18,6 @@ export type {
   AbortStreamParams,
   AbortStreamResponse,
   ChatPaneConversation,
-  ChatSessionEffectsParams,
 } from './host';
 export { useChatActions } from './actions';
 export { getChatStatus, isEmptyContentPart } from './status';

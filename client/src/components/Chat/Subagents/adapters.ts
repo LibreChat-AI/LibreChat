@@ -1,4 +1,5 @@
 import { ContentTypes } from 'librechat-data-provider';
+import { REDACTED_REASONING_MARKER } from '@librechat/chat/react';
 import type {
   Agents,
   PartMetadata,
@@ -12,8 +13,7 @@ import type {
   TAttachment,
   FullToolCall,
 } from 'librechat-data-provider';
-import type { SubagentProgress } from './state';
-import { REDACTED_REASONING_MARKER } from './state';
+import type { SubagentProgress } from '@librechat/chat/react';
 
 export type ChildActivityItem =
   | Extract<SubagentActivityItem, { type: 'steer' }>

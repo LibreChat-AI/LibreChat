@@ -3,7 +3,7 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import {
   CacheKeys,
   AUTH_USER_DOC_BY_ID_PREFIX,
-  AUTH_USER_DOC_CACHE_TTL_MS,
+  AUTH_USER_DOC_MAX_AGE_MS,
 } from 'librechat-data-provider';
 import type * as t from '~/types';
 import { createToolApprovalGrantModel } from '~/models/toolApprovalGrant';
@@ -648,6 +648,7 @@ describe('User Methods - Database Tests', () => {
       });
       const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${user._id?.toString()}`;
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['auth-cache-key-a', 'auth-cache-key-b']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -716,7 +717,7 @@ describe('User Methods - Database Tests', () => {
         await methodsWithCache.awaitAuthUserDocEviction(userId);
 
         expect(delay).toHaveBeenCalledTimes(1);
-        expect(delay.mock.calls[0][0]).toBeGreaterThan(AUTH_USER_DOC_CACHE_TTL_MS);
+        expect(delay.mock.calls[0][0]).toBeGreaterThan(AUTH_USER_DOC_MAX_AGE_MS);
         expect(cache.delete).not.toHaveBeenCalledWith(`${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`);
         if (!failing.indexRead) {
           expect(cache.delete).toHaveBeenCalledWith('auth-cache-key-b');
@@ -787,6 +788,7 @@ describe('User Methods - Database Tests', () => {
       });
       const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${user._id?.toString()}`;
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['auth-cache-key-a']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -902,6 +904,7 @@ describe('User Methods - Database Tests', () => {
       const userId = user._id?.toString() ?? '';
       const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['auth-cache-key']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -924,6 +927,7 @@ describe('User Methods - Database Tests', () => {
         samlId: 'original-saml-id',
       });
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn(),
         delete: jest.fn(),
       };
@@ -1212,6 +1216,7 @@ describe('User Methods - Database Tests', () => {
       enableAuthUserDocCache();
       const { id, pendingBackupCodes } = await createEnrollingUser('cached-2fa@example.com');
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['cached-auth-document']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -1233,6 +1238,7 @@ describe('User Methods - Database Tests', () => {
       enableAuthUserDocCache();
       const { id } = await createEnrollingUser('cached-2fa-miss@example.com');
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['cached-auth-document']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -1316,7 +1322,29 @@ describe('User Methods - Database Tests', () => {
       expect(stored?.termsAcceptedAt).toBeNull();
       expect(stored?.termsAcceptedSource).toBeUndefined();
       expect(cache.delete).toHaveBeenCalledWith('cached-accepted');
-      expect(delay).toHaveBeenCalledTimes(1);
+      expect(delay).not.toHaveBeenCalled();
+    });
+
+    it('waits for cached auth documents to expire when an eviction fails', async () => {
+      enableAuthUserDocCache();
+      await User.create({
+        name: 'Unevictable',
+        email: 'unevictable-reset@example.com',
+        provider: 'local',
+        termsAccepted: true,
+        termsAcceptedAt: new Date(),
+      });
+      const cache = {
+        get: jest.fn().mockResolvedValue(['cached-accepted']),
+        set: jest.fn().mockResolvedValue(true),
+        delete: jest.fn().mockRejectedValue(new Error('redis unavailable')),
+      };
+      const delay = jest.fn().mockResolvedValue(undefined);
+      const cached = createUserMethods(mongoose, { getCache: () => cache, delay });
+
+      await cached.resetTermsAcceptance();
+
+      expect(delay).toHaveBeenCalledWith(AUTH_USER_DOC_MAX_AGE_MS + 100);
     });
 
     it('does not wait when the auth user cache is off', async () => {
@@ -1492,6 +1520,7 @@ describe('User Methods - Database Tests', () => {
       });
       const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${user._id?.toString()}`;
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['auth-cache-key-a']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -1735,6 +1764,7 @@ describe('User Methods - Database Tests', () => {
       );
 
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['auth-cache-key-a']),
         delete: jest.fn().mockResolvedValue(true),
       };
@@ -2096,6 +2126,7 @@ describe('User Methods - Database Tests', () => {
       const userId = user._id?.toString() ?? '';
       const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
       const cache = {
+        set: jest.fn().mockResolvedValue(true),
         get: jest.fn().mockResolvedValue(['auth-cache-key-a']),
         delete: jest.fn().mockResolvedValue(true),
       };

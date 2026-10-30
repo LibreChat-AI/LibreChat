@@ -8,15 +8,21 @@ jest.mock('~/Providers', () => ({
   useFileMapContext: () => ({}),
   useShareContext: () => ({}),
 }));
-jest.mock(
-  '~/components/Chat/Input/Files/FileContainer',
-  () =>
-    ({ onClick, buttonClassName }: { onClick: () => void; buttonClassName?: string }) => (
-      <button className={buttonClassName} onClick={onClick}>
-        file action
-      </button>
-    ),
-);
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  FileContainer: ({
+    onClick,
+    buttonClassName,
+  }: {
+    onClick: () => void;
+    buttonClassName?: string;
+  }) => (
+    <button className={buttonClassName} onClick={onClick}>
+      file action
+    </button>
+  ),
+}));
+
 jest.mock(
   '../Image',
   () =>

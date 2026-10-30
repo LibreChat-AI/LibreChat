@@ -38,15 +38,18 @@ jest.mock('../useContentHandler', () => () => ({
   resetContentHandler: jest.fn(),
 }));
 jest.mock('../useAttachmentHandler', () => () => jest.fn());
-jest.mock('../useStepHandler', () => () => ({
-  stepHandler: jest.fn(),
-  clearStepMaps: jest.fn(),
-  resetSubagentAtoms: mockResetSubagentAtoms,
-  resetPtcAtoms: mockResetPtcAtoms,
-  prunePtcTraces: jest.fn(),
-  syncStepMessage: jest.fn(),
-  cancelPendingDeltaFlush: jest.fn(),
-  flushPendingDeltas: jest.fn(),
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useStepHandler: () => ({
+    stepHandler: jest.fn(),
+    clearStepMaps: jest.fn(),
+    resetSubagentAtoms: mockResetSubagentAtoms,
+    resetPtcAtoms: mockResetPtcAtoms,
+    prunePtcTraces: jest.fn(),
+    syncStepMessage: jest.fn(),
+    cancelPendingDeltaFlush: jest.fn(),
+    flushPendingDeltas: jest.fn(),
+  }),
 }));
 jest.mock('~/data-provider', () => ({
   ...jest.requireActual('~/data-provider/CodeEnvironments'),

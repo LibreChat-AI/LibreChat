@@ -11,6 +11,7 @@ import type {
   SteerQueueItem,
 } from '~/stream/interfaces/IJobStore';
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
+import type { AuthoredSkillBinding } from '~/agents/authored';
 import {
   JobStatusTransitionDeadlineError,
   isPendingActionExpired,
@@ -33,6 +34,7 @@ export interface ApprovalLifecycleCallbacks {
 
 export interface ApprovalPauseOptions {
   discoveredTools?: string[];
+  authoredSkills?: AuthoredSkillBinding[];
   activityPhaseSnapshot?: ActivityPhaseSnapshot;
   compactionSemanticIndex?: ICompactionSemanticIndexProjection;
   /** Calibration and fading state at the pause; seeds the resumed run's pruner. */
@@ -153,6 +155,7 @@ export class ApprovalLifecycle {
           ...(discoveredTools != null && discoveredTools.length > 0
             ? { discoveredTools: [...discoveredTools] }
             : {}),
+          ...(options.authoredSkills != null ? { authoredSkills: options.authoredSkills } : {}),
           ...(activityPhaseSnapshot != null ? { activityPhaseSnapshot } : {}),
           ...(compactionSemanticIndex != null ? { compactionSemanticIndex } : {}),
           ...(contextMeta != null ? { contextMeta } : {}),

@@ -23,6 +23,7 @@ jest.mock('@librechat/client', () => ({
 }));
 
 jest.mock('librechat-data-provider', () => ({
+  ...jest.requireActual('librechat-data-provider'),
   Constants: { NEW_CONVO: 'new', SEARCH: 'search' },
   buildTree: ({ messages }: { messages: unknown[] }) => messages,
 }));

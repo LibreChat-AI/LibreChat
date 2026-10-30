@@ -5,6 +5,7 @@ import { RouterProvider } from 'react-router-dom';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { Toast, ToastViewport, ToastProvider, useInputModality } from '@librechat/client';
 import { QueryClient, QueryClientProvider, QueryCache, MutationCache } from '@tanstack/react-query';
+import { FilesHostProvider, appFilesHost } from '~/Providers/FilesHostContext';
 import Direction, { ToastSwipeProvider } from '~/Providers/Direction';
 import { ScreenshotProvider, useApiErrorBoundary } from './hooks';
 import WakeLockManager from '~/components/System/WakeLockManager';
@@ -81,7 +82,9 @@ const App = () => {
                       transition-safe reads are gated behind
                       `_TRANSITION_SUPPORT_UNSTABLE` hooks this app does not use.
                       Worth revisiting once that state has moved to Jotai. */}
-                    <RouterProvider router={router} useTransitions={false} />
+                    <FilesHostProvider host={appFilesHost}>
+                      <RouterProvider router={router} useTransitions={false} />
+                    </FilesHostProvider>
                     <WakeLockManager />
                     <QueryDevtoolsGate />
                     <Toast />

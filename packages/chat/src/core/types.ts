@@ -223,8 +223,8 @@ export type ChatStreamStatus = {
 /** The agent selection a paused generation resumes with, matching its original request. */
 export type ChatResumeSelection = {
   conversationId: string;
-  /** The paused generation being resumed. */
-  generationCreatedAt: number;
+  /** The paused generation being resumed, when its stream named one; the action id fences it either way. */
+  generationCreatedAt?: number;
   endpoint?: string | null;
   endpointType?: string | null;
   agent_id?: string | null;

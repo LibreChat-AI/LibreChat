@@ -1,4 +1,5 @@
 import { ContentTypes } from 'librechat-data-provider';
+import { initSubagentAggregatorState, initSubagentTickerState } from '@librechat/chat';
 import type {
   SubagentThreadView,
   SubagentUpdateEvent,
@@ -14,7 +15,6 @@ import {
   mergeChildConversationTurns,
   retainBoundedMovingWindowTurns,
 } from './adapters';
-import { initSubagentAggregatorState, initSubagentTickerState } from '~/utils/subagentContent';
 import { aggregateSubagentContent } from 'test/subagents';
 
 describe('child activity adapters', () => {

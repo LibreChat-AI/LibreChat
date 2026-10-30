@@ -1,13 +1,12 @@
 import { useEffect } from 'react';
 import { useToastContext } from '@librechat/client';
 import { EToolResources } from 'librechat-data-provider';
+import { FileContainer, AttachmentImage as Image } from '@librechat/chat/components';
 import type { ExtendedFile } from '~/common';
 import { useDeleteFilesMutation } from '~/data-provider';
 import { logger, getCachedPreview } from '~/utils';
 import { useFileDeletion } from '~/hooks/Files';
-import FileContainer from './FileContainer';
 import { useLocalize } from '~/hooks';
-import Image from './Image';
 
 /**
  * Shared wrapper with a stable module-scope identity. Passing an inline arrow as
