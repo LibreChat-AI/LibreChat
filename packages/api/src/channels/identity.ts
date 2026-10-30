@@ -79,9 +79,20 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
     throw new Error('Channel link lifetimes must be positive safe integers');
   }
   async function permitted(record: ChannelIdentityRecord, userId: string): Promise<boolean> {
-    return (
-      (await deps.channelIsCurrent(record.identity)) && (await deps.canUse(record.identity, userId))
-    );
+    const [current, allowed] = await Promise.all([
+      deps.channelIsCurrent(record.identity),
+      deps.canUse(record.identity, userId),
+    ]);
+    return current && allowed;
+  }
+  async function currentView(record: ChannelIdentityRecord): Promise<ChannelLinkView> {
+    const projected = view(record, now());
+    if (
+      (projected.state === 'active' || projected.state === 'accepted') &&
+      (!record.userId || !(await permitted(record, record.userId)))
+    )
+      return { ...projected, state: 'unavailable' };
+    return projected;
   }
   async function lifetime(kind: 'ticketLifetimeMs' | 'linkLifetimeMs'): Promise<number> {
     const value = (await deps.getLifetimes?.())?.[kind] ?? deps[kind];
@@ -106,7 +117,9 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
         existing &&
         ['active', 'accepted'].includes(existing.state) &&
         (existing.state === 'active' ? existing.expiresAtMs : existing.ticketExpiresAtMs) > now() &&
-        sameChannelActor(identity, existing.identity)
+        sameChannelActor(identity, existing.identity) &&
+        existing.userId != null &&
+        (await permitted(existing, existing.userId))
       )
         return failure('already_linked');
       const secret = nonce();
@@ -197,7 +210,7 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
       if (!(await deps.channelIsCurrent(identity))) return failure('changed');
       const record = await deps.storage.readChannelIdentity(identity);
       if (!record || !sameChannelActor(record.identity, identity)) return { ok: true, value: null };
-      return { ok: true, value: view(record, now()) };
+      return { ok: true, value: await currentView(record) };
     },
     /** Re-run at admission AND continuation; callers must bind this exact revision to their run. */
     async resolve(
@@ -224,7 +237,7 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
     },
     async list(principal: ChannelLinkPrincipal): Promise<ChannelLinkView[]> {
       const records = await deps.storage.listChannelLinks(principal.tenantId, principal.userId);
-      return records.map((record) => view(record, now()));
+      return Promise.all(records.map(currentView));
     },
     async revoke(
       principal: ChannelLinkPrincipal,
@@ -235,7 +248,17 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
       if (!record || record.userId !== principal.userId) return failure('forbidden');
       if (record.revision !== expectedRevision) return failure('changed');
       const revoked: ChannelIdentityRecord = { ...record, state: 'revoked', revision: nonce() };
-      if (!(await deps.storage.saveChannelIdentity(revoked, record.revision)))
+      if (
+        !(await deps.storage.revokeChannelIdentity(
+          {
+            tenantId: principal.tenantId,
+            userId: principal.userId,
+            linkId,
+            revision: expectedRevision,
+          },
+          revoked.revision,
+        ))
+      )
         return failure('changed');
       return { ok: true, value: view(revoked, now()) };
     },

@@ -1,7 +1,7 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import request from 'supertest';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { createModels, createMethods, tenantStorage, runAsSystem } from '@librechat/data-schemas';
 import type { ChannelDependencies } from './service';
 import { acceptsChannelServiceToken, createChannelHandlers, publicChannel } from './service';
@@ -14,14 +14,17 @@ jest.mock('@librechat/data-schemas', () => {
 const serviceToken = 'local-test-service-token-32-characters';
 const owner = '507f1f77bcf86cd799439011';
 const tenantId = 'tenant-a';
-let mongo: MongoMemoryServer;
+let mongo: MongoMemoryReplSet;
 let db: ReturnType<typeof createMethods>;
 let app: express.Express;
 let deps: ChannelDependencies;
 let revokedKeys: string[];
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
+  mongo = await MongoMemoryReplSet.create({
+    replSet: { count: 1 },
+    instanceOpts: [{ args: ['--nounixsocket'] }],
+  });
   await mongoose.connect(mongo.getUri());
   createModels(mongoose);
   db = createMethods(mongoose);
@@ -282,9 +285,20 @@ it('returns a safe deleting state while a persisted run is still active', async 
 it('retains the deleting parent when dependent thread cleanup fails', async () => {
   const id = await createChannel();
   await tenantStorage.run({ tenantId }, async () => {
-    await db.putAgentChannelThread(id, 'CTEST:123.456', 'resp_test');
-    expect(await db.deleteAgentChannel(id, 'another-owner')).toBe(false);
-    expect(await db.getAgentChannelThread(id, 'CTEST:123.456')).not.toBeNull();
+    await mongoose.models.AgentChannelThread.create({
+      channelId: id,
+      tenantId,
+      externalThreadKey: 'CTEST:123.456',
+      conversationId: 'resp_test',
+    });
+    expect(await db.deleteAgentChannel(id, 'another-owner')).toEqual({ status: 'not_found' });
+    expect(
+      await mongoose.models.AgentChannelThread.findOne({
+        channelId: id,
+        tenantId,
+        externalThreadKey: 'CTEST:123.456',
+      }),
+    ).not.toBeNull();
   });
   const cleanup = jest.spyOn(mongoose.models.AgentChannelThread, 'deleteMany');
   cleanup.mockRejectedValueOnce(new Error('temporary database failure'));
@@ -296,9 +310,71 @@ it('retains the deleting parent when dependent thread cleanup fails', async () =
     await request(app).delete(`/ui/agent-test/channels/${id}`).expect(204);
     await tenantStorage.run({ tenantId }, async () => {
       expect(await db.getAgentChannel(id)).toBeNull();
-      expect(await db.getAgentChannelThread(id, 'CTEST:123.456')).toBeNull();
+      expect(
+        await mongoose.models.AgentChannelThread.findOne({
+          channelId: id,
+          tenantId,
+          externalThreadKey: 'CTEST:123.456',
+        }),
+      ).toBeNull();
     });
   } finally {
     cleanup.mockRestore();
   }
+});
+
+it.each([undefined, '', '   '])(
+  'rejects webhook activation without a usable signing secret: %s',
+  async (signingSecret) => {
+    deps.config = async () => ({ enabled: true, transport: 'webhook' });
+    const verify = jest.fn(deps.verifySlackToken);
+    deps.verifySlackToken = verify;
+    const id = await createChannel();
+    await request(app)
+      .patch(`/ui/agent-test/channels/${id}`)
+      .send({ slack: { botToken: 'xoxb-local-test', appId: 'ATEST', signingSecret } })
+      .expect(400);
+    expect(verify).not.toHaveBeenCalled();
+    expect((await tenantStorage.run({ tenantId }, () => db.getAgentChannel(id)))?.status).toBe(
+      'pending_install',
+    );
+  },
+);
+
+it('uses one policy snapshot and supplies the verified webhook credentials only to the authenticated bundle', async () => {
+  const config = jest.fn(async () => ({ enabled: true, transport: 'webhook' as const }));
+  deps.config = config;
+  const id = await createChannel();
+  config.mockClear();
+  const active = await request(app)
+    .patch(`/ui/agent-test/channels/${id}`)
+    .send({
+      slack: {
+        botToken: 'xoxb-local-test',
+        appId: 'ATEST',
+        signingSecret: 'private-signing-secret',
+      },
+    })
+    .expect(200);
+  expect(config).toHaveBeenCalledTimes(1);
+  expect(JSON.stringify(active.body)).not.toContain('private-signing-secret');
+  config.mockClear();
+  const result = await request(app)
+    .get(`/service/slack/${tenantId}/${id}`)
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .expect(200);
+  expect(config).toHaveBeenCalledTimes(1);
+  expect(result.body.credentials.signingSecret).toBe('private-signing-secret');
+});
+
+it('fails closed if an existing socket-mode channel is switched to webhook transport without a secret', async () => {
+  const id = await createChannel();
+  await activation(id).expect(200);
+  deps.config = async () => ({ enabled: true, transport: 'webhook' });
+  const result = await request(app)
+    .get(`/service/slack/${tenantId}/${id}`)
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .expect(409);
+  expect(result.body).toEqual({ error: 'channel_signing_secret_required' });
+  expect(JSON.stringify(result.body)).not.toContain('xoxb-');
 });

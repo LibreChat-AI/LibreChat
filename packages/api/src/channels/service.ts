@@ -27,6 +27,10 @@ interface ChannelConfig {
   transport?: 'socket_mode' | 'webhook';
 }
 
+function validSigningSecret(config: ChannelConfig, secret?: string): boolean {
+  return config.transport !== 'webhook' || Boolean(secret?.trim());
+}
+
 export interface ChannelDependencies {
   db: AgentChannelMethods;
   serviceToken: () => string | undefined;
@@ -145,14 +149,17 @@ export function createChannelHandlers(deps: ChannelDependencies): {
   service: ChannelServiceGuard;
 } {
   const protect =
-    (handler: (req: Request, res: Response) => Promise<void>): RequestHandler =>
+    (
+      handler: (req: Request, res: Response, config: ChannelConfig) => Promise<void>,
+    ): RequestHandler =>
     async (req, res) => {
       try {
-        if (!(await deps.config())?.enabled) {
+        const config = await deps.config();
+        if (!config?.enabled) {
           res.status(404).json({ error: 'channels_disabled' });
           return;
         }
-        await handler(req, res);
+        await handler(req, res, config);
       } catch (error) {
         deps.logError(getSafeErrorMetadata(error));
         res.status(503).json({ error: 'channel_operation_failed' });
@@ -198,7 +205,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
     res.status(201).json(publicChannel(channel));
   });
 
-  const update = protect(async (req, res) => {
+  const update = protect(async (req, res, config) => {
     const channel = await ownedChannel(req);
     if (!channel) {
       res.status(404).json({ error: 'channel_not_found' });
@@ -259,7 +266,11 @@ export function createChannelHandlers(deps: ChannelDependencies): {
       return;
     }
     const parsed = activateInput.safeParse(req.body);
-    if (!parsed.success || channel.status === 'active') {
+    if (
+      !parsed.success ||
+      channel.status === 'active' ||
+      !validSigningSecret(config, parsed.data.slack.signingSecret)
+    ) {
       res.status(400).json({ error: 'invalid_channel_activation' });
       return;
     }
@@ -304,32 +315,30 @@ export function createChannelHandlers(deps: ChannelDependencies): {
       res.status(404).json({ error: 'channel_not_found' });
       return;
     }
-    const deleting = await deps.db.updateAgentChannel(channel.channelId, channel.createdBy, {
-      status: 'deleting',
-      revision: nanoid(),
-    });
+    const deleting = await deps.db.beginAgentChannelDeletion(channel.channelId, channel.createdBy);
+    if (!deleting) return void res.status(204).end();
     if (deleting?.apiKeyId) {
       await deps.deleteApiKey(deleting.apiKeyId, channel.createdBy);
     }
-    if (!(await deps.db.deleteAgentChannel(channel.channelId, channel.createdBy))) {
-      res.status(202).json(publicChannel(deleting ?? { ...channel, status: 'deleting' }));
+    const result = await deps.db.deleteAgentChannel(channel.channelId, channel.createdBy);
+    if (result.status === 'pending_drain') {
+      res.status(202).json(publicChannel(deleting));
       return;
     }
     res.status(204).end();
   });
 
-  const manifest = protect(async (req, res) => {
+  const manifest = protect(async (req, res, config) => {
     const channel = await ownedChannel(req);
     if (!channel) {
       res.status(404).json({ error: 'channel_not_found' });
       return;
     }
     const agent = await deps.getAgent(channel.agentId);
-    const config = await deps.config();
     res.json(
       buildSlackChannelManifest({
         name: agent?.name ?? 'Agent',
-        tenantId: channel.tenantId ?? '_',
+        tenantId: channel.tenantId || '_',
         channelId: channel.channelId,
         transport: config?.transport,
         gatewayUrl: config?.gatewayUrl,
@@ -337,10 +346,15 @@ export function createChannelHandlers(deps: ChannelDependencies): {
     );
   });
 
-  const service = (
-    handler: (req: Request, res: Response, channel: AgentChannelRecord) => Promise<void>,
-  ) =>
-    protect(async (req, res) => {
+  const serviceWithConfig = (
+    handler: (
+      req: Request,
+      res: Response,
+      channel: AgentChannelRecord,
+      config: ChannelConfig,
+    ) => Promise<void>,
+  ): RequestHandler =>
+    protect(async (req, res, config) => {
       if (!acceptsChannelServiceToken(req.get('authorization'), deps.serviceToken())) {
         res.status(401).json({ error: 'invalid_service_auth' });
         return;
@@ -354,17 +368,20 @@ export function createChannelHandlers(deps: ChannelDependencies): {
       if (
         !channel ||
         channel.status !== 'active' ||
-        requestedTenant !== (channel.tenantId ?? '_')
+        requestedTenant !== (channel.tenantId || '_')
       ) {
         res.status(404).json({ error: 'channel_not_found' });
         return;
       }
-      await tenantStorage.run({ tenantId: channel.tenantId }, async () => {
-        await handler(req, res, channel);
+      await tenantStorage.run({ tenantId: channel.tenantId || undefined }, async () => {
+        await handler(req, res, channel, config);
       });
     });
 
-  const bundle = service(async (_req, res, channel) => {
+  const service: ChannelServiceGuard = (handler) =>
+    serviceWithConfig((req, res, channel) => handler(req, res, channel));
+
+  const bundle = serviceWithConfig(async (_req, res, channel, config) => {
     const agent = await deps.getAgent(channel.agentId);
     if (!agent || !channel.encryptedBotToken) {
       res.status(404).json({ error: 'channel_not_found' });
@@ -377,6 +394,10 @@ export function createChannelHandlers(deps: ChannelDependencies): {
         : Promise.resolve(''),
     ]);
     res.set('Cache-Control', 'no-store');
+    if (!validSigningSecret(config, signingSecret)) {
+      res.status(409).json({ error: 'channel_signing_secret_required' });
+      return;
+    }
     res.json({
       channel: publicChannel(channel),
       credentials: { botToken, signingSecret },
