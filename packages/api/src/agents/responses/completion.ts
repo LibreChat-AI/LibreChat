@@ -1,3 +1,4 @@
+import { responseTenantId } from './scope';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   ResponseStorage,
@@ -75,7 +76,7 @@ export function createResponseExecutionRelease(
     if (
       job.createdAt !== record.generationCreatedAt ||
       job.metadata.userId !== record.userId ||
-      job.metadata.tenantId !== record.tenantId ||
+      responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
       job.metadata.agent_id !== record.agentId ||
       job.metadata.endpoint !== 'responses' ||
       job.metadata.responseMessageId !== record.responseId ||
@@ -138,7 +139,7 @@ function sameExecution(
       : current.review?.providerExecutionId;
   return (
     current.userId === previous.userId &&
-    current.tenantId === previous.tenantId &&
+    responseTenantId(current.tenantId) === responseTenantId(previous.tenantId) &&
     current.responseId === previous.responseId &&
     current.agentId === previous.agentId &&
     current.sourceKeyId === previous.sourceKeyId &&

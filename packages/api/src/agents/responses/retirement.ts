@@ -1,3 +1,4 @@
+import { responseTenantId } from './scope';
 import type { ResponseOwner, ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { ResponseCheckpointIdentity } from './checkpoint';
@@ -49,7 +50,7 @@ export function createResponseRetirement(
       const retained =
         job &&
         job.metadata.userId === owner.userId &&
-        (job.metadata.tenantId || undefined) === (owner.tenantId || undefined) &&
+        responseTenantId(job.metadata.tenantId) === responseTenantId(owner.tenantId) &&
         job.metadata.endpoint === 'responses' &&
         job.metadata.responseMessageId === responseId &&
         job.metadata.agent_id &&
@@ -75,7 +76,7 @@ export function createResponseRetirement(
       if (
         job.createdAt !== identity.generationCreatedAt ||
         job.metadata.userId !== identity.userId ||
-        job.metadata.tenantId !== identity.tenantId ||
+        responseTenantId(job.metadata.tenantId) !== responseTenantId(identity.tenantId) ||
         job.metadata.agent_id !== identity.agentId ||
         job.metadata.endpoint !== 'responses' ||
         job.metadata.conversationId !== identity.conversationId ||
@@ -151,7 +152,7 @@ export function createResponseRetirement(
       record.generationCreatedAt == null ||
       job.createdAt !== record.generationCreatedAt ||
       job.metadata.userId !== record.userId ||
-      job.metadata.tenantId !== record.tenantId ||
+      responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
       job.metadata.agent_id !== record.agentId ||
       job.metadata.endpoint !== 'responses' ||
       job.metadata.conversationId !== record.conversationId ||
@@ -172,7 +173,7 @@ export function createResponseRetirement(
         proof.providerDrained !== true ||
         stopped.createdAt !== epoch ||
         proof.userId !== owner.userId ||
-        proof.tenantId !== owner.tenantId ||
+        responseTenantId(proof.tenantId) !== responseTenantId(owner.tenantId) ||
         proof.agent_id !== agentId ||
         proof.endpoint !== 'responses' ||
         proof.responseMessageId !== responseId ||

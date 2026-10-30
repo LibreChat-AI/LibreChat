@@ -1,3 +1,4 @@
+import { responseTenantId, isResponseTenantId } from './scope';
 import {
   AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2,
   AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1,
@@ -20,7 +21,7 @@ export const BACKGROUND_RESPONSE_RESUME_SOURCE = 'responses.resume';
 /** A saved decision selects this identity once; HTTP/queue retries reuse it verbatim. */
 export function createResponseResumeEnvelope(record: StoredResponseRecord): AgentTriggerEnvelope {
   const intent = record.resume;
-  if (!intent || record.generationCreatedAt == null)
+  if (!intent || record.generationCreatedAt == null || !isResponseTenantId(record.tenantId))
     throw new Error('Response resume intent is unavailable');
   const identity = `${record.responseId}:resume:${intent.intentId}`;
   return createAgentTriggerEnvelope({
@@ -28,7 +29,7 @@ export function createResponseResumeEnvelope(record: StoredResponseRecord): Agen
     requestId: identity,
     deliveryId: identity,
     receivedAt: intent.reservedAt,
-    principal: { id: record.userId, tenantId: record.tenantId },
+    principal: { id: record.userId, tenantId: responseTenantId(record.tenantId) },
     target: { agentId: record.agentId },
     run: { conversationId: record.conversationId },
     event: {
@@ -103,7 +104,7 @@ export function createResponseResumeQueue(
     async enqueue(record) {
       const envelope = createResponseResumeEnvelope(record);
       const receipt = await deps.enqueue(envelope, {
-        orderingKey: `responses:${record.tenantId ?? '_'}:${record.userId}:${record.conversationId}`,
+        orderingKey: `responses:${responseTenantId(record.tenantId) ?? '_'}:${record.userId}:${record.conversationId}`,
         requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1,
       });
       if (receipt.deliveryKey !== getAgentTriggerIdempotencyKey(envelope))
@@ -116,12 +117,14 @@ export function createResponseResumeQueue(
 export function createBackgroundResponseEnvelope(
   record: StoredResponseRecord,
 ): AgentTriggerEnvelope {
+  if (!isResponseTenantId(record.tenantId))
+    throw new Error('Response tenant authority unavailable');
   return createAgentTriggerEnvelope({
     mode: 'fire',
     requestId: record.responseId,
     deliveryId: record.responseId,
     receivedAt: record.createdAt.getTime(),
-    principal: { id: record.userId, tenantId: record.tenantId },
+    principal: { id: record.userId, tenantId: responseTenantId(record.tenantId) },
     target: { agentId: record.agentId },
     run: { conversationId: record.conversationId },
     event: {
@@ -226,7 +229,7 @@ export function createBackgroundResponseQueue(
       if (record.deliveryKey !== backgroundResponseDeliveryKey(record))
         throw new Error('Response queue identity changed');
       const receipt = await deps.enqueue(createBackgroundResponseEnvelope(record), {
-        orderingKey: `responses:${record.tenantId ?? '_'}:${record.userId}:${record.conversationId}`,
+        orderingKey: `responses:${responseTenantId(record.tenantId) ?? '_'}:${record.userId}:${record.conversationId}`,
         requiredWorkerCapability:
           deps.workerCapability ?? AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2,
       });
