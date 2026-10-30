@@ -17,6 +17,7 @@ import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { Agent, TMessage } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 import { getSafeErrorMetadata, mergeQuotedText, formatQuotesAsMarkdown } from '~/utils';
+import { BASE64_BYTES_PER_PDF_PAGE, PDF_TOKENS_PER_PAGE_CLAUDE } from './attachments';
 import { ATTACHMENT_ONLY_TEXT } from '~/files/context';
 import Tokenizer from '~/utils/tokenizer';
 
@@ -69,8 +70,6 @@ export function payloadParser({
  */
 export const CLAUDE_TOKEN_CORRECTION = 1.1;
 const IMAGE_TOKEN_SAFETY_MARGIN = 1.05;
-const BASE64_BYTES_PER_PDF_PAGE = 75_000;
-const PDF_TOKENS_PER_PAGE_CLAUDE = 2000;
 const PDF_TOKENS_PER_PAGE_OPENAI = 1500;
 const URL_DOCUMENT_FALLBACK_TOKENS = 2000;
 

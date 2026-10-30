@@ -653,7 +653,7 @@ export const endpointFileConfigSchema = z.object({
   defaultLLMDeliveryPath: defaultLLMDeliveryPathSchema.optional(),
   legacyFileUploadUX: z.boolean().optional(),
   textFallbackWithoutTools: z.boolean().optional(),
-  preferFileSearch: z.boolean().optional(),
+  llmDeliveryPolicy: z.enum(['classic', 'automatic']).optional(),
 });
 
 const skillFileConfigSchema = z.object({
@@ -711,7 +711,7 @@ export const fileConfigSchema = z.object({
   defaultLLMDeliveryPath: defaultLLMDeliveryPathSchema.optional(),
   legacyFileUploadUX: z.boolean().optional(),
   textFallbackWithoutTools: z.boolean().optional(),
-  preferFileSearch: z.boolean().optional(),
+  llmDeliveryPolicy: z.enum(['classic', 'automatic']).optional(),
 });
 
 export type TFileConfig = z.infer<typeof fileConfigSchema>;
@@ -1068,7 +1068,7 @@ function mergeWithDefault(
     legacyFileUploadUX: endpointConfig.legacyFileUploadUX ?? defaultConfig.legacyFileUploadUX,
     textFallbackWithoutTools:
       endpointConfig.textFallbackWithoutTools ?? defaultConfig.textFallbackWithoutTools,
-    preferFileSearch: endpointConfig.preferFileSearch ?? defaultConfig.preferFileSearch,
+    llmDeliveryPolicy: endpointConfig.llmDeliveryPolicy ?? defaultConfig.llmDeliveryPolicy,
   };
 }
 
@@ -1161,7 +1161,7 @@ export function getEndpointFileConfig(params: {
     legacyFileUploadUX: mergedFileConfig.legacyFileUploadUX ?? baseDefaultConfig.legacyFileUploadUX,
     textFallbackWithoutTools:
       mergedFileConfig.textFallbackWithoutTools ?? baseDefaultConfig.textFallbackWithoutTools,
-    preferFileSearch: mergedFileConfig.preferFileSearch ?? baseDefaultConfig.preferFileSearch,
+    llmDeliveryPolicy: mergedFileConfig.llmDeliveryPolicy ?? baseDefaultConfig.llmDeliveryPolicy,
   };
   const userDefaultConfig = mergedFileConfig.endpoints.default;
   const defaultConfig = userDefaultConfig
@@ -1317,8 +1317,8 @@ function buildMergedFileConfig(dynamic: DynamicFileConfig | undefined): FileConf
     mergedConfig.textFallbackWithoutTools = dynamic.textFallbackWithoutTools;
   }
 
-  if (dynamic.preferFileSearch !== undefined) {
-    mergedConfig.preferFileSearch = dynamic.preferFileSearch;
+  if (dynamic.llmDeliveryPolicy !== undefined) {
+    mergedConfig.llmDeliveryPolicy = dynamic.llmDeliveryPolicy;
   }
 
   if (dynamic.serverFileSizeLimit !== undefined) {
@@ -1466,8 +1466,8 @@ function buildMergedFileConfig(dynamic: DynamicFileConfig | undefined): FileConf
       mergedEndpoint.textFallbackWithoutTools = dynamicEndpoint.textFallbackWithoutTools;
     }
 
-    if (dynamicEndpoint.preferFileSearch !== undefined) {
-      mergedEndpoint.preferFileSearch = dynamicEndpoint.preferFileSearch;
+    if (dynamicEndpoint.llmDeliveryPolicy !== undefined) {
+      mergedEndpoint.llmDeliveryPolicy = dynamicEndpoint.llmDeliveryPolicy;
     }
   }
 

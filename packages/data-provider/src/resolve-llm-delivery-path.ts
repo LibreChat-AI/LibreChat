@@ -418,10 +418,14 @@ export interface TurnDeliveryRouting {
   endpointProvider?: string;
   useResponsesApi?: boolean;
   sttConfigured: boolean;
+  /** Attachments automatic reading moved out of this turn's prompt for size. Initialization
+   *  settles it with the rest, before any reader routes a file, so every reader agrees. */
+  overBudgetFileIds?: ReadonlySet<string>;
 }
 
 /** The fields of an attachment record that decide its delivery on a turn. */
 export interface TurnDeliveryFile {
+  file_id?: string;
   type?: string;
   text?: string | null;
   /** Stored as an upload-time inference, so any string may be read back. */
@@ -448,12 +452,42 @@ export interface TurnDeliveryFile {
 const isLLMDeliveryPath = (value: unknown): value is TDefaultLLMDeliveryPath =>
   value === 'provider' || value === 'text' || value === 'none';
 
+/** Tabular data Run Code reads whole (#17370): Excel, ODS, CSV/TSV and Parquet. */
 const isSpreadsheetMimeType = (mimeType: string): boolean =>
-  excelMimeTypes.test(mimeType) || mimeType === 'application/vnd.oasis.opendocument.spreadsheet';
+  excelMimeTypes.test(mimeType) ||
+  /^(text\/(csv|tab-separated-values)|application\/(csv|vnd\.oasis\.opendocument\.spreadsheet|x-parquet|vnd\.apache\.parquet))$/.test(
+    mimeType,
+  );
+
+export const isMediaMimeType = (mimeType: string): boolean =>
+  /^(image|audio|video)\//.test(mimeType);
+
+/** An admin's per-type `defaultLLMDeliveryPath` override still wins under automatic reading (#17370). */
+const hasLLMDeliveryOverride = (
+  mimeType: string,
+  routing: Partial<TurnDeliveryRouting>,
+): boolean => {
+  const wildcard = mimeType.split('/')[0] + '/*';
+  return [
+    routing.endpointConfig?.defaultLLMDeliveryPath,
+    routing.fileConfig?.defaultLLMDeliveryPath,
+  ].some(
+    (config) => config?.overrides?.[mimeType] != null || config?.overrides?.[wildcard] != null,
+  );
+};
 
 /** Whether a record's stored route was inferred at upload, so each turn resolves it again. */
 export function hasInferredLLMDeliveryPath(file: TurnDeliveryFile): boolean {
   return file.llmDeliveryPath != null && file.metadata?.destinationChosen !== true;
+}
+
+/** Whether the endpoint opted into automatic reading; the legacy chooser keeps classic routing. */
+export function isAutomaticLLMDelivery(
+  endpointConfig?: Pick<EndpointFileConfig, 'llmDeliveryPolicy' | 'legacyFileUploadUX'> | null,
+): boolean {
+  return (
+    endpointConfig?.llmDeliveryPolicy === 'automatic' && endpointConfig.legacyFileUploadUX !== true
+  );
 }
 
 /**
@@ -472,10 +506,10 @@ export function hasInferredLLMDeliveryPath(file: TurnDeliveryFile): boolean {
  * that never received the file. Run Code is judged by the tool set: see
  * {@link hasTurnFileConsumer}.
  *
- * Where the endpoint enables `preferFileSearch` and this turn runs File Search, an inferred
- * route for a message attachment of a document type File Search can index, and that is not
- * plain text, is `none`. Initialization lists the file for the tool, and the tool embeds it on
- * the first search.
+ * Under `llmDeliveryPolicy: automatic`, an inferred spreadsheet route is `none` on a turn that
+ * runs Run Code. So is any route initialization listed in `overBudgetFileIds`, when a file tool
+ * this turn runs can read the type. Media, agent files and types with a
+ * `defaultLLMDeliveryPath` override keep their route.
  */
 export function resolveTurnLLMDeliveryPath(
   routing: Partial<TurnDeliveryRouting> | undefined,
@@ -489,19 +523,19 @@ export function resolveTurnLLMDeliveryPath(
   /* Conversion changes the stored type, so use the type routing originally saw. */
   const mimeType = file.metadata?.routingMimeType ?? file.type ?? '';
   const path = resolveUploadLLMDeliveryPath({ mimeType, ...routing });
-  /* The preference outranks the text fallback below: an un-embedded upload is exactly the
-   * file it targets, and initialization lists it for the tool before the first search.
-   * Plain text and code stay inline, where the model reads them whole; an agent's own
-   * files keep their context route, and spreadsheets stay with Run Code when this turn has
-   * it, since code reads them whole where search only samples rows. */
+  /* Automatic reading (#17370): a spreadsheet goes to Run Code, which reads it whole, and an
+   * attachment initialization moved out of this turn's prompt for size goes to whichever file
+   * tool can read it. Media, an agent's own files and a type the admin routed keep their route. */
   if (
-    endpointConfig?.preferFileSearch === true &&
-    endpointConfig.legacyFileUploadUX !== true &&
-    consumers?.fileSearch === true &&
-    !(consumers.executeCode && isSpreadsheetMimeType(mimeType)) &&
+    isAutomaticLLMDelivery(endpointConfig) &&
+    consumers != null &&
     file.context !== FileContext.agents &&
-    !isNativelyReadableText(mimeType) &&
-    canToolResourceConsume(EToolResources.file_search, mimeType)
+    !isMediaMimeType(mimeType) &&
+    !hasLLMDeliveryOverride(mimeType, routing) &&
+    ((consumers.executeCode && isSpreadsheetMimeType(mimeType)) ||
+      (file.file_id != null &&
+        routing.overBudgetFileIds?.has(file.file_id) === true &&
+        hasTurnFileConsumer(mimeType, consumers)))
   ) {
     return 'none';
   }

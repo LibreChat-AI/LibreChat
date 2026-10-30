@@ -6399,12 +6399,18 @@ describe('initializeAgent tool-routed text fallback', () => {
     fileSearchAvailable = true,
     fileContextCharLimit,
     useResponsesApi,
-    preferFileSearch,
+    llmDeliveryPolicy,
+    maxContextTokens,
+    model,
+    maxTokens,
+    csvOverride = true,
+    endpointFileSizeLimit,
     queuedForSearch = false,
     extraQueued,
     agentScoped = false,
     loadedToolDefinitions,
     requestFiles,
+    historyFiles,
   }: {
     tools: string[];
     csv: IMongoFile;
@@ -6416,12 +6422,19 @@ describe('initializeAgent tool-routed text fallback', () => {
     fileSearchAvailable?: boolean;
     fileContextCharLimit?: number;
     useResponsesApi?: boolean;
-    preferFileSearch?: boolean;
+    llmDeliveryPolicy?: 'classic' | 'automatic';
+    maxContextTokens?: number;
+    model?: string;
+    maxTokens?: number;
+    csvOverride?: boolean;
+    endpointFileSizeLimit?: number;
     queuedForSearch?: boolean;
     extraQueued?: IMongoFile[];
     agentScoped?: boolean;
     loadedToolDefinitions?: Array<{ name: string }>;
     requestFiles?: IMongoFile[];
+    /** Earlier-turn attachments that resendFiles brings back through deferred provisioning. */
+    historyFiles?: IMongoFile[];
   }) {
     const attached = requestFiles ?? [csv];
     const { filterFilesByEndpointRuntimeConfig } = jest.requireMock('~/files') as {
@@ -6430,6 +6443,10 @@ describe('initializeAgent tool-routed text fallback', () => {
     const { agent, req, res, loadTools, db } = createMocks({
       provider,
       overrideProvider,
+      maxContextTokens,
+      /* A named model resolves its window through the real token map. */
+      ...(model != null && { model, useRealTokenLookup: true }),
+      ...(maxTokens != null && { maxOutputTokens: maxTokens }),
       loadedToolDefinitions:
         loadedToolDefinitions ??
         (tools.includes(EToolResources.file_search) ? [{ name: EToolResources.file_search }] : []),
@@ -6460,23 +6477,38 @@ describe('initializeAgent tool-routed text fallback', () => {
       };
     });
     agent.tools = tools;
+    if (historyFiles != null) {
+      mockExtractLibreChatParams.mockReturnValueOnce({
+        resendFiles: true,
+        maxContextTokens,
+        modelOptions: { model: agent.model },
+      });
+      (db.getConvoFiles as jest.Mock).mockResolvedValue(historyFiles.map((f) => f.file_id));
+      (db as { getDeferredProvisionFiles?: jest.Mock }).getDeferredProvisionFiles = jest
+        .fn()
+        .mockResolvedValue(historyFiles);
+    }
     if (softFailure) loadTools.mockResolvedValue(undefined);
     req.config = {
       fileConfig: {
         fileContextCharLimit,
         endpoints: {
           [provider]: {
-            defaultLLMDeliveryPath: { overrides: { 'text/csv': 'none' } },
+            ...(csvOverride && { defaultLLMDeliveryPath: { overrides: { 'text/csv': 'none' } } }),
             textFallbackWithoutTools,
-            ...(preferFileSearch != null && { preferFileSearch }),
+            ...(llmDeliveryPolicy != null && { llmDeliveryPolicy }),
+            ...(endpointFileSizeLimit != null && { fileSizeLimit: endpointFileSizeLimit }),
             ...(supportedMimeTypes != null && { supportedMimeTypes }),
           },
         },
       },
     } as unknown as ServerRequest['config'];
-    (db.getFiles as jest.Mock).mockResolvedValueOnce(attached);
+    (db.getFiles as jest.Mock).mockResolvedValueOnce([...attached, ...(historyFiles ?? [])]);
     filterFilesByEndpointRuntimeConfig.mockImplementationOnce(
-      (_config: ServerRequest['config'], { files }: { files: IMongoFile[] }) => files,
+      endpointFileSizeLimit != null
+        ? jest.requireActual<typeof import('~/files/filter')>('~/files/filter')
+            .filterFilesByEndpointRuntimeConfig
+        : (_config: ServerRequest['config'], { files }: { files: IMongoFile[] }) => files ?? [],
     );
 
     const result = await initializeAgent(
@@ -6486,6 +6518,7 @@ describe('initializeAgent tool-routed text fallback', () => {
         agent,
         loadTools,
         requestFiles: attached,
+        ...(historyFiles != null && { conversationId: 'convo-1' }),
         codeEnvAvailable: true,
         fileSearchAvailable,
         endpointOption: { endpoint: EModelEndpoint.agents },
@@ -6671,7 +6704,7 @@ describe('initializeAgent tool-routed text fallback', () => {
     expect(result.fileConsumers).toEqual({ executeCode: true, fileSearch: false });
   });
 
-  describe('preferFileSearch', () => {
+  describe('llmDeliveryPolicy automatic', () => {
     beforeEach(() => {
       /* Earlier tests can leave unconsumed one-shot mocks that would shadow this suite's. */
       (primeResources as jest.Mock)
@@ -6690,37 +6723,211 @@ describe('initializeAgent tool-routed text fallback', () => {
       llmDeliveryPath: 'provider',
       metadata: { destinationChosen: false },
     } as IMongoFile;
+    const sheet = {
+      ...pdf,
+      file_id: 'sheet-file',
+      filename: 'data.csv',
+      type: 'text/csv',
+      text: 'a,b',
+      llmDeliveryPath: 'text',
+    } as IMongoFile;
     const base = {
       tools: [EToolResources.file_search],
       provider: EModelEndpoint.anthropic as string,
       csv: pdf,
     };
+    const bothTools = [EToolResources.file_search, EToolResources.execute_code];
     const ids = (files?: Array<{ file_id: string }>) => files?.map((f) => f.file_id);
+    const pdfs = (count = 15) =>
+      Array.from(
+        { length: count },
+        (_, i) =>
+          ({ ...pdf, file_id: `p${i}`, filename: `p${i}.pdf`, bytes: 2_400_000 }) as IMongoFile,
+      );
+    const firstTen = Array.from({ length: 10 }, (_, i) => `p${i}`);
 
-    it('routes a request PDF to File Search and lists it for the tool', async () => {
+    it('moves the largest PDFs to File Search when the turn overflows', async () => {
+      const files = pdfs();
       const { result, loadTools } = await initializeWith({
         ...base,
-        preferFileSearch: true,
+        tools: bothTools,
+        csv: files[0],
+        requestFiles: files,
+        model: 'claude-sonnet-5-5',
+        llmDeliveryPolicy: 'automatic',
         queuedForSearch: true,
       });
-      expect(result.requestAttachments?.[0].llmDeliveryPath).toBe('none');
-      expect(ids(loadTools.mock.calls[0][0].tool_resources.file_search.files)).toEqual([
-        'pdf-file',
-      ]);
-      expect(ids(result.tool_resources?.file_search?.files)).toEqual(['pdf-file']);
+      const routes = Object.fromEntries(
+        (result.requestAttachments ?? []).map((f) => [f.file_id, f.llmDeliveryPath]),
+      );
+      expect(
+        Object.keys(routes)
+          .filter((id) => routes[id] === 'none')
+          .sort(),
+      ).toEqual([...firstTen].sort());
+      expect(files.slice(10).map((f) => routes[f.file_id])).toEqual(Array(5).fill('provider'));
+      expect(ids(loadTools.mock.calls[0][0].tool_resources.file_search.files)).toEqual(firstTen);
+      expect(ids(result.tool_resources?.file_search?.files)).toEqual(firstTen);
     });
 
-    it('keeps a request PDF inline without the preference', async () => {
+    it('sends a large CSV to Run Code without the text-limit error', async () => {
+      const csv = {
+        ...sheet,
+        file_id: 'csv',
+        text: 'x'.repeat(9_452_368),
+      } as IMongoFile;
       const { result } = await initializeWith({
         ...base,
-        preferFileSearch: false,
+        tools: [EToolResources.execute_code],
+        csv,
+        csvOverride: false,
+        fileContextCharLimit: 1_000_000,
+        llmDeliveryPolicy: 'automatic',
+      });
+      expect(result.requestAttachments?.[0].llmDeliveryPath).toBe('none');
+    });
+
+    it('rejects that CSV under classic', async () => {
+      const csv = { ...sheet, file_id: 'csv', text: 'x'.repeat(9_452_368) } as IMongoFile;
+      await expect(
+        initializeWith({
+          ...base,
+          tools: [EToolResources.execute_code],
+          csv,
+          csvOverride: false,
+          fileContextCharLimit: 1_000_000,
+        }),
+      ).rejects.toThrow(/extracted document text limit \(9452368 > 1000000\)/);
+    });
+
+    it('keeps a Word letter inline', async () => {
+      const letter = {
+        ...pdf,
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        text: 'x'.repeat(20_000),
+        llmDeliveryPath: 'text',
+      } as IMongoFile;
+      const { result } = await initializeWith({
+        ...base,
+        csv: letter,
+        maxContextTokens: 1_000_000,
+        llmDeliveryPolicy: 'automatic',
+      });
+      expect(result.requestAttachments?.[0].llmDeliveryPath).toBe('text');
+    });
+
+    it('keeps a photo unchanged', async () => {
+      const photo = { ...pdf, type: 'image/png', bytes: 5_000_000 } as IMongoFile;
+      const { result } = await initializeWith({
+        ...base,
+        tools: bothTools,
+        csv: photo,
+        maxContextTokens: 1_000_000,
+        llmDeliveryPolicy: 'automatic',
+      });
+      expect(result.requestAttachments?.[0].llmDeliveryPath).toBe('provider');
+    });
+
+    it('refuses an overflowing turn with no file tool', async () => {
+      await expect(
+        initializeWith({
+          ...base,
+          tools: [],
+          requestFiles: pdfs(),
+          maxContextTokens: 1_000_000,
+          llmDeliveryPolicy: 'automatic',
+        }),
+      ).rejects.toThrow(/attachment context \(estimated tokens\) limit \(1290000 > 995904\)/);
+    });
+
+    it('refuses when File Search fails to load', async () => {
+      await expect(
+        initializeWith({
+          ...base,
+          requestFiles: pdfs(),
+          loadedToolDefinitions: [],
+          maxContextTokens: 1_000_000,
+          llmDeliveryPolicy: 'automatic',
+        }),
+      ).rejects.toThrow(/attachment context \(estimated tokens\) limit \(1290000 > 995904\)/);
+    });
+
+    it('changes nothing when off', async () => {
+      const { result } = await initializeWith({
+        ...base,
+        requestFiles: pdfs(3),
+        maxContextTokens: 100_000,
         queuedForSearch: true,
       });
-      expect(result.requestAttachments?.[0].llmDeliveryPath).not.toBe('none');
+      expect(result.requestAttachments?.map((f) => f.llmDeliveryPath)).toEqual(
+        Array(3).fill('provider'),
+      );
       expect(result.tool_resources?.file_search?.files).toBeUndefined();
     });
 
-    it('does not list a chosen search file without the preference', async () => {
+    it('skips the budget when the window is unknown', async () => {
+      const letter = {
+        ...pdf,
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        text: 'x'.repeat(200_000),
+        llmDeliveryPath: 'text',
+      } as IMongoFile;
+      const { result } = await initializeWith({
+        ...base,
+        csv: letter,
+        model: 'sonnet',
+        maxTokens: 64_000,
+        llmDeliveryPolicy: 'automatic',
+      });
+      expect(result.requestAttachments?.[0].llmDeliveryPath).toBe('text');
+    });
+
+    it('does not count a file the endpoint drops', async () => {
+      const files = [...pdfs(14), { ...pdf, file_id: 'huge', bytes: 40_000_000 } as IMongoFile];
+      const { result } = await initializeWith({
+        ...base,
+        csv: files[0],
+        requestFiles: files,
+        endpointFileSizeLimit: 3,
+        maxContextTokens: 1_000_000,
+        llmDeliveryPolicy: 'automatic',
+      });
+      const routes = (result.requestAttachments ?? []).map((f) => f.llmDeliveryPath);
+      expect(result.requestAttachments?.some((f) => f.file_id === 'huge')).toBe(false);
+      expect(routes.filter((route) => route === 'none')).toHaveLength(9);
+      expect(routes.filter((route) => route === 'provider')).toHaveLength(5);
+    });
+
+    it('plans over history files that resendFiles brings back', async () => {
+      const { result } = await initializeWith({
+        ...base,
+        tools: bothTools,
+        requestFiles: [],
+        historyFiles: pdfs(),
+        maxContextTokens: 1_000_000,
+        llmDeliveryPolicy: 'automatic',
+      });
+      expect([...(result.deliveryRouting?.overBudgetFileIds ?? [])].sort()).toEqual(
+        [...firstTen].sort(),
+      );
+    });
+
+    it('does not count a file the endpoint drops when planning the refusal', async () => {
+      const files = [...pdfs(10), { ...pdf, file_id: 'huge', bytes: 40_000_000 } as IMongoFile];
+      const { result } = await initializeWith({
+        ...base,
+        tools: [],
+        csv: files[0],
+        requestFiles: files,
+        endpointFileSizeLimit: 3,
+        maxContextTokens: 1_000_000,
+        llmDeliveryPolicy: 'automatic',
+      });
+      expect(result.requestAttachments?.some((f) => f.file_id === 'huge')).toBe(false);
+      expect(result.requestAttachments).toHaveLength(10);
+    });
+
+    it('does not list a chosen search file without the policy', async () => {
       const chosen = {
         ...pdf,
         llmDeliveryPath: 'none',
@@ -6730,7 +6937,7 @@ describe('initializeAgent tool-routed text fallback', () => {
       expect(result.tool_resources?.file_search?.files).toBeUndefined();
     });
 
-    it('does not list a chosen search file with the preference', async () => {
+    it('does not list a chosen search file with the policy', async () => {
       const chosen = {
         ...pdf,
         llmDeliveryPath: 'none',
@@ -6739,13 +6946,13 @@ describe('initializeAgent tool-routed text fallback', () => {
       const { result } = await initializeWith({
         ...base,
         csv: chosen,
-        preferFileSearch: true,
+        llmDeliveryPolicy: 'automatic',
         queuedForSearch: true,
       });
       expect(result.tool_resources?.file_search?.files).toBeUndefined();
     });
 
-    it('does not list an inferred search-routed file without the preference', async () => {
+    it('does not list an inferred search-routed file without the policy', async () => {
       const inferred = {
         ...pdf,
         type: 'text/csv',
@@ -6755,36 +6962,58 @@ describe('initializeAgent tool-routed text fallback', () => {
       expect(result.tool_resources?.file_search?.files).toBeUndefined();
     });
 
-    it('lists a queued history file', async () => {
+    it('lists a queued history spreadsheet', async () => {
       const { result } = await initializeWith({
         ...base,
-        preferFileSearch: true,
+        tools: bothTools,
+        llmDeliveryPolicy: 'automatic',
+        csvOverride: false,
         queuedForSearch: true,
         requestFiles: [],
-        extraQueued: [{ ...pdf, file_id: 'old-pdf' } as IMongoFile],
+        extraQueued: [{ ...sheet, file_id: 'old-sheet' } as IMongoFile],
       });
-      expect(ids(result.tool_resources?.file_search?.files)).toEqual(['old-pdf']);
+      expect(ids(result.tool_resources?.file_search?.files)).toEqual(['old-sheet']);
     });
 
     it("does not list the agent's own queued files", async () => {
       const { result } = await initializeWith({
         ...base,
-        preferFileSearch: true,
+        tools: bothTools,
+        csv: sheet,
+        csvOverride: false,
+        llmDeliveryPolicy: 'automatic',
         queuedForSearch: true,
         agentScoped: true,
       });
       expect(result.tool_resources?.file_search?.files).toBeUndefined();
     });
 
-    it('returns to inline delivery when File Search does not load', async () => {
+    it('moves a document over the share to File Search when it loads', async () => {
+      const letter = { ...sheet, text: 'x'.repeat(20_000) } as IMongoFile;
       const { result } = await initializeWith({
         ...base,
-        preferFileSearch: true,
+        csv: letter,
+        csvOverride: false,
+        maxContextTokens: 10_000,
+        llmDeliveryPolicy: 'automatic',
+        queuedForSearch: true,
+      });
+      expect(result.requestAttachments?.[0].llmDeliveryPath).toBe('none');
+    });
+
+    it('returns to inline delivery when File Search does not load', async () => {
+      const letter = { ...sheet, text: 'x'.repeat(20_000) } as IMongoFile;
+      const { result } = await initializeWith({
+        ...base,
+        csv: letter,
+        csvOverride: false,
+        maxContextTokens: 10_000,
+        llmDeliveryPolicy: 'automatic',
         queuedForSearch: true,
         loadedToolDefinitions: [],
       });
       expect(result.fileConsumers?.fileSearch).toBe(false);
-      expect(result.requestAttachments?.[0].llmDeliveryPath).not.toBe('none');
+      expect(result.requestAttachments?.[0].llmDeliveryPath).toBe('text');
     });
   });
 });

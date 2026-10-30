@@ -1110,185 +1110,186 @@ describe('resolveTurnLLMDeliveryPath', () => {
   });
 });
 
-describe('resolveTurnLLMDeliveryPath with preferFileSearch', () => {
+describe('resolveTurnLLMDeliveryPath with llmDeliveryPolicy automatic', () => {
   const endpoint = 'anthropic';
+  const auto: EndpointFileConfig = { llmDeliveryPolicy: 'automatic' };
+  const csv = {
+    file_id: 'c',
+    type: 'text/csv',
+    text: 'a,b',
+    llmDeliveryPath: 'text',
+    metadata: { destinationChosen: false },
+  };
   const pdf = {
+    file_id: 'p',
     type: 'application/pdf',
     text: 'x',
     llmDeliveryPath: 'provider',
     metadata: { destinationChosen: false },
   };
-  const docx = {
-    type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    text: 'x',
-    llmDeliveryPath: 'text',
-    metadata: { destinationChosen: false },
-  };
+  const code: TurnFileConsumers = { executeCode: true, fileSearch: false };
   const search: TurnFileConsumers = { executeCode: false, fileSearch: true };
-  const prefer: EndpointFileConfig = { preferFileSearch: true };
 
-  it('routes an inferred PDF to File Search when the turn runs it', () => {
+  it.each([
+    'text/csv',
+    'application/csv',
+    'text/tab-separated-values',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.oasis.opendocument.spreadsheet',
+    'application/x-parquet',
+    'application/vnd.apache.parquet',
+  ])('sends %s to Run Code', (type) => {
     expect(
       resolveTurnLLMDeliveryPath({
-        file: pdf,
-        consumers: search,
+        file: { ...csv, type },
+        consumers: code,
         endpoint,
-        endpointConfig: prefer,
+        endpointConfig: auto,
       }),
     ).toBe('none');
   });
 
-  it('routes an inferred text-route document to File Search', () => {
+  it('keeps a spreadsheet inline without Run Code', () => {
     expect(
-      resolveTurnLLMDeliveryPath({
-        file: docx,
-        consumers: search,
-        endpoint,
-        endpointConfig: prefer,
-      }),
-    ).toBe('none');
+      resolveTurnLLMDeliveryPath({ file: csv, consumers: search, endpoint, endpointConfig: auto }),
+    ).toBe('text');
   });
 
-  it('leaves spreadsheets to Run Code when the turn has it', () => {
-    const xlsx = {
-      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-      text: 'x',
-      llmDeliveryPath: 'text',
-      metadata: { destinationChosen: false },
-    };
+  it('keeps JSON inline with Run Code', () => {
     expect(
       resolveTurnLLMDeliveryPath({
-        file: xlsx,
-        consumers: { executeCode: true, fileSearch: true },
+        file: { ...csv, type: 'application/json' },
+        consumers: code,
         endpoint,
-        endpointConfig: prefer,
+        endpointConfig: auto,
       }),
     ).toBe('text');
+  });
+
+  it('moves an over-budget PDF to a file tool', () => {
     expect(
       resolveTurnLLMDeliveryPath({
-        file: xlsx,
+        file: pdf,
         consumers: search,
         endpoint,
-        endpointConfig: prefer,
+        endpointConfig: auto,
+        overBudgetFileIds: new Set(['p']),
       }),
     ).toBe('none');
   });
 
-  it('keeps plain text and code inline', () => {
-    for (const type of ['text/x-python', 'application/json']) {
-      expect(
-        resolveTurnLLMDeliveryPath({
-          file: {
-            type,
-            text: 'x',
-            llmDeliveryPath: 'text',
-            metadata: { destinationChosen: false },
-          },
-          consumers: search,
-          endpoint,
-          endpointConfig: prefer,
-        }),
-      ).toBe('text');
-    }
-  });
-
-  it('keeps the model route when the turn runs no File Search', () => {
+  it('keeps an over-budget PDF no tool can read', () => {
     expect(
       resolveTurnLLMDeliveryPath({
         file: pdf,
-        consumers: { executeCode: true, fileSearch: false },
+        consumers: { executeCode: false, fileSearch: false },
         endpoint,
-        endpointConfig: prefer,
+        endpointConfig: auto,
+        overBudgetFileIds: new Set(['p']),
       }),
     ).toBe('provider');
   });
 
-  it('keeps the model route when consumers are unknown', () => {
-    expect(resolveTurnLLMDeliveryPath({ file: pdf, endpoint, endpointConfig: prefer })).toBe(
-      'provider',
-    );
+  it('keeps a PDF that fits', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: pdf,
+        consumers: { executeCode: true, fileSearch: true },
+        endpoint,
+        endpointConfig: auto,
+      }),
+    ).toBe('provider');
+  });
+
+  it('never moves media', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: {
+          file_id: 'i',
+          type: 'image/png',
+          llmDeliveryPath: 'provider',
+          metadata: { destinationChosen: false },
+        },
+        consumers: { executeCode: true, fileSearch: true },
+        endpoint,
+        endpointConfig: auto,
+        overBudgetFileIds: new Set(['i']),
+      }),
+    ).toBe('provider');
   });
 
   it('is off unless configured', () => {
-    for (const endpointConfig of [{}, { preferFileSearch: false }]) {
+    for (const endpointConfig of [{}, { llmDeliveryPolicy: 'classic' as const }]) {
       expect(
-        resolveTurnLLMDeliveryPath({ file: pdf, consumers: search, endpoint, endpointConfig }),
-      ).toBe('provider');
+        resolveTurnLLMDeliveryPath({ file: csv, consumers: code, endpoint, endpointConfig }),
+      ).toBe('text');
     }
-  });
-
-  it('leaves images to the provider', () => {
-    expect(
-      resolveTurnLLMDeliveryPath({
-        file: { ...pdf, type: 'image/png' },
-        consumers: search,
-        endpoint,
-        endpointConfig: prefer,
-      }),
-    ).toBe('provider');
-  });
-
-  it('keeps a destination the user chose', () => {
-    expect(
-      resolveTurnLLMDeliveryPath({
-        file: { ...pdf, metadata: { destinationChosen: true } },
-        consumers: search,
-        endpoint,
-        endpointConfig: prefer,
-      }),
-    ).toBe('provider');
   });
 
   it('is ignored under the legacy chooser', () => {
     expect(
       resolveTurnLLMDeliveryPath({
-        file: pdf,
-        consumers: search,
+        file: csv,
+        consumers: code,
         endpoint,
-        endpointConfig: { preferFileSearch: true, legacyFileUploadUX: true },
+        endpointConfig: { ...auto, legacyFileUploadUX: true },
       }),
     ).toBe('provider');
   });
 
-  it('leaves records predating routing alone', () => {
+  it('keeps a chosen destination', () => {
     expect(
       resolveTurnLLMDeliveryPath({
-        file: { type: 'application/pdf', text: 'x', metadata: { destinationChosen: false } },
-        consumers: search,
+        file: { ...csv, metadata: { destinationChosen: true } },
+        consumers: code,
         endpoint,
-        endpointConfig: prefer,
-      }),
-    ).toBeUndefined();
-  });
-
-  it("keeps an agent's own file on its route", () => {
-    expect(
-      resolveTurnLLMDeliveryPath({
-        file: { ...docx, context: 'agents' },
-        consumers: search,
-        endpoint,
-        endpointConfig: prefer,
+        endpointConfig: auto,
       }),
     ).toBe('text');
   });
 
-  it('outranks the text fallback for an un-embedded file', () => {
-    const file = { ...pdf, llmDeliveryPath: 'none' };
-    const endpointConfig: EndpointFileConfig = {
-      defaultLLMDeliveryPath: { overrides: { 'application/pdf': 'none' } },
-      textFallbackWithoutTools: true,
-    };
-    expect(resolveTurnLLMDeliveryPath({ file, consumers: search, endpoint, endpointConfig })).toBe(
-      'text',
-    );
+  it("keeps an agent's own file", () => {
     expect(
       resolveTurnLLMDeliveryPath({
-        file,
-        consumers: search,
+        file: { ...csv, context: 'agents' },
+        consumers: code,
         endpoint,
-        endpointConfig: { ...endpointConfig, preferFileSearch: true },
+        endpointConfig: auto,
       }),
-    ).toBe('none');
+    ).toBe('text');
+  });
+
+  it('does not judge unknown consumers', () => {
+    expect(resolveTurnLLMDeliveryPath({ file: csv, endpoint, endpointConfig: auto })).toBe('text');
+  });
+
+  it("keeps an admin's defaultLLMDeliveryPath override", () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: csv,
+        consumers: code,
+        endpoint,
+        endpointConfig: {
+          ...auto,
+          defaultLLMDeliveryPath: { overrides: { 'text/csv': 'text' } },
+        },
+      }),
+    ).toBe('text');
+  });
+
+  it('honours a global wildcard override', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: csv,
+        consumers: code,
+        endpoint,
+        endpointConfig: auto,
+        fileConfig: mergeFileConfig({
+          defaultLLMDeliveryPath: { overrides: { 'text/*': 'text' } },
+        }),
+      }),
+    ).toBe('text');
   });
 });
 

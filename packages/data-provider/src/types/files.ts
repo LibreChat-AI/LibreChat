@@ -55,11 +55,12 @@ export type EndpointFileConfig = {
   /** Delivers the text extracted at upload for a file routed to tools (`none`) on a turn that
    *  runs no tool able to read it. Off by default, which leaves such a file out of the prompt. */
   textFallbackWithoutTools?: boolean;
-  /** In unified upload mode, sends a message attachment with no chosen destination to File
-   *  Search instead of the prompt on a turn whose agent runs File Search, for document types
-   *  File Search can index and the model cannot read as plain text. Off by default. Ignored
-   *  under `legacyFileUploadUX`. */
-  preferFileSearch?: boolean;
+  /** How an attachment that names no destination is read (#17370). `classic` (default) keeps
+   *  the stored route. `automatic`: spreadsheets go to Run Code when the turn runs it, and the
+   *  largest attachments leave the prompt for a file tool when together they exceed this turn's
+   *  share of the context window; a turn that cannot fit the window is refused before sending.
+   *  A `defaultLLMDeliveryPath` override for the type, and `legacyFileUploadUX`, still win. */
+  llmDeliveryPolicy?: 'classic' | 'automatic';
 };
 
 export type FileConfig = {
@@ -108,11 +109,12 @@ export type FileConfig = {
   /** Delivers the text extracted at upload for a file routed to tools (`none`) on a turn that
    *  runs no tool able to read it. Off by default, which leaves such a file out of the prompt. */
   textFallbackWithoutTools?: boolean;
-  /** In unified upload mode, sends a message attachment with no chosen destination to File
-   *  Search instead of the prompt on a turn whose agent runs File Search, for document types
-   *  File Search can index and the model cannot read as plain text. Off by default. Ignored
-   *  under `legacyFileUploadUX`. */
-  preferFileSearch?: boolean;
+  /** How an attachment that names no destination is read (#17370). `classic` (default) keeps
+   *  the stored route. `automatic`: spreadsheets go to Run Code when the turn runs it, and the
+   *  largest attachments leave the prompt for a file tool when together they exceed this turn's
+   *  share of the context window; a turn that cannot fit the window is refused before sending.
+   *  A `defaultLLMDeliveryPath` override for the type, and `legacyFileUploadUX`, still win. */
+  llmDeliveryPolicy?: 'classic' | 'automatic';
 };
 
 export type FileConfigInput = {
@@ -156,11 +158,12 @@ export type FileConfigInput = {
   /** Delivers the text extracted at upload for a file routed to tools (`none`) on a turn that
    *  runs no tool able to read it. Off by default, which leaves such a file out of the prompt. */
   textFallbackWithoutTools?: boolean;
-  /** In unified upload mode, sends a message attachment with no chosen destination to File
-   *  Search instead of the prompt on a turn whose agent runs File Search, for document types
-   *  File Search can index and the model cannot read as plain text. Off by default. Ignored
-   *  under `legacyFileUploadUX`. */
-  preferFileSearch?: boolean;
+  /** How an attachment that names no destination is read (#17370). `classic` (default) keeps
+   *  the stored route. `automatic`: spreadsheets go to Run Code when the turn runs it, and the
+   *  largest attachments leave the prompt for a file tool when together they exceed this turn's
+   *  share of the context window; a turn that cannot fit the window is refused before sending.
+   *  A `defaultLLMDeliveryPath` override for the type, and `legacyFileUploadUX`, still win. */
+  llmDeliveryPolicy?: 'classic' | 'automatic';
 };
 
 /** The immutable origin of a file explicitly published from an agent execution. */

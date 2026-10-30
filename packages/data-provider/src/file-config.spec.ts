@@ -2116,12 +2116,12 @@ describe('textFallbackWithoutTools config merging', () => {
   });
 });
 
-describe('preferFileSearch config merging', () => {
+describe('llmDeliveryPolicy config merging', () => {
   const resolveFor = (dynamic: Parameters<typeof mergeFileConfig>[0], endpoint: string) =>
-    getEndpointFileConfig({ fileConfig: mergeFileConfig(dynamic), endpoint }).preferFileSearch;
+    getEndpointFileConfig({ fileConfig: mergeFileConfig(dynamic), endpoint }).llmDeliveryPolicy;
 
   it('is off unless configured', () => {
-    expect(mergeFileConfig(undefined).preferFileSearch).toBeUndefined();
+    expect(mergeFileConfig(undefined).llmDeliveryPolicy).toBeUndefined();
     expect(resolveFor(undefined, EModelEndpoint.openAI)).toBeUndefined();
     expect(resolveFor({ endpoints: { default: {} } }, EModelEndpoint.openAI)).toBeUndefined();
   });
@@ -2129,27 +2129,30 @@ describe('preferFileSearch config merging', () => {
   it('accepts the setting at the top level and on an endpoint', () => {
     expect(
       fileConfigSchema.safeParse({
-        preferFileSearch: true,
-        endpoints: { openAI: { preferFileSearch: false } },
+        llmDeliveryPolicy: 'automatic',
+        endpoints: { openAI: { llmDeliveryPolicy: 'classic' } },
       }).success,
     ).toBe(true);
-    expect(fileConfigSchema.safeParse({ preferFileSearch: 'yes' }).success).toBe(false);
+    expect(fileConfigSchema.safeParse({ llmDeliveryPolicy: 'yes' }).success).toBe(false);
+    expect(fileConfigSchema.safeParse({ llmDeliveryPolicy: true }).success).toBe(false);
   });
 
   it('reaches an endpoint configured for it', () => {
     expect(
       resolveFor(
-        { endpoints: { [EModelEndpoint.openAI]: { preferFileSearch: true } } },
+        { endpoints: { [EModelEndpoint.openAI]: { llmDeliveryPolicy: 'automatic' } } },
         EModelEndpoint.openAI,
       ),
-    ).toBe(true);
+    ).toBe('automatic');
   });
 
   it('is inherited from the top level and from the default endpoint', () => {
-    expect(resolveFor({ preferFileSearch: true }, EModelEndpoint.anthropic)).toBe(true);
-    expect(resolveFor({ endpoints: { default: { preferFileSearch: true } } }, 'MyGateway')).toBe(
-      true,
+    expect(resolveFor({ llmDeliveryPolicy: 'automatic' }, EModelEndpoint.anthropic)).toBe(
+      'automatic',
     );
+    expect(
+      resolveFor({ endpoints: { default: { llmDeliveryPolicy: 'automatic' } } }, 'MyGateway'),
+    ).toBe('automatic');
   });
 
   it('lets an endpoint turn off what it would inherit', () => {
@@ -2157,19 +2160,19 @@ describe('preferFileSearch config merging', () => {
       resolveFor(
         {
           endpoints: {
-            default: { preferFileSearch: true },
-            [EModelEndpoint.openAI]: { preferFileSearch: false },
+            default: { llmDeliveryPolicy: 'automatic' },
+            [EModelEndpoint.openAI]: { llmDeliveryPolicy: 'classic' },
           },
         },
         EModelEndpoint.openAI,
       ),
-    ).toBe(false);
+    ).toBe('classic');
   });
 
   it('reaches a custom endpoint by its own name', () => {
-    expect(resolveFor({ endpoints: { Anthropic: { preferFileSearch: true } } }, 'Anthropic')).toBe(
-      true,
-    );
+    expect(
+      resolveFor({ endpoints: { Anthropic: { llmDeliveryPolicy: 'automatic' } } }, 'Anthropic'),
+    ).toBe('automatic');
   });
 });
 

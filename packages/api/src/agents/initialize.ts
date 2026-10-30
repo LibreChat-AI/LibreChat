@@ -7,6 +7,7 @@ import {
   EModelEndpoint,
   EToolResources,
   canToolResourceConsume,
+  isAutomaticLLMDelivery,
   resolveTurnLLMDeliveryPath,
   hasInferredLLMDeliveryPath,
   paramEndpoints,
@@ -83,6 +84,12 @@ import {
   MAX_PRIMED_SKILLS_PER_TURN,
 } from './skills';
 import {
+  assertAgentAttachmentLimits,
+  isModelBoundAttachmentFile,
+  planInlineAttachmentBudget,
+  INLINE_ATTACHMENT_CONTEXT_SHARE,
+} from './attachments';
+import {
   resolveChatProjectFiles,
   resolveChatProjectPolicyFiles,
   toCanonicalProjectResource,
@@ -128,7 +135,6 @@ import {
 import { assertChatProjectInstructions, ChatProjectResourcesChangedError } from '../projects/turn';
 import { extractAgentContent, extractSkillContent } from '../protection/adapters/submissions';
 import { createConfiguredContentInspector, inspectContent } from '../protection/runtime';
-import { assertAgentAttachmentLimits, isModelBoundAttachmentFile } from './attachments';
 import { assertModelBoundContent } from '../middleware/modelBoundContent';
 import { resolveAttachedWorkspaceReadFileLines } from '~/code/workspace';
 import { isValidInstructionsPromptLink } from './instructions/linked';
@@ -1660,13 +1666,14 @@ export async function initializeAgent(
     llmConfig?.maxTokens as number | undefined,
     0,
   );
+  const modelContextTokens = getModelMaxTokens(
+    tokensModel ?? '',
+    providerEndpointMap[overrideProvider as keyof typeof providerEndpointMap],
+    options.endpointTokenConfig,
+  );
   const agentMaxContextTokens = optionalChainWithEmptyCheck(
     maxContextTokens,
-    getModelMaxTokens(
-      tokensModel ?? '',
-      providerEndpointMap[overrideProvider as keyof typeof providerEndpointMap],
-      options.endpointTokenConfig,
-    ),
+    modelContextTokens,
     DEFAULT_MAX_CONTEXT_TOKENS,
   );
 
@@ -1969,6 +1976,26 @@ export async function initializeAgent(
   } else if (requestFiles.length > 0 || toolFileIds.length > 0) {
     currentFiles = requestUsageFiles.concat(toolUsageFiles);
   }
+  const automaticDelivery = isAutomaticLLMDelivery(deliveryRouting.endpointConfig);
+  /* An unresolved window falls back to a default that says nothing about this model; judging
+   * attachments against it would move or refuse files the real window holds. */
+  const contextWindowKnown = Number(maxContextTokens) > 0 || modelContextTokens != null;
+  if (automaticDelivery && !contextWindowKnown) {
+    logger.warn(
+      `[initializeAgent] Automatic reading skipped the attachment budget: no context window for "${tokensModel}". Set maxContextTokens or endpointTokenConfig.`,
+    );
+  }
+  const contextRoom = Math.max(
+    0,
+    (Number(agentMaxContextTokens) || 0) - (Number(maxOutputTokens) || 0),
+  );
+  const budgetParams = {
+    routing: deliveryRouting,
+    consumers: fileConsumers,
+    budgetTokens: Math.floor(contextRoom * INLINE_ATTACHMENT_CONTEXT_SHARE),
+    limitTokens: contextRoom,
+  };
+  let budgetCandidates: NonNullable<typeof currentFiles> = [];
   if (currentFiles?.length) {
     /* Before any check reads the route: endpoint filtering, model-bound limits and content
      * inspection below all have to judge each file by the route this turn delivers it by. */
@@ -1992,6 +2019,21 @@ export async function initializeAgent(
       skipTotalSizeLimit: true,
       preserveTextSources: true,
     });
+    /* Automatic reading settles which attachments leave the prompt for size here, once, after
+     * the endpoint dropped what it never receives and before any limit reads a route. */
+    if (automaticDelivery && contextWindowKnown) {
+      budgetCandidates = [...currentFiles, ...(resendFiles ? deferredProvisionFiles : [])];
+      deliveryRouting.overBudgetFileIds = planInlineAttachmentBudget(
+        budgetCandidates,
+        budgetParams,
+      );
+      if (deliveryRouting.overBudgetFileIds.size > 0) {
+        currentFiles = applyTurnDelivery(currentFiles, {
+          routing: deliveryRouting,
+          consumers: fileConsumers,
+        });
+      }
+    }
     const requestUsageFileIds = new Set(
       (authorizedRunFiles ?? requestUsageFiles).map((file) => file.file_id),
     );
@@ -2212,9 +2254,9 @@ export async function initializeAgent(
   );
   runtimeToolResources = projectResources.resources;
   const provisionState = projectResources.provisionState;
-  /* Only the preference moves files the model would otherwise see; without it the File
-   * Search note stays as it was, including under the legacy chooser. */
-  if (deliveryRouting.endpointConfig.preferFileSearch === true) {
+  /* Automatic reading moves files the model would otherwise see; classic keeps the note as
+   * it was, including under the legacy chooser. */
+  if (automaticDelivery) {
     runtimeToolResources = addQueuedFilesToFileSearch(
       runtimeToolResources,
       provisionState,
@@ -2826,6 +2868,9 @@ export async function initializeAgent(
     fileConsumers.executeCode !== finalFileConsumers.executeCode ||
     fileConsumers.fileSearch !== finalFileConsumers.fileSearch;
   Object.assign(fileConsumers, finalFileConsumers);
+  if (consumersChanged && automaticDelivery && contextWindowKnown) {
+    deliveryRouting.overBudgetFileIds = planInlineAttachmentBudget(budgetCandidates, budgetParams);
+  }
   const finalizeAttachments = (files: Array<TFile | undefined> | undefined): IMongoFile[] => {
     const hydrated = toMongoFiles(files);
     return consumersChanged
