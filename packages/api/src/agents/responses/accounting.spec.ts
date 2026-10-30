@@ -364,7 +364,10 @@ describe('accounting lineage and invocation receipts', () => {
       { clientOptions: { model: 'configured' } },
     );
     captured.model = 'configured';
-    expect(buildCollectedResponseAccounting([captured], []).calls[0]).toMatchObject({
+    const repeated = captureResponseAccountingUsage(captured, {
+      __invoked_model: 'flattened-model',
+    });
+    expect(buildCollectedResponseAccounting([repeated], []).calls[0]).toMatchObject({
       model: 'configured',
       modelSource: 'configured',
     });

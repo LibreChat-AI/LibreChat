@@ -48,6 +48,22 @@ describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 foll
     });
   });
 
+  it('captures configured provenance before billing fills the model and keeps it on repeated contextualization', () => {
+    const usage = { input_tokens: 10, output_tokens: 5 };
+    const context = { provider: 'bedrock', clientOptions: { model: 'configured-model' } };
+    const first = contextualizeModelUsage(usage, undefined, context);
+    expect(first.model).toBe('configured-model');
+    expect(first.accountingIdentity).toEqual({
+      model: 'configured-model',
+      provider: 'bedrock',
+      modelSource: 'configured',
+    });
+    expect(contextualizeModelUsage(first, undefined, context).accountingIdentity).toEqual(
+      first.accountingIdentity,
+    );
+    expect(usage).not.toHaveProperty('accountingIdentity');
+  });
+
   it('prefers the actually invoked fallback provider and model', () => {
     const usage = { input_tokens: 10, output_tokens: 5 };
     const result = contextualizeModelUsage(
