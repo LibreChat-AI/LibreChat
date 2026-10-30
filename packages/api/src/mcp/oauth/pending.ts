@@ -1,3 +1,6 @@
+import { getSafeErrorMetadata } from '~/utils/errors';
+import { invokeOAuthStart } from './publication';
+import { getMCPOAuthLeaseId } from './tokens';
 import { logger, getTenantId } from '@librechat/data-schemas';
 
 import type { MCPOAuthFlowMetadata, MCPOAuthTokens } from './types';
@@ -15,7 +18,8 @@ type PendingOAuthFlowState = Pick<
   'createdAt' | 'metadata' | 'status'
 >;
 
-type PendingOAuthFlowManager = Pick<FlowStateManager<MCPOAuthTokens | null>, 'getFlowState'>;
+type PendingOAuthFlowManager = Pick<FlowStateManager<MCPOAuthTokens | null>, 'getFlowState'> &
+  Partial<Pick<FlowStateManager<MCPOAuthTokens | null>, 'acquireLease'>>;
 
 export type PendingOAuthStart = {
   authURL: string;
@@ -105,7 +109,6 @@ export class OAuthLifecycleRelay {
   private readonly oauthEnds = new Set<OAuthEndHandler>();
   private readonly emittedAuthUrls = new WeakMap<t.OAuthStartHandler, string>();
   private readonly emittedOAuthEnds = new WeakSet<OAuthEndHandler>();
-  private lastOAuthStart?: PendingOAuthStart;
   private oauthEnded = false;
 
   constructor({
@@ -129,23 +132,17 @@ export class OAuthLifecycleRelay {
   private readonly logPrefix: string;
 
   public readonly start: t.OAuthStartHandler = async (authURL, options) => {
-    this.lastOAuthStart = { authURL, options };
-    const errors: unknown[] = [];
-    let delivered = false;
-
-    for (const oauthStart of Array.from(this.oauthStarts)) {
-      try {
-        await this.emit(oauthStart, authURL, options);
-        delivered = true;
-      } catch (error) {
-        errors.push(error);
-        logger.warn(`${this.logPrefix} Failed to notify OAuth prompt listener`, error);
-      }
-    }
-
-    if (!delivered && errors.length > 0) {
-      throw errors[0];
-    }
+    const publications = Array.from(this.oauthStarts, (handler) => this.emit(handler, authURL, options));
+    const published = await Promise.allSettled(publications.map((entry) => entry.published));
+    const failed = published.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+    for (const result of failed)
+      logger.warn(`${this.logPrefix} Failed to publish OAuth prompt`, getSafeErrorMetadata(result.reason));
+    if (publications.length > 0 && failed.length === publications.length) throw failed[0].reason;
+    // The outer flow lease covers every listener's publication, never its authorization callback.
+    options?.onPublished?.();
+    const completed = await Promise.allSettled(publications.map((entry) => entry.completed));
+    const errors = completed.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+    if (completed.length > 0 && errors.length === completed.length) throw errors[0].reason;
   };
 
   /** Completion notifications are best effort and cannot invalidate received OAuth tokens. */
@@ -155,7 +152,7 @@ export class OAuthLifecycleRelay {
       try {
         await this.emitEnd(oauthEnd);
       } catch (error) {
-        logger.warn(`${this.logPrefix} Failed to notify OAuth completion listener`, error);
+        logger.warn(`${this.logPrefix} Failed to notify OAuth completion listener`, getSafeErrorMetadata(error));
       }
     }
   };
@@ -181,7 +178,7 @@ export class OAuthLifecycleRelay {
         try {
           await this.emitEnd(oauthEnd);
         } catch (error) {
-          logger.warn(`${this.logPrefix} Failed to re-issue OAuth completion`, error);
+          logger.warn(`${this.logPrefix} Failed to re-issue OAuth completion`, getSafeErrorMetadata(error));
         }
       }
       return;
@@ -190,49 +187,52 @@ export class OAuthLifecycleRelay {
     if (!oauthStart) {
       return;
     }
-    const lastOAuthStart = this.lastOAuthStart;
-    const storedOAuthStart =
-      !lastOAuthStart || lastOAuthStart.options?.expiresAt == null
-        ? await getReplayablePendingMCPOAuthStart({ flowManager, userId, serverName })
-        : undefined;
-    const currentOAuthStart = this.lastOAuthStart;
-    const replayOAuthStart =
-      storedOAuthStart &&
-      (!currentOAuthStart || storedOAuthStart.authURL === currentOAuthStart.authURL)
-        ? storedOAuthStart
-        : currentOAuthStart;
-    if (!replayOAuthStart) {
-      return;
-    }
-    if (this.oauthEnded) {
-      return;
-    }
-
-    this.lastOAuthStart = replayOAuthStart;
+    // A cached URL/deadline is not publication authority after teardown. Late listeners re-read
+    // the canonical flow while holding the same lease used by publication and removal.
+    if (!flowManager?.acquireLease) return;
+    const lease = await flowManager.acquireLease(getMCPOAuthLeaseId(userId, serverName));
+    if (!lease) return;
+    let publication: ReturnType<OAuthLifecycleRelay['emit']> | undefined;
     try {
-      await this.emit(oauthStart, replayOAuthStart.authURL, replayOAuthStart.options);
+      const flowId = MCPOAuthHandler.generateFlowId(userId, serverName, getTenantId());
+      const flow = await flowManager.getFlowState(flowId, MCP_OAUTH_FLOW_TYPE);
+      const replay = getReplayablePendingMCPOAuthStartFromFlow(flow);
+      if (!replay || this.oauthEnded) return;
+      publication = this.emit(oauthStart, replay.authURL, replay.options);
+      await publication.published;
     } catch (error) {
-      logger.warn(`${this.logPrefix} Failed to re-issue pending OAuth URL`, error);
+      logger.warn(`${this.logPrefix} Failed to re-issue pending OAuth URL`, getSafeErrorMetadata(error));
+    } finally {
+      await lease.release();
+    }
+    if (publication) {
+      try {
+        await publication.completed;
+      } catch (error) {
+        logger.warn(`${this.logPrefix} OAuth listener completion failed`, getSafeErrorMetadata(error));
+      }
     }
   }
 
-  private async emit(
+  private emit(
     oauthStart: t.OAuthStartHandler,
     authURL: string,
     options?: t.OAuthStartOptions,
-  ): Promise<void> {
-    if (this.emittedAuthUrls.get(oauthStart) === authURL) {
-      return;
-    }
-    this.emittedAuthUrls.set(oauthStart, authURL);
-    await oauthStart(authURL, options);
+  ): ReturnType<typeof invokeOAuthStart> {
+    if (this.emittedAuthUrls.get(oauthStart) === authURL)
+      return { published: Promise.resolve(), completed: Promise.resolve() };
+    const publication = invokeOAuthStart(oauthStart, authURL, { expiresAt: options?.expiresAt });
+    return {
+      ...publication,
+      published: publication.published.then(() => { this.emittedAuthUrls.set(oauthStart, authURL); }),
+    };
   }
 
   private async emitEnd(oauthEnd: OAuthEndHandler): Promise<void> {
     if (this.emittedOAuthEnds.has(oauthEnd)) {
       return;
     }
-    this.emittedOAuthEnds.add(oauthEnd);
     await oauthEnd();
+    this.emittedOAuthEnds.add(oauthEnd);
   }
 }

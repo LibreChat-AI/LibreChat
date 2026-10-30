@@ -330,6 +330,8 @@ export interface RequestScopedMCPConnectionStore {
 
 export interface OAuthStartOptions {
   expiresAt?: number;
+  /** Call after the prompt URL is durable, before awaiting authorization completion. */
+  onPublished?: () => void;
 }
 
 export type OAuthStartHandler = (authURL: string, options?: OAuthStartOptions) => Promise<void>;
