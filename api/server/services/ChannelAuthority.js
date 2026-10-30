@@ -31,7 +31,9 @@ module.exports = createChannelApplicationAuthority({
   credentials: {
     encrypt: encryptCredential,
     decrypt: decryptCredential,
-    responses: createResponseStorage(mongoose),
+    responses: createResponseStorage(mongoose, {
+      getMCPAppMessageBudget: db.getMCPAppMessageBudget,
+    }),
     createKey: db.createAgentApiKey,
     getKey: db.getAgentApiKeyById,
     deleteKey: db.deleteAgentApiKey,
