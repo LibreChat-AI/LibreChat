@@ -34,7 +34,9 @@ const {
   submitInteractiveReview,
 } = require('./Responses');
 
-const responseStorage = createResponseStorage(mongoose);
+const responseStorage = createResponseStorage(mongoose, {
+  getMCPAppMessageBudget: db.getMCPAppMessageBudget,
+});
 const getChannelConfig = policy.config;
 
 const handlers = createChannelHandlers({
