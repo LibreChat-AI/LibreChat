@@ -172,6 +172,11 @@ export function applyRunStepClosed(
   editPrefixOffset: number,
   timing: Pick<PartMetadata, 'toolPreparationDurationMs' | 'toolExecutionDurationMs'> = {},
 ): TMessage | undefined {
+  if (
+    runStep.stepDetails.type === StepTypes.TOOL_CALLS &&
+    runStep.stepDetails.tool_calls?.some((call) => 'name' in call && isOAuthToolCallName(call.name))
+  )
+    return undefined;
   const index = runStep.index + editPrefixOffset;
   const existing = message.content?.[index];
   if (!existing || existing.type !== ContentTypes.TOOL_CALL) {
@@ -181,7 +186,9 @@ export function applyRunStepClosed(
   if (
     !existingToolCall ||
     ('name' in existingToolCall && isOAuthToolCallName(existingToolCall.name)) ||
-    ('stepId' in existingToolCall && existingToolCall.stepId != null && existingToolCall.stepId !== runStep.id)
+    ('stepId' in existingToolCall &&
+      existingToolCall.stepId != null &&
+      existingToolCall.stepId !== runStep.id)
   ) {
     return undefined;
   }

@@ -66,3 +66,25 @@ it.each(['timeout', 'caller cancellation'])(
     expect(f.end).toHaveBeenCalledTimes(1);
   },
 );
+
+it.each([false, true])(
+  'preserves tool side effects and original outcome through retirement outage: throws=%s',
+  async (throws) => {
+    const f = fixture();
+    const failure = new Error('original tool failure');
+    const retirement = new Error('private retirement transport failure');
+    f.end.mockRejectedValueOnce(retirement);
+    let effects = 0;
+    const operation = f.prompt.run(async () => {
+      await f.prompt.start('https://auth.example/authorize');
+      effects++;
+      if (throws) throw failure;
+      return 'executed result';
+    });
+    if (throws) await expect(operation).rejects.toBe(failure);
+    else await expect(operation).resolves.toBe('executed result');
+    expect(effects).toBe(1);
+    await f.prompt.end();
+    expect(f.end).toHaveBeenCalledTimes(2);
+  },
+);
