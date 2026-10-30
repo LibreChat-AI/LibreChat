@@ -1,13 +1,14 @@
-import { useState, useId, useMemo } from 'react';
+import { useState, useId } from 'react';
 import { ListFilter } from 'lucide-react';
 import * as Menu from '@ariakit/react/menu';
 import { DropdownPopup } from '@librechat/client';
-import { useReactTable } from '@tanstack/react-table';
-import { useLocalize, TranslationKeys } from '~/hooks';
+import type { Table } from '@tanstack/react-table';
+import type { TranslationKeys } from '~/hooks';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 interface ColumnVisibilityDropdownProps<TData> {
-  table: ReturnType<typeof useReactTable<TData>>;
+  table: Table<TData>;
   contextMap: Record<string, TranslationKeys>;
   isSmallScreen: boolean;
 }
@@ -21,19 +22,20 @@ export function ColumnVisibilityDropdown<TData>({
   const menuId = useId();
   const [isOpen, setIsOpen] = useState(false);
 
-  const dropdownItems = useMemo(
-    () =>
-      table
-        .getAllColumns()
-        .filter((column) => column.getCanHide())
-        .map((column) => ({
-          label: localize(contextMap[column.id]),
-          onClick: () => column.toggleVisibility(!column.getIsVisible()),
-          icon: column.getIsVisible() ? '✓' : '',
-          id: column.id,
-        })),
-    [table, contextMap, localize],
-  );
+  const dropdownItems = table
+    .getAllColumns()
+    .filter((column) => column.getCanHide())
+    .map((column) => {
+      const isVisible = column.getIsVisible();
+
+      return {
+        label: localize(contextMap[column.id]),
+        onClick: () => column.toggleVisibility(!column.getIsVisible()),
+        icon: isVisible ? '✓' : '',
+        ariaChecked: isVisible,
+        id: column.id,
+      };
+    });
 
   return (
     <DropdownPopup
