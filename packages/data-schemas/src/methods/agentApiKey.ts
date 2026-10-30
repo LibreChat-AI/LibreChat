@@ -27,7 +27,12 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
   validateAgentApiKey: (apiKey: string) => Promise<{
     userId: Types.ObjectId;
     keyId: Types.ObjectId;
-    binding?: AgentApiKeyBinding;
+  } | null>;
+  /** Private grant lookup; its caller must authorize the binding before authentication. */
+  validateBoundAgentApiKey: (apiKey: string) => Promise<{
+    userId: Types.ObjectId;
+    keyId: Types.ObjectId;
+    binding: AgentApiKeyBinding;
   } | null>;
   listAgentApiKeys: (userId: string | Types.ObjectId) => Promise<AgentApiKeyListItem[]>;
   deleteAgentApiKey: (
@@ -111,7 +116,7 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
     }
   }
 
-  async function validateAgentApiKey(apiKey: string): Promise<{
+  async function lookupKey(apiKey: string): Promise<{
     userId: Types.ObjectId;
     keyId: Types.ObjectId;
     binding?: AgentApiKeyBinding;
@@ -141,6 +146,26 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
       keyId: keyDoc._id as Types.ObjectId,
       ...(keyDoc.binding ? { binding: keyDoc.binding } : {}),
     };
+  }
+
+  /** Ordinary production authentication never accepts a source-bound credential. */
+  async function validateAgentApiKey(apiKey: string): Promise<{
+    userId: Types.ObjectId;
+    keyId: Types.ObjectId;
+  } | null> {
+    if (apiKey.startsWith('sk-bound-')) return null;
+    const key = await lookupKey(apiKey);
+    return key ? { userId: key.userId, keyId: key.keyId } : null;
+  }
+
+  async function validateBoundAgentApiKey(apiKey: string): Promise<{
+    userId: Types.ObjectId;
+    keyId: Types.ObjectId;
+    binding: AgentApiKeyBinding;
+  } | null> {
+    if (!apiKey.startsWith('sk-bound-')) return null;
+    const key = await lookupKey(apiKey);
+    return key?.binding ? { userId: key.userId, keyId: key.keyId, binding: key.binding } : null;
   }
 
   async function listAgentApiKeys(userId: string | Types.ObjectId): Promise<AgentApiKeyListItem[]> {
@@ -222,6 +247,7 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
   return {
     createAgentApiKey,
     validateAgentApiKey,
+    validateBoundAgentApiKey,
     listAgentApiKeys,
     deleteAgentApiKey,
     deleteAllAgentApiKeys,
