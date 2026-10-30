@@ -219,7 +219,7 @@ export async function closeResponseScopes(
     {
       ...responseOwnerFilter(owner),
       ...(conversationIds ? { conversationId: { $in: conversationIds } } : {}),
-      status: { $in: ['queued', 'in_progress', 'requires_action'] },
+      status: { $in: ['queued', 'in_progress', 'requires_action', 'materializing'] },
       cancellationRequestedAt: { $exists: false },
       pendingTerminal: { $exists: false },
     },

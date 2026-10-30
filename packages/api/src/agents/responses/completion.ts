@@ -295,6 +295,8 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
         return retired;
       }
     }
+    if (authority?.turnJSON != null && record.status !== 'materializing')
+      throw new Error('Response private terminal phase is unavailable');
     const receipt = record.pendingTerminal;
     if (!receipt) {
       if (terminal(record)) {
@@ -393,6 +395,7 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
       if (
         !current ||
         !saved ||
+        (receipt.turnJSON != null && current.status !== 'materializing') ||
         !sameExecution(record, current, receipt) ||
         !sameResponseTerminalReceipt(saved, receipt)
       )
@@ -428,6 +431,7 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
         const saved = await deps.storage.read(record, record.responseId);
         if (
           saved?.preparedTerminal &&
+          (receipt.turnJSON == null || saved.status === 'materializing') &&
           sameExecution(record, saved, receipt) &&
           sameResponseTerminalReceipt(saved.preparedTerminal, receipt)
         )
@@ -439,6 +443,7 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
       const saved = await deps.storage.read(record, record.responseId);
       if (
         saved?.preparedTerminal &&
+        (receipt.turnJSON == null || saved.status === 'materializing') &&
         sameExecution(record, saved, receipt) &&
         sameResponseTerminalReceipt(saved.preparedTerminal, receipt)
       )

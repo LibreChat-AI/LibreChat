@@ -668,3 +668,54 @@ it.each(['owner', 'conversation'] as const)(
       expect(enqueue).not.toHaveBeenCalled();
     }),
 );
+
+it.each([false, true])(
+  'rejects an unfenced new-format preparation readback (lostAck=%s)',
+  (lostAck) =>
+    scoped(async () => {
+      const { record, receipt } = await setup();
+      const candidate = {
+        ...receipt,
+        turnJSON: JSON.stringify({
+          version: 1,
+          context: { userId: owner.userId },
+          conversation: { conversationId: record.conversationId, agent_id: record.agentId },
+          inputs: [{ index: 0, messageId: 'input-one', parentMessageId: 'root' }],
+          parentMessageId: 'input-one',
+          initialAgentId: record.agentId,
+          trace: {},
+        }),
+      };
+      const prepared = await storage.prepareTerminal(
+        owner,
+        record.responseId,
+        { execution: record },
+        candidate,
+      );
+      if (!prepared.ok) throw new Error('Preparation failed');
+      // An unsafe pre-release receipt is not automatically adopted into the fenced protocol.
+      await mongoose.models.StoredResponse.updateOne(
+        { responseId: record.responseId },
+        {
+          $set: { status: 'in_progress' },
+        },
+      );
+      if (lostAck)
+        jest.spyOn(storage, 'prepareTerminal').mockRejectedValueOnce(new Error('ack unavailable'));
+      const completion = createResponseCompletion({
+        storage,
+        cleanupCheckpoint: async () => {},
+        confirmExecution: async () => 'complete',
+        releaseExecution: async () => {},
+      });
+      await expect(completion.prepare(record, candidate)).rejects.toThrow(
+        lostAck ? 'ack unavailable' : 'Response terminal preparation conflicted',
+      );
+      const retained = (await storage.read(owner, record.responseId))!;
+      await expect(completion.finish(retained)).rejects.toThrow(
+        'Response private terminal phase is unavailable',
+      );
+      expect(retained.preparedTerminal?.turnJSON).toBe(candidate.turnJSON);
+      expect(retained.status).toBe('in_progress');
+    }),
+);

@@ -39,7 +39,10 @@ export function createResponseReview(deps: ResponseReviewDependencies) {
   async function privateView(record: StoredResponseRecord): Promise<ResponseReviewView> {
     const view: ResponseReviewView = {
       responseId: record.responseId,
-      status: record.status === 'requires_action' ? 'in_progress' : record.status,
+      status:
+        record.status === 'requires_action' || record.status === 'materializing'
+          ? 'in_progress'
+          : record.status,
       oauth: [],
     };
     if (
