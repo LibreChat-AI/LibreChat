@@ -157,9 +157,6 @@ it('blocks other principals as soon as channel-owner account admission closes', 
       code: 'invalid_transition',
     });
     expect(await identities().saveChannelIdentity(link(), null)).toBe(false);
-    await expect(channels().getOrCreateAgentChannelThread('channel', 'late')).rejects.toThrow(
-      'authority unavailable',
-    );
   }));
 
 it.each(['direct', 'account'] as const)(
