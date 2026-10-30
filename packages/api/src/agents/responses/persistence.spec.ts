@@ -204,6 +204,15 @@ describe('Responses persistence references', () => {
     ).toEqual([]);
   });
 
+  it('does not treat caller-submitted assistant input as a generated response', () => {
+    const imported = { messageId: 'resp_imported', isCreatedByUser: false, isUserSubmitted: true };
+    expect(selectResponseHistory([imported], imported.messageId)).toEqual([]);
+    expect(selectStoredResponse([imported], imported.messageId)).toEqual([]);
+    expect(selectStoredResponse([messages[1], imported], 'legacy-conversation')).toEqual([
+      messages[1],
+    ]);
+  });
+
   it('detects cyclic or incomplete message ancestry', () => {
     expect(() =>
       selectResponseHistory(
@@ -240,14 +249,16 @@ describe('Responses persistence references', () => {
     expect(input[0]).not.toHaveProperty('parentMessageId');
   });
 
-  it('assigns missing user IDs and does not persist client tool or system input as a user', () => {
+  it('assigns missing IDs and preserves submitted roles in the parent chain', () => {
     const chain = buildResponseInputChain(
       [{ role: 'system' }, { role: 'user' }],
       String(Constants.NO_PARENT),
     );
-    expect(chain.messages).toHaveLength(1);
+    expect(chain.messages).toHaveLength(2);
+    expect(chain.messages.map((message) => message.role)).toEqual(['system', 'user']);
     expect(chain.messages[0].parentMessageId).toBe(Constants.NO_PARENT);
-    expect(chain.parentMessageId).toBe(chain.messages[0].messageId);
+    expect(chain.messages[1].parentMessageId).toBe(chain.messages[0].messageId);
+    expect(chain.parentMessageId).toBe(chain.messages[1].messageId);
   });
 
   it('retrieves exactly the requested response rather than the entire conversation', () => {
