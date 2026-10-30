@@ -189,16 +189,24 @@ export const useFilePreviewBlob = (
   userId?: string,
   fileId?: string,
   shareId?: string,
+  preview?: 'pdf',
 ): QueryObserverResult<Blob> =>
   useQuery(
-    [QueryKeys.fileDownload, 'previewBlob', shareId ? 'share' : 'owner', shareId ?? userId, fileId],
+    [
+      QueryKeys.fileDownload,
+      'previewBlob',
+      shareId ? 'share' : 'owner',
+      shareId ?? userId,
+      fileId,
+      preview ?? 'file',
+    ],
     async () => {
       if (!fileId || (!shareId && !userId)) {
         throw new Error('Preview identity unavailable');
       }
       const response = shareId
-        ? await dataService.getSharedFileDownload(shareId, fileId)
-        : await dataService.getFileDownload(userId!, fileId);
+        ? await dataService.getSharedFileDownload(shareId, fileId, preview && { preview })
+        : await dataService.getFileDownload(userId!, fileId, preview && { preview });
       return response.data;
     },
     { enabled: false, retry: false, cacheTime: 0 },

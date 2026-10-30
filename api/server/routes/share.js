@@ -27,6 +27,7 @@ const {
   traceIdForMessage,
   resolveDownloadPath,
   prepareResultToolCallPreviews,
+  sendOfficePdfPreview,
 } = require('@librechat/api');
 const {
   logger,
@@ -281,8 +282,9 @@ const streamSharedFile = async (req, res, file, requestedDisposition) => {
 
   // Redirect to a signed storage URL only when explicitly requested (?direct=true);
   // by default stream through the server so blob (XHR) callers work without bucket CORS.
+  const isPdfPreview = req.query.preview === 'pdf';
   const isDirectSource = source === FileSources.s3 || source === FileSources.cloudfront;
-  if (req.query.direct === 'true' && getDownloadURL && isDirectSource) {
+  if (req.query.direct === 'true' && getDownloadURL && isDirectSource && !isPdfPreview) {
     try {
       const url = await getDownloadURL({
         req,
@@ -307,6 +309,15 @@ const streamSharedFile = async (req, res, file, requestedDisposition) => {
   // the local stream resolves the real filename, not a literal `*.png?v=...` path.
   const streamPath = (resolveDownloadPath(file) || '').split('?')[0];
   const fileStream = await getDownloadStream(req, streamPath);
+
+  if (isPdfPreview) {
+    return sendOfficePdfPreview({
+      res,
+      stream: fileStream,
+      file,
+      fileConfig: req.config?.fileConfig,
+    });
+  }
 
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Disposition', getContentDisposition(file.filename, disposition));
