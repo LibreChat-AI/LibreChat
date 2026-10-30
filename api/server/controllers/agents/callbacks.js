@@ -21,6 +21,7 @@ const {
   sendEvent,
   getModelEndUsage,
   computeUsageCostUSD,
+  captureResponseAccountingUsage,
   GenerationJobManager,
   waitForGenerationSettled,
   writeAttachmentEvent,
@@ -1580,7 +1581,7 @@ function markSummarizationUsage(usage, metadata) {
  * not consistently include it, and cache normalization depends on it.
  */
 function contextualizeModelUsage(usage, metadata, agentContext = {}) {
-  const taggedUsage = { ...usage };
+  const taggedUsage = captureResponseAccountingUsage(usage, metadata, agentContext);
   const context = agentContext ?? {};
   const invokedProvider = metadata?.__invoked_provider;
   const invokedModel = metadata?.__invoked_model;

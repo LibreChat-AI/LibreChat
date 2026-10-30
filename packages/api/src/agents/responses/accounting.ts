@@ -24,7 +24,18 @@ export interface AccountingCollectorOptions {
   seed?: ResponseAccounting;
 }
 
-export type AccountingUsage = Omit<UsageMetadata, 'usage_type'> & {
+/** Private receipt captured before billing applies configured provider/model fallbacks. */
+export interface AccountingInvocationIdentity {
+  model?: string;
+  provider?: string;
+  modelSource: AccountingModelSource;
+}
+
+export interface CollectedResponseAccountingUsage extends UsageMetadata {
+  accountingIdentity?: AccountingInvocationIdentity;
+}
+
+export type AccountingUsage = Omit<CollectedResponseAccountingUsage, 'usage_type'> & {
   usage_type?: ResponseAccountingCall['usageType'];
 };
 
@@ -39,6 +50,42 @@ interface InvocationContext {
   provider?: string;
   agentId?: string;
   clientOptions?: { model?: string };
+}
+
+function invocationIdentity(
+  usage: Pick<UsageMetadata, 'model' | 'provider'> | undefined,
+  metadata?: InvocationMetadata,
+  context?: InvocationContext | null,
+): AccountingInvocationIdentity {
+  const model =
+    metadata?.ls_model_name ||
+    metadata?.__invoked_model ||
+    usage?.model ||
+    context?.clientOptions?.model;
+  const provider = metadata?.__invoked_provider || usage?.provider || context?.provider;
+  let modelSource: AccountingModelSource = 'unknown';
+  if (metadata?.ls_model_name || metadata?.__invoked_model) modelSource = 'runtime_reported';
+  else if (usage?.model) modelSource = 'provider_reported';
+  else if (context?.clientOptions?.model) modelSource = 'configured';
+  return { ...(model ? { model } : {}), ...(provider ? { provider } : {}), modelSource };
+}
+
+export function captureResponseAccountingUsage(
+  usage: UsageMetadata | undefined,
+  metadata?: InvocationMetadata,
+  context?: InvocationContext | null,
+): CollectedResponseAccountingUsage {
+  return { ...usage, accountingIdentity: invocationIdentity(usage, metadata, context) };
+}
+
+/** Missing historical accounting cannot be repaired by appending later priced calls. */
+function missingCoverage(value: ResponseAccounting | undefined): boolean {
+  return (
+    value == null ||
+    value.coverage === 'partial' ||
+    value.reason === 'partial_coverage' ||
+    (value.calls.length === 0 && value.status === 'unavailable')
+  );
 }
 
 const decimal = /^(?:0|[1-9]\d*)(?:\.\d{1,18})?$/;
@@ -80,6 +127,7 @@ export function createResponseAccountingCollector(options: AccountingCollectorOp
   const calls: ResponseAccountingCall[] = options.seed?.calls.map((call) => ({ ...call })) ?? [];
   const callIds = new Map<string, string>();
   let conflictingUsage = options.seed?.reason === 'conflicting_usage';
+  const inheritedMissingCoverage = options.seed != null && missingCoverage(options.seed);
 
   return {
     record(
@@ -88,20 +136,8 @@ export function createResponseAccountingCollector(options: AccountingCollectorOp
       context?: InvocationContext | null,
       callId?: string,
     ): void {
-      const model =
-        metadata?.ls_model_name ||
-        metadata?.__invoked_model ||
-        usage?.model ||
-        context?.clientOptions?.model;
-      const provider = metadata?.__invoked_provider || usage?.provider || context?.provider;
-      let modelSource: AccountingModelSource = 'unknown';
-      if (metadata?.ls_model_name || metadata?.__invoked_model) {
-        modelSource = 'runtime_reported';
-      } else if (usage?.model) {
-        modelSource = 'provider_reported';
-      } else if (context?.clientOptions?.model) {
-        modelSource = 'configured';
-      }
+      const { model, provider, modelSource } =
+        usage?.accountingIdentity ?? invocationIdentity(usage, metadata, context);
       const normalized: UsageMetadata = {
         ...usage,
         model,
@@ -171,7 +207,8 @@ export function createResponseAccountingCollector(options: AccountingCollectorOp
     snapshot(): ResponseAccounting {
       const priced = calls.filter((call) => call.amount != null);
       const bases = new Set(priced.map((call) => call.basis));
-      const complete = calls.length > 0 && priced.length === calls.length;
+      const complete =
+        calls.length > 0 && priced.length === calls.length && !inheritedMissingCoverage;
       const available = complete && bases.size === 1 && !conflictingUsage;
       let coverage: ResponseAccounting['coverage'] = 'none';
       if (complete) {
@@ -225,31 +262,35 @@ export function combineResponseAccounting(
       calls,
     },
   }).snapshot();
-  const missing = [previous, current].some(
-    (value) => value == null || (value.calls.length === 0 && value.status === 'unavailable'),
-  );
-  if (!missing || conflicting) return snapshot;
+  const missing = [previous, current].some(missingCoverage);
+  if (!missing) return snapshot;
   const priced = calls.some((call) => call.amount != null);
+  let reason: ResponseAccounting['reason'] = priced ? 'partial_coverage' : 'usage_unavailable';
+  if (conflicting) reason = 'conflicting_usage';
   return {
     status: 'unavailable',
     currency: 'USD',
     coverage: priced ? 'partial' : 'none',
-    reason: priced ? 'partial_coverage' : 'usage_unavailable',
+    reason,
     calls: snapshot.calls,
   };
 }
 
 /** Persist complete call provenance before the ephemeral generation is removed. */
 export function buildCollectedResponseAccounting(
-  collectedUsage: ReadonlyArray<UsageMetadata | null | undefined>,
+  collectedUsage: ReadonlyArray<CollectedResponseAccountingUsage | null | undefined>,
   emittedUsage: ReadonlyArray<TTokenUsageEvent>,
   options: AccountingCollectorOptions = {},
 ): ResponseAccounting {
   const collector = createResponseAccountingCollector(options);
   for (const entry of collectedUsage) {
-    collector.record(entry ?? undefined, {
-      __invoked_model: entry?.model,
-      __invoked_provider: entry?.provider,
+    collector.record({
+      ...entry,
+      accountingIdentity: entry?.accountingIdentity ?? {
+        ...(entry?.model ? { model: entry.model } : {}),
+        ...(entry?.provider ? { provider: entry.provider } : {}),
+        modelSource: 'unknown',
+      },
     });
   }
   for (const entry of emittedUsage) {
@@ -263,8 +304,15 @@ export function buildCollectedResponseAccounting(
     // batch does not retain. Preserve their usage, but never price them with
     // the primary Agent's config or report an incomplete total as complete.
     collector.record(
-      entry,
-      { __invoked_model: entry.model, __invoked_provider: entry.provider },
+      {
+        ...entry,
+        accountingIdentity: {
+          model: entry.model,
+          provider: entry.provider,
+          modelSource: 'unknown',
+        },
+      },
+      undefined,
       undefined,
       entry.runId && entry.seq != null ? `${entry.runId}:${entry.seq}` : undefined,
     );
@@ -274,7 +322,7 @@ export function buildCollectedResponseAccounting(
 
 /** Plain metadata patch shared by completion and abort saves after transient jobs are removed. */
 export function buildPersistedResponseAccounting(options: {
-  collectedUsage?: ReadonlyArray<UsageMetadata | null | undefined>;
+  collectedUsage?: ReadonlyArray<CollectedResponseAccountingUsage | null | undefined>;
   emittedUsage: ReadonlyArray<TTokenUsageEvent>;
   billingEnabled?: boolean;
   billing?: Parameters<typeof createApplicationBillingQuote>[0];

@@ -6,6 +6,8 @@ jest.mock('nanoid', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  captureResponseAccountingUsage: (...args) =>
+    jest.requireActual('@librechat/api').captureResponseAccountingUsage(...args),
   writeGuarded: (res, chunk) => {
     if (res.writableEnded === true || res.destroyed === true) {
       return false;
