@@ -70,7 +70,7 @@ async function fixture(principal: ResponseOwner = owner, retainTerminalPersisten
       conversationId: 'conversation',
       agentId: 'agent',
       protocol: 'responses',
-      retainTerminalPersistence,
+      ...(retainTerminalPersistence ? { retainTerminalPersistence: true as const } : {}),
       isPrincipalActive: async () => true,
     },
     { manager: jobs },
