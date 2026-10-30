@@ -1,7 +1,11 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { render, screen } from '@testing-library/react';
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string, params?: Record<string, unknown>) =>
     `${key}:${params?.[0] ?? ''}`,
 }));

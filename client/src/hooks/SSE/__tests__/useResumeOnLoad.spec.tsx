@@ -1,7 +1,7 @@
 import { RecoilRoot } from 'recoil';
-import { useResumeOnLoad } from '@librechat/chat/react';
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useResumeOnLoad, pendingApprovalActionFamily } from '@librechat/chat/react';
 import { Constants, ContentTypes, QueryKeys, RetentionMode } from 'librechat-data-provider';
 import { isSubmittingFamily, resetSubmitting, submissionByIndex } from '@librechat/chat/react';
 import {
@@ -31,7 +31,6 @@ import type { MutableSnapshot } from 'recoil';
 import type { ReactNode } from 'react';
 import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
-import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { agentQueuedTurnsQueryKey } from '~/data-provider/SSE/queuedTurns';
 import { usePaneConversation } from '~/routes/ChatSettings';
 import { StreamHostTestProvider } from 'test/streamHost';

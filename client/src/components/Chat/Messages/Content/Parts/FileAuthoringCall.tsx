@@ -1,19 +1,21 @@
 import { useMemo } from 'react';
 import { FilePenLine, FilePlus2 } from 'lucide-react';
-import { TOOL_ROW_CLASSES, BareStatus } from '@librechat/chat/components';
 import { parseJsonField, parseJsonFieldOccurrences } from '@librechat/chat';
 import {
   toolPanelSpacingClassName,
   useFollowScroll,
   useToolCallIntent,
 } from '@librechat/chat/react';
-import type { TAttachment, PartMetadata } from 'librechat-data-provider';
-import DiffView, {
+import {
+  DiffView,
+  BareStatus,
+  diffPreviewText,
+  TOOL_ROW_CLASSES,
   parseUnifiedDiff,
   buildEditPreviewDiff,
-  diffPreviewText,
-  type TextEditPreview,
-} from './DiffView';
+} from '@librechat/chat/components';
+import type { TAttachment, PartMetadata } from 'librechat-data-provider';
+import type { TextEditPreview } from '@librechat/chat/components';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
