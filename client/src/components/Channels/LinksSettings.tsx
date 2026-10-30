@@ -9,7 +9,7 @@ export default function LinksSettings() {
   return (
     <Links
       api={dataService.channelIdentityClient}
-      principalKey={`${user.tenantId ?? '_'}:${user.id}`}
+      principalKey={JSON.stringify([user.tenantId ?? '_', user.id])}
     />
   );
 }

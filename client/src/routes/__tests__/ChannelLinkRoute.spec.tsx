@@ -1,13 +1,33 @@
 import React from 'react';
+import { RecoilRoot } from 'recoil';
+import { ToastProvider } from '@librechat/client';
 import userEvent from '@testing-library/user-event';
 import { BrowserRouter, Routes, Route } from 'react-router-dom';
 import { act, render, screen, waitFor } from '@testing-library/react';
-import { request, channelConfigSchema } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { request, channelConfigSchema, dataService } from 'librechat-data-provider';
 import type { ChannelLinkView } from 'librechat-data-provider';
 import ChannelLinkRoute from '../ChannelLinkRoute';
 import { useAuthContext } from '~/hooks';
+import store from '~/store';
 
+jest.mock('librechat-data-provider', () => {
+  const actual = jest.requireActual('librechat-data-provider');
+  return {
+    ...actual,
+    dataService: {
+      ...actual.dataService,
+      getStartupConfig: jest.fn(),
+      getUserTerms: jest.fn(),
+      acceptTerms: jest.fn(),
+    },
+  };
+});
+jest.mock(
+  '~/components/Chat/Messages/Content/MarkdownLite',
+  () =>
+    ({ content }: { content: string }) => <p>{content}</p>,
+);
 const mockAuthUrls: string[] = [];
 jest.mock('~/hooks', () => ({
   useAuthContext: jest.fn(),
@@ -27,9 +47,11 @@ let pending: ChannelLinkView;
 let post: jest.SpyInstance;
 function authenticated(value = true) {
   jest.mocked(useAuthContext).mockReturnValue({
-    user: value ? { id: 'user-a', email: 'account@example.com' } : undefined,
+    user: value ? { id: 'user-a', tenantId: 'tenant', email: 'account@example.com' } : undefined,
     isAuthenticated: value,
-  } as ReturnType<typeof useAuthContext>);
+    isAuthReady: true,
+    logout: jest.fn(),
+  } as unknown as ReturnType<typeof useAuthContext>);
 }
 function savedTicket() {
   return JSON.parse(sessionStorage.getItem(storageKey) ?? 'null');
@@ -39,22 +61,46 @@ function renderRoute() {
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
     logger: { log: () => {}, warn: () => {}, error: () => {} },
   });
-  return render(
+  const tree = () => (
     <QueryClientProvider client={client}>
-      <BrowserRouter>
-        <Routes>
-          <Route path="/channels/link" element={<ChannelLinkRoute />} />
-          <Route path="/login" element={<div data-testid="login" />} />
-        </Routes>
-      </BrowserRouter>
-    </QueryClientProvider>,
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(store.queriesEnabled, true);
+          set(store.user, jest.mocked(useAuthContext)().user as never);
+        }}
+      >
+        <ToastProvider>
+          <BrowserRouter>
+            <Routes>
+              <Route path="/channels/link" element={<ChannelLinkRoute />} />
+              <Route path="/login" element={<div data-testid="login" />} />
+            </Routes>
+          </BrowserRouter>
+        </ToastProvider>
+      </RecoilRoot>
+    </QueryClientProvider>
   );
+  const mounted = render(tree());
+  return { ...mounted, client, rerenderRoute: () => mounted.rerender(tree()) };
 }
+
 beforeEach(() => {
   mockAuthUrls.length = 0;
   sessionStorage.clear();
   window.history.replaceState({}, '', '/channels/link');
   authenticated(false);
+  jest
+    .mocked(dataService.getStartupConfig)
+    .mockReset()
+    .mockResolvedValue({ interface: {} } as never);
+  jest
+    .mocked(dataService.getUserTerms)
+    .mockReset()
+    .mockResolvedValue({ termsAccepted: true, termsAcceptedAt: '2030-01-01' });
+  jest
+    .mocked(dataService.acceptTerms)
+    .mockReset()
+    .mockResolvedValue({ message: 'Accepted', termsAcceptedAt: '2030-01-01' });
   pending = {
     identity: {
       tenantId: 'tenant',
@@ -69,10 +115,10 @@ beforeEach(() => {
     state: 'pending',
     expiresAtMs: Date.now() + 60_000,
   };
-  post = jest.spyOn(request, 'post').mockImplementation(async (url) => ({
-    ok: true,
-    value: { ...pending, state: String(url).endsWith('/accept') ? 'accepted' : 'pending' },
-  }));
+  post = jest.spyOn(request, 'post').mockImplementation(async (url) => {
+    if (String(url).endsWith('/accept')) pending = { ...pending, state: 'accepted' };
+    return { ok: true, value: pending };
+  });
 });
 afterEach(() => {
   jest.restoreAllMocks();
@@ -163,7 +209,7 @@ test('same-route fragment replacement uses only the new exact ticket', async () 
   expect(savedTicket().ticket).toBe(nextTicket);
   await userEvent.click(await screen.findByRole('button', { name: 'com_ui_channel_link_accept' }));
   await waitFor(() =>
-    expect(post).toHaveBeenLastCalledWith('/api/channels/links/accept', {
+    expect(post).toHaveBeenCalledWith('/api/channels/links/accept', {
       ticket: nextTicket,
       revision: 'revision',
     }),
@@ -198,10 +244,7 @@ test('authoritative expiry clears an unconsumed ticket while the page stays open
   pending.expiresAtMs = Date.now() + 1000;
   window.history.replaceState({}, '', `/channels/link#${ticket}`);
   renderRoute();
-  await act(async () => {
-    await jest.advanceTimersByTimeAsync(10);
-  });
-  expect(savedTicket().expiresAtMs).toBe(pending.expiresAtMs);
+  await waitFor(() => expect(savedTicket().expiresAtMs).toBe(pending.expiresAtMs));
   expect(screen.getByRole('button', { name: 'com_ui_channel_link_accept' })).toBeInTheDocument();
   await act(async () => {
     await jest.advanceTimersByTimeAsync(1000);
@@ -267,4 +310,97 @@ test('blocked storage permits an already-authenticated in-memory ticket', async 
   await screen.findByText('U1');
   expect(post).toHaveBeenCalledWith('/api/channels/links/preview', { ticket });
   expect(window.location.hash).toBe('');
+});
+
+test('waits beyond the old redirect timeout for a restored session while keeping the ticket private', async () => {
+  window.history.replaceState({}, '', `/channels/link#${ticket}`);
+  jest.mocked(useAuthContext).mockReturnValue({
+    user: undefined,
+    isAuthenticated: false,
+    isAuthReady: false,
+    logout: jest.fn(),
+  } as unknown as ReturnType<typeof useAuthContext>);
+  const mounted = renderRoute();
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 350));
+  });
+  expect(screen.queryByTestId('login')).not.toBeInTheDocument();
+  expect(post).not.toHaveBeenCalled();
+  expect(window.location.href).not.toContain(ticket);
+  authenticated();
+  mounted.rerenderRoute();
+  expect(await screen.findByText('U1')).toBeInTheDocument();
+  expect(post).toHaveBeenCalledWith('/api/channels/links/preview', { ticket });
+});
+
+test('uses the actual terms modal before preview or acceptance can send a POST', async () => {
+  authenticated();
+  window.history.replaceState({}, '', `/channels/link#${ticket}`);
+  jest.mocked(dataService.getStartupConfig).mockResolvedValue({
+    interface: { termsOfService: { modalAcceptance: true, modalContent: 'Current terms' } },
+  } as never);
+  jest
+    .mocked(dataService.getUserTerms)
+    .mockResolvedValue({ termsAccepted: false, termsAcceptedAt: null });
+  renderRoute();
+  const accept = await screen.findByRole('button', { name: 'com_ui_accept' });
+  expect(post).not.toHaveBeenCalled();
+  await userEvent.click(accept);
+  expect(dataService.acceptTerms).toHaveBeenCalledTimes(1);
+  await screen.findByText('U1');
+  expect(post).toHaveBeenCalledTimes(1);
+  expect(post).toHaveBeenCalledWith('/api/channels/links/preview', { ticket });
+  await userEvent.click(screen.getByRole('button', { name: 'com_ui_channel_link_accept' }));
+  expect(post).toHaveBeenCalledWith('/api/channels/links/accept', { ticket, revision: 'revision' });
+});
+
+test.each(['config', 'terms'] as const)(
+  'blocks private POSTs until a failed %s read succeeds',
+  async (failed) => {
+    authenticated();
+    window.history.replaceState({}, '', `/channels/link#${ticket}`);
+    jest
+      .mocked(dataService.getStartupConfig)
+      .mockResolvedValue({ interface: { termsOfService: { modalAcceptance: true } } } as never);
+    if (failed === 'config')
+      jest.mocked(dataService.getStartupConfig).mockRejectedValueOnce(new Error('private failure'));
+    else jest.mocked(dataService.getUserTerms).mockRejectedValueOnce(new Error('private failure'));
+    renderRoute();
+    expect(await screen.findByRole('alert')).toHaveTextContent('com_ui_channel_link_error');
+    expect(post).not.toHaveBeenCalled();
+    expect(document.body.textContent).not.toContain('private failure');
+    await userEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+    expect(await screen.findByText('U1')).toBeInTheDocument();
+  },
+);
+
+test('an old owner acknowledgement cannot replace the new owner preview or consume its tab ticket', async () => {
+  authenticated();
+  window.history.replaceState({}, '', `/channels/link#${ticket}`);
+  let finish!: (value: { ok: true; value: ChannelLinkView }) => void;
+  post.mockImplementation(async (url) =>
+    String(url).endsWith('/accept')
+      ? new Promise((resolve) => {
+          finish = resolve;
+        })
+      : { ok: true, value: pending },
+  );
+  const mounted = renderRoute();
+  await userEvent.click(await screen.findByRole('button', { name: 'com_ui_channel_link_accept' }));
+  jest.mocked(useAuthContext).mockReturnValue({
+    user: { id: 'user-b', tenantId: 'other-tenant', email: 'b@example.com' },
+    isAuthenticated: true,
+    isAuthReady: true,
+    logout: jest.fn(),
+  } as unknown as ReturnType<typeof useAuthContext>);
+  mounted.rerenderRoute();
+  await waitFor(() =>
+    expect(screen.getByRole('button', { name: 'com_ui_channel_link_accept' })).toBeEnabled(),
+  );
+  await act(async () => {
+    finish({ ok: true, value: { ...pending, state: 'accepted' } });
+  });
+  expect(screen.queryByText('com_ui_channel_link_confirm_slack')).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'com_ui_channel_link_accept' })).toBeEnabled();
+  expect(savedTicket().ticket).toBe(ticket);
 });
