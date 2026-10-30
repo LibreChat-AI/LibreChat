@@ -1,6 +1,7 @@
 import type { AgentResourceFileInput } from './deletion';
 import {
   buildDeleteFilesResponse,
+  deleteAgentAttachedFiles,
   deleteAgentResourceFiles,
   partitionAgentResourceFiles,
   PARTIAL_FILE_DELETION_MESSAGE,
@@ -275,5 +276,61 @@ describe('delete agent resource files', () => {
 
     expect(result.outcome).toEqual({ deletedFileIds: [], failedFileIds: ['owned'] });
     expect(deps.removeAgentResourceFiles).not.toHaveBeenCalled();
+  });
+});
+
+describe('delete agent attached files on agent deletion', () => {
+  const agentObjectId = '65f000000000000000000001';
+
+  const makeDeps = (sharedFileIds: string[] = []) => ({
+    getSharedResourceFileIds: jest.fn().mockResolvedValue(sharedFileIds),
+    deleteFiles: jest.fn().mockImplementation((files: TestFile[]) =>
+      Promise.resolve({
+        deletedFileIds: files.map((file) => file.file_id),
+        failedFileIds: [],
+      }),
+    ),
+  });
+
+  it('destroys sole-referenced files and skips shared ones', async () => {
+    const deps = makeDeps(['shared']);
+    const result = await deleteAgentAttachedFiles(
+      {
+        agentObjectId,
+        fileIds: ['owned', 'shared', 'missing'],
+        files: [
+          { file_id: 'owned', filename: 'owned.txt' },
+          { file_id: 'shared', filename: 'shared.txt' },
+        ],
+      },
+      deps,
+    );
+
+    expect(deps.getSharedResourceFileIds).toHaveBeenCalledWith({
+      file_ids: ['owned', 'shared'],
+      excludeAgentObjectId: agentObjectId,
+    });
+    expect(deps.deleteFiles).toHaveBeenCalledWith([{ file_id: 'owned', filename: 'owned.txt' }]);
+    expect(result).toEqual({
+      outcome: { deletedFileIds: ['owned'], failedFileIds: [] },
+      skippedSharedFileIds: ['shared'],
+      destroyedFileIds: ['owned'],
+    });
+  });
+
+  it('does nothing when the agent has no attached file records', async () => {
+    const deps = makeDeps();
+    const result = await deleteAgentAttachedFiles(
+      { agentObjectId, fileIds: ['gone'], files: [] },
+      deps,
+    );
+
+    expect(deps.getSharedResourceFileIds).not.toHaveBeenCalled();
+    expect(deps.deleteFiles).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      outcome: null,
+      skippedSharedFileIds: [],
+      destroyedFileIds: [],
+    });
   });
 });

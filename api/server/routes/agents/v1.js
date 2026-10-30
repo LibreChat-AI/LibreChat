@@ -146,6 +146,7 @@ router.delete(
     requiredPermission: PermissionBits.DELETE,
     resourceIdParam: 'id',
   }),
+  configMiddleware,
   v1.deleteAgent,
 );
 

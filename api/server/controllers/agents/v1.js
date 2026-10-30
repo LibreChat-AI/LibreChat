@@ -52,6 +52,7 @@ const {
   checkInstructionsPromptWrite,
   applyInstructionsPromptUnset,
   instructionsContentForScan,
+  cascadeDeleteAgentResources,
 } = require('@librechat/api');
 const {
   Time,
@@ -85,7 +86,7 @@ const {
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { resizeAvatar } = require('~/server/services/Files/images/avatar');
 const { getFileStrategy } = require('~/server/utils/getFileStrategy');
-const { filterFile } = require('~/server/services/Files/process');
+const { filterFile, processDeleteRequest } = require('~/server/services/Files/process');
 const { getCachedTools } = require('~/server/services/Config');
 const {
   createMCPPermissionContext,
@@ -1728,6 +1729,30 @@ const deleteAgentHandler = async (req, res) => {
     if (!agent) {
       return res.status(404).json({ error: 'Agent not found' });
     }
+
+    await cascadeDeleteAgentResources(
+      {
+        agentObjectId: agent._id.toString(),
+        tool_resources: agent.tool_resources,
+        avatar: agent.avatar,
+      },
+      {
+        getFiles: async (fileIds) =>
+          (await db.getFiles({ file_id: { $in: fileIds } }, null, { text: 0 })) ?? [],
+        getSharedResourceFileIds: db.getSharedResourceFileIds,
+        deleteFiles: (files) => processDeleteRequest({ req, files }),
+        deleteAvatar: async (avatar) => {
+          const { deleteFile } = getStrategyFunctions(avatar.source);
+          await deleteFile(req, {
+            filepath: avatar.filepath,
+            user: req.user.id,
+            tenantId: req.user.tenantId,
+          });
+          await db.deleteFileByFilter({ filepath: avatar.filepath });
+        },
+      },
+    );
+
     await db.deleteAgent({ id });
     return res.json({ message: 'Agent deleted' });
   } catch (error) {

@@ -232,7 +232,10 @@ const processDeleteRequest = async ({ req, files }) => {
     client[FileSources.azure] = azureClient.openai;
   };
 
-  if (req.body.assistant_id !== undefined) {
+  const assistantId = req.body?.assistant_id;
+  const toolResource = req.body?.tool_resource;
+
+  if (assistantId !== undefined) {
     await initializeClients();
   }
 
@@ -250,18 +253,18 @@ const processDeleteRequest = async ({ req, files }) => {
 
     const openai = client[source];
 
-    if (req.body.assistant_id && req.body.tool_resource) {
+    if (assistantId && toolResource) {
       promises.push(
         deleteResourceFileId({
           req,
           openai,
           file_id: file.file_id,
-          assistant_id: req.body.assistant_id,
-          tool_resource: req.body.tool_resource,
+          assistant_id: assistantId,
+          tool_resource: toolResource,
         }),
       );
-    } else if (req.body.assistant_id) {
-      promises.push(openai.beta.assistants.files.del(req.body.assistant_id, file.file_id));
+    } else if (assistantId) {
+      promises.push(openai.beta.assistants.files.del(assistantId, file.file_id));
     }
 
     const deleteFile = getDeleteMethod({ source, deletionMethods });
