@@ -153,7 +153,22 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
       : { ok: false, status: 404, code: 'response_not_found' };
   }
 
+  /** Null is absence of a readable journal, never an authorization denial or storage failure. */
+  async function lookup(
+    owner: ResponseOwner,
+    responseId: string,
+  ): Promise<BackgroundResponseResult | null> {
+    const record = await deps.storage.read(owner, responseId);
+    if (!record) return null;
+    if (!(await deps.authorize(owner, record.agentId, record.sourceKeyId)))
+      return { ok: false, status: 404, code: 'response_not_found' };
+    return responseResult(record);
+  }
+
   return {
+    lookup(owner: ResponseOwner, responseId: string): Promise<BackgroundResponseResult | null> {
+      return lookup(owner, responseId);
+    },
     async create(
       envelope: ResponsesRunEnvelope,
       idempotencyKey?: string,
@@ -199,9 +214,13 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
         : { ok: true, response: view(record) };
     },
     async retrieve(owner: ResponseOwner, responseId: string): Promise<BackgroundResponseResult> {
-      const record = await readAuthorized(owner, responseId);
-      if (!record) return { ok: false, status: 404, code: 'response_not_found' };
-      return responseResult(record);
+      return (
+        (await lookup(owner, responseId)) ?? {
+          ok: false,
+          status: 404,
+          code: 'response_not_found',
+        }
+      );
     },
     async cancel(owner: ResponseOwner, responseId: string): Promise<BackgroundResponseResult> {
       const authorized = await readAuthorized(owner, responseId);

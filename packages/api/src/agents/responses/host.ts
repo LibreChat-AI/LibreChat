@@ -182,7 +182,9 @@ export function createBackgroundResponsesHost(
         const continuation = await resolveResponseContinuation(previous, owner.userId, {
           getMessage: deps.getMessage,
         });
-        const stored = await deps.getConvoRetention(owner.userId, continuation.conversationId);
+        const stored = previous
+          ? await deps.getConvoRetention(owner.userId, continuation.conversationId)
+          : null;
         if (previous && !stored) throw new Error('Response continuation is unavailable');
         const principal = user ?? (await deps.findUser(owner.userId));
         if (!principal) throw new Error('Response principal unavailable');
@@ -320,7 +322,6 @@ export function createBackgroundResponsesHost(
       ),
     handlers: (ordinary: { create: RequestHandler; retrieve: RequestHandler }) =>
       createBackgroundResponseHttpHandlers({
-        storage: deps.storage,
         service,
         ordinary,
         onError: deps.onError,

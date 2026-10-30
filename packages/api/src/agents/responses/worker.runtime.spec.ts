@@ -2,8 +2,8 @@ import express from 'express';
 import jwt from 'jsonwebtoken';
 import request from 'supertest';
 import mongoose from 'mongoose';
-import { FileSources } from 'librechat-data-provider';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import { FileSources, PermissionBits } from 'librechat-data-provider';
 import {
   createModels,
   createMethods,
@@ -1345,17 +1345,53 @@ describe('background Responses execution handoff', () => {
       const readApp = express();
       const methods = createMethods(mongoose);
       readApp.use((req, _res, next) => {
-        Object.assign(req, { user: { id: owner.userId } });
+        Object.assign(req, { user });
         tenantStorage.run(owner, next);
       });
-      // Exercise the built export wired by the CJS controller, against the actual committed rows.
+      // Exercise the compiled host and its actual foreground fallback over committed history.
       const compiled = jest.requireActual<{
         createStoredForegroundResponseReader: typeof import('./stored').createStoredForegroundResponseReader;
+        createBackgroundResponsesHost: typeof import('./host').createBackgroundResponsesHost;
       }>('@librechat/api');
-      readApp.get(
-        '/:id',
-        compiled.createStoredForegroundResponseReader({ ...methods, logger: { error: jest.fn() } }),
-      );
+      const readHost = compiled.createBackgroundResponsesHost({
+        storage,
+        jobs: GenerationJobManager,
+        findUser: async () => user,
+        getKey: async () => ({}),
+        getRole: async () =>
+          new mongoose.models.Role({ name: 'USER', permissions: { REMOTE_AGENTS: { USE: true } } }),
+        getConfig: async () => ({
+          config: {},
+          fileStrategy: FileSources.local,
+          imageOutputType: 'png',
+          endpoints: {
+            agents: {
+              remoteApi: { background: { enabled: true, acknowledgementTimeoutMs: 1000 } },
+            },
+          },
+        }),
+        isPrincipalActive: async () => true,
+        getAgentPermissions: async () => PermissionBits.VIEW,
+        getMessage: methods.getMessage,
+        getConvoRetention: methods.getConvoRetention,
+        enqueue: async () => {
+          throw new Error('Retrieval must not enqueue another provider');
+        },
+        signingSecret: () => secret,
+        onError: (error) => {
+          errors.push(error);
+        },
+      });
+      const readHandlers = readHost.handlers({
+        create: (_req, res) => {
+          res.sendStatus(500);
+        },
+        retrieve: compiled.createStoredForegroundResponseReader({
+          ...methods,
+          logger: { error: jest.fn() },
+        }),
+      });
+      readApp.get('/:id', readHandlers.retrieve);
       const read = await request(readApp)
         .get('/' + record.responseId)
         .expect(200);
@@ -1363,6 +1399,17 @@ describe('background Responses execution handoff', () => {
       expect(read.body.background).toBe(true);
       expect(read.body.error).toEqual(JSON.parse(saved.responseJSON!).error);
       expect(JSON.stringify(read.body)).not.toContain('private provider diagnostics');
+
+      await scope(() => mongoose.models.ResponseScope.updateMany({}, { $set: { closed: true } }));
+      await request(readApp)
+        .get('/' + record.responseId)
+        .expect(404);
+      await scope(() =>
+        mongoose.models.StoredResponse.deleteOne({ responseId: record.responseId }),
+      );
+      await request(readApp)
+        .get('/' + record.responseId)
+        .expect(404);
 
       expect(
         await scope(() =>
