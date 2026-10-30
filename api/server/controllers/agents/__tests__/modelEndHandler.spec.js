@@ -2,7 +2,8 @@ jest.mock('@librechat/data-schemas', () => ({
   logger: { error: jest.fn(), debug: jest.fn(), info: jest.fn() },
 }));
 jest.mock('@librechat/api', () => {
-  const { getModelRefusalInfo, getModelEndUsage } = jest.requireActual('@librechat/api');
+  const { getModelRefusalInfo, getModelEndUsage, captureResponseAccountingUsage } =
+    jest.requireActual('@librechat/api');
   return {
     sendEvent: jest.fn(),
     emitEvent: jest.fn(),
@@ -10,6 +11,7 @@ jest.mock('@librechat/api', () => {
     markSummarizationUsage: (usage) => usage,
     getModelRefusalInfo,
     getModelEndUsage,
+    captureResponseAccountingUsage,
   };
 });
 jest.mock('~/server/services/Files/Citations', () => ({
@@ -36,8 +38,14 @@ describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 foll
   it('leaves usage usable when graph context is unavailable', () => {
     const usage = { input_tokens: 10, output_tokens: 5 };
 
-    expect(contextualizeModelUsage(usage, undefined, undefined)).toEqual(usage);
-    expect(contextualizeModelUsage(usage, undefined, null)).toEqual(usage);
+    expect(contextualizeModelUsage(usage, undefined, undefined)).toEqual({
+      ...usage,
+      accountingIdentity: { modelSource: 'unknown' },
+    });
+    expect(contextualizeModelUsage(usage, undefined, null)).toEqual({
+      ...usage,
+      accountingIdentity: { modelSource: 'unknown' },
+    });
   });
 
   it('prefers the actually invoked fallback provider and model', () => {
@@ -60,6 +68,11 @@ describe('ModelEndHandler — Vertex thoughtSignature capture (issue #13006 foll
       provider: 'anthropic',
       model: 'claude-fallback',
       agentId: 'agent-1',
+      accountingIdentity: {
+        model: 'claude-fallback',
+        provider: 'anthropic',
+        modelSource: 'runtime_reported',
+      },
     });
   });
 
