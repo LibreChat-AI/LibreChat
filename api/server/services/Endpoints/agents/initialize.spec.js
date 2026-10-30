@@ -2496,6 +2496,60 @@ describe('initializeClient — subagent loading', () => {
     }
   });
 
+  describe('stateful default setting for a flag-false lazy subagent', () => {
+    beforeEach(() => {
+      process.env.CODE_ENVIRONMENT_DECISION_VERSION = '1';
+      process.env.LIBRECHAT_CODE_BASEURL_STATEFUL = 'https://stateful-code.example.com/v1/';
+    });
+
+    afterEach(() => {
+      delete process.env.LIBRECHAT_CODE_DEFAULT_PROFILE;
+      delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
+      delete process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
+    });
+
+    it.each([
+      ['stateful', true],
+      [undefined, false],
+    ])('with the setting %s reports statefulCodeSessions %s', async (setting, expected) => {
+      if (setting != null) {
+        process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = setting;
+      }
+      const subAgent = await createAgent({
+        id: SUBAGENT_ID,
+        name: 'Flag-False Code Subagent',
+        provider: 'openai',
+        model: 'gpt-4',
+        author: new mongoose.Types.ObjectId(),
+        tools: ['execute_code'],
+        stateful_code_sessions: false,
+      });
+      await grantView(subAgent);
+      mockInitializeAgent.mockResolvedValue(
+        makePrimaryConfig({
+          subagents: { enabled: true, allowSelf: false, agent_ids: [SUBAGENT_ID] },
+        }),
+      );
+      const req = makeSubagentReq();
+      req.config.endpoints.agents.capabilities.push('execute_code', 'stateful_code_sessions');
+
+      await initializeClient({
+        req,
+        res: {},
+        signal: new AbortController().signal,
+        endpointOption: makeEndpointOption(),
+      });
+
+      expect(agentClientArgs.agent.lazySubagentConfigs[0]).toEqual(
+        expect.objectContaining({
+          id: SUBAGENT_ID,
+          codeEnvAvailable: true,
+          statefulCodeSessions: expected,
+        }),
+      );
+    });
+  });
+
   it('rejects a disallowed lazy subagent scope before exposing it for prewarm', async () => {
     const subAgent = await createAgent({
       id: SUBAGENT_ID,

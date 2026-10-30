@@ -6733,6 +6733,98 @@ describe('initializeAgent turn delivery routing', () => {
   });
 });
 
+describe('initializeAgent — LIBRECHAT_CODE_DEFAULT_PROFILE call sites', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    process.env.LIBRECHAT_CODE_BASEURL_STATEFUL = 'https://stateful-code.example.com/v1/';
+  });
+
+  afterEach(() => {
+    delete process.env.LIBRECHAT_CODE_DEFAULT_PROFILE;
+    delete process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
+  });
+
+  const run = async (
+    configureAgent: (agent: Agent) => void,
+    { statefulSessionsAvailable = true }: { statefulSessionsAvailable?: boolean } = {},
+  ) => {
+    const { agent, req, res, loadTools, db } = createMocks();
+    configureAgent(agent);
+    const result = await initializeAgent(
+      {
+        req,
+        res,
+        agent,
+        loadTools,
+        endpointOption: { endpoint: EModelEndpoint.agents },
+        allowedProviders: new Set([Providers.OPENAI]),
+        isInitialAgent: true,
+        codeEnvAvailable: true,
+        statefulSessionsAvailable,
+      },
+      db,
+    );
+    return result;
+  };
+
+  const ephemeralWithCode = (agent: Agent) => {
+    agent.id = Constants.EPHEMERAL_AGENT_ID;
+    agent.tools = [Tools.execute_code];
+  };
+
+  /** Shape loadAddedAgent returns for a saved agent: suffixed id, toggle explicitly off. */
+  const savedAddedAgent = (agent: Agent) => {
+    agent.id = 'agent_saved____1';
+    agent.tools = [Tools.execute_code];
+    agent.stateful_code_sessions = false;
+  };
+
+  it('runs an ephemeral Code-toggle agent on the stateful profile when the setting is stateful', async () => {
+    process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = 'stateful';
+    const result = await run(ephemeralWithCode);
+
+    expect(result.statefulCodeSessions).toBe(true);
+    expect(result.codeExecutionContext).toEqual(
+      expect.objectContaining({ executionProfile: 'stateful', statefulSessions: true }),
+    );
+  });
+
+  it('keeps an ephemeral Code-toggle agent on the default profile when the setting is unset', async () => {
+    const result = await run(ephemeralWithCode);
+
+    expect(result.statefulCodeSessions).toBe(false);
+    expect(result.codeExecutionContext).toEqual(
+      expect.objectContaining({ executionProfile: 'default', statefulSessions: false }),
+    );
+  });
+
+  it('runs an added-conversation saved agent with the toggle off on the stateful profile when the setting is stateful', async () => {
+    process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = 'stateful';
+    const result = await run(savedAddedAgent);
+
+    expect(result.statefulCodeSessions).toBe(true);
+    expect(result.codeExecutionContext).toEqual(
+      expect.objectContaining({ executionProfile: 'stateful', statefulSessions: true }),
+    );
+  });
+
+  it('keeps an added-conversation saved agent with the toggle off on the default profile when the setting is unset', async () => {
+    const result = await run(savedAddedAgent);
+
+    expect(result.statefulCodeSessions).toBe(false);
+    expect(result.codeExecutionContext).toEqual(
+      expect.objectContaining({ executionProfile: 'default', statefulSessions: false }),
+    );
+  });
+
+  it('does not turn stateful on when the stateful capability is off', async () => {
+    process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = 'stateful';
+    const result = await run(ephemeralWithCode, { statefulSessionsAvailable: false });
+
+    expect(result.statefulCodeSessions).toBe(false);
+  });
+});
+
 describe('initializeAgent — inference trust boundary', () => {
   beforeEach(() => {
     jest.clearAllMocks();

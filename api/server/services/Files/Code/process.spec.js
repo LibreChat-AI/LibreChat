@@ -72,6 +72,8 @@ jest.mock('@librechat/api', () => {
       jest.requireActual('@librechat/api').prepareCodeOutputBufferForInspection,
     getCodeFileContextLine: jest.requireActual('@librechat/api').getCodeFileContextLine,
     appendCodeFileContextLine: jest.requireActual('@librechat/api').appendCodeFileContextLine,
+    isStatefulCodeDefaultProfile: (...args) =>
+      jest.requireActual('@librechat/api').isStatefulCodeDefaultProfile(...args),
     resolveDownloadPath: (file) => file.storageKey || file.filepath,
     logAxiosError: jest.fn(),
     /* Behaviourally identical to the real predicate in
@@ -1319,6 +1321,47 @@ describe('Code Process', () => {
         expect(result.filepath).toContain(
           `execution_route_key=${encodeURIComponent(executionRouteKey)}`,
         );
+      });
+
+      describe('default-profile download link', () => {
+        const originalProfile = process.env.LIBRECHAT_CODE_DEFAULT_PROFILE;
+        afterEach(() => {
+          if (originalProfile === undefined) {
+            delete process.env.LIBRECHAT_CODE_DEFAULT_PROFILE;
+          } else {
+            process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = originalProfile;
+          }
+        });
+
+        it('writes execution_profile=default when the deployment default is stateful', async () => {
+          process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = 'stateful';
+          mockAxios.mockRejectedValue(new Error('Network error'));
+          const { file: result } = await processCodeOutput({
+            ...baseParams,
+            executionProfile: 'default',
+          });
+          expect(result.filepath).toContain('execution_profile=default');
+        });
+
+        it('adds no execution_profile when the deployment default is unset', async () => {
+          delete process.env.LIBRECHAT_CODE_DEFAULT_PROFILE;
+          mockAxios.mockRejectedValue(new Error('Network error'));
+          const { file: result } = await processCodeOutput({
+            ...baseParams,
+            executionProfile: 'default',
+          });
+          expect(result.filepath).not.toContain('execution_profile');
+        });
+
+        it('keeps execution_profile=stateful for stateful runs', async () => {
+          process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = 'stateful';
+          mockAxios.mockRejectedValue(new Error('Network error'));
+          const { file: result } = await processCodeOutput({
+            ...baseParams,
+            executionProfile: 'stateful',
+          });
+          expect(result.filepath).toContain('execution_profile=stateful');
+        });
       });
 
       it('should fallback to download URL when saveBuffer is not available', async () => {

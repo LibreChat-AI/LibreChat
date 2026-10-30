@@ -10,6 +10,7 @@ const mockGetMCPServerTools = jest.fn();
 const mockCreateMCPTool = jest.fn();
 const mockCreateMCPTools = jest.fn();
 const mockGetServerConfig = jest.fn();
+const mockCheckCapability = jest.fn(async () => true);
 const mockGetAccessibleMcpServerNames = jest.fn(async () => []);
 const mockPrimeCodeFiles = jest.fn(async () => ({ files: [], toolContext: undefined }));
 
@@ -57,6 +58,7 @@ jest.mock('~/server/services/Config', () => ({
     },
   }),
   getMCPServerTools: (...args) => mockGetMCPServerTools(...args),
+  checkCapability: (...args) => mockCheckCapability(...args),
 }));
 
 jest.mock('~/server/services/MCP', () => ({
@@ -373,6 +375,67 @@ describe('Tool Handlers', () => {
           signal: controller.signal,
         }),
       );
+    });
+
+    describe('stateful default profile', () => {
+      const loadCodeTool = async (agent) => {
+        const toolMap = await loadTools({
+          user: fakeUser._id.toString(),
+          tools: [Tools.execute_code],
+          returnMap: true,
+          agent,
+          options: { req: { body: {} } },
+        });
+        await toolMap[Tools.execute_code]();
+        return mockPrimeCodeFiles.mock.calls.at(-1)[0].executionProfile;
+      };
+
+      beforeEach(() => {
+        process.env.LIBRECHAT_CODE_BASEURL_STATEFUL = 'https://stateful.example.com/v1';
+        mockPrimeCodeFiles.mockClear();
+        mockCheckCapability.mockResolvedValue(true);
+      });
+
+      afterEach(() => {
+        delete process.env.LIBRECHAT_CODE_BASEURL_STATEFUL;
+        delete process.env.LIBRECHAT_CODE_DEFAULT_PROFILE;
+      });
+
+      it('runs an agent with the flag unset stateful when the default profile is stateful', async () => {
+        process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = 'stateful';
+        expect(await loadCodeTool({ id: 'agent-1', tools: [Tools.execute_code] })).toBe('stateful');
+      });
+
+      it('runs an agent with the flag false stateful when the default profile is stateful', async () => {
+        process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = 'stateful';
+        expect(
+          await loadCodeTool({
+            id: 'agent-1',
+            tools: [Tools.execute_code],
+            stateful_code_sessions: false,
+          }),
+        ).toBe('stateful');
+      });
+
+      it('keeps an agent with the flag unset on the default profile when the setting is unset', async () => {
+        expect(await loadCodeTool({ id: 'agent-1', tools: [Tools.execute_code] })).toBe('default');
+      });
+
+      it('keeps an agent with the flag set stateful when the setting is unset', async () => {
+        expect(
+          await loadCodeTool({
+            id: 'agent-1',
+            tools: [Tools.execute_code],
+            stateful_code_sessions: true,
+          }),
+        ).toBe('stateful');
+      });
+
+      it('does not turn stateful when the capability is off, even with the default profile', async () => {
+        process.env.LIBRECHAT_CODE_DEFAULT_PROFILE = 'stateful';
+        mockCheckCapability.mockResolvedValue(false);
+        expect(await loadCodeTool({ id: 'agent-1', tools: [Tools.execute_code] })).toBe('default');
+      });
     });
 
     describe('MCP credential failure propagation', () => {

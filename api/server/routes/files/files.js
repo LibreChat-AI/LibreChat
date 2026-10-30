@@ -17,6 +17,7 @@ const {
   verifyAgentUploadPermission,
   createCodeExecutionRouteKey,
   getCodeExecutionBaseUrl,
+  getCodeDefaultProfile,
   assertUploadContentAllowed,
   hasActiveFilePolicy,
   sanitizeFilename,
@@ -27,6 +28,7 @@ const {
 } = require('@librechat/api');
 const {
   isUUID,
+  AgentCapabilities,
   FileSources,
   ResourceType,
   EModelEndpoint,
@@ -52,6 +54,7 @@ const { fileAccess } = require('~/server/middleware/accessResources/fileAccess')
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { getOpenAIClient } = require('~/server/controllers/assistants/helpers');
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
+const { checkCapability } = require('~/server/services/Config');
 const { getRoleByName } = require('~/models');
 const { checkPermission } = require('~/server/services/PermissionService');
 const { cleanFileName, getContentDisposition } = require('~/server/utils/files');
@@ -376,7 +379,14 @@ router.get('/code/download/:session_id/:fileId', async (req, res) => {
       logger.debug(`${logPrefix} invalid execution_profile`);
       return res.status(400).send('Bad request');
     }
-    const executionProfile = requestedProfile ?? 'default';
+    let executionProfile = requestedProfile ?? getCodeDefaultProfile();
+    if (
+      requestedProfile == null &&
+      executionProfile === 'stateful' &&
+      !(await checkCapability(req, AgentCapabilities.stateful_code_sessions))
+    ) {
+      executionProfile = 'default';
+    }
     const requestedRouteKey = req.query.execution_route_key;
     if (
       requestedRouteKey != null &&
