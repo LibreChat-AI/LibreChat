@@ -63,10 +63,8 @@ const {
   resolveResponseContinuation,
   buildResponseInputChain,
   loadForegroundResponseHistory,
-  projectStoredResponseMessage,
-  saveForegroundResponseInputs,
-  requireResponseStorageWrite,
   createForegroundResponseTerminal,
+  stageForegroundResponse,
   createStoredForegroundResponseReader,
   createResponseAccountingSnapshot,
   withResponsePersistenceErrors,
@@ -96,10 +94,8 @@ const {
   resolveToolRoleGrants,
   resolveApiConversationProject,
   resolveAdmittedCodeEnvironmentDecision,
-  resolvePersistableCodeEnvironmentDecision,
   createTerminalRunErrorObserver,
   announceReply,
-  getConversationWriteContext,
   isTemporaryTurn,
   getModelEndUsage,
   hasEntityEmbeddings,
@@ -349,101 +345,6 @@ async function loadPreviousMessages(conversationId, userId, previousResponseId) 
 }
 
 /**
- * Save input messages to database
- * @param {import('express').Request} req
- * @param {string} conversationId
- * @param {Array} inputMessages - Internal format messages
- * @param {string} agentId
- * @returns {Promise<void>}
- */
-async function saveInputMessages(req, conversationId, inputMessages, agentId) {
-  return saveForegroundResponseInputs(
-    { context: getConversationWriteContext(req), conversationId, messages: inputMessages, agentId },
-    { saveMessage: db.saveMessage },
-  );
-}
-
-/**
- * Save response output to database
- * @param {import('express').Request} req
- * @param {string} conversationId
- * @param {string} responseId
- * @param {import('@librechat/api').Response} response
- * @param {string} agentId
- * @param {number | undefined} visibleOutputTokens
- * @returns {Promise<void>}
- */
-async function saveResponseOutput(
-  req,
-  conversationId,
-  responseId,
-  response,
-  agentId,
-  visibleOutputTokens,
-  parentMessageId,
-) {
-  const langfuseTraceFields = await getLangfuseTraceMessageFields(req.config, responseId, {
-    isTemporary: isTemporaryTurn(req),
-  });
-
-  // Save the assistant message
-  return requireResponseStorageWrite(
-    db.saveMessage(
-      getConversationWriteContext(req),
-      {
-        messageId: responseId,
-        conversationId,
-        ...projectStoredResponseMessage(response, parentMessageId),
-        isCreatedByUser: false,
-        ...langfuseTraceFields,
-        sender: 'Agent',
-        endpoint: EModelEndpoint.agents,
-        model: agentId,
-        finish_reason: response.status === 'completed' ? 'stop' : response.status,
-        tokenCount: visibleOutputTokens ?? response.usage?.output_tokens,
-      },
-      { context: 'Responses API - save assistant response' },
-    ),
-    { conversationId, messageId: responseId },
-  );
-}
-
-/**
- * Save or update conversation
- * @param {import('express').Request} req
- * @param {string} conversationId
- * @param {string} agentId
- * @param {object} agent
- * @param {import('@librechat/api').ConversationCodeEnvironmentDecision} codeEnvironmentDecision
- * @returns {Promise<void>}
- */
-async function saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision) {
-  const title = resolveConversationTitle(req, agent?.name || 'Open Responses Conversation');
-  await requireResponseStorageWrite(
-    db.saveConvo(
-      getConversationWriteContext(req),
-      {
-        conversationId,
-        endpoint: EModelEndpoint.agents,
-        agent_id: agentId,
-        ...resolvePersistableCodeEnvironmentDecision({
-          conversationId,
-          decision: codeEnvironmentDecision,
-          conversation: req.resolvedConversation,
-        }),
-        ...(title != null && { title }),
-        model: agent?.model,
-      },
-      {
-        context: 'Responses API - save conversation',
-        initialAgentId: agent?.id === agentId ? agentId : null,
-      },
-    ),
-    { conversationId },
-  );
-}
-
-/**
  * Convert stored messages to Open Responses output format
  * @param {Array} messages - Stored messages
  * @returns {Array} Output items
@@ -606,7 +507,7 @@ const executeResponse = async (envelope, { req, res }) => {
      * execution must observe it after durable enrollment and before provider work. */
     isPrincipalActive: db.isSubagentOwnerAdmissible,
     afterSettle: terminal.afterSettle,
-    beforeSettle: (execution) => {
+    beforeSettle: (execution, error) => {
       if (!artifactWritesCovered && artifactPromises.length > 0) {
         execution.track(
           waitForAgentExecutionWrites(artifactPromises).catch((artifactError) => {
@@ -617,6 +518,7 @@ const executeResponse = async (envelope, { req, res }) => {
           }),
         );
       }
+      terminal.beforeSettle(execution, error);
     },
     onSettlementError: terminal.onSettlementError,
     handleExecutionError: (error, signal) => {
@@ -1386,36 +1288,35 @@ const executeResponse = async (envelope, { req, res }) => {
 
         const accounting = snapshotAccounting();
         const finalResponse = prepareStreamResponse(usage, accounting);
-        terminal.stage({
-          response: finalResponse,
-          fail: failStream,
-          save: async (response) => {
-            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
-            await saveInputMessages(req, conversationId, inputChain.messages, agentId);
-            return saveResponseOutput(
-              req,
-              conversationId,
-              responseId,
-              response,
-              agentId,
-              tracker.usage.outputTokens,
-              parentMessageId,
-            );
+        stageForegroundResponse(
+          {
+            terminal,
+            request: req,
+            response: finalResponse,
+            conversationId,
+            agentId,
+            agent,
+            codeEnvironmentDecision,
+            messages: inputChain.messages,
+            parentMessageId,
+            visibleOutputTokens: tracker.usage.outputTokens,
+            transport: {
+              type: 'stream',
+              response: res,
+              finalize: finalizeStream,
+              fail: failStream,
+            },
           },
-          afterStore: (savedResponse) =>
-            announceReply(db, {
-              userId: req?.user?.id,
-              conversationId,
-              reply: savedResponse,
-              context: 'Responses API - announce stored reply',
-            }),
-          publish: (response) => {
-            finalizeStream(usage, accounting, response);
-            res.end();
+          {
+            saveConvo: db.saveConvo,
+            saveMessage: db.saveMessage,
+            announceReply: announceReply.bind(null, db),
+            resolveTitle: resolveConversationTitle,
+            traceFields: getLangfuseTraceMessageFields,
           },
-        });
+        );
 
-        // The HTTP response is complete, while destructive cleanup still waits for artifacts.
+        // Register artifact writes before the host drains and publishes the terminal response.
         if (artifactPromises.length > 0) {
           execution.track(
             waitForAgentExecutionWrites(artifactPromises).catch((artifactError) => {
@@ -1625,38 +1526,28 @@ const executeResponse = async (envelope, { req, res }) => {
           buildResponsesUsage(collectedUsage),
           snapshotAccounting(),
         );
-        terminal.stage({
-          response,
-          fail: (failure) =>
-            sendResponsesErrorResponse(
-              res,
-              failure.status,
-              failure.message,
-              'server_error',
-              failure.code,
-            ),
-          save: async (finalResponse) => {
-            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
-            await saveInputMessages(req, conversationId, inputChain.messages, agentId);
-            return saveResponseOutput(
-              req,
-              conversationId,
-              responseId,
-              finalResponse,
-              agentId,
-              aggregator.usage.outputTokens,
-              parentMessageId,
-            );
+        stageForegroundResponse(
+          {
+            terminal,
+            request: req,
+            response: response,
+            conversationId,
+            agentId,
+            agent,
+            codeEnvironmentDecision,
+            messages: inputChain.messages,
+            parentMessageId,
+            visibleOutputTokens: aggregator.usage.outputTokens,
+            transport: { type: 'json', response: res },
           },
-          afterStore: (savedResponse) =>
-            announceReply(db, {
-              userId: req?.user?.id,
-              conversationId,
-              reply: savedResponse,
-              context: 'Responses API - announce stored reply',
-            }),
-          publish: (finalResponse) => res.json(finalResponse),
-        });
+          {
+            saveConvo: db.saveConvo,
+            saveMessage: db.saveMessage,
+            announceReply: announceReply.bind(null, db),
+            resolveTitle: resolveConversationTitle,
+            traceFields: getLangfuseTraceMessageFields,
+          },
+        );
 
         const duration = Date.now() - requestStartTime;
         logger.debug(
