@@ -6,9 +6,11 @@ import type { Agents } from 'librechat-data-provider';
 import type { ResponseDecisionDependencies } from './decision';
 import { createBackgroundResponseService, buildPendingBackgroundResponse } from './background';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
+import { createResponseCompletion, createResponseExecutionRelease } from './completion';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { createResponseDecisionSubmission } from './decision';
 import { enrollAgentExecution } from '../remote/lifecycle';
+import { cleanupResponseCheckpoint } from './checkpoint';
 import { createResponseResumeAdmission } from './resume';
 import { GenerationJobManagerClass } from '~/stream';
 import { buildPendingAction } from '../hitl/policy';
@@ -365,7 +367,13 @@ it('keeps a submitted decision recoverable through owner review and preserves pa
   scoped(async () => {
     const { action } = await setup();
     const review = createResponseReview({ jobs, publicBaseURL: 'https://agents.example' });
+    const completion = createResponseCompletion({
+      storage,
+      cleanupCheckpoint: cleanupResponseCheckpoint,
+      releaseExecution: createResponseExecutionRelease(jobs),
+    });
     const service = createBackgroundResponseService({
+      recoverTerminal: completion.finish,
       storage,
       authorize: async () => true,
       enqueue: async () => {},
