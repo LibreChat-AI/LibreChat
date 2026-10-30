@@ -1,3 +1,4 @@
+import { useFailedReveal } from './reveal';
 import React, { useMemo, useState, useEffect, useContext, useCallback } from 'react';
 import { Button } from '@librechat/client';
 import { hasToolParams } from '@librechat/chat';
@@ -240,7 +241,7 @@ export default function ToolCall({
   /** The cheap, identity and phase checks run first: a streaming call re-renders
    *  on every argument delta, and the panel check parses its payload. */
   const bare =
-    phase === 'completed' &&
+    (phase === 'completed' || (generatedLabel && phase === 'failed')) &&
     (generatedLabel ||
       ((soleTool || loneGroup) && !isMCPToolCall && !isActionCall && intent == null)) &&
     hasInfo &&
@@ -250,6 +251,18 @@ export default function ToolCall({
   useToolContentRequest(bare);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showInfo);
   const rowRef = useRowHandoff(bare);
+  const revealBareFailure = useCallback(
+    (claimFocus: () => boolean) => {
+      if (!claimFocus()) return;
+      const panel = expandRef.current;
+      if (panel == null) return;
+      panel.setAttribute('tabindex', '-1');
+      panel.focus({ preventScroll: true });
+    },
+    [expandRef],
+  );
+  useFailedReveal(bare && phase === 'failed', revealBareFailure);
+
   const { shouldRenderBody, mountBody, handleTransitionEnd } = useLazyCollapseBody(showInfo);
 
   /**
@@ -471,7 +484,7 @@ export default function ToolCall({
         onTransitionEnd={handleTransitionEnd}
         data-tool-call-output-id={toolCallId}
       >
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {hasInfo && shouldRenderBody && (
             <div
               className={cn(

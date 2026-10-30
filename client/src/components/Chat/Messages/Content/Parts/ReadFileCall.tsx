@@ -118,7 +118,7 @@ export default function ReadFileCall({
 
   return (
     <>
-      <BareStatus active={bare} text={finishedText} />
+      <BareStatus phase={phase} active={bare} text={finishedText} />
       {!bare && (
         <div
           className={TOOL_ROW_CLASSES}
@@ -147,7 +147,7 @@ export default function ReadFileCall({
         </div>
       )}
       <div style={expandStyle}>
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {hasOutput && (
             <div
               className={cn(

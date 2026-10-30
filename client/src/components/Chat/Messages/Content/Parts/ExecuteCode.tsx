@@ -1,3 +1,4 @@
+import CommandTime from './CommandTime';
 import { useMemo } from 'react';
 import { SquareTerminal } from 'lucide-react';
 import { TOOL_ROW_CLASSES, BareStatus, Stdout } from '@librechat/chat/components';
@@ -148,7 +149,7 @@ export default function ExecuteCode({
 
   return (
     <>
-      <BareStatus active={bare} text={finishedText} />
+      <BareStatus phase={phase} active={bare} text={finishedText} />
       {!bare && (
         <div
           className={TOOL_ROW_CLASSES}
@@ -170,8 +171,10 @@ export default function ExecuteCode({
              *  covers the live card; the persisted `backgrounded` marker covers
              *  the card after harvest replaces the handle with real stdout
              *  (and after any reload), when no transient signal survives. */
-            durationMs={
-              backgroundHandle == null && backgrounded !== true ? runStepDurationMs : undefined
+            timer={
+              backgroundHandle == null && backgrounded !== true ? (
+                <CommandTime phase={phase} durationMs={runStepDurationMs} />
+              ) : undefined
             }
             icon={
               <SquareTerminal
@@ -188,13 +191,20 @@ export default function ExecuteCode({
         </div>
       )}
       <div style={expandStyle}>
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           <div
             className={cn(
               toolPanelSpacingClassName,
               'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
             )}
           >
+            {bare && code && (
+              <div className="flex items-center justify-end px-4 pt-2">
+                {backgroundHandle == null && backgrounded !== true && (
+                  <CommandTime phase={phase} durationMs={runStepDurationMs} />
+                )}
+              </div>
+            )}
             {code && <CodeWindowHeader language={lang} code={code} />}
             {code && (
               <pre

@@ -1,3 +1,4 @@
+import { useFailedReveal } from '../reveal';
 import { useCallback, useContext } from 'react';
 import {
   GeneratedToolLabelContext,
@@ -112,7 +113,7 @@ export default function useToolCallState({
   const bare =
     solo &&
     (panelReady ?? hasContent) &&
-    phase === 'completed' &&
+    (phase === 'completed' || (generatedLabel && phase === 'failed')) &&
     !keepRow &&
     !(keepLabelRow && !generatedLabel);
   const [expanded, setExpansionOverride] = useToolExpansion(hasContent);
@@ -121,6 +122,17 @@ export default function useToolCallState({
   useToolContentRequest(bare);
   const { style: expandStyle, ref: expandRef } = useExpandCollapse(showCode);
   const rowRef = useRowHandoff(bare);
+  const revealBareFailure = useCallback(
+    (claimFocus: () => boolean) => {
+      if (!claimFocus()) return;
+      const panel = expandRef.current;
+      if (panel == null) return;
+      panel.setAttribute('tabindex', '-1');
+      panel.focus({ preventScroll: true });
+    },
+    [expandRef],
+  );
+  useFailedReveal(bare && phase === 'failed', revealBareFailure);
   const toggleCode = useCallback(() => {
     const next = !showCode;
     setExpansionOverride(next);

@@ -137,7 +137,7 @@ export default function BackgroundTaskCall({
         onTransitionEnd={handleTransitionEnd}
         data-tool-call-output-id={toolCallId}
       >
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {hasContent && shouldRenderBody && (
             <div
               className={cn(

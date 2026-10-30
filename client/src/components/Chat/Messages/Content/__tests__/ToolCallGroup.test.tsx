@@ -443,6 +443,21 @@ describe('ToolCallGroup image hoisting', () => {
     expect(screen.queryByTestId('inner-0')).not.toBeInTheDocument();
   });
 
+  it('keeps an unnamed streaming batch open between consecutive calls', () => {
+    const parts = [{ part: makePart('first', '', 'lookup'), idx: 0 }];
+    const view = renderGroup({ ...baseProps, parts, isSubmitting: true });
+    view.rerender(
+      <RecoilRoot>
+        <ToolCallGroup
+          {...baseProps}
+          parts={[{ part: makePart('first', 'done', 'lookup'), idx: 0 }]}
+          isSubmitting
+        />
+      </RecoilRoot>,
+    );
+    expect(screen.getByRole('button', { expanded: true })).toBeInTheDocument();
+  });
+
   it('keeps a pending-label group expanded while its tool has no output', () => {
     const voidToolParts = [{ part: makePart('t1', '', 'update_settings'), idx: 0 }];
     const labelPart = {
@@ -2084,6 +2099,27 @@ describe('ToolCallGroup sole tool', () => {
       );
     },
   );
+
+  it('keeps the tool header when Thoughts shares its group', () => {
+    function Probe() {
+      return <span data-testid="lone-with-thoughts">{String(useContext(LoneGroupContext))}</span>;
+    }
+    renderGroup({
+      ...props(['only']),
+      parts: [
+        { part: makePart('only'), idx: 0 },
+        { part: { type: ContentTypes.THINK, think: 'Checking' } as TMessageContentParts, idx: 1 },
+      ],
+      renderPart: () => <Probe />,
+    });
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('lone-with-thoughts')).toHaveTextContent('false');
+  });
+  it('lets the grid panel shrink below its content height', () => {
+    renderGroup(props(['first', 'second']));
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('min-h-0');
+  });
 
   it('opens the only tool call inside the group by default', () => {
     renderGroup(props(['only']));
