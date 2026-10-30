@@ -34,7 +34,7 @@ function validSigningSecret(config: ChannelConfig, secret?: string): boolean {
 export interface ChannelDependencies {
   db: AgentChannelMethods;
   serviceToken: () => string | undefined;
-  config: () => Promise<ChannelConfig | undefined>;
+  config: (req: Request, channel?: AgentChannelRecord) => Promise<ChannelConfig | undefined>;
   getAgent: (agentId: string) => Promise<{ id: string; name?: string | null } | null>;
   deleteApiKey: (id: string, userId: string) => Promise<boolean>;
   verifySlackToken: (token: string) => Promise<SlackIdentity | null>;
@@ -154,7 +154,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
     ): RequestHandler =>
     async (req, res) => {
       try {
-        const config = await deps.config();
+        const config = await deps.config(req);
         if (!config?.enabled) {
           res.status(404).json({ error: 'channels_disabled' });
           return;
@@ -346,37 +346,50 @@ export function createChannelHandlers(deps: ChannelDependencies): {
     );
   });
 
-  const serviceWithConfig = (
-    handler: (
-      req: Request,
-      res: Response,
-      channel: AgentChannelRecord,
-      config: ChannelConfig,
-    ) => Promise<void>,
-  ): RequestHandler =>
-    protect(async (req, res, config) => {
-      if (!acceptsChannelServiceToken(req.get('authorization'), deps.serviceToken())) {
-        res.status(401).json({ error: 'invalid_service_auth' });
-        return;
+  const serviceWithConfig =
+    (
+      handler: (
+        req: Request,
+        res: Response,
+        channel: AgentChannelRecord,
+        config: ChannelConfig,
+      ) => Promise<void>,
+    ): RequestHandler =>
+    async (req, res) => {
+      try {
+        if (!acceptsChannelServiceToken(req.get('authorization'), deps.serviceToken())) {
+          res.status(401).json({ error: 'invalid_service_auth' });
+          return;
+        }
+        if (!identifier.safeParse(req.params.channelId).success) {
+          res.status(404).json({ error: 'channel_not_found' });
+          return;
+        }
+        const channel = await runAsSystem(async () =>
+          deps.db.getAgentChannel(req.params.channelId),
+        );
+        const requestedTenant = req.params.tenantId ?? req.get('x-tenant-id') ?? '_';
+        if (
+          !channel ||
+          channel.status !== 'active' ||
+          requestedTenant !== (channel.tenantId || '_')
+        ) {
+          res.status(404).json({ error: 'channel_not_found' });
+          return;
+        }
+        await tenantStorage.run({ tenantId: channel.tenantId || undefined }, async () => {
+          const config = await deps.config(req, channel);
+          if (!config?.enabled) {
+            res.status(404).json({ error: 'channels_disabled' });
+            return;
+          }
+          await handler(req, res, channel, config);
+        });
+      } catch (error) {
+        deps.logError(getSafeErrorMetadata(error));
+        res.status(503).json({ error: 'channel_operation_failed' });
       }
-      if (!identifier.safeParse(req.params.channelId).success) {
-        res.status(404).json({ error: 'channel_not_found' });
-        return;
-      }
-      const channel = await runAsSystem(async () => deps.db.getAgentChannel(req.params.channelId));
-      const requestedTenant = req.params.tenantId ?? req.get('x-tenant-id') ?? '_';
-      if (
-        !channel ||
-        channel.status !== 'active' ||
-        requestedTenant !== (channel.tenantId || '_')
-      ) {
-        res.status(404).json({ error: 'channel_not_found' });
-        return;
-      }
-      await tenantStorage.run({ tenantId: channel.tenantId || undefined }, async () => {
-        await handler(req, res, channel, config);
-      });
-    });
+    };
 
   const service: ChannelServiceGuard = (handler) =>
     serviceWithConfig((req, res, channel) => handler(req, res, channel));

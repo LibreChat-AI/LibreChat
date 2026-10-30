@@ -33,7 +33,6 @@ const {
   sendEvent,
   computeUsageCostUSD,
   aggregateEmittedUsage,
-  buildPersistedResponseAccounting,
   resolveAgentTokenConfig,
   buildPersistedContextUsage,
   resolveRetainedToolTokens,
@@ -3717,7 +3716,6 @@ class AgentClient extends BaseClient {
      *   thoughtSignatures?: Record<string, string>,
      *   contextUsage?: import('librechat-data-provider').TContextUsageEvent,
      *   usage?: import('librechat-data-provider').TResponseUsage,
-     *   accounting?: import('librechat-data-provider').ResponseAccounting,
      * }} */
     const metadata = {};
     const signatures = this.collectedThoughtSignatures;
@@ -3785,22 +3783,6 @@ class AgentClient extends BaseClient {
     if (usage) {
       metadata.usage = usage;
     }
-    Object.assign(
-      metadata,
-      buildPersistedResponseAccounting({
-        collectedUsage: this.collectedUsage,
-        emittedUsage: usageEvents,
-        billingEnabled: this.options.req?.config?.interfaceConfig?.contextCost,
-        billing: {
-          pricing: {
-            getMultiplier: db.getMultiplier,
-            getCacheMultiplier: db.getCacheMultiplier,
-          },
-          getValueKey: db.getValueKey,
-          resolveEndpointTokenConfig: (entry) => this.resolveAgentEndpointTokenConfig(entry),
-        },
-      }),
-    );
     return Object.keys(metadata).length > 0 ? metadata : undefined;
   }
 
