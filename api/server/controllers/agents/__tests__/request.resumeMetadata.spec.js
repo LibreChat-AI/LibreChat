@@ -257,6 +257,10 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  getTrustedNewConversationId: (...args) =>
+    jest.requireActual('@librechat/api').getTrustedNewConversationId(...args),
+  buildGenerationStartedResponse: (...args) =>
+    jest.requireActual('@librechat/api').buildGenerationStartedResponse(...args),
   resolveChannelExecutionMetadata: (...args) =>
     jest.requireActual('@librechat/api').resolveChannelExecutionMetadata(...args),
   getPreliminaryResponseMessageId: jest.requireActual(
@@ -594,7 +598,7 @@ describe('ResumableAgentController resume metadata', () => {
 
   it('persists the validated channel marker received through signed trigger ingress', async () => {
     const { generateAgentTriggerToken } = jest.requireActual('@librechat/api');
-    const channelExecution = { channelId: 'channel-1', runId: 'channel-run-1' };
+    const channelExecution = { channelId: 'channel:team/频道', runId: 'event.run:1' };
     const req = {
       user: { id: 'user-123' },
       headers: {
@@ -624,6 +628,51 @@ describe('ResumableAgentController resume metadata', () => {
       expect.objectContaining({ initialMetadata: expect.objectContaining({ channelExecution }) }),
     );
   });
+
+  it.each([true, false])(
+    'reserves conversation and acknowledges the canonical reply for trusted trigger: %s',
+    async (trusted) => {
+      const reserved = '3c911c1d-e019-4a13-8ccb-258774a4f2bd';
+      mockGenerationJobManager.claimGeneration.mockImplementationOnce(
+        async (_user, _request, streamId, conversationId) =>
+          wonGenerationClaim({ streamId, conversationId }),
+      );
+      const req = {
+        user: { id: 'user-123' },
+        _isAgentTrigger: trusted,
+        body: {
+          text: 'Run',
+          messageId: 'incoming-user-message',
+          conversationId: 'new',
+          newConversationId: reserved,
+          clientRequestId: 'stable-channel-request',
+          endpointOption: { endpoint: 'agents', modelOptions: { model: 'agent-1' } },
+        },
+        config: {},
+      };
+      const res = createResumableResponse();
+      await AgentController(
+        req,
+        res,
+        jest.fn(),
+        jest.fn().mockRejectedValue(new Error('stop after enrollment')),
+        null,
+      );
+      const [streamId, , conversationId, options] =
+        mockGenerationJobManager.createJob.mock.calls[0];
+      if (trusted) expect(conversationId).toBe(reserved);
+      else expect(conversationId).not.toBe(reserved);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          streamId,
+          conversationId,
+          status: 'started',
+          responseMessageId: options.initialMetadata.responseMessageId,
+        }),
+      );
+      expect(options.initialMetadata.responseMessageId).toEqual(expect.any(String));
+    },
+  );
 
   it.each([
     ['non-string', { arbitrary: true }],
@@ -1134,6 +1183,8 @@ describe('ResumableAgentController resume metadata', () => {
       streamId: 'conversation-123',
       conversationId: 'conversation-123',
       generationCreatedAt: 1000,
+      responseMessageId:
+        mockGenerationJobManager.createJob.mock.calls[0][3].initialMetadata.responseMessageId,
       status: 'started',
       generationProtocolVersion: 2,
     });
@@ -1514,6 +1565,8 @@ describe('ResumableAgentController resume metadata', () => {
       streamId: conversationId,
       conversationId,
       generationCreatedAt: 1000,
+      responseMessageId:
+        mockGenerationJobManager.createJob.mock.calls[0][3].initialMetadata.responseMessageId,
       status: 'started',
       generationProtocolVersion: 1,
     });
@@ -3092,6 +3145,8 @@ describe('ResumableAgentController resume metadata', () => {
       streamId: 'conversation-123',
       conversationId: 'conversation-123',
       generationCreatedAt: 1000,
+      responseMessageId:
+        mockGenerationJobManager.createJob.mock.calls[0][3].initialMetadata.responseMessageId,
       status: 'started',
       generationProtocolVersion: 1,
     });

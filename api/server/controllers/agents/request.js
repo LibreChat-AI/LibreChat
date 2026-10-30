@@ -18,6 +18,8 @@ const {
   resolveTitleTiming,
   GenerationJobManager,
   resolveChannelExecutionMetadata,
+  getTrustedNewConversationId,
+  buildGenerationStartedResponse,
   createConvoPersistenceSignal,
   recoverTurnMessageReference,
   filterPersistableAbortContent,
@@ -932,10 +934,11 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     req.body.overrideUserMessageId = `${recoveredSteerId}${Constants.COMMON_DIVIDER}0`;
   }
   const isNewConvo = !reqConversationId || reqConversationId === 'new';
-  const scheduledNewConversationId =
-    isScheduledFire && typeof req.body?.newConversationId === 'string'
-      ? req.body.newConversationId
-      : null;
+  const scheduledNewConversationId = getTrustedNewConversationId({
+    isScheduledFire,
+    isAgentTrigger: req._isAgentTrigger === true,
+    newConversationId: req.body?.newConversationId,
+  });
   let conversationId = reqConversationId;
   if (isNewConvo) {
     conversationId =
@@ -1874,7 +1877,12 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       sendGenerationJson(
         res,
         200,
-        { streamId, conversationId, generationCreatedAt: jobCreatedAt, status: 'started' },
+        buildGenerationStartedResponse({
+          streamId,
+          conversationId,
+          generationCreatedAt: jobCreatedAt,
+          responseMessageId: preallocatedResponseMessageId,
+        }),
         generationProtocolVersion,
       );
     };
