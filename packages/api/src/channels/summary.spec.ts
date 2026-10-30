@@ -22,7 +22,19 @@ function priced(amount = '0.1'): ResponseAccounting {
     basis: 'application_billing',
     coverage: 'complete',
     reason: 'priced',
-    calls: [],
+    calls: [
+      {
+        modelSource: 'configured',
+        usageType: 'message',
+        inputTokens: 2,
+        outputTokens: 3,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        amount,
+        basis: 'application_billing',
+        reason: 'priced',
+      },
+    ],
   };
 }
 function snapshot(overrides: Partial<ChannelRunSnapshot> = {}): ChannelRunSnapshot {
@@ -60,7 +72,13 @@ function run(sequence = 1): ChannelRunRecord {
       input: 'Private input must not appear in summary',
       actor: { teamId: 'T1', appId: 'A1', externalUserId: 'U1' },
     },
-    execution: { requestId: 'request', conversationId: 'conversation', parentMessageId: 'parent' },
+    execution: {
+      requestId: 'request',
+      responseId: 'response',
+      protocol: 'responses',
+      conversationId: 'conversation',
+      parentMessageId: 'parent',
+    },
   };
 }
 function service(rows: ChannelSummaryRow[] = [], trace?: ChannelSummaryTraceDependencies) {
@@ -187,7 +205,7 @@ describe('actor-lane summary', () => {
       { ...run(), snapshot: { ...snapshot(), summary: frozen } },
       snapshot({ accounting: priced('999') }),
     );
-    expect(result).toBe(frozen);
+    expect(result).toEqual(frozen);
     expect(priorMetrics).not.toHaveBeenCalled();
   });
   it('propagates storage outages instead of returning complete empty history', async () => {
@@ -378,5 +396,71 @@ describe('authorized saved session provenance', () => {
     } finally {
       process.env = savedEnv;
     }
+  });
+});
+
+describe('fresh disclosure of frozen metrics', () => {
+  it('does not count absent or empty accounting as recorded token usage, including legacy zeros', async () => {
+    for (const accounting of [undefined, { ...priced(), calls: [] }]) {
+      expect(
+        (
+          await service().summarize(
+            run(),
+            snapshot({ usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 }, accounting }),
+          )
+        ).tokens.coverage,
+      ).toBe('unavailable');
+    }
+    const knownZero = priced();
+    knownZero.calls[0].inputTokens = 0;
+    knownZero.calls[0].outputTokens = 0;
+    expect(
+      (
+        await service().summarize(
+          run(),
+          snapshot({
+            usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+            accounting: knownZero,
+          }),
+        )
+      ).tokens,
+    ).toMatchObject({ coverage: 'complete', value: { totalTokens: 0 } });
+  });
+  it('preserves immutable metrics while suppressing a previously authorized URL after policy changes', async () => {
+    const destinationId = 'destination';
+    const link = {
+      url: 'https://cloud.langfuse.com/project/project/sessions/conversation',
+      destinationId,
+    };
+    let allowed = true;
+    let destination = link;
+    const trace: ChannelSummaryTraceDependencies = {
+      canViewSession: async () => allowed,
+      getMessage: async () => ({
+        user: 'user',
+        tenantId: 'tenant',
+        conversationId: 'conversation',
+        messageId: 'response',
+        isCreatedByUser: false,
+        langfuseSampled: true,
+        langfuseDestinationIds: [destinationId],
+      }),
+      resolveSession: async () => destination,
+    };
+    const summaryService = service([], trace);
+    const frozen = await summaryService.summarize(run(), snapshot());
+    expect(frozen.session).toEqual({ url: link.url });
+    const retained = { ...run(), snapshot: { ...snapshot(), summary: frozen } };
+    allowed = false;
+    const denied = await summaryService.summarize(
+      retained,
+      snapshot({ accounting: priced('999') }),
+    );
+    expect(denied.session).toBeUndefined();
+    expect(denied.costUSD).toEqual(frozen.costUSD);
+    expect(frozen.session).toEqual({ url: link.url });
+    allowed = true;
+    destination = { ...link, destinationId: 'changed' };
+    expect((await summaryService.summarize(retained, snapshot())).session).toBeUndefined();
   });
 });
