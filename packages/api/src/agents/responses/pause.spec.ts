@@ -44,6 +44,7 @@ import {
   LIBRECHAT_CHECKPOINT_NAMESPACE_KEY,
   __resetCheckpointerForTests,
 } from '../checkpointer';
+import { buildEffectiveToolApprovalPolicy, markToolApprovalAllowAlways } from '../hitl/allow';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { createResponseResumeAdmission, createResponseResumeValidation } from './resume';
 import { createResponseCompletion, createResponseExecutionRelease } from './completion';
@@ -162,8 +163,15 @@ async function setup(
   };
   let modelCalls = 0;
   let toolExecutions = 0;
-  const buildRun = async (customHandlers?: RunConfig['customHandlers']) => {
-    const wiring = toolReviews ? buildHITLRunWiring({ enabled: true }) : undefined;
+  const buildRun = async (
+    customHandlers?: RunConfig['customHandlers'],
+    remembered?: readonly string[],
+  ) => {
+    const wiring = toolReviews
+      ? buildHITLRunWiring(
+          buildEffectiveToolApprovalPolicy({ enabled: true, allowAlways: true }, [], remembered),
+        )
+      : undefined;
     const run = await Run.create({
       runId: responseId,
       skipCleanup: true,
@@ -267,6 +275,7 @@ async function setup(
         interruptId: interrupt.interruptId,
         ttlMs: 60_000,
         projectContextKey: 'private-project-binding',
+        resumeAgentIds: ['agent'],
         requestFingerprint: computeLegacyAgentRequestFingerprint(JSON.parse(record.requestJSON)),
         requestFingerprintV2: computeAgentRequestFingerprint(JSON.parse(record.requestJSON)),
         resumeContext: {
@@ -295,165 +304,212 @@ async function setup(
   };
 }
 
-it.each([false, true])(
-  'retains a real SDK pause or cleans its checkpoint after initial persistence failure (%s)',
-  (failPersistence) =>
-    scoped(async () => {
-      const reserved = await reserveOriginal();
-      if (!reserved.ok) throw new Error('Reservation failed');
-      const secret = 'runtime-pause-test-secret';
-      const user = new mongoose.models.User({
-        _id: owner.userId,
-        tenantId: owner.tenantId,
-        email: 'pause@example.test',
-      });
-      const errors: unknown[] = [];
-      const complete = jest.fn(async () => 'must not complete');
-      const order: string[] = [];
-      let done!: () => void;
-      const finished = new Promise<void>((resolve) => {
-        done = resolve;
-      });
-      const app = express();
-      app.use(express.json());
-      app.use(
-        createBackgroundResponseWorkerAuth(
-          {
-            storage,
-            signingSecret: () => secret,
-            findUser: async () => user,
-            authorize: async () => true,
-            admitResume: async () => ({ ok: false, code: 'response_resume_unavailable' }),
-            onError: (error) => {
-              errors.push(error);
-            },
+it.each([
+  'live',
+  'write_failure',
+  'owner_deleted',
+  'conversation_deleted',
+  'expired',
+  'owner_deleted_missing_job',
+] as const)('settles a real SDK pause under %s', (outcome) =>
+  scoped(async () => {
+    const failPersistence = outcome === 'write_failure';
+    let pausedNamespace: string | undefined;
+    const reserved = await reserveOriginal();
+    if (!reserved.ok) throw new Error('Reservation failed');
+    const secret = 'runtime-pause-test-secret';
+    const user = new mongoose.models.User({
+      _id: owner.userId,
+      tenantId: owner.tenantId,
+      email: 'pause@example.test',
+    });
+    const errors: unknown[] = [];
+    const complete = jest.fn(async () => 'must not complete');
+    const order: string[] = [];
+    let done!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      done = resolve;
+    });
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createBackgroundResponseWorkerAuth(
+        {
+          storage,
+          signingSecret: () => secret,
+          findUser: async () => user,
+          authorize: async () => true,
+          admitResume: async () => ({ ok: false, code: 'response_resume_unavailable' }),
+          onError: (error) => {
+            errors.push(error);
           },
-          (_req, res) => {
-            res.status(401).end();
+        },
+        (_req, res) => {
+          res.status(401).end();
+        },
+      ),
+    );
+    app.post('/', async (req, res) => {
+      try {
+        (req as ServerRequest).config = {
+          config: {},
+          fileStrategy: FileSources.local,
+          imageOutputType: 'png',
+          endpoints: { agents: { checkpointer } },
+        };
+        const runtime = createResponseExecutionRuntime(req, res, {
+          getMessage: async () => null,
+          jobs: manager,
+        });
+        expect(
+          runtime.inputChain({
+            messages: [{ messageId: 'original-user-message' }],
+            parentMessageId: 'original-user-message',
+          }).messages,
+        ).toHaveLength(1);
+        expect(await runtime.graphOptions()).toMatchObject({ hitlCapable: true });
+        const f = await setup(
+          async (execution) => {
+            await runtime.hooks.onEnrolled!(execution);
           },
-        ),
-      );
-      app.post('/', async (req, res) => {
-        try {
-          (req as ServerRequest).config = {
-            config: {},
-            fileStrategy: FileSources.local,
-            imageOutputType: 'png',
-            endpoints: { agents: { checkpointer } },
-          };
-          const runtime = createResponseExecutionRuntime(req, res, {
-            getMessage: async () => null,
-            jobs: manager,
-          });
-          expect(
-            runtime.inputChain({
-              messages: [{ messageId: 'original-user-message' }],
-              parentMessageId: 'original-user-message',
-            }).messages,
-          ).toHaveLength(1);
-          expect(await runtime.graphOptions()).toMatchObject({ hitlCapable: true });
-          const f = await setup(
-            async (execution) => {
-              await runtime.hooks.onEnrolled!(execution);
-            },
-            (run, input, config) =>
-              runtime.processRun(run, input, {
-                ...config,
-                configurable: {
-                  thread_id: 'wrong-thread',
-                  [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: 'wrong-owner-namespace',
+          (run, input, config) =>
+            runtime.processRun(run, input, {
+              ...config,
+              configurable: {
+                thread_id: 'wrong-thread',
+                [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: 'wrong-owner-namespace',
+              },
+            }),
+        );
+        await runtime
+          .completeTurn(
+            {
+              run: f.run,
+              execution: f.execution,
+              agents: [],
+              visibleOutputTokens: 0,
+              buildPartial: () => f.partial,
+              persistence: {
+                saveConversation: async () => {
+                  order.push('conversation');
                 },
-              }),
-          );
-          await runtime
-            .completeTurn(
-              {
-                run: f.run,
-                execution: f.execution,
-                agents: [],
-                visibleOutputTokens: 0,
-                buildPartial: () => f.partial,
-                persistence: {
-                  saveConversation: async () => {
-                    order.push('conversation');
-                  },
-                  saveInput: async () => {
-                    order.push('input');
-                  },
-                  saveOutput: async (partial) => {
-                    order.push('output');
-                    if (failPersistence) throw new Error('Injected unfinished output failure');
-                    await mongoose.connection.db!.collection('runtime_unfinished_turns').insertOne({
-                      responseId,
-                      epoch: f.execution.createdAt,
-                      responseJSON: JSON.stringify(partial),
-                    });
-                  },
+                saveInput: async () => {
+                  order.push('input');
+                },
+                saveOutput: async (partial) => {
+                  order.push('output');
+                  if (failPersistence) throw new Error('Injected unfinished output failure');
+                  await mongoose.connection.db!.collection('runtime_unfinished_turns').insertOne({
+                    responseId,
+                    epoch: f.execution.createdAt,
+                    responseJSON: JSON.stringify(partial),
+                  });
                 },
               },
-              complete,
-            )
-            .catch(async (error) => {
-              if (!failPersistence) throw error;
-              await f.execution.settle(error);
-              await runtime.hooks.afterSettle!(f.execution, error);
-            });
-          await f.execution.settle();
-          if (f.execution.isPaused) await runtime.hooks.afterPause!(f.execution);
-          else await runtime.hooks.afterSettle!(f.execution, undefined);
-          expect(f.execution.isPaused).toBe(!failPersistence);
-          expect(f.modelCalls()).toBe(1);
-        } catch (error) {
-          errors.push(error);
-          if (!res.writableEnded) res.status(500).end();
-        } finally {
-          done();
-        }
-      });
-      await request(app)
-        .post('/')
-        .set('x-lc-response-worker', '1')
-        .auth(mintBackgroundResponseWorkerToken(reserved.record, secret), { type: 'bearer' })
-        .send({})
-        .expect(202);
-      await finished;
-      expect(errors).toEqual([]);
-      expect(complete).not.toHaveBeenCalled();
-      expect(order).toEqual(['conversation', 'input', 'output']);
-      const record = (await storage.read(owner, responseId))!;
-      if (failPersistence) {
-        expect(record.status).toBe('failed');
-        expect(record.review).toBeUndefined();
-        expect(record.pendingTerminal).toBeUndefined();
-        const job = (await manager.getJob(responseId))!;
-        expect(
-          await (await getAgentCheckpointer(checkpointer))!.getTuple({
-            configurable: {
-              thread_id: conversationId,
-              [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: job.metadata.checkpointNamespace,
             },
-          }),
-        ).toBeUndefined();
-        return;
+            complete,
+          )
+          .catch(async (error) => {
+            if (!failPersistence) throw error;
+            await f.execution.settle(error);
+            await runtime.hooks.afterSettle!(f.execution, error);
+          });
+        await f.execution.settle();
+        pausedNamespace = (await manager.getJob(responseId))?.metadata.checkpointNamespace;
+        if (f.execution.isPaused && outcome !== 'live') {
+          const methods = createMethods(mongoose);
+          if (outcome.startsWith('owner_deleted')) {
+            await mongoose.models.User.updateOne(
+              { _id: owner.userId },
+              { $set: { tenantId: owner.tenantId, email: 'pause-owner@example.test' } },
+              { upsert: true },
+            );
+            await methods.deleteUserById(owner.userId);
+          } else if (outcome === 'conversation_deleted') {
+            await methods.deleteConvos(owner.userId, { conversationId });
+          } else {
+            await methods.saveConvo(
+              { userId: owner.userId, expiredAt: new Date(Date.now() - 1000) },
+              { conversationId, endpoint: 'agents' },
+            );
+          }
+          if (outcome === 'owner_deleted_missing_job')
+            await manager.getJobStore().deleteJob(responseId, f.execution.createdAt);
+        }
+        if (f.execution.isPaused) await runtime.hooks.afterPause!(f.execution);
+        else await runtime.hooks.afterSettle!(f.execution, undefined);
+        expect(f.execution.isPaused).toBe(!failPersistence);
+        expect(f.modelCalls()).toBe(1);
+      } catch (error) {
+        errors.push(error);
+        if (!res.writableEnded) res.status(500).end();
+      } finally {
+        done();
       }
-      expect(record.status).toBe('requires_action');
+    });
+    await request(app)
+      .post('/')
+      .set('x-lc-response-worker', '1')
+      .auth(mintBackgroundResponseWorkerToken(reserved.record, secret), { type: 'bearer' })
+      .send({})
+      .expect(202);
+    await finished;
+    expect(errors).toEqual([]);
+    expect(complete).not.toHaveBeenCalled();
+    expect(order).toEqual(['conversation', 'input', 'output']);
+    const record = (await storage.read(owner, responseId))!;
+    if (outcome !== 'live' && !failPersistence) {
+      expect(record).toBeNull();
+      const retainedJob = await manager.getJob(responseId);
+      if (outcome === 'owner_deleted_missing_job') expect(retainedJob).toBeUndefined();
+      else
+        expect(retainedJob).toMatchObject({
+          status: 'aborted',
+          metadata: { providerDrained: true, terminalPersistencePending: false },
+        });
+      expect(
+        await (await getAgentCheckpointer(checkpointer))!.getTuple({
+          configurable: {
+            thread_id: conversationId,
+            [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: pausedNamespace,
+          },
+        }),
+      ).toBeUndefined();
+      return;
+    }
+    if (failPersistence) {
+      expect(record.status).toBe('failed');
+      expect(record.review).toBeUndefined();
       expect(record.pendingTerminal).toBeUndefined();
-      expect(JSON.parse(record.review!.pendingActionJSON!)).toMatchObject({
-        streamId: responseId,
-        responseMessageId: responseId,
-        conversationId,
-        payload: { type: 'ask_user_question' },
-        requestFingerprintV2: expect.any(String),
-      });
-      const saved = await mongoose.connection
-        .db!.collection('runtime_unfinished_turns')
-        .findOne({ responseId, epoch: record.generationCreatedAt });
-      expect(JSON.parse(saved!.responseJSON)).toMatchObject({
-        id: responseId,
-        status: 'in_progress',
-      });
-      expect(JSON.parse(record.responseJSON!).output).toEqual([]);
-    }),
+      const job = (await manager.getJob(responseId))!;
+      expect(
+        await (await getAgentCheckpointer(checkpointer))!.getTuple({
+          configurable: {
+            thread_id: conversationId,
+            [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: job.metadata.checkpointNamespace,
+          },
+        }),
+      ).toBeUndefined();
+      return;
+    }
+    expect(record.status).toBe('requires_action');
+    expect(record.pendingTerminal).toBeUndefined();
+    expect(JSON.parse(record.review!.pendingActionJSON!)).toMatchObject({
+      streamId: responseId,
+      responseMessageId: responseId,
+      conversationId,
+      payload: { type: 'ask_user_question' },
+      requestFingerprintV2: expect.any(String),
+    });
+    const saved = await mongoose.connection
+      .db!.collection('runtime_unfinished_turns')
+      .findOne({ responseId, epoch: record.generationCreatedAt });
+    expect(JSON.parse(saved!.responseJSON)).toMatchObject({
+      id: responseId,
+      status: 'in_progress',
+    });
+    expect(JSON.parse(record.responseJSON!).output).toEqual([]);
+  }),
 );
 
 it('captures a real SDK question interrupt and cancels its actual durable checkpoint safely', () =>
@@ -631,6 +687,7 @@ it.each(['unchanged', 'environment', 'definition', 'workspace'] as const)(
           run: f.run,
           payload: interrupt.payload,
           agents: [agent],
+          resumeAgentIds: ['agent'],
           aliases: [],
           context: { ...(await buildAction(interrupt)), ttlMs: 60_000 },
         });
@@ -1312,7 +1369,7 @@ it('uses production validation for a real retained question and rejects changed 
       job,
       action,
       decision,
-      resolution: { answers: decision.answers },
+      resolution: { type: 'ask_user_question' as const, value: { answers: decision.answers } },
     };
     expect(await validation.validateDecision(input)).toBe(true);
     allowed = false;
@@ -1410,3 +1467,178 @@ it('does not expose a resumable action when unfinished-turn persistence fails', 
     expect(job).toMatchObject({ status: 'error', metadata: { providerDrained: true } });
     expect(JSON.stringify(job)).not.toContain(failure.message);
   }));
+
+it('persists a session approval before compiling the resumed SDK graph and avoids a second same-tool pause', () =>
+  scoped(async () => {
+    const policy = { enabled: true, allowAlways: true };
+    const methods = createMethods(mongoose);
+    await mongoose.models.Conversation.deleteMany({ user: owner.userId, conversationId });
+    await mongoose.models.Conversation.create({
+      user: owner.userId,
+      conversationId,
+      endpoint: 'agents',
+    });
+    const f = await setup(undefined, undefined, true);
+    const buildAction = f.deps.buildAction;
+    f.deps.buildAction = async (interrupt) => {
+      const action = await buildAction(interrupt);
+      if (action.payload.type !== 'tool_approval') throw new Error('Expected tool approval');
+      return { ...action, payload: markToolApprovalAllowAlways(action.payload, { policy }) };
+    };
+    await pauseResponseForReview({ ...f, checkpointer }, f.deps);
+    await f.execution.settle();
+    const paused = (await storage.read(owner, responseId))!;
+    const action = JSON.parse(paused.review!.pendingActionJSON!);
+    const decisions = [
+      { tool_call_id: 'review-1', decision: 'approve' as const, scope: 'session' as const },
+    ];
+    const mapped = resolveToolApprovalResume(action.payload, decisions);
+    if (!('resumeValue' in mapped)) throw new Error('Missing reviewed resolution');
+    const reserved = await storage.reserveResume(
+      owner,
+      responseId,
+      {
+        generationCreatedAt: f.execution.createdAt,
+        intentId: 'session-intent',
+        actionId: action.actionId,
+        previousProviderExecutionId: paused.review!.providerExecutionId,
+        providerExecutionId: 'session-provider',
+        fingerprint: 'session',
+        decisionJSON: JSON.stringify({ actionId: action.actionId, decisions }),
+        resolutionJSON: JSON.stringify(mapped.resumeValue),
+      },
+      Date.now(),
+    );
+    if (!reserved.ok) throw new Error('Missing session reservation');
+    const admit = createResponseResumeAdmission({
+      storage,
+      jobs: manager,
+      authorize: async () => true,
+      validate: async () => ({ ok: true, provenance: {} }),
+    });
+    const secret = 'session-sdk-secret';
+    const user = new mongoose.models.User({ _id: owner.userId, tenantId: owner.tenantId });
+    const errors: unknown[] = [];
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const app = express();
+    app.use(express.json());
+    app.use(
+      createBackgroundResponseWorkerAuth(
+        {
+          storage,
+          signingSecret: () => secret,
+          findUser: async () => user,
+          authorize: async () => true,
+          admitResume: (record, _user, intentId) => admit(record, responseId, intentId),
+          onError: (error) => {
+            errors.push(error);
+          },
+        },
+        (_req, res) => {
+          res.status(401).end();
+        },
+      ),
+    );
+    app.post('/', async (req, res) => {
+      (req as ServerRequest).config = {
+        config: {},
+        fileStrategy: FileSources.local,
+        imageOutputType: 'png',
+        endpoints: { agents: { checkpointer, toolApproval: policy } },
+      };
+      const writes = jest.fn(methods.addConvoToolApprovalAllows);
+      const runtime = createResponseExecutionRuntime(req, res, {
+        getMessage: async () => null,
+        jobs: manager,
+        addConvoToolApprovalAllows: writes,
+      });
+      try {
+        await expect(runtime.graphOptions([])).rejects.toThrow(
+          'Response remembered approval ownership unavailable',
+        );
+        expect(writes).not.toHaveBeenCalled();
+        await executeAgentRun(
+          {
+            envelope: createAgentRunEnvelope({
+              protocol: 'responses',
+              requestId: responseId,
+              receivedAt: Date.now(),
+              principal: { id: owner.userId, tenantId: owner.tenantId },
+              payload: req.body,
+            }),
+            runId: responseId,
+            conversationId,
+            ...runtime.hooks,
+            isPrincipalActive: async () => true,
+            execute: async () => {
+              const options = await runtime.graphOptions([]);
+              expect(writes).toHaveBeenCalledTimes(1);
+              expect(options.toolApprovalAllows).toEqual(['review_lookup']);
+              // No loaded conversation snapshot is fabricated to carry the remembered policy.
+              expect((req as ServerRequest).resolvedConversation).toBeUndefined();
+              const saved = await mongoose.models.Conversation.findOne({
+                user: owner.userId,
+                conversationId,
+              }).lean();
+              expect(saved?.toolApprovalAllows).toEqual(['review_lookup']);
+              const rebuilt = await f.buildRun(undefined, options.toolApprovalAllows);
+              await runtime.processRun(rebuilt, { messages: [] }, f.config);
+              expect(rebuilt.getInterrupt()).toBeUndefined();
+              res.json({
+                ...buildPendingBackgroundResponse(paused),
+                status: 'completed',
+                output: [],
+                completed_at: Math.floor(Date.now() / 1000),
+              });
+            },
+          },
+          { manager },
+        );
+      } catch (error) {
+        errors.push(error);
+        if (!res.writableEnded) res.status(500).end();
+      } finally {
+        finish();
+      }
+    });
+    await request(app)
+      .post('/')
+      .set('x-lc-response-worker', '1')
+      .auth(mintResponseResumeWorkerToken(reserved.record, secret), { type: 'bearer' })
+      .send({})
+      .expect(202);
+    await finished;
+    expect(errors).toEqual([]);
+    expect(f.toolExecutions()).toBe(2);
+    expect(f.modelCalls()).toBe(3);
+    expect((await storage.read(owner, responseId))?.status).toBe('completed');
+  }));
+
+it.each(['missing', 'duplicate', 'empty', 'foreign'] as const)(
+  'rejects an incomplete private participant witness before pause persistence: %s',
+  (kind) =>
+    scoped(async () => {
+      const f = await setup();
+      const buildAction = f.deps.buildAction;
+      f.deps.buildAction = async (interrupt) => ({
+        ...(await buildAction(interrupt)),
+        resumeAgentIds:
+          kind === 'missing'
+            ? undefined
+            : kind === 'duplicate'
+              ? ['agent', 'agent']
+              : kind === 'empty'
+                ? ['agent', '']
+                : ['other-agent'],
+      });
+      await expect(pauseResponseForReview({ ...f, checkpointer }, f.deps)).rejects.toThrow(
+        'Response review action identity changed',
+      );
+      expect(f.unfinishedWrites()).toBe(0);
+      expect((await storage.read(owner, responseId))?.status).toBe('in_progress');
+      await f.execution.settle(new Error('Invalid private witness'));
+    }),
+);

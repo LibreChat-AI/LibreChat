@@ -679,9 +679,13 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
         !(conversationAnchor?.expiredAt && conversationAnchor.expiredAt <= now)
       )
         return null;
-      const matchingRetained = retainedCandidate && (!record ||
-        retainedCandidate.generationCreatedAt === record.generationCreatedAt ||
-        (retirement && record.generationCreatedAt == null)) ? retainedCandidate : undefined;
+      const matchingRetained =
+        retainedCandidate &&
+        (!record ||
+          retainedCandidate.generationCreatedAt === record.generationCreatedAt ||
+          (retirement && record.generationCreatedAt == null))
+          ? retainedCandidate
+          : undefined;
       // A staged checkpoint is one binding: never fill an incomplete terminal
       // binding with settings from a prior review or retained provider segment.
       const terminalCheckpoint = record?.pendingTerminal;
@@ -708,7 +712,8 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
         responseId: id,
         agentId,
         conversationId,
-        generationCreatedAt: generationCreatedAt ?? (retirement ? matchingRetained?.generationCreatedAt : undefined),
+        generationCreatedAt:
+          generationCreatedAt ?? (retirement ? matchingRetained?.generationCreatedAt : undefined),
         expiredAt,
         retirement,
         checkpointNamespace,

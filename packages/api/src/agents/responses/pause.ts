@@ -1,4 +1,4 @@
-import { responseTenantId } from './scope';
+import { MAX_SUBAGENT_GRAPH_NODES } from 'librechat-data-provider';
 import type { ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
 import type { Agents, TCheckpointerConfig } from 'librechat-data-provider';
 import type { RunInterruptResult } from '@librechat/agents';
@@ -9,6 +9,7 @@ import type { Response } from './types';
 import { hasDurableAgentInterruptCheckpoint, resolveCheckpointerConfig } from '../checkpointer';
 import { checkpointOwnerNamespacePrefix } from '~/stream/checkpoints';
 import { buildPendingBackgroundResponse } from './background';
+import { responseTenantId } from './scope';
 
 export interface ResponsePauseDependencies {
   storage: ResponseStorage;
@@ -44,10 +45,12 @@ export async function pauseResponseForReview(
   const providerExecutionId = job?.metadata.providerExecutionId;
   if (
     !job ||
+    !execution.ownsSettlement ||
     job.createdAt !== record.generationCreatedAt ||
     job.createdAt !== execution.createdAt ||
     job.status !== 'running' ||
     !providerExecutionId ||
+    job.metadata.providerExecutionStartedId !== providerExecutionId ||
     job.metadata.userId !== record.userId ||
     responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
     job.metadata.agent_id !== record.agentId ||
@@ -75,6 +78,10 @@ export async function pauseResponseForReview(
   const action = await deps.buildAction(interrupt, job);
   const expiresAt = action.expiresAt;
   if (
+    !action.resumeAgentIds?.includes(record.agentId) ||
+    action.resumeAgentIds.length > MAX_SUBAGENT_GRAPH_NODES ||
+    new Set(action.resumeAgentIds).size !== action.resumeAgentIds.length ||
+    action.resumeAgentIds.some((id) => typeof id !== 'string' || !id) ||
     action.streamId !== record.responseId ||
     action.responseMessageId !== record.responseId ||
     action.conversationId !== record.conversationId ||

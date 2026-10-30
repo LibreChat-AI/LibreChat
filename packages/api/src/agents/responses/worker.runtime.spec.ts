@@ -6,6 +6,7 @@ import { FileSources } from 'librechat-data-provider';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createModels,
+  createMethods,
   createResponseStorage,
   tenantStorage,
   runAsSystem,
@@ -340,7 +341,7 @@ describe('background Responses execution handoff', () => {
     expect(resume).not.toHaveBeenCalled();
   });
   it('does not enable interactive execution from caller fields without an installed resume validator', async () => {
-    const { app } = fixture((req, res) => {
+    const { app } = fixture(async (req, res) => {
       const runtime = createResponseExecutionRuntime(req, res, {
         getMessage: async () => null,
         jobs: GenerationJobManager,
@@ -640,6 +641,23 @@ describe('background Responses execution handoff', () => {
     const finished = new Promise<void>((resolve) => {
       settled = resolve;
     });
+    const stage = storage.stageTerminal.bind(storage);
+    const stageWithConcurrentProgress = jest
+      .spyOn(storage, 'stageTerminal')
+      .mockImplementationOnce(async (...args) => {
+        for (let step = 0; step < 30; step++) {
+          const current = (await storage.read(owner, record.responseId))!;
+          const projected = await storage.publish(owner, current.responseId, current.revision, {
+            status: 'in_progress',
+            responseJSON: JSON.stringify({
+              ...buildPendingBackgroundResponse(current),
+              metadata: { progress: step },
+            }),
+          });
+          expect(projected.ok).toBe(true);
+        }
+        return stage(...args);
+      });
     let starts = 0;
     const { app } = fixture(async (req, res) => {
       const runtime = createResponseExecutionRuntime(req, res, {
@@ -714,6 +732,8 @@ describe('background Responses execution handoff', () => {
     release();
     await finished;
     const saved = await scope(async () => storage.read(owner, record.responseId));
+    expect(stageWithConcurrentProgress).toHaveBeenCalledTimes(1);
+    stageWithConcurrentProgress.mockRestore();
     expect(saved?.status).toBe('completed');
     expect(JSON.parse(saved!.responseJSON!).output[0].content[0].text).toBe('# Exact final answer');
   });
@@ -790,6 +810,98 @@ describe('background Responses execution handoff', () => {
     expect(starts).toBe(1);
     publication.mockRestore();
   });
+
+  it.each([
+    ['owner', 'enrollment'],
+    ['conversation', 'enrollment'],
+    ['expiry', 'enrollment'],
+    ['owner', 'settlement'],
+    ['conversation', 'settlement'],
+    ['expiry', 'settlement'],
+  ] as const)(
+    'releases the exact runtime after %s retirement during %s without restoring private output',
+    async (kind, phase) => {
+      const errors: unknown[] = [];
+      let starts = 0;
+      let done!: () => void;
+      const finished = new Promise<void>((resolve) => {
+        done = resolve;
+      });
+      const retire = async () => {
+        const methods = createMethods(mongoose);
+        if (kind === 'owner') {
+          await mongoose.models.User.updateOne(
+            { _id: owner.userId },
+            { $set: { tenantId: owner.tenantId, email: 'retired-worker@example.test' } },
+            { upsert: true },
+          );
+          await methods.deleteUserById(owner.userId);
+        } else if (kind === 'conversation')
+          await methods.deleteConvos(owner.userId, { conversationId: record.conversationId });
+        else
+          await methods.saveConvo(
+            { userId: owner.userId, expiredAt: new Date(Date.now() - 1000) },
+            { conversationId: record.conversationId, endpoint: 'agents' },
+          );
+      };
+      const { app } = fixture(async (req, res) => {
+        const runtime = createResponseExecutionRuntime(req, res, {
+          getMessage: async () => null,
+          jobs: GenerationJobManager,
+        });
+        try {
+          await executeAgentRun({
+            envelope: createAgentRunEnvelope({
+              protocol: 'responses',
+              requestId: record.responseId,
+              receivedAt: Date.now(),
+              principal: { id: owner.userId, tenantId: owner.tenantId },
+              payload: req.body,
+            }),
+            runId: record.responseId,
+            conversationId: record.conversationId,
+            ...runtime.hooks,
+            onEnrolled: async (execution) => {
+              if (phase === 'enrollment') await retire();
+              await runtime.hooks.onEnrolled!(execution);
+            },
+            isPrincipalActive: async () => true,
+            execute: async () => {
+              starts++;
+              await retire();
+              res.json({
+                ...buildPendingBackgroundResponse(record),
+                status: 'completed',
+                output: [],
+              });
+            },
+            onSettlementError: (error) => {
+              errors.push(error);
+            },
+          });
+        } catch (error) {
+          errors.push(error);
+          if (!res.writableEnded) res.status(409).json({ error: 'execution_unavailable' });
+        } finally {
+          done();
+        }
+      });
+      await request(app)
+        .post('/')
+        .set('x-lc-response-worker', '1')
+        .auth(mintBackgroundResponseWorkerToken(record, secret), { type: 'bearer' })
+        .send({})
+        .expect(phase === 'enrollment' ? 409 : 202);
+      await finished;
+      expect(starts).toBe(phase === 'enrollment' ? 0 : 1);
+      expect(errors).toHaveLength(phase === 'enrollment' ? 1 : 0);
+      expect(await scope(() => storage.read(owner, record.responseId))).toBeNull();
+      expect(await GenerationJobManager.getJob(record.responseId)).toMatchObject({
+        status: phase === 'enrollment' ? 'error' : 'complete',
+        metadata: { providerDrained: true, terminalPersistencePending: false },
+      });
+    },
+  );
 
   it.each(['before enrollment', 'during publication'])(
     'honors queued cancellation %s without provider work',
