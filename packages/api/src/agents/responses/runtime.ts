@@ -1,5 +1,3 @@
-import { responseTenantId } from './scope';
-import { createResponseRetirement } from './retirement';
 import { checkpointerSchema, responseReviewDecisionSchema } from 'librechat-data-provider';
 import type { ResponseTerminalReceipt, StoredResponseRecord } from '@librechat/data-schemas';
 import type { Request, Response as HttpResponse } from 'express';
@@ -42,9 +40,11 @@ import { buildPendingBackgroundResponse } from './background';
 import { resolveResponseContinuation } from './persistence';
 import { captureRunPendingAction } from '../hitl/capture';
 import { cleanupResponseCheckpoint } from './checkpoint';
+import { createResponseRetirement } from './retirement';
 import { collectReachableAgents } from '../traversal';
 import { pauseResponseForReview } from './pause';
 import { generateResponseId } from './service';
+import { responseTenantId } from './scope';
 
 type TerminalResponse = Response & { status: ResponseTerminalReceipt['status'] };
 type ReviewAgent = NonNullable<Parameters<typeof captureRunPendingAction>[0]['agents'][number]> &
@@ -79,15 +79,17 @@ export interface ResponseExecutionRuntime {
   };
   graphOptions: (
     agents?: Parameters<typeof createRun>[0]['agents'],
-  ) => Promise<Pick<
-    Parameters<typeof createRun>[0],
-    | 'hitlCapable'
-    | 'discoveredToolNames'
-    | 'reviewedToolApprovals'
-    | 'sessionStartSource'
-    | 'toolApprovalStorage'
-    | 'toolApprovalAllows'
-  >>;
+  ) => Promise<
+    Pick<
+      Parameters<typeof createRun>[0],
+      | 'hitlCapable'
+      | 'discoveredToolNames'
+      | 'reviewedToolApprovals'
+      | 'sessionStartSource'
+      | 'toolApprovalStorage'
+      | 'toolApprovalAllows'
+    >
+  >;
   seedAggregator: (aggregator: ResponseAggregator | null) => void;
   composeResponse: (response: Response) => Response;
   visibleOutputTokens: (current: number) => number;
@@ -115,7 +117,12 @@ export interface ResponseExecutionRuntime {
   connection?: AgentExecutionConnection;
   hooks: Pick<
     ExecuteAgentRunParams<unknown>,
-    'onEnrolled' | 'afterPause' | 'afterSettle' | 'clientRequestId' | 'resume' | 'retainTerminalPersistence'
+    | 'onEnrolled'
+    | 'afterPause'
+    | 'afterSettle'
+    | 'clientRequestId'
+    | 'resume'
+    | 'retainTerminalPersistence'
   >;
   processRun: (
     run: Pick<Run<IState>, 'processStream' | 'resume'>,
@@ -133,7 +140,10 @@ export function createResponseExecutionRuntime(
   res: HttpResponse,
   continuation: Parameters<typeof resolveResponseContinuation>[2] & {
     generateResponseId?: () => string;
-    jobs?: Pick<GenerationJobManagerClass, 'getJob' | 'abortJob' | 'finishProviderTerminalPersistence'> &
+    jobs?: Pick<
+      GenerationJobManagerClass,
+      'getJob' | 'abortJob' | 'finishProviderTerminalPersistence'
+    > &
       Partial<Pick<GenerationJobManagerClass, 'updateMetadata'>>;
     pluginHookSource?: MarkToolApprovalAllowAlwaysOptions['pluginHookSource'];
     toolApprovalStorage?: Parameters<typeof createRun>[0]['toolApprovalStorage'];
@@ -143,7 +153,10 @@ export function createResponseExecutionRuntime(
   },
 ): ResponseExecutionRuntime {
   const admission = getBackgroundResponseWorkerAdmission(req);
-  if (admission && !continuation.jobs?.finishProviderTerminalPersistence)
+  if (
+    admission &&
+    (!continuation.jobs?.finishProviderTerminalPersistence || !continuation.jobs.abortJob)
+  )
     throw new Error('Response terminal publication release capability is unavailable');
   const interactive =
     admission?.interactive === true &&
@@ -214,7 +227,12 @@ export function createResponseExecutionRuntime(
   }
   const hooks: Pick<
     ExecuteAgentRunParams<unknown>,
-    'onEnrolled' | 'afterPause' | 'afterSettle' | 'clientRequestId' | 'resume' | 'retainTerminalPersistence'
+    | 'onEnrolled'
+    | 'afterPause'
+    | 'afterSettle'
+    | 'clientRequestId'
+    | 'resume'
+    | 'retainTerminalPersistence'
   > = admission
     ? {
         retainTerminalPersistence: true,
@@ -294,13 +312,24 @@ export function createResponseExecutionRuntime(
         afterPause: async (execution) => {
           if (!execution.isPaused || !execution.ownsSettlement)
             throw new Error('Background response pause ownership changed');
-          const current = await admission.storage.read(admission.record, admission.record.responseId);
+          const current = await admission.storage.read(
+            admission.record,
+            admission.record.responseId,
+          );
           if (current && current.generationCreatedAt !== execution.createdAt)
             throw new Error('Background response pause identity changed');
-          if (current && current.cancellationRequestedAt == null && !['completed', 'failed', 'cancelled', 'incomplete'].includes(current.status)) return;
+          if (
+            current &&
+            current.cancellationRequestedAt == null &&
+            !['completed', 'failed', 'cancelled', 'incomplete'].includes(current.status)
+          )
+            return;
           if (!current) {
-            const identity = await admission.storage.readCleanupIdentity(admission.record, admission.record.responseId,
-              { ...admission.record, generationCreatedAt: execution.createdAt, ...checkpoint });
+            const identity = await admission.storage.readCleanupIdentity(
+              admission.record,
+              admission.record.responseId,
+              { ...admission.record, generationCreatedAt: execution.createdAt, ...checkpoint },
+            );
             if (!identity?.retirement || identity.generationCreatedAt !== execution.createdAt)
               throw new Error('Background response pause retirement identity unavailable');
             const job = await continuation.jobs!.getJob(admission.record.responseId);
@@ -309,15 +338,21 @@ export function createResponseExecutionRuntime(
               if (identity.requiresCheckpointCleanup) {
                 if (!identity.checkpointNamespace || !identity.checkpointConfigJSON)
                   throw new Error('Background response pause checkpoint identity unavailable');
-                await cleanupResponseCheckpoint({ ...identity, pendingTerminal: identity }, identity.checkpointNamespace);
+                await cleanupResponseCheckpoint(
+                  { ...identity, pendingTerminal: identity },
+                  identity.checkpointNamespace,
+                );
               }
               return;
             }
           }
           const stopped = await createResponseRetirement({
-            storage: admission.storage, jobs: continuation.jobs!, cleanupCheckpoint: cleanupResponseCheckpoint,
+            storage: admission.storage,
+            jobs: continuation.jobs!,
+            cleanupCheckpoint: cleanupResponseCheckpoint,
           })(admission.record, admission.record.responseId);
-          if (stopped !== 'stopped') throw new Error('Background response pause retirement is pending');
+          if (stopped !== 'stopped')
+            throw new Error('Background response pause retirement is pending');
         },
         afterSettle: async (execution, error) => {
           let current = await admission.storage.read(admission.record, admission.record.responseId);
@@ -328,12 +363,17 @@ export function createResponseExecutionRuntime(
           });
           if (!current || current.generationCreatedAt == null) {
             const retired = await admission.storage.readCleanupIdentity(
-              admission.record, admission.record.responseId,
+              admission.record,
+              admission.record.responseId,
               { ...admission.record, generationCreatedAt: execution.createdAt, ...checkpoint },
             );
             if (retired?.retirement && retired.generationCreatedAt === execution.createdAt)
               current = { ...admission.record, ...retired };
-            else if (current?.status === 'cancelled' && current.cancellationRequestedAt != null && current.generationCreatedAt == null) {
+            else if (
+              current?.status === 'cancelled' &&
+              current.cancellationRequestedAt != null &&
+              current.generationCreatedAt == null
+            ) {
               // Stop won the enrollment CAS. This exact local attempt must still release its drain proof.
               await completion.finish({ ...current, generationCreatedAt: execution.createdAt });
               return;
@@ -424,22 +464,29 @@ export function createResponseExecutionRuntime(
     async graphOptions(agents) {
       const hitlCapable = interactive;
       const request = req as ServerRequest;
-      const policy = () => hitlCapable
-        ? {
-            toolApprovalStorage: continuation.toolApprovalStorage,
-            toolApprovalAllows: resolveRunToolApprovalAllows(
-              request.config?.endpoints?.agents?.toolApproval,
-              {
-                conversationId: admission!.record.conversationId,
-                toolApprovalAllows: [...new Set([
-                  ...resolveRunToolApprovalAllows(request.config?.endpoints?.agents?.toolApproval, request.resolvedConversation, admission!.record.conversationId),
-                  ...rememberedTools,
-                ])],
-              },
-              admission!.record.conversationId,
-            ),
-          }
-        : {};
+      const policy = () =>
+        hitlCapable
+          ? {
+              toolApprovalStorage: continuation.toolApprovalStorage,
+              toolApprovalAllows: resolveRunToolApprovalAllows(
+                request.config?.endpoints?.agents?.toolApproval,
+                {
+                  conversationId: admission!.record.conversationId,
+                  toolApprovalAllows: [
+                    ...new Set([
+                      ...resolveRunToolApprovalAllows(
+                        request.config?.endpoints?.agents?.toolApproval,
+                        request.resolvedConversation,
+                        admission!.record.conversationId,
+                      ),
+                      ...rememberedTools,
+                    ]),
+                  ],
+                },
+                admission!.record.conversationId,
+              ),
+            }
+          : {};
       if (!admission?.resume) return { hitlCapable, ...policy() };
       const action: Agents.PendingAction = JSON.parse(
         admission.record.review?.pendingActionJSON ?? 'null',
@@ -467,8 +514,14 @@ export function createResponseExecutionRuntime(
         throw new Error('Response checkpoint storage settings changed');
       const reviewedAgents = collectReachableAgents<ReviewAgentNode>(agents);
       assertCodeExecutionApprovalBinding(action.codeExecutionBinding, reviewedAgents);
-      const participants = new Set([admission.record.agentId, ...reviewedAgents.map((agent) => agent.id)]);
-      if (!action.resumeAgentIds?.length || action.resumeAgentIds.some((id) => !participants.has(id)))
+      const participants = new Set([
+        admission.record.agentId,
+        ...reviewedAgents.map((agent) => agent.id),
+      ]);
+      if (
+        !action.resumeAgentIds?.length ||
+        action.resumeAgentIds.some((id) => !participants.has(id))
+      )
         throw new Error('Response resume participants changed');
       const decision = responseReviewDecisionSchema.parse(
         JSON.parse(admission.record.resume?.decisionJSON ?? 'null'),
@@ -593,7 +646,14 @@ export function createResponseExecutionRuntime(
               run: input.run,
               payload,
               agents,
-              resumeAgentIds: [...new Set([admission.record.agentId, ...agents.map((agent) => agent.id).filter((id): id is string => typeof id === 'string' && id.length > 0)])],
+              resumeAgentIds: [
+                ...new Set([
+                  admission.record.agentId,
+                  ...agents
+                    .map((agent) => agent.id)
+                    .filter((id): id is string => typeof id === 'string' && id.length > 0),
+                ]),
+              ],
               aliases,
               context: {
                 streamId: admission.record.responseId,
