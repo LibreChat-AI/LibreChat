@@ -13,7 +13,6 @@ export type InsightsAccessUser = {
   idOnTheSource?: string | null;
 };
 
-/** Eligibility only: detailed inspection also requires the effective YAML setting. */
 export type InsightsAccess = {
   agents: TInsightsAgent[];
   detailAgentIds: string[];
@@ -121,14 +120,12 @@ function createAccessResolver(deps: InsightsAgentAccessDeps, includeEditableAgen
   };
 }
 
-/** Resolve aggregate access separately from existing inspection eligibility. */
 export function createInsightsAccessResolver(
   deps: InsightsAgentAccessDeps,
 ): (user: InsightsAccessUser) => Promise<InsightsAccess> {
   return createAccessResolver(deps, true);
 }
 
-/** Preserve the existing route contract until the separate eligibility is enforced there. */
 export function createInsightsAgentAccessResolver(
   deps: InsightsAgentAccessDeps,
 ): (user: InsightsAccessUser) => Promise<TInsightsAgent[]> {
