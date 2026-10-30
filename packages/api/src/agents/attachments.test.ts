@@ -1,5 +1,5 @@
 import { logger } from '@librechat/data-schemas';
-import { EModelEndpoint, FileContext, FileSources } from 'librechat-data-provider';
+import { EModelEndpoint, FileContext, FileSources, mergeFileConfig } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { ServerRequest } from '~/types';
 
@@ -22,6 +22,8 @@ import {
   buildAgentContextAttachmentsByAgentId,
   isModelBoundAttachmentFile,
   isToolOwnedAttachment,
+  estimateAttachmentTokens,
+  planInlineAttachmentBudget,
 } from './attachments';
 import { applyTurnDelivery, resolveTurnDeliveryRouting } from './files/delivery';
 
@@ -903,5 +905,194 @@ describe('files that belong to a tool', () => {
         countRepeatedExtractedText: true,
       }),
     ).not.toThrow();
+  });
+});
+
+describe('planInlineAttachmentBudget', () => {
+  const routing = {
+    fileConfig: mergeFileConfig(undefined),
+    endpointConfig: { llmDeliveryPolicy: 'automatic' as const } as Record<string, unknown>,
+    endpoint: 'anthropic',
+    sttConfigured: false,
+  };
+  const room = 995_904;
+  const budget = 497_952;
+  const pdfs = Array.from({ length: 15 }, (_, i) => ({
+    file_id: `p${i}`,
+    filename: `p${i}.pdf`,
+    type: 'application/pdf',
+    bytes: 2_400_000,
+    llmDeliveryPath: 'provider',
+    metadata: { destinationChosen: false },
+  }));
+  const plan = (
+    files: Array<Record<string, unknown> & { file_id: string }>,
+    consumers: { executeCode: boolean; fileSearch: boolean },
+    budgetTokens = budget,
+    limitTokens = room,
+    route = routing,
+  ) =>
+    planInlineAttachmentBudget(files, {
+      routing: route as unknown as Parameters<typeof planInlineAttachmentBudget>[1]['routing'],
+      consumers,
+      budgetTokens,
+      limitTokens,
+    });
+
+  it('prices files before encoding', () => {
+    expect(estimateAttachmentTokens(pdfs[0], 'provider')).toBe(86_000);
+    expect(estimateAttachmentTokens({ text: 'x'.repeat(9_452_368) }, 'text')).toBe(2_363_092);
+    expect(
+      estimateAttachmentTokens(
+        { type: 'application/pdf', bytes: 1_000_000, text: 'x'.repeat(1_900_000) },
+        'provider',
+      ),
+    ).toBe(475_000);
+  });
+
+  it('prices a PDF by its pages and text, as Bedrock measured them', () => {
+    const measured = (bytes: number, pageCount: number, textChars: number) => ({
+      type: 'application/pdf',
+      bytes,
+      metadata: { pageCount, textChars },
+    });
+    const big = estimateAttachmentTokens(measured(2_400_000, 40, 271_780), 'provider');
+    const small = estimateAttachmentTokens(measured(300_000, 10, 67_870), 'provider');
+    expect(big).toBe(172_712);
+    expect(small).toBe(43_148);
+    expect(Math.abs(big - 171_779) / 171_779).toBeLessThan(0.05);
+    expect(Math.abs(small - 43_318) / 43_318).toBeLessThan(0.05);
+  });
+
+  it('never prices a measured PDF below its size, which pruning still counts', () => {
+    expect(
+      estimateAttachmentTokens(
+        { type: 'application/pdf', bytes: 14_708_922, metadata: { pageCount: 14, textChars: 0 } },
+        'provider',
+      ),
+    ).toBe(524_000);
+  });
+
+  it('does not read pages from text, which may be OCR markdown', () => {
+    const text = ('a'.repeat(100) + '\n').repeat(2_400);
+    expect(
+      estimateAttachmentTokens({ type: 'application/pdf', bytes: 2_400_000, text }, 'provider'),
+    ).toBe(86_000);
+  });
+
+  it('moves the largest until the rest fit', () => {
+    const expected = Array.from({ length: 10 }, (_, i) => `p${i}`).sort();
+    const consumers = { executeCode: true, fileSearch: true };
+    expect([...plan(pdfs, consumers)].sort()).toEqual(expected);
+    expect([...plan([...pdfs].reverse(), consumers)].sort()).toEqual(expected);
+  });
+
+  it('moves measured PDFs the size estimate would have kept', () => {
+    const measured = pdfs.slice(0, 5).map((file) => ({
+      ...file,
+      metadata: { ...file.metadata, pageCount: 40, textChars: 271_780 },
+    }));
+    const consumers = { executeCode: true, fileSearch: true };
+    expect([...plan(measured, consumers)].sort()).toEqual(['p0', 'p1', 'p2']);
+  });
+
+  it('refuses a turn that cannot fit the window', () => {
+    expect(() => plan(pdfs, { executeCode: false, fileSearch: false })).toThrow(
+      expect.objectContaining({ limitType: 'context', observed: 1_290_000, limit: room }),
+    );
+  });
+
+  it('keeps a turn that fits the window without tools', () => {
+    const one = [{ ...pdfs[0], bytes: 525_000 }];
+    expect(plan(one, { executeCode: false, fileSearch: false }, 13_952, 27_904).size).toBe(0);
+  });
+
+  it('moves a too-large CSV to File Search without Run Code', () => {
+    const csv = {
+      file_id: 'csv',
+      filename: 'data.csv',
+      type: 'text/csv',
+      text: 'x'.repeat(9_452_368),
+      llmDeliveryPath: 'text',
+      metadata: { destinationChosen: false },
+    };
+    expect(plan([csv], { executeCode: false, fileSearch: true })).toEqual(new Set(['csv']));
+  });
+
+  it('moves a document over the extracted-text limit', () => {
+    const txt = {
+      file_id: 'txt',
+      filename: 'notes.txt',
+      type: 'text/plain',
+      text: 'x'.repeat(1_500_000),
+      llmDeliveryPath: 'text',
+      metadata: { destinationChosen: false },
+    };
+    expect(plan([txt], { executeCode: false, fileSearch: true }).size).toBe(1);
+  });
+
+  it('leaves a letter and a photo alone', () => {
+    const letter = {
+      file_id: 'letter',
+      type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      text: 'x'.repeat(20_000),
+      llmDeliveryPath: 'text',
+      metadata: { destinationChosen: false },
+    };
+    const photo = {
+      file_id: 'photo',
+      type: 'image/png',
+      bytes: 5_000_000,
+      llmDeliveryPath: 'provider',
+      metadata: { destinationChosen: false },
+    };
+    expect(plan([letter, photo], { executeCode: true, fileSearch: true }).size).toBe(0);
+  });
+
+  it.each([
+    ['an agent file', { context: FileContext.agents }],
+    ['a file with a chosen destination', { metadata: { destinationChosen: true } }],
+  ])('does not count %s toward the budget', (_name, extra) => {
+    const big = {
+      ...pdfs[0],
+      file_id: 'big',
+      bytes: 36_000_000,
+      ...extra,
+    };
+    const expected = Array.from({ length: 10 }, (_, i) => `p${i}`).sort();
+    expect([...plan([...pdfs, big], { executeCode: true, fileSearch: true })].sort()).toEqual(
+      expected,
+    );
+  });
+
+  it('caps a text file at the extracted-text limit when deciding to refuse', () => {
+    const txt = {
+      file_id: 'txt',
+      filename: 'notes.txt',
+      type: 'text/plain',
+      text: 'x'.repeat(4_400_000),
+      llmDeliveryPath: 'text',
+      metadata: { destinationChosen: false },
+    };
+    const route = {
+      ...routing,
+      fileConfig: mergeFileConfig({ fileContextCharLimit: 5_000_000 } as never),
+    };
+    expect(() =>
+      plan([txt], { executeCode: false, fileSearch: false }, budget, room, route),
+    ).not.toThrow();
+  });
+
+  it('does not move a type the admin routed', () => {
+    const route = {
+      ...routing,
+      endpointConfig: {
+        llmDeliveryPolicy: 'automatic' as const,
+        defaultLLMDeliveryPath: { overrides: { 'application/pdf': 'provider' } },
+      },
+    };
+    expect(() =>
+      plan(pdfs, { executeCode: false, fileSearch: true }, budget, room, route as never),
+    ).toThrow(expect.objectContaining({ limitType: 'context' }));
   });
 });

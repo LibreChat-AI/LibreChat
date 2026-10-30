@@ -3,6 +3,7 @@ import type { EndpointFileConfig, FileConfig, RegexLike } from './types/files';
 import type { CodeEnvReferenceSet } from './codeEnvRef';
 import type { TEndpoint } from './config';
 import {
+  excelMimeTypes,
   retrievalMimeTypes,
   isExplicitMimeConfig,
   isBedrockDocumentType,
@@ -19,6 +20,7 @@ import {
 import { normalizeEndpointName } from './utils';
 import { EToolResources } from './types/tools';
 import { getCodeEnvRefs } from './codeEnvRef';
+import { FileContext } from './types/files';
 
 /**
  * The native provider a custom endpoint declares, when it declares one. A custom endpoint
@@ -416,14 +418,20 @@ export interface TurnDeliveryRouting {
   endpointProvider?: string;
   useResponsesApi?: boolean;
   sttConfigured: boolean;
+  /** Attachments automatic reading moved out of this turn's prompt for size. Initialization
+   *  settles it with the rest, before any reader routes a file, so every reader agrees. */
+  overBudgetFileIds?: ReadonlySet<string>;
 }
 
 /** The fields of an attachment record that decide its delivery on a turn. */
 export interface TurnDeliveryFile {
+  file_id?: string;
   type?: string;
   text?: string | null;
   /** Stored as an upload-time inference, so any string may be read back. */
   llmDeliveryPath?: string | null;
+  /** Where the record came from; an agent's own files are never message attachments. */
+  context?: string | null;
   /** Whether a vector store holds this file, which is what lets file search serve it.
    *  Records predating namespace tracking carry only this flag. */
   embedded?: boolean | null;
@@ -444,9 +452,42 @@ export interface TurnDeliveryFile {
 const isLLMDeliveryPath = (value: unknown): value is TDefaultLLMDeliveryPath =>
   value === 'provider' || value === 'text' || value === 'none';
 
+/** Tabular data Run Code reads whole (#17370): Excel, ODS, CSV/TSV and Parquet. */
+const isSpreadsheetMimeType = (mimeType: string): boolean =>
+  excelMimeTypes.test(mimeType) ||
+  /^(text\/(csv|tab-separated-values)|application\/(csv|vnd\.oasis\.opendocument\.spreadsheet|x-parquet|vnd\.apache\.parquet))$/.test(
+    mimeType,
+  );
+
+export const isMediaMimeType = (mimeType: string): boolean =>
+  /^(image|audio|video)\//.test(mimeType);
+
+/** An admin's per-type `defaultLLMDeliveryPath` override still wins under automatic reading (#17370). */
+const hasLLMDeliveryOverride = (
+  mimeType: string,
+  routing: Partial<TurnDeliveryRouting>,
+): boolean => {
+  const wildcard = mimeType.split('/')[0] + '/*';
+  return [
+    routing.endpointConfig?.defaultLLMDeliveryPath,
+    routing.fileConfig?.defaultLLMDeliveryPath,
+  ].some(
+    (config) => config?.overrides?.[mimeType] != null || config?.overrides?.[wildcard] != null,
+  );
+};
+
 /** Whether a record's stored route was inferred at upload, so each turn resolves it again. */
 export function hasInferredLLMDeliveryPath(file: TurnDeliveryFile): boolean {
   return file.llmDeliveryPath != null && file.metadata?.destinationChosen !== true;
+}
+
+/** Whether the endpoint opted into automatic reading; the legacy chooser keeps classic routing. */
+export function isAutomaticLLMDelivery(
+  endpointConfig?: Pick<EndpointFileConfig, 'llmDeliveryPolicy' | 'legacyFileUploadUX'> | null,
+): boolean {
+  return (
+    endpointConfig?.llmDeliveryPolicy === 'automatic' && endpointConfig.legacyFileUploadUX !== true
+  );
 }
 
 /**
@@ -464,6 +505,11 @@ export function hasInferredLLMDeliveryPath(file: TurnDeliveryFile): boolean {
  * under no tool, so enabling file search would otherwise withhold the text for a vector store
  * that never received the file. Run Code is judged by the tool set: see
  * {@link hasTurnFileConsumer}.
+ *
+ * Under `llmDeliveryPolicy: automatic`, an inferred spreadsheet route is `none` on a turn that
+ * runs Run Code. So is any route initialization listed in `overBudgetFileIds`, when a file tool
+ * this turn runs can read the type. Media, agent files and types with a
+ * `defaultLLMDeliveryPath` override keep their route.
  */
 export function resolveTurnLLMDeliveryPath(
   routing: Partial<TurnDeliveryRouting> | undefined,
@@ -477,6 +523,22 @@ export function resolveTurnLLMDeliveryPath(
   /* Conversion changes the stored type, so use the type routing originally saw. */
   const mimeType = file.metadata?.routingMimeType ?? file.type ?? '';
   const path = resolveUploadLLMDeliveryPath({ mimeType, ...routing });
+  /* Automatic reading (#17370): a spreadsheet goes to Run Code, which reads it whole, and an
+   * attachment initialization moved out of this turn's prompt for size goes to whichever file
+   * tool can read it. Media, an agent's own files and a type the admin routed keep their route. */
+  if (
+    isAutomaticLLMDelivery(endpointConfig) &&
+    consumers != null &&
+    file.context !== FileContext.agents &&
+    !isMediaMimeType(mimeType) &&
+    !hasLLMDeliveryOverride(mimeType, routing) &&
+    ((consumers.executeCode && isSpreadsheetMimeType(mimeType)) ||
+      (file.file_id != null &&
+        routing.overBudgetFileIds?.has(file.file_id) === true &&
+        hasTurnFileConsumer(mimeType, consumers)))
+  ) {
+    return 'none';
+  }
   const hasFallbackText = typeof file.text === 'string' && file.text.length > 0;
   if (
     path === 'none' &&
