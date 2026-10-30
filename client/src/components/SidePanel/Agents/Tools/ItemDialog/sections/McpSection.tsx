@@ -119,7 +119,18 @@ export default function McpSection({ item }: Props) {
   /** Live server data — `item.server` is a snapshot from card click and goes stale once
    * the MCP query refetches (e.g., after a server connects), so read from the live map. */
   const liveServer = mcpServersMap.get(serverName) ?? item.server;
-  const tools = useMemo(() => liveServer.tools ?? [], [liveServer.tools]);
+  /** Sorted by display name (case-insensitive, `tool2` before `tool10`) instead of the
+   * arbitrary order the server's `tools/list` returned them in. */
+  const tools = useMemo(
+    () =>
+      [...(liveServer.tools ?? [])].sort((a, b) =>
+        a.metadata.name.localeCompare(b.metadata.name, undefined, {
+          numeric: true,
+          sensitivity: 'base',
+        }),
+      ),
+    [liveServer.tools],
+  );
   const hasTools = tools.length > 0;
 
   /** Subscribe to the tools field so selection toggles re-render this section.
