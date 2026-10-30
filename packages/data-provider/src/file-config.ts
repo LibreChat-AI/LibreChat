@@ -470,6 +470,7 @@ export const codeTypeMapping: { [key: string]: string } = {
   psm1: 'text/plain', // .psm1 - PowerShell module
   bat: 'text/plain', // .bat - Batch script
   cmd: 'text/plain', // .cmd - Windows command script
+  reg: 'text/plain', // .reg - Windows Registry Editor file
   asm: 'text/plain', // .asm - Assembly source
   s: 'text/plain', // .s - Assembly source
   v: 'text/plain', // .v - V or Verilog source
@@ -535,12 +536,14 @@ export const mimeTypeAliases: Readonly<Record<string, string>> = {
  * @returns The normalized or inferred MIME type; empty string if unresolvable
  */
 export function inferMimeType(fileName: string, currentType: string): string {
-  if (currentType) {
-    return mimeTypeAliases[currentType] ?? currentType;
+  const normalizedType = currentType ? (mimeTypeAliases[currentType] ?? currentType) : '';
+
+  if (normalizedType && normalizedType !== 'application/octet-stream') {
+    return normalizedType;
   }
 
   const extension = fileName.split('.').pop()?.toLowerCase() ?? '';
-  return codeTypeMapping[extension] || imageTypeMapping[extension] || currentType;
+  return codeTypeMapping[extension] || imageTypeMapping[extension] || normalizedType;
 }
 
 export const retrievalMimeTypes = [
