@@ -3,6 +3,7 @@ const OpenAI = require('openai');
 const FormData = require('form-data');
 const { Readable } = require('stream');
 const createOpenAIImageTools = require('~/app/clients/tools/structured/OpenAIImageTools');
+const { appendImageEditOptions } = require('@librechat/api');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 
 jest.mock('axios');
@@ -32,6 +33,34 @@ jest.mock('@librechat/api', () => ({
   extractBaseURL: jest.fn((url) => url),
   getProxyDispatcher: jest.fn(() => undefined),
   applyAxiosProxyConfig: jest.fn(),
+  resolveImageOutputFormat: jest.fn((background, outputFormat) => {
+    if (background === 'transparent' && outputFormat !== 'png' && outputFormat !== 'webp') {
+      return 'png';
+    }
+    return outputFormat;
+  }),
+  appendImageEditOptions: jest.fn(
+    (
+      formData,
+      { background = 'auto', configuredOutputFormat, quality = 'auto', size = 'auto' },
+    ) => {
+      const outputFormat =
+        background === 'transparent' &&
+        configuredOutputFormat !== 'png' &&
+        configuredOutputFormat !== 'webp'
+          ? 'png'
+          : configuredOutputFormat;
+
+      if (background !== 'auto') {
+        formData.append('background', background);
+      }
+      formData.append('output_format', outputFormat);
+      formData.append('quality', quality);
+      formData.append('size', size);
+
+      return outputFormat;
+    },
+  ),
 }));
 
 jest.mock('~/server/services/Files/strategies', () => ({
@@ -263,5 +292,95 @@ describe('OpenAIImageTools - IMAGE_GEN_OAI_MODEL environment variable', () => {
         headers: expect.objectContaining({ 'api-key': 'test-api-key' }),
       }),
     );
+  });
+});
+
+describe('OpenAIImageTools - image editing output options', () => {
+  let originalEnv;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    originalEnv = { ...process.env };
+
+    process.env.IMAGE_GEN_OAI_API_KEY = 'test-api-key';
+    axios.post.mockResolvedValue({
+      data: {
+        data: [
+          {
+            b64_json: 'base64-encoded-image-data',
+          },
+        ],
+      },
+    });
+    getStrategyFunctions.mockReturnValue({
+      getDownloadStream: jest.fn().mockResolvedValue(Readable.from(Buffer.from('image'))),
+    });
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  const buildEditTool = (imageOutputType) =>
+    createOpenAIImageTools({
+      isAgent: true,
+      req: { user: { id: 'test-user' } },
+      imageOutputType,
+      imageFiles: [
+        {
+          file_id: 'image-1',
+          filepath: '/tmp/image.png',
+          filename: 'image.png',
+          type: 'image/png',
+          source: 'local',
+        },
+      ],
+    })[1];
+
+  it('sends transparent background options and returns the resolved output MIME type', async () => {
+    const imageEditTool = buildEditTool('jpeg');
+
+    const result = await imageEditTool.func({
+      prompt: 'remove the background',
+      image_ids: ['image-1'],
+      background: 'transparent',
+    });
+
+    expect(appendImageEditOptions).toHaveBeenCalledWith(expect.anything(), {
+      background: 'transparent',
+      configuredOutputFormat: 'jpeg',
+      quality: 'auto',
+      size: 'auto',
+    });
+    const [, formData] = axios.post.mock.calls[0];
+    const formBody = formData._streams.filter((part) => typeof part === 'string').join('');
+    expect(formBody).toContain('name="background"');
+    expect(formBody).toMatch(/name=\"background\"[\s\S]*?transparent/);
+    expect(formBody).toContain('name="output_format"');
+    expect(formBody).toMatch(/name=\"output_format\"[\s\S]*?png/);
+    expect(result[1].content[0].image_url.url).toBe(
+      'data:image/png;base64,base64-encoded-image-data',
+    );
+  });
+
+  it('sends the configured output format when background is omitted', async () => {
+    const imageEditTool = buildEditTool('webp');
+
+    await imageEditTool.func({
+      prompt: 'adjust the lighting',
+      image_ids: ['image-1'],
+    });
+
+    expect(appendImageEditOptions).toHaveBeenCalledWith(expect.anything(), {
+      background: 'auto',
+      configuredOutputFormat: 'webp',
+      quality: 'auto',
+      size: 'auto',
+    });
+    const [, formData] = axios.post.mock.calls[0];
+    const formBody = formData._streams.filter((part) => typeof part === 'string').join('');
+    expect(formBody).not.toContain('name="background"');
+    expect(formBody).toContain('name="output_format"');
+    expect(formBody).toMatch(/name=\"output_format\"[\s\S]*?webp/);
   });
 });
