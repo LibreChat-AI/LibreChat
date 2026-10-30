@@ -6,9 +6,71 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { chromium } from '@playwright/test';
-import { build } from 'vite';
+import { build, loadConfigFromFile } from 'vite';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
+
+test('vendor chunk names depend on packages rather than checkout paths', async () => {
+  const loaded = await loadConfigFromFile(
+    { command: 'build', mode: 'production' },
+    path.join(root, 'client/vite.config.ts'),
+  );
+  const chunkName = loaded.config.build.rolldownOptions.output.codeSplitting.groups.find(
+    (group) => typeof group.name === 'function',
+  )?.name;
+  assert.equal(typeof chunkName, 'function');
+  for (const checkout of [
+    '/app/LibreChat',
+    '/home/ricky/git/LibreChat',
+    '/work/mermaid/fetch',
+    '/work/node_modules-cache/mermaid/fetch/LibreChat',
+    'C:/Users/ricky/mermaid/fetch/LibreChat',
+  ]) {
+    for (const [module, expected] of [
+      ['react-dom/cjs/react-dom.production.min.js', 'vendor'],
+      ['heic-to/dist/heic-to.js', 'heic-converter'],
+      ['@radix-ui/react-dialog/dist/index.mjs', 'radix-ui'],
+      ['axios/index.js', 'http-client'],
+      ['ky/distribution/index.js', 'http-client'],
+      ['cross-fetch/dist/browser-ponyfill.js', 'http-client'],
+      ['@protobufjs/fetch/index.js', 'http-client'],
+      ['@smithy/fetch-http-handler/dist-es/index.js', 'http-client'],
+      ['@fetch-tools/plain/index.js', 'vendor'],
+      ['sky-package/index.js', 'vendor'],
+      ['axios-extra/index.js', 'vendor'],
+      ['ky-extra/index.js', 'vendor'],
+      ['@scope/axios/index.js', 'vendor'],
+      ['sky-package/dist/axios/index.js', 'vendor'],
+      ['sky-package/dist/ky/index.js', 'vendor'],
+      ['sky-package/dist/fetch.js', 'vendor'],
+      ['mermaid/node_modules/ky/distribution/index.js', 'http-client'],
+      ['axios/node_modules/sky-package/index.js', 'vendor'],
+      ['cross-fetch/node_modules/plain/index.js', 'vendor'],
+      ['mermaid/node_modules/@radix-ui/react-dialog/dist/index.mjs', 'radix-ui'],
+      ['mermaid/node_modules/lodash-es/lodash.js', 'mermaid'],
+      ['regenerator-runtime/runtime.js', 'polyfills'],
+      ['@hyperdx/otel-web/dist/index.js', 'rum'],
+      ['@opentelemetry/sdk-trace-base/build/esm/index.js', 'rum'],
+      ['@opentelemetry/instrumentation-fetch/build/esm/index.js', 'rum'],
+      ['rrweb/dist/rrweb.js', 'rum'],
+      ['@tanstack/react-query-devtools/build/lib/index.js', 'query-devtools'],
+    ]) {
+      const id = `${checkout}/node_modules/${module}`;
+      assert.equal(chunkName(id), expected, id);
+      assert.equal(chunkName(id.replaceAll('/', '\\')), expected, id);
+    }
+    for (const [module, expected] of [
+      ['src/main.tsx', null],
+      ['src/polyfills/index.ts', 'polyfills'],
+      ['src/locales/en/translation.json', null],
+      ['src/locales/fr/translation.json', 'locale-fr'],
+    ]) {
+      const id = `${checkout}/client/${module}`;
+      assert.equal(chunkName(id), expected, id);
+      assert.equal(chunkName(id.replaceAll('/', '\\')), expected, id);
+    }
+  }
+});
 
 // A small production-build fixture exercises the actual bootstrap and worker recovery code
 // without requiring a database or identity provider. It does not simulate an active model run.
