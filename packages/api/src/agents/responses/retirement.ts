@@ -1,10 +1,10 @@
-import { responseTenantId } from './scope';
 import type { ResponseOwner, ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { ResponseCheckpointIdentity } from './checkpoint';
 import type { ResponseCompletionRecord } from './completion';
 import { createResponseCompletion, createResponseExecutionRelease } from './completion';
 import { buildPendingBackgroundResponse } from './background';
+import { responseTenantId } from './scope';
 
 export interface ResponseRetirementDependencies {
   storage: ResponseStorage;

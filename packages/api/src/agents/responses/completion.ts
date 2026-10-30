@@ -1,4 +1,3 @@
-import { responseTenantId } from './scope';
 import { isDeepStrictEqual } from 'node:util';
 import type {
   ResponseStorage,
@@ -8,6 +7,7 @@ import type {
   ResponseCleanupIdentity,
 } from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
+import { responseTenantId } from './scope';
 
 /** A retirement result carries cleanup authority only and must never render private output. */
 export interface ResponseCompletionRecord extends StoredResponseRecord {
