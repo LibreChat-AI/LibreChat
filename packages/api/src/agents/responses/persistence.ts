@@ -159,8 +159,9 @@ export function buildResponseInputChain<T extends { role: string; messageId?: st
 export function selectStoredResponse<T extends StoredResponseMessage>(
   messages: T[],
   responseId: string,
+  responseReference: boolean = responseId.startsWith('resp_'),
 ): T[] {
-  if (responseId.startsWith('resp_')) {
+  if (responseReference) {
     return messages.filter(
       (message) => message.messageId === responseId && !message.isCreatedByUser,
     );

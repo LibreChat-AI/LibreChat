@@ -150,11 +150,13 @@ const mockResponsesUsage = {
 const mockBuildResponsesUsage = jest.fn().mockReturnValue(mockResponsesUsage);
 const mockEnrollAgentExecution = jest.fn();
 let mockExecution;
+let mockRealExecutionManager;
 
 function resetMockExecution() {
   const controller = new AbortController();
   mockExecution = {
     signal: controller.signal,
+    terminalOutcome: 'complete',
     abort: jest.fn((reason) => controller.abort(reason)),
     track: jest.fn((promise) => promise),
     beginProviderExecution: jest.fn(async () => {
@@ -179,6 +181,7 @@ jest.mock('uuid', () => ({
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
+  ...jest.requireActual('@librechat/data-schemas'),
   logger: {
     debug: jest.fn(),
     info: jest.fn(),
@@ -198,6 +201,28 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  captureResponseAccountingUsage: (...args) =>
+    jest.requireActual('@librechat/api').captureResponseAccountingUsage(...args),
+  resolveResponseContinuation: (...args) =>
+    jest.requireActual('@librechat/api').resolveResponseContinuation(...args),
+  buildResponseInputChain: (...args) =>
+    jest.requireActual('@librechat/api').buildResponseInputChain(...args),
+  loadForegroundResponseHistory: (...args) =>
+    jest.requireActual('@librechat/api').loadForegroundResponseHistory(...args),
+  projectStoredResponseMessage: (...args) =>
+    jest.requireActual('@librechat/api').projectStoredResponseMessage(...args),
+  requireResponseStorageWrite: (...args) =>
+    jest.requireActual('@librechat/api').requireResponseStorageWrite(...args),
+  saveForegroundResponseInputs: (...args) =>
+    jest.requireActual('@librechat/api').saveForegroundResponseInputs(...args),
+  createForegroundResponseTerminal: (...args) =>
+    jest.requireActual('@librechat/api').createForegroundResponseTerminal(...args),
+  createStoredForegroundResponseReader: (...args) =>
+    jest.requireActual('@librechat/api').createStoredForegroundResponseReader(...args),
+  createResponseAccountingSnapshot: (...args) =>
+    jest.requireActual('@librechat/api').createResponseAccountingSnapshot(...args),
+  withResponsePersistenceErrors: (...args) =>
+    jest.requireActual('@librechat/api').withResponsePersistenceErrors(...args),
   createFileProvisionRecovery: () =>
     jest.requireActual('@librechat/api').createFileProvisionRecovery(),
   getAgentErrorMetadata: (...args) =>
@@ -413,6 +438,15 @@ jest.mock('@librechat/api', () => ({
       on_chat_model_end: { handle: jest.fn() },
     },
     finalizeStream: jest.fn(),
+    failStream: jest.fn(),
+    prepareStreamResponse: jest.fn(() => ({
+      id: 'resp_test',
+      object: 'response',
+      output: [],
+      model: 'agent-123',
+      status: 'completed',
+      store: false,
+    })),
   }),
   createAggregatorEventHandlers: jest.fn().mockReturnValue({
     on_message_delta: { handle: jest.fn() },
@@ -421,16 +455,22 @@ jest.mock('@librechat/api', () => ({
     on_run_step_delta: { handle: jest.fn() },
     on_chat_model_end: { handle: jest.fn() },
   }),
-  executeAgentRun: async ({
-    envelope,
-    runId,
-    conversationId,
-    connection,
-    isPrincipalActive,
-    execute,
-    handleExecutionError,
-    beforeSettle,
-  }) => {
+  executeAgentRun: async (params) => {
+    if (mockRealExecutionManager)
+      return jest
+        .requireActual('@librechat/api')
+        .executeAgentRun(params, { manager: mockRealExecutionManager });
+    const {
+      envelope,
+      runId,
+      conversationId,
+      connection,
+      isPrincipalActive,
+      execute,
+      handleExecutionError,
+      beforeSettle,
+      afterSettle,
+    } = params;
     let execution;
     let executionError;
     let closed = connection?.isClosed() ?? false;
@@ -460,6 +500,7 @@ jest.mock('@librechat/api', () => ({
       if (execution) {
         await beforeSettle?.(execution, executionError);
         await execution.settle(executionError);
+        await afterSettle?.(execution, executionError);
       }
     }
   },
@@ -536,6 +577,8 @@ jest.mock('~/cache', () => ({
   logViolation: jest.fn(),
 }));
 
+jest.mock('~/server/services/Files/process', () => ({ saveBase64Image: jest.fn() }));
+
 jest.mock('~/server/services/Files/strategies', () => ({
   getStrategyFunctions: jest.fn().mockReturnValue({}),
 }));
@@ -557,7 +600,8 @@ jest.mock('~/models', () => ({
   getProjectFiles: jest.fn(),
   getFiles: jest.fn(),
   getMessages: jest.fn().mockResolvedValue([]),
-  saveMessage: jest.fn().mockResolvedValue({}),
+  getMessage: jest.fn().mockResolvedValue(null),
+  saveMessage: jest.fn().mockImplementation(async (_context, message) => ({ ...message })),
   updateFilesUsage: jest.fn(),
   getUserKeyValues: jest.fn(),
   getUserCodeFiles: jest.fn(),
@@ -571,7 +615,7 @@ jest.mock('~/models', () => ({
   getCacheMultiplier: mockGetCacheMultiplier,
   getConvoFiles: jest.fn().mockResolvedValue([]),
   getFormattedMemories: jest.fn().mockResolvedValue({ withKeys: '', withoutKeys: '' }),
-  saveConvo: jest.fn().mockResolvedValue({}),
+  saveConvo: jest.fn().mockImplementation(async (_context, conversation) => ({ ...conversation })),
   getConvo: jest.fn().mockResolvedValue(null),
   readAdmittedConvoCodeEnvironmentDecision: jest.fn().mockResolvedValue(null),
   isSubagentOwnerAdmissible: jest.fn().mockResolvedValue(true),
@@ -651,6 +695,7 @@ describe('createResponse controller', () => {
           codeWorkspaces: selections,
         });
       await createResponse(req, res);
+      expect(api.sendResponsesErrorResponse.mock.calls).toEqual([]);
       const fencedRead = require('~/models').readAdmittedConvoCodeEnvironmentDecision;
       if (movesEnabled) expect(fencedRead).toHaveBeenCalledTimes(1);
       else expect(fencedRead).not.toHaveBeenCalled();
@@ -802,16 +847,21 @@ describe('createResponse controller', () => {
   });
 
   it('does not initialize a provider after disconnecting during enrollment', async () => {
+    let enteredEnrollment;
+    const enrollmentReady = new Promise((resolve) => {
+      enteredEnrollment = resolve;
+    });
     let finishEnrollment;
     mockEnrollAgentExecution.mockImplementationOnce(
       () =>
         new Promise((resolve) => {
           finishEnrollment = resolve;
+          enteredEnrollment();
         }),
     );
 
     const request = createResponse(req, res);
-    await Promise.resolve();
+    await enrollmentReady;
     res.once.mock.calls[0][1]();
     finishEnrollment(mockExecution);
     await request;
@@ -1092,8 +1142,10 @@ describe('createResponse controller', () => {
         { role: 'user', content: 'Hello', messageId: 'input-123' },
       ]);
       const savedResponse = { messageId: 'resp_mock-123', isTemporary: true };
-      db.saveMessage.mockResolvedValueOnce({ messageId: 'input-123' });
-      db.saveMessage.mockResolvedValueOnce(savedResponse);
+      db.saveMessage.mockImplementationOnce(async (_context, message) => ({ ...message }));
+      db.saveMessage.mockImplementationOnce(async (_context, message) =>
+        Object.assign(savedResponse, { conversationId: message.conversationId }),
+      );
 
       await createResponse(req, res);
 
@@ -2629,6 +2681,7 @@ describe('createResponse controller', () => {
         expect.anything(),
         expect.anything(),
         mockResponsesUsage,
+        expect.objectContaining({ status: 'unavailable', calls: expect.any(Array) }),
       );
     });
 
@@ -2642,7 +2695,302 @@ describe('createResponse controller', () => {
 
       const finalizeStream =
         api.createResponsesEventHandlers.mock.results.at(-1).value.finalizeStream;
-      expect(finalizeStream).toHaveBeenCalledWith(mockResponsesUsage);
+      expect(finalizeStream).toHaveBeenCalledWith(
+        mockResponsesUsage,
+        expect.objectContaining({ calls: expect.any(Array) }),
+        expect.objectContaining({ store: false }),
+      );
+    });
+  });
+
+  describe('foreground production composition', () => {
+    const names = [
+      'createResponseContext',
+      'createResponseTracker',
+      'createResponseAggregator',
+      'createResponsesEventHandlers',
+      'createAggregatorEventHandlers',
+      'buildAggregatedResponse',
+      'buildResponsesUsage',
+      'convertInputToMessages',
+      'setupStreamingResponse',
+      'emitResponseCreated',
+      'emitResponseInProgress',
+      'createOwnedToolEndHandler',
+      'sendResponsesErrorResponse',
+    ];
+    let originals;
+    let originalRun;
+    let originalContextualize;
+    beforeEach(() => {
+      const api = require('@librechat/api');
+      const actual = jest.requireActual('@librechat/api');
+      originals = new Map(names.map((name) => [name, api[name].getMockImplementation()]));
+      for (const name of names) api[name].mockImplementation(actual[name]);
+      originalRun = api.createRun.getMockImplementation();
+      const callbacks = require('~/server/controllers/agents/callbacks');
+      originalContextualize = callbacks.contextualizeModelUsage.getMockImplementation();
+      callbacks.contextualizeModelUsage.mockImplementation(
+        jest.requireActual('~/server/controllers/agents/callbacks').contextualizeModelUsage,
+      );
+      mockRealExecutionManager = new actual.GenerationJobManagerClass();
+      mockRealExecutionManager.configure({
+        jobStore: new actual.InMemoryJobStore(),
+        eventTransport: new actual.InMemoryEventTransport(),
+        cleanupOnComplete: false,
+      });
+      mockRealExecutionManager.initialize();
+      api.createRun.mockImplementation(async ({ customHandlers }) => ({
+        processStream: async () => {
+          customHandlers.on_run_step.handle('on_run_step', {
+            id: 'step-tool',
+            type: 'tool_calls',
+            index: 0,
+            stepDetails: {
+              type: 'tool_calls',
+              tool_calls: [{ id: 'call', name: 'lookup', args: '{}' }],
+            },
+          });
+          customHandlers.on_run_step_completed.handle('on_run_step_completed', {
+            result: {
+              id: 'step-tool',
+              index: 0,
+              tool_call: {
+                id: 'call',
+                name: 'lookup',
+                args: '{}',
+                output: 'retained-tool-result',
+                type: 'tool_call',
+              },
+            },
+          });
+          customHandlers.on_message_delta.handle('on_message_delta', {
+            delta: { content: [{ type: 'text', text: 'Answer' }] },
+          });
+          customHandlers.on_chat_model_end.handle(
+            'on_chat_model_end',
+            { output: { usage_metadata: { input_tokens: 2, output_tokens: 1 } } },
+            {},
+            {
+              getAgentContext: () => ({
+                clientOptions: { model: 'configured-provider-model' },
+                provider: 'openAI',
+              }),
+            },
+          );
+        },
+      }));
+    });
+    afterEach(async () => {
+      await mockRealExecutionManager?.destroy();
+      mockRealExecutionManager = undefined;
+      const api = require('@librechat/api');
+      for (const [name, implementation] of originals) api[name].mockImplementation(implementation);
+      api.createRun.mockImplementation(originalRun);
+      require('~/server/controllers/agents/callbacks').contextualizeModelUsage.mockImplementation(
+        originalContextualize,
+      );
+    });
+    const completed = (res, stream) => {
+      if (!stream) return res.json.mock.calls.at(-1)?.[0];
+      return res.write.mock.calls
+        .map(([chunk]) => chunk)
+        .filter((chunk) => chunk.startsWith('data: {'))
+        .map((chunk) => JSON.parse(chunk.slice(6).trim()))
+        .find((event) => event.type === 'response.completed')?.response;
+    };
+    it.each([false, true])(
+      'publishes tool results, accounting and successful storage after real host drain: stream=%s',
+      async (stream) => {
+        const api = require('@librechat/api');
+        const db = require('~/models');
+        api.validateResponseRequest.mockReturnValueOnce({
+          request: { model: 'agent-123', input: 'Hello', stream, store: true },
+        });
+        const saveMessage = db.saveMessage.getMockImplementation();
+        db.saveMessage.mockImplementation(async (context, message) => {
+          const job = await mockRealExecutionManager.getJob('resp_mock-123');
+          expect(job.metadata.providerDrained).toBe(true);
+          return saveMessage(context, message);
+        });
+        try {
+          await createResponse(req, res);
+        } finally {
+          db.saveMessage.mockImplementation(saveMessage);
+        }
+        expect(api.sendResponsesErrorResponse.mock.calls).toEqual([]);
+        const response = completed(res, stream);
+        expect(response).toMatchObject({
+          id: 'resp_mock-123',
+          store: true,
+          accounting: {
+            calls: [
+              expect.objectContaining({
+                model: 'configured-provider-model',
+                modelSource: 'configured',
+                inputTokens: 2,
+                outputTokens: 1,
+              }),
+            ],
+          },
+        });
+        expect(response.output).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: 'function_call_output',
+              call_id: 'call',
+              output: 'retained-tool-result',
+            }),
+          ]),
+        );
+        const message = db.saveMessage.mock.calls.find(([, value]) => !value.isCreatedByUser)?.[1];
+        expect(message).toMatchObject({
+          parentMessageId: expect.any(String),
+          content: expect.arrayContaining([
+            expect.objectContaining({
+              tool_call: expect.objectContaining({ output: 'retained-tool-result' }),
+            }),
+          ]),
+          metadata: { responseReceipt: { accounting: response.accounting, usage: response.usage } },
+        });
+        expect(
+          require('~/server/controllers/agents/callbacks')[
+            stream ? 'createResponsesToolEndCallback' : 'createToolEndCallback'
+          ],
+        ).toHaveBeenCalled();
+        expect(mockRecordCollectedUsage).toHaveBeenCalledTimes(1);
+      },
+    );
+    it.each([false, true])(
+      'retains provider output with store false on resolved conversation save failure: stream=%s',
+      async (stream) => {
+        const api = require('@librechat/api');
+        const db = require('~/models');
+        api.validateResponseRequest.mockReturnValueOnce({
+          request: { model: 'agent-123', input: 'Hello', stream, store: true },
+        });
+        db.saveConvo.mockResolvedValueOnce({ message: 'private database failure' });
+        await createResponse(req, res);
+        expect(completed(res, stream)).toMatchObject({
+          store: false,
+          output: expect.arrayContaining([
+            expect.objectContaining({
+              type: 'function_call_output',
+              output: 'retained-tool-result',
+            }),
+          ]),
+        });
+        expect(db.saveMessage).not.toHaveBeenCalled();
+      },
+    );
+    it.each([false, true])(
+      'closes canonical cancellation without emitting success or persisting output: stream=%s',
+      async (stream) => {
+        const api = require('@librechat/api');
+        const db = require('~/models');
+        const provider = api.createRun.getMockImplementation();
+        api.validateResponseRequest.mockReturnValueOnce({
+          request: { model: 'agent-123', input: 'Hello', stream, store: true },
+        });
+        api.createRun.mockImplementationOnce(async (options) => {
+          const run = await provider(options);
+          return {
+            ...run,
+            processStream: async (...args) => {
+              await run.processStream(...args);
+              const job = await mockRealExecutionManager.getJob('resp_mock-123');
+              await mockRealExecutionManager.abortJob('resp_mock-123', {
+                expectedCreatedAt: job.createdAt,
+                awaitProviderDrain: false,
+              });
+            },
+          };
+        });
+        await createResponse(req, res);
+        expect(db.saveMessage).not.toHaveBeenCalled();
+        if (stream) {
+          expect(completed(res, true)).toBeUndefined();
+          expect(res.write.mock.calls.map(([value]) => value).join('')).toContain(
+            'response_execution_cancelled',
+          );
+          expect(res.end).toHaveBeenCalled();
+        } else {
+          expect(res.status).toHaveBeenCalledWith(409);
+          expect(res.json).toHaveBeenCalledWith({
+            error: expect.objectContaining({ code: 'response_execution_cancelled' }),
+          });
+        }
+      },
+    );
+    it.each([false, true])(
+      'closes outcome readback failure with a safe error after provider drain: stream=%s',
+      async (stream) => {
+        const api = require('@librechat/api');
+        const db = require('~/models');
+        api.validateResponseRequest.mockReturnValueOnce({
+          request: { model: 'agent-123', input: 'Hello', stream, store: true },
+        });
+        const complete = mockRealExecutionManager.completeJob.bind(mockRealExecutionManager);
+        jest
+          .spyOn(mockRealExecutionManager, 'completeJob')
+          .mockImplementationOnce(async (...args) => {
+            const result = await complete(...args);
+            jest
+              .spyOn(mockRealExecutionManager, 'getJob')
+              .mockRejectedValueOnce(new Error('private-outage-secret'));
+            return result;
+          });
+        await expect(createResponse(req, res)).rejects.toThrow('private-outage-secret');
+        expect(db.saveMessage).not.toHaveBeenCalled();
+        const body = stream
+          ? res.write.mock.calls.map(([value]) => value).join('')
+          : JSON.stringify(res.json.mock.calls);
+        expect(body).toContain('response_execution_unavailable');
+        expect(body).not.toContain('private-outage-secret');
+        expect(completed(res, stream)?.store).not.toBe(true);
+        expect(await mockRealExecutionManager.getCleanupBlockingJobIdsForUser(req.user.id)).toEqual(
+          [],
+        );
+      },
+    );
+
+    it('resolves a returned response ID before real host conversation admission and links its next input', async () => {
+      const api = require('@librechat/api');
+      const db = require('~/models');
+      const priorConversation = '6834b9eb-9939-40d2-847a-ac9ad95fd88d';
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: 'Next',
+          stream: false,
+          store: true,
+          previous_response_id: 'resp_prior',
+        },
+      });
+      db.getMessage.mockResolvedValueOnce({
+        messageId: 'resp_prior',
+        conversationId: priorConversation,
+        isCreatedByUser: false,
+      });
+      db.getConvo.mockResolvedValueOnce({ conversationId: priorConversation, user: req.user.id });
+      db.getMessages.mockResolvedValueOnce([
+        {
+          messageId: 'resp_prior',
+          conversationId: priorConversation,
+          parentMessageId: null,
+          text: 'Earlier answer',
+          isCreatedByUser: false,
+        },
+      ]);
+      await createResponse(req, res);
+      expect(api.sendResponsesErrorResponse.mock.calls).toEqual([]);
+      expect(db.getConvo).toHaveBeenCalledWith(req.user.id, priorConversation);
+      expect(
+        db.saveMessage.mock.calls.find(([, message]) => message.isCreatedByUser)?.[1],
+      ).toMatchObject({ conversationId: priorConversation, parentMessageId: 'resp_prior' });
+      expect((await mockRealExecutionManager.getJob('resp_mock-123')).metadata.conversationId).toBe(
+        priorConversation,
+      );
     });
   });
 

@@ -325,10 +325,12 @@ export function emitResponseCompleted(
   config: StreamHandlerConfig,
   usage?: Usage,
   accounting?: ResponseAccounting,
+  preparedResponse?: Response,
 ): void {
   const { res, context, tracker } = config;
   tracker.status = 'completed';
-  const response = buildResponse(context, tracker, 'completed', usage, accounting);
+  const response =
+    preparedResponse ?? buildResponse(context, tracker, 'completed', usage, accounting);
   writeEvent(res, {
     type: 'response.completed',
     sequence_number: tracker.nextSequence(),
