@@ -1737,3 +1737,54 @@ it.each(['cancelled', 'terminal', 'erased'] as const)(
       expect((await storage.read(owner, 'resp_one'))?.review).toBeUndefined();
     }),
 );
+
+it.each(['live', 'owner_deleted', 'conversation_deleted', 'expired'] as const)(
+  'supplements an unpublished generation only under durable retirement proof: %s',
+  (reason) =>
+    scoped(async () => {
+      await storage.reserve(reservation());
+      const retained = {
+        ...owner,
+        responseId: 'resp_one',
+        agentId: 'agent-one',
+        conversationId: 'conversation-one',
+        generationCreatedAt: 42,
+        checkpointNamespace: 'owned-checkpoint',
+        checkpointConfigJSON: 'pinned-settings',
+      };
+      if (reason === 'expired')
+        await createResponseRetention(mongoose)(
+          owner,
+          'conversation-one',
+          new Date(Date.now() - 1000),
+        );
+      else if (reason !== 'live')
+        await closeResponseScopes(
+          mongoose,
+          owner,
+          reason === 'conversation_deleted' ? ['conversation-one'] : undefined,
+        );
+      const identity = await storage.readCleanupIdentity(owner, 'resp_one', retained);
+      expect(identity).toMatchObject({
+        generationCreatedAt: reason === 'live' ? undefined : 42,
+        retirement: reason === 'live' ? undefined : reason,
+        checkpointNamespace: reason === 'live' ? undefined : 'owned-checkpoint',
+      });
+      if (reason !== 'live') {
+        const wrong = await storage.readCleanupIdentity(owner, 'resp_one', {
+          ...retained,
+          agentId: 'wrong-agent',
+        });
+        expect(wrong?.generationCreatedAt).toBeUndefined();
+        expect(wrong?.checkpointNamespace).toBeUndefined();
+        await mongoose.models.StoredResponse.updateOne(
+          { responseId: 'resp_one' },
+          { $set: { generationCreatedAt: 43 } },
+        );
+        expect(await storage.readCleanupIdentity(owner, 'resp_one', retained)).toMatchObject({
+          generationCreatedAt: 43,
+          checkpointNamespace: undefined,
+        });
+      }
+    }),
+);
