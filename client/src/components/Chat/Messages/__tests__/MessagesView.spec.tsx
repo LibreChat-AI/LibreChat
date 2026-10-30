@@ -1,13 +1,13 @@
 import React from 'react';
 import { Provider, createStore } from 'jotai';
 import { ChatContext } from '@librechat/chat/react';
+import { resolveThreadRows } from '@librechat/chat';
 import { render, screen } from '@testing-library/react';
 import type { ChatContract } from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import type { ReactElement } from 'react';
 import { siblingIdxFamily } from '~/components/Chat/Messages/Thread/state';
 import useThreadRows from '~/hooks/Messages/useThreadRows';
-import * as thread from '~/utils/thread';
 
 let mockMessagesKey = 'convo-1';
 let mockMaximizeChatSpace = false;
@@ -92,6 +92,13 @@ jest.mock('../MessageNav', () => {
 
 import MessagesView from '../MessagesView';
 
+/** The thread helpers are package exports, which cannot be spied on in place; wrap the real
+ *  resolver so calls are recorded and rows still resolve. */
+jest.mock('@librechat/chat', () => {
+  const actual = jest.requireActual('@librechat/chat');
+  return { ...actual, resolveThreadRows: jest.fn(actual.resolveThreadRows) };
+});
+
 /** The pane's chat contract, as far as the list reads it: the pane and the routed key. */
 const withChat = (ui: ReactElement) => (
   <ChatContext.Provider
@@ -172,7 +179,8 @@ describe('MessagesView pending steers', () => {
     jest
       .mocked(useThreadRows)
       .mockImplementation(jest.requireActual('~/hooks/Messages/useThreadRows').default);
-    const resolve = jest.spyOn(thread, 'resolveThreadRows');
+    const resolve = jest.mocked(resolveThreadRows);
+    resolve.mockClear();
     const large = Array.from({ length: 12_000 }, (_, index) => ({
       ...messageTree[0],
       messageId: `large-${index}`,
@@ -192,7 +200,8 @@ describe('MessagesView pending steers', () => {
     jest
       .mocked(useThreadRows)
       .mockImplementation(jest.requireActual('~/hooks/Messages/useThreadRows').default);
-    const resolve = jest.spyOn(thread, 'resolveThreadRows');
+    const resolve = jest.mocked(resolveThreadRows);
+    resolve.mockClear();
     const jotaiStore = createStore();
     jotaiStore.set(siblingIdxFamily('convo-2'), 1);
     const destination = [

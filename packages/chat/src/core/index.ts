@@ -24,3 +24,5 @@ export * from './subagents';
 export { strongDirection } from './direction';
 export * from './shortcuts';
 export * from './pane';
+export * from './thread';
+export * from './lanes';

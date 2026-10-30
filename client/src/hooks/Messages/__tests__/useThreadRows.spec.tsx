@@ -1,9 +1,16 @@
 import React from 'react';
 import { Provider, createStore } from 'jotai';
 import { renderHook } from '@testing-library/react';
+import { resolveThreadRows } from '@librechat/chat';
 import type { TMessage } from 'librechat-data-provider';
 import useThreadRows from '../useThreadRows';
-import * as thread from '~/utils/thread';
+
+/** The thread helpers are package exports, which cannot be spied on in place; wrap the real
+ *  resolver so calls are recorded and rows still resolve. */
+jest.mock('@librechat/chat', () => {
+  const actual = jest.requireActual('@librechat/chat');
+  return { ...actual, resolveThreadRows: jest.fn(actual.resolveThreadRows) };
+});
 
 function history(conversationId: string, count: number): TMessage[] {
   return Array.from({ length: count }, (_, index) => ({
@@ -30,7 +37,8 @@ function setup(messages: TMessage[] | null, conversationId: string) {
 
 describe('useThreadRows ownership', () => {
   it('does not index the departing large thread for row reuse in another conversation', () => {
-    const resolve = jest.spyOn(thread, 'resolveThreadRows');
+    const resolve = jest.mocked(resolveThreadRows);
+    resolve.mockClear();
     const large = history('large', 12_000);
     const small = history('small', 2);
     const { result, rerender } = setup(large, 'large');
@@ -59,7 +67,8 @@ describe('useThreadRows ownership', () => {
   });
 
   it('releases the previous rows when the transcript is absent', () => {
-    const resolve = jest.spyOn(thread, 'resolveThreadRows');
+    const resolve = jest.mocked(resolveThreadRows);
+    resolve.mockClear();
     const messages = history('same', 3);
     const { result, rerender } = setup(messages, 'same');
 
