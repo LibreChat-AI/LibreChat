@@ -278,7 +278,6 @@ describe('Insights methods', () => {
         isTemporary: false,
         ...attribution,
       };
-      // Bypass the fixture's legacy-agent default so missing fields really remain absent.
       await mongoose.models.Conversation.collection.insertOne(conversation);
       await fixtures.messages.insertOne({
         messageId: 'root-prompt',

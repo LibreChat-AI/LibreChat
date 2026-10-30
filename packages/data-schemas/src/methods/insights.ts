@@ -187,7 +187,6 @@ const conversationOwnerMatch = ({ conversationId, userId }: ConversationOwner) =
   user: userId,
 });
 
-/** A present initial field is authoritative, including an explicitly unattributed value. */
 function rootAgentMatch(agentIds: string[], prefix = '') {
   const initialField = `${prefix}initial_agent_id`;
   const currentField = `${prefix}agent_id`;
