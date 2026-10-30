@@ -803,6 +803,7 @@ describe('background Responses execution handoff', () => {
       createResponseCompletion({
         storage,
         cleanupCheckpoint: async () => {},
+        releaseExecution: createResponseExecutionRelease(GenerationJobManager),
       }).finish(pending),
     );
     expect(recovered.status).toBe('completed');
