@@ -131,3 +131,13 @@ it('retries job cleanup after the marker was cleared but deletion failed', () =>
     await f.release(f.record);
     expect(await jobs.getJob(f.record.responseId)).toBeUndefined();
   }));
+
+it.each(['owner_deleted', 'conversation_deleted', 'expired'] as const)(
+  'releases only exact drained proof for a durable %s cleanup identity',
+  (retirement) =>
+    scope(async () => {
+      const f = await fixture();
+      await f.release({ ...f.record, status: 'in_progress', retirement }, f.receipt);
+      expect(await jobs.getJob(f.record.responseId)).toBeUndefined();
+    }),
+);

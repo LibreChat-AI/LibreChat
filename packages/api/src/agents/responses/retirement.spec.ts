@@ -16,7 +16,7 @@ import { buildPendingBackgroundResponse } from './background';
 import { enrollAgentExecution } from '../remote/lifecycle';
 import { createResponseRetirement } from './retirement';
 
-const owner = { userId: 'stop-owner', tenantId: 'stop-tenant' };
+const owner = { userId: new mongoose.Types.ObjectId().toString(), tenantId: 'stop-tenant' };
 const scoped = <T>(work: () => Promise<T>) => tenantStorage.run(owner, work);
 let mongo: MongoMemoryReplSet;
 let storage: ResponseStorage;
@@ -28,12 +28,22 @@ beforeAll(async () => {
     instanceOpts: [{ args: ['--nounixsocket'] }],
   });
   await mongoose.connect(mongo.getUri(), { autoIndex: false });
+  createModels(mongoose);
   storage = createResponseStorage(mongoose);
 });
 beforeEach(async () => {
   await runAsSystem(async () => {
     await mongoose.models.StoredResponse.deleteMany({});
     await mongoose.models.ResponseScope?.deleteMany({});
+  });
+  await scoped(async () => {
+    await mongoose.models.User.deleteMany({});
+    await mongoose.models.User.create({
+      _id: owner.userId,
+      tenantId: owner.tenantId,
+      email: 'stop-owner@example.com',
+      provider: 'local',
+    });
   });
   jobs = new GenerationJobManagerClass();
   jobs.configure({
@@ -269,3 +279,70 @@ it('rejects retained abort on unsupported stores before changing the owned gener
     Object.defineProperty(jobs.getJobStore(), 'providerTerminalPersistence', { value: true });
     await f.execution.settle();
   }));
+
+it('releases retained provider proof through the complete fallback recovery', () =>
+  scoped(async () => {
+    const f = await fixture();
+    const retire = createResponseRetirement({ storage, jobs, cleanupCheckpoint: async () => {} });
+    expect(await retire(owner, f.responseId)).toBe('stopped');
+    expect((await storage.read(owner, f.responseId))?.status).toBe('cancelled');
+    expect(await jobs.getJob(f.responseId)).toBeUndefined();
+    expect(await retire(owner, f.responseId)).toBe('stopped');
+  }));
+
+it('keeps the fallback retention barrier until failed checkpoint cleanup is retried', () =>
+  scoped(async () => {
+    const f = await fixture();
+    await f.execution.settle();
+    const record = (await storage.read(owner, f.responseId))!;
+    const job = (await jobs.getJob(f.responseId))!;
+    const receipt = {
+      generationCreatedAt: f.execution.createdAt,
+      providerExecutionId: job.metadata.providerExecutionId!,
+      ownerId: job.metadata.providerExecutionOwnerId,
+      status: 'completed' as const,
+      responseJSON: JSON.stringify({
+        ...buildPendingBackgroundResponse(record),
+        status: 'completed',
+      }),
+      checkpointNamespace: 'owned-scope',
+      checkpointConfigJSON: '{"pinned":true}',
+    };
+    expect(
+      (await storage.stageTerminal(owner, f.responseId, { execution: record }, receipt)).ok,
+    ).toBe(true);
+    const cleanup = jest.fn(async () => {});
+    cleanup.mockRejectedValueOnce(new Error('checkpoint unavailable'));
+    const retire = createResponseRetirement({ storage, jobs, cleanupCheckpoint: cleanup });
+    await expect(retire(owner, f.responseId)).rejects.toThrow('checkpoint unavailable');
+    expect((await jobs.getJob(f.responseId))?.metadata.terminalPersistencePending).toBe(true);
+    expect((await storage.read(owner, f.responseId))?.pendingTerminal).toEqual(receipt);
+    expect(await retire(owner, f.responseId)).toBe('stopped');
+    expect(cleanup).toHaveBeenCalledTimes(2);
+    expect(await jobs.getJob(f.responseId)).toBeUndefined();
+  }));
+
+it.each(['owner', 'conversation'] as const)(
+  'drains a retained provider after %s erasure without an expiry deadline',
+  (kind) =>
+    scoped(async () => {
+      const f = await fixture();
+      const db = createMethods(mongoose);
+      if (kind === 'owner') await db.deleteUserById(owner.userId);
+      else await db.deleteConvos(owner.userId, { conversationId: 'conversation' });
+      expect(await storage.read(owner, f.responseId)).toBeNull();
+      const job = (await jobs.getJob(f.responseId))!;
+      expect(
+        await storage.readCleanupIdentity(owner, f.responseId, {
+          ...owner,
+          responseId: f.responseId,
+          agentId: 'agent',
+          conversationId: 'conversation',
+          generationCreatedAt: job.createdAt,
+        }),
+      ).toMatchObject({ retirement: kind === 'owner' ? 'owner_deleted' : 'conversation_deleted' });
+      expect(await f.retire(owner, f.responseId)).toBe('stopped');
+      expect(await jobs.getJob(f.responseId)).toBeUndefined();
+      expect(await storage.read(owner, f.responseId)).toBeNull();
+    }),
+);
