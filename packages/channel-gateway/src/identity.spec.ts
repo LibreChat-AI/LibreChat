@@ -175,3 +175,25 @@ describe('private identity linking', () => {
     ).toBe(false);
   });
 });
+
+test('an unavailable prior identity issues a fresh private ticket without replaying the original request', async () => {
+  const { backend, slack, flow } = setup();
+  backend
+    .mockResolvedValueOnce(json({ ok: true, value: { ...view(), state: 'unavailable' } }))
+    .mockResolvedValueOnce(
+      json({
+        ok: true,
+        value: {
+          url: `https://chat.example/channels/link#${'b'.repeat(43)}`,
+          expiresAtMs: Date.now() + 60000,
+        },
+      }),
+    );
+  await flow.prompt('C1', 'U1', bundle);
+  expect(backend.mock.calls.map(([url]) => String(url).split('/').at(-1))).toEqual([
+    'U1',
+    'ticket',
+  ]);
+  expect(posted(slack).get('text')).toContain('will not run automatically');
+  expect(posted(slack).get('user')).toBe('U1');
+});
