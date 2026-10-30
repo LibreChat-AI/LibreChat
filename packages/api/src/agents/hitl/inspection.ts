@@ -138,6 +138,9 @@ function getReferencedAgentIds(
     for (const id of agent.subagents.agent_ids ?? []) {
       add(id);
     }
+    for (const graph of agent.subagents.graphs ?? []) {
+      for (const id of graph.agent_ids) add(id);
+    }
   }
   return [...ids];
 }

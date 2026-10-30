@@ -11,11 +11,43 @@ import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { GenerationJob } from '~/types/stream';
 import { resolveAskUserQuestionResume, resolveToolApprovalResume } from '../hitl/resume';
 import { canonicalResponseJSON } from './background';
+import { responseTenantId } from './scope';
 
-type DecisionResolution = Extract<
-  ReturnType<typeof resolveAskUserQuestionResume> | ReturnType<typeof resolveToolApprovalResume>,
-  { resumeValue: object }
->['resumeValue'];
+export type ResponseDecisionResolution =
+  | {
+      type: 'ask_user_question';
+      value: Extract<
+        ReturnType<typeof resolveAskUserQuestionResume>,
+        { resumeValue: object }
+      >['resumeValue'];
+    }
+  | {
+      type: 'tool_approval';
+      value: Extract<
+        ReturnType<typeof resolveToolApprovalResume>,
+        { resumeValue: object }
+      >['resumeValue'];
+    };
+
+/** Keep question batches distinct from arbitrary tool-call identifiers. */
+export function resolveResponseReviewDecision(
+  action: Pick<Agents.PendingAction, 'payload'>,
+  decision: ResponseReviewDecision,
+): { resolution: ResponseDecisionResolution } | { status: 400 | 403 } {
+  if (action.payload?.type === 'ask_user_question') {
+    const mapped = resolveAskUserQuestionResume(action.payload, decision);
+    return 'resumeValue' in mapped
+      ? { resolution: { type: 'ask_user_question', value: mapped.resumeValue } }
+      : { status: mapped.status };
+  }
+  if (action.payload?.type === 'tool_approval') {
+    const mapped = resolveToolApprovalResume(action.payload, decision.decisions ?? []);
+    return 'resumeValue' in mapped
+      ? { resolution: { type: 'tool_approval', value: mapped.resumeValue } }
+      : { status: mapped.status };
+  }
+  return { status: 400 };
+}
 
 export interface ResponseDecisionDependencies {
   storage: ResponseStorage;
@@ -27,7 +59,7 @@ export interface ResponseDecisionDependencies {
     job: GenerationJob;
     action: Agents.PendingAction;
     decision: ResponseReviewDecision;
-    resolution: DecisionResolution;
+    resolution: ResponseDecisionResolution;
   }) => Promise<boolean>;
   /** Only publish the immutable saved intent through the existing resume queue; never execute inline. */
   enqueue: (record: StoredResponseRecord) => Promise<void>;
@@ -115,26 +147,19 @@ export function createResponseDecisionSubmission(
       (decision.answer != null && decision.answers != null)
     )
       return invalid;
-    let mapped:
-      | ReturnType<typeof resolveAskUserQuestionResume>
-      | ReturnType<typeof resolveToolApprovalResume>
-      | undefined;
-    if (action.payload?.type === 'ask_user_question')
-      mapped = resolveAskUserQuestionResume(action.payload, decision);
-    else if (action.payload?.type === 'tool_approval')
-      mapped = resolveToolApprovalResume(action.payload, decision.decisions ?? []);
-    if (!mapped || !('resumeValue' in mapped)) {
+    const mapped = resolveResponseReviewDecision(action, decision);
+    if (!('resolution' in mapped)) {
       if (mapped?.status === 403)
         return { ok: false, status: 403, code: 'response_decision_rejected' };
       return invalid;
     }
     const decisionJSON = canonicalResponseJSON(decision);
-    const resolutionJSON = canonicalResponseJSON(mapped.resumeValue);
+    const resolutionJSON = canonicalResponseJSON(mapped.resolution.value);
     const fingerprint = createHash('sha256').update(decisionJSON).digest('hex');
     const sameIntent = (value: StoredResponseRecord) =>
       value.generationCreatedAt === epoch &&
       value.userId === identity.userId &&
-      value.tenantId === identity.tenantId &&
+      responseTenantId(value.tenantId) === responseTenantId(identity.tenantId) &&
       value.agentId === identity.agentId &&
       value.conversationId === identity.conversationId &&
       value.sourceKeyId === identity.sourceKeyId &&
@@ -160,35 +185,38 @@ export function createResponseDecisionSubmission(
     if (terminal(record)) return record.resume ? receipt(record) : unavailable;
     const now = (deps.now ?? Date.now)();
     const admitted = record.resume?.state === 'admitted';
-    if (
-      (!admitted && review.expiresAt <= now) ||
-      !['requires_action', 'in_progress'].includes(record.status)
-    )
-      return unavailable;
+    if (!['requires_action', 'in_progress'].includes(record.status)) return unavailable;
     const job = await deps.jobs.getJob(responseId);
     if (
       !job ||
       job.createdAt !== record.generationCreatedAt ||
       job.metadata.userId !== record.userId ||
-      job.metadata.tenantId !== record.tenantId ||
+      responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
       job.metadata.agent_id !== record.agentId ||
       job.metadata.endpoint !== 'responses' ||
       job.metadata.conversationId !== record.conversationId ||
-      job.metadata.responseMessageId !== responseId ||
-      job.metadata.providerExecutionId !==
-        (admitted ? record.resume!.providerExecutionId : review.providerExecutionId)
+      job.metadata.responseMessageId !== responseId
     )
       return unavailable;
+    // Approval resolution may commit before Mongo admission. An equivalent retry
+    // requeues that exact saved segment, even after the consumed pause expires.
+    const resolvedIntent =
+      record.resume != null &&
+      job.status === 'running' &&
+      record.resume.providerExecutionId !== review.providerExecutionId &&
+      job.metadata.providerExecutionId === record.resume.providerExecutionId;
     if (
-      admitted
-        ? job.status !== 'running'
-        : job.status !== 'requires_action' ||
-          job.metadata.providerDrained !== true ||
-          job.metadata.terminalPersistencePending === true ||
-          !isDeepStrictEqual(JSON.parse(JSON.stringify(job.metadata.pendingAction ?? null)), action)
+      !resolvedIntent &&
+      (admitted ||
+        review.expiresAt <= now ||
+        job.metadata.providerExecutionId !== review.providerExecutionId ||
+        job.status !== 'requires_action' ||
+        job.metadata.providerDrained !== true ||
+        job.metadata.terminalPersistencePending === true ||
+        !isDeepStrictEqual(JSON.parse(JSON.stringify(job.metadata.pendingAction ?? null)), action))
     )
       return unavailable;
-    if (!(await deps.validate({ record, job, action, decision, resolution: mapped.resumeValue })))
+    if (!(await deps.validate({ record, job, action, decision, resolution: mapped.resolution })))
       return { ok: false, status: 403, code: 'response_decision_rejected' };
     if (!record.resume) {
       try {

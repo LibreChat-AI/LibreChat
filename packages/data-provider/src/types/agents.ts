@@ -628,6 +628,8 @@ export namespace Agents {
      * no longer reconstruct the ephemeral config — still rebuilds the same agent/graph.
      */
     resumeContext?: Record<string, unknown>;
+    /** Server-only identities of the initialized participants bound to this pause. */
+    resumeAgentIds?: string[];
     /**
      * Opaque, server-only identity of the stateful code targets selected when a
      * tool approval paused. Resume rejects a changed target before provider or

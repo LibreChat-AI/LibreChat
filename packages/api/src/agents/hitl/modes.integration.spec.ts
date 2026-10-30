@@ -255,6 +255,7 @@ test.each([
     expect(executions).toBe(0);
     const captured = captureRunPendingAction({
       run: first,
+      resumeAgentIds: [source.id],
       payload: interrupt!.payload,
       agents: [source],
       aliases: [],
