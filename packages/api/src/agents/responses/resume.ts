@@ -2,6 +2,7 @@ import {
   checkpointerSchema,
   messageFilterSchema,
   responseReviewDecisionSchema,
+  MAX_SUBAGENT_GRAPH_NODES,
 } from 'librechat-data-provider';
 import type {
   AppConfig,
@@ -10,7 +11,7 @@ import type {
   StoredResponseRecord,
   ResponseOwner,
 } from '@librechat/data-schemas';
-import type { Agents } from 'librechat-data-provider';
+import type { Agents, Agent } from 'librechat-data-provider';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { ResumeContentProtectionDependencies } from '../hitl/protection';
 import type { ResolveChatProjectContextDeps } from '~/projects/context';
@@ -19,8 +20,6 @@ import type { JobMetadataPatch } from '~/stream/interfaces/IJobStore';
 import type { ResponseDecisionDependencies } from './decision';
 import type { GenerationJob } from '~/types/stream';
 import {
-  resolveAskUserQuestionResume,
-  resolveToolApprovalResume,
   buildResolvedAskUserQuestion,
   appendResolvedAskUserQuestion,
   attachAskUserQuestionAnswers,
@@ -34,7 +33,11 @@ import { getChatProjectContextKey, resolveChatProjectContext } from '~/projects/
 import { checkpointOwnerNamespacePrefix } from '~/stream/checkpoints';
 import { getResumeAgentSnapshot } from '../hitl/inspection';
 import { preflightResumeContent } from '../hitl/preflight';
+import { getLookupConcurrency } from '~/utils/concurrency';
+import { resolveResponseReviewDecision } from './decision';
 import { canonicalResponseJSON } from './background';
+import { isResponseTenantId } from './scope';
+import { responseTenantId } from './scope';
 
 export interface ResponseResumeValidationDependencies {
   findUser: (userId: string) => Promise<IUser | null>;
@@ -52,6 +55,26 @@ export function createResponseResumeValidation(deps: ResponseResumeValidationDep
 } {
   async function inspect(input: Parameters<ResponseDecisionDependencies['validate']>[0]) {
     const { record, job, action, decision, resolution } = input;
+    if (resolution.type !== action.payload.type) return;
+    const participants = action.resumeAgentIds;
+    if (
+      !Array.isArray(participants) ||
+      participants.length === 0 ||
+      participants.length > MAX_SUBAGENT_GRAPH_NODES ||
+      participants.some((id) => typeof id !== 'string' || !id) ||
+      new Set(participants).size !== participants.length ||
+      !participants.includes(record.agentId) ||
+      !isResponseTenantId(record.tenantId) ||
+      !record.review?.checkpointConfigJSON
+    )
+      return;
+    let retained: ReturnType<typeof checkpointerSchema.safeParse>;
+    try {
+      retained = checkpointerSchema.safeParse(JSON.parse(record.review.checkpointConfigJSON));
+    } catch {
+      return;
+    }
+    if (!retained.success) return;
     const originalRequest = JSON.parse(record.requestJSON);
     if (
       !action.requestFingerprint ||
@@ -64,19 +87,20 @@ export function createResponseResumeValidation(deps: ResponseResumeValidationDep
     if (
       !foundUser ||
       String(foundUser._id) !== record.userId ||
-      foundUser.tenantId !== record.tenantId
+      !isResponseTenantId(foundUser.tenantId) ||
+      responseTenantId(foundUser.tenantId) !== responseTenantId(record.tenantId)
     )
       return;
-    const user = Object.assign(foundUser, { id: record.userId, role: foundUser.role });
+    const user = Object.assign({}, foundUser, {
+      id: record.userId,
+      role: foundUser.role,
+      tenantId: responseTenantId(record.tenantId),
+    });
     const config = await deps.getConfig(user);
-    const retained = checkpointerSchema.parse(
-      JSON.parse(record.review?.checkpointConfigJSON ?? 'null'),
-    );
     const current = resolveCheckpointerConfig(config.endpoints?.agents?.checkpointer);
-    const pinned = resolveCheckpointerConfig(retained);
+    const pinned = resolveCheckpointerConfig(retained.data);
     const namespace = job.metadata.checkpointNamespace;
     if (
-      !retained ||
       pinned.type !== 'mongo' ||
       current.type !== pinned.type ||
       current.checkpointCollectionName !== pinned.checkpointCollectionName ||
@@ -84,7 +108,7 @@ export function createResponseResumeValidation(deps: ResponseResumeValidationDep
       !namespace?.startsWith(checkpointOwnerNamespacePrefix(record.userId, record.tenantId)) ||
       !record.review?.checkpointId ||
       !action.interruptId ||
-      !(await hasDurableAgentInterruptCheckpoint(record.conversationId, retained, {
+      !(await hasDurableAgentInterruptCheckpoint(record.conversationId, retained.data, {
         checkpointNamespace: namespace,
         checkpointId: record.review.checkpointId,
         checkpointNs: record.review.checkpointNs,
@@ -92,36 +116,63 @@ export function createResponseResumeValidation(deps: ResponseResumeValidationDep
       }))
     )
       return;
+    let unavailableParticipant = false;
+    const loadedAgents = new Map<string, Promise<Agent | null>>();
+    const loadAgent = (id: string): Promise<Agent | null> => {
+      let pending = loadedAgents.get(id);
+      if (!pending) {
+        pending = (async () => {
+          const agent = await deps.content.getAgent({ id });
+          if (!agent || agent.id !== id || !(await deps.content.canAccessAgent(agent, user))) {
+            unavailableParticipant = true;
+            return null;
+          }
+          return agent;
+        })();
+        loadedAgents.set(id, pending);
+      }
+      return pending;
+    };
     const [agent, project] = await Promise.all([
-      deps.content.getAgent({ id: record.agentId }),
+      loadAgent(record.agentId),
       resolveChatProjectContext(
         {
           userId: record.userId,
-          tenantId: record.tenantId,
+          tenantId: responseTenantId(record.tenantId),
           conversationId: record.conversationId,
           includeResources: true,
         },
         deps.projects,
       ),
     ]);
-    if (
-      !agent ||
-      !(await deps.content.canAccessAgent(agent, user)) ||
-      action.projectContextKey !== getChatProjectContextKey(project)
-    )
-      return;
-    await getResumeAgentSnapshot({
+    if (!agent || action.projectContextKey !== getChatProjectContextKey(project)) return;
+    const additionalRoots: Agent[] = [];
+    const concurrency = getLookupConcurrency(config, 'resumeAgentLoads');
+    for (let offset = 0; offset < participants.length; offset += concurrency) {
+      const chunk = await Promise.all(
+        participants.slice(offset, offset + concurrency).map(loadAgent),
+      );
+      for (const participant of chunk) if (participant) additionalRoots.push(participant);
+    }
+    const snapshot = await getResumeAgentSnapshot({
       primaryAgent: agent,
+      additionalRoots,
       subagentsEnabled: true,
-      getAgent: async (filter) => (await deps.content.getAgent(filter)) ?? null,
-      canAccessAgent: (candidate) => deps.content.canAccessAgent(candidate, user),
+      getAgent: (filter) => loadAgent(filter.id),
+      appConfig: config,
     });
-    const batch = 'answers' in resolution ? resolution.answers : undefined;
+    const present = new Set(snapshot.map((participant) => participant.id));
+    if (unavailableParticipant || participants.some((id) => !present.has(id))) return;
+    const batch =
+      resolution.type === 'ask_user_question' && 'answers' in resolution.value
+        ? resolution.value.answers
+        : undefined;
     const answer = batch == null ? decision.answer : JSON.stringify({ answers: batch });
-    const inspectionResolution =
-      'answers' in resolution
-        ? { answer: JSON.stringify({ answers: resolution.answers }) }
-        : resolution;
+    let inspectionResolution: Parameters<typeof preflightResumeContent>[0]['resumeValue'];
+    if (resolution.type === 'tool_approval') inspectionResolution = resolution.value;
+    else if ('answers' in resolution.value)
+      inspectionResolution = { answer: JSON.stringify({ answers: resolution.value.answers }) };
+    else inspectionResolution = resolution.value;
     const resumeState = await deps.jobs.getResumeState(record.responseId, job.createdAt, {
       validateEarlyBufferRecovery: true,
     });
@@ -160,7 +211,11 @@ export function createResponseResumeValidation(deps: ResponseResumeValidationDep
         checkpointNamespace: namespace,
         resolvedAddedAgent: undefined,
       },
-      deps.content,
+      {
+        ...deps.content,
+        getAgent: (filter) => loadAgent(filter.id),
+        canAccessAgent: async (candidate) => (await loadAgent(candidate.id)) != null,
+      },
     );
     return {
       userSubmittedPaths: prepared.userSubmittedPaths,
@@ -181,15 +236,10 @@ export function createResponseResumeValidation(deps: ResponseResumeValidationDep
     if (!action || !parsed.success || action.actionId !== parsed.data.actionId)
       return { ok: false };
     const decision = parsed.data;
-    let mapped;
-    if (action.payload.type === 'ask_user_question')
-      mapped = resolveAskUserQuestionResume(action.payload, decision);
-    else if (action.payload.type === 'tool_approval')
-      mapped = resolveToolApprovalResume(action.payload, decision.decisions ?? []);
+    const mapped = resolveResponseReviewDecision(action, decision);
     if (
-      !mapped ||
-      !('resumeValue' in mapped) ||
-      canonicalResponseJSON(mapped.resumeValue) !==
+      !('resolution' in mapped) ||
+      canonicalResponseJSON(mapped.resolution.value) !==
         canonicalResponseJSON(JSON.parse(record.resume?.resolutionJSON ?? 'null'))
     )
       return { ok: false };
@@ -198,7 +248,7 @@ export function createResponseResumeValidation(deps: ResponseResumeValidationDep
       job,
       action,
       decision,
-      resolution: mapped.resumeValue,
+      resolution: mapped.resolution,
     });
     return provenance ? { ok: true, provenance } : { ok: false };
   };
@@ -257,7 +307,7 @@ export function createResponseResumeAdmission(deps: ResponseResumeAdmissionDepen
       job != null &&
       job.createdAt === record.generationCreatedAt &&
       job.metadata.userId === record.userId &&
-      job.metadata.tenantId === record.tenantId &&
+      responseTenantId(job.metadata.tenantId) === responseTenantId(record.tenantId) &&
       job.metadata.agent_id === record.agentId &&
       job.metadata.endpoint === 'responses' &&
       job.metadata.conversationId === record.conversationId &&

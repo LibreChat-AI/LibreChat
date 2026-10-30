@@ -312,6 +312,7 @@ export interface PendingActionContext {
   requestFingerprintV2?: string;
   /** Graph-determining fields to replay on resume; see {@link RESUME_CONTEXT_KEYS}. */
   resumeContext?: Record<string, unknown>;
+  resumeAgentIds?: string[];
   /** Opaque server-only binding to the stateful code targets selected at pause time. */
   codeExecutionBinding?: Agents.CodeExecutionApprovalBinding;
   /** Server-only alias pairs of the offered "Always allow" tools; see `collectAllowAlwaysAliases`. */
@@ -850,6 +851,7 @@ export function buildPendingAction(
     requestFingerprint: ctx.requestFingerprint,
     requestFingerprintV2: ctx.requestFingerprintV2,
     resumeContext: ctx.resumeContext,
+    resumeAgentIds: ctx.resumeAgentIds,
     codeExecutionBinding: ctx.codeExecutionBinding,
     toolApprovalAliases: ctx.toolApprovalAliases,
   };
@@ -872,6 +874,7 @@ export function toClientPendingAction(
     requestFingerprint: _requestFingerprint,
     requestFingerprintV2: _requestFingerprintV2,
     resumeContext: _resumeContext,
+    resumeAgentIds: _resumeAgentIds,
     codeExecutionBinding: _codeExecutionBinding,
     toolApprovalBindings: _toolApprovalBindings,
     toolApprovalAliases: _toolApprovalAliases,

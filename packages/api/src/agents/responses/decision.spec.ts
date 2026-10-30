@@ -407,3 +407,52 @@ it('keeps a submitted decision recoverable through owner review and preserves pa
       status: 'ready',
     });
   }));
+
+it('requeues an equivalent intent after approval commits but Mongo admission fails', () =>
+  scoped(async () => {
+    const { action } = await setup();
+    const decision = { actionId: action.actionId, answer: 'staging' };
+    const f = fixture();
+    const first = await f.submit(owner, responseId, decision);
+    if (!first.ok) throw new Error('Initial submission failed');
+    const selected = (await storage.read(owner, responseId))!.resume!;
+    const resolve = jest.spyOn(jobs.approvals, 'resolve');
+    const begin = jest.spyOn(jobs, 'beginProviderExecution');
+    jest
+      .spyOn(storage, 'admitResume')
+      .mockRejectedValueOnce(new Error('Mongo admission unavailable'));
+    const admit = createResponseResumeAdmission({
+      storage,
+      jobs,
+      authorize: async () => true,
+      validate: async () => ({ ok: true, provenance: {} }),
+    });
+    await expect(admit(owner, responseId, selected.intentId)).rejects.toThrow(
+      'Mongo admission unavailable',
+    );
+    expect((await storage.read(owner, responseId))!.resume!.state).toBe('reserved');
+    expect((await jobs.getJob(responseId))?.metadata.providerExecutionId).toBe(
+      selected.providerExecutionId,
+    );
+    f.enqueue.mockClear();
+    const retry = fixture({ now: () => action.expiresAt! + 1 });
+    expect(await retry.submit(owner, responseId, decision)).toEqual(first);
+    expect(retry.validate).toHaveBeenCalledTimes(1);
+    expect(retry.enqueue).toHaveBeenCalledTimes(1);
+    expect(retry.enqueue.mock.calls[0][0].resume!.intentId).toBe(selected.intentId);
+    expect(await admit(owner, responseId, selected.intentId)).toMatchObject({
+      ok: true,
+      status: 'ready',
+    });
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(begin).not.toHaveBeenCalled();
+    expect(await retry.submit(owner, responseId, { ...decision, answer: 'changed' })).toMatchObject(
+      { ok: false, status: 409 },
+    );
+    const revoked = fixture({ authorize: () => false });
+    expect(await revoked.submit(owner, responseId, decision)).toMatchObject({
+      ok: false,
+      status: 404,
+    });
+    expect(revoked.enqueue).not.toHaveBeenCalled();
+  }));
