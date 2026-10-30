@@ -42,6 +42,15 @@ const referenceSchema = controlSchema
   .strict();
 const choiceSchema = referenceSchema.extend({ choice: z.number().int().min(0).max(3) }).strict();
 type Reference = z.infer<typeof referenceSchema>;
+const modalContentLimit = 99; // Slack allows 100 blocks; reserve one for browser recovery.
+class NativeDecisionError extends Error {
+  constructor(
+    readonly blockId: string,
+    message: string,
+  ) {
+    super(message);
+  }
+}
 const plain = (text: string): PlainTextElement => ({ type: 'plain_text', text });
 const questions = (payload: Agents.AskUserQuestionInterruptPayload): Question[] =>
   payload.questions?.length ? payload.questions : [payload.question];
@@ -138,6 +147,7 @@ export function reviewModal(ref: Reference, action: PendingAction): ModalView | 
         (question.options?.length ?? 0) > 100
       )
         return null;
+      blocks.push({ type: 'section', text: plain(question.question) });
       if (question.options?.length) {
         if (question.options.some((option) => !option.label || option.label.length > 75))
           return null;
@@ -148,22 +158,19 @@ export function reviewModal(ref: Reference, action: PendingAction): ModalView | 
         const element: InputBlock['element'] = question.multiSelect
           ? { type: 'multi_static_select', action_id: 'choice', options }
           : { type: 'static_select', action_id: 'choice', options };
-        blocks.push(
-          { type: 'section', text: plain(question.question) },
-          {
-            type: 'input',
-            block_id: `question_${i}`,
-            label: plain('Choose an answer'),
-            optional: true,
-            element,
-          },
-        );
+        blocks.push({
+          type: 'input',
+          block_id: `question_${i}`,
+          label: plain('Choose an answer'),
+          optional: true,
+          element,
+        });
       }
       if (question.description) blocks.push({ type: 'section', text: plain(question.description) });
       blocks.push({
         type: 'input',
         block_id: `question_${i}_text`,
-        label: plain(question.options?.length ? 'Or write an answer' : question.question),
+        label: plain(question.options?.length ? 'Or write an answer' : 'Your answer'),
         optional: !!question.options?.length,
         element: {
           type: 'plain_text_input',
@@ -195,7 +202,7 @@ export function reviewModal(ref: Reference, action: PendingAction): ModalView | 
       );
     }
   } else return null;
-  if (blocks.length > 95) return null;
+  if (blocks.length > modalContentLimit) return null;
   return {
     type: 'modal',
     callback_id: 'channel_native_review',
@@ -221,7 +228,7 @@ export function nativeDecision(
           (config) => config.tool_call_id === call.tool_call_id,
         )?.allowed_decisions;
         if ((decision !== 'approve' && decision !== 'reject') || !allowed?.includes(decision))
-          throw new Error('Decision not allowed');
+          throw new NativeDecisionError(`tool_${i}`, 'Decision not allowed');
         return { tool_call_id: call.tool_call_id, decision, scope: 'once' };
       }),
     };
@@ -234,6 +241,7 @@ export function nativeDecision(
     const key = `question_${i}`;
     let answer = values[`${key}_text`]?.answer?.value?.trim() ?? '';
     const field = values[key]?.choice;
+    const input = answer || !question.options?.length ? `${key}_text` : key;
     const selected = [
       ...(field?.selected_options ?? []),
       ...(field?.selected_option ? [field.selected_option] : []),
@@ -244,20 +252,21 @@ export function nativeDecision(
       new Set(selected.map((option) => option.value)).size !== selected.length ||
       answer.length > 3000
     )
-      throw new Error('Choose or write one answer');
+      throw new NativeDecisionError(input, 'Choose or write one answer');
     if (selected.length)
       answer = selected
         .map((option) => {
-          if (!/^(0|[1-9][0-9]*)$/.test(option.value)) throw new Error('Invalid choice');
+          if (!/^(0|[1-9][0-9]*)$/.test(option.value))
+            throw new NativeDecisionError(key, 'Invalid choice');
           const selectedOption = question.options?.[Number(option.value)];
-          if (!selectedOption) throw new Error('Invalid choice');
+          if (!selectedOption) throw new NativeDecisionError(key, 'Invalid choice');
           return selectedOption.value;
         })
         .join(', ');
-    if (!answer) throw new Error('Answer required');
+    if (!answer) throw new NativeDecisionError(input, 'Answer required');
     if (payload.questions?.length) {
       if (!question.id || Object.hasOwn(answers, question.id))
-        throw new Error('Invalid question identifier');
+        throw new NativeDecisionError(input, 'Invalid question identifier');
       Object.defineProperty(answers, question.id, { value: answer, enumerable: true });
     } else single = answer;
   }
@@ -280,7 +289,7 @@ function decisionReceipt(
     },
   ];
   if (action.payload.type === 'tool_approval')
-    for (const call of action.payload.action_requests) {
+    for (const call of action.payload.action_requests.slice(0, 20)) {
       const accepted = decision.decisions?.find(
         (item) => item.tool_call_id === call.tool_call_id,
       )?.decision;
@@ -292,6 +301,10 @@ function decisionReceipt(
         text: plain(`${label}: ${[...call.name].slice(0, 200).join('')}`),
       });
     }
+  if (action.payload.type === 'tool_approval' && action.payload.action_requests.length > 20) {
+    blocks.push({ type: 'section', text: plain(decisionConfirmation(action, decision)) });
+  }
+  if (blocks.length > modalContentLimit) throw new Error('Saved review exceeds modal budget');
   return {
     type: 'modal',
     title: plain('Decision received'),
@@ -336,8 +349,15 @@ export class ReviewFlow {
     try {
       if (actionId === 'channel_run_cancel') {
         if (
-          !(await this.client.cancel(control.runId, caller, control.revision, signal))
-            .cancellationRequested
+          !(
+            await this.client.cancel(
+              control.runId,
+              caller,
+              control.revision,
+              interaction.channelId,
+              signal,
+            )
+          ).cancellationRequested
         )
           throw new Error('Cancellation was not accepted');
         return this.identity.notify(
@@ -407,13 +427,18 @@ export class ReviewFlow {
               ],
             });
           }
-          await this.slack.openView(
-            bundle.credentials.botToken,
-            interaction.triggerId,
-            modal,
-            signal,
-          );
-          return;
+          try {
+            await this.slack.openView(
+              bundle.credentials.botToken,
+              interaction.triggerId,
+              modal,
+              signal,
+            );
+            return;
+          } catch (error) {
+            if (signal?.aborted) throw error;
+            // No decision was submitted. The actor-private browser path remains usable.
+          }
         }
       }
       if (!safePrivateURL(review.url) || !review.actionId)
@@ -562,16 +587,13 @@ export class ReviewFlow {
         if (ref.savedIntentId || !interaction.view.values) return unavailable();
         try {
           decision = nativeDecision(review.pendingAction, interaction.view.values);
-        } catch {
-          const payload = review.pendingAction.payload;
-          let input = 'tool_0';
-          if (payload.type === 'ask_user_question') {
-            input = questions(payload)[0]?.options?.length ? 'question_0' : 'question_0_text';
-          }
+        } catch (error) {
+          if (!(error instanceof NativeDecisionError)) throw error;
           return {
             response_action: 'errors',
             errors: {
-              [input]: 'Choose or write one answer for each question, or a decision for each tool.',
+              [error.blockId]:
+                'Choose or write one answer for this question, or a decision for this tool.',
             },
           };
         }
