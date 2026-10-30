@@ -1,4 +1,3 @@
-import { invokeOAuthStart } from './oauth/publication';
 import { createHash } from 'crypto';
 import { logger, getTenantId, tenantStorage } from '@librechat/data-schemas';
 import type { OAuthClientInformation } from '@modelcontextprotocol/sdk/shared/auth.js';
@@ -59,6 +58,7 @@ import {
 } from './openid';
 import { PENDING_STALE_MS, FlowStateNotFoundError, normalizeExpiresAt } from '~/flow/manager';
 import { createLazyOboUpstreamTokenProvider, awaitOboOperation } from '~/mcp/oauth/obo';
+import { invokeOAuthStart } from './oauth/publication';
 import { preProcessGraphTokens } from '~/utils/graph';
 import { isAbortError } from '~/utils/errors';
 import { MCPConnection } from './connection';
@@ -1733,7 +1733,9 @@ export class MCPConnectionFactory {
       expiresAt == null
     )
       throw new Error('OAuth prompt publication is no longer current');
-    const { published, completed } = invokeOAuthStart(this.oauthStart, authorizationUrl, { expiresAt });
+    const { published, completed } = invokeOAuthStart(this.oauthStart, authorizationUrl, {
+      expiresAt,
+    });
     await published;
     return { completed };
   }
