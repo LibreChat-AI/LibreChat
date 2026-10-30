@@ -12,6 +12,12 @@ import {
 import { sendResponsesErrorResponse } from './service';
 import { getSafeErrorMetadata } from '~/utils/errors';
 
+const inputSenders: Record<InternalMessage['role'], string> = {
+  user: 'User',
+  assistant: 'Agent',
+  system: 'System',
+};
+
 interface Diagnostics {
   error: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void;
 }
@@ -199,7 +205,7 @@ export async function saveForegroundResponseInputs<WriteContext>(
             typeof message.content === 'string'
               ? [{ type: ContentTypes.TEXT, text: message.content }]
               : message.content,
-          sender: message.role === 'user' ? 'User' : message.role === 'system' ? 'System' : 'Agent',
+          sender: inputSenders[message.role],
           endpoint: EModelEndpoint.agents,
           model: input.agentId,
         },

@@ -374,7 +374,9 @@ export class AgentExecutionEnrollment {
           terminal?.createdAt !== this.createdAt ||
           terminal.metadata.providerExecutionId !== this.providerExecutionId ||
           (this.ownerId != null && terminal.metadata.providerExecutionOwnerId !== this.ownerId) ||
-          !['complete', 'error', 'aborted'].includes(terminal.status)
+          (terminal.status !== 'complete' &&
+            terminal.status !== 'error' &&
+            terminal.status !== 'aborted')
         )
           throw new Error('Agent terminal outcome could not be confirmed');
         terminalOutcome =

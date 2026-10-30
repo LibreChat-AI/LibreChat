@@ -216,7 +216,11 @@ it('retains submitted system/assistant tool replay provenance in the next select
       'assistant',
     ]);
     expect(history.slice(0, 3).every((message) => message.isUserSubmitted === true)).toBe(true);
-    const sdk = formatAgentMessages(history, undefined, new Set(['lookup']));
+    const sdk = formatAgentMessages(
+      history.map((message) => ({ ...message })),
+      undefined,
+      new Set(['lookup']),
+    );
     expect(
       sdk.messages
         .filter((message) => message instanceof ToolMessage)
