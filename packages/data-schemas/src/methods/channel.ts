@@ -43,6 +43,11 @@ export interface AgentChannelMethods {
     expectedStatus?: AgentChannelRecord['status'],
     expectedRevision?: string,
   ): Promise<AgentChannelRecord | null>;
+  /** Close admission and retire links before external credential cleanup. */
+  beginAgentChannelDeletion(
+    channelId: string,
+    createdBy: string,
+  ): Promise<AgentChannelRecord | null>;
   deleteAgentChannel(channelId: string, createdBy: string): Promise<boolean>;
   getAgentChannelThread(
     channelId: string,
@@ -81,6 +86,19 @@ export function createAgentChannelMethods(
     } finally {
       await session.endSession();
     }
+  }
+
+  async function beginDeletion(
+    channelId: string,
+    createdBy: string,
+  ): Promise<AgentChannelRecord | null> {
+    const deleting = await channel()
+      .findOneAndUpdate({ channelId, createdBy }, { $set: { status: 'deleting' } }, { new: true })
+      .select(secrets)
+      .lean();
+    if (!deleting) return null;
+    await retireChannelScope(mongoose, deleting.tenantId, channelId);
+    return deleting;
   }
 
   return {
@@ -199,13 +217,10 @@ export function createAgentChannelMethods(
       }
       return write();
     },
+    beginAgentChannelDeletion: beginDeletion,
     async deleteAgentChannel(channelId: string, createdBy: string): Promise<boolean> {
-      const deleting = await channel()
-        .findOneAndUpdate({ channelId, createdBy }, { $set: { status: 'deleting' } }, { new: true })
-        .select('tenantId')
-        .lean();
+      const deleting = await beginDeletion(channelId, createdBy);
       if (!deleting) return false;
-      await retireChannelScope(mongoose, deleting.tenantId, channelId);
       if (
         await mongoose.models.ChannelRun.exists({
           channelId,
