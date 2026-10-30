@@ -132,7 +132,6 @@ export function createInsightsHandler({
       }
       const agentIds = requestedAgentIds.length > 0 ? requestedAgentIds : [...authorizedAgentIds];
       const inspectableAgents = new Set(detailAgentIds);
-      // A combined result must not include detail from an aggregate-only agent.
       const showDetails =
         configuredShowDetails && agentIds.every((id) => inspectableAgents.has(id));
 
