@@ -49,6 +49,8 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  resolveChannelExecutionMetadata: (...args) =>
+    jest.requireActual('@librechat/api').resolveChannelExecutionMetadata(...args),
   savePrivateTextMessage: (save, _req, ...args) => save(...args),
   savePrivateTextErrorTurn: (...args) =>
     jest.requireActual('@librechat/api').savePrivateTextErrorTurn(...args),
