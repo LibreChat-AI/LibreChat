@@ -57,7 +57,8 @@ function isPolicyAllowlisted(req: Request): boolean {
   );
 }
 
-function getAuthorizingCredential(req: Request): TokenIssuance {
+/** Dates the bearer that authorized the request; an absent or undecodable one is undated. */
+export function getAuthorizingCredential(req: Request): TokenIssuance {
   const authorization = req.headers.authorization;
   const value = Array.isArray(authorization) ? authorization[0] : authorization;
   const token = typeof value === 'string' ? value.replace(/^Bearer\s+/i, '') : '';

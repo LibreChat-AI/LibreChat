@@ -853,6 +853,12 @@ export type TVerify2FAResponse = {
   message: string;
 };
 
+/** Opt-in confirmation retires every earlier session and hands back the one that replaces them. */
+export type TConfirm2FAResponse = {
+  token: string;
+  user: TUser;
+};
+
 /** For verifying 2FA during login with a temporary token. */
 export type TVerify2FATempRequest = TOTPVerificationPayload & {
   tempToken: string;

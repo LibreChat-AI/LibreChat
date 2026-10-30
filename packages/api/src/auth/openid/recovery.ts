@@ -20,11 +20,13 @@ import type {
 } from './types';
 import type { TokenResult } from './flight';
 import {
+  createOpenIDSessionRetiredError,
   createOpenIDRefreshOwnershipError,
   isOpenIDRefreshOwnershipError,
   reloadOpenIDSessionIfPersisted,
   toOpenIDLogArgument,
 } from './errors';
+import { isOpenIDSessionRetired } from './reuseCredential';
 
 type FindUser = (...args: Array<string | object | undefined>) => Promise<OpenIDUser | null>;
 
@@ -127,6 +129,9 @@ export interface OpenIDRefreshRecoveryService {
 
 export interface OpenIDRefreshRecoveryDeps {
   jwt: { decode: (token: string) => OpenIDClaims | string | null };
+  cookies: { parse: (header: string) => Record<string, string> };
+  /** Verifies the signed identity cookie that dates a session. */
+  getJwtRefreshSecret: () => string | undefined;
   logger: Pick<OpenIDLogger, 'debug' | 'warn'>;
   findOpenIDUser: (args: FindOpenIDUserArgs) => Promise<{
     user?: OpenIDUser | null;
@@ -231,6 +236,8 @@ export function createOpenIDRefreshRecoveryService(
 ): OpenIDRefreshRecoveryService {
   const {
     jwt,
+    cookies,
+    getJwtRefreshSecret,
     logger,
     findOpenIDUser,
     findUser,
@@ -411,6 +418,42 @@ export function createOpenIDRefreshRecoveryService(
     return identity;
   }
 
+  /**
+   * Refuses to extend a session established before a password reset or an enrollment.
+   * `openIdJwtStrategy` already refuses that session's bearers; spending its refresh grant would
+   * mint a fresh one dated after the cutoff. The session is ended here, against the user the check
+   * ran for, because the caller's own teardown only knows the identity the session tokens carry,
+   * and a session dated by its identity cookie may carry none.
+   */
+  function assertOpenIDSessionCurrent(
+    req: OpenIDRequest,
+    res: OpenIDResponse | undefined,
+    user: OpenIDUser,
+    refreshToken?: string,
+  ) {
+    if (user._id == null) {
+      return;
+    }
+    const userId = user._id.toString();
+    const retired = isOpenIDSessionRetired({
+      parsedCookies: req.headers?.cookie ? cookies.parse(req.headers.cookie) : {},
+      sessionTokens: req.session?.openidTokens,
+      user: { ...user, _id: userId },
+      jwtRefreshSecret: getJwtRefreshSecret(),
+      refreshToken,
+    });
+    if (!retired) {
+      return;
+    }
+    logger.warn(
+      `[refreshController] OpenID session predates enrollment or password reset: userId=${userId}`,
+    );
+    if (res) {
+      clearOpenIDAuthTokens(req, res, userId, user.tenantId);
+    }
+    throw createOpenIDSessionRetiredError();
+  }
+
   async function refreshOpenIDUser({
     req,
     res,
@@ -421,6 +464,7 @@ export function createOpenIDRefreshRecoveryService(
     assertLeaseOwned,
     deferPublication = false,
   }: RefreshOpenIDUserArgs): Promise<OpenIDRefreshResolution> {
+    assertOpenIDSessionCurrent(req, res, user);
     const previousSessionTokens = deferPublication ? req.session?.openidTokens : undefined;
     const hadSessionTokens = Boolean(req.session && 'openidTokens' in req.session);
     const identityContext = seedRefreshSession({
@@ -455,6 +499,7 @@ export function createOpenIDRefreshRecoveryService(
     bridgedRefreshToken,
     bridgeUser,
   }: RecoverOpenIDRefreshBridgeInput): Promise<SharedOpenIDRefreshResult> {
+    assertOpenIDSessionCurrent(req, res, bridgeUser, refreshToken);
     const userId = bridgeUser._id.toString();
     const key = createRefreshTokenBridgeFlightKey({
       oldRefreshToken: refreshToken,

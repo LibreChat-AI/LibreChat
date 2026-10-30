@@ -99,6 +99,8 @@ export const UNSEEN_REPLY_WATERMARK = '1970-01-01T00:00:00.000Z' as const;
 export const defaultSocialLogins = ['google', 'facebook', 'openid', 'github', 'discord', 'saml'];
 
 export const TWO_FACTOR_ENROLLMENT_REQUIRED_CODE = 'TWO_FACTOR_ENROLLMENT_REQUIRED' as const;
+/** A password reset changed the password but could not retire every earlier credential. */
+export const CREDENTIAL_RETIREMENT_INCOMPLETE_CODE = 'CREDENTIAL_RETIREMENT_INCOMPLETE' as const;
 
 /** A write was refused because the deployment requires terms acceptance the user has not given. */
 export const TERMS_NOT_ACCEPTED_CODE = 'terms_not_accepted' as const;

@@ -462,6 +462,7 @@
   "com_auth_registration_success_insecure": "Registration successful.",
   "com_auth_reset_password": "Reset your password",
   "com_auth_reset_password_if_email_exists": "If an account with that email exists, an email with password reset instructions has been sent. Please make sure to check your spam folder.",
+  "com_auth_reset_password_incomplete": "Your new password is active, but some other sessions may stay signed in until they expire. Sign in with your new password, then request another reset link to sign them out.",
   "com_auth_reset_password_link_sent": "Email Sent",
   "com_auth_reset_password_success": "Password Reset Success",
   "com_auth_saml_login": "Continue with SAML",
