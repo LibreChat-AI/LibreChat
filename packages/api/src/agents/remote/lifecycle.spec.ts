@@ -689,11 +689,11 @@ describe('Agent execution enrollment', () => {
       return start(...args);
     });
     const starting = execution.beginProviderExecution();
-    const rejected = expect(starting).rejects.toMatchObject({ code: 'RUN_REPLACED' });
+    const rejected = starting.catch((error: unknown) => error);
     execution.abort(new Error('connection closed during start'));
     expect((await manager.getJob(execution.runId))?.abortController.signal.aborted).toBe(false);
     gate.resolve();
-    await rejected;
+    await expect(rejected).resolves.toMatchObject({ code: 'RUN_REPLACED' });
     expect((await manager.getJob(execution.runId))?.abortController.signal.aborted).toBe(true);
     await execution.settle(new Error('closed'));
     expect((await store.getJob(execution.runId))?.providerDrained).toBe(true);

@@ -18,12 +18,10 @@ it('does not manufacture channel authority for an ordinary request', () => {
 it.each(['none', 'header', 'ordinary-token', 'wrong-signature', 'missing-header'])(
   'rejects an untrusted channel marker: %s',
   (mode) => {
-    const token =
-      mode === 'ordinary-token'
-        ? generateShortLivedToken('user')
-        : mode === 'wrong-signature'
-          ? jwt.sign({ id: 'user', scope: 'agent_trigger' }, 'wrong-secret')
-          : generateAgentTriggerToken('user');
+    let token = generateAgentTriggerToken('user');
+    if (mode === 'ordinary-token') token = generateShortLivedToken('user');
+    else if (mode === 'wrong-signature')
+      token = jwt.sign({ id: 'user', scope: 'agent_trigger' }, 'wrong-secret');
     const headers =
       mode === 'none'
         ? {}
