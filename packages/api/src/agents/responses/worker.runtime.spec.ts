@@ -22,17 +22,23 @@ import {
   getBackgroundResponseWorkerRecord,
   mintResponseResumeWorkerToken,
 } from './worker';
+import {
+  createResponseCompletion,
+  createResponseExecutionRelease,
+  createResponseExecutionConfirmation,
+} from './completion';
+import { buildPendingBackgroundResponse, createBackgroundResponseService } from './background';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
-import { createResponseCompletion, createResponseExecutionRelease } from './completion';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
-import { buildPendingBackgroundResponse } from './background';
 import { createResponseExecutionRuntime } from './runtime';
 import { enrollAgentExecution } from '../remote/lifecycle';
 import { createResponseResumeAdmission } from './resume';
 import { createAgentRunEnvelope } from '../envelope';
 import { buildPendingAction } from '../hitl/policy';
+import { createResponseContext } from './service';
 import { executeAgentRun } from '../remote/host';
 import { GenerationJobManager } from '~/stream';
+import { createResponseTurn } from './turn';
 
 let mongo: MongoMemoryReplSet;
 let storage: ResponseStorage;
@@ -221,7 +227,7 @@ it('does not accept a stale token after the original key reference changes', asy
 });
 
 describe('background Responses execution handoff', () => {
-  it.each(['completed', 'cancelled', 'publication_failure'] as const)(
+  it.each(['completed', 'cancelled', 'publication_failure', 'lost_finalizer'] as const)(
     'retains exact terminal proof until Responses publication with default cleanup (%s)',
     async (outcome) => {
       GenerationJobManager.configure({
@@ -254,6 +260,13 @@ describe('background Responses execution handoff', () => {
             runId: record.responseId,
             conversationId: record.conversationId,
             ...runtime.hooks,
+            ...(outcome === 'lost_finalizer'
+              ? {
+                  afterSettle: async () => {
+                    throw new Error('Injected request-process loss after provider drain');
+                  },
+                }
+              : {}),
             isPrincipalActive: async () => true,
             execute: async (execution) => {
               if (outcome === 'cancelled') {
@@ -261,7 +274,7 @@ describe('background Responses execution handoff', () => {
                   expectedCreatedAt: execution.createdAt,
                 });
               }
-              res.json({
+              await runtime.completion!.prepare({
                 ...buildPendingBackgroundResponse(record),
                 status: 'completed',
                 output: [],
@@ -283,9 +296,12 @@ describe('background Responses execution handoff', () => {
         .expect(202);
       await finished;
       let saved = (await scope(() => storage.read(owner, record.responseId)))!;
-      if (outcome === 'publication_failure') {
+      if (outcome === 'publication_failure' || outcome === 'lost_finalizer') {
         expect(errors).toHaveLength(1);
-        expect(saved.pendingTerminal).toBeDefined();
+        if (outcome === 'lost_finalizer') {
+          expect(saved.preparedTerminal).toBeDefined();
+          expect(saved.pendingTerminal).toBeUndefined();
+        } else expect(saved.pendingTerminal).toBeDefined();
         await GenerationJobManager.getJobStore().updateJob(
           record.responseId,
           { terminalPersistenceStartedAt: Date.now() - 60_000 },
@@ -301,6 +317,7 @@ describe('background Responses execution handoff', () => {
           createResponseCompletion({
             storage,
             cleanupCheckpoint: async () => {},
+            confirmExecution: createResponseExecutionConfirmation(GenerationJobManager),
             releaseExecution: createResponseExecutionRelease(GenerationJobManager),
           }).finish(saved),
         );
@@ -310,6 +327,100 @@ describe('background Responses execution handoff', () => {
       expect(await GenerationJobManager.getJob(record.responseId)).toBeUndefined();
     },
   );
+  it('publishes a safe failure when a required background terminal save fails', async () => {
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const errors: unknown[] = [];
+    const saveMessage = jest.fn(async () => null);
+    const prepare = jest.spyOn(storage, 'prepareTerminal');
+    const { app } = fixture(async (req, res) => {
+      const runtime = createResponseExecutionRuntime(req, res, {
+        getMessage: async () => null,
+        jobs: GenerationJobManager,
+      });
+      const turn = createResponseTurn({
+        runtime,
+        context: createResponseContext(req.body, record.responseId),
+        requestedStore: true,
+        logger: { error: jest.fn() },
+      });
+      try {
+        await executeAgentRun({
+          envelope: createAgentRunEnvelope({
+            protocol: 'responses',
+            requestId: record.responseId,
+            receivedAt: Date.now(),
+            principal: { id: owner.userId, tenantId: owner.tenantId },
+            payload: req.body,
+          }),
+          runId: record.responseId,
+          conversationId: record.conversationId,
+          connection: runtime.connection,
+          ...turn.hooks,
+          isPrincipalActive: async () => true,
+          execute: async (execution) => {
+            await turn.stage(
+              {
+                run: { getInterrupt: () => undefined },
+                execution,
+                agents: [],
+                request: { user: { id: owner.userId }, body: { isTemporary: false } },
+                response: { ...buildPendingBackgroundResponse(record), status: 'completed' },
+                conversationId: record.conversationId,
+                agentId: record.agentId,
+                agent: { id: record.agentId },
+                messages: [],
+                parentMessageId: record.parentMessageId,
+                transport: { type: 'json', response: res },
+              },
+              {
+                saveConvo: async () => ({ message: 'private database failure' }),
+                saveMessage,
+                announceReply: async () => {},
+                resolveTitle: () => null,
+                traceFields: async () => ({ langfuseSampled: false }),
+              },
+            );
+          },
+          onSettlementError: (error) => {
+            errors.push(error);
+          },
+        });
+      } catch (error) {
+        expect(error).toMatchObject({ code: 'response_storage_unavailable' });
+      } finally {
+        finish();
+      }
+    });
+    await request(app)
+      .post('/')
+      .set('x-lc-response-worker', '1')
+      .auth(mintBackgroundResponseWorkerToken(record, secret), { type: 'bearer' })
+      .send({})
+      .expect(202);
+    await finished;
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatchObject({ code: 'response_storage_unavailable' });
+    expect(saveMessage).not.toHaveBeenCalled();
+    expect(prepare).not.toHaveBeenCalled();
+    const saved = (await scope(() => storage.read(owner, record.responseId)))!;
+    expect(saved.status).toBe('failed');
+    expect(saved.preparedTerminal).toBeUndefined();
+    expect(saved.pendingTerminal).toBeUndefined();
+    expect(JSON.parse(saved.responseJSON!)).toMatchObject({
+      status: 'failed',
+      output: [],
+      error: { code: 'execution_failed' },
+    });
+    expect(saved.responseJSON).not.toContain('private database failure');
+    expect(await GenerationJobManager.getJob(record.responseId)).toMatchObject({
+      status: 'error',
+      metadata: { providerDrained: true, terminalPersistencePending: false },
+    });
+  });
+
   it('keeps memory-checkpointer background calls on the ordinary SDK stream with interactive host installed', async () => {
     const processStream = jest.fn(async () => undefined);
     const resume = jest.fn(async () => undefined);
@@ -596,7 +707,7 @@ describe('background Responses execution handoff', () => {
                 },
               );
               await gate;
-              res.json({
+              await runtime.completion!.prepare({
                 ...buildPendingBackgroundResponse(record),
                 status: 'completed',
                 output: [],
@@ -634,6 +745,14 @@ describe('background Responses execution handoff', () => {
   });
 
   it('keeps final output private until provider drain and prevents a retried HTTP request starting another run', async () => {
+    let markPrepared!: () => void;
+    let failPreparation!: (error: unknown) => void;
+    let executionError: unknown;
+    const preparation = new Promise<void>((resolve, reject) => {
+      markPrepared = resolve;
+      failPreparation = reject;
+    });
+    preparation.catch(() => {});
     let release!: () => void;
     const trailingWrite = new Promise<void>((resolve) => {
       release = resolve;
@@ -642,9 +761,9 @@ describe('background Responses execution handoff', () => {
     const finished = new Promise<void>((resolve) => {
       settled = resolve;
     });
-    const stage = storage.stageTerminal.bind(storage);
-    const stageWithConcurrentProgress = jest
-      .spyOn(storage, 'stageTerminal')
+    const prepare = storage.prepareTerminal.bind(storage);
+    const prepareWithConcurrentProgress = jest
+      .spyOn(storage, 'prepareTerminal')
       .mockImplementationOnce(async (...args) => {
         for (let step = 0; step < 30; step++) {
           const current = (await storage.read(owner, record.responseId))!;
@@ -652,12 +771,13 @@ describe('background Responses execution handoff', () => {
             status: 'in_progress',
             responseJSON: JSON.stringify({
               ...buildPendingBackgroundResponse(current),
+              status: 'in_progress',
               metadata: { progress: step },
             }),
           });
           expect(projected.ok).toBe(true);
         }
-        return stage(...args);
+        return prepare(...args);
       });
     let starts = 0;
     const { app } = fixture(async (req, res) => {
@@ -683,7 +803,7 @@ describe('background Responses execution handoff', () => {
           execute: async (execution) => {
             starts++;
             execution.track(trailingWrite);
-            res.json({
+            await runtime.completion!.prepare({
               ...buildPendingBackgroundResponse(record),
               status: 'completed',
               output: [
@@ -703,13 +823,15 @@ describe('background Responses execution handoff', () => {
                 },
               ],
             });
+            markPrepared();
           },
         });
-        settled();
       } catch (error) {
-        res
-          .status(409)
-          .json({ code: error instanceof Error && 'code' in error ? error.code : 'failed' });
+        executionError = error;
+        failPreparation(error);
+        if (!res.writableEnded) res.status(409).json({ code: 'failed' });
+      } finally {
+        settled();
       }
     });
     const token = mintBackgroundResponseWorkerToken(record, secret);
@@ -719,23 +841,57 @@ describe('background Responses execution handoff', () => {
       .auth(token, { type: 'bearer' })
       .send({});
     expect(first.status).toBe(202);
-    expect((await scope(async () => storage.read(owner, record.responseId)))?.status).toBe(
-      'in_progress',
-    );
-    const duplicate = await request(app)
-      .post('/')
-      .set('x-lc-response-worker', '1')
-      .auth(token, { type: 'bearer' })
-      .send({});
-    expect(duplicate.status).toBe(409);
-    expect(duplicate.body.code).toBe('RUN_ALREADY_ADMITTED');
-    expect(starts).toBe(1);
-    release();
+    try {
+      await preparation;
+      const recovery = createResponseCompletion({
+        storage,
+        cleanupCheckpoint: async () => {},
+        confirmExecution: createResponseExecutionConfirmation(GenerationJobManager),
+        releaseExecution: createResponseExecutionRelease(GenerationJobManager),
+      });
+      const service = createBackgroundResponseService({
+        storage,
+        authorize: async () => true,
+        resolveContinuation: async () => ({
+          conversationId: record.conversationId,
+          parentMessageId: record.parentMessageId,
+        }),
+        enqueue: async () => {
+          throw new Error('Prepared work must not be enqueued again');
+        },
+        observe: async () => {
+          throw new Error('Prepared work must go to its completion owner');
+        },
+        recoverTerminal: recovery.finish,
+        cancel: async () => {},
+      });
+      const visible = await scope(() => service.retrieve(owner, record.responseId));
+      expect(visible).toMatchObject({ ok: true, response: { status: 'in_progress' } });
+      expect(JSON.stringify(visible)).not.toContain('# Exact final answer');
+      const beforeDrain = (await scope(() => storage.read(owner, record.responseId)))!;
+      expect(beforeDrain.preparedTerminal).toBeDefined();
+      expect(beforeDrain.pendingTerminal).toBeUndefined();
+      expect((await scope(async () => storage.read(owner, record.responseId)))?.status).toBe(
+        'in_progress',
+      );
+      const duplicate = await request(app)
+        .post('/')
+        .set('x-lc-response-worker', '1')
+        .auth(token, { type: 'bearer' })
+        .send({});
+      expect(duplicate.status).toBe(409);
+      expect(duplicate.body.code).toBe('RUN_ALREADY_ADMITTED');
+      expect(starts).toBe(1);
+    } finally {
+      release();
+    }
     await finished;
+    expect(executionError).toBeUndefined();
     const saved = await scope(async () => storage.read(owner, record.responseId));
-    expect(stageWithConcurrentProgress).toHaveBeenCalledTimes(1);
-    stageWithConcurrentProgress.mockRestore();
+    expect(prepareWithConcurrentProgress).toHaveBeenCalledTimes(1);
+    prepareWithConcurrentProgress.mockRestore();
     expect(saved?.status).toBe('completed');
+    expect(saved?.preparedTerminal).toBeUndefined();
     expect(JSON.parse(saved!.responseJSON!).output[0].content[0].text).toBe('# Exact final answer');
   });
 
@@ -770,7 +926,7 @@ describe('background Responses execution handoff', () => {
           isPrincipalActive: async () => true,
           execute: async () => {
             starts++;
-            res.json({
+            await runtime.completion!.prepare({
               ...buildPendingBackgroundResponse(record),
               status: 'completed',
               metadata: { marker: 'exact-runtime-result' },
@@ -803,6 +959,7 @@ describe('background Responses execution handoff', () => {
       createResponseCompletion({
         storage,
         cleanupCheckpoint: async () => {},
+        confirmExecution: createResponseExecutionConfirmation(GenerationJobManager),
         releaseExecution: createResponseExecutionRelease(GenerationJobManager),
       }).finish(pending),
     );
@@ -871,7 +1028,7 @@ describe('background Responses execution handoff', () => {
             execute: async () => {
               starts++;
               await retire();
-              res.json({
+              await runtime.completion!.prepare({
                 ...buildPendingBackgroundResponse(record),
                 status: 'completed',
                 output: [],
@@ -945,7 +1102,7 @@ describe('background Responses execution handoff', () => {
             starts++;
           },
           handleExecutionError: () => {
-            res.status(409).json({ code: 'cancelled' });
+            if (!res.writableEnded) res.status(409).json({ code: 'cancelled' });
           },
         });
         settled();
@@ -992,11 +1149,14 @@ describe('background Responses execution handoff', () => {
             ...runtime.hooks,
             isPrincipalActive: async () => true,
             execute: async (execution) => {
+              await runtime.completion!.prepare({
+                ...buildPendingBackgroundResponse(record),
+                status: 'completed',
+              });
               if (mode === 'stop')
                 await GenerationJobManager.abortJob(runtime.responseId, {
                   expectedCreatedAt: execution.createdAt,
                 });
-              res.json({ ...buildPendingBackgroundResponse(record), status: 'completed' });
               if (mode === 'error') throw new Error('private provider diagnostics');
             },
             onSettlementError: (error) => {

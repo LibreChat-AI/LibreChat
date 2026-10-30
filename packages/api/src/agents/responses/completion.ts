@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from 'node:util';
+import { sameResponseTerminalReceipt } from '@librechat/data-schemas';
 import type {
   ResponseStorage,
   StoredResponseRecord,
@@ -15,6 +16,10 @@ export interface ResponseCompletionRecord extends StoredResponseRecord {
 }
 
 export interface ResponseCompletion {
+  prepare(
+    record: StoredResponseRecord,
+    receipt: ResponseTerminalReceipt,
+  ): Promise<ResponseCompletionRecord>;
   finish(record: StoredResponseRecord): Promise<ResponseCompletionRecord>;
   stageAndFinish(
     record: StoredResponseRecord,
@@ -25,6 +30,11 @@ export interface ResponseCompletion {
 export interface ResponseCompletionDependencies {
   storage: ResponseStorage;
   cleanupCheckpoint: (record: StoredResponseRecord, namespace: string) => Promise<void>;
+  /** A prepared result is a proposal; only exact canonical drain permits its promotion. */
+  confirmExecution: (
+    record: StoredResponseRecord,
+    receipt: ResponseTerminalReceipt,
+  ) => Promise<'complete' | 'error' | 'aborted' | null>;
   /** Required and idempotent: transient provider ownership survives until canonical publication. */
   releaseExecution: (
     record: StoredResponseRecord,
@@ -52,6 +62,55 @@ type ExecutionReleaseIdentity = Pick<
   review?: Pick<NonNullable<StoredResponseRecord['review']>, 'providerExecutionId'>;
 };
 
+async function readExecutionJob(
+  jobs: Pick<GenerationJobManagerClass, 'getJob'>,
+  record: ExecutionReleaseIdentity,
+  receipt?: Pick<ResponseTerminalReceipt, 'providerExecutionId' | 'ownerId'>,
+) {
+  if (record.generationCreatedAt == null) return null;
+  const job = await jobs.getJob(record.responseId);
+  if (!job) return null;
+  const expectedProvider =
+    receipt?.providerExecutionId ??
+    (record.resume?.state === 'admitted'
+      ? record.resume.providerExecutionId
+      : record.review?.providerExecutionId);
+  if (
+    job.createdAt !== record.generationCreatedAt ||
+    job.metadata.userId !== record.userId ||
+    responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
+    job.metadata.agent_id !== record.agentId ||
+    job.metadata.endpoint !== 'responses' ||
+    job.metadata.responseMessageId !== record.responseId ||
+    job.metadata.conversationId !== record.conversationId ||
+    !job.metadata.providerExecutionId ||
+    (expectedProvider != null && job.metadata.providerExecutionId !== expectedProvider) ||
+    (receipt != null && job.metadata.providerExecutionOwnerId !== receipt.ownerId)
+  )
+    throw new Error('Response terminal execution identity changed');
+  return { job, providerExecutionId: job.metadata.providerExecutionId };
+}
+
+/** Candidate bytes and possession of a provider ID do not prove that execution drained. */
+export function createResponseExecutionConfirmation(
+  jobs: Pick<GenerationJobManagerClass, 'getJob'>,
+): ResponseCompletionDependencies['confirmExecution'] {
+  return async (record, receipt) => {
+    const proof = await readExecutionJob(jobs, record, receipt);
+    const job = proof?.job;
+    if (
+      !job ||
+      job.metadata.providerDrained !== true ||
+      job.status === 'running' ||
+      job.status === 'requires_action'
+    )
+      return null;
+    if (job.status !== 'complete' && job.status !== 'error' && job.status !== 'aborted')
+      throw new Error('Response terminal execution outcome is unavailable');
+    return job.status;
+  };
+}
+
 /** Release transient provider proof only after its canonical terminal result is durable. */
 export function createResponseExecutionRelease(
   jobs: Pick<GenerationJobManagerClass, 'getJob' | 'finishProviderTerminalPersistence'>,
@@ -67,32 +126,18 @@ export function createResponseExecutionRelease(
     )
       throw new Error('Response terminal publication is unavailable');
     if (record.generationCreatedAt == null) return;
-    const job = await jobs.getJob(record.responseId);
-    if (!job) return;
-    const expectedProvider =
-      receipt?.providerExecutionId ??
-      (record.resume?.state === 'admitted'
-        ? record.resume.providerExecutionId
-        : record.review?.providerExecutionId);
+    const proof = await readExecutionJob(jobs, record, receipt);
+    if (!proof) return;
+    const { job, providerExecutionId } = proof;
     if (
-      job.createdAt !== record.generationCreatedAt ||
-      job.metadata.userId !== record.userId ||
-      responseTenantId(job.metadata.tenantId) !== responseTenantId(record.tenantId) ||
-      job.metadata.agent_id !== record.agentId ||
-      job.metadata.endpoint !== 'responses' ||
-      job.metadata.responseMessageId !== record.responseId ||
-      job.metadata.conversationId !== record.conversationId ||
       !['complete', 'error', 'aborted'].includes(job.status) ||
-      job.metadata.providerDrained !== true ||
-      !job.metadata.providerExecutionId ||
-      (expectedProvider != null && job.metadata.providerExecutionId !== expectedProvider) ||
-      (receipt != null && job.metadata.providerExecutionOwnerId !== receipt.ownerId)
+      job.metadata.providerDrained !== true
     )
       throw new Error('Response terminal execution identity changed');
     const released = await jobs.finishProviderTerminalPersistence(
       record.responseId,
       record.generationCreatedAt,
-      job.metadata.providerExecutionId,
+      providerExecutionId,
       receipt?.ownerId ?? job.metadata.providerExecutionOwnerId,
     );
     if (!released) throw new Error('Response terminal execution release is unavailable');
@@ -152,11 +197,42 @@ function sameExecution(
   );
 }
 
-/** Persist a post-drain result before cleanup, then retry only cleanup/publication, never execution. */
+function publishedReceipt(
+  previous: StoredResponseRecord,
+  current: StoredResponseRecord | null,
+  receipt: ResponseTerminalReceipt,
+): boolean {
+  return (
+    current != null &&
+    sameExecution(previous, current, receipt) &&
+    current.status === receipt.status &&
+    current.responseJSON === receipt.responseJSON &&
+    !current.pendingTerminal &&
+    !current.preparedTerminal
+  );
+}
+
+function redactRetirement(record: ResponseCompletionRecord): ResponseCompletionRecord {
+  return {
+    ...record,
+    requestJSON: '',
+    responseJSON: undefined,
+    review: undefined,
+    resume: undefined,
+    pendingTerminal: undefined,
+    preparedTerminal: undefined,
+  };
+}
+
+/** Prepare durably before drain; only the completion owner may promote, clean up and publish. */
 export function createResponseCompletion(deps: ResponseCompletionDependencies): ResponseCompletion {
-  if (typeof deps.cleanupCheckpoint !== 'function' || typeof deps.releaseExecution !== 'function')
-    throw new Error('Response completion cleanup and release owners are unavailable');
-  async function discardRetired(record: StoredResponseRecord, receipt: ResponseTerminalReceipt) {
+  if (
+    typeof deps.cleanupCheckpoint !== 'function' ||
+    typeof deps.confirmExecution !== 'function' ||
+    typeof deps.releaseExecution !== 'function'
+  )
+    throw new Error('Response completion confirmation, cleanup and release owners are unavailable');
+  async function readRetirement(record: StoredResponseRecord, receipt: ResponseTerminalReceipt) {
     const identity = await deps.storage.readCleanupIdentity(record, record.responseId, {
       ...record,
       checkpointNamespace: receipt.checkpointNamespace,
@@ -167,11 +243,17 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
       !(identity?.expiredAt && identity.expiredAt.getTime() <= Date.now())
     )
       return null;
-    const retired: ResponseCompletionRecord = {
+    const retired: ResponseCompletionRecord & ResponseCleanupIdentity = {
       ...record,
       ...identity,
       retirement: identity.retirement ?? 'expired',
     };
+    return retired;
+  }
+  async function discardRetired(record: StoredResponseRecord, receipt: ResponseTerminalReceipt) {
+    const retired = await readRetirement(record, receipt);
+    if (!retired) return null;
+    const identity = retired;
     const namespace = identity.checkpointNamespace ?? receipt.checkpointNamespace;
     if (identity.requiresCheckpointCleanup && !namespace)
       throw new Error('Response checkpoint cleanup identity unavailable');
@@ -190,19 +272,45 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
       );
     await deps.releaseExecution(retired, receipt);
     return {
-      ...retired,
-      requestJSON: '',
-      responseJSON: undefined,
-      review: undefined,
-      resume: undefined,
-      pendingTerminal: undefined,
+      ...redactRetirement(retired),
       status: receipt.status,
     };
   }
   async function finish(record: StoredResponseRecord): Promise<ResponseCompletionRecord> {
     const receipt = record.pendingTerminal;
     if (!receipt) {
-      if (terminal(record)) await deps.releaseExecution(record);
+      if (terminal(record)) {
+        await deps.releaseExecution(record);
+        return record;
+      }
+      const prepared = record.preparedTerminal;
+      if (prepared) {
+        assertReceipt(record, prepared);
+        const outcome = await deps.confirmExecution(record, prepared);
+        if (outcome == null) return record;
+        const response = JSON.parse(prepared.responseJSON) as Record<string, unknown>;
+        const cancelled = outcome === 'aborted' || record.cancellationRequestedAt != null;
+        const failed = outcome === 'error' && prepared.status === 'completed';
+        let status = prepared.status;
+        if (cancelled) status = 'cancelled';
+        else if (failed) status = 'failed';
+        const responseJSON =
+          status === prepared.status
+            ? prepared.responseJSON
+            : JSON.stringify({
+                ...response,
+                status,
+                completed_at: Math.floor(Date.now() / 1000),
+                error: cancelled
+                  ? null
+                  : {
+                      type: 'server_error',
+                      code: 'execution_failed',
+                      message: 'The Agent could not complete this request.',
+                    },
+              });
+        return stageAndFinish(record, { ...prepared, status, responseJSON }, prepared);
+      }
       return record;
     }
     assertReceipt(record, receipt);
@@ -223,14 +331,7 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
         const expired = await discardRetired(record, receipt);
         if (expired) return expired;
       }
-      if (
-        !current ||
-        current.status !== receipt.status ||
-        current.generationCreatedAt !== receipt.generationCreatedAt ||
-        current.responseJSON !== receipt.responseJSON ||
-        current.pendingTerminal
-      )
-        throw error;
+      if (!publishedReceipt(record, current, receipt)) throw error;
     }
     if (!current) {
       const expired = await discardRetired(record, receipt);
@@ -240,57 +341,91 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
     if (terminal(current)) await deps.releaseExecution(current, receipt);
     return current;
   }
-  return {
-    finish,
-    async stageAndFinish(
-      record: StoredResponseRecord,
-      receipt: ResponseTerminalReceipt,
-    ): Promise<ResponseCompletionRecord> {
-      assertReceipt(record, receipt);
-      if (record.expiredAt && record.expiredAt.getTime() <= Date.now()) {
-        const retired = await discardRetired(record, receipt);
-        if (!retired) throw new Error('Response retirement identity unavailable');
-        return retired;
-      }
-      let staged: ResponseMutationResult;
-      try {
-        staged = await deps.storage.stageTerminal(
-          record,
-          record.responseId,
-          { execution: record },
-          receipt,
-        );
-      } catch (error) {
-        const current = await deps.storage.read(record, record.responseId);
-        if (!current) {
-          const expired = await discardRetired(record, receipt);
-          if (expired) return expired;
-        }
-        const saved = current?.pendingTerminal;
-        if (
-          !current ||
-          !saved ||
-          saved.generationCreatedAt !== receipt.generationCreatedAt ||
-          saved.providerExecutionId !== receipt.providerExecutionId ||
-          saved.ownerId !== receipt.ownerId ||
-          saved.responseJSON !== receipt.responseJSON ||
-          saved.status !== receipt.status ||
-          saved.checkpointNamespace !== receipt.checkpointNamespace ||
-          saved.checkpointConfigJSON !== receipt.checkpointConfigJSON
-        )
-          throw error;
-        return finish(current);
-      }
-      if (staged.ok) return finish(staged.record);
+  async function stageAndFinish(
+    record: StoredResponseRecord,
+    receipt: ResponseTerminalReceipt,
+    prepared?: ResponseTerminalReceipt,
+  ): Promise<ResponseCompletionRecord> {
+    assertReceipt(record, receipt);
+    if (record.expiredAt && record.expiredAt.getTime() <= Date.now()) {
+      const retired = await discardRetired(record, receipt);
+      if (!retired) throw new Error('Response retirement identity unavailable');
+      return retired;
+    }
+    let staged: ResponseMutationResult;
+    try {
+      staged = await deps.storage.stageTerminal(
+        record,
+        record.responseId,
+        { execution: record },
+        receipt,
+        prepared
+          ? { receipt: prepared, cancellationRequestedAt: record.cancellationRequestedAt }
+          : undefined,
+      );
+    } catch (error) {
       const current = await deps.storage.read(record, record.responseId);
       if (!current) {
         const expired = await discardRetired(record, receipt);
         if (expired) return expired;
       }
-      if (!current || !sameExecution(record, current, receipt))
-        throw new Error('Response terminal receipt publication conflicted');
-      if (terminal(current)) return finish(current);
+      if (current && publishedReceipt(record, current, receipt)) return finish(current);
+      const saved = current?.pendingTerminal;
+      if (
+        !current ||
+        !saved ||
+        !sameExecution(record, current, receipt) ||
+        !sameResponseTerminalReceipt(saved, receipt)
+      )
+        throw error;
+      return finish(current);
+    }
+    if (staged.ok) return finish(staged.record);
+    const current = await deps.storage.read(record, record.responseId);
+    if (!current) {
+      const expired = await discardRetired(record, receipt);
+      if (expired) return expired;
+    }
+    if (!current || !sameExecution(record, current, receipt))
       throw new Error('Response terminal receipt publication conflicted');
+    if (terminal(current)) return finish(current);
+    throw new Error('Response terminal receipt publication conflicted');
+  }
+  return {
+    finish,
+    stageAndFinish,
+    async prepare(record, receipt) {
+      assertReceipt(record, receipt);
+      try {
+        const staged = await deps.storage.prepareTerminal(
+          record,
+          record.responseId,
+          { execution: record },
+          receipt,
+        );
+        if (staged.ok) return staged.record;
+      } catch (error) {
+        const saved = await deps.storage.read(record, record.responseId);
+        if (
+          saved?.preparedTerminal &&
+          sameExecution(record, saved, receipt) &&
+          sameResponseTerminalReceipt(saved.preparedTerminal, receipt)
+        )
+          return saved;
+        const retired = !saved ? await readRetirement(record, receipt) : null;
+        if (retired) return redactRetirement(retired);
+        throw error;
+      }
+      const saved = await deps.storage.read(record, record.responseId);
+      if (
+        saved?.preparedTerminal &&
+        sameExecution(record, saved, receipt) &&
+        sameResponseTerminalReceipt(saved.preparedTerminal, receipt)
+      )
+        return saved;
+      const retired = !saved ? await readRetirement(record, receipt) : null;
+      if (retired) return redactRetirement(retired);
+      throw new Error('Response terminal preparation conflicted');
     },
   };
 }

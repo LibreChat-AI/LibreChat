@@ -6,7 +6,11 @@ import type {
   ResponseResumeReservation,
   ResponseTerminalReceipt,
 } from './response';
-import { closeResponseScopes, createResponseRetention } from './responseScope';
+import {
+  closeResponseScopes,
+  eraseResponseRecords,
+  createResponseRetention,
+} from './responseScope';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createConversationMethods } from './conversation';
 import { createConversationImportMethods } from './import';
@@ -747,6 +751,128 @@ const outcome: ResponseTerminalReceipt = {
   responseJSON: '{"final":"private until cleanup"}',
   checkpointNamespace: 'owned-checkpoint',
 };
+
+it('prepares one immutable result privately and moves it atomically into the confirmed journal', () =>
+  scoped(async () => {
+    await storage.reserve(reservation());
+    const running = await storage.publish(owner, 'resp_one', 0, {
+      status: 'in_progress',
+      generationCreatedAt: 10,
+      responseJSON: '{"progress":true}',
+    });
+    if (!running.ok) throw new Error('Publication failed');
+    const attempts = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        storage.prepareTerminal(owner, 'resp_one', { execution: running.record }, outcome),
+      ),
+    );
+    expect(attempts.every((result) => result.ok)).toBe(true);
+    const prepared = (await storage.read(owner, 'resp_one'))!;
+    expect(prepared).toMatchObject({
+      status: 'in_progress',
+      responseJSON: '{"progress":true}',
+      preparedTerminal: outcome,
+    });
+    expect(prepared.pendingTerminal).toBeUndefined();
+    expect(
+      await storage.prepareTerminal(
+        owner,
+        'resp_one',
+        { execution: prepared },
+        {
+          ...outcome,
+          responseJSON: 'different candidate',
+        },
+      ),
+    ).toEqual({ ok: false, code: 'response_conflict' });
+    expect(
+      await storage.publish(owner, 'resp_one', prepared.revision, {
+        status: 'completed',
+        responseJSON: 'unconfirmed',
+      }),
+    ).toEqual({ ok: false, code: 'response_conflict' });
+    expect(
+      await storage.stageTerminal(owner, 'resp_one', { execution: prepared }, outcome),
+    ).toEqual({ ok: false, code: 'response_conflict' });
+    const promoted = await storage.stageTerminal(
+      owner,
+      'resp_one',
+      { execution: prepared },
+      outcome,
+      { receipt: outcome },
+    );
+    expect(promoted.ok).toBe(true);
+    if (!promoted.ok) throw new Error('Promotion failed');
+    expect(promoted.record.preparedTerminal).toBeUndefined();
+    expect(promoted.record.pendingTerminal).toEqual(outcome);
+    expect(
+      (await storage.finishTerminal(owner, 'resp_one', promoted.record.revision, outcome)).ok,
+    ).toBe(true);
+  }));
+
+it('fences a racing Stop when promoting a prepared success without projection-revision retries', () =>
+  scoped(async () => {
+    await storage.reserve(reservation());
+    const running = await storage.publish(owner, 'resp_one', 0, {
+      status: 'in_progress',
+      generationCreatedAt: 10,
+      responseJSON: '{}',
+    });
+    if (!running.ok) throw new Error('Publication failed');
+    const prepared = await storage.prepareTerminal(
+      owner,
+      'resp_one',
+      { execution: running.record },
+      outcome,
+    );
+    if (!prepared.ok) throw new Error('Preparation failed');
+    const stopped = (await storage.requestCancellation(owner, 'resp_one', 100))!;
+    expect(
+      await storage.stageTerminal(owner, 'resp_one', { execution: prepared.record }, outcome, {
+        receipt: outcome,
+      }),
+    ).toEqual({ ok: false, code: 'response_conflict' });
+    const cancelled = {
+      ...outcome,
+      status: 'cancelled' as const,
+      responseJSON: '{"cancelled":true}',
+    };
+    const promoted = await storage.stageTerminal(
+      owner,
+      'resp_one',
+      { execution: stopped },
+      cancelled,
+      { receipt: outcome, cancellationRequestedAt: stopped.cancellationRequestedAt },
+    );
+    expect(promoted.ok).toBe(true);
+    if (!promoted.ok) throw new Error('Promotion failed');
+    expect(
+      (await storage.finishTerminal(owner, 'resp_one', promoted.record.revision, cancelled)).ok,
+    ).toBe(true);
+    expect((await storage.read(owner, 'resp_one'))?.status).toBe('cancelled');
+  }));
+
+it('retains only a prepared checkpoint binding for expired cleanup and erases the entire candidate', () =>
+  scoped(async () => {
+    await storage.reserve(reservation());
+    const running = await storage.publish(owner, 'resp_one', 0, {
+      status: 'in_progress',
+      generationCreatedAt: 10,
+      responseJSON: '{}',
+    });
+    if (!running.ok) throw new Error('Publication failed');
+    await storage.prepareTerminal(owner, 'resp_one', { execution: running.record }, outcome);
+    await createResponseRetention(mongoose)(owner, 'conversation-one', new Date(0));
+    const identity = await storage.readCleanupIdentity(owner, 'resp_one');
+    expect(identity).toMatchObject({
+      retirement: 'expired',
+      checkpointNamespace: outcome.checkpointNamespace,
+    });
+    expect(JSON.stringify(identity)).not.toContain('private until cleanup');
+    await closeResponseScopes(mongoose, owner);
+    await eraseResponseRecords(mongoose, owner);
+    expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(0);
+  }));
 
 it('stages an initial terminal receipt without requiring a review or resume', () =>
   scoped(async () => {

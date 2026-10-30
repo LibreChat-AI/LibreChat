@@ -60,11 +60,9 @@ const {
   getRemoteAgentPermissions,
   resolveAgentScopedSkillIds,
   // Responses API
-  resolveResponseContinuation,
   buildResponseInputChain,
   loadForegroundResponseHistory,
-  createForegroundResponseTerminal,
-  stageForegroundResponse,
+  createResponseTurn,
   createStoredForegroundResponseReader,
   createResponseAccountingSnapshot,
   withResponsePersistenceErrors,
@@ -495,7 +493,8 @@ const executeResponse = async (envelope, { req, res }) => {
 
   const { conversationId, parentMessageId: previousMessageId } =
     await responseRuntime.resolveContinuation(envelope);
-  const terminal = createForegroundResponseTerminal({
+  const turn = createResponseTurn({
+    runtime: responseRuntime,
     context,
     requestedStore: request.store,
     logger,
@@ -509,11 +508,10 @@ const executeResponse = async (envelope, { req, res }) => {
     runId: responseId,
     conversationId,
     connection: responseRuntime.connection,
-    ...responseRuntime.hooks,
+    ...turn.hooks,
     /** Conversation delete-all uses the shared owner-admission fence. Remote
      * execution must observe it after durable enrollment and before provider work. */
     isPrincipalActive: db.isSubagentOwnerAdmissible,
-    afterSettle: terminal.afterSettle,
     beforeSettle: (execution, error) => {
       if (!artifactWritesCovered && artifactPromises.length > 0) {
         execution.track(
@@ -525,9 +523,8 @@ const executeResponse = async (envelope, { req, res }) => {
           }),
         );
       }
-      terminal.beforeSettle(execution, error);
+      turn.beforeSettle(execution, error);
     },
-    onSettlementError: terminal.onSettlementError,
     handleExecutionError: (error, signal) => {
       terminalRunError.log(error, signal);
       return handleExecutionError({ error, res, appConfig });
@@ -1320,11 +1317,13 @@ const executeResponse = async (envelope, { req, res }) => {
 
         const usage = buildResponsesUsage(collectedUsage);
 
-        const accounting = snapshotAccounting();
-        const finalResponse = prepareStreamResponse(usage, accounting);
-        stageForegroundResponse(
+        const accountingSnapshot = snapshotAccounting();
+        const finalResponse = prepareStreamResponse(usage, accountingSnapshot);
+        await turn.stage(
           {
-            terminal,
+            run,
+            execution,
+            agents: runAgents,
             request: req,
             response: finalResponse,
             conversationId,
@@ -1570,9 +1569,11 @@ const executeResponse = async (envelope, { req, res }) => {
           buildResponsesUsage(collectedUsage),
           snapshotAccounting(),
         );
-        stageForegroundResponse(
+        await turn.stage(
           {
-            terminal,
+            run,
+            execution,
+            agents: runAgents,
             request: req,
             response: response,
             conversationId,
