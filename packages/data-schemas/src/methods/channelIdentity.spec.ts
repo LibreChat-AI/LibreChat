@@ -4,6 +4,7 @@ import type { ChannelIdentityRecord } from './channelIdentity';
 import { closeChannelScope, retireAgentChannel } from './channelScope';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
+import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
 import { createUserMethods } from './user';
 import { createModels } from '~/models';
@@ -484,4 +485,91 @@ it('serializes revoked insertion with retirement and erases its private payload 
     expect(await insertion).toBe(true);
     await retirement;
     expect(await mongoose.models.ChannelIdentity.countDocuments({ tenantId })).toBe(0);
+  }));
+
+it('creates and activates a per-user link at an empty canonical channel revision and admits its run', () =>
+  scope(async () => {
+    await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'connection-owner', {
+      revision: '',
+    });
+    const pending = { ...identity(), identity: { ...identity().identity, channelRevision: '' } };
+    expect(await storage.saveChannelIdentity(pending, null)).toBe(true);
+    const active = {
+      ...pending,
+      state: 'active' as const,
+      userId: 'linked-owner',
+      revision: 'active',
+    };
+    expect(await storage.saveChannelIdentity(active, 'one')).toBe(true);
+    expect((await storage.readChannelLink(tenantId, 'link'))?.identity.channelRevision).toBe('');
+    const input = {
+      tenantId,
+      channelId: 'channel',
+      agentId: 'agent',
+      principal: {
+        userId: 'linked-owner',
+        channelRevision: '',
+        linkId: 'link',
+        linkRevision: 'active',
+      },
+      admission: {
+        eventId: 'empty-revision',
+        externalChannelId: 'C1',
+        externalThreadKey: '123.456',
+        externalMessageKey: '123.457',
+        actor: { teamId: 'team', appId: 'app', externalUserId: 'external-user' },
+        input: 'hello',
+      },
+    };
+    const runs = createChannelRunStorage(mongoose);
+    await expect(runs.admit(input, 100)).resolves.toMatchObject({
+      run: { principal: { channelRevision: '' } },
+    });
+    await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'connection-owner', {
+      revision: 'rotated',
+    });
+    await expect(
+      runs.admit({ ...input, admission: { ...input.admission, eventId: 'stale-empty' } }, 101),
+    ).rejects.toMatchObject({ code: 'invalid_transition' });
+  }));
+
+it.each([undefined, null])(
+  'still requires a channel revision when its value is %s',
+  (channelRevision) =>
+    scope(async () => {
+      const model = new mongoose.models.ChannelIdentity({
+        ...identity(),
+        identity: { ...identity().identity, channelRevision },
+      });
+      await expect(model.validate()).rejects.toThrow('channelRevision');
+    }),
+);
+
+it.each(['channelId', 'ticketHash'] as const)(
+  'does not relax required nonempty %s validation',
+  (field) =>
+    scope(async () => {
+      const record = { ...identity(), identity: { ...identity().identity, channelRevision: '' } };
+      const model = new mongoose.models.ChannelIdentity(
+        field === 'ticketHash'
+          ? { ...record, ticketHash: '' }
+          : { ...record, identity: { ...record.identity, channelId: '' } },
+      );
+      await expect(model.validate()).rejects.toThrow(field);
+    }),
+);
+
+it('uses the same full-record schema validation on insertion and replacement', () =>
+  scope(async () => {
+    await expect(
+      storage.saveChannelIdentity({ ...identity(), ticketHash: '' }, null),
+    ).rejects.toThrow('ticketHash');
+    expect(await storage.saveChannelIdentity(identity(), null)).toBe(true);
+    await expect(
+      storage.saveChannelIdentity({ ...identity(), revision: 'bad', ticketHash: '' }, 'one'),
+    ).rejects.toThrow('ticketHash');
+    expect(await storage.readChannelLink(tenantId, 'link')).toMatchObject({
+      revision: 'one',
+      ticketHash: 'private-hash',
+    });
   }));

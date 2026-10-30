@@ -8,6 +8,7 @@ import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
 import { createUserMethods } from './user';
 import { createModels } from '~/models';
+import { createMethods } from './index';
 
 let mongo: MongoMemoryReplSet;
 let methods: ReturnType<typeof createAgentChannelMethods>;
@@ -78,7 +79,9 @@ it('keeps a deleting parent until admitted work drains and rejects delayed admis
   scope(async () => {
     await methods.createAgentChannel(channel());
     await runs.admit(event(), 100);
-    expect(await methods.deleteAgentChannel('channel', 'owner')).toBe(false);
+    expect(await methods.deleteAgentChannel('channel', 'owner')).toEqual({
+      status: 'pending_drain',
+    });
     expect(await methods.getAgentChannel('channel')).toMatchObject({ status: 'deleting' });
     await expect(
       runs.admit({ ...event(), admission: { ...event().admission, eventId: 'late' } }, 101),
@@ -88,7 +91,7 @@ it('keeps a deleting parent until admitted work drains and rejects delayed admis
       await methods.updateAgentChannel('channel', 'owner', { status: 'active' }, 'deleting'),
     ).toBeNull();
     await mongoose.models.ChannelRun.updateMany({}, { $set: { state: 'cancelled' } });
-    expect(await methods.deleteAgentChannel('channel', 'owner')).toBe(true);
+    expect(await methods.deleteAgentChannel('channel', 'owner')).toEqual({ status: 'deleted' });
     await expect(runs.admit(event(), 102)).rejects.toMatchObject({ code: 'invalid_transition' });
   }));
 
@@ -125,7 +128,7 @@ it('waits for an inserting admission before deciding whether deletion can finish
       paused.mockRestore();
     }
     expect(await admission).toMatchObject({ duplicate: false });
-    expect(await deletion).toBe(false);
+    expect(await deletion).toEqual({ status: 'pending_drain' });
     expect(await methods.getAgentChannel('channel')).toMatchObject({ status: 'deleting' });
   }));
 
@@ -149,7 +152,7 @@ it('leaves deletion retryable after dependent erasure fails', () =>
     );
     expect(await methods.getAgentChannel('channel')).toMatchObject({ status: 'deleting' });
     await expect(runs.admit(event(), 100)).rejects.toMatchObject({ code: 'invalid_transition' });
-    expect(await methods.deleteAgentChannel('channel', 'owner')).toBe(true);
+    expect(await methods.deleteAgentChannel('channel', 'owner')).toEqual({ status: 'deleted' });
     expect(await mongoose.models.AgentChannelThread.countDocuments({ channelId: 'channel' })).toBe(
       0,
     );
@@ -158,7 +161,9 @@ it('leaves deletion retryable after dependent erasure fails', () =>
 it('does not close admission when a different owner requests deletion', () =>
   scope(async () => {
     await methods.createAgentChannel(channel());
-    expect(await methods.deleteAgentChannel('channel', 'intruder')).toBe(false);
+    expect(await methods.deleteAgentChannel('channel', 'intruder')).toEqual({
+      status: 'not_found',
+    });
     expect(await runs.admit(event(), 100)).toMatchObject({ duplicate: false });
   }));
 
@@ -286,7 +291,7 @@ it('redacts deleted-owner credentials while retaining a retry anchor for other p
       { runId: other.run.runId },
       { $set: { state: 'cancelled' } },
     );
-    expect(await methods.deleteAgentChannel('channel', userId)).toBe(true);
+    expect(await methods.deleteAgentChannel('channel', userId)).toEqual({ status: 'deleted' });
   }));
 
 it('keeps account erasure retryable after connection mapping cleanup fails', () =>
@@ -365,7 +370,9 @@ it('requires the retirement operation for deletion transitions and blocks update
       status: 'deleting',
       apiKeyId: 'original-key',
     });
-    expect(await methods.deleteAgentChannel('channel', 'owner')).toBe(false);
+    expect(await methods.deleteAgentChannel('channel', 'owner')).toEqual({
+      status: 'pending_drain',
+    });
     expect(
       await methods.updateAgentChannel(
         'channel',
@@ -389,7 +396,7 @@ it('retires every linked identity before completing direct channel deletion', ()
         await identities.saveChannelIdentity(linkRecord(tenantId, 'channel', state, state), null),
       ).toBe(true);
     }
-    expect(await methods.deleteAgentChannel('channel', 'owner')).toBe(true);
+    expect(await methods.deleteAgentChannel('channel', 'owner')).toEqual({ status: 'deleted' });
     expect(await identities.listChannelLinks(tenantId, 'linked-user')).toEqual([]);
     expect(
       await mongoose.models.ChannelIdentity.countDocuments({
@@ -423,7 +430,7 @@ it('keeps identity retirement failure retryable without reopening admission', ()
         null,
       ),
     ).toBe(false);
-    expect(await methods.deleteAgentChannel('channel', 'owner')).toBe(true);
+    expect(await methods.deleteAgentChannel('channel', 'owner')).toEqual({ status: 'deleted' });
     expect(await identities.listChannelLinks(tenantId, 'linked-user')).toEqual([]);
   }));
 
@@ -515,7 +522,7 @@ it.each([tenantId, undefined])(
         { runId: admitted.run.runId },
         { $set: { state: 'cancelled' } },
       );
-      expect(await methods.deleteAgentChannel('channel', ownerId)).toBe(true);
+      expect(await methods.deleteAgentChannel('channel', ownerId)).toEqual({ status: 'deleted' });
     }),
 );
 
@@ -543,3 +550,151 @@ it('treats an empty revision as an exact CAS token rather than an absent guard',
       ),
     ).toMatchObject({ status: 'disabled' });
   }));
+
+it.each(['listAgentChannelTenants', 'listDeletingAgentChannels'] as const)(
+  'enforces live configured bounds through createMethods for %s',
+  (method) =>
+    scope(async () => {
+      let maxMetadataPageSize = 2;
+      const getConfig = jest.fn(async () => ({ maxMetadataPageSize }));
+      const composed = createMethods(mongoose, { getChannelStorageConfig: getConfig });
+      for (let i = 0; i < 3; i++) {
+        await methods.createAgentChannel({ ...channel(), channelId: `paged-${i}` });
+        await methods.beginAgentChannelDeletion(`paged-${i}`, 'owner');
+      }
+      const first = await composed[method](undefined, 2);
+      expect(first.channels).toHaveLength(2);
+      expect(first.next).toEqual(expect.any(String));
+      expect((await composed[method](first.next, 2)).channels).toHaveLength(1);
+      maxMetadataPageSize = 1;
+      const query = jest.spyOn(mongoose.models.AgentChannel.collection, 'find');
+      try {
+        await expect(composed[method](undefined, 2)).rejects.toThrow(
+          'Invalid channel metadata page',
+        );
+        expect(query).not.toHaveBeenCalled();
+      } finally {
+        query.mockRestore();
+      }
+      expect((await composed[method](undefined, 1)).channels).toHaveLength(1);
+      maxMetadataPageSize = 3;
+      expect((await composed[method](undefined, 3)).channels).toHaveLength(3);
+      expect(getConfig).toHaveBeenCalledTimes(5);
+      expect((await methods[method](undefined, 100)).channels).toHaveLength(3);
+      await expect(methods[method](undefined, 101)).rejects.toThrow(
+        'Invalid channel metadata page',
+      );
+    }),
+);
+
+it('rejects malformed metadata pages before reading configuration or querying data', () =>
+  scope(async () => {
+    const getConfig = jest.fn(async () => ({ maxMetadataPageSize: 2 }));
+    const composed = createMethods(mongoose, { getChannelStorageConfig: getConfig });
+    const query = jest.spyOn(mongoose.models.AgentChannel.collection, 'find');
+    try {
+      for (const method of ['listAgentChannelTenants', 'listDeletingAgentChannels'] as const)
+        for (const [cursor, limit] of [
+          [undefined, 0],
+          [undefined, -1],
+          [undefined, 1.5],
+          [undefined, NaN],
+          [undefined, Infinity],
+          ['invalid', 1],
+          ['', 1],
+        ] as const)
+          await expect(composed[method](cursor, limit)).rejects.toThrow(
+            'Invalid channel metadata page',
+          );
+      expect(getConfig).not.toHaveBeenCalled();
+      expect(query).not.toHaveBeenCalled();
+    } finally {
+      query.mockRestore();
+    }
+  }));
+
+it('propagates metadata configuration failures without querying or silently using default bounds', () =>
+  scope(async () => {
+    const failure = new Error('configuration unavailable');
+    let unavailable = true;
+    const composed = createMethods(mongoose, {
+      getChannelStorageConfig: async () => {
+        if (unavailable) throw failure;
+        return { maxMetadataPageSize: 0 };
+      },
+    });
+    const query = jest.spyOn(mongoose.models.AgentChannel.collection, 'find');
+    try {
+      for (const method of ['listAgentChannelTenants', 'listDeletingAgentChannels'] as const)
+        await expect(composed[method](undefined, 1)).rejects.toBe(failure);
+      unavailable = false;
+      for (const method of ['listAgentChannelTenants', 'listDeletingAgentChannels'] as const)
+        await expect(composed[method](undefined, 1)).rejects.toThrow();
+      expect(query).not.toHaveBeenCalled();
+    } finally {
+      query.mockRestore();
+    }
+  }));
+
+it('distinguishes absent, draining, deleted and repeated deletion outcomes', () =>
+  scope(async () => {
+    expect(await methods.deleteAgentChannel('channel', 'owner')).toEqual({ status: 'not_found' });
+    await methods.createAgentChannel(channel());
+    expect(await methods.deleteAgentChannel('channel', 'intruder')).toEqual({
+      status: 'not_found',
+    });
+    expect((await methods.getAgentChannel('channel'))?.status).toBe('active');
+    const admitted = await runs.admit(event(), 100);
+    expect(await methods.deleteAgentChannel('channel', 'owner')).toEqual({
+      status: 'pending_drain',
+    });
+    expect((await methods.getAgentChannel('channel'))?.status).toBe('deleting');
+    await mongoose.models.ChannelRun.updateOne(
+      { runId: admitted.run.runId },
+      { $set: { state: 'cancelled' } },
+    );
+    expect(await methods.deleteAgentChannel('channel', 'owner')).toEqual({ status: 'deleted' });
+    expect(await methods.deleteAgentChannel('channel', 'owner')).toEqual({ status: 'not_found' });
+  }));
+
+it('returns deleted once and not_found for a concurrent deletion retry', () =>
+  scope(async () => {
+    await methods.createAgentChannel(channel());
+    const outcomes = await Promise.all(
+      Array.from({ length: 2 }, () => methods.deleteAgentChannel('channel', 'owner')),
+    );
+    expect(outcomes.map((result) => result.status).sort()).toEqual(['deleted', 'not_found']);
+    expect(await methods.getAgentChannel('channel')).toBeNull();
+    await expect(runs.admit(event(), 100)).rejects.toMatchObject({ code: 'invalid_transition' });
+  }));
+
+it.each(['queued', 'executing', 'requires_action', 'delivering', 'blocked'] as const)(
+  'reports pending_drain while a retained run is %s',
+  (state) =>
+    scope(async () => {
+      await methods.createAgentChannel(channel());
+      const admitted = await runs.admit(event(), 100);
+      await mongoose.models.ChannelRun.updateOne(
+        { runId: admitted.run.runId },
+        { $set: { state } },
+      );
+      expect(await methods.deleteAgentChannel('channel', 'owner')).toEqual({
+        status: 'pending_drain',
+      });
+      expect((await methods.getAgentChannel('channel'))?.status).toBe('deleting');
+    }),
+);
+
+it.each(['delivered', 'failed', 'cancelled'] as const)(
+  'completes deletion when retained runs are %s',
+  (state) =>
+    scope(async () => {
+      await methods.createAgentChannel(channel());
+      const admitted = await runs.admit(event(), 100);
+      await mongoose.models.ChannelRun.updateOne(
+        { runId: admitted.run.runId },
+        { $set: { state } },
+      );
+      expect(await methods.deleteAgentChannel('channel', 'owner')).toEqual({ status: 'deleted' });
+    }),
+);

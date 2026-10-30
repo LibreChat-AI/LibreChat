@@ -59,6 +59,8 @@ export function createChannelIdentityStorage(
       assertChannelTenant(record.tenantId);
       if (record.tenantId !== record.identity.tenantId)
         throw new TypeError('Channel identity tenant mismatch');
+      if (typeof record.identity.channelRevision !== 'string')
+        throw new TypeError('Channel revision required');
       await ensureIndexes();
       if (
         (!record.userId && record.accountLabel != null) ||
@@ -99,7 +101,7 @@ export function createChannelIdentityStorage(
             'identity.agentId': record.identity.agentId,
           },
           { $set: fields, ...(Object.keys(absent).length ? { $unset: absent } : {}) },
-          { session },
+          { session, runValidators: true },
         );
         return result.modifiedCount === 1;
       };
@@ -158,7 +160,7 @@ export function createChannelIdentityStorage(
           await model().updateMany(
             { tenantId, 'identity.channelId': channelId, state: { $ne: 'revoked' } },
             { $set: { state: 'revoked', revision } },
-            { session },
+            { session, runValidators: true },
           );
         });
       } finally {

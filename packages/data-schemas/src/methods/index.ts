@@ -64,6 +64,7 @@ import { createAgentApiKeyMethods, type AgentApiKeyMethods } from './agentApiKey
 import { createAgentChannelMethods, type AgentChannelMethods } from './channel';
 export { createChannelIdentityStorage } from './channelIdentity';
 export type { ChannelIdentityStorage } from './channelIdentity';
+export type { AgentChannelDeletionResult } from './channel';
 export type { ChannelIdentityRecord } from '~/models/channelIdentity';
 
 export { createChannelRunStorage, ChannelRunConflict } from './channelRun';
@@ -561,7 +562,7 @@ export function createMethods(
     ...createToolFavoriteMethods(mongoose),
     ...createAgentCategoryMethods(mongoose),
     ...createAgentApiKeyMethods(mongoose),
-    ...createAgentChannelMethods(mongoose),
+    ...createAgentChannelMethods(mongoose, deps.getChannelStorageConfig),
     ...createMCPServerMethods(mongoose, {
       getSoleOwnedResourceIds: aclEntryMethods.getSoleOwnedResourceIds,
     }),
