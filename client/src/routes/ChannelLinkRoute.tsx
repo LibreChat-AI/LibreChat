@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Spinner } from '@librechat/client';
-import { useLocation, useNavigate } from 'react-router-dom';
-import { channelConfigSchema, dataService } from 'librechat-data-provider';
+import { Button, Spinner } from '@librechat/client';
+import { Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { buildLoginRedirectUrl, channelConfigSchema, dataService } from 'librechat-data-provider';
 import type { ChannelIdentityResult, ChannelLinkView } from 'librechat-data-provider';
+import { useOwnerActionPolicy, OwnerTermsModal } from '~/hooks/useOwnerActionPolicy';
 import { AuthContextProvider } from '~/hooks/AuthContext';
-import useAuthRedirect from './useAuthRedirect';
+import { useAuthContext, useLocalize } from '~/hooks';
 import Link from '~/components/Channels/Link';
 
 const storageKey = 'channel_link_pending_ticket';
@@ -56,15 +57,72 @@ function AuthenticatedLink({
   ticket: string;
   onResult: (result: ChannelIdentityResult<ChannelLinkView>) => void;
 }) {
-  const { user, isAuthenticated } = useAuthRedirect();
-  if (!isAuthenticated || !user) return <Spinner />;
+  const { user, isAuthenticated, isAuthReady } = useAuthContext();
+  const location = useLocation();
+  if (!isAuthReady) return <Spinner />;
+  if (!isAuthenticated)
+    return (
+      <Navigate
+        to={buildLoginRedirectUrl(location.pathname, location.search, location.hash)}
+        replace
+      />
+    );
+  if (!user?.id) return <Spinner />;
+  const principalKey = JSON.stringify([user.tenantId ?? '_', user.id]);
   return (
-    <Link
-      api={dataService.channelIdentityClient}
+    <OwnedLink
+      key={JSON.stringify([principalKey, ticket])}
+      principalKey={principalKey}
       accountLabel={user.email || user.name || user.id}
       ticket={ticket}
-      onTicketResult={onResult}
+      onResult={onResult}
     />
+  );
+}
+
+function OwnedLink({
+  principalKey,
+  accountLabel,
+  ticket,
+  onResult,
+}: {
+  principalKey: string;
+  accountLabel: string;
+  ticket: string;
+  onResult: (result: ChannelIdentityResult<ChannelLinkView>) => void;
+}) {
+  const localize = useLocalize();
+  const policy = useOwnerActionPolicy();
+  const { config, terms, requiresTerms, termsReady, policyError } = policy;
+  return (
+    <>
+      {policyError && (
+        <div role="alert" className="text-text-primary mx-auto max-w-lg space-y-3 p-6">
+          <p>{localize('com_ui_channel_link_error')}</p>
+          <Button
+            disabled={config.isFetching || terms.isFetching}
+            onClick={() => {
+              if (config.isError) void config.refetch();
+              else void terms.refetch();
+            }}
+          >
+            {localize('com_ui_retry')}
+          </Button>
+        </div>
+      )}
+      {!policyError && !termsReady && !(requiresTerms && terms.data?.termsAccepted === false) && (
+        <Spinner />
+      )}
+      <Link
+        api={dataService.channelIdentityClient}
+        accountLabel={accountLabel}
+        principalKey={principalKey}
+        ticket={ticket}
+        onTicketResult={onResult}
+        enabled={termsReady && !policyError}
+      />
+      <OwnerTermsModal policy={policy} />
+    </>
   );
 }
 

@@ -3869,5 +3869,6 @@
   "com_ui_code_setup_deny": "Deny setup",
   "com_ui_code_setup_saving": "Saving your decision…",
   "com_ui_terms_accept_failed": "Could not accept the terms. Please try again.",
-  "com_ui_channels_read_only": "Managed by another account"
+  "com_ui_channels_read_only": "Managed by another account",
+  "com_ui_channel_link_unavailable": "This connection is unavailable. You can still disconnect this account."
 }

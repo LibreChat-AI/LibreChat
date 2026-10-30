@@ -13,15 +13,17 @@ const states: Record<ChannelLinkView['state'], TranslationKeys> = {
   active: 'com_ui_channel_link_active',
   revoked: 'com_ui_channel_link_revoked',
   expired: 'com_ui_channel_link_expired',
+  unavailable: 'com_ui_channel_link_unavailable',
 };
 
-export default function Links({
-  api,
-  principalKey,
-}: {
+interface LinksProps {
   api: ChannelIdentityClient;
   principalKey: string;
-}) {
+}
+export default function Links(props: LinksProps) {
+  return <OwnedLinks key={props.principalKey} {...props} />;
+}
+function OwnedLinks({ api, principalKey }: { api: ChannelIdentityClient; principalKey: string }) {
   const localize = useLocalize();
   const id = useId();
   const queryClient = useQueryClient();
@@ -31,8 +33,8 @@ export default function Links({
   const revoke = useMutation({
     mutationKey: [MutationKeys.channelLinks, principalKey],
     mutationFn: (link: ChannelLinkView) => api.revoke(link.linkId, link.revision),
-    onSuccess: async () => {
-      setConfirm(null);
+    onSuccess: async (_result, link) => {
+      setConfirm((current) => (current === link.linkId ? null : current));
       await queryClient.invalidateQueries(key);
     },
   });
