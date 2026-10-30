@@ -94,6 +94,7 @@ export function createChannelResponseProjection(deps: ChannelResponseProjectionD
       stored.requestKey !== `channel:${run.runId}` ||
       stored.conversationId !== execution.conversationId ||
       stored.parentMessageId !== execution.parentMessageId ||
+      (execution.apiKeyId != null && stored.sourceKeyId !== execution.apiKeyId) ||
       (execution.generationCreatedAt != null &&
         stored.generationCreatedAt !== execution.generationCreatedAt)
     )

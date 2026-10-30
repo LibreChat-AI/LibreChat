@@ -65,7 +65,7 @@ describe('mounted service-token advance cannot execute an unbound run', () => {
   it('rejects legacy and unprepared state behind the actual service guard without starting work', () =>
     scope(async () => {
       const fixture = makeRun();
-      await mongoose.models.AgentChannel.create({
+      await createMethods(mongoose).createAgentChannel({
         channelId: fixture.channelId,
         tenantId: fixture.tenantId,
         agentId: fixture.agentId,
@@ -75,6 +75,24 @@ describe('mounted service-token advance cannot execute an unbound run', () => {
         credentialMode: 'per_user',
         revision: fixture.principal.channelRevision,
         slack: { teamId: 'T1', appId: 'A1', botUserId: 'UBOT' },
+      });
+      await mongoose.models.ChannelIdentity.create({
+        tenantId: fixture.tenantId,
+        linkId: fixture.principal.linkId,
+        revision: fixture.principal.linkRevision,
+        userId: fixture.principal.userId,
+        state: 'active',
+        ticketHash: 'ticket',
+        ticketExpiresAtMs: Date.now() + 60000,
+        expiresAtMs: Date.now() + 60000,
+        identity: {
+          tenantId: fixture.tenantId,
+          channelId: fixture.channelId,
+          channelRevision: fixture.principal.channelRevision,
+          teamId: 'T1',
+          externalUserId: 'U1',
+          agentId: fixture.agentId,
+        },
       });
       const storage = createChannelRunStorage(mongoose);
       await storage.admit(
