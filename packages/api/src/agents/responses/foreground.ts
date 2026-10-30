@@ -232,6 +232,10 @@ interface ForegroundTerminalFrame<Saved> {
 
 export interface ForegroundResponseTerminal<Saved> {
   onSettlementError: (error: unknown) => void;
+  beforeSettle: (
+    execution: Pick<AgentExecutionEnrollment, 'signal' | 'track'>,
+    error: unknown,
+  ) => void;
   stage: (frame: ForegroundTerminalFrame<Saved>) => void;
   afterSettle: (
     execution: Pick<AgentExecutionEnrollment, 'terminalOutcome'>,
@@ -257,7 +261,7 @@ export async function requireResponseStorageWrite<Result>(
   return value;
 }
 
-/** The shared host invokes settlement only for the owned, drained terminal attempt. */
+/** Persist while the provider owns cleanup; render only after the host confirms drain. */
 export function createForegroundResponseTerminal<Saved>({
   context,
   requestedStore,
@@ -268,9 +272,11 @@ export function createForegroundResponseTerminal<Saved>({
   logger: Diagnostics;
 }): ForegroundResponseTerminal<Saved> {
   let staged: ForegroundTerminalFrame<Saved> | undefined;
+  let phase: 'open' | 'staged' | 'prepared' | 'done' = 'open';
   const fail = (cancelled = false): void => {
     const frame = staged;
     staged = undefined;
+    phase = 'done';
     frame?.fail(
       cancelled
         ? {
@@ -285,47 +291,59 @@ export function createForegroundResponseTerminal<Saved>({
           },
     );
   };
+  const persist = async (frame: ForegroundTerminalFrame<Saved>): Promise<void> => {
+    let saved: { value: Saved } | undefined;
+    try {
+      saved = { value: await frame.save(frame.response) };
+      context.stored = true;
+    } catch (saveError) {
+      logger.error('[Responses API] Error saving response', getSafeErrorMetadata(saveError));
+    }
+    if (!saved || !frame.afterStore) return;
+    try {
+      await frame.afterStore(saved.value);
+    } catch (notificationError) {
+      logger.error(
+        '[Responses API] Error announcing stored response',
+        getSafeErrorMetadata(notificationError),
+      );
+    }
+  };
   return {
     onSettlementError(error: unknown): void {
       logger.error('[Responses API] Failed to settle execution', getSafeErrorMetadata(error));
       fail();
     },
     stage(frame: ForegroundTerminalFrame<Saved>): void {
-      if (staged) throw new Error('Response terminal result was already staged');
+      if (phase !== 'open') throw new Error('Response terminal result was already staged');
       staged = frame;
+      phase = 'staged';
+    },
+    beforeSettle(
+      execution: Pick<AgentExecutionEnrollment, 'signal' | 'track'>,
+      error: unknown,
+    ): void {
+      if (!staged) return;
+      if (phase !== 'staged') throw new Error('Response persistence was already prepared');
+      phase = 'prepared';
+      context.stored = false;
+      if (requestedStore !== true || error != null || execution.signal.aborted) return;
+      // Account/conversation cleanup must still see this generation until all data writes finish.
+      execution.track(persist(staged));
     },
     async afterSettle(
       execution: Pick<AgentExecutionEnrollment, 'terminalOutcome'>,
       error: unknown,
     ): Promise<void> {
       if (!staged) return;
-      if (error != null || execution.terminalOutcome !== 'complete') {
+      if (phase !== 'prepared' || error != null || execution.terminalOutcome !== 'complete') {
         fail(execution.terminalOutcome === 'aborted');
         return;
       }
       const frame = staged;
       staged = undefined;
-      context.stored = false;
-      if (requestedStore === true) {
-        let saved: { value: Saved } | undefined;
-        try {
-          saved = { value: await frame.save(frame.response) };
-          context.stored = true;
-        } catch (saveError) {
-          logger.error('[Responses API] Error saving response', getSafeErrorMetadata(saveError));
-        }
-        if (saved && frame.afterStore) {
-          try {
-            await frame.afterStore(saved.value);
-          } catch (notificationError) {
-            logger.error(
-              '[Responses API] Error announcing stored response',
-              getSafeErrorMetadata(notificationError),
-            );
-          }
-        }
-      }
-      frame.publish({ ...frame.response, store: context.stored });
+      phase = 'done';
+      frame.publish({ ...frame.response, store: context.stored === true });
     },
   };
 }
