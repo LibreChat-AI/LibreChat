@@ -324,7 +324,7 @@ describe('background Responses execution handoff', () => {
           getMessage: async () => null,
           jobs: GenerationJobManager,
         });
-        expect(runtime.graphOptions()).toEqual({ hitlCapable: false });
+        expect(await runtime.graphOptions()).toEqual({ hitlCapable: false });
         await runtime.processRun({ processStream, resume }, { messages: [] }, { version: 'v2' });
         res.json({ ordinary: true });
       },
@@ -345,7 +345,7 @@ describe('background Responses execution handoff', () => {
         getMessage: async () => null,
         jobs: GenerationJobManager,
       });
-      expect(runtime.graphOptions()).toEqual({ hitlCapable: false });
+      expect(await runtime.graphOptions()).toEqual({ hitlCapable: false });
       res.json({ ok: true });
     });
     await request(app)
