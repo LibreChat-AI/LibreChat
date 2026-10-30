@@ -4,14 +4,6 @@ import { parseJsonField } from '@librechat/chat';
 import { Globe, ChevronDown, Info } from 'lucide-react';
 import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import {
-  useRowHandoff,
-  GeneratedToolLabelContext,
-  useToolExpansion,
-  useToolContentRequest,
-  toolPanelSpacingClassName,
-  useToolCallIntent,
-} from '@librechat/chat/react';
-import {
   Button,
   HoverCard,
   HoverCardTrigger,
@@ -19,6 +11,14 @@ import {
   HoverCardContent,
   disclosureChevronVariants,
 } from '@librechat/client';
+import {
+  useRowHandoff,
+  GeneratedToolLabelContext,
+  useToolExpansion,
+  useToolContentRequest,
+  toolPanelSpacingClassName,
+  useToolCallIntent,
+} from '@librechat/chat/react';
 import type {
   TAttachment,
   ValidSource,

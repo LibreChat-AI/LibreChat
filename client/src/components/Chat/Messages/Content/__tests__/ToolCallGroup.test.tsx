@@ -1,6 +1,6 @@
-import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import React, { useContext } from 'react';
 import { RecoilRoot } from 'recoil';
+import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
 import { LoneGroupContext, SoleToolContext, useToolAutoExpand } from '@librechat/chat/react';

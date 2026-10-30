@@ -14,7 +14,15 @@ import { LoneGroupContext, SoleToolContext } from '../../react/parts/disclosure'
  * Only a call that can drop its row renders it, so a card with a row of its
  * own never carries a second, empty live region.
  */
-export default function BareStatus({ active, text, phase }: { active: boolean; text: string; phase?: string }): ReactNode {
+export default function BareStatus({
+  active,
+  text,
+  phase,
+}: {
+  active: boolean;
+  text: string;
+  phase?: string;
+}): ReactNode {
   const localize = useLocalize();
   const sole = useContext(SoleToolContext) === true;
   const lone = useContext(LoneGroupContext);

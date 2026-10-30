@@ -1,4 +1,3 @@
-import { useFailedReveal } from '../reveal';
 import { useCallback, useContext } from 'react';
 import { resolveToolCallPhase } from '@librechat/chat';
 import {
@@ -13,6 +12,7 @@ import type { PartMetadata } from 'librechat-data-provider';
 import type { ToolCallPhase } from '@librechat/chat';
 import { isError } from '~/components/Chat/Messages/Content/ToolOutput';
 import { useProgress, useExpandCollapse } from '~/hooks';
+import { useFailedReveal } from '../reveal';
 
 interface ToolCallState {
   showCode: boolean;
