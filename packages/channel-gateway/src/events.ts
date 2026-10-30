@@ -37,6 +37,7 @@ export type NormalizedEvent =
   | { kind: 'reaction'; reaction: ChannelReactionEvent }
   | {
       kind: 'stop';
+      externalChannelId: string;
       actor: ChannelRunAdmission['actor'];
       externalThreadKey: string;
       eventAt: number;
@@ -113,6 +114,7 @@ export function normalizeEvent(
       throw new Error('Invalid native Stop event');
     return {
       kind: 'stop',
+      externalChannelId: event.channel,
       actor,
       externalThreadKey: `${event.channel}:${event.thread_ts}`,
       eventAt: Math.floor(eventTimestampUs(event.event_ts) / 1000),

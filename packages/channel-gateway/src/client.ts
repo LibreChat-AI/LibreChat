@@ -11,7 +11,15 @@ import type {
   ResponseReviewDecision,
   ResponseReviewDecisionReceipt,
 } from 'librechat-data-provider';
-import type { ChannelBundle, Lease, ResponseGrant, Review, BackgroundResponse } from './types';
+import type {
+  ChannelBundle,
+  Lease,
+  LeaseRenewal,
+  ResponseGrant,
+  ResponsePreparation,
+  Review,
+  BackgroundResponse,
+} from './types';
 import type { GatewayConfig } from './config';
 
 export class ServiceError extends Error {
@@ -158,13 +166,13 @@ export class ChannelClient {
   claim(owner: string, signal?: AbortSignal): Promise<Lease | null> {
     return this.runs('/claim', { owner }, signal, null);
   }
-  renew(fence: ChannelRunFence, signal?: AbortSignal): Promise<Lease> {
+  renew(fence: ChannelRunFence, signal?: AbortSignal): Promise<LeaseRenewal> {
     return this.runs(`/${encodeURIComponent(fence.runId)}/renew`, { fence }, signal);
   }
   yield(fence: ChannelRunFence, signal?: AbortSignal): Promise<null> {
     return this.runs(`/${encodeURIComponent(fence.runId)}/yield`, { fence }, signal, null);
   }
-  prepare(fence: ChannelRunFence, signal?: AbortSignal): Promise<ResponseGrant> {
+  prepare(fence: ChannelRunFence, signal?: AbortSignal): Promise<ResponsePreparation> {
     return this.runs(`/${encodeURIComponent(fence.runId)}/response/prepare`, { fence }, signal);
   }
   review(
@@ -206,17 +214,27 @@ export class ChannelClient {
     runId: string,
     actor: ChannelRunActor,
     revision: string,
+    externalChannelId: string,
     signal?: AbortSignal,
   ): Promise<{ cancellationRequested: boolean }> {
-    return this.runs(`/${encodeURIComponent(runId)}/cancel`, { actor, revision }, signal);
+    return this.runs(
+      `/${encodeURIComponent(runId)}/cancel`,
+      { actor, revision, externalChannelId },
+      signal,
+    );
   }
   stop(
     actor: ChannelRunActor,
     externalThreadKey: string,
     eventAt: number,
+    externalChannelId: string,
     signal?: AbortSignal,
   ): Promise<{ cancellationRequested: boolean }> {
-    return this.runs('/stop-thread', { actor, externalThreadKey, eventAt }, signal);
+    return this.runs(
+      '/stop-thread',
+      { actor, externalThreadKey, externalChannelId, eventAt },
+      signal,
+    );
   }
   async identity<T extends ChannelLinkView | ChannelLinkTicket | null>(
     actor: string,

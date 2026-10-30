@@ -162,3 +162,27 @@ export interface ChannelRunView {
   receipts: ChannelDeliveryReceipt[];
   cancellationRequested: boolean;
 }
+
+/** Renewal extends a fence's lifetime without returning another run snapshot. */
+export interface ChannelRunLeaseRenewal {
+  fence: ChannelRunFence;
+  leaseExpiresAt: number;
+}
+export interface ChannelRunLease extends ChannelRunLeaseRenewal {
+  run: ChannelRunView;
+}
+/** Credentials are absent when cancellation settles before execution starts. */
+export interface ChannelResponseGrant {
+  settled?: never;
+  apiKey: string;
+  requestKey: string;
+  responseId?: string;
+  request: {
+    model: string;
+    input: string;
+    background: true;
+    store: true;
+    previous_response_id?: string;
+  };
+}
+export type ChannelResponsePreparation = ChannelResponseGrant | { settled: ChannelRunView };
