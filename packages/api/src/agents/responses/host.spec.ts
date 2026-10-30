@@ -24,6 +24,7 @@ import {
   buildAggregatedResponse,
   createResponseAggregator,
   createResponseContext,
+  convertInputToMessages,
 } from './service';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
@@ -34,6 +35,7 @@ import { buildPendingBackgroundResponse } from './background';
 import { mintBackgroundResponseWorkerToken } from './worker';
 import { enrollAgentExecution } from '../remote/lifecycle';
 import { createResponseExecutionRuntime } from './runtime';
+import { buildResponseInputChain } from './persistence';
 import { createBackgroundResponsesHost } from './host';
 import { getSafeErrorMetadata } from '~/utils/errors';
 import { createAgentRunEnvelope } from '../envelope';
@@ -218,8 +220,12 @@ async function fixture(
               conversationId: continuation.conversationId,
               agentId: envelope.payload.model,
               agent: { id: envelope.payload.model, name: 'HTTP Test Agent' },
-              messages: [],
-              parentMessageId: continuation.parentMessageId,
+              ...runtime.inputChain(
+                buildResponseInputChain(
+                  convertInputToMessages(envelope.payload.input),
+                  continuation.parentMessageId,
+                ),
+              ),
               transport: { type: 'json', response: res },
             },
             {
@@ -840,6 +846,23 @@ it('creates, executes and retrieves a background response through HTTP, real aut
     .send(body);
   expect(replay.body.id).toBe(created.body.id);
   expect(f.inputs).toHaveLength(1);
+  const reply = await scoped(() =>
+    db.getMessage({ user: String(user._id), messageId: created.body.id }),
+  );
+  expect(reply).toMatchObject({ finish_reason: 'stop', text: '# Real Responses lifecycle' });
+  const messages = await scoped(() =>
+    db.getMessages({ user: String(user._id), conversationId: reply!.conversationId }),
+  );
+  expect(messages).toHaveLength(2);
+  expect(messages).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        messageId: reply!.parentMessageId,
+        isCreatedByUser: true,
+        text: body.input,
+      }),
+    ]),
+  );
   expect(f.errors).toEqual([]);
 });
 
