@@ -1,17 +1,12 @@
-import { randomUUID } from 'node:crypto';
 import type { ClientSession } from 'mongoose';
-import type { AgentChannelRecord, AgentChannelThreadRecord } from '~/models/channel';
-import {
-  retireAgentChannel,
-  initializeChannelScope,
-  touchChannelScope,
-  touchChannelAuthority,
-} from './channelScope';
+import type { AgentChannelRecord } from '~/models/channel';
+import { retireAgentChannel, initializeChannelScope, touchChannelScope } from './channelScope';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { createAgentChannelThreadModel } from '~/models/channel';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
 
-export type { AgentChannelRecord, AgentChannelThreadRecord } from '~/models/channel';
+export type { AgentChannelRecord } from '~/models/channel';
 export type AgentChannelMetadata = Pick<
   AgentChannelRecord,
   | 'channelId'
@@ -55,23 +50,14 @@ export interface AgentChannelMethods {
     createdBy: string,
   ): Promise<AgentChannelRecord | null>;
   deleteAgentChannel(channelId: string, createdBy: string): Promise<boolean>;
-  getAgentChannelThread(
-    channelId: string,
-    externalThreadKey: string,
-  ): Promise<AgentChannelThreadRecord | null>;
-  getOrCreateAgentChannelThread(
-    channelId: string,
-    externalThreadKey: string,
-  ): Promise<AgentChannelThreadRecord>;
 }
 
 export function createAgentChannelMethods(
   mongoose: typeof import('mongoose'),
 ): AgentChannelMethods {
   const channel = () => mongoose.model<AgentChannelRecord>('AgentChannel');
-  const threads = () => mongoose.model<AgentChannelThreadRecord>('AgentChannelThread');
+  const threads = () => createAgentChannelThreadModel(mongoose);
   const ensureIndexes = createChannelIndexGate(() => [channel()]);
-  const ensureThreadIndexes = createChannelIndexGate(() => [threads()]);
   const secrets = '+encryptedBotToken +encryptedSigningSecret +encryptedApiKey +apiKeyId';
 
   async function ownerWrite<T>(
@@ -237,62 +223,6 @@ export function createAgentChannelMethods(
         status: 'deleting',
       });
       return result.deletedCount > 0;
-    },
-    async getAgentChannelThread(
-      channelId: string,
-      externalThreadKey: string,
-    ): Promise<AgentChannelThreadRecord | null> {
-      return threads().findOne({ channelId, externalThreadKey }).lean();
-    },
-    async getOrCreateAgentChannelThread(
-      channelId: string,
-      externalThreadKey: string,
-    ): Promise<AgentChannelThreadRecord> {
-      await ensureThreadIndexes();
-      const parent = await channel()
-        .findOne({ channelId })
-        .select('tenantId status agentId revision')
-        .lean();
-      if (!parent || parent.status === 'deleting')
-        throw new Error('Channel thread authority unavailable');
-      await initializeChannelScope(mongoose, parent.tenantId, channelId);
-      const session = await mongoose.startSession();
-      let mapping: AgentChannelThreadRecord | null = null;
-      try {
-        await session.withTransaction(async () => {
-          if (
-            !(await touchChannelAuthority(
-              mongoose,
-              {
-                tenantId: parent.tenantId,
-                channelId,
-                agentId: parent.agentId,
-                channelRevision: parent.revision ?? channelId,
-              },
-              session,
-            ))
-          )
-            throw new Error('Channel thread authority unavailable');
-          mapping = await threads()
-            .findOneAndUpdate(
-              { channelId, externalThreadKey, tenantId: parent.tenantId || { $in: [null, ''] } },
-              {
-                $setOnInsert: {
-                  channelId,
-                  externalThreadKey,
-                  tenantId: parent.tenantId,
-                  conversationId: randomUUID(),
-                },
-              },
-              { upsert: true, new: true, session },
-            )
-            .lean();
-        });
-        if (!mapping) throw new Error('Channel thread mapping unavailable');
-        return mapping;
-      } finally {
-        await session.endSession();
-      }
     },
   };
 }

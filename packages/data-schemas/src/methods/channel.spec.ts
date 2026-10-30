@@ -74,28 +74,6 @@ it('builds unique connection indexes before concurrent first writes', () =>
     expect(await mongoose.models.AgentChannel.countDocuments({ channelId: 'channel' })).toBe(1);
   }));
 
-it('builds mapping indexes and serializes concurrent first mappings', () =>
-  scope(async () => {
-    await methods.createAgentChannel(channel());
-    const mappings = await Promise.all(
-      Array.from({ length: 8 }, () => methods.getOrCreateAgentChannelThread('channel', 'thread')),
-    );
-    expect(new Set(mappings.map((mapping) => mapping.conversationId)).size).toBe(1);
-    expect(mappings[0].conversationId).toMatch(/^[0-9a-f-]{36}$/);
-    expect(
-      await mongoose.models.AgentChannelThread.countDocuments({
-        channelId: 'channel',
-        externalThreadKey: 'thread',
-      }),
-    ).toBe(1);
-    expect(await methods.getAgentChannelThread('channel', 'thread')).toMatchObject({
-      conversationId: mappings[0].conversationId,
-    });
-    expect((await methods.getOrCreateAgentChannelThread('channel', 'thread')).conversationId).toBe(
-      mappings[0].conversationId,
-    );
-  }));
-
 it('keeps a deleting parent until admitted work drains and rejects delayed admissions', () =>
   scope(async () => {
     await methods.createAgentChannel(channel());
@@ -151,61 +129,30 @@ it('waits for an inserting admission before deciding whether deletion can finish
     expect(await methods.getAgentChannel('channel')).toMatchObject({ status: 'deleting' });
   }));
 
-it('drains a concurrent mapping write before erasing mappings and the parent', () =>
-  scope(async () => {
-    await methods.createAgentChannel(channel());
-    let entered!: () => void;
-    let release!: () => void;
-    const started = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const collection = mongoose.models.AgentChannelThread.collection;
-    const update = collection.findOneAndUpdate.bind(collection);
-    const paused = jest
-      .spyOn(collection, 'findOneAndUpdate')
-      .mockImplementation(async (...args) => {
-        entered();
-        await gate;
-        return update(...args);
-      });
-    const mapping = methods.getOrCreateAgentChannelThread('channel', 'thread');
-    await started;
-    let finished = false;
-    const deletion = methods.deleteAgentChannel('channel', 'owner').then((result) => {
-      finished = true;
-      return result;
-    });
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(finished).toBe(false);
-    } finally {
-      release();
-      paused.mockRestore();
-    }
-    await mapping;
-    expect(await deletion).toBe(true);
-    expect(await methods.getAgentChannelThread('channel', 'thread')).toBeNull();
-    await expect(methods.getOrCreateAgentChannelThread('channel', 'late')).rejects.toThrow(
-      'authority unavailable',
-    );
-  }));
-
 it('leaves deletion retryable after dependent erasure fails', () =>
   scope(async () => {
     await methods.createAgentChannel(channel());
-    await methods.getOrCreateAgentChannelThread('channel', 'thread');
+    await mongoose.models.AgentChannelThread.create({
+      tenantId,
+      channelId: 'channel',
+      externalThreadKey: 'thread',
+      conversationId: 'legacy-conversation',
+    });
     jest
       .spyOn(mongoose.models.AgentChannelThread.collection, 'deleteMany')
       .mockRejectedValueOnce(new Error('mapping erasure failed'));
     await expect(methods.deleteAgentChannel('channel', 'owner')).rejects.toThrow(
       'mapping erasure failed',
     );
+    expect(await mongoose.models.AgentChannelThread.countDocuments({ channelId: 'channel' })).toBe(
+      1,
+    );
     expect(await methods.getAgentChannel('channel')).toMatchObject({ status: 'deleting' });
     await expect(runs.admit(event(), 100)).rejects.toMatchObject({ code: 'invalid_transition' });
     expect(await methods.deleteAgentChannel('channel', 'owner')).toBe(true);
+    expect(await mongoose.models.AgentChannelThread.countDocuments({ channelId: 'channel' })).toBe(
+      0,
+    );
   }));
 
 it('does not close admission when a different owner requests deletion', () =>
@@ -312,7 +259,12 @@ it('redacts deleted-owner credentials while retaining a retry anchor for other p
       },
       100,
     );
-    await methods.getOrCreateAgentChannelThread('channel', 'thread');
+    await mongoose.models.AgentChannelThread.create({
+      tenantId,
+      channelId: 'channel',
+      externalThreadKey: 'thread',
+      conversationId: 'legacy-conversation',
+    });
     await createUserMethods(mongoose).deleteUserById(userId);
     const parent = await methods.getAgentChannel('channel');
     expect(parent).toMatchObject({ status: 'deleting' });
@@ -323,7 +275,9 @@ it('redacts deleted-owner credentials while retaining a retry anchor for other p
       'apiKeyId',
     ])
       expect(parent).not.toHaveProperty(field);
-    expect(await methods.getAgentChannelThread('channel', 'thread')).toBeNull();
+    expect(await mongoose.models.AgentChannelThread.countDocuments({ channelId: 'channel' })).toBe(
+      0,
+    );
     expect(await runs.read(tenantId, 'channel', other.run.runId)).not.toBeNull();
     await expect(
       runs.admit({ ...event(), admission: { ...event().admission, eventId: 'late' } }, 101),
@@ -348,7 +302,12 @@ it('keeps account erasure retryable after connection mapping cleanup fails', () 
       createdBy: userId,
       encryptedBotToken: 'private-token',
     });
-    await methods.getOrCreateAgentChannelThread('channel', 'thread');
+    await mongoose.models.AgentChannelThread.create({
+      tenantId,
+      channelId: 'channel',
+      externalThreadKey: 'thread',
+      conversationId: 'legacy-conversation',
+    });
     jest
       .spyOn(mongoose.models.AgentChannelThread.collection, 'deleteMany')
       .mockRejectedValueOnce(new Error('mapping store unavailable'));
@@ -356,7 +315,13 @@ it('keeps account erasure retryable after connection mapping cleanup fails', () 
     await expect(users.deleteUserById(userId)).rejects.toThrow('mapping store unavailable');
     expect(await mongoose.models.User.findById(userId).lean()).not.toBeNull();
     expect(await methods.getAgentChannel('channel')).not.toHaveProperty('encryptedBotToken');
+    expect(await mongoose.models.AgentChannelThread.countDocuments({ channelId: 'channel' })).toBe(
+      1,
+    );
     await expect(users.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
+    expect(await mongoose.models.AgentChannelThread.countDocuments({ channelId: 'channel' })).toBe(
+      0,
+    );
     expect(await methods.getAgentChannel('channel')).toBeNull();
   }));
 
@@ -385,28 +350,6 @@ function linkRecord(
     },
   };
 }
-
-it('preserves a previously persisted conversation as the immutable thread identity', () =>
-  scope(async () => {
-    await methods.createAgentChannel(channel());
-    await mongoose.models.AgentChannelThread.create({
-      tenantId,
-      channelId: 'channel',
-      externalThreadKey: 'legacy-thread',
-      conversationId: 'legacy-conversation',
-    });
-    const mappings = await Promise.all(
-      Array.from({ length: 6 }, () =>
-        methods.getOrCreateAgentChannelThread('channel', 'legacy-thread'),
-      ),
-    );
-    expect(mappings.every((mapping) => mapping.conversationId === 'legacy-conversation')).toBe(
-      true,
-    );
-    expect((await methods.getAgentChannelThread('channel', 'legacy-thread'))?.conversationId).toBe(
-      'legacy-conversation',
-    );
-  }));
 
 it('requires the retirement operation for deletion transitions and blocks updates of deleting rows', () =>
   scope(async () => {
