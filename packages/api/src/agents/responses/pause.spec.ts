@@ -1579,10 +1579,7 @@ it('persists a session approval before compiling the resumed SDK graph and avoid
               expect(options.toolApprovalAllows).toEqual(['review_lookup']);
               // No loaded conversation snapshot is fabricated to carry the remembered policy.
               expect((req as ServerRequest).resolvedConversation).toBeUndefined();
-              const saved = await mongoose.models.Conversation.findOne({
-                user: owner.userId,
-                conversationId,
-              }).lean();
+              const saved = await methods.getConvo(owner.userId, conversationId);
               expect(saved?.toolApprovalAllows).toEqual(['review_lookup']);
               const rebuilt = await f.buildRun(undefined, options.toolApprovalAllows);
               await runtime.processRun(rebuilt, { messages: [] }, f.config);
