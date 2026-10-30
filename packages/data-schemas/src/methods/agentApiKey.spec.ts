@@ -41,7 +41,8 @@ describe('validateAgentApiKey', () => {
     expect(
       await mongoose.models.AgentApiKey.findOne({ keyHash: await hashToken(created.key) }),
     ).toBeNull();
-    expect(await methods.validateAgentApiKey(created.key)).toEqual({
+    expect(await methods.validateAgentApiKey(created.key)).toBeNull();
+    expect(await methods.validateBoundAgentApiKey(created.key)).toEqual({
       userId,
       keyId: new mongoose.Types.ObjectId(created.id),
       binding,
@@ -63,6 +64,7 @@ describe('validateAgentApiKey', () => {
       userId,
       keyId: new mongoose.Types.ObjectId(created.id),
     });
+    expect(await methods.validateBoundAgentApiKey(created.key)).toBeNull();
   });
 
   it('rejects a bound-prefix token when its stored grant is missing', async () => {
@@ -74,6 +76,7 @@ describe('validateAgentApiKey', () => {
     );
 
     await expect(methods.validateAgentApiKey(created.key)).resolves.toBeNull();
+    await expect(methods.validateBoundAgentApiKey(created.key)).resolves.toBeNull();
   });
 
   it('rejects an ordinary-prefix token with a stored binding', async () => {
@@ -84,6 +87,7 @@ describe('validateAgentApiKey', () => {
     );
 
     await expect(methods.validateAgentApiKey(created.key)).resolves.toBeNull();
+    await expect(methods.validateBoundAgentApiKey(created.key)).resolves.toBeNull();
   });
 
   it.each([false, true])('rejects expired keys (bound=%s)', async (bound) => {
@@ -95,6 +99,7 @@ describe('validateAgentApiKey', () => {
     });
 
     await expect(methods.validateAgentApiKey(created.key)).resolves.toBeNull();
+    await expect(methods.validateBoundAgentApiKey(created.key)).resolves.toBeNull();
   });
 
   it('propagates a bound-key lookup failure instead of treating it as absence', async () => {
@@ -103,7 +108,7 @@ describe('validateAgentApiKey', () => {
       throw new Error('bound lookup unavailable');
     });
 
-    await expect(methods.validateAgentApiKey(created.key)).rejects.toThrow(
+    await expect(methods.validateBoundAgentApiKey(created.key)).rejects.toThrow(
       'bound lookup unavailable',
     );
   });
@@ -148,7 +153,10 @@ it('keeps every attacker-chosen public wrapper outside the legacy validator dige
   }
   const ordinary = await methods.createAgentApiKey({ userId, name: 'legacy-control' });
   expect(await legacyLookup(ordinary.key)).not.toBeNull();
-  expect(await methods.validateAgentApiKey(created.key)).toMatchObject({ binding: { id: 'one' } });
+  expect(await methods.validateAgentApiKey(created.key)).toBeNull();
+  expect(await methods.validateBoundAgentApiKey(created.key)).toMatchObject({
+    binding: { id: 'one' },
+  });
 });
 
 it('serializes bound-key creation with final account erasure', async () => {
@@ -195,6 +203,7 @@ it('serializes bound-key creation with final account erasure', async () => {
   const created = await creating;
   await deleting;
   expect(await methods.validateAgentApiKey(created.key)).toBeNull();
+  expect(await methods.validateBoundAgentApiKey(created.key)).toBeNull();
   expect(await mongoose.models.AgentApiKey.exists({ userId: user._id })).toBeNull();
   await expect(
     methods.createAgentApiKey({
