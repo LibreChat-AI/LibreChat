@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ClientSession } from 'mongoose';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { createChannelScopeModel } from '~/models/channelScope';
 
 export function assertChannelTenant(tenantId: string | undefined): void {
@@ -72,4 +73,18 @@ export async function closeChannelScope(
     if (!(error instanceof mongoose.mongo.MongoServerError) || error.code !== 11000) throw error;
     await model.updateOne(filter, { $set: { closed: true } });
   }
+}
+
+/** One retirement cascade for direct deletion and account erasure. Closed admission makes
+ * identity cleanup retryable without permitting a late ticket or link to recreate authority. */
+export async function retireChannelScope(
+  mongoose: typeof import('mongoose'),
+  tenantId: string | undefined,
+  channelId: string,
+): Promise<void> {
+  await closeChannelScope(mongoose, tenantId, channelId);
+  await createChannelIdentityModel(mongoose).deleteMany({
+    tenantId: tenantId || '_',
+    'identity.channelId': channelId,
+  });
 }
