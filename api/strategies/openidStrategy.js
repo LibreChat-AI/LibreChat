@@ -722,6 +722,9 @@ async function processOpenIDAuth(tokenset, existingUsersOnly = false) {
     const decodedToken = getRoleSource(requiredRoleTokenKind, 'required role', tokenset, userinfo);
 
     let roles = get(decodedToken, requiredRoleParameterPath);
+    if (typeof roles === 'object' && !Array.isArray(roles)) {
+      roles = Object.keys(roles);
+    }
 
     // Handle Azure AD group overage for ID token groups: when hasgroups or _claim_* indicate overage,
     // resolve groups via Microsoft Graph instead of relying on token group values.
