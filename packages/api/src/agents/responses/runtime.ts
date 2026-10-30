@@ -54,6 +54,17 @@ interface ReviewAgentNode
   extends Omit<ReviewAgent, keyof ReachableAgent<never>>,
     ReachableAgent<ReviewAgentNode> {}
 
+/** Capture and rebuild must describe the same initialized participant identities. */
+function responseParticipantIds(primaryId: string, agents: readonly ReviewAgentNode[]): string[] {
+  const participants = new Set<string>([primaryId]);
+  for (const agent of agents) {
+    if (typeof agent.id !== 'string' || !agent.id)
+      throw new Error('Response graph participant identity unavailable');
+    participants.add(agent.id);
+  }
+  return [...participants];
+}
+
 function responseBody(value: unknown): value is TerminalResponse {
   return (
     value != null &&
@@ -390,10 +401,10 @@ export function createResponseExecutionRuntime(
           const cancelled =
             identity.outcome === 'aborted' || current.cancellationRequestedAt != null;
           const result: TerminalResponse = candidate ?? {
-            ...buildPendingBackgroundResponse(current),
+            ...(previous() ?? buildPendingBackgroundResponse(current)),
             status: cancelled ? 'cancelled' : 'failed',
             completed_at: Math.floor(Date.now() / 1000),
-            output: [],
+            required_action: undefined,
             error: cancelled
               ? null
               : {
@@ -514,13 +525,16 @@ export function createResponseExecutionRuntime(
         throw new Error('Response checkpoint storage settings changed');
       const reviewedAgents = collectReachableAgents<ReviewAgentNode>(agents);
       assertCodeExecutionApprovalBinding(action.codeExecutionBinding, reviewedAgents);
-      const participants = new Set([
-        admission.record.agentId,
-        ...reviewedAgents.map((agent) => agent.id),
-      ]);
+      const participants = new Set(
+        responseParticipantIds(admission.record.agentId, reviewedAgents),
+      );
+      const retainedParticipants = action.resumeAgentIds;
       if (
-        !action.resumeAgentIds?.length ||
-        action.resumeAgentIds.some((id) => !participants.has(id))
+        !Array.isArray(retainedParticipants) ||
+        retainedParticipants.length === 0 ||
+        new Set(retainedParticipants).size !== retainedParticipants.length ||
+        participants.size !== retainedParticipants.length ||
+        retainedParticipants.some((id) => typeof id !== 'string' || !participants.has(id))
       )
         throw new Error('Response resume participants changed');
       const decision = responseReviewDecisionSchema.parse(
@@ -646,14 +660,7 @@ export function createResponseExecutionRuntime(
               run: input.run,
               payload,
               agents,
-              resumeAgentIds: [
-                ...new Set([
-                  admission.record.agentId,
-                  ...agents
-                    .map((agent) => agent.id)
-                    .filter((id): id is string => typeof id === 'string' && id.length > 0),
-                ]),
-              ],
+              resumeAgentIds: responseParticipantIds(admission.record.agentId, agents),
               aliases,
               context: {
                 streamId: admission.record.responseId,
