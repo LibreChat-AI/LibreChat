@@ -3223,7 +3223,6 @@ export type TResolvedInsightsConfig = {
   showDetails: boolean;
 };
 
-/** Keep partial overrides inheritable; resolve absent flags to false at use time. */
 export function resolveInsightsConfig(config?: TInsightsConfig | null): TResolvedInsightsConfig {
   return {
     enabled: config?.enabled ?? false,
