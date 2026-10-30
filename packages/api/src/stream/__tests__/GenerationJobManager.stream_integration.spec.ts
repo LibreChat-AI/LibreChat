@@ -12,6 +12,11 @@ import {
   keyvRedisClient as staticKeyvClient,
   keyvRedisClientReady,
 } from '~/cache/redisClients';
+import {
+  buildMCPAuthRunStepEvent,
+  buildMCPAuthRunStepDeltaEvent,
+  buildMCPAuthRunStepCompletedEvent,
+} from '~/mcp/oauth/events';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { RedisEventTransport } from '~/stream/implementations/RedisEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
@@ -260,6 +265,64 @@ describe('GenerationJobManager Integration Tests', () => {
   });
 
   describeRedis('Redis Mode', () => {
+    test('reconstructs acknowledged OAuth prompts and their retirement on another Redis replica', async () => {
+      const manager = createRedisManager();
+      const peer = createRedisManager();
+      const streamId = `oauth-durable-${Date.now()}`;
+      const toolCall = {
+        id: 'oauth:call',
+        name: 'oauth_mcp_clock',
+        type: 'tool_call_chunk' as const,
+      };
+      const stepId = 'oauth-step';
+      try {
+        const job = await manager.createJob(streamId, 'oauth-user', streamId);
+        const ownership = { expectedCreatedAt: job.createdAt, durable: true };
+        await manager.emitChunk(
+          streamId,
+          buildMCPAuthRunStepEvent({
+            stepId,
+            toolCall,
+            runId: 'response',
+            index: 0,
+          }),
+          ownership,
+        );
+        await manager.emitChunk(
+          streamId,
+          buildMCPAuthRunStepDeltaEvent({
+            stepId,
+            toolCall,
+            authURL: 'https://auth.example/authorize',
+            options: { expiresAt: Date.now() + 60000 },
+          }),
+          ownership,
+        );
+        const restored = await peer.getResumeState(streamId, job.createdAt);
+        expect(restored?.runSteps).toEqual(
+          expect.arrayContaining([expect.objectContaining({ id: stepId })]),
+        );
+        expect(restored?.pendingOAuthPrompts).toEqual([
+          expect.objectContaining({ stepId, toolCallId: toolCall.id, toolName: toolCall.name }),
+        ]);
+        await manager.emitChunk(
+          streamId,
+          buildMCPAuthRunStepCompletedEvent({
+            stepId,
+            toolCall: { ...toolCall, type: 'tool_call', output: 'ended' },
+            index: 0,
+          }),
+          ownership,
+        );
+        expect(
+          (await peer.getResumeState(streamId, job.createdAt))?.pendingOAuthPrompts,
+        ).toBeUndefined();
+      } finally {
+        await peer.destroy();
+        await manager.destroy();
+      }
+    });
+
     test('should create and manage jobs via Redis', async () => {
       // Create Redis services
       const services = createStreamServices({
