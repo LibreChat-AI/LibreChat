@@ -1,9 +1,10 @@
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { ChannelIdentityRecord } from './channelIdentity';
-import { closeChannelScope, retireChannelScope } from './channelScope';
+import { closeChannelScope, retireAgentChannel } from './channelScope';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
+import { createAgentChannelMethods } from './channel';
 import { createUserMethods } from './user';
 import { createModels } from '~/models';
 
@@ -37,8 +38,28 @@ beforeAll(async () => {
 });
 beforeEach(async () =>
   runAsSystem(async () => {
-    await mongoose.models.ChannelIdentity.deleteMany({});
+    await mongoose.models.AgentChannel.deleteMany({});
     await mongoose.models.ChannelScope.deleteMany({});
+    for (const [partition, channelId] of [
+      [tenantId, 'channel'],
+      [tenantId, 'other-channel'],
+      ['another-tenant', 'tenant-channel'],
+    ]) {
+      await tenantStorage.run({ tenantId: partition }, async () =>
+        createAgentChannelMethods(mongoose).createAgentChannel({
+          tenantId: partition,
+          channelId,
+          agentId: 'agent',
+          createdBy: 'connection-owner',
+          type: 'slack',
+          status: 'active',
+          credentialMode: 'per_user',
+          revision: 'channel-one',
+          slack: { teamId: 'team', appId: 'app', botUserId: 'bot' },
+        }),
+      );
+    }
+    await mongoose.models.ChannelIdentity.deleteMany({});
   }),
 );
 afterAll(async () => {
@@ -136,7 +157,11 @@ it('rejects a mismatched request tenant rather than letting middleware replace t
       {
         ...identity(),
         tenantId: 'another-tenant',
-        identity: { ...identity().identity, tenantId: 'another-tenant' },
+        identity: {
+          ...identity().identity,
+          tenantId: 'another-tenant',
+          channelId: 'tenant-channel',
+        },
       },
       null,
     );
@@ -298,7 +323,11 @@ function inState(state: ChannelIdentityRecord['state'], suffix: string): Channel
 it.each(identityStates)('fences new %s records after complete channel retirement', (state) =>
   scope(async () => {
     await storage.saveChannelIdentity(identity(), null);
-    await retireChannelScope(mongoose, tenantId, 'channel');
+    await retireAgentChannel(mongoose, {
+      tenantId,
+      channelId: 'channel',
+      createdBy: 'connection-owner',
+    });
     expect(await storage.saveChannelIdentity(inState(state, state), null)).toBe(false);
     expect(
       await mongoose.models.ChannelIdentity.countDocuments({
@@ -410,7 +439,11 @@ it('cannot move a revoked full record out of a closed channel to escape retireme
       identity: { ...identity().identity, channelId: 'other-channel' },
     };
     expect(await storage.saveChannelIdentity(replacement, 'one')).toBe(false);
-    await retireChannelScope(mongoose, tenantId, 'channel');
+    await retireAgentChannel(mongoose, {
+      tenantId,
+      channelId: 'channel',
+      createdBy: 'connection-owner',
+    });
     expect(await mongoose.models.ChannelIdentity.countDocuments({ tenantId })).toBe(0);
   }));
 
@@ -434,7 +467,11 @@ it('serializes revoked insertion with retirement and erases its private payload 
     const insertion = storage.saveChannelIdentity(inState('revoked', 'revoked-race'), null);
     await started;
     let retired = false;
-    const retirement = retireChannelScope(mongoose, tenantId, 'channel').then(() => {
+    const retirement = retireAgentChannel(mongoose, {
+      tenantId,
+      channelId: 'channel',
+      createdBy: 'connection-owner',
+    }).then(() => {
       retired = true;
     });
     try {

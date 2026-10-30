@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import type { ClientSession } from 'mongoose';
 import type { AgentChannelRecord, AgentChannelThreadRecord } from '~/models/channel';
-import { retireChannelScope, initializeChannelScope, touchChannelScope } from './channelScope';
+import {
+  retireAgentChannel,
+  initializeChannelScope,
+  touchChannelScope,
+  touchChannelAuthority,
+} from './channelScope';
+import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
 
@@ -89,17 +95,19 @@ export function createAgentChannelMethods(
   }
 
   async function beginDeletion(channelId: string, createdBy: string) {
-    const deleting = await channel()
-      .findOneAndUpdate({ channelId, createdBy }, { $set: { status: 'deleting' } }, { new: true })
-      .select(secrets)
-      .lean();
-    if (!deleting) return null;
-    await retireChannelScope(mongoose, deleting.tenantId, channelId);
-    return deleting;
+    const parent = await channel().findOne({ channelId, createdBy }).select('tenantId').lean();
+    if (!parent) return null;
+    return retireAgentChannel(mongoose, { channelId, createdBy, tenantId: parent.tenantId });
   }
 
   return {
     async createAgentChannel(input: AgentChannelRecord): Promise<AgentChannelRecord> {
+      const currentTenant = getTenantId();
+      input = {
+        ...input,
+        tenantId:
+          input.tenantId ?? (currentTenant === SYSTEM_TENANT_ID ? undefined : currentTenant),
+      };
       if (input.status === 'deleting') throw new TypeError('Channel deletion requires retirement');
       await ensureIndexes();
       await initializeChannelScope(mongoose, input.tenantId, input.channelId);
@@ -187,7 +195,7 @@ export function createAgentChannelMethods(
     ): Promise<AgentChannelRecord | null> {
       // Deleting is an irreversible lifecycle operation, never a generic metadata patch.
       if (expectedStatus === 'deleting' || update.status === 'deleting') return null;
-      const write = async (session?: ClientSession): Promise<AgentChannelRecord | null> =>
+      const write = async (session: ClientSession): Promise<AgentChannelRecord | null> =>
         channel()
           .findOneAndUpdate(
             {
@@ -197,22 +205,17 @@ export function createAgentChannelMethods(
               ...(expectedRevision !== undefined ? { revision: expectedRevision } : {}),
             },
             { $set: update },
-            { new: true, ...(session ? { session } : {}) },
+            { new: true, session, runValidators: true },
           )
           .select(secrets)
           .lean();
-      if (
-        update.status === 'active' ||
-        update.encryptedBotToken ||
-        update.encryptedSigningSecret ||
-        update.encryptedApiKey ||
-        update.apiKeyId
-      ) {
-        const parent = await channel().findOne({ channelId, createdBy }).select('tenantId').lean();
-        if (!parent) return null;
-        return ownerWrite(createdBy, parent.tenantId, write);
-      }
-      return write();
+      const parent = await channel().findOne({ channelId, createdBy }).select('tenantId').lean();
+      if (!parent) return null;
+      await initializeChannelScope(mongoose, parent.tenantId, channelId);
+      return ownerWrite(createdBy, parent.tenantId, async (session) => {
+        if (!(await touchChannelScope(mongoose, parent.tenantId, channelId, session))) return null;
+        return write(session);
+      });
     },
     beginAgentChannelDeletion: beginDeletion,
     async deleteAgentChannel(channelId: string, createdBy: string): Promise<boolean> {
@@ -229,7 +232,7 @@ export function createAgentChannelMethods(
       // Keep the deleting parent available for a retry if dependent cleanup fails.
       await threads().deleteMany({ channelId, tenantId: deleting.tenantId || { $in: [null, ''] } });
       const result = await channel().deleteOne({
-        _id: deleting._id,
+        channelId,
         createdBy,
         status: 'deleting',
       });
@@ -246,7 +249,10 @@ export function createAgentChannelMethods(
       externalThreadKey: string,
     ): Promise<AgentChannelThreadRecord> {
       await ensureThreadIndexes();
-      const parent = await channel().findOne({ channelId }).select('tenantId status').lean();
+      const parent = await channel()
+        .findOne({ channelId })
+        .select('tenantId status agentId revision')
+        .lean();
       if (!parent || parent.status === 'deleting')
         throw new Error('Channel thread authority unavailable');
       await initializeChannelScope(mongoose, parent.tenantId, channelId);
@@ -254,7 +260,18 @@ export function createAgentChannelMethods(
       let mapping: AgentChannelThreadRecord | null = null;
       try {
         await session.withTransaction(async () => {
-          if (!(await touchChannelScope(mongoose, parent.tenantId, channelId, session)))
+          if (
+            !(await touchChannelAuthority(
+              mongoose,
+              {
+                tenantId: parent.tenantId,
+                channelId,
+                agentId: parent.agentId,
+                channelRevision: parent.revision ?? channelId,
+              },
+              session,
+            ))
+          )
             throw new Error('Channel thread authority unavailable');
           mapping = await threads()
             .findOneAndUpdate(

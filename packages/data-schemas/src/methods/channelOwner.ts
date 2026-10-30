@@ -18,12 +18,20 @@ export async function prepareChannelOwnerAdmission(
     throw new TypeError('Channel owner does not match authenticated scope');
   const [key] = responseScopeKeys(owner, '');
   await initializeResponseScopes(mongoose, [key]);
-  return async (session) => {
-    const admitted = await createResponseScopeModel(mongoose).updateOne(
-      { _id: key, closed: false },
-      { $inc: { revision: 1 } },
-      { session },
-    );
-    return admitted.matchedCount === 1;
-  };
+  return (session) => touchChannelOwnerAdmission(mongoose, owner, session);
+}
+
+/** Existing canonical channel owners already have an initialized account fence. */
+export async function touchChannelOwnerAdmission(
+  mongoose: typeof import('mongoose'),
+  owner: ResponseOwner,
+  session: ClientSession,
+): Promise<boolean> {
+  const [key] = responseScopeKeys(owner, '');
+  const admitted = await createResponseScopeModel(mongoose).updateOne(
+    { _id: key, closed: false },
+    { $inc: { revision: 1 } },
+    { session },
+  );
+  return admitted.matchedCount === 1;
 }

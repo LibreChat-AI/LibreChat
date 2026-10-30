@@ -1,7 +1,12 @@
 import type { ChannelExternalIdentity } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { ChannelIdentityRecord } from '~/models/channelIdentity';
-import { assertChannelTenant, initializeChannelScope, touchChannelScope } from './channelScope';
+import {
+  assertChannelTenant,
+  initializeChannelScope,
+  touchChannelAuthority,
+  lockChannelScope,
+} from './channelScope';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
 export type { ChannelIdentityRecord } from '~/models/channelIdentity';
@@ -116,10 +121,15 @@ export function createChannelIdentityStorage(
               return;
             }
             if (
-              !(await touchChannelScope(
+              !(await touchChannelAuthority(
                 mongoose,
-                record.tenantId,
-                record.identity.channelId,
+                {
+                  tenantId: record.tenantId,
+                  channelId: record.identity.channelId,
+                  agentId: record.identity.agentId,
+                  channelRevision: record.identity.channelRevision,
+                  teamId: record.identity.teamId,
+                },
                 session,
               ))
             ) {
@@ -140,10 +150,20 @@ export function createChannelIdentityStorage(
 
     async revokeChannelIdentities(tenantId, channelId, revision) {
       assertChannelTenant(tenantId);
-      await model().updateMany(
-        { tenantId, 'identity.channelId': channelId, state: { $ne: 'revoked' } },
-        { $set: { state: 'revoked', revision } },
-      );
+      await initializeChannelScope(mongoose, tenantId, channelId);
+      const session = await mongoose.startSession();
+      try {
+        await session.withTransaction(async () => {
+          await lockChannelScope(mongoose, tenantId, channelId, session);
+          await model().updateMany(
+            { tenantId, 'identity.channelId': channelId, state: { $ne: 'revoked' } },
+            { $set: { state: 'revoked', revision } },
+            { session },
+          );
+        });
+      } finally {
+        await session.endSession();
+      }
     },
   };
 }
