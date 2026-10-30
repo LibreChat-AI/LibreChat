@@ -49,6 +49,10 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  getTrustedNewConversationId: (...args) =>
+    jest.requireActual('@librechat/api').getTrustedNewConversationId(...args),
+  buildGenerationStartedResponse: (...args) =>
+    jest.requireActual('@librechat/api').buildGenerationStartedResponse(...args),
   resolveChannelExecutionMetadata: (...args) =>
     jest.requireActual('@librechat/api').resolveChannelExecutionMetadata(...args),
   savePrivateTextMessage: (save, _req, ...args) => save(...args),

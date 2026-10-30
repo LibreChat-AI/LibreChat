@@ -18,15 +18,29 @@ export function parseChannelExecution(value: unknown): GenerationJobMetadata['ch
     !('runId' in value) ||
     typeof value.channelId !== 'string' ||
     !value.channelId ||
-    value.channelId.length > 256 ||
-    !/^[\w-]+$/.test(value.channelId) ||
     typeof value.runId !== 'string' ||
-    !value.runId ||
-    value.runId.length > 256 ||
-    !/^[\w-]+$/.test(value.runId)
+    !value.runId
   )
     throw new Error('channel_execution_invalid');
   return { channelId: value.channelId, runId: value.runId };
+}
+
+/** Source IDs are opaque; both normal settlement and abort use the same owner predicate. */
+export function hasSourceTerminalAction(metadata: {
+  agentEventDeliveryKey?: string;
+  channelExecution?: GenerationJobMetadata['channelExecution'];
+}): boolean {
+  return metadata.agentEventDeliveryKey != null || metadata.channelExecution != null;
+}
+
+/** The acknowledgement carries the reply ID already reserved for this generation. */
+export function buildGenerationStartedResponse(input: {
+  streamId: string;
+  conversationId: string;
+  generationCreatedAt: number;
+  responseMessageId: string;
+}): typeof input & { status: 'started' } {
+  return { ...input, status: 'started' };
 }
 
 /** Body markers acquire authority only at the signed server-trigger ingress. */

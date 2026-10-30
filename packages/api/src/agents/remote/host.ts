@@ -36,6 +36,8 @@ export interface ExecuteAgentRunParams<Result> {
     execution: AgentExecutionEnrollment,
     executionError: unknown,
   ) => void | Promise<void>;
+  /** A durable pause keeps its checkpoint; it is not a terminal journal outcome. */
+  afterPause?: (execution: AgentExecutionEnrollment) => void | Promise<void>;
 }
 
 /**
@@ -59,6 +61,7 @@ export async function executeAgentRun<Result>(
     beforeSettle,
     onSettlementError,
     afterSettle,
+    afterPause,
   }: ExecuteAgentRunParams<Result>,
   deps?: AgentExecutionEnrollmentDeps,
 ): Promise<Result> {
@@ -124,7 +127,10 @@ export async function executeAgentRun<Result>(
       const settled = await execution.settle(executionError);
       settlementFailure ??= settled.persistenceError;
       executionError ??= settled.persistenceError;
-      if (execution.ownsSettlement) await afterSettle?.(execution, executionError);
+      if (execution.ownsSettlement) {
+        if (execution.isPaused) await afterPause?.(execution);
+        else await afterSettle?.(execution, executionError);
+      }
       if (settlementFailure != null) throw settlementFailure;
     } catch (error) {
       onSettlementError?.(error);

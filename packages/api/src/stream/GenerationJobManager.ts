@@ -98,7 +98,7 @@ import { toClientPendingAction } from '~/agents/hitl/policy';
 import { markAbortedCompactionContent } from '~/agents/compaction';
 import { ApprovalLifecycle, pausePersistenceActionId } from './ApprovalLifecycle';
 import { projectPendingMCPOAuthPrompts } from '~/mcp/oauth/resume';
-import { sanitizeJobMetadata } from './metadata';
+import { sanitizeJobMetadata, hasSourceTerminalAction } from './metadata';
 
 /** Terminal error surfaced to a client still attached when its approval window lapses. */
 const APPROVAL_EXPIRED_ERROR = 'Approval expired before a decision was made';
@@ -2473,7 +2473,7 @@ class GenerationJobManagerClass {
                 completedAt: Date.now(),
                 error: message,
                 finalEvent: JSON.stringify(finalEvent),
-                ...(job.agentEventDeliveryKey != null &&
+                ...(hasSourceTerminalAction(job) &&
                   this.terminalHostActionHandler != null && {
                     terminalHostActionPending: true,
                   }),
@@ -4146,7 +4146,7 @@ class GenerationJobManagerClass {
       patch: {
         completedAt,
         ...(terminalError != null && { error: terminalError }),
-        ...(jobData.agentEventDeliveryKey != null &&
+        ...(hasSourceTerminalAction(jobData) &&
           this.terminalHostActionHandler != null && {
             terminalHostActionPending: true,
           }),
@@ -4883,7 +4883,7 @@ class GenerationJobManagerClass {
           completedAt: terminalPersistenceStartedAt,
           terminalPersistencePending: true,
           terminalPersistenceStartedAt,
-          ...((jobData.agentEventDeliveryKey != null || jobData.channelExecution != null) &&
+          ...(hasSourceTerminalAction(jobData) &&
             this.terminalHostActionHandler != null && {
               terminalHostActionPending: true,
             }),
@@ -5139,8 +5139,7 @@ class GenerationJobManagerClass {
       };
     } finally {
       try {
-        const mustDrainForTerminalEvidence =
-          jobData.agentEventDeliveryKey != null || jobData.channelExecution != null;
+        const mustDrainForTerminalEvidence = hasSourceTerminalAction(jobData);
         if (options?.awaitProviderDrain || mustDrainForTerminalEvidence) {
           await this.waitForProviderDrainIfRequired(streamId, jobData);
           await this.persistAgentEventRunStepEvidence(streamId, jobData);
@@ -9351,7 +9350,7 @@ class GenerationJobManagerClass {
   ): Promise<void> {
     try {
       await this.approvalExpiredHandler?.(streamId, job);
-      if (job.agentEventDeliveryKey != null || job.channelExecution != null) {
+      if (hasSourceTerminalAction(job)) {
         await this.terminalHostActionHandler?.(
           streamId,
           job,
@@ -9377,7 +9376,7 @@ class GenerationJobManagerClass {
     job: SerializableJobData,
   ): Promise<boolean> {
     try {
-      if (job.agentEventDeliveryKey != null || job.channelExecution != null) {
+      if (hasSourceTerminalAction(job)) {
         await this.terminalHostActionHandler?.(
           streamId,
           job,
