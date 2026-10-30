@@ -1617,28 +1617,24 @@ it('persists a session approval before compiling the resumed SDK graph and avoid
     expect((await storage.read(owner, responseId))?.status).toBe('completed');
   }));
 
-it.each(['missing', 'duplicate', 'empty', 'foreign'] as const)(
-  'rejects an incomplete private participant witness before pause persistence: %s',
-  (kind) =>
-    scoped(async () => {
-      const f = await setup();
-      const buildAction = f.deps.buildAction;
-      f.deps.buildAction = async (interrupt) => ({
-        ...(await buildAction(interrupt)),
-        resumeAgentIds:
-          kind === 'missing'
-            ? undefined
-            : kind === 'duplicate'
-              ? ['agent', 'agent']
-              : kind === 'empty'
-                ? ['agent', '']
-                : ['other-agent'],
-      });
-      await expect(pauseResponseForReview({ ...f, checkpointer }, f.deps)).rejects.toThrow(
-        'Response review action identity changed',
-      );
-      expect(f.unfinishedWrites()).toBe(0);
-      expect((await storage.read(owner, responseId))?.status).toBe('in_progress');
-      await f.execution.settle(new Error('Invalid private witness'));
-    }),
+it.each([
+  { kind: 'missing', ids: undefined },
+  { kind: 'duplicate', ids: ['agent', 'agent'] },
+  { kind: 'empty', ids: ['agent', ''] },
+  { kind: 'foreign', ids: ['other-agent'] },
+])('rejects an incomplete private participant witness before pause persistence: $kind', ({ ids }) =>
+  scoped(async () => {
+    const f = await setup();
+    const buildAction = f.deps.buildAction;
+    f.deps.buildAction = async (interrupt) => ({
+      ...(await buildAction(interrupt)),
+      resumeAgentIds: ids,
+    });
+    await expect(pauseResponseForReview({ ...f, checkpointer }, f.deps)).rejects.toThrow(
+      'Response review action identity changed',
+    );
+    expect(f.unfinishedWrites()).toBe(0);
+    expect((await storage.read(owner, responseId))?.status).toBe('in_progress');
+    await f.execution.settle(new Error('Invalid private witness'));
+  }),
 );
