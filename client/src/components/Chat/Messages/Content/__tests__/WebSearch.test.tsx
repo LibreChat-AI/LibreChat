@@ -2,6 +2,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Tools } from 'librechat-data-provider';
 import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
+import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { ToolContentRequestContext } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type {
@@ -601,5 +602,32 @@ describe('WebSearch', () => {
       const matches = screen.getAllByText('Searching again');
       expect(matches.length).toBeGreaterThanOrEqual(1);
     });
+  });
+});
+
+describe('generated single-search label', () => {
+  const search = () =>
+    render(
+      <RecoilRoot>
+        <SearchContext.Provider
+          value={{
+            searchResults: makeSearchResults({
+              0: { organic: [makeSource('https://example.com', 'Example result')] },
+            }),
+          }}
+        >
+          <GeneratedToolLabelContext.Provider value>
+            <WebSearch initialProgress={1} isSubmitting={false} args={{ query: 'example' }} />
+          </GeneratedToolLabelContext.Provider>
+        </SearchContext.Provider>
+      </RecoilRoot>,
+    );
+  it('does not render a redundant searched-the-web disclosure', () => {
+    search();
+    expect(screen.queryByRole('button', { name: /Searched the web/ })).not.toBeInTheDocument();
+  });
+  it('shows the source links directly', () => {
+    search();
+    expect(screen.getByRole('link', { name: /Example result/ })).toBeInTheDocument();
   });
 });

@@ -307,3 +307,22 @@ describe('groupSequentialToolCalls reasoning transparency', () => {
     expect(result.map((g) => g.type)).toEqual(['single', 'single']);
   });
 });
+
+it('keeps a trailing thought in the preceding named batch', () => {
+  const grouped = groupSequentialToolCalls(
+    withIndex([toolCall('a'), label('Checked source'), think('Checking the result'), textPart()]),
+  );
+  expect(grouped[0]).toMatchObject({ type: 'tool-group', parts: [{ idx: 0 }, { idx: 2 }] });
+});
+
+it('does not move a post-label thought into the next tool batch as streaming continues', () => {
+  const grouped = groupSequentialToolCalls(
+    withIndex([
+      toolCall('a'),
+      label('Checked source'),
+      think('Checking the result'),
+      toolCall('b'),
+    ]),
+  );
+  expect(grouped[0]).toMatchObject({ type: 'tool-group', parts: [{ idx: 0 }, { idx: 2 }] });
+});

@@ -1,4 +1,5 @@
 import { useContext } from 'react';
+import { useLocalize } from '@librechat/client';
 import type { ReactNode } from 'react';
 import { LoneGroupContext, SoleToolContext } from '../../react/parts/disclosure';
 
@@ -13,15 +14,25 @@ import { LoneGroupContext, SoleToolContext } from '../../react/parts/disclosure'
  * Only a call that can drop its row renders it, so a card with a row of its
  * own never carries a second, empty live region.
  */
-export default function BareStatus({ active, text }: { active: boolean; text: string }): ReactNode {
+export default function BareStatus({
+  active,
+  text,
+  phase,
+}: {
+  active: boolean;
+  text: string;
+  phase?: string;
+}): ReactNode {
+  const localize = useLocalize();
   const sole = useContext(SoleToolContext) === true;
   const lone = useContext(LoneGroupContext);
   if (!sole && !lone) {
     return null;
   }
+  const outcome = phase === 'failed' ? localize('com_ui_failed') : text;
   return (
     <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-      {active ? text : ''}
+      {active ? outcome : ''}
     </span>
   );
 }

@@ -42,8 +42,9 @@ export default function SkillCall({
       isSubmitting,
       output,
       hasInput: !!parsedSkillName,
+      panelReady: output.length > 0,
       /** The row is the only place that names the skill that ran. */
-      keepRow: true,
+      keepLabelRow: true,
       onExpand,
       runStepStatus,
     });
@@ -55,7 +56,7 @@ export default function SkillCall({
 
   return (
     <>
-      <BareStatus active={bare} text={finishedText} />
+      <BareStatus phase={phase} active={bare} text={finishedText} />
       {!bare && (
         <div className={TOOL_ROW_CLASSES} ref={rowRef}>
           <ProgressText
@@ -79,7 +80,7 @@ export default function SkillCall({
         </div>
       )}
       <div style={expandStyle}>
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           {hasOutput && (
             <div
               className={cn(

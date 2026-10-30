@@ -396,6 +396,7 @@ describe('live fold parity with the cards it hides', () => {
     const second = toPart({ name: 'create_file', output: '' }, 'second');
     const view = mount([first, second], undefined, true);
 
+    expect(screen.getByTestId('live-phase-combo')).toHaveClass('sr-only');
     expect(screen.getByTestId('live-phase-combo')).toHaveTextContent('×2');
     expect(
       within(screen.getByTestId('activity-phase-card')).getAllByRole('button')[0],
@@ -1277,7 +1278,9 @@ describe('live activity hardening transitions', () => {
     const header = screen.getByRole('button');
     expect(header).toHaveAccessibleName('Checking the next file');
     expect(screen.queryByTestId('live-phase-combo')).toBeNull();
-    expect(header.querySelector('.absolute[aria-hidden="true"]')).toBeNull();
+    expect(
+      header.querySelector('.absolute[aria-hidden="true"]:not(.lucide-chevron-down)'),
+    ).toBeNull();
   });
 
   it.each(['error', 'cancelled', 'completed'] as const)(
