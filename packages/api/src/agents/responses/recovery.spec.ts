@@ -116,7 +116,11 @@ it('retains the exact completed answer across cleanup failure and a fresh recove
     const { record, receipt } = await setup();
     const cleanup = jest.fn(async () => {});
     cleanup.mockRejectedValueOnce(new Error('checkpoint unavailable'));
-    const completion = createResponseCompletion({ storage, cleanupCheckpoint: cleanup });
+    const completion = createResponseCompletion({
+      releaseExecution: async () => {},
+      storage,
+      cleanupCheckpoint: cleanup,
+    });
     await expect(completion.stageAndFinish(record, receipt)).rejects.toThrow(
       'checkpoint unavailable',
     );
@@ -124,6 +128,7 @@ it('retains the exact completed answer across cleanup failure and a fresh recove
     expect(pending).toMatchObject({ status: 'in_progress', pendingTerminal: receipt });
     expect(pending.responseJSON).not.toContain('saved final answer');
     const restarted = createResponseCompletion({
+      releaseExecution: async () => {},
       storage: createResponseStorage(mongoose),
       cleanupCheckpoint: cleanup,
     });
@@ -168,6 +173,7 @@ it('recovers initial-execution checkpoint cleanup without a review record or cur
       );
     }
     const unavailable = createResponseCompletion({
+      releaseExecution: async () => {},
       storage,
       cleanupCheckpoint: async () => {
         throw new Error('checkpoint storage temporarily unavailable');
@@ -180,6 +186,7 @@ it('recovers initial-execution checkpoint cleanup without a review record or cur
     expect(pending.review).toBeUndefined();
     expect(pending.pendingTerminal).toEqual(savedReceipt);
     const restarted = createResponseCompletion({
+      releaseExecution: async () => {},
       storage: createResponseStorage(mongoose),
       cleanupCheckpoint: cleanupResponseCheckpoint,
     });
@@ -195,7 +202,11 @@ it('retries terminal publication without losing the answer after cleanup already
   scoped(async () => {
     const { record, receipt } = await setup();
     const cleanup = jest.fn(async () => {});
-    const completion = createResponseCompletion({ storage, cleanupCheckpoint: cleanup });
+    const completion = createResponseCompletion({
+      releaseExecution: async () => {},
+      storage,
+      cleanupCheckpoint: cleanup,
+    });
     jest
       .spyOn(storage, 'finishTerminal')
       .mockRejectedValueOnce(new Error('publication unavailable'));
@@ -241,7 +252,11 @@ it('reconciles a committed terminal stage whose acknowledgement was lost', () =>
       await stage(...args);
       throw new Error('lost stage acknowledgement');
     });
-    const completion = createResponseCompletion({ storage, cleanupCheckpoint: async () => {} });
+    const completion = createResponseCompletion({
+      releaseExecution: async () => {},
+      storage,
+      cleanupCheckpoint: async () => {},
+    });
     expect(await completion.stageAndFinish(record, receipt)).toMatchObject({
       status: 'completed',
       responseJSON: receipt.responseJSON,
@@ -264,7 +279,11 @@ it.each([false, true])(
       expect(projected.ok).toBe(true);
       if (lateStop) await storage.requestCancellation(owner, record.responseId, Date.now());
       const stage = jest.spyOn(storage, 'stageTerminal');
-      const completion = createResponseCompletion({ storage, cleanupCheckpoint: async () => {} });
+      const completion = createResponseCompletion({
+        releaseExecution: async () => {},
+        storage,
+        cleanupCheckpoint: async () => {},
+      });
       const result = await completion.stageAndFinish(record, receipt);
       expect(result).toMatchObject({ status: 'completed', responseJSON: receipt.responseJSON });
       expect(stage).toHaveBeenCalledTimes(1);
@@ -280,7 +299,11 @@ it('does not replace another terminal receipt after a staging conflict', () =>
     ).toBe(true);
     const stage = jest.spyOn(storage, 'stageTerminal');
     const cleanup = jest.fn(async () => {});
-    const completion = createResponseCompletion({ storage, cleanupCheckpoint: cleanup });
+    const completion = createResponseCompletion({
+      releaseExecution: async () => {},
+      storage,
+      cleanupCheckpoint: cleanup,
+    });
     await expect(completion.stageAndFinish(record, receipt)).rejects.toThrow(
       'Response terminal receipt publication conflicted',
     );
@@ -293,7 +316,11 @@ it('does not retry a receipt from a different generation', () =>
   scoped(async () => {
     const { record, receipt } = await setup();
     const stage = jest.spyOn(storage, 'stageTerminal');
-    const completion = createResponseCompletion({ storage, cleanupCheckpoint: async () => {} });
+    const completion = createResponseCompletion({
+      releaseExecution: async () => {},
+      storage,
+      cleanupCheckpoint: async () => {},
+    });
     await expect(
       completion.stageAndFinish(
         { ...record, generationCreatedAt: 9 },
@@ -324,7 +351,11 @@ it.each(['provider', 'another-provider'])(
       );
       expect(reviewed.ok).toBe(true);
       const stage = jest.spyOn(storage, 'stageTerminal');
-      const completion = createResponseCompletion({ storage, cleanupCheckpoint: async () => {} });
+      const completion = createResponseCompletion({
+        releaseExecution: async () => {},
+        storage,
+        cleanupCheckpoint: async () => {},
+      });
       await expect(completion.stageAndFinish(record, receipt)).rejects.toThrow(
         'Response terminal receipt publication conflicted',
       );
@@ -382,7 +413,11 @@ it.each([false, true])(
           ).ok,
         ).toBe(true);
       const stage = jest.spyOn(storage, 'stageTerminal');
-      const completion = createResponseCompletion({ storage, cleanupCheckpoint: async () => {} });
+      const completion = createResponseCompletion({
+        releaseExecution: async () => {},
+        storage,
+        cleanupCheckpoint: async () => {},
+      });
       await expect(completion.stageAndFinish(reviewed.record, receipt)).rejects.toThrow(
         'Response terminal receipt publication conflicted',
       );
@@ -395,7 +430,11 @@ it('lets authorized polling recover a saved result without queueing or observing
   scoped(async () => {
     const { record, receipt } = await setup();
     await storage.stageTerminal(owner, record.responseId, record.revision, receipt);
-    const completion = createResponseCompletion({ storage, cleanupCheckpoint: async () => {} });
+    const completion = createResponseCompletion({
+      releaseExecution: async () => {},
+      storage,
+      cleanupCheckpoint: async () => {},
+    });
     const enqueue = jest.fn(async () => {
       throw new Error('No model redelivery');
     });
@@ -424,7 +463,11 @@ it('does not let a late Stop overwrite the saved result or require a transient j
   scoped(async () => {
     const { record, receipt } = await setup();
     await storage.stageTerminal(owner, record.responseId, record.revision, receipt);
-    const completion = createResponseCompletion({ storage, cleanupCheckpoint: async () => {} });
+    const completion = createResponseCompletion({
+      releaseExecution: async () => {},
+      storage,
+      cleanupCheckpoint: async () => {},
+    });
     const getJob = jest.fn(async () => {
       throw new Error('Transient job may have expired');
     });
@@ -478,7 +521,11 @@ it('converges concurrent finishers on one immutable canonical result', () =>
     const { record, receipt } = await setup();
     const staged = await storage.stageTerminal(owner, record.responseId, record.revision, receipt);
     if (!staged.ok) throw new Error('Stage failed');
-    const completion = createResponseCompletion({ storage, cleanupCheckpoint: async () => {} });
+    const completion = createResponseCompletion({
+      releaseExecution: async () => {},
+      storage,
+      cleanupCheckpoint: async () => {},
+    });
     const results = await Promise.all(
       Array.from({ length: 12 }, () => completion.finish(staged.record)),
     );
@@ -495,7 +542,11 @@ it('converges concurrent finishers on one immutable canonical result', () =>
 it('rejects invalid receipt identity before it can poison the durable journal', () =>
   scoped(async () => {
     const { record, receipt } = await setup();
-    const completion = createResponseCompletion({ storage, cleanupCheckpoint: async () => {} });
+    const completion = createResponseCompletion({
+      releaseExecution: async () => {},
+      storage,
+      cleanupCheckpoint: async () => {},
+    });
     await expect(
       completion.stageAndFinish(record, { ...receipt, responseJSON: 'not JSON' }),
     ).rejects.toThrow('Response terminal receipt is invalid');
@@ -546,7 +597,11 @@ it.each(['owner', 'conversation'] as const)(
     scoped(async () => {
       const { record, receipt } = await setup();
       await storage.stageTerminal(owner, record.responseId, record.revision, receipt);
-      const completion = createResponseCompletion({ storage, cleanupCheckpoint: async () => {} });
+      const completion = createResponseCompletion({
+        releaseExecution: async () => {},
+        storage,
+        cleanupCheckpoint: async () => {},
+      });
       const observe = jest.fn();
       const enqueue = jest.fn();
       const service = createBackgroundResponseService({

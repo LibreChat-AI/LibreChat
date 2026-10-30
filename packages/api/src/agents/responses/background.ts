@@ -30,12 +30,15 @@ export interface BackgroundResponseDependencies {
   /** Idempotent queue publication under record.deliveryKey; MUST NOT execute inline or mint a new identity on retry. */
   enqueue: (record: StoredResponseRecord) => Promise<void>;
   deliveryKey?: (record: StoredResponseRecord) => string;
+  /** Progress-only projection. A terminal observation is a hint to reread the journal;
+   * generationCreatedAt is a consistency witness, never enrollment authority. */
   observe: (record: StoredResponseRecord) => Promise<{
     response: Response;
     generationCreatedAt?: number;
   } | null>;
-  recoverTerminal?: (record: StoredResponseRecord) => Promise<ResponseCompletionRecord>;
-  /** Signal exact execution and wait for provider-drained confirmation in observe; never claim a missing job stopped. */
+  /** Completion journal owns cleanup and release before any terminal view becomes public. */
+  recoverTerminal: (record: StoredResponseRecord) => Promise<ResponseCompletionRecord>;
+  /** Signal exact execution; the completion journal confirms its final outcome. Never claim a missing job stopped. */
   cancel: (record: StoredResponseRecord) => Promise<void>;
   now?: () => number;
 }
@@ -83,6 +86,8 @@ function view(record: StoredResponseRecord): Response {
 
 /** Provider-neutral Responses lifecycle; no channel, Slack, service-token or rendering dependency. */
 export function createBackgroundResponseService(deps: BackgroundResponseDependencies) {
+  if (typeof deps.recoverTerminal !== 'function')
+    throw new Error('Response completion owner is unavailable');
   const now = deps.now ?? Date.now;
 
   async function readAuthorized(owner: ResponseOwner, responseId: string) {
@@ -91,14 +96,23 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
     return record;
   }
 
+  function hasTerminalWork(record: StoredResponseRecord): boolean {
+    return record.pendingTerminal != null || terminal(record.status);
+  }
+
+  async function canonicalView(record: StoredResponseRecord): Promise<Response | null> {
+    if (!hasTerminalWork(record)) return view(record);
+    const recovered = await deps.recoverTerminal(record);
+    return recovered.retirement ? null : view(recovered);
+  }
+
+  async function freshView(record: StoredResponseRecord): Promise<Response | null> {
+    const current = await deps.storage.read(record, record.responseId);
+    return current ? canonicalView(current) : null;
+  }
+
   async function refresh(record: StoredResponseRecord): Promise<Response | null> {
-    if ((record.pendingTerminal || terminal(record.status)) && deps.recoverTerminal) {
-      const recovered = await deps.recoverTerminal(record);
-      if (recovered.retirement) return null;
-      record = recovered;
-    }
-    if (record.pendingTerminal) return view(record);
-    if (terminal(record.status)) return view(record);
+    if (hasTerminalWork(record)) return canonicalView(record);
     const observed = await deps.observe(record);
     if (!observed) return view(record);
     const response = observed.response;
@@ -109,20 +123,22 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
       !response.store
     )
       throw new Error('Background response execution identity changed');
+    // An observer has no provider-drain or checkpoint proof. Only the journal may finalize it.
+    // Enrollment identity likewise belongs to admission, never a progress projection.
+    if (
+      terminal(response.status) ||
+      (observed.generationCreatedAt != null &&
+        observed.generationCreatedAt !== record.generationCreatedAt)
+    )
+      return freshView(record);
     const result = await deps.storage.publish(record, record.responseId, record.revision, {
       status:
         response.required_action || (record.status === 'requires_action' && record.review != null)
           ? 'requires_action'
           : response.status,
       responseJSON: JSON.stringify(response),
-      ...(observed.generationCreatedAt == null
-        ? {}
-        : { generationCreatedAt: observed.generationCreatedAt }),
     });
-    if (result.ok) return response;
-    const current = await deps.storage.read(record, record.responseId);
-    if (!current) return null;
-    return view(current);
+    return result.ok ? canonicalView(result.record) : freshView(record);
   }
 
   async function responseResult(record: StoredResponseRecord): Promise<BackgroundResponseResult> {
@@ -163,18 +179,17 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
       let record = result.record;
       if (result.replayed && !(await deps.authorize(owner, record.agentId, record.sourceKeyId)))
         return { ok: false, status: 403, code: 'permission_denied' };
-      if (!terminal(record.status)) {
-        const attached = await deps.storage.attachDelivery(
-          owner,
-          record.responseId,
-          deps.deliveryKey?.(record) ?? `response_${record.responseId}`,
-        );
-        if (attached.ok) {
-          record = attached.record;
-          await deps.enqueue(record);
-        }
+      if (hasTerminalWork(record)) return responseResult(record);
+      const attached = await deps.storage.attachDelivery(
+        owner,
+        record.responseId,
+        deps.deliveryKey?.(record) ?? `response_${record.responseId}`,
+      );
+      if (attached.ok) {
+        record = attached.record;
+        if (!hasTerminalWork(record)) await deps.enqueue(record);
       }
-      return terminal(record.status)
+      return hasTerminalWork(record)
         ? responseResult(record)
         : { ok: true, response: view(record) };
     },
@@ -186,10 +201,10 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
     async cancel(owner: ResponseOwner, responseId: string): Promise<BackgroundResponseResult> {
       const authorized = await readAuthorized(owner, responseId);
       if (!authorized) return { ok: false, status: 404, code: 'response_not_found' };
-      if (terminal(authorized.status)) return responseResult(authorized);
+      if (hasTerminalWork(authorized)) return responseResult(authorized);
       const record = await deps.storage.requestCancellation(owner, responseId, now());
       if (!record) return { ok: false, status: 404, code: 'response_not_found' };
-      if (!terminal(record.status)) await deps.cancel(record);
+      if (!hasTerminalWork(record)) await deps.cancel(record);
       const current = await readAuthorized(owner, responseId);
       if (!current) return { ok: false, status: 404, code: 'response_not_found' };
       return responseResult(current);

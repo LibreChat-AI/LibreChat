@@ -2,7 +2,11 @@ import { z } from 'zod';
 import type { StoredResponseRecord, ResponseStorage } from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { BackgroundResponseQueueDependencies } from './queue';
-import { mintBackgroundResponseWorkerToken, mintResponseResumeWorkerToken } from './worker';
+import {
+  mintBackgroundResponseWorkerToken,
+  mintResponseResumeWorkerToken,
+  RESPONSE_WORKER_TOKEN_EXPIRED,
+} from './worker';
 import { AgentTriggerExecutionError } from '../triggers/host';
 import { responseTenantId } from './scope';
 
@@ -16,6 +20,10 @@ export interface BackgroundResponseTransportDependencies {
     init?: Parameters<typeof globalThis.fetch>[1],
   ) => ReturnType<typeof globalThis.fetch>;
 }
+
+const expiredWorkerCredential = z.object({
+  error: z.object({ code: z.literal(RESPONSE_WORKER_TOKEN_EXPIRED) }),
+});
 
 const acknowledgement = z.object({
   id: z.string(),
@@ -146,12 +154,17 @@ function createResponseWorkerTransport(
       });
     }
     if (!response.ok) {
-      await response.body?.cancel();
+      const expired =
+        response.status === 401 &&
+        expiredWorkerCredential.safeParse(await response.json().catch(() => null)).success;
+      // A 401 body has already been consumed; cancelling its locked reader would hide the
+      // classified authentication outcome with a stream error.
+      if (response.status !== 401) await response.body?.cancel();
       throw new AgentTriggerExecutionError('Background response admission rejected', {
         mode: 'fire',
         certainty: response.status >= 500 ? 'ambiguous' : 'definite',
-        retryable: response.status >= 500 || response.status === 429,
-        code: 'response_admission_rejected',
+        retryable: expired || response.status >= 500 || response.status === 429,
+        code: expired ? RESPONSE_WORKER_TOKEN_EXPIRED : 'response_admission_rejected',
         status: response.status,
       });
     }

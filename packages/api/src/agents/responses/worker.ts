@@ -14,6 +14,9 @@ import { tenantContextMiddleware } from '~/middleware/tenant';
 const audience = 'librechat-responses-worker';
 const purpose = 'responses_background';
 const resumePurpose = 'responses_resume';
+export const RESPONSE_WORKER_TOKEN_EXPIRED = 'response_worker_token_expired';
+// Per-attempt security window, not a limit on durable queue work; expiration renews the credential.
+const workerTokenLifetime = '60s';
 const baseClaims = z.object({
   responseId: z.string().min(1),
   userId: z.string().min(1),
@@ -29,6 +32,37 @@ const claimsSchema = z.discriminatedUnion('purpose', [
     providerExecutionId: z.string().min(1).max(128),
   }),
 ]);
+type WorkerClaims = z.infer<typeof claimsSchema>;
+type WorkerTokenError = 'invalid_response_worker' | typeof RESPONSE_WORKER_TOKEN_EXPIRED;
+type WorkerTokenResult =
+  | { ok: true; value: WorkerClaims }
+  | { ok: false; error: { code: WorkerTokenError } };
+
+function verifyWorkerToken(token: string, secret: string): WorkerTokenResult {
+  const verification: jwt.VerifyOptions = { algorithms: ['HS256'], audience };
+  try {
+    const parsed = claimsSchema.safeParse(jwt.verify(token, secret, verification));
+    if (parsed.success) return { ok: true, value: parsed.data };
+  } catch (error) {
+    if (error instanceof jwt.TokenExpiredError) {
+      try {
+        // verify() checks expiration before audience. Revalidate every other constraint before
+        // treating this as a renewable credential rather than a forged or malformed request.
+        const expired = claimsSchema.safeParse(
+          jwt.verify(token, secret, {
+            ...verification,
+            ignoreExpiration: true,
+          }),
+        );
+        if (expired.success) return { ok: false, error: { code: RESPONSE_WORKER_TOKEN_EXPIRED } };
+      } catch {
+        // Invalid signatures, audiences, purposes and claim shapes remain permanent denials.
+      }
+    }
+  }
+  return { ok: false, error: { code: 'invalid_response_worker' } };
+}
+
 interface WorkerAdmission {
   record: StoredResponseRecord;
   storage: ResponseStorage;
@@ -79,7 +113,7 @@ export function mintResponseResumeWorkerToken(
       providerExecutionId: record.resume.providerExecutionId,
     },
     secret,
-    { algorithm: 'HS256', audience, expiresIn: '60s' },
+    { algorithm: 'HS256', audience, expiresIn: workerTokenLifetime },
   );
 }
 
@@ -101,7 +135,7 @@ export function mintBackgroundResponseWorkerToken(
       sourceKeyId: record.sourceKeyId,
     },
     secret,
-    { algorithm: 'HS256', audience, expiresIn: '60s' },
+    { algorithm: 'HS256', audience, expiresIn: workerTokenLifetime },
   );
 }
 
@@ -120,22 +154,17 @@ export function createBackgroundResponseWorkerAuth(
 ): RequestHandler {
   return async (req, res, next) => {
     if (req.headers['x-lc-response-worker'] !== '1') return ordinaryAuth(req, res, next);
-    const deny = () => {
-      res.status(401).json({ error: { code: 'invalid_response_worker', message: 'Unauthorized' } });
+    const deny = (code: WorkerTokenError = 'invalid_response_worker') => {
+      res.status(401).json({ error: { code, message: 'Unauthorized' } });
     };
     if (req.method !== 'POST' || req.path !== '/') return deny();
     const header = req.headers.authorization;
     if (!header?.startsWith('Bearer ')) return deny();
-    let claims: z.infer<typeof claimsSchema>;
+    let claims: WorkerClaims;
     try {
-      const parsed = claimsSchema.safeParse(
-        jwt.verify(header.slice(7), deps.signingSecret(), {
-          algorithms: ['HS256'],
-          audience,
-        }),
-      );
-      if (!parsed.success) return deny();
-      claims = parsed.data;
+      const verified = verifyWorkerToken(header.slice(7), deps.signingSecret());
+      if (!verified.ok) return deny(verified.error.code);
+      claims = verified.value;
     } catch {
       return deny();
     }
