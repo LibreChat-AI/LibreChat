@@ -5,7 +5,7 @@ import {
   getRunStepCloseMetadata,
 } from 'librechat-data-provider';
 import type { Agents, TMessage, PartMetadata } from 'librechat-data-provider';
-import { getStepMetadata, updateContent } from './content';
+import { getStepMetadata, updateContent, isOAuthToolCallName } from './content';
 
 type ToolTimingLookup = (
   callId: string,
@@ -178,7 +178,11 @@ export function applyRunStepClosed(
     return undefined;
   }
   const existingToolCall = existing[ContentTypes.TOOL_CALL];
-  if (!existingToolCall) {
+  if (
+    !existingToolCall ||
+    ('name' in existingToolCall && isOAuthToolCallName(existingToolCall.name)) ||
+    ('stepId' in existingToolCall && existingToolCall.stepId != null && existingToolCall.stepId !== runStep.id)
+  ) {
     return undefined;
   }
   /** Spread conditionally so an unknowable duration leaves any value the server already stamped

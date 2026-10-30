@@ -13,9 +13,9 @@ import { isAskUserQuestionPart, isAnsweredAskUserQuestionPart } from '../ask';
 /**
  * Pure content-part primitives behind `useStepHandler`.
  *
- * Invariant every function here keeps: a part's position in `message.content` is its step index
- * (plus the retained edit prefix). Parts are written in place, never spliced, so a slot that
- * arrives early leaves holes rather than shifting later parts.
+ * Native parts retain their server step index (plus the edit prefix), including sparse holes.
+ * OAuth prompts are auxiliary presentation keyed by tool/step identity after that native region;
+ * their synthetic wire index never reserves or overwrites a provider content slot.
  *
  * AI SDK mapping, for orientation only: `message.content` is `UIMessage.parts`, and the part
  * types map as `text` to `text`, `think` to `reasoning`, `tool_call` to `tool-<name>`,
@@ -162,13 +162,70 @@ export function prepareReasoningPartForStep(
   return { ...message, content: nextContent };
 }
 
+/** OAuth presentation has its own identity domain, independent of future SDK step indices. */
+export function updateContent(
+  message: TMessage,
+  index: number,
+  contentPart: Agents.MessageContentComplex,
+  finalUpdate = false,
+  metadata?: ContentMetadata,
+): TMessage {
+  const incoming =
+    contentPart.type === ContentTypes.TOOL_CALL && 'tool_call' in contentPart
+      ? contentPart.tool_call
+      : undefined;
+  const oauth = isOAuthToolCallName(incoming?.name);
+  const content = message.content ?? [];
+  // Ordinary messages keep the indexed writer's existing allocation and traversal behavior.
+  if (!oauth && !isOAuthToolCallContent(content[content.length - 1]) && !isOAuthToolCallContent(content[index]))
+    return writeContent(message, index, contentPart, finalUpdate, metadata);
+
+  let nativeLength = content.length;
+  while (nativeLength > 0 && isOAuthToolCallContent(content[nativeLength - 1])) nativeLength--;
+  const native = content.slice(0, nativeLength);
+  const auxiliary: TMessageContentParts[] = [];
+  for (let position = 0; position < content.length; position++) {
+    const part = content[position];
+    if (!isOAuthToolCallContent(part)) continue;
+    auxiliary.push(part);
+    // Older snapshots may interleave a prompt with native content. Preserve absolute holes.
+    if (position < nativeLength) delete native[position];
+  }
+  const position = auxiliary.findIndex((part) => {
+    if (part.type !== ContentTypes.TOOL_CALL || !('tool_call' in part)) return false;
+    const call = part.tool_call;
+    if (incoming?.id) return call?.id === incoming.id;
+    if (incoming?.stepId) return call != null && 'stepId' in call && call.stepId === incoming.stepId;
+    return call != null && 'name' in call && call.name === incoming?.name;
+  });
+  if (!oauth && position < 0) {
+    const result = writeContent({ ...message, content: native }, index, contentPart, finalUpdate, metadata);
+    const active = auxiliary.filter((part) =>
+      part.type === ContentTypes.TOOL_CALL && 'tool_call' in part && Boolean(part.tool_call?.auth),
+    );
+    return { ...result, content: [...(result.content ?? []), ...active] };
+  }
+  if (finalUpdate) {
+    if (position >= 0) auxiliary.splice(position, 1);
+    return { ...message, content: [...native, ...auxiliary] };
+  }
+  const result = writeContent(
+    { ...message, content: auxiliary },
+    position >= 0 ? position : auxiliary.length,
+    contentPart,
+    false,
+    metadata,
+  );
+  return { ...message, content: [...native, ...(result.content ?? [])] };
+}
+
 /**
  * Writes one incoming part into `message.content[index]` and returns the next message. Text and
  * reasoning append, tool calls merge (args concatenate until they arrive as an object), summaries
  * concatenate their content, and a part of a different type never overwrites an occupied slot.
  * Returns the input message unchanged when the part is rejected.
  */
-export function updateContent(
+function writeContent(
   message: TMessage,
   index: number,
   contentPart: Agents.MessageContentComplex,
@@ -181,19 +238,9 @@ export function updateContent(
     return message;
   }
 
-  const incomingOAuthToolCall =
-    contentType === ContentTypes.TOOL_CALL &&
-    'tool_call' in contentPart &&
-    isOAuthToolCallName(contentPart.tool_call?.name);
-
   let updatedContent = [...(message.content || [])] as Array<
     Partial<TMessageContentParts> | undefined
   >;
-
-  const oauthPromptOccupiesSlot = isOAuthToolCallContent(updatedContent[index]);
-  if (!incomingOAuthToolCall && oauthPromptOccupiesSlot) {
-    updatedContent = updatedContent.filter((part) => !isOAuthToolCallContent(part));
-  }
 
   /**
    * The synthetic ask-user-question card is pause-scoped UI appended at the end

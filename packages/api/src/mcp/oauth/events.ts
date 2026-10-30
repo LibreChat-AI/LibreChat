@@ -1,3 +1,4 @@
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { Constants, Time } from 'librechat-data-provider';
 import { GraphEvents, StepTypes } from '@librechat/agents';
 import type { OAuthStartHandler } from '../types';
@@ -29,8 +30,10 @@ export function createMCPReauthenticationPrompt({
   runId,
   createStart,
   createEnd,
+  logger,
 }: {
   serverName: string;
+  logger?: { warn: (message: string, metadata: ReturnType<typeof getSafeErrorMetadata>) => void };
   toolCallId?: string;
   stepId?: string;
   runId: string;
@@ -53,10 +56,28 @@ export function createMCPReauthenticationPrompt({
     pending = true;
     await emitStart(...args);
   };
+  let retiring: Promise<void> | undefined;
   const end = async () => {
     if (!pending) return;
-    await emitEnd();
-    pending = false;
+    if (retiring) return retiring;
+    retiring = (async () => {
+      try {
+        await emitEnd();
+        pending = false;
+      } catch (error) {
+        // Keep the prompt retryable without replacing an already-performed tool's outcome.
+        try {
+          logger?.warn('[MCP OAuth] Prompt retirement unavailable', getSafeErrorMetadata(error));
+        } catch {
+          // Diagnostic transport cannot become the tool outcome either.
+        }
+      }
+    })();
+    try {
+      await retiring;
+    } finally {
+      retiring = undefined;
+    }
   };
   return {
     start,
@@ -218,4 +239,50 @@ export function buildMCPAuthRunStepCompletedEvent({
       },
     },
   };
+}
+
+interface OAuthEventTransport {
+  res: import('node:http').ServerResponse;
+  sendEvent: (res: import('node:http').ServerResponse, event: t.ServerSentEvent) => void;
+  jobs: Pick<import('~/stream/GenerationJobManager').GenerationJobManagerClass, 'emitChunk'>;
+  streamId?: string | null;
+  jobCreatedAt?: number;
+}
+
+function createOAuthEventEmitter(transport: OAuthEventTransport) {
+  return async (event: t.ServerSentEvent): Promise<void> => {
+    if (!transport.streamId) {
+      transport.sendEvent(transport.res, event);
+      return;
+    }
+    if (transport.jobCreatedAt == null) throw new Error('OAuth prompt generation is unavailable');
+    await transport.jobs.emitChunk(transport.streamId, event, {
+      expectedCreatedAt: transport.jobCreatedAt,
+      durable: true,
+    });
+  };
+}
+
+export function createMCPAuthStepEmitter(
+  input: OAuthEventTransport & Parameters<typeof buildMCPAuthRunStepEvent>[0],
+): () => Promise<void> {
+  const emit = createOAuthEventEmitter(input);
+  return () => emit(buildMCPAuthRunStepEvent(input));
+}
+
+export function createMCPAuthDeltaEmitter(
+  input: OAuthEventTransport & Pick<Parameters<typeof buildMCPAuthRunStepDeltaEvent>[0], 'stepId' | 'toolCall'>,
+): OAuthStartHandler {
+  const emit = createOAuthEventEmitter(input);
+  return (authURL, options) => emit(buildMCPAuthRunStepDeltaEvent({ ...input, authURL, options }));
+}
+
+export function createMCPAuthEndEmitter(
+  input: OAuthEventTransport & Parameters<typeof buildMCPAuthRunStepCompletedEvent>[0],
+): () => Promise<void> {
+  const emit = createOAuthEventEmitter(input);
+  return () => emit(buildMCPAuthRunStepCompletedEvent({
+    ...input,
+    toolCall: { ...input.toolCall, output: 'OAuth authentication ended', type: 'tool_call' },
+  }));
 }
