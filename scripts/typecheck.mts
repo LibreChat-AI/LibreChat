@@ -27,7 +27,7 @@ function hasBunCheck(): boolean {
 /** Resolves the checker to run, or null when neither Bun nor `typescript` is available. */
 export function resolveTypecheck(root: string): TypecheckCommand | null {
   if (hasBunCheck()) {
-    return { checker: 'bun', command: 'bun', args: ['check'] };
+    return { checker: 'bun', command: 'bun', args: ['check', '--no-script'] };
   }
   try {
     const tsc = createRequire(import.meta.url).resolve('typescript/bin/tsc', { paths: [root] });
@@ -44,7 +44,9 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     process.exit(1);
   }
   if (typecheck.checker === 'tsc') {
-    console.error('typecheck: `bun check` is unavailable, falling back to tsc');
+    console.error(
+      'typecheck: `bun check` is unavailable, falling back to tsc; install Bun 1.4.3+ for faster checks',
+    );
   }
   const result = spawnSync(typecheck.command, [...typecheck.args, ...process.argv.slice(2)], {
     stdio: 'inherit',

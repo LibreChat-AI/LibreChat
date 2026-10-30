@@ -30,6 +30,7 @@
     "build": "npm run clean && tsdown && npm run openapi:copy",
     "build:dev": "npm run clean && tsdown && npm run openapi:copy",
     "build:watch": "npm run openapi:copy && tsdown --watch",
+    "typecheck": "node ../../scripts/typecheck.mts",
     "build:watch:prod": "npm run openapi:copy && tsdown --watch",
     "openapi:copy": "node -e \"const fs=require('fs');fs.mkdirSync('dist',{recursive:true});fs.copyFileSync('openapi/agents.openapi.json','dist/agents.openapi.json')\"",
     "test": "jest --coverage --watch --testPathIgnorePatterns=\"\\.*integration\\.|\\.*helper\\.|__tests__/helpers/|\\.*manual\\.spec\\.\"",

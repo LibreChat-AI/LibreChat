@@ -25,6 +25,7 @@
     "clean": "rimraf dist",
     "build": "npm run clean && tsdown && tsc -p tsconfig.build.json",
     "build:watch": "tsdown --watch",
+    "typecheck": "node ../../scripts/typecheck.mts",
     "test": "jest --coverage --watch",
     "test:ci": "jest --coverage --ci --logHeapUsage",
     "verify": "npm run test:ci",
