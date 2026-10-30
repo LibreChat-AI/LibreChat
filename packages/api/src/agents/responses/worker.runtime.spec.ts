@@ -376,6 +376,7 @@ describe('background Responses execution handoff', () => {
         agentId: record.agentId,
         conversationId: record.conversationId,
         protocol: 'responses',
+        retainTerminalPersistence: true,
         isPrincipalActive: async () => true,
       });
       await storage.publish(owner, record.responseId, 0, {
