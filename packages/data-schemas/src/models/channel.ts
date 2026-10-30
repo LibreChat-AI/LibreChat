@@ -10,7 +10,8 @@ export interface AgentChannelRecord extends AgentChannel {
   apiKeyId?: string;
 }
 
-export interface AgentChannelThreadRecord {
+/** Legacy prototype rows are retained only for privacy erasure, never conversation allocation. */
+interface LegacyAgentChannelThreadRecord {
   channelId: string;
   tenantId?: string;
   externalThreadKey: string;
@@ -52,8 +53,8 @@ export function createAgentChannelModel(
 
 export function createAgentChannelThreadModel(
   mongoose: typeof import('mongoose'),
-): Model<AgentChannelThreadRecord> {
-  const schema = new Schema<AgentChannelThreadRecord>(
+): Model<LegacyAgentChannelThreadRecord> {
+  const schema = new Schema<LegacyAgentChannelThreadRecord>(
     {
       channelId: { type: String, required: true },
       tenantId: String,
@@ -66,6 +67,6 @@ export function createAgentChannelThreadModel(
   applyTenantIsolation(schema);
   return (
     mongoose.models.AgentChannelThread ??
-    mongoose.model<AgentChannelThreadRecord>('AgentChannelThread', schema)
+    mongoose.model<LegacyAgentChannelThreadRecord>('AgentChannelThread', schema)
   );
 }
