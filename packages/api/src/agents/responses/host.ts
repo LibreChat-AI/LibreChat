@@ -22,10 +22,14 @@ import type { BackgroundResponseResult } from './background';
 import type { BackgroundResponseQueue } from './queue';
 import type { ServerRequest } from '~/types/http';
 import type { BoundAddress } from '~/app/origin';
+import {
+  createResponseCompletion,
+  createResponseExecutionRelease,
+  createResponseExecutionConfirmation,
+} from './completion';
 import { createBackgroundResponseWorkerAuth, getBackgroundResponseWorkerRecord } from './worker';
 import { createBackgroundResponseTransport, createResponseResumeTransport } from './transport';
 import { resolveImportRetentionFields, isTemporaryRecord } from '~/conversations/retention';
-import { createResponseCompletion, createResponseExecutionRelease } from './completion';
 import { createBackgroundResponseQueue, createResponseResumeQueue } from './queue';
 import { createBackgroundResponseAuthority } from './authority';
 import { createBackgroundResponseService } from './background';
@@ -34,8 +38,8 @@ import { createResponseDecisionSubmission } from './decision';
 import { resolveResponseContinuation } from './persistence';
 import { cleanupResponseCheckpoint } from './checkpoint';
 import { createResponseRetirement } from './retirement';
-import { selfOriginFromAddress } from '~/app/origin';
 import { createResponseReview } from './review';
+import { responseTenantId } from './scope';
 
 export interface BackgroundResponsesHostDependencies
   extends BackgroundResponseAuthorityDependencies {
@@ -98,13 +102,14 @@ export function createBackgroundResponsesHost(
 ): BackgroundResponsesHost {
   if (deps.decisions && deps.interactive)
     throw new Error('Response decision transport must have one owner');
-  let origin: string | undefined;
+  let listener: BoundAddress | undefined;
   const authorize = createBackgroundResponseAuthority(deps);
   const review = createResponseReview(deps);
   const completion = createResponseCompletion({
     storage: deps.storage,
     cleanupCheckpoint: cleanupResponseCheckpoint,
     releaseExecution: createResponseExecutionRelease(deps.jobs),
+    confirmExecution: createResponseExecutionConfirmation(deps.jobs),
   });
   const retire = createResponseRetirement({
     storage: deps.storage,
@@ -118,12 +123,12 @@ export function createBackgroundResponsesHost(
     signingSecret: deps.signingSecret,
     fetch: deps.fetch,
     getOrigin: () => {
-      if (!origin) throw new Error('Background Responses local listener is not initialized');
-      return origin;
+      if (!listener) throw new Error('Background Responses local listener is not initialized');
+      return listener;
     },
     acknowledgementTimeoutMs: async (record) => {
       const user = await deps.findUser(record.userId);
-      if (!user || user.tenantId !== record.tenantId)
+      if (!user || responseTenantId(user.tenantId) !== responseTenantId(record.tenantId))
         throw new Error('Response principal unavailable');
       const timeout = (await deps.getConfig(user)).endpoints?.agents?.remoteApi?.background
         ?.acknowledgementTimeoutMs;
@@ -220,6 +225,7 @@ export function createBackgroundResponsesHost(
       return {
         responseId: view.responseId,
         status: view.status,
+        ...(view.recovery ? { recovery: view.recovery } : {}),
         oauth: [],
         pendingAction: view.pendingAction,
         pendingDecision: view.pendingDecision,
@@ -232,7 +238,7 @@ export function createBackgroundResponsesHost(
       const user = ownerReviewUser(req);
       if (!user?.id) return void res.status(401).json({ error: 'unauthorized' });
       try {
-        const owner = { userId: user.id, tenantId: user.tenantId };
+        const owner = { userId: user.id, tenantId: responseTenantId(user.tenantId) };
         const record = await deps.storage.read(owner, req.params.id);
         if (!record || !(await authorize(owner, record.agentId, record.sourceKeyId, user)))
           return void res.status(404).json({ error: 'response_not_found' });
@@ -261,7 +267,7 @@ export function createBackgroundResponsesHost(
       });
       try {
         const result = await submit(
-          { userId: user.id, tenantId: user.tenantId },
+          { userId: user.id, tenantId: responseTenantId(user.tenantId) },
           req.params.id,
           req.body,
         );
@@ -279,7 +285,7 @@ export function createBackgroundResponsesHost(
       if (!user?.id) return void res.status(401).json({ error: 'unauthorized' });
       try {
         const result = await service(req).cancel(
-          { userId: user.id, tenantId: user.tenantId },
+          { userId: user.id, tenantId: responseTenantId(user.tenantId) },
           req.params.id,
         );
         if (!result.ok) return void res.status(result.status).json({ error: result.code });
@@ -297,7 +303,7 @@ export function createBackgroundResponsesHost(
       ...(resumeQueue?.sourceDispatchers ?? []),
     ]),
     initialize: (address: BoundAddress | string | null) => {
-      origin = selfOriginFromAddress(address) ?? undefined;
+      listener = address != null && typeof address !== 'string' ? { ...address } : undefined;
     },
     authenticate: (ordinary: RequestHandler) =>
       createBackgroundResponseWorkerAuth(
