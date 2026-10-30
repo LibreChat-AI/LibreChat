@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import type { ResponseOwner, ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
 import type { ResponsesRunEnvelope, JsonValue } from '../envelope';
+import type { ResponseCompletionRecord } from './completion';
 import type { Response } from './types';
 import {
   createResponseContext,
@@ -33,7 +34,7 @@ export interface BackgroundResponseDependencies {
     response: Response;
     generationCreatedAt?: number;
   } | null>;
-  recoverTerminal?: (record: StoredResponseRecord) => Promise<StoredResponseRecord>;
+  recoverTerminal?: (record: StoredResponseRecord) => Promise<ResponseCompletionRecord>;
   /** Signal exact execution and wait for provider-drained confirmation in observe; never claim a missing job stopped. */
   cancel: (record: StoredResponseRecord) => Promise<void>;
   now?: () => number;
@@ -90,9 +91,12 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
     return record;
   }
 
-  async function refresh(record: StoredResponseRecord): Promise<Response> {
-    if ((record.pendingTerminal || terminal(record.status)) && deps.recoverTerminal)
-      record = await deps.recoverTerminal(record);
+  async function refresh(record: StoredResponseRecord): Promise<Response | null> {
+    if ((record.pendingTerminal || terminal(record.status)) && deps.recoverTerminal) {
+      const recovered = await deps.recoverTerminal(record);
+      if (recovered.retirement) return null;
+      record = recovered;
+    }
     if (record.pendingTerminal) return view(record);
     if (terminal(record.status)) return view(record);
     const observed = await deps.observe(record);
@@ -117,8 +121,15 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
     });
     if (result.ok) return response;
     const current = await deps.storage.read(record, record.responseId);
-    if (!current) throw new Error('Background response disappeared during publication');
+    if (!current) return null;
     return view(current);
+  }
+
+  async function responseResult(record: StoredResponseRecord): Promise<BackgroundResponseResult> {
+    const response = await refresh(record);
+    return response
+      ? { ok: true, response }
+      : { ok: false, status: 404, code: 'response_not_found' };
   }
 
   return {
@@ -150,6 +161,8 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
       });
       if (!result.ok) return { ok: false, status: 409, code: result.code };
       let record = result.record;
+      if (result.replayed && !(await deps.authorize(owner, record.agentId, record.sourceKeyId)))
+        return { ok: false, status: 403, code: 'permission_denied' };
       if (!terminal(record.status)) {
         const attached = await deps.storage.attachDelivery(
           owner,
@@ -161,23 +174,25 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
           await deps.enqueue(record);
         }
       }
-      return { ok: true, response: terminal(record.status) ? await refresh(record) : view(record) };
+      return terminal(record.status)
+        ? responseResult(record)
+        : { ok: true, response: view(record) };
     },
     async retrieve(owner: ResponseOwner, responseId: string): Promise<BackgroundResponseResult> {
       const record = await readAuthorized(owner, responseId);
       if (!record) return { ok: false, status: 404, code: 'response_not_found' };
-      return { ok: true, response: await refresh(record) };
+      return responseResult(record);
     },
     async cancel(owner: ResponseOwner, responseId: string): Promise<BackgroundResponseResult> {
       const authorized = await readAuthorized(owner, responseId);
       if (!authorized) return { ok: false, status: 404, code: 'response_not_found' };
-      if (terminal(authorized.status)) return { ok: true, response: await refresh(authorized) };
+      if (terminal(authorized.status)) return responseResult(authorized);
       const record = await deps.storage.requestCancellation(owner, responseId, now());
       if (!record) return { ok: false, status: 404, code: 'response_not_found' };
       if (!terminal(record.status)) await deps.cancel(record);
       const current = await readAuthorized(owner, responseId);
       if (!current) return { ok: false, status: 404, code: 'response_not_found' };
-      return { ok: true, response: await refresh(current) };
+      return responseResult(current);
     },
   };
 }

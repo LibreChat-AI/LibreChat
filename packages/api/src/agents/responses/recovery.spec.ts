@@ -1,6 +1,12 @@
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import { createResponseStorage, tenantStorage, runAsSystem } from '@librechat/data-schemas';
+import {
+  createResponseStorage,
+  createModels,
+  createMethods,
+  tenantStorage,
+  runAsSystem,
+} from '@librechat/data-schemas';
 import type {
   ResponseStorage,
   StoredResponseRecord,
@@ -14,7 +20,7 @@ import { createResponseRetirement } from './retirement';
 
 let mongo: MongoMemoryReplSet;
 let storage: ResponseStorage;
-const owner = { userId: 'completion-owner', tenantId: 'completion-tenant' };
+const owner = { userId: new mongoose.Types.ObjectId().toString(), tenantId: 'completion-tenant' };
 const scoped = <T>(work: () => Promise<T>) => tenantStorage.run(owner, work);
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({
@@ -22,12 +28,22 @@ beforeAll(async () => {
     instanceOpts: [{ args: ['--nounixsocket'] }],
   });
   await mongoose.connect(mongo.getUri(), { autoIndex: false });
+  createModels(mongoose);
   storage = createResponseStorage(mongoose);
 });
 beforeEach(async () => {
   await runAsSystem(async () => {
     await mongoose.models.StoredResponse.deleteMany({});
     await mongoose.models.ResponseScope?.deleteMany({});
+    await mongoose.models.User.deleteMany({});
+  });
+  await scoped(async () => {
+    await mongoose.models.User.create({
+      _id: owner.userId,
+      tenantId: owner.tenantId,
+      email: 'completion-owner@example.com',
+      provider: 'local',
+    });
   });
 });
 afterEach(() => {
@@ -234,7 +250,7 @@ it('reconciles a committed terminal stage whose acknowledgement was lost', () =>
   }));
 
 it.each([false, true])(
-  'retries a projection-only revision conflict after provider drain (late Stop: %s)',
+  'stages by execution identity despite projection changes after provider drain (late Stop: %s)',
   (lateStop) =>
     scoped(async () => {
       const { record, receipt } = await setup();
@@ -251,7 +267,7 @@ it.each([false, true])(
       const completion = createResponseCompletion({ storage, cleanupCheckpoint: async () => {} });
       const result = await completion.stageAndFinish(record, receipt);
       expect(result).toMatchObject({ status: 'completed', responseJSON: receipt.responseJSON });
-      expect(stage).toHaveBeenCalledTimes(2);
+      expect(stage).toHaveBeenCalledTimes(1);
     }),
 );
 
@@ -417,7 +433,7 @@ it('does not let a late Stop overwrite the saved result or require a transient j
     });
     const retire = createResponseRetirement({
       storage,
-      jobs: { getJob, abortJob },
+      jobs: { getJob, abortJob, finishProviderTerminalPersistence: jest.fn() },
       recoverTerminal: completion.finish,
     });
     expect(await retire(owner, record.responseId)).toBe('stopped');
@@ -488,3 +504,72 @@ it('rejects invalid receipt identity before it can poison the durable journal', 
     ).rejects.toThrow('Response terminal receipt identity changed');
     expect((await storage.read(owner, record.responseId))?.pendingTerminal).toBeUndefined();
   }));
+
+it.each(['owner', 'conversation'] as const)(
+  'discards a drained terminal payload after durable %s retirement without expiry',
+  (kind) =>
+    scoped(async () => {
+      const { record, receipt } = await setup();
+      const db = createMethods(mongoose);
+      if (kind === 'owner') await db.deleteUserById(owner.userId);
+      else await db.deleteConvos(owner.userId, { conversationId: record.conversationId });
+      expect(await storage.read(owner, record.responseId)).toBeNull();
+      const cleanup = jest.fn(async () => {});
+      const release = jest.fn(async () => {});
+      const completion = createResponseCompletion({
+        storage,
+        cleanupCheckpoint: cleanup,
+        releaseExecution: release,
+      });
+      const retired = await completion.stageAndFinish(record, receipt);
+      expect(retired).toMatchObject({
+        status: 'completed',
+        requestJSON: '',
+        retirement: kind === 'owner' ? 'owner_deleted' : 'conversation_deleted',
+      });
+      expect(retired.responseJSON).toBeUndefined();
+      expect(retired.pendingTerminal).toBeUndefined();
+      expect(cleanup).toHaveBeenCalledTimes(1);
+      expect(release).toHaveBeenCalledWith(
+        expect.objectContaining({
+          retirement: kind === 'owner' ? 'owner_deleted' : 'conversation_deleted',
+        }),
+        receipt,
+      );
+      expect(await storage.read(owner, record.responseId)).toBeNull();
+    }),
+);
+
+it.each(['owner', 'conversation'] as const)(
+  'returns not found when an authorized read races %s retirement during recovery',
+  (kind) =>
+    scoped(async () => {
+      const { record, receipt } = await setup();
+      await storage.stageTerminal(owner, record.responseId, record.revision, receipt);
+      const completion = createResponseCompletion({ storage, cleanupCheckpoint: async () => {} });
+      const observe = jest.fn();
+      const enqueue = jest.fn();
+      const service = createBackgroundResponseService({
+        storage,
+        authorize: async () => true,
+        observe,
+        enqueue,
+        resolveContinuation: async () => ({
+          conversationId: record.conversationId,
+          parentMessageId: 'root',
+        }),
+        cancel: async () => {},
+        recoverTerminal: async (retained) => {
+          const db = createMethods(mongoose);
+          if (kind === 'owner') await db.deleteUserById(owner.userId);
+          else await db.deleteConvos(owner.userId, { conversationId: record.conversationId });
+          return completion.finish(retained);
+        },
+      });
+      const result = await service.retrieve(owner, record.responseId);
+      expect(result).toEqual({ ok: false, status: 404, code: 'response_not_found' });
+      expect(JSON.stringify(result)).not.toContain('saved final answer');
+      expect(observe).not.toHaveBeenCalled();
+      expect(enqueue).not.toHaveBeenCalled();
+    }),
+);

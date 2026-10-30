@@ -77,11 +77,71 @@ export type ResponseResumeResult =
   | { ok: true; record: StoredResponseRecord; replayed: boolean }
   | { ok: false; code: 'resume_conflict' };
 
+/** A drained execution's authority is independent of polling's projection revision. */
+export type ResponseTerminalGuard =
+  | number
+  | {
+      execution: Pick<
+        StoredResponseRecord,
+        'agentId' | 'sourceKeyId' | 'conversationId' | 'generationCreatedAt' | 'review' | 'resume'
+      >;
+    };
+
+function terminalExecutionFilter(guard: Exclude<ResponseTerminalGuard, number>) {
+  const { execution } = guard;
+  const filter: Record<string, unknown> = {
+    agentId: execution.agentId,
+    sourceKeyId: execution.sourceKeyId ?? { $exists: false },
+    conversationId: execution.conversationId,
+    generationCreatedAt: execution.generationCreatedAt,
+  };
+  const review = execution.review;
+  if (review) {
+    const fields: Record<
+      keyof ResponseReviewCheckpoint,
+      ResponseReviewCheckpoint[keyof ResponseReviewCheckpoint]
+    > = {
+      actionId: review.actionId,
+      providerExecutionId: review.providerExecutionId,
+      expiresAt: review.expiresAt,
+      partialResponseJSON: review.partialResponseJSON,
+      visibleOutputTokens: review.visibleOutputTokens,
+      pendingActionJSON: review.pendingActionJSON,
+      checkpointConfigJSON: review.checkpointConfigJSON,
+      checkpointId: review.checkpointId,
+      checkpointNs: review.checkpointNs,
+    };
+    for (const [key, value] of Object.entries(fields))
+      filter[`review.${key}`] = value ?? { $exists: false };
+  } else filter.review = { $exists: false };
+  const resume = execution.resume;
+  if (resume) {
+    const fields: Record<
+      keyof ResponseResumeIntent,
+      ResponseResumeIntent[keyof ResponseResumeIntent]
+    > = {
+      intentId: resume.intentId,
+      actionId: resume.actionId,
+      previousProviderExecutionId: resume.previousProviderExecutionId,
+      providerExecutionId: resume.providerExecutionId,
+      fingerprint: resume.fingerprint,
+      resolutionJSON: resume.resolutionJSON,
+      decisionJSON: resume.decisionJSON,
+      state: resume.state,
+      reservedAt: resume.reservedAt,
+      admittedAt: resume.admittedAt,
+    };
+    for (const [key, value] of Object.entries(fields))
+      filter[`resume.${key}`] = value ?? { $exists: false };
+  } else filter.resume = { $exists: false };
+  return filter;
+}
+
 export interface ResponseStorage {
   stageTerminal(
     owner: ResponseOwner,
     responseId: string,
-    revision: number,
+    guard: ResponseTerminalGuard,
     receipt: ResponseTerminalReceipt,
   ): Promise<ResponseMutationResult>;
   finishTerminal(
@@ -183,7 +243,13 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
     $and: [activeExpirationFilter<StoredResponseRecord>()],
   });
   return {
-    async stageTerminal(owner, responseId, revision, receipt) {
+    async stageTerminal(owner, responseId, guard, receipt) {
+      if (
+        typeof guard !== 'number' &&
+        guard.execution.generationCreatedAt !== receipt.generationCreatedAt
+      )
+        return { ok: false, code: 'response_conflict' };
+      const execution = typeof guard === 'number' ? undefined : terminalExecutionFilter(guard);
       const pendingTerminal: ResponseTerminalReceipt = {
         generationCreatedAt: receipt.generationCreatedAt,
         providerExecutionId: receipt.providerExecutionId,
@@ -202,7 +268,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
           {
             ...scope(owner),
             responseId,
-            revision,
+            ...(execution ?? { revision: guard }),
             generationCreatedAt: receipt.generationCreatedAt,
             status: { $in: active },
             pendingTerminal: { $exists: false },
@@ -223,7 +289,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
         )
         .lean();
       if (record) return { ok: true, record };
-      const existing = await model.findOne({ ...scope(owner), responseId }).lean();
+      const existing = await model.findOne({ ...scope(owner), responseId, ...execution }).lean();
       if (
         existing?.generationCreatedAt === receipt.generationCreatedAt &&
         existing.pendingTerminal &&
