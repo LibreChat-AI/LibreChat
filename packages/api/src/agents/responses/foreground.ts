@@ -30,6 +30,7 @@ export function withResponsePersistenceErrors(handler: RequestHandler): RequestH
 
 export interface ResponseHistoryMessage extends StoredResponseMessage {
   content?: unknown;
+  metadata?: Record<string, unknown>;
   isUserSubmitted?: boolean;
   userSubmittedPaths?: string[];
   userSubmittedMessageFieldPaths?: { path: string; field: string }[];
@@ -63,6 +64,12 @@ function internalHistoryContent(message: ResponseHistoryMessage): InternalMessag
   return content;
 }
 
+function historyRole(message: ResponseHistoryMessage): InternalMessage['role'] {
+  const role = message.isUserSubmitted ? message.metadata?.responseInputRole : undefined;
+  if (role === 'system' || role === 'assistant') return role;
+  return message.isCreatedByUser ? 'user' : 'assistant';
+}
+
 /** A lookup outage is not an empty conversation; model history must fail closed. */
 export async function loadForegroundResponseHistory(
   input: { conversationId: string; userId: string; previousResponseId?: string },
@@ -81,7 +88,7 @@ export async function loadForegroundResponseHistory(
     if (input.previousResponseId?.startsWith('resp_') && messages.length === 0)
       throw new ResponsePersistenceError();
     return messages.map((message) => ({
-      role: message.isCreatedByUser ? ('user' as const) : ('assistant' as const),
+      role: historyRole(message),
       content: internalHistoryContent(message),
       messageId: message.messageId,
       isCreatedByUser: message.isCreatedByUser === true,
@@ -162,7 +169,9 @@ export async function saveForegroundResponseInputs<WriteContext>(
         messageId: string;
         conversationId: string;
         parentMessageId: string;
-        isCreatedByUser: true;
+        isCreatedByUser: boolean;
+        isUserSubmitted: true;
+        metadata: { responseInputRole: InternalMessage['role'] };
         text: string;
         content: Exclude<InternalMessage['content'], string>;
         sender: string;
@@ -181,18 +190,20 @@ export async function saveForegroundResponseInputs<WriteContext>(
           messageId: message.messageId,
           conversationId: input.conversationId,
           parentMessageId: message.parentMessageId,
-          isCreatedByUser: true,
+          isCreatedByUser: message.role === 'user',
+          isUserSubmitted: true,
+          metadata: { responseInputRole: message.role },
           text:
             typeof message.content === 'string' ? message.content : JSON.stringify(message.content),
           content:
             typeof message.content === 'string'
               ? [{ type: ContentTypes.TEXT, text: message.content }]
               : message.content,
-          sender: 'User',
+          sender: message.role === 'user' ? 'User' : message.role === 'system' ? 'System' : 'Agent',
           endpoint: EModelEndpoint.agents,
           model: input.agentId,
         },
-        { context: 'Responses API - save user input' },
+        { context: 'Responses API - save response input' },
       ),
       { messageId: message.messageId, conversationId: input.conversationId },
     );
