@@ -26,6 +26,9 @@ export const webSearchAuth = {
       keenableApiKey: 0 as const,
       keenableApiUrl: 0 as const,
     },
+    kagi: {
+      kagiApiKey: 1 as const,
+    },
   },
   scrapers: {
     firecrawl: {
@@ -46,6 +49,9 @@ export const webSearchAuth = {
        * lifts rate limits. The fetch endpoint itself is overridden with the
        * `KEENABLE_FETCH_URL` env var, not through this config. */
       keenableApiKey: 0 as const,
+    },
+    kagi: {
+      kagiApiKey: 1 as const,
     },
   },
   rerankers: {
@@ -229,6 +235,7 @@ export function loadWebSearchConfig(
   config: TWebSearchConfigInput | undefined,
 ): TCustomConfig['webSearch'] {
   const serperApiKey = config?.serperApiKey ?? '${SERPER_API_KEY}';
+  const kagiApiKey = config?.kagiApiKey ?? '${KAGI_API_KEY}';
   const searxngInstanceUrl = config?.searxngInstanceUrl ?? '${SEARXNG_INSTANCE_URL}';
   const searxngApiKey = config?.searxngApiKey ?? '${SEARXNG_API_KEY}';
   const firecrawlApiKey = config?.firecrawlApiKey ?? '${FIRECRAWL_API_KEY}';
@@ -257,6 +264,7 @@ export function loadWebSearchConfig(
     jinaApiUrl,
     cohereApiKey,
     serperApiKey,
+    kagiApiKey,
     searxngApiKey,
     tavilyApiKey,
     tavilySearchUrl,
