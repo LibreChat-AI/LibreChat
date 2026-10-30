@@ -21,6 +21,8 @@ import {
   getEditPrefix,
   updateContent,
 } from '../steps';
+import { markAskUserQuestionAnswered } from '../ask';
+import { applyPendingAction } from '../pending';
 
 const RUN_ID = 'response-1';
 
@@ -601,6 +603,183 @@ describe('steps', () => {
         ),
       ).toBeUndefined();
     });
+
+    it.each(['oauth-first', 'question-first'])(
+      'streams after an answered question beside OAuth (%s)',
+      (order) => {
+        const ask = toolStep('ask', 0, [{ id: 'ask-call', name: 'ask_user_question', args: '' }]);
+        const oauth = toolStep('oauth-one', 0, [{ id: 'flow-1', name: 'oauth_mcp_one', args: '' }]);
+        const pending: Agents.PendingAction = {
+          actionId: `question-with-oauth-${order}`,
+          streamId: 'stream',
+          createdAt: 0,
+          payload: { type: 'ask_user_question', question: { question: 'Which environment?' } },
+        };
+        let response = applyToolCallsStep(createResponse(), ask, 0).message;
+        const addOAuth = () => {
+          response = applyToolCallsStep(response, oauth, 0).message;
+          response = applyToolCallDelta(
+            response,
+            oauth,
+            {
+              id: oauth.id,
+              delta: {
+                type: StepTypes.TOOL_CALLS,
+                tool_calls: [{ id: 'flow-1', name: 'oauth_mcp_one', args: '' }],
+                auth: 'https://one.example/authorize',
+              },
+            },
+            'flow-1',
+            0,
+          ) as TMessage;
+        };
+        if (order === 'oauth-first') addOAuth();
+        response = applyPendingAction(response, pending);
+        response = applyPendingAction(response, pending);
+        if (order === 'question-first') addOAuth();
+        expect(response.content).toHaveLength(3);
+        markAskUserQuestionAnswered(pending.actionId);
+        response = applyToolCallCompleted(
+          response,
+          ask,
+          toolEnd(ask.id, { id: 'ask-call', name: 'ask_user_question', output: 'staging' }),
+          0,
+        );
+        response = streamText(response, messageStep('resumed', 1), ['Resumed ', 'answer']);
+        expect(response.content).toMatchObject([
+          { type: ContentTypes.TOOL_CALL, tool_call: { id: 'ask-call', output: 'staging' } },
+          { type: ContentTypes.TEXT, text: 'Resumed answer' },
+          {
+            type: ContentTypes.TOOL_CALL,
+            tool_call: { id: 'flow-1', auth: 'https://one.example/authorize' },
+          },
+        ]);
+      },
+    );
+
+    it('keeps OAuth prompts separate from reasoning and sibling tool output', () => {
+      const thinking = { type: ContentTypes.THINK, think: 'Delegating' } as const;
+      const parent = {
+        type: ContentTypes.TOOL_CALL,
+        tool_call: { id: 'child', name: 'subagent', args: '' },
+      } as TMessageContentParts;
+      let response = createResponse([thinking, parent]);
+      const prompt = (server: string, id: string) => {
+        const step = toolStep(`oauth-${server}`, 0, [
+          { id, name: `oauth_mcp_${server}`, args: '', type: ToolCallTypes.TOOL_CALL },
+        ]);
+        response = applyToolCallsStep(response, step, 0).message;
+        response = applyToolCallDelta(
+          response,
+          step,
+          {
+            id: step.id,
+            delta: {
+              type: StepTypes.TOOL_CALLS,
+              tool_calls: [{ id, name: `oauth_mcp_${server}`, args: '' }],
+              auth: `https://${server}.example/authorize`,
+            },
+          },
+          id,
+          0,
+        ) as TMessage;
+        return step;
+      };
+      const first = prompt('one', 'flow-1');
+      prompt('two', 'flow-2');
+      response = streamText(response, messageStep('sibling', 2), ['Sibling finished']);
+      expect(response.content?.slice(0, 3)).toEqual([
+        thinking,
+        parent,
+        { type: ContentTypes.TEXT, text: 'Sibling finished' },
+      ]);
+      expect(
+        response.content?.slice(3).map((part) => (part as Agents.ToolCallContent).tool_call?.auth),
+      ).toEqual(['https://one.example/authorize', 'https://two.example/authorize']);
+      response = applyToolCallCompleted(
+        response,
+        first,
+        toolEnd(first.id, {
+          id: 'flow-1',
+          name: 'oauth_mcp_one',
+          output: 'OAuth authentication completed',
+        }),
+        0,
+      );
+      expect(response.content).toHaveLength(4);
+      expect(toolCallAt(response, 3)).toMatchObject({
+        id: 'flow-2',
+        auth: 'https://two.example/authorize',
+      });
+    });
+
+    it('deduplicates replayed prompts and ignores completion of an older flow', () => {
+      let response = createResponse([{ type: ContentTypes.TEXT, text: 'Existing answer' }]);
+      const oldStep = toolStep('oauth-one', 0, [
+        { id: 'flow-old', name: 'oauth_mcp_one', args: '' },
+      ]);
+      response = applyToolCallsStep(response, oldStep, 0).message;
+      const step = toolStep('oauth-one', 0, [
+        { id: 'flow-new', name: 'oauth_mcp_one', args: '', type: ToolCallTypes.TOOL_CALL },
+      ]);
+      for (let i = 0; i < 2; i++) {
+        response = applyToolCallsStep(response, step, 0).message;
+        response = applyToolCallDelta(
+          response,
+          step,
+          {
+            id: step.id,
+            delta: {
+              type: StepTypes.TOOL_CALLS,
+              tool_calls: [{ id: 'flow-new', name: 'oauth_mcp_one', args: '' }],
+              auth: 'https://one.example/authorize',
+            },
+          },
+          'flow-new',
+          0,
+        ) as TMessage;
+      }
+      response = applyToolCallCompleted(
+        response,
+        step,
+        toolEnd(step.id, { id: 'flow-old', name: 'oauth_mcp_one', output: 'completed' }),
+        0,
+      );
+      expect(response.content).toHaveLength(2);
+      expect(toolCallAt(response, 1)).toMatchObject({
+        id: 'flow-new',
+        auth: 'https://one.example/authorize',
+      });
+    });
+
+    it.each(['failed', 'cancelled'] as const)(
+      'removes only the OAuth prompt on %s close',
+      (status) => {
+        const parent = {
+          type: ContentTypes.TOOL_CALL,
+          tool_call: { id: 'parent', name: 'subagent', args: '' },
+        } as TMessageContentParts;
+        const first = toolStep('oauth-one', 0, [{ id: 'flow-1', name: 'oauth_mcp_one', args: '' }]);
+        const second = toolStep('oauth-two', 0, [
+          { id: 'flow-2', name: 'oauth_mcp_two', args: '' },
+        ]);
+        let response = applyToolCallsStep(createResponse([parent]), first, 0).message;
+        response = applyToolCallsStep(response, second, 0).message;
+        const closed = {
+          id: first.id,
+          index: 0,
+          type: StepTypes.TOOL_CALLS,
+          status,
+          created_at: 1000,
+          closed_at: 1250,
+        };
+        const result = applyRunStepClosed(response, first, closed, 0) as TMessage;
+        expect(result.content?.[0]).toEqual(parent);
+        expect(result.content).toHaveLength(2);
+        expect(toolCallAt(result, 1)?.id).toBe('flow-2');
+        expect(applyRunStepClosed(result, first, closed, 0)?.content).toEqual(result.content);
+      },
+    );
 
     it('displaces a pending OAuth prompt when real content lands in its slot', () => {
       const oauth = createResponse([

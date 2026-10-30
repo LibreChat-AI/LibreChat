@@ -2,6 +2,7 @@ import { Constants, StepTypes, StepEvents } from 'librechat-data-provider';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { StepEvent, StepEffect, StepContext, StreamState } from './stream/state';
 import {
+  isOAuthToolCallName,
   getEditPrefix,
   applyAgentUpdate,
   applySummaryStep,
@@ -43,8 +44,8 @@ export { syncStreamMessage } from './stream/subagent';
  * same event read the list back through `getMessages`. Everything else (live-status stores,
  * announcements, cache invalidation, coalesced flushes) is returned in order for the binding.
  *
- * Invariant: a part's position in `message.content` is its step index plus the retained edit
- * prefix. Nothing here splices content mid-stream.
+ * Model parts retain their absolute step indices plus the edit prefix. Synthetic OAuth
+ * prompts follow those model parts and are addressed separately by identity.
  */
 
 export function reduceStep(state: StreamState, event: StepEvent, ctx: StepContext): StepEffect[] {
@@ -62,7 +63,19 @@ export function reduceStep(state: StreamState, event: StepEvent, ctx: StepContex
   const { initialContent, editPrefixOffset } = getEditPrefix(submission);
 
   if (event.event === StepEvents.ON_RUN_STEP) {
-    const runStep = event.data;
+    let runStep = event.data;
+    if (runStep.runId !== Constants.USE_PRELIM_RESPONSE_MESSAGE_ID && runStep.runId) {
+      state.currentResponseId = runStep.runId;
+    } else if (
+      runStep.runId === Constants.USE_PRELIM_RESPONSE_MESSAGE_ID &&
+      state.currentResponseId &&
+      runStep.stepDetails.type === StepTypes.TOOL_CALLS &&
+      runStep.stepDetails.tool_calls?.some(
+        (call) => 'name' in call && isOAuthToolCallName(call.name),
+      )
+    ) {
+      runStep = { ...runStep, runId: state.currentResponseId };
+    }
     let parentMessageId =
       submission.isRegenerate && submission.initialResponse?.parentMessageId
         ? submission.initialResponse.parentMessageId

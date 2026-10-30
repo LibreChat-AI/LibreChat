@@ -14,8 +14,9 @@ import { isAskUserQuestionPart, isAnsweredAskUserQuestionPart } from '../ask';
  * Pure content-part primitives behind `useStepHandler`.
  *
  * Invariant every function here keeps: a part's position in `message.content` is its step index
- * (plus the retained edit prefix). Parts are written in place, never spliced, so a slot that
- * arrives early leaves holes rather than shifting later parts.
+ * (plus the retained edit prefix). Model parts are written in place, so early arrivals leave
+ * holes rather than shifting later parts. Synthetic OAuth prompts follow the model parts
+ * and are addressed by call ID, outside the model's index space.
  *
  * AI SDK mapping, for orientation only: `message.content` is `UIMessage.parts`, and the part
  * types map as `text` to `text`, `think` to `reasoning`, `tool_call` to `tool-<name>`,
@@ -45,7 +46,7 @@ type AllContentTypes =
 export const isOAuthToolCallName = (name?: string): boolean =>
   typeof name === 'string' && name.startsWith(`oauth${Constants.mcp_delimiter}`);
 
-const isOAuthToolCallContent = (part?: Partial<TMessageContentParts>) => {
+export const isOAuthToolCallContent = (part?: Partial<TMessageContentParts>): boolean => {
   if (part?.type !== ContentTypes.TOOL_CALL || !('tool_call' in part)) {
     return false;
   }
@@ -186,21 +187,54 @@ export function updateContent(
     'tool_call' in contentPart &&
     isOAuthToolCallName(contentPart.tool_call?.name);
 
-  let updatedContent = [...(message.content || [])] as Array<
-    Partial<TMessageContentParts> | undefined
-  >;
-
-  const oauthPromptOccupiesSlot = isOAuthToolCallContent(updatedContent[index]);
-  if (!incomingOAuthToolCall && oauthPromptOccupiesSlot) {
-    updatedContent = updatedContent.filter((part) => !isOAuthToolCallContent(part));
+  // Synthetic OAuth rows share neither the model's index space nor each other's slot.
+  const hasOAuth =
+    incomingOAuthToolCall ||
+    isOAuthToolCallContent(message.content?.[(message.content?.length ?? 0) - 1]);
+  const modelContent: Array<Partial<TMessageContentParts> | undefined> = hasOAuth
+    ? []
+    : [...(message.content ?? [])];
+  const oauthContent: Array<Partial<TMessageContentParts> | undefined> = [];
+  if (hasOAuth) {
+    for (const part of message.content ?? []) {
+      (isOAuthToolCallContent(part) ? oauthContent : modelContent).push(part);
+    }
+  }
+  let updatedContent = incomingOAuthToolCall ? oauthContent : modelContent;
+  if (incomingOAuthToolCall && 'tool_call' in contentPart) {
+    const incomingId = contentPart.tool_call?.id;
+    const incomingStepId = contentPart.tool_call?.stepId;
+    const existingIndex = oauthContent.findIndex((part) => {
+      if (part?.type !== ContentTypes.TOOL_CALL || !('tool_call' in part) || !part.tool_call)
+        return false;
+      return (
+        (incomingId && part.tool_call.id === incomingId) ||
+        (!finalUpdate &&
+          incomingStepId &&
+          'stepId' in part.tool_call &&
+          part.tool_call.stepId === incomingStepId)
+      );
+    });
+    if (finalUpdate) {
+      if (existingIndex >= 0) oauthContent.splice(existingIndex, 1);
+      return { ...message, content: [...modelContent, ...oauthContent] as TMessageContentParts[] };
+    }
+    const existing = oauthContent[existingIndex];
+    if (
+      existing?.type === ContentTypes.TOOL_CALL &&
+      'tool_call' in existing &&
+      existing.tool_call?.id !== incomingId
+    ) {
+      oauthContent[existingIndex] = undefined;
+    }
+    index = existingIndex >= 0 ? existingIndex : oauthContent.length;
   }
 
   /**
    * The synthetic ask-user-question card is pause-scoped UI appended at the end
    * of the content, exactly the ABSOLUTE index the resumed segment streams
    * into. Once real content arrives for that slot the pause is over: displace
-   * the card (same displacement pattern as the OAuth prompt above) instead of
-   * dropping the incoming part as a type mismatch. Covers the streaming
+   * the card instead of dropping the incoming part as a type mismatch. Covers the streaming
    * handler's own in-flight message copy, reconnecting tabs, and other devices:
    * the store-level strip on answer submit can't reach those.
    */
@@ -322,8 +356,12 @@ export function updateContent(
       args,
       stepId: getNonEmptyValue([contentPart.tool_call.stepId, existingToolCall?.stepId]),
       type: ToolCallTypes.TOOL_CALL,
-      auth: contentPart.tool_call.auth,
-      expires_at: contentPart.tool_call.expires_at,
+      auth: incomingOAuthToolCall
+        ? (contentPart.tool_call.auth ?? existingToolCall?.auth)
+        : contentPart.tool_call.auth,
+      expires_at: incomingOAuthToolCall
+        ? (contentPart.tool_call.expires_at ?? existingToolCall?.expires_at)
+        : contentPart.tool_call.expires_at,
       toolPreparationStartedAt:
         contentPart.tool_call.toolPreparationStartedAt ??
         existingToolCall?.toolPreparationStartedAt,
@@ -361,5 +399,19 @@ export function updateContent(
     } as Partial<TMessageContentParts>;
   }
 
-  return { ...message, content: updatedContent as TMessageContentParts[] };
+  let content = updatedContent;
+  if (incomingOAuthToolCall) {
+    content = [...modelContent, ...updatedContent];
+  } else if (oauthContent.length > 0) {
+    content = [
+      ...updatedContent,
+      ...oauthContent.filter(
+        (part) =>
+          part?.type === ContentTypes.TOOL_CALL &&
+          'tool_call' in part &&
+          part.tool_call?.auth != null,
+      ),
+    ];
+  }
+  return { ...message, content: content as TMessageContentParts[] };
 }
