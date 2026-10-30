@@ -12,6 +12,7 @@ on:
       - 'packages/**'
       - 'package.json'
       - 'package-lock.json'
+      - '.bun-version'
       - 'config/circular-deps.mjs'
       - '.github/workflows/backend-review.yml'
       - '!**.md'
@@ -21,6 +22,7 @@ on:
       - 'packages/**'
       - 'package.json'
       - 'package-lock.json'
+      - '.bun-version'
       - 'config/circular-deps.mjs'
       - '.github/workflows/backend-review.yml'
       - '!**.md'
@@ -301,10 +303,10 @@ jobs:
           name: build-api
           path: packages/api/dist
 
-      - name: Use Bun 1.4.3
+      - name: Use pinned Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.4.3'
+          bun-version-file: .bun-version
 
       - name: Type check data-provider
         run: bun check -p packages/data-provider/tsconfig.json
