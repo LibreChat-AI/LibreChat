@@ -1,7 +1,7 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import request from 'supertest';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createModels,
   createMethods,
@@ -16,14 +16,17 @@ import { createChannelHandlers } from './service';
 
 const serviceToken = 'local-channel-identity-test-token-32-characters';
 const tenantId = 'tenant-a';
-let mongo: MongoMemoryServer;
+let mongo: MongoMemoryReplSet;
 let app: express.Express;
 let db: ReturnType<typeof createMethods>;
 let identity: ReturnType<typeof createChannelIdentityService>;
 let mode: 'shared' | 'per_user';
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create({ instance: { args: ['--nounixsocket'] } });
+  mongo = await MongoMemoryReplSet.create({
+    replSet: { count: 1 },
+    instanceOpts: [{ args: ['--nounixsocket'] }],
+  });
   await mongoose.connect(mongo.getUri());
   createModels(mongoose);
   db = createMethods(mongoose);
@@ -86,7 +89,7 @@ beforeEach(async () => {
         user: {
           id: req.get('x-test-user'),
           tenantId: req.get('x-test-user-tenant') ?? tenantId,
-          name: 'Account name',
+          name: req.get('x-test-name') ?? 'Account name',
           email: 'private@example.com',
         },
       });
@@ -195,4 +198,69 @@ test('requires service auth and authenticated same-tenant browser; rejects cross
     .set('Sec-Fetch-Site', 'cross-site')
     .send({ revision: link.revision })
     .expect(403);
+});
+
+test.each(['', 'private@example.test'])(
+  'never exports internal principal IDs for an unsafe account name: %s',
+  async (name) => {
+    const issued = await svc('/service/channel-a/identity/U1/ticket').send({}).expect(200);
+    const ticket = new URL(issued.body.value.url).hash.slice(1);
+    const preview = await browser('/links/preview').send({ ticket }).expect(200);
+    await browser('/links/accept')
+      .set('x-test-name', name)
+      .send({ ticket, revision: preview.body.value.revision })
+      .expect(200);
+    const inspected = await request(app)
+      .get('/service/channel-a/identity/U1')
+      .set('Authorization', `Bearer ${serviceToken}`)
+      .set('x-tenant-id', tenantId)
+      .expect(200);
+    expect(inspected.body.value.accountLabel).toBe('Linked account');
+    expect(JSON.stringify(inspected.body)).not.toMatch(/user-a|private@example/);
+  },
+);
+
+test('lets an owner withdraw existing consent after the channel is disabled', async () => {
+  const { accepted: link } = await accepted();
+  const confirmed = await svc('/service/channel-a/identity/U1/confirm')
+    .send({ linkId: link.linkId, revision: link.revision })
+    .expect(200);
+  const active = confirmed.body.value;
+  await tenantStorage.run({ tenantId }, () =>
+    db.updateAgentChannel(
+      'channel-a',
+      'user-a',
+      { status: 'disabled', revision: 'disabled-revision' },
+      'active',
+      'rev-1',
+    ),
+  );
+  const links = await request(app).get('/links').set('x-test-user', 'user-a').expect(200);
+  expect(links.body[0].state).toBe('unavailable');
+  const result = await request(app)
+    .delete(`/links/${active.linkId}`)
+    .set('x-test-user', 'user-a')
+    .set('Sec-Fetch-Site', 'same-origin')
+    .send({ revision: active.revision })
+    .expect(200);
+  expect(result.body).toMatchObject({ ok: true, value: { state: 'revoked' } });
+  await tenantStorage.run({ tenantId }, async () => {
+    await db.updateAgentChannel(
+      'channel-a',
+      'user-a',
+      { status: 'active', revision: 'rev-1' },
+      'disabled',
+      'disabled-revision',
+    );
+    expect(
+      await identity.resolve({
+        tenantId,
+        channelId: 'channel-a',
+        channelRevision: 'rev-1',
+        agentId: 'agent-a',
+        teamId: 'T1',
+        externalUserId: 'U1',
+      }),
+    ).toMatchObject({ ok: false, error: { code: 'revoked' } });
+  });
 });

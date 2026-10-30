@@ -53,8 +53,8 @@ export function createChannelIdentityHandlers(
         return;
       }
       const user = parsedUser.data;
-      const tenantId = getTenantId() ?? '_';
-      if ((user.tenantId ?? '_') !== tenantId) {
+      const tenantId = getTenantId() || '_';
+      if ((user.tenantId || '_') !== tenantId) {
         res.status(403).json({ ok: false, error: { code: 'forbidden' } });
         return;
       }
@@ -64,7 +64,7 @@ export function createChannelIdentityHandlers(
         name &&
         !name.includes('@') &&
         [...name].every((char) => char.charCodeAt(0) >= 32 && char.charCodeAt(0) !== 127);
-      const accountLabel = safeName ? name.slice(0, 200) : `Account ${user.id}`;
+      const accountLabel = safeName ? name.slice(0, 200) : 'Linked account';
       try {
         await handler(req, res, { userId: user.id, tenantId, accountLabel });
       } catch {
@@ -82,7 +82,7 @@ export function createChannelIdentityHandlers(
         .safeParse(req.params.externalUserId);
       if (
         !externalUserId.success ||
-        !channel.revision ||
+        channel.revision == null ||
         !channel.slack?.teamId ||
         !channel.slack.appId
       ) {
@@ -90,7 +90,7 @@ export function createChannelIdentityHandlers(
         return;
       }
       await handler(req, res, {
-        tenantId: channel.tenantId ?? '_',
+        tenantId: channel.tenantId || '_',
         channelId: channel.channelId,
         channelRevision: channel.revision,
         agentId: channel.agentId,
