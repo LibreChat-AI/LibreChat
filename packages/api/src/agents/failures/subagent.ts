@@ -7,6 +7,7 @@ import {
   MCPTransportAuthenticationError,
 } from '~/mcp/errors';
 import { ReauthenticationRequiredError } from '~/mcp/oauth/tokens';
+import { classifySubagentResolutionFailure } from '../errors';
 import { CodeWorkspaceSelectionError } from '~/code/errors';
 import { OboTokenResolutionError } from '~/mcp/oauth/obo';
 import { OpenIDReauthRequiredError } from '~/utils/oidc';
@@ -174,8 +175,8 @@ export function findMCPAuthenticationFailure(error: unknown): MCPAuthenticationF
 
 /**
  * Logs why a subagent could not start, which the SDK otherwise reports only as a fixed
- * `cause`. Leaves the SDK's classification unchanged: its causes cannot yet say that an MCP
- * server needs re-authentication, so that reason is logged rather than shown.
+ * `cause`. Host-owned MCP failures select fixed SDK messages; other failures retain the
+ * SDK's existing classification. Operator logging and model-facing text remain separate.
  */
 export const reportSubagentResolutionFailure: SubagentResolutionFailureHandler = (
   detail,
@@ -198,6 +199,8 @@ export const reportSubagentResolutionFailure: SubagentResolutionFailureHandler =
       frames: describeStackFrames(error),
     },
   );
+  const cause = classifySubagentResolutionFailure(detail, error);
+  return cause === 'unknown' ? undefined : cause;
 };
 
 function describeMCPAuthenticationFailure(failure: MCPAuthenticationFailure | undefined): string {
