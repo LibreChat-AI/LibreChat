@@ -74,14 +74,58 @@ beforeEach(async () => {
   await runAsSystem(async () => {
     await mongoose.models.ChannelRun.deleteMany({});
     await mongoose.models.ChannelLane.deleteMany({});
+    await mongoose.models.AgentChannel.deleteMany({});
+    await mongoose.models.ChannelScope.deleteMany({});
+    await mongoose.models.ResponseScope.deleteMany({});
+    await mongoose.models.StoredResponse.deleteMany({});
+    await createMethods(mongoose).createAgentChannel({
+      tenantId,
+      channelId: 'channel',
+      agentId: 'agent',
+      createdBy: 'channel-owner',
+      type: 'slack',
+      status: 'active',
+      credentialMode: 'shared',
+      revision: 'v1',
+      slack: { teamId: 'T1', appId: 'A1', botUserId: 'B1' },
+    });
   });
 });
+
+async function bindTestResponse(run: ChannelRunRecord, responseId = 'response-1', at = 102) {
+  const current = (await storage.read(run.tenantId, run.channelId, run.runId))!;
+  const execution = current.execution!;
+  await mongoose.models.StoredResponse.create({
+    tenantId: run.tenantId === '_' ? undefined : run.tenantId,
+    sourceKeyId: execution.apiKeyId,
+    userId: run.principal.userId,
+    responseId,
+    requestKey: `channel:${run.runId}`,
+    fingerprint: 'request',
+    agentId: run.agentId,
+    requestJSON: JSON.stringify({
+      model: run.agentId,
+      input: run.admission.input,
+      background: true,
+      store: true,
+      ...(execution.parentMessageId === '00000000-0000-0000-0000-000000000000'
+        ? {}
+        : { previous_response_id: execution.parentMessageId }),
+    }),
+    conversationId: execution.conversationId,
+    parentMessageId: execution.parentMessageId,
+    status: 'queued',
+    revision: 0,
+  });
+  return storage.bindResponse(run.tenantId, fence(run), responseId, at);
+}
 
 async function ready() {
   await storage.admit(enrollment(), 100);
   const claimed = await storage.claim(tenantId, 'channel', 'worker-a', 100, 1000);
   expect(claimed).not.toBeNull();
-  const run = await storage.prepareExecution(tenantId, fence(claimed!), 101);
+  const prepared = await storage.prepareExecution(tenantId, fence(claimed!), 101);
+  const run = await bindTestResponse(prepared);
   await storage.saveSnapshot(
     tenantId,
     fence(run),
@@ -144,7 +188,6 @@ describe('Responses execution binding', () => {
   beforeEach(async () => {
     await runAsSystem(async () => {
       await mongoose.models.StoredResponse.deleteMany({});
-      await mongoose.models.ResponseScope?.deleteMany({});
     });
   });
   async function prepared() {
@@ -160,7 +203,7 @@ describe('Responses execution binding', () => {
       { apiKeyId: 'issued', encryptedApiKey: 'ciphertext' },
       102,
     );
-    if (cancel) await storage.requestCancel(tenantId, 'channel', run.runId, 'owner');
+    if (cancel) await storage.requestCancel(run, run.runId);
     return run;
   }
   it('holds a cancelled issued grant until the exact late response exists, without writing that response', () =>
@@ -252,7 +295,7 @@ describe('Responses execution binding', () => {
       await expect(storage.recoverResponse(tenantId, fence(run), 103)).rejects.toMatchObject({
         code: 'invalid_transition',
       });
-      await storage.requestCancel(tenantId, 'channel', run.runId, 'owner');
+      await storage.requestCancel(run, run.runId);
       await expect(storage.recoverResponse('other-tenant', fence(run), 103)).rejects.toMatchObject({
         code: 'invalid_transition',
       });
@@ -327,7 +370,11 @@ describe('Responses execution binding', () => {
         });
         const cleanup = await storage.claimAuthorityLost(run, 'cleanup', 1101, 1000);
         expect(cleanup).not.toBeNull();
-        const jobs = { getJob: jest.fn(async () => undefined), abortJob: jest.fn() };
+        const jobs = {
+          getJob: jest.fn(async () => undefined),
+          abortJob: jest.fn(),
+          finishProviderTerminalPersistence: jest.fn(async () => false),
+        };
         const retire = createChannelResponseRetirement({
           storage: responses,
           recovery: storage,
@@ -378,7 +425,11 @@ describe('Responses execution binding', () => {
       );
       expect(publication.ok).toBe(true);
       const cleanup = await storage.claimAuthorityLost(run, 'cleanup', 1101, 1000);
-      const jobs = { getJob: jest.fn(async () => undefined), abortJob: jest.fn() };
+      const jobs = {
+        getJob: jest.fn(async () => undefined),
+        abortJob: jest.fn(),
+        finishProviderTerminalPersistence: jest.fn(async () => false),
+      };
       const retire = createChannelResponseRetirement({
         storage: responses,
         recovery: storage,
@@ -401,7 +452,7 @@ describe('Responses execution binding', () => {
   it('confirms unstarted cancellation only while no credential or provider admission can exist', () =>
     scope(async () => {
       const run = await prepared();
-      await storage.requestCancel(tenantId, 'channel', run.runId, 'owner');
+      await storage.requestCancel(run, run.runId);
       const cancelled = await storage.finishUnstartedResponseCancellation(
         tenantId,
         fence(run),
@@ -428,7 +479,7 @@ describe('Responses execution binding', () => {
         { apiKeyId: 'issued', encryptedApiKey: 'ciphertext' },
         102,
       );
-      await storage.requestCancel(tenantId, 'channel', run.runId, 'owner');
+      await storage.requestCancel(run, run.runId);
       await expect(
         storage.finishUnstartedResponseCancellation(tenantId, fence(run), 103),
       ).rejects.toMatchObject({ code: 'invalid_transition' });
@@ -621,7 +672,7 @@ it('yields only the polling lease, invalidates its fence, and reclaims one exact
     expect(
       (await storage.claim(tenantId, 'channel', 'other-worker', 104, 60_000))?.principal.userId,
     ).toBe('other');
-    await storage.requestCancel(tenantId, 'channel', run.runId, 'owner');
+    await storage.requestCancel(run, run.runId);
     expect(await storage.yieldLease(tenantId, 'channel', fence(run), 105)).toBe(true);
     const yielded = (await storage.read(tenantId, 'channel', run.runId))!;
     expect(yielded.leaseOwner).toBeUndefined();
@@ -761,9 +812,7 @@ it('commits all confirmed reply mappings and cursor atomically, then releases FI
     const committed = await storage.commitDelivery(tenantId, fence(run), 110);
     expect(committed.state).toBe('delivered');
     expect((await storage.commitDelivery(tenantId, fence(run), 111)).runId).toBe(run.runId);
-    expect((await storage.findDeliveredReply(tenantId, 'channel', 'C1:reply-1'))?.runId).toBe(
-      run.runId,
-    );
+    expect((await storage.findDeliveredReply(run, 'C1:reply-1'))?.runId).toBe(run.runId);
     const next = (await storage.claim(tenantId, 'channel', 'next', 112, 1000))!;
     const execution = await storage.prepareExecution(tenantId, fence(next), 113);
     expect(execution.execution?.parentMessageId).toBe('response-1');
@@ -794,8 +843,19 @@ it('honors persisted retry time and immutable plans', () =>
 it('enforces tenant and initiating actor boundaries for reads and cancellation', () =>
   scope(async () => {
     const { run } = await storage.admit(enrollment(), 100);
-    expect(await storage.requestCancel(tenantId, 'channel', run.runId, 'intruder')).toBe(false);
-    expect(await storage.requestCancel(tenantId, 'channel', run.runId, 'owner')).toBe(true);
+    expect(
+      await storage.requestCancel(
+        {
+          ...run,
+          admission: {
+            ...run.admission,
+            actor: { ...run.admission.actor, externalUserId: 'intruder' },
+          },
+        },
+        run.runId,
+      ),
+    ).toBe(false);
+    expect(await storage.requestCancel(run, run.runId)).toBe(true);
     await tenantStorage.run({ tenantId: 'different' }, async () => {
       expect(await storage.read(tenantId, 'channel', run.runId)).toBeNull();
       expect(await storage.claim(tenantId, 'channel', 'intruder', 100, 100)).toBeNull();
@@ -809,11 +869,13 @@ it('native Stop lookup excludes a newer claim, even when its message was already
     await storage.claim(tenantId, 'channel', 'worker', 200, 100);
     const lookup = (at: number, actor = 'owner') =>
       storage.readActiveThread(
-        tenantId,
-        'channel',
-        input.admission.externalThreadKey,
-        actor,
-        input.principal,
+        {
+          ...input,
+          admission: {
+            ...input.admission,
+            actor: { ...input.admission.actor, externalUserId: actor },
+          },
+        },
         at,
       );
     expect(await lookup(199)).toBeNull();
@@ -873,6 +935,7 @@ it('allows known-handle terminal cleanup before final plan and never creates a n
     await storage.admit(enrollment(), 100);
     const run = (await storage.claim(tenantId, 'channel', 'one', 100, 100))!;
     await storage.prepareExecution(tenantId, fence(run), 101);
+    await bindTestResponse(run, 'response');
     await storage.planProgress(
       tenantId,
       fence(run),
@@ -923,24 +986,27 @@ it('retains the original response credential and refuses replacement after cance
     await storage.prepareExecution(tenantId, fence(run), 101);
     const original = { apiKeyId: 'original', encryptedApiKey: 'ciphertext' };
     await storage.attachResponseCredential(tenantId, fence(run), original, 102);
-    const replay = await storage.attachResponseCredential(
-      tenantId,
-      fence(run),
-      { apiKeyId: 'replacement', encryptedApiKey: 'other' },
-      103,
-    );
-    expect(replay.execution).toMatchObject(original);
-    await storage.requestCancel(tenantId, 'channel', run.runId, 'owner');
+    await expect(
+      storage.attachResponseCredential(
+        tenantId,
+        fence(run),
+        { apiKeyId: 'replacement', encryptedApiKey: 'other' },
+        103,
+      ),
+    ).rejects.toMatchObject({ code: 'invalid_transition' });
+    expect((await storage.read(tenantId, 'channel', run.runId))?.execution).toMatchObject(original);
+    await storage.requestCancel(run, run.runId);
     await expect(
       storage.attachResponseCredential(tenantId, fence(run), original, 104),
     ).rejects.toMatchObject({ code: 'invalid_transition' });
   }));
 
-it('freezes the first terminal summary inside the fence transaction even for stale concurrent projections', () =>
+it('freezes a planned terminal summary inside the fence transaction even for stale concurrent projections', () =>
   scope(async () => {
     await storage.admit(enrollment(), 100);
     const run = (await storage.claim(tenantId, 'channel', 'worker', 100, 100))!;
     await storage.prepareExecution(tenantId, fence(run), 101);
+    await bindTestResponse(run, 'response');
     const summary: ChannelRunSummary = {
       version: 1,
       scope: 'actor_lane',
@@ -953,15 +1019,39 @@ it('freezes the first terminal summary inside the fence transaction even for sta
       tokens: { coverage: 'unavailable', coveredRuns: 0 },
       elapsedMs: { coverage: 'complete', coveredRuns: 1, value: 12 },
     };
-    const snapshot = { status: 'completed' as const, text: 'Answer', elapsedMs: 12, summary };
+    const snapshot = {
+      responseId: 'response',
+      status: 'completed' as const,
+      text: 'Answer',
+      elapsedMs: 12,
+      summary,
+    };
     await storage.saveSnapshot(tenantId, fence(run), snapshot, 102);
-    const result = await storage.saveSnapshot(
+    await storage.savePlan(
       tenantId,
       fence(run),
       {
-        ...snapshot,
-        summary: { ...summary, elapsedMs: { coverage: 'unavailable', coveredRuns: 0 } },
+        revision: 'summary-plan',
+        rendererVersion: 'v1',
+        parts: [{ operationId: 'answer', kind: 'message', required: true, text: 'Answer' }],
       },
+      102,
+    );
+    await expect(
+      storage.saveSnapshot(
+        tenantId,
+        fence(run),
+        {
+          ...snapshot,
+          summary: { ...summary, elapsedMs: { coverage: 'unavailable', coveredRuns: 0 } },
+        },
+        103,
+      ),
+    ).rejects.toMatchObject({ code: 'invalid_transition' });
+    const result = await storage.saveSnapshot(
+      tenantId,
+      fence(run),
+      { ...snapshot, summary: undefined },
       103,
     );
     expect(result.snapshot?.summary).toEqual(summary);
@@ -977,10 +1067,25 @@ it('retains exact upload allocation and stage across a crash without reopening r
     await storage.admit(enrollment(), 100);
     const run = (await storage.claim(tenantId, 'channel', 'one', 100, 100))!;
     await storage.prepareExecution(tenantId, fence(run), 101);
+    await bindTestResponse(run, 'response');
     await storage.saveSnapshot(
       tenantId,
       fence(run),
-      { status: 'completed', responseId: 'response', text: 'File', elapsedMs: 1 },
+      {
+        status: 'completed',
+        responseId: 'response',
+        text: 'File',
+        elapsedMs: 1,
+        artifacts: [
+          {
+            artifactId: 'opaque',
+            filename: 'report.txt',
+            mediaType: 'text/plain',
+            bytes: 4,
+            sha256: 'hash',
+          },
+        ],
+      },
       102,
     );
     await storage.savePlan(
@@ -1066,7 +1171,7 @@ it('does not give actor B actor A history or cancellation even when the configur
     const { run: runB } = await storage.admit(eventB, 104);
     expect(runB.principal.userId).toBe(runA.principal.userId);
     expect(runB.laneId).not.toBe(runA.laneId);
-    expect(await storage.requestCancel(tenantId, 'channel', runA.runId, 'actor-B')).toBe(false);
+    expect(await storage.requestCancel(eventB, runA.runId)).toBe(false);
     const claimedB = (await storage.claim(tenantId, 'channel', 'worker-B', 105, 1000))!;
     expect(claimedB.runId).toBe(runB.runId);
     const preparedB = await storage.prepareExecution(tenantId, fence(claimedB), 106);
@@ -1150,7 +1255,7 @@ it('authority cleanup releases FIFO without advancing history or erasing ambiguo
       state: 'cancelled',
       receipts: lost.receipts,
     });
-    expect(await storage.findDeliveredReply(tenantId, 'channel', 'C1:reply')).toBeNull();
+    expect(await storage.findDeliveredReply(run, 'C1:reply')).toBeNull();
     const next = await storage.admit(enrollment('next'), 107);
     const claimed = (await storage.claim(tenantId, 'channel', 'next-worker', 108, 1000))!;
     expect(claimed.runId).toBe(next.run.runId);
