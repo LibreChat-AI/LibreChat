@@ -1,8 +1,12 @@
 import { Socket } from 'node:net';
 import { IncomingMessage, ServerResponse } from 'node:http';
 import { logger as systemLogger } from '@librechat/data-schemas';
+import {
+  createMCPReauthenticationPrompt,
+  createMCPAuthStepEmitter,
+  createMCPInitializationOAuthPrompts,
+} from './events';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
-import { createMCPReauthenticationPrompt, createMCPAuthStepEmitter } from './events';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import { createOAuthCallback, invokeOAuthStart } from './publication';
@@ -148,4 +152,93 @@ it('rejects publication before the URL when durable step evidence fails, without
     await manager.destroy();
     internalDiagnostics.mockRestore();
   }
+});
+
+it('shares one durable startup prompt identity across discovery and reconnect, retiring exactly once', async () => {
+  const emitChunk = jest.fn().mockResolvedValue(undefined);
+  const owner = createMCPInitializationOAuthPrompts({
+    userId: 'owner',
+    res: {} as ServerResponse,
+    sendEvent: jest.fn(),
+    jobs: { emitChunk },
+    streamId: 'startup-stream',
+    jobCreatedAt: 123,
+  });
+  const prompt = owner.forServer('startup', 2);
+  expect(owner.forServer('startup', 9)).toBe(prompt);
+  const ack = jest.fn();
+  await prompt.run(async () => {
+    await prompt.start('https://auth.example/authorize', { onPublished: ack });
+    await prompt.start('https://auth.example/authorize', { onPublished: ack });
+    await prompt.end();
+  });
+  expect(ack).toHaveBeenCalledTimes(2);
+  const events = emitChunk.mock.calls.map(([, event]) => event);
+  expect(events.map((event) => event.event)).toEqual([
+    'on_run_step',
+    'on_run_step_delta',
+    'on_run_step_completed',
+  ]);
+  expect(events[2].data.result.id).toBe(events[0].data.id);
+  expect(events[2].data.result.tool_call.id).toBe(events[0].data.stepDetails.tool_calls[0].id);
+  expect(events[2].data.result.index).toBe(2);
+  expect(
+    emitChunk.mock.calls.every(
+      ([id, , options]) =>
+        id === 'startup-stream' && options.expectedCreatedAt === 123 && options.durable === true,
+    ),
+  ).toBe(true);
+});
+
+it('does not cache failed startup publication and retries without hiding its original failure', async () => {
+  const emitChunk = jest
+    .fn()
+    .mockRejectedValueOnce(new Error('private store diagnostic'))
+    .mockResolvedValue(undefined);
+  const prompt = createMCPInitializationOAuthPrompts({
+    userId: 'owner',
+    res: {} as ServerResponse,
+    sendEvent: jest.fn(),
+    jobs: { emitChunk },
+    streamId: 'startup-stream',
+    jobCreatedAt: 123,
+  }).forServer('startup');
+  const ack = jest.fn();
+  await expect(
+    prompt.start('https://auth.example/authorize', { onPublished: ack }),
+  ).rejects.toThrow('MCP sign-in prompt is unavailable');
+  expect(ack).not.toHaveBeenCalled();
+  await prompt.start('https://auth.example/authorize', { onPublished: ack });
+  await prompt.end();
+  expect(ack).toHaveBeenCalledTimes(1);
+  expect(emitChunk).toHaveBeenCalledTimes(4);
+});
+
+it('clears startup deduplication before a publication acknowledgement can reenter completion', async () => {
+  const emitChunk = jest.fn().mockResolvedValue(undefined);
+  const prompt = createMCPInitializationOAuthPrompts({
+    userId: 'owner',
+    res: {} as ServerResponse,
+    sendEvent: jest.fn(),
+    jobs: { emitChunk },
+    streamId: 'startup-stream',
+    jobCreatedAt: 123,
+  }).forServer('startup');
+  let ending: Promise<void> | undefined;
+  await prompt.start('https://auth.example/authorize', {
+    onPublished: () => {
+      ending = prompt.end();
+    },
+  });
+  await ending;
+  await prompt.start('https://auth.example/authorize');
+  await prompt.end();
+  expect(emitChunk.mock.calls.map(([, event]) => event.event)).toEqual([
+    'on_run_step',
+    'on_run_step_delta',
+    'on_run_step_completed',
+    'on_run_step',
+    'on_run_step_delta',
+    'on_run_step_completed',
+  ]);
 });

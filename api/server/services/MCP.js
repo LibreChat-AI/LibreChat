@@ -22,11 +22,10 @@ const {
   GenerationJobManager,
   resolveJsonSchemaRefs,
   sanitizeGeminiSchema,
-  buildMCPAuthStepId,
-  buildMCPAuthToolCall,
   processMCPEnv,
   preProcessGraphTokens,
   createMCPReauthenticationPrompt,
+  createMCPInitializationOAuthPrompts,
   createMCPAuthStepEmitter,
   createMCPAuthDeltaEmitter,
   createMCPAuthEndEmitter,
@@ -776,59 +775,47 @@ async function reconnectServer({
     evictStale(lastReconnectAttempts, RECONNECT_THROTTLE_MS);
   }
 
-  const runId = Constants.USE_PRELIM_RESPONSE_MESSAGE_ID;
   const flowId = `${user.id}:${serverName}:${Date.now()}`;
   const flowManager = getFlowStateManager(getLogStores(CacheKeys.FLOWS));
-  const stepId = buildMCPAuthStepId(serverName);
-  const toolCall = buildMCPAuthToolCall({
-    id: flowId,
-    serverName,
-  });
-
-  const runStepEmitter = createRunStepEmitter({
+  const oauthPrompt = createMCPInitializationOAuthPrompts({
+    userId: user.id,
     res,
-    index,
-    runId,
-    stepId,
-    toolCall,
+    sendEvent,
+    jobs: GenerationJobManager,
     streamId,
     jobCreatedAt,
-  });
-  const runStepDeltaEmitter = createRunStepDeltaEmitter({
-    res,
-    stepId,
-    toolCall,
-    streamId,
-    jobCreatedAt,
-  });
-  const callback = createOAuthCallback({ runStepEmitter, runStepDeltaEmitter });
+    logger,
+  }).forServer(serverName, index);
   const oauthStart = createOAuthStart({
     res,
     flowId,
-    callback,
+    callback: oauthPrompt.start,
     flowManager,
   });
-  return await reinitMCPServer({
-    user,
-    signal,
-    serverName,
-    configServers,
-    oauthStart,
-    flowManager,
-    userMCPAuthMap,
-    requestBody,
-    requestScopedConnections,
-    upstreamTokenProvider,
-    upstreamTokenProviderResolver,
-    recoveryPolicy,
-    mcpApps,
-    oboIdentityContext,
-    streamId,
-    jobCreatedAt,
-    forceNew: true,
-    returnOnOAuth: false,
-    connectionTimeout: Time.THIRTY_SECONDS,
-  });
+  return await oauthPrompt.run(() =>
+    reinitMCPServer({
+      user,
+      signal,
+      serverName,
+      configServers,
+      oauthStart,
+      oauthEnd: oauthPrompt.end,
+      flowManager,
+      userMCPAuthMap,
+      requestBody,
+      requestScopedConnections,
+      upstreamTokenProvider,
+      upstreamTokenProviderResolver,
+      recoveryPolicy,
+      mcpApps,
+      oboIdentityContext,
+      streamId,
+      jobCreatedAt,
+      forceNew: true,
+      returnOnOAuth: false,
+      connectionTimeout: Time.THIRTY_SECONDS,
+    }),
+  );
 }
 
 /**
