@@ -28,7 +28,9 @@ import type { UsageMetadata } from '~/stream/interfaces/IJobStore';
 import type { TextContentFragment } from '~/protection/types';
 import {
   writeDone,
+  buildResponse,
   emitResponseCompleted,
+  emitError,
   emitMessageItemAdded,
   emitMessageItemDone,
   emitTextContentPartAdded,
@@ -742,7 +744,9 @@ function createToolCallChunkResolver(): ToolCallChunkResolver {
 export function createResponsesEventHandlers(config: StreamHandlerConfig): {
   handlers: Record<string, { handle: (event: string, data: unknown) => void }>;
   state: StreamState;
-  finalizeStream: (usage?: Usage, accounting?: ResponseAccounting) => void;
+  finalizeStream: (usage?: Usage, accounting?: ResponseAccounting, response?: Response) => void;
+  prepareStreamResponse: (usage?: Usage, accounting?: ResponseAccounting) => Response;
+  failStream: (failure: { message: string; code: string }) => void;
   emitClientToolDeferral: (callId: string, output: string) => void;
 } {
   const state: StreamState = {
@@ -1082,7 +1086,7 @@ export function createResponsesEventHandlers(config: StreamHandlerConfig): {
   /**
    * Finalize the stream - close open items and emit completed
    */
-  const finalizeStream = (usage?: Usage, accounting?: ResponseAccounting): void => {
+  const prepareStreamResponse = (usage?: Usage, accounting?: ResponseAccounting): Response => {
     closeOpenStreams();
     for (const [callId, output] of pendingClientToolDeferrals ?? []) {
       deliverClientToolDeferral(callId, output);
@@ -1090,11 +1094,31 @@ export function createResponsesEventHandlers(config: StreamHandlerConfig): {
     // A later step can announce a sibling before its arguments or deferral
     // are settled. Only terminate handoffs after the run has completed.
     closeOpenClientToolCalls();
-    emitResponseCompleted(config, usage, accounting);
+    return buildResponse(config.context, config.tracker, 'completed', usage, accounting);
+  };
+  const finalizeStream = (
+    usage?: Usage,
+    accounting?: ResponseAccounting,
+    response?: Response,
+  ): void => {
+    const prepared = response ?? prepareStreamResponse(usage, accounting);
+    emitResponseCompleted(config, usage, accounting, prepared);
     writeDone(config.res);
   };
 
-  return { handlers, state, finalizeStream, emitClientToolDeferral };
+  const failStream = (failure: { message: string; code: string }): void => {
+    emitError(config, { type: 'server_error', message: failure.message, code: failure.code });
+    writeDone(config.res);
+    config.res.end();
+  };
+  return {
+    handlers,
+    state,
+    finalizeStream,
+    prepareStreamResponse,
+    failStream,
+    emitClientToolDeferral,
+  };
 }
 
 /* =============================================================================
@@ -1250,7 +1274,7 @@ export function buildAggregatedResponse(
     },
     max_output_tokens: null,
     max_tool_calls: null,
-    store: false,
+    store: context.stored === true,
     background: false,
     service_tier: 'default',
     metadata: {},

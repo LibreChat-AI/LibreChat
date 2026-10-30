@@ -332,15 +332,37 @@ export function buildPersistedResponseAccounting(options: {
   billingEnabled?: boolean;
   billing?: Parameters<typeof createApplicationBillingQuote>[0];
 }): { accounting?: ResponseAccounting } {
-  if (!options.collectedUsage?.length) return {};
+  const hasPrimary = Boolean(options.collectedUsage?.length);
+  const hasAuxiliary = options.emittedUsage.some(
+    (entry) =>
+      entry.usage_type === 'activity-label' ||
+      entry.usage_type === 'activity-phase' ||
+      entry.usage_type === 'reasoning-label',
+  );
+  if (!hasPrimary && !hasAuxiliary) return {};
   const quote =
     options.billingEnabled === true && typeof options.billing?.getValueKey === 'function'
       ? createApplicationBillingQuote(options.billing)
       : undefined;
   return {
-    accounting: buildCollectedResponseAccounting(options.collectedUsage, options.emittedUsage, {
-      quote,
-    }),
+    accounting: buildCollectedResponseAccounting(
+      options.collectedUsage ?? [],
+      options.emittedUsage,
+      {
+        ...(!hasPrimary
+          ? {
+              seed: {
+                status: 'unavailable' as const,
+                currency: 'USD' as const,
+                coverage: 'none' as const,
+                reason: 'usage_unavailable' as const,
+                calls: [],
+              },
+            }
+          : {}),
+        quote,
+      },
+    ),
   };
 }
 
@@ -376,4 +398,13 @@ export function createApplicationBillingQuote(options: {
     }
     return { amount: amount.toFixed(12), basis: 'application_billing' };
   };
+}
+
+/** Read the final collected batch once; billing still consumes only new invocation usage. */
+export function createResponseAccountingSnapshot(
+  options: Parameters<typeof buildPersistedResponseAccounting>[0],
+): () => ResponseAccounting {
+  return (): ResponseAccounting =>
+    buildPersistedResponseAccounting(options).accounting ??
+    createResponseAccountingCollector().snapshot();
 }
