@@ -612,7 +612,7 @@ function isEmptyObjectSchema(jsonSchema) {
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted events.
  */
 function createRunStepDeltaEmitter(options) {
-  return createMCPAuthDeltaEmitter({ ...options, sendEvent, jobs: GenerationJobManager });
+  return createMCPAuthDeltaEmitter({ ...options, sendEvent, jobs: GenerationJobManager, logger });
 }
 
 /**
@@ -627,7 +627,7 @@ function createRunStepDeltaEmitter(options) {
  * @returns {() => Promise<void>}
  */
 function createRunStepEmitter(options) {
-  return createMCPAuthStepEmitter({ ...options, sendEvent, jobs: GenerationJobManager });
+  return createMCPAuthStepEmitter({ ...options, sendEvent, jobs: GenerationJobManager, logger });
 }
 
 /**
@@ -684,7 +684,7 @@ function createOAuthStart({ flowId, flowManager, callback }) {
  * @param {number} [params.jobCreatedAt] - The generation epoch that owns emitted events.
  */
 function createOAuthEnd(options) {
-  return createMCPAuthEndEmitter({ ...options, sendEvent, jobs: GenerationJobManager });
+  return createMCPAuthEndEmitter({ ...options, sendEvent, jobs: GenerationJobManager, logger });
 }
 
 /**

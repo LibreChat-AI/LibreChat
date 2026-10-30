@@ -128,7 +128,8 @@ test.each([undefined, ''])('normalizes the application tenant alias %s', async (
     user: { id: owner.id, tenantId },
     metadata: { tenantId: tenantId === '' ? undefined : '' },
   });
-  await request(app).get(`/${conversationId}`).expect(200);
+  const result = await request(app).get(`/${conversationId}`).expect(200);
+  expect(result.body.conversationId).toBe(conversationId);
 });
 
 test('returns established history unchanged without a generation lookup', async () => {
