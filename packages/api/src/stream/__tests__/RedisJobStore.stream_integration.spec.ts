@@ -177,6 +177,142 @@ describe('RedisJobStore Integration Tests', () => {
     }
   });
 
+  test.each([false, true])(
+    'reconstructs only explicit external journal ownership after a generic Responses abort: %s',
+    async (external) => {
+      expect(ioredisClient).not.toBeNull();
+      const { RedisJobStore } = await import('../implementations/RedisJobStore');
+      const { InMemoryEventTransport } = await import('../implementations/InMemoryEventTransport');
+      const { GenerationJobManagerClass } = await import('../GenerationJobManager');
+      const store = new RedisJobStore(ioredisClient!);
+      const manager = new GenerationJobManagerClass();
+      const peer = new GenerationJobManagerClass();
+      manager.configure({
+        jobStore: store,
+        eventTransport: new InMemoryEventTransport(),
+        cleanupOnComplete: false,
+      });
+      peer.configure({
+        jobStore: new RedisJobStore(ioredisClient!),
+        eventTransport: new InMemoryEventTransport(),
+        cleanupOnComplete: false,
+      });
+      manager.initialize();
+      peer.initialize();
+      const id = `journal-owner-${Date.now()}`;
+      try {
+        const job = await manager.createJob(id, 'owner', id, {
+          initialMetadata: {
+            endpoint: 'responses',
+            ...(external && { terminalPersistenceOwner: 'external' as const }),
+          },
+        });
+        const finalize = jest
+          .spyOn(store, 'finalizeTerminalPersistence')
+          .mockRejectedValueOnce(new Error('abort owner unavailable'));
+        await manager.abortJob(id, { expectedCreatedAt: job.createdAt });
+        expect(finalize).toHaveBeenCalledTimes(external ? 0 : 1);
+        finalize.mockRestore();
+        await store.updateJob(
+          id,
+          { terminalPersistenceStartedAt: Date.now() - 60_000 },
+          job.createdAt,
+        );
+        expect((await peer.getJob(id))?.metadata.terminalPersistenceOwner).toBe(
+          external ? 'external' : undefined,
+        );
+        expect((await peer.getCleanupJob(id))?.metadata.terminalPersistencePending).toBe(external);
+        if (external) {
+          await expect(
+            peer.finishProviderTerminalPersistence(id, job.createdAt, 'foreign-provider'),
+          ).resolves.toBe(false);
+          expect((await peer.getCleanupJob(id))?.metadata.terminalPersistencePending).toBe(true);
+          await expect(
+            peer.finishProviderTerminalPersistence(
+              id,
+              job.createdAt,
+              job.metadata.providerExecutionId!,
+            ),
+          ).resolves.toBe(true);
+          expect((await peer.getCleanupJob(id))?.metadata.terminalPersistencePending).toBe(false);
+        } else {
+          expect(JSON.parse((await store.getJob(id))!.finalEvent!)).toMatchObject({
+            reconcile: true,
+          });
+        }
+      } finally {
+        await Promise.all([manager.destroy(), peer.destroy()]);
+      }
+    },
+  );
+
+  test.each(['lost', 'false'] as const)(
+    'reconciles a committed Redis pause-barrier release with a %s acknowledgement',
+    async (ack) => {
+      expect(ioredisClient).not.toBeNull();
+      const { RedisJobStore } = await import('../implementations/RedisJobStore');
+      const { InMemoryEventTransport } = await import('../implementations/InMemoryEventTransport');
+      const { GenerationJobManagerClass } = await import('../GenerationJobManager');
+      const { executeAgentRun } = await import('../../agents/remote/host');
+      const { createAgentRunEnvelope } = await import('../../agents/envelope');
+      const manager = new GenerationJobManagerClass();
+      const store = new RedisJobStore(ioredisClient!);
+      manager.configure({
+        jobStore: store,
+        eventTransport: new InMemoryEventTransport(),
+        cleanupOnComplete: false,
+      });
+      manager.initialize();
+      const id = `pause-release-${Date.now()}`;
+      const pending = buildPendingAction(id);
+      pending.responseMessageId = id;
+      const afterPause = jest.fn();
+      const afterSettle = jest.fn();
+      const finish = manager.approvals.finishPausePersistence.bind(manager.approvals);
+      jest
+        .spyOn(manager.approvals, 'finishPausePersistence')
+        .mockImplementationOnce(async (...args) => {
+          expect(await finish(...args)).toBe(true);
+          if (ack === 'lost') throw new Error('lost Redis reply');
+          return false;
+        });
+      try {
+        await executeAgentRun(
+          {
+            envelope: createAgentRunEnvelope({
+              protocol: 'responses',
+              requestId: id,
+              receivedAt: Date.now(),
+              principal: { id: 'owner' },
+              payload: { model: 'agent', input: 'Choose' },
+            }),
+            runId: id,
+            conversationId: id,
+            retainTerminalPersistence: true,
+            isPrincipalActive: async () => true,
+            execute: async (execution) => {
+              await execution.pauseForReview(pending, async () => {});
+            },
+            afterPause,
+            afterSettle,
+          },
+          { manager },
+        );
+        expect(afterPause).toHaveBeenCalledTimes(1);
+        expect(afterSettle).not.toHaveBeenCalled();
+        expect(await store.getJob(id)).toMatchObject({
+          status: 'requires_action',
+          pendingActionId: pending.actionId,
+          providerDrained: true,
+          terminalPersistencePending: false,
+          terminalPersistenceOwner: 'external',
+        });
+      } finally {
+        await manager.destroy();
+      }
+    },
+  );
+
   test('default job cleanup retains Responses provider proof through terminal publication', async () => {
     expect(ioredisClient).not.toBeNull();
     const { RedisJobStore } = await import('../implementations/RedisJobStore');

@@ -367,18 +367,16 @@ describe('GenerationJobManager terminal host actions', () => {
   });
 
   it.each(['complete', 'error', 'abort'] as const)(
-    'reconciles channel %s with the same retryable source authority',
+    'reconciles delivery %s with the same retryable source authority',
     async (outcome) => {
       const handler = jest
         .fn()
         .mockRejectedValueOnce(new Error('source unavailable'))
         .mockResolvedValue(undefined);
       manager.setTerminalHostActionHandler(handler);
-      const streamId = `channel-${outcome}`;
+      const streamId = `delivery-${outcome}`;
       const job = await manager.createJob(streamId, 'owner', streamId, {
-        initialMetadata: {
-          channelExecution: { channelId: 'channel:opaque/id', runId: 'event.run' },
-        },
+        initialMetadata: { agentEventDeliveryKey: 'delivery-event' },
       });
       if (outcome === 'abort')
         await manager.abortJob(streamId, { expectedCreatedAt: job.createdAt });
