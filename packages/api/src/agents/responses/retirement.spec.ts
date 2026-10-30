@@ -7,12 +7,16 @@ import {
   tenantStorage,
   runAsSystem,
 } from '@librechat/data-schemas';
-import type { ResponseStorage, ResponseOwner } from '@librechat/data-schemas';
+import type { ResponseStorage, ResponseOwner, StoredResponseRecord } from '@librechat/data-schemas';
+import {
+  createResponseCompletion,
+  createResponseExecutionRelease,
+  createResponseExecutionConfirmation,
+} from './completion';
+import { buildPendingBackgroundResponse, createBackgroundResponseService } from './background';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
-import { createResponseCompletion, createResponseExecutionRelease } from './completion';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
-import { buildPendingBackgroundResponse } from './background';
 import { enrollAgentExecution } from '../remote/lifecycle';
 import { createResponseRetirement } from './retirement';
 
@@ -100,6 +104,7 @@ async function fixture(principal: ResponseOwner = owner, retainTerminalPersisten
   const completion = createResponseCompletion({
     storage,
     cleanupCheckpoint: async () => {},
+    confirmExecution: createResponseExecutionConfirmation(jobs),
     releaseExecution: createResponseExecutionRelease(jobs),
   });
   const retire = createResponseRetirement({
@@ -122,6 +127,44 @@ async function fixture(principal: ResponseOwner = owner, retainTerminalPersisten
   );
   return { execution, responseId, retire, completion };
 }
+
+it('signals and drains a prepared result through public Stop before publishing cancellation', () =>
+  scoped(async () => {
+    const f = await fixture();
+    const running = (await storage.read(owner, f.responseId))!;
+    const proposed = { ...buildPendingBackgroundResponse(running), status: 'completed' as const };
+    await f.completion.prepare(running, {
+      ...f.execution.getPersistenceIdentity(),
+      status: 'completed',
+      responseJSON: JSON.stringify(proposed),
+    });
+    expect((await storage.read(owner, f.responseId))?.pendingTerminal).toBeUndefined();
+    const cancel = jest.fn(async (record: StoredResponseRecord) => {
+      expect(record.cancellationRequestedAt).toEqual(expect.any(Number));
+      expect(await f.retire(record, record.responseId)).toBe('stopped');
+    });
+    const service = createBackgroundResponseService({
+      storage,
+      authorize: async () => true,
+      resolveContinuation: async () => ({
+        conversationId: running.conversationId,
+        parentMessageId: running.parentMessageId,
+      }),
+      enqueue: async () => {},
+      observe: async () => {
+        throw new Error('Prepared cancellation must use its completion owner');
+      },
+      recoverTerminal: f.completion.finish,
+      cancel,
+    });
+    expect(await service.cancel(owner, f.responseId)).toMatchObject({
+      ok: true,
+      response: { status: 'cancelled' },
+    });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect((await storage.read(owner, f.responseId))?.preparedTerminal).toBeUndefined();
+    expect(await jobs.getJob(f.responseId)).toBeUndefined();
+  }));
 
 it('retains a running Stop after provider drain until canonical cancellation releases it with default cleanup', () =>
   scoped(async () => {

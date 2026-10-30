@@ -221,10 +221,7 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').requireResponseStorageWrite(...args),
   saveForegroundResponseInputs: (...args) =>
     jest.requireActual('@librechat/api').saveForegroundResponseInputs(...args),
-  stageForegroundResponse: (...args) =>
-    jest.requireActual('@librechat/api').stageForegroundResponse(...args),
-  createForegroundResponseTerminal: (...args) =>
-    jest.requireActual('@librechat/api').createForegroundResponseTerminal(...args),
+  createResponseTurn: (...args) => jest.requireActual('@librechat/api').createResponseTurn(...args),
   createStoredForegroundResponseReader: (...args) =>
     jest.requireActual('@librechat/api').createStoredForegroundResponseReader(...args),
   createResponseAccountingSnapshot: (...args) =>
@@ -1208,7 +1205,7 @@ describe('createResponse controller', () => {
     expect(history.some((message) => message.messageId === 'resp_later')).toBe(false);
   });
 
-  it('fails visibly without exposing database details when requested storage fails', async () => {
+  it('reports unsuccessful optional storage without exposing database details', async () => {
     const api = require('@librechat/api');
     const db = require('~/models');
     api.validateResponseRequest.mockReturnValueOnce({ request: { ...req.body, store: true } });
@@ -1216,14 +1213,9 @@ describe('createResponse controller', () => {
 
     await createResponse(req, res);
 
-    expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(
-      res,
-      503,
-      'Response storage is unavailable. Please try again.',
-      'server_error',
-      'response_storage_unavailable',
-    );
-    expect(res.json).not.toHaveBeenCalled();
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ store: false }));
+    expect(api.sendResponsesErrorResponse).not.toHaveBeenCalled();
+    expect(JSON.stringify(res.json.mock.calls)).not.toContain('sensitive diagnostics');
   });
 
   it('retrieves the selected stored reply by its returned ID, without later replies', async () => {
@@ -1233,19 +1225,17 @@ describe('createResponse controller', () => {
       messageId: 'resp_first',
       conversationId: 'thread-conversation',
       isCreatedByUser: false,
+      text: 'first answer',
     });
     db.getConvo.mockResolvedValueOnce({
       conversationId: 'thread-conversation',
       agent_id: 'agent-123',
     });
-    db.getMessages.mockResolvedValueOnce([
-      { messageId: 'resp_first', text: 'first answer' },
-      { messageId: 'resp_later', text: 'later answer' },
-    ]);
 
     await require('../responses').getResponse(req, res);
 
     expect(db.getConvo).toHaveBeenCalledWith('user-123', 'thread-conversation');
+    expect(db.getMessages).not.toHaveBeenCalled();
     expect(res.json).toHaveBeenCalledWith(
       expect.objectContaining({
         id: 'resp_first',
@@ -1253,7 +1243,7 @@ describe('createResponse controller', () => {
         store: true,
         output: [
           expect.objectContaining({
-            id: 'resp_first',
+            id: 'msg_resp_first',
             content: [expect.objectContaining({ text: 'first answer' })],
           }),
         ],
@@ -1262,7 +1252,6 @@ describe('createResponse controller', () => {
   });
 
   it('does not retrieve another owner’s stored response', async () => {
-    const api = require('@librechat/api');
     const db = require('~/models');
     req.params = { id: 'resp_foreign' };
     db.getMessage.mockResolvedValueOnce(null);
@@ -1271,14 +1260,13 @@ describe('createResponse controller', () => {
     await require('../responses').getResponse(req, res);
 
     expect(db.getMessage).toHaveBeenCalledWith({ user: 'user-123', messageId: 'resp_foreign' });
-    expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(
-      res,
-      404,
-      expect.any(String),
-      'not_found',
-      'response_not_found',
-    );
-    expect(res.json).not.toHaveBeenCalled();
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.json).toHaveBeenCalledWith({
+      error: expect.objectContaining({
+        type: 'not_found',
+        code: 'response_not_found',
+      }),
+    });
   });
 
   it.each([false, true])(
@@ -2579,8 +2567,13 @@ describe('createResponse controller', () => {
             },
           ],
         };
-        if (stream) api.buildResponse.mockReturnValueOnce(response);
-        else api.buildAggregatedResponse.mockReturnValueOnce(response);
+        if (stream) {
+          const handlers = api.createResponsesEventHandlers.getMockImplementation()();
+          api.createResponsesEventHandlers.mockReturnValueOnce({
+            ...handlers,
+            prepareStreamResponse: jest.fn(() => response),
+          });
+        } else api.buildAggregatedResponse.mockReturnValueOnce(response);
         await createResponse(req, res);
         expect(require('~/models').saveMessage).toHaveBeenCalledWith(
           expect.anything(),

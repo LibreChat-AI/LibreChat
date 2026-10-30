@@ -68,7 +68,12 @@ function fixture() {
   const deliveries = new Map<string, StoredResponseRecord>();
   const cleanupCheckpoint = jest.fn(async () => {});
   const releaseExecution = jest.fn(async () => {});
-  const completion = createResponseCompletion({ storage, cleanupCheckpoint, releaseExecution });
+  const completion = createResponseCompletion({
+    storage,
+    cleanupCheckpoint,
+    releaseExecution,
+    confirmExecution: async () => null,
+  });
   const deps: BackgroundResponseDependencies = {
     storage,
     authorize: async (principal, agentId) =>

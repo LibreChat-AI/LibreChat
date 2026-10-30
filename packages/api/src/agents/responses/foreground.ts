@@ -252,6 +252,12 @@ export interface ForegroundResponseTerminal<Saved> {
   ) => Promise<void>;
 }
 
+export interface ResponseTerminalCompletion<Execution = AgentExecutionEnrollment> {
+  /** Required storage finished; persist a proposal while the provider still owns cleanup. */
+  prepare: (response: Response) => Promise<void>;
+  afterSettle: (execution: Execution, error: unknown) => Promise<void>;
+}
+
 /** Legacy storage can resolve absence/error records; those are not successful persistence. */
 export async function requireResponseStorageWrite<Result>(
   operation: Promise<Result>,
@@ -271,21 +277,32 @@ export async function requireResponseStorageWrite<Result>(
 }
 
 /** Persist while the provider owns cleanup; render only after the host confirms drain. */
-export function createForegroundResponseTerminal<Saved>({
+export function createResponseTerminal<
+  Saved,
+  Execution extends Pick<AgentExecutionEnrollment, 'terminalOutcome'> = Pick<
+    AgentExecutionEnrollment,
+    'terminalOutcome'
+  >,
+>({
   context,
   requestedStore,
   logger,
+  completion,
 }: {
   context: ResponseContext;
   requestedStore?: boolean;
   logger: Diagnostics;
-}): ForegroundResponseTerminal<Saved> {
+  completion?: ResponseTerminalCompletion<Execution>;
+}): Omit<ForegroundResponseTerminal<Saved>, 'afterSettle'> & {
+  afterSettle: (execution: Execution, error: unknown) => Promise<void>;
+} {
   let staged: ForegroundTerminalFrame<Saved> | undefined;
   let phase: 'open' | 'staged' | 'prepared' | 'done' = 'open';
   const fail = (cancelled = false): void => {
     const frame = staged;
     staged = undefined;
     phase = 'done';
+    if (completion) return;
     frame?.fail(
       cancelled
         ? {
@@ -307,16 +324,20 @@ export function createForegroundResponseTerminal<Saved>({
       context.stored = true;
     } catch (saveError) {
       logger.error('[Responses API] Error saving response', getSafeErrorMetadata(saveError));
+      if (completion) throw new ResponsePersistenceError();
     }
-    if (!saved || !frame.afterStore) return;
-    try {
-      await frame.afterStore(saved.value);
-    } catch (notificationError) {
-      logger.error(
-        '[Responses API] Error announcing stored response',
-        getSafeErrorMetadata(notificationError),
-      );
+    if (!saved) return;
+    if (frame.afterStore) {
+      try {
+        await frame.afterStore(saved.value);
+      } catch (notificationError) {
+        logger.error(
+          '[Responses API] Error announcing stored response',
+          getSafeErrorMetadata(notificationError),
+        );
+      }
     }
+    await completion?.prepare({ ...frame.response, store: true });
   };
   return {
     onSettlementError(error: unknown): void {
@@ -336,14 +357,18 @@ export function createForegroundResponseTerminal<Saved>({
       if (phase !== 'staged') throw new Error('Response persistence was already prepared');
       phase = 'prepared';
       context.stored = false;
-      if (requestedStore !== true || error != null || execution.signal.aborted) return;
+      if ((!completion && requestedStore !== true) || error != null || execution.signal.aborted)
+        return;
       // Account/conversation cleanup must still see this generation until all data writes finish.
       execution.track(persist(staged));
     },
-    async afterSettle(
-      execution: Pick<AgentExecutionEnrollment, 'terminalOutcome'>,
-      error: unknown,
-    ): Promise<void> {
+    async afterSettle(execution: Execution, error: unknown): Promise<void> {
+      if (completion) {
+        await completion.afterSettle(execution, error);
+        staged = undefined;
+        phase = 'done';
+        return;
+      }
       if (!staged) return;
       if (phase !== 'prepared' || error != null || execution.terminalOutcome !== 'complete') {
         fail(execution.terminalOutcome === 'aborted');
@@ -356,6 +381,10 @@ export function createForegroundResponseTerminal<Saved>({
     },
   };
 }
+
+/** Compatibility name for existing foreground callers. */
+export const createForegroundResponseTerminal: typeof createResponseTerminal =
+  createResponseTerminal;
 
 interface CompletionRequest
   extends Omit<TurnConversationRequest, 'config' | 'resolvedConversation'> {
@@ -385,7 +414,7 @@ interface StoredReply extends PersistedReply {
   conversationId: string;
   messageId: string;
 }
-interface CompletionDependencies {
+export interface ResponsePersistenceDependencies {
   saveMessage: (
     context: ConversationWriteContext,
     message: InputMessage | OutputMessage,
@@ -407,12 +436,31 @@ interface CompletionDependencies {
   traceFields: typeof getLangfuseTraceMessageFields;
 }
 
-/** Own storage ordering and transport selection in the same typed completion boundary. */
-export function stageForegroundResponse(
+/** The shared turn's storage and transport inputs; terminal ownership is selected separately. */
+export interface ResponseStageInput {
+  terminal: Pick<ForegroundResponseTerminal<StoredReply>, 'stage'>;
+  request: CompletionRequest;
+  response: Response;
+  conversationId: string;
+  agentId: string;
+  agent: { id?: string; name?: string; model?: string };
+  codeEnvironmentDecision?: ConversationCodeEnvironmentDecision;
+  messages: (InternalMessage & { messageId: string; parentMessageId: string })[];
+  parentMessageId: string;
+  visibleOutputTokens?: number;
+  transport:
+    | { type: 'json'; response: HttpResponse }
+    | {
+        type: 'stream';
+        response: HttpResponse;
+        finalize: (usage?: Usage, accounting?: ResponseAccounting, response?: Response) => void;
+        fail: Parameters<ForegroundResponseTerminal<StoredReply>['stage']>[0]['fail'];
+      };
+}
+
+export function createResponsePersistence(
   {
-    terminal,
     request,
-    response,
     conversationId,
     agentId,
     agent,
@@ -420,33 +468,12 @@ export function stageForegroundResponse(
     messages,
     parentMessageId,
     visibleOutputTokens,
-    transport,
-  }: {
-    terminal: ForegroundResponseTerminal<StoredReply>;
-    request: CompletionRequest;
-    response: Response;
-    conversationId: string;
-    agentId: string;
-    agent: { id?: string; name?: string; model?: string };
-    codeEnvironmentDecision?: ConversationCodeEnvironmentDecision;
-    messages: (InternalMessage & { messageId: string; parentMessageId: string })[];
-    parentMessageId: string;
-    visibleOutputTokens?: number;
-    transport:
-      | { type: 'json'; response: HttpResponse }
-      | {
-          type: 'stream';
-          response: HttpResponse;
-          finalize: (usage?: Usage, accounting?: ResponseAccounting, response?: Response) => void;
-          fail: Parameters<ForegroundResponseTerminal<StoredReply>['stage']>[0]['fail'];
-        };
-  },
-  deps: CompletionDependencies,
-): void {
-  terminal.stage({
-    response,
-    save: async (result) => {
-      const context = getConversationWriteContext(request);
+  }: Omit<ResponseStageInput, 'terminal' | 'response' | 'transport'>,
+  deps: ResponsePersistenceDependencies,
+) {
+  const context = getConversationWriteContext(request);
+  return {
+    async saveConversation(): Promise<void> {
       const title = deps.resolveTitle(request, agent.name || 'Open Responses Conversation');
       await requireResponseStorageWrite(
         deps.saveConvo(
@@ -477,10 +504,14 @@ export function stageForegroundResponse(
         ),
         { conversationId },
       );
+    },
+    async saveInput(): Promise<void> {
       await saveForegroundResponseInputs(
         { context, conversationId, messages, agentId },
         { saveMessage: deps.saveMessage },
       );
+    },
+    async saveOutput(result: Response): Promise<StoredReply> {
       const traceFields = await deps.traceFields(request.config, result.id, {
         isTemporary: isTemporaryTurn(request),
       });
@@ -507,7 +538,7 @@ export function stageForegroundResponse(
         return saved;
       });
     },
-    afterStore: async (reply) => {
+    async announce(reply: StoredReply): Promise<void> {
       await deps.announceReply({
         userId: request.user?.id,
         conversationId,
@@ -515,6 +546,22 @@ export function stageForegroundResponse(
         context: 'Responses API - announce stored reply',
       });
     },
+  };
+}
+
+/** Stage one shared persistence frame; the chosen terminal owner publishes after drain. */
+export function stageResponseResult(
+  { terminal, response, transport }: ResponseStageInput,
+  persistence: ReturnType<typeof createResponsePersistence>,
+): void {
+  terminal.stage({
+    response,
+    save: async (result) => {
+      await persistence.saveConversation();
+      await persistence.saveInput();
+      return persistence.saveOutput(result);
+    },
+    afterStore: persistence.announce,
     fail: (failure) => {
       if (transport.type === 'stream') return transport.fail(failure);
       sendResponsesErrorResponse(
@@ -534,4 +581,12 @@ export function stageForegroundResponse(
       transport.response.end();
     },
   });
+}
+
+/** Compatibility entry point for existing foreground callers. */
+export function stageForegroundResponse(
+  input: ResponseStageInput,
+  deps: ResponsePersistenceDependencies,
+): void {
+  stageResponseResult(input, createResponsePersistence(input, deps));
 }

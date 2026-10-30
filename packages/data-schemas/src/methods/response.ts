@@ -148,11 +148,18 @@ function responseExecutionFilter(guard: Exclude<ResponseExecutionGuard, number>)
 }
 
 export interface ResponseStorage {
+  prepareTerminal(
+    owner: ResponseOwner,
+    responseId: string,
+    guard: Exclude<ResponseExecutionGuard, number>,
+    receipt: ResponseTerminalReceipt,
+  ): Promise<ResponseMutationResult>;
   stageTerminal(
     owner: ResponseOwner,
     responseId: string,
     guard: ResponseTerminalGuard,
     receipt: ResponseTerminalReceipt,
+    promotion?: { receipt: ResponseTerminalReceipt; cancellationRequestedAt?: number },
   ): Promise<ResponseMutationResult>;
   finishTerminal(
     owner: ResponseOwner,
@@ -210,16 +217,67 @@ export interface ResponseStorage {
 
 const active = ['queued', 'in_progress', 'requires_action'];
 
-function sameTerminal(a: ResponseTerminalReceipt, b: ResponseTerminalReceipt): boolean {
-  return (
-    a.generationCreatedAt === b.generationCreatedAt &&
-    a.providerExecutionId === b.providerExecutionId &&
-    a.ownerId === b.ownerId &&
-    a.status === b.status &&
-    a.responseJSON === b.responseJSON &&
-    a.checkpointNamespace === b.checkpointNamespace &&
-    a.checkpointConfigJSON === b.checkpointConfigJSON
+export function sameResponseTerminalReceipt(
+  a: ResponseTerminalReceipt,
+  b: ResponseTerminalReceipt,
+): boolean {
+  const fields: Record<keyof ResponseTerminalReceipt, boolean> = {
+    generationCreatedAt: a.generationCreatedAt === b.generationCreatedAt,
+    providerExecutionId: a.providerExecutionId === b.providerExecutionId,
+    ownerId: a.ownerId === b.ownerId,
+    status: a.status === b.status,
+    responseJSON: a.responseJSON === b.responseJSON,
+    checkpointNamespace: a.checkpointNamespace === b.checkpointNamespace,
+    checkpointConfigJSON: a.checkpointConfigJSON === b.checkpointConfigJSON,
+  };
+  return Object.values(fields).every(Boolean);
+}
+
+function terminalReceipt(receipt: ResponseTerminalReceipt): ResponseTerminalReceipt {
+  return {
+    generationCreatedAt: receipt.generationCreatedAt,
+    providerExecutionId: receipt.providerExecutionId,
+    ...(receipt.ownerId == null ? {} : { ownerId: receipt.ownerId }),
+    status: receipt.status,
+    responseJSON: receipt.responseJSON,
+    ...(receipt.checkpointNamespace == null
+      ? {}
+      : { checkpointNamespace: receipt.checkpointNamespace }),
+    ...(receipt.checkpointConfigJSON == null
+      ? {}
+      : { checkpointConfigJSON: receipt.checkpointConfigJSON }),
+  };
+}
+
+function terminalFilter(prefix: string, receipt: ResponseTerminalReceipt): Record<string, unknown> {
+  const fields: Record<
+    keyof ResponseTerminalReceipt,
+    ResponseTerminalReceipt[keyof ResponseTerminalReceipt]
+  > = {
+    generationCreatedAt: receipt.generationCreatedAt,
+    providerExecutionId: receipt.providerExecutionId,
+    ownerId: receipt.ownerId,
+    status: receipt.status,
+    responseJSON: receipt.responseJSON,
+    checkpointNamespace: receipt.checkpointNamespace,
+    checkpointConfigJSON: receipt.checkpointConfigJSON,
+  };
+  return Object.fromEntries(
+    Object.entries(fields).map(([key, value]) => [`${prefix}.${key}`, value ?? { $exists: false }]),
   );
+}
+
+function terminalProviderFilter(receipt: ResponseTerminalReceipt) {
+  return {
+    $or: [
+      { 'resume.state': 'admitted', 'resume.providerExecutionId': receipt.providerExecutionId },
+      {
+        'resume.state': { $ne: 'admitted' },
+        'review.providerExecutionId': receipt.providerExecutionId,
+      },
+      { review: { $exists: false }, resume: { $exists: false } },
+    ],
+  };
 }
 
 /** Authorization precedes this storage boundary; every read/write remains owner- and tenant-scoped. */
@@ -253,26 +311,54 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
     $and: [activeExpirationFilter<StoredResponseRecord>()],
   });
   return {
-    async stageTerminal(owner, responseId, guard, receipt) {
+    async prepareTerminal(owner, responseId, guard, receipt) {
+      if (guard.execution.generationCreatedAt !== receipt.generationCreatedAt)
+        return { ok: false, code: 'response_conflict' };
+      const execution = responseExecutionFilter(guard);
+      const preparedTerminal = terminalReceipt(receipt);
+      const record = await model
+        .findOneAndUpdate(
+          {
+            ...scope(owner),
+            responseId,
+            ...execution,
+            status: { $in: active },
+            preparedTerminal: { $exists: false },
+            pendingTerminal: { $exists: false },
+            ...terminalProviderFilter(receipt),
+          },
+          { $set: { preparedTerminal }, $inc: { revision: 1 } },
+          { new: true, runValidators: true },
+        )
+        .lean();
+      if (record) return { ok: true, record };
+      const existing = await model.findOne({ ...scope(owner), responseId, ...execution }).lean();
+      if (
+        existing?.preparedTerminal &&
+        !existing.pendingTerminal &&
+        sameResponseTerminalReceipt(existing.preparedTerminal, preparedTerminal)
+      )
+        return { ok: true, record: existing };
+      return { ok: false, code: 'response_conflict' };
+    },
+    async stageTerminal(owner, responseId, guard, receipt, promotion) {
+      const prepared = promotion?.receipt;
+      if (
+        prepared &&
+        (prepared.generationCreatedAt !== receipt.generationCreatedAt ||
+          prepared.providerExecutionId !== receipt.providerExecutionId ||
+          prepared.ownerId !== receipt.ownerId ||
+          prepared.checkpointNamespace !== receipt.checkpointNamespace ||
+          prepared.checkpointConfigJSON !== receipt.checkpointConfigJSON)
+      )
+        return { ok: false, code: 'response_conflict' };
       if (
         typeof guard !== 'number' &&
         guard.execution.generationCreatedAt !== receipt.generationCreatedAt
       )
         return { ok: false, code: 'response_conflict' };
       const execution = typeof guard === 'number' ? undefined : responseExecutionFilter(guard);
-      const pendingTerminal: ResponseTerminalReceipt = {
-        generationCreatedAt: receipt.generationCreatedAt,
-        providerExecutionId: receipt.providerExecutionId,
-        ...(receipt.ownerId == null ? {} : { ownerId: receipt.ownerId }),
-        status: receipt.status,
-        responseJSON: receipt.responseJSON,
-        ...(receipt.checkpointNamespace == null
-          ? {}
-          : { checkpointNamespace: receipt.checkpointNamespace }),
-        ...(receipt.checkpointConfigJSON == null
-          ? {}
-          : { checkpointConfigJSON: receipt.checkpointConfigJSON }),
-      };
+      const pendingTerminal = terminalReceipt(receipt);
       const record = await model
         .findOneAndUpdate(
           {
@@ -282,19 +368,15 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
             generationCreatedAt: receipt.generationCreatedAt,
             status: { $in: active },
             pendingTerminal: { $exists: false },
-            $or: [
-              {
-                'resume.state': 'admitted',
-                'resume.providerExecutionId': receipt.providerExecutionId,
-              },
-              {
-                'resume.state': { $ne: 'admitted' },
-                'review.providerExecutionId': receipt.providerExecutionId,
-              },
-              { review: { $exists: false }, resume: { $exists: false } },
-            ],
+            ...(promotion
+              ? {
+                  ...terminalFilter('preparedTerminal', promotion.receipt),
+                  cancellationRequestedAt: promotion.cancellationRequestedAt ?? { $exists: false },
+                }
+              : { preparedTerminal: { $exists: false } }),
+            ...terminalProviderFilter(receipt),
           },
-          { $set: { pendingTerminal }, $inc: { revision: 1 } },
+          { $set: { pendingTerminal }, $unset: { preparedTerminal: 1 }, $inc: { revision: 1 } },
           { new: true, runValidators: true },
         )
         .lean();
@@ -303,7 +385,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
       if (
         existing?.generationCreatedAt === receipt.generationCreatedAt &&
         existing.pendingTerminal &&
-        sameTerminal(existing.pendingTerminal, pendingTerminal)
+        sameResponseTerminalReceipt(existing.pendingTerminal, pendingTerminal)
       )
         return { ok: true, record: existing };
       return { ok: false, code: 'response_conflict' };
@@ -331,7 +413,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
           },
           {
             $set: { status: receipt.status, responseJSON: receipt.responseJSON },
-            $unset: { pendingTerminal: 1 },
+            $unset: { pendingTerminal: 1, preparedTerminal: 1 },
             $inc: { revision: 1 },
           },
           { new: true },
@@ -357,6 +439,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
               status: 'requires_action',
               resume: { $exists: false },
               pendingTerminal: { $exists: false },
+              preparedTerminal: { $exists: false },
               cancellationRequestedAt: { $exists: false },
             };
       if (
@@ -377,6 +460,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
             generationCreatedAt,
             status: { $in: ['in_progress', 'requires_action'] },
             pendingTerminal: { $exists: false },
+            preparedTerminal: { $exists: false },
             cancellationRequestedAt: { $exists: false },
             $or: [
               { review: { $exists: false }, resume: { $exists: false } },
@@ -436,6 +520,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
             generationCreatedAt: input.generationCreatedAt,
             status: 'requires_action',
             pendingTerminal: { $exists: false },
+            preparedTerminal: { $exists: false },
             cancellationRequestedAt: { $exists: false },
             resume: { $exists: false },
             'review.actionId': input.actionId,
@@ -494,6 +579,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
             generationCreatedAt,
             status: 'requires_action',
             pendingTerminal: { $exists: false },
+            preparedTerminal: { $exists: false },
             cancellationRequestedAt: { $exists: false },
             'resume.intentId': intentId,
             'resume.providerExecutionId': providerExecutionId,
@@ -635,7 +721,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
       const record = await model
         .findOne({ ...ownerScope(owner), responseId })
         .select(
-          'userId tenantId responseId agentId conversationId generationCreatedAt expiredAt pendingTerminal.checkpointNamespace pendingTerminal.checkpointConfigJSON review.checkpointConfigJSON review.providerExecutionId',
+          'userId tenantId responseId agentId conversationId generationCreatedAt expiredAt pendingTerminal.checkpointNamespace pendingTerminal.checkpointConfigJSON preparedTerminal.checkpointNamespace preparedTerminal.checkpointConfigJSON review.checkpointConfigJSON review.providerExecutionId',
         )
         .lean();
       // Retained data comes only from an internal job/receipt, never request input.
@@ -688,7 +774,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
           : undefined;
       // A staged checkpoint is one binding: never fill an incomplete terminal
       // binding with settings from a prior review or retained provider segment.
-      const terminalCheckpoint = record?.pendingTerminal;
+      const terminalCheckpoint = record?.pendingTerminal ?? record?.preparedTerminal;
       const hasTerminalCheckpoint =
         terminalCheckpoint?.checkpointNamespace != null ||
         terminalCheckpoint?.checkpointConfigJSON != null;
@@ -758,6 +844,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
             revision,
             status: { $in: predecessors },
             pendingTerminal: { $exists: false },
+            preparedTerminal: { $exists: false },
             ...(update.status === 'in_progress'
               ? {
                   $and: [
