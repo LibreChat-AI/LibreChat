@@ -81,6 +81,7 @@ describe('Slack message normalization', () => {
       }),
     ).toEqual({
       kind: 'stop',
+      externalChannelId: 'C1',
       actor: { teamId: 'T1', appId: 'A1', externalUserId: 'U1' },
       externalThreadKey: 'C1:1792999999.5',
       eventAt: 1793000001123,
