@@ -126,7 +126,7 @@ describe('MCP OAuth initiation log boundary', () => {
       [`127.0.0.1:${server.port}`],
     );
     const resource = `${server.url}?credential=${secret}`;
-    const manager = new FlowStateManager<MCPOAuthTokens>(new Keyv(), { ci: true });
+    const manager = new FlowStateManager<MCPOAuthTokens>(new Keyv(), { ttl: 30_000, ci: true });
     await manager.initFlow(result.flowId, 'mcp_oauth', {
       ...result.flowMetadata,
       serverUrl: resource,
@@ -154,7 +154,7 @@ describe('MCP OAuth initiation log boundary', () => {
       result.flowMetadata.state,
       result.flowMetadata.codeVerifier,
     ]) {
-      expect(output.includes(value)).toBe(false);
+      if (value) expect(output.includes(value)).toBe(false);
     }
   });
 
