@@ -13,6 +13,7 @@ import { validateEmail, cn } from '~/utils';
 import Instructions from './Instructions';
 import FileContext from './FileContext';
 import AgentAvatar from './AgentAvatar';
+import Channels from './Channels';
 import Starters from './Starters';
 import { Panel } from '~/common';
 
@@ -21,9 +22,17 @@ const fieldClass = 'h-9';
 export default function AgentConfig({
   instructionsPromptStatus,
   onRetryInstructionsPrompt,
+  showChannels = false,
+  channelsAgentId,
+  channelsUserId,
+  channelsTenantId,
 }: {
   instructionsPromptStatus?: InstructionsPromptStatus;
   onRetryInstructionsPrompt?: () => void;
+  showChannels?: boolean;
+  channelsAgentId?: string;
+  channelsUserId?: string;
+  channelsTenantId?: string;
 }) {
   const localize = useLocalize();
   const methods = useFormContext<AgentForm>();
@@ -166,6 +175,10 @@ export default function AgentConfig({
         <div className="mb-3">
           <FileContext agent_id={agent_id} files={contextFiles} />
         </div>
+      )}
+
+      {showChannels && channelsUserId && (
+        <Channels agentId={channelsAgentId} userId={channelsUserId} tenantId={channelsTenantId} />
       )}
 
       {/* CONVERSATION STARTERS */}
