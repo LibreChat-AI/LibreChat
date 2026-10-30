@@ -24,6 +24,39 @@ describe('Responses accounting', () => {
     expect(buildPersistedResponseAccounting({ collectedUsage: [], emittedUsage: [] })).toEqual({});
   });
 
+  it.each(['activity-label', 'activity-phase', 'reasoning-label'] as const)(
+    'retains auxiliary-only %s usage without inventing complete primary coverage',
+    (usageType) => {
+      const result = buildPersistedResponseAccounting({
+        collectedUsage: [],
+        emittedUsage: [
+          {
+            input_tokens: 2,
+            output_tokens: 1,
+            provider: 'openAI',
+            model: 'label-model',
+            usage_type: usageType,
+            runId: 'label',
+            seq: -1,
+          },
+        ],
+      }).accounting;
+      expect(result).toMatchObject({
+        status: 'unavailable',
+        calls: [
+          expect.objectContaining({
+            model: 'label-model',
+            usageType,
+            inputTokens: 2,
+            outputTokens: 1,
+          }),
+        ],
+      });
+      expect(result?.coverage).not.toBe('complete');
+      expect(result).not.toHaveProperty('amount');
+    },
+  );
+
   it('only quotes persisted accounting when application billing is explicitly enabled', () => {
     const getValueKey = jest.fn(() => 'gpt-4o');
     const billing = {
