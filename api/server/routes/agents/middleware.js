@@ -16,6 +16,7 @@ const apiKeyMiddleware = createRequireApiKeyAuth({
   authorizeBinding: (...args) =>
     require('~/server/services/ChannelAuthority').authorizeChannelResponseKeyRequest(...args),
   validateAgentApiKey: db.validateAgentApiKey,
+  validateBoundAgentApiKey: db.validateBoundAgentApiKey,
   findUser: db.findUser,
   isPrincipalActive: db.isAgentTriggerPrincipalActive,
 });
