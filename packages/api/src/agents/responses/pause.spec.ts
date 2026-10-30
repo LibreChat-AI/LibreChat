@@ -138,6 +138,7 @@ async function setup(
       conversationId,
       agentId: 'agent',
       protocol: 'responses',
+      retainTerminalPersistence: true,
       isPrincipalActive: async () => true,
     },
     { manager },
