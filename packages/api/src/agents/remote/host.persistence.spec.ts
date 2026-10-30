@@ -58,13 +58,13 @@ describe('execution host persistence authority', () => {
       },
       { manager },
     );
-    const rejected = expect(result).rejects.toBe(failure);
+    const rejected = result.catch((error: unknown) => error);
     await ready;
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect((await manager.getJob('required-write'))?.status).toBe('running');
     expect(journal).not.toHaveBeenCalled();
     finishTail();
-    await rejected;
+    await expect(rejected).resolves.toBe(failure);
     expect(journal).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'error' }), failure);
     expect(await manager.getJobStore().getJob('required-write')).toMatchObject({
       status: 'error',
