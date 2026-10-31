@@ -115,7 +115,7 @@ export function createChannelFeedbackEventModel(
     { timestamps: true },
   );
   schema.index({ tenantId: 1, channelId: 1, eventId: 1 }, { unique: true });
-  schema.index({ tenantId: 1, processed: 1, retryAtMs: 1, createdAt: 1 });
+  schema.index({ tenantId: 1, processed: 1, updatedAt: 1, _id: 1 });
   schema.index({ tenantId: 1, ledgerKey: 1, 'event.eventTimestampUs': -1, 'event.eventId': -1 });
   schema.index({ tenantId: 1, 'mapping.principalId': 1, 'mapping.conversationId': 1 });
   schema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
