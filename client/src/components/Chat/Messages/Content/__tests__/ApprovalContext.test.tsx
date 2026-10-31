@@ -7,6 +7,7 @@ import type { ResumeSubmitTransport } from '../ApprovalContext';
 import ApprovalProvider, {
   ResumeSubmitContext,
   useApprovalContext,
+  useAskSubmitStatus,
   useResumeSubmit,
 } from '../ApprovalContext';
 import { ChatContext } from '~/Providers/ChatContext';
@@ -83,10 +84,11 @@ describe('useResumeSubmit', () => {
     jest.clearAllMocks();
   });
 
-  test('uses host submission outside a chat without invoking the ordinary resume mutations', () => {
+  test('passes full selected batches and answers through a host while owning submission state outside chat', async () => {
+    const pending = Promise.withResolvers<void>();
     const transport: ResumeSubmitTransport = {
-      submitToolApproval: jest.fn(),
-      submitAskAnswer: jest.fn(),
+      submitToolApproval: jest.fn(() => pending.promise),
+      submitAskAnswer: jest.fn(async () => {}),
     };
     const onSuccess = jest.fn();
     const hostWrapper = ({ children }: { children: React.ReactNode }) => (
@@ -96,34 +98,61 @@ describe('useResumeSubmit', () => {
         </ResumeSubmitContext.Provider>
       </JotaiProvider>
     );
-    const { result } = renderHook(() => useResumeSubmit(), { wrapper: hostWrapper });
-    expect(result.current).toBe(transport);
+    const { result } = renderHook(
+      () => ({
+        approval: useApprovalContext(),
+        first: useResumeSubmit(),
+        second: useResumeSubmit(),
+      }),
+      { wrapper: hostWrapper },
+    );
+    const decisions: import('librechat-data-provider').Agents.ToolApprovalResolution[] = [
+      { tool_call_id: 'approve', decision: 'approve', scope: 'session' },
+      {
+        tool_call_id: 'edit',
+        decision: 'edit',
+        editedArguments: { path: 'new.ts', nested: { enabled: true } },
+      },
+      { tool_call_id: 'respond', decision: 'respond', responseText: 'Use the existing file.' },
+      { tool_call_id: 'reject', decision: 'reject', reason: 'Do not run this command.' },
+    ];
     act(() => {
-      result.current.submitToolApproval('approval-action');
-      result.current.submitAskAnswer('single-action', 'answer', { onSuccess });
-      result.current.submitAskAnswer('batch-action', { first: 'yes', second: 'no' });
+      for (const decision of decisions) {
+        result.current.approval.registerToolCall('approval-action', decision.tool_call_id);
+        result.current.approval.setDecision('approval-action', decision.tool_call_id, decision);
+      }
+      result.current.first.submitToolApproval('approval-action');
+      result.current.second.submitToolApproval('approval-action');
     });
-    expect(transport.submitToolApproval).toHaveBeenCalledWith('approval-action');
-    expect(transport.submitAskAnswer).toHaveBeenNthCalledWith(1, 'single-action', 'answer', {
-      onSuccess,
+    expect(transport.submitToolApproval).toHaveBeenCalledTimes(1);
+    expect(transport.submitToolApproval).toHaveBeenCalledWith('approval-action', decisions);
+    expect(result.current.approval.getStatus('approval-action')).toBe('submitting');
+    await act(async () => {
+      pending.resolve();
     });
+    expect(result.current.approval.getStatus('approval-action')).toBe('submitted');
+    await act(async () => {
+      result.current.first.submitAskAnswer('single-action', 'answer', { onSuccess });
+      result.current.first.submitAskAnswer('batch-action', { first: 'yes', second: 'no' });
+    });
+    expect(transport.submitAskAnswer).toHaveBeenNthCalledWith(1, 'single-action', 'answer');
     expect(transport.submitAskAnswer).toHaveBeenNthCalledWith(2, 'batch-action', {
       first: 'yes',
       second: 'no',
     });
-    expect(onSuccess).not.toHaveBeenCalled();
+    expect(onSuccess).toHaveBeenCalledTimes(1);
     expect(mockApprovalMutate).not.toHaveBeenCalled();
     expect(mockAskMutate).not.toHaveBeenCalled();
   });
 
-  test('switches host transports without changing hook order and restores ordinary chat submission', () => {
+  test('switches host transports without changing hook order and restores ordinary chat submission', async () => {
     const first: ResumeSubmitTransport = {
-      submitToolApproval: jest.fn(),
-      submitAskAnswer: jest.fn(),
+      submitToolApproval: jest.fn(async () => {}),
+      submitAskAnswer: jest.fn(async () => {}),
     };
     const second: ResumeSubmitTransport = {
-      submitToolApproval: jest.fn(),
-      submitAskAnswer: jest.fn(),
+      submitToolApproval: jest.fn(async () => {}),
+      submitAskAnswer: jest.fn(async () => {}),
     };
     let transport: ResumeSubmitTransport | null = null;
     const ChatWrapper = createWrapper(1000);
@@ -135,12 +164,12 @@ describe('useResumeSubmit', () => {
     const { result, rerender } = renderHook(() => useResumeSubmit(), { wrapper: hostWrapper });
     transport = first;
     rerender();
-    act(() => result.current.submitAskAnswer('host-action', 'first'));
-    expect(first.submitAskAnswer).toHaveBeenCalledWith('host-action', 'first');
+    await act(async () => result.current.submitAskAnswer('host-first', 'first'));
+    expect(first.submitAskAnswer).toHaveBeenCalledWith('host-first', 'first');
     transport = second;
     rerender();
-    act(() => result.current.submitAskAnswer('host-action', 'second'));
-    expect(second.submitAskAnswer).toHaveBeenCalledWith('host-action', 'second');
+    await act(async () => result.current.submitAskAnswer('host-second', 'second'));
+    expect(second.submitAskAnswer).toHaveBeenCalledWith('host-second', 'second');
     expect(mockAskMutate).not.toHaveBeenCalled();
     transport = null;
     rerender();
@@ -155,6 +184,129 @@ describe('useResumeSubmit', () => {
       expect.any(Object),
     );
   });
+
+  test.each(['tool', 'ask'] as const)(
+    'owns pending, retryable failure and success for %s host submissions across hook instances',
+    async (kind) => {
+      const first = Promise.withResolvers<void>();
+      const retry = Promise.withResolvers<void>();
+      const send = jest
+        .fn()
+        .mockImplementationOnce(() => first.promise)
+        .mockImplementationOnce(() => retry.promise);
+      const transport: ResumeSubmitTransport = { submitToolApproval: send, submitAskAnswer: send };
+      const hostWrapper = ({ children }: { children: React.ReactNode }) => (
+        <JotaiProvider>
+          <ApprovalProvider>
+            <ResumeSubmitContext.Provider value={transport}>
+              {children}
+            </ResumeSubmitContext.Provider>
+          </ApprovalProvider>
+        </JotaiProvider>
+      );
+      const { result } = renderHook(
+        () => ({
+          approval: useApprovalContext(),
+          ask: useAskSubmitStatus(),
+          first: useResumeSubmit(),
+          second: useResumeSubmit(),
+        }),
+        { wrapper: hostWrapper },
+      );
+      const onSuccess = jest.fn();
+      const submit = (surface: 'first' | 'second') =>
+        kind === 'tool'
+          ? result.current[surface].submitToolApproval('action')
+          : result.current[surface].submitAskAnswer('action', 'answer', { onSuccess });
+      const status = () =>
+        kind === 'tool'
+          ? result.current.approval.getStatus('action')
+          : result.current.ask.getAskStatus('action');
+      act(() => {
+        result.current.approval.registerToolCall('action', 'tool');
+        result.current.approval.setDecision('action', 'tool', {
+          tool_call_id: 'tool',
+          decision: 'approve',
+        });
+        submit('first');
+        submit('second');
+      });
+      expect(send).toHaveBeenCalledTimes(1);
+      expect(status()).toBe('submitting');
+      await act(async () => {
+        first.reject(new Error('temporary'));
+      });
+      expect(status()).toBe('error');
+      expect(onSuccess).not.toHaveBeenCalled();
+      act(() => {
+        submit('second');
+        submit('first');
+      });
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(status()).toBe('submitting');
+      await act(async () => {
+        retry.resolve();
+      });
+      expect(status()).toBe('submitted');
+      act(() => {
+        submit('first');
+        submit('second');
+      });
+      expect(send).toHaveBeenCalledTimes(2);
+      expect(onSuccess).toHaveBeenCalledTimes(kind === 'ask' ? 1 : 0);
+    },
+  );
+
+  test.each(['tool', 'ask'] as const)(
+    'keeps expired %s host submissions terminal and catches synchronous transport errors',
+    async (kind) => {
+      const send = jest
+        .fn<Promise<void>, []>()
+        .mockImplementationOnce(() => {
+          throw new Error('synchronous failure');
+        })
+        .mockRejectedValueOnce({ response: { status: 409 } });
+      const transport: ResumeSubmitTransport = { submitToolApproval: send, submitAskAnswer: send };
+      const hostWrapper = ({ children }: { children: React.ReactNode }) => (
+        <JotaiProvider>
+          <ApprovalProvider>
+            <ResumeSubmitContext.Provider value={transport}>
+              {children}
+            </ResumeSubmitContext.Provider>
+          </ApprovalProvider>
+        </JotaiProvider>
+      );
+      const { result } = renderHook(
+        () => ({
+          approval: useApprovalContext(),
+          ask: useAskSubmitStatus(),
+          submit: useResumeSubmit(),
+        }),
+        { wrapper: hostWrapper },
+      );
+      const submit = () =>
+        kind === 'tool'
+          ? result.current.submit.submitToolApproval('action')
+          : result.current.submit.submitAskAnswer('action', 'answer');
+      const status = () =>
+        kind === 'tool'
+          ? result.current.approval.getStatus('action')
+          : result.current.ask.getAskStatus('action');
+      act(() => {
+        result.current.approval.registerToolCall('action', 'tool');
+        result.current.approval.setDecision('action', 'tool', {
+          tool_call_id: 'tool',
+          decision: 'approve',
+        });
+      });
+      await act(async () => submit());
+      expect(status()).toBe('error');
+      await act(async () => submit());
+      expect(status()).toBe('expired');
+      act(() => submit());
+      expect(send).toHaveBeenCalledTimes(2);
+    },
+  );
 
   test('accepts only action identity and payload without requiring chat stream metadata', () => {
     const hostWrapper = ({ children }: { children: React.ReactNode }) => (
