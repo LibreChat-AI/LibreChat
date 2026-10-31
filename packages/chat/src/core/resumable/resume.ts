@@ -1,4 +1,4 @@
-import { Constants, tMessageSchema } from 'librechat-data-provider';
+import { Constants, ContentTypes, tMessageSchema } from 'librechat-data-provider';
 import type {
   Agents,
   TMessage,
@@ -45,6 +45,32 @@ export const isCompactionAnchorProjection = (
   userMessage.messageId !== '' &&
   userMessage.parentMessageId == null &&
   (userMessage.text == null || userMessage.text === '');
+
+/** The SDK snapshot's summary placeholder lacks the live `summarizing` marker. */
+function restoreSummaryState(resumeState: Agents.ResumeState): TMessage['content'] {
+  const content = resumeState.aggregatedContent as TMessage['content'];
+  if (!content?.length) {
+    return content;
+  }
+  let restored: TMessage['content'];
+  for (const step of resumeState.runSteps ?? []) {
+    const part = content[step.index];
+    if (
+      step.summary == null ||
+      (step.status != null && step.status !== 'in_progress') ||
+      (step.runId != null && step.runId !== resumeState.responseMessageId) ||
+      part?.type !== ContentTypes.SUMMARY ||
+      part.summarizing != null ||
+      part.boundary != null ||
+      part.failed === true
+    ) {
+      continue;
+    }
+    restored ??= [...content];
+    restored[step.index] = { ...part, summarizing: true };
+  }
+  return restored ?? content;
+}
 
 export const buildResumeEventSubmission = (
   currentSubmission: TSubmission,
@@ -95,7 +121,7 @@ export const buildResumeEventSubmission = (
     parentMessageId: userMessage.messageId,
     conversationId,
     content:
-      resumeState.aggregatedContent ??
+      restoreSummaryState(resumeState) ??
       (currentSubmission.initialResponse as TMessage | undefined)?.content,
     sender: resumeState.sender ?? currentSubmission.initialResponse?.sender,
     iconURL: preferDefinedString(currentSubmission.initialResponse?.iconURL, resumeState.iconURL),
@@ -201,7 +227,7 @@ export function buildSubmissionFromResumeState(
     conversationId,
     text: '',
     // aggregatedContent is authoritative - it reflects actual job state
-    content: (resumeState.aggregatedContent as TMessage['content']) ?? [],
+    content: restoreSummaryState(resumeState) ?? [],
     isCreatedByUser: false,
     role: 'assistant',
     sender: responseMetadataMessage?.sender ?? resumeState.sender,
