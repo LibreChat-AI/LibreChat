@@ -109,7 +109,7 @@ function stringifyArguments(args: unknown): string {
 /** Build a bounded, inert preview from the exact effective arguments in the interrupt. */
 export function buildApprovalPreview(
   request: Agents.ToolApprovalRequest,
-  maxChars = MAX_PREVIEW_CHARS,
+  maxChars: number = MAX_PREVIEW_CHARS,
 ): ApprovalPreview {
   const parsed = parseArguments(request.arguments);
   let kind: ApprovalPreview['kind'] = 'generic';

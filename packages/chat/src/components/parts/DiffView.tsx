@@ -1,5 +1,6 @@
 import { memo } from 'react';
-import { cn } from '~/utils';
+import { cn } from '@librechat/client';
+import type { ReactNode } from 'react';
 
 const HUNK_HEADER = /^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
 
@@ -209,7 +210,7 @@ const DiffRow = memo(function DiffRow({ type, text, num, hasLineNumbers }: DiffR
 /** Index keys are safe: the parser walks the text top to bottom and the stream
  *  only appends, so a row's index, type and line numbers are stable once
  *  emitted. Only the trailing, still-growing line changes, and its props do too. */
-export default function DiffView({ parsed }: { parsed: ParsedDiff }) {
+export default function DiffView({ parsed }: { parsed: ParsedDiff }): ReactNode {
   const { lines, hasLineNumbers } = parsed;
   const firstContentIndex = lines.findIndex((line) => line.type !== 'hunk');
 

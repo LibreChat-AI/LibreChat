@@ -96,6 +96,18 @@ export {
   FOLD_GLYPH_SELECTOR,
   ARTIFACT_ROW_NAV_SPACING,
 } from './components/parts/rows';
+export { default as AskOptions } from './components/parts/AskOptions';
+export type { AskOption } from './components/parts/AskOptions';
+export { default as SkillPills } from './components/parts/SkillPills';
+export type { SkillPillsSource } from './components/parts/SkillPills';
+export { default as MessageQuotes } from './components/parts/MessageQuotes';
+export {
+  default as DiffView,
+  diffPreviewText,
+  parseUnifiedDiff,
+  buildEditPreviewDiff,
+} from './components/parts/DiffView';
+export type { DiffLine, ParsedDiff, TextEditPreview } from './components/parts/DiffView';
 export { default as AttachmentImage } from './components/composer/files/Image';
 export { default as ImagePreview } from './components/composer/files/ImagePreview';
 export { default as SendButton } from './components/composer/SendButton';

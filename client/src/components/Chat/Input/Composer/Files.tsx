@@ -1,5 +1,6 @@
 import { memo, useRef, useMemo, useState, useEffect } from 'react';
 import { Eye, Search } from 'lucide-react';
+import { getPreviewKind } from '@librechat/chat';
 import { apiBaseUrl } from 'librechat-data-provider';
 import { FilePreview, getFileType } from '@librechat/chat/components';
 import { Button, IconButton, Spinner, useToastContext } from '@librechat/client';
@@ -9,7 +10,6 @@ import FilePreviewDialog, {
   formatBytes,
   getDisplayType,
 } from '~/components/Chat/Messages/Content/FilePreviewDialog';
-import { getPreviewKind } from '~/components/Chat/Messages/Content/preview';
 import DialogImage from '~/components/Chat/Messages/Content/DialogImage';
 import { useGetFiles, useFilePreviewBlob } from '~/data-provider';
 import { toAbsoluteFilePath, triggerDownload } from '~/utils';
