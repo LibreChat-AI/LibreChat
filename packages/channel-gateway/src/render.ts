@@ -103,6 +103,15 @@ export interface SlackMessage {
   blocks?: SlackBlock[];
 }
 
+/** Every presentation path uses the same block and serialized-payload boundary. */
+function presentationFor(message: SlackMessage): ChannelDeliveryPart['presentation'] {
+  const blocks = blocksSchema.safeParse(message.blocks);
+  if (!blocks.success) return undefined;
+  const payload = JSON.stringify(blocks.data);
+  if (Buffer.byteLength(payload) > presentationLimit) return undefined;
+  return { format: presentationFormat, payload };
+}
+
 export function supportedRenderer(version: string): boolean {
   return version === 'slack-text-v1' || supportedStructured.has(version);
 }
@@ -826,17 +835,13 @@ export function makeSlackPlan(
     throw new Error('Durable answer exceeds part budget');
   }
   const parts: ChannelDeliveryPart[] = messages.map((message, index) => {
-    const payload = JSON.stringify(message.blocks);
+    const presentation = presentationFor(message);
     return {
       operationId: `${run.runId}:reply:${index}`,
       kind: 'message',
       required: true,
       text: message.text,
-      ...(message.blocks?.length &&
-      blocksSchema.safeParse(message.blocks).success &&
-      Buffer.byteLength(payload) <= presentationLimit
-        ? { presentation: { format: presentationFormat, payload } }
-        : {}),
+      ...(presentation ? { presentation } : {}),
     };
   });
   const summary = snapshot.summary;
@@ -903,11 +908,17 @@ export function makeSlackPlan(
     const notice =
       '\n\nSome attachments or session links were omitted by this channel’s delivery limit.';
     last.text += notice;
-    // Reflow as explicit plain text; never split an existing formatted atom to add a notice.
-    last.presentation = {
-      format: presentationFormat,
-      payload: JSON.stringify(plainMessage(last.text).blocks),
-    };
+    const message = durableSlackMessage(last, rendererVersion);
+    const blocks = message.blocks && [
+      ...message.blocks,
+      {
+        type: 'section' as const,
+        text: { type: 'plain_text' as const, text: notice.trim() },
+      },
+    ];
+    // Preserve formatting when it fits; fallback obeys the same block and payload boundary.
+    last.presentation =
+      presentationFor({ text: last.text, blocks }) ?? presentationFor(plainMessage(last.text));
   }
   const plan = { revision: '', rendererVersion, parts };
   plan.revision = createHash('sha256').update(JSON.stringify(plan)).digest('hex');
