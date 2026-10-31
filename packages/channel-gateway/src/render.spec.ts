@@ -49,6 +49,47 @@ const artifact: ChannelArtifact = {
 };
 
 describe('Slack answer rendering', () => {
+  it('parses balanced and escaped link parentheses without touching literal code', () => {
+    expect(safeMrkdwn('[docs](https://example.com/Foo_(bar))')).toBe(
+      '<https://example.com/Foo_(bar)|docs>',
+    );
+    expect(safeMrkdwn('[docs](https://example.com/a_(b_(c)))')).toBe(
+      '<https://example.com/a_(b_(c))|docs>',
+    );
+    expect(safeMrkdwn(String.raw`[docs](https://example.com/a\(b\))`)).toBe(
+      '<https://example.com/a(b)|docs>',
+    );
+    expect(safeMrkdwn('`[docs](https://example.com/Foo_(bar))`')).toBe(
+      '`[docs](https://example.com/Foo_(bar))`',
+    );
+    expect(safeMrkdwn('[unsafe](javascript:alert(1))')).toBe('unsafe');
+    expect(safeMrkdwn('[unfinished](https://example.com/a_(b)')).toBe(
+      '[unfinished](https://example.com/a_(b)',
+    );
+  });
+
+  it.each([1, 2, 3, 100])('keeps required text and artifact groups within budget %i', (budget) => {
+    const view = run();
+    view.snapshot!.artifacts = [artifact];
+    const plan = makeSlackPlan(view, false, budget);
+    expect(plan.parts.length).toBeLessThanOrEqual(budget);
+    expect(plan.parts[0].required).toBe(true);
+    expect(plan.parts[0].text).toContain('Hello');
+    if (plan.parts.some((part) => part.kind === 'artifact'))
+      expect(plan.parts.some((part) => part.operationId.endsWith(':artifact-status'))).toBe(true);
+    else expect(plan.parts[0].text).toContain('omitted');
+  });
+
+  it('reflows rich blocks and explicitly bounds oversized required output under a reduced budget', () => {
+    const view = run();
+    view.snapshot!.text = 'answer '.repeat(15000);
+    const plan = makeSlackPlan(view, false, 1);
+    expect(plan.parts).toHaveLength(1);
+    expect(plan.parts[0].text).toContain('Reply shortened');
+    expect(Buffer.byteLength(plan.parts[0].text)).toBeLessThan(40000);
+    expect(view.snapshot!.text.length).toBe(105000);
+  });
+
   it('converts prose but leaves code syntax untouched', () => {
     expect(
       safeMrkdwn(

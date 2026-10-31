@@ -348,6 +348,7 @@ it('uses one policy snapshot and supplies the verified webhook credentials only 
     nativeSessions: true,
     lifecycleReactions: true,
     signatureToleranceSeconds: 60,
+    maxDeliveryParts: 1,
   }));
   deps.config = config;
   const id = await createChannel();
@@ -378,6 +379,7 @@ it('uses one policy snapshot and supplies the verified webhook credentials only 
     lifecycleReactions: true,
     signatureToleranceSeconds: 60,
   });
+  expect(result.body.delivery).toEqual({ maxDeliveryParts: 1 });
   expect(result.body.gateway).not.toHaveProperty('enabled');
 });
 
