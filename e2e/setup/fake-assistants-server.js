@@ -576,10 +576,6 @@ const server = http.createServer(async (req, res) => {
         return;
       }
       const prompt = latestUserText(thread);
-      if (prompt.includes('E2E_ASSISTANT_ERROR')) {
-        sendError(res, 400, 'E2E assistant run failed');
-        return;
-      }
       if (prompt.includes('E2E_ASSISTANT_SLOW')) {
         sendSlowAssistantStream(res, { assistant, thread });
         return;
