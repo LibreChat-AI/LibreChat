@@ -39,6 +39,7 @@ export * from './roles';
 /* types (exports schemas from `./types` as they contain needed in other defs) */
 export * from './types';
 export * from './types/agents';
+export * from './types/responseAccounting';
 export * from './types/assistants';
 export * from './types/content';
 export * from './types/tools';
@@ -111,5 +112,7 @@ export * from './code/workspace';
 export * from './types/scheduleConsent';
 
 export * from './approval';
+
+export * from './types/responseReview';
 
 export * from './codeSetup';
