@@ -1,7 +1,14 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { dataService, MutationKeys, PermissionBits, QueryKeys } from 'librechat-data-provider';
+import {
+  dataService,
+  DynamicQueryKeys,
+  MutationKeys,
+  PermissionBits,
+  QueryKeys,
+} from 'librechat-data-provider';
 import type { QueryClient, UseMutationResult } from '@tanstack/react-query';
 import type * as t from 'librechat-data-provider';
+import { invalidateRecentFiles } from '~/utils/files';
 
 /**
  * AGENTS
@@ -41,6 +48,46 @@ const pruneEdgeEndpoint = (
     return retained.length > 0 ? retained : null;
   }
   return endpoint === agentId ? null : endpoint;
+};
+
+/** File ids the deleted agent was known to hold, from the agent detail and agent-files caches. */
+const collectCachedAgentFileIds = (queryClient: QueryClient, agentId: string): string[] => {
+  const agent =
+    queryClient.getQueryData<t.Agent>([QueryKeys.agent, agentId, 'expanded']) ??
+    queryClient.getQueryData<t.Agent>([QueryKeys.agent, agentId]);
+  const ids = new Set<string>();
+  const toolResources = agent?.tool_resources;
+  if (toolResources != null) {
+    for (const resource of Object.values(toolResources)) {
+      for (const fileId of resource?.file_ids ?? []) {
+        if (typeof fileId === 'string' && fileId.length > 0) {
+          ids.add(fileId);
+        }
+      }
+    }
+  }
+  const agentFiles = queryClient.getQueryData<t.TFile[]>(DynamicQueryKeys.agentFiles(agentId));
+  for (const file of agentFiles ?? []) {
+    if (typeof file.file_id === 'string' && file.file_id.length > 0) {
+      ids.add(file.file_id);
+    }
+  }
+  return [...ids];
+};
+
+/** Drop sole-referenced agent files from the global files list so the panel updates without a reload. */
+const pruneDeletedAgentFiles = (queryClient: QueryClient, agentId: string): void => {
+  const attachedFileIds = collectCachedAgentFileIds(queryClient, agentId);
+  queryClient.removeQueries({ queryKey: DynamicQueryKeys.agentFiles(agentId) });
+  if (attachedFileIds.length > 0) {
+    const attached = new Set(attachedFileIds);
+    queryClient.setQueryData<t.TFile[] | undefined>([QueryKeys.files], (files) =>
+      files?.filter((file) => !attached.has(file.file_id)),
+    );
+  }
+  invalidateRecentFiles(queryClient);
+  /** Shared files another agent still holds are restored by the refetch. */
+  queryClient.invalidateQueries({ queryKey: [QueryKeys.files] });
 };
 
 /** Mirrors the server's deletion cleanup so cached execution graphs stop referencing the
@@ -199,6 +246,7 @@ export const useDeleteAgentMutation = (
           return data;
         })(allAgentViewAndEditQueryKeys);
 
+        pruneDeletedAgentFiles(queryClient, variables.agent_id);
         queryClient.removeQueries([QueryKeys.agent, variables.agent_id]);
         queryClient.removeQueries([QueryKeys.agent, variables.agent_id, 'expanded']);
         /** Deletion removes the agent from every edge endpoint server-side. Refresh every cached

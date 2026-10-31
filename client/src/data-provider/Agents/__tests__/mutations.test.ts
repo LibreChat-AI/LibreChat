@@ -1,8 +1,14 @@
 import { createElement } from 'react';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { dataService, PermissionBits, QueryKeys } from 'librechat-data-provider';
-import type { Agent, AgentListResponse, GraphEdge } from 'librechat-data-provider';
+import {
+  dataService,
+  DynamicQueryKeys,
+  EToolResources,
+  PermissionBits,
+  QueryKeys,
+} from 'librechat-data-provider';
+import type { Agent, AgentListResponse, GraphEdge, TFile } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import {
   useCreateAgentMutation,
@@ -23,6 +29,7 @@ jest.mock('librechat-data-provider', () => {
       deleteAgent: jest.fn(),
       updateAgent: jest.fn(),
       duplicateAgent: jest.fn(),
+      getFiles: jest.fn().mockResolvedValue([]),
     },
   };
 });
@@ -136,6 +143,55 @@ describe('useDeleteAgentMutation', () => {
     ]);
     expect(queryClient.getQueryData([QueryKeys.agent, targetId])).toBeUndefined();
     expect(queryClient.getQueryData([QueryKeys.agent, targetId, 'expanded'])).toBeUndefined();
+  });
+
+  it("removes the deleted agent's files from the files panel cache immediately", async () => {
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+      },
+    });
+    const targetId = 'agent_with_files';
+    const keptFile: TFile = {
+      file_id: 'kept',
+      filename: 'kept.txt',
+      bytes: 1,
+      type: 'text/plain',
+      embedded: false,
+      filepath: '/uploads/kept.txt',
+    } as TFile;
+    const deletedFile: TFile = {
+      file_id: 'deleted',
+      filename: 'deleted.txt',
+      bytes: 1,
+      type: 'text/plain',
+      embedded: false,
+      filepath: '/uploads/deleted.txt',
+    } as TFile;
+    const agent = {
+      ...createAgent(targetId),
+      tool_resources: {
+        [EToolResources.file_search]: { file_ids: ['deleted'] },
+      },
+    };
+    queryClient.setQueryData([QueryKeys.agent, targetId], agent);
+    queryClient.setQueryData(DynamicQueryKeys.agentFiles(targetId), [deletedFile]);
+    queryClient.setQueryData<TFile[]>([QueryKeys.files], [keptFile, deletedFile]);
+    jest.mocked(dataService.deleteAgent).mockResolvedValue();
+    jest.mocked(dataService.getFiles).mockResolvedValue([keptFile]);
+
+    const { result } = renderHook(() => useDeleteAgentMutation(), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({ agent_id: targetId });
+    });
+
+    expect(queryClient.getQueryData<TFile[]>([QueryKeys.files])).toEqual([keptFile]);
+    expect(queryClient.getQueryData(DynamicQueryKeys.agentFiles(targetId))).toBeUndefined();
   });
 });
 

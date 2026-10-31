@@ -1,5 +1,6 @@
 import { Types } from 'mongoose';
 import {
+  EToolResources,
   PermissionBits,
   Permissions,
   PermissionTypes,
@@ -8,7 +9,7 @@ import {
 import type { IAgent, IRole, IUser } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { AgentManagementDeleteDeps } from './deletion';
-import { createAgentManagementDeleteHandler } from './deletion';
+import { cascadeDeleteAgentResources, createAgentManagementDeleteHandler } from './deletion';
 
 jest.mock('@librechat/data-schemas', () => {
   const actual = jest.requireActual('@librechat/data-schemas');
@@ -61,6 +62,9 @@ function makeDeps(overrides: Partial<AgentManagementDeleteDeps> = {}): AgentMana
     checkPermission: jest.fn().mockResolvedValue(true),
     hasCapability: jest.fn().mockResolvedValue(false),
     deleteAgent: jest.fn().mockResolvedValue(existingAgent as IAgent),
+    getFiles: jest.fn().mockResolvedValue([]),
+    getSharedResourceFileIds: jest.fn().mockResolvedValue([]),
+    deleteFiles: jest.fn().mockResolvedValue({ deletedFileIds: [], failedFileIds: [] }),
     ...overrides,
   };
 }
@@ -183,5 +187,84 @@ describe('Agent Management delete handler', () => {
     expect(response.json).toHaveBeenCalledWith({
       error: { code: 'internal_error', message: 'Internal server error' },
     });
+  });
+
+  it('destroys sole-referenced tool-resource files before deleting the Agent', async () => {
+    const owned = { file_id: 'owned' };
+    const shared = { file_id: 'shared' };
+    const order: string[] = [];
+    const deps = makeDeps({
+      getAgentWithVersionCount: jest.fn().mockResolvedValue({
+        ...existingAgent,
+        tool_resources: {
+          [EToolResources.file_search]: { file_ids: ['owned', 'shared'] },
+        },
+      }),
+      getFiles: jest.fn().mockResolvedValue([owned, shared]),
+      getSharedResourceFileIds: jest.fn().mockResolvedValue(['shared']),
+      deleteFiles: jest.fn().mockImplementation(async (_req, files) => {
+        order.push('files');
+        return {
+          deletedFileIds: files.map((file: { file_id: string }) => file.file_id),
+          failedFileIds: [],
+        };
+      }),
+      deleteAgent: jest.fn().mockImplementation(async () => {
+        order.push('agent');
+        return existingAgent as IAgent;
+      }),
+    });
+    const response = makeResponse();
+
+    await createAgentManagementDeleteHandler(deps)(makeRequest(), response);
+
+    expect(deps.deleteFiles).toHaveBeenCalledWith(expect.anything(), [owned]);
+    expect(order).toEqual(['files', 'agent']);
+    expect(response.status).toHaveBeenCalledWith(200);
+  });
+
+  it('still deletes the Agent when attached-file cleanup fails', async () => {
+    const deps = makeDeps({
+      getAgentWithVersionCount: jest.fn().mockResolvedValue({
+        ...existingAgent,
+        tool_resources: {
+          [EToolResources.context]: { file_ids: ['owned'] },
+        },
+      }),
+      getFiles: jest.fn().mockResolvedValue([{ file_id: 'owned' }]),
+      deleteFiles: jest.fn().mockRejectedValue(new Error('storage unavailable')),
+    });
+    const response = makeResponse();
+
+    await createAgentManagementDeleteHandler(deps)(makeRequest(), response);
+
+    expect(deps.deleteAgent).toHaveBeenCalled();
+    expect(response.status).toHaveBeenCalledWith(200);
+  });
+});
+
+describe('cascadeDeleteAgentResources', () => {
+  it('deletes the avatar after tool-resource files', async () => {
+    const order: string[] = [];
+    await cascadeDeleteAgentResources(
+      {
+        agentObjectId: objectId.toString(),
+        tool_resources: { [EToolResources.execute_code]: { file_ids: ['code-file'] } },
+        avatar: { filepath: '/avatars/a.png', source: 'local' },
+      },
+      {
+        getFiles: jest.fn().mockResolvedValue([{ file_id: 'code-file' }]),
+        getSharedResourceFileIds: jest.fn().mockResolvedValue([]),
+        deleteFiles: jest.fn().mockImplementation(async () => {
+          order.push('files');
+          return { deletedFileIds: ['code-file'], failedFileIds: [] };
+        }),
+        deleteAvatar: jest.fn().mockImplementation(async () => {
+          order.push('avatar');
+        }),
+      },
+    );
+
+    expect(order).toEqual(['files', 'avatar']);
   });
 });

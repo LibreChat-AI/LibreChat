@@ -197,3 +197,81 @@ export const deleteAgentResourceFiles = async <TFile>(
     destroyedFileIds: outcome?.deletedFileIds ?? [],
   };
 };
+
+export type AgentAttachedFileDeletionDeps<TFile> = {
+  /** Which of these ids another agent still references; a shared file is never destroyed. */
+  getSharedResourceFileIds: (params: {
+    file_ids: string[];
+    excludeAgentObjectId: string;
+  }) => Promise<string[]>;
+  /** The full delete pass, injected: storage, vectors, and metadata. */
+  deleteFiles: (files: TFile[]) => Promise<FileDeletionOutcome>;
+};
+
+export type AgentAttachedFileDeletionResult = {
+  outcome: FileDeletionOutcome | null;
+  skippedSharedFileIds: string[];
+  destroyedFileIds: string[];
+};
+
+/**
+ * Destroys files attached to an agent that is itself being deleted, keeping any
+ * file another agent still references.
+ *
+ * Unlike {@link deleteAgentResourceFiles}, this path does not partition by caller
+ * ownership: deleting the agent is an authorized DELETE on the resource, and a
+ * sole-referenced file left behind would orphan storage and embeddings. Shared
+ * copies (for example after agent duplication) stay intact. Unlinking is skipped
+ * because the agent document is about to go away with its `tool_resources`.
+ */
+export const deleteAgentAttachedFiles = async <TFile extends { file_id: string }>(
+  {
+    agentObjectId,
+    fileIds,
+    files,
+  }: {
+    /** The agent's globally unique `_id`; `id` alone repeats across tenants. */
+    agentObjectId: string;
+    fileIds: string[];
+    files: TFile[];
+  },
+  deps: AgentAttachedFileDeletionDeps<TFile>,
+): Promise<AgentAttachedFileDeletionResult> => {
+  if (fileIds.length === 0 || files.length === 0) {
+    return { outcome: null, skippedSharedFileIds: [], destroyedFileIds: [] };
+  }
+
+  const attached = new Set(fileIds);
+  const candidates = files.filter((file) => attached.has(file.file_id));
+  if (candidates.length === 0) {
+    return { outcome: null, skippedSharedFileIds: [], destroyedFileIds: [] };
+  }
+
+  const sharedFileIds = new Set(
+    await deps.getSharedResourceFileIds({
+      file_ids: candidates.map((file) => file.file_id),
+      excludeAgentObjectId: agentObjectId,
+    }),
+  );
+
+  const destroyable: TFile[] = [];
+  const skippedSharedFileIds: string[] = [];
+  for (const file of candidates) {
+    if (sharedFileIds.has(file.file_id)) {
+      skippedSharedFileIds.push(file.file_id);
+      continue;
+    }
+    destroyable.push(file);
+  }
+
+  if (destroyable.length === 0) {
+    return { outcome: null, skippedSharedFileIds, destroyedFileIds: [] };
+  }
+
+  const outcome = await deps.deleteFiles(destroyable);
+  return {
+    outcome,
+    skippedSharedFileIds,
+    destroyedFileIds: outcome.deletedFileIds ?? [],
+  };
+};

@@ -31,6 +31,8 @@ const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const { checkPermission, findAccessibleResources } = require('~/server/services/PermissionService');
 const { createMulterInstance } = require('~/server/routes/files/multer');
 const { handleFileUpload } = require('~/server/routes/files/files');
+const { processDeleteRequest } = require('~/server/services/Files/process');
+const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { checkCapability, getEndpointsConfig } = require('~/server/services/Config');
 const v1 = require('~/server/controllers/agents/v1');
 const db = require('~/models');
@@ -62,6 +64,19 @@ const deleteHandler = createAgentManagementDeleteHandler({
   checkPermission,
   hasCapability,
   deleteAgent: db.deleteAgent,
+  getFiles: async (fileIds) =>
+    (await db.getFiles({ file_id: { $in: fileIds } }, null, { text: 0 })) ?? [],
+  getSharedResourceFileIds: db.getSharedResourceFileIds,
+  deleteFiles: (req, files) => processDeleteRequest({ req, files }),
+  deleteAvatar: async (req, avatar) => {
+    const { deleteFile } = getStrategyFunctions(avatar.source);
+    await deleteFile(req, {
+      filepath: avatar.filepath,
+      user: req.user?.id,
+      tenantId: req.user?.tenantId,
+    });
+    await db.deleteFileByFilter({ filepath: avatar.filepath });
+  },
 });
 const fileHandlers = createAgentManagementFileHandlers({
   getRoleByName: db.getRoleByName,
@@ -173,7 +188,7 @@ router.get('/:id/files', fileHandlers.list);
 router.delete('/:id/files/:fileId', fileHandlers.remove);
 router.get('/:id', readHandlers.get);
 router.patch('/:id', configMiddleware, updateHandler);
-router.delete('/:id', deleteHandler);
+router.delete('/:id', configMiddleware, deleteHandler);
 
 router.use((_req, res) => {
   const { status, body } = mapAgentManagementError('not_found');
