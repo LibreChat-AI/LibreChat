@@ -49,6 +49,17 @@ const artifact: ChannelArtifact = {
 };
 
 describe('Slack answer rendering', () => {
+  it('honors configured budgets above 64 messages for ordinary answers', () => {
+    const view = run();
+    view.snapshot!.text = '# Heading\n\n'.repeat(2700);
+    const plan = makeSlackPlan(view, false, 100);
+    expect(plan.parts.length).toBeGreaterThan(64);
+    expect(plan.parts.length).toBeLessThanOrEqual(100);
+    expect(plan.parts.map((part) => part.text).join('')).not.toContain('Reply shortened');
+    for (const part of plan.parts)
+      expect(() => durableSlackMessage(part, plan.rendererVersion)).not.toThrow();
+  });
+
   it('parses balanced and escaped link parentheses without touching literal code', () => {
     expect(safeMrkdwn('[docs](https://example.com/Foo_(bar))')).toBe(
       '<https://example.com/Foo_(bar)|docs>',
