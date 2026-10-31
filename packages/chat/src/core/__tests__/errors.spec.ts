@@ -27,6 +27,9 @@ const newChatSubmission = (endpoint: string): EventSubmission =>
     conversation: { conversationId: Constants.NEW_CONVO, endpoint },
   }) as unknown as EventSubmission;
 
+const ERROR_TEXT =
+  'The Assistant run failed to initialize. Try sending a message in a new conversation.';
+
 /** The settled error message `sendError` writes: final, addressed to the saved conversation. */
 const settledError = (endpoint: string): TResData =>
   ({
@@ -37,7 +40,7 @@ const settledError = (endpoint: string): TResData =>
     unfinished: false,
     error: true,
     final: true,
-    text: 'The Assistant run failed to initialize. Try sending a message in a new conversation.',
+    text: ERROR_TEXT,
     isCreatedByUser: false,
     endpoint,
   }) as unknown as TResData;
@@ -57,7 +60,7 @@ describe('resolveErrorTurn on the new-chat route', () => {
       const turn = resolve(endpoint);
       expect(turn.recover).toBe(false);
       expect(turn.errorResponse.error).toBe(true);
-      expect(turn.errorResponse.text).toBe(settledError(endpoint).text);
+      expect(turn.errorResponse.text).toBe(ERROR_TEXT);
     },
   );
 

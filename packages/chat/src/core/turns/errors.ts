@@ -1,11 +1,30 @@
 import { v4 } from 'uuid';
-import { ContentTypes, tMessageSchema } from 'librechat-data-provider';
+import { ContentTypes, tMessageSchema, isAssistantsEndpoint } from 'librechat-data-provider';
 import type { TMessage, EventSubmission, TMessageContentParts } from 'librechat-data-provider';
 import type { TResData } from './types';
 import { getPartKeyIndex, isEmptyContentPart, preserveStreamedContentIdentity } from '../content';
 import { responseParentMessageId } from '../resumable/messages';
 
 const CONNECTION_ERROR_TEXT = 'Error connecting to server, try refreshing the page.';
+
+/**
+ * A settled error the Assistants routes write: final, addressed to the conversation they created,
+ * and never saved (their error handler sends with `shouldSaveMessage: false`). Rebuilding the
+ * new-chat pane into that conversation refetches its messages, and the copy the server returns
+ * has no error row, so the pane keeps the failure on screen instead.
+ */
+const isUnsavedSettledError = (data: TResData, submission: EventSubmission): boolean => {
+  const settled = data as Partial<TMessage> & { final?: boolean };
+  if (settled.final !== true || settled.error !== true) {
+    return false;
+  }
+  const endpoint =
+    settled.endpoint ??
+    submission.conversation?.endpointType ??
+    submission.conversation?.endpoint ??
+    submission.initialResponse?.endpoint;
+  return isAssistantsEndpoint(endpoint);
+};
 
 /**
  * The parts the in-flight response has streamed so far: the transcript's tail (a user row there
@@ -215,7 +234,7 @@ export const resolveErrorTurn = ({
   }
   return {
     conversationId: receivedConvoId,
-    recover: isNewConversationRoute,
+    recover: isNewConversationRoute && !isUnsavedSettledError(data, submission),
     errorResponse: build(
       tMessageSchema.parse({
         ...data,
