@@ -15,6 +15,7 @@ import {
   removeUnavailableTools,
   getModelSpecIconURL,
   getConvoSwitchLogic,
+  resolvePresetSpec,
   logger,
 } from '~/utils';
 import { useDefaultConvo } from '~/hooks';
@@ -259,7 +260,7 @@ export default function useSelectMention({
         endpointsConfig,
       });
 
-      newPreset.spec = null;
+      newPreset.spec = resolvePresetSpec(newPreset, modelSpecs);
       newPreset.iconURL = newPreset.iconURL ?? null;
       newPreset.modelLabel = newPreset.modelLabel ?? null;
       const isModular = isCurrentModular && isNewModular && shouldSwitch;
@@ -297,6 +298,7 @@ export default function useSelectMention({
     },
     [
       modularChat,
+      modelSpecs,
       getConversation,
       availableTools,
       newConversation,

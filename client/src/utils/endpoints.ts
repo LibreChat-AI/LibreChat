@@ -526,6 +526,27 @@ export function getModelSpecPreset(modelSpec?: t.TModelSpec) {
   };
 }
 
+/**
+ * The model spec a saved preset keeps when it is applied: the spec it was saved from,
+ * while that spec is still offered and still serves the preset's endpoint and model
+ * (or agent). Otherwise `null`, so a stale or repointed name never reaches the selector
+ * or the server. Hidden specs are absent from the client list and clear as well.
+ */
+export function resolvePresetSpec(
+  preset: Pick<t.TPreset, 'spec' | 'endpoint' | 'model' | 'agent_id'>,
+  modelSpecs?: t.TModelSpec[],
+): string | null {
+  if (!preset.spec) {
+    return null;
+  }
+  const modelSpec = modelSpecs?.find((spec) => spec.name === preset.spec);
+  if (!modelSpec || resolveModelSpecEndpoint(modelSpec) !== preset.endpoint) {
+    return null;
+  }
+  const target = modelSpec.preset.agent_id ? 'agent_id' : 'model';
+  return (modelSpec.preset[target] ?? null) === (preset[target] ?? null) ? modelSpec.name : null;
+}
+
 /** Fields set by a model spec that should be cleared when switching to a non-spec conversation. */
 export const specDisplayFieldReset = {
   spec: null as string | null,

@@ -13,11 +13,13 @@ import {
   normalizeExportFilename,
   removeUnavailableTools,
   getConvoSwitchLogic,
+  resolvePresetSpec,
   cleanupPreset,
 } from '~/utils';
 import {
   useUpdatePresetMutation,
   useDeletePresetMutation,
+  useGetStartupConfig,
   useGetPresetsQuery,
 } from '~/data-provider';
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
@@ -47,6 +49,7 @@ export default function usePresets(index = 0) {
   const setPreset = useSetAtom(presetFamily(index));
   const conversationId = useRecoilValue(store.conversationIdByIndex(index));
   const { data: modelsData } = useGetModelsQuery();
+  const { data: startupConfig } = useGetStartupConfig();
   const { newConversation } = useNewConvo(index);
 
   useEffect(() => {
@@ -202,7 +205,7 @@ export default function usePresets(index = 0) {
       endpointsConfig,
     });
 
-    newPreset.spec = null;
+    newPreset.spec = resolvePresetSpec(newPreset, startupConfig?.modelSpecs?.list);
     newPreset.iconURL = newPreset.iconURL ?? null;
     newPreset.modelLabel = newPreset.modelLabel ?? null;
     const isModular = isCurrentModular && isNewModular && shouldSwitch;
