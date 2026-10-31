@@ -2206,3 +2206,137 @@ it.each(['live', 'expired', 'closed'] as const)(
       expect(JSON.stringify(identity)).not.toContain('Hello');
     }),
 );
+
+it('atomically reserves a dispatch outbox and exposes only bounded maintenance identity', () =>
+  scoped(async () => {
+    const result = await storage.reserve({ ...reservation(), dispatch: true });
+    expect(result).toMatchObject({
+      ok: true,
+      record: { dispatchOutbox: { kind: 'create', id: 'resp_one', state: 'pending' } },
+    });
+    const page = await runAsSystem(() => storage.listPendingDispatches(undefined, 1, false));
+    expect(page.responses).toEqual([{ ...owner, responseId: 'resp_one' }]);
+    expect(JSON.stringify(page)).not.toContain('Hello');
+    expect(JSON.stringify(page)).not.toContain('requestJSON');
+    expect(await storage.settleDispatch(owner, 'resp_one', { kind: 'create', id: 'wrong' })).toBe(
+      false,
+    );
+    expect(
+      await storage.settleDispatch(owner, 'resp_one', { kind: 'create', id: 'resp_one' }),
+    ).toBe(true);
+    expect(
+      (await runAsSystem(() => storage.listPendingDispatches(undefined, 1, false))).responses,
+    ).toEqual([]);
+  }));
+
+it('fences late create acknowledgements from a newer resume and does not bump execution revision', () =>
+  scoped(async () => {
+    await pause();
+    const reserved = await storage.reserveResume(owner, 'resp_one', resume(), 100);
+    expect(reserved.ok).toBe(true);
+    const before = (await storage.read(owner, 'resp_one'))!;
+    expect(before.dispatchOutbox).toEqual({ kind: 'resume', id: 'intent-one', state: 'pending' });
+    expect(
+      await storage.settleDispatch(owner, 'resp_one', { kind: 'create', id: 'resp_one' }),
+    ).toBe(false);
+    expect(await storage.settleDispatch(owner, 'resp_one', { kind: 'resume', id: 'wrong' })).toBe(
+      false,
+    );
+    expect((await storage.read(owner, 'resp_one'))!.dispatchOutbox).toEqual(before.dispatchOutbox);
+    expect(
+      await storage.settleDispatch(owner, 'resp_one', { kind: 'resume', id: 'intent-one' }),
+    ).toBe(true);
+    expect((await storage.read(owner, 'resp_one'))!.revision).toBe(before.revision);
+    expect(
+      (await runAsSystem(() => storage.listPendingDispatches(undefined, 10, true))).responses,
+    ).toEqual([]);
+  }));
+
+it('recovers legacy reservations and resume intents without acknowledging another tenant or closed scope', () =>
+  scoped(async () => {
+    await storage.reserve(reservation());
+    const page = await runAsSystem(() => storage.listPendingDispatches(undefined, 1, false));
+    expect(page.responses).toEqual([{ ...owner, responseId: 'resp_one' }]);
+    await expect(storage.listPendingDispatches(undefined, 1, false)).rejects.toThrow('system');
+    await expect(
+      runAsSystem(() => storage.listPendingDispatches(undefined, 0, false)),
+    ).rejects.toThrow('page');
+    await expect(
+      runAsSystem(() => storage.listPendingDispatches('invalid', 1, false)),
+    ).rejects.toThrow('cursor');
+    await closeResponseScopes(mongoose, owner, ['conversation-one']);
+    expect(
+      await storage.settleDispatch(owner, 'resp_one', { kind: 'create', id: 'resp_one' }),
+    ).toBe(false);
+  }));
+
+it('finds legacy resume writes after an earlier create marker was settled', () =>
+  scoped(async () => {
+    await pause();
+    await storage.reserveResume(owner, 'resp_one', resume(), 100);
+    await mongoose.models.StoredResponse.updateOne(
+      { responseId: 'resp_one' },
+      { $set: { dispatchOutbox: { kind: 'create', id: 'resp_one', state: 'settled' } } },
+    );
+    expect(
+      (await runAsSystem(() => storage.listPendingDispatches(undefined, 10, false))).responses,
+    ).toEqual([]);
+    expect(
+      (await runAsSystem(() => storage.listPendingDispatches(undefined, 10, true))).responses,
+    ).toEqual([{ ...owner, responseId: 'resp_one' }]);
+    expect(
+      await storage.settleDispatch(owner, 'resp_one', { kind: 'resume', id: 'intent-one' }),
+    ).toBe(true);
+  }));
+
+it('bounds metadata pages across named and default tenants and omits expired requests', async () => {
+  for (let i = 0; i < 4; i++) {
+    const tenantId = i % 2 ? undefined : owner.tenantId;
+    await tenantStorage.run({ tenantId }, () =>
+      storage.reserve(
+        reservation({ tenantId, responseId: 'page-' + i, requestKey: 'page-' + i, dispatch: true }),
+      ),
+    );
+  }
+  await scoped(() =>
+    storage.reserve(
+      reservation({
+        responseId: 'expired',
+        requestKey: 'expired',
+        conversationId: 'expired-conversation',
+        expiredAt: new Date(0),
+        dispatch: true,
+      }),
+    ),
+  );
+  const found: Array<{ tenantId?: string; userId: string; responseId: string }> = [];
+  let cursor: string | undefined;
+  do {
+    const page = await runAsSystem(() => storage.listPendingDispatches(cursor, 1, false));
+    expect(page.responses.length).toBeLessThanOrEqual(1);
+    found.push(...page.responses);
+    cursor = page.next;
+  } while (cursor);
+  expect(found.map((row) => row.responseId).sort()).toEqual([
+    'page-0',
+    'page-1',
+    'page-2',
+    'page-3',
+  ]);
+  expect(new Set(found.map((row) => row.tenantId))).toEqual(new Set([undefined, owner.tenantId]));
+});
+
+it('cannot overwrite a concurrently reserved resume with a late create acknowledgement', () =>
+  scoped(async () => {
+    await pause();
+    const results = await Promise.all([
+      storage.settleDispatch(owner, 'resp_one', { kind: 'create', id: 'resp_one' }),
+      storage.reserveResume(owner, 'resp_one', resume(), 100),
+    ]);
+    expect(results[1]).toMatchObject({ ok: true });
+    expect((await storage.read(owner, 'resp_one'))!.dispatchOutbox).toEqual({
+      kind: 'resume',
+      id: 'intent-one',
+      state: 'pending',
+    });
+  }));
