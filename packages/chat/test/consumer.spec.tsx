@@ -451,6 +451,7 @@ describe('a consumer rendering subagent activity', () => {
     extendActiveJobsGrace: unused,
     useStreamStatus: unused,
     useResumeSettings: unused,
+    useEventServices: unused,
     useParentSubagentIndex: () => ({
       data: index,
       isError: false,
