@@ -1,5 +1,3 @@
-export { removeCharIfLast } from '@librechat/chat';
-
 /**
  * Insert text at the cursor position in a textarea.
  */
