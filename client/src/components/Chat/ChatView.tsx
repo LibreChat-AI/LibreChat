@@ -10,12 +10,12 @@ import {
   submissionByIndex,
   composerLiftFamily,
   ChatSessionProvider,
+  useScrollbarGutterSeed,
   ComposerRestoreProvider,
 } from '@librechat/chat/react';
 import type { TChatProject, TMessage } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { AddedChatContext, ChatFormProvider, useChatContext, useFileMapContext } from '~/Providers';
-import { useScrollbarGutterSeed, useAddedResponse, useLocalize } from '~/hooks';
 import Footer, { useLandingFooter, useConfiguredFooter } from './Footer';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import ApprovalProvider from './Messages/Content/ApprovalContext';
@@ -23,6 +23,7 @@ import ConversationStarters from './Input/ConversationStarters';
 import { pendingApprovalActionFamily } from './approval/state';
 import ProjectBadge from '~/components/Projects/ProjectBadge';
 import { OwnerTextProvider } from './Messages/PrivateText';
+import { useAddedResponse, useLocalize } from '~/hooks';
 import { AskAnswerHostProvider } from './ask/state';
 import MessagesView from './Messages/MessagesView';
 import Presentation from './Presentation';
