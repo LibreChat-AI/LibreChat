@@ -39,6 +39,7 @@ jest.mock('@librechat/api', () => ({
 
 jest.mock('~/models', () => ({
   initializeMessageBudget: jest.fn(),
+  initializeChannelStorageConfig: jest.fn(),
   saveMessage: (...args) => mockSaveMessage(...args),
 }));
 
@@ -84,6 +85,28 @@ function mockSubscribeSuccess() {
     process.nextTick(() => onDone({ done: true }));
     return { unsubscribe: jest.fn() };
   });
+}
+
+/** A real HTTP socket must reach subscribe before fake time can exercise its keepalive. */
+function openSilentStream() {
+  let resolveAttached;
+  const subscribed = new Promise((resolve) => {
+    resolveAttached = resolve;
+  });
+  mockGenerationJobManager.subscribe.mockImplementation(async (_streamId, _writeEvent, onDone) => {
+    resolveAttached(onDone);
+    return { unsubscribe: jest.fn() };
+  });
+  const pending = request(app)
+    .get('/agents/chat/stream/stream-123')
+    .then((res) => res);
+  const attached = Promise.race([
+    subscribed,
+    pending.then((res) => {
+      throw new Error(`Stream ended before subscribing: HTTP ${res.status}`);
+    }),
+  ]);
+  return { pending, attached };
 }
 
 describe('SSE stream tenant isolation', () => {
@@ -411,19 +434,8 @@ describe('SSE stream tenant isolation', () => {
           status: 'running',
           createdAt: 1000,
         });
-        let finish;
-        mockGenerationJobManager.subscribe.mockImplementation(
-          async (_streamId, _writeEvent, onDone) => {
-            finish = onDone;
-            return { unsubscribe: jest.fn() };
-          },
-        );
-
-        const pending = request(app)
-          .get('/agents/chat/stream/stream-123')
-          .then((res) => res);
-        await jest.advanceTimersByTimeAsync(0);
-        await new Promise((resolve) => setImmediate(resolve));
+        const { pending, attached } = openSilentStream();
+        const finish = await attached;
         await jest.advanceTimersByTimeAsync(60_000);
         finish({ final: true });
         const res = await pending;
@@ -470,19 +482,8 @@ describe('SSE stream tenant isolation', () => {
           status: 'running',
           createdAt: 1000,
         });
-        let finish;
-        mockGenerationJobManager.subscribe.mockImplementation(
-          async (_streamId, _writeEvent, onDone) => {
-            finish = onDone;
-            return { unsubscribe: jest.fn() };
-          },
-        );
-
-        const pending = request(app)
-          .get('/agents/chat/stream/stream-123')
-          .then((res) => res);
-        await jest.advanceTimersByTimeAsync(0);
-        await new Promise((resolve) => setImmediate(resolve));
+        const { pending, attached } = openSilentStream();
+        const finish = await attached;
         await jest.advanceTimersByTimeAsync(60_000);
         finish({ final: true });
         const res = await pending;
@@ -502,19 +503,8 @@ describe('SSE stream tenant isolation', () => {
           status: 'running',
           createdAt: 1000,
         });
-        let finish;
-        mockGenerationJobManager.subscribe.mockImplementation(
-          async (_streamId, _writeEvent, onDone) => {
-            finish = onDone;
-            return { unsubscribe: jest.fn() };
-          },
-        );
-
-        const pending = request(app)
-          .get('/agents/chat/stream/stream-123')
-          .then((res) => res);
-        await jest.advanceTimersByTimeAsync(0);
-        await new Promise((resolve) => setImmediate(resolve));
+        const { pending, attached } = openSilentStream();
+        const finish = await attached;
         await jest.advanceTimersByTimeAsync(60_000);
 
         expect(mockGenerationJobManager.subscribe).toHaveBeenCalled();

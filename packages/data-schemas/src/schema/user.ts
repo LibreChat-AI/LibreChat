@@ -1,6 +1,7 @@
 import { Schema } from 'mongoose';
 import { SystemRoles, STATEFUL_CODE_ENVIRONMENTS } from 'librechat-data-provider';
 import { applySearchTokens } from '~/models/plugins/searchTokens';
+import { isReservedTenantId } from '~/config/tenantContext';
 import { USER_SEARCH_TOKEN_FIELDS } from '~/utils/search';
 import { IUser } from '~/types';
 
@@ -232,6 +233,10 @@ const userSchema: Schema<IUser> = new Schema<IUser>(
     tenantId: {
       type: String,
       index: true,
+      validate: {
+        validator: (value: string | undefined) => !isReservedTenantId(value),
+        message: 'Reserved tenant identifier',
+      },
     },
   },
   { timestamps: true },
