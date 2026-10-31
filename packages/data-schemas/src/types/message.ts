@@ -82,6 +82,7 @@ export interface IMessage extends Document {
     tag: TFeedbackTag | undefined;
     text?: string;
   };
+  langfuseCentralTraceExportEnabled?: boolean;
   langfuseSampled?: boolean;
   langfuseDestinationIds?: string[];
   /** The run whose trace this response reports, when that run's id is not the message's own (a failed turn's error row). */

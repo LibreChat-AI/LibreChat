@@ -497,7 +497,12 @@ export interface ResponseTurnIntent {
   context: Omit<ResponseTurnWrites['context'], 'expiredAt'> & { expiredAt?: string };
   conversation: ResponseTurnWrites['conversation'];
   initialAgentId: string | null;
-  trace: { langfuseSampled?: boolean; langfuseDestinationIds?: string[]; langfuseRunId?: string };
+  trace: {
+    langfuseCentralTraceExportEnabled?: boolean;
+    langfuseSampled?: boolean;
+    langfuseDestinationIds?: string[];
+    langfuseRunId?: string;
+  };
   visibleOutputTokens?: number;
 }
 

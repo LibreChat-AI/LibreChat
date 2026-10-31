@@ -1,3 +1,4 @@
+import { getLangfuseTraceMessageFields } from './destinations';
 import { withoutTraceRefs } from './trace';
 
 describe('withoutTraceRefs', () => {
@@ -18,4 +19,22 @@ describe('withoutTraceRefs', () => {
 
     expect(withoutTraceRefs(row)).toEqual({ messageId: 'copy-2', langfuseSampled: false });
   });
+});
+
+it('drops original central-export permission when copying a trace reference', () => {
+  expect(
+    withoutTraceRefs({
+      langfuseSampled: true,
+      langfuseCentralTraceExportEnabled: true,
+      langfuseDestinationIds: ['project'],
+    }),
+  ).not.toHaveProperty('langfuseCentralTraceExportEnabled');
+});
+
+it('captures the original central export decision with source trace fields', async () => {
+  expect(
+    await getLangfuseTraceMessageFields(undefined, 'source-trace', {
+      centralTraceExportEnabled: false,
+    }),
+  ).toMatchObject({ langfuseCentralTraceExportEnabled: false });
 });
