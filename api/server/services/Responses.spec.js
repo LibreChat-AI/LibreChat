@@ -14,15 +14,29 @@ const mockEnqueue = jest.fn();
 const mockIsQueueReady = jest.fn();
 const mockAuthorizeChannelResponseKeySource = jest.fn().mockResolvedValue(false);
 
+jest.mock('../../../packages/api/src/agents/responses/resume', () => ({
+  createResponseResumeValidation: (...args) => mockCreateResponseResumeValidation(...args),
+  createResponseResumeAdmission: jest.fn(() => jest.fn()),
+}));
+jest.mock('../../../packages/api/src/agents/responses/authority', () => ({
+  createBackgroundResponseAuthority: jest.fn(() => jest.fn()),
+}));
+jest.mock('../../../packages/api/src/agents/responses/host', () => ({
+  createBackgroundResponsesHost: jest.fn(() => ({ initialize: jest.fn() })),
+}));
 jest.mock('@librechat/api', () => ({
+  createInteractiveResponsesHost: jest.requireActual(
+    '../../../packages/api/src/agents/responses/interactive',
+  ).createInteractiveResponsesHost,
   createAgentTriggerProducerBinding:
     jest.requireActual('@librechat/api').createAgentTriggerProducerBinding,
   getRemoteAgentPermissions: jest.requireActual('../../../packages/api/src/apiKeys/service')
     .getRemoteAgentPermissions,
-  createResponseResumeValidation: (...args) => mockCreateResponseResumeValidation(...args),
-  createBackgroundResponseAuthority: jest.fn(() => jest.fn()),
-  createResponseResumeAdmission: jest.fn(() => jest.fn()),
-  createBackgroundResponsesHost: jest.fn(() => ({ initialize: jest.fn() })),
+  createBackgroundResponseAuthority: jest.requireMock(
+    '../../../packages/api/src/agents/responses/authority',
+  ).createBackgroundResponseAuthority,
+  createBackgroundResponsesHost: jest.requireMock('../../../packages/api/src/agents/responses/host')
+    .createBackgroundResponsesHost,
   GenerationJobManager: {},
 }));
 jest.mock('@librechat/data-schemas', () => ({
@@ -68,6 +82,11 @@ describe('Responses resume permission composition', () => {
       resourceType: ResourceType.AGENT,
       resourceId: agent._id,
     });
+  });
+
+  it('denies an unstored Agent without requesting unscoped permissions', async () => {
+    await expect(canAccessAgent({}, user)).resolves.toBe(false);
+    expect(mockGetEffectivePermissions).not.toHaveBeenCalled();
   });
 
   it('honors an explicit Remote Agent VIEW grant without Agent SHARE', async () => {
