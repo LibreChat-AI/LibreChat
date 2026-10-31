@@ -1,4 +1,10 @@
 import { createHash } from 'node:crypto';
+import {
+  CHANNEL_RUN_MAX_JSON_BYTES,
+  CHANNEL_DELIVERY_TEXT_MAX_CHARS,
+  CHANNEL_DELIVERY_PARTS_HARD_MAX,
+  CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES,
+} from 'librechat-data-provider';
 import type { ChannelArtifact, ChannelRunFence, ChannelRunView } from 'librechat-data-provider';
 import type { ChannelBundle, ResponseGrant } from './types';
 import { ChannelClient, ServiceError, boundedBody } from './client';
@@ -60,6 +66,101 @@ const run: ChannelRunView = {
 };
 
 describe('ChannelClient service boundary', () => {
+  test('returns a valid worker-bound claim', async () => {
+    const lease = { run, fence, leaseExpiresAt: Date.now() + 60_000 };
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockImplementation(async () => json(lease));
+    await expect(new ChannelClient(config, transport).claim(fence.owner)).resolves.toEqual(lease);
+  });
+
+  test.each([
+    { fence: { ...fence, runId: 'other-run' } },
+    { fence: { ...fence, owner: 'other-worker' } },
+    { fence: { ...fence, epoch: 0 } },
+    { fence: { ...fence, epoch: 1.5 } },
+    { run: { ...run, channelId: 'other-channel' } },
+    { run: { ...run, revision: '' } },
+    { run: { ...run, admission: { ...run.admission, externalThreadKey: 'foreign:123' } } },
+    { run: { ...run, admission: null } },
+    { leaseExpiresAt: 0 },
+    { leaseExpiresAt: 'future' },
+  ])('rejects an inconsistent claimed lease %#', async (change) => {
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockImplementation(async () =>
+        json({ run, fence, leaseExpiresAt: Date.now() + 60_000, ...change }),
+      );
+    await expect(new ChannelClient(config, transport).claim(fence.owner)).rejects.toThrow();
+  });
+
+  test.each([
+    { fence: { ...fence, runId: 'other-run' } },
+    { fence: { ...fence, owner: 'other-worker' } },
+    { fence: { ...fence, epoch: 2 } },
+    { leaseExpiresAt: 0 },
+  ])('rejects a renewal that changes the fence %#', async (change) => {
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockImplementation(async () =>
+        json({ fence, leaseExpiresAt: Date.now() + 60_000, ...change }),
+      );
+    await expect(new ChannelClient(config, transport).renew(fence)).rejects.toThrow();
+  });
+
+  test('rejects settlement for another run before exposing it to the worker', async () => {
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockImplementation(async () => json({ settled: { ...run, runId: 'other-run' } }));
+    await expect(new ChannelClient(config, transport).prepare(fence)).rejects.toThrow();
+  });
+
+  test.each([
+    { settled: { ...run, channelId: 'other-channel' } },
+    { settled: null },
+    { settled: run, apiKey: grant.apiKey },
+    { ...grant, request: { ...grant.request, store: false } },
+    { ...grant, request: undefined },
+  ])('fails closed on ambiguous or malformed successful preparation %#', async (value) => {
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockImplementation(async () => json(value));
+    await expect(new ChannelClient(config, transport).prepare(fence)).rejects.toThrow();
+    expect(transport).toHaveBeenCalledTimes(1);
+  });
+
+  test('reads a valid maximal-part plan above the old service cap through claim and mutation', async () => {
+    const largeRun: ChannelRunView = {
+      ...run,
+      plan: {
+        revision: 'revision-1',
+        rendererVersion: 'test',
+        parts: Array.from({ length: CHANNEL_DELIVERY_PARTS_HARD_MAX }, (_, i) => ({
+          operationId: `part-${i}`,
+          kind: 'message',
+          required: true,
+          text: '\u0000'.repeat(CHANNEL_DELIVERY_TEXT_MAX_CHARS),
+          presentation: {
+            format: 'slack-blocks-v1',
+            payload: JSON.stringify({
+              text: 'x'.repeat(CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES - 1000),
+            }),
+          },
+        })),
+      },
+    };
+    expect(Buffer.byteLength(JSON.stringify(largeRun))).toBeGreaterThan(2 * 1024 * 1024);
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockImplementationOnce(async () =>
+        json({ run: largeRun, fence, leaseExpiresAt: Date.now() + 60_000 }),
+      )
+      .mockImplementationOnce(async () => json(largeRun));
+    const client = new ChannelClient(config, transport);
+    await expect(client.claim(fence.owner)).resolves.toMatchObject({ fence, run: largeRun });
+    await expect(client.mutate(fence, 'advance')).resolves.toEqual(largeRun);
+  });
+
   test('uses service credentials only for the authorized channel/tenant and prohibits redirects', async () => {
     const transport = jest
       .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
@@ -152,10 +253,20 @@ describe('ChannelClient service boundary', () => {
   });
 
   test('malformed and oversized bodies fail safely', async () => {
+    const chunk = Buffer.alloc(64 * 1024, 'x');
+    let remaining = CHANNEL_RUN_MAX_JSON_BYTES + 1;
+    const oversized = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (remaining === 0) return controller.close();
+        const size = Math.min(remaining, chunk.length);
+        controller.enqueue(chunk.subarray(0, size));
+        remaining -= size;
+      },
+    });
     const transport = jest
       .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
       .mockResolvedValueOnce(new Response('private-malformed-value'))
-      .mockResolvedValueOnce(new Response('x'.repeat(2 * 1024 * 1024 + 1)));
+      .mockResolvedValueOnce(new Response(oversized));
     const client = new ChannelClient(config, transport);
     await expect(client.claim('worker-1')).rejects.toThrow('Invalid channel service response');
     await expect(client.claim('worker-1')).rejects.toThrow('Remote response exceeds size limit');
@@ -163,6 +274,16 @@ describe('ChannelClient service boundary', () => {
 });
 
 describe('bound Responses lifecycle', () => {
+  test('reads valid persisted Response content beyond the previous service cap', async () => {
+    const large = { ...response, output: '\u0000'.repeat(400_000) };
+    expect(Buffer.byteLength(JSON.stringify(large))).toBeGreaterThan(2 * 1024 * 1024);
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockImplementation(async () => json(large));
+    await expect(new ChannelClient(config, transport).response(grant, 'create')).resolves.toEqual(
+      large,
+    );
+  });
   test('uses only the run-bound key, stable creation idempotency and exact returned identity', async () => {
     const transport = jest
       .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()

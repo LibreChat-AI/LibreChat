@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { CHANNEL_RUN_MAX_JSON_BYTES } from 'librechat-data-provider';
 import type {
   ChannelRunActor,
   ChannelRunAdmission,
@@ -29,6 +30,25 @@ export class ServiceError extends Error {
   ) {
     super(`Channel service returned HTTP ${status}`);
   }
+}
+
+const validId = (value: unknown): value is string =>
+  typeof value === 'string' && /^[\w:.-]{1,256}$/.test(value);
+
+function validFence(
+  value: ChannelRunFence | undefined,
+  expected: Partial<ChannelRunFence>,
+): boolean {
+  return Boolean(
+    value &&
+      validId(value.runId) &&
+      validId(value.owner) &&
+      Number.isSafeInteger(value.epoch) &&
+      value.epoch > 0 &&
+      (expected.runId === undefined || value.runId === expected.runId) &&
+      (expected.owner === undefined || value.owner === expected.owner) &&
+      (expected.epoch === undefined || value.epoch === expected.epoch),
+  );
 }
 
 export async function boundedBody(response: Response, limit: number): Promise<Buffer> {
@@ -88,7 +108,7 @@ export class ChannelClient {
 
   private async decode<T>(response: Response, empty?: T): Promise<T> {
     if (response.status === 204 && empty !== undefined) return empty;
-    const bytes = await boundedBody(response, 2 * 1024 * 1024);
+    const bytes = await boundedBody(response, response.ok ? CHANNEL_RUN_MAX_JSON_BYTES : 64 * 1024);
     if (!response.ok) {
       let code = '';
       try {
@@ -137,6 +157,55 @@ export class ChannelClient {
   async runs<T>(suffix: string, body: object, signal?: AbortSignal, empty?: T): Promise<T> {
     return this.request<T>(this.root + '/runs' + suffix, body, signal, empty);
   }
+  private assertRun(run: ChannelRunView | undefined, runId: string): asserts run is ChannelRunView {
+    if (
+      !run ||
+      typeof run !== 'object' ||
+      run.runId !== runId ||
+      run.channelId !== this.config.CHANNEL_ID ||
+      !validId(run.revision) ||
+      !Number.isSafeInteger(run.sequence) ||
+      run.sequence < 1 ||
+      ![
+        'queued',
+        'executing',
+        'requires_action',
+        'delivering',
+        'delivered',
+        'failed',
+        'cancelled',
+        'blocked',
+      ].includes(run.state) ||
+      typeof run.cancellationRequested !== 'boolean' ||
+      !Array.isArray(run.receipts) ||
+      !validId(run.admission?.externalChannelId) ||
+      typeof run.admission?.externalThreadKey !== 'string' ||
+      !run.admission.externalThreadKey.startsWith(run.admission.externalChannelId + ':') ||
+      !validId(run.admission.actor?.teamId) ||
+      !validId(run.admission.actor?.appId) ||
+      !validId(run.admission.actor?.externalUserId)
+    )
+      throw new Error('Channel run identity changed');
+  }
+  private assertGrant(grant: ResponseGrant): void {
+    if (
+      !grant ||
+      typeof grant !== 'object' ||
+      typeof grant.apiKey !== 'string' ||
+      !grant.apiKey.startsWith('sk-bound-') ||
+      /[\r\n]/.test(grant.apiKey) ||
+      typeof grant.requestKey !== 'string' ||
+      !grant.requestKey ||
+      grant.requestKey.length > 256 ||
+      /[\r\n]/.test(grant.requestKey) ||
+      typeof grant.request?.model !== 'string' ||
+      !grant.request.model ||
+      typeof grant.request.input !== 'string' ||
+      grant.request.background !== true ||
+      grant.request.store !== true
+    )
+      throw new Error('Invalid run-bound response credential');
+  }
   async mutate(
     fence: ChannelRunFence,
     action: string,
@@ -148,13 +217,7 @@ export class ChannelClient {
       { ...body, fence },
       signal,
     );
-    if (
-      result.runId !== fence.runId ||
-      result.channelId !== this.config.CHANNEL_ID ||
-      !result.revision ||
-      !result.admission?.externalThreadKey.startsWith(result.admission.externalChannelId + ':')
-    )
-      throw new Error('Channel run identity changed');
+    this.assertRun(result, fence.runId);
     return result;
   }
   admit(
@@ -163,17 +226,47 @@ export class ChannelClient {
   ): Promise<{ runId: string; duplicate: boolean }> {
     return this.runs('', input, signal);
   }
-  claim(owner: string, signal?: AbortSignal): Promise<Lease | null> {
-    return this.runs('/claim', { owner }, signal, null);
+  async claim(owner: string, signal?: AbortSignal): Promise<Lease | null> {
+    const lease = await this.runs<Lease | null>('/claim', { owner }, signal, null);
+    if (lease === null) return null;
+    if (
+      !validFence(lease?.fence, { owner }) ||
+      !Number.isSafeInteger(lease.leaseExpiresAt) ||
+      lease.leaseExpiresAt <= 0
+    )
+      throw new Error('Invalid channel run lease');
+    this.assertRun(lease.run, lease.fence.runId);
+    return lease;
   }
-  renew(fence: ChannelRunFence, signal?: AbortSignal): Promise<LeaseRenewal> {
-    return this.runs(`/${encodeURIComponent(fence.runId)}/renew`, { fence }, signal);
+  async renew(fence: ChannelRunFence, signal?: AbortSignal): Promise<LeaseRenewal> {
+    const lease = await this.runs<LeaseRenewal>(
+      `/${encodeURIComponent(fence.runId)}/renew`,
+      { fence },
+      signal,
+    );
+    if (
+      !validFence(lease?.fence, fence) ||
+      !Number.isSafeInteger(lease.leaseExpiresAt) ||
+      lease.leaseExpiresAt <= 0
+    )
+      throw new Error('Invalid channel run lease');
+    return lease;
   }
   yield(fence: ChannelRunFence, signal?: AbortSignal): Promise<null> {
     return this.runs(`/${encodeURIComponent(fence.runId)}/yield`, { fence }, signal, null);
   }
-  prepare(fence: ChannelRunFence, signal?: AbortSignal): Promise<ResponsePreparation> {
-    return this.runs(`/${encodeURIComponent(fence.runId)}/response/prepare`, { fence }, signal);
+  async prepare(fence: ChannelRunFence, signal?: AbortSignal): Promise<ResponsePreparation> {
+    const result = await this.runs<ResponsePreparation>(
+      `/${encodeURIComponent(fence.runId)}/response/prepare`,
+      { fence },
+      signal,
+    );
+    if (!result || typeof result !== 'object') throw new Error('Invalid Response preparation');
+    if ('settled' in result) {
+      this.assertRun(result.settled, fence.runId);
+      if ('apiKey' in result) throw new Error('Invalid Response preparation');
+    } else this.assertGrant(result);
+    return result;
   }
   review(
     runId: string,
@@ -255,15 +348,12 @@ export class ChannelClient {
     method: 'create' | 'read' | 'cancel',
     signal?: AbortSignal,
   ): Promise<BackgroundResponse> {
-    if (
-      !grant.apiKey.startsWith('sk-bound-') ||
-      !grant.requestKey ||
-      grant.requestKey.length > 256 ||
-      /[\r\n]/.test(grant.requestKey)
-    )
-      throw new Error('Invalid run-bound response credential');
+    this.assertGrant(grant);
     const id = grant.responseId;
-    if (method !== 'create' && (!id || !/^resp_[A-Za-z0-9_-]{1,250}$/.test(id)))
+    if (
+      (id !== undefined || method !== 'create') &&
+      (!id || !/^resp_[A-Za-z0-9_-]{1,250}$/.test(id))
+    )
       throw new Error('Invalid Response identity');
     const suffix =
       method === 'create'

@@ -53,6 +53,16 @@ describe('SlackClient', () => {
       'permanent',
     ],
     [
+      'platform rate limited',
+      () =>
+        Promise.resolve(
+          new Response(JSON.stringify({ ok: false, error: 'ratelimited' }), {
+            headers: { 'Content-Type': 'application/json', 'Retry-After': '2' },
+          }),
+        ),
+      'retryable',
+    ],
+    [
       'rate limited',
       () => Promise.resolve(new Response('', { status: 429, headers: { 'retry-after': '2' } })),
       'retryable',
@@ -87,6 +97,45 @@ describe('SlackClient', () => {
     ).resolves.toEqual({ channel: 'C123', ts: '123.456' });
     expect(transport).toHaveBeenCalledTimes(2);
   });
+
+  test('retries an idempotent update after a platform rate limit', async () => {
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ ok: false, error: 'ratelimited' }), {
+          headers: { 'Content-Type': 'application/json', 'Retry-After': '0.001' },
+        }),
+      )
+      .mockResolvedValue(success({ channel: 'C123', ts: '123.456' }));
+    await expect(
+      new SlackClient(config, undefined, transport).updateMessage(token, {
+        ...message,
+        ts: '123.456',
+      }),
+    ).resolves.toEqual({ channel: 'C123', ts: '123.456' });
+    expect(transport).toHaveBeenCalledTimes(2);
+  });
+
+  test.each(['2', '60'])(
+    'preserves platform Retry-After=%s for durable progress without a hidden retry',
+    async (seconds) => {
+      const transport = jest
+        .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+        .mockImplementation(
+          async () =>
+            new Response(JSON.stringify({ ok: false, error: 'ratelimited' }), {
+              headers: { 'Content-Type': 'application/json', 'Retry-After': seconds },
+            }),
+        );
+      await expect(
+        new SlackClient(config, undefined, transport).updateMessageOnce(token, {
+          ...message,
+          ts: '123.456',
+        }),
+      ).rejects.toMatchObject({ outcome: 'retryable', retryAfterMs: Number(seconds) * 1000 });
+      expect(transport).toHaveBeenCalledTimes(1);
+    },
+  );
 
   test('does not shorten a long retry-after or sleep on the process', async () => {
     const transport = jest

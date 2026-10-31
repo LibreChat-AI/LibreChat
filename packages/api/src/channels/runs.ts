@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { ChannelRunConflict } from '@librechat/data-schemas';
-import { responseReviewDecisionSchema } from 'librechat-data-provider';
+import {
+  responseReviewDecisionSchema,
+  CHANNEL_DELIVERY_PARTS_HARD_MAX,
+  CHANNEL_DELIVERY_TEXT_MAX_CHARS,
+  CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES,
+} from 'librechat-data-provider';
 import type {
   ChannelRunLease,
   ChannelRunLeaseRenewal,
@@ -80,8 +85,10 @@ const presentationSchema = z
     format: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
     payload: z
       .string()
-      .max(64_000)
-      .refine((value) => Buffer.byteLength(value, 'utf8') <= 64_000)
+      .max(CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES)
+      .refine(
+        (value) => Buffer.byteLength(value, 'utf8') <= CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES,
+      )
       .refine((value) => {
         try {
           const parsed: unknown = JSON.parse(value);
@@ -106,7 +113,7 @@ const planBody = z
                 operationId: id,
                 kind: z.enum(['message', 'artifact']),
                 required: z.boolean(),
-                text: z.string().max(40_000),
+                text: z.string().max(CHANNEL_DELIVERY_TEXT_MAX_CHARS),
                 presentation: presentationSchema.optional(),
                 artifactId: id.optional(),
                 traceUrl: z.string().url().optional(),
@@ -116,7 +123,7 @@ const planBody = z
               .refine((part) => !part.traceUrl || (part.kind === 'message' && !part.required)),
           )
           .min(1)
-          .max(100),
+          .max(CHANNEL_DELIVERY_PARTS_HARD_MAX),
       })
       .strict(),
   })

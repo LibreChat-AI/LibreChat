@@ -1,6 +1,10 @@
 export interface SlackChannelManifest {
   display_information: { name: string };
-  features: { bot_user: { display_name: string } };
+  features: {
+    bot_user: { display_name: string };
+    agent_view: { agent_description: string };
+    app_home: { messages_tab_enabled: true; messages_tab_read_only_enabled: false };
+  };
   oauth_config: { scopes: { bot: string[] } };
   settings: {
     socket_mode_enabled: boolean;
@@ -29,10 +33,21 @@ export function buildSlackChannelManifest(input: {
     gateway = url.toString().replace(/\/+$/, '');
   }
   const binding = `${encodeURIComponent(input.tenantId)}/${encodeURIComponent(input.channelId)}`;
-  const name = input.name.slice(0, 80);
+  const title = input.name.trim() || 'LibreChat';
+  const name = [...title].slice(0, 35).join('');
+  const botName =
+    title
+      .toLowerCase()
+      .replace(/[^a-z0-9._-]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 80) || 'librechat_agent';
   return {
     display_information: { name },
-    features: { bot_user: { display_name: name } },
+    features: {
+      bot_user: { display_name: botName },
+      agent_view: { agent_description: [...title].slice(0, 300).join('') },
+      app_home: { messages_tab_enabled: true, messages_tab_read_only_enabled: false },
+    },
     oauth_config: {
       scopes: {
         bot: [
@@ -42,13 +57,20 @@ export function buildSlackChannelManifest(input: {
           'reactions:write',
           'files:write',
           'im:write',
+          'im:history',
         ],
       },
     },
     settings: {
       socket_mode_enabled: socket,
       event_subscriptions: {
-        bot_events: ['app_mention', 'reaction_added', 'reaction_removed'],
+        bot_events: [
+          'app_mention',
+          'message.im',
+          'agent_session_stopped',
+          'reaction_added',
+          'reaction_removed',
+        ],
         ...(!socket ? { request_url: `${gateway}/slack/events/${binding}` } : {}),
       },
       interactivity: {
