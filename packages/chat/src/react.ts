@@ -123,6 +123,8 @@ export { composerLiftFamily } from './react/lift';
 export { showSkillsPopoverFamily } from './react/skills';
 export { useComposerOverlay, composerOverlayCountFamily } from './react/overlay';
 export { default as useTimeTick } from './react/tick';
+export { default as useGenerationsByLatest } from './react/messages/generations';
+export type { Generations, TUseGenerations } from './react/messages/generations';
 export {
   useMessagesHost,
   MessagesHostProvider,
@@ -130,7 +132,10 @@ export {
 } from './react/messages/host';
 export type {
   ForkEvents,
+  MessageCopy,
   MessagesHost,
+  MarkdownVariant,
+  MessageCopyInput,
   ForkPreferences,
   ForkConversation,
 } from './react/messages/host';

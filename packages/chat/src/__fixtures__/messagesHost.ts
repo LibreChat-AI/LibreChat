@@ -1,6 +1,6 @@
 import type { MessagesHost } from '../react/messages/host';
 
-/** A messages host for specs: locale clock, no slots, no forking, with the members a spec needs
+/** A messages host for specs: locale clock, no slots, no forking, no copying, with the members a spec needs
  *  overridden. */
 export function createMessagesHost(overrides: Partial<MessagesHost> = {}): MessagesHost {
   return {
@@ -15,6 +15,7 @@ export function createMessagesHost(overrides: Partial<MessagesHost> = {}): Messa
       setRememberOption: () => undefined,
     }),
     useForkConversation: () => null,
+    useMessageCopy: () => ({ copyToClipboard: () => undefined, canCopy: false }),
     ...overrides,
   };
 }

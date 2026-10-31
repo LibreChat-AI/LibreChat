@@ -15,6 +15,7 @@ import {
   messageFooterClasses,
   ElapsedTimer,
   MessageRow,
+  MinimalHoverButtons,
 } from '@librechat/chat/components';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { ToolContentQuery } from '@librechat/chat/react';
@@ -34,7 +35,6 @@ import { SubagentActivityContent, SubagentStatus, getActivityContent } from './S
 import ResumeAuthorHeader from '~/components/Chat/Messages/Content/Parts/ResumeAuthorHeader';
 import { useSearchResultsByTurn } from '~/hooks/Messages/useSearchResultsByTurn';
 import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source';
-import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
 import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
 import { isAbnormalTerminalStatus, isLiveSubagentStatus } from './status';
 import { AuthorContext } from '~/Providers/AuthorContext';
