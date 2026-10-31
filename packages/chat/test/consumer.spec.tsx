@@ -187,6 +187,7 @@ const messagesHost: MessagesHost = {
     setRememberOption: () => undefined,
   }),
   useForkConversation: () => null,
+  useMessageCopy: () => ({ copyToClipboard: () => undefined, canCopy: false }),
 };
 
 const renderers: PartRenderers = {
