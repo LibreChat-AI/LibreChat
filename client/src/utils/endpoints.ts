@@ -273,6 +273,10 @@ export function getConvoSwitchLogic(params: ConversationInitParams): InitiatedTe
     conversationId: 'new',
   };
 
+  if (currentEndpoint !== newEndpoint) {
+    template.model = undefined;
+  }
+
   // Reset agent_id if switching to a non-agents endpoint but template has a non-ephemeral agent_id
   if (
     !isAgentsEndpoint(newEndpoint) &&

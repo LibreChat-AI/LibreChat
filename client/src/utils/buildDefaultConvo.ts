@@ -33,14 +33,22 @@ const buildDefaultConvo = ({
     };
   }
 
-  // Discovery supplies a default, never replaces an explicit selection.
-  const model = lastConversationSetup?.model ?? conversation.model ?? lastSelectedModel?.[endpoint];
+  // A model belongs to its endpoint, whether restored, supplied, or discovered.
+  const presetMatches =
+    lastConversationSetup?.endpoint == null || lastConversationSetup.endpoint === endpoint;
+  const conversationMatches = conversation.endpoint == null || conversation.endpoint === endpoint;
+  const model =
+    (presetMatches ? lastConversationSetup?.model : undefined) ??
+    (conversationMatches ? conversation.model : undefined) ??
+    lastSelectedModel?.[endpoint];
   const possibleModels = model ? [model] : models;
 
   const convo = parseConvo({
     endpoint: endpoint as EndpointSchemaKey,
     endpointType: endpointType as EndpointSchemaKey,
-    conversation: lastConversationSetup,
+    conversation: presetMatches
+      ? lastConversationSetup
+      : { ...lastConversationSetup, model: undefined },
     possibleValues: possibleModels ? { models: possibleModels } : undefined,
     defaultParamsEndpoint,
   });
