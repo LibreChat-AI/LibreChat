@@ -327,10 +327,10 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       await deps.storage.finishAuthorityLost(run.tenantId, fence, now());
   }
   const guarded = (handler: Parameters<ChannelServiceGuard>[0]) =>
-    deps.guard(async (req, res, channel) => {
+    deps.guard(async (req, res, channel, config) => {
       res.set('Cache-Control', 'no-store');
       try {
-        await handler(req, res, channel);
+        await handler(req, res, channel, config);
       } catch (error) {
         if (error instanceof ChannelDisclosureError) {
           res
@@ -425,13 +425,18 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
     return run;
   }
   return {
-    stopThread: guarded(async (req, res, channel) => {
+    stopThread: guarded(async (req, res, channel, config) => {
+      const observedAt = now();
       const parsed = z
         .object({
           actor: actorSchema,
           externalThreadKey: id,
           externalChannelId: id,
-          eventAt: z.number().int().positive().max(now()),
+          eventAt: z
+            .number()
+            .int()
+            .positive()
+            .max(observedAt + config.signatureToleranceSeconds * 1000),
         })
         .strict()
         .safeParse(req.body);
@@ -456,14 +461,15 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         principal,
         admission: { actor, externalThreadKey, externalChannelId },
       };
-      const run = await deps.storage.readActiveThread(scope, eventAt);
+      const observation = await deps.storage.observeThreadStop(scope, eventAt, observedAt);
+      const run = observation?.run;
       if (!run || !(await hasAuthority(channel, run))) {
         res.json({ cancellationRequested: false });
         return;
       }
       const accepted = await deps.storage.requestCancel(scope, run.runId, {
         epoch: run.leaseEpoch,
-        before: eventAt,
+        before: observation!.before,
       });
       res.status(accepted ? 202 : 200).json({ cancellationRequested: accepted });
     }),

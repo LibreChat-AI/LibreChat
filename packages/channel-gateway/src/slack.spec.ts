@@ -10,6 +10,44 @@ const success = (body: object) =>
 const receipt = () => success({ channel: 'C123', ts: '123.789' });
 
 describe('SlackClient', () => {
+  test.each([
+    'service_unavailable',
+    'request_timeout',
+    'team_added_to_org',
+    'future_platform_outage',
+  ])(
+    'treats %s conservatively across creates, idempotent updates and durable writes',
+    async (code) => {
+      const fixture = () =>
+        jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>().mockImplementation(
+          async () =>
+            new Response(JSON.stringify({ ok: false, error: code }), {
+              headers: { 'Content-Type': 'application/json', 'Retry-After': '0.001' },
+            }),
+        );
+      const create = fixture();
+      await expect(
+        new SlackClient(config, undefined, create).postMessage(token, message),
+      ).rejects.toMatchObject({ outcome: 'unknown' });
+      expect(create).toHaveBeenCalledTimes(1);
+      const update = fixture();
+      await expect(
+        new SlackClient(config, undefined, update).updateMessage(token, {
+          ...message,
+          ts: '123.456',
+        }),
+      ).rejects.toMatchObject({ outcome: 'retryable' });
+      expect(update).toHaveBeenCalledTimes(3);
+      const durable = fixture();
+      await expect(
+        new SlackClient(config, undefined, durable).updateMessageOnce(token, {
+          ...message,
+          ts: '123.456',
+        }),
+      ).rejects.toMatchObject({ outcome: 'unknown' });
+      expect(durable).toHaveBeenCalledTimes(1);
+    },
+  );
   test('posts once with safe rendering defaults and no token in its body', async () => {
     const transport = jest
       .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
@@ -31,6 +69,21 @@ describe('SlackClient', () => {
   test.each([
     ['network', () => Promise.reject(new Error('secret content')), 'unknown'],
     ['5xx', () => Promise.resolve(new Response('secret content', { status: 503 })), 'unknown'],
+    [
+      'HTTP timeout',
+      () => Promise.resolve(new Response('secret content', { status: 408 })),
+      'unknown',
+    ],
+    [
+      'HTTP conflict',
+      () => Promise.resolve(new Response('secret content', { status: 409 })),
+      'unknown',
+    ],
+    [
+      'HTTP too early',
+      () => Promise.resolve(new Response('secret content', { status: 425 })),
+      'unknown',
+    ],
     ['invalid JSON', () => Promise.resolve(new Response('secret content')), 'unknown'],
     [
       'empty successful response',
