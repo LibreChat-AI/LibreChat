@@ -29,6 +29,15 @@ function SandboxPolicyProbe() {
   );
 }
 
+function AppToolApprovalProbe() {
+  const { appToolApproval } = useMCPAppsPolicy();
+  return (
+    <output>
+      {appToolApproval?.allow?.map(({ server, tool }) => `${server}:${tool}`).join(',') ?? 'none'}
+    </output>
+  );
+}
+
 function CachedPolicyProvider({ children }: { children: React.ReactNode }) {
   const { data, isSuccess, error } = useQuery<TStartupConfig>(
     ['startup-policy'],
@@ -121,6 +130,55 @@ describe('MCPAppsPolicyProvider', () => {
     expect(
       screen.getByText('https://mcp-sandbox.example.com/api/mcp/sandbox:480:7:32768'),
     ).toBeInTheDocument();
+  });
+
+  it('preserves the App tool approval allowlist from startup config', () => {
+    render(
+      <MCPAppsPolicyProvider
+        startupConfig={
+          {
+            mcpApps: {
+              enabled: true,
+              legacyHtmlEnabled: true,
+              appToolApproval: {
+                allow: [{ server: 'example-server', tool: 'sample_tool' }],
+              },
+            },
+          } as TStartupConfig
+        }
+        ready
+      >
+        <AppToolApprovalProbe />
+      </MCPAppsPolicyProvider>,
+    );
+
+    expect(screen.getByText('example-server:sample_tool')).toBeInTheDocument();
+  });
+
+  it.each([
+    'mcp:example-server:sample_tool',
+    { allow: 'mcp:example-server:sample_tool' },
+    { allow: [null] },
+    { allow: [{ server: 'example-server', tool: 'sample_tool', extra: true }] },
+  ])('fails closed for a malformed startup App tool approval policy %p', (appToolApproval) => {
+    render(
+      <MCPAppsPolicyProvider
+        startupConfig={
+          {
+            mcpApps: {
+              enabled: true,
+              legacyHtmlEnabled: true,
+              appToolApproval,
+            },
+          } as unknown as TStartupConfig
+        }
+        ready
+      >
+        <AppToolApprovalProbe />
+      </MCPAppsPolicyProvider>,
+    );
+
+    expect(screen.getByText('none')).toBeInTheDocument();
   });
 
   it('falls back to bounded policy values when a published startup payload is malformed', () => {

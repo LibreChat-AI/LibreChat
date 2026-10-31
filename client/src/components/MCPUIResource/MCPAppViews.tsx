@@ -52,7 +52,10 @@ function ActiveMCPAppView({
   const localize = useLocalize();
   const { policy } = useMCPAppsHost();
   // Reuse the deployment operation limit to bound requests awaiting consent in this View.
-  const approval = useMCPAppApproval(policy.operationLimits?.maxActive);
+  const approval = useMCPAppApproval(
+    policy.operationLimits?.maxActive,
+    policy.appToolApproval?.allow,
+  );
   const frame = useMCPAppFrame(app, {
     defaultHeight: DEFAULT_APP_VIEW_HEIGHT,
     toolArgs: app.toolArgs,
