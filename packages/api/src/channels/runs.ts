@@ -169,6 +169,34 @@ const settleBody = z
   })
   .strict();
 
+const reconcileDeliveryBody = z
+  .object({
+    fence: fenceSchema,
+    receipt: z
+      .object({
+        operationId: id,
+        outcome: z.literal('confirmed'),
+        attempts: z.number().int().positive(),
+        externalMessageKey: id.optional(),
+        externalFileId: id.optional(),
+      })
+      .strict(),
+  })
+  .strict();
+const reconcileProgressBody = z
+  .object({
+    fence: fenceSchema,
+    revision: progressRevision,
+    receipt: z
+      .object({
+        outcome: z.literal('confirmed'),
+        attempts: z.number().int().positive(),
+        externalMessageKey: id,
+      })
+      .strict(),
+  })
+  .strict();
+
 function withoutSession(summary: ChannelRunSummary): ChannelRunSummary {
   const { session: _previous, ...metrics } = summary;
   return metrics;
@@ -222,6 +250,8 @@ export type ChannelRunHandlers = Record<
   | 'planProgress'
   | 'beginProgress'
   | 'settleProgress'
+  | 'reconcileProgress'
+  | 'reconcileDelivery'
   | 'begin'
   | 'checkpointUpload'
   | 'artifact'
@@ -826,6 +856,38 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         ),
       );
     }),
+    reconcileProgress: guarded(async (req, res, channel) => {
+      const parsed = reconcileProgressBody.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_progress_receipt' });
+        return;
+      }
+      const binding = await bound(req, res, channel, parsed.data.fence);
+      if (!binding) return;
+      if (
+        !parsed.data.receipt.externalMessageKey.startsWith(
+          `${binding.run.admission.externalChannelId}:`,
+        )
+      ) {
+        res.status(400).json({ error: 'delivery_destination_mismatch' });
+        return;
+      }
+      res.json(
+        await presentRun(
+          channel,
+          await deps.storage.reconcileProgress(
+            channel.tenantId ?? '_',
+            binding.fence,
+            {
+              revision: parsed.data.revision,
+              attempts: parsed.data.receipt.attempts,
+              externalMessageKey: parsed.data.receipt.externalMessageKey,
+            },
+            now(),
+          ),
+        ),
+      );
+    }),
     begin: guarded(async (req, res, channel) => {
       const parsed = beginBody.safeParse(req.body);
       if (!parsed.success) {
@@ -923,6 +985,31 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         await presentRun(
           channel,
           await deps.storage.settleDelivery(
+            channel.tenantId ?? '_',
+            binding.fence,
+            parsed.data.receipt,
+            now(),
+          ),
+        ),
+      );
+    }),
+    reconcileDelivery: guarded(async (req, res, channel) => {
+      const parsed = reconcileDeliveryBody.safeParse(req.body);
+      if (!parsed.success) {
+        res.status(400).json({ error: 'invalid_delivery_receipt' });
+        return;
+      }
+      const binding = await bound(req, res, channel, parsed.data.fence);
+      if (!binding) return;
+      const key = parsed.data.receipt.externalMessageKey;
+      if (key && !key.startsWith(`${binding.run.admission.externalChannelId}:`)) {
+        res.status(400).json({ error: 'delivery_destination_mismatch' });
+        return;
+      }
+      res.json(
+        await presentRun(
+          channel,
+          await deps.storage.reconcileDelivery(
             channel.tenantId ?? '_',
             binding.fence,
             parsed.data.receipt,
