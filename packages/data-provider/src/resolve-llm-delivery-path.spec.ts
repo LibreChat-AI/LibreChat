@@ -1110,6 +1110,189 @@ describe('resolveTurnLLMDeliveryPath', () => {
   });
 });
 
+describe('resolveTurnLLMDeliveryPath with llmDeliveryPolicy automatic', () => {
+  const endpoint = 'anthropic';
+  const auto: EndpointFileConfig = { llmDeliveryPolicy: 'automatic' };
+  const csv = {
+    file_id: 'c',
+    type: 'text/csv',
+    text: 'a,b',
+    llmDeliveryPath: 'text',
+    metadata: { destinationChosen: false },
+  };
+  const pdf = {
+    file_id: 'p',
+    type: 'application/pdf',
+    text: 'x',
+    llmDeliveryPath: 'provider',
+    metadata: { destinationChosen: false },
+  };
+  const code: TurnFileConsumers = { executeCode: true, fileSearch: false };
+  const search: TurnFileConsumers = { executeCode: false, fileSearch: true };
+
+  it.each([
+    'text/csv',
+    'application/csv',
+    'text/tab-separated-values',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'application/vnd.oasis.opendocument.spreadsheet',
+    'application/x-parquet',
+    'application/vnd.apache.parquet',
+  ])('sends %s to Run Code', (type) => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: { ...csv, type },
+        consumers: code,
+        endpoint,
+        endpointConfig: auto,
+      }),
+    ).toBe('none');
+  });
+
+  it('keeps a spreadsheet inline without Run Code', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({ file: csv, consumers: search, endpoint, endpointConfig: auto }),
+    ).toBe('text');
+  });
+
+  it('keeps JSON inline with Run Code', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: { ...csv, type: 'application/json' },
+        consumers: code,
+        endpoint,
+        endpointConfig: auto,
+      }),
+    ).toBe('text');
+  });
+
+  it('moves an over-budget PDF to a file tool', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: pdf,
+        consumers: search,
+        endpoint,
+        endpointConfig: auto,
+        overBudgetFileIds: new Set(['p']),
+      }),
+    ).toBe('none');
+  });
+
+  it('keeps an over-budget PDF no tool can read', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: pdf,
+        consumers: { executeCode: false, fileSearch: false },
+        endpoint,
+        endpointConfig: auto,
+        overBudgetFileIds: new Set(['p']),
+      }),
+    ).toBe('provider');
+  });
+
+  it('keeps a PDF that fits', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: pdf,
+        consumers: { executeCode: true, fileSearch: true },
+        endpoint,
+        endpointConfig: auto,
+      }),
+    ).toBe('provider');
+  });
+
+  it('never moves media', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: {
+          file_id: 'i',
+          type: 'image/png',
+          llmDeliveryPath: 'provider',
+          metadata: { destinationChosen: false },
+        },
+        consumers: { executeCode: true, fileSearch: true },
+        endpoint,
+        endpointConfig: auto,
+        overBudgetFileIds: new Set(['i']),
+      }),
+    ).toBe('provider');
+  });
+
+  it('is off unless configured', () => {
+    for (const endpointConfig of [{}, { llmDeliveryPolicy: 'classic' as const }]) {
+      expect(
+        resolveTurnLLMDeliveryPath({ file: csv, consumers: code, endpoint, endpointConfig }),
+      ).toBe('text');
+    }
+  });
+
+  it('is ignored under the legacy chooser', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: csv,
+        consumers: code,
+        endpoint,
+        endpointConfig: { ...auto, legacyFileUploadUX: true },
+      }),
+    ).toBe('provider');
+  });
+
+  it('keeps a chosen destination', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: { ...csv, metadata: { destinationChosen: true } },
+        consumers: code,
+        endpoint,
+        endpointConfig: auto,
+      }),
+    ).toBe('text');
+  });
+
+  it("keeps an agent's own file", () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: { ...csv, context: 'agents' },
+        consumers: code,
+        endpoint,
+        endpointConfig: auto,
+      }),
+    ).toBe('text');
+  });
+
+  it('does not judge unknown consumers', () => {
+    expect(resolveTurnLLMDeliveryPath({ file: csv, endpoint, endpointConfig: auto })).toBe('text');
+  });
+
+  it("keeps an admin's defaultLLMDeliveryPath override", () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: csv,
+        consumers: code,
+        endpoint,
+        endpointConfig: {
+          ...auto,
+          defaultLLMDeliveryPath: { overrides: { 'text/csv': 'text' } },
+        },
+      }),
+    ).toBe('text');
+  });
+
+  it('honours a global wildcard override', () => {
+    expect(
+      resolveTurnLLMDeliveryPath({
+        file: csv,
+        consumers: code,
+        endpoint,
+        endpointConfig: auto,
+        fileConfig: mergeFileConfig({
+          defaultLLMDeliveryPath: { overrides: { 'text/*': 'text' } },
+        }),
+      }),
+    ).toBe('text');
+  });
+});
+
 describe('retained code destination', () => {
   it('preserves chosen code intent without claiming the deleted copy exists', () => {
     const file: TurnDeliveryFile = {

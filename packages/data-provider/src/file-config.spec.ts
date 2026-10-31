@@ -2116,6 +2116,66 @@ describe('textFallbackWithoutTools config merging', () => {
   });
 });
 
+describe('llmDeliveryPolicy config merging', () => {
+  const resolveFor = (dynamic: Parameters<typeof mergeFileConfig>[0], endpoint: string) =>
+    getEndpointFileConfig({ fileConfig: mergeFileConfig(dynamic), endpoint }).llmDeliveryPolicy;
+
+  it('is off unless configured', () => {
+    expect(mergeFileConfig(undefined).llmDeliveryPolicy).toBeUndefined();
+    expect(resolveFor(undefined, EModelEndpoint.openAI)).toBeUndefined();
+    expect(resolveFor({ endpoints: { default: {} } }, EModelEndpoint.openAI)).toBeUndefined();
+  });
+
+  it('accepts the setting at the top level and on an endpoint', () => {
+    expect(
+      fileConfigSchema.safeParse({
+        llmDeliveryPolicy: 'automatic',
+        endpoints: { openAI: { llmDeliveryPolicy: 'classic' } },
+      }).success,
+    ).toBe(true);
+    expect(fileConfigSchema.safeParse({ llmDeliveryPolicy: 'yes' }).success).toBe(false);
+    expect(fileConfigSchema.safeParse({ llmDeliveryPolicy: true }).success).toBe(false);
+  });
+
+  it('reaches an endpoint configured for it', () => {
+    expect(
+      resolveFor(
+        { endpoints: { [EModelEndpoint.openAI]: { llmDeliveryPolicy: 'automatic' } } },
+        EModelEndpoint.openAI,
+      ),
+    ).toBe('automatic');
+  });
+
+  it('is inherited from the top level and from the default endpoint', () => {
+    expect(resolveFor({ llmDeliveryPolicy: 'automatic' }, EModelEndpoint.anthropic)).toBe(
+      'automatic',
+    );
+    expect(
+      resolveFor({ endpoints: { default: { llmDeliveryPolicy: 'automatic' } } }, 'MyGateway'),
+    ).toBe('automatic');
+  });
+
+  it('lets an endpoint turn off what it would inherit', () => {
+    expect(
+      resolveFor(
+        {
+          endpoints: {
+            default: { llmDeliveryPolicy: 'automatic' },
+            [EModelEndpoint.openAI]: { llmDeliveryPolicy: 'classic' },
+          },
+        },
+        EModelEndpoint.openAI,
+      ),
+    ).toBe('classic');
+  });
+
+  it('reaches a custom endpoint by its own name', () => {
+    expect(
+      resolveFor({ endpoints: { Anthropic: { llmDeliveryPolicy: 'automatic' } } }, 'Anthropic'),
+    ).toBe('automatic');
+  });
+});
+
 describe('agent attachment context limits', () => {
   it('keeps the turn-memory ceiling separate from agent upload storage', () => {
     expect(baseFileConfig.fileContextSizeLimit).toBe(128 * 1024 * 1024);

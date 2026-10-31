@@ -1524,6 +1524,14 @@ endpoints:
 #   # Existing files without extracted text are not backfilled. Paused runs retain encoded text
 #   # and conservatively count referenced fallback text against current limits on resume.
 #   textFallbackWithoutTools: false
+#   # How attachments that name no destination are read. `classic` (default) keeps today's routing.
+#   # `automatic`: spreadsheets (csv, tsv, xls, xlsx, ods, parquet) go to Run Code when the agent
+#   # has it; other attachments stay in the prompt while together they fit half the model's context
+#   # window (after output tokens) and the extracted-text limit, and the largest leave first for
+#   # File Search or Run Code. A turn that cannot fit the window is refused before sending.
+#   # Images, audio, video, chosen destinations, defaultLLMDeliveryPath overrides, the agent's own
+#   # files and legacyFileUploadUX are unaffected. Also settable per endpoint.
+#   llmDeliveryPolicy: classic
 #   fileContextSizeLimit: 128  # Maximum aggregate model-bound attachment size in one agent turn (MB)
 #   fileContextCharLimit: 1000000  # Maximum aggregate extracted-text characters in one agent turn
 #   endpoints:

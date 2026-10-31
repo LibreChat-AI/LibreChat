@@ -5,6 +5,14 @@ import {
   EModelEndpoint,
   mergeFileConfig,
   getEndpointFileConfig,
+  isMediaMimeType,
+  hasInferredLLMDeliveryPath,
+  resolveTurnLLMDeliveryPath,
+} from 'librechat-data-provider';
+import type {
+  TurnDeliveryRouting,
+  TurnDeliveryFile,
+  TurnFileConsumers,
 } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { TokenCountFn } from '~/utils/text';
@@ -13,6 +21,14 @@ import { filterFilesByEndpointRuntimeConfig } from '~/files/filter';
 import { AGENT_ATTACHMENT_LIMIT_EXCEEDED } from './errors';
 import { countTokens } from '~/utils/tokenizer';
 import { extractFileContext } from '~/files';
+
+export const BASE64_BYTES_PER_PDF_PAGE = 75_000;
+export const PDF_TOKENS_PER_PAGE_CLAUDE = 2000;
+/** A PDF the provider reads costs each page's image plus its extracted text (Anthropic PDF
+ *  support). Fitted to Bedrock Converse, claude-sonnet-5-5, 2026-10-30: 40 pages / 271,780
+ *  chars = 171,779 tokens and 10 pages / 67,870 chars = 43,318, both within 1%. */
+export const PDF_TOKENS_PER_RENDERED_PAGE = 1_600;
+export const PDF_CHARS_PER_TOKEN = 2.5;
 
 type FileWithId = {
   file_id?: string | null;
@@ -182,7 +198,7 @@ function getExplicitEndpointFileLimit(
   );
 }
 
-export type AgentAttachmentLimit = 'count' | 'bytes' | 'extracted_text';
+export type AgentAttachmentLimit = 'count' | 'bytes' | 'extracted_text' | 'context';
 
 export interface AgentAttachmentStats {
   attachmentCount: number;
@@ -211,6 +227,7 @@ export class AgentAttachmentLimitError extends Error {
       count: 'attachment count',
       bytes: 'total attachment size',
       extracted_text: 'extracted document text',
+      context: 'attachment context (estimated tokens)',
     };
     super(
       `This turn exceeds the configured ${labels[limitType]} limit (${observed} > ${limit}). Remove some attachments or use smaller files and try again.`,
@@ -773,4 +790,128 @@ export async function buildAgentScopedContext({
   );
 
   return new Map(entries.filter(([, context]) => Boolean(context)));
+}
+
+/** Prompt tokens an attachment costs before encoding. A PDF sent as a file costs the larger of
+ *  its base64 page count and its text, raised to its pages and extracted characters when upload
+ *  counted them. It never goes below the size estimate, which the encoded-block count before
+ *  pruning (`client.ts`) still uses. Anything else is priced by its extracted text, else its size. */
+export function estimateAttachmentTokens(
+  file: {
+    type?: string | null;
+    bytes?: number | null;
+    text?: string | null;
+    /* `& object` keeps files whose metadata has other keys assignable (weak-type check). */
+    metadata?: ({ pageCount?: number | null; textChars?: number | null } & object) | null;
+  },
+  path: string | undefined,
+): number {
+  const textTokens = Math.ceil((file.text?.length ?? 0) / 4);
+  if (path === 'provider' && file.type === 'application/pdf') {
+    const pages = Math.max(1, Math.ceil(((file.bytes ?? 0) * 4) / 3 / BASE64_BYTES_PER_PDF_PAGE));
+    const sizeTokens = Math.max(pages * PDF_TOKENS_PER_PAGE_CLAUDE, textTokens);
+    const pageCount = file.metadata?.pageCount ?? 0;
+    if (pageCount <= 0) {
+      return sizeTokens;
+    }
+    const chars = file.metadata?.textChars ?? 0;
+    return Math.max(
+      sizeTokens,
+      pageCount * PDF_TOKENS_PER_RENDERED_PAGE + Math.ceil(chars / PDF_CHARS_PER_TOKEN),
+    );
+  }
+  return file.text ? textTokens : Math.ceil((file.bytes ?? 0) / 4);
+}
+
+/** Share of the context window, after the output reserve, one turn's inline attachments may fill. */
+export const INLINE_ATTACHMENT_CONTEXT_SHARE = 0.5;
+
+/**
+ * Automatic reading's aggregate check. Among attachments whose route was inferred, the largest
+ * leave the prompt first, each only where the resolver would hand it to a file tool, until the
+ * rest fit `budgetTokens` and the extracted-text limit. Throws the 413 attachment-limit error
+ * when what stays cannot fit `limitTokens`, so the turn is refused before anything is sent.
+ */
+export function planInlineAttachmentBudget<
+  T extends TurnDeliveryFile & {
+    file_id: string;
+    bytes?: number | null;
+    metadata?: { pageCount?: number | null; textChars?: number | null } | null;
+  },
+>(
+  files: readonly T[],
+  {
+    routing,
+    consumers,
+    budgetTokens,
+    limitTokens,
+  }: {
+    routing: TurnDeliveryRouting;
+    consumers: TurnFileConsumers;
+    budgetTokens: number;
+    limitTokens: number;
+  },
+): Set<string> {
+  const base = { ...routing, overBudgetFileIds: undefined };
+  const charLimit = routing.fileConfig.fileContextCharLimit;
+  const tokenCap = routing.fileConfig.fileTokenLimit;
+  const seen = new Set<string>();
+  const inline: Array<{
+    fileId: string;
+    tokens: number;
+    promptTokens: number;
+    chars: number;
+    divertible: boolean;
+  }> = [];
+  let tokens = 0;
+  let promptTokens = 0;
+  let chars = 0;
+  for (const file of files) {
+    if (seen.has(file.file_id)) continue;
+    seen.add(file.file_id);
+    const mimeType = file.metadata?.routingMimeType ?? file.type ?? '';
+    if (
+      !hasInferredLLMDeliveryPath(file) ||
+      file.context === FileContext.agents ||
+      isMediaMimeType(mimeType)
+    ) {
+      continue;
+    }
+    const path = resolveTurnLLMDeliveryPath(base, file, consumers);
+    if (path !== 'provider' && !(path === 'text' && file.text)) continue;
+    const fileTokens = estimateAttachmentTokens(file, path);
+    const entry = {
+      fileId: file.file_id,
+      tokens: fileTokens,
+      /* Text delivery truncates each file at fileTokenLimit; only the refusal uses this. */
+      promptTokens: path === 'text' && tokenCap ? Math.min(fileTokens, tokenCap) : fileTokens,
+      chars: file.text?.length ?? 0,
+      divertible:
+        resolveTurnLLMDeliveryPath(
+          { ...base, overBudgetFileIds: new Set([file.file_id]) },
+          file,
+          consumers,
+        ) === 'none',
+    };
+    tokens += entry.tokens;
+    promptTokens += entry.promptTokens;
+    chars += entry.chars;
+    inline.push(entry);
+  }
+  const diverted = new Set<string>();
+  inline.sort(
+    (a, b) => b.tokens - a.tokens || a.fileId.localeCompare(b.fileId, undefined, { numeric: true }),
+  );
+  for (const entry of inline) {
+    if (tokens <= budgetTokens && (!charLimit || chars <= charLimit)) break;
+    if (!entry.divertible) continue;
+    diverted.add(entry.fileId);
+    tokens -= entry.tokens;
+    promptTokens -= entry.promptTokens;
+    chars -= entry.chars;
+  }
+  if (limitTokens > 0 && promptTokens > limitTokens) {
+    throw new AgentAttachmentLimitError('context', promptTokens, limitTokens);
+  }
+  return diverted;
 }

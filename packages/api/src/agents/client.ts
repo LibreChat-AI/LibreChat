@@ -17,6 +17,7 @@ import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { Agent, TMessage } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
 import { getSafeErrorMetadata, mergeQuotedText, formatQuotesAsMarkdown } from '~/utils';
+import { BASE64_BYTES_PER_PDF_PAGE, PDF_TOKENS_PER_PAGE_CLAUDE } from './attachments';
 import { ATTACHMENT_ONLY_TEXT } from '~/files/context';
 import Tokenizer from '~/utils/tokenizer';
 
@@ -69,8 +70,6 @@ export function payloadParser({
  */
 export const CLAUDE_TOKEN_CORRECTION = 1.1;
 const IMAGE_TOKEN_SAFETY_MARGIN = 1.05;
-const BASE64_BYTES_PER_PDF_PAGE = 75_000;
-const PDF_TOKENS_PER_PAGE_CLAUDE = 2000;
 const PDF_TOKENS_PER_PAGE_OPENAI = 1500;
 const URL_DOCUMENT_FALLBACK_TOKENS = 2000;
 
@@ -83,6 +82,8 @@ type ContentBlock = {
   data?: string;
   text?: string;
   tool_call?: { id?: string; name?: string; args?: string; output?: string };
+  file?: { file_data?: string };
+  file_data?: string;
 };
 
 export type FormattedMessageContentPart = {
@@ -242,6 +243,13 @@ function estimateDocumentBlockTokens(
 ): number {
   const pdfPerPage = isClaude ? PDF_TOKENS_PER_PAGE_CLAUDE : PDF_TOKENS_PER_PAGE_OPENAI;
 
+  /* OpenAI chat `file` and Responses `input_file` parts carry the PDF as a data URL. */
+  const fileData = block.file?.file_data ?? block.file_data;
+  if (typeof fileData === 'string' && fileData.startsWith('data:application/pdf;base64,')) {
+    const base64 = fileData.slice(fileData.indexOf(',') + 1);
+    return Math.max(1, Math.ceil(base64.length / BASE64_BYTES_PER_PDF_PAGE)) * pdfPerPage;
+  }
+
   if (typeof block.source_type === 'string') {
     if (block.source_type === 'text' && typeof block.text === 'string') {
       return countTokens != null ? countTokens(block.text) : Math.ceil(block.text.length / 4);
@@ -344,7 +352,7 @@ export function countFormattedMessageTokens(
           continue;
         }
 
-        if (type === 'document' || type === 'file') {
+        if (type === 'document' || type === 'file' || type === 'input_file') {
           numTokens += estimateDocumentBlockTokens(block, isClaude, countTokens);
           continue;
         }
