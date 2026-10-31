@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   CHANNEL_RUN_MAX_JSON_BYTES,
   channelGatewayWirePolicySchema,
+  channelStorageConfigSchema,
 } from 'librechat-data-provider';
 import type {
   ChannelRunActor,
@@ -157,7 +158,11 @@ export class ChannelClient {
       throw new Error('Invalid active channel binding');
     const policy = channelGatewayWirePolicySchema.safeParse(value.gateway);
     if (!policy.success) throw new Error('Unsupported channel gateway policy');
-    return { ...value, gateway: policy.data };
+    const delivery = channelStorageConfigSchema
+      .pick({ maxDeliveryParts: true })
+      .safeParse(value.delivery === undefined ? {} : value.delivery);
+    if (!delivery.success) throw new Error('Invalid channel delivery policy');
+    return { ...value, gateway: policy.data, delivery: delivery.data };
   }
   async runs<T>(suffix: string, body: object, signal?: AbortSignal, empty?: T): Promise<T> {
     return this.request<T>(this.root + '/runs' + suffix, body, signal, empty);

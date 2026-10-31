@@ -230,6 +230,52 @@ describe('actor-bound review handling', () => {
     });
   });
 
+  test.each([409, 403, 404, 410])(
+    'stale private choice read %i sends a private unavailable notice',
+    async (status) => {
+      const { backend, slack, flow } = setup();
+      backend.mockResolvedValueOnce(new Response('{}', { status }));
+      await expect(
+        flow.choice(JSON.stringify({ ...ref(), choice: 1 }), interaction(), bundle),
+      ).resolves.toBeUndefined();
+      expect(backend).toHaveBeenCalledTimes(1);
+      expect(JSON.stringify(slack.mock.calls)).toContain('unavailable');
+    },
+  );
+
+  test('a concurrent decision conflict is unavailable while unexpected failures still propagate', async () => {
+    const { backend, slack, flow } = setup();
+    const reference = ref();
+    backend
+      .mockResolvedValueOnce(
+        json({ actionId: 'action', pendingAction: question(reference.expiresAt) }),
+      )
+      .mockResolvedValueOnce(new Response('{}', { status: 409 }));
+    await flow.choice(JSON.stringify({ ...reference, choice: 1 }), interaction(), bundle);
+    expect(JSON.stringify(slack.mock.calls)).toContain('unavailable');
+    backend.mockResolvedValueOnce(new Response('{}', { status: 503 }));
+    await expect(
+      flow.choice(JSON.stringify({ ...reference, choice: 1 }), interaction(), bundle),
+    ).rejects.toThrow();
+  });
+
+  test('batch headings are preserved and oversized headings fall back to the browser', () => {
+    const pending = question();
+    if (pending.payload.type !== 'ask_user_question') throw new Error();
+    pending.payload.questions = [{ id: 'env', header: 'Environment', ...pending.payload.question }];
+    expect(JSON.stringify(reviewModal(ref(), pending))).toContain('Environment');
+    pending.payload.questions = Array.from({ length: 20 }, (_, i) => ({
+      id: String(i),
+      header: 'Environment',
+      description: 'Context',
+      ...pending.payload.question,
+    }));
+    expect(reviewModal(ref(), pending)).toBeNull();
+    pending.payload.questions = [{ id: 'env', ...pending.payload.question }];
+    pending.payload.questions[0].header = 'x'.repeat(151);
+    expect(reviewModal(ref(), pending)).toBeNull();
+  });
+
   test('a choice button cannot replace an already saved decision', async () => {
     const { backend, flow } = setup();
     const reference = ref();
