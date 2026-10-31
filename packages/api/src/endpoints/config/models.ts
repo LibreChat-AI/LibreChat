@@ -9,10 +9,11 @@ import {
 import type { TModelsConfig, TEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest, GetUserKeyValuesFunction, UserKeyValues } from '~/types';
+import type { ServedCustomEndpoint } from '~/endpoints/custom/config';
 import type { FetchModelsParams } from '~/endpoints/models';
 import type { GetAppConfigOptions } from '~/app/service';
+import { isServedCustomEndpoint, resolveServedCustomEndpoints } from '~/endpoints/custom/config';
 import { fetchModels as defaultFetchModels } from '~/endpoints/models';
-import { isServedCustomEndpoint } from '~/endpoints/custom/config';
 import { getTokenConfigKey } from '~/endpoints/custom/initialize';
 import { getAppConfigOptionsFromUser } from '~/app/service';
 
@@ -72,7 +73,7 @@ function headersFingerprint(headers: Record<string, string> | undefined): string
 
 interface ResolvedEndpoint {
   name: string;
-  endpoint: TEndpoint;
+  endpoint: ServedCustomEndpoint;
   apiKey: string;
   baseURL: string;
   apiKeyIsUserProvided: boolean;
@@ -88,7 +89,10 @@ export interface LoadConfigModelsDeps {
 export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
   const { getAppConfig, getUserKeyValues, fetchModels = defaultFetchModels } = deps;
 
-  return async function loadConfigModels(req: ServerRequest): Promise<TModelsConfig> {
+  return async function loadConfigModels(
+    req: ServerRequest,
+    requestedEndpoint?: string,
+  ): Promise<TModelsConfig> {
     const appConfig = req.config ?? (await getAppConfig(getAppConfigOptionsFromUser(req.user)));
     if (!appConfig) {
       return {};
@@ -98,15 +102,26 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
     const azureConfig = appConfig.endpoints?.[EModelEndpoint.azureOpenAI];
     const { modelNames } = azureConfig ?? {};
 
-    if (modelNames && azureConfig) {
+    if (
+      modelNames &&
+      azureConfig &&
+      (requestedEndpoint == null || requestedEndpoint === EModelEndpoint.azureOpenAI)
+    ) {
       modelsConfig[EModelEndpoint.azureOpenAI] = modelNames;
     }
 
-    if (azureConfig?.assistants && azureConfig.assistantModels) {
+    if (
+      azureConfig?.assistants &&
+      azureConfig.assistantModels &&
+      (requestedEndpoint == null || requestedEndpoint === EModelEndpoint.azureAssistants)
+    ) {
       modelsConfig[EModelEndpoint.azureAssistants] = azureConfig.assistantModels;
     }
 
     for (const endpoint of CONFIGURED_MODEL_LIST_ENDPOINTS) {
+      if (requestedEndpoint != null && requestedEndpoint !== endpoint) {
+        continue;
+      }
       const models = configuredModelList(appConfig, endpoint);
       if (models) {
         modelsConfig[endpoint] = models;
@@ -117,16 +132,21 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
       return modelsConfig;
     }
 
-    const customEndpoints = (appConfig.endpoints[EModelEndpoint.custom] as TEndpoint[]).filter(
-      isServedCustomEndpoint,
-    );
+    const definitions = appConfig.endpoints[EModelEndpoint.custom] as TEndpoint[];
+    const selected =
+      requestedEndpoint == null
+        ? undefined
+        : resolveServedCustomEndpoints(definitions).get(requestedEndpoint);
+    let customEndpoints: ServedCustomEndpoint[];
+    if (requestedEndpoint == null) customEndpoints = definitions.filter(isServedCustomEndpoint);
+    else customEndpoints = selected ? [selected] : [];
 
     const fetchPromisesMap: Record<string, Promise<string[]>> = {};
     const uniqueKeyToEndpointsMap: Record<string, string[]> = {};
     /** tokenKey the deduped fetch cached its token config under, so siblings
      *  sharing the fetch can be backfilled with the same config afterward */
     const uniqueKeyToTokenKey: Record<string, string> = {};
-    const endpointsMap: Record<string, TEndpoint> = {};
+    const endpointsMap: Record<string, ServedCustomEndpoint> = {};
     const tenantId = req.user?.tenantId;
 
     const resolved: ResolvedEndpoint[] = [];

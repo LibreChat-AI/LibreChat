@@ -20,6 +20,11 @@ jest.mock('~/hooks/AuthContext', () => ({
   useAuthContext: () => ({ isAuthenticated: false, user: null, roles: {} }),
 }));
 
+jest.mock('~/hooks/Chat/target', () => ({
+  __esModule: true,
+  default: () => ({ ready: true, pending: false, failed: false, retry: jest.fn() }),
+}));
+
 jest.mock('~/data-provider', () => ({
   useProjectQuery: () => ({ data: undefined }),
 }));

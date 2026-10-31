@@ -8,8 +8,10 @@ import ChatRoute from '../ChatRoute';
 const mockSetConversation = jest.fn();
 const mockFetchConversation = jest.fn();
 const mockHasSetConversation = { current: true };
-let mockConversation: Partial<TConversation> = { conversationId: 'chat-a' };
+let mockConversation: Partial<TConversation> | null = { conversationId: 'chat-a' };
 const mockConfig = {};
+let mockStartupQuery = { data: mockConfig as object | undefined };
+let mockEndpointsQuery = { data: mockConfig as object | undefined, isLoading: false };
 const mockRoles = { USER: {} };
 let mockAssistantListMap = {};
 const mockNewConversation = jest.fn(({ template }: { template?: Partial<TConversation> }) => {
@@ -39,8 +41,10 @@ jest.mock('librechat-data-provider/react-query', () => ({
   useGetModelsQuery: () => ({ data: mockConfig }),
 }));
 jest.mock('~/data-provider', () => ({
-  useGetStartupConfig: () => ({ data: mockConfig }),
-  useGetEndpointsQuery: () => ({ data: mockConfig }),
+  useGetStartupConfig: () => mockStartupQuery,
+  useGetEndpointsQuery: () => mockEndpointsQuery,
+  useGetAgentByIdQuery: () => ({ isFetched: true }),
+  useGetPresetsQuery: () => ({ data: [], isFetched: true }),
   useListAgentsQuery: () => ({}),
   useProjectQuery: () => ({}),
   useGetConvoIdQuery: (id: string, options: { enabled: boolean }) => {
@@ -72,6 +76,7 @@ jest.mock('~/utils', () => ({
   defaultSpecAwaitsAgents: () => false,
   processValidSettings: () => ({}),
   getDefaultModelSpec: () => ({}),
+  getLocalStorageItems: () => ({ lastConversationSetup: {} }),
   hasModelSelection: () => false,
   isNotFoundError: () => false,
   isTemporaryConversation: () => false,
@@ -80,7 +85,12 @@ jest.mock('~/utils', () => ({
 }));
 jest.mock('~/components/Chat/ChatView', () => ({
   __esModule: true,
-  default: () => <div data-testid="composer">{mockConversation.conversationId}</div>,
+  default: () => (
+    <div data-testid="composer">
+      {mockConversation?.conversationId}
+      <input aria-label="Draft" />
+    </div>
+  ),
 }));
 
 function Harness() {
@@ -104,6 +114,8 @@ function setup(initialEntries = ['/c/chat-a'], initialIndex = initialEntries.len
 }
 
 beforeEach(() => {
+  mockStartupQuery = { data: mockConfig };
+  mockEndpointsQuery = { data: mockConfig, isLoading: false };
   mockConversation = { conversationId: 'chat-a' };
   mockHasSetConversation.current = true;
   mockAssistantListMap = {};
@@ -206,11 +218,11 @@ it('allows retry after a failed history load without replacing the departing dra
     await router.navigate(-1);
   });
   await screen.findByRole('alert');
-  expect(mockConversation.conversationId).toBe('chat-a');
+  expect(mockConversation?.conversationId).toBe('chat-a');
   expect(screen.getByTestId('composer')).not.toBeVisible();
   fireEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
   await waitFor(() => expect(screen.getByTestId('composer')).toBeVisible());
-  expect(mockConversation.conversationId).toBe('chat-b');
+  expect(mockConversation?.conversationId).toBe('chat-b');
   expect(consoleError).toHaveBeenCalledWith(new Error('offline'));
 });
 
@@ -222,7 +234,7 @@ it('waits for the conversation record even when assistant catalogs are already l
     await router.navigate(-1);
   });
   expect(mockNewConversation).not.toHaveBeenCalled();
-  expect(mockConversation.conversationId).toBe('chat-a');
+  expect(mockConversation?.conversationId).toBe('chat-a');
   expect(screen.getByTestId('composer')).not.toBeVisible();
 });
 
@@ -230,4 +242,31 @@ it('reconciles a remounted chat route with conversation state retained by the sh
   setup(['/c/chat-b']);
   await waitFor(() => expect(screen.getByTestId('composer')).toHaveTextContent('chat-b'));
   expect(mockFetchConversation).toHaveBeenCalledWith('chat-b');
+});
+
+it('renders a cold new-chat composer while configuration and endpoint metadata are pending', async () => {
+  mockConversation = null;
+  mockHasSetConversation.current = false;
+  mockStartupQuery = { data: undefined };
+  mockEndpointsQuery = { data: undefined, isLoading: true };
+  setup(['/c/new']);
+  const input = screen.getByRole('textbox', { name: 'Draft' });
+  fireEvent.change(input, { target: { value: 'Written before startup finishes' } });
+  expect(input).toHaveValue('Written before startup finishes');
+  expect(mockNewConversation).not.toHaveBeenCalled();
+  act(() => {
+    mockStartupQuery = { data: mockConfig };
+    mockEndpointsQuery = { data: mockConfig, isLoading: false };
+    mockSetConversation();
+  });
+  await waitFor(() => expect(mockNewConversation).toHaveBeenCalledTimes(1));
+  expect(screen.getByRole('textbox', { name: 'Draft' })).toBe(input);
+  expect(input).toHaveValue('Written before startup finishes');
+});
+
+it('does not hide a restored chat behind unrelated catalog loading', () => {
+  mockEndpointsQuery = { data: mockConfig, isLoading: true };
+  setup(['/c/chat-a']);
+  expect(screen.getByTestId('composer')).toBeVisible();
+  expect(mockNewConversation).not.toHaveBeenCalled();
 });

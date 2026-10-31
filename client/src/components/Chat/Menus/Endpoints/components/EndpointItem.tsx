@@ -108,7 +108,7 @@ function EndpointMenuContent({
     return modelSpecs.filter((spec: TModelSpec) => spec.group === endpoint.value);
   }, [modelSpecs, endpoint.value]);
 
-  if (isAssistantsEndpoint(endpoint.value) && endpoint.models === undefined) {
+  if (endpoint.isLoading && !endpoint.models?.length) {
     return (
       <div
         className="flex items-center justify-center p-2"
@@ -163,6 +163,18 @@ function EndpointMenuContent({
           setSize={listboxSetSize}
         />
       ))}
+      {endpoint.isUnavailable && (
+        <MenuItem onClick={endpoint.onRetry}>{localize('com_ui_retry')}</MenuItem>
+      )}
+      {endpoint.isLoading && endpoint.models != null && (
+        <div
+          role="status"
+          aria-label={localize('com_ui_loading')}
+          className="flex justify-center p-2"
+        >
+          <Spinner aria-hidden="true" />
+        </div>
+      )}
       <EndpointModels
         endpoint={endpoint}
         renderedModels={renderedModels}

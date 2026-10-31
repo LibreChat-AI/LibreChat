@@ -1,7 +1,8 @@
 import React from 'react';
-import { renderHook, waitFor } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { EModelEndpoint, QueryKeys, dataService } from 'librechat-data-provider';
+import { activateCatalog, resetCatalogWarmup } from '~/hooks/useCatalogWarmup';
 import useAssistantsMap from '../useAssistantsMap';
 
 /** `dataService` methods are non-configurable, so the HTTP boundary is mocked
@@ -49,6 +50,8 @@ describe('useAssistantsMap', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    resetCatalogWarmup();
+    activateCatalog('assistants');
   });
 
   it('keeps the composite map referentially stable across unrelated re-renders', async () => {
@@ -78,5 +81,13 @@ describe('useAssistantsMap', () => {
     rerender();
 
     expect(result.current).toBe(first);
+  });
+
+  it('waits for idle before warming assistant catalogs', async () => {
+    resetCatalogWarmup();
+    const { result } = setup(true);
+    expect(dataService.listAssistants).not.toHaveBeenCalled();
+    act(() => activateCatalog('assistants'));
+    await waitFor(() => expect(result.current[EModelEndpoint.assistants].asst_1).toBeDefined());
   });
 });

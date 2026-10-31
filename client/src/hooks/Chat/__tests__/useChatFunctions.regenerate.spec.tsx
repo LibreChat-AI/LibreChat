@@ -39,6 +39,11 @@ const mockGetEphemeralAgent = jest.fn((): TEphemeralAgent | null => null);
 const mockSetFilesToDelete = jest.fn();
 const mockGetSender = jest.fn(() => 'Assistant');
 const mockGetExpiry = jest.fn(() => 'expiry-key');
+const mockAgent = {
+  id: 'agent-1',
+  provider: EModelEndpoint.openAI,
+  model: 'gpt-5.1',
+} as Agent;
 const mockAgentQueryData: { current?: Agent } = {};
 const mockEndpointsQueryData: { current?: Record<string, unknown> } = {};
 const mockCapabilitiesData: { current?: Record<string, unknown> } = {};
@@ -46,11 +51,19 @@ const mockCapabilitiesState: {
   current?: { status: string; fetchStatus?: string; dataUpdatedAt?: number };
 } = {};
 /** A query that holds data always has a timestamp: loaded data is fresh unless a test says otherwise. */
-const mockGetQueryState = jest.fn((queryKey: readonly unknown[]) =>
-  queryKey[0] === QueryKeys.reasoningCapabilities
-    ? { dataUpdatedAt: Date.now(), ...mockCapabilitiesState.current }
-    : undefined,
-);
+const mockGetQueryState = jest.fn((queryKey: readonly unknown[]) => {
+  if (queryKey[0] === QueryKeys.reasoningCapabilities) {
+    return { dataUpdatedAt: Date.now(), ...mockCapabilitiesState.current };
+  }
+  if (
+    queryKey[0] === QueryKeys.agent &&
+    mockAgentQueryData.current &&
+    queryKey[1] === mockAgentQueryData.current.id
+  ) {
+    return { status: 'success', data: mockAgentQueryData.current };
+  }
+  return undefined;
+});
 const mockGetQueryData = jest.fn((queryKey: readonly unknown[]) => {
   if (queryKey[0] === QueryKeys.reasoningCapabilities) {
     return mockCapabilitiesData.current;
@@ -59,7 +72,12 @@ const mockGetQueryData = jest.fn((queryKey: readonly unknown[]) => {
     return mockAgentQueryData.current;
   }
   if (queryKey[0] === QueryKeys.endpoints) {
-    return mockEndpointsQueryData.current ?? {};
+    return (
+      mockEndpointsQueryData.current ?? {
+        [EModelEndpoint.agents]: { order: 0 },
+        [EModelEndpoint.openAI]: { order: 1 },
+      }
+    );
   }
   return {};
 });
@@ -233,6 +251,13 @@ function renderAsk(
   return { ...hook, getMessages, setMessages, setFiles, setSubmission, reasoningStore };
 }
 
+beforeEach(() => {
+  mockAgentQueryData.current = mockAgent;
+  mockEndpointsQueryData.current = undefined;
+  mockCapabilitiesData.current = undefined;
+  mockCapabilitiesState.current = undefined;
+});
+
 describe('useChatFunctions ask', () => {
   beforeEach(() => {
     mockEndpointsQueryData.current = undefined;
@@ -240,7 +265,6 @@ describe('useChatFunctions ask', () => {
     mockCapabilitiesState.current = undefined;
     localStorage.clear();
     jest.clearAllMocks();
-    mockAgentQueryData.current = undefined;
     mockGetLatestConversation.mockReturnValue(null);
     mockResolveCodeWorkspaceSubmission.mockReturnValue({});
   });
@@ -968,7 +992,6 @@ describe('useChatFunctions ask', () => {
 describe('useChatFunctions regenerate', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockAgentQueryData.current = undefined;
   });
 
   it('keys a non-tail regenerate to the selected assistant response', () => {
@@ -1094,7 +1117,6 @@ describe('useChatFunctions regenerate', () => {
 describe('useChatFunctions ask attachments', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockAgentQueryData.current = undefined;
   });
   afterEach(() => {
     mockGetEphemeralAgent.mockReturnValue(null);
@@ -1328,7 +1350,6 @@ describe('useChatFunctions ask attachments', () => {
 describe('useChatFunctions ask compaction', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockGetQueryData.mockReturnValue({});
   });
 
   it('submits a summarize-only turn hung off the leaf without a new user bubble', () => {

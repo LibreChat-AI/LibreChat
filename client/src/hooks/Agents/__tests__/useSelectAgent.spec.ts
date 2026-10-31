@@ -60,7 +60,7 @@ describe('useSelectAgent', () => {
     );
   });
 
-  it('opens a fresh composer first and keeps it when the agent details arrive', async () => {
+  it('opens one fresh composer without waiting for or reopening it for metadata', async () => {
     mockFetchQuery.mockResolvedValue({ id: 'agent-1', name: 'Full Agent' });
     const { result } = renderHook(() => useSelectAgent());
 
@@ -68,12 +68,12 @@ describe('useSelectAgent', () => {
       await result.current.onSelect('agent-1');
     });
 
-    expect(mockNewConversation).toHaveBeenCalledTimes(2);
-    expect(mockNewConversation.mock.calls[0][0].keepComposerState).toBe(false);
-    expect(mockNewConversation.mock.calls[1][0].keepComposerState).toBe(true);
+    expect(mockNewConversation).toHaveBeenCalledTimes(1);
+    expect(mockNewConversation.mock.calls[0][0].keepComposerState).toBeUndefined();
+    expect(mockFetchQuery).not.toHaveBeenCalled();
   });
 
-  it('keeps the composer when the agent details cannot be fetched', async () => {
+  it('does not couple selection to a metadata request', async () => {
     const consoleError = jest.spyOn(console, 'error').mockImplementation(() => undefined);
     mockFetchQuery.mockRejectedValue(new Error('offline'));
     const { result } = renderHook(() => useSelectAgent());
@@ -82,8 +82,8 @@ describe('useSelectAgent', () => {
       await result.current.onSelect('agent-1');
     });
 
-    expect(mockNewConversation).toHaveBeenCalledTimes(2);
-    expect(mockNewConversation.mock.calls[1][0].keepComposerState).toBe(true);
+    expect(mockNewConversation).toHaveBeenCalledTimes(1);
+    expect(mockFetchQuery).not.toHaveBeenCalled();
     consoleError.mockRestore();
   });
 
@@ -99,8 +99,8 @@ describe('useSelectAgent', () => {
     });
 
     expect(mockGetDefaultConversation).not.toHaveBeenCalled();
-    expect(mockNewConversation.mock.calls[0][0].keepComposerState).toBe(false);
-    expect(mockNewConversation.mock.calls[1][0].keepComposerState).toBe(true);
+    expect(mockNewConversation.mock.calls[0][0].keepComposerState).toBeUndefined();
+    expect(mockFetchQuery).not.toHaveBeenCalled();
   });
 
   it('clears model spec display fields when selecting an agent', async () => {
@@ -142,11 +142,11 @@ describe('useSelectAgent', () => {
     });
 
     expect(mockNewConversation.mock.calls[0][0].template.codeWorkspaces).toBeUndefined();
-    expect(mockNewConversation.mock.calls[1][0].template.codeWorkspaces).toBeUndefined();
+    expect(mockFetchQuery).not.toHaveBeenCalled();
     expect(mockGetDefaultConversation.mock.calls[0][0].conversation.codeWorkspaces).toBeUndefined();
   });
 
-  it('preserves a workspace selected while the same agent is hydrating', async () => {
+  it('leaves subsequent workspace choices to the active conversation', async () => {
     const selectedWorkspace = [{ environmentId: 'machine-a', workspaceId: 'project-a' }];
     mockGetConversation
       .mockResolvedValueOnce({
@@ -166,6 +166,6 @@ describe('useSelectAgent', () => {
     });
 
     expect(mockNewConversation.mock.calls[0][0].template.codeWorkspaces).toBeUndefined();
-    expect(mockNewConversation.mock.calls[1][0].template.codeWorkspaces).toEqual(selectedWorkspace);
+    expect(mockFetchQuery).not.toHaveBeenCalled();
   });
 });

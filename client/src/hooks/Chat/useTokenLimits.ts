@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { isAgentsEndpoint, resolveModelCatalogKey } from 'librechat-data-provider';
 import type { TConversation, TModelTokenomics } from 'librechat-data-provider';
-import { useTokenConfigQuery, useGetAgentByIdQuery } from '~/data-provider';
+import { useTokenConfigQuery, useGetAgentByIdQuery, useGetEndpointsQuery } from '~/data-provider';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 
 export interface TokenLimits {
@@ -24,37 +24,46 @@ function toNumber(value: unknown): number | undefined {
  */
 export default function useTokenLimits(conversation: TConversation | null): TokenLimits {
   const { modelSpecs } = useChatSettings().config;
-  const { data: tokenConfig } = useTokenConfigQuery();
 
   const endpoint = conversation?.endpoint ?? '';
   const agentId = isAgentsEndpoint(endpoint) ? conversation?.agent_id : null;
   const { data: agent } = useGetAgentByIdQuery(agentId);
 
-  const spec = conversation?.spec;
-  const model = conversation?.model;
-  const maxContextSetting = conversation?.maxContextTokens;
-
-  return useMemo(() => {
-    const specPreset = spec ? modelSpecs?.find((s) => s.name === spec)?.preset : undefined;
-
-    let lookupEndpoint = endpoint;
-    let lookupModel = model ?? '';
+  const { data: endpointsConfig } = useGetEndpointsQuery();
+  const selection = useMemo(() => {
+    const specPreset = modelSpecs?.find((item) => item.name === conversation?.spec)?.preset;
+    let provider = endpoint;
+    let model = conversation?.model ?? '';
     if (agent) {
-      lookupEndpoint = agent.provider ?? endpoint;
-      lookupModel = agent.model ?? lookupModel;
+      provider = agent.provider ?? provider;
+      model = agent.model ?? model;
     } else if (specPreset) {
-      lookupEndpoint = specPreset.endpoint ?? lookupEndpoint;
-      lookupModel = lookupModel || (specPreset.model ?? '');
+      provider = specPreset.endpoint ?? provider;
+      model = model || (specPreset.model ?? '');
     }
-    lookupEndpoint = resolveModelCatalogKey(lookupEndpoint, tokenConfig);
-
-    const rates = tokenConfig?.[lookupEndpoint]?.[lookupModel];
-    const maxContextTokens =
-      toNumber(maxContextSetting) ??
-      toNumber(agent?.model_parameters?.maxContextTokens) ??
-      toNumber(specPreset?.maxContextTokens) ??
-      rates?.context;
-
-    return { maxContextTokens, rates, endpoint: lookupEndpoint, model: lookupModel };
-  }, [endpoint, model, spec, maxContextSetting, agent, modelSpecs, tokenConfig]);
+    return {
+      endpoint: resolveModelCatalogKey(provider, endpointsConfig),
+      model,
+      maxContextTokens:
+        toNumber(conversation?.maxContextTokens) ??
+        toNumber(agent?.model_parameters?.maxContextTokens) ??
+        toNumber(specPreset?.maxContextTokens),
+    };
+  }, [
+    agent,
+    conversation?.spec,
+    conversation?.model,
+    conversation?.maxContextTokens,
+    modelSpecs,
+    endpoint,
+    endpointsConfig,
+  ]);
+  const { data: tokenConfig } = useTokenConfigQuery(
+    { enabled: !!selection.endpoint && (!agentId || agent != null) },
+    selection.endpoint,
+  );
+  return useMemo(() => {
+    const rates = tokenConfig?.[selection.endpoint]?.[selection.model];
+    return { ...selection, rates, maxContextTokens: selection.maxContextTokens ?? rates?.context };
+  }, [selection, tokenConfig]);
 }

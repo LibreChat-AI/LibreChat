@@ -20,6 +20,7 @@ import type { ChatFormValues } from '~/common';
 import { ChatTransportContext, defaultChatTransport } from '~/Providers/ChatTransportContext';
 import { getNewConversationDraftId, getDraft, setDraft } from '~/utils/drafts';
 import { ChatContext, ChatFormProvider } from '~/Providers';
+import { TargetContext } from '~/Providers/TargetContext';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import { SteerHostTestProvider } from 'test/steerHost';
 import { startupConfigKey } from '~/data-provider';
@@ -50,11 +51,13 @@ const transport: Transport = {
 function Harness({
   conversation,
   routePending = false,
+  targetReady = true,
   onAsk = ask,
   speechSettingsInitialized = false,
 }: {
   conversation: TConversation;
   routePending?: boolean;
+  targetReady?: boolean;
   onAsk?: typeof ask;
   speechSettingsInitialized?: boolean;
 }) {
@@ -103,16 +106,20 @@ function Harness({
   return (
     <ChatFormProvider {...methods}>
       <ChatContext.Provider value={chatHelpers}>
-        <ChatForm
-          index={0}
-          routePending={routePending}
-          isLandingPage
-          enterToSend
-          autoSendText={-1}
-          speechSettingsInitialized={speechSettingsInitialized}
-          footerBelow={false}
-          centerFormOnLanding={false}
-        />
+        <TargetContext.Provider
+          value={{ ready: targetReady, pending: !targetReady, failed: false, retry: () => {} }}
+        >
+          <ChatForm
+            index={0}
+            routePending={routePending}
+            isLandingPage
+            enterToSend
+            autoSendText={-1}
+            speechSettingsInitialized={speechSettingsInitialized}
+            footerBelow={false}
+            centerFormOnLanding={false}
+          />
+        </TargetContext.Provider>
       </ChatContext.Provider>
     </ChatFormProvider>
   );
@@ -124,6 +131,7 @@ function mountComposer(
     pathname = `/c/${conversation.conversationId}`,
     query = 'agent_id=agent_test&q=hi&submit=true',
     routePending = false,
+    targetReady = true,
     speechSettingsInitialized = false,
     liveRun = false,
   } = {},
@@ -209,6 +217,7 @@ function mountComposer(
     <Harness
       conversation={conversation}
       routePending={routePending}
+      targetReady={targetReady}
       speechSettingsInitialized={speechSettingsInitialized}
     />,
     {
@@ -231,6 +240,44 @@ describe('ChatForm URL submission', () => {
 
   afterEach(() => {
     jest.useRealTimers();
+  });
+
+  it('retargets an unavailable saved agent before waiting for replacement send readiness', async () => {
+    newConversation.mockClear();
+    const source = {
+      ...initialConversation,
+      conversationId: 'saved-chat',
+      endpoint: EModelEndpoint.agents,
+      agent_id: 'agent_deleted',
+      model: undefined,
+    };
+    const view = mountComposer(source, {
+      targetReady: false,
+      query: 'endpoint=openAI&model=gpt-4o&q=recover+this+chat&submit=true',
+    });
+    await act(async () => jest.advanceTimersByTime(100));
+    expect(newConversation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        preset: expect.objectContaining({ endpoint: EModelEndpoint.openAI, model: 'gpt-4o' }),
+      }),
+    );
+    expect(screen.getByTestId('text-input')).toHaveValue('recover this chat');
+    expect(ask).not.toHaveBeenCalled();
+    const destination = { ...initialConversation, conversationId: 'saved-chat' };
+    await act(async () =>
+      view.rerender(<Harness conversation={destination} targetReady={false} />),
+    );
+    await act(async () => jest.advanceTimersByTime(4000));
+    expect(ask).not.toHaveBeenCalled();
+    expect(screen.getByTestId('text-input')).toHaveValue('recover this chat');
+    await act(async () => view.rerender(<Harness conversation={destination} targetReady />));
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(ask).toHaveBeenCalledWith(
+      expect.objectContaining({ text: 'recover this chat' }),
+      expect.anything(),
+    );
+    await act(async () => jest.advanceTimersByTime(4000));
+    expect(ask).toHaveBeenCalledTimes(1);
   });
 
   it('processes a queued prompt URL after ordinary conversation navigation without remounting', async () => {

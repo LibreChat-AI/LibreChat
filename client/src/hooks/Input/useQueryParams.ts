@@ -31,8 +31,13 @@ import {
   getConvoSwitchLogic,
   logger,
 } from '~/utils';
+import {
+  startupConfigKey,
+  useGetAgentByIdQuery,
+  getAgentListQueryData,
+  setAgentListQueryData,
+} from '~/data-provider';
 import { useAuthContext, useAgentsMap, useDefaultConvo, useSubmitMessage } from '~/hooks';
-import { startupConfigKey, useGetAgentByIdQuery } from '~/data-provider';
 import { useChatContext, useChatFormContext } from '~/Providers';
 import { isHistoryRevalidating } from '~/hooks/Chat/ask/guards';
 import { consumeComposerQuery } from '~/utils/drafts';
@@ -45,7 +50,7 @@ const injectAgentIntoAgentsMap = (
   agent: AgentListResponse['data'][number],
 ) => {
   const editCacheKey = [QueryKeys.agents, { requiredPermission: PermissionBits.EDIT }];
-  const editCache = queryClient.getQueryData<AgentListResponse>(editCacheKey);
+  const editCache = getAgentListQueryData(queryClient, editCacheKey);
 
   if (editCache?.data && !editCache.data.some((cachedAgent) => cachedAgent.id === agent.id)) {
     // Inject agent into EDIT cache so dropdown can display it
@@ -53,7 +58,7 @@ const injectAgentIntoAgentsMap = (
       ...editCache,
       data: [agent, ...editCache.data],
     };
-    queryClient.setQueryData(editCacheKey, updatedCache);
+    setAgentListQueryData(queryClient, editCacheKey, updatedCache);
     logger.log('agent', 'Injected URL agent into cache:', agent);
   }
 };
@@ -62,11 +67,13 @@ const injectAgentIntoAgentsMap = (
 export default function useQueryParams({
   textAreaRef,
   routePending = false,
+  targetReady = true,
   onBeforePrompt,
   onPromptSettled,
 }: {
   textAreaRef: React.RefObject<HTMLTextAreaElement>;
   routePending?: boolean;
+  targetReady?: boolean;
   onBeforePrompt?: () => void;
   onPromptSettled?: (text: string, conversationId: string | null | undefined) => void;
 }) {
@@ -86,6 +93,8 @@ export default function useQueryParams({
 
   const routePendingRef = useRef(routePending);
   routePendingRef.current = routePending;
+  const targetReadyRef = useRef(targetReady);
+  targetReadyRef.current = targetReady;
   const onPromptSettledRef = useRef(onPromptSettled);
   onPromptSettledRef.current = onPromptSettled;
   const methods = useChatFormContext();
@@ -278,9 +287,8 @@ export default function useQueryParams({
 
   const areSettingsApplied = useCallback(() => {
     const convo = conversationRef.current;
-    if (!validSettingsRef.current || !convo) {
-      return false;
-    }
+    if (!convo) return false;
+    if (!validSettingsRef.current) return true;
 
     const endpointsConfig = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]) ?? {};
     const normalizedSettings = convo.endpoint
@@ -455,6 +463,8 @@ export default function useQueryParams({
   /** Consumes an auto-submit once, leaving a refused submission in the composer. */
   const processSubmission = useCallback(() => {
     if (
+      routePendingRef.current ||
+      !targetReadyRef.current ||
       submissionHandledRef.current ||
       !pendingSubmitRef.current ||
       !promptTextRef.current ||
@@ -525,6 +535,31 @@ export default function useQueryParams({
     restoreUrlPrompt,
     settlePrompt,
   ]);
+
+  const armSettingsTimeout = useCallback(() => {
+    if (settingsTimeoutRef.current || routePendingRef.current || !targetReadyRef.current) return;
+    const requestId = requestIdRef.current;
+    settingsTimeoutRef.current = setTimeout(() => {
+      if (requestId !== requestIdRef.current) {
+        return;
+      }
+      settingsTimeoutRef.current = null;
+      if (routePendingRef.current || !targetReadyRef.current) return;
+      if (!ownsRequest()) {
+        cancelRequest();
+        return;
+      }
+      if (!submissionHandledRef.current && pendingSubmitRef.current) {
+        restoreUrlPrompt();
+        pendingSubmitRef.current = false;
+        submissionHandledRef.current = true;
+        setSubmissionStatus('failed');
+        logger.log('conversation', 'Settings application timeout, retaining prompt');
+        settlePrompt();
+        clearConsumedSearchParams();
+      }
+    }, MAX_SETTINGS_WAIT_MS);
+  }, [ownsRequest, cancelRequest, restoreUrlPrompt, settlePrompt, clearConsumedSearchParams]);
 
   /** Observes the history the composer sends from, so a retry runs after the
    * render that derives the latest message from it, not during the cache write. */
@@ -637,6 +672,7 @@ export default function useQueryParams({
       const settingsAccepted = !hasSettings || newQueryConvo(validSettings) === true;
       if (willAutoSubmit && decodedPrompt.trim()) {
         pendingSubmitRef.current = true;
+        setSubmissionStatus('preparing');
         if (!settingsAccepted) {
           pendingSubmitRef.current = false;
           submissionHandledRef.current = true;
@@ -645,25 +681,7 @@ export default function useQueryParams({
           processSubmission();
         } else {
           setSubmissionStatus('preparing');
-          settingsTimeoutRef.current = setTimeout(() => {
-            if (requestId !== requestIdRef.current) {
-              return;
-            }
-            settingsTimeoutRef.current = null;
-            if (!ownsRequest()) {
-              cancelRequest();
-              return;
-            }
-            if (!submissionHandledRef.current && pendingSubmitRef.current) {
-              restoreUrlPrompt();
-              pendingSubmitRef.current = false;
-              submissionHandledRef.current = true;
-              setSubmissionStatus('failed');
-              logger.log('conversation', 'Settings application timeout, retaining prompt');
-              settlePrompt();
-              clearConsumedSearchParams();
-            }
-          }, MAX_SETTINGS_WAIT_MS);
+          armSettingsTimeout();
         }
       } else {
         submissionHandledRef.current = true;
@@ -689,6 +707,7 @@ export default function useQueryParams({
     clearConsumedSearchParams,
     queryClient,
     processSubmission,
+    armSettingsTimeout,
     areSettingsApplied,
     restoreUrlPrompt,
     ownsRequest,
@@ -696,12 +715,16 @@ export default function useQueryParams({
   ]);
 
   useEffect(() => {
+    if (routePending || !targetReady) {
+      if (settingsTimeoutRef.current) clearTimeout(settingsTimeoutRef.current);
+      settingsTimeoutRef.current = null;
+      return;
+    }
     // Only proceed if we've already processed URL parameters but haven't yet handled submission
     if (
       !processedRef.current ||
       submissionHandledRef.current ||
       !pendingSubmitRef.current ||
-      !validSettingsRef.current ||
       !conversation ||
       !ownsRequest()
     ) {
@@ -712,8 +735,19 @@ export default function useQueryParams({
     if (areSettingsApplied()) {
       logger.log('conversation', 'Settings fully applied, processing submission');
       processSubmission();
+    } else {
+      armSettingsTimeout();
     }
-  }, [conversation, processSubmission, areSettingsApplied, restoreUrlPrompt, ownsRequest]);
+  }, [
+    conversation,
+    routePending,
+    targetReady,
+    processSubmission,
+    armSettingsTimeout,
+    areSettingsApplied,
+    restoreUrlPrompt,
+    ownsRequest,
+  ]);
 
   useEffect(() => {
     mountedRef.current = true;
