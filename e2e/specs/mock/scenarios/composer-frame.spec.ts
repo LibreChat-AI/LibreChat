@@ -4,7 +4,7 @@ import { MOCK_ENDPOINTS, NEW_CHAT_PATH, selectMockEndpoint } from '../helpers';
 /**
  * The composer layout, drawn by the chat package's frame: a click on the surface's empty area
  * returns focus to the draft, while a popup trigger inside it keeps focus so its menu can open
- * and close normally (#15624).
+ * and close normally (#15624). On a touch screen the draft is left alone instead.
  */
 test.describe.configure({ timeout: 120_000 });
 
@@ -23,6 +23,12 @@ test.describe('composer frame', () => {
     const box = await surface.boundingBox();
     expect(box).not.toBeNull();
     await surface.click({ position: { x: (box?.width ?? 0) / 2, y: (box?.height ?? 0) - 6 } });
+    /* A coarse pointer leaves focus alone so the on-screen keyboard does not open on a stray tap. */
+    const coarse = await page.evaluate(() => window.matchMedia('(pointer: coarse)').matches);
+    if (coarse) {
+      await expect(input).not.toBeFocused();
+      return;
+    }
     await expect(input).toBeFocused();
 
     const trigger = surface.locator('[aria-haspopup]:not([aria-haspopup="false"])').first();
