@@ -46,6 +46,7 @@ describe('classifyCodeArtifact', () => {
       ['report.docx', 'application/octet-stream'],
       ['data.xlsx', 'application/octet-stream'],
       ['legacy.xls', 'application/octet-stream'],
+      ['workbook.xlsb', 'application/octet-stream'],
       ['sheet.ods', 'application/octet-stream'],
       ['notes.odt', 'application/octet-stream'],
     ])('classifies %s as document', (name, mime) => {
@@ -69,6 +70,12 @@ describe('classifyCodeArtifact', () => {
           'unknown',
           'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
         ),
+      ).toBe('document');
+    });
+
+    it('classifies xlsb mime', () => {
+      expect(
+        classifyCodeArtifact('unknown', 'application/vnd.ms-excel.sheet.binary.macroenabled.12'),
       ).toBe('document');
     });
 

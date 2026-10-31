@@ -117,7 +117,27 @@ async function excelSheetToText(file: Express.Multer.File): Promise<string> {
   if (data.length >= 4 && data[0] === 0x50 && data[1] === 0x4b) {
     await assertSafeZipSize(data, { name: file.originalname ?? 'spreadsheet' });
   }
-  const workbook = read(data, { type: 'buffer' });
+
+  let workbook: ReturnType<typeof read>;
+  try {
+    workbook = read(data, { type: 'buffer' });
+  } catch (cause) {
+    /* SheetJS CE 0.20.3 hard-throws on at least one legitimate, non-corrupted XLSB
+     * shape: workbooks using Excel's "Rich Value" cell-metadata feature (linked data
+     * types such as Stocks/Geography) emit a `BrtStr` record in `xl/metadata.bin` that
+     * SheetJS's hand-written metadata parser doesn't recognize and can't skip
+     * ("Unexpected record 0x3b"). Confirmed via an independent parser (python-calamine)
+     * successfully reading the same file byte-for-byte — this is a SheetJS parsing gap,
+     * not file corruption, but it can surface for any `read()` failure here.
+     *
+     * Re-thrown with a message containing the "Unable to extract text from" fragment so
+     * `resolveUploadErrorMessage` (packages/api/src/utils/files.ts) recognizes it as a
+     * known, user-safe failure instead of collapsing to the generic fallback — while the
+     * original library error is preserved via `cause` for server-side diagnostics rather
+     * than forwarded to the client (see AGENTS.md "Service failures and user-facing
+     * errors": never forward arbitrary error.message to a client). */
+    throw new Error('Unable to extract text from this Excel file', { cause });
+  }
 
   let text = '';
   for (const sheetName of workbook.SheetNames) {

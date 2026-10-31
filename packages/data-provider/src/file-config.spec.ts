@@ -124,6 +124,9 @@ describe('inferMimeType', () => {
     expect(inferMimeType('sheet.xlsx', '')).toBe(
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     );
+    expect(inferMimeType('workbook.xlsb', '')).toBe(
+      'application/vnd.ms-excel.sheet.binary.macroenabled.12',
+    );
     expect(inferMimeType('deck.pptx', '')).toBe(
       'application/vnd.openxmlformats-officedocument.presentationml.presentation',
     );
@@ -137,6 +140,7 @@ describe('inferMimeType', () => {
     expect(baseFileConfig.checkType(inferMimeType('sheet.xlsx', ''))).toBe(true);
     expect(baseFileConfig.checkType(inferMimeType('legacy.doc', ''))).toBe(true);
     expect(baseFileConfig.checkType(inferMimeType('template.potx', ''))).toBe(true);
+    expect(baseFileConfig.checkType(inferMimeType('workbook.xlsb', ''))).toBe(true);
   });
 });
 
