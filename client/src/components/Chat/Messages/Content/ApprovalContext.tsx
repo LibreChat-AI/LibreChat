@@ -23,6 +23,17 @@ import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { resolveAskUserQuestionPart } from '~/utils/approval';
 import { ChatContext } from '~/Providers/ChatContext';
 
+export interface ResumeSubmitTransport {
+  submitToolApproval: (
+    actionId: string,
+    decisions: Agents.ToolApprovalResolution[],
+  ) => Promise<void>;
+  submitAskAnswer: (actionId: string, resolution: string | Record<string, string>) => Promise<void>;
+}
+
+/** Host-owned I/O; the shared hook owns selected payloads, submission locks and status. */
+export const ResumeSubmitContext = createContext<ResumeSubmitTransport | null>(null);
+
 /** Shared read/write for the ask-answer submit status. */
 export function useAskSubmitStatus(): {
   getAskStatus: (actionId: string) => AskAnswerStatus;
@@ -148,14 +159,14 @@ const isExpiredError = (error: unknown): boolean => {
  * React Query. Message content renders in places without those providers (shared /
  * exported views, tests), so the provider must be safe to mount anywhere. The
  * context-dependent submit lives in {@link useResumeSubmit}, which the cards call —
- * and the cards only render inside a live chat view where those providers exist.
+ * which chooses the ordinary chat transport or an explicitly supplied host transport.
  */
 export default function ApprovalProvider({
   children,
   pendingAction,
 }: {
   children: React.ReactNode;
-  pendingAction?: Agents.PendingAction | null;
+  pendingAction?: Pick<Agents.PendingAction, 'actionId' | 'payload'> | null;
 }) {
   /** Content slices keep their historical local provider so exported/read-only
    *  renderers remain self-contained. Inside a live chat, reuse the provider
@@ -172,7 +183,7 @@ function ApprovalStateProvider({
   pendingAction,
 }: {
   children: React.ReactNode;
-  pendingAction?: Agents.PendingAction | null;
+  pendingAction?: Pick<Agents.PendingAction, 'actionId' | 'payload'> | null;
 }) {
   /** actionId → (tool_call_id → resolution). Mutable refs so reads are
    *  synchronous for `isReady`/submit; `version` is threaded into the context
@@ -411,6 +422,18 @@ function ApprovalStateProvider({
   return <ApprovalContext.Provider value={value}>{children}</ApprovalContext.Provider>;
 }
 
+/** A host may reject asynchronously or throw before returning its request promise. */
+function submitHost(
+  submit: () => Promise<void>,
+  callbacks: { onSuccess: () => void; onError: (error: unknown) => void },
+): void {
+  try {
+    void submit().then(callbacks.onSuccess, callbacks.onError);
+  } catch (error) {
+    callbacks.onError(error);
+  }
+}
+
 /**
  * Submit hook for the approval cards. Sources the resume body's agent/endpoint
  * fields from the active conversation (so the route's shared `buildEndpointOption`
@@ -421,10 +444,11 @@ function ApprovalStateProvider({
  * live chat views but ALSO from contexts without a `ChatContext.Provider` (e.g. a
  * subagent tool paused inside an isolated activity surface, or a search/citation render that
  * passes chat context as a prop), so it reads the context non-throwingly: with no
- * conversation, `buildResumeFields` returns null and the controls are inert rather
- * than crashing.
+ * conversation, the ordinary transport stays inert. An explicit host supplies only
+ * I/O; payload readiness, synchronous locks and submission status stay shared.
  */
 export function useResumeSubmit() {
+  const transport = useContext(ResumeSubmitContext);
   const jotaiStore = useStore();
   const chatContext = useContext(ChatContext);
   const conversation = chatContext?.conversation;
@@ -433,7 +457,6 @@ export function useResumeSubmit() {
   const askMutation = useSubmitAskAnswerMutation();
   const { getDecisions, isReady, setStatus, beginToolSubmission, endToolSubmission } =
     useApprovalContext();
-  const submittingAskActionIdsRef = useRef(new Set<string>());
   /** Ask status lives in Jotai so it works from the composer (outside the
    *  provider); tool-approval status stays on the context. */
   const { setAskStatus } = useAskSubmitStatus();
@@ -467,35 +490,29 @@ export function useResumeSubmit() {
 
   const submitToolApproval = useCallback(
     (actionId: string) => {
-      const fields = buildResumeFields();
+      const fields = transport ? null : buildResumeFields();
       const decisions = getDecisions(actionId);
-      if (!fields || decisions.length === 0 || !isReady(actionId)) {
-        return;
-      }
-      if (!beginToolSubmission(actionId)) {
-        return;
-      }
+      if ((!transport && !fields) || decisions.length === 0 || !isReady(actionId)) return;
+      if (!beginToolSubmission(actionId)) return;
       setStatus(actionId, 'submitting');
-      approvalMutation.mutate(
-        { ...fields, actionId, decisions },
-        {
-          onSuccess: () => {
-            setStatus(actionId, 'submitted');
-            const pendingAtom = pendingApprovalActionFamily(fields.conversationId);
-            if (jotaiStore.get(pendingAtom)?.actionId === actionId) {
-              jotaiStore.set(pendingAtom, null);
-            }
-          },
-          onError: (error) => {
-            const expired = isExpiredError(error);
-            if (!expired) {
-              // Network/validation failures are retryable; a 409 is terminal.
-              endToolSubmission(actionId);
-            }
-            setStatus(actionId, expired ? 'expired' : 'error');
-          },
+      const callbacks = {
+        onSuccess: () => {
+          setStatus(actionId, 'submitted');
+          if (!fields) return;
+          const pendingAtom = pendingApprovalActionFamily(fields.conversationId);
+          if (jotaiStore.get(pendingAtom)?.actionId === actionId) jotaiStore.set(pendingAtom, null);
         },
-      );
+        onError: (error: unknown) => {
+          const expired = isExpiredError(error);
+          if (!expired) endToolSubmission(actionId);
+          setStatus(actionId, expired ? 'expired' : 'error');
+        },
+      };
+      if (transport) {
+        submitHost(() => transport.submitToolApproval(actionId, decisions), callbacks);
+      } else if (fields) {
+        approvalMutation.mutate({ ...fields, actionId, decisions }, callbacks);
+      }
     },
     [
       approvalMutation,
@@ -506,6 +523,7 @@ export function useResumeSubmit() {
       isReady,
       jotaiStore,
       setStatus,
+      transport,
     ],
   );
 
@@ -515,67 +533,48 @@ export function useResumeSubmit() {
       resolution: string | Record<string, string>,
       opts?: { onSuccess?: () => void },
     ) => {
-      const fields = buildResumeFields();
+      const fields = transport ? null : buildResumeFields();
       const isBatch = typeof resolution !== 'string';
       const hasAnswer = isBatch ? Object.keys(resolution).length > 0 : resolution.length > 0;
-      if (!fields || !hasAnswer) {
-        return;
-      }
-      if (submittingAskActionIdsRef.current.has(actionId)) {
-        return;
-      }
-      submittingAskActionIdsRef.current.add(actionId);
+      if ((!transport && !fields) || !hasAnswer) return;
+      // Read the shared Jotai store synchronously: two rendered surfaces must
+      // not both enter before React publishes their next render.
+      const status = jotaiStore.get(askSubmitStatusAtom)[actionId];
+      if (status === 'submitting' || status === 'submitted' || status === 'expired') return;
       setAskStatus(actionId, 'submitting');
-      askMutation.mutate(
-        {
-          ...fields,
-          actionId,
-          ...(isBatch ? { answers: resolution } : { answer: resolution }),
-        },
-        {
-          onSuccess: () => {
-            setAskStatus(actionId, 'submitted');
-            /**
-             * Drop the synthetic question part now that the run is resuming: the
-             * server streams the resumed segment at ABSOLUTE content indices
-             * continuing after the pre-pause parts — the exact slot this appended
-             * part occupies. Left in place it blocks that index and the resumed
-             * output doesn't render until finalize. The Q&A's durable record is
-             * the ask_user_question tool call itself.
-             */
+      const callbacks = {
+        onSuccess: () => {
+          setAskStatus(actionId, 'submitted');
+          if (!transport) {
+            // Only the ordinary chat transport owns synthetic timeline question parts.
             const messages = chatContext?.getMessages?.();
             if (messages && chatContext?.setMessages) {
               let changed = false;
               const next = messages.map((message) => {
                 const resolved = resolveAskUserQuestionPart(message, actionId, resolution);
-                if (resolved !== message) {
-                  changed = true;
-                }
+                if (resolved !== message) changed = true;
                 return resolved;
               });
-              if (changed) {
-                chatContext.setMessages(next);
-              }
+              if (changed) chatContext.setMessages(next);
             }
-            /**
-             * Caller cleanup (clearing the composer / selection) runs ONLY on
-             * success: the composer is the user's sole copy of a free-form
-             * answer, so a failed resume (400 on the answer cap, expiry, a
-             * network error) must leave it intact for the user to trim/retry.
-             */
-            opts?.onSuccess?.();
-          },
-          onError: (error) => {
-            const expired = isExpiredError(error);
-            if (!expired) {
-              submittingAskActionIdsRef.current.delete(actionId);
-            }
-            setAskStatus(actionId, expired ? 'expired' : 'error');
-          },
+          }
+          // A failed request must retain the caller's only copy of the answer.
+          opts?.onSuccess?.();
         },
-      );
+        onError: (error: unknown) => {
+          setAskStatus(actionId, isExpiredError(error) ? 'expired' : 'error');
+        },
+      };
+      if (transport) {
+        submitHost(() => transport.submitAskAnswer(actionId, resolution), callbacks);
+      } else if (fields) {
+        askMutation.mutate(
+          { ...fields, actionId, ...(isBatch ? { answers: resolution } : { answer: resolution }) },
+          callbacks,
+        );
+      }
     },
-    [askMutation, buildResumeFields, setAskStatus, chatContext],
+    [askMutation, buildResumeFields, setAskStatus, chatContext, jotaiStore, transport],
   );
 
   return { submitToolApproval, submitAskAnswer };
