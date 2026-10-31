@@ -233,14 +233,16 @@ describe('applyLoadedConfig', () => {
     const adapter = new KeyvRedis(client, { throwOnErrors: true });
     const cache = new Keyv({ store: adapter, namespace: 'APP_CONFIG', throwOnErrors: true });
     cache.on('error', () => undefined);
-    const getApplicableConfigs = jest.fn(async () => [
-      {
-        principalType: PrincipalType.ROLE,
-        isActive: true,
-        priority: 10,
-        overrides: { interface: { modelSelect: false } },
-      },
-    ]);
+    const getApplicableConfigs = jest.fn(
+      async (): ReturnType<AppConfigServiceDeps['getApplicableConfigs']> => [
+        {
+          principalType: PrincipalType.ROLE,
+          principalId: 'USER',
+          priority: 10,
+          overrides: { interface: { modelSelect: false } },
+        },
+      ],
+    );
     try {
       await client.connect();
       const runtime = createRuntime(

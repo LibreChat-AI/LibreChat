@@ -1212,6 +1212,7 @@ describe('createAppConfigService', () => {
 
           expect(resolved.interfaceConfig?.modelSelect).toBe(false);
           expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(1);
+          if (stage === 'read') expect(deps._cache.set).toHaveBeenCalledTimes(1);
           expect(warn).toHaveBeenCalled();
           expect(JSON.stringify(warn.mock.calls)).not.toContain('private content');
         },
@@ -1952,7 +1953,7 @@ describe('createAppConfigService', () => {
             availableTools: {
               good: {
                 type: 'function',
-                function: { name: 'good', description: 'good', parameters: {} },
+                function: { name: 'good', description: 'good', parameters: { type: 'object' } },
               },
             },
           };
@@ -1961,7 +1962,11 @@ describe('createAppConfigService', () => {
             availableTools: {
               rejected: {
                 type: 'function',
-                function: { name: 'rejected', description: 'rejected', parameters: {} },
+                function: {
+                  name: 'rejected',
+                  description: 'rejected',
+                  parameters: { type: 'object' },
+                },
               },
             },
           };

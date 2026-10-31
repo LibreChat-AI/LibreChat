@@ -1076,12 +1076,13 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
      * The key names a role and user, not a principal set: principals resolved elsewhere are
      * cached only when a user id ties them to the key.
      */
-    const cacheable = bypassOverrideCache !== true && (resolvedPrincipals == null || !!userId);
+    let cacheable = bypassOverrideCache !== true && (resolvedPrincipals == null || !!userId);
     if (cacheable && !refresh) {
       let cachedMerged: AppConfig | undefined;
       try {
         cachedMerged = (await cache.get(cacheKey)) as AppConfig | undefined;
       } catch (error) {
+        cacheable = false;
         logger.warn(
           '[getAppConfig] Failed to read merged config cache; resolving uncached.',
           getSafeErrorMetadata(error),
