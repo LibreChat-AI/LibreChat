@@ -29,6 +29,7 @@ import type {
   IMessage,
   ISharedLink,
   ISubagentThreadReservation,
+  IUser,
 } from '~/types';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 import type { MessageMethods } from './message';
@@ -40,6 +41,13 @@ import {
   MAX_AGENT_EVENT_ACTOR_TOOL_NAME_LENGTH,
 } from '~/types/convo';
 import {
+  closeResponseScopes,
+  eraseResponseRecords,
+  createResponseRetention,
+  discoverResponseOwners,
+  createResponseConversationReplacement,
+} from './responseScope';
+import {
   activeExpirationFilter,
   buildRetentionVisibilityFilter,
   createFallbackRetentionDate,
@@ -49,6 +57,7 @@ import {
   updateChatProjectLastConversationForUser,
 } from './chatProject';
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
+import { getTenantId, SYSTEM_TENANT_ID, runAsSystem } from '~/config/tenantContext';
 import { isAgentFadingTier, isAgentFadingTierEntries } from '~/utils/fading';
 import { isCompactionSemanticIndexProjection } from '~/types/compaction';
 import { withoutMeiliIndexing } from '~/models/plugins/mongoMeili';
@@ -668,6 +677,8 @@ export function createConversationMethods(
   mongoose: typeof import('mongoose'),
   deps?: ConversationMethodDeps,
 ): ConversationMethods {
+  const retainResponses = createResponseRetention(mongoose);
+  const prepareResponseReplacement = createResponseConversationReplacement(mongoose);
   let legacyReceiptExpiryCursor: Types.ObjectId | undefined;
 
   /**
@@ -2336,12 +2347,13 @@ export function createConversationMethods(
 
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const stored = await Conversation.findOne({ conversationId, user: userId })
-      .select({ _id: 1, isTemporary: 1, expiredAt: 1, tags: 1 })
+      .select({ _id: 1, isTemporary: 1, expiredAt: 1, tags: 1, tenantId: 1 })
       .lean<{
         _id: Types.ObjectId;
         isTemporary?: boolean;
         expiredAt?: Date | null;
         tags?: string[];
+        tenantId?: string;
       } | null>();
     if (!stored) {
       return;
@@ -2357,6 +2369,7 @@ export function createConversationMethods(
       }
     }
 
+    await retainResponses({ userId, tenantId: stored.tenantId }, conversationId, expiredAt);
     let stampedDeadline = stored.expiredAt != null;
     if (stored.isTemporary !== true) {
       /**
@@ -2580,6 +2593,37 @@ export function createConversationMethods(
         update.expiredAt = null;
       }
 
+      const responseDeadline =
+        update.expiredAt instanceof Date ? update.expiredAt : retentionOnInsert?.expiredAt;
+      const replacingConversationId = newConversationId && newConversationId !== conversationId;
+      if (responseDeadline || replacingConversationId) {
+        const stored = await Conversation.findOne({ user: userId, conversationId })
+          .select('tenantId expiredAt')
+          .lean<Pick<IConversation, 'tenantId' | 'expiredAt'>>();
+        const contextTenant = getTenantId();
+        const responseOwner = {
+          userId,
+          tenantId:
+            stored?.tenantId ?? (contextTenant === SYSTEM_TENANT_ID ? undefined : contextTenant),
+        };
+        // Conversation IDs are shared foreign keys for messages, approvals, jobs
+        // and checkpoints. newConversationId assigns an initial ID, never renames
+        // a persisted conversation independently of those resources.
+        if (
+          replacingConversationId &&
+          (stored || !(await prepareResponseReplacement(responseOwner, conversationId)))
+        ) {
+          return { message: 'Conversation ID cannot be replaced after persistence.' };
+        }
+        const deadline = responseDeadline ?? stored?.expiredAt;
+        if (deadline)
+          await retainResponses(
+            responseOwner,
+            newConversationId || conversationId,
+            stored?.expiredAt && stored.expiredAt < deadline ? stored.expiredAt : deadline,
+          );
+      }
+
       const createdAtOnInsert =
         metadata?.createdAtOnInsert instanceof Date &&
         !Number.isNaN(metadata.createdAtOnInsert.getTime())
@@ -2652,6 +2696,9 @@ export function createConversationMethods(
       const baseFilter = {
         conversationId,
         user: userId,
+        // Initial ID assignment must never match a source inserted after the
+        // absence check. Upsert may create the new ID, but cannot rename that row.
+        ...(replacingConversationId ? { _id: { $exists: false } } : {}),
         ...(metadata?.titleSource === 'generated' && {
           titleSetByUser: { $ne: true },
           title: { $in: [null, '', 'New Chat'] },
@@ -2772,6 +2819,11 @@ export function createConversationMethods(
         const deadline = createChatExpirationDate(
           interfaceConfig,
           conversation.isTemporary === true,
+        );
+        await retainResponses(
+          { userId, tenantId: conversation.tenantId },
+          conversationId,
+          deadline,
         );
         const result = await Conversation.updateOne(
           {
@@ -4046,12 +4098,40 @@ export function createConversationMethods(
         .select('conversationId tenantId chatProjectId tags')
         .lean<DeletionConversation[]>();
       const recoveryConversationIds: string[] = [];
+      const recoveryResponseScopes: DeletionConversation[] = [];
+      const responseGroups = (wave: DeletionConversation[]) => {
+        const groups = new Map<string | undefined, string[]>();
+        for (const conversation of wave) {
+          const tenantId = conversation.tenantId || undefined;
+          const ids = groups.get(tenantId) ?? [];
+          ids.push(conversation.conversationId);
+          groups.set(tenantId, ids);
+        }
+        return groups;
+      };
+      const closeResponses = async (wave: DeletionConversation[]) => {
+        for (const [tenantId, ids] of responseGroups(wave))
+          await closeResponseScopes(mongoose, { userId: user, tenantId }, ids);
+      };
+      const eraseResponses = async (wave: DeletionConversation[]) => {
+        for (const [tenantId, ids] of responseGroups(wave))
+          await eraseResponseRecords(mongoose, { userId: user, tenantId }, ids);
+      };
       if (!conversations.length && typeof filter.conversationId === 'string') {
+        // Authorized delayed reservations retain the globally unique user's actual tenant.
+        // Fence it before probing legacy payloads, including when no response exists yet.
+        const owner = isValidObjectIdString(user)
+          ? await (mongoose.models.User as Model<IUser>).findById(user).select('tenantId').lean()
+          : null;
+        if (owner)
+          await closeResponses([
+            { conversationId: filter.conversationId, tenantId: owner.tenantId },
+          ]);
         /** A prior attempt may have deleted the root before a descendant read failed.
          * Resume from immutable root lineage and retain the root id for message,
          * checkpoint, and tool cleanup. The message probe distinguishes that partial
          * commit from a conversation id that never existed. */
-        const [descendants, rootMessages] = await Promise.all([
+        const [descendants, rootMessages, responseOwners] = await Promise.all([
           retryCascadeOperation(() =>
             Conversation.find({
               user,
@@ -4061,8 +4141,20 @@ export function createConversationMethods(
               .lean<DeletionConversation[]>(),
           ),
           getMessages({ user, conversationId: filter.conversationId }, '_id', { limit: 1 }),
+          discoverResponseOwners(mongoose, user, filter.conversationId),
         ]);
-        if (descendants.length === 0 && rootMessages.length === 0 && options?.allowEmpty !== true) {
+        for (const responseOwner of responseOwners) {
+          recoveryResponseScopes.push({
+            conversationId: filter.conversationId,
+            tenantId: responseOwner.tenantId,
+          });
+        }
+        if (
+          descendants.length === 0 &&
+          rootMessages.length === 0 &&
+          recoveryResponseScopes.length === 0 &&
+          options?.allowEmpty !== true
+        ) {
           throw new Error('Conversation not found or already deleted.');
         }
         conversations = descendants;
@@ -4132,6 +4224,7 @@ export function createConversationMethods(
           break;
         }
         const waveIds = wave.map((conversation) => conversation.conversationId);
+        await closeResponses(wave);
         await deps?.deleteAgentQueuedTurns?.(
           user,
           wave.map((conversation) => ({
@@ -4147,6 +4240,8 @@ export function createConversationMethods(
             conversationId: { $in: waveIds },
           }),
         );
+        // Like subagent content, response erasure is an irreversible part of deletion intent.
+        await eraseResponses(wave);
         const result = await Conversation.deleteMany({ user, conversationId: { $in: waveIds } });
         if (result.deletedCount > 0) {
           /** Result erasure is irreversible. Keep receipts intact when a
@@ -4181,6 +4276,12 @@ export function createConversationMethods(
       ];
 
       if (recoveryConversationIds.length > 0) {
+        // Each command retains an explicit owner/partition predicate. Request tenant
+        // middleware must not replace the partitions discovered by recovery.
+        await runAsSystem(async () => {
+          await closeResponses(recoveryResponseScopes);
+          await eraseResponses(recoveryResponseScopes);
+        });
         await deps?.deleteAgentQueuedTurns?.(
           user,
           recoveryConversationIds.map((conversationId) => ({
