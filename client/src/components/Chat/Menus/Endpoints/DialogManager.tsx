@@ -44,6 +44,11 @@ const DialogManager = ({
             keyDialogEndpoint,
             'userProvideBearerToken',
           )}
+          userProvideRegion={getEndpointField(
+            endpointsConfig,
+            keyDialogEndpoint,
+            'userProvideRegion',
+          )}
         />
       )}
     </>
