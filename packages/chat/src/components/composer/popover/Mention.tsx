@@ -3,8 +3,8 @@ import { useCombobox } from '@librechat/client';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { KeyboardEvent, MutableRefObject } from 'react';
 import type { CommandOption, CommandDismissReason } from './Command';
+import { removeCharIfLast } from '../../../core/textarea';
 import useInitPopoverInput from '../../../react/popover';
-import { removeCharIfLast } from './text';
 import CommandPopover from './Command';
 
 export interface MentionPopoverProps {
