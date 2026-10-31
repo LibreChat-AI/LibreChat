@@ -9,8 +9,9 @@ import {
 } from 'librechat-data-provider';
 import type { UseFormRegister, UseFormHandleSubmit, UseFormSetValue } from 'react-hook-form';
 import type { SearchApiKeyFormData } from '~/hooks/Plugins/useAuthSearchTool';
-import InputSection, { type DropdownOption } from './InputSection';
+import type { DropdownOption } from './InputSection';
 import { useGetStartupConfig } from '~/data-provider';
+import InputSection from './InputSection';
 import { useLocalize } from '~/hooks';
 
 export default function ApiKeyDialog({
@@ -85,6 +86,20 @@ export default function ApiKeyDialog({
   }, [selectedProvider, selectedReranker, selectedScraper, setValue]);
 
   const providerOptions: DropdownOption[] = [
+    {
+      key: SearchProviders.KAGI,
+      label: localize('com_ui_web_search_provider_kagi'),
+      inputs: {
+        kagiApiKey: {
+          placeholder: localize('com_ui_web_search_kagi_key'),
+          type: 'password' as const,
+          link: {
+            url: 'https://kagi.com/api/keys',
+            text: localize('com_ui_web_search_provider_kagi_key'),
+          },
+        },
+      },
+    },
     {
       key: SearchProviders.SERPER,
       label: localize('com_ui_web_search_provider_serper'),
@@ -192,6 +207,20 @@ export default function ApiKeyDialog({
 
   const scraperOptions: DropdownOption[] = [
     {
+      key: ScraperProviders.KAGI,
+      label: localize('com_ui_web_search_scraper_kagi'),
+      inputs: {
+        kagiApiKey: {
+          placeholder: localize('com_ui_web_search_kagi_key'),
+          type: 'password' as const,
+          link: {
+            url: 'https://kagi.com/api/keys',
+            text: localize('com_ui_web_search_scraper_kagi_key'),
+          },
+        },
+      },
+    },
+    {
       key: ScraperProviders.FIRECRAWL,
       label: localize('com_ui_web_search_scraper_firecrawl'),
       inputs: {
@@ -262,6 +291,14 @@ export default function ApiKeyDialog({
   const providerAuthType = authTypes.find(([cat]) => cat === SearchCategories.PROVIDERS)?.[1];
   const scraperAuthType = authTypes.find(([cat]) => cat === SearchCategories.SCRAPERS)?.[1];
   const rerankerAuthType = authTypes.find(([cat]) => cat === SearchCategories.RERANKERS)?.[1];
+  const providerInputNames =
+    providerAuthType === AuthType.SYSTEM_DEFINED
+      ? undefined
+      : new Set(
+          Object.keys(
+            providerOptions.find((option) => option.key === selectedProvider)?.inputs ?? {},
+          ),
+        );
 
   const handleProviderChange = (key: string) => {
     setSelectedProvider(key as SearchProviders);
@@ -327,6 +364,7 @@ export default function ApiKeyDialog({
                   selectedKey={selectedScraper}
                   onSelectionChange={handleScraperChange}
                   dropdownOptions={scraperOptions}
+                  excludedInputs={providerInputNames}
                   showDropdown={!config?.webSearch?.scraperProvider}
                   register={register}
                   dropdownOpen={dropdownOpen.scraper}

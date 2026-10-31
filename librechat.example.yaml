@@ -1576,6 +1576,8 @@ endpoints:
 #   cohereApiKey: '${COHERE_API_KEY}'
 #   # Search providers
 #   serperApiKey: '${SERPER_API_KEY}'
+#   # Kagi (search and/or Extract scraper share this key; set KAGI_API_KEY in .env)
+#   kagiApiKey: '${KAGI_API_KEY}'
 #   searxngInstanceUrl: '${SEARXNG_INSTANCE_URL}'
 #   searxngApiKey: '${SEARXNG_API_KEY}'
 #   # Tavily (search provider and/or scraper)
@@ -1612,6 +1614,31 @@ endpoints:
 #   # allowedAddresses:
 #   #   - 'searxng:8080'
 #   #   - '127.0.0.1:8080'
+#
+# Kagi Search paired with Kagi Extract for Markdown page content:
+# Set KAGI_API_KEY in .env to a Kagi API token shared by search and extraction.
+# Configure API access/billing at https://kagi.com/api. API calls may incur charges;
+# enabling both can generate search and page-extraction usage. Do not assume a web
+# search subscription covers API usage; check https://kagi.com/api/pricing.
+# Both endpoints use Authorization: Bearer <token>; neither has a custom URL option.
+# Search: POST https://kagi.com/api/v1/search
+#   JSON body: {query, workflow: 'search', format: 'json', limit} (limit is optional).
+# Extract: POST https://kagi.com/api/v1/extract
+#   JSON body: {pages: [{url: 'https://example.com/article'}], format: 'json'}.
+#   Each extracted page's content is Markdown inside the JSON response.
+# OpenAPI reference: https://kagi.com/api/docs/_spec/openapi.yaml?download
+# webSearch:
+#   searchProvider: kagi
+#   scraperProvider: kagi
+#   kagiApiKey: '${KAGI_API_KEY}'  # Default; set KAGI_API_KEY=user_provided in .env for per-user tokens
+#   kagiSearchOptions:           # Optional
+#     limit: 10                  # Positive integer, maximum 1024
+#     timeout: 15000             # HTTP client timeout in milliseconds, 1-120000
+#   kagiScraperOptions:          # Optional; independent of the search timeout
+#     timeout: 15000             # HTTP client timeout in milliseconds, 1-120000
+#   # Neither timeout above configures Kagi's server-side timeout parameter.
+#   rerankerType: jina           # Reranking is a separate choice; Kagi is not a reranker
+#   jinaApiKey: '${JINA_API_KEY}' # Or rerankerType: none to skip reranking
 #
 # Tavily as both search and scraper provider example:
 # webSearch:

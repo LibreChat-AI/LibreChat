@@ -3746,6 +3746,8 @@ describe('web.ts', () => {
       const searxngSearchOptions = { language: 'en', ...destination };
       const tavilySearchOptions = { maxResults: 3, ...destination };
       const keenableSearchOptions = { site: 'librechat.ai', ...destination };
+      const kagiSearchOptions = { limit: 5, timeout: 10000, ...destination };
+      const kagiScraperOptions = { timeout: 12000, ...destination };
 
       const { authResult } = await loadWebSearchAuth({
         userId,
@@ -3757,6 +3759,8 @@ describe('web.ts', () => {
           searxngSearchOptions,
           tavilySearchOptions,
           keenableSearchOptions,
+          kagiSearchOptions,
+          kagiScraperOptions,
         }),
         loadAuthValues: authValuesFor(),
       });
@@ -3770,6 +3774,8 @@ describe('web.ts', () => {
       expect(authResult.searxngSearchOptions).toEqual({ language: 'en' });
       expect(authResult.tavilySearchOptions).toEqual({ maxResults: 3 });
       expect(authResult.keenableSearchOptions).toEqual({ site: 'librechat.ai' });
+      expect(authResult.kagiSearchOptions).toEqual({ limit: 5, timeout: 10000 });
+      expect(authResult.kagiScraperOptions).toEqual({ timeout: 12000 });
       expect(JSON.stringify(authResult)).not.toContain(configUrl);
       expect(JSON.stringify(authResult)).not.toContain('option-block-key');
     });

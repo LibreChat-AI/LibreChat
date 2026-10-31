@@ -3849,6 +3849,7 @@ export enum SearchProviders {
   SEARXNG = 'searxng',
   TAVILY = 'tavily',
   KEENABLE = 'keenable',
+  KAGI = 'kagi',
 }
 
 export enum ScraperProviders {
@@ -3856,6 +3857,7 @@ export enum ScraperProviders {
   SERPER = 'serper',
   TAVILY = 'tavily',
   KEENABLE = 'keenable',
+  KAGI = 'kagi',
 }
 
 export enum RerankerTypes {
@@ -3890,6 +3892,8 @@ export const webSearchSchema = z.object({
   allowedAddresses: allowedAddressesSchema,
   serperApiKey: z.string().optional().default('${SERPER_API_KEY}'),
   serperApiKeyPreview: apiKeyPreviewSchema,
+  kagiApiKey: z.string().optional().default('${KAGI_API_KEY}'),
+  kagiApiKeyPreview: apiKeyPreviewSchema,
   searxngInstanceUrl: z.string().optional().default('${SEARXNG_INSTANCE_URL}'),
   searxngApiKey: z.string().optional().default('${SEARXNG_API_KEY}'),
   searxngApiKeyPreview: apiKeyPreviewSchema,
@@ -3945,6 +3949,19 @@ export const webSearchSchema = z.object({
           tag: z.string().nullable().optional(),
         })
         .optional(),
+    })
+    .optional(),
+  kagiSearchOptions: z
+    .object({
+      limit: z.number().int().positive().max(1024).optional(),
+      /** HTTP client timeout in milliseconds, not Kagi's server-side timeout parameter. */
+      timeout: z.number().int().positive().max(120000).optional(),
+    })
+    .optional(),
+  kagiScraperOptions: z
+    .object({
+      /** HTTP client timeout in milliseconds, not Kagi's server-side extraction timeout. */
+      timeout: z.number().int().positive().max(120000).optional(),
     })
     .optional(),
   searxngSearchOptions: z

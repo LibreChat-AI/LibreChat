@@ -1,7 +1,13 @@
-import { SafeSearchTypes, SearchProviders, ScraperProviders } from 'librechat-data-provider';
+import {
+  RerankerTypes,
+  SafeSearchTypes,
+  SearchProviders,
+  ScraperProviders,
+} from 'librechat-data-provider';
 import type { TCustomConfig } from 'librechat-data-provider';
 import {
   webSearchAuth,
+  webSearchKeys,
   getWebSearchKeys,
   loadWebSearchConfig,
   webSearchUrlApiKeys,
@@ -56,6 +62,7 @@ describe('loadWebSearchConfig', () => {
 
       expect(result).toEqual({
         serperApiKey: '${SERPER_API_KEY}',
+        kagiApiKey: '${KAGI_API_KEY}',
         searxngInstanceUrl: '${SEARXNG_INSTANCE_URL}',
         searxngApiKey: '${SEARXNG_API_KEY}',
         firecrawlApiKey: '${FIRECRAWL_API_KEY}',
@@ -66,6 +73,7 @@ describe('loadWebSearchConfig', () => {
         cohereApiKey: '${COHERE_API_KEY}',
         safeSearch: SafeSearchTypes.MODERATE,
         rerankerType: undefined,
+        searxngSearchOptions: undefined,
         tavilyApiKey: '${TAVILY_API_KEY}',
         tavilySearchUrl: '${TAVILY_SEARCH_URL}',
         tavilyExtractUrl: '${TAVILY_EXTRACT_URL}',
@@ -103,6 +111,48 @@ describe('loadWebSearchConfig', () => {
       expect(result?.scraperProvider).toBe('serper');
       expect(result?.searchProvider).toBe('serper');
       expect(result?.serperApiKey).toBe('test-key');
+    });
+
+    it('should preserve Kagi configuration with an independent scraper and reranker', () => {
+      const config: TCustomConfig['webSearch'] = {
+        searchProvider: SearchProviders.KAGI,
+        kagiApiKey: 'kagi-test-token',
+        kagiApiKeyPreview: '...oken',
+        kagiSearchOptions: { limit: 1024, timeout: 120000 },
+        scraperProvider: ScraperProviders.FIRECRAWL,
+        rerankerType: RerankerTypes.NONE,
+      };
+
+      expect(loadWebSearchConfig(config)).toMatchObject(config);
+    });
+
+    it.each([SearchProviders.KAGI, SearchProviders.SERPER, undefined])(
+      'should preserve Kagi Extract options independently of search provider %p',
+      (searchProvider) => {
+        const config: TCustomConfig['webSearch'] = {
+          searchProvider,
+          scraperProvider: ScraperProviders.KAGI,
+          kagiApiKey: 'kagi-test-token',
+          kagiApiKeyPreview: '...oken',
+          kagiSearchOptions: { limit: 1024, timeout: 15000 },
+          kagiScraperOptions: { timeout: 120000 },
+          rerankerType: RerankerTypes.NONE,
+        };
+
+        expect(loadWebSearchConfig(config)).toMatchObject(config);
+      },
+    );
+
+    it('should leave Kagi options and provider selections unset by default', () => {
+      const result = loadWebSearchConfig(undefined);
+
+      expect(result?.kagiApiKey).toBe('${KAGI_API_KEY}');
+      expect(result?.kagiApiKeyPreview).toBeUndefined();
+      expect(result?.kagiSearchOptions).toBeUndefined();
+      expect(result?.kagiScraperOptions).toBeUndefined();
+      expect(result?.searchProvider).toBeUndefined();
+      expect(result?.scraperProvider).toBeUndefined();
+      expect(result?.rerankerType).toBeUndefined();
     });
 
     it('should preserve searxngSearchOptions', () => {
@@ -194,6 +244,7 @@ describe('loadWebSearchConfig', () => {
       const result = loadWebSearchConfig({});
 
       expect(result?.serperApiKey).toBe('${SERPER_API_KEY}');
+      expect(result?.kagiApiKey).toBe('${KAGI_API_KEY}');
       expect(result?.searxngApiKey).toBe('${SEARXNG_API_KEY}');
       expect(result?.firecrawlApiKey).toBe('${FIRECRAWL_API_KEY}');
       expect(result?.jinaApiKey).toBe('${JINA_API_KEY}');
@@ -215,6 +266,10 @@ describe('loadWebSearchConfig', () => {
       expect(result?.jinaApiKey).toBe('actual-jina-key');
       expect(result?.cohereApiKey).toBe('actual-cohere-key');
     });
+  });
+
+  it.each(['user_provided', '${CUSTOM_KAGI_API_KEY}', ''])('preserves Kagi key value %p', (key) => {
+    expect(loadWebSearchConfig({ kagiApiKey: key })?.kagiApiKey).toBe(key);
   });
 
   describe('URLs', () => {
@@ -243,6 +298,39 @@ describe('loadWebSearchConfig', () => {
 });
 
 describe('webSearchAuth', () => {
+  it('appends Kagi without changing existing provider priority', () => {
+    expect(Object.keys(webSearchAuth.providers)).toEqual([
+      SearchProviders.SERPER,
+      SearchProviders.SEARXNG,
+      SearchProviders.TAVILY,
+      SearchProviders.KEENABLE,
+      SearchProviders.KAGI,
+    ]);
+  });
+
+  it('appends Kagi without changing existing scraper priority', () => {
+    expect(Object.keys(webSearchAuth.scrapers)).toEqual([
+      ScraperProviders.FIRECRAWL,
+      ScraperProviders.SERPER,
+      ScraperProviders.TAVILY,
+      ScraperProviders.KEENABLE,
+      ScraperProviders.KAGI,
+    ]);
+  });
+
+  it('requires the same Kagi API key in separate search and scraper categories', () => {
+    expect(webSearchAuth.providers[SearchProviders.KAGI]).toEqual({ kagiApiKey: 1 });
+    expect(webSearchAuth.scrapers[ScraperProviders.KAGI]).toEqual({ kagiApiKey: 1 });
+    expect(webSearchAuth.rerankers).not.toHaveProperty(SearchProviders.KAGI);
+  });
+
+  it('deduplicates the shared Kagi key across categories without a configurable URL', () => {
+    expect(getWebSearchKeys().filter((key) => key === 'kagiApiKey')).toHaveLength(1);
+    expect(webSearchKeys).toEqual(getWebSearchKeys());
+    expect(webSearchPairedFields).not.toContain('kagiApiKey');
+    expect([...webSearchUrlApiKeys.values()]).not.toContain('kagiApiKey');
+  });
+
   it('registers Keenable in both the provider and the scraper category', () => {
     expect(webSearchAuth.providers).toHaveProperty(SearchProviders.KEENABLE);
     expect(webSearchAuth.scrapers).toHaveProperty(ScraperProviders.KEENABLE);
