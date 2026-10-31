@@ -25,17 +25,17 @@ describe('gateway configuration', () => {
     ).toBe(channelConfigSchema.parse({}).transport);
   });
 
-  test('older v1 policies default only reconnect pacing and newer ones honor the override', () => {
+  test('operator configuration defaults reconnect pacing and honors an explicit override', () => {
     const bootstrap = loadConfig({ ...required, SLACK_APP_TOKEN: 'test-app-token' });
-    const older = {
+    const policy = {
       transport: 'socket_mode' as const,
       nativeSessions: false,
       lifecycleReactions: false,
       signatureToleranceSeconds: 300,
     };
-    expect(resolveGatewayConfig(bootstrap, older).socketReconnectDelayMs).toBe(5000);
+    expect(resolveGatewayConfig(bootstrap, policy).socketReconnectDelayMs).toBe(5000);
     expect(
-      resolveGatewayConfig(bootstrap, { ...older, socketReconnectDelayMs: 100 })
+      resolveGatewayConfig(bootstrap, { ...policy, socketReconnectDelayMs: 100 })
         .socketReconnectDelayMs,
     ).toBe(100);
   });
