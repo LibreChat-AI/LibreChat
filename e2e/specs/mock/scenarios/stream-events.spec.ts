@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
 import {
   replyText,
   replyPrompt,
@@ -8,9 +9,24 @@ import {
   MOCK_ENDPOINTS,
   conversationRow,
   selectMockEndpoint,
+  modelSelectorTrigger,
   sendMessageAndWaitForCompletion,
 } from '../helpers';
 import { openSidebar } from './sidebar';
+
+/** Picks the endpoint whose replies get an automatic title. The model row carries a pin control,
+ *  so it is matched by its text, and the pick is confirmed on the trigger: a phone viewport
+ *  otherwise keeps the soft-default spec and the turn never asks for a title. */
+async function selectTitledEndpoint(page: Page) {
+  const trigger = modelSelectorTrigger(page);
+  await trigger.click();
+  await page.getByRole('option', { name: 'Mock Titles immediate' }).click();
+  await page
+    .getByRole('option')
+    .filter({ hasText: /^mock-titles-immediate$/ })
+    .click();
+  await expect(trigger).toContainText(/Mock Titles immediate|mock-titles-immediate/);
+}
 
 const uniqueLabel = (prefix: string) =>
   `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
@@ -73,10 +89,7 @@ test.describe('stream event handlers', () => {
     await request.post(`${fixture}/__e2e/behavior`, { data: { label: title } });
     try {
       await page.goto(NEW_CHAT_PATH);
-      await selectMockEndpoint(page, {
-        label: 'Mock Titles immediate',
-        model: 'mock-titles-immediate',
-      });
+      await selectTitledEndpoint(page);
       const response = await sendMessageAndWaitForCompletion(page, replyPrompt(label));
       expect(response.ok()).toBeTruthy();
       await expect(messagesView(page).getByText(replyText(label))).toBeVisible();
