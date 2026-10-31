@@ -672,7 +672,8 @@ export function renderRichAnswer(value: string, native = false, notice = ''): Re
     // Keep every datum in the text renderer when a component cannot fit in one rich message.
     if (Buffer.byteLength(message.text) <= chunkLimit && presentationFor(message))
       messages.push(message);
-    else messages.push(...plainChunks(rendered.plain, 2700).filter(Boolean).map(plainMessage));
+    else
+      messages.push(...plainChunks(rendered.plain, chunkLimit).filter(Boolean).map(plainMessage));
   }
   if (notice) messages.push(...prose(notice.trim()));
   return messages;
@@ -987,7 +988,7 @@ export function makeSlackPlan(
     if (plain.length > budget) selected[selected.length - 1] += notice;
     messages = selected.map(plainMessage);
   }
-  if (!messages.length || messages.length > 64) {
+  if (!messages.length || messages.length > budget) {
     throw new Error('Durable answer exceeds part budget');
   }
   const parts: ChannelDeliveryPart[] = messages.map((message, index) => {

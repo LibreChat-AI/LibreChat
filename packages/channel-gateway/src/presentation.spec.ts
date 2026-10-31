@@ -292,6 +292,40 @@ describe('semantic Slack presentations', () => {
     ).toBe(false);
   });
 
+  test('packs oversized rich fallbacks as messages instead of section-sized delivery parts', () => {
+    const oversized = {
+      type: 'layout',
+      title: 'Large layout',
+      rows: Array.from({ length: 5 }, () =>
+        Array.from({ length: 2 }, () => ({
+          type: 'container',
+          title: 'Group',
+          blocks: Array.from({ length: 10 }, () => ({ type: 'text', text: '&'.repeat(400) })),
+        })),
+      ),
+    };
+    const value = document([oversized]);
+    expect(parsePresentation(value)).toBeDefined();
+    const plan = makeSlackPlan(run(value));
+    expect(plan.parts.length).toBeLessThan(10);
+    expect(
+      plan.parts
+        .map((part) => part.text)
+        .join('')
+        .match(/&amp;/g),
+    ).toHaveLength(40_000);
+    expect(
+      plan.parts.every(
+        (part) =>
+          Buffer.byteLength(part.text) <= 40_000 &&
+          Buffer.byteLength(part.presentation?.payload ?? '') <= 64_000,
+      ),
+    ).toBe(true);
+    expect(plan.parts.map((part) => part.text).join('')).not.toContain('Reply shortened');
+    for (const part of plan.parts)
+      expect(() => durableSlackMessage(part, plan.rendererVersion)).not.toThrow();
+  });
+
   test('counts nested blocks and JSON bytes, and preserves all data through delivery shortening', () => {
     const giant = {
       type: 'layout',
