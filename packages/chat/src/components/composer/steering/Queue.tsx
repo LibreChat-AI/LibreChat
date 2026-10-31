@@ -35,7 +35,7 @@ import {
   escalatingSteerFamily,
   revealedQueuedTurnFamily,
   pendingSteersByConvoId,
-} from '../../../react/steer/atoms';
+} from '../../../react/steer/rows';
 import {
   claimQueuedIntent,
   releaseQueuedIntent,
