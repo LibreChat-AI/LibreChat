@@ -178,6 +178,15 @@ const host: MessagePartsHost = {
 const messagesHost: MessagesHost = {
   useHour12: () => false,
   renderFiles: () => null,
+  useForkPreferences: () => ({
+    option: '',
+    setOption: () => undefined,
+    splitAtTarget: false,
+    setSplitAtTarget: () => undefined,
+    rememberOption: false,
+    setRememberOption: () => undefined,
+  }),
+  useForkConversation: () => null,
 };
 
 const renderers: PartRenderers = {
