@@ -2186,3 +2186,23 @@ it('closes and cooperatively cancels private prepared work while retaining redac
     await eraseResponseRecords(mongoose, owner, ['conversation-one']);
     expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(0);
   }));
+
+it.each(['live', 'expired', 'closed'] as const)(
+  'returns immutable cleanup binding metadata without payload for %s rows',
+  (state) =>
+    scoped(async () => {
+      await storage.reserve(reservation({ sourceKeyId: 'run-key' }));
+      if (state === 'expired')
+        await createResponseRetention(mongoose)(owner, 'conversation-one', new Date(0));
+      if (state === 'closed') await closeResponseScopes(mongoose, owner, ['conversation-one']);
+      const identity = await storage.readCleanupIdentity(owner, 'resp_one');
+      expect(identity).toMatchObject({
+        requestKey: 'request-one',
+        sourceKeyId: 'run-key',
+        parentMessageId: 'root',
+      });
+      expect(identity).not.toHaveProperty('requestJSON');
+      expect(identity).not.toHaveProperty('responseJSON');
+      expect(JSON.stringify(identity)).not.toContain('Hello');
+    }),
+);

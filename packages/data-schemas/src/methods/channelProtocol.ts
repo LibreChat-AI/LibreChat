@@ -187,6 +187,7 @@ export function assertPlan(
       (part) =>
         !part.operationId ||
         !['message', 'artifact'].includes(part.kind) ||
+        (part.traceUrl != null && (part.required || part.kind !== 'message' || !part.traceUrl)) ||
         (part.kind === 'artifact' &&
           (!part.artifactId ||
             !run.snapshot?.artifacts?.some((artifact) => artifact.artifactId === part.artifactId))),
