@@ -2,6 +2,7 @@ import React, { useCallback, useMemo, memo } from 'react';
 import { useRecoilValue } from 'recoil';
 import { parseWakeupMessage } from '@librechat/chat';
 import {
+  HoverButtons,
   revealOnRowHoverClasses,
   messageFooterClasses,
   Elapsed,
@@ -23,7 +24,6 @@ import {
 import MessageContent from '~/components/Chat/Messages/Content/MessageContent';
 import { useLocalize, useMessageActions, useContentMetadata } from '~/hooks';
 import { PrivateText } from '~/components/Chat/Messages/PrivateText';
-import HoverButtons from '~/components/Chat/Messages/HoverButtons';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import Wakeup from '~/components/Chat/Messages/Content/Wakeup';
 import { MessageContext } from '~/Providers';

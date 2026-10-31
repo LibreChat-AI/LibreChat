@@ -3,6 +3,7 @@ import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { Constants } from 'librechat-data-provider';
 import {
+  HoverButtons,
   revealOnRowHoverClasses,
   messageFooterClasses,
   Elapsed,
@@ -27,7 +28,6 @@ import ToolCallLimitNotice from '~/components/Chat/Messages/Content/ToolCallLimi
 import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source';
 import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
 import { PrivateText } from '~/components/Chat/Messages/PrivateText';
-import HoverButtons from '~/components/Chat/Messages/HoverButtons';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import { showThinkingAtom } from '~/store/showThinking';
 import { AuthorContext } from '~/Providers';
