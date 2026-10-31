@@ -331,9 +331,12 @@ export class ReviewFlow {
   constructor(
     private readonly client: ChannelClient,
     private readonly slack: SlackClient,
-    private readonly appTitle: string,
   ) {
     this.identity = new IdentityFlow(client, slack);
+  }
+
+  private get appTitle(): string {
+    return this.client.config.APP_TITLE;
   }
 
   async control(
