@@ -114,6 +114,12 @@ export { default as SendButton } from './components/composer/SendButton';
 export { default as QuoteButton } from './components/composer/QuoteButton';
 export { default as ComposerHints } from './components/composer/bar/Hints';
 export { default as ComposerWaveform } from './components/composer/bar/Waveform';
+export {
+  default as ComposerEffort,
+  leanFor,
+  effortRank,
+  resolveEffortLabel,
+} from './components/composer/bar/Effort';
 export { default as EscalateNowButton } from './components/composer/EscalateNowButton';
 export { default as DuringRunSendButton } from './components/composer/DuringRunSendButton';
 export { composerHintId } from './components/composer/bar/Hints';
