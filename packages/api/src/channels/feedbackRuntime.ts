@@ -1,18 +1,18 @@
-import { channelConfigSchema } from 'librechat-data-provider';
-import type { ChannelConfig } from 'librechat-data-provider';
 import type { RequestHandler } from 'express';
 import type { ChannelFeedbackWorkerDependencies } from './feedbackWorker';
 import type { ChannelFeedbackHostDependencies } from './feedbackHost';
+import type { ChannelWorkerSettings } from './settings';
 import type { ChannelServiceGuard } from './runs';
 import { createChannelFeedbackHandlers } from './feedbackHttp';
 import { createChannelFeedbackWorker } from './feedbackWorker';
 import { createChannelFeedbackHost } from './feedbackHost';
+import { channelWorkerSettings } from './settings';
 
 export interface ChannelFeedbackRuntimeDependencies {
-  getConfig: () => Promise<ChannelConfig | undefined>;
+  getWorkerSettings: () => Promise<ChannelWorkerSettings | undefined>;
   hostDeps: Omit<
     ChannelFeedbackHostDependencies,
-    'getConfig' | 'maxConflictRetries' | 'exportTimeoutMs' | 'exportLeaseMs' | 'exportRetryMs'
+    'maxConflictRetries' | 'exportTimeoutMs' | 'exportLeaseMs' | 'exportRetryMs'
   >;
   workerDeps: Omit<
     ChannelFeedbackWorkerDependencies,
@@ -42,16 +42,6 @@ export function createChannelFeedbackRuntime(
       res.status(503).json({ error: 'channel_feedback_unavailable' });
       return;
     }
-    let enabled = false;
-    try {
-      enabled = (await deps.getConfig())?.enabled === true;
-    } catch {
-      /* Fail closed. */
-    }
-    if (!enabled || stopped) {
-      res.status(503).json({ error: 'channel_feedback_unavailable' });
-      return;
-    }
     await handlers.reaction(req, res, next);
   };
   return {
@@ -60,12 +50,11 @@ export function createChannelFeedbackRuntime(
       if (stopped) return Promise.resolve();
       if (initialization) return initialization;
       initialization = (async () => {
-        const config = channelConfigSchema.parse((await deps.getConfig()) ?? {});
-        if (!config.enabled || stopped) return;
+        const config = channelWorkerSettings(await deps.getWorkerSettings());
+        if (stopped) return;
         const settings = config.feedback;
         const feedback = createChannelFeedbackHost({
           ...deps.hostDeps,
-          getConfig: async () => (await deps.getConfig()) ?? { enabled: false },
           maxConflictRetries: settings.maxConflictRetries,
           exportTimeoutMs: settings.exportTimeoutMs,
           exportLeaseMs: settings.exportLeaseMs,

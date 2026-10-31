@@ -3320,3 +3320,40 @@ describe('channel erasure configuration', () => {
     expect(agentsEndpointSchema.safeParse({ channels: { erasureBatchSize } }).success).toBe(false);
   });
 });
+
+describe('complete channel operator configuration', () => {
+  it('keeps channel execution disabled by default and accepts explicit enablement with runtime limits', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels?.enabled).toBe(false);
+    const parsed = configSchema.parse({
+      version: '1.2.1',
+      endpoints: {
+        agents: {
+          channels: {
+            enabled: true,
+            transport: 'webhook',
+            gatewayUrl: 'https://gateway.example',
+            cleanup: { batchSize: 12 },
+            ticketLifetimeMs: 180000,
+            artifactAnswerFileThresholdBytes: 8192,
+          },
+        },
+      },
+    });
+    expect(parsed.endpoints?.agents?.channels).toMatchObject({
+      enabled: true,
+      transport: 'webhook',
+      gatewayUrl: 'https://gateway.example',
+      cleanup: { batchSize: 12 },
+      ticketLifetimeMs: 180000,
+      artifactAnswerFileThresholdBytes: 8192,
+    });
+  });
+  it.each([{ artifactMaxBytes: 50 * 1024 * 1024 + 1 }, { ticketLifetimeMs: 0 }, { batchSize: 12 }])(
+    'rejects invalid or unknown runtime configuration %p',
+    (channels) => {
+      expect(
+        agentsEndpointSchema.safeParse({ channels: { enabled: true, ...channels } }).success,
+      ).toBe(false);
+    },
+  );
+});

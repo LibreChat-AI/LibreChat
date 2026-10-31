@@ -254,9 +254,13 @@ it('retries queue publication under the same durable decision after a transient 
     const { action } = await setup();
     const f = fixture();
     f.enqueue.mockRejectedValueOnce(new Error('queue unavailable'));
-    await expect(
-      f.submit(owner, responseId, { actionId: action.actionId, answer: 'staging' }),
-    ).rejects.toThrow('queue unavailable');
+    expect(
+      await f.submit(owner, responseId, { actionId: action.actionId, answer: 'staging' }),
+    ).toMatchObject({ ok: true });
+    expect((await storage.read(owner, responseId))?.dispatchOutbox).toMatchObject({
+      kind: 'resume',
+      state: 'pending',
+    });
     const intentId = (await storage.read(owner, responseId))!.resume!.intentId;
     expect(
       await f.submit(owner, responseId, { actionId: action.actionId, answer: 'staging' }),
