@@ -1,9 +1,4 @@
-const {
-  PermissionBits,
-  ResourceType,
-  Permissions,
-  PermissionTypes,
-} = require('librechat-data-provider');
+const { PermissionBits, Permissions, PermissionTypes } = require('librechat-data-provider');
 
 const mockCreateResponseResumeValidation = jest.fn(() => ({}));
 const mockGetEffectivePermissions = jest.fn();
@@ -33,67 +28,19 @@ jest.mock('./ChannelAuthority', () => ({
   authorizeChannelResponseKeySource: (...args) => mockAuthorizeChannelResponseKeySource(...args),
 }));
 
-describe('Responses resume permission composition', () => {
-  let canAccessAgent;
-  const agent = { _id: 'stored-agent-resource-id' };
-  const user = { id: 'verified-owner', role: 'USER' };
-
+describe('Responses base production composition', () => {
   beforeEach(() => {
     jest.resetModules();
     jest.clearAllMocks();
     mockGetEffectivePermissions.mockReset();
     require('./Responses');
-    canAccessAgent = mockCreateResponseResumeValidation.mock.calls[0][0].content.canAccessAgent;
-  });
-
-  it('inherits Remote Agent access from current Agent SHARE without a separate remote grant', async () => {
-    mockGetEffectivePermissions.mockImplementation(async ({ resourceType }) =>
-      resourceType === ResourceType.AGENT ? PermissionBits.SHARE : 0,
-    );
-
-    await expect(canAccessAgent(agent, user)).resolves.toBe(true);
-    expect(mockGetEffectivePermissions).toHaveBeenCalledTimes(1);
-    expect(mockGetEffectivePermissions).toHaveBeenCalledWith({
-      userId: user.id,
-      role: user.role,
-      resourceType: ResourceType.AGENT,
-      resourceId: agent._id,
-    });
-  });
-
-  it('honors an explicit Remote Agent VIEW grant without Agent SHARE', async () => {
-    mockGetEffectivePermissions.mockImplementation(async ({ resourceType }) =>
-      resourceType === ResourceType.REMOTE_AGENT ? PermissionBits.VIEW : 0,
-    );
-
-    await expect(canAccessAgent(agent, user)).resolves.toBe(true);
-    expect(mockGetEffectivePermissions).toHaveBeenLastCalledWith({
-      userId: user.id,
-      role: user.role,
-      resourceType: ResourceType.REMOTE_AGENT,
-      resourceId: agent._id,
-    });
-  });
-
-  it('rejects absent grants and rechecks current permissions after revocation', async () => {
-    mockGetEffectivePermissions.mockResolvedValue(PermissionBits.SHARE);
-    await expect(canAccessAgent(agent, user)).resolves.toBe(true);
-
-    mockGetEffectivePermissions.mockResolvedValue(0);
-    await expect(canAccessAgent(agent, user)).resolves.toBe(false);
-    expect(mockGetEffectivePermissions).toHaveBeenLastCalledWith({
-      userId: user.id,
-      role: user.role,
-      resourceType: ResourceType.REMOTE_AGENT,
-      resourceId: agent._id,
-    });
   });
 
   it('delegates bound-key authority to Channels and still denies unknown bindings', async () => {
     const { tenantStorage } = jest.requireActual('@librechat/data-schemas');
     return tenantStorage.run({ tenantId: 'tenant' }, async () => {
-      const { createBackgroundResponseAuthority } = require('@librechat/api');
-      const dependencies = createBackgroundResponseAuthority.mock.calls[0][0];
+      const { createBackgroundResponsesHost } = require('@librechat/api');
+      const dependencies = createBackgroundResponsesHost.mock.calls[0][0];
       expect(dependencies.authorizeBinding).toEqual(expect.any(Function));
       const createAuthority =
         jest.requireActual('@librechat/api').createBackgroundResponseAuthority;
@@ -143,4 +90,15 @@ describe('Responses resume permission composition', () => {
     ).resolves.toEqual({ deliveryId: 'delivery' });
     expect(enqueue).toHaveBeenCalledWith('envelope', 'options');
   });
+});
+
+it('keeps browser discovery and interactive resume inactive before the owner page is installed', () => {
+  jest.resetModules();
+  jest.clearAllMocks();
+  require('./Responses');
+  const { createBackgroundResponsesHost } = require('@librechat/api');
+  const options = createBackgroundResponsesHost.mock.calls[0][0];
+  expect(options).not.toHaveProperty('publicBaseURL');
+  expect(options).not.toHaveProperty('interactive');
+  expect(mockCreateResponseResumeValidation).not.toHaveBeenCalled();
 });

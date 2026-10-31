@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { channelConfigSchema } from 'librechat-data-provider';
 import { runAsSystem, tenantStorage } from '@librechat/data-schemas';
 import type { AgentChannelMethods, ChannelRunStorage } from '@librechat/data-schemas';
-import type { ChannelConfig } from 'librechat-data-provider';
+import type { ChannelWorkerSettings } from './settings';
 import type { ChannelRunDependencies } from './runs';
 import { createIdleRecoveryLoop } from '~/agents/recovery';
+import { channelWorkerSettings } from './settings';
 import { hasChannelRunAuthority } from './runs';
 
 export interface ChannelCleanupDependencies {
@@ -13,13 +13,14 @@ export interface ChannelCleanupDependencies {
     AgentChannelMethods,
     'getAgentChannelMetadata' | 'listDeletingAgentChannels' | 'deleteAgentChannel'
   >;
+  /** Canonical live authority includes effective tenant/principal enablement. Operational failures throw. */
   resolvePrincipal: ChannelRunDependencies['resolvePrincipal'];
   retireForAuthorityLoss: ChannelRunDependencies['retireForAuthorityLoss'];
   isCredentialCurrent: (
     run: Parameters<ChannelRunDependencies['retireForAuthorityLoss']>[0],
   ) => Promise<boolean>;
   deleteApiKey: (id: string, userId: string) => Promise<boolean>;
-  getConfig: () => Promise<ChannelConfig | undefined>;
+  getWorkerSettings: () => Promise<ChannelWorkerSettings | undefined>;
   onError: (error: unknown) => void;
   now?: () => number;
 }
@@ -39,14 +40,14 @@ export function createChannelCleanupRuntime(deps: ChannelCleanupDependencies) {
       if (stopped) return Promise.resolve();
       if (initialization) return initialization;
       initialization = (async () => {
-        const initial = channelConfigSchema.parse((await deps.getConfig()) ?? {});
+        const initial = channelWorkerSettings(await deps.getWorkerSettings());
         if (stopped) return;
         worker = createIdleRecoveryLoop({
           ...initial.cleanup,
           onError: deps.onError,
           scan: async () => {
             if (stopped) return true;
-            const config = channelConfigSchema.parse((await deps.getConfig()) ?? {});
+            const config = channelWorkerSettings(await deps.getWorkerSettings());
             const pageSize = Math.min(config.cleanup.batchSize, config.maxMetadataPageSize);
             const [runs, deleting] = await runAsSystem(() =>
               Promise.all([
@@ -71,7 +72,6 @@ export function createChannelCleanupRuntime(deps: ChannelCleanupDependencies) {
                     if (!run) return;
                     const channel = await deps.channels.getAgentChannelMetadata(target.channelId);
                     if (
-                      config.enabled &&
                       channel &&
                       (await hasChannelRunAuthority(channel, run, deps.resolvePrincipal)) &&
                       (await deps.isCredentialCurrent(run))
