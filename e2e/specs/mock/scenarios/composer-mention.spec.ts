@@ -64,7 +64,9 @@ test.describe('mention popover', () => {
   test('an endpoint drills into its models and the pick switches the model @scenario:mention-popover-switches-model', async ({
     page,
   }) => {
-    const target = MOCK_ENDPOINTS[1];
+    /* Mock Providers A and B are model specs in the e2e config, so they switch on pick; C is a
+       plain custom endpoint the mention list offers as an endpoint row. */
+    const target = { label: 'Mock Provider C', model: 'mock-model-c' };
     const { textarea, combobox } = await openMention(page);
 
     /* The filter also matches the endpoint's own models (their value is the endpoint name), so
@@ -87,7 +89,7 @@ test.describe('mention popover', () => {
     await combobox.press('Enter');
 
     await expect(page.getByRole('combobox', { name: /Mention/ })).toHaveCount(0);
-    await expect(modelSelectorTrigger(page)).toContainText(target.label);
+    await expect(modelSelectorTrigger(page)).toContainText(/Mock Provider C|mock-model-c/);
     await expect(textarea).toBeFocused();
     await expect(textarea).toHaveValue('');
   });
