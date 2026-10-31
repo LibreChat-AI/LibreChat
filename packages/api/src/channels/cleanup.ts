@@ -108,8 +108,6 @@ export function createChannelCleanupRuntime(deps: ChannelCleanupDependencies) {
                 try {
                   const channel = await deps.channels.getAgentChannelMetadata(target.channelId);
                   if (channel?.status !== 'deleting') return;
-                  if (channel.apiKeyId)
-                    await deps.deleteApiKey(channel.apiKeyId, channel.createdBy);
                   const result = await deps.channels.deleteAgentChannel(
                     channel.channelId,
                     channel.createdBy,

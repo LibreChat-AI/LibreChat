@@ -44,7 +44,6 @@ const handlers = createChannelHandlers({
   serviceToken: () => process.env.CHANNEL_SERVICE_TOKEN,
   config: policy.requestConfig,
   getAgent: (id) => db.getAgent({ id }),
-  deleteApiKey: db.deleteAgentApiKey,
   verifySlackToken: verifySlackChannelToken,
   logError: (metadata) => logger.error('[Channels] Operation failed', metadata),
 });

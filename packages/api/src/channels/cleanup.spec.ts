@@ -217,17 +217,16 @@ it('defers deletion while cleanup is unknown and completes after restart and exa
   });
 });
 
-it('recovers deleting parents with no remaining runs but never bypasses a failed legacy key revocation', async () => {
-  await scope(() => db.updateAgentChannel('channel', 'user-a', { apiKeyId: 'legacy-key-id' }));
+it('recovers deleting parents with no remaining runs after a storage outage', async () => {
   await scope(() => db.beginAgentChannelDeletion('channel', 'user-a'));
-  deps.deleteApiKey = async () => {
-    throw new Error('key store unavailable');
-  };
+  const deletion = jest
+    .spyOn(deps.channels, 'deleteAgentChannel')
+    .mockRejectedValueOnce(new Error('channel store unavailable'));
   await runtime.initialize();
   expect(await scope(() => db.getAgentChannelMetadata('channel'))).toMatchObject({
     status: 'deleting',
   });
-  deps.deleteApiKey = async () => true;
+  deletion.mockRestore();
   await restart();
   expect(await scope(() => db.getAgentChannelMetadata('channel'))).toBeNull();
 });

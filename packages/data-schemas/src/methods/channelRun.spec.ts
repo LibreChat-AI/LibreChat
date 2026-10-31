@@ -387,7 +387,7 @@ it('does not couple Stop occurrences for distinct external actors', () =>
     expect(observations.map((o) => o?.run.runId)).toEqual([a.runId, b.runId]);
   }));
 
-it('owns legacy empty Stop lanes for erasure and cannot recreate them after account deletion', () =>
+it('owns empty Stop lanes for erasure and cannot recreate them after account deletion', () =>
   scope(async () => {
     const user = await mongoose.models.User.create({
       email: 'stop-erasure@example.com',
@@ -396,12 +396,8 @@ it('owns legacy empty Stop lanes for erasure and cannot recreate them after acco
     });
     const input = { ...event(), principal: { ...event().principal, userId: String(user._id) } };
     await storage.admit(input, 100);
-    // Retained legacy lane after run cleanup, before lane ownership was recorded.
+    // A retained empty lane remains owned after its runs are cleaned up.
     await mongoose.models.ChannelRun.deleteMany({ tenantId });
-    await mongoose.models.ChannelLane.updateMany(
-      { userId: input.principal.userId },
-      { $unset: { userId: 1 } },
-    );
     await storage.observeThreadStop(input, 120, 101);
     await createUserMethods(mongoose).deleteUserById(input.principal.userId);
     expect(await storage.observeThreadStop(input, 121, 110)).toBeNull();
@@ -694,7 +690,7 @@ it('does not replay an admitted event through a different principal or linked ac
     });
   }));
 
-it('erases channel request/output and legacy lane identity before deleting its account', () =>
+it('erases channel request/output and owned lane identity before deleting its account', () =>
   scope(async () => {
     const user = await mongoose.models.User.create({
       email: 'channel-erasure@example.com',
@@ -705,10 +701,6 @@ it('erases channel request/output and legacy lane identity before deleting its a
     const input = { ...event(), principal: { ...event().principal, userId } };
     const own = await storage.admit(input, 100);
     const other = await storage.admit(event('other', 'other-owner'), 100);
-    await mongoose.models.ChannelLane.updateOne(
-      { laneId: own.run.laneId },
-      { $unset: { userId: 1 } },
-    );
     await createUserMethods(mongoose).deleteUserById(userId);
     expect(await storage.read(tenantId, 'channel', own.run.runId)).toBeNull();
     expect(await mongoose.models.ChannelLane.exists({ laneId: own.run.laneId })).toBeNull();
@@ -1056,36 +1048,6 @@ const testArtifact = {
   bytes: 12,
   sha256: 'hash',
 };
-
-it('migrates the prototype event constraint before admitting colliding event IDs from different apps', () =>
-  scope(async () => {
-    const collection = mongoose.models.ChannelRun.collection;
-    const legacy = {
-      tenantId: 1,
-      channelId: 1,
-      'admission.actor.teamId': 1,
-      'admission.eventId': 1,
-    };
-    await collection.createIndex(legacy, { unique: true, name: 'prototype_event' });
-    const revised = createChannelRunStorage(mongoose);
-    const second = event();
-    second.admission.actor.appId = 'other-app';
-    const a = await revised.admit(event(), 100);
-    await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'channel-owner', {
-      revision: 'rotated',
-      slack: { teamId: 'T1', appId: 'other-app', botUserId: 'B1' },
-    });
-    second.principal.channelRevision = 'rotated';
-    const b = await revised.admit(second, 100);
-    expect(a.run.runId).not.toBe(b.run.runId);
-    expect((await revised.admit(second, 101)).run.runId).toBe(b.run.runId);
-    const indexes = await collection.indexes();
-    expect(indexes.some((index) => index.name === 'prototype_event')).toBe(false);
-    expect(indexes.find((index) => index.name === 'channel_run_event_v2')).toMatchObject({
-      unique: true,
-      key: { 'admission.actor.appId': 1 },
-    });
-  }));
 
 it.each(['completed', 'failed', 'cancelled'] as const)(
   'never rolls a %s snapshot back into execution',
@@ -1531,18 +1493,14 @@ it('injects account erasure work bounds before closing admission', () =>
       input.admission.externalThreadKey = `thread-${i}`;
       await storage.admit(input, 100 + i);
     }
-    await mongoose.models.ChannelLane.updateMany({ userId }, { $unset: { userId: 1 } });
     const getConfig = jest.fn(async () => ({ erasureBatchSize: 1 }));
     const deleted = jest.spyOn(mongoose.models.ChannelLane, 'deleteMany');
     try {
       await createUserMethods(mongoose, { getChannelStorageConfig: getConfig }).deleteUserById(
         userId,
       );
-      const batches = deleted.mock.calls
-        .map(([filter]) => filter as { laneId?: { $in?: string[] } })
-        .filter((filter) => filter?.laneId?.$in);
-      expect(batches).toHaveLength(3);
-      for (const batch of batches) expect(batch?.laneId?.$in).toHaveLength(1);
+      expect(deleted).toHaveBeenCalledWith({ tenantId, userId });
+      expect(await mongoose.models.ChannelLane.countDocuments({ tenantId, userId })).toBe(0);
       expect(getConfig).toHaveBeenCalledTimes(1);
     } finally {
       deleted.mockRestore();

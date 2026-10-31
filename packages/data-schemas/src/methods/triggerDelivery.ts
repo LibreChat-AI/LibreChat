@@ -28,7 +28,6 @@ import {
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
   AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V1,
-  AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2,
   AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1,
 } from '~/types/triggerDelivery';
 import { createIndexesWithRetry } from '~/utils/retry';
@@ -1195,7 +1194,6 @@ export function createAgentTriggerDeliveryMethods(
       input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1 &&
       input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2 &&
       input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V1 &&
-      input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2 &&
       input.requiredWorkerCapability !== AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1
     ) {
       throw new TypeError('Agent trigger delivery requires an unsupported worker capability');
