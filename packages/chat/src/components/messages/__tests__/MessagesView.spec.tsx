@@ -48,6 +48,9 @@ function createHost(overrides: Partial<MessagesHost> = {}) {
     useScreenshotTarget: () => useRef<HTMLDivElement>(null),
     useAutoScroll: () => false,
     useConversationSeen,
+    renderMessageRow: () => null,
+    renderActivity: () => null,
+    useFileMap: () => undefined,
     ...overrides,
   };
   return { host, scrolling, reportNearBottom, useConversationSeen };

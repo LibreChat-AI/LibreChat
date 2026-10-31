@@ -1,54 +1,45 @@
-import React from 'react';
-import { RecoilRoot } from 'recoil';
+/**
+ * @jest-environment jsdom
+ */
 import { Provider as JotaiProvider } from 'jotai';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
+import type { MessageRowSlotProps, MessagesHost } from '../../../../react/messages/host';
+import { RowMountProvider } from '../../../../react/messages/useProgressiveRowMount';
+import { setDefaultMessagesHost } from '../../../../react/messages/host';
 import MultiMessage from '../MultiMessage';
 
-type RowProps = {
-  message: TMessage;
-  siblingIdx?: number;
-  setSiblingIdx?: (value: number) => void;
-};
+const RowStub = ({ message, siblingIdx, setSiblingIdx }: MessageRowSlotProps) => (
+  <div>
+    <div data-testid="row">{message.messageId}</div>
+    <button data-testid="prev" onClick={() => setSiblingIdx(siblingIdx - 1)} />
+  </div>
+);
 
-/** Row stub exposing the sibling switcher contract (display-order index). */
-const createRowStub = () => {
-  const { createElement } = jest.requireActual<typeof React>('react');
-  return ({ message, siblingIdx = 0, setSiblingIdx }: RowProps) =>
-    createElement(
-      'div',
-      null,
-      createElement('div', { 'data-testid': 'row' }, message.messageId),
-      createElement(
-        'button',
-        { 'data-testid': 'prev', onClick: () => setSiblingIdx?.(siblingIdx - 1) },
-        'prev',
-      ),
-    );
-};
-
-jest.mock('~/components/Messages/MessageContent', () => ({
-  __esModule: true,
-  default: createRowStub(),
-}));
-jest.mock('../MessageParts', () => ({ __esModule: true, default: createRowStub() }));
-jest.mock('../Message', () => ({ __esModule: true, default: createRowStub() }));
-jest.mock('~/components/Chat/Subagents/EventSubagentActivityGroup', () => ({
-  __esModule: true,
-  default: ({
-    parentMessageIds,
-    hasParallelContent,
-  }: {
-    parentMessageIds: string[];
-    hasParallelContent?: boolean;
-  }) => (
+/** A host whose message slot exposes the sibling switcher contract (display-order index). */
+const host: MessagesHost = {
+  useHour12: () => undefined,
+  renderFiles: () => null,
+  useScrolling: () => {
+    throw new Error('not used by the thread');
+  },
+  useScreenshotTarget: () => undefined,
+  useAutoScroll: () => false,
+  useConversationSeen: () => () => undefined,
+  renderMessageRow: (props) => <RowStub {...props} />,
+  renderActivity: ({ parentMessageIds, hasParallelContent }) => (
     <div
       data-testid="event-subagent-activity"
       data-parent-message-ids={parentMessageIds.join(',')}
       data-has-parallel-content={String(hasParallelContent)}
     />
   ),
-}));
+  useFileMap: () => undefined,
+};
+
+beforeAll(() => {
+  setDefaultMessagesHost(host);
+});
 
 const msg = (messageId: string): TMessage =>
   ({
@@ -65,14 +56,12 @@ const tree = (ids: string[]) => ids.map((id) => msg(id));
 
 const treeElement = (ids: string[]) => (
   <JotaiProvider>
-    <RecoilRoot>
-      <MultiMessage
-        messageId="parent-1"
-        messagesTree={tree(ids)}
-        currentEditId={null}
-        setCurrentEditId={jest.fn()}
-      />
-    </RecoilRoot>
+    <MultiMessage
+      messageId="parent-1"
+      messagesTree={tree(ids)}
+      currentEditId={null}
+      setCurrentEditId={jest.fn()}
+    />
   </JotaiProvider>
 );
 
@@ -83,14 +72,12 @@ describe('MultiMessage sibling selection', () => {
     const structured = msg('structured');
     const legacy = { ...msg('legacy'), content: undefined } as TMessage;
     const view = render(
-      <RecoilRoot>
-        <MultiMessage
-          messageId="parent-1"
-          messagesTree={[structured]}
-          currentEditId={null}
-          setCurrentEditId={jest.fn()}
-        />
-      </RecoilRoot>,
+      <MultiMessage
+        messageId="parent-1"
+        messagesTree={[structured]}
+        currentEditId={null}
+        setCurrentEditId={jest.fn()}
+      />,
     );
 
     expect(screen.getByTestId('event-subagent-activity')).toHaveAttribute(
@@ -99,14 +86,12 @@ describe('MultiMessage sibling selection', () => {
     );
 
     view.rerender(
-      <RecoilRoot>
-        <MultiMessage
-          messageId="parent-1"
-          messagesTree={[legacy]}
-          currentEditId={null}
-          setCurrentEditId={jest.fn()}
-        />
-      </RecoilRoot>,
+      <MultiMessage
+        messageId="parent-1"
+        messagesTree={[legacy]}
+        currentEditId={null}
+        setCurrentEditId={jest.fn()}
+      />,
     );
     expect(screen.getByTestId('event-subagent-activity')).toHaveAttribute(
       'data-parent-message-ids',
@@ -125,14 +110,12 @@ describe('MultiMessage sibling selection', () => {
     assistant.parentMessageId = 'user';
 
     render(
-      <RecoilRoot>
-        <MultiMessage
-          messageId="root"
-          messagesTree={[user]}
-          currentEditId={null}
-          setCurrentEditId={jest.fn()}
-        />
-      </RecoilRoot>,
+      <MultiMessage
+        messageId="root"
+        messagesTree={[user]}
+        currentEditId={null}
+        setCurrentEditId={jest.fn()}
+      />,
     );
 
     expect(screen.getAllByTestId('event-subagent-activity')).toHaveLength(1);
@@ -157,14 +140,12 @@ describe('MultiMessage sibling selection', () => {
     } as TMessage;
 
     render(
-      <RecoilRoot>
-        <MultiMessage
-          messageId="root"
-          messagesTree={[user]}
-          currentEditId="user"
-          setCurrentEditId={jest.fn()}
-        />
-      </RecoilRoot>,
+      <MultiMessage
+        messageId="root"
+        messagesTree={[user]}
+        currentEditId="user"
+        setCurrentEditId={jest.fn()}
+      />,
     );
 
     expect(screen.queryByTestId('event-subagent-activity')).not.toBeInTheDocument();
@@ -181,14 +162,12 @@ describe('MultiMessage sibling selection', () => {
     } as unknown as TMessage;
 
     render(
-      <RecoilRoot>
-        <MultiMessage
-          messageId="parent-1"
-          messagesTree={[assistant]}
-          currentEditId={null}
-          setCurrentEditId={jest.fn()}
-        />
-      </RecoilRoot>,
+      <MultiMessage
+        messageId="parent-1"
+        messagesTree={[assistant]}
+        currentEditId={null}
+        setCurrentEditId={jest.fn()}
+      />,
     );
 
     expect(screen.getByTestId('event-subagent-activity')).toHaveAttribute(
@@ -210,14 +189,12 @@ describe('MultiMessage sibling selection', () => {
     } as unknown as TMessage;
 
     render(
-      <RecoilRoot>
-        <MultiMessage
-          messageId="parent-1"
-          messagesTree={[assistant]}
-          currentEditId={null}
-          setCurrentEditId={jest.fn()}
-        />
-      </RecoilRoot>,
+      <MultiMessage
+        messageId="parent-1"
+        messagesTree={[assistant]}
+        currentEditId={null}
+        setCurrentEditId={jest.fn()}
+      />,
     );
 
     expect(screen.getByTestId('event-subagent-activity')).toHaveAttribute(
@@ -233,14 +210,12 @@ describe('MultiMessage sibling selection', () => {
     } as unknown as TMessage;
 
     render(
-      <RecoilRoot>
-        <MultiMessage
-          messageId="parent-1"
-          messagesTree={[assistant]}
-          currentEditId={null}
-          setCurrentEditId={jest.fn()}
-        />
-      </RecoilRoot>,
+      <MultiMessage
+        messageId="parent-1"
+        messagesTree={[assistant]}
+        currentEditId={null}
+        setCurrentEditId={jest.fn()}
+      />,
     );
 
     expect(screen.getByTestId('row')).toHaveTextContent('assistant');
@@ -308,7 +283,7 @@ describe('MultiMessage sibling selection', () => {
    * Regression: streaming ids hydrate to durable ids at finalize (the legacy
    * regenerate path mints a new UUID for `_`-suffixed preliminary ids). The
    * newest child's id changing WITHOUT the prior newest surviving is a
-   * re-key of the same row, not an append — it must not yank a user who
+   * re-key of the same row, not an append; it must not yank a user who
    * paged to an older sibling mid-stream.
    */
   it('keeps the viewed older branch when the newest sibling is re-keyed at finalize', () => {
@@ -342,7 +317,7 @@ describe('MultiMessage sibling selection', () => {
   /**
    * Regression: sibling `createdAt` ties have no sort tie-breaker, so a
    * refetch can return the same membership in a different order. A changed
-   * last id without a NEW member is a reorder, not an append — the viewed
+   * last id without a NEW member is a reorder, not an append; the viewed
    * message must stay selected by identity.
    */
   it('treats a same-membership reorder as churn, not an append', () => {
@@ -357,19 +332,17 @@ describe('MultiMessage sibling selection', () => {
   /**
    * Regression: the recursive instance is deliberately unkeyed and gets
    * reused across parents when an ancestor's branch switches. The
-   * reconciliation refs then describe the previous parent's children —
+   * reconciliation refs then describe the previous parent's children, so
    * reconciling against them wiped the returned-to branch's saved selection.
    */
   it("preserves each parent's saved selection when the instance is reused across parents", () => {
     const treeFor = (messageId: string, ids: string[]) => (
-      <RecoilRoot>
-        <MultiMessage
-          messageId={messageId}
-          messagesTree={tree(ids)}
-          currentEditId={null}
-          setCurrentEditId={jest.fn()}
-        />
-      </RecoilRoot>
+      <MultiMessage
+        messageId={messageId}
+        messagesTree={tree(ids)}
+        currentEditId={null}
+        setCurrentEditId={jest.fn()}
+      />
     );
 
     const view = render(treeFor('parent-a', ['a1', 'a2']));
@@ -385,9 +358,6 @@ describe('MultiMessage sibling selection', () => {
 });
 
 describe('MultiMessage row mount window', () => {
-  const { RowMountProvider } =
-    jest.requireActual<typeof import('@librechat/chat/react')>('@librechat/chat/react');
-
   const chain = (): TMessage => {
     const leaf = { ...msg('m2'), parentMessageId: 'm1', depth: 2 } as TMessage;
     const mid = { ...msg('m1'), parentMessageId: 'm0', depth: 1, children: [leaf] } as TMessage;
@@ -395,16 +365,14 @@ describe('MultiMessage row mount window', () => {
   };
 
   const windowedTree = (mountWindow: { start: number; end: number } | null) => (
-    <RecoilRoot>
-      <RowMountProvider mountWindow={mountWindow}>
-        <MultiMessage
-          messageId="parent-1"
-          messagesTree={[chain()]}
-          currentEditId={null}
-          setCurrentEditId={jest.fn()}
-        />
-      </RowMountProvider>
-    </RecoilRoot>
+    <RowMountProvider mountWindow={mountWindow}>
+      <MultiMessage
+        messageId="parent-1"
+        messagesTree={[chain()]}
+        currentEditId={null}
+        setCurrentEditId={jest.fn()}
+      />
+    </RowMountProvider>
   );
 
   it('renders every row without a window', () => {

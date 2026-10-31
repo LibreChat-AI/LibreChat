@@ -1,19 +1,15 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useStore } from 'jotai';
+import type { TFile, TMessage } from 'librechat-data-provider';
+import type { ThreadIndex, ThreadRow } from '../../core/thread';
 import {
   ROOT_KEY,
   buildThreadIndex,
   changedParentKeys,
   reconcileSiblingIdx,
   resolveThreadRows,
-} from '@librechat/chat';
-import type { TFile, TMessage } from 'librechat-data-provider';
-import type { ThreadIndex, ThreadRow } from '@librechat/chat';
-import {
-  siblingIdxFamily,
-  siblingKey,
-  useSiblingIndexes,
-} from '~/components/Chat/Messages/Thread/state';
+} from '../../core/thread';
+import { siblingIdxFamily, siblingKey, useSiblingIndexes } from '../thread';
 
 const EMPTY_KEYS: string[] = [];
 
