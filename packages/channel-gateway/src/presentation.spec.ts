@@ -128,6 +128,7 @@ describe('semantic Slack presentations', () => {
     expect(allText).not.toContain('librechat-presentation');
     expect(allText).not.toContain('<@U123>');
     const layout = blocks.find((block) => block.type === 'layout');
+    expect(layout).toMatchObject({ label: 'Options', is_label_visible: true });
     expect(layout?.type === 'layout' && layout.fallback).toEqual(
       expect.arrayContaining([expect.objectContaining({ type: 'section' })]),
     );
@@ -227,6 +228,56 @@ describe('semantic Slack presentations', () => {
     expect(channelPresentationSchema.safeParse({ version: 1, blocks: [component] }).success).toBe(
       false,
     );
+  });
+
+  test('rejects duplicate pie labels before freezing new presentations while replaying existing v7 plans', () => {
+    const pie = {
+      type: 'chart',
+      title: 'Share',
+      chart: {
+        type: 'pie',
+        segments: [
+          { label: 'Same', value: 2 },
+          { label: 'Same', value: 1 },
+        ],
+      },
+    };
+    expect(parsePresentation(document([pie]))).toBeUndefined();
+    const payload = JSON.stringify([
+      { type: 'data_visualization', title: 'Share', chart: pie.chart },
+    ]);
+    const frozen = {
+      operationId: 'run:reply:0',
+      kind: 'message' as const,
+      required: true,
+      text: 'Share: Same 2; Same 1',
+      presentation: { format: 'slack-blocks-v1', payload },
+    };
+    expect(durableSlackMessage(frozen, 'slack-structured-v7').blocks).toEqual(JSON.parse(payload));
+  });
+
+  test('keeps legacy layout labels optional on replay without changing new visible titles', () => {
+    const plan = makeSlackPlan(
+      run(document([{ type: 'layout', title: 'Visible title', rows: [[card]] }])),
+    );
+    const part = plan.parts.find((item) =>
+      item.presentation?.payload.includes('is_label_visible'),
+    )!;
+    const blocks = JSON.parse(part.presentation!.payload);
+    expect(blocks[0]).toMatchObject({
+      type: 'layout',
+      label: 'Visible title',
+      is_label_visible: true,
+    });
+    delete blocks[0].is_label_visible;
+    const legacy = {
+      ...part,
+      presentation: { ...part.presentation!, payload: JSON.stringify(blocks) },
+    };
+    expect(durableSlackMessage(legacy, 'slack-structured-v7').blocks?.[0]).toMatchObject({
+      type: 'layout',
+      label: 'Visible title',
+    });
   });
 
   test('degrades a layout exceeding nested chart limits without losing its values', () => {
