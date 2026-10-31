@@ -1014,6 +1014,14 @@ type CapturedRequest = {
 async function compactSummary(
   agents: Array<Record<string, unknown>>,
   requests: CapturedRequest[] = [],
+  messages: BaseMessage[] = [
+    new HumanMessage('Compute 1 + 1.'),
+    new AIMessage('2'),
+    new HumanMessage('Compute 2 + 2.'),
+    new AIMessage('4'),
+    new HumanMessage('Compute 3 + 3.'),
+    new AIMessage('6'),
+  ],
 ) {
   const summaryConfig = agents[0].summarizationConfig as NonNullable<
     AgentInputs['summarizationConfig']
@@ -1063,12 +1071,34 @@ async function compactSummary(
     tokenCounter: (message) => String(message.content).length,
   });
   await run.processStream(
-    { messages: [new HumanMessage('Compute 2 + 2.'), new AIMessage('4')] },
+    { messages },
     { version: 'v2', configurable: { thread_id: 'azure-summary-test' } },
   );
 
   return { requests };
 }
+
+describe('manual compaction recency', () => {
+  it('skips a fully retained conversation without calling the summarizer', async () => {
+    const agents = await callAndCapture({
+      summarizeOnly: true,
+      summarizationConfig: { model: 'gpt-4o', parameters: { streaming: false } },
+    });
+    const requests: CapturedRequest[] = [];
+    await expect(
+      compactSummary(agents, requests, [
+        new HumanMessage('Compute 1 + 1.'),
+        new AIMessage('2'),
+        new HumanMessage('Compute 2 + 2.'),
+        new AIMessage('4'),
+      ]),
+    ).rejects.toMatchObject({
+      name: 'ManualSummarizationSkippedError',
+      reason: 'nothing_to_summarize',
+    });
+    expect(requests).toHaveLength(0);
+  });
+});
 
 describe('Azure deployment alias', () => {
   /** `initializeAgent` maps an Azure Responses agent to the OpenAI provider. */
@@ -1252,6 +1282,7 @@ describe('Azure deployment alias', () => {
         summarizeOnly: true,
         summarizationConfig: {
           model,
+          maxSummaryTokens: 1536,
           parameters: {
             streaming: false,
             apiKey: 'override-key',
@@ -1272,8 +1303,7 @@ describe('Azure deployment alias', () => {
       expect(requests[0].headers.get('api-key')).toBe('override-key');
       expect(requests[0].headers.get('X-Request')).toBe('resolved-user-header');
       expect(requests[0].body.model).toBe('user-deployment');
-      const chatTokenKey = model === 'gpt-6-astra' ? 'max_completion_tokens' : 'max_tokens';
-      expect(requests[0].body[useResponsesApi ? 'max_output_tokens' : chatTokenKey]).toBe(1536);
+      expect(requests[0].body[useResponsesApi ? 'max_output_tokens' : 'max_tokens']).toBe(1536);
       expect((agents[0].clientOptions as Record<string, unknown>).configuration).toEqual(
         configOptions,
       );

@@ -1,8 +1,9 @@
-import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
-import { getE2EUser } from '../../../setup/user';
+import { expect, test } from '@playwright/test';
 import { deleteConversations, deleteMessagesByConversation, seedMessages, withMongo } from '../db';
 import { messagesView, sendMessageAndWaitForCompletion } from '../helpers';
+import { sendCompactionHistory } from '../compaction.helpers';
+import { getE2EUser } from '../../../setup/user';
 
 const userEmail = getE2EUser().email;
 const LABEL_SERVER = `http://127.0.0.1:${process.env.E2E_LABEL_PORT || '8889'}`;
@@ -33,6 +34,7 @@ test.describe('compaction snapshot modes', () => {
   }) => {
     test.setTimeout(150_000);
     await page.goto('/c/new');
+    await sendCompactionHistory(page, 'abandoned-compaction', 1);
     await sendMessageAndWaitForCompletion(page, 'tell me about abandoned compactions');
     const conversationId = new URL(page.url()).pathname.replace('/c/', '');
     expect(conversationId).not.toBe('new');
