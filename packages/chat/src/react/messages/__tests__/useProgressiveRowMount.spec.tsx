@@ -1,3 +1,6 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { act, renderHook } from '@testing-library/react';
 import type { RowMountWindow } from '../useProgressiveRowMount';

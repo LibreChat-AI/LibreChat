@@ -1,3 +1,6 @@
+/**
+ * @jest-environment jsdom
+ */
 import { renderHook } from '@testing-library/react';
 import useScrollbarGutter, { SCROLLBAR_GUTTER_PROPERTY } from '../useScrollbarGutter';
 

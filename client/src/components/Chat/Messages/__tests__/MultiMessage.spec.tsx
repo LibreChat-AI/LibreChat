@@ -386,7 +386,7 @@ describe('MultiMessage sibling selection', () => {
 
 describe('MultiMessage row mount window', () => {
   const { RowMountProvider } =
-    jest.requireActual<typeof import('~/hooks/Messages')>('~/hooks/Messages');
+    jest.requireActual<typeof import('@librechat/chat/react')>('@librechat/chat/react');
 
   const chain = (): TMessage => {
     const leaf = { ...msg('m2'), parentMessageId: 'm1', depth: 2 } as TMessage;
