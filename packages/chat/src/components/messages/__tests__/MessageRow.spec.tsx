@@ -20,6 +20,7 @@ beforeAll(initEnglish);
 const host: MessagesHost = {
   useHour12: () => undefined,
   renderFiles: () => <button data-testid="attached-file" />,
+  renderMessageIcon: () => null,
 };
 
 const MESSAGE_BODY = 'Message body';

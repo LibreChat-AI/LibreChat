@@ -5,15 +5,13 @@ import {
   activeSubagentPanel,
   adaptLivePersistedActivity,
   resolveSubagentAgentId,
-} from '@librechat/chat/react';
-import type { TMessage } from 'librechat-data-provider';
-import {
   isSelfSpawn as isSelfSpawnType,
   messageAuthor,
   findAgentLaneId,
   resolveSubagentAuthor,
   findAgentAuthorMessage,
-} from './author';
+} from '@librechat/chat/react';
+import type { TMessage } from 'librechat-data-provider';
 import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
 import { SubagentActivityScrollSurface } from './SubagentActivity';
 import SubagentConversation from './SubagentConversation';

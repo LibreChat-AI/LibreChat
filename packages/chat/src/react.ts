@@ -127,8 +127,9 @@ export {
   useMessagesHost,
   MessagesHostProvider,
   setDefaultMessagesHost,
+  MessageIconSlot,
 } from './react/messages/host';
-export type { MessagesHost } from './react/messages/host';
+export type { MessagesHost, MessageIconData, MessageIconProps } from './react/messages/host';
 export {
   SoleToolContext,
   LoneGroupContext,

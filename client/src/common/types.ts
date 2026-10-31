@@ -8,6 +8,7 @@ import type {
   NewConversationParams,
 } from '@librechat/chat/react';
 import type { UseMutationResult } from '@tanstack/react-query';
+import type { MessageIconData } from '@librechat/chat/react';
 import type { ExtendedFile } from '@librechat/chat';
 import type * as t from 'librechat-data-provider';
 import type { LucideIcon } from 'lucide-react';
@@ -306,11 +307,7 @@ export type TMessageProps = {
   setSiblingIdx?: ((value: number) => void | React.Dispatch<React.SetStateAction<number>>) | null;
 };
 
-export type TMessageIcon = { endpoint?: string | null; isCreatedByUser?: boolean } & Pick<
-  t.TConversation,
-  'modelLabel'
-> &
-  Pick<t.TMessage, 'model' | 'iconURL'>;
+export type TMessageIcon = MessageIconData;
 
 export type TInitialProps = {
   text: string;

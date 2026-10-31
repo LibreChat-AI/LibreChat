@@ -21,6 +21,8 @@ import { ChatSurfaceHarness, testChatSurface } from 'test/harness';
 import SubagentThreadPanel from './SubagentThreadPanel';
 import { useOpenSubagentPanel } from './surface';
 import { getDraft } from '~/utils';
+import '~/Providers/MessagePartsHostContext';
+import '~/Providers/MessagesHostContext';
 
 const mockUseSubagentThreadQuery = jest.fn();
 const mockUseToolCallPartQuery = jest.fn(

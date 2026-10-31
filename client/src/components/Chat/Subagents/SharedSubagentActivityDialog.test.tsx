@@ -7,6 +7,8 @@ import SharedSubagentActivityDialog from './SharedSubagentActivityDialog';
 import { MessageContext } from '~/Providers/MessageContext';
 import { ShareContext } from '~/Providers/ShareContext';
 import { ChatSurfaceHarness } from 'test/harness';
+import '~/Providers/MessagePartsHostContext';
+import '~/Providers/MessagesHostContext';
 
 const mockUseSubagentThreadQuery = jest.fn();
 
