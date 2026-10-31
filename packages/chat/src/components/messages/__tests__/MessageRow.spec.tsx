@@ -32,6 +32,9 @@ const host: MessagesHost = {
   useScreenshotTarget: () => ({ current: null }),
   useAutoScroll: () => false,
   useConversationSeen: () => () => undefined,
+  renderMessageRow: () => null,
+  renderActivity: () => null,
+  useFileMap: () => undefined,
 };
 
 const MESSAGE_BODY = 'Message body';

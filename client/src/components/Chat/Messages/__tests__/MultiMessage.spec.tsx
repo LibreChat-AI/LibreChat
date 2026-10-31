@@ -1,54 +1,42 @@
-import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Provider as JotaiProvider } from 'jotai';
+import { setDefaultMessagesHost } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
+import type { MessageRowSlotProps, MessagesHost } from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import MultiMessage from '../MultiMessage';
 
-type RowProps = {
-  message: TMessage;
-  siblingIdx?: number;
-  setSiblingIdx?: (value: number) => void;
-};
+const RowStub = ({ message, siblingIdx, setSiblingIdx }: MessageRowSlotProps) => (
+  <div>
+    <div data-testid="row">{message.messageId}</div>
+    <button data-testid="prev" onClick={() => setSiblingIdx(siblingIdx - 1)} />
+  </div>
+);
 
-/** Row stub exposing the sibling switcher contract (display-order index). */
-const createRowStub = () => {
-  const { createElement } = jest.requireActual<typeof React>('react');
-  return ({ message, siblingIdx = 0, setSiblingIdx }: RowProps) =>
-    createElement(
-      'div',
-      null,
-      createElement('div', { 'data-testid': 'row' }, message.messageId),
-      createElement(
-        'button',
-        { 'data-testid': 'prev', onClick: () => setSiblingIdx?.(siblingIdx - 1) },
-        'prev',
-      ),
-    );
-};
-
-jest.mock('~/components/Messages/MessageContent', () => ({
-  __esModule: true,
-  default: createRowStub(),
-}));
-jest.mock('../MessageParts', () => ({ __esModule: true, default: createRowStub() }));
-jest.mock('../Message', () => ({ __esModule: true, default: createRowStub() }));
-jest.mock('~/components/Chat/Subagents/EventSubagentActivityGroup', () => ({
-  __esModule: true,
-  default: ({
-    parentMessageIds,
-    hasParallelContent,
-  }: {
-    parentMessageIds: string[];
-    hasParallelContent?: boolean;
-  }) => (
+/** A host whose message slot exposes the sibling switcher contract (display-order index). */
+const host: MessagesHost = {
+  useHour12: () => undefined,
+  renderFiles: () => null,
+  useScrolling: () => {
+    throw new Error('not used by the thread');
+  },
+  useScreenshotTarget: () => undefined,
+  useAutoScroll: () => false,
+  useConversationSeen: () => () => undefined,
+  renderMessageRow: (props) => <RowStub {...props} />,
+  renderActivity: ({ parentMessageIds, hasParallelContent }) => (
     <div
       data-testid="event-subagent-activity"
       data-parent-message-ids={parentMessageIds.join(',')}
       data-has-parallel-content={String(hasParallelContent)}
     />
   ),
-}));
+  useFileMap: () => undefined,
+};
+
+beforeAll(() => {
+  setDefaultMessagesHost(host);
+});
 
 const msg = (messageId: string): TMessage =>
   ({
@@ -308,7 +296,7 @@ describe('MultiMessage sibling selection', () => {
    * Regression: streaming ids hydrate to durable ids at finalize (the legacy
    * regenerate path mints a new UUID for `_`-suffixed preliminary ids). The
    * newest child's id changing WITHOUT the prior newest surviving is a
-   * re-key of the same row, not an append — it must not yank a user who
+   * re-key of the same row, not an append; it must not yank a user who
    * paged to an older sibling mid-stream.
    */
   it('keeps the viewed older branch when the newest sibling is re-keyed at finalize', () => {
@@ -342,7 +330,7 @@ describe('MultiMessage sibling selection', () => {
   /**
    * Regression: sibling `createdAt` ties have no sort tie-breaker, so a
    * refetch can return the same membership in a different order. A changed
-   * last id without a NEW member is a reorder, not an append — the viewed
+   * last id without a NEW member is a reorder, not an append; the viewed
    * message must stay selected by identity.
    */
   it('treats a same-membership reorder as churn, not an append', () => {
@@ -357,7 +345,7 @@ describe('MultiMessage sibling selection', () => {
   /**
    * Regression: the recursive instance is deliberately unkeyed and gets
    * reused across parents when an ancestor's branch switches. The
-   * reconciliation refs then describe the previous parent's children —
+   * reconciliation refs then describe the previous parent's children, so
    * reconciling against them wiped the returned-to branch's saved selection.
    */
   it("preserves each parent's saved selection when the instance is reused across parents", () => {

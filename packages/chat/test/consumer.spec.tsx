@@ -189,6 +189,9 @@ const messagesHost: MessagesHost = {
   useScreenshotTarget: () => undefined,
   useAutoScroll: () => false,
   useConversationSeen: () => () => undefined,
+  renderMessageRow: () => null,
+  renderActivity: () => null,
+  useFileMap: () => undefined,
 };
 
 const renderers: PartRenderers = {
