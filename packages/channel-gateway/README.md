@@ -31,11 +31,11 @@ Remove legacy `SLACK_NATIVE_SESSIONS`, `SLACK_LIFECYCLE_REACTIONS` and `SLACK_SI
 
 Native Stop remains available for an authenticated existing session even when optional native emission is disabled. The application accepts bounded future clock skew and durably pins each click's first observed target, lease epoch and cutoff, including no target. A retry cannot advance its cutoff or stop a newer run. Past occurrence times remain unchanged; clock skew does not establish a globally exact event order.
 
-# Delivery recovery
+## Delivery recovery
 
 The gateway preserves each frozen delivery operation and its receipt. A required operation whose provider result is unknown holds its actor lane: retrying blindly could post the same answer twice. Stopping a worker or requesting cancellation does not prove whether Slack accepted an earlier request.
 
-## Reconcile a verified provider result
+### Reconcile a verified provider result
 
 1. Pause gateway processing for the affected channel while investigating. Keep the channel enabled and preserve its actor link and source authority; disabling these is not a recovery bypass.
 2. Inspect the frozen run plan and retained receipt. Verify in the provider that the exact operation reached the intended channel or thread. Record its message key or file ID, matching the retained attempt and any upload checkpoint. If the result cannot be verified, leave the receipt unknown and the lane held.
@@ -70,12 +70,12 @@ The standalone process composes private transport adapters with native presentat
 
 The production bundle incorporates these seven internal source modules:
 
-| Module   | Responsibility                                                                               |
-| -------- | -------------------------------------------------------------------------------------------- |
-| `client` | Private service authentication, channel/run identity checks and bounded API responses        |
-| `config` | Process bindings and resolution of the server-owned gateway policy                           |
-| `events` | Original-byte webhook authentication, installation challenges and scoped event normalization |
-| `slack`  | Bounded provider calls, conservative uncertain-write outcomes and artifact transport         |
+| Module     | Responsibility                                                                               |
+| ---------- | -------------------------------------------------------------------------------------------- |
+| `client`   | Private service authentication, channel/run identity checks and bounded API responses        |
+| `config`   | Process bindings and resolution of the server-owned gateway policy                           |
+| `events`   | Original-byte webhook authentication, installation challenges and scoped event normalization |
+| `slack`    | Bounded provider calls, conservative uncertain-write outcomes and artifact transport         |
 | `render`   | Deterministic bounded answer/progress plans and durable presentation replay                  |
 | `identity` | Actor-private account-link tickets and exact-account confirmation                            |
 | `review`   | Current actor/action validation, native forms and immutable saved-decision retry             |
