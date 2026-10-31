@@ -1046,13 +1046,23 @@ export default function AgentPanel() {
             )}
           </div>
           {agentQuery.isInitialLoading && <AgentPanelSkeleton />}
-          {!canEditAgent && !showChannels && !agentQuery.isInitialLoading && (
-            <div className="flex h-[30vh] w-full items-center justify-center">
+          {!canEditAgent && !agentQuery.isInitialLoading && (
+            <div
+              className={
+                showChannels
+                  ? 'flex w-full justify-center'
+                  : 'flex h-[30vh] w-full items-center justify-center'
+              }
+            >
               <div className="text-center">
-                <h2 className="text-text-primary m-2 text-xl font-semibold">
-                  {localize('com_agents_not_available')}
-                </h2>
-                <p className="text-text-secondary">{localize('com_agents_no_access')}</p>
+                {!showChannels && (
+                  <>
+                    <h2 className="text-text-primary m-2 text-xl font-semibold">
+                      {localize('com_agents_not_available')}
+                    </h2>
+                    <p className="text-text-secondary">{localize('com_agents_no_access')}</p>
+                  </>
+                )}
                 {agentQuery.data?.id && <ResetApprovals agentId={agentQuery.data.id} />}
               </div>
             </div>

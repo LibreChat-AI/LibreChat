@@ -2,6 +2,7 @@
  * @jest-environment jsdom
  */
 import * as React from 'react';
+import userEvent from '@testing-library/user-event';
 import { render, waitFor, fireEvent, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { UseFormReturn } from 'react-hook-form';
@@ -29,6 +30,7 @@ let mockHasPermission = true;
 let mockPermissionBits: number | undefined;
 let mockRolePermissions: Record<string, boolean> = {};
 let mockChannelsProps: unknown;
+let mockPersonalApprovalModesEnabled = true;
 let mockAgentPanelContext = {
   activePanel: 'builder',
   agentsConfig: {
@@ -61,6 +63,7 @@ jest.mock('librechat-data-provider', () => {
     dataService: {
       createAgent: jest.fn(),
       updateAgent: jest.fn(),
+      resetToolApprovalGrants: jest.fn(),
     },
     Tools: actualModule.Tools || {
       execute_code: 'execute_code',
@@ -87,11 +90,7 @@ jest.mock('librechat-data-provider', () => {
 });
 
 jest.mock('@librechat/client', () => ({
-  Button: ({ children, onClick, ...props }: any) => (
-    <button onClick={onClick} {...props}>
-      {children}
-    </button>
-  ),
+  ...jest.requireActual('@librechat/client'),
   useToastContext: () => ({
     get showToast() {
       return mockShowToast || jest.fn();
@@ -124,6 +123,9 @@ jest.mock('~/utils', () => ({
 
 jest.mock('~/hooks', () => ({
   useSelectAgent: () => ({ onSelect: jest.fn() }),
+  useGetAgentsConfig: () => ({
+    agentsConfig: { toolApproval: { agentModes: mockPersonalApprovalModesEnabled } },
+  }),
   useLocalize: () => (key: string) => key,
   useHasAccess: ({ permissionType }: { permissionType: string }) =>
     mockRolePermissions[permissionType] !== false,
@@ -347,6 +349,8 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
     mockPermissionBits = undefined;
     mockRolePermissions = {};
     mockChannelsProps = undefined;
+    mockPersonalApprovalModesEnabled = true;
+    jest.mocked(dataService.resetToolApprovalGrants).mockResolvedValue({ reset: true });
     mockFormDefaults = {};
     mockModelsQuery = {
       data: { openai: ['gpt-4'] },
@@ -365,6 +369,43 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
   });
 
   describe('AgentPanel', () => {
+    it.each([
+      [PermissionBits.SHARE, true, true],
+      [PermissionBits.SHARE, false, true],
+      [PermissionBits.SHARE, true, false],
+      [PermissionBits.VIEW, true, true],
+    ] as const)(
+      'keeps personal consent independent from channels and editing: bits=%s enabled=%s remote=%s',
+      async (bits, channelsEnabled, remote) => {
+        const { mockUseGetAgentByIdQuery } = setupMocks();
+        mockAgentQuery(mockUseGetAgentByIdQuery, { author: 'other-user' });
+        mockPermissionBits = bits;
+        mockRolePermissions = { [PermissionTypes.REMOTE_AGENTS]: remote };
+        mockAgentPanelContext = {
+          ...mockAgentPanelContext,
+          agentsConfig: { allowedProviders: [], channels: { enabled: channelsEnabled } },
+        };
+        const user = userEvent.setup();
+        const mounted = render(<AgentPanel />, { wrapper: createWrapper() });
+        const managesChannels = bits === PermissionBits.SHARE && channelsEnabled && remote;
+        await waitFor(() =>
+          expect(Boolean(mounted.queryByTestId('channel-controls'))).toBe(managesChannels),
+        );
+        expect(mounted.queryByTestId('save-agent-button')).not.toBeInTheDocument();
+        expect(mockAgentConfigStatus).toBeUndefined();
+        const reset = await mounted.findByRole('button', { name: 'com_ui_tool_approval_reset' });
+        expect(reset).toBeEnabled();
+        expect(Boolean(mounted.queryByText('com_agents_not_available'))).toBe(!managesChannels);
+        await user.click(reset);
+        await user.click(mounted.getByRole('menuitem', { name: 'com_ui_tool_approval_reset' }));
+        await waitFor(() =>
+          expect(dataService.resetToolApprovalGrants).toHaveBeenCalledWith({
+            agentId: 'agent-123',
+          }),
+        );
+      },
+    );
+
     it.each([
       ['USER', PermissionBits.EDIT | PermissionBits.SHARE, true, true, true],
       ['USER', PermissionBits.EDIT, true, true, false],
