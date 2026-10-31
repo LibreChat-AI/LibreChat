@@ -102,3 +102,9 @@ export type {
   ComposerHintKind,
   ComposerHintState,
 } from './components/composer/bar/hint';
+
+/** Chat pane: the layout that seats the header, message column and composer band. */
+export { default as ChatPane } from './components/pane/ChatPane';
+export { getChatPaneView } from './components/pane/view';
+export type { ChatPaneProps } from './components/pane/ChatPane';
+export type { ChatPaneView, ChatPaneColumn } from './components/pane/view';
