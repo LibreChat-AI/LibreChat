@@ -11,6 +11,7 @@ import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { GenerationJob } from '~/types/stream';
 import { resolveAskUserQuestionResume, resolveToolApprovalResume } from '../hitl/resume';
 import { canonicalResponseJSON } from './background';
+import { publishResponseDispatch } from './outbox';
 import { responseTenantId } from './scope';
 
 export type ResponseDecisionResolution =
@@ -50,6 +51,7 @@ export function resolveResponseReviewDecision(
 }
 
 export interface ResponseDecisionDependencies {
+  onDispatchError?: (error: unknown) => void;
   storage: ResponseStorage;
   jobs: Pick<GenerationJobManagerClass, 'getJob'>;
   authorize: (record: StoredResponseRecord) => Promise<boolean>;
@@ -61,7 +63,7 @@ export interface ResponseDecisionDependencies {
     decision: ResponseReviewDecision;
     resolution: ResponseDecisionResolution;
   }) => Promise<boolean>;
-  /** Only publish the immutable saved intent through the existing resume queue; never execute inline. */
+  /** Only publish the immutable saved intent; never execute inline. Worker admission repeats live checkpoint/content authority. */
   enqueue: (record: StoredResponseRecord) => Promise<void>;
   now?: () => number;
 }
@@ -247,7 +249,11 @@ export function createResponseDecisionSubmission(
     if (!current || !(await deps.authorize(current))) return missing;
     if (!sameIntent(current) || current.pendingTerminal || current.cancellationRequestedAt != null)
       return unavailable;
-    if (!terminal(current)) await deps.enqueue(current);
+    await publishResponseDispatch(
+      { storage: deps.storage, enqueue: deps.enqueue, onError: deps.onDispatchError },
+      current,
+      'resume',
+    );
     return receipt(current);
   };
 }

@@ -69,15 +69,16 @@ export type AgentTriggerCompletionExpedite =
   | { user: string; conversationId: string; taskIds?: string[] }
   | { deliveryKeys: string[] };
 
+export interface AgentTriggerSourceDispatcher {
+  workerCapability: string;
+  dispatch: AgentTriggerExecutionHost['dispatch'];
+  /** Bounded source publication recovery. The canonical queue owns scheduling. */
+  recoverPending?: (limit: number, activity: { found: boolean }) => Promise<number>;
+}
+
 export interface AgentTriggerServiceDeps {
   /** Protocol-owned execution handlers reuse this queue without going through chat ingress. */
-  sourceDispatchers?: ReadonlyMap<
-    string,
-    {
-      workerCapability: string;
-      dispatch: AgentTriggerExecutionHost['dispatch'];
-    }
-  >;
+  sourceDispatchers?: ReadonlyMap<string, AgentTriggerSourceDispatcher>;
   /** Source-owned live authority recheck immediately before queued dispatch. */
   authorizeSource?: (envelope: AgentTriggerEnvelope) => Promise<void>;
   fetch?: AgentTriggerExecutionHostDeps['fetch'];
@@ -533,6 +534,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         batchRecovery,
         expiredLegacyActorReceipts,
         retiredCheckpointDeletions,
+        recoveredSourceOutboxes,
       ] = await Promise.all([
         isolated('user purges', () =>
           methods.recoverAgentTriggerUserPurges(purgeRecoveryLimit, activity),
@@ -565,6 +567,14 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
           () =>
             deps.reclaimCheckpointDeletions?.(purgeRecoveryLimit, activity) ?? Promise.resolve(0),
         ),
+        Promise.all(
+          [...(deps.sourceDispatchers?.entries() ?? [])].map(([name, source]) =>
+            isolated(
+              `source outbox ${name}`,
+              () => source.recoverPending?.(purgeRecoveryLimit, activity) ?? Promise.resolve(0),
+            ),
+          ),
+        ).then((counts) => counts.reduce((sum, count) => sum + count, 0)),
       ]);
       const recoveredBatches = batchRecovery.count;
       const reclaimedLanes = batchRecovery.succeeded
@@ -581,7 +591,8 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         recoveredBatches > 0 ||
         reclaimedLanes > 0 ||
         expiredLegacyActorReceipts > 0 ||
-        retiredCheckpointDeletions > 0
+        retiredCheckpointDeletions > 0 ||
+        recoveredSourceOutboxes > 0
       ) {
         logger.info('[agent-triggers] recovered durable delivery maintenance', {
           purgedUsers,
@@ -590,6 +601,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
           reclaimedLanes,
           expiredLegacyActorReceipts,
           retiredCheckpointDeletions,
+          recoveredSourceOutboxes,
         });
       }
       return (
@@ -600,7 +612,8 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         recoveredBatches === 0 &&
         reclaimedLanes === 0 &&
         expiredLegacyActorReceipts === 0 &&
-        retiredCheckpointDeletions === 0
+        retiredCheckpointDeletions === 0 &&
+        recoveredSourceOutboxes === 0
       );
     })
       .catch((error) => {
