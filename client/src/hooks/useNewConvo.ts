@@ -78,6 +78,39 @@ export function clearInheritedAgentWorkspace(
     : conversation;
 }
 
+function restoreRememberedTarget(
+  conversation: TConversation,
+  endpoint: EModelEndpoint,
+  index: number,
+): TConversation {
+  if (
+    conversation.spec ||
+    conversation.model ||
+    conversation.agent_id ||
+    conversation.assistant_id
+  ) {
+    return conversation;
+  }
+  if (isAgentsEndpoint(endpoint)) {
+    const agentId = localStorage.getItem(`${LocalStorageKeys.AGENT_ID_PREFIX}${index}`);
+    return agentId && !isEphemeralAgentId(agentId)
+      ? { ...conversation, endpoint, agent_id: agentId }
+      : conversation;
+  }
+  if (!isAssistantsEndpoint(endpoint)) return conversation;
+  const assistantId = localStorage.getItem(`${LocalStorageKeys.ASST_ID_PREFIX}${index}${endpoint}`);
+  if (!assistantId) return conversation;
+  const stored = localStorage.getItem(`${LocalStorageKeys.LAST_CONVO_SETUP}_${index}`);
+  let model: string | null | undefined;
+  try {
+    const setup = stored ? (JSON.parse(stored) as Partial<TConversation>) : undefined;
+    if (setup?.endpoint === endpoint && setup.assistant_id === assistantId) model = setup.model;
+  } catch {
+    // The remembered ID can still be resolved without a saved setup.
+  }
+  return { ...conversation, endpoint, assistant_id: assistantId, model };
+}
+
 const useNewConvo = (index = 0) => {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -205,6 +238,10 @@ const useNewConvo = (index = 0) => {
             conversation.assistant_id = undefined;
           }
 
+          if (!activePreset && conversation.conversationId === Constants.NEW_CONVO) {
+            conversation = restoreRememberedTarget(conversation, defaultEndpoint, index);
+          }
+
           const models =
             modelsData?.[defaultEndpoint] ??
             queryClient.getQueryData<TModelsConfig>([QueryKeys.models, defaultEndpoint])?.[
@@ -294,7 +331,7 @@ const useNewConvo = (index = 0) => {
         }
         navigate(path, { replace: true });
       },
-    [endpointsConfig, defaultPreset, queryClient, hasAgentAccess, searchParams],
+    [index, endpointsConfig, defaultPreset, queryClient, hasAgentAccess, searchParams],
   );
 
   const newConversation = useCallback(
