@@ -7,6 +7,7 @@ import type {
   TCredentialsConfig,
   TChatProjectsConfig,
   TMemoryConfig,
+  TPromptsConfig,
   EModelEndpoint,
   TVertexAIConfig,
   TAgentsEndpoint,
@@ -53,6 +54,8 @@ export interface FunctionTool {
 export interface AppConfig {
   /** The main custom configuration */
   config: Partial<TCustomConfig>;
+  /** Prompt library configuration */
+  prompts?: TPromptsConfig;
   /** OCR configuration */
   ocr?: TCustomConfig['ocr'];
   /** File paths configuration */

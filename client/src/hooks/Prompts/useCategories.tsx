@@ -27,8 +27,11 @@ const useCategories = ({
     enabled: hasAccess,
     select: (data) =>
       data.map((category) => ({
-        label: localize(category.label as TranslationKeys),
+        label: category.label?.startsWith('com_')
+          ? localize(category.label as TranslationKeys)
+          : category.label || category.value,
         value: category.value,
+        ...(category.custom && { custom: true }),
         icon: category.value ? (
           <CategoryIcon category={category.value} className={className} />
         ) : null,
