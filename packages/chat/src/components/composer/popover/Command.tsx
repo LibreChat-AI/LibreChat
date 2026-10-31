@@ -158,7 +158,7 @@ export default function CommandPopover({
 
   return (
     <div className="absolute bottom-28 z-10 w-full space-y-2">
-      <div className="popover border-border-light bg-surface-secondary rounded-theme-popover border p-2 shadow-lg">
+      <div className="popover border-border-light bg-surface-tertiary-alt rounded-theme-popover border p-2 shadow-lg">
         <Input
           ref={inputRef}
           role="combobox"
@@ -167,7 +167,8 @@ export default function CommandPopover({
           aria-controls={listboxId}
           aria-activedescendant={activeId}
           placeholder={placeholder}
-          className="bg-surface-secondary mb-1 h-auto w-full rounded-none border-0 p-2"
+          variant="embedded"
+          className="mb-1"
           autoComplete="off"
           value={searchValue}
           onKeyDown={handleKeyDown}

@@ -1388,11 +1388,6 @@
       "count": 1
     }
   },
-  "packages/chat/src/components/composer/popover/Command.tsx": {
-    "shadcn/no-restyle": {
-      "count": 4
-    }
-  },
   "packages/chat/src/components/messages/Feedback.tsx": {
     "shadcn/no-restyle": {
       "count": 10
