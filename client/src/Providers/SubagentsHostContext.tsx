@@ -1,16 +1,15 @@
 import { useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { CSSTransition } from 'react-transition-group';
-import { ScrollToBottom } from '@librechat/chat/components';
 import { setDefaultSubagentsHost } from '@librechat/chat/react';
 import { QueryKeys, dataService } from 'librechat-data-provider';
+import { SteerPart, ScrollToBottom } from '@librechat/chat/components';
 import type {
   SubagentsHost,
   TaskContentScope,
   SubagentRetainedControl,
   SubagentJumpToLatestProps,
 } from '@librechat/chat/react';
-import SteerPart from '~/components/Chat/Messages/Content/Parts/SteerPart';
 
 /** Reads a shortened guidance message's full receipt, once the reader asks for it. */
 function useRetainedControl(

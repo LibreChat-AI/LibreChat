@@ -84,6 +84,8 @@ const host: MessagePartsHost = {
   renderAgentIcon: () => null,
   renderAgentAvatar: () => <span data-testid="agent-avatar" />,
   renderContentParts: () => null,
+  renderImage: () => null,
+  renderFilePreview: () => null,
   useFontSize: () => 'text-base',
   useShowThinking: () => false,
   useAutoExpandTools: () => false,

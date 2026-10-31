@@ -3,7 +3,14 @@ import './renderers';
 export * from './Attachment';
 export * from './OpenAIImageGen';
 
-export { Text, Summary, EmptyText, AgentUpdate, CollapsibleText } from '@librechat/chat/components';
+export {
+  Text,
+  Summary,
+  EmptyText,
+  SteerPart,
+  AgentUpdate,
+  CollapsibleText,
+} from '@librechat/chat/components';
 export {
   default as Reasoning,
   ReasoningMarker,
@@ -19,6 +26,5 @@ export { default as FileAuthoringCall } from './FileAuthoringCall';
 export { default as BashCall } from './BashCall';
 export { default as PtcToolTrace } from './PtcToolTrace';
 export { default as SubagentCall } from './SubagentCall';
-export { default as SteerPart } from './SteerPart';
 export { AuthorHeader } from '@librechat/chat/components';
 export { default as ResumeAuthorHeader } from './ResumeAuthorHeader';

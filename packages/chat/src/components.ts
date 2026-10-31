@@ -105,6 +105,8 @@ export type { AskOption } from './components/parts/AskOptions';
 export { default as SkillPills } from './components/parts/SkillPills';
 export type { SkillPillsSource } from './components/parts/SkillPills';
 export { default as MessageQuotes } from './components/parts/MessageQuotes';
+export { default as SteerPart } from './components/parts/SteerPart';
+export type { SteerPartProps } from './components/parts/SteerPart';
 export {
   default as DiffView,
   diffPreviewText,

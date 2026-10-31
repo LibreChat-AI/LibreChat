@@ -11,6 +11,7 @@ import type { Agents, TConversation, TMessage } from 'librechat-data-provider';
 import type { PendingSteer } from '@librechat/chat';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { applyPendingAction } from '~/utils/approval';
+import { setAppPartRenderers } from '../slots';
 import PendingSteers from '../PendingSteers';
 import store from '~/store';
 
@@ -45,10 +46,13 @@ jest.mock('~/Providers', () => ({
   useFileMapContext: () => ({}),
 }));
 
-jest.mock('~/components/Chat/Messages/Content/MarkdownLite', () => ({
-  __esModule: true,
-  default: ({ content }: { content: string }) => <span>{content}</span>,
-}));
+/** The parts barrel registers the app's renderers; this spec loads PendingSteers alone. */
+setAppPartRenderers({
+  renderMarkdown: ({ content }) => <span>{content}</span>,
+  renderAgentIcon: () => null,
+  renderImage: () => null,
+  renderFilePreview: () => null,
+});
 
 const CONVO_ID = 'convo-1';
 
