@@ -1,8 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo, useCallback, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { useGetEndpointModelsQuery } from 'librechat-data-provider/react-query';
 import {
-  QueryKeys,
   dataService,
   PermissionBits,
   isAgentsEndpoint,
@@ -19,6 +18,9 @@ import {
   useListAgentsQuery,
   useListAssistantsQuery,
 } from '~/data-provider';
+import { assistantKey } from './ask/guards';
+
+const viewAgents = { requiredPermission: PermissionBits.VIEW };
 
 export function targetIdentity(conversation: TConversation | null | undefined): string {
   return JSON.stringify([
@@ -48,22 +50,20 @@ export default function useTarget(
   const agent = useGetAgentByIdQuery(agentId, { enabled: isSavedAgent });
   const version = endpoints.data?.[endpoint]?.version ?? defaultAssistantsVersion[endpoint];
   const assistant = useQuery(
-    [QueryKeys.assistant, endpoint, assistantId, version],
+    assistantKey(endpoint, assistantId, version, conversation?.model),
     () =>
       dataService.getAssistantById({
         endpoint: endpoint as AssistantsEndpoint,
         assistant_id: assistantId ?? '',
         version,
+        model: conversation?.model,
       }),
     { enabled: !!assistantId && !!endpoints.data?.[endpoint], retry: false, staleTime: 5000 },
   );
   const needsAgent = isAgent && !agentId;
   const needsAssistant = isAssistant && !assistantId;
   const needsModel = !!endpoint && !isSavedAgent && !isAssistant && !conversation?.model;
-  const agents = useListAgentsQuery(
-    { requiredPermission: PermissionBits.VIEW },
-    { enabled: needsAgent },
-  );
+  const agents = useListAgentsQuery(viewAgents, { enabled: needsAgent });
   const assistants = useListAssistantsQuery(endpoint as AssistantsEndpoint, undefined, {
     enabled: needsAssistant,
   });
@@ -74,7 +74,9 @@ export default function useTarget(
   const defaultAgent = needsAgent ? agents.data?.data[0]?.id : undefined;
   const defaultAssistant = needsAssistant ? assistants.data?.data[0] : undefined;
   const defaultModel = needsModel ? models.data?.[endpoint]?.[0] : undefined;
-  const assistantModel = assistant.data?.model ?? defaultAssistant?.model;
+  const assistantModel = conversation?.model
+    ? undefined
+    : (assistant.data?.model ?? defaultAssistant?.model);
 
   useEffect(() => {
     const patch: Partial<TConversation> = {};
@@ -107,7 +109,8 @@ export default function useTarget(
     (needsAssistant && assistants.isError) ||
     (needsModel && models.isError);
   const ready = !!config && !!endpoints.data?.[endpoint] && targetReady;
-  const retry = () => {
+  const retryRef = useRef(() => {});
+  retryRef.current = () => {
     if (startup.isError) void startup.refetch();
     if (endpoints.isError) void endpoints.refetch();
     if (isSavedAgent) void agent.refetch();
@@ -116,12 +119,16 @@ export default function useTarget(
     if (needsAssistant) void assistants.refetch();
     if (needsModel) void models.refetch();
   };
-  return {
-    ready,
-    failed,
-    pending: !ready && !failed,
-    retry,
-    agent: agent.data,
-    assistant: assistant.data,
-  };
+  const retry = useCallback(() => retryRef.current(), []);
+  return useMemo(
+    () => ({
+      ready,
+      failed,
+      pending: !ready && !failed,
+      retry,
+      agent: agent.data,
+      assistant: assistant.data,
+    }),
+    [ready, failed, retry, agent.data, assistant.data],
+  );
 }

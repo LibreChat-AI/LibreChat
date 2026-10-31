@@ -20,6 +20,7 @@ import type { ChatFormValues } from '~/common';
 import { ChatTransportContext, defaultChatTransport } from '~/Providers/ChatTransportContext';
 import { getNewConversationDraftId, getDraft, setDraft } from '~/utils/drafts';
 import { ChatContext, ChatFormProvider } from '~/Providers';
+import { TargetContext } from '~/Providers/TargetContext';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import { SteerHostTestProvider } from 'test/steerHost';
 import { startupConfigKey } from '~/data-provider';
@@ -103,16 +104,20 @@ function Harness({
   return (
     <ChatFormProvider {...methods}>
       <ChatContext.Provider value={chatHelpers}>
-        <ChatForm
-          index={0}
-          routePending={routePending}
-          isLandingPage
-          enterToSend
-          autoSendText={-1}
-          speechSettingsInitialized={speechSettingsInitialized}
-          footerBelow={false}
-          centerFormOnLanding={false}
-        />
+        <TargetContext.Provider
+          value={{ ready: true, pending: false, failed: false, retry: () => {} }}
+        >
+          <ChatForm
+            index={0}
+            routePending={routePending}
+            isLandingPage
+            enterToSend
+            autoSendText={-1}
+            speechSettingsInitialized={speechSettingsInitialized}
+            footerBelow={false}
+            centerFormOnLanding={false}
+          />
+        </TargetContext.Provider>
       </ChatContext.Provider>
     </ChatFormProvider>
   );

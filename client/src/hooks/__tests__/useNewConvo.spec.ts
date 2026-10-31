@@ -33,6 +33,8 @@ function QueryWrapper({ children }: { children: React.ReactNode }) {
   return React.createElement(QueryClientProvider, { client }, children);
 }
 
+const mockNavigate = jest.fn();
+let mockRunSwitch = false;
 const mockDeleteFiles = jest.fn();
 const mockUploadFile = jest.fn();
 let mockUploadOptions: { onSuccess?: (data: object, body: FormData) => void } = {};
@@ -73,7 +75,7 @@ const mockFiles = new Map<
 >();
 
 jest.mock('react-router-dom', () => ({
-  useNavigate: () => jest.fn(),
+  useNavigate: () => mockNavigate,
   useSearchParams: () => [new URLSearchParams()],
 }));
 
@@ -89,10 +91,13 @@ jest.mock('recoil', () => ({
     return null;
   },
   useSetRecoilState: (key: string) => (update: unknown) => mockSetEphemeralAgent(key, update),
-  useRecoilCallback: (callback) =>
-    callback.length === 0
-      ? jest.fn()
-      : callback({ set: (key, update) => mockSetEphemeralAgent(key, update) }),
+  useRecoilCallback: (callback) => {
+    if (callback.length === 0) {
+      if (mockRunSwitch) return callback({});
+      return jest.fn();
+    }
+    return callback({ set: (key, update) => mockSetEphemeralAgent(key, update) });
+  },
 }));
 jest.mock('librechat-data-provider/react-query', () => ({
   useGetModelsQuery: () => ({ data: {} }),
@@ -1806,4 +1811,41 @@ describe('useNewConvo reset cleanup', () => {
     expect(mockStorePendingDiscardIds).toHaveBeenCalledWith(0, ['inflight-paste']);
     expect(mockPendingDiscardIds).toEqual(new Set(['inflight-paste']));
   });
+});
+
+describe('passive route navigation', () => {
+  beforeEach(() => {
+    mockRunSwitch = true;
+    mockNavigate.mockClear();
+  });
+  afterEach(() => {
+    mockRunSwitch = false;
+  });
+
+  it.each([true, false])(
+    'uses explicit replacement intent without catalog data (%s)',
+    async (replace) => {
+      const { result } = renderHook(() => useNewConvo(), { wrapper: QueryWrapper });
+      await act(async () =>
+        result.current.switchToConversation(
+          {
+            conversationId: 'new',
+            endpoint: EModelEndpoint.openAI,
+            model: 'selected',
+            title: '',
+            createdAt: '',
+            updatedAt: '',
+          },
+          null,
+          undefined,
+          false,
+          false,
+          true,
+          undefined,
+          replace,
+        ),
+      );
+      expect(mockNavigate).toHaveBeenCalledWith('/c/new', ...(replace ? [{ replace: true }] : []));
+    },
+  );
 });

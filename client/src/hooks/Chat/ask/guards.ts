@@ -1,5 +1,6 @@
 import {
   QueryKeys,
+  EModelEndpoint,
   isAgentsEndpoint,
   isEphemeralAgentId,
   isAssistantsEndpoint,
@@ -9,6 +10,21 @@ import type { TConversation, TEndpointsConfig, Agent, Assistant } from 'librecha
 import type { QueryClient } from '@tanstack/react-query';
 
 export { isHistoryRevalidating } from '@librechat/chat/react';
+
+export function assistantKey(
+  endpoint: string,
+  id: string | null | undefined,
+  version: string | number,
+  model: string | null | undefined,
+) {
+  return [
+    QueryKeys.assistant,
+    endpoint,
+    id,
+    version,
+    endpoint === EModelEndpoint.azureAssistants ? model : undefined,
+  ] as const;
+}
 
 /** Catalog membership is not required to send to an explicit, authorized target. */
 export function isTargetReady(
@@ -29,12 +45,9 @@ export function isTargetReady(
   if (isAssistantsEndpoint(endpoint)) {
     const id = conversation?.assistant_id;
     const version = endpoints[endpoint]?.version ?? defaultAssistantsVersion[endpoint];
-    const assistant = queryClient.getQueryState<Assistant>([
-      QueryKeys.assistant,
-      endpoint,
-      id,
-      version,
-    ]);
+    const assistant = queryClient.getQueryState<Assistant>(
+      assistantKey(endpoint, id, version, conversation?.model),
+    );
     return assistant?.status === 'success' && assistant.data?.id === id;
   }
   return !!conversation?.model;

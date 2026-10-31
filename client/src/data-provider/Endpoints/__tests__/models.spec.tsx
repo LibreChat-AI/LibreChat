@@ -3,7 +3,7 @@ import { RecoilRoot } from 'recoil';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useGetEndpointModelsQuery } from 'librechat-data-provider/react-query';
-import { dataService, QueryKeys, EModelEndpoint, getConfigDefaults } from 'librechat-data-provider';
+import { dataService, QueryKeys, EModelEndpoint, configSchema } from 'librechat-data-provider';
 import type { TModelsConfig, TEndpointsConfig, TStartupConfig } from 'librechat-data-provider';
 import { activateCatalog, resetCatalogWarmup } from '~/hooks/useCatalogWarmup';
 import useEndpoints from '~/hooks/Endpoint/useEndpoints';
@@ -66,7 +66,7 @@ const startupConfig: TStartupConfig = {
   sharedLinksEnabled: false,
   publicSharedLinksEnabled: false,
   allowAccountDeletion: false,
-  interface: getConfigDefaults().interface,
+  interface: configSchema.parse({ version: '1.3.18' }).interface,
 };
 
 function setup(startup = startupConfig) {

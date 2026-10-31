@@ -460,6 +460,7 @@ export default function useQueryParams({
   /** Consumes an auto-submit once, leaving a refused submission in the composer. */
   const processSubmission = useCallback(() => {
     if (
+      routePendingRef.current ||
       submissionHandledRef.current ||
       !pendingSubmitRef.current ||
       !promptTextRef.current ||
