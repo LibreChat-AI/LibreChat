@@ -7,33 +7,6 @@ export type GroupedPart =
   | { type: 'single'; part: PartWithIndex }
   | { type: 'tool-group'; parts: PartWithIndex[]; labelPart?: PartWithIndex };
 
-type ToolCallWithNestedContent = Agents.ToolCall & {
-  subagent_content?: TMessageContentParts[];
-};
-
-/**
- * True when the part carries an unresolved tool approval — directly or nested
- * in subagent content. Collapsed disclosure bodies retain instead of
- * unmounting while this holds, because `ToolApproval` owns unsent local
- * edit/respond/reason state that an unmount would discard.
- */
-export function hasPendingApprovalInPart(part: TMessageContentParts): boolean {
-  if (part.type !== ContentTypes.TOOL_CALL) {
-    return false;
-  }
-  const toolCall = part[ContentTypes.TOOL_CALL] as ToolCallWithNestedContent | undefined;
-  if (!toolCall) {
-    return false;
-  }
-  if (toolCall.approval != null && (toolCall.output?.length ?? 0) === 0) {
-    return true;
-  }
-  return (
-    Array.isArray(toolCall.subagent_content) &&
-    toolCall.subagent_content.some(hasPendingApprovalInPart)
-  );
-}
-
 /**
  * True while a standard tool call waits on a sign-in. A step the run already
  * closed can never be waiting, whatever its progress says: `ToolCall` hides

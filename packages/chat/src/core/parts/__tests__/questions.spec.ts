@@ -1,22 +1,26 @@
 import { ContentTypes } from 'librechat-data-provider';
 import type { Agents, TMessage, TMessageContentParts } from 'librechat-data-provider';
 import {
-  ASK_USER_QUESTION,
-  applyPendingAction,
-  countTaggedApprovalParts,
   getAskUserQuestionPart,
-  findPendingActionMessageIndex,
   removeAskUserQuestionPart,
   parseAskUserQuestionArgs,
   parseAskUserQuestionsArgs,
   resolveAskUserQuestionPart,
   getSubmittedAskAnswer,
-  findLiveAskUserQuestion,
   collectLiveAskToolCallIds,
-  isAnsweredAskUserQuestionPart,
   splitOtherOption,
-} from './approval';
-import { hasPendingApprovalInPart } from './groupToolCalls';
+} from '../questions';
+import {
+  applyPendingAction,
+  countTaggedApprovalParts,
+  hasPendingApprovalInPart,
+  findPendingActionMessageIndex,
+} from '../../pending';
+import {
+  ASK_USER_QUESTION,
+  findLiveAskUserQuestion,
+  isAnsweredAskUserQuestionPart,
+} from '../../ask';
 
 const toolCallPart = (id: string, extra: Record<string, unknown> = {}): TMessageContentParts =>
   ({

@@ -1,5 +1,10 @@
 import { boundIntentLabel, getToolCallIntent } from '@librechat/chat/react';
 import {
+  hasPendingApprovalInPart,
+  ASK_USER_QUESTION,
+  getSubmittedAskAnswer,
+} from '@librechat/chat';
+import {
   Constants,
   ContentTypes,
   isOpaqueReasoning,
@@ -16,10 +21,9 @@ import type { TOptions } from 'i18next';
 import type { SpanOutcome, SpanSummary } from './outcome';
 import type { TranslationKeys } from '~/hooks';
 import { getBatchActivityLabelPart, getActivityLabelText } from '~/utils/activityLabels';
-import { hasPendingApprovalInPart, hasPendingAuthInPart } from '~/utils/groupToolCalls';
-import { ASK_USER_QUESTION, getSubmittedAskAnswer } from '~/utils/approval';
 import { getToolDisplayLabel, parseToolName } from '~/utils/toolLabels';
 import { getToolIconName, getToolMeta, summarizeSpan } from './outcome';
+import { hasPendingAuthInPart } from '~/utils/groupToolCalls';
 import { isError } from './ToolOutput';
 
 /** How often a live fold's header may repaint. A streamed intent moves the

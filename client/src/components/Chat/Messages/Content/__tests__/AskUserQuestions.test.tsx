@@ -1,9 +1,9 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { ASK_USER_DECLINED_ANSWER } from '@librechat/chat';
 import { ChatSurfaceProvider } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { Agents } from 'librechat-data-provider';
-import { ASK_USER_DECLINED_ANSWER } from '~/utils/approval';
 import AskUserQuestions from '../AskUserQuestions';
 
 const mockSubmitAskAnswer = jest.fn();

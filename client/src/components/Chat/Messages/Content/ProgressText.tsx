@@ -5,7 +5,7 @@ import * as Popover from '@radix-ui/react-popover';
 import { Button, disclosureChevronVariants } from '@librechat/client';
 import { isReportableRunStepDuration } from 'librechat-data-provider';
 import { ElapsedTimer, CancelledIcon, ROW_GLYPH_SLOT } from '@librechat/chat/components';
-import type { ToolCallPhase } from '~/utils/toolCallPhase';
+import type { ToolCallPhase } from '@librechat/chat';
 import { cn, getRunStepDurationLabels } from '~/utils';
 import { useToolPreparation } from './preparation';
 import { useFailedReveal } from './reveal';

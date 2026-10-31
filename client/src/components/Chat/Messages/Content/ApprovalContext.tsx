@@ -9,6 +9,7 @@ import {
 } from 'react';
 import { Constants } from 'librechat-data-provider';
 import { useAtom, useStore, useAtomValue } from 'jotai';
+import { resolveAskUserQuestionPart } from '@librechat/chat';
 import {
   askSubmitStatusAtom,
   pendingApprovalActionFamily,
@@ -22,7 +23,6 @@ import {
   type ResumeAgentFields,
 } from '~/data-provider';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
-import { resolveAskUserQuestionPart } from '~/utils/approval';
 import { ChatContext } from '~/Providers/ChatContext';
 
 /** Shared read/write for the ask-answer submit status. */
