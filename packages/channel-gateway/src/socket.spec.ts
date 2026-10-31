@@ -275,12 +275,39 @@ describe('Socket Mode app binding', () => {
     await tick();
     expect(app.connected).toBe(false);
     expect(backend).not.toHaveBeenCalled();
+    socket.emit('connecting');
     socket.emit('ws_message', hello(), false);
     await tick();
     socket.emit('slack_event', event());
     await tick();
     expect(backend).toHaveBeenCalledTimes(2);
     controller.abort();
+  });
+
+  test('transport failure revokes hello authority until the next connection attempt', async () => {
+    const { app, backend, log } = setup();
+    const controller = new AbortController();
+    const { socket, closed } = await connectSocket(config, app, 'A1', log, controller.signal);
+    try {
+      socket.emit('ws_message', hello(), false);
+      await tick();
+      expect(app.connected).toBe(true);
+      socket.emit('error', new Error('private transport failure'));
+      expect(app.connected).toBe(false);
+      socket.emit('ws_message', hello(), false);
+      await tick();
+      expect(app.connected).toBe(false);
+      socket.emit('slack_event', event());
+      await tick();
+      expect(backend).not.toHaveBeenCalled();
+      socket.emit('connecting');
+      socket.emit('ws_message', hello(), false);
+      await tick();
+      expect(app.connected).toBe(true);
+    } finally {
+      controller.abort();
+      await closed;
+    }
   });
 
   test('SDK error and rejected admission never log raw content or acknowledge failure', async () => {
@@ -294,14 +321,14 @@ describe('Socket Mode app binding', () => {
     const { socket } = await connectSocket(config, app, 'A1', log, controller.signal);
     socket.emit('ws_message', hello(), false);
     await tick();
-    socket.emit('error', new Error('private Slack app token'));
     const delivery = event();
     socket.emit('slack_event', delivery);
     await tick();
     expect(delivery.ack).not.toHaveBeenCalled();
+    socket.emit('error', new Error('private Slack app token'));
     expect(log.warn.mock.calls).toEqual([
-      ['slack_socket_transport_error'],
       ['slack_socket_delivery_not_accepted'],
+      ['slack_socket_transport_error'],
     ]);
     expect(JSON.stringify(log.warn.mock.calls)).not.toContain('private');
     controller.abort();
@@ -357,6 +384,7 @@ describe('Socket Mode app binding', () => {
       expect(start).toHaveBeenCalledTimes(3);
       expect(app.connected).toBe(false);
       expect(log.warn).toHaveBeenCalledWith('slack_socket_reconnect_failed');
+      connection.socket.emit('connecting');
       connection.socket.emit('ws_message', hello(), false);
       await tick();
       expect(app.connected).toBe(true);
