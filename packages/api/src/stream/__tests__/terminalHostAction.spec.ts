@@ -366,6 +366,39 @@ describe('GenerationJobManager terminal host actions', () => {
     );
   });
 
+  it.each(['complete', 'error', 'abort'] as const)(
+    'reconciles delivery %s with the same retryable source authority',
+    async (outcome) => {
+      const handler = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('source unavailable'))
+        .mockResolvedValue(undefined);
+      manager.setTerminalHostActionHandler(handler);
+      const streamId = `delivery-${outcome}`;
+      const job = await manager.createJob(streamId, 'owner', streamId, {
+        initialMetadata: { agentEventDeliveryKey: 'delivery-event' },
+      });
+      if (outcome === 'abort')
+        await manager.abortJob(streamId, { expectedCreatedAt: job.createdAt });
+      else
+        await manager.completeJob(
+          streamId,
+          outcome === 'error' ? 'execution_failed' : undefined,
+          job.createdAt,
+        );
+      expect(handler).toHaveBeenCalledTimes(1);
+      expect(await store.getJob(streamId)).toMatchObject({ terminalHostActionPending: true });
+      await expect(manager.retryTerminalHostAction(streamId, job.createdAt + 1)).resolves.toBe(
+        false,
+      );
+      await expect(manager.retryTerminalHostAction(streamId, job.createdAt)).resolves.toBe(true);
+      expect(handler).toHaveBeenCalledTimes(2);
+      expect(await store.getJob(streamId)).not.toHaveProperty('terminalHostActionPending');
+      await manager.retryTerminalHostAction(streamId, job.createdAt);
+      expect(handler).toHaveBeenCalledTimes(2);
+    },
+  );
+
   it('retries an exact pending terminal host action when late evidence arrives', async () => {
     const handler = jest
       .fn()

@@ -1,3 +1,6 @@
+import { randomUUID } from 'node:crypto';
+import type { Agents } from 'librechat-data-provider';
+import type { ApprovalPauseOptions } from '~/stream/ApprovalLifecycle';
 import type { GenerationJobManagerClass } from '~/stream';
 import type { GenerationJob } from '~/types/stream';
 import { GenerationJobManager, GenerationAdmissionDeniedError } from '~/stream';
@@ -6,10 +9,10 @@ const ACCOUNT_DELETION_ERROR = 'Account deletion is in progress';
 const REMOTE_EXECUTION_ERROR = 'Remote agent execution failed';
 
 export class AgentExecutionAdmissionError extends Error {
-  readonly code: 'ACCOUNT_DELETION_IN_PROGRESS' | 'RUN_REPLACED';
+  readonly code: 'ACCOUNT_DELETION_IN_PROGRESS' | 'RUN_REPLACED' | 'RUN_ALREADY_ADMITTED';
   readonly status = 409;
 
-  constructor(message: string, code: 'ACCOUNT_DELETION_IN_PROGRESS' | 'RUN_REPLACED') {
+  constructor(message: string, code: AgentExecutionAdmissionError['code']) {
     super(message);
     this.name = 'AgentExecutionAdmissionError';
     this.code = code;
@@ -23,9 +26,11 @@ export interface AgentExecutionEnrollmentParams {
   agentId: string;
   protocol: 'chat.completions' | 'responses';
   isPrincipalActive: (userId: string) => Promise<boolean>;
+  clientRequestId?: string;
+  retainTerminalPersistence?: true;
 }
 
-interface AgentExecutionEnrollmentDeps {
+export interface AgentExecutionEnrollmentDeps {
   manager: GenerationJobManagerClass;
 }
 
@@ -33,8 +38,13 @@ export async function waitForAgentExecutionWrites<T>(writes: readonly Promise<T>
   const results = await Promise.allSettled(writes);
   const failure = results.find((result) => result.status === 'rejected');
   if (failure?.status === 'rejected') {
-    throw failure.reason;
+    throw failure.reason ?? new Error('Required Agent persistence failed');
   }
+}
+
+export interface AgentExecutionSettlement {
+  /** Required writes failed; the durable terminal identity is error, never complete. */
+  persistenceError?: unknown;
 }
 
 export class AgentExecutionEnrollment {
@@ -45,24 +55,58 @@ export class AgentExecutionEnrollment {
   private readonly manager: GenerationJobManagerClass;
   private readonly providerExecutionId: string;
   private readonly abortController: AbortController;
+  private readonly attemptController?: AbortController;
+  private readonly ownerId?: string;
+  private readonly retainTerminalPersistence?: true;
   private readonly trailingWrites: Promise<unknown>[] = [];
   private providerStarted = false;
-  private settlement?: Promise<void>;
+  private providerStartRejected = false;
+  private settlement?: Promise<AgentExecutionSettlement>;
+  private pendingPause?: string;
+  private paused = false;
 
-  constructor(manager: GenerationJobManagerClass, job: GenerationJob) {
+  get isPaused(): boolean {
+    return this.paused;
+  }
+
+  /** A definitive start-CAS loser owns neither terminal publication nor provider drain. */
+  get isStartRejected(): boolean {
+    return this.providerStartRejected;
+  }
+
+  get ownsSettlement(): boolean {
+    return !this.providerStartRejected && (this.ownerId == null || this.providerStarted);
+  }
+
+  constructor(
+    manager: GenerationJobManagerClass,
+    job: GenerationJob,
+    ownerId?: string,
+    retainTerminalPersistence?: true,
+  ) {
     const providerExecutionId = job.metadata.providerExecutionId;
     if (!providerExecutionId) {
       throw new Error('Agent execution enrollment is missing its provider identity');
     }
     this.manager = manager;
+    this.ownerId = ownerId;
+    this.retainTerminalPersistence = retainTerminalPersistence;
     this.runId = job.streamId;
     this.createdAt = job.createdAt;
     this.providerExecutionId = providerExecutionId;
     this.abortController = job.abortController;
-    this.signal = job.abortController.signal;
+    this.attemptController = ownerId == null ? undefined : new AbortController();
+    this.signal =
+      this.attemptController == null
+        ? job.abortController.signal
+        : AbortSignal.any([job.abortController.signal, this.attemptController.signal]);
   }
 
   abort(reason?: unknown): void {
+    if (this.attemptController) {
+      this.attemptController.abort(reason);
+      if (!this.providerStarted) return;
+    }
     this.abortController.abort(reason);
   }
 
@@ -87,18 +131,29 @@ export class AgentExecutionEnrollment {
     }
     let started: boolean;
     try {
-      started = await this.manager.beginProviderExecution(
-        this.runId,
-        this.createdAt,
-        this.providerExecutionId,
-      );
+      started =
+        this.ownerId == null
+          ? await this.manager.beginProviderExecution(
+              this.runId,
+              this.createdAt,
+              this.providerExecutionId,
+            )
+          : await this.manager.beginProviderExecution(
+              this.runId,
+              this.createdAt,
+              this.providerExecutionId,
+              this.ownerId,
+            );
     } catch (error) {
-      /** The CAS may have committed before its response was lost. Provider work has
-       * not begun, but settlement still owns acknowledgement of that possible fence. */
-      this.providerStarted = true;
+      /** Legacy enrollment owns its unique segment. A resumed attempt instead needs its
+       * exact start receipt; the manager reconciles that receipt before returning success.
+       * An unresolved failure is not authority to terminalize or drain another attempt. */
+      if (this.ownerId == null) this.providerStarted = true;
+      else this.providerStartRejected = true;
       throw error;
     }
     if (!started) {
+      this.providerStartRejected = true;
       throw new AgentExecutionAdmissionError(
         'Agent execution stopped before provider startup',
         'RUN_REPLACED',
@@ -106,6 +161,7 @@ export class AgentExecutionEnrollment {
     }
     this.providerStarted = true;
     if (this.signal.aborted) {
+      this.abortController.abort(this.signal.reason);
       throw new AgentExecutionAdmissionError(
         'Agent execution stopped before provider startup',
         'RUN_REPLACED',
@@ -113,39 +169,179 @@ export class AgentExecutionEnrollment {
     }
   }
 
-  settle(error?: unknown): Promise<void> {
+  /** The SDK checkpoint must already be durable; persist its unfinished turn behind the shared barrier. */
+  async pauseForReview(
+    action: Agents.PendingAction,
+    persist: () => Promise<void>,
+    options: Omit<
+      ApprovalPauseOptions,
+      'expectedCreatedAt' | 'expectedProviderExecutionId' | 'persistencePending'
+    > = {},
+  ): Promise<boolean> {
+    if (this.settlement || this.pendingPause || !this.providerStarted)
+      throw new Error('Agent execution cannot publish another pause');
+    if (this.manager.getJobStore().providerGuardedStatusTransitions !== true)
+      throw new Error('Agent review requires provider-guarded status transitions');
+    if (this.signal.aborted) return false;
+    const job = await this.manager.getJob(this.runId);
+    if (
+      job?.createdAt !== this.createdAt ||
+      job.status !== 'running' ||
+      job.metadata.providerExecutionId !== this.providerExecutionId
+    )
+      return false;
+    if (
+      action.streamId !== this.runId ||
+      action.responseMessageId !== this.runId ||
+      action.conversationId !== job.metadata.conversationId ||
+      !action.actionId
+    )
+      throw new Error('Agent approval identity changed');
+    const pauseOptions = {
+      ...options,
+      expectedCreatedAt: this.createdAt,
+      expectedProviderExecutionId: this.providerExecutionId,
+      persistencePending: true,
+    };
+    let published: boolean;
+    try {
+      published = await this.manager.approvals.pause(this.runId, action, pauseOptions);
+    } catch (error) {
+      // A lost CAS acknowledgement is not permission to publish a second action.
+      if (
+        !(await this.manager.approvals.ownsPausePersistence(
+          this.runId,
+          action.actionId,
+          this.createdAt,
+          this.providerExecutionId,
+        ))
+      )
+        throw error;
+      published = true;
+    }
+    if (!published) return false;
+    this.pendingPause = action.actionId;
+    try {
+      if (
+        !(await this.manager.approvals.ownsPausePersistence(
+          this.runId,
+          action.actionId,
+          this.createdAt,
+          this.providerExecutionId,
+        ))
+      )
+        throw new Error('Agent approval persistence ownership changed');
+      await persist();
+    } catch (error) {
+      await this.manager.failPausePersistence(
+        this.runId,
+        action.actionId,
+        REMOTE_EXECUTION_ERROR,
+        this.createdAt,
+        this.providerExecutionId,
+      );
+      throw error;
+    }
+    return true;
+  }
+
+  settle(error?: unknown): Promise<AgentExecutionSettlement> {
     this.settlement ??= this.settleInternal(error);
     return this.settlement;
   }
 
-  private async settleInternal(error?: unknown): Promise<void> {
+  /** The journal may retain this proof after the generation's transient job expires. */
+  async confirmTerminalIdentity(): Promise<{
+    generationCreatedAt: number;
+    providerExecutionId: string;
+    ownerId?: string;
+    outcome: 'complete' | 'error' | 'aborted';
+  }> {
+    if (!this.settlement || !this.ownsSettlement || this.isPaused)
+      throw new Error('Agent terminal ownership is unavailable');
+    await this.settlement;
+    const job = await this.manager.getJob(this.runId);
+    if (
+      !job ||
+      job.createdAt !== this.createdAt ||
+      job.metadata.providerExecutionId !== this.providerExecutionId ||
+      job.metadata.providerDrained !== true ||
+      ['running', 'requires_action'].includes(job.status) ||
+      (this.ownerId != null && job.metadata.providerExecutionOwnerId !== this.ownerId)
+    )
+      throw new Error('Agent terminal settlement could not be confirmed');
+    let outcome: 'complete' | 'error' | 'aborted' = 'complete';
+    if (job.status === 'aborted') outcome = 'aborted';
+    else if (job.status === 'error') outcome = 'error';
+    return {
+      generationCreatedAt: this.createdAt,
+      providerExecutionId: this.providerExecutionId,
+      outcome,
+      ...(this.ownerId == null ? {} : { ownerId: this.ownerId }),
+    };
+  }
+
+  private complete(error?: unknown): Promise<boolean> {
+    const args = [
+      this.runId,
+      error == null ? undefined : REMOTE_EXECUTION_ERROR,
+      this.createdAt,
+    ] as const;
+    if (this.manager.getJobStore().providerGuardedStatusTransitions !== true)
+      return this.manager.completeJob(...args);
+    return this.manager.completeJob(...args, {
+      expectedProviderExecutionId: this.providerExecutionId,
+      persistencePending: this.retainTerminalPersistence,
+    });
+  }
+
+  private async settleInternal(error?: unknown): Promise<AgentExecutionSettlement> {
+    if (!this.ownsSettlement) {
+      await waitForAgentExecutionWrites(this.trailingWrites);
+      return {};
+    }
+    if (this.pendingPause && error == null) return this.settlePause(this.pendingPause);
+    if (this.pendingPause) {
+      try {
+        await this.manager.failPausePersistence(
+          this.runId,
+          this.pendingPause,
+          REMOTE_EXECUTION_ERROR,
+          this.createdAt,
+          this.providerExecutionId,
+        );
+      } catch (pauseError) {
+        await Promise.allSettled(this.trailingWrites);
+        this.manager.abandonProviderExecution(this.runId, this.createdAt, this.providerExecutionId);
+        throw pauseError;
+      }
+    }
+    let persistenceError: unknown;
+    try {
+      await waitForAgentExecutionWrites(this.trailingWrites);
+    } catch (writeError) {
+      persistenceError = writeError;
+    }
+    const effectiveError = error ?? persistenceError;
     let terminalError: unknown;
     try {
-      await this.manager.completeJob(
-        this.runId,
-        error == null ? undefined : REMOTE_EXECUTION_ERROR,
-        this.createdAt,
-      );
+      await this.complete(effectiveError);
     } catch (settleError) {
       terminalError = settleError;
     }
-
-    await Promise.allSettled(this.trailingWrites);
 
     /** A failed terminal write is not allowed to become a drained running job. Retry
      * after trailing persistence settles; if another terminal owner won meanwhile,
      * exact-generation readback is the idempotent success receipt. */
     if (terminalError != null) {
       try {
-        const completed = await this.manager.completeJob(
-          this.runId,
-          error == null ? undefined : REMOTE_EXECUTION_ERROR,
-          this.createdAt,
-        );
+        const completed = await this.complete(effectiveError);
         if (!completed) {
           const job = await this.manager.getJob(this.runId);
           if (
             job?.createdAt !== this.createdAt ||
+            job.metadata.providerExecutionId !== this.providerExecutionId ||
+            (this.ownerId != null && job.metadata.providerExecutionOwnerId !== this.ownerId) ||
             job.status === 'running' ||
             job.status === 'requires_action'
           ) {
@@ -168,11 +364,10 @@ export class AgentExecutionEnrollment {
     }
     if (this.providerStarted && terminalError == null) {
       try {
-        const drained = await this.manager.markProviderExecutionDrained(
-          this.runId,
-          this.createdAt,
-          this.providerExecutionId,
-        );
+        const args = [this.runId, this.createdAt, this.providerExecutionId] as const;
+        const drained = await (this.retainTerminalPersistence
+          ? this.manager.markProviderExecutionDrained(...args, true)
+          : this.manager.markProviderExecutionDrained(...args));
         if (!drained) {
           throw new Error('Agent provider execution drain could not be confirmed');
         }
@@ -187,6 +382,99 @@ export class AgentExecutionEnrollment {
     if (drainError != null) {
       throw drainError;
     }
+    if (persistenceError != null) {
+      const terminal = await this.manager.getJob(this.runId);
+      if (
+        terminal?.createdAt !== this.createdAt ||
+        terminal.metadata.providerExecutionId !== this.providerExecutionId ||
+        !['error', 'aborted'].includes(terminal.status)
+      )
+        throw new Error('Agent failed execution outcome could not be confirmed');
+    }
+    return persistenceError == null ? {} : { persistenceError };
+  }
+
+  private async settlePause(actionId: string): Promise<AgentExecutionSettlement> {
+    try {
+      await waitForAgentExecutionWrites(this.trailingWrites);
+      const job = await this.manager.getJob(this.runId);
+      if (
+        job?.createdAt !== this.createdAt ||
+        job.metadata.providerExecutionId !== this.providerExecutionId ||
+        !(await this.manager.approvals.ownsPausePersistence(
+          this.runId,
+          actionId,
+          this.createdAt,
+          this.providerExecutionId,
+        ))
+      )
+        throw new Error('Agent approval settlement ownership changed');
+      if (
+        !(await this.manager.markProviderExecutionDrained(
+          this.runId,
+          this.createdAt,
+          this.providerExecutionId,
+        ))
+      )
+        throw new Error('Agent approval provider drain could not be confirmed');
+      let releaseError: unknown;
+      let released = false;
+      try {
+        released = await this.manager.approvals.finishPausePersistence(
+          this.runId,
+          actionId,
+          this.createdAt,
+          this.providerExecutionId,
+        );
+      } catch (error) {
+        releaseError = error;
+      }
+      if (!released) {
+        const current = await this.manager.getJobStore().getJob(this.runId);
+        if (
+          current?.createdAt !== this.createdAt ||
+          current.status !== 'requires_action' ||
+          current.providerExecutionId !== this.providerExecutionId ||
+          current.providerExecutionOwnerId !== this.ownerId ||
+          current.providerDrained !== true ||
+          current.terminalPersistencePending === true ||
+          current.pendingActionId !== actionId ||
+          current.pendingAction?.actionId !== actionId
+        )
+          throw releaseError ?? new Error('Agent approval persistence could not be confirmed');
+      }
+      this.paused = true;
+      return {};
+    } catch (error) {
+      try {
+        await this.manager.failPausePersistence(
+          this.runId,
+          actionId,
+          REMOTE_EXECUTION_ERROR,
+          this.createdAt,
+          this.providerExecutionId,
+        );
+        // Recovery may already have terminalized the same pause. Draining the exact
+        // generation/provider is still required after all trailing writes settle.
+        const drained = await this.manager.markProviderExecutionDrained(
+          this.runId,
+          this.createdAt,
+          this.providerExecutionId,
+          this.retainTerminalPersistence,
+        );
+        if (!drained) throw error;
+        const terminal = await this.manager.getJob(this.runId);
+        if (
+          terminal?.createdAt !== this.createdAt ||
+          terminal.metadata.providerExecutionId !== this.providerExecutionId ||
+          !['error', 'aborted'].includes(terminal.status)
+        )
+          throw error;
+        return { persistenceError: error };
+      } finally {
+        this.manager.abandonProviderExecution(this.runId, this.createdAt, this.providerExecutionId);
+      }
+    }
   }
 }
 
@@ -195,20 +483,43 @@ export async function enrollAgentExecution(
   deps: AgentExecutionEnrollmentDeps = { manager: GenerationJobManager },
 ): Promise<AgentExecutionEnrollment> {
   const { runId, userId, conversationId, agentId, protocol, isPrincipalActive } = params;
+  if (
+    params.retainTerminalPersistence &&
+    deps.manager.getJobStore().providerTerminalPersistence !== true
+  )
+    throw new Error('Agent terminal persistence barrier is unavailable');
+  const claim =
+    params.clientRequestId == null
+      ? undefined
+      : await deps.manager.claimGeneration(userId, params.clientRequestId, runId, conversationId);
+  if (claim && !claim.claimed)
+    throw new AgentExecutionAdmissionError(
+      'Agent execution was already admitted',
+      'RUN_ALREADY_ADMITTED',
+    );
   let job: GenerationJob;
   try {
     /** The principal predicate replaces the default guard, so admission is one post-commit read
      * and a refused run takes the manager's retire-and-purge path. */
     job = await deps.manager.createJob(runId, userId, conversationId, {
+      ...(claim
+        ? {
+            idempotencyClientRequestId: params.clientRequestId,
+            idempotencyClaimToken: claim.existing?.claimToken,
+          }
+        : {}),
       admissionCheck: isPrincipalActive,
       initialMetadata: {
         agent_id: agentId,
         endpoint: protocol,
         model: agentId,
         responseMessageId: runId,
+        ...(params.retainTerminalPersistence && { terminalPersistenceOwner: 'external' as const }),
       },
     });
   } catch (error) {
+    if (claim && params.clientRequestId != null)
+      await deps.manager.releaseGeneration(userId, params.clientRequestId, runId, claim.existing);
     if (error instanceof GenerationAdmissionDeniedError) {
       throw new AgentExecutionAdmissionError(
         ACCOUNT_DELETION_ERROR,
@@ -218,5 +529,51 @@ export async function enrollAgentExecution(
     throw error;
   }
 
-  return new AgentExecutionEnrollment(deps.manager, job);
+  return new AgentExecutionEnrollment(
+    deps.manager,
+    job,
+    undefined,
+    params.retainTerminalPersistence,
+  );
+}
+export interface ResumedAgentExecutionIdentity {
+  generationCreatedAt: number;
+  providerExecutionId: string;
+}
+
+/** Reuse an already resolved job; never replace its epoch or claim a fresh conversation. */
+export async function enrollResumedAgentExecution(
+  params: AgentExecutionEnrollmentParams & ResumedAgentExecutionIdentity & { tenantId?: string },
+  deps: AgentExecutionEnrollmentDeps = { manager: GenerationJobManager },
+): Promise<AgentExecutionEnrollment> {
+  if (!(await params.isPrincipalActive(params.userId)))
+    throw new AgentExecutionAdmissionError(ACCOUNT_DELETION_ERROR, 'ACCOUNT_DELETION_IN_PROGRESS');
+  const job = await deps.manager.getJob(params.runId);
+  if (
+    deps.manager.getJobStore().providerStartOwnership !== true ||
+    (params.retainTerminalPersistence &&
+      deps.manager.getJobStore().providerTerminalPersistence !== true) ||
+    !job ||
+    job.status !== 'running' ||
+    job.createdAt !== params.generationCreatedAt ||
+    job.metadata.userId !== params.userId ||
+    job.metadata.tenantId !== params.tenantId ||
+    job.metadata.agent_id !== params.agentId ||
+    job.metadata.conversationId !== params.conversationId ||
+    job.metadata.endpoint !== params.protocol ||
+    job.metadata.responseMessageId !== params.runId ||
+    job.metadata.providerExecutionId !== params.providerExecutionId ||
+    Boolean(params.retainTerminalPersistence) !==
+      (job.metadata.terminalPersistenceOwner === 'external')
+  )
+    throw new AgentExecutionAdmissionError(
+      'Resumed agent execution identity changed',
+      'RUN_REPLACED',
+    );
+  return new AgentExecutionEnrollment(
+    deps.manager,
+    job,
+    randomUUID(),
+    params.retainTerminalPersistence,
+  );
 }

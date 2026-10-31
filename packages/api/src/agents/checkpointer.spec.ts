@@ -88,6 +88,19 @@ describe('deleteAgentCheckpoint', () => {
     await expect(deleteAgentCheckpoint('conversation-1')).resolves.toBeUndefined();
   });
 
+  test('fails closed on an unavailable durable database when strict cleanup was requested', async () => {
+    await expect(
+      deleteAgentCheckpoint('conversation-1', { type: 'mongo' }, undefined, {
+        throwOnError: true,
+      }),
+    ).rejects.toThrow('Checkpoint database is unavailable');
+    await expect(
+      deleteAgentCheckpoint('conversation-1', { type: 'memory' }, undefined, {
+        throwOnError: true,
+      }),
+    ).resolves.toBeUndefined();
+  });
+
   test('captures an empty generation when no durable saver is available', async () => {
     await expect(captureAgentCheckpointGeneration('conversation-1')).resolves.toEqual({
       threadId: 'conversation-1',
