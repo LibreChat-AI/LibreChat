@@ -68,7 +68,7 @@ export interface ResponseDecisionDependencies {
 
 export type ResponseDecisionResult =
   | { ok: true; receipt: ResponseReviewDecisionReceipt }
-  | { ok: false; status: 400 | 403 | 404 | 409; code: string };
+  | { ok: false; status: 400 | 403 | 404 | 409 | 503; code: string };
 
 export type ResponseDecisionSubmission = (
   owner: ResponseOwner,

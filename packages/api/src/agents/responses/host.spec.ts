@@ -26,10 +26,10 @@ import {
   createResponseContext,
   convertInputToMessages,
 } from './service';
+import { createAgentTriggerService, createAgentTriggerProducerBinding } from '../triggers/service';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { createCheckpointNamespace } from '~/stream/checkpoints';
-import { createAgentTriggerService } from '../triggers/service';
 import { createRequireApiKeyAuth } from '~/apiKeys/middleware';
 import { buildPendingBackgroundResponse } from './background';
 import { mintBackgroundResponseWorkerToken } from './worker';
@@ -124,6 +124,11 @@ async function fixture(
   decisions?: BackgroundResponsesHostDependencies['decisions'],
   interactive?: BackgroundResponsesHostDependencies['interactive'],
   listenAddress = '127.0.0.1',
+  startupProbe?: (
+    phase: 'unbound' | 'queue-starting',
+    client: ReturnType<typeof request>,
+    key: string,
+  ) => Promise<void>,
 ) {
   const config: AppConfig = {
     config: {},
@@ -143,6 +148,7 @@ async function fixture(
     context: { streamId: string | null; jobCreatedAt?: number },
     execution: AgentExecutionEnrollment,
   ) => Promise<string | { paused: true }> = async () => '# Real Responses lifecycle';
+  const producer = createAgentTriggerProducerBinding();
   const host = createBackgroundResponsesHost({
     decisions,
     interactive,
@@ -158,7 +164,8 @@ async function fixture(
     getAgentPermissions: async (agentId) => (agentId === 'agent' ? PermissionBits.VIEW : 0),
     getMessage: db.getMessage,
     getConvoRetention: db.getConvoRetention,
-    enqueue: (...args) => service.enqueue(...args),
+    enqueue: producer.enqueue,
+    isQueueReady: producer.isReady,
     signingSecret: () => 'isolated-background-host-secret',
     onError: (error) => {
       errors.push(error);
@@ -290,20 +297,23 @@ async function fixture(
   cleanup.push(async () => {
     await new Promise<void>((resolve) => server.close(() => resolve()));
   });
-  host.initialize(server.address());
-  const service = createAgentTriggerService({
-    methods: persistence(),
-    sourceDispatchers: host.sourceDispatchers,
-    deliveryOptions: { tickMs: 10 },
-  });
-  await service.initialize({ address: server.address() });
-  cleanup.push(() => service.stop());
   const credential = await scoped(async () =>
     db.createAgentApiKey({ userId: user._id, name: 'background-test' }),
   );
   const origin = selfOriginFromAddress(server.address());
   if (!origin) throw new Error('Missing initialized HTTP listener');
   const client = request(origin);
+  await startupProbe?.('unbound', client, credential.key);
+  host.initialize(server.address());
+  const service = createAgentTriggerService({
+    methods: persistence(),
+    sourceDispatchers: host.sourceDispatchers,
+    deliveryOptions: { tickMs: 10 },
+  });
+  cleanup.push(() => service.stop());
+  producer.bind(service);
+  await startupProbe?.('queue-starting', client, credential.key);
+  await service.initialize({ address: server.address() });
   async function readUntil(id: string, status: string) {
     let observed: { httpStatus: number; status?: string; errorCode?: string } | undefined;
     const failure = () =>
@@ -333,6 +343,7 @@ async function fixture(
   }
   return {
     host,
+    stopQueue: () => service.stop(),
     client,
     credential,
     inputs,
@@ -1462,3 +1473,64 @@ it.each([undefined, null, ''])(
     expect(f.errors).toEqual([]);
   },
 );
+
+it.each(['unbound', 'queue-starting'] as const)(
+  'rejects %s admission before reserving work and accepts after startup',
+  async (phase) => {
+    const body = { model: 'agent', input: 'startup request', background: true, store: true };
+    const f = await fixture(undefined, undefined, '127.0.0.1', async (current, client, key) => {
+      if (current !== phase) return;
+      await client
+        .post('/api/agents/v1/responses')
+        .auth(key, { type: 'bearer' })
+        .set('Idempotency-Key', 'startup-key')
+        .send(body)
+        .expect(503);
+      await scoped(async () => {
+        expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(0);
+        expect(await mongoose.models.AgentTriggerDelivery.countDocuments({})).toBe(0);
+      });
+    });
+    const accepted = await f.client
+      .post('/api/agents/v1/responses')
+      .auth(f.credential.key, { type: 'bearer' })
+      .set('Idempotency-Key', 'startup-key')
+      .send(body)
+      .expect(202);
+    await f.readUntil(accepted.body.id, 'completed');
+    expect(f.inputs).toHaveLength(1);
+    await f.stopQueue();
+    await f.client
+      .post('/api/agents/v1/responses')
+      .auth(f.credential.key, { type: 'bearer' })
+      .set('Idempotency-Key', 'after-stop')
+      .send(body)
+      .expect(503);
+    expect(await scoped(() => mongoose.models.StoredResponse.countDocuments({}))).toBe(1);
+    await f.client
+      .get('/api/agents/v1/responses/' + accepted.body.id)
+      .auth(f.credential.key, { type: 'bearer' })
+      .expect(200);
+  },
+);
+
+it('keeps owner reads available but denies interactive admission before queue readiness', async () => {
+  const enqueue = jest.fn(async () => {});
+  const validate = jest.fn(async () => true);
+  const f = await fixture({ validate, enqueue });
+  const { id, action, owner } = await ownerPause(f.credential.id);
+  await f.stopQueue();
+  const path = `/api/agents/responses/${id}/review`;
+  const view = await f.client.get(path).expect(200);
+  expect(view.body.pendingAction.actionId).toBe(action.actionId);
+  expect(view.body.canSubmitDecision).toBe(false);
+  const input = { actionId: action.actionId, answer: 'staging' };
+  await f.client.post(path).send(input).expect(503);
+  expect(await scoped(() => f.host.submitInteractiveReview(owner, id, input))).toMatchObject({
+    ok: false,
+    status: 503,
+  });
+  expect((await scoped(() => storage.read(owner, id)))?.resume).toBeUndefined();
+  expect(validate).not.toHaveBeenCalled();
+  expect(enqueue).not.toHaveBeenCalled();
+});

@@ -45,6 +45,8 @@ export interface BackgroundResponsesHostDependencies
   extends BackgroundResponseAuthorityDependencies {
   storage: ResponseStorage;
   enqueue: AgentTriggerService['enqueue'];
+  /** Reuse the queue owner’s live producer capability; listener binding alone is insufficient. */
+  isQueueReady: AgentTriggerService['isReady'];
   jobs: Pick<
     GenerationJobManagerClass,
     'getJob' | 'abortJob' | 'getResumeState' | 'finishProviderTerminalPersistence'
@@ -103,6 +105,7 @@ export function createBackgroundResponsesHost(
   if (deps.decisions && deps.interactive)
     throw new Error('Response decision transport must have one owner');
   let listener: BoundAddress | undefined;
+  const isAdmissionReady = () => listener != null && deps.isQueueReady();
   const authorize = createBackgroundResponseAuthority(deps);
   const review = createResponseReview(deps);
   const completion = createResponseCompletion({
@@ -162,6 +165,8 @@ export function createBackgroundResponsesHost(
 
   const submitInteractiveReview: ResponseDecisionSubmission = async (owner, responseId, input) => {
     if (!decisions) return { ok: false, status: 409, code: 'response_decision_unavailable' };
+    if (!isAdmissionReady())
+      return { ok: false, status: 503, code: 'response_decision_unavailable' };
     return createResponseDecisionSubmission({
       storage: deps.storage,
       jobs: deps.jobs,
@@ -231,7 +236,7 @@ export function createBackgroundResponsesHost(
         oauth: [],
         pendingAction: view.pendingAction,
         pendingDecision: view.pendingDecision,
-        canSubmitDecision: decisions != null,
+        canSubmitDecision: decisions != null && isAdmissionReady(),
       };
     },
     review: async (req, res) => {
@@ -247,7 +252,7 @@ export function createBackgroundResponsesHost(
         const recovered = await completion.finish(record);
         res.json({
           ...(await review.privateView(recovered)),
-          canSubmitDecision: decisions != null,
+          canSubmitDecision: decisions != null && isAdmissionReady(),
         });
       } catch (error) {
         deps.onError(error);
@@ -259,7 +264,8 @@ export function createBackgroundResponsesHost(
       res.set('Referrer-Policy', 'no-referrer');
       const user = ownerReviewUser(req);
       if (!user?.id) return void res.status(401).json({ error: 'unauthorized' });
-      if (!decisions) return void res.status(503).json({ error: 'response_decision_unavailable' });
+      if (!decisions || !isAdmissionReady())
+        return void res.status(503).json({ error: 'response_decision_unavailable' });
       const submit = createResponseDecisionSubmission({
         storage: deps.storage,
         jobs: deps.jobs,
@@ -322,6 +328,7 @@ export function createBackgroundResponsesHost(
       ),
     handlers: (ordinary: { create: RequestHandler; retrieve: RequestHandler }) =>
       createBackgroundResponseHttpHandlers({
+        isAdmissionReady,
         service,
         ordinary,
         onError: deps.onError,

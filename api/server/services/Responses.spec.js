@@ -2,9 +2,13 @@ const { PermissionBits, Permissions, PermissionTypes } = require('librechat-data
 
 const mockCreateResponseResumeValidation = jest.fn(() => ({}));
 const mockGetEffectivePermissions = jest.fn();
+const mockEnqueue = jest.fn();
+const mockIsQueueReady = jest.fn();
 const mockAuthorizeChannelResponseKeySource = jest.fn().mockResolvedValue(false);
 
 jest.mock('@librechat/api', () => ({
+  createAgentTriggerProducerBinding:
+    jest.requireActual('@librechat/api').createAgentTriggerProducerBinding,
   getRemoteAgentPermissions: jest.requireActual('../../../packages/api/src/apiKeys/service')
     .getRemoteAgentPermissions,
   createResponseResumeValidation: (...args) => mockCreateResponseResumeValidation(...args),
@@ -33,6 +37,8 @@ describe('Responses base production composition', () => {
     jest.resetModules();
     jest.clearAllMocks();
     mockGetEffectivePermissions.mockReset();
+    mockEnqueue.mockReset().mockResolvedValue({ deliveryId: 'delivery' });
+    mockIsQueueReady.mockReset().mockReturnValue(false);
     require('./Responses');
   });
 
@@ -73,22 +79,27 @@ describe('Responses base production composition', () => {
     });
   });
 
-  it('uses the startup-injected queue without importing the trigger composition', async () => {
+  it('binds the canonical producer before listening and tracks its live readiness', async () => {
     const { createBackgroundResponsesHost } = require('@librechat/api');
-    const enqueue = jest.fn().mockResolvedValue({ deliveryId: 'delivery' });
-    const { initializeBackgroundResponses } = require('./Responses');
-    expect(() =>
-      createBackgroundResponsesHost.mock.calls[0][0].enqueue('uninitialized', 'options'),
-    ).toThrow();
-    expect(enqueue).not.toHaveBeenCalled();
-    initializeBackgroundResponses('listener', enqueue);
+    const options = createBackgroundResponsesHost.mock.calls[0][0];
+    const {
+      initializeBackgroundResponses,
+      configureBackgroundResponseQueue,
+    } = require('./Responses');
+    expect(options.isQueueReady()).toBe(false);
+    await expect(options.enqueue('early')).rejects.toThrow('not bound');
+    configureBackgroundResponseQueue({ enqueue: mockEnqueue, isReady: mockIsQueueReady });
+    initializeBackgroundResponses('listener');
     expect(createBackgroundResponsesHost.mock.results[0].value.initialize).toHaveBeenCalledWith(
       'listener',
     );
-    await expect(
-      createBackgroundResponsesHost.mock.calls[0][0].enqueue('envelope', 'options'),
-    ).resolves.toEqual({ deliveryId: 'delivery' });
-    expect(enqueue).toHaveBeenCalledWith('envelope', 'options');
+    expect(options.isQueueReady()).toBe(false);
+    mockIsQueueReady.mockReturnValue(true);
+    expect(options.isQueueReady()).toBe(true);
+    await expect(options.enqueue('envelope', 'options')).resolves.toEqual({
+      deliveryId: 'delivery',
+    });
+    expect(mockEnqueue).toHaveBeenCalledWith('envelope', 'options');
   });
 });
 
