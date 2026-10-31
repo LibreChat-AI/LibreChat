@@ -72,6 +72,9 @@ export {
   createChannelFeedbackStorage,
   ChannelFeedbackAuthorityError,
   CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX,
+  CHANNEL_FEEDBACK_RECEIPT_RETENTION_MS,
+  channelFeedbackReactionIdentity,
+  isLaterChannelFeedbackEvent,
 } from './channelFeedback';
 export type { ChannelFeedbackStorage, ChannelFeedbackReplySource } from './channelFeedback';
 export type { ChannelFeedbackEventRecord, ChannelFeedbackLedger } from '~/models/channelFeedback';

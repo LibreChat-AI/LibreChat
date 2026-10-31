@@ -8,7 +8,7 @@ export interface ChannelFeedbackWorkerDependencies {
     cursor: string | undefined,
     limit: number,
   ) => Promise<{ channels: Array<{ tenantId?: string }>; next?: string }>;
-  feedback: Pick<ReturnType<typeof createChannelFeedbackService>, 'recover' | 'flush'>;
+  feedback: Pick<ReturnType<typeof createChannelFeedbackService>, 'recover' | 'flush' | 'compact'>;
   batchSize: number;
   intervalMs: number;
   maxIdleIntervalMs: number;
@@ -36,6 +36,12 @@ export function createChannelFeedbackWorker(
             const recovered = await deps.feedback.recover(tenantId, deps.batchSize);
             const exported = await deps.feedback.flush(tenantId, deps.batchSize);
             if (recovered || exported) idle = false;
+          } catch (error) {
+            idle = false;
+            deps.onError(error);
+          }
+          try {
+            if (await deps.feedback.compact(tenantId, deps.batchSize)) idle = false;
           } catch (error) {
             idle = false;
             deps.onError(error);

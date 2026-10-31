@@ -5,7 +5,7 @@ import { assertChannelTenant } from './channelScope';
 export type ChannelFeedbackReplySource = Omit<
   ChannelReplyMapping,
   'traceId' | 'centralTraceExportEnabled'
-> & { langfuseRunId?: string };
+> & { langfuseRunId?: string; centralTraceExportEnabled?: boolean };
 
 /** Dedicated metadata projection for feedback on a delivered reply; never exposes history or credentials. */
 export async function readChannelFeedbackReplySource(
@@ -61,6 +61,7 @@ export async function readChannelFeedbackReplySource(
               _id: 0,
               messageId: 1,
               langfuseRunId: 1,
+              langfuseCentralTraceExportEnabled: 1,
               langfuseSampled: 1,
               langfuseDestinationIds: 1,
               isTemporary: 1,
@@ -87,6 +88,7 @@ export async function readChannelFeedbackReplySource(
         principalId: '$principal.userId',
         langfuseRunId: '$message.langfuseRunId',
         isTemporary: '$message.isTemporary',
+        centralTraceExportEnabled: '$message.langfuseCentralTraceExportEnabled',
         sampled: '$message.langfuseSampled',
         destinationIds: '$message.langfuseDestinationIds',
       },
