@@ -84,6 +84,7 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
 
     if (mergedConfig[EModelEndpoint.agents] && appConfig?.endpoints?.[EModelEndpoint.agents]) {
       const {
+        channels,
         disableBuilder,
         capabilities,
         allowedProviders,
@@ -91,7 +92,6 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
         maxSubagents,
         fileSharing,
         linkedInstructions,
-        channels,
       } = appConfig.endpoints[EModelEndpoint.agents];
       const toolApproval = appConfig.endpoints[EModelEndpoint.agents].toolApproval;
       /** Only advertise Accept edits when the endpoint fallback cannot force every
@@ -137,6 +137,7 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
         : undefined;
       mergedConfig[EModelEndpoint.agents] = {
         ...mergedConfig[EModelEndpoint.agents],
+        channels: { enabled: channels?.enabled === true },
         allowedProviders,
         disableBuilder,
         capabilities,
@@ -147,7 +148,6 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
         linkedInstructions: {
           langfuse: { enabled: linkedInstructions?.langfuse?.enabled === true },
         },
-        channels: { enabled: channels?.enabled === true },
         toolApproval: {
           enabled: toolApproval?.enabled === true,
           agentModes: toolApproval?.enabled === true && toolApproval.agentModes === true,
