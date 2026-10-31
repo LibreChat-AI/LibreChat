@@ -9,6 +9,7 @@ export interface ChannelMessage {
   isTemporary?: boolean;
   expiredAt?: Date | string | null;
   langfuseRunId?: string | null;
+  langfuseCentralTraceExportEnabled?: boolean | null;
   langfuseSampled?: boolean | null;
   langfuseDestinationIds?: string[] | null;
 }

@@ -30,6 +30,7 @@ export interface ResponseTurnWrites {
     | 'unfinished'
     | 'finish_reason'
     | 'tokenCount'
+    | 'langfuseCentralTraceExportEnabled'
     | 'langfuseSampled'
     | 'langfuseDestinationIds'
     | 'langfuseRunId'

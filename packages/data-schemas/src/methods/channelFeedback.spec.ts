@@ -252,37 +252,43 @@ it('repairs bounded legacy feedback retention even when a channel is disabled', 
 
 it('expires legacy orphan rows without touching another tenant or dropping permanent live rows', () =>
   scope(async () => {
-    await persist();
-    for (const name of ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback'])
-      await mongoose.models[name].collection.updateMany(
-        { tenantId },
-        { $unset: { expiredAt: '', retentionVersion: '' } },
-      );
-    await mongoose.models.ChannelReply.collection.insertOne({
-      ...mapping,
-      tenantId: 'foreign-retention-tenant',
-    });
-    expect(await storage.repairChannelFeedbackRetention(tenantId, 1)).toBe(3);
-    for (const name of ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback']) {
-      const row = await mongoose.models[name].findOne({ tenantId }).lean<{ expiredAt?: Date }>();
-      expect(row).toMatchObject({ retentionVersion: 1 });
-      expect(row?.expiredAt).toBeUndefined();
-      await mongoose.models[name].collection.updateMany(
-        { tenantId },
-        { $unset: { retentionVersion: '' } },
-      );
-    }
-    await mongoose.models.Message.deleteOne({ messageId: mapping.messageId });
-    expect(await storage.repairChannelFeedbackRetention(tenantId, 1)).toBe(3);
-    for (const name of ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback'])
-      expect(await mongoose.models[name].findOne({ tenantId }).lean()).toMatchObject({
-        expiredAt: new Date(0),
-      });
-    expect(
-      await mongoose.models.ChannelReply.collection.findOne({
+    // Inspect the exact repair deadline before this fixture's TTL worker deletes it.
+    await mongoose.connection.db!.admin().command({ setParameter: 1, ttlMonitorEnabled: false });
+    try {
+      await persist();
+      for (const name of ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback'])
+        await mongoose.models[name].collection.updateMany(
+          { tenantId },
+          { $unset: { expiredAt: '', retentionVersion: '' } },
+        );
+      await mongoose.models.ChannelReply.collection.insertOne({
+        ...mapping,
         tenantId: 'foreign-retention-tenant',
-      }),
-    ).not.toHaveProperty('retentionVersion');
+      });
+      expect(await storage.repairChannelFeedbackRetention(tenantId, 1)).toBe(3);
+      for (const name of ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback']) {
+        const row = await mongoose.models[name].findOne({ tenantId }).lean<{ expiredAt?: Date }>();
+        expect(row).toMatchObject({ retentionVersion: 1 });
+        expect(row?.expiredAt).toBeUndefined();
+        await mongoose.models[name].collection.updateMany(
+          { tenantId },
+          { $unset: { retentionVersion: '' } },
+        );
+      }
+      await mongoose.models.Message.deleteOne({ messageId: mapping.messageId });
+      expect(await storage.repairChannelFeedbackRetention(tenantId, 1)).toBe(3);
+      for (const name of ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback'])
+        expect(await mongoose.models[name].findOne({ tenantId }).lean()).toMatchObject({
+          expiredAt: new Date(0),
+        });
+      expect(
+        await mongoose.models.ChannelReply.collection.findOne({
+          tenantId: 'foreign-retention-tenant',
+        }),
+      ).not.toHaveProperty('retentionVersion');
+    } finally {
+      await mongoose.connection.db!.admin().command({ setParameter: 1, ttlMonitorEnabled: true });
+    }
   }));
 
 it('metadata backoff cannot modify a current export lease or recreate erased feedback', () =>
@@ -318,6 +324,249 @@ it('pins legacy score dates once from ledger creation across lease takeover', ()
     expect(first.scoreTimestamp).toEqual(original.createdAt);
     const next = (await storage.claimChannelFeedbackExport(first, 'next', now + 2000, now + 3000))!;
     expect(next.scoreTimestamp).toEqual(first.scoreTimestamp);
+  }));
+
+it('compacts legacy history in bounded pages while retaining skin-tone and removal checkpoints', () =>
+  scope(async () => {
+    const inputs = [
+      { id: 'base-add', at: 1, reaction: '+1', action: 'added' as const },
+      { id: 'base-remove', at: 2, reaction: 'thumbsup', action: 'removed' as const },
+      { id: 'old-tone', at: 0, reaction: 'thumbsup::skin-tone-2', action: 'added' as const },
+      { id: 'tone-two', at: 3, reaction: '+1::skin-tone-2', action: 'added' as const },
+      { id: 'tone-three', at: 4, reaction: 'thumbsup::skin-tone-3', action: 'added' as const },
+      { id: 'down', at: 5, reaction: '-1', action: 'added' as const },
+    ];
+    for (const input of inputs) {
+      const record = event();
+      await storage.admitChannelFeedbackEvent({
+        ...record,
+        eventId: input.id,
+        digest: input.id,
+        processed: true,
+        rating: input.reaction === '-1' ? 'thumbsDown' : 'thumbsUp',
+        event: {
+          ...record.event,
+          eventId: input.id,
+          eventTimestampUs: input.at,
+          reaction: input.reaction,
+          action: input.action,
+        },
+      });
+    }
+    const legacy = {
+      ...ledger(),
+      votes: [
+        {
+          externalMessageKey: mapping.externalMessageKey,
+          rating: 'thumbsUp' as const,
+          active: false,
+          eventTimestampUs: 2,
+          eventId: 'base-remove',
+        },
+      ],
+    };
+    await storage.ensureChannelFeedback(legacy);
+    await mongoose.models.AgentChannel.updateOne(
+      { channelId: mapping.channelId },
+      { $set: { status: 'disabled' } },
+    );
+    let compacted = 0;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const count = await storage.compactChannelFeedbackEvents(tenantId, 2);
+      compacted += count;
+      if (!count) break;
+    }
+    expect(compacted).toBe(6);
+    expect(
+      await mongoose.models.ChannelFeedbackEvent.countDocuments({ receiptCompacted: true }),
+    ).toBe(6);
+    expect(
+      await mongoose.models.ChannelFeedbackEvent.countDocuments({
+        receiptExpiresAt: { $exists: true },
+      }),
+    ).toBe(2);
+    await mongoose.models.ChannelFeedbackEvent.deleteMany({ receiptExpiresAt: { $exists: true } });
+    const rebuilt = await storage.rebuildVotes(tenantId, mapping.runId, ['base-remove']);
+    expect(rebuilt).toHaveLength(4);
+    expect(rebuilt).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ reaction: 'thumbsup', active: false }),
+        expect.objectContaining({ reaction: 'thumbsup::skin-tone-2', active: true }),
+        expect.objectContaining({ reaction: 'thumbsup::skin-tone-3', active: true }),
+        expect.objectContaining({ reaction: 'thumbsdown', active: true }),
+      ]),
+    );
+    expect(await storage.getChannelFeedback(tenantId, mapping.runId)).toMatchObject({
+      revision: 0,
+      votes: legacy.votes,
+      exportStatus: 'pending',
+    });
+    expect(await storage.isAuthorityCurrent(mapping)).toBe(false);
+  }));
+
+it('rechecks checkpoint membership after another legacy compactor initializes the cache', () =>
+  scope(async () => {
+    for (const [index, id] of ['old', 'current'].entries()) {
+      const receipt = event();
+      await storage.admitChannelFeedbackEvent({
+        ...receipt,
+        eventId: id,
+        digest: id,
+        processed: true,
+        event: { ...receipt.event, eventId: id, eventTimestampUs: index + 1 },
+      });
+    }
+    await storage.ensureChannelFeedback({
+      ...ledger(),
+      votes: [
+        {
+          externalMessageKey: mapping.externalMessageKey,
+          rating: 'thumbsUp',
+          active: true,
+          eventTimestampUs: 1,
+          eventId: 'old',
+        },
+      ],
+    });
+    const events = mongoose.models.ChannelFeedbackEvent;
+    const find = events.find.bind(events);
+    // Worker A selects two rows; worker B then initializes the cache and compacts only its first row.
+    const selection = jest
+      .spyOn(events, 'find')
+      .mockImplementationOnce((filter?: mongoose.FilterQuery<ChannelFeedbackEventRecord>) => {
+        const query = find(filter ?? {});
+        const execute = query.exec.bind(query);
+        jest.spyOn(query, 'exec').mockImplementationOnce(async () => {
+          const rows = await execute();
+          expect(await storage.compactChannelFeedbackEvents(tenantId, 1)).toBe(1);
+          return rows;
+        });
+        return query;
+      });
+    try {
+      expect(await storage.compactChannelFeedbackEvents(tenantId, 2)).toBe(1);
+    } finally {
+      selection.mockRestore();
+    }
+    const rows = await events.find({ tenantId }).lean();
+    expect(rows).toHaveLength(2);
+    for (const row of rows) {
+      expect(row.receiptCompacted).toBe(true);
+      expect(row.receiptExpiresAt).toBeUndefined();
+    }
+    expect(await storage.getChannelFeedback(tenantId, mapping.runId)).toMatchObject({
+      revision: 0,
+      exportStatus: 'pending',
+    });
+  }));
+
+it('retains a bounded latest receipt checkpoint without recreating a missing ledger', () =>
+  scope(async () => {
+    for (let index = 0; index < 3; index++) {
+      const record = event();
+      await storage.admitChannelFeedbackEvent({
+        ...record,
+        eventId: `orphan-${index}`,
+        digest: `orphan-${index}`,
+        processed: true,
+        event: { ...record.event, eventId: `orphan-${index}`, eventTimestampUs: index },
+      });
+    }
+    for (let attempt = 0; attempt < 4; attempt++)
+      await storage.compactChannelFeedbackEvents(tenantId, 1);
+    expect(await mongoose.models.ChannelFeedback.countDocuments({})).toBe(0);
+    expect(
+      await mongoose.models.ChannelFeedbackEvent.countDocuments({
+        receiptExpiresAt: { $exists: true },
+      }),
+    ).toBe(2);
+    expect(
+      await mongoose.models.ChannelFeedbackEvent.findOne({ eventId: 'orphan-2' }).lean(),
+    ).not.toHaveProperty('receiptExpiresAt');
+  }));
+
+it('serializes compaction with a newer canonical projection without expiring its checkpoint', () =>
+  scope(async () => {
+    const first = { ...event(), processed: true };
+    const firstVote = {
+      ...first.event,
+      rating: 'thumbsUp' as const,
+      reaction: 'thumbsup',
+      active: true,
+    };
+    await storage.admitChannelFeedbackEvent(first);
+    await storage.ensureChannelFeedback({ ...ledger(), votes: [firstVote] });
+    const second = {
+      ...event(),
+      eventId: 'new-remove',
+      digest: 'new-remove',
+      event: {
+        ...event().event,
+        eventId: 'new-remove',
+        eventTimestampUs: 2,
+        action: 'removed' as const,
+      },
+    };
+    await storage.admitChannelFeedbackEvent(second);
+    await Promise.all([
+      storage.compactChannelFeedbackEvents(tenantId, 10),
+      storage.withAuthority(mapping, async (active) => {
+        const previous = (await active.getChannelFeedback(tenantId, mapping.runId))!;
+        expect(
+          await active.saveChannelFeedback(
+            {
+              ...previous,
+              revision: previous.revision + 1,
+              rating: null,
+              votes: [
+                { ...firstVote, eventId: second.eventId, eventTimestampUs: 2, active: false },
+              ],
+            },
+            previous.revision,
+          ),
+        ).toBe(true);
+        await active.markChannelFeedbackEvent(second);
+      }),
+    ]);
+    expect(await storage.getChannelFeedback(tenantId, mapping.runId)).toMatchObject({
+      revision: 1,
+      rating: null,
+    });
+    expect(
+      await mongoose.models.ChannelFeedbackEvent.findOne({ eventId: first.eventId }).lean(),
+    ).toHaveProperty('receiptExpiresAt');
+    expect(
+      await mongoose.models.ChannelFeedbackEvent.findOne({ eventId: second.eventId }).lean(),
+    ).not.toHaveProperty('receiptExpiresAt');
+  }));
+
+it('rotates a failed compaction page even after its retry delay expires', () =>
+  scope(async () => {
+    for (const id of ['failed', 'valid']) {
+      const source = { ...mapping, runId: id };
+      const record = { ...event(source), processed: true };
+      await storage.admitChannelFeedbackEvent(record);
+      await storage.ensureChannelFeedback({
+        ...ledger(source),
+        votes: [{ ...record.event, reaction: 'thumbsup', rating: 'thumbsUp', active: true }],
+      });
+    }
+    const now = Date.now();
+    const failure = jest
+      .spyOn(mongoose.models.ChannelFeedback, 'findOneAndUpdate')
+      .mockImplementationOnce(() => {
+        throw new Error('compaction unavailable');
+      });
+    await expect(storage.compactChannelFeedbackEvents(tenantId, 1, now, 1000)).rejects.toThrow(
+      'compaction unavailable',
+    );
+    failure.mockRestore();
+    expect(await storage.compactChannelFeedbackEvents(tenantId, 1, now + 60000, 1000)).toBe(1);
+    expect(
+      await mongoose.models.ChannelFeedbackEvent.findOne({ eventId: 'valid' }).lean(),
+    ).toMatchObject({ receiptCompacted: true });
+    expect(await storage.compactChannelFeedbackEvents(tenantId, 1, now + 60000, 1000)).toBe(1);
+    await expect(storage.compactChannelFeedbackEvents('foreign-tenant', 1)).rejects.toThrow();
   }));
 
 it('erases all owner feedback and rejects delayed standalone writes after actual account deletion', () =>

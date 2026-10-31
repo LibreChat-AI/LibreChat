@@ -31,6 +31,14 @@ export interface ChannelFeedbackHostDependencies {
   now?: () => number;
 }
 
+function traceRouting(source: Pick<ChannelReplyMapping, 'sampled' | 'destinationIds'>) {
+  // A known sampling decision can deliberately leave destination identity unresolved.
+  return {
+    sampled: source.sampled === true,
+    destinationIds: typeof source.sampled === 'boolean' ? source.destinationIds : [],
+  };
+}
+
 /** One trusted source projection resolves receipt and owned message without loading answer text or keys. */
 export function createChannelFeedbackHost(
   deps: ChannelFeedbackHostDependencies,
@@ -82,10 +90,10 @@ export function createChannelFeedbackHost(
       if (!source) return null;
       return {
         ...source,
-        sampled: source.sampled === true,
-        destinationIds: source.destinationIds ?? [],
+        ...traceRouting(source),
         traceId: traceIdForMessage(source.langfuseRunId || source.messageId),
-        centralTraceExportEnabled: await centralAllowed(source),
+        centralTraceExportEnabled:
+          source.centralTraceExportEnabled === true && (await centralAllowed(source)),
       };
     },
     sendScore: async (input, mapping) => {
@@ -93,14 +101,23 @@ export function createChannelFeedbackHost(
       const appConfig = await authorizedConfig(mapping);
       if (!appConfig) throw new Error('Channel feedback policy changed');
       input.assertActive();
-      const centralTraceExportEnabled =
-        input.centralTraceExportEnabled === true && (await centralAllowed(mapping));
+      const currentCentral = await centralAllowed(mapping);
       input.assertActive();
-      if (!(await deps.storage.isAuthorityCurrent(mapping)))
-        throw new Error('Channel feedback authority changed');
-      input.assertActive();
+      const source = await deps.storage.readChannelReplyTrace(mapping);
+      if (!source) throw new Error('Channel feedback authority changed');
+      if (traceIdForMessage(source.langfuseRunId || mapping.messageId) !== input.traceId)
+        throw new Error('Channel feedback trace identity changed');
+      const assertActive = () => {
+        input.assertActive();
+        if (source.expiredAt && source.expiredAt.getTime() <= Date.now())
+          throw new Error('Channel feedback authority changed');
+      };
+      assertActive();
+      const centralTraceExportEnabled = source.centralTraceExportEnabled === true && currentCentral;
       await deps.sendScore({
         ...input,
+        ...traceRouting(source),
+        assertActive,
         appConfig,
         isTemporary: mapping.isTemporary !== false,
         centralTraceExportEnabled,

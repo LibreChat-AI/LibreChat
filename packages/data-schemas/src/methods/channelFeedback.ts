@@ -1,4 +1,3 @@
-import { CHANNEL_DELIVERY_PARTS_HARD_MAX } from 'librechat-data-provider';
 import type {
   ChannelReplyMapping,
   ChannelFeedbackActor,
@@ -7,12 +6,21 @@ import type {
 import type { ClientSession } from 'mongoose';
 import type { ChannelFeedbackLedger, ChannelFeedbackEventRecord } from '~/models/channelFeedback';
 import type { ChannelFeedbackReplySource } from './channelFeedbackSource';
+import type { ChannelFeedbackSourceState } from './channelFeedbackScope';
+import type { FeedbackCheckpoint } from './channelFeedbackCompaction';
 import {
   withChannelFeedbackAuthority,
   sameFeedbackSource,
   readChannelFeedbackRetention,
   ChannelFeedbackAuthorityError,
 } from './channelFeedbackScope';
+import {
+  feedbackCheckpoint,
+  pinFeedbackCheckpoint,
+  acknowledgeFeedbackReceipt,
+  compactFeedbackReceipts,
+} from './channelFeedbackCompaction';
+import { CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX } from './channelFeedbackProtocol';
 import { readChannelFeedbackReplySource } from './channelFeedbackSource';
 import { createChannelIndexGate } from './channelIndexes';
 import { assertChannelTenant } from './channelScope';
@@ -21,9 +29,20 @@ export type { ChannelFeedbackReplySource } from './channelFeedbackSource';
 export { ChannelFeedbackAuthorityError } from './channelFeedbackScope';
 
 /** Two ratings, each with five supported skin tones plus the default emoji, per delivery part. */
-export const CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX: number = CHANNEL_DELIVERY_PARTS_HARD_MAX * 12;
+export {
+  CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX,
+  CHANNEL_FEEDBACK_RECEIPT_RETENTION_MS,
+  channelFeedbackReactionIdentity,
+  isLaterChannelFeedbackEvent,
+} from './channelFeedbackProtocol';
 export interface ChannelFeedbackStorage {
   repairChannelFeedbackRetention(tenantId: string, limit: number): Promise<number>;
+  compactChannelFeedbackEvents(
+    tenantId: string,
+    limit: number,
+    now?: number,
+    retryMs?: number,
+  ): Promise<number>;
   deferChannelFeedbackEvent(record: ChannelFeedbackEventRecord, retryAtMs: number): Promise<void>;
   deferChannelFeedbackExport(
     record: ChannelFeedbackLedger,
@@ -35,6 +54,8 @@ export interface ChannelFeedbackStorage {
     work: (storage: ChannelFeedbackStorage) => Promise<T>,
   ): Promise<T>;
   isAuthorityCurrent(mapping: ChannelReplyMapping): Promise<boolean>;
+  /** Ineligible sources return null; database/operational failures throw. */
+  readChannelReplyTrace(mapping: ChannelReplyMapping): Promise<ChannelFeedbackSourceState | null>;
   readReplySource(
     actor: ChannelFeedbackActor,
     externalMessageKey: string,
@@ -98,15 +119,26 @@ export function createChannelFeedbackStorage(
     session?: ClientSession,
     source?: ChannelReplyMapping,
     sourceExpiry: Date | null = null,
+    sourceState?: ChannelFeedbackSourceState,
   ): ChannelFeedbackStorage {
+    let checkpoint: FeedbackCheckpoint | undefined;
+    function remember(record: ChannelFeedbackLedger) {
+      if (session && source && sameFeedbackSource(source, record.mapping))
+        checkpoint = feedbackCheckpoint(record);
+    }
     async function guard<T>(
       mapping: ChannelReplyMapping,
-      work: (session: ClientSession, expiredAt: Date | null) => Promise<T>,
+      work: (
+        session: ClientSession,
+        expiredAt: Date | null,
+        state: ChannelFeedbackSourceState,
+      ) => Promise<T>,
     ): Promise<T> {
       await ensureIndexes();
       if (session && source) {
-        if (!sameFeedbackSource(source, mapping)) throw new ChannelFeedbackAuthorityError();
-        return work(session, sourceExpiry);
+        if (!sameFeedbackSource(source, mapping) || !sourceState)
+          throw new ChannelFeedbackAuthorityError();
+        return work(session, sourceExpiry, sourceState);
       }
       return withChannelFeedbackAuthority(mongoose, mapping, work);
     }
@@ -132,6 +164,15 @@ export function createChannelFeedbackStorage(
           .updateOne({ ...filter, expiredAt: null }, { $set: { expiredAt } }, { session: active });
     }
     const storage: ChannelFeedbackStorage = {
+      async compactChannelFeedbackEvents(tenantId, limit, now = Date.now(), retryMs = 5000) {
+        page(tenantId, limit);
+        if (!Number.isSafeInteger(now) || !Number.isSafeInteger(retryMs) || retryMs < 1)
+          throw new TypeError('Invalid feedback compaction clock');
+        await ensureIndexes();
+        return compactFeedbackReceipts(mongoose, tenantId, limit, now, retryMs, (key, active) =>
+          createStorage(active).rebuildVotes(tenantId, key, []),
+        );
+      },
       async repairChannelFeedbackRetention(tenantId, limit) {
         page(tenantId, limit);
         await ensureIndexes();
@@ -222,9 +263,17 @@ export function createChannelFeedbackStorage(
         mapping: ChannelReplyMapping,
         work: (storage: ChannelFeedbackStorage) => Promise<T>,
       ): Promise<T> {
-        return guard(mapping, (active, expiredAt) =>
-          work(createStorage(active, mapping, expiredAt)),
+        return guard(mapping, (active, expiredAt, state) =>
+          work(createStorage(active, mapping, expiredAt, state)),
         );
+      },
+      async readChannelReplyTrace(mapping) {
+        try {
+          return await guard(mapping, async (_active, _expiry, state) => state);
+        } catch (error) {
+          if (error instanceof ChannelFeedbackAuthorityError) return null;
+          throw error;
+        }
       },
       async isAuthorityCurrent(mapping) {
         try {
@@ -362,16 +411,21 @@ export function createChannelFeedbackStorage(
       },
       async markChannelFeedbackEvent(record) {
         await guard(record.mapping, async (active) => {
-          await events().updateOne(
-            {
-              tenantId: record.tenantId,
-              channelId: record.channelId,
-              eventId: record.eventId,
-              digest: record.digest,
-            },
-            { $set: { processed: true } },
-            { session: active },
-          );
+          let current = checkpoint;
+          if (
+            !current ||
+            current.key !== record.ledgerKey ||
+            !sameFeedbackSource(current.mapping, record.mapping)
+          ) {
+            const stored = await ledger()
+              .findOne({ tenantId: record.tenantId, key: record.ledgerKey })
+              .session(active)
+              .lean();
+            if (!stored || !sameFeedbackSource(stored.mapping, record.mapping))
+              throw new ChannelFeedbackAuthorityError();
+            current = feedbackCheckpoint(stored);
+          }
+          await acknowledgeFeedbackReceipt(mongoose, record, current, active);
         });
       },
       async ensureChannelFeedback(record) {
@@ -388,15 +442,18 @@ export function createChannelFeedbackStorage(
           await retainLegacyNull('ChannelFeedback', filter, expiredAt, active);
           const stored = await ledger().findOne(filter).session(active).lean();
           if (!stored) throw new Error('Channel feedback ledger disappeared during admission');
+          remember(stored);
           return stored;
         });
       },
       async getChannelFeedback(tenantId, key) {
         assertChannelTenant(tenantId);
-        return ledger()
+        const stored = await ledger()
           .findOne({ tenantId, key })
           .session(session ?? null)
           .lean();
+        if (stored) remember(stored);
+        return stored;
       },
       async saveChannelFeedback(record, expectedRevision) {
         return guard(record.mapping, async (active) => {
@@ -413,7 +470,10 @@ export function createChannelFeedbackStorage(
             },
             { session: active },
           );
-          return result.modifiedCount === 1;
+          if (result.modifiedCount !== 1) return false;
+          remember(record);
+          await pinFeedbackCheckpoint(mongoose, record, active);
+          return true;
         });
       },
       async claimChannelFeedbackExport(candidate, leaseId, now, leaseUntilMs) {

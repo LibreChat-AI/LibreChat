@@ -25,6 +25,10 @@ export interface ChannelFeedbackEventRecord extends ChannelFeedbackRetention {
   mapping: ChannelReplyMapping;
   rating: ChannelRating;
   processed: boolean;
+  receiptCompacted?: boolean;
+  receiptExpiresAt?: Date;
+  receiptCheckpointRevision?: number;
+  compactionRetryAtMs?: number;
   retryAtMs?: number;
 }
 
@@ -34,6 +38,8 @@ export interface ChannelFeedbackLedger extends ChannelFeedbackRetention {
   mapping: ChannelReplyMapping;
   externalUserId: string;
   scoreId: string;
+  receiptCompactionEpoch?: number;
+  receiptCheckpointRevision?: number;
   scoreTimestamp?: Date;
   createdAt?: Date;
   votes: ChannelFeedbackVote[];
@@ -108,6 +114,10 @@ export function createChannelFeedbackEventModel(
       mapping: { type: mappingSchema(), required: true },
       rating: { type: String, enum: ['thumbsUp', 'thumbsDown'], required: true },
       processed: { type: Boolean, required: true },
+      receiptCompacted: Boolean,
+      receiptExpiresAt: Date,
+      receiptCheckpointRevision: Number,
+      compactionRetryAtMs: { type: Number, default: 0 },
       retryAtMs: { type: Number, default: 0 },
       expiredAt: Date,
       retentionVersion: Number,
@@ -116,6 +126,15 @@ export function createChannelFeedbackEventModel(
   );
   schema.index({ tenantId: 1, channelId: 1, eventId: 1 }, { unique: true });
   schema.index({ tenantId: 1, processed: 1, updatedAt: 1, _id: 1 });
+  schema.index({ receiptExpiresAt: 1 }, { expireAfterSeconds: 0 });
+  schema.index({ tenantId: 1, processed: 1, receiptCompacted: 1, updatedAt: 1, _id: 1 });
+  schema.index({
+    tenantId: 1,
+    ledgerKey: 1,
+    processed: 1,
+    receiptCompacted: 1,
+    receiptExpiresAt: 1,
+  });
   schema.index({ tenantId: 1, ledgerKey: 1, 'event.eventTimestampUs': -1, 'event.eventId': -1 });
   schema.index({ tenantId: 1, 'mapping.principalId': 1, 'mapping.conversationId': 1 });
   schema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
@@ -148,6 +167,8 @@ export function createChannelFeedbackModel(
       mapping: { type: mappingSchema(), required: true },
       externalUserId: { type: String, required: true },
       scoreId: { type: String, required: true },
+      receiptCompactionEpoch: Number,
+      receiptCheckpointRevision: Number,
       scoreTimestamp: Date,
       expiredAt: Date,
       retentionVersion: Number,

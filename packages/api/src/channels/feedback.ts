@@ -3,6 +3,8 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   ChannelFeedbackAuthorityError,
   CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX,
+  channelFeedbackReactionIdentity as reactionIdentity,
+  isLaterChannelFeedbackEvent as later,
 } from '@librechat/data-schemas';
 import type {
   ChannelFeedbackActor,
@@ -62,20 +64,6 @@ export function normalizeChannelRating(reaction: string): ChannelRating | null {
   if (name === '+1' || name === 'thumbsup') return 'thumbsUp';
   if (name === '-1' || name === 'thumbsdown') return 'thumbsDown';
   return null;
-}
-
-function reactionIdentity(reaction: string): string {
-  return reaction.replace(/^\+1(?=::|$)/, 'thumbsup').replace(/^-1(?=::|$)/, 'thumbsdown');
-}
-
-function later(
-  a: Pick<ChannelFeedbackVote, 'eventTimestampUs' | 'eventId'>,
-  b: Pick<ChannelFeedbackVote, 'eventTimestampUs' | 'eventId'>,
-): boolean {
-  return (
-    a.eventTimestampUs > b.eventTimestampUs ||
-    (a.eventTimestampUs === b.eventTimestampUs && a.eventId > b.eventId)
-  );
 }
 
 /** Independent message slots preserve a rating when one of several overflow reactions is removed. */
@@ -290,6 +278,15 @@ export function createChannelFeedbackService(deps: ChannelFeedbackDependencies) 
       }
       if (admitted.digest !== eventDigest) return failure('event_conflict');
       return project(admitted);
+    },
+    /** Journal maintenance is independent of admission, recovery and provider export. */
+    async compact(tenantId: string, limit: number): Promise<number> {
+      return deps.storage.compactChannelFeedbackEvents(
+        tenantId,
+        limit,
+        Date.now(),
+        deps.exportRetryMs,
+      );
     },
     /** Recover accepted receipts after a process exits between admission and projection. */
     async recover(tenantId: string, limit: number): Promise<number> {

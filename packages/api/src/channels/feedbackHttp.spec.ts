@@ -20,6 +20,7 @@ import { createChannelFeedbackHost } from './feedbackHost';
 import { sendFeedbackScore } from '~/langfuse/feedback';
 import { traceIdForMessage } from '~/langfuse/trace';
 import { createChannelHandlers } from './service';
+import * as configSecrets from '~/admin/secrets';
 
 const tenantId = 'tenant-a';
 const serviceToken = 'local-channel-feedback-test-token-32-characters';
@@ -150,6 +151,7 @@ beforeEach(async () => {
       text: 'answer',
       langfuseRunId: 'actual-run',
       langfuseSampled: true,
+      langfuseCentralTraceExportEnabled: true,
       langfuseDestinationIds: ['recorded-project'],
       feedback: { rating: 'thumbsDown' },
     });
@@ -324,6 +326,104 @@ test('honors feedback disable and rechecks central export policy without broaden
   );
 });
 
+it.each([
+  { name: 'unresolved', sampled: true, ids: undefined, expected: undefined },
+  { name: 'explicit empty', sampled: true, ids: [], expected: [] },
+  { name: 'captured', sampled: true, ids: ['recorded-project'], expected: ['recorded-project'] },
+  { name: 'not sampled', sampled: false, ids: undefined, expected: undefined },
+  { name: 'missing sampling', sampled: undefined, ids: undefined, expected: [] },
+])(
+  'preserves $name trace routing through admission, persistence and restart',
+  async ({ sampled, ids, expected }) => {
+    await scope(async () => {
+      await mongoose.models.Message.updateOne(
+        { messageId: 'message-a' },
+        {
+          ...(sampled === undefined ? {} : { $set: { langfuseSampled: sampled } }),
+          $unset: {
+            langfuseDestinationIds: '',
+            ...(sampled === undefined ? { langfuseSampled: '' } : {}),
+          },
+        },
+      );
+      if (ids)
+        await mongoose.models.Message.updateOne(
+          { messageId: 'message-a' },
+          { $set: { langfuseDestinationIds: ids } },
+        );
+    });
+    await post().expect(200);
+    await scope(async () => createChannelFeedbackHost(deps).flush(tenantId, 10));
+    expect(deps.sendScore).toHaveBeenCalledWith(
+      expect.objectContaining({ sampled: sampled === true, destinationIds: expected }),
+    );
+  },
+);
+
+it.each([false, undefined])(
+  'requires original central consent %s rather than a copied mapping or later opt-in',
+  async (original) => {
+    await post().expect(200);
+    await scope(async () => {
+      await mongoose.models.Message.collection.updateOne(
+        { messageId: 'message-a' },
+        original === undefined
+          ? { $unset: { langfuseCentralTraceExportEnabled: '' } }
+          : { $set: { langfuseCentralTraceExportEnabled: original } },
+      );
+    });
+    central = true;
+    await scope(async () => createChannelFeedbackHost(deps).flush(tenantId, 10));
+    expect(deps.sendScore).toHaveBeenCalledWith(
+      expect.objectContaining({ centralTraceExportEnabled: false }),
+    );
+  },
+);
+
+it('dispatches actual tenant feedback with unresolved optional project identity', async () => {
+  const previous = { ...process.env };
+  const encrypted = `v3:${'a'.repeat(32)}:${'b'.repeat(32)}`;
+  const originalDecrypt = configSecrets.decryptConfigSecret;
+  const decrypt = jest
+    .spyOn(configSecrets, 'decryptConfigSecret')
+    .mockImplementation((value) =>
+      value === encrypted ? 'fixture-tenant-secret' : originalDecrypt(value),
+    );
+  const fetch = jest.spyOn(global, 'fetch').mockResolvedValue(new Response(null, { status: 200 }));
+  try {
+    delete process.env.LANGFUSE_PUBLIC_KEY;
+    delete process.env.LANGFUSE_SECRET_KEY;
+    process.env.TENANT_ISOLATION_STRICT = 'false';
+    central = true;
+    config.langfuse = {
+      enabled: true,
+      publicKey: 'fixture-tenant-public',
+      secretKey: encrypted,
+      destination: 'eu',
+    };
+    await scope(async () =>
+      mongoose.models.Message.updateOne(
+        { messageId: 'message-a' },
+        { $set: { isTemporary: false }, $unset: { langfuseDestinationIds: '' } },
+      ),
+    );
+    await post().expect(200);
+    await scope(async () =>
+      createChannelFeedbackHost({ ...deps, sendScore: sendFeedbackScore }).flush(tenantId, 10),
+    );
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch.mock.calls[0][0]).toMatch(/\/api\/public\/scores$/);
+    expect(JSON.parse(fetch.mock.calls[0][1]!.body as string)).toMatchObject({
+      name: 'user-feedback',
+      value: 1,
+    });
+  } finally {
+    fetch.mockRestore();
+    decrypt.mockRestore();
+    process.env = previous;
+  }
+});
+
 test('missing trace provenance is explicit unavailable rather than guessed sampling or routing', async () => {
   await scope(async () =>
     mongoose.models.Message.updateOne(
@@ -364,6 +464,47 @@ test('durable worker enumerates only metadata in system context then exports wit
   await worker.start();
   await worker.stop();
   expect(observed).toEqual([SYSTEM_TENANT_ID, tenantId]);
+});
+
+it('exports valid feedback even when independent receipt maintenance fails', async () => {
+  await post().expect(200);
+  const onError = jest.fn();
+  const worker = createChannelFeedbackWorker({
+    feedback: {
+      ...feedback,
+      compact: async () => {
+        throw new Error('maintenance unavailable');
+      },
+    },
+    batchSize: 10,
+    intervalMs: 60000,
+    maxIdleIntervalMs: 60000,
+    onError,
+    listChannels: async () => ({ channels: [{ tenantId }] }),
+  });
+  await worker.start();
+  await worker.stop();
+  expect(deps.sendScore).toHaveBeenCalledTimes(1);
+  expect(onError).toHaveBeenCalledWith(
+    expect.objectContaining({ message: 'maintenance unavailable' }),
+  );
+  expect(await scope(() => mongoose.models.ChannelFeedback.findOne({}).lean())).toMatchObject({
+    exportStatus: 'sent',
+  });
+});
+
+it('refuses to move a frozen feedback mapping to a changed source trace', async () => {
+  await post().expect(200);
+  await scope(async () =>
+    mongoose.models.Message.updateOne(
+      { messageId: 'message-a' },
+      { $set: { langfuseRunId: 'different-trace' } },
+    ),
+  );
+  await expect(scope(() => createChannelFeedbackHost(deps).flush(tenantId, 10))).rejects.toThrow(
+    'trace identity changed',
+  );
+  expect(deps.sendScore).not.toHaveBeenCalled();
 });
 
 it('resolves delivered source metadata once and reuses the mapping on redelivery', async () => {
