@@ -1,0 +1,97 @@
+import { expect, test } from '@playwright/test';
+import type { Page } from '@playwright/test';
+import {
+  MOCK_ENDPOINTS,
+  NEW_CHAT_PATH,
+  modelSelectorTrigger,
+  selectMockEndpoint,
+} from '../helpers';
+
+/**
+ * The `@` mention popover, drawn by the chat package's command popover through the app's
+ * windowed list: a combobox whose active option the keyboard moves and announces, which drills
+ * an endpoint into its models and switches the conversation to the model picked.
+ */
+test.describe.configure({ timeout: 120_000 });
+
+async function openMention(page: Page) {
+  await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+  await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+  const textarea = page.getByRole('textbox', { name: 'Message input' });
+  await textarea.click();
+  await textarea.press('@');
+  const combobox = page.getByRole('combobox', { name: /Mention/ });
+  await expect(combobox).toBeFocused();
+  return { textarea, combobox };
+}
+
+const activeOption = async (page: Page) => {
+  const id = await page
+    .getByRole('combobox', { name: /Mention/ })
+    .getAttribute('aria-activedescendant');
+  return page.locator(`[id="${id}"]`);
+};
+
+test.describe('mention popover', () => {
+  test('keyboard moves and announces the active option @scenario:mention-popover-keyboard-combobox', async ({
+    page,
+  }) => {
+    const { textarea, combobox } = await openMention(page);
+
+    await expect(combobox).toHaveAttribute('aria-expanded', 'true');
+    const listbox = page.locator(`[id="${await combobox.getAttribute('aria-controls')}"]`);
+    await expect(listbox).toHaveAttribute('role', 'listbox');
+    await expect(listbox.getByRole('option').first()).toBeVisible();
+    await expect(listbox.locator('[role="grid"], [role="rowgroup"]')).toHaveCount(0);
+
+    await expect(combobox).toHaveAttribute('aria-activedescendant', 'mention-item-0');
+    await combobox.press('ArrowDown');
+    await expect(combobox).toHaveAttribute('aria-activedescendant', 'mention-item-1');
+    const active = await activeOption(page);
+    await expect(active).toHaveAttribute('role', 'option');
+    await expect(active).toHaveAttribute('aria-selected', 'true');
+    await expect(active).toBeInViewport();
+    await expect(listbox.locator('[aria-selected="true"]')).toHaveCount(1);
+
+    await combobox.press('ArrowUp');
+    await expect(combobox).toHaveAttribute('aria-activedescendant', 'mention-item-0');
+
+    await combobox.press('Escape');
+    await expect(page.getByRole('combobox', { name: /Mention/ })).toHaveCount(0);
+    await expect(textarea).toBeFocused();
+  });
+
+  test('an endpoint drills into its models and the pick switches the model @scenario:mention-popover-switches-model', async ({
+    page,
+  }) => {
+    const target = MOCK_ENDPOINTS[1];
+    const { textarea, combobox } = await openMention(page);
+
+    await combobox.fill(target.label);
+    await expect(await activeOption(page)).toContainText(target.label);
+    await combobox.press('Enter');
+
+    await expect(combobox).toHaveValue('');
+    await expect(await activeOption(page)).toContainText(target.model);
+    await combobox.press('Enter');
+
+    await expect(page.getByRole('combobox', { name: /Mention/ })).toHaveCount(0);
+    await expect(modelSelectorTrigger(page)).toContainText(target.label);
+    await expect(textarea).toBeFocused();
+    await expect(textarea).toHaveValue('');
+  });
+
+  test('no match closes the popover and returns to the draft @scenario:mention-popover-no-match-closes', async ({
+    page,
+  }) => {
+    const { textarea, combobox } = await openMention(page);
+
+    await combobox.fill('zzzz-no-such-entry');
+    await expect(combobox).toHaveAttribute('aria-expanded', 'false');
+    await expect(combobox).not.toHaveAttribute('aria-activedescendant', /.*/);
+    await combobox.press('Enter');
+
+    await expect(page.getByRole('combobox', { name: /Mention/ })).toHaveCount(0);
+    await expect(textarea).toBeFocused();
+  });
+});
