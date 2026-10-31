@@ -29,9 +29,9 @@ jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
   ),
 }));
 
-jest.mock('~/components/Chat/Messages/HoverButtons', () => ({
-  __esModule: true,
-  default: () => null,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  HoverButtons: () => null,
 }));
 
 /**

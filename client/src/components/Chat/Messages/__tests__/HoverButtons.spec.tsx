@@ -1,8 +1,11 @@
 import React from 'react';
+import { getDefaultStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
 import { RecoilRoot, type MutableSnapshot } from 'recoil';
+import { HoverButtons } from '@librechat/chat/components';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import {
   Constants,
   ContentTypes,
@@ -12,12 +15,17 @@ import {
 } from 'librechat-data-provider';
 import {
   MessagesOperationsContext,
-  MessagesSubmittingContext,
   type MessagesOperations,
 } from '~/Providers/MessagesViewContext';
 import { hasCopyableText } from '~/hooks/Messages/useCopyToClipboard';
-import HoverButtons from '~/components/Chat/Messages/HoverButtons';
+import '~/Providers/MessagesHostContext';
 import store from '~/store';
+
+const setSubmitting = (value: boolean) => getDefaultStore().set(isSubmittingFamily(0), value);
+
+afterEach(() => {
+  resetSubmitting(getDefaultStore());
+});
 
 const conversation = {
   conversationId: 'convo-1',
@@ -43,6 +51,7 @@ function renderHoverButtons({
   handleFeedback,
   thread,
   voice,
+  textToSpeech = voice != null,
 }: {
   isSubmitting: boolean;
   message?: TMessage;
@@ -56,18 +65,22 @@ function renderHoverButtons({
   thread?: TMessage[];
   /** Enables Read Aloud on the browser engine with this voice selected. */
   voice?: string;
+  /** The viewer's read-aloud setting; on whenever a voice is set unless given. */
+  textToSpeech?: boolean;
 }) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
 
   const initializeState = ({ set }: MutableSnapshot) => {
-    set(store.textToSpeech, voice != null);
+    set(store.textToSpeech, textToSpeech);
     if (voice != null) {
       set(store.voice, voice);
       set(store.speechSettingsInitialized, true);
     }
   };
+
+  setSubmitting(isSubmitting);
 
   const { container } = render(
     <QueryClientProvider client={queryClient}>
@@ -75,24 +88,22 @@ function renderHoverButtons({
         <MessagesOperationsContext.Provider
           value={{ getMessages: () => thread } as unknown as MessagesOperations}
         >
-          <MessagesSubmittingContext.Provider value={isSubmitting}>
-            <MemoryRouter>
-              <HoverButtons
-                index={0}
-                isLast={isLast}
-                isEditing={false}
-                message={message}
-                conversation={targetConversation}
-                enterEdit={jest.fn()}
-                regenerate={jest.fn()}
-                handleContinue={jest.fn()}
-                copyToClipboard={jest.fn()}
-                getCanCopy={getCanCopy}
-                latestMessageId={latestMessageId}
-                handleFeedback={handleFeedback}
-              />
-            </MemoryRouter>
-          </MessagesSubmittingContext.Provider>
+          <MemoryRouter>
+            <HoverButtons
+              index={0}
+              isLast={isLast}
+              isEditing={false}
+              message={message}
+              conversation={targetConversation}
+              enterEdit={jest.fn()}
+              regenerate={jest.fn()}
+              handleContinue={jest.fn()}
+              copyToClipboard={jest.fn()}
+              getCanCopy={getCanCopy}
+              latestMessageId={latestMessageId}
+              handleFeedback={handleFeedback}
+            />
+          </MemoryRouter>
         </MessagesOperationsContext.Provider>
       </RecoilRoot>
     </QueryClientProvider>,
@@ -570,7 +581,7 @@ describe('HoverButtons edit affordance', () => {
 
 /**
  * The row above these controls no longer re-renders when a send starts or settles,
- * so the rerun gate has to follow the pane's submission state on its own.
+ * so the rerun gate has to follow the pane's submission state in the store on its own.
  */
 describe('HoverButtons submission state', () => {
   const assistantMessage = {
@@ -580,18 +591,6 @@ describe('HoverButtons submission state', () => {
     isCreatedByUser: false,
     text: 'An earlier answer',
   } as TMessage;
-
-  let setSubmitting: (value: boolean) => void = () => undefined;
-  /** Holds the pane's submission state; the toolbar element itself never changes. */
-  function SubmittingHost({ children }: { children: React.ReactNode }) {
-    const [submitting, setState] = React.useState(false);
-    setSubmitting = setState;
-    return (
-      <MessagesSubmittingContext.Provider value={submitting}>
-        {children}
-      </MessagesSubmittingContext.Provider>
-    );
-  }
 
   it('withholds and restores rerun on a settled row as a send starts and ends', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -620,9 +619,7 @@ describe('HoverButtons submission state', () => {
               } as unknown as MessagesOperations
             }
           >
-            <MemoryRouter>
-              <SubmittingHost>{buttons}</SubmittingHost>
-            </MemoryRouter>
+            <MemoryRouter>{buttons}</MemoryRouter>
           </MessagesOperationsContext.Provider>
         </RecoilRoot>
       </QueryClientProvider>,
@@ -744,6 +741,20 @@ describe('HoverButtons read aloud', () => {
       isLast: true,
       latestMessageId: 'assistant-1',
       voice: voiceName,
+    });
+
+    expect(screen.queryByTestId('read-aloud-button')).toBeNull();
+    expect(screen.getByTestId('copy-response-button')).toBeInTheDocument();
+  });
+
+  it('offers no read aloud while text to speech is off', () => {
+    renderHoverButtons({
+      isSubmitting: false,
+      message: { ...userMessage, messageId: 'assistant-1', isCreatedByUser: false },
+      isLast: true,
+      latestMessageId: 'assistant-1',
+      voice: voiceName,
+      textToSpeech: false,
     });
 
     expect(screen.queryByTestId('read-aloud-button')).toBeNull();

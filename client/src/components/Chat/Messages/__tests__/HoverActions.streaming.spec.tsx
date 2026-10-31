@@ -17,14 +17,6 @@ import store from '~/store';
 let mockHoverButtonsRenderCount = 0;
 let mockContentRenderCount = 0;
 
-jest.mock('~/components/Chat/Messages/HoverButtons', () => ({
-  __esModule: true,
-  default: () => {
-    mockHoverButtonsRenderCount += 1;
-    return <div data-testid="hover-buttons" />;
-  },
-}));
-
 jest.mock('~/components/Chat/Messages/Content/MessageContent', () => ({
   __esModule: true,
   default: ({ text }: { text: string }) => {
@@ -51,6 +43,10 @@ jest.mock('~/components/Chat/Messages/Content/ContentParts', () => {
 
 jest.mock('@librechat/chat/components', () => ({
   ...jest.requireActual('@librechat/chat/components'),
+  HoverButtons: () => {
+    mockHoverButtonsRenderCount += 1;
+    return <div data-testid="hover-buttons" />;
+  },
   AuthorHeader: () => <div data-testid="author-header" />,
 }));
 
