@@ -40,7 +40,7 @@ const buildDefaultConvo = ({
   const model =
     (presetMatches ? lastConversationSetup?.model : undefined) ??
     (conversationMatches ? conversation.model : undefined) ??
-    lastSelectedModel?.[endpoint];
+    (isAssistantsEndpoint(endpoint) ? undefined : lastSelectedModel?.[endpoint]);
   const possibleModels = model ? [model] : models;
 
   const convo = parseConvo({
