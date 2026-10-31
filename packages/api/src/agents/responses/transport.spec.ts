@@ -8,6 +8,7 @@ import {
 } from '@librechat/data-schemas';
 import type { ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
 import type { BackgroundResponseTransportDependencies } from './transport';
+import type { BoundAddress } from '~/app/origin';
 import { createBackgroundResponseTransport } from './transport';
 
 let mongo: MongoMemoryReplSet;
@@ -65,7 +66,7 @@ async function enroll() {
   );
   if (!result.ok) throw new Error('Enrollment failed');
 }
-function transport(fetch: Fetch, origin = 'http://127.0.0.1:3088') {
+function transport(fetch: Fetch, origin: string | BoundAddress = 'http://127.0.0.1:3088') {
   return createBackgroundResponseTransport({
     storage,
     fetch,
@@ -169,4 +170,26 @@ it('refuses remote or credential-bearing worker origins before making a request'
     );
   }
   expect(calls).toBe(0);
+});
+
+it('uses an initialized concrete listener capability without accepting the equivalent arbitrary URL', async () => {
+  const fetch: Fetch = async (url) => {
+    expect(String(url)).toBe('http://192.0.2.7:3088/api/agents/v1/responses');
+    await enroll();
+    return Response.json(ack, { status: 202 });
+  };
+  await expect(scoped(() => transport(fetch, 'http://192.0.2.7:3088')(record))).rejects.toThrow(
+    'capable local listener',
+  );
+  await expect(
+    scoped(() => transport(fetch, { address: '192.0.2.7', family: 'IPv4', port: 3088 })(record)),
+  ).resolves.toEqual({ status: 'started', generationCreatedAt: 1234 });
+});
+
+it('rejects a hostname masquerading as a bound listener before dispatch', async () => {
+  const fetch = jest.fn<ReturnType<Fetch>, Parameters<Fetch>>();
+  await expect(
+    scoped(() => transport(fetch, { address: 'example.test', port: 3088 })(record)),
+  ).rejects.toThrow('capable local listener');
+  expect(fetch).not.toHaveBeenCalled();
 });

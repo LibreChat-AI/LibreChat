@@ -134,6 +134,26 @@ function appFor(
   return app;
 }
 
+it.each([conversationId, responseId])(
+  'does not project background history through an ordinary %s read',
+  (id) =>
+    scoped(async () => {
+      await save({ ...result(), background: true });
+      await request(appFor())
+        .get('/' + id)
+        .expect(404);
+      // A damaged full receipt cannot make its server-written background marker disappear.
+      await mongoose.models.Message.updateOne(
+        { user: owner.userId, messageId: responseId },
+        { $set: { 'metadata.responseReceipt': { background: true } } },
+      );
+      const rejected = await request(appFor())
+        .get('/' + id)
+        .expect(404);
+      expect(JSON.stringify(rejected.body)).not.toContain('tool-result-only-in-canonical-content');
+    }),
+);
+
 it.each([conversationId, responseId])('preserves legacy tokenCount usage for %s', (id) =>
   scoped(async () => {
     await db.saveConvo({ userId: owner.userId }, { conversationId, endpoint: 'agents' });
