@@ -234,6 +234,9 @@ const messagesHost: MessagesHost = {
   useAutoScroll: () => false,
   useConversationSeen: () => () => undefined,
   renderMessageIcon: () => null,
+  renderMessageRow: () => null,
+  renderActivity: () => null,
+  useFileMap: () => undefined,
 };
 
 const renderers: PartRenderers = {

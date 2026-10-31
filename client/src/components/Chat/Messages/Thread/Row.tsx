@@ -1,23 +1,17 @@
 import { memo, useCallback } from 'react';
 import { useSetAtom } from 'jotai';
-import { hasParallelLanes } from '@librechat/chat';
-import { isAssistantsEndpoint } from 'librechat-data-provider';
-import { EventSubagentActivityGroup } from '@librechat/chat/components';
+import { siblingIdxFamily, useMessagesHost } from '@librechat/chat/react';
+import { activityParentMessageIds, hasParallelLanes } from '@librechat/chat';
+import type { MessageRowSlotProps } from '@librechat/chat/react';
 import type { ThreadRow } from '@librechat/chat';
-import type { TMessageProps } from '~/common';
-import MessageContent from '~/components/Messages/MessageContent';
-import MessageParts from '../MessageParts';
-import { siblingIdxFamily } from './state';
-import Message from '../Message';
 
-type RowProps = {
+type RowProps = Pick<MessageRowSlotProps, 'currentEditId' | 'setCurrentEditId'> & {
   row: ThreadRow;
-  currentEditId: TMessageProps['currentEditId'];
-  setCurrentEditId: TMessageProps['setCurrentEditId'];
 };
 
 /** One visible row of the flat thread: the message plus its activity group. */
 function Row({ row, currentEditId, setCurrentEditId }: RowProps) {
+  const { renderMessageRow, renderActivity } = useMessagesHost();
   const { message, siblingIdx, siblingCount, parentKey } = row;
   const setSiblingIdx = useSetAtom(siblingIdxFamily(parentKey));
   const setSiblingIdxRev = useCallback(
@@ -27,46 +21,26 @@ function Row({ row, currentEditId, setCurrentEditId }: RowProps) {
     [siblingCount, setSiblingIdx],
   );
 
-  const sharedProps = {
-    message,
-    currentEditId,
-    setCurrentEditId,
-    siblingIdx: siblingCount - siblingIdx - 1,
-    siblingCount,
-    setSiblingIdx: setSiblingIdxRev,
-  };
-
-  let content: JSX.Element;
-  if (isAssistantsEndpoint(message.endpoint) && message.content) {
-    content = <MessageParts {...sharedProps} />;
-  } else if (message.content) {
-    content = <MessageContent {...sharedProps} />;
-  } else {
-    content = <Message {...sharedProps} />;
-  }
-
-  let activityParentMessageIds: string[] = [];
-  if (message.isCreatedByUser) {
-    if (row.childCount === 0) activityParentMessageIds = [message.messageId];
-  } else {
-    activityParentMessageIds = [message.messageId, message.parentMessageId].filter(
-      (id): id is string => typeof id === 'string' && id.length > 0,
-    );
-  }
-  const isEditingActivityAnchor =
-    typeof currentEditId === 'string' && activityParentMessageIds.includes(currentEditId);
+  const activityIds = activityParentMessageIds(message, row.childCount > 0, currentEditId);
   const hasParallelContent = !message.isCreatedByUser && hasParallelLanes(message.content);
 
   return (
     <>
-      {content}
-      {!isEditingActivityAnchor && activityParentMessageIds.length > 0 ? (
+      {renderMessageRow({
+        message,
+        currentEditId,
+        setCurrentEditId,
+        siblingIdx: siblingCount - siblingIdx - 1,
+        siblingCount,
+        setSiblingIdx: setSiblingIdxRev,
+      })}
+      {activityIds.length > 0 ? (
         <div className="w-full border-0 bg-transparent">
-          <EventSubagentActivityGroup
-            conversationId={message.conversationId ?? ''}
-            parentMessageIds={activityParentMessageIds}
-            hasParallelContent={hasParallelContent}
-          />
+          {renderActivity({
+            conversationId: message.conversationId ?? '',
+            parentMessageIds: activityIds,
+            hasParallelContent,
+          })}
         </div>
       ) : null}
     </>

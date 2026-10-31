@@ -1,13 +1,11 @@
 import { memo } from 'react';
 import { useRowMountWindow } from '@librechat/chat/react';
+import type { MessageRowSlotProps } from '@librechat/chat/react';
 import type { ThreadRow } from '@librechat/chat';
-import type { TMessageProps } from '~/common';
 import Row from './Row';
 
-type ListProps = {
+type ListProps = Pick<MessageRowSlotProps, 'currentEditId' | 'setCurrentEditId'> & {
   rows: ThreadRow[];
-  currentEditId: TMessageProps['currentEditId'];
-  setCurrentEditId: TMessageProps['setCurrentEditId'];
 };
 
 /**
