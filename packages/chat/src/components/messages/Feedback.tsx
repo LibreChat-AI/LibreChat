@@ -1,7 +1,6 @@
 import React, { memo, useState, useCallback, useMemo, useEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
-import { hoverButtonClasses } from '@librechat/chat/components';
-import { TFeedback, TFeedbackTag, getTagsForRating } from 'librechat-data-provider';
+import { getTagsForRating } from 'librechat-data-provider';
 import {
   AlertCircle,
   PenTool,
@@ -21,9 +20,12 @@ import {
   TooltipAnchor,
   ThumbUpIcon,
   ThumbDownIcon,
+  cn,
+  useLocalize,
 } from '@librechat/client';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+import type { TFeedback, TFeedbackTag } from 'librechat-data-provider';
+import type { NamedExoticComponent } from 'react';
+import { hoverButtonClasses } from './styles';
 
 interface FeedbackProps {
   handleFeedback: ({ feedback }: { feedback: TFeedback | undefined }) => void;
@@ -340,4 +342,6 @@ function Feedback({ isLast = false, handleFeedback, feedback: initialFeedback }:
 }
 
 /** Memoized: a send re-renders every row's toolbar, and nothing here depends on it. */
-export default memo(Feedback);
+const MemoFeedback: NamedExoticComponent<FeedbackProps> = memo(Feedback);
+
+export default MemoFeedback;

@@ -410,22 +410,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/Feedback.tsx": {
-    "shadcn/no-restyle": {
-      "count": 10
-    },
-    "shadcn/require-static-classes": {
-      "count": 3
-    }
-  },
-  "client/src/components/Chat/Messages/Fork.tsx": {
-    "shadcn/no-restyle": {
-      "count": 4
-    },
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/HoverButtons.tsx": {
     "shadcn/require-static-classes": {
       "count": 1
@@ -1411,6 +1395,22 @@
   },
   "packages/chat/src/components/composer/files/SourceIcon.tsx": {
     "shadcn/no-arbitrary-values": {
+      "count": 1
+    }
+  },
+  "packages/chat/src/components/messages/Feedback.tsx": {
+    "shadcn/no-restyle": {
+      "count": 10
+    },
+    "shadcn/require-static-classes": {
+      "count": 3
+    }
+  },
+  "packages/chat/src/components/messages/Fork.tsx": {
+    "shadcn/no-restyle": {
+      "count": 4
+    },
+    "shadcn/require-static-classes": {
       "count": 1
     }
   },

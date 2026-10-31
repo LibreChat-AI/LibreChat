@@ -1,6 +1,28 @@
 import { createContext, useContext } from 'react';
-import type { TMessage } from 'librechat-data-provider';
+import type { TMessage, TForkConvoRequest } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
+
+/** The viewer's fork defaults, kept across sessions. */
+export type ForkPreferences = {
+  /** The fork option used without asking, when `rememberOption` is set. */
+  option: string;
+  setOption: (option: string) => void;
+  /** Whether a fork starts its branch at the target message. */
+  splitAtTarget: boolean;
+  setSplitAtTarget: (value: boolean) => void;
+  /** Whether the fork button forks at once with `option` instead of opening the menu. */
+  rememberOption: boolean;
+  setRememberOption: (value: boolean) => void;
+};
+
+/** What a fork reports back. `onSuccess` runs once the app has opened the new conversation. */
+export type ForkEvents = {
+  onSuccess: () => void;
+  onError: (error: unknown) => void;
+};
+
+/** Starts a fork of a conversation. */
+export type ForkConversation = (request: TForkConvoRequest, events: ForkEvents) => void;
 
 /**
  * Everything the message list reads from the app: viewer preferences, and render slots for the
@@ -15,12 +37,29 @@ export interface MessagesHost {
   useHour12: () => boolean | undefined;
   /** Renders the files attached to a user message, above its text. */
   renderFiles: (message: TMessage) => ReactNode;
+  /** The viewer's fork defaults. */
+  useForkPreferences: () => ForkPreferences;
+  /** Forks a conversation and opens the copy; `null` where forking is unavailable. */
+  useForkConversation: () => ForkConversation | null;
 }
 
-/** The host rows read outside any provider before an app registers one: locale clock, no slots. */
+const noop = (): void => undefined;
+
+const fallbackForkPreferences: ForkPreferences = {
+  option: '',
+  setOption: noop,
+  splitAtTarget: false,
+  setSplitAtTarget: noop,
+  rememberOption: false,
+  setRememberOption: noop,
+};
+
+/** The host rows read outside any provider before an app registers one: locale clock, no slots, no forking. */
 const fallbackHost: MessagesHost = {
   useHour12: () => undefined,
   renderFiles: () => null,
+  useForkPreferences: () => fallbackForkPreferences,
+  useForkConversation: () => null,
 };
 
 const MessagesHostContext = createContext<MessagesHost | null>(null);

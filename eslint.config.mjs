@@ -360,6 +360,7 @@ export default [
             'tool-status-text',
             'message-render',
             'message-timestamp',
+            'popover-animate',
           ],
         },
       ],
