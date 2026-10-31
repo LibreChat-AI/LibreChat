@@ -1,7 +1,16 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { cleanupAgent } from './agents.helpers';
-import { NEW_CHAT_PATH, getAccessToken, requestJson, sendMessage, mockReply } from './helpers';
+import { withMongo } from './db';
+import { getPrimaryE2EUser } from '../../setup/users.mock';
+import {
+  NEW_CHAT_PATH,
+  getAccessToken,
+  requestJson,
+  sendMessage,
+  mockReply,
+  isAgentGenerationStart,
+} from './helpers';
 
 function holdCatalogs(page: Page, selectedEndpoint?: string) {
   let release!: () => void;
@@ -105,5 +114,44 @@ test('a selected agent loads by id independently of the agent catalog', async ({
   } finally {
     await catalogs.dispose();
     await cleanupAgent(page, agent.id);
+  }
+});
+
+test('URL settings replace an unavailable saved agent before checking send readiness', async ({
+  page,
+}) => {
+  const conversationId = '17692000-0000-4000-8000-000000000009';
+  await withMongo(async (db) => {
+    const user = await db.collection('users').findOne({ email: getPrimaryE2EUser().email });
+    if (!user) throw new Error('Test user unavailable');
+    await db.collection('conversations').insertOne({
+      conversationId,
+      user: user._id.toString(),
+      title: 'Unavailable startup target',
+      endpoint: 'agents',
+      agent_id: 'agent_deleted_startup_target',
+      isArchived: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      __v: 0,
+    });
+  });
+  const catalogs = holdCatalogs(page);
+  await catalogs.install;
+  let admissions = 0;
+  page.on('response', (response) => {
+    if (isAgentGenerationStart(response)) admissions++;
+  });
+  try {
+    const response = page.waitForResponse(isAgentGenerationStart);
+    await page.goto(
+      `/c/${conversationId}?endpoint=Mock%20Provider%20C&model=mock-model-c&q=recover%20saved%20target&submit=true`,
+    );
+    expect((await response).ok()).toBeTruthy();
+    await expect(mockReply(page)).toBeVisible();
+    await expect(trigger(page)).toContainText('mock-model-c');
+    expect(admissions).toBe(1);
+  } finally {
+    await catalogs.dispose();
   }
 });
