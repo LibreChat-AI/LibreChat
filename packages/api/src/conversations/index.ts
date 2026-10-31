@@ -5,6 +5,7 @@ export * from './files';
 export * from './filters';
 export * from './import';
 export * from './lineage';
+export * from './load';
 export * from './read';
 export * from './retention';
 export * from './save';

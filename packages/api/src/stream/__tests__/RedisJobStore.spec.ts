@@ -304,7 +304,8 @@ describe('RedisJobStore', () => {
     expect(lrange).not.toHaveBeenCalled();
   });
 
-  test('writes initial metadata in the atomic job creation', async () => {
+  const retentionDeadlines = ['2030-01-01T00:00:00.000Z', '', 'invalid'];
+  test.each(retentionDeadlines)('round-trips job metadata %p', async (retentionExpiresAt) => {
     const evalJobCreation = jest
       .fn()
       .mockImplementation((...args: unknown[]) => ['', '', args[Number(args[1]) + 3]]);
@@ -337,7 +338,8 @@ describe('RedisJobStore', () => {
       agent_id: 'agent-1',
       compact: true,
       isTemporary: false,
-      retentionExpiresAt: '2030-01-01T00:00:00.000Z',
+      isNewConversation: false,
+      retentionExpiresAt,
       responseCheckpointConfigJSON: '{"type":"mongo","checkpointCollectionName":"responses"}',
       agentEventDeliveryKey: 'completion-delivery-1',
       agentEventInvocationKey: 'original-delivery-1',
@@ -457,7 +459,8 @@ describe('RedisJobStore', () => {
       model: 'test-model',
       agent_id: 'agent-1',
       isTemporary: false,
-      retentionExpiresAt: '2030-01-01T00:00:00.000Z',
+      isNewConversation: false,
+      retentionExpiresAt,
       responseCheckpointConfigJSON: '{"type":"mongo","checkpointCollectionName":"responses"}',
       scheduleId: 'schedule-1',
       scheduleMCPCompletion: {
@@ -527,7 +530,8 @@ describe('RedisJobStore', () => {
       }),
       agent_id: 'agent-1',
       isTemporary: '0',
-      retentionExpiresAt: '2030-01-01T00:00:00.000Z',
+      isNewConversation: '0',
+      retentionExpiresAt,
       responseCheckpointConfigJSON: '{"type":"mongo","checkpointCollectionName":"responses"}',
       scheduleId: 'schedule-1',
       scheduledFor: '2026-08-17T12:00:00.000Z',
