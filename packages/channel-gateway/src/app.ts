@@ -275,11 +275,11 @@ export class GatewayApp {
       response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
       response.end(JSON.stringify(body));
     };
-    if (request.method === 'GET' && path === '/readyz') {
+    if (request.method === 'GET' && path === '/livez') {
       send(200, { status: 'ok' });
       return;
     }
-    if (request.method === 'GET' && path === '/healthz') {
+    if (request.method === 'GET' && (path === '/healthz' || path === '/readyz')) {
       const ready = this.ready && (this.config.SLACK_TRANSPORT !== 'socket_mode' || this.connected);
       send(ready ? 200 : 503, { status: ready ? 'ready' : 'not_ready' });
       return;

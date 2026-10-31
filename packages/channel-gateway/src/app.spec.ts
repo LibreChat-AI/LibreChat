@@ -369,6 +369,28 @@ describe('durable Slack ingress', () => {
 });
 
 describe('signed webhook boundary', () => {
+  test.each([
+    ['webhook', false, false, 503],
+    ['webhook', true, false, 200],
+    ['socket_mode', false, true, 503],
+    ['socket_mode', true, false, 503],
+    ['socket_mode', true, true, 200],
+  ] as const)(
+    'shares truthful readiness for %s ready=%s connected=%s',
+    async (transport, ready, connected, status) => {
+      const { app } = setup({ SLACK_TRANSPORT: transport, SLACK_APP_TOKEN: 'test-app' });
+      app.ready = ready;
+      app.connected = connected;
+      await serve(app, async (base) => {
+        for (const path of ['/healthz', '/readyz']) {
+          const response = await fetch(base + path);
+          expect(response.status).toBe(status);
+          expect(await response.json()).toEqual({ status: status === 200 ? 'ready' : 'not_ready' });
+        }
+        expect((await fetch(base + '/livez')).status).toBe(200);
+      });
+    },
+  );
   test('does not echo a challenge after the ingress deadline expires during channel lookup', async () => {
     const { app, backend } = setup();
     backend.mockImplementation(async () => {
@@ -425,6 +447,7 @@ describe('signed webhook boundary', () => {
         ).status,
       ).toBe(503);
       expect((await fetch(base + '/healthz')).status).toBe(503);
+      expect((await fetch(base + '/readyz')).status).toBe(503);
     });
     expect(backend).toHaveBeenCalledTimes(1);
   });

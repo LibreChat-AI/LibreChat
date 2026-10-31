@@ -23,6 +23,8 @@ Remove legacy `SLACK_NATIVE_SESSIONS`, `SLACK_LIFECYCLE_REACTIONS` and `SLACK_SI
 
 ## Install a webhook app
 
+`/healthz` and `/readyz` share the actual readiness state: startup must complete, Socket Mode must be connected when selected, and an observed ingress-policy mismatch makes the replica unready. `/livez` reports only that the HTTP process is alive. The container healthcheck uses `/healthz`.
+
 1. Select webhook mode and set the gateway base URL in the application configuration. Create the Slack app and apply the generated bot capabilities; install it to obtain its bot token. Keep its signing secret private.
 2. Activate the Agent Channel with the app/workspace/bot identity, bot token and signing secret, and configure the matching gateway service/tenant/channel bindings. The private bundle requires an active channel with usable signing credentials before webhook verification can succeed.
 3. Start the gateway, then apply the generated Events API and interaction URLs to the Slack app. Installation challenges authenticate the original request bytes with that channel's signing secret before echoing the challenge. Missing, stale or tampered signatures cannot pass URL verification. Socket Mode instead requires the app-level token and matching authenticated app identity.
