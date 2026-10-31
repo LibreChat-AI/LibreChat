@@ -241,8 +241,8 @@ const buttonVariantRecipe = cva(
           'rounded-sm text-xs text-text-secondary hover:text-text-primary focus-visible:ring-offset-0',
         /** A line of guidance that is also a way into the field it names, such as the ask popover's
          *  "type below" pointing at the composer: it reads as text, with a text cursor and no fill
-         *  under the pointer, and keeps the focus ring. */
-        hint: 'cursor-text rounded-md text-xs font-normal text-text-secondary',
+         *  under the pointer, rises to the primary ink on hover, and keeps the focus ring. */
+        hint: 'cursor-text rounded-md text-xs font-normal text-text-secondary hover:text-text-primary',
         /** The content of a list row whose row owns the highlight, such as a composer palette
          *  entry: it lays the row out and takes the pointer, and leaves fill and ink to the row. */
         'row-content':
