@@ -28,6 +28,8 @@ jest.mock('@librechat/api', () => ({
     emitChunk: jest.fn(),
   },
   HOST_FILE_AUTHORING_ARTIFACT_KEY: '__librechat_file_authoring',
+  MODEL_ONLY_ARTIFACT_KEY: jest.requireActual('@librechat/api').MODEL_ONLY_ARTIFACT_KEY,
+  isModelOnlyArtifact: jest.requireActual('@librechat/api').isModelOnlyArtifact,
   getToolInputValidationDetails: jest.fn((result, validationError) =>
     validationError != null
       ? {
@@ -859,6 +861,78 @@ describe('createToolEndCallback', () => {
       }
     },
   );
+
+  describe('image_url artifact content', () => {
+    const imageOutput = (artifact) => ({
+      name: 'read_file',
+      tool_call_id: 'call_read',
+      artifact: {
+        ...artifact,
+        content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } }],
+      },
+    });
+
+    beforeEach(() => {
+      res.headersSent = true;
+      res.writableEnded = false;
+      require('~/server/services/Files/process').saveBase64Image.mockResolvedValue({
+        file_id: 'file_img',
+        filename: 'read_file_img_mock-id',
+        filepath: '/images/read_file_img_mock-id.png',
+        type: 'image/png',
+      });
+    });
+
+    it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
+      '%s keeps a model-only image out of the chat',
+      async (factoryName) => {
+        const { MODEL_ONLY_ARTIFACT_KEY, writeAttachmentEvent } = require('@librechat/api');
+        const { saveBase64Image } = require('~/server/services/Files/process');
+        const tracker = { nextSequence: jest.fn(() => 1) };
+        const toolEndCallback = require('../callbacks')[factoryName]({
+          req,
+          res,
+          tracker,
+          artifactPromises,
+        });
+
+        for (let read = 0; read < 3; read++) {
+          await toolEndCallback(
+            { output: imageOutput({ [MODEL_ONLY_ARTIFACT_KEY]: true }) },
+            { run_id: 'run456', thread_id: 'thread789' },
+          );
+        }
+
+        expect(artifactPromises).toHaveLength(0);
+        expect(saveBase64Image).not.toHaveBeenCalled();
+        expect(res.write).not.toHaveBeenCalled();
+        expect(writeAttachmentEvent).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['createToolEndCallback', 'createResponsesToolEndCallback'])(
+      '%s still attaches an image the tool did not mark as model-only',
+      async (factoryName) => {
+        const { saveBase64Image } = require('~/server/services/Files/process');
+        const tracker = { nextSequence: jest.fn(() => 1) };
+        const toolEndCallback = require('../callbacks')[factoryName]({
+          req,
+          res,
+          tracker,
+          artifactPromises,
+        });
+
+        await toolEndCallback(
+          { output: imageOutput({}) },
+          { run_id: 'run456', thread_id: 'thread789' },
+        );
+
+        const [attachment] = await Promise.all(artifactPromises);
+        expect(saveBase64Image).toHaveBeenCalledTimes(1);
+        expect(attachment).toMatchObject({ file_id: 'file_img', toolCallId: 'call_read' });
+      },
+    );
+  });
 
   describe('ui_resources artifact handling', () => {
     it('should process ui_resources artifact and return attachment when headers not sent', async () => {
