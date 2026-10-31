@@ -83,15 +83,22 @@ export function createChannelFeedbackRuntime(
           feedback,
           wake: () => worker?.wake(),
         });
-        try {
-          await worker.start();
-        } catch (error) {
-          await worker.stop().catch(() => undefined);
-          throw error;
-        }
+        await worker.start();
         if (stopped) await worker.stop();
         else ready = true;
-      })();
+      })().catch(async (error: unknown) => {
+        ready = false;
+        handlers = undefined;
+        const failed = worker;
+        worker = undefined;
+        try {
+          await failed?.stop();
+        } catch {
+          /* Preserve the initialization failure after attempting owned worker disposal. */
+        }
+        initialization = undefined;
+        throw error;
+      });
       return initialization;
     },
     async stop(): Promise<void> {
