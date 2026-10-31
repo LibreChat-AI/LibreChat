@@ -2,8 +2,8 @@
  * @jest-environment jsdom
  */
 import * as React from 'react';
-import { render, waitFor, fireEvent, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
 import type { UseFormReturn } from 'react-hook-form';
 import type { Agent } from 'librechat-data-provider';
 import type { AgentForm, AgentModelPanelProps } from '~/common';
@@ -116,8 +116,22 @@ jest.mock('~/utils', () => ({
   })),
 }));
 
+const mockSelectAgent = jest.fn();
+const mockSetSidebarOpen = jest.fn();
+let mockIsSmallScreen = false;
+
+jest.mock('~/hooks/Nav/useSidebarState', () => ({
+  __esModule: true,
+  default: () => ({ isSmallScreen: mockIsSmallScreen, expanded: true, setExpanded: jest.fn() }),
+}));
+
+jest.mock('~/hooks/Nav/useSidebarToggle', () => ({
+  __esModule: true,
+  default: () => ({ setSidebarOpen: mockSetSidebarOpen, toggleSidebar: jest.fn() }),
+}));
+
 jest.mock('~/hooks', () => ({
-  useSelectAgent: () => ({ onSelect: jest.fn() }),
+  useSelectAgent: () => ({ onSelect: mockSelectAgent }),
   useLocalize: () => (key: string) => key,
   useAuthContext: () => ({ user: { id: 'user-123', role: mockUserRole } }),
 }));
@@ -1319,5 +1333,56 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
         });
       });
     });
+  });
+});
+
+describe('AgentPanel - Select Agent', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockShowToast = jest.fn();
+    mockFormDefaults = {};
+    mockHasPermission = true;
+    mockUserRole = 'USER';
+    mockModelsQuery = {
+      data: { openai: ['gpt-4'] },
+      isFetchedAfterMount: true,
+      isSuccess: true,
+    };
+    mockAgentPanelContext = {
+      activePanel: 'builder',
+      agentsConfig: { allowedProviders: [] },
+      setActivePanel: jest.fn(),
+      endpointsConfig: { openai: {} },
+      setCurrentAgentId: jest.fn(),
+      agent_id: 'agent-123',
+    };
+    const { mockUseGetAgentByIdQuery } = setupMocks();
+    mockAgentQuery(mockUseGetAgentByIdQuery, {});
+  });
+
+  const clickSelect = () => {
+    render(<AgentPanel />, { wrapper: createWrapper() });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_select_agent' }));
+  };
+
+  it('closes the mobile drawer before starting the chat with the agent', () => {
+    mockIsSmallScreen = true;
+    clickSelect();
+
+    expect(mockSetSidebarOpen).toHaveBeenCalledTimes(1);
+    expect(mockSetSidebarOpen).toHaveBeenCalledWith(false, expect.any(Function));
+    expect(mockSelectAgent).not.toHaveBeenCalled();
+
+    const afterSlide = mockSetSidebarOpen.mock.calls[0][1] as () => void;
+    afterSlide();
+    expect(mockSelectAgent).toHaveBeenCalledWith('agent-123');
+  });
+
+  it('leaves the desktop sidebar as it is and starts the chat at once', () => {
+    mockIsSmallScreen = false;
+    clickSelect();
+
+    expect(mockSetSidebarOpen).not.toHaveBeenCalled();
+    expect(mockSelectAgent).toHaveBeenCalledWith('agent-123');
   });
 });
