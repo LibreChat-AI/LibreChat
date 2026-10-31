@@ -13,6 +13,8 @@ import StructuredMessage from '~/components/Messages/MessageContent';
 import MessageParts from '~/components/Chat/Messages/MessageParts';
 import Message from '~/components/Chat/Messages/Message';
 import store from '~/store';
+import '~/components/Chat/Messages/Content/register';
+import '~/Providers/MessagesHostContext';
 
 let mockHoverButtonsRenderCount = 0;
 let mockContentRenderCount = 0;

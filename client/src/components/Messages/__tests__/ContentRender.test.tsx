@@ -4,6 +4,8 @@ import { render, screen, within } from '@testing-library/react';
 import type { Agent, TConversation, TMessage } from 'librechat-data-provider';
 import type { TMessageChatContext } from '~/common';
 import ContentRender from '../ContentRender';
+import '~/components/Chat/Messages/Content/register';
+import '~/Providers/MessagesHostContext';
 
 const mockRenders = { parts: 0 };
 
