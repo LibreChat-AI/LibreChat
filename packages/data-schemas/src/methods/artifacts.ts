@@ -6,6 +6,7 @@ import type {
   RunArtifactRunScope,
 } from '~/types/file';
 import { getTenantId, isReservedTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { SERVER_AUTHORED_MESSAGE_FILTER } from '~/utils/authored';
 
 /** Null denotes an absent/expired owned response; query failures remain operational errors. */
 export async function readResponseArtifactCatalog(
@@ -45,7 +46,7 @@ export async function readResponseArtifactCatalog(
     tenantId: partition,
     conversationId: scope.conversationId,
     messageId: scope.runId,
-    isCreatedByUser: false,
+    ...SERVER_AUTHORED_MESSAGE_FILTER,
     ...expiry,
   };
   const Message = mongoose.model('Message');
