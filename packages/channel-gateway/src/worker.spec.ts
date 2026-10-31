@@ -365,7 +365,9 @@ describe('durable Channels worker', () => {
       f.config.SLACK_NATIVE_SESSIONS = true;
       if (field === 'apiKey' || field === 'requestKey') f.grant[field] = 'wrong';
       else f.grant.request[field] = 'wrong';
-      await expect(f.execute()).rejects.toThrow('grant');
+      await expect(f.execute()).rejects.toThrow(
+        field === 'apiKey' ? 'Invalid run-bound response credential' : 'Invalid Responses grant',
+      );
       expect(f.paths().some((path) => path.startsWith('/api/agents/'))).toBe(false);
     },
   );
