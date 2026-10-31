@@ -4,7 +4,13 @@ import mongoose from 'mongoose';
 import { Readable } from 'node:stream';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
-import { PermissionBits, Permissions, PermissionTypes, FileSources } from 'librechat-data-provider';
+import {
+  PermissionBits,
+  Permissions,
+  PermissionTypes,
+  FileSources,
+  channelConfigSchema,
+} from 'librechat-data-provider';
 import {
   createModels,
   createMethods,
@@ -186,11 +192,12 @@ beforeEach(async () => {
         await artifactRead();
         return Readable.from(Buffer.from('file'));
       },
-      limits: async () => ({
-        artifactMaxBytes: 1000,
-        artifactMaxFiles: 1,
-        artifactReadTimeoutMs: 1000,
-      }),
+      limits: async () =>
+        channelConfigSchema.parse({
+          artifactMaxBytes: 1000,
+          artifactMaxFiles: 1,
+          artifactReadTimeoutMs: 1000,
+        }),
     }),
     guard: handlers.service,
     resolvePrincipal: authority.resolvePrincipal,
