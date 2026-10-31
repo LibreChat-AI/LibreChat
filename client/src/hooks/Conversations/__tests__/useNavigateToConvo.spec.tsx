@@ -1,5 +1,5 @@
 import { RecoilRoot, useRecoilValue } from 'recoil';
-import { QueryKeys } from 'librechat-data-provider';
+import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import { render, screen, act, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { BrowserRouter, useLocation, useNavigate } from 'react-router-dom';
@@ -125,6 +125,17 @@ function Harness({ runningIds = [] }: { runningIds?: string[] }) {
           navigate('/c/new');
         }}
       />
+      <button
+        data-testid="go-removed-endpoint"
+        onClick={() =>
+          navigateToConvo({
+            ...rowB,
+            conversationId: 'new',
+            endpoint: EModelEndpoint.azureOpenAI,
+            model: 'old-model',
+          })
+        }
+      />
       <div data-testid="path">{location.pathname}</div>
       <div data-testid="convo">{JSON.stringify(conversation ?? null)}</div>
     </div>
@@ -191,6 +202,24 @@ const settle = async (id: string, outcome: TConversation | { status: number }) =
 };
 
 describe('useNavigateToConvo', () => {
+  it('uses the destination-scoped cache when an endpoint was removed', () => {
+    localStorage.clear();
+    const client = renderHarness();
+    client.setQueryData([QueryKeys.models, 'openAI'], { openAI: ['scoped-model'] });
+    click('go-removed-endpoint');
+    expect(currentConvo()?.endpoint).toBe('openAI');
+    expect(currentConvo()?.model).toBe('scoped-model');
+    expect(client.getQueryData([QueryKeys.models])).toBeUndefined();
+  });
+
+  it('leaves the model unresolved if the fallback endpoint has not been discovered', () => {
+    localStorage.clear();
+    renderHarness();
+    click('go-removed-endpoint');
+    expect(currentConvo()?.endpoint).toBe('openAI');
+    expect(currentConvo()?.model).toBeUndefined();
+  });
+
   afterEach(() => {
     mockGetConversationById.mockClear();
     mockPending.clear();

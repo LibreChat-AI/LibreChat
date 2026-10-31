@@ -153,3 +153,45 @@ it('hydrates an assistant by id without requiring the assistant list', async () 
   await waitFor(() => expect(result.current.value?.model).toBe('assistant-model'));
   expect(dataService.listAssistants).not.toHaveBeenCalled();
 });
+
+it.each([403, 404])(
+  'does not replace a missing or denied remembered assistant (%s) with a catalog default',
+  async (status) => {
+    jest
+      .spyOn(dataService, 'getAssistantById')
+      .mockRejectedValue(Object.assign(new Error('unavailable'), { status }));
+    const { result, client } = setup(
+      conversation({ endpoint: EModelEndpoint.assistants, assistant_id: 'asst_remembered' }),
+    );
+    client.setQueryData([QueryKeys.assistants, EModelEndpoint.assistants], {
+      data: [{ id: 'asst_first', model: 'other-model' }],
+    });
+    await waitFor(() => expect(result.current.target.failed).toBe(true));
+    expect(result.current.value?.assistant_id).toBe('asst_remembered');
+    expect(result.current.target.ready).toBe(false);
+    expect(dataService.listAssistants).not.toHaveBeenCalled();
+  },
+);
+
+it('does not replace a remembered agent missing from a partial catalog', async () => {
+  jest.spyOn(dataService, 'getAgentById').mockResolvedValue({ id: 'agent_remembered' } as Agent);
+  const { result, client } = setup(
+    conversation({ endpoint: EModelEndpoint.agents, agent_id: 'agent_remembered' }),
+  );
+  client.setQueryData([QueryKeys.agents], { data: [{ id: 'agent_first' }] });
+  await waitFor(() => expect(result.current.target.ready).toBe(true));
+  expect(result.current.value?.agent_id).toBe('agent_remembered');
+  expect(dataService.listAgents).not.toHaveBeenCalled();
+});
+
+it('keeps a missing remembered agent selected rather than using a catalog fallback', async () => {
+  jest
+    .spyOn(dataService, 'getAgentById')
+    .mockRejectedValue(Object.assign(new Error('missing'), { status: 404 }));
+  const { result } = setup(
+    conversation({ endpoint: EModelEndpoint.agents, agent_id: 'agent_missing' }),
+  );
+  await waitFor(() => expect(result.current.target.failed).toBe(true));
+  expect(result.current.value?.agent_id).toBe('agent_missing');
+  expect(dataService.listAgents).not.toHaveBeenCalled();
+});
