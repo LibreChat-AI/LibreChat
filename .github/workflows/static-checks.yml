@@ -161,6 +161,10 @@ jobs:
         continue-on-error: true
         run: npm ci
 
+      - name: Test scoped dependency overrides
+        if: steps.install_dependencies.outcome == 'success'
+        run: npm run test:dependencies
+
       # The @shadcn/lint design rules read each primitive's `cva` variants through
       # the @librechat/client entry point, which resolves to packages/client/dist.
       # Without it they classify nothing and report strictly fewer violations than
