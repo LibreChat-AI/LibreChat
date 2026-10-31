@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { dataService, MutationKeys, PermissionBits, QueryKeys } from 'librechat-data-provider';
 import type { QueryClient, UseMutationResult } from '@tanstack/react-query';
 import type * as t from 'librechat-data-provider';
+import { getAgentListQueryData, setAgentListQueryData } from './queries';
 
 /**
  * AGENTS
@@ -82,7 +83,7 @@ export const useCreateAgentMutation = (
     onSuccess: (newAgent, variables, context) => {
       ((keys: t.AgentListParams[]) => {
         keys.forEach((key) => {
-          const listRes = queryClient.getQueryData<t.AgentListResponse>([QueryKeys.agents, key]);
+          const listRes = getAgentListQueryData(queryClient, [QueryKeys.agents, key]);
           if (!listRes) {
             return;
           }
@@ -93,7 +94,7 @@ export const useCreateAgentMutation = (
             ...JSON.parse(JSON.stringify(listRes.data)),
           ];
 
-          queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], {
+          setAgentListQueryData(queryClient, [QueryKeys.agents, key], {
             ...listRes,
             data: currentAgents,
           });
@@ -128,13 +129,13 @@ export const useUpdateAgentMutation = (
       onSuccess: (updatedAgent, variables, context) => {
         ((keys: t.AgentListParams[]) => {
           keys.forEach((key) => {
-            const listRes = queryClient.getQueryData<t.AgentListResponse>([QueryKeys.agents, key]);
+            const listRes = getAgentListQueryData(queryClient, [QueryKeys.agents, key]);
 
             if (!listRes) {
               return;
             }
 
-            queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], {
+            setAgentListQueryData(queryClient, [QueryKeys.agents, key], {
               ...listRes,
               data: listRes.data.map((agent) => {
                 if (agent.id === variables.agent_id) {
@@ -177,7 +178,7 @@ export const useDeleteAgentMutation = (
         const data = ((keys: t.AgentListParams[]) => {
           let data: t.Agent[] = [];
           keys.forEach((key) => {
-            const listRes = queryClient.getQueryData<t.AgentListResponse>([QueryKeys.agents, key]);
+            const listRes = getAgentListQueryData(queryClient, [QueryKeys.agents, key]);
 
             if (!listRes) {
               return;
@@ -187,7 +188,7 @@ export const useDeleteAgentMutation = (
               .filter((agent) => agent.id !== variables.agent_id)
               .map((agent) => pruneAgentEdges(agent, variables.agent_id));
 
-            queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], {
+            setAgentListQueryData(queryClient, [QueryKeys.agents, key], {
               ...listRes,
               data: remainingAgents,
             });
@@ -239,12 +240,12 @@ export const useDuplicateAgentMutation = (
       onSuccess: ({ agent, actions }, variables, context) => {
         ((keys: t.AgentListParams[]) => {
           keys.forEach((key) => {
-            const listRes = queryClient.getQueryData<t.AgentListResponse>([QueryKeys.agents, key]);
+            const listRes = getAgentListQueryData(queryClient, [QueryKeys.agents, key]);
             if (listRes) {
               /** Duplicating grants the caller ownership, so the new row is editable.
                *  The response omits list-only `isEditable`; see `mergeAgentListRow`. */
               const currentAgents = [{ ...agent, isEditable: true }, ...listRes.data];
-              queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], {
+              setAgentListQueryData(queryClient, [QueryKeys.agents, key], {
                 ...listRes,
                 data: currentAgents,
               });
@@ -283,12 +284,12 @@ export const useUploadAgentAvatarMutation = (
     onSuccess: (updatedAgent, variables, context) => {
       ((keys: t.AgentListParams[]) => {
         keys.forEach((key) => {
-          const listRes = queryClient.getQueryData<t.AgentListResponse>([QueryKeys.agents, key]);
+          const listRes = getAgentListQueryData(queryClient, [QueryKeys.agents, key]);
           if (!listRes) {
             return;
           }
 
-          queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], {
+          setAgentListQueryData(queryClient, [QueryKeys.agents, key], {
             ...listRes,
             data: listRes.data.map((agent) => {
               if (agent.id === variables.agent_id) {
@@ -334,12 +335,12 @@ export const useUpdateAgentAction = (
       const updatedAgent = updateAgentActionResponse[0];
       ((keys: t.AgentListParams[]) => {
         keys.forEach((key) => {
-          const listRes = queryClient.getQueryData<t.AgentListResponse>([QueryKeys.agents, key]);
+          const listRes = getAgentListQueryData(queryClient, [QueryKeys.agents, key]);
 
           if (!listRes) {
             return;
           }
-          queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], {
+          setAgentListQueryData(queryClient, [QueryKeys.agents, key], {
             ...listRes,
             data: listRes.data.map((agent) => {
               if (agent.id === variables.agent_id) {
@@ -405,7 +406,7 @@ export const useDeleteAgentAction = (
       });
       ((keys: t.AgentListParams[]) => {
         keys.forEach((key) => {
-          queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], (prev) => {
+          setAgentListQueryData(queryClient, [QueryKeys.agents, key], (prev) => {
             if (!prev) {
               return prev;
             }
@@ -472,10 +473,10 @@ export const useRevertAgentVersionMutation = (
 
         ((keys: t.AgentListParams[]) => {
           keys.forEach((key) => {
-            const listRes = queryClient.getQueryData<t.AgentListResponse>([QueryKeys.agents, key]);
+            const listRes = getAgentListQueryData(queryClient, [QueryKeys.agents, key]);
 
             if (listRes) {
-              queryClient.setQueryData<t.AgentListResponse>([QueryKeys.agents, key], {
+              setAgentListQueryData(queryClient, [QueryKeys.agents, key], {
                 ...listRes,
                 data: listRes.data.map((agent) => {
                   if (agent.id === variables.agent_id) {

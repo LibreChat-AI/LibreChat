@@ -458,8 +458,9 @@ export const getAIEndpoints = (): Promise<t.TEndpointsConfig> => {
   return request.get(endpoints.aiEndpoints());
 };
 
-export const getTokenConfig = (): Promise<t.TTokenConfigMap> => {
-  return request.get(endpoints.tokenConfig());
+export const getTokenConfig = async (endpoint?: string): Promise<t.TTokenConfigMap> => {
+  const config = await request.get<t.TTokenConfigMap>(endpoints.tokenConfig(endpoint));
+  return endpoint == null ? config : { [endpoint]: config[endpoint] ?? {} };
 };
 
 export const getReasoningCapabilities = (
@@ -468,8 +469,10 @@ export const getReasoningCapabilities = (
   return request.get(endpoints.reasoningCapabilities(endpoint));
 };
 
-export const getModels = async (): Promise<t.TModelsConfig> => {
-  return request.get(endpoints.models());
+export const getModels = async (endpoint?: string): Promise<t.TModelsConfig> => {
+  const models = await request.get<t.TModelsConfig>(endpoints.models(endpoint));
+  // Older servers ignore the selector and return the aggregate catalog.
+  return endpoint == null ? models : { [endpoint]: models[endpoint] ?? [] };
 };
 
 /* Assistants */

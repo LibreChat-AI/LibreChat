@@ -200,3 +200,35 @@ describe('buildDefaultConvo - defaultParamsEndpoint', () => {
     });
   });
 });
+
+describe('selection independent of model discovery', () => {
+  const selected = {
+    conversationId: 'new',
+    endpoint: EModelEndpoint.openAI,
+    model: 'explicit-model',
+    createdAt: '',
+    updatedAt: '',
+    title: '',
+  } as TConversation;
+
+  it('preserves an explicit model even when a different catalog default arrives', () => {
+    expect(
+      buildDefaultConvo({
+        conversation: selected,
+        endpoint: EModelEndpoint.openAI,
+        lastConversationSetup: selected,
+        models: ['another-model'],
+      }).model,
+    ).toBe('explicit-model');
+  });
+
+  it('leaves an unresolved model undecided rather than selecting a placeholder', () => {
+    expect(
+      buildDefaultConvo({
+        conversation: { ...selected, model: undefined },
+        endpoint: EModelEndpoint.openAI,
+        lastConversationSetup: null,
+      }).model,
+    ).toBeUndefined();
+  });
+});

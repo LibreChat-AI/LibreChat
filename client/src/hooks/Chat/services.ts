@@ -20,12 +20,12 @@ import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedRespons
 import useGetConversation from '~/hooks/Conversations/useGetConversation';
 import useCodeApprovalMode from '~/hooks/Agents/useCodeApprovalMode';
 import useSetFilesToDelete from '~/hooks/Files/useSetFilesToDelete';
+import { isHistoryRevalidating, isTargetReady } from './ask/guards';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
 import useGetSender from '~/hooks/Conversations/useGetSender';
 import { resolveSubmittedReasoning } from './ask/reasoning';
-import { isHistoryRevalidating } from './ask/guards';
 import useUserKey from '~/hooks/Input/useUserKey';
 
 /** The app's side of a pane's turns: its catalogs, router, composer files, code workspace and
@@ -64,6 +64,13 @@ export default function useTurnServices({
     isHistoryRevalidating: (conversationId) => isHistoryRevalidating(queryClient, conversationId),
     resolveCode: (submitted) => {
       const latest = getConversation();
+      if (
+        !config.loaded ||
+        !isTargetReady(queryClient, latest) ||
+        (addedConversation != null && !isTargetReady(queryClient, addedConversation))
+      ) {
+        return null;
+      }
       const latestApprovalMode = latest?.codeApprovalMode;
       const workspaceSubmission = codeWorkspaceState.resolveSubmission(
         latest?.codeWorkspaces ?? submitted?.codeWorkspaces,

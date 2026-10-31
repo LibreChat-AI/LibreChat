@@ -1,4 +1,5 @@
 {
+  "com_ui_chat_target_failed": "Unable to load this chat’s model or agent.",
   "com_ui_pr_account_checking": "Checking connection",
   "com_ui_pr_account_connect": "Connect",
   "com_ui_pr_account_connect_aria": "Connect {{0}}",

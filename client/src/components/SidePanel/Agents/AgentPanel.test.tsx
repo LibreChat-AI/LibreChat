@@ -94,6 +94,8 @@ jest.mock('@librechat/client', () => ({
 }));
 
 // Mock other dependencies
+jest.mock('~/data-provider/Endpoints/models', () => ({ useModelCatalog: () => mockModelsQuery }));
+
 jest.mock('librechat-data-provider/react-query', () => ({
   useGetModelsQuery: () => mockModelsQuery,
   useGetEffectivePermissionsQuery: () => ({

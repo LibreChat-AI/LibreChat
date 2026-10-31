@@ -3,7 +3,6 @@ import { Plus } from 'lucide-react';
 import isEqual from 'lodash/isEqual';
 import { Button, useToastContext } from '@librechat/client';
 import { useWatch, useForm, FormProvider } from 'react-hook-form';
-import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import {
   MemoryScope,
   SystemRoles,
@@ -44,6 +43,7 @@ import { useResourcePermissions } from '~/hooks/useResourcePermissions';
 import { useSelectAgent, useLocalize, useAuthContext } from '~/hooks';
 import { useAgentPanelContext } from '~/Providers/AgentPanelContext';
 import { resolveCapabilityTools } from './Tools/items/capabilities';
+import { useModelCatalog } from '~/data-provider/Endpoints/models';
 import ResetApprovals from '~/components/Agents/ResetApprovals';
 import AgentPanelSkeleton from './AgentPanelSkeleton';
 import AdvancedPanel from './Advanced/AdvancedPanel';
@@ -483,7 +483,10 @@ export default function AgentPanel() {
 
   const { onSelect: onSelectAgent } = useSelectAgent();
 
-  const modelsQuery = useGetModelsQuery({ refetchOnMount: 'always' });
+  const modelsQuery = useModelCatalog(
+    { refetchOnMount: 'always' },
+    { endpoints: Object.keys(endpointsConfig ?? {}) },
+  );
   const basicAgentQuery = useGetAgentByIdQuery(current_agent_id);
 
   const { hasPermission, isLoading: permissionsLoading } = useResourcePermissions(

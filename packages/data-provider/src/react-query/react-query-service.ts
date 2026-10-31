@@ -187,6 +187,24 @@ export const useGetModelsQuery = (
   });
 };
 
+export const useGetEndpointModelsQuery = (
+  endpoint: string,
+  config?: UseQueryOptions<t.TModelsConfig>,
+): QueryObserverResult<t.TModelsConfig> => {
+  return useQuery<t.TModelsConfig>(
+    [QueryKeys.models, endpoint],
+    () => dataService.getModels(endpoint),
+    {
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: false,
+      refetchOnMount: false,
+      staleTime: Infinity,
+      ...config,
+      enabled: endpoint.length > 0 && config?.enabled !== false,
+    },
+  );
+};
+
 export const useCreatePresetMutation = (): UseMutationResult<
   s.TPreset,
   unknown,

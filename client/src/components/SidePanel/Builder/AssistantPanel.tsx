@@ -1,6 +1,5 @@
 import { useId, useState, useMemo, useEffect } from 'react';
 import { Spinner, Dropdown, useToastContext } from '@librechat/client';
-import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import { useForm, FormProvider, Controller, useWatch } from 'react-hook-form';
 import {
   Tools,
@@ -21,6 +20,7 @@ import { cn, defaultTextProps, getAvailableModelSelection, removeFocusOutlines }
 import AssistantConversationStarters from './AssistantConversationStarters';
 import AssistantToolsDialog from '~/components/Tools/AssistantToolsDialog';
 import { useSelectAssistant, useLocalize, useLocalStorage } from '~/hooks';
+import { useModelCatalog } from '~/data-provider/Endpoints/models';
 import { useAssistantsMapContext } from '~/Providers';
 import AppendDateCheckbox from './AppendDateCheckbox';
 import CapabilitiesForm from './CapabilitiesForm';
@@ -51,7 +51,10 @@ export default function AssistantPanel({
   assistantsConfig,
   version,
 }: AssistantPanelProps & { assistantsConfig?: TConfig | null }) {
-  const modelsQuery = useGetModelsQuery({ refetchOnMount: 'always' });
+  const modelsQuery = useModelCatalog(
+    { refetchOnMount: 'always' },
+    { endpoints: Object.keys(endpointsConfig ?? {}) },
+  );
   const models = useMemo(() => modelsQuery.data?.[endpoint] ?? [], [endpoint, modelsQuery.data]);
   const modelsReady = modelsQuery.isFetchedAfterMount && !modelsQuery.isFetching;
   const [lastSelectedModels] = useLocalStorage<LastSelectedModels | undefined>(

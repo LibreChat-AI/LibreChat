@@ -26,6 +26,11 @@ import { clearUploadRecovery } from '~/hooks/Files/useFileHandling';
 import { useAutoSave } from '~/hooks/Input/useAutoSave';
 import useTurnHandlers from '~/hooks/SSE/opening';
 
+function QueryWrapper({ children }: { children: React.ReactNode }) {
+  const [client] = React.useState(() => new QueryClient());
+  return React.createElement(QueryClientProvider, { client }, children);
+}
+
 const mockDeleteFiles = jest.fn();
 const mockUploadFile = jest.fn();
 let mockUploadOptions: { onSuccess?: (data: object, body: FormData) => void } = {};
@@ -1635,7 +1640,7 @@ describe('useNewConvo reset cleanup', () => {
           setFileSearchChoice('origin-conversation', false);
         }
       }
-      const next = renderHook(() => useNewConvo());
+      const next = renderHook(() => useNewConvo(), { wrapper: QueryWrapper });
       act(() => next.result.current.newConversation());
       expect(clearUploadRecovery).toHaveBeenCalledWith('pending-search', mockSaveDrafts);
       expect(getDefaultStore().get(filesFamily(0)).size).toBe(0);
@@ -1717,7 +1722,7 @@ describe('useNewConvo reset cleanup', () => {
         });
       }
       beginFileSearchUpload('answer-upload', 'answer-origin');
-      const next = renderHook(() => useNewConvo(2));
+      const next = renderHook(() => useNewConvo(2), { wrapper: QueryWrapper });
       act(() => next.result.current.newConversation());
       expect(clearUploadRecovery).toHaveBeenCalledWith('answer-upload', mode === 'active');
       next.unmount();
@@ -1743,7 +1748,7 @@ describe('useNewConvo reset cleanup', () => {
 
   it('does not delete a file claimed by another tab but deletes an unclaimed file', () => {
     mockForeignClaims.add('claimed-file');
-    const { result } = renderHook(() => useNewConvo(2));
+    const { result } = renderHook(() => useNewConvo(2), { wrapper: QueryWrapper });
 
     act(() => {
       result.current.newConversation();
@@ -1775,7 +1780,7 @@ describe('useNewConvo reset cleanup', () => {
       progress: 0,
     });
     mockMarkedPasteIds.add('inflight-paste');
-    const { result } = renderHook(() => useNewConvo());
+    const { result } = renderHook(() => useNewConvo(), { wrapper: QueryWrapper });
 
     act(() => {
       result.current.newConversation();

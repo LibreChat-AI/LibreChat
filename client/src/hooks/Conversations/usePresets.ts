@@ -7,7 +7,7 @@ import { QueryKeys } from 'librechat-data-provider';
 import { presetFamily } from '@librechat/chat/react';
 import { useQueryClient } from '@tanstack/react-query';
 import { useRecoilState, useSetRecoilState, useRecoilValue } from 'recoil';
-import { useCreatePresetMutation, useGetModelsQuery } from 'librechat-data-provider/react-query';
+import { useCreatePresetMutation } from 'librechat-data-provider/react-query';
 import type { TPreset, TEndpointsConfig } from 'librechat-data-provider';
 import {
   normalizeExportFilename,
@@ -45,15 +45,10 @@ export default function usePresets(index = 0) {
   const presetsQuery = useGetPresetsQuery({ enabled: !!user && isAuthenticated });
   const preset = useAtomValue(presetFamily(index));
   const setPreset = useSetAtom(presetFamily(index));
-  const conversationId = useRecoilValue(store.conversationIdByIndex(index));
-  const { data: modelsData } = useGetModelsQuery();
+
   const { newConversation } = useNewConvo(index);
 
   useEffect(() => {
-    if (modelsData?.initial) {
-      return;
-    }
-
     const { data: presets } = presetsQuery;
     if (_defaultPreset || !presets || hasLoaded.current) {
       return;
@@ -70,13 +65,10 @@ export default function usePresets(index = 0) {
       return;
     }
     setDefaultPreset(defaultPreset);
-    if (!conversationId || conversationId === 'new') {
-      newConversation({ preset: defaultPreset, modelsData, disableParams: true });
-    }
     hasLoaded.current = true;
     // dependencies are stable and only needed once
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [presetsQuery.data, user, modelsData, conversationId]);
+  }, [presetsQuery.data, user]);
 
   const setPresets = useCallback(
     (presets: TPreset[]) => {

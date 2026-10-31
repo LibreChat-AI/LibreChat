@@ -16,14 +16,18 @@ import {
 import type { TChatProject, TMessage } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { AddedChatContext, ChatFormProvider, useChatContext, useFileMapContext } from '~/Providers';
+import { AssistantsMapContext, useAssistantsMapContext } from '~/Providers/AssistantsMapContext';
+import { AgentsMapContext, useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import Footer, { useLandingFooter, useConfiguredFooter } from './Footer';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import ApprovalProvider from './Messages/Content/ApprovalContext';
 import ConversationStarters from './Input/ConversationStarters';
 import ProjectBadge from '~/components/Projects/ProjectBadge';
 import { OwnerTextProvider } from './Messages/PrivateText';
+import { TargetContext } from '~/Providers/TargetContext';
 import { useAddedResponse, useLocalize } from '~/hooks';
 import MessagesView from './Messages/MessagesView';
+import useTarget from '~/hooks/Chat/target';
 import Presentation from './Presentation';
 import ChatForm from './Input/ChatForm';
 import { TraceSurface } from './Trace';
@@ -84,7 +88,40 @@ function ChatViewPane({
   }, [messages, fileMap]);
 
   const chat = useChatContext();
+  const target = useTarget(chat.conversation, chat.setConversation);
+  const agentsMap = useAgentsMapContext();
+  const assistantsMap = useAssistantsMapContext();
+  const selectedAgents = useMemo(
+    () => (target.agent ? { ...agentsMap, [target.agent.id]: target.agent } : agentsMap),
+    [agentsMap, target.agent],
+  );
+  const selectedAssistants = useMemo(
+    () =>
+      target.assistant && chat.conversation?.endpoint
+        ? {
+            ...assistantsMap,
+            [chat.conversation.endpoint]: {
+              ...assistantsMap?.[chat.conversation.endpoint],
+              [target.assistant.id]: target.assistant,
+            },
+          }
+        : assistantsMap,
+    [assistantsMap, target.assistant, chat.conversation?.endpoint],
+  );
   const addedChatHelpers = useAddedResponse();
+  const addedTarget = useTarget(addedChatHelpers.conversation, addedChatHelpers.setConversation);
+  const readiness = useMemo(
+    () => ({
+      ready: target.ready && (addedChatHelpers.conversation == null || addedTarget.ready),
+      pending: target.pending || (addedChatHelpers.conversation != null && addedTarget.pending),
+      failed: target.failed || (addedChatHelpers.conversation != null && addedTarget.failed),
+      retry: () => {
+        target.retry();
+        if (addedChatHelpers.conversation) addedTarget.retry();
+      },
+    }),
+    [target, addedTarget, addedChatHelpers.conversation],
+  );
 
   const activeConversation =
     chat.conversation?.conversationId === conversationId ? chat.conversation : undefined;
@@ -121,79 +158,89 @@ function ChatViewPane({
   const isSubagentThreadReadOnly = activeSubagentThread != null;
 
   return (
-    <AskAnswerHostProvider saveDrafts={saveDrafts}>
-      <ChatFormProvider {...methods}>
-        <ComposerRestoreProvider>
-          <QueuedTurnPortalProvider>
-            <AddedChatContext.Provider value={addedChatHelpers}>
-              <ApprovalProvider pendingAction={pendingAction}>
-                <Presentation routePending={routePending}>
-                  <TraceSurface conversationId={conversationId}>
-                    <ChatPane
-                      index={index}
-                      view={view}
-                      heading={pageHeading}
-                      header={
-                        <Header
-                          parentConversationId={parentConversationId}
-                          readOnly={isSubagentThreadReadOnly}
-                        />
-                      }
-                      badge={chatProjectId ? <ProjectBadge projectId={chatProjectId} /> : null}
-                      messages={<MessagesView messagesTree={messagesTree} messages={messages} />}
-                      landing={<Landing centerFormOnLanding={centerFormOnLanding} />}
-                      renderColumn={(column) => (
-                        <OwnerTextProvider
-                          messages={messages}
-                          conversationId={conversationId}
-                          isSubmitting={chat.isSubmitting}
-                        >
-                          {column}
-                        </OwnerTextProvider>
-                      )}
-                      starters={<ConversationStarters />}
-                      readOnlyNote={
-                        isSubagentThreadReadOnly
-                          ? localize('com_ui_subagent_thread_read_only')
-                          : undefined
-                      }
-                      composer={
-                        <ChatForm
-                          index={index}
-                          routePending={routePending}
-                          placeholder={chatFormPlaceholder}
-                          project={isProjectLandingPage ? project : undefined}
-                          isLandingPage={isLandingPage}
-                          enterToSend={enterToSend}
-                          autoSendText={autoSendText}
-                          speechSettingsInitialized={speechSettingsInitialized}
-                          footerBelow={footerBelow}
-                          centerFormOnLanding={centerFormOnLanding}
-                        />
-                      }
-                      /* The generic disclaimer and the policy links are the welcome
+    <TargetContext.Provider value={readiness}>
+      <AgentsMapContext.Provider value={selectedAgents}>
+        <AssistantsMapContext.Provider value={selectedAssistants}>
+          <AskAnswerHostProvider saveDrafts={saveDrafts}>
+            <ChatFormProvider {...methods}>
+              <ComposerRestoreProvider>
+                <QueuedTurnPortalProvider>
+                  <AddedChatContext.Provider value={addedChatHelpers}>
+                    <ApprovalProvider pendingAction={pendingAction}>
+                      <Presentation routePending={routePending}>
+                        <TraceSurface conversationId={conversationId}>
+                          <ChatPane
+                            index={index}
+                            view={view}
+                            heading={pageHeading}
+                            header={
+                              <Header
+                                parentConversationId={parentConversationId}
+                                readOnly={isSubagentThreadReadOnly}
+                              />
+                            }
+                            badge={
+                              chatProjectId ? <ProjectBadge projectId={chatProjectId} /> : null
+                            }
+                            messages={
+                              <MessagesView messagesTree={messagesTree} messages={messages} />
+                            }
+                            landing={<Landing centerFormOnLanding={centerFormOnLanding} />}
+                            renderColumn={(column) => (
+                              <OwnerTextProvider
+                                messages={messages}
+                                conversationId={conversationId}
+                                isSubmitting={chat.isSubmitting}
+                              >
+                                {column}
+                              </OwnerTextProvider>
+                            )}
+                            starters={<ConversationStarters />}
+                            readOnlyNote={
+                              isSubagentThreadReadOnly
+                                ? localize('com_ui_subagent_thread_read_only')
+                                : undefined
+                            }
+                            composer={
+                              <ChatForm
+                                index={index}
+                                routePending={routePending}
+                                placeholder={chatFormPlaceholder}
+                                project={isProjectLandingPage ? project : undefined}
+                                isLandingPage={isLandingPage}
+                                enterToSend={enterToSend}
+                                autoSendText={autoSendText}
+                                speechSettingsInitialized={speechSettingsInitialized}
+                                footerBelow={footerBelow}
+                                centerFormOnLanding={centerFormOnLanding}
+                              />
+                            }
+                            /* The generic disclaimer and the policy links are the welcome
                          screen's; a deployment's own footer stays with the
                          conversation that always showed it. */
-                      bandFooter={
-                        !fullFooter && configuredFooter ? <Footer configuredOnly /> : null
-                      }
-                      footer={fullFooter ? <Footer /> : null}
-                      renderMascot={(bandRef) => (
-                        <Lia
-                          bandRef={bandRef}
-                          landing={isLandingPage}
-                          submission={rootSubmission}
-                        />
-                      )}
-                    />
-                  </TraceSurface>
-                </Presentation>
-              </ApprovalProvider>
-            </AddedChatContext.Provider>
-          </QueuedTurnPortalProvider>
-        </ComposerRestoreProvider>
-      </ChatFormProvider>
-    </AskAnswerHostProvider>
+                            bandFooter={
+                              !fullFooter && configuredFooter ? <Footer configuredOnly /> : null
+                            }
+                            footer={fullFooter ? <Footer /> : null}
+                            renderMascot={(bandRef) => (
+                              <Lia
+                                bandRef={bandRef}
+                                landing={isLandingPage}
+                                submission={rootSubmission}
+                              />
+                            )}
+                          />
+                        </TraceSurface>
+                      </Presentation>
+                    </ApprovalProvider>
+                  </AddedChatContext.Provider>
+                </QueuedTurnPortalProvider>
+              </ComposerRestoreProvider>
+            </ChatFormProvider>
+          </AskAnswerHostProvider>
+        </AssistantsMapContext.Provider>
+      </AgentsMapContext.Provider>
+    </TargetContext.Provider>
   );
 }
 

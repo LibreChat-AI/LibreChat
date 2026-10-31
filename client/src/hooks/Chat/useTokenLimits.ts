@@ -24,11 +24,16 @@ function toNumber(value: unknown): number | undefined {
  */
 export default function useTokenLimits(conversation: TConversation | null): TokenLimits {
   const { modelSpecs } = useChatSettings().config;
-  const { data: tokenConfig } = useTokenConfigQuery();
 
   const endpoint = conversation?.endpoint ?? '';
   const agentId = isAgentsEndpoint(endpoint) ? conversation?.agent_id : null;
   const { data: agent } = useGetAgentByIdQuery(agentId);
+
+  const lookupProvider = agent?.provider ?? endpoint;
+  const { data: tokenConfig } = useTokenConfigQuery(
+    { enabled: !!lookupProvider && (!agentId || agent != null) },
+    lookupProvider,
+  );
 
   const spec = conversation?.spec;
   const model = conversation?.model;
