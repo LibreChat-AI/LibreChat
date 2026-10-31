@@ -2,17 +2,15 @@
  * @jest-environment jsdom
  */
 import React, { useState } from 'react';
+import { Provider, createStore } from 'jotai';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { AskAnswerView, AskPopoverProps } from '../Popover';
+import { composerOverlayCountFamily } from '../../../../react/overlay';
 import AskPopover from '../Popover';
 
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string) => key,
-}));
-
-jest.mock('../../../../react/overlay', () => ({
-  useComposerOverlay: jest.fn(),
 }));
 
 /**
@@ -199,5 +197,45 @@ describe('AskPopover', () => {
       />,
     );
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('registers as an open composer overlay while it shows and releases it when dismissed or unmounted', () => {
+    const store = createStore();
+    const count = () => store.get(composerOverlayCountFamily('c-1'));
+    const ask = view();
+    const { unmount } = render(
+      <Provider store={store}>
+        <Host initial={ask} />
+      </Provider>,
+    );
+    expect(count()).toBe(1);
+
+    act(() => {
+      fireEvent.click(screen.getByRole('button', { name: 'com_ui_ask_move_to_chat' }));
+    });
+    expect(count()).toBe(0);
+
+    unmount();
+    render(
+      <Provider store={store}>
+        <Host initial={view()} />
+      </Provider>,
+    ).unmount();
+    expect(count()).toBe(0);
+  });
+
+  it('does not register while the question sits in the chat', () => {
+    const store = createStore();
+    render(
+      <Provider store={store}>
+        <AskPopover
+          conversationId="c-1"
+          ask={view({ popoverVisible: false })}
+          useComposerText={() => ''}
+          renderQuestions={() => null}
+        />
+      </Provider>,
+    );
+    expect(store.get(composerOverlayCountFamily('c-1'))).toBe(0);
   });
 });
