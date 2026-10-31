@@ -139,6 +139,7 @@ export async function loadDefaultInterface({
     remoteAgents: interfaceConfig?.remoteAgents,
     skills: interfaceConfig?.skills,
     sharedLinks: interfaceConfig?.sharedLinks,
+    projects: interfaceConfig?.projects,
     schedules: interfaceConfig?.schedules,
 
     /* Merged per field rather than taken whole, so an operator who sets one capability keeps

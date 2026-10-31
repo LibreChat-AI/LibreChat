@@ -124,6 +124,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.SHARE]: true,
         [Permissions.SHARE_PUBLIC]: true,
       },
+      [PermissionTypes.PROJECTS]: {
+        [Permissions.SHARE]: false,
+        [Permissions.SHARE_PUBLIC]: false,
+      },
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
@@ -184,6 +188,10 @@ describe('updateInterfacePermissions - permissions', () => {
       },
       [PermissionTypes.SHARED_LINKS]: {
         [Permissions.CREATE]: true,
+        [Permissions.SHARE]: true,
+        [Permissions.SHARE_PUBLIC]: true,
+      },
+      [PermissionTypes.PROJECTS]: {
         [Permissions.SHARE]: true,
         [Permissions.SHARE_PUBLIC]: true,
       },
@@ -344,6 +352,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.SHARE]: true,
         [Permissions.SHARE_PUBLIC]: true,
       },
+      [PermissionTypes.PROJECTS]: {
+        [Permissions.SHARE]: false,
+        [Permissions.SHARE_PUBLIC]: false,
+      },
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
@@ -404,6 +416,10 @@ describe('updateInterfacePermissions - permissions', () => {
       },
       [PermissionTypes.SHARED_LINKS]: {
         [Permissions.CREATE]: true,
+        [Permissions.SHARE]: true,
+        [Permissions.SHARE_PUBLIC]: true,
+      },
+      [PermissionTypes.PROJECTS]: {
         [Permissions.SHARE]: true,
         [Permissions.SHARE_PUBLIC]: true,
       },
@@ -520,6 +536,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.SHARE]: true,
         [Permissions.SHARE_PUBLIC]: true,
       },
+      [PermissionTypes.PROJECTS]: {
+        [Permissions.SHARE]: false,
+        [Permissions.SHARE_PUBLIC]: false,
+      },
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
@@ -580,6 +600,10 @@ describe('updateInterfacePermissions - permissions', () => {
       },
       [PermissionTypes.SHARED_LINKS]: {
         [Permissions.CREATE]: true,
+        [Permissions.SHARE]: true,
+        [Permissions.SHARE_PUBLIC]: true,
+      },
+      [PermissionTypes.PROJECTS]: {
         [Permissions.SHARE]: true,
         [Permissions.SHARE_PUBLIC]: true,
       },
@@ -709,6 +733,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.SHARE]: true,
         [Permissions.SHARE_PUBLIC]: true,
       },
+      [PermissionTypes.PROJECTS]: {
+        [Permissions.SHARE]: false,
+        [Permissions.SHARE_PUBLIC]: false,
+      },
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
@@ -769,6 +797,10 @@ describe('updateInterfacePermissions - permissions', () => {
       },
       [PermissionTypes.SHARED_LINKS]: {
         [Permissions.CREATE]: true,
+        [Permissions.SHARE]: true,
+        [Permissions.SHARE_PUBLIC]: true,
+      },
+      [PermissionTypes.PROJECTS]: {
         [Permissions.SHARE]: true,
         [Permissions.SHARE_PUBLIC]: true,
       },
@@ -885,6 +917,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.SHARE]: true,
         [Permissions.SHARE_PUBLIC]: true,
       },
+      [PermissionTypes.PROJECTS]: {
+        [Permissions.SHARE]: false,
+        [Permissions.SHARE_PUBLIC]: false,
+      },
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
@@ -945,6 +981,10 @@ describe('updateInterfacePermissions - permissions', () => {
       },
       [PermissionTypes.SHARED_LINKS]: {
         [Permissions.CREATE]: true,
+        [Permissions.SHARE]: true,
+        [Permissions.SHARE_PUBLIC]: true,
+      },
+      [PermissionTypes.PROJECTS]: {
         [Permissions.SHARE]: true,
         [Permissions.SHARE_PUBLIC]: true,
       },
@@ -1066,6 +1106,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.SHARE]: true,
         [Permissions.SHARE_PUBLIC]: true,
       },
+      [PermissionTypes.PROJECTS]: {
+        [Permissions.SHARE]: false,
+        [Permissions.SHARE_PUBLIC]: false,
+      },
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
@@ -1114,6 +1158,10 @@ describe('updateInterfacePermissions - permissions', () => {
       },
       [PermissionTypes.SHARED_LINKS]: {
         [Permissions.CREATE]: true,
+        [Permissions.SHARE]: true,
+        [Permissions.SHARE_PUBLIC]: true,
+      },
+      [PermissionTypes.PROJECTS]: {
         [Permissions.SHARE]: true,
         [Permissions.SHARE_PUBLIC]: true,
       },
@@ -1252,6 +1300,10 @@ describe('updateInterfacePermissions - permissions', () => {
         [Permissions.SHARE]: true,
         [Permissions.SHARE_PUBLIC]: true,
       },
+      [PermissionTypes.PROJECTS]: {
+        [Permissions.SHARE]: false,
+        [Permissions.SHARE_PUBLIC]: false,
+      },
       [PermissionTypes.SCHEDULES]: {
         [Permissions.USE]: true,
         [Permissions.CREATE]: true,
@@ -1304,6 +1356,10 @@ describe('updateInterfacePermissions - permissions', () => {
       },
       [PermissionTypes.SHARED_LINKS]: {
         [Permissions.CREATE]: true,
+        [Permissions.SHARE]: true,
+        [Permissions.SHARE_PUBLIC]: true,
+      },
+      [PermissionTypes.PROJECTS]: {
         [Permissions.SHARE]: true,
         [Permissions.SHARE_PUBLIC]: true,
       },
@@ -2898,6 +2954,40 @@ describe('updateInterfacePermissions - permissions', () => {
     expect(userCall[1][PermissionTypes.SHARED_LINKS]).toEqual({
       [Permissions.CREATE]: false,
       [Permissions.SHARE]: false,
+      [Permissions.SHARE_PUBLIC]: false,
+    });
+  });
+
+  it('seeds PROJECTS sharing from interface.projects, overriding existing values', async () => {
+    mockGetRoleByName.mockResolvedValue({
+      permissions: {
+        [PermissionTypes.PROJECTS]: {
+          [Permissions.SHARE]: false,
+          [Permissions.SHARE_PUBLIC]: false,
+        },
+        [PermissionTypes.SCHEDULES]: {
+          [Permissions.USE]: true,
+          [Permissions.CREATE]: true,
+        },
+      },
+    });
+
+    const config = { interface: { projects: { share: true, public: false } } };
+    const configDefaults = { interface: {} } as TConfigDefaults;
+    const interfaceConfig = await loadDefaultInterface({ config, configDefaults });
+    const appConfig = { config, interfaceConfig } as unknown as AppConfig;
+
+    await updateInterfacePermissions({
+      appConfig,
+      getRoleByName: mockGetRoleByName,
+      updateAccessPermissions: mockUpdateAccessPermissions,
+    });
+
+    const userCall = mockUpdateAccessPermissions.mock.calls.find(
+      (call) => call[0] === SystemRoles.USER,
+    );
+    expect(userCall[1][PermissionTypes.PROJECTS]).toEqual({
+      [Permissions.SHARE]: true,
       [Permissions.SHARE_PUBLIC]: false,
     });
   });

@@ -169,6 +169,22 @@ describe('ProjectResources', () => {
     mockRemoveMutateAsync.mockResolvedValue({});
   });
 
+  it("shows a shared project's files read-only to a member", () => {
+    mockProjectQueryState = {
+      ...mockProjectQueryState,
+      data: [
+        { file_id: 'owner-file', filename: 'brief.pdf', availability: 'ready' },
+      ] as TChatProjectFile[],
+    };
+    render(<ProjectResources project={project} canManage={false} />, { wrapper: Providers });
+
+    expect(screen.getByText('brief.pdf')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Add files/ })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Remove brief.pdf from project' }),
+    ).not.toBeInTheDocument();
+  });
+
   it('renders loading, error, and empty states with recovery controls', () => {
     mockProjectQueryState = { ...mockProjectQueryState, isLoading: true };
     renderResources();

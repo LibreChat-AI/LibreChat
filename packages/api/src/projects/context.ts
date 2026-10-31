@@ -6,6 +6,12 @@ import { resolveChatProjectResources } from './resources';
 
 export interface ResolvedChatProjectContext {
   projectId: string;
+  /**
+   * The project's owner. Project files are the owner's uploads, so they are resolved and
+   * searched in the owner's scope, also when the project was shared with the requester.
+   * Absent on snapshots recorded before projects could be shared: those are the requester's.
+   */
+  ownerId?: string;
   contextRevision: number;
   instructions: string;
   file_ids: string[];
@@ -21,8 +27,17 @@ export type ConversationSnapshot = Partial<IConversation> & {
 
 type ProjectSnapshot = Pick<IChatProject, 'instructions' | 'contextRevision' | 'file_ids'> & {
   _id?: { toString(): string } | string;
+  user?: string;
   tenantId?: string | null;
 };
+
+/** The id project files are scoped to: the owner, or the requester for an unowned snapshot. */
+export function getChatProjectFileOwnerId(
+  context: Pick<ResolvedChatProjectContext, 'ownerId'> | null | undefined,
+  requesterId: string,
+): string {
+  return context?.ownerId || requesterId;
+}
 
 export interface ResolveChatProjectContextInput {
   userId: string;
@@ -93,7 +108,7 @@ export async function hydrateChatProjectContextResources(
     ...context,
     resources: await resolveChatProjectResources({
       project: { file_ids: context.file_ids },
-      userId,
+      userId: getChatProjectFileOwnerId(context, userId),
       tenantId: tenantId ?? undefined,
       getProjectFiles,
     }),
@@ -248,17 +263,19 @@ export async function resolveChatProjectContext(
   const file_ids = Array.isArray(project.file_ids)
     ? project.file_ids.filter((fileId): fileId is string => typeof fileId === 'string')
     : [];
+  const ownerId = typeof project.user === 'string' && project.user !== '' ? project.user : userId;
   const resources =
     includeResources === false
       ? []
       : await resolveChatProjectResources({
           project: { file_ids },
-          userId,
+          userId: ownerId,
           tenantId: tenantId ?? undefined,
           getProjectFiles: deps.getProjectFiles,
         });
   return {
     projectId: projectIdFromRecord,
+    ownerId,
     contextRevision:
       typeof project.contextRevision === 'number' && Number.isSafeInteger(project.contextRevision)
         ? project.contextRevision
