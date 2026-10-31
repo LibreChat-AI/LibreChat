@@ -2,7 +2,7 @@
   "name": "@librechat/channel-gateway",
   "version": "0.1.0",
   "private": true,
-  "description": "Slack transport adapters for LibreChat Agent Channels",
+  "description": "Standalone Slack gateway for LibreChat Agent Channels",
   "type": "module",
   "scripts": {
     "build": "tsdown",
