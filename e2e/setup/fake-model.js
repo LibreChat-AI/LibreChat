@@ -3607,6 +3607,15 @@ function resolveResponses({ graph, messages, text, toolNames }) {
     return steerToolReplyResponses(steerToolLabel, toolNames);
   }
 
+  if (text.includes('E2E_REPLICA_TOOL:')) {
+    const name = Array.from(toolNames).find((name) => name === 'status_ping_mcp_e2e-status');
+    return name
+      ? {
+          responses: ['', 'E2E replica tool finished'],
+          toolCalls: [{ id: `call_replica_${Date.now()}`, name, args: {}, type: 'tool_call' }],
+        }
+      : { responses: ['E2E replica tool unavailable'] };
+  }
   const mcpAppLabel = getMarkerValue(text, MCP_APP_MARKER);
   if (mcpAppLabel) {
     return mcpAppResponses(mcpAppLabel, toolNames);

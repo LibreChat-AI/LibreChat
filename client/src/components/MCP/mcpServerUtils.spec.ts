@@ -1,5 +1,10 @@
 import type { MCPServerStatus } from 'librechat-data-provider';
-import { isMCPServerReadyForAgent, shouldShowActionButton } from './mcpServerUtils';
+import {
+  getStatusColor,
+  getStatusTextKey,
+  isMCPServerReadyForAgent,
+  shouldShowActionButton,
+} from './mcpServerUtils';
 
 const status = (
   connectionState: MCPServerStatus['connectionState'],
@@ -36,6 +41,16 @@ describe('isMCPServerReadyForAgent', () => {
     expect(isMCPServerReadyForAgent(configured, true, true)).toBe(true);
   });
 
+  it('rejects missing required variables even with a connected transport', () => {
+    expect(
+      isMCPServerReadyForAgent(
+        { ...status('connected', 'not_required'), configurationState: 'needs_configuration' },
+        false,
+        true,
+      ),
+    ).toBe(false);
+  });
+
   it('requires a live connection for servers that are not request-scoped', () => {
     expect(isMCPServerReadyForAgent(status('disconnected', 'not_required'), false)).toBe(false);
     expect(isMCPServerReadyForAgent(status('connected', 'not_required'), false)).toBe(true);
@@ -63,4 +78,34 @@ describe('shouldShowActionButton', () => {
     expect(shouldShowActionButton({ ...baseProps, hasCustomUserVars: true })).toBe(true);
     expect(shouldShowActionButton({ ...baseProps, hasCustomUserVars: false })).toBe(false);
   });
+});
+
+it('preserves connected readiness from older replicas without configurationState', () => {
+  expect(
+    isMCPServerReadyForAgent({ connectionState: 'connected', requiresOAuth: false }, false, true),
+  ).toBe(true);
+});
+
+it('presents an unavailable lookup as unknown and keeps retry actionable', () => {
+  const serverStatus: MCPServerStatus = {
+    connectionState: 'error',
+    connectionStateSource: 'unavailable',
+    requiresOAuth: true,
+  };
+  expect(getStatusTextKey('server', { server: serverStatus })).toBe('com_nav_mcp_status_unknown');
+  expect(getStatusColor('server', { server: serverStatus })).toBe('bg-status-neutral');
+  expect(isMCPServerReadyForAgent(serverStatus, false)).toBe(false);
+  expect(isMCPServerReadyForAgent({ ...serverStatus, requestScoped: true }, true, true)).toBe(
+    false,
+  );
+  expect(
+    shouldShowActionButton({
+      serverName: 'server',
+      serverStatus,
+      isInitializing: false,
+      canCancel: false,
+      onCancel: jest.fn(),
+      onConfigClick: jest.fn(),
+    }),
+  ).toBe(true);
 });

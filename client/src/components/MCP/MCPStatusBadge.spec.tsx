@@ -13,7 +13,7 @@ jest.mock('@librechat/client', () => ({
 }));
 
 describe('MCPStatusBadge', () => {
-  test.each(['disconnected', 'connected', 'error'] as const)(
+  test.each(['disconnected', 'connected'] as const)(
     'renders the %s request-scoped state as on-demand',
     (connectionState) => {
       const serverStatus: MCPServerStatus = {
@@ -28,6 +28,17 @@ describe('MCPStatusBadge', () => {
       expect(getStatusDotColor(serverStatus)).toBe('bg-status-info');
     },
   );
+
+  it('keeps explicit request-scoped errors visible', () => {
+    const serverStatus: MCPServerStatus = {
+      connectionState: 'error',
+      requiresOAuth: false,
+      requestScoped: true,
+    };
+    render(<MCPStatusBadge serverStatus={serverStatus} />);
+    expect(screen.getByRole('status')).toHaveTextContent('com_nav_mcp_status_error');
+    expect(getStatusDotColor(serverStatus)).toBe('bg-status-error');
+  });
 
   it('preserves the active connecting state for a request-scoped OAuth flow', () => {
     const serverStatus: MCPServerStatus = {

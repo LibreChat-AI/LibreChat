@@ -45,6 +45,7 @@ export function applyMCPDiscoveryAuthorizationState(
       requiresOAuth: true,
       connectionState: 'disconnected',
       authorizationState: 'needs_authorization',
+      connectionStateSource: 'authorization',
     };
   }
   return changed ? nextStatus : connectionStatus;
@@ -74,6 +75,7 @@ export function applyPendingOAuthState(
       requiresOAuth: true,
       connectionState: 'connecting',
       authorizationState: 'authorizing',
+      connectionStateSource: 'authorization',
     };
   }
   return nextStatus ?? connectionStatus;

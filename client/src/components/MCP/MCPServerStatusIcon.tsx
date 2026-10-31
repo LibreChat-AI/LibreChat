@@ -2,6 +2,7 @@ import React from 'react';
 import { KeyRound, PlugZap, X } from 'lucide-react';
 import { Button, Spinner, TooltipAnchor } from '@librechat/client';
 import type { MCPServerStatus } from 'librechat-data-provider';
+import { getStatusColor } from './mcpServerUtils';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -133,20 +134,7 @@ function CompactStatusDot({ serverStatus, isInitializing }: CompactStatusDotProp
     );
   }
 
-  const { connectionState, requiresOAuth } = serverStatus;
-
-  let colorClass = 'bg-status-neutral';
-  if (connectionState === 'connecting') {
-    colorClass = 'bg-status-info';
-  } else if (serverStatus.requestScoped) {
-    colorClass = 'bg-status-info';
-  } else if (connectionState === 'connected') {
-    colorClass = 'bg-status-success';
-  } else if (connectionState === 'error') {
-    colorClass = 'bg-status-error';
-  } else if (connectionState === 'disconnected' && requiresOAuth) {
-    colorClass = 'bg-status-warning';
-  }
+  const colorClass = getStatusColor('server', { server: serverStatus });
 
   return (
     <div className={cn('border-surface-secondary size-3 rounded-full border-2', colorClass)} />

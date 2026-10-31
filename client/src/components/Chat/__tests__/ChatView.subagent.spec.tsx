@@ -4,6 +4,10 @@ import ChatView from '../ChatView';
 
 let mockConversation: Record<string, unknown> | null;
 
+jest.mock('~/hooks/AuthContext', () => ({
+  useAuthContext: () => ({ user: { id: 'user' } }),
+}));
+
 jest.mock('react-router-dom', () => ({
   useParams: () => ({ conversationId: 'child-thread' }),
 }));

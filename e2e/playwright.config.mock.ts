@@ -254,6 +254,30 @@ function writeRuntimeMockConfig() {
     process.env.E2E_MODEL_SPECS_ENFORCE === 'true'
       ? template.replace('\n  enforce: false\n', '\n  enforce: true\n')
       : template;
+  if (process.env.E2E_MCP_CONNECTION_STATUS === 'true') {
+    config += '\nclientLimits:\n  mcpConnectMs: 6500\n';
+    config = config.replace(
+      '  allowedDomains:\n',
+      '  allowedDomains:\n    - http://127.0.0.1:28769\n',
+    );
+    config = config.replace(
+      'mcpServers:\n',
+      `mcpServers:
+  e2e-status:
+    type: streamable-http
+    url: http://127.0.0.1:28769/mcp
+    requiresOAuth: false
+    startup: false
+    initTimeout: 1000
+    timeout: 1000
+    headers:
+      Authorization: 'Bearer e2e-status-token'
+      X-E2E-User: '{{LIBRECHAT_USER_ID}}'
+    title: E2E Connection State
+    description: Controlled MCP connection-attempt fixture.
+`,
+    );
+  }
   config = config.replace(
     '  agents:\n',
     `  agents:\n    managementApi: ${JSON.stringify({ auth: managementAuth })}\n`,

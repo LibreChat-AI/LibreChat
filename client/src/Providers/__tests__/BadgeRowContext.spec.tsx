@@ -22,6 +22,12 @@ import { ephemeralAgentByConvoId } from '~/store';
  * tool, skill and MCP server catalog, per keystroke.
  */
 
+const mockUser = { id: 'user', tenantId: 'tenant' };
+jest.mock('~/hooks/AuthContext', () => ({
+  ...jest.requireActual('~/hooks/AuthContext'),
+  useAuthContext: () => ({ user: mockUser }),
+}));
+
 /* Held outside the factory so it is one function for the whole test, the way
    the real `ToastProvider` sits above the composer and does not re-render with
    it. A fresh `showToast` per render would be the mock's instability, not the
