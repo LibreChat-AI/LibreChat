@@ -264,11 +264,12 @@ describe('actor-bound review handling', () => {
     if (pending.payload.type !== 'ask_user_question') throw new Error();
     pending.payload.questions = [{ id: 'env', header: 'Environment', ...pending.payload.question }];
     expect(JSON.stringify(reviewModal(ref(), pending))).toContain('Environment');
+    const prompt = pending.payload.question;
     pending.payload.questions = Array.from({ length: 20 }, (_, i) => ({
       id: String(i),
       header: 'Environment',
       description: 'Context',
-      ...pending.payload.question,
+      ...prompt,
     }));
     expect(reviewModal(ref(), pending)).toBeNull();
     pending.payload.questions = [{ id: 'env', ...pending.payload.question }];
