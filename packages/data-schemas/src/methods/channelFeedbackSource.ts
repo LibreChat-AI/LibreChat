@@ -1,4 +1,5 @@
 import type { ChannelFeedbackActor, ChannelReplyMapping } from 'librechat-data-provider';
+import { SERVER_AUTHORED_MESSAGE_FILTER } from '~/utils/authored';
 import { assertChannelTenant } from './channelScope';
 
 export type ChannelFeedbackReplySource = Omit<
@@ -43,7 +44,7 @@ export async function readChannelFeedbackReplySource(
           {
             $match: {
               tenantId: actor.tenantId === '_' ? { $in: [null, ''] } : actor.tenantId,
-              isCreatedByUser: false,
+              ...SERVER_AUTHORED_MESSAGE_FILTER,
               $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }],
               $expr: {
                 $and: [

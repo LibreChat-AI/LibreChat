@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { ChannelReplyMapping } from 'librechat-data-provider';
 import type { ChannelFeedbackLedger, ChannelFeedbackEventRecord } from '~/models/channelFeedback';
+import type { ChannelRunRecord } from '~/models/channelRun';
 import { createChannelFeedbackStorage, ChannelFeedbackAuthorityError } from './channelFeedback';
 import { closeResponseScopes, eraseResponseRecords } from './responseScope';
 import { runAsSystem, tenantStorage } from '~/config/tenantContext';
@@ -369,4 +370,99 @@ it('erases imported-conversation feedback while preserving another owner in that
     await assertRetired();
     expect(await storage.isAuthorityCurrent(other)).toBe(true);
     expect(await storage.getChannelFeedback(tenantId, other.runId)).not.toBeNull();
+  }));
+
+it('rejects user-submitted assistant-shaped replies in source lookup and every feedback writer', () =>
+  scope(async () => {
+    const delivered: ChannelRunRecord = {
+      tenantId,
+      channelId: mapping.channelId,
+      agentId: mapping.agentId,
+      runId: mapping.runId,
+      laneId: 'lane',
+      state: 'delivered',
+      sequence: 1,
+      payloadHash: 'hash',
+      receivedAt: 1,
+      leaseEpoch: 1,
+      leaseExpiresAt: 0,
+      cancellationRequested: false,
+      principal: {
+        userId,
+        channelRevision: mapping.channelRevision,
+        linkId: 'link',
+        linkRevision: 'r1',
+      },
+      admission: {
+        eventId: 'event',
+        externalChannelId: 'C1',
+        externalThreadKey: 'C1:thread',
+        externalMessageKey: 'C1:input',
+        actor: { teamId: mapping.teamId, appId: 'A1', externalUserId: 'U1' },
+        input: 'input',
+      },
+      execution: {
+        protocol: 'responses',
+        requestId: 'request',
+        responseId: mapping.responseId,
+        conversationId: mapping.conversationId,
+        parentMessageId: 'parent',
+      },
+      snapshot: {
+        status: 'completed',
+        responseId: mapping.responseId,
+        text: 'retained answer',
+        elapsedMs: 1,
+      },
+      receipts: [
+        {
+          operationId: 'answer',
+          outcome: 'confirmed',
+          attempts: 1,
+          externalMessageKey: mapping.externalMessageKey,
+        },
+      ],
+    };
+    await mongoose.models.ChannelRun.create(delivered);
+    const actor = {
+      tenantId,
+      channelId: mapping.channelId,
+      channelRevision: mapping.channelRevision,
+      teamId: mapping.teamId,
+      agentId: mapping.agentId,
+    };
+    expect(await storage.readReplySource(actor, mapping.externalMessageKey)).toMatchObject({
+      responseId: mapping.responseId,
+      messageId: mapping.messageId,
+    });
+    await persist();
+    await mongoose.models.Message.updateOne(
+      { messageId: mapping.messageId, user: userId },
+      { $set: { isUserSubmitted: true } },
+    );
+    expect(await storage.readReplySource(actor, mapping.externalMessageKey)).toBeNull();
+    expect(await storage.isAuthorityCurrent(mapping)).toBe(false);
+    await expect(storage.putChannelReply(mapping)).rejects.toBeInstanceOf(
+      ChannelFeedbackAuthorityError,
+    );
+    await expect(storage.ensureChannelFeedback(ledger())).rejects.toBeInstanceOf(
+      ChannelFeedbackAuthorityError,
+    );
+    const late = event();
+    late.eventId = 'late';
+    late.digest = 'late';
+    late.event = { ...late.event, eventId: 'late' };
+    await expect(storage.admitChannelFeedbackEvent(late)).rejects.toBeInstanceOf(
+      ChannelFeedbackAuthorityError,
+    );
+    await expect(
+      storage.saveChannelFeedback({ ...ledger(), revision: 1 }, 0),
+    ).rejects.toBeInstanceOf(ChannelFeedbackAuthorityError);
+    const now = Date.now();
+    await expect(
+      storage.claimChannelFeedbackExport(ledger(), 'lease', now, now + 1000),
+    ).rejects.toBeInstanceOf(ChannelFeedbackAuthorityError);
+    expect(await storage.getChannelFeedback(tenantId, mapping.runId)).toMatchObject({
+      revision: 0,
+    });
   }));

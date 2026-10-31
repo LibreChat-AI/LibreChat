@@ -2,6 +2,7 @@ import type { ChannelReplyMapping } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import { initializeResponseScopes, responseScopeKeys } from './responseScope';
 import { assertChannelTenant, touchChannelAuthority } from './channelScope';
+import { SERVER_AUTHORED_MESSAGE_FILTER } from '~/utils/authored';
 import { createResponseScopeModel } from '~/models/responseScope';
 
 export class ChannelFeedbackAuthorityError extends Error {
@@ -90,7 +91,7 @@ export async function withChannelFeedbackAuthority<T>(
           tenantId: owner.tenantId ?? { $in: [null, ''] },
           conversationId: mapping.conversationId,
           messageId: mapping.messageId,
-          isCreatedByUser: false,
+          ...SERVER_AUTHORED_MESSAGE_FILTER,
           $or: [{ expiredAt: null }, { expiredAt: { $gt: at } }],
         })
         .select('expiredAt')
