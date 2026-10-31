@@ -67,11 +67,13 @@ const injectAgentIntoAgentsMap = (
 export default function useQueryParams({
   textAreaRef,
   routePending = false,
+  targetReady = true,
   onBeforePrompt,
   onPromptSettled,
 }: {
   textAreaRef: React.RefObject<HTMLTextAreaElement>;
   routePending?: boolean;
+  targetReady?: boolean;
   onBeforePrompt?: () => void;
   onPromptSettled?: (text: string, conversationId: string | null | undefined) => void;
 }) {
@@ -91,6 +93,8 @@ export default function useQueryParams({
 
   const routePendingRef = useRef(routePending);
   routePendingRef.current = routePending;
+  const targetReadyRef = useRef(targetReady);
+  targetReadyRef.current = targetReady;
   const onPromptSettledRef = useRef(onPromptSettled);
   onPromptSettledRef.current = onPromptSettled;
   const methods = useChatFormContext();
@@ -283,9 +287,8 @@ export default function useQueryParams({
 
   const areSettingsApplied = useCallback(() => {
     const convo = conversationRef.current;
-    if (!validSettingsRef.current || !convo) {
-      return false;
-    }
+    if (!convo) return false;
+    if (!validSettingsRef.current) return true;
 
     const endpointsConfig = queryClient.getQueryData<TEndpointsConfig>([QueryKeys.endpoints]) ?? {};
     const normalizedSettings = convo.endpoint
@@ -461,6 +464,7 @@ export default function useQueryParams({
   const processSubmission = useCallback(() => {
     if (
       routePendingRef.current ||
+      !targetReadyRef.current ||
       submissionHandledRef.current ||
       !pendingSubmitRef.current ||
       !promptTextRef.current ||
@@ -533,14 +537,14 @@ export default function useQueryParams({
   ]);
 
   const armSettingsTimeout = useCallback(() => {
-    if (settingsTimeoutRef.current || routePendingRef.current) return;
+    if (settingsTimeoutRef.current || routePendingRef.current || !targetReadyRef.current) return;
     const requestId = requestIdRef.current;
     settingsTimeoutRef.current = setTimeout(() => {
       if (requestId !== requestIdRef.current) {
         return;
       }
       settingsTimeoutRef.current = null;
-      if (routePendingRef.current) return;
+      if (routePendingRef.current || !targetReadyRef.current) return;
       if (!ownsRequest()) {
         cancelRequest();
         return;
@@ -668,6 +672,7 @@ export default function useQueryParams({
       const settingsAccepted = !hasSettings || newQueryConvo(validSettings) === true;
       if (willAutoSubmit && decodedPrompt.trim()) {
         pendingSubmitRef.current = true;
+        setSubmissionStatus('preparing');
         if (!settingsAccepted) {
           pendingSubmitRef.current = false;
           submissionHandledRef.current = true;
@@ -710,7 +715,7 @@ export default function useQueryParams({
   ]);
 
   useEffect(() => {
-    if (routePending) {
+    if (routePending || !targetReady) {
       if (settingsTimeoutRef.current) clearTimeout(settingsTimeoutRef.current);
       settingsTimeoutRef.current = null;
       return;
@@ -720,7 +725,6 @@ export default function useQueryParams({
       !processedRef.current ||
       submissionHandledRef.current ||
       !pendingSubmitRef.current ||
-      !validSettingsRef.current ||
       !conversation ||
       !ownsRequest()
     ) {
@@ -737,6 +741,7 @@ export default function useQueryParams({
   }, [
     conversation,
     routePending,
+    targetReady,
     processSubmission,
     armSettingsTimeout,
     areSettingsApplied,
