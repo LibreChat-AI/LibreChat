@@ -48,9 +48,9 @@ jest.mock('~/Providers/MessagePartsHostContext', () => {
   };
 });
 
-jest.mock('~/components/Chat/Messages/MinimalHoverButtons', () => ({
-  __esModule: true,
-  default: ({ message }: { message: TMessage }) => {
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  MinimalHoverButtons: ({ message }: { message: TMessage }) => {
     mockCopyMessage(message);
     return <button type="button" aria-label="copy" />;
   },

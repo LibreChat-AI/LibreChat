@@ -1,7 +1,7 @@
 import type { MessagesHost } from '../react/messages/host';
 
-/** A messages host for specs: locale clock, no slots, no forking, inert scrolling, with the
- *  members a spec needs overridden. */
+/** A messages host for specs: locale clock, no slots, no forking, no copying, inert scrolling,
+ *  with the members a spec needs overridden. */
 export function createMessagesHost(overrides: Partial<MessagesHost> = {}): MessagesHost {
   return {
     useHour12: () => undefined,
@@ -15,6 +15,7 @@ export function createMessagesHost(overrides: Partial<MessagesHost> = {}): Messa
       setRememberOption: () => undefined,
     }),
     useForkConversation: () => null,
+    useMessageCopy: () => ({ copyToClipboard: () => undefined, canCopy: false }),
     useScrolling: () => ({
       contentRef: { current: null },
       scrollableRef: { current: null },

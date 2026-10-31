@@ -4,9 +4,10 @@ import type {
   TMessage,
   Assistant,
   TConversation,
+  SearchResultData,
   TForkConvoRequest,
 } from 'librechat-data-provider';
-import type { MouseEvent, ReactNode, RefObject } from 'react';
+import type { Dispatch, ReactNode, MouseEvent, RefObject, SetStateAction } from 'react';
 
 /** The scroll machinery of the message list, as the app's scrolling hook drives it. */
 export type MessagesScrolling = {
@@ -51,6 +52,24 @@ export type ForkEvents = {
 /** Starts a fork of a conversation. */
 export type ForkConversation = (request: TForkConvoRequest, events: ForkEvents) => void;
 
+/** The renderer a message is displayed with: `full` for model text, `lite` for user markdown. */
+export type MarkdownVariant = 'full' | 'lite';
+
+/** What a row asks the host to copy. */
+export type MessageCopyInput = {
+  message: TMessage;
+  /** Search results the message cites, resolved into the copied text. */
+  searchResults?: { [key: string]: SearchResultData };
+  /** The renderer the row displayed the message with, when it is not the authorship default. */
+  variant?: MarkdownVariant;
+};
+
+/** A row's copy action: `copyToClipboard` flips `setIsCopied` on while the copied state shows. */
+export type MessageCopy = {
+  copyToClipboard: (setIsCopied: Dispatch<SetStateAction<boolean>>) => void;
+  canCopy: boolean;
+};
+
 /** What a message author's icon is drawn from: the endpoint and model, or the agent or
  *  assistant that wrote it. */
 export type MessageIconData = { endpoint?: string | null; isCreatedByUser?: boolean } & Pick<
@@ -83,7 +102,8 @@ export interface MessagesHost {
   useForkPreferences: () => ForkPreferences;
   /** Forks a conversation and opens the copy; `null` where forking is unavailable. */
   useForkConversation: () => ForkConversation | null;
-
+  /** Copies a message the way the app renders it; `canCopy` is `false` where copying is unavailable. */
+  useMessageCopy: (input: MessageCopyInput) => MessageCopy;
   /**
    * Drives the list's scrolling: follows the stream, lands on a conversation's end and keeps
    * the reader's position.
@@ -111,6 +131,8 @@ export interface MessagesHost {
 
 const noop = (): void => undefined;
 
+const fallbackMessageCopy: MessageCopy = { copyToClipboard: noop, canCopy: false };
+
 const fallbackForkPreferences: ForkPreferences = {
   option: '',
   setOption: noop,
@@ -137,13 +159,14 @@ function useInertScrolling(): MessagesScrolling {
 
 const ignoreNearBottom: ReportNearBottom = () => undefined;
 
-/** The host rows read outside any provider before an app registers one: locale clock, no slots, no forking. */
+/** The host rows read outside any provider before an app registers one: locale clock, no slots,
+ *  no forking, no copying, inert scrolling. */
 const fallbackHost: MessagesHost = {
   useHour12: () => undefined,
   renderFiles: () => null,
   useForkPreferences: () => fallbackForkPreferences,
   useForkConversation: () => null,
-
+  useMessageCopy: () => fallbackMessageCopy,
   useScrolling: useInertScrolling,
   useScreenshotTarget: () => useRef<HTMLDivElement>(null),
   useAutoScroll: () => false,

@@ -1,6 +1,6 @@
 import { Constants, EModelEndpoint, isAssistantsEndpoint } from 'librechat-data-provider';
 
-type TUseGenerations = {
+export type TUseGenerations = {
   error?: boolean;
   endpoint?: string;
   messageId?: string;
@@ -25,6 +25,16 @@ type TUseGenerations = {
   isUserInitiatedCompaction?: boolean;
 };
 
+/** Which rerun, edit, continue and fork controls a message row offers. */
+export type Generations = {
+  forkingSupported: boolean;
+  continueSupported: boolean;
+  regenerateEnabled: boolean;
+  isActiveStreamingMessage: boolean;
+  isEditableEndpoint: boolean;
+  hideEditButton: boolean;
+};
+
 export default function useGenerationsByLatest({
   error = false,
   endpoint,
@@ -38,7 +48,7 @@ export default function useGenerationsByLatest({
   getHasEditablePart,
   parentIsUserMessage,
   isUserInitiatedCompaction = false,
-}: TUseGenerations) {
+}: TUseGenerations): Generations {
   const isEditableEndpoint = Boolean(
     [
       EModelEndpoint.openAI,

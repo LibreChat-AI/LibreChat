@@ -25,6 +25,7 @@ import {
   SubagentActivityContent,
   SubagentStatus,
   getActivityContent,
+  MinimalHoverButtons,
 } from '@librechat/chat/components';
 import type { ChildConversationTurn, ToolContentQuery, TurnAuthor } from '@librechat/chat/react';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
@@ -41,7 +42,6 @@ import { MessagePartsHostProvider, useMessagePartsHost } from '~/Providers/Messa
 import ResumeAuthorHeader from '~/components/Chat/Messages/Content/Parts/ResumeAuthorHeader';
 import { useSearchResultsByTurn } from '~/hooks/Messages/useSearchResultsByTurn';
 import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source';
-import MinimalHoverButtons from '~/components/Chat/Messages/MinimalHoverButtons';
 import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
 import { AuthorContext } from '~/Providers/AuthorContext';
 import { ChatContext } from '~/Providers/ChatContext';

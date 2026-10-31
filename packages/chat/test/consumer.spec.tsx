@@ -214,6 +214,7 @@ const messagesHost: MessagesHost = {
     setRememberOption: () => undefined,
   }),
   useForkConversation: () => null,
+  useMessageCopy: () => ({ copyToClipboard: () => undefined, canCopy: false }),
   useScrolling: () => ({
     contentRef: { current: null },
     scrollableRef: { current: null },
