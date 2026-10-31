@@ -1,15 +1,17 @@
 import { createHmac } from 'node:crypto';
 import { SocketModeClient } from '@slack/socket-mode';
 import { createServer, request as httpRequest } from 'node:http';
+import { DEFAULT_CHANNEL_GATEWAY_POLICY } from 'librechat-data-provider';
 import type { AddressInfo } from 'node:net';
 import type { ChannelBundle } from './types';
+import { loadConfig, resolveGatewayConfig } from './config';
 import { ChannelClient } from './client';
 import { connectSocket } from './socket';
-import { loadConfig } from './config';
 import { SlackClient } from './slack';
 import { GatewayApp } from './app';
 
 const bundle: ChannelBundle = {
+  gateway: { version: 1, ...DEFAULT_CHANNEL_GATEWAY_POLICY, transport: 'webhook' },
   channel: {
     channelId: 'binding',
     tenantId: 'tenant',
@@ -53,17 +55,28 @@ const callback = (
 const json = (body: object, status = 200) =>
   new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 function setup(env: NodeJS.ProcessEnv = {}) {
-  const config = loadConfig({
-    CHANNEL_SERVICE_TOKEN: 'test-service',
-    CHANNEL_TENANT_ID: 'tenant',
-    CHANNEL_ID: 'binding',
-    ...env,
-  });
+  const currentBundle: ChannelBundle = {
+    ...bundle,
+    gateway: {
+      ...bundle.gateway,
+      transport: env.SLACK_TRANSPORT === 'socket_mode' ? 'socket_mode' : 'webhook',
+    },
+  };
+  const config = resolveGatewayConfig(
+    loadConfig({
+      CHANNEL_SERVICE_TOKEN: 'test-service',
+      SLACK_TRANSPORT: 'webhook',
+      CHANNEL_TENANT_ID: 'tenant',
+      CHANNEL_ID: 'binding',
+      ...env,
+    }),
+    currentBundle.gateway,
+  );
   const backend = jest
     .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
     .mockImplementation(async (url) =>
       String(url).includes('/service/slack/')
-        ? json(bundle)
+        ? json(currentBundle)
         : json({ runId: 'run', duplicate: false }),
     );
   const slack = jest
@@ -76,7 +89,7 @@ function setup(env: NodeJS.ProcessEnv = {}) {
     new SlackClient(config, undefined, slack),
     log,
   );
-  return { app, backend, slack, log, config };
+  return { app, backend, slack, log, config, bundle: currentBundle };
 }
 async function serve(app: GatewayApp, check: (base: string) => Promise<void>) {
   const server = createServer((request, response) => {
@@ -137,7 +150,7 @@ describe('durable Slack ingress', () => {
   });
 
   test('native Stop is constrained to its actor, thread and occurrence time', async () => {
-    const { app, backend } = setup({ SLACK_NATIVE_SESSIONS: 'true' });
+    const { app, backend } = setup();
     await app.dispatch(
       envelope({
         type: 'agent_session_stopped',
@@ -155,7 +168,7 @@ describe('durable Slack ingress', () => {
     });
   });
 
-  test('native Stop is not handled when its feature is disabled', async () => {
+  test('native Stop remains available when native emission is disabled', async () => {
     const { app, backend } = setup();
     await app.dispatch(
       envelope({
@@ -165,11 +178,12 @@ describe('durable Slack ingress', () => {
       }),
       false,
     );
-    expect(backend).toHaveBeenCalledTimes(1);
+    expect(backend).toHaveBeenCalledTimes(2);
+    expect(String(backend.mock.calls[1][0])).toContain('/runs/stop-thread');
   });
 
   test.each([400, 403])('native Stop reports a safe diagnostic for backend %i', async (status) => {
-    const { app, backend, log } = setup({ SLACK_NATIVE_SESSIONS: 'true' });
+    const { app, backend, log } = setup();
     backend.mockImplementation(async (url) =>
       String(url).includes('/service/slack/')
         ? json(bundle)
@@ -192,7 +206,7 @@ describe('durable Slack ingress', () => {
   });
 
   test('native Stop malformed envelope and binding errors are distinguishable without payload logging', async () => {
-    const { app, log } = setup({ SLACK_NATIVE_SESSIONS: 'true' });
+    const { app, log } = setup();
     const stop = envelope({
       type: 'agent_session_stopped',
       thread_ts: '1792999999.5',
@@ -211,63 +225,41 @@ describe('durable Slack ingress', () => {
     expect(JSON.stringify(log.warn.mock.calls)).not.toContain('foreign');
   });
 
-  test('future Stop waits without clamping its original occurrence time', async () => {
-    const { app, backend } = setup({ SLACK_NATIVE_SESSIONS: 'true' });
-    let now = 1793000000000;
-    jest.spyOn(Date, 'now').mockImplementation(() => now);
-    const pending = app.dispatch(
-      envelope({
-        type: 'agent_session_stopped',
-        thread_ts: '1792999999.5',
-        event_ts: '1793000000.1',
-      }),
-      false,
-    );
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(backend).toHaveBeenCalledTimes(1);
-    now += 100;
-    await pending;
-    expect(JSON.parse(String(backend.mock.calls[1][1]?.body)).eventAt).toBe(1793000000100);
-  });
+  test.each(['1793000000.1', '1793000010.1'])(
+    'forwards future Stop %s immediately with its original occurrence time for durable service normalization',
+    async (event_ts) => {
+      const { app, backend } = setup();
+      jest.spyOn(Date, 'now').mockReturnValue(1793000000000);
+      await app.dispatch(
+        envelope({ type: 'agent_session_stopped', thread_ts: '1792999999.5', event_ts }),
+        false,
+      );
+      expect(JSON.parse(String(backend.mock.calls[1][1]?.body)).eventAt).toBe(
+        Math.floor(Number(event_ts) * 1000),
+      );
+    },
+  );
 
-  test('future Stop outside the acknowledgement window is rejected without waiting or writing', async () => {
-    const { app, backend } = setup({ SLACK_NATIVE_SESSIONS: 'true' });
-    jest.spyOn(Date, 'now').mockReturnValue(1793000000000);
+  test('already-aborted Stop does not reach the backend', async () => {
+    const { app, backend } = setup();
+    const controller = new AbortController();
+    controller.abort();
     await expect(
       app.dispatch(
         envelope({
           type: 'agent_session_stopped',
           thread_ts: '1792999999.5',
-          event_ts: '1793000010.1',
+          event_ts: '1793000001.1',
         }),
         false,
+        controller.signal,
       ),
-    ).rejects.toThrow('acknowledgement window');
-    expect(backend).toHaveBeenCalledTimes(1);
-  });
-
-  test('future Stop waiting observes shutdown without sending a cancellation', async () => {
-    const { app, backend } = setup({ SLACK_NATIVE_SESSIONS: 'true' });
-    jest.spyOn(Date, 'now').mockReturnValue(1793000000000);
-    const controller = new AbortController();
-    const pending = app.dispatch(
-      envelope({
-        type: 'agent_session_stopped',
-        thread_ts: '1792999999.5',
-        event_ts: '1793000001.1',
-      }),
-      false,
-      controller.signal,
-    );
-    await new Promise((resolve) => setImmediate(resolve));
-    controller.abort();
-    await expect(pending).rejects.toThrow();
-    expect(backend).toHaveBeenCalledTimes(1);
+    ).rejects.toThrow();
+    expect(backend).not.toHaveBeenCalled();
   });
 
   test('Socket Mode leaves rejected Stop unacknowledged for redelivery', async () => {
-    const { app, backend, log, config } = setup({
-      SLACK_NATIVE_SESSIONS: 'true',
+    const { app, backend, log, config, bundle } = setup({
       SLACK_TRANSPORT: 'socket_mode',
       SLACK_APP_TOKEN: 'test-app',
     });
@@ -377,8 +369,82 @@ describe('durable Slack ingress', () => {
 });
 
 describe('signed webhook boundary', () => {
+  test('does not echo a challenge after the ingress deadline expires during channel lookup', async () => {
+    const { app, backend } = setup();
+    backend.mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 2100));
+      return json(bundle);
+    });
+    await serve(app, async (base) => {
+      const body = JSON.stringify({ type: 'url_verification', challenge: 'too-late' });
+      const response = await fetch(base + '/slack/events/tenant/binding', {
+        method: 'POST',
+        headers: signed(body),
+        body,
+      });
+      expect(response.status).toBe(503);
+      expect(await response.text()).not.toContain('too-late');
+    });
+  });
+  test('echoes only an authenticated installation challenge without admitting a run', async () => {
+    const { app, backend } = setup();
+    await serve(app, async (base) => {
+      const body = JSON.stringify({ type: 'url_verification', challenge: 'verified-challenge' });
+      const response = await fetch(base + '/slack/events/tenant/binding', {
+        method: 'POST',
+        headers: signed(body),
+        body,
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toEqual({ challenge: 'verified-challenge' });
+      const tampered = await fetch(base + '/slack/events/tenant/binding', {
+        method: 'POST',
+        headers: signed(body + 'changed'),
+        body,
+      });
+      expect(tampered.status).toBe(401);
+    });
+    expect(backend.mock.calls.every(([url]) => String(url).includes('/service/slack/'))).toBe(true);
+  });
+
+  test('fails closed and becomes unhealthy if the current server policy changes ingress', async () => {
+    const { app, backend, bundle: current } = setup();
+    app.ready = true;
+    backend.mockImplementation(async () =>
+      json({ ...current, gateway: { ...current.gateway, transport: 'socket_mode' } }),
+    );
+    await serve(app, async (base) => {
+      const body = JSON.stringify(envelope());
+      expect(
+        (
+          await fetch(base + '/slack/events/tenant/binding', {
+            method: 'POST',
+            headers: signed(body),
+            body,
+          })
+        ).status,
+      ).toBe(503);
+      expect((await fetch(base + '/healthz')).status).toBe(503);
+    });
+    expect(backend).toHaveBeenCalledTimes(1);
+  });
+
+  test('rejects unsigned installation challenges before echoing their payload', async () => {
+    const { app, backend } = setup();
+    await serve(app, async (base) => {
+      const response = await fetch(base + '/slack/events/tenant/binding', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'url_verification', challenge: 'must-authenticate-first' }),
+      });
+      expect(response.status).toBe(401);
+      expect(await response.text()).not.toContain('must-authenticate-first');
+      expect(backend).toHaveBeenCalledTimes(1);
+    });
+  });
+
   test('HTTP leaves rejected Stop retryable rather than acknowledging it', async () => {
-    const { app, backend } = setup({ SLACK_NATIVE_SESSIONS: 'true' });
+    const { app, backend } = setup();
     backend.mockImplementation(async (url) =>
       String(url).includes('/service/slack/')
         ? json(bundle)

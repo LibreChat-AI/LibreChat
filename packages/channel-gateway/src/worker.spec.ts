@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { DEFAULT_CHANNEL_GATEWAY_POLICY } from 'librechat-data-provider';
 import type {
   ChannelDeliveryPlan,
   ChannelDeliveryReceipt,
@@ -44,6 +45,7 @@ function fixture() {
     AGENT_INVOKE_TIMEOUT_MS: '2000',
   });
   const bundle: ChannelBundle = {
+    gateway: { version: 1, ...DEFAULT_CHANNEL_GATEWAY_POLICY, transport: 'socket_mode' },
     channel: {
       channelId: config.CHANNEL_ID,
       tenantId: config.CHANNEL_TENANT_ID,
@@ -286,6 +288,29 @@ function fixture() {
 }
 
 describe('durable Channels worker', () => {
+  test.each([false, true])(
+    'uses the current server lifecycle-reaction policy (%s)',
+    async (enabled) => {
+      const f = fixture();
+      f.bundle.gateway.lifecycleReactions = enabled;
+      await f.execute();
+      const reactions = f.slackRequests.filter((request) =>
+        request.method.startsWith('reactions.'),
+      );
+      expect(reactions.map((request) => [request.method, request.body.get('name')])).toEqual(
+        enabled
+          ? [
+              ['reactions.add', 'eyes'],
+              ['reactions.add', 'hourglass_flowing_sand'],
+              ['reactions.remove', 'hourglass_flowing_sand'],
+              ['reactions.add', 'white_check_mark'],
+            ]
+          : [],
+      );
+      expect(f.state.state).toBe('delivered');
+    },
+  );
+
   test('executes only through a bound Responses grant and persists progress before writes', async () => {
     const f = fixture();
     delete f.grant.responseId;
@@ -362,7 +387,7 @@ describe('durable Channels worker', () => {
     'rejects a changed %s grant before Responses execution',
     async (field) => {
       const f = fixture();
-      f.config.SLACK_NATIVE_SESSIONS = true;
+      f.bundle.gateway.nativeSessions = true;
       if (field === 'apiKey' || field === 'requestKey') f.grant[field] = 'wrong';
       else f.grant.request[field] = 'wrong';
       await expect(f.execute()).rejects.toThrow(
@@ -555,7 +580,7 @@ describe('durable Channels worker', () => {
 
   test('does not yield when a renewal becomes uncertain while the independent renewer drains', async () => {
     const f = fixture();
-    f.config.SLACK_NATIVE_SESSIONS = true;
+    f.bundle.gateway.nativeSessions = true;
     f.lease.leaseExpiresAt = Date.now() + 60;
     f.hooks.renew = async () => {
       await delay(30);
@@ -608,7 +633,7 @@ describe('durable Channels worker', () => {
 
   test('verified unstarted cancellation never creates or polls a Response', async () => {
     const f = fixture();
-    f.config.SLACK_NATIVE_SESSIONS = true;
+    f.bundle.gateway.nativeSessions = true;
     f.state.cancellationRequested = true;
     f.hooks.prepare = () => ({
       settled: {
@@ -626,7 +651,7 @@ describe('durable Channels worker', () => {
 
   test('unproved cancellation without a Response cursor is held instead of creating new work', async () => {
     const f = fixture();
-    f.config.SLACK_NATIVE_SESSIONS = true;
+    f.bundle.gateway.nativeSessions = true;
     f.state.cancellationRequested = true;
     delete f.grant.responseId;
     await expect(f.execute()).rejects.toThrow('awaits reconciliation');
@@ -635,7 +660,7 @@ describe('durable Channels worker', () => {
 
   test('a canonical cancellation polls only the exact bound Response cancellation route', async () => {
     const f = fixture();
-    f.config.SLACK_NATIVE_SESSIONS = true;
+    f.bundle.gateway.nativeSessions = true;
     f.state.cancellationRequested = true;
     f.hooks.advance = () => {
       f.state.state = 'delivering';
@@ -656,7 +681,7 @@ describe('durable Channels worker', () => {
 
   test('requires-action uses native suspended state and one safe actor-lane yield', async () => {
     const f = fixture();
-    f.config.SLACK_NATIVE_SESSIONS = true;
+    f.bundle.gateway.nativeSessions = true;
     f.hooks.advance = () => {
       f.state.state = 'requires_action';
       f.state.snapshot = {
@@ -744,7 +769,7 @@ describe('optional delivery and uncertain execution boundaries', () => {
   );
   test('native status success still publishes recovery guidance and suppresses stale review controls', async () => {
     const f = fixture();
-    f.config.SLACK_NATIVE_SESSIONS = true;
+    f.bundle.gateway.nativeSessions = true;
     f.hooks.advance = () => {
       f.state.state = 'requires_action';
       f.state.snapshot = {

@@ -77,10 +77,12 @@ jobs:
           docker run --rm -i --read-only --entrypoint node channel-gateway:ci - <<'NODE'
           const http = require('node:http');
           const { spawn } = require('node:child_process');
+          const { createHmac } = require('node:crypto');
           const { setTimeout: delay } = require('node:timers/promises');
           const bundle = {
-            channel: { channelId: 'fixture', tenantId: 'fixture', agentId: 'agent_fixture', type: 'slack', status: 'active', revision: 'fixture', slack: { teamId: 'T1', appId: 'A1', botUserId: 'U1' } },
-            credentials: { botToken: 'fixture' }, agent: { id: 'agent_fixture' },
+            channel: { channelId: 'fixture', tenantId: 'fixture', agentId: 'agent_fixture', createdBy: 'owner', type: 'slack', status: 'active', revision: 'fixture', slack: { teamId: 'T1', appId: 'A1', botUserId: 'U1' } },
+            gateway: { version: 1, transport: 'webhook', nativeSessions: false, lifecycleReactions: false, signatureToleranceSeconds: 300 },
+            credentials: { botToken: 'fixture', signingSecret: 'fixture-signing' }, agent: { id: 'agent_fixture' },
           };
           const backend = http.createServer((req, res) => {
             if (req.url.endsWith('/runs/claim')) { req.resume(); res.writeHead(204); res.end(); return; }
@@ -88,7 +90,7 @@ jobs:
           });
           backend.listen(0, '127.0.0.1', async () => {
             const child = spawn(process.execPath, ['/app/main.cjs'], {
-              env: { ...process.env, LIBRECHAT_INTERNAL_URL: `http://127.0.0.1:${backend.address().port}`, CHANNEL_SERVICE_TOKEN: 'fixture', CHANNEL_TENANT_ID: 'fixture', CHANNEL_ID: 'fixture', SLACK_TRANSPORT: 'webhook' },
+              env: { ...process.env, LIBRECHAT_INTERNAL_URL: `http://127.0.0.1:${backend.address().port}`, CHANNEL_SERVICE_TOKEN: 'fixture', CHANNEL_TENANT_ID: 'fixture', CHANNEL_ID: 'fixture' },
               stdio: 'ignore',
             });
             const exited = new Promise(resolve => child.once('exit', resolve));
@@ -101,6 +103,15 @@ jobs:
                 await delay(100);
               }
               if (!ready) throw new Error('Gateway did not become healthy');
+              const body = JSON.stringify({ type: 'url_verification', challenge: 'verified' });
+              const url = 'http://127.0.0.1:8080/slack/events/fixture/fixture';
+              const unsigned = await fetch(url, { method: 'POST', body });
+              if (unsigned.status !== 401) throw new Error('Unsigned challenge accepted');
+              const timestamp = String(Math.floor(Date.now() / 1000));
+              const signature = 'v0=' + createHmac('sha256', 'fixture-signing').update(`v0:${timestamp}:${body}`).digest('hex');
+              const signed = await fetch(url, { method: 'POST', body, headers: { 'x-slack-request-timestamp': timestamp, 'x-slack-signature': signature } });
+              if (signed.status !== 200 || (await signed.json()).challenge !== 'verified') throw new Error('Signed challenge rejected');
+
               child.kill('SIGTERM');
               if (await exited !== 0) throw new Error('Gateway did not exit cleanly');
               console.log('Standalone gateway became healthy and stopped cleanly.');

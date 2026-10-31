@@ -1,4 +1,35 @@
-# Channel gateway delivery recovery
+# Slack Channel gateway
+
+## Configure one server-owned policy
+
+Configure the application in `librechat.yaml`:
+
+```yaml
+endpoints:
+  agents:
+    channels:
+      enabled: true
+      transport: socket_mode
+      nativeSessions: false
+      lifecycleReactions: false
+      signatureToleranceSeconds: 300
+```
+
+Socket Mode, disabled optional native/lifecycle emission and a 300-second signature window are the defaults. The signature window accepts 1–300 seconds. For webhooks, set `transport: webhook` and `gatewayUrl` to the externally reachable HTTPS gateway base URL. Keep the private application service URL internal.
+
+The gateway loads this versioned policy with its private channel bundle before opening its listener or selecting ingress. Deploy matching application and gateway versions: policy version 1 is required, and absent or unsupported versions fail closed. Configure `CHANNEL_SERVICE_TOKEN`, `CHANNEL_TENANT_ID`, `CHANNEL_ID`, `LIBRECHAT_INTERNAL_URL` and, for Socket Mode, `SLACK_APP_TOKEN` in the gateway environment. These are process bindings and secrets. `APP_TITLE`, listening settings, provider/service addresses and process request timeouts also remain deployment settings.
+
+Remove legacy `SLACK_NATIVE_SESSIONS`, `SLACK_LIFECYCLE_REACTIONS` and `SLACK_SIGNATURE_TOLERANCE_SECS` environment variables; their presence now fails startup instead of overriding the server. Use the YAML fields above. `SLACK_TRANSPORT` is optional and only asserts the server-selected mode; a mismatch fails startup. Restart gateway replicas after changing ingress mode. A replica which observes a changed mode rejects ingress and becomes unhealthy. Workers read optional feature policy from the current private bundle, while already-frozen delivery plans retain their original operations.
+
+## Install a webhook app
+
+1. Select webhook mode and set the gateway base URL in the application configuration. Create the Slack app and apply the generated bot capabilities; install it to obtain its bot token. Keep its signing secret private.
+2. Activate the Agent Channel with the app/workspace/bot identity, bot token and signing secret, and configure the matching gateway service/tenant/channel bindings. The private bundle requires an active channel with usable signing credentials before webhook verification can succeed.
+3. Start the gateway, then apply the generated Events API and interaction URLs to the Slack app. Installation challenges authenticate the original request bytes with that channel's signing secret before echoing the challenge. Missing, stale or tampered signatures cannot pass URL verification. Socket Mode instead requires the app-level token and matching authenticated app identity.
+
+Native Stop remains available for an authenticated existing session even when optional native emission is disabled. The application accepts bounded future clock skew and durably pins each click's first observed target, lease epoch and cutoff, including no target. A retry cannot advance its cutoff or stop a newer run. Past occurrence times remain unchanged; clock skew does not establish a globally exact event order.
+
+# Delivery recovery
 
 The gateway preserves each frozen delivery operation and its receipt. A required operation whose provider result is unknown holds its actor lane: retrying blindly could post the same answer twice. Stopping a worker or requesting cancellation does not prove whether Slack accepted an earlier request.
 
