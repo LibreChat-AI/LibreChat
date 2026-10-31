@@ -1220,7 +1220,7 @@ export const channelStorageConfigSchema = z.object({
 
 export type ChannelStorageConfig = z.infer<typeof channelStorageConfigSchema>;
 
-/** Runtime policy for explicitly constructed channel hosts. */
+/** Channel runtime and operator policy; execution remains disabled by default. */
 export const channelConfigSchema = channelStorageConfigSchema.extend({
   enabled: z.boolean().default(false),
   transport: z.enum(['socket_mode', 'webhook']).default('socket_mode'),
@@ -2307,7 +2307,7 @@ export const agentsEndpointSchema = baseEndpointSchema
         .optional(),
       managementApi: managementApiSchema.optional(),
       remoteApi: remoteApiSchema.optional(),
-      channels: channelStorageConfigSchema.strict().optional(),
+      channels: channelConfigSchema.strict().optional(),
       /** Human-in-the-loop tool approval policy. Off by default. */
       toolApproval: toolApprovalPolicySchema,
       /** Ask User question behavior; see {@link askUserQuestionConfigSchema}. */

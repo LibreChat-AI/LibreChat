@@ -148,11 +148,21 @@ async function fixture(
     context: { streamId: string | null; jobCreatedAt?: number },
     execution: AgentExecutionEnrollment,
   ) => Promise<string | { paused: true }> = async () => '# Real Responses lifecycle';
+  let beforeReservation: (() => Promise<void>) | undefined;
   const producer = createAgentTriggerProducerBinding();
   const host = createBackgroundResponsesHost({
     decisions,
     interactive,
-    storage,
+    storage: new Proxy(storage, {
+      get(target, property, receiver) {
+        if (property === 'reserve')
+          return async (input: Parameters<ResponseStorage['reserve']>[0]) => {
+            await beforeReservation?.();
+            return target.reserve(input);
+          };
+        return Reflect.get(target, property, receiver);
+      },
+    }),
     jobs: GenerationJobManager,
     publicBaseURL: 'https://agents.example',
     findUser: (id) => db.findUser({ _id: id }),
@@ -343,6 +353,9 @@ async function fixture(
   }
   return {
     host,
+    setBeforeReservation: (callback?: () => Promise<void>) => {
+      beforeReservation = callback;
+    },
     stopQueue: () => service.stop(),
     client,
     credential,
@@ -585,7 +598,7 @@ it('registers only resume-capable initial/resume workers and dispatches saved in
   expect((await GenerationJobManager.getJob(id))?.status).toBe('requires_action');
 });
 
-it('returns a safe retryable HTTP failure when queue publication fails after saving the owner decision', async () => {
+it('accepts a durable owner decision and recovers publication without resubmitting it', async () => {
   let calls = 0;
   const f = await fixture({
     validate: async () => true,
@@ -598,8 +611,17 @@ it('returns a safe retryable HTTP failure when queue publication fails after sav
   const failed = await f.client
     .post(path)
     .send({ actionId: action.actionId, answer: 'staging' })
-    .expect(503);
-  expect(failed.body).toEqual({ error: 'response_service_unavailable' });
+    .expect(202);
+  expect(failed.body).toMatchObject({
+    responseId: id,
+    actionId: action.actionId,
+    status: 'queued',
+  });
+  expect((await scoped(() => storage.read(owner, id)))?.dispatchOutbox).toMatchObject({
+    kind: 'resume',
+    id: failed.body.intentId,
+    state: 'pending',
+  });
   expect(JSON.stringify(failed.body)).not.toContain('private queue');
   const restored = await f.client.get(path).expect(200);
   expect(restored.body.canSubmitDecision).toBe(true);
@@ -610,8 +632,15 @@ it('returns a safe retryable HTTP failure when queue publication fails after sav
   const native = await scoped(() => f.host.readInteractiveReview(owner, id));
   expect(native?.pendingDecision).toEqual(restored.body.pendingDecision);
   expect(native?.pendingAction?.actionId).toBe(action.actionId);
-  const retry = await f.client.post(path).send(restored.body.pendingDecision.decision).expect(202);
-  expect(retry.body.intentId).toBe(restored.body.pendingDecision.intentId);
+  const recover = f.host.sourceDispatchers.get('responses')!.recoverPending!;
+  await runAsSystem(() => recover(25, { found: false }));
+  const recovered = (await scoped(() => storage.read(owner, id)))!;
+  expect(recovered.resume!.intentId).toBe(restored.body.pendingDecision.intentId);
+  expect(recovered.dispatchOutbox).toMatchObject({
+    kind: 'resume',
+    id: failed.body.intentId,
+    state: 'settled',
+  });
   expect(calls).toBe(2);
   expect(f.errors).toHaveLength(1);
 });
@@ -1533,4 +1562,61 @@ it('keeps owner reads available but denies interactive admission before queue re
   expect((await scoped(() => storage.read(owner, id)))?.resume).toBeUndefined();
   expect(validate).not.toHaveBeenCalled();
   expect(enqueue).not.toHaveBeenCalled();
+});
+
+it.each(['shutdown', 'before-attach'] as const)(
+  'recovers %s handoff without client replay or an Idempotency-Key',
+  async (failure) => {
+    const first = await fixture();
+    if (failure === 'shutdown')
+      first.setBeforeReservation(async () => {
+        first.setBeforeReservation();
+        await first.stopQueue();
+      });
+    const attach =
+      failure === 'before-attach'
+        ? jest.spyOn(storage, 'attachDelivery').mockRejectedValueOnce(new Error('lost attachment'))
+        : undefined;
+    const accepted = await first.client
+      .post('/api/agents/v1/responses')
+      .auth(first.credential.key, { type: 'bearer' })
+      .send({ model: 'agent', input: 'durable shutdown request', background: true, store: true })
+      .expect(202);
+    const originalId = accepted.body.id;
+    expect(await scoped(() => mongoose.models.AgentTriggerDelivery.countDocuments({}))).toBe(0);
+    expect(
+      await scoped(() => storage.read({ userId: String(user._id), tenantId }, originalId)),
+    ).toMatchObject({ dispatchOutbox: { kind: 'create', id: originalId, state: 'pending' } });
+    attach?.mockRestore();
+    await first.stopQueue();
+    const restarted = await fixture();
+    await first.readUntil(originalId, 'completed');
+    expect(first.inputs).toHaveLength(0);
+    expect(restarted.inputs).toHaveLength(1);
+    expect(await runAsSystem(() => mongoose.models.StoredResponse.countDocuments({}))).toBe(1);
+    expect(await runAsSystem(() => mongoose.models.AgentTriggerDelivery.countDocuments({}))).toBe(
+      1,
+    );
+  },
+);
+
+it('recovers a lost source acknowledgement after queue commit without another execution', async () => {
+  const f = await fixture();
+  const acknowledgement = jest
+    .spyOn(storage, 'settleDispatch')
+    .mockRejectedValueOnce(new Error('private acknowledgement unavailable'));
+  const accepted = await f.client
+    .post('/api/agents/v1/responses')
+    .auth(f.credential.key, { type: 'bearer' })
+    .send({ model: 'agent', input: 'queue receipt race', background: true, store: true })
+    .expect(202);
+  acknowledgement.mockRestore();
+  await runAsSystem(() =>
+    f.host.sourceDispatchers.get('responses')!.recoverPending!(25, { found: false }),
+  );
+  await f.readUntil(accepted.body.id, 'completed');
+  expect(f.inputs).toHaveLength(1);
+  expect(await runAsSystem(() => mongoose.models.StoredResponse.countDocuments({}))).toBe(1);
+  expect(await runAsSystem(() => mongoose.models.AgentTriggerDelivery.countDocuments({}))).toBe(1);
+  expect(JSON.stringify(accepted.body)).not.toContain('private acknowledgement');
 });

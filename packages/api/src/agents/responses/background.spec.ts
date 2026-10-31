@@ -161,7 +161,14 @@ it('replays the same identity, including after an uncertain queue publication', 
         throw new Error('queue response lost');
       }
     };
-    await expect(service.create(envelope(), 'same')).rejects.toThrow('queue response lost');
+    const accepted = await service.create(envelope(), 'same');
+    expect(accepted.ok).toBe(true);
+    const pending = [...deliveries.values()][0];
+    expect((await storage.read(owner, pending.responseId))?.dispatchOutbox).toMatchObject({
+      kind: 'create',
+      id: pending.responseId,
+      state: 'pending',
+    });
     const result = await service.create(envelope(), 'same');
     expect(result.ok).toBe(true);
     expect(deliveries.size).toBe(1);

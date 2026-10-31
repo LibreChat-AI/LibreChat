@@ -38,6 +38,7 @@ import { createResponseDecisionSubmission } from './decision';
 import { resolveResponseContinuation } from './persistence';
 import { cleanupResponseCheckpoint } from './checkpoint';
 import { createResponseRetirement } from './retirement';
+import { createResponseDispatchOutbox } from './outbox';
 import { createResponseReview } from './review';
 import { responseTenantId } from './scope';
 
@@ -163,6 +164,16 @@ export function createBackgroundResponsesHost(
       ? { validate: deps.interactive.validate, enqueue: resumeQueue.enqueue }
       : deps.decisions;
 
+  const outbox = createResponseDispatchOutbox({
+    isReady: isAdmissionReady,
+    storage: deps.storage,
+    create: queue,
+    resume: resumeQueue ?? (decisions ? { enqueue: decisions.enqueue } : undefined),
+    authorize: (record) => authorize(record, record.agentId, record.sourceKeyId),
+    retire: (record) => retire(record, record.responseId),
+    onError: deps.onError,
+  });
+
   const submitInteractiveReview: ResponseDecisionSubmission = async (owner, responseId, input) => {
     if (!decisions) return { ok: false, status: 409, code: 'response_decision_unavailable' };
     if (!isAdmissionReady())
@@ -171,6 +182,7 @@ export function createBackgroundResponsesHost(
       storage: deps.storage,
       jobs: deps.jobs,
       now: deps.now,
+      onDispatchError: deps.onError,
       ...decisions,
       authorize: (record) => authorize(record, record.agentId, record.sourceKeyId),
     })(owner, responseId, input);
@@ -181,6 +193,7 @@ export function createBackgroundResponsesHost(
     return createBackgroundResponseService({
       storage: deps.storage,
       enqueue: queue.enqueue,
+      onDispatchError: deps.onError,
       deliveryKey: queue.deliveryKey,
       authorize: (owner, agentId, keyId) => authorize(owner, agentId, keyId, user),
       resolveContinuation: async (owner, previous) => {
@@ -270,6 +283,7 @@ export function createBackgroundResponsesHost(
         storage: deps.storage,
         jobs: deps.jobs,
         now: deps.now,
+        onDispatchError: deps.onError,
         ...decisions,
         authorize: (record) => authorize(record, record.agentId, record.sourceKeyId, user),
       });
@@ -307,7 +321,9 @@ export function createBackgroundResponsesHost(
     readResponse: (owner, responseId) => service().retrieve(owner, responseId),
     cancelResponse: (owner, responseId) => service().cancel(owner, responseId),
     sourceDispatchers: new Map([
-      ...queue.sourceDispatchers,
+      ...[...queue.sourceDispatchers].map(
+        ([name, source]) => [name, { ...source, recoverPending: outbox.recoverPending }] as const,
+      ),
       ...(resumeQueue?.sourceDispatchers ?? []),
     ]),
     initialize: (address: BoundAddress | string | null) => {
