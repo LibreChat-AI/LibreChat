@@ -38,3 +38,19 @@ it('validates injected runtime host policy without exposing an operator enable s
   expect(channelConfigSchema.safeParse({ artifactMaxFiles: 21 }).success).toBe(false);
   expect(agentsEndpointSchema.safeParse({ channels: { enabled: true } }).success).toBe(false);
 });
+
+it('configures the answer-file byte threshold with the existing default and bounded integer values', () => {
+  expect(channelConfigSchema.parse({}).artifactAnswerFileThresholdBytes).toBe(6000);
+  expect(
+    channelConfigSchema.parse({ artifactAnswerFileThresholdBytes: 0 })
+      .artifactAnswerFileThresholdBytes,
+  ).toBe(0);
+  expect(
+    channelConfigSchema.parse({ artifactAnswerFileThresholdBytes: 8192 })
+      .artifactAnswerFileThresholdBytes,
+  ).toBe(8192);
+  for (const value of [-1, 1.5, 50 * 1024 * 1024 + 1])
+    expect(channelConfigSchema.safeParse({ artifactAnswerFileThresholdBytes: value }).success).toBe(
+      false,
+    );
+});
