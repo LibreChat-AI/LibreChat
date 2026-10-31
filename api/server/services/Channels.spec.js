@@ -18,6 +18,10 @@ const mockDb = {
   listDeletingAgentChannels: jest.fn(),
   deleteAgentChannel: jest.fn(),
 };
+jest.mock('@librechat/api', () => {
+  const actual = jest.requireActual('@librechat/api');
+  return { ...actual, createChannelRunHandlers: jest.fn(actual.createChannelRunHandlers) };
+});
 jest.mock('~/models', () => mockDb);
 jest.mock('./Config', () => ({ getAppConfig: (...args) => mockConfig(...args) }));
 jest.mock('./PermissionService', () => ({ getEffectivePermissions: jest.fn() }));
@@ -122,4 +126,17 @@ it('returns a safe unavailable result when effective owner configuration fails',
   mockConfig.mockRejectedValue(new Error('private configuration details'));
   await call().expect(503, { error: 'channel_operation_failed' });
   expect(reached).not.toHaveBeenCalled();
+});
+
+it('installs the channel owner-review URL with the owning review page', () => {
+  const { createChannelRunHandlers } = require('@librechat/api');
+  expect(createChannelRunHandlers).toHaveBeenCalledWith(
+    expect.objectContaining({
+      publicBaseUrl: process.env.DOMAIN_CLIENT,
+      interactive: {
+        readInteractiveReview: expect.any(Function),
+        submitInteractiveReview: expect.any(Function),
+      },
+    }),
+  );
 });
