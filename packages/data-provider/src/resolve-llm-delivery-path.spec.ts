@@ -715,6 +715,11 @@ describe('isNativelyReadableText', () => {
 });
 
 describe('canToolResourceConsume', () => {
+  it('accepts an SVG for the code interpreter, which lists it as supported', () => {
+    expect(canToolResourceConsume('execute_code', 'image/svg+xml')).toBe(true);
+    expect(canToolResourceConsume('execute_code', 'image/svg')).toBe(true);
+  });
+
   it('accepts a presentation for file search, which RAG handles', () => {
     /* The chooser offers file search for pptx from the retrieval set, so refusing it
      * here rejects the destination the user was just given. The extraction set omits

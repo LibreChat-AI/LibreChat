@@ -1278,7 +1278,16 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
           entity_id,
         }),
     );
-  } else if (isImage) {
+  } else if (
+    isImage &&
+    /* An SVG the user sent to the code interpreter is source for the code to work on.
+     * Rasterized, the sandbox would get a PNG in its place, so it is stored as uploaded.
+     * Only an explicit choice: an inferred destination is re-routed per turn and may still
+     * reach a provider, which cannot read SVG. */
+    !(
+      tool_resource === EToolResources.execute_code && /^image\/(svg|svg\+xml)$/.test(file.mimetype)
+    )
+  ) {
     /* The conversion is this file's storage step. Uploading the original first left a
      * second object nothing references, and the record's size and dimensions describing
      * bytes that were replaced. Only the storage fields are kept: the record below is
