@@ -118,7 +118,7 @@ test.describe('message hover toolbar', () => {
     const row = messageRender(page, prompt);
     await row.hover();
     await row.getByRole('button', { name: 'Edit', exact: true }).click();
-    const editor = messagesView(page).getByRole('textbox');
+    const editor = messagesView(page).getByTestId('message-text-editor');
     await expect(editor).toHaveValue(prompt);
     await expect(editor).toBeFocused();
 
