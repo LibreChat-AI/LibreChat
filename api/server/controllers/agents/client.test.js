@@ -6485,7 +6485,87 @@ describe('AgentClient - titleConvo', () => {
       expect(client.publishRunContextMeta).toHaveBeenCalledTimes(expectSeed ? 1 : 0);
     });
 
-    it('gives every resent document a unique name before formatting', async () => {
+    it.each([Providers.OPENAI, Providers.ANTHROPIC, Providers.GOOGLE])(
+      'continues a large existing %s chat with a new short message',
+      async (provider) => {
+        client.options.agent.provider = provider;
+        client.agentConfigs = new Map([
+          ['secondary-agent', { ...mockAgent, id: 'secondary-agent', provider: Providers.GOOGLE }],
+        ]);
+        const resolve = jest.fn();
+        client.options.agent.lazySubagentConfigs = [
+          { id: 'lazy-agent', provider: Providers.ANTHROPIC, configId: 'lazy-config', resolve },
+        ];
+        const history = Array.from({ length: 80 }, (_, index) => ({
+          messageId: `history-${index}`,
+          parentMessageId: index === 0 ? null : `history-${index - 1}`,
+          sender: index % 2 === 0 ? 'User' : 'Assistant',
+          isCreatedByUser: index % 2 === 0,
+          content: Array.from({ length: 51 }, () => ({ type: ContentTypes.TEXT, text: 'ok' })),
+        }));
+        const latest = {
+          messageId: 'next-message',
+          parentMessageId: 'history-79',
+          sender: 'User',
+          isCreatedByUser: true,
+          text: 'x',
+        };
+        const messages = [...history, latest];
+        const original = structuredClone(messages);
+        client.setModelBoundStoredMessages(messages);
+
+        const result = await client.buildMessages(messages, latest.messageId, {}, {});
+
+        expect(result.prompt).toHaveLength(messages.length);
+        expect(result.prompt.at(-1).content).toBe('x');
+        expect(messages).toMatchObject(original);
+        expect(resolve).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      'primary',
+      'secondary',
+      'nested subagent',
+      'nested graph member',
+      'lazy subagent',
+      'nested lazy subagent',
+      'lazy graph member',
+    ])('gives every resent document a unique name for a Bedrock %s', async (recipient) => {
+      const bedrockAgent = {
+        ...mockAgent,
+        id: 'bedrock-recipient',
+        provider: Providers.BEDROCK,
+      };
+      const resolve = jest.fn().mockResolvedValue(bedrockAgent);
+      const lazyAgent = { ...bedrockAgent, configId: 'bedrock-config', resolve };
+      if (recipient === 'primary') {
+        client.options.agent.provider = Providers.BEDROCK;
+      } else if (recipient === 'secondary') {
+        client.agentConfigs = new Map([[bedrockAgent.id, bedrockAgent]]);
+      } else if (recipient === 'nested subagent') {
+        client.options.agent.subagentAgentConfigs = [
+          { ...mockAgent, id: 'middle-agent', subagentAgentConfigs: [bedrockAgent] },
+        ];
+      } else if (recipient === 'nested graph member') {
+        client.options.agent.subagentGraphConfigs = [{ memberConfigs: [bedrockAgent] }];
+      } else if (recipient === 'lazy subagent') {
+        client.options.agent.lazySubagentConfigs = [lazyAgent];
+      } else if (recipient === 'nested lazy subagent') {
+        client.options.agent.subagentAgentConfigs = [
+          { ...mockAgent, id: 'middle-agent', lazySubagentConfigs: [lazyAgent] },
+        ];
+      } else {
+        client.options.agent.lazySubagentConfigs = [
+          {
+            id: 'lazy-team',
+            provider: Providers.OPENAI,
+            configId: 'team-config',
+            resolve,
+            subagentGraphMemberMetadata: [bedrockAgent],
+          },
+        ];
+      }
       const bedrockDocument = (name) => ({
         type: 'document',
         document: { name, format: 'pdf', source: { bytes: Buffer.from(name) } },
@@ -6526,6 +6606,9 @@ describe('AgentClient - titleConvo', () => {
           : [],
       );
       expect(names).toEqual(['Stripe fees', 'Stripe fees (2)']);
+      expect(firstQuestion.documents[0].document.name).toBe('Stripe fees');
+      expect(secondQuestion.documents[0].document.name).toBe('Stripe fees');
+      expect(resolve).not.toHaveBeenCalled();
     });
 
     it('preserves persisted source identity through both agent formatting passes', async () => {

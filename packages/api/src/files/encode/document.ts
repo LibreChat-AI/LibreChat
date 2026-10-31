@@ -15,6 +15,7 @@ import type {
   DocumentResult,
   ServerRequest,
 } from '~/types';
+import type { ReachableAgent } from '~/agents/traversal';
 import {
   CONTENT_TRAVERSAL_MAX_DEPTH,
   CONTENT_TRAVERSAL_MAX_NODES,
@@ -26,6 +27,7 @@ import {
   isAttachmentObjectNotFoundError,
 } from './utils';
 import { validatePdf, validateBedrockDocument } from '~/files/validation';
+import { someReachableAgent } from '~/agents/traversal';
 import { runGuardedEncode } from './memoryGuard';
 
 /** The longest document name LibreChat sends to Bedrock. */
@@ -95,6 +97,18 @@ function renameDocumentParts(
   return renamed ?? parts;
 }
 
+interface DocumentRecipient extends ReachableAgent<DocumentRecipient> {
+  readonly provider?: string;
+}
+
+function isBedrockRecipient({ provider }: DocumentRecipient): boolean {
+  return provider === Providers.BEDROCK;
+}
+
+function hasBedrockRecipient(recipients: Iterable<DocumentRecipient>): boolean {
+  return someReachableAgent(recipients, isBedrockRecipient);
+}
+
 /**
  * Bedrock rejects a request in which two documents share a name, and every turn resends the
  * documents of earlier turns (and of steers replayed with their attachments), so two uploads with
@@ -102,11 +116,17 @@ function renameDocumentParts(
  * formatted payload in conversation order (`report`, `report (2)`), leaving the first occurrence,
  * every other kind of part, and the parts themselves untouched: a message whose documents change
  * gets a new content array. Names compare case-insensitively, as the restriction is not
- * documented to be case-sensitive. Replay always enforces traversal limits, even without filters.
+ * documented to be case-sensitive. Recipient metadata includes lazy children and graph
+ * members without resolving them. Only runs with a Bedrock recipient need naming;
+ * Bedrock replay enforces traversal limits even without filters.
  */
 export function dedupeDocumentNames(
   messages: Array<{ content?: string | PayloadContentPart[] | null }>,
+  recipients?: Iterable<DocumentRecipient>,
 ): void {
+  if (recipients != null && !hasBedrockRecipient(recipients)) {
+    return;
+  }
   const budget = { remaining: CONTENT_TRAVERSAL_MAX_NODES - messages.length };
   if (budget.remaining < 0) {
     throw new ContentTraversalLimitError();

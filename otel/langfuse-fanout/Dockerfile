@@ -1,4 +1,5 @@
-FROM golang:1.25-alpine AS builder
+FROM golang:1.26.10-alpine3.24@sha256:a2012b4a1d1f9f7e9f44e0d39b805a901e856b1dd80b4e6ee4338db547050308 AS builder
+ENV GOTOOLCHAIN=local
 WORKDIR /src
 COPY otel/langfuse-fanout/go.mod otel/langfuse-fanout/go.sum* ./
 RUN go mod download

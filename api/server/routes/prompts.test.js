@@ -1711,6 +1711,121 @@ describe('GET /api/prompts/groups/:groupId/resolve', () => {
   });
 });
 
+describe('GET /api/prompts/groups/:groupId/revisions', () => {
+  afterEach(async () => {
+    await Prompt.deleteMany({});
+    await PromptGroup.deleteMany({});
+    await AclEntry.deleteMany({});
+  });
+
+  it('lists native revisions newest first with the Production entry marked', async () => {
+    const { group, prompt: production } = await createAccessiblePromptGroup({
+      name: 'Revisions native group',
+      prompt: 'Production text',
+    });
+    const draft = await Prompt.create({
+      prompt: 'Draft text',
+      author: testUsers.owner._id,
+      type: 'text',
+      groupId: group._id,
+    });
+
+    const response = await request(app)
+      .get(`/api/prompts/groups/${group._id}/revisions`)
+      .expect(200);
+
+    expect(response.body).toEqual({
+      source: 'native',
+      groupId: group._id.toString(),
+      revisions: [
+        { source: 'native', promptId: draft._id.toString(), version: 2, isProduction: false },
+        {
+          source: 'native',
+          promptId: production._id.toString(),
+          version: 1,
+          isProduction: true,
+        },
+      ],
+    });
+  });
+
+  it('returns 403 without VIEW permission on the group', async () => {
+    const { group } = await createAccessiblePromptGroup({
+      name: 'Revisions forbidden group',
+      prompt: 'Native text',
+    });
+    setTestUser(app, testUsers.noAccess);
+
+    const response = await request(app)
+      .get(`/api/prompts/groups/${group._id}/revisions`)
+      .expect(403);
+
+    expect(response.body.error).toBe('Forbidden');
+  });
+
+  it('returns 404 for a missing group', async () => {
+    const response = await request(app)
+      .get(`/api/prompts/groups/${new ObjectId()}/revisions`)
+      .expect(404);
+
+    expect(response.body).toEqual({
+      error: 'Not Found',
+      message: `${ResourceType.PROMPTGROUP} not found`,
+    });
+  });
+
+  it('allows a user with only VIEW access, not just the owner', async () => {
+    const { group } = await createAccessiblePromptGroup({
+      name: 'Revisions viewer group',
+      prompt: 'Native text',
+    });
+    await grantPermission({
+      principalType: PrincipalType.USER,
+      principalId: testUsers.viewer._id,
+      resourceType: ResourceType.PROMPTGROUP,
+      resourceId: group._id,
+      accessRoleId: AccessRoleIds.PROMPTGROUP_VIEWER,
+      grantedBy: testUsers.owner._id,
+    });
+    setTestUser(app, testUsers.viewer);
+
+    const response = await request(app)
+      .get(`/api/prompts/groups/${group._id}/revisions`)
+      .expect(200);
+
+    expect(response.body.source).toBe('native');
+  });
+
+  it('returns 403 for a role without PROMPTS USE, before the group VIEW check', async () => {
+    const { group } = await createAccessiblePromptGroup({
+      name: 'Revisions no-PROMPTS-USE group',
+      prompt: 'Native text',
+    });
+    // getRoleByName's mock returns null for any role besides USER/ADMIN, so this
+    // role carries no PROMPTS.USE grant even though the user has group VIEW access.
+    const noUseUser = await User.create({
+      name: 'No Prompts Use',
+      email: 'no-prompts-use@example.com',
+      role: 'NoPromptsUseRole',
+    });
+    await grantPermission({
+      principalType: PrincipalType.USER,
+      principalId: noUseUser._id,
+      resourceType: ResourceType.PROMPTGROUP,
+      resourceId: group._id,
+      accessRoleId: AccessRoleIds.PROMPTGROUP_VIEWER,
+      grantedBy: testUsers.owner._id,
+    });
+    setTestUser(app, noUseUser);
+
+    const response = await request(app)
+      .get(`/api/prompts/groups/${group._id}/revisions`)
+      .expect(403);
+
+    expect(response.body).toEqual({ message: 'Forbidden: Insufficient permissions' });
+  });
+});
+
 describe('Externally managed (Langfuse) prompt groups are read-only', () => {
   const readOnlyBody = { code: 'read_only', error: 'Externally managed prompts are read-only' };
   let group;

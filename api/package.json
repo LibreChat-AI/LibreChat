@@ -119,7 +119,7 @@
     "pdfjs-dist": "^5.4.624",
     "prom-client": "^15.1.3",
     "rate-limit-redis": "^4.2.0",
-    "re2js": "^2.8.6",
+    "re2js": "^2.9.1",
     "sanitize-html": "^2.18.1",
     "sharp": "^0.35.5",
     "swagger-ui-dist": "^5.32.15",

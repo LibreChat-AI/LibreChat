@@ -11,8 +11,8 @@ const DEFAULT_LIST_LIMIT = 20;
 const MAX_CURSOR_LENGTH = 512;
 
 /**
- * `instructionsPrompt` (the Builder's link to a native prompt group) is a Builder-only
- * feature in this slice: the Management API never accepts or returns it, so every
+ * `instructionsPrompt` (the Builder's link to a native or Langfuse prompt group) is a
+ * Builder-only feature in this slice: the Management API never accepts or returns it, so every
  * Management type and schema below omits the field entirely, the same way an unknown
  * top-level field is rejected rather than silently stripped (see the note above
  * `agentManagementCreateSchema`).

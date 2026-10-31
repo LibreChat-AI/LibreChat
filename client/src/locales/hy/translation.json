@@ -90,7 +90,7 @@
   "com_endpoint_config_google_gemini_api": "(Gemini API)",
   "com_endpoint_config_google_service_key": "Google Service Account Key",
   "com_endpoint_config_key": "Մուտքագրեք API key-ը",
-  "com_endpoint_config_key_encryption": "Ձեր բանալին կգաղտնագրվի և կհեռացվի",
+  "com_endpoint_config_key_encryption": "Ընթացիկ բանալին գաղտնագրված է և կջնջվի {{0}}",
   "com_endpoint_config_key_for": "Մուտքագրեք API key-ը՝",
   "com_endpoint_config_key_google_need_to": "Դուք պետք է",
   "com_endpoint_config_key_google_service_account": "Ստեղծել ծառայողական օգտահաշիվ",

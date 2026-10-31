@@ -1734,6 +1734,13 @@ export const agentsEndpointSchema = baseEndpointSchema
             })
             .optional()
             .prefault({}),
+          /** Rollout switch for linking an agent's instructions to a Langfuse prompt group. */
+          langfuse: z
+            .object({
+              enabled: z.boolean().optional().default(false),
+            })
+            .optional()
+            .prefault({}),
         })
         .optional(),
       /** Cap on any agent's `recursion_limit` and on `recursionLimit`. */

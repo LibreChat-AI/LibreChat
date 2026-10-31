@@ -36,6 +36,7 @@
     "clean": "rimraf dist",
     "build": "npm run clean && tsdown",
     "build:watch": "tsdown --watch",
+    "typecheck": "node ../../scripts/typecheck.mts",
     "test": "jest --coverage --watch",
     "test:ci": "jest --coverage --ci",
     "verify": "npm run test:ci",

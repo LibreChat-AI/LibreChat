@@ -154,9 +154,113 @@ describe('agent instructions-prompt link validation', () => {
       agentCreateSchema.safeParse({
         ...base,
         instructionsPrompt: {
+          source: 'other',
+          groupId: validGroupId,
+          selection: { type: 'production' },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts a Langfuse production selection', () => {
+    const instructionsPrompt = {
+      source: 'langfuse' as const,
+      groupId: validGroupId,
+      selection: { type: 'production' as const },
+    };
+    expect(agentCreateSchema.parse({ ...base, instructionsPrompt }).instructionsPrompt).toEqual(
+      instructionsPrompt,
+    );
+    expect(agentUpdateSchema.parse({ instructionsPrompt }).instructionsPrompt).toEqual(
+      instructionsPrompt,
+    );
+  });
+
+  it('accepts a Langfuse exact-version selection', () => {
+    const instructionsPrompt = {
+      source: 'langfuse' as const,
+      groupId: validGroupId,
+      selection: { type: 'exact' as const, version: 3 },
+    };
+    expect(agentCreateSchema.parse({ ...base, instructionsPrompt }).instructionsPrompt).toEqual(
+      instructionsPrompt,
+    );
+  });
+
+  it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '3'])(
+    'rejects an invalid Langfuse version: %j',
+    (version) => {
+      expect(
+        agentCreateSchema.safeParse({
+          ...base,
+          instructionsPrompt: {
+            source: 'langfuse',
+            groupId: validGroupId,
+            selection: { type: 'exact', version },
+          },
+        }).success,
+      ).toBe(false);
+    },
+  );
+
+  it('rejects a Langfuse link using the retired "version" selection type', () => {
+    expect(
+      agentCreateSchema.safeParse({
+        ...base,
+        instructionsPrompt: {
+          source: 'langfuse',
+          groupId: validGroupId,
+          selection: { type: 'version', version: 3 },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a Langfuse exact selection carrying a promptId', () => {
+    expect(
+      agentCreateSchema.safeParse({
+        ...base,
+        instructionsPrompt: {
+          source: 'langfuse',
+          groupId: validGroupId,
+          selection: { type: 'exact', promptId: validPromptId },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects extra keys on a Langfuse link and on its selection', () => {
+    expect(
+      agentCreateSchema.safeParse({
+        ...base,
+        instructionsPrompt: {
           source: 'langfuse',
           groupId: validGroupId,
           selection: { type: 'production' },
+          extra: true,
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      agentCreateSchema.safeParse({
+        ...base,
+        instructionsPrompt: {
+          source: 'langfuse',
+          groupId: validGroupId,
+          selection: { type: 'exact', version: 3, extra: true },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a native link with an exact selection carrying a version instead of a promptId', () => {
+    expect(
+      agentCreateSchema.safeParse({
+        ...base,
+        instructionsPrompt: {
+          source: 'native',
+          groupId: validGroupId,
+          selection: { type: 'exact', version: 3 },
         },
       }).success,
     ).toBe(false);

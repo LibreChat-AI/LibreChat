@@ -1,7 +1,7 @@
+import type { NativePromptSelection } from 'librechat-data-provider';
 import type {
   PromptStore,
   PromptRecord,
-  PromptSelection,
   PromptProjection,
   PromptGroupRecord,
   PromptSourceAdapter,
@@ -70,20 +70,19 @@ async function resolveProduction(
     : null;
 }
 
-export function selectionUnavailableReason(selection: PromptSelection): 'production' | 'revision' {
+export function selectionUnavailableReason(selection: {
+  readonly type: 'production' | 'exact';
+}): 'production' | 'revision' {
   return selection.type === 'production' ? 'production' : 'revision';
 }
 
 /** Native prompts stored in the LibreChat database; resolves content through the
- *  store's `getPrompt`. */
+ *  store's `getPrompt` and lists revisions through its `getPrompts`. */
 export function createNativePromptAdapter(
-  store: Pick<PromptStore, 'getPrompt'>,
-): PromptSourceAdapter {
+  store: Pick<PromptStore, 'getPrompt' | 'getPrompts'>,
+): PromptSourceAdapter<NativePromptSelection> {
   return {
     resolvePrompt: async ({ group, selection, loadedRevision }) => {
-      if (selection.type === 'version') {
-        return { ok: false, error: { type: 'unsupported_selection', source: 'native' } };
-      }
       const resolved =
         selection.type === 'exact'
           ? await resolveExact(store, group._id, selection.promptId, loadedRevision)
@@ -95,6 +94,25 @@ export function createNativePromptAdapter(
         };
       }
       return { ok: true, value: { source: 'native', ...resolved } };
+    },
+
+    listRevisions: async ({ group }) => {
+      // getPrompts returns revisions newest first; version is derived from position, not stored.
+      const revisions = await store.getPrompts(group._id);
+      const total = revisions.length;
+      return {
+        ok: true,
+        value: {
+          source: 'native',
+          groupId: group._id,
+          revisions: revisions.map((revision, index) => ({
+            source: 'native',
+            promptId: revision._id,
+            version: total - index,
+            isProduction: revision._id === group.productionId,
+          })),
+        },
+      };
     },
   };
 }

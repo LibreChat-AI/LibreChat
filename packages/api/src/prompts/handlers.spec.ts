@@ -50,6 +50,9 @@ function mockRes(): Response & MockRes {
 function makeService(overrides: Partial<PromptService> = {}): PromptService {
   return {
     resolvePrompt: jest.fn(),
+    // Defaults to native so tests that don't set a source still reach resolvePrompt.
+    readPromptGroup: jest.fn().mockResolvedValue({ _id: groupId, source: 'native' }),
+    listRevisions: jest.fn(),
     getListPromptGroupsByAccess: jest.fn(),
     getPrompts: jest.fn().mockResolvedValue([]),
     createPromptGroup: jest.fn(),
@@ -583,28 +586,68 @@ describe('createPromptHandlers resolvePrompt', () => {
     jest.restoreAllMocks();
   });
 
-  function resolveReq(version?: string): PromptRequest {
-    return mockReq({ params: { groupId }, query: version == null ? {} : { version } });
+  function resolveReq(version?: string, group?: { source: 'native' | 'langfuse' }): PromptRequest {
+    return mockReq({
+      params: { groupId },
+      query: version == null ? {} : { version },
+      resourceAccess: group ? { resourceInfo: { _id: groupId, ...group } } : undefined,
+    });
   }
 
-  it('resolves production when no version is given', async () => {
+  it('resolves production when no version is given, for a preloaded native group', async () => {
     const resolvePrompt = jest.fn().mockResolvedValue({
       ok: true,
       value: { source: 'native', groupId, promptId, prompt: 'Hi', type: 'text' },
     });
-    const handlers = createPromptHandlers(makeDeps({ service: makeService({ resolvePrompt }) }));
+    const readPromptGroup = jest.fn();
+    const handlers = createPromptHandlers(
+      makeDeps({ service: makeService({ resolvePrompt, readPromptGroup }) }),
+    );
     const res = mockRes();
 
-    await handlers.resolvePrompt(resolveReq(), res);
+    await handlers.resolvePrompt(resolveReq(undefined, { source: 'native' }), res);
 
+    expect(readPromptGroup).not.toHaveBeenCalled();
     expect(resolvePrompt).toHaveBeenCalledWith({
       groupId,
+      source: 'native',
       selection: { type: 'production' },
-      loadedGroup: undefined,
+      loadedGroup: { _id: groupId, source: 'native' },
       filters: undefined,
     });
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({ source: 'native', groupId, promptId, prompt: 'Hi', type: 'text' });
+  });
+
+  it('resolves production when no version is given, for a preloaded Langfuse group', async () => {
+    const resolvePrompt = jest.fn().mockResolvedValue({
+      ok: true,
+      value: {
+        source: 'langfuse',
+        groupId,
+        prompt: 'Hi',
+        type: 'text',
+        version: 5,
+        labels: ['production'],
+      },
+    });
+    const readPromptGroup = jest.fn();
+    const handlers = createPromptHandlers(
+      makeDeps({ service: makeService({ resolvePrompt, readPromptGroup }) }),
+    );
+    const res = mockRes();
+
+    await handlers.resolvePrompt(resolveReq(undefined, { source: 'langfuse' }), res);
+
+    expect(readPromptGroup).not.toHaveBeenCalled();
+    expect(resolvePrompt).toHaveBeenCalledWith({
+      groupId,
+      source: 'langfuse',
+      selection: { type: 'production' },
+      loadedGroup: { _id: groupId, source: 'langfuse' },
+      filters: undefined,
+    });
+    expect(res.statusCode).toBe(200);
   });
 
   it('resolves an exact version for a Langfuse group', async () => {
@@ -621,13 +664,15 @@ describe('createPromptHandlers resolvePrompt', () => {
     });
     const handlers = createPromptHandlers(makeDeps({ service: makeService({ resolvePrompt }) }));
     const res = mockRes();
+    const loadedGroupRecord = { _id: groupId, source: 'langfuse' as const };
 
-    await handlers.resolvePrompt(resolveReq('3'), res);
+    await handlers.resolvePrompt(resolveReq('3', { source: 'langfuse' }), res);
 
     expect(resolvePrompt).toHaveBeenCalledWith({
       groupId,
-      selection: { type: 'version', version: 3 },
-      loadedGroup: undefined,
+      source: 'langfuse',
+      selection: { type: 'exact', version: 3 },
+      loadedGroup: loadedGroupRecord,
       filters: undefined,
     });
     expect(res.statusCode).toBe(200);
@@ -639,6 +684,76 @@ describe('createPromptHandlers resolvePrompt', () => {
       version: 3,
       labels: ['production'],
     });
+  });
+
+  it('reads the group once when a capability bypass left no loaded group, then resolves its production', async () => {
+    const readPromptGroup = jest.fn().mockResolvedValue({ _id: groupId, source: 'langfuse' });
+    const resolvePrompt = jest.fn().mockResolvedValue({
+      ok: true,
+      value: { source: 'langfuse', groupId, prompt: 'Hi', type: 'text', version: 5, labels: [] },
+    });
+    const handlers = createPromptHandlers(
+      makeDeps({ service: makeService({ readPromptGroup, resolvePrompt }) }),
+    );
+    const res = mockRes();
+
+    // No resourceAccess, as a MANAGE_PROMPTS capability bypass leaves it.
+    await handlers.resolvePrompt(resolveReq(), res);
+
+    expect(readPromptGroup).toHaveBeenCalledWith(groupId);
+    expect(resolvePrompt).toHaveBeenCalledTimes(1);
+    expect(resolvePrompt).toHaveBeenCalledWith({
+      groupId,
+      source: 'langfuse',
+      selection: { type: 'production' },
+      loadedGroup: { _id: groupId, source: 'langfuse' },
+      filters: undefined,
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('rejects ?version=N with 400 once a capability-bypassed read confirms the group is native', async () => {
+    const readPromptGroup = jest.fn().mockResolvedValue({ _id: groupId, source: 'native' });
+    const resolvePrompt = jest.fn();
+    const handlers = createPromptHandlers(
+      makeDeps({ service: makeService({ readPromptGroup, resolvePrompt }) }),
+    );
+    const res = mockRes();
+
+    await handlers.resolvePrompt(resolveReq('2'), res);
+
+    expect(readPromptGroup).toHaveBeenCalledWith(groupId);
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toEqual({ code: 'invalid_request' });
+    expect(resolvePrompt).not.toHaveBeenCalled();
+  });
+
+  it('maps a capability-bypassed read of a missing group to the same 404 as a missing selection', async () => {
+    const readPromptGroup = jest.fn().mockResolvedValue(null);
+    const resolvePrompt = jest.fn();
+    const handlers = createPromptHandlers(
+      makeDeps({ service: makeService({ readPromptGroup, resolvePrompt }) }),
+    );
+    const res = mockRes();
+
+    await handlers.resolvePrompt(resolveReq(), res);
+
+    expect(readPromptGroup).toHaveBeenCalledWith(groupId);
+    expect(res.statusCode).toBe(404);
+    expect(res.body).toEqual({ code: 'not_found' });
+    expect(resolvePrompt).not.toHaveBeenCalled();
+  });
+
+  it('rejects ?version=N on a native group with 400 invalid_request, without calling the service', async () => {
+    const resolvePrompt = jest.fn();
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ resolvePrompt }) }));
+    const res = mockRes();
+
+    await handlers.resolvePrompt(resolveReq('2', { source: 'native' }), res);
+
+    expect(res.statusCode).toBe(400);
+    expect(res.body).toEqual({ code: 'invalid_request' });
+    expect(resolvePrompt).not.toHaveBeenCalled();
   });
 
   it.each(['0', '-1', '1.5', 'abc'])(
@@ -680,20 +795,6 @@ describe('createPromptHandlers resolvePrompt', () => {
     expect(res.statusCode).toBe(400);
     expect(res.body).toEqual({ code: 'invalid_request' });
     expect(resolvePrompt).not.toHaveBeenCalled();
-  });
-
-  it('maps a native group rejecting ?version to 400 invalid_request', async () => {
-    const resolvePrompt = jest.fn().mockResolvedValue({
-      ok: false,
-      error: { type: 'unsupported_selection', source: 'native' },
-    });
-    const handlers = createPromptHandlers(makeDeps({ service: makeService({ resolvePrompt }) }));
-    const res = mockRes();
-
-    await handlers.resolvePrompt(resolveReq('2'), res);
-
-    expect(res.statusCode).toBe(400);
-    expect(res.body).toEqual({ code: 'invalid_request' });
   });
 
   it('maps blocked_content to the shared content filter response', async () => {
@@ -806,7 +907,6 @@ describe('createPromptHandlers resolvePrompt', () => {
     await handlers.resolvePrompt(resolveReq(), res);
 
     expect(res.statusCode).toBe(502);
-    expect(res.statusCode).not.toBe(401);
     expect(res.body).toEqual({ code: 'unauthorized' });
     expect(errorSpy).toHaveBeenCalled();
   });
@@ -915,6 +1015,182 @@ describe('createPromptHandlers resolvePrompt', () => {
 
     expect(res.statusCode).toBe(200);
     expect((res.body as Record<string, unknown>).sourceUrl).toBeUndefined();
+  });
+});
+
+describe('createPromptHandlers listRevisions', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  function revisionsReq(): PromptRequest {
+    return mockReq({ params: { groupId } });
+  }
+
+  it('lists revisions and calls the service without filters or a selection', async () => {
+    const listed = {
+      source: 'native' as const,
+      groupId,
+      revisions: [{ source: 'native' as const, promptId, version: 1, isProduction: true }],
+    };
+    const listRevisions = jest.fn().mockResolvedValue({ ok: true, value: listed });
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(listRevisions).toHaveBeenCalledWith({ groupId, loadedGroup: undefined });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toEqual(listed);
+  });
+
+  it('does not increment usage', async () => {
+    const incrementPromptGroupUsage = jest.fn();
+    const listRevisions = jest.fn().mockResolvedValue({
+      ok: true,
+      value: { source: 'native', groupId, revisions: [] },
+    });
+    const handlers = createPromptHandlers(
+      makeDeps({ service: makeService({ listRevisions, incrementPromptGroupUsage }) }),
+    );
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(incrementPromptGroupUsage).not.toHaveBeenCalled();
+  });
+
+  it('maps a missing group (unavailable_selection) to 404 not_found', async () => {
+    const listRevisions = jest.fn().mockResolvedValue({
+      ok: false,
+      error: { type: 'unavailable_selection', reason: 'revision' },
+    });
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body).toEqual({ code: 'not_found' });
+  });
+
+  it('maps source_not_found to 404 with the Langfuse message', async () => {
+    const listRevisions = jest.fn().mockResolvedValue({
+      ok: false,
+      error: { type: 'source_not_found', source: 'langfuse' },
+    });
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body).toEqual({ code: 'not_found', message: 'Prompt not found in Langfuse' });
+  });
+
+  it('maps unsupported_content to 422 unsupported_type', async () => {
+    const listRevisions = jest.fn().mockResolvedValue({
+      ok: false,
+      error: { type: 'unsupported_content', reason: 'chat_prompt' },
+    });
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(res.statusCode).toBe(422);
+    expect(res.body).toEqual({ code: 'unsupported_type' });
+  });
+
+  it.each([
+    ['disabled', 404, { code: 'not_available' }],
+    ['not_configured', 409, { code: 'not_configured' }],
+    ['source_changed', 409, { code: 'source_changed' }],
+  ] as const)('maps source_unavailable reason %s to %i %j', async (reason, status, body) => {
+    const listRevisions = jest.fn().mockResolvedValue({
+      ok: false,
+      error: { type: 'source_unavailable', source: 'langfuse', reason },
+    });
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(res.statusCode).toBe(status);
+    expect(res.body).toEqual(body);
+  });
+
+  it('falls back to the shared sendResolveRejection default for an unlisted error variant such as unsupported_source', async () => {
+    const listRevisions = jest.fn().mockResolvedValue({
+      ok: false,
+      error: { type: 'unsupported_source', source: 'native' },
+    });
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    // An unmapped error type falls through to the generic 500.
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toEqual({ message: 'Error resolving prompt' });
+  });
+
+  it('maps a thrown Langfuse timeout to 504', async () => {
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    const listRevisions = jest
+      .fn()
+      .mockRejectedValue(new LangfusePromptRequestError('timeout', 'Langfuse request timed out'));
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(res.statusCode).toBe(504);
+    expect(res.body).toEqual({ code: 'timeout' });
+  });
+
+  it('maps a thrown Langfuse 401 to 502, never 401', async () => {
+    const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    const listRevisions = jest
+      .fn()
+      .mockRejectedValue(
+        new LangfusePromptRequestError('unauthorized', 'Langfuse responded with 401', 401),
+      );
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(res.statusCode).toBe(502);
+    expect(res.body).toEqual({ code: 'unauthorized' });
+    expect(errorSpy).toHaveBeenCalled();
+  });
+
+  it('maps a thrown read PromptStoreError to 404 not_found', async () => {
+    jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    const listRevisions = jest
+      .fn()
+      .mockRejectedValue(new PromptStoreError('read', new Error('db down')));
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(res.statusCode).toBe(404);
+    expect(res.body).toEqual({ code: 'not_found' });
+  });
+
+  it('returns 500 for an unexpected thrown error', async () => {
+    const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
+    const listRevisions = jest.fn().mockRejectedValue(new Error('database unavailable'));
+    const handlers = createPromptHandlers(makeDeps({ service: makeService({ listRevisions }) }));
+    const res = mockRes();
+
+    await handlers.listRevisions(revisionsReq(), res);
+
+    expect(res.statusCode).toBe(500);
+    expect(res.body).toEqual({ message: 'Error listing prompt revisions' });
+    expect(errorSpy).toHaveBeenCalledWith('Error listing prompt revisions', { type: 'Error' });
   });
 });
 

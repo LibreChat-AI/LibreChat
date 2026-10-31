@@ -342,12 +342,21 @@ describe('linked instructions configuration', () => {
     expect(agentsEndpointSchema.parse({ linkedInstructions: {} }).linkedInstructions).toEqual({
       timeoutMs: 2000,
       native: { cacheTtlMs: 300_000, cacheClearTimeoutMs: 1000 },
+      langfuse: { enabled: false },
     });
     expect(
       agentsEndpointSchema.parse({
         linkedInstructions: { timeoutMs: 5000, native: { cacheTtlMs: 0 } },
       }).linkedInstructions,
-    ).toEqual({ timeoutMs: 5000, native: { cacheTtlMs: 0, cacheClearTimeoutMs: 1000 } });
+    ).toEqual({
+      timeoutMs: 5000,
+      native: { cacheTtlMs: 0, cacheClearTimeoutMs: 1000 },
+      langfuse: { enabled: false },
+    });
+    expect(
+      agentsEndpointSchema.parse({ linkedInstructions: { langfuse: { enabled: true } } })
+        .linkedInstructions?.langfuse,
+    ).toEqual({ enabled: true });
     for (const timeoutMs of [0, 99, 30_001, 1.5]) {
       expect(agentsEndpointSchema.safeParse({ linkedInstructions: { timeoutMs } }).success).toBe(
         false,

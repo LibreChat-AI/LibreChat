@@ -11,6 +11,7 @@ on:
       - 'scripts/typecheck.mts'
       - 'package.json'
       - 'package-lock.json'
+      - '.bun-version'
       - '.github/workflows/frontend-review.yml'
       - '!**.md'
   # Post-merge safety net and full-run baseline for gated selection (same rationale as
@@ -27,6 +28,7 @@ on:
       - 'scripts/typecheck.mts'
       - 'package.json'
       - 'package-lock.json'
+      - '.bun-version'
       - '.github/workflows/frontend-review.yml'
   # Promotion requires full CI at the exact dev SHA, including path-filtered commits.
   workflow_dispatch:
@@ -286,10 +288,10 @@ jobs:
           name: build-chat-package
           path: packages/chat/dist
 
-      - name: Use Bun 1.4.3
+      - name: Use pinned Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.4.3'
+          bun-version-file: .bun-version
 
       - name: Type check client
         run: npm run typecheck
@@ -337,10 +339,10 @@ jobs:
           name: build-client-package
           path: packages/client/dist
 
-      - name: Use Bun 1.4.3
+      - name: Use pinned Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: '1.4.3'
+          bun-version-file: .bun-version
 
       - name: Type check
         run: npm run typecheck

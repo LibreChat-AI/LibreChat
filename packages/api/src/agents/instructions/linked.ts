@@ -1,60 +1,61 @@
 import { scopedCacheKey } from '@librechat/data-schemas';
 import type {
   FiltersConfig,
+  DeepPartial,
+  TAgentsEndpoint,
   AgentInstructionsPrompt,
   AgentInstructionsPromptSelection,
   RestrictedAgentInstructionsPrompt,
 } from 'librechat-data-provider';
-import type { NativeResolvedPrompt, PromptServiceError } from '~/prompts/types';
+import type {
+  ResolvedPrompt,
+  PromptReference,
+  NativeResolvedPrompt,
+  PromptServiceError,
+} from '~/prompts/types';
 import type { PromptService } from '~/prompts/service';
 import { assertModelBoundContent } from '~/middleware/modelBoundContent';
 import { isContentFilterError } from '~/middleware/contentFilter';
+import { LangfusePromptRequestError } from '~/langfuse/prompts';
 import { inspectPromptContent } from '~/prompts/protection';
 
-/**
- * Narrows `link` to a resolvable `native` link — the same test
- * `initializeAgent` uses to decide whether an agent's stored inline
- * `instructions` are live text or dead text superseded by a link. A
- * `RestrictedAgentInstructionsPrompt` stub (`{ source: 'native', restricted:
- * true }`, no `groupId`) is never valid: it never reaches `initializeAgent`
- * (that shape exists only for an editor without VIEW on the linked group),
- * so it must not be treated as a link that suppresses inline text elsewhere
- * either — most importantly in the HITL resume preflight, which inspects a
- * stored agent snapshot rather than a live `Agent`.
- */
+/** A restricted stub is never valid; a disabled Langfuse link still is. */
 export function isValidInstructionsPromptLink(
   link: AgentInstructionsPrompt | RestrictedAgentInstructionsPrompt | null | undefined,
 ): link is AgentInstructionsPrompt {
-  return link != null && link.source === 'native' && 'groupId' in link;
+  return (
+    link != null && (link.source === 'native' || link.source === 'langfuse') && 'groupId' in link
+  );
 }
 
-/** Facts about a resolved link, retained on the initialized agent. Never persisted. */
-export type LinkedInstructionsFacts = {
-  source: 'native';
-  groupId: string;
-  promptId: string;
-};
+/** Facts about a resolved link, retained on the initialized agent but never persisted. */
+export type LinkedInstructionsFacts =
+  | { source: 'native'; groupId: string; promptId: string }
+  | { source: 'langfuse'; groupId: string; version: number };
 
 export type LinkedInstructionsUnavailableReason =
   | 'unavailable_selection'
   | 'blocked_content'
   | 'timeout'
+  | 'disabled'
   | 'error';
 
 export type LinkedInstructionsResult =
   | { status: 'resolved'; prompt: string; facts: LinkedInstructionsFacts }
   | { status: 'unavailable'; reason: LinkedInstructionsUnavailableReason };
 
-/**
- * Resolves an agent's linked native prompt-group instructions. Usage is no
- * longer recorded here — call `.recordUse(facts)` (below) once the caller's
- * own initialization that used a `resolved` result has itself succeeded.
- */
+/** Deep-partial, so a config literal built by hand (tests, a partial override) stays
+ *  assignable without supplying every default `agentsEndpointSchema` applies on parse. */
+export type LinkedInstructionsConfig = DeepPartial<
+  NonNullable<TAgentsEndpoint['linkedInstructions']>
+>;
+
+/** Never records usage itself; call `.recordUse(facts)` once initialization succeeds. */
 export type ResolveLinkedInstructions = ((input: {
   link: AgentInstructionsPrompt;
   signal?: AbortSignal;
   filters?: FiltersConfig;
-  config?: { timeoutMs?: number; native?: { cacheTtlMs?: number } };
+  config?: LinkedInstructionsConfig;
 }) => Promise<LinkedInstructionsResult>) & {
   /**
    * Records a usage generation for a resolved link's prompt group. The
@@ -157,23 +158,19 @@ function errorName(error: unknown): string {
   return error instanceof Error ? error.name : typeof error;
 }
 
-/**
- * Agent links stay native only (`allowedSources: ['native']` on every `resolvePrompt`
- * call in this module). `blocked_content` and `unavailable_selection` map directly, and
- * `unsupported_source` — returned by that `allowedSources` check when a link's group
- * has since become a Langfuse group — maps to `unavailable_selection`, the same reason
- * a missing native selection gets. The remaining source-routing types
- * (`unsupported_selection`, `source_unavailable`, `source_not_found`,
- * `unsupported_content`) never reach a native-only caller and map to the generic
- * `'error'` reason only as a fallback.
- */
+/** Every source-routing failure collapses to `unavailable_selection`. */
 function mapServiceErrorReason(
   type: PromptServiceError['type'],
 ): LinkedInstructionsUnavailableReason {
   if (type === 'blocked_content' || type === 'unavailable_selection') {
     return type;
   }
-  if (type === 'unsupported_source') {
+  if (
+    type === 'unsupported_source' ||
+    type === 'source_unavailable' ||
+    type === 'source_not_found' ||
+    type === 'unsupported_content'
+  ) {
     return 'unavailable_selection';
   }
   return 'error';
@@ -273,45 +270,7 @@ function cacheReadBudgetMs(timeoutMs: number): number {
   return Math.min(250, timeoutMs / 4);
 }
 
-/**
- * Builds the runtime resolver for an agent's linked native prompt-group
- * instructions.
- *
- * Cache-first: a hit is checked under both policies — prompt-library and
- * agent-instructions — with the caller's *current* filters (so a policy
- * change blocks a previously-cached prompt) before being returned. A miss
- * calls `resolvePrompt`, which already applies the prompt-library policy
- * with the same filters, so the miss path checks only the
- * agent-instructions policy and writes the cache only on success, while
- * unaborted, and only when `cacheTtlMs > 0`. `cacheTtlMs === 0` skips the
- * cache read entirely (and never writes).
- *
- * Latency is bounded by one shared deadline (`config.timeoutMs` from the
- * moment `resolve` is called), not by re-arming a fresh timeout per phase —
- * a slow or failed cache read spends part of that budget, and only what
- * remains is left for `resolvePrompt`, so the worst case stays ~`timeoutMs`
- * overall instead of doubling. The cache-read phase itself is additionally
- * capped at `cacheReadBudgetMs` (at most 250ms, or a quarter of `timeoutMs`
- * when that is smaller) so a *hung* cache read — one that never settles —
- * cannot consume the entire deadline and starve `resolvePrompt` of its own
- * chance to run; a cache read failure or timeout is logged and treated as a
- * miss (falls through to `resolvePrompt`) rather than failing the turn — a
- * cache outage must not drop instructions. The cache write itself never
- * blocks the caller: it is fire-and-forget (errors caught and logged),
- * issued only when unaborted.
- *
- * Abort is checked before work starts and after every await and always
- * throws the signal's abort reason — it is never mapped to an `unavailable`
- * result, and a cancelled call never writes the cache. Failures (timeout on
- * the `resolvePrompt` phase, a thrown adapter error, or an unrecognized error
- * from the content-policy check) resolve to `{ status: 'unavailable', reason
- * }` — the resolution is never rejected by anything other than an abort.
- * Logs never include prompt text — only the reason, groupId, and the error's
- * name.
- *
- * The returned function never records prompt-group usage itself; call its
- * `.recordUse(facts)` once the caller's own initialization succeeds.
- */
+/** Caches native links only. One deadline covers the cache read and `resolvePrompt`. */
 export function createLinkedInstructionsResolver(
   deps: CreateLinkedInstructionsResolverDeps,
 ): ResolveLinkedInstructions {
@@ -326,17 +285,23 @@ export function createLinkedInstructionsResolver(
     link: AgentInstructionsPrompt;
     signal?: AbortSignal;
     filters?: FiltersConfig;
-    config?: { timeoutMs?: number; native?: { cacheTtlMs?: number } };
+    config?: LinkedInstructionsConfig;
   }): Promise<LinkedInstructionsResult> {
     signal?.throwIfAborted();
 
+    if (link.source === 'langfuse' && config?.langfuse?.enabled !== true) {
+      return { status: 'unavailable', reason: 'disabled' };
+    }
+
     const timeoutMs = config?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const cacheTtlMs = config?.native?.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
-    const key = scopedCacheKey(buildCacheKey(link.groupId, link.selection));
+    const useCache = link.source === 'native' && cacheTtlMs > 0;
     const deadline = Date.now() + timeoutMs;
 
+    let key: string | undefined;
     let cached: CachedLinkedPrompt | undefined;
-    if (cacheTtlMs > 0) {
+    if (useCache && link.source === 'native') {
+      key = scopedCacheKey(buildCacheKey(link.groupId, link.selection));
       try {
         const cacheBudget = Math.min(remainingMs(deadline), cacheReadBudgetMs(timeoutMs));
         const raw = await runBounded(cache.get(key), cacheBudget, signal);
@@ -391,27 +356,36 @@ export function createLinkedInstructionsResolver(
       };
     }
 
-    let fetched: NativeResolvedPrompt;
+    // Built from `link` directly so narrowing on `source` also narrows `selection`.
+    const reference: PromptReference =
+      link.source === 'native'
+        ? { source: 'native', selection: link.selection }
+        : { source: 'langfuse', selection: link.selection };
+
+    let fetched: ResolvedPrompt;
     try {
       const result = await runBounded(
         promptService.resolvePrompt({
           groupId: link.groupId,
-          selection: link.selection,
+          ...reference,
           filters,
-          allowedSources: ['native'],
         }),
         remainingMs(deadline),
         signal,
       );
       signal?.throwIfAborted();
       if (!result.ok) {
+        logger.warn('[linkedInstructions] resolvePrompt returned a failure result', {
+          groupId: link.groupId,
+          source: link.source,
+          type: result.error.type,
+          ...('reason' in result.error ? { reason: result.error.reason } : {}),
+        });
         return { status: 'unavailable', reason: mapServiceErrorReason(result.error.type) };
       }
-      if (result.value.source !== 'native') {
-        /* allowedSources: ['native'] above means the service only ever resolves
-         * a native group here; this check narrows the type for the compiler
-         * and cannot be reached at runtime. */
-        return { status: 'unavailable', reason: 'error' };
+      if (result.value.source !== link.source) {
+        /* A mismatch means the link's group has since switched source, not a bug. */
+        return { status: 'unavailable', reason: 'unavailable_selection' };
       }
       fetched = result.value;
     } catch (error) {
@@ -422,6 +396,8 @@ export function createLinkedInstructionsResolver(
       logger.error('[linkedInstructions] resolvePrompt failed', {
         groupId: link.groupId,
         errorName: errorName(error),
+        /* Log the stable `code`, never the message, which may echo upstream response text. */
+        ...(error instanceof LangfusePromptRequestError ? { code: error.code } : {}),
       });
       return { status: 'unavailable', reason: 'error' };
     }
@@ -434,7 +410,8 @@ export function createLinkedInstructionsResolver(
       };
     }
 
-    if (cacheTtlMs > 0 && !signal?.aborted) {
+    if (useCache && key && !signal?.aborted && fetched.source === 'native') {
+      /* Always true at runtime; kept to narrow `fetched` to `NativeResolvedPrompt` for the compiler. */
       /* Fire-and-forget: the turn must not wait on the cache write, and a
        * write failure is a cache-warmth loss, not a resolution failure. */
       cache
@@ -457,10 +434,15 @@ export function createLinkedInstructionsResolver(
     }
     signal?.throwIfAborted();
 
+    const facts: LinkedInstructionsFacts =
+      fetched.source === 'native'
+        ? { source: 'native', groupId: fetched.groupId, promptId: fetched.promptId }
+        : { source: 'langfuse', groupId: fetched.groupId, version: fetched.version };
+
     return {
       status: 'resolved',
       prompt: fetched.prompt,
-      facts: { source: 'native', groupId: fetched.groupId, promptId: fetched.promptId },
+      facts,
     };
   };
 

@@ -5,11 +5,13 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
+import yaml from 'js-yaml';
 import { expect, test } from '@playwright/test';
 import { inOneProject, repoRoot, staticChecks } from './lint.helpers';
 
@@ -52,7 +54,7 @@ function fakeBun(bin: string, log: string, helpStatus: number, checkStatus: numb
     path,
     [
       '#!/bin/sh',
-      `echo "$@" >> '${log}'`,
+      `printf '%s: %s\\n' "$PWD" "$*" >> '${log}'`,
       `if [ "$2" = "--help" ]; then exit ${helpStatus}; fi`,
       `exit ${checkStatus}`,
       '',
@@ -101,6 +103,9 @@ test.describe('the shared type checker', () => {
     try {
       const failing = typecheck(broken.bin, broken.project);
       expect(failing.output).toContain('falling back to tsc');
+      expect(failing.output).toContain(
+        `install Bun ${readFileSync(join(repoRoot, '.bun-version'), 'utf8').trim()}`,
+      );
       expect(failing.output).toContain('TS2322');
       expect(failing.status, 'the fallback hid a type error').not.toBe(0);
 
@@ -128,6 +133,75 @@ test.describe('the shared type checker', () => {
     } finally {
       rmSync(dir, { force: true, recursive: true });
     }
+  });
+
+  test('the root command checks every TypeScript workspace and the chat test project @scenario:root-typecheck-covers-all-workspaces', () => {
+    const { dir, bin } = scratch('export const value: number = 1;\n');
+    const log = join(dir, 'bun.log');
+    try {
+      fakeBun(bin, log, 0, 0);
+      const run = () =>
+        spawnSync('npm', ['run', 'typecheck', '--silent'], {
+          cwd: repoRoot,
+          encoding: 'utf8',
+          env: { ...process.env, PATH: `${bin}:${dirname(process.execPath)}:/usr/bin:/bin` },
+        });
+      const passing = run();
+      expect(passing.status, `${passing.stdout}${passing.stderr}`).toBe(0);
+
+      const projects = [
+        'client',
+        ...readdirSync(join(repoRoot, 'packages')).map((name) => `packages/${name}`),
+      ].filter((path) => existsSync(join(repoRoot, path, 'tsconfig.json')));
+      const checked = logged(log)
+        .trim()
+        .split('\n')
+        .filter((line) => line.includes(': check') && !line.includes('--help'));
+      expect(checked.sort()).toEqual(
+        [
+          ...projects.map((path) => `${join(repoRoot, path)}: check`),
+          `${join(repoRoot, 'packages/chat')}: check -p test/tsconfig.json`,
+        ].sort(),
+      );
+
+      fakeBun(bin, log, 0, 1);
+      const failing = run();
+      expect(failing.status, 'the root command hid a workspace type error').not.toBe(0);
+      expect(`${failing.stdout}${failing.stderr}`).not.toContain('falling back to tsc');
+    } finally {
+      rmSync(dir, { force: true, recursive: true });
+    }
+  });
+
+  test('CI and local tooling share the Bun 1.4.4 pin @scenario:typecheck-shares-bun-version-pin', () => {
+    expect(readFileSync(join(repoRoot, '.bun-version'), 'utf8').trim()).toBe('1.4.4');
+    const workflows = readdirSync(join(repoRoot, '.github/workflows')).filter((file) =>
+      /\.ya?ml$/.test(file),
+    );
+    let setupCount = 0;
+    for (const file of workflows) {
+      const workflow = yaml.load(
+        readFileSync(join(repoRoot, '.github/workflows', file), 'utf8'),
+      ) as {
+        on: Record<string, { paths?: string[] }>;
+        jobs: Record<string, { steps?: { uses?: string; with?: Record<string, string> }[] }>;
+      };
+      const setups = Object.values(workflow.jobs).flatMap((job) =>
+        (job.steps ?? []).filter((step) => step.uses?.startsWith('oven-sh/setup-bun@')),
+      );
+      if (setups.length === 0) continue;
+      setupCount += setups.length;
+      for (const setup of setups) {
+        expect(setup.with?.['bun-version-file'], file).toBe('.bun-version');
+        expect(setup.with?.['bun-version'], file).toBeUndefined();
+      }
+      for (const event of ['push', 'pull_request']) {
+        expect(workflow.on[event].paths, `${file}: ${event}`).toContain('.bun-version');
+      }
+    }
+    expect(setupCount).toBe(3);
+    const listed = staticChecks(['.bun-version', '--list', '--full']);
+    expect(listed.output).toMatch(/TypeScript \(typecheck\)\s+would run/);
   });
 
   test('a change to the shared checker alone selects the TypeScript gate @scenario:a-checker-only-change-selects-the-typecheck-gate', () => {
