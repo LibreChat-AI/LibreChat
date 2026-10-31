@@ -1,3 +1,4 @@
+import { DEFAULT_CHANNEL_GATEWAY_POLICY } from 'librechat-data-provider';
 import type { ChannelLinkView } from 'librechat-data-provider';
 import type { ChannelBundle } from './types';
 import { IdentityFlow, safeIdentityTicket, safePrivateURL, validActorView } from './identity';
@@ -11,6 +12,7 @@ const config = loadConfig({
   CHANNEL_ID: 'binding',
 });
 const bundle: ChannelBundle = {
+  gateway: { version: 1, ...DEFAULT_CHANNEL_GATEWAY_POLICY },
   channel: {
     channelId: 'binding',
     tenantId: 'tenant',
