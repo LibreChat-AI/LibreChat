@@ -1765,6 +1765,20 @@ export class Chat {
     }
   }
 
+  /** A pause belongs to one generation, so the date a source reports for it is the answer's too. */
+  private dateAnswer(action: Agents.PendingAction, generationCreatedAt: number | undefined): void {
+    const answering = this.answering;
+    if (
+      answering &&
+      !answering.ended &&
+      answering.generationCreatedAt == null &&
+      generationCreatedAt != null &&
+      answering.action.actionId === action.actionId
+    ) {
+      answering.generationCreatedAt = generationCreatedAt;
+    }
+  }
+
   /**
    * Ends that claim when `next` replaces the pause being answered: a pause of a later generation,
    * or a later one of the same generation, whether or not the chat still shows the answered one.
@@ -2698,8 +2712,12 @@ export class Chat {
     );
   }
 
-  /** Records a pause of `generationCreatedAt` as the newest seen when no later one was. */
+  /**
+   * Records a pause of `generationCreatedAt` as the newest seen when no later one was, and dates an
+   * undated answer in flight for that same pause, so a stop of the generation it names ends it.
+   */
   private seePause(action: Agents.PendingAction, generationCreatedAt: number | undefined): void {
+    this.dateAnswer(action, generationCreatedAt);
     if (generationCreatedAt == null || this.isOlderPause(action, generationCreatedAt)) {
       return;
     }
