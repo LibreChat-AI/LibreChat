@@ -148,7 +148,7 @@ it.each(['map', 'record'] as const)(
 );
 
 it(
-  'backs rejected recovery receipts off so a later valid receipt can progress',
+  'rotates rejected recovery receipts even when retry delays expire between polls',
   scoped(async () => {
     for (let index = 0; index < 3; index++) {
       const input = event(`recover-${index}`, index + 1, { externalMessageKey: `C1:${index}` });
@@ -167,6 +167,7 @@ it(
     deps.canRecord = async (source) =>
       !('externalMessageKey' in source) || source.externalMessageKey === 'C1:2';
     expect(await service.recover(actor.tenantId, 2)).toBe(0);
+    clock += deps.exportRetryMs + 60000;
     expect(await service.recover(actor.tenantId, 2)).toBe(1);
     deps.canRecord = async () => true;
     clock += deps.exportRetryMs + 1;
