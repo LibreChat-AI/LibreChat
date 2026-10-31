@@ -118,7 +118,7 @@ function hasBedrockRecipient(recipients: Iterable<DocumentRecipient>): boolean {
  * gets a new content array. Names compare case-insensitively, as the restriction is not
  * documented to be case-sensitive. Recipient metadata includes lazy children and graph
  * members without resolving them. Only runs with a Bedrock recipient need naming;
- * Bedrock replay enforces traversal limits even without filters.
+ * Structural limits apply per message, not to the lifetime of the conversation.
  */
 export function dedupeDocumentNames(
   messages: Array<{ content?: string | PayloadContentPart[] | null }>,
@@ -127,15 +127,15 @@ export function dedupeDocumentNames(
   if (recipients != null && !hasBedrockRecipient(recipients)) {
     return;
   }
-  const budget = { remaining: CONTENT_TRAVERSAL_MAX_NODES - messages.length };
-  if (budget.remaining < 0) {
-    throw new ContentTraversalLimitError();
-  }
   const nameOf = createDocumentNamer();
   for (const message of messages) {
-    if (!Array.isArray(message?.content)) {
+    if (message == null) {
+      throw new ContentTraversalLimitError();
+    }
+    if (!Array.isArray(message.content)) {
       continue;
     }
+    const budget = { remaining: CONTENT_TRAVERSAL_MAX_NODES - 1 };
     const content = renameDocumentParts(message.content, nameOf, budget);
     if (content !== message.content) {
       message.content = content;
