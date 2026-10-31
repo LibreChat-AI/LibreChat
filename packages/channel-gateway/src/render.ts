@@ -230,6 +230,7 @@ interface MarkdownDocument {
   source: string;
   root: Root;
   definitions: Map<string, Definition>;
+  sourcePositions: boolean;
 }
 
 function bounds(node: Nodes): [number, number] {
@@ -246,16 +247,19 @@ function parseMarkdown(source: string): MarkdownDocument {
     mdastExtensions: [gfmFromMarkdown()],
   });
   const definitions = new Map<string, Definition>();
+  let sourcePositions = true;
   const pending: Nodes[] = [root];
   while (pending.length) {
     const node = pending.pop()!;
+    if (node.position?.start.offset == null || node.position.end.offset == null)
+      sourcePositions = false;
     if (node.type === 'definition' && !definitions.has(node.identifier))
       definitions.set(node.identifier, node);
     if ('children' in node)
       for (let index = node.children.length - 1; index >= 0; index--)
         pending.push(node.children[index]);
   }
-  return { source, root, definitions };
+  return { source, root, definitions, sourcePositions };
 }
 
 function labelText(node: Nodes): string {
@@ -357,27 +361,27 @@ function inlineDocument(document: MarkdownDocument, initial: Nodes, wire = true)
         )[node.type]
       : undefined;
     const children = node.children;
-    // GFM autolinks can synthesize children without source positions. Preserve that
-    // source subtree literally rather than invent offsets or fail delivery.
+    const tasks: Task[] = [];
+    if (style) tasks.push({ text: style, plain: '' });
     if (
       children.some(
         (child) => child.position?.start.offset == null || child.position.end.offset == null,
       )
     ) {
-      pending.push(literal(raw(node)));
-      continue;
+      // Synthetic GFM children still pass through link/code sanitization; raw source
+      // reconstruction here would bypass validation of positioned siblings too.
+      for (const child of children) tasks.push({ node: child });
+    } else {
+      const [start, end] = bounds(node);
+      let cursor = style && children.length ? bounds(children[0])[0] : start;
+      for (const child of children) {
+        const [childStart, childEnd] = bounds(child);
+        if (cursor < childStart) tasks.push(literal(document.source.slice(cursor, childStart)));
+        tasks.push({ node: child });
+        cursor = childEnd;
+      }
+      if (!style && cursor < end) tasks.push(literal(document.source.slice(cursor, end)));
     }
-    const [start, end] = bounds(node);
-    const tasks: Task[] = [];
-    if (style) tasks.push({ text: style, plain: '' });
-    let cursor = style && children.length ? bounds(children[0])[0] : start;
-    for (const child of children) {
-      const [childStart, childEnd] = bounds(child);
-      if (cursor < childStart) tasks.push(literal(document.source.slice(cursor, childStart)));
-      tasks.push({ node: child });
-      cursor = childEnd;
-    }
-    if (!style && cursor < end) tasks.push(literal(document.source.slice(cursor, end)));
     if (style) {
       const span = { start: output.text.length, end: 0 };
       output.spans.push(span);
@@ -640,6 +644,8 @@ export function renderAgentAnswer(value: string): RenderedMessage[] {
     return renderSlackDocument(value);
   }
   const document = parseMarkdown(value);
+  // Native Markdown preserves source syntax, which synthetic GFM nodes cannot provide.
+  if (!document.sourcePositions) return renderSlackDocument(value);
   const fallback = inlineDocument(document, document.root);
   if (Buffer.byteLength(fallback.text) > chunkLimit) return renderSlackDocument(value);
   const native = inlineDocument(document, document.root, false).text;

@@ -141,6 +141,7 @@ const layout = z
   .strictObject({
     type: z.literal('layout'),
     label: characters(150),
+    is_label_visible: z.literal(true).optional(),
     rows: z
       .array(
         z.strictObject({
@@ -196,7 +197,10 @@ const semanticStable = z.union([semanticText, semanticImage, divider]);
 const semanticChart = z.strictObject({
   type: z.literal('chart'),
   title: characters(50),
-  chart: z.union([seriesChart, pieChart]),
+  chart: z.union([
+    seriesChart,
+    pieChart.refine((chart) => unique(chart.segments.map((segment) => segment.label))),
+  ]),
 });
 const semanticTable = z
   .strictObject({
@@ -365,6 +369,7 @@ function nativeBlock(block: Component): NativeBlock {
       return {
         type: 'layout',
         label: block.title,
+        is_label_visible: true,
         rows: block.rows.map((row) => ({
           items: row.map((item) => ({ block: nativeBlock(item) })),
         })),

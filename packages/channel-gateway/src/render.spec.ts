@@ -174,6 +174,32 @@ describe('Slack answer rendering', () => {
     expect(messages.map((message) => message.plain).join('')).toContain('private');
   });
 
+  it.each(['https://user:password@example.com', 'javascript:alert'])(
+    'keeps synthetic GFM nodes inside the link sanitizer for %s',
+    (target) => {
+      const source = JSON.stringify({
+        version: 1,
+        blocks: [
+          {
+            type: 'card',
+            body: `[private](${target})`,
+            links: [{ url: 'https://docs.slack.dev/' }],
+          },
+        ],
+      });
+      expect(safeMrkdwn(source)).not.toContain(target);
+      for (const messages of [renderSlackDocument(source), renderAgentAnswer(source)]) {
+        const serialized = JSON.stringify(messages);
+        expect(serialized).not.toContain(target);
+        expect(serialized).toContain('private');
+        expect(serialized).toContain('https://docs.slack.dev/');
+        expect(
+          messages.some((message) => message.blocks?.some((block) => block.type === 'markdown')),
+        ).toBe(false);
+      }
+    },
+  );
+
   it('bounds escaped semantic fallback and keeps safe link destinations readable', () => {
     const view = run();
     view.snapshot!.text = ('&'.repeat(3000) + ' [docs](https://example.com/__file__)\n\n').repeat(
