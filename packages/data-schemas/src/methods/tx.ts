@@ -280,6 +280,9 @@ export const tokenValues: Record<string, { prompt: number; completion: number }>
     'mistral-large-2411': { prompt: 2.0, completion: 6.0 },
     'mistral-large-2512': { prompt: 0.5, completion: 1.5 },
     'mistral-large-3': { prompt: 0.5, completion: 1.5 },
+    // Mistral Large 4 sale pricing; no end date is published. Revert to
+    // { prompt: 1.36, completion: 4.18 } once it ends.
+    'mistral-large-4': { prompt: 0.68, completion: 2.09 },
     'mixtral-8x22b': { prompt: 0.65, completion: 0.65 },
     kimi: { prompt: 0.6, completion: 2.5 },
     moonshot: { prompt: 2.0, completion: 5.0 },
