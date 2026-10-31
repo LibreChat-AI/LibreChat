@@ -61,7 +61,7 @@ it('loads effective current-principal policy without bypassing database override
   });
 });
 
-it('does not persist a browser ticket before the link page is installed', async () => {
+it('refuses an unsafe origin at actual ticket issuance before persisting a ticket', async () => {
   const leaf = require('./ChannelAuthority');
   mockGetChannelMetadata.mockResolvedValue({
     channelId: 'channel',
@@ -79,6 +79,32 @@ it('does not persist a browser ticket before the link page is installed', async 
       teamId: 'T1',
       externalUserId: 'U1',
     }),
-  ).resolves.toEqual({ ok: false, error: { code: 'unavailable' } });
+  ).rejects.toThrow('HTTPS');
+  expect(mockGetChannelMetadata).toHaveBeenCalledWith('channel');
   expect(mockIdentityStorage.saveChannelIdentity).not.toHaveBeenCalled();
+});
+
+it('issues a ticket to the installed link page using the trusted deployment origin', async () => {
+  process.env.DOMAIN_CLIENT = 'https://chat.example.test';
+  const leaf = require('./ChannelAuthority');
+  mockGetChannelMetadata.mockResolvedValue({
+    channelId: 'channel',
+    agentId: 'agent',
+    revision: 'v1',
+    status: 'active',
+    slack: { teamId: 'T1' },
+  });
+  mockIdentityStorage.saveChannelIdentity.mockResolvedValue(true);
+  const result = await leaf.authority.identity.issue({
+    tenantId: '_',
+    channelId: 'channel',
+    agentId: 'agent',
+    channelRevision: 'v1',
+    teamId: 'T1',
+    externalUserId: 'U1',
+  });
+  expect(result.ok).toBe(true);
+  expect(new URL(result.value.url).origin).toBe('https://chat.example.test');
+  expect(new URL(result.value.url).pathname).toBe('/channels/link');
+  expect(mockIdentityStorage.saveChannelIdentity).toHaveBeenCalledTimes(1);
 });
