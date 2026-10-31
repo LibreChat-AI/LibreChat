@@ -131,6 +131,22 @@ describe('initializeBedrock', () => {
       expect(result.llmConfig).toHaveProperty('maxTokens', 4096);
     });
 
+    it('should strip stale OpenAI Responses API parameters', async () => {
+      const params = createMockParams({
+        model_parameters: {
+          model: 'anthropic.claude-sonnet-4-20250514-v1:0',
+          useResponsesApi: true,
+        },
+      });
+      const result = await initializeBedrock(params);
+      const additionalModelRequestFields = result.llmConfig.additionalModelRequestFields as
+        | Record<string, unknown>
+        | undefined;
+
+      expect(result.llmConfig).not.toHaveProperty('useResponsesApi');
+      expect(additionalModelRequestFields?.useResponsesApi).toBeUndefined();
+    });
+
     it('should handle session token when provided', async () => {
       process.env.BEDROCK_AWS_SESSION_TOKEN = 'test-session-token';
       const params = createMockParams();
