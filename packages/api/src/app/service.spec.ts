@@ -1,4 +1,9 @@
-import { PrincipalType, getMaxSubagents, setMaxSubagents } from 'librechat-data-provider';
+import {
+  FileSources,
+  PrincipalType,
+  getMaxSubagents,
+  setMaxSubagents,
+} from 'librechat-data-provider';
 import {
   logger,
   AppService,
@@ -35,9 +40,8 @@ function createMockCache(namespace = 'app_config') {
   const store = new Map();
   return {
     get: jest.fn((key) => Promise.resolve(store.get(`${namespace}:${key}`))),
-    set: jest.fn((key, value) => {
+    set: jest.fn(async (key, value): Promise<boolean | void> => {
       store.set(`${namespace}:${key}`, value);
-      return Promise.resolve(undefined);
     }),
     delete: jest.fn((key) => {
       store.delete(`${namespace}:${key}`);
@@ -1175,6 +1179,45 @@ describe('createAppConfigService', () => {
       expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(1);
     });
 
+    describe.each([false, true])('optional override cache with failClosed=%s', (failClosed) => {
+      it.each(['read', 'write', 'cleanup'])(
+        'serves current restrictions when cache %s fails',
+        async (stage) => {
+          const warn = jest.spyOn(logger, 'warn').mockReturnValue(logger);
+          const deps = createDeps({
+            getApplicableConfigs: jest
+              .fn()
+              .mockResolvedValue([
+                { isActive: true, priority: 10, overrides: { interface: { modelSelect: false } } },
+              ]),
+          });
+          const service = createAppConfigService(deps);
+          await service.getAppConfig({ baseOnly: true });
+          const failure = new Error('cache failure with private content');
+          if (stage === 'read') {
+            deps._cache.get.mockRejectedValueOnce(failure);
+          } else if (stage === 'write') {
+            deps._cache.set.mockRejectedValueOnce(failure);
+          } else {
+            deps._cache.set.mockImplementationOnce(async () => {
+              await service.clearAppConfigCache();
+            });
+            deps._cache.delete.mockImplementation(async (key) => {
+              if (key.startsWith('_OVERRIDE_')) throw failure;
+              return deps._cache._store.delete(`app_config:${key}`);
+            });
+          }
+
+          const resolved = await service.getAppConfig({ role: 'USER', failClosed });
+
+          expect(resolved.interfaceConfig?.modelSelect).toBe(false);
+          expect(deps.getApplicableConfigs).toHaveBeenCalledTimes(1);
+          expect(warn).toHaveBeenCalled();
+          expect(JSON.stringify(warn.mock.calls)).not.toContain('private content');
+        },
+      );
+    });
+
     it('separates shared merges when identical YAML derives different runtime settings', async () => {
       const cache = createMockCache();
       const firstDeps = createDeps({
@@ -1895,6 +1938,76 @@ describe('createAppConfigService', () => {
 
       expect(result).toEqual({ ok: false, error: { code: 'LOAD_FAILED' } });
       expect(await getAppConfig({ baseOnly: true })).toBe(initial);
+    });
+
+    describe.each([false, true])('restoration after a clear=%s', (clear) => {
+      it.each(['tool rejection', 'tool refusal', 'base rejection', 'base refusal'])(
+        'repairs a %s on the next ordinary read',
+        async (stage) => {
+          jest.spyOn(logger, 'error').mockReturnValue(logger);
+          const good: AppConfig = {
+            config: {},
+            fileStrategy: FileSources.local,
+            imageOutputType: 'png',
+            availableTools: {
+              good: {
+                type: 'function',
+                function: { name: 'good', description: 'good', parameters: {} },
+              },
+            },
+          };
+          const rejected: AppConfig = {
+            ...good,
+            availableTools: {
+              rejected: {
+                type: 'function',
+                function: { name: 'rejected', description: 'rejected', parameters: {} },
+              },
+            },
+          };
+          let tools = good.availableTools;
+          let refuseTools = false;
+          const deps = createDeps({
+            loadBaseConfig: jest.fn().mockResolvedValue(good),
+            setCachedTools: jest.fn(async (next: AppConfig['availableTools']) => {
+              if (next === good.availableTools && refuseTools) {
+                refuseTools = false;
+                if (stage.endsWith('rejection')) throw new Error('tool restore unavailable');
+                return false;
+              }
+              tools = next;
+              return true;
+            }),
+          });
+          const service = createAppConfigService(deps);
+          await service.getAppConfig({ baseOnly: true });
+          if (clear) await service.clearAppConfigCache();
+          refuseTools = stage.startsWith('tool');
+          deps.loadBaseConfig.mockResolvedValueOnce(rejected).mockRejectedValue(invalidFile());
+          let writes = 0;
+          deps._cache.set.mockImplementation(async (key, value) => {
+            writes++;
+            if (writes === 1) throw new Error('new base unavailable');
+            if (writes === 2 && stage.startsWith('base')) {
+              if (stage.endsWith('rejection')) throw new Error('base restore unavailable');
+              return false;
+            }
+            deps._cache._store.set(`app_config:${key}`, value);
+          });
+
+          await expect(service.reloadBaseConfig()).resolves.toMatchObject({ ok: false });
+          if (stage.startsWith('tool')) expect(tools).toBe(rejected.availableTools);
+          const loads = deps.loadBaseConfig.mock.calls.length;
+
+          expect(await service.getAppConfig({ baseOnly: true })).toBe(good);
+          expect(deps.loadBaseConfig).toHaveBeenCalledTimes(loads + 1);
+          expect(tools).toBe(good.availableTools);
+          expect(deps._cache._store.get('app_config:_BASE_')).toBe(good);
+
+          expect(await service.getAppConfig({ baseOnly: true })).toBe(good);
+          expect(deps.loadBaseConfig).toHaveBeenCalledTimes(loads + 1);
+        },
+      );
     });
 
     it('resolves with the failure instead of rejecting when there is no last good config', async () => {

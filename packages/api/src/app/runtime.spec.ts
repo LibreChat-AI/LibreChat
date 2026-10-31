@@ -1,6 +1,7 @@
 import { Keyv } from 'keyv';
 import KeyvRedis from '@keyv/redis';
 import { createClient } from '@redis/client';
+import { PrincipalType } from 'librechat-data-provider';
 import { logger, AppService } from '@librechat/data-schemas';
 import type { TCustomConfig } from 'librechat-data-provider';
 import type { AppConfigServiceDeps } from './service';
@@ -56,7 +57,10 @@ describe('applyLoadedConfig', () => {
     }
   });
 
-  function createRuntime(baseCache?: ReturnType<AppConfigServiceDeps['getCache']>) {
+  function createRuntime(
+    baseCache?: ReturnType<AppConfigServiceDeps['getCache']>,
+    getApplicableConfigs: AppConfigServiceDeps['getApplicableConfigs'] = async () => [],
+  ) {
     process.env.CONFIG_PATH = '/virtual/librechat.yaml';
     let text = 'version: 1.3.18\ntelemetry:\n  stackTraceLimit: 25\n';
     const load = createCustomConfigLoader({
@@ -86,7 +90,7 @@ describe('applyLoadedConfig', () => {
       setCachedTools,
       getCache: () => baseCache ?? cache,
       cacheKeys: { APP_CONFIG: 'app_config' },
-      getApplicableConfigs: async () => [],
+      getApplicableConfigs,
       getUserPrincipals: async () => [],
     });
     return {
@@ -217,6 +221,58 @@ describe('applyLoadedConfig', () => {
     expect(Error.stackTraceLimit).toBe(40);
     expect(getConfigDigest()).not.toBe(firstDigest);
     expect([...values.keys()].filter((key) => key.startsWith('_OVERRIDE_'))).toHaveLength(3);
+  });
+
+  it('serves database restrictions uncached through Redis write and connection failures', async () => {
+    jest.spyOn(logger, 'warn').mockReturnValue(logger);
+    const server = await startRespServer();
+    const client = createClient({
+      url: server.url,
+      socket: { reconnectStrategy: false, connectTimeout: 100 },
+    });
+    const adapter = new KeyvRedis(client, { throwOnErrors: true });
+    const cache = new Keyv({ store: adapter, namespace: 'APP_CONFIG', throwOnErrors: true });
+    cache.on('error', () => undefined);
+    const getApplicableConfigs = jest.fn(async () => [
+      {
+        principalType: PrincipalType.ROLE,
+        isActive: true,
+        priority: 10,
+        overrides: { interface: { modelSelect: false } },
+      },
+    ]);
+    try {
+      await client.connect();
+      const runtime = createRuntime(
+        {
+          get: (key) => cache.get(key),
+          set: (key, value) => cache.set(key, value),
+          delete: (key) => cache.delete(key),
+        },
+        getApplicableConfigs,
+      );
+      await runtime.getAppConfig({ baseOnly: true });
+      const digest = getConfigDigest();
+      server.readonly = true;
+
+      expect(
+        (await runtime.getAppConfig({ role: 'USER', failClosed: true })).interfaceConfig
+          ?.modelSelect,
+      ).toBe(false);
+      await server.close();
+      client.destroy();
+      expect(
+        (await runtime.getAppConfig({ role: 'USER', failClosed: true })).interfaceConfig
+          ?.modelSelect,
+      ).toBe(false);
+
+      expect(getApplicableConfigs).toHaveBeenCalledTimes(2);
+      expect(Error.stackTraceLimit).toBe(25);
+      expect(getConfigDigest()).toBe(digest);
+    } finally {
+      if (client.isOpen) client.destroy();
+      await server.close();
+    }
   });
 
   it('keeps last-good telemetry when the real Redis adapter rejects SET, then retries', async () => {

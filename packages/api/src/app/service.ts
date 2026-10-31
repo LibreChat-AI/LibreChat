@@ -30,6 +30,7 @@ import { resolveOverrideLayers, mergeOverrideLayersWithSource } from './override
 import { createEnvReferencePolicy, parseEnvAllowlist } from './allowlist';
 import { resolveRuntimeConfigSecrets } from '~/admin/secrets';
 import { normalizeEndpointReferences } from './references';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { getConfigLoadFailure } from './loader';
 import { checkAppConfigTheme } from './theme';
 
@@ -830,6 +831,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     if (generation !== baseGeneration) {
       return lastGood;
     }
+    publishedBaseGeneration = -1;
     const restorations = [cache.set(BASE_CONFIG_KEY, lastGood)];
     if (lastGood.availableTools) {
       restorations.push(setCachedTools(lastGood.availableTools));
@@ -837,14 +839,19 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     const results = await Promise.allSettled(restorations);
     for (const result of results) {
       if (result.status === 'rejected') {
-        logger.error('[ensureBaseConfig] Failed to restore last-good config state:', result.reason);
+        logger.error(
+          '[ensureBaseConfig] Failed to restore last-good config state:',
+          getSafeErrorMetadata(result.reason),
+        );
+      } else if (result.value === false) {
+        logger.error('[ensureBaseConfig] Cache refused last-good config restoration.');
       }
     }
     if (generation !== baseGeneration) {
       await cache.delete(BASE_CONFIG_KEY).catch((deleteError: unknown) => {
         logger.error('[ensureBaseConfig] Failed to drop an overtaken restoration:', deleteError);
       });
-    } else {
+    } else if (results.every((result) => result.status === 'fulfilled' && result.value !== false)) {
       publishedBaseGeneration = generation;
     }
     return lastGood;
@@ -1071,7 +1078,15 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
      */
     const cacheable = bypassOverrideCache !== true && (resolvedPrincipals == null || !!userId);
     if (cacheable && !refresh) {
-      const cachedMerged = (await cache.get(cacheKey)) as AppConfig | undefined;
+      let cachedMerged: AppConfig | undefined;
+      try {
+        cachedMerged = (await cache.get(cacheKey)) as AppConfig | undefined;
+      } catch (error) {
+        logger.warn(
+          '[getAppConfig] Failed to read merged config cache; resolving uncached.',
+          getSafeErrorMetadata(error),
+        );
+      }
       if (cachedMerged) {
         return await augment(withRuntimeSecrets(cachedMerged));
       }
@@ -1116,9 +1131,16 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     }
 
     if (cacheable && getOverrideGeneration(cacheTenantId) === generation) {
-      await cache.set(cacheKey, merged, overrideCacheTtl);
-      if (getOverrideGeneration(cacheTenantId) !== generation) {
-        await cache.delete(cacheKey);
+      try {
+        await cache.set(cacheKey, merged, overrideCacheTtl);
+        if (getOverrideGeneration(cacheTenantId) !== generation) {
+          await cache.delete(cacheKey);
+        }
+      } catch (error) {
+        logger.warn(
+          '[getAppConfig] Failed to cache merged config; serving the resolved configuration.',
+          getSafeErrorMetadata(error),
+        );
       }
     }
     return await augment(withRuntimeSecrets(merged));
