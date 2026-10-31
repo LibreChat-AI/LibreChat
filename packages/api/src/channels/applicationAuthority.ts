@@ -47,7 +47,7 @@ export function createChannelApplicationAuthority(
     getRole: deps.getRole,
     isPrincipalActive: deps.isPrincipalActive,
     enrollmentRequired: deps.enrollmentRequired,
-    publicBaseUrl: deps.publicBaseUrl || 'http://localhost:3080',
+    publicBaseUrl: deps.publicBaseUrl,
     getConfig: deps.policy.config,
     getLifetimes: deps.policy.config,
     getAgentPermissions: async (agentId, user) =>
