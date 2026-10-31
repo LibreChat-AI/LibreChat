@@ -67,8 +67,19 @@ test.describe('mention popover', () => {
     const target = MOCK_ENDPOINTS[1];
     const { textarea, combobox } = await openMention(page);
 
+    /* The filter also matches the endpoint's own models (their value is the endpoint name), so
+       walk to the endpoint row itself rather than assuming it ranks first. */
     await combobox.fill(target.label);
-    await expect(await activeOption(page)).toContainText(target.label);
+    const endpointRow = page.getByRole('option', { name: target.label, exact: true });
+    await expect(endpointRow).toBeVisible();
+    const endpointId = await endpointRow.getAttribute('id');
+    for (let step = 0; step < 10; step++) {
+      if ((await combobox.getAttribute('aria-activedescendant')) === endpointId) {
+        break;
+      }
+      await combobox.press('ArrowDown');
+    }
+    await expect(combobox).toHaveAttribute('aria-activedescendant', endpointId ?? '');
     await combobox.press('Enter');
 
     await expect(combobox).toHaveValue('');
