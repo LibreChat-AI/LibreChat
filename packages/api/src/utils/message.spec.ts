@@ -9,7 +9,11 @@ import {
   getPreliminaryResponseMessageId,
   isValidMessageId,
   MAX_MESSAGE_ID_LENGTH,
+  stripProviderItems,
+  omitProviderItemsFromEvent,
 } from './message';
+import { attachProviderItems } from './providerItems';
+import { sendEvent } from './events';
 
 /** Cast to string for type compatibility with ThreadMessage */
 const NO_PARENT = Constants.NO_PARENT as string;
@@ -747,4 +751,47 @@ describe('bounded turn message identities', () => {
       expect(getPreliminaryResponseMessageId({ messageId: 'user', responseMessageId })).toBeNull();
     },
   );
+});
+
+describe('provider output items', () => {
+  const providerItems = { origin: 'digest', items: [{ id: 'rs_1', encrypted_content: 'opaque' }] };
+  const content = () => [
+    { type: 'text', text: 'Looking it up.' },
+    { type: 'tool_call', tool_call: { id: 'call_1', name: 'lookup', args: '{}', providerItems } },
+  ];
+  const toolCall = { id: 'call_1', name: 'lookup', args: '{}' };
+
+  it('touches nothing else, however deep a key named like them sits', () => {
+    const event = { data: { output: { providerItems: 'a tool result field' } } };
+    expect(omitProviderItemsFromEvent(event)).toBe(event);
+    const plain = { final: true, responseMessage: { content: [{ type: 'text', text: 'x' }] } };
+    expect(omitProviderItemsFromEvent(plain)).toBe(plain);
+    expect(omitProviderItemsFromEvent(undefined)).toBeUndefined();
+    expect(omitProviderItemsFromEvent('text')).toBe('text');
+  });
+
+  it('leaves them out of a sent event', () => {
+    const write = jest.fn();
+    sendEvent(
+      { write } as never,
+      { final: true, responseMessage: { content: content() } } as never,
+    );
+    expect(write.mock.calls[0][0]).toContain('call_1');
+    expect(write.mock.calls[0][0]).not.toContain('opaque');
+  });
+
+  it('strips them from content without touching the input', () => {
+    const input = content();
+    const stripped = stripProviderItems(input);
+    expect(stripped[1]).toEqual({ type: 'tool_call', tool_call: toolCall });
+    expect(stripped[0]).toBe(input[0]);
+    expect(input[1].tool_call?.providerItems).toBe(providerItems);
+  });
+
+  it('returns a row without stored items, or without list content, as it is', () => {
+    const plain = { content: [{ type: 'text', text: 'x' }] };
+    expect(attachProviderItems(plain)).toBe(plain);
+    const text = { content: 'x', providerItems: { call_1: providerItems } };
+    expect(attachProviderItems(text)).toBe(text);
+  });
 });

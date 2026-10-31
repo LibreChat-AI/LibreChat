@@ -155,6 +155,77 @@ export function sanitizeMessageForTransmit<T extends Partial<TMessage>>(
   return sanitized;
 }
 
+/**
+ * Provider output items the agents SDK reports for a finished tool round
+ * (`tool_call.providerItems`: OpenAI Responses ids, status and encrypted reasoning) so the
+ * next turn replays the round as it was sent. They live in the run's content while it is
+ * live; `saveMessage` moves them into a field of their own, so a stored message never
+ * carries them in `content`. They are server state: never sent to a client, never accepted
+ * from one.
+ */
+const PROVIDER_ITEMS_FIELD = 'providerItems';
+
+/**
+ * Message content without provider output items. Returns the same array when
+ * no part carries them.
+ */
+export function stripProviderItems<T>(content: T): T {
+  if (!Array.isArray(content)) {
+    return content;
+  }
+  let stripped: unknown[] | undefined;
+  content.forEach((part: { tool_call?: Record<string, unknown> } | null, index) => {
+    if (part?.tool_call == null || !(PROVIDER_ITEMS_FIELD in part.tool_call)) {
+      return;
+    }
+    const { [PROVIDER_ITEMS_FIELD]: _items, ...toolCall } = part.tool_call;
+    stripped ??= [...content];
+    stripped[index] = { ...part, tool_call: toolCall };
+  });
+  return (stripped ?? content) as T;
+}
+
+type ContentCarrier = { content?: unknown; aggregatedContent?: unknown };
+
+function withoutProviderItems<T extends ContentCarrier>(
+  carrier: T,
+  key: 'content' | 'aggregatedContent',
+): T {
+  const stripped = stripProviderItems(carrier[key]);
+  return stripped === carrier[key] ? carrier : { ...carrier, [key]: stripped };
+}
+
+/**
+ * A stream event without the provider items of live tool calls, on the two shapes that carry the
+ * run's content: a sync event (`resumeState.aggregatedContent`) and a final one
+ * (`responseMessage.content`). The event is returned as is when it has none.
+ */
+export function omitProviderItemsFromEvent<T>(event: T): T {
+  const carrier = event as {
+    responseMessage?: ContentCarrier;
+    resumeState?: ContentCarrier;
+  } | null;
+  if (carrier == null || typeof carrier !== 'object') {
+    return event;
+  }
+  const responseMessage =
+    carrier.responseMessage != null
+      ? withoutProviderItems(carrier.responseMessage, 'content')
+      : undefined;
+  const resumeState =
+    carrier.resumeState != null
+      ? withoutProviderItems(carrier.resumeState, 'aggregatedContent')
+      : undefined;
+  if (responseMessage === carrier.responseMessage && resumeState === carrier.resumeState) {
+    return event;
+  }
+  return {
+    ...carrier,
+    ...(responseMessage != null && { responseMessage }),
+    ...(resumeState != null && { resumeState }),
+  } as T;
+}
+
 export function isPreliminaryMessageId(messageId: unknown): messageId is string {
   return typeof messageId === 'string' && messageId.endsWith('_');
 }

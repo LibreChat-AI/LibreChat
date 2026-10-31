@@ -8064,6 +8064,90 @@ describe('AgentClient - titleConvo', () => {
         limitType: 'bytes',
       });
     });
+
+    describe('provider items', () => {
+      const toolRound = (extras = {}) => [
+        {
+          messageId: 'msg-1',
+          parentMessageId: null,
+          sender: 'User',
+          text: 'Look it up',
+          isCreatedByUser: true,
+        },
+        {
+          messageId: 'msg-2',
+          parentMessageId: 'msg-1',
+          sender: 'Assistant',
+          text: '',
+          isCreatedByUser: false,
+          content: [
+            { type: ContentTypes.TEXT, text: 'Looking it up.' },
+            {
+              type: ContentTypes.TOOL_CALL,
+              tool_call: { id: 'call_1', name: 'lookup', args: '{}', output: 'ok', progress: 1 },
+            },
+          ],
+          ...extras,
+        },
+        {
+          messageId: 'msg-3',
+          parentMessageId: 'msg-2',
+          sender: 'User',
+          text: 'Thanks',
+          isCreatedByUser: true,
+        },
+      ];
+
+      it('builds the prompt of a tool round as upstream when no provider items are stored', async () => {
+        const result = await client.buildMessages(toolRound(), 'msg-3', {});
+
+        expect(result.prompt).toMatchInlineSnapshot(`
+          [
+            {
+              "content": "Look it up",
+              "messageId": "msg-1",
+              "role": "user",
+            },
+            {
+              "content": [
+                {
+                  "text": "Looking it up.",
+                  "type": "text",
+                },
+                {
+                  "tool_call": {
+                    "args": "{}",
+                    "id": "call_1",
+                    "name": "lookup",
+                    "output": "ok",
+                    "progress": 1,
+                  },
+                  "type": "tool_call",
+                },
+              ],
+              "messageId": "msg-2",
+              "role": "assistant",
+            },
+            {
+              "content": "Thanks",
+              "messageId": "msg-3",
+              "role": "user",
+            },
+          ]
+        `);
+      });
+
+      it('puts the stored provider items back on their tool calls', async () => {
+        const providerItems = { origin: 'digest', items: [{ id: 'rs_1', type: 'reasoning' }] };
+        const history = toolRound({ providerItems: { call_1: providerItems } });
+
+        const result = await client.buildMessages(history, 'msg-3', {});
+
+        const toolCall = result.prompt[1].content.find((part) => part.tool_call)?.tool_call;
+        expect(toolCall.providerItems).toEqual(providerItems);
+        expect(history[1].content[1].tool_call).not.toHaveProperty('providerItems');
+      });
+    });
   });
 
   describe('provider-native YouTube file preflight', () => {
