@@ -228,6 +228,67 @@ describe('Slack answer rendering', () => {
     }
   });
 
+  it.each([
+    '__file__',
+    '**file**',
+    'a__b__c?x=__query__&y=**query**',
+    'a`b`c',
+    'a_(b_(c))__name__',
+    'a**file**?q=__x__',
+  ])('never formats the destination %s after constructing a link', (path) => {
+    const url = 'https://example.com/' + path;
+    const source = '[docs](' + url + ')';
+    const wire = '<' + url.replaceAll('&', '&amp;') + '|docs>';
+    expect(safeMrkdwn(source)).toBe(wire);
+    expect(renderAgentAnswer(source)[0].blocks).toEqual([{ type: 'markdown', text: source }]);
+    const long = renderAgentAnswer('x'.repeat(12001) + ' ' + source);
+    expect(
+      long
+        .flatMap((message) => message.blocks ?? [])
+        .some((block) => block.type === 'section' && block.text.text.includes(wire)),
+    ).toBe(true);
+  });
+
+  it('formats prose around immutable link/code atoms and keeps fence line boundaries', () => {
+    const link = '[docs](https://example.com/__file__)';
+    expect(safeMrkdwn('**Before ' + link + ' `__literal__` after**')).toBe(
+      '*Before <https://example.com/__file__|docs> `__literal__` after*',
+    );
+    expect(safeMrkdwn('```txt\n__literal__\n```\n# ' + link)).toBe(
+      '```txt\n__literal__\n```\n*<https://example.com/__file__|docs>*',
+    );
+    const forged = '\0' + 'a'.repeat(64) + ':0\0';
+    expect(safeMrkdwn(forged + link)).toBe(forged + '<https://example.com/__file__|docs>');
+    const unmatched = Array.from({ length: 256 }, (_, i) => 'x' + '`'.repeat(i + 1) + 'y').join('');
+    expect(safeMrkdwn(unmatched)).toBe(unmatched);
+  });
+
+  it.each([2790, 2795, 2800, 2805])(
+    'retains source atom boundaries through enclosing styles at offset %i',
+    (offset) => {
+      const source =
+        '**Before [docs](https://example.com/__file__?q=**value**) `__literal__` after**';
+      const expected =
+        '*Before <https://example.com/__file__?q=**value**|docs> `__literal__` after*';
+      const messages = renderSlackDocument('x'.repeat(offset) + source);
+      const sections = messages
+        .flatMap((message) => message.blocks ?? [])
+        .flatMap((block) => (block.type === 'section' ? [block.text] : []));
+      expect(
+        sections.some((section) => section.type === 'mrkdwn' && section.text.includes(expected)),
+      ).toBe(true);
+      expect(sections.map((section) => section.text).join('')).toBe('x'.repeat(offset) + expected);
+      const oversized = renderSlackDocument(
+        '**' + 'x'.repeat(offset) + ' [docs](https://example.com/**path**) after**',
+      );
+      expect(
+        oversized
+          .flatMap((message) => message.blocks ?? [])
+          .every((block) => block.type === 'section' && block.text.type === 'plain_text'),
+      ).toBe(true);
+    },
+  );
+
   it('converts prose but leaves code syntax untouched', () => {
     expect(
       safeMrkdwn(
