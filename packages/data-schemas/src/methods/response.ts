@@ -900,9 +900,10 @@ export function createResponseStorage(
           )
             return false;
           if (marker.kind !== token.kind || marker.id !== token.id) return false;
+          // A consumed resume may pause again and clear its intent before enqueue acknowledgement.
           if (token.kind === 'create') {
             if (token.id !== record.responseId || record.resume?.state === 'reserved') return false;
-          } else if (record.resume?.intentId !== token.id) return false;
+          } else if (record.resume && record.resume.intentId !== token.id) return false;
           if (marker.state === 'settled') return true;
           const updated = await model.updateOne(
             { ...scope(owner), responseId },
