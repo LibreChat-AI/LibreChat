@@ -181,18 +181,18 @@ const useRetainedControl: SubagentsHost['useRetainedControl'] = (scope, invocati
 };
 
 const subagentsHost: SubagentsHost = {
-  renderContentParts: (props) => (
-    <MockContentParts {...(props as Parameters<typeof MockContentParts>[0])} />
-  ),
   renderSteer: (props) => <MockSteerPart {...props} />,
   useRetainedControl,
 };
 
-const partsHost = {
+const partsHost: Partial<MessagePartsHost> = {
+  renderContentParts: (props) => (
+    <MockContentParts {...(props as Parameters<typeof MockContentParts>[0])} />
+  ),
   useShowThinking: () => false,
   useAutoExpandTools: () => mockAutoExpandTools,
   renderMarkdown: ({ content }: { content: string }) => <div>{content}</div>,
-} as Partial<MessagePartsHost>;
+};
 
 const surface: ChatSurface = {
   enterToSend: true,

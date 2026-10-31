@@ -1,6 +1,12 @@
 import { createContext, useContext } from 'react';
+import type {
+  Agent,
+  TFile,
+  TAttachment,
+  SearchResultData,
+  TMessageContentParts,
+} from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
-import type { Agent, TFile } from 'librechat-data-provider';
 import type { TShowToast } from '@librechat/client';
 
 /** The message a part renders in, as its host reports it. */
@@ -34,6 +40,31 @@ export type MessagePartsUser = { id?: string; name?: string; username?: string }
 
 /** Shows a transient notification. */
 export type MessagePartsToast = (toast: TShowToast) => void;
+
+/** What a caller asks the host's content-parts renderer to draw: a message's parts, and the row
+ *  state around them. Omitted row fields take an assistant reply's defaults: not the user's,
+ *  the last row, and latest while it is submitting. */
+export type ContentPartsSlotProps = {
+  content: TMessageContentParts[];
+  messageId: string;
+  conversationId: string | null;
+  attachments?: TAttachment[];
+  searchResults?: Record<string, SearchResultData>;
+  authorHeader?: ReactNode;
+  isSubmitting: boolean;
+  showThinking: boolean;
+  edit?: boolean;
+  enterEdit?: (cancel?: boolean) => void | null | undefined;
+  siblingIdx?: number;
+  setSiblingIdx?: ((value: number) => void) | null;
+  isCreatedByUser?: boolean;
+  isLast?: boolean;
+  isLatestMessage?: boolean;
+  manualSkills?: string[];
+  renderOwnerId?: string;
+  createdAt?: string | null;
+  foldLiveActivity?: boolean;
+};
 
 /** Where the calling message is rendered: a public share link, or the reader's own chat. */
 export type MessagePartsShare = {
@@ -74,6 +105,8 @@ export interface MessagePartsHost {
   useSmoothStreaming: () => boolean;
   /** An agent the viewer can see, by id. */
   useAgent: (agentId: string) => Agent | undefined;
+  /** Draws a message's content parts with the app's renderer. */
+  renderContentParts: (props: ContentPartsSlotProps) => ReactNode;
   /** Renders an agent's avatar; `undefined` when the agent is unknown. */
   renderAgentIcon: (agent: Agent | undefined) => ReactNode;
   /** Renders an agent's bare inline avatar, without the message icon around it. */

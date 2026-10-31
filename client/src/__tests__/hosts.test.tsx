@@ -59,6 +59,7 @@ const ENTRY_HOSTS = [
   '~/Providers/MessagePartsHostContext',
   '~/Providers/MessagesHostContext',
   '~/Providers/SubagentsHostContext',
+  '~/components/Chat/Messages/Content/register',
 ];
 ENTRY_HOSTS.forEach((path) => jest.requireActual(path));
 

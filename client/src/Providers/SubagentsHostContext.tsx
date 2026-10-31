@@ -10,7 +10,6 @@ import type {
   SubagentRetainedControl,
   SubagentJumpToLatestProps,
 } from '@librechat/chat/react';
-import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
 import SteerPart from '~/components/Chat/Messages/Content/Parts/SteerPart';
 
 /** Reads a shortened guidance message's full receipt, once the reader asks for it. */
@@ -74,18 +73,9 @@ function JumpToLatest({ visible, onClick, maximizeChatSpace }: SubagentJumpToLat
   );
 }
 
-/** What subagent transcripts read from the app: the content and steer renderers that still live
- *  here, and the receipt read. Registered as the default when this module loads. */
+/** What subagent transcripts read from the app: the steer renderer and the jump-to-latest fade
+ *  that still live here, and the receipt read. Registered as the default when this module loads. */
 export const appSubagentsHost: SubagentsHost = {
-  renderContentParts: ({ isSubmitting, ...props }) => (
-    <ContentParts
-      {...props}
-      isCreatedByUser={false}
-      isLast
-      isSubmitting={isSubmitting}
-      isLatestMessage={isSubmitting}
-    />
-  ),
   renderSteer: (props) => <SteerPart {...props} />,
   renderJumpToLatest: (props) => <JumpToLatest {...props} />,
   useRetainedControl,

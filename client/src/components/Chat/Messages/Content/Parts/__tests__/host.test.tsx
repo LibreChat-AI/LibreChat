@@ -58,6 +58,7 @@ function createHost(overrides: Partial<MessagePartsHost> = {}): MessagePartsHost
     usePaneConversationId: () => null,
     useLiveAppliedSteer: () => [false, jest.fn()],
     useShare: () => ({}),
+    renderContentParts: () => null,
     useMessagesEditing: () => ({
       conversation: null,
       ask: jest.fn(),

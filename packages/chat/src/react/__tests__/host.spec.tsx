@@ -12,6 +12,7 @@ const createHost = (fontSize: string): MessagePartsHost => ({
   useAgent: () => undefined,
   renderAgentIcon: () => null,
   renderAgentAvatar: () => null,
+  renderContentParts: () => null,
   useFontSize: () => fontSize,
   useShowThinking: () => false,
   useAutoExpandTools: () => false,

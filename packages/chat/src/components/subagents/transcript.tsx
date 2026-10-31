@@ -459,7 +459,6 @@ export function SubagentActivityContent({
 }): ReactNode {
   const localize = useLocalize();
   const host = useMessagePartsHost();
-  const { renderContentParts } = useSubagentsHost();
   const showThinking = host.useShowThinking();
   const isSubmitting = isLiveSubagentStatus(activity.status);
   const parts = useMemo(() => content ?? getActivityContent(activity), [content, activity]);
@@ -479,7 +478,7 @@ export function SubagentActivityContent({
   } else {
     body = (
       <ToolContentQueryContext.Provider value={toolContentQuery ?? null}>
-        {renderContentParts({
+        {host.renderContentParts({
           content: parts,
           messageId: activity.messageId ?? activityId ?? 'subagent-activity-panel',
           conversationId,

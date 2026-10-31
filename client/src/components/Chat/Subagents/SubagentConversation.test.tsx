@@ -14,6 +14,7 @@ import SubagentConversation from './SubagentConversation';
 import { ChatContext } from '~/Providers/ChatContext';
 import { ChatSurfaceHarness } from 'test/harness';
 import '~/Providers/SubagentsHostContext';
+import '~/components/Chat/Messages/Content/register';
 
 const mockRecoveredQuery = jest.fn();
 jest.mock('~/data-provider/Subagents/content', () => ({
@@ -29,12 +30,17 @@ const mockParentAsk = jest.fn();
 /** The package's own provider, so the transcript, which reads the package host, sees the same
  *  host as the conversation around it. Registered as the default, as the app entry does. */
 jest.mock('~/Providers/MessagePartsHostContext', () => {
+  const { getAppContentParts } = jest.requireActual<
+    typeof import('~/components/Chat/Messages/Content/Parts/slots')
+  >('~/components/Chat/Messages/Content/Parts/slots');
   const chat = jest.requireActual<typeof import('@librechat/chat/react')>('@librechat/chat/react');
   chat.setDefaultMessagePartsHost({
     useShowThinking: () => false,
     useAutoExpandTools: () => false,
     useMessagesAsk: () => mockParentAsk,
     renderMarkdown: ({ content }: { content: string }) => content,
+    renderContentParts: (props: Parameters<ReturnType<typeof getAppContentParts>>[0]) =>
+      getAppContentParts()(props),
   } as unknown as Parameters<typeof chat.setDefaultMessagePartsHost>[0]);
   return {
     MessagePartsHostProvider: chat.MessagePartsHostProvider,
