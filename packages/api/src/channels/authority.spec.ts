@@ -5,13 +5,6 @@ import { Readable } from 'node:stream';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import {
-  PermissionBits,
-  Permissions,
-  PermissionTypes,
-  FileSources,
-  channelConfigSchema,
-} from 'librechat-data-provider';
-import {
   createModels,
   createMethods,
   createChannelIdentityStorage,
@@ -21,11 +14,23 @@ import {
   tenantStorage,
   runAsSystem,
 } from '@librechat/data-schemas';
+import {
+  PermissionBits,
+  Permissions,
+  PermissionTypes,
+  FileSources,
+  channelConfigSchema,
+  CHANNEL_RUN_MAX_JSON_BYTES,
+  CHANNEL_DELIVERY_PARTS_HARD_MAX,
+  CHANNEL_DELIVERY_TEXT_MAX_CHARS,
+  CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES,
+} from 'librechat-data-provider';
 import type {
   ChannelRunAdmission,
   ChannelIdentityResult,
   ChannelRunSnapshot,
   ChannelRunSummary,
+  ChannelDeliveryPlan,
 } from 'librechat-data-provider';
 import type { IUser, ChannelRunRecord } from '@librechat/data-schemas';
 import type { ChannelResponseCredentialDependencies } from './credentials';
@@ -817,6 +822,63 @@ it(
       .expect(409);
   }),
 );
+it(
+  'returns a persisted maximum-part plan through claim and fenced mutation within the shared wire budget',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker-A' }).expect(200);
+    const fence = claimed.body.fence;
+    const route = `runs/${admitted.body.runId}`;
+    await post(`${route}/advance`).send({ fence }).expect(200);
+    await bindFixtureResponse(
+      (await storage.read(tenantId, 'channel', admitted.body.runId))!,
+      'reply-1',
+    );
+    await storage.saveSnapshot(
+      tenantId,
+      fence,
+      { status: 'completed', responseId: 'reply-1', text: 'Answer', elapsedMs: 1 },
+      Date.now(),
+    );
+    const plan: ChannelDeliveryPlan = {
+      revision: 'plan-1',
+      rendererVersion: 'test',
+      parts: Array.from({ length: CHANNEL_DELIVERY_PARTS_HARD_MAX }, (_, i) => ({
+        operationId: `part-${i}`,
+        kind: 'message',
+        required: true,
+        text: '\u0000'.repeat(CHANNEL_DELIVERY_TEXT_MAX_CHARS),
+        presentation: {
+          format: 'slack-blocks-v1',
+          payload: JSON.stringify({
+            text: 'x'.repeat(CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES - 1000),
+          }),
+        },
+      })),
+    };
+    await storage.savePlan(tenantId, fence, plan, Date.now());
+    // Delivery leases are reclaimed on expiry; the polling-only yield route does not release them.
+    fakeNow = claimed.body.leaseExpiresAt + 1;
+    const lease = await post('runs/claim').send({ owner: 'worker-B' }).expect(200);
+    expect(lease.body.run.plan.parts).toHaveLength(CHANNEL_DELIVERY_PARTS_HARD_MAX);
+    expect(lease.body.fence.owner).toBe('worker-B');
+    for (const bytes of [
+      Buffer.byteLength(lease.text),
+      Buffer.byteLength(
+        (
+          await post(`${route}/begin`)
+            .send({ fence: lease.body.fence, operationId: 'part-0' })
+            .expect(200)
+        ).text,
+      ),
+    ]) {
+      expect(bytes).toBeGreaterThan(2 * 1024 * 1024);
+      expect(bytes).toBeLessThan(CHANNEL_RUN_MAX_JSON_BYTES);
+    }
+  }),
+);
+
 function post(path: string) {
   return request(app)
     .post(`/service/channel/${path}`)

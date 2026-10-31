@@ -182,7 +182,13 @@ export class SlackClient {
           return { ok: true };
         const uncertain: SlackWriteOutcome = !once && updates.has(method) ? 'retryable' : 'unknown';
         let outcome: SlackWriteOutcome = uncertain;
-        if (status === 429 || error instanceof WebAPIRateLimitedError) {
+        if (
+          status === 429 ||
+          error instanceof WebAPIRateLimitedError ||
+          (error instanceof WebAPIPlatformError &&
+            validEnvelope &&
+            error.data.error === 'ratelimited')
+        ) {
           outcome = 'retryable';
           if (error instanceof WebAPIRateLimitedError) retryAfterMs = error.retryAfter * 1000;
         } else if (error instanceof WebAPIPlatformError && validEnvelope) {
