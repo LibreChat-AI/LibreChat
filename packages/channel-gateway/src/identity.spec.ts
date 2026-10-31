@@ -63,6 +63,104 @@ function posted(transport: ReturnType<typeof setup>['slack']) {
 }
 
 describe('private identity linking', () => {
+  test('concurrent accepted reads produce one confirmation and one private stale acknowledgement', async () => {
+    const { backend, slack, flow } = setup();
+    let reads = 0;
+    let confirms = 0;
+    let release: () => void = () => {};
+    const bothRead = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    backend.mockImplementation(async (url) => {
+      if (String(url).endsWith('/confirm')) {
+        confirms++;
+        return json(
+          confirms === 1
+            ? { ok: true, value: { ...view(), state: 'active' } }
+            : { ok: false, error: { code: 'changed' } },
+        );
+      }
+      reads++;
+      if (reads === 2) release();
+      await bothRead;
+      return json({ ok: true, value: view() });
+    });
+    const reference = JSON.stringify({ linkId: 'link', revision: 'l1' });
+    await Promise.all([
+      flow.confirm('C1', 'U1', reference, bundle),
+      flow.confirm('C1', 'U1', reference, bundle),
+    ]);
+    const texts = slack.mock.calls.map(
+      ([, init]) => new URLSearchParams(String(init?.body)).get('text')!,
+    );
+    expect(texts.filter((text) => text.includes('link is confirmed'))).toHaveLength(1);
+    expect(texts.filter((text) => text.includes('stale'))).toHaveLength(1);
+    expect(backend.mock.calls.every(([url]) => String(url).includes('/identity/U1'))).toBe(true);
+    expect(
+      slack.mock.calls.every(
+        ([url, init]) =>
+          String(url).includes('chat.postEphemeral') &&
+          new URLSearchParams(String(init?.body)).get('user') === 'U1',
+      ),
+    ).toBe(true);
+  });
+
+  test.each([
+    'invalid_ticket',
+    'expired',
+    'changed',
+    'forbidden',
+    'already_linked',
+    'confirmation_required',
+    'revoked',
+    'unavailable',
+  ])(
+    'preserves domain failure %s across lookup, ticket and confirmation without claiming success',
+    async (code) => {
+      for (const phase of ['lookup', 'ticket', 'confirm']) {
+        const { backend, slack, flow } = setup();
+        if (phase !== 'lookup')
+          backend.mockResolvedValueOnce(
+            json({ ok: true, value: phase === 'ticket' ? null : view() }),
+          );
+        backend.mockResolvedValueOnce(json({ ok: false, error: { code } }));
+        if (phase === 'confirm')
+          await flow.confirm(
+            'C1',
+            'U1',
+            JSON.stringify({ linkId: 'link', revision: 'l1' }),
+            bundle,
+          );
+        else await flow.prompt('C1', 'U1', bundle);
+        expect(posted(slack).get('text')).toContain('stale or unavailable');
+        expect(posted(slack).get('text')).not.toContain('link is confirmed');
+        expect(slack).toHaveBeenCalledTimes(1);
+      }
+    },
+  );
+
+  test.each([400, 403, 404, 409, 410])(
+    'expected HTTP %i is private unavailability, not a failed interaction',
+    async (status) => {
+      const { backend, slack, flow } = setup();
+      backend.mockResolvedValueOnce(new Response('{}', { status }));
+      await flow.prompt('C1', 'U1', bundle);
+      expect(posted(slack).get('text')).toContain('stale or unavailable');
+    },
+  );
+
+  test('a confirmation HTTP conflict is acknowledged, while service outages still propagate', async () => {
+    const { backend, slack, flow } = setup();
+    backend
+      .mockResolvedValueOnce(json({ ok: true, value: view() }))
+      .mockResolvedValueOnce(new Response('{}', { status: 409 }));
+    await flow.confirm('C1', 'U1', JSON.stringify({ linkId: 'link', revision: 'l1' }), bundle);
+    expect(posted(slack).get('text')).toContain('stale or unavailable');
+    backend.mockResolvedValueOnce(new Response('{}', { status: 503 }));
+    await expect(flow.prompt('C1', 'U1', bundle)).rejects.toThrow();
+    expect(slack).toHaveBeenCalledTimes(1);
+  });
+
   test('accepted account requires explicit actor-private Slack confirmation', async () => {
     const { backend, slack, flow } = setup();
     backend.mockResolvedValueOnce(json({ ok: true, value: view() }));
