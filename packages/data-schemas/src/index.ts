@@ -23,6 +23,10 @@ export type {
 } from './methods/response';
 export {
   createMethods,
+  createChannelRunStorage,
+  createChannelSummaryStorage,
+  CHANNEL_SUMMARY_MAX_PRIOR_ROWS,
+  ChannelRunConflict,
   createSkillDeletionPersistenceAdapter,
   AGENT_OWNER_CONTACT_RESOLVED_FIELD,
   AgentSortCursorError,
@@ -125,6 +129,7 @@ export {
   runAsSystem,
   scopedCacheKey,
   SYSTEM_TENANT_ID,
+  isReservedTenantId,
 } from './config/tenantContext';
 export type { TenantContext } from './config/tenantContext';
 export {
