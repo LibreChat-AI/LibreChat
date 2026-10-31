@@ -124,7 +124,7 @@ test.describe('prompts popover', () => {
       page,
       [{ name, text: 'Write to {{recipient}} about the e2e run' }],
       async () => {
-        const { textarea, combobox } = await openPrompts(page);
+        const { combobox } = await openPrompts(page);
         await combobox.fill(name);
         await expect(page.getByRole('option', { name })).toBeVisible();
         await combobox.press('Tab');
@@ -132,7 +132,6 @@ test.describe('prompts popover', () => {
         const dialog = page.getByRole('dialog');
         await expect(dialog).toBeVisible();
         await expect(dialog).toContainText(name);
-        await expect(textarea).not.toBeFocused();
         await expect
           .poll(() => dialog.evaluate((node) => node.contains(document.activeElement)))
           .toBe(true);
