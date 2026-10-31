@@ -22,6 +22,7 @@ const mockResolve = jest.fn((group: TPromptGroup) =>
 jest.mock('~/data-provider', () => ({
   useRecordPromptUsage: () => ({ mutate: mockRecordUsageMutate }),
   useDeletePromptGroup: () => ({ mutate: mockMutate, isLoading: false }),
+  useGetCategories: () => ({ data: undefined }),
 }));
 
 jest.mock('~/hooks', () => ({
