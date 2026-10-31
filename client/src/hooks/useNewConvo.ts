@@ -126,6 +126,7 @@ const useNewConvo = (index = 0) => {
         keepAddedConvos?: boolean,
         disableFocus?: boolean,
         _disableParams?: boolean,
+        replaceNavigation = false,
       ) => {
         const { endpoint = null } = conversation;
         const buildDefaultConversation = (endpoint === null || buildDefault) ?? false;
@@ -267,7 +268,11 @@ const useNewConvo = (index = 0) => {
           return searchParamsString ? `?${searchParamsString}` : '';
         };
 
-        if (conversation.conversationId === Constants.NEW_CONVO && !modelsData) {
+        if (
+          conversation.conversationId === Constants.NEW_CONVO &&
+          !modelsData &&
+          !replaceNavigation
+        ) {
           const appTitle = localStorage.getItem(LocalStorageKeys.APP_TITLE) ?? '';
           if (appTitle) {
             setDocumentTitle(appTitle, true);
@@ -504,6 +509,7 @@ const useNewConvo = (index = 0) => {
         keepAddedConvos,
         disableFocus,
         disableParams,
+        keepComposerState,
       );
     },
     [

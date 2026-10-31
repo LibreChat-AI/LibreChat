@@ -1,3 +1,4 @@
+import { FileSources } from 'librechat-data-provider';
 import type { TModelsConfig } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { Response } from 'express';
@@ -106,7 +107,10 @@ describe('model discovery service', () => {
   });
 
   it('reuses the resolved principal config for availability and discovery', async () => {
-    const config = { endpoints: { openAI: { models: ['narrowed'] } } } as AppConfig;
+    const config = Object.assign(
+      { config: {}, fileStrategy: FileSources.local, imageOutputType: 'png' } as AppConfig,
+      { endpoints: { openAI: { models: ['narrowed'] } } },
+    );
     const { deps, modelController } = setup(config);
     const req = request('openAI');
     delete req.config;

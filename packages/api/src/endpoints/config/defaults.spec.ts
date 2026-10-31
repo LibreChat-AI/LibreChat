@@ -1,3 +1,4 @@
+import { FileSources } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest } from '~/types';
 import { loadDefaultEndpointModels } from './defaults';
@@ -11,7 +12,12 @@ function loaders() {
   };
 }
 const req = { user: { id: 'user-1', tenantId: 'tenant-1' } } as ServerRequest;
-const config = { endpoints: {} } as AppConfig;
+const config: AppConfig = {
+  config: {},
+  fileStrategy: FileSources.local,
+  imageOutputType: 'png',
+  endpoints: {},
+};
 
 describe('scoped default model discovery', () => {
   it.each([
@@ -34,7 +40,7 @@ describe('scoped default model discovery', () => {
 
   it('layers endpoint headers over global headers and forwards the authenticated user', async () => {
     const deps = loaders();
-    const configured = {
+    const configured = Object.assign({}, config, {
       endpoints: {
         all: { headers: { authorization: 'global', 'X-Gateway': 'trusted' } },
         openAI: {
@@ -42,7 +48,7 @@ describe('scoped default model discovery', () => {
           models: ['narrowed'],
         },
       },
-    } as AppConfig;
+    });
     await loadDefaultEndpointModels(req, configured, 'openAI', deps);
     expect(deps.getOpenAIModels).toHaveBeenCalledWith({
       user: 'user-1',
@@ -54,11 +60,14 @@ describe('scoped default model discovery', () => {
 
   it('retains configured Anthropic and Vertex precedence', async () => {
     const deps = loaders();
-    const configured = {
+    const configured = Object.assign({}, config, {
       endpoints: {
-        anthropic: { models: ['configured'], vertexConfig: { modelNames: ['vertex'] } },
+        anthropic: {
+          models: ['configured'],
+          vertexConfig: { region: 'us-central1', modelNames: ['vertex'] },
+        },
       },
-    } as AppConfig;
+    });
     await loadDefaultEndpointModels(req, configured, 'anthropic', deps);
     expect(deps.getAnthropicModels).toHaveBeenCalledWith(
       expect.objectContaining({ configuredModels: ['configured'], vertexModels: ['vertex'] }),

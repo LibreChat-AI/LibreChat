@@ -269,7 +269,7 @@ const ChatForm = memo(function ChatForm({
     clearSettingsError,
   } = useQueryParams({
     textAreaRef,
-    routePending,
+    routePending: routePending || !target.ready,
     onBeforePrompt: preserveText,
     onPromptSettled: settleText,
   });
