@@ -462,25 +462,7 @@ export type TLoginLayoutContext = {
 
 export type ConvoGenerator = (params: NewConversationParams) => void | t.TConversation;
 
-export type TBaseResData = {
-  final?: boolean;
-  initial?: boolean;
-  previousMessages?: t.TMessage[];
-  conversation: t.TConversation;
-  conversationId?: string;
-  runMessages?: t.TMessage[];
-};
-
-export type TResData = TBaseResData & {
-  requestMessage: t.TMessage;
-  responseMessage: t.TMessage;
-};
-
-export type TFinalResData = Omit<TBaseResData, 'conversation'> & {
-  conversation: Partial<t.TConversation> & Pick<t.TConversation, 'conversationId'>;
-  requestMessage?: t.TMessage;
-  responseMessage?: t.TMessage;
-};
+export type { TResData, TBaseResData, TFinalResData } from '@librechat/chat';
 
 declare global {
   interface Window {
