@@ -1,4 +1,4 @@
-import { buildApprovalPreview, buildApprovalPreviews } from '../preview';
+import { buildApprovalPreview, buildApprovalPreviews } from '../approval';
 
 describe('buildApprovalPreview', () => {
   test('shows named action arguments instead of an empty command', () => {
@@ -106,7 +106,7 @@ describe('buildApprovalPreview', () => {
         0,
       ),
     ).toBeLessThanOrEqual(64 * 1024);
-    expect(previews.at(-1)).toMatchObject({ body: '', truncated: true });
+    expect(previews[previews.length - 1]).toMatchObject({ body: '', truncated: true });
   });
 
   test('applies the visible cap after expanding hidden control characters', () => {

@@ -73,7 +73,7 @@ jest.mock('../Input/ChatForm', () => ({
   __esModule: true,
   default: (props: Record<string, unknown>) => {
     mockChatFormProps(props);
-    mockAskHostSaveDrafts(jest.requireActual('../ask/state').useAskAnswerHost());
+    mockAskHostSaveDrafts(jest.requireActual('@librechat/chat/react').useAskAnswerHost());
     return <div />;
   },
 }));

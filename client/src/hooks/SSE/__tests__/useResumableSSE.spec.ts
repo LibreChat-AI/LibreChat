@@ -23,7 +23,6 @@ import {
   removeUsageAtoms,
 } from '~/components/Chat/Input/TokenUsage/store';
 import { registerComposerDraft, captureComposerDraft, bindComposerLaunch } from '~/utils/drafts';
-import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 
 type SSEEventListener = (e: Partial<MessageEvent> & { responseCode?: number }) => void;
 
@@ -327,6 +326,7 @@ import {
   stopRequestedByConvoId,
   detachedRunByConvoId,
   resetQueueFamilies,
+  pendingApprovalActionFamily,
 } from '@librechat/chat/react';
 
 /** Every hook here renders under the app's stream host, as `Root` mounts it. */

@@ -8,7 +8,7 @@ import {
   askAnswerCheckedAtom,
   askAnswerTextAtom,
   releasedComposerTextAtom,
-} from '~/components/Chat/ask/state';
+} from '@librechat/chat/react';
 
 const mockSubmitAskAnswer = jest.fn();
 const mockResetComposer = jest.fn();

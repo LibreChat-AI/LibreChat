@@ -1,14 +1,14 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Provider, createStore } from 'jotai';
-import { activeGenerationCreatedAtByConvoId } from '@librechat/chat/react';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
-import type { ShortcutBinding } from '@librechat/chat';
-import type { Agents } from 'librechat-data-provider';
 import {
   approvalPanelOpenFamily,
   pendingApprovalActionFamily,
-} from '~/components/Chat/approval/state';
+  activeGenerationCreatedAtByConvoId,
+} from '@librechat/chat/react';
+import type { ShortcutBinding } from '@librechat/chat';
+import type { Agents } from 'librechat-data-provider';
 import { ChatSurfaceProvider } from '~/components/Chat/Subagents/surface';
 import ApprovalProvider, { useApprovalContext } from '../ApprovalContext';
 import { ChatContext } from '~/Providers/ChatContext';

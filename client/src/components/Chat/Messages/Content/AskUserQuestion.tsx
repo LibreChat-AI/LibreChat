@@ -1,4 +1,5 @@
 import { useContext, useMemo, useState } from 'react';
+import { AskOptions } from '@librechat/chat/components';
 import { Button, TextareaAutosize, TooltipAnchor } from '@librechat/client';
 import { ChevronDown, MessageCircleQuestion, TriangleAlert } from 'lucide-react';
 import { isCancelKey, isReboundSubmitChord, resolveComposerKeyDown } from '@librechat/chat';
@@ -10,7 +11,6 @@ import { useOptionalChatSurface } from '~/components/Chat/Subagents/surface';
 import { NO_HOST_BINDINGS } from '~/hooks/Input/useComposerBindings';
 import { cn, forceResize, insertTextAtCursor } from '~/utils';
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
-import AskOptions from '~/components/Chat/ask/options';
 import { ChatContext } from '~/Providers/ChatContext';
 import AskUserQuestions from './AskUserQuestions';
 import { useLocalize } from '~/hooks';
