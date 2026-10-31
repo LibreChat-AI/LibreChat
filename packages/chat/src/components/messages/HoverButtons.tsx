@@ -1,6 +1,5 @@
-import React, { useState, useMemo, useCallback, memo } from 'react';
+import React, { useState, useMemo, useCallback, useContext, memo } from 'react';
 import { Copy, Check } from 'lucide';
-import { useAtomValue } from 'jotai';
 import { getSpeechText, findMessageById, isUserInitiatedCompaction } from 'librechat-data-provider';
 import {
   cn,
@@ -16,9 +15,8 @@ import type { TConversation, TMessage, TFeedback } from 'librechat-data-provider
 import type { NamedExoticComponent, ReactNode } from 'react';
 import { MessageAudioSlot, useMessagesHost } from '../../react/messages/host';
 import useGenerationsByLatest from '../../react/messages/generations';
-import { revealedQueuedTurnFamily } from '../../react/steer/atoms';
 import { hasEditablePart } from '../../core/parts/editableParts';
-import { useIsSubmitting } from '../../react/submission';
+import { ChatContext } from '../../react/chat/context';
 import { hoverButtonClasses } from './styles';
 import Feedback from './Feedback';
 import Fork from './Fork';
@@ -109,12 +107,13 @@ const HoverButtons = ({
   handleFeedback,
 }: THoverButtons): ReactNode => {
   const localize = useLocalize();
-  /** Subscribed here rather than passed down: a send toggles the rerun controls on
-   *  every row, and only this toolbar has to re-render for it. */
-  const isSubmitting = useIsSubmitting(index);
+  /** Read from the pane's chat contract here rather than passed down: a send toggles the
+   *  rerun controls on every row, and only this toolbar has to re-render for it. */
+  const isSubmitting = useContext(ChatContext)?.isSubmitting === true;
   const [isCopied, setIsCopied] = useState(false);
-  const getMessages = useMessagesHost().useGetMessages();
-  const pendingReveal = useAtomValue(revealedQueuedTurnFamily(conversation?.conversationId ?? ''));
+  const { useGetMessages, useHasPendingTurn } = useMessagesHost();
+  const getMessages = useGetMessages();
+  const hasPendingTurn = useHasPendingTurn(conversation?.conversationId ?? '');
 
   const endpoint = useMemo(() => {
     if (!conversation) {
@@ -151,7 +150,7 @@ const HoverButtons = ({
    *  continuation may race it, exactly as while a run is submitting. */
   const generationCapabilities = useGenerationsByLatest({
     isEditing,
-    isSubmitting: isSubmitting || pendingReveal != null,
+    isSubmitting: isSubmitting || hasPendingTurn,
     error: message.error,
     endpoint: endpoint ?? '',
     messageId: message.messageId,

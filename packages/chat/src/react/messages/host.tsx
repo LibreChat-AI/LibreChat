@@ -127,6 +127,8 @@ export interface MessagesHost {
   useMessageCopy: (input: MessageCopyInput) => MessageCopy;
   /** Reads the visible thread at call time; returns `undefined` outside a messages view. */
   useGetMessages: () => () => TMessage[] | undefined;
+  /** Whether a queued follow-up is about to start in this conversation, so no rerun races it. */
+  useHasPendingTurn: (conversationId: string) => boolean;
   /** Renders the app's read-aloud control, or `null` while read-aloud is off. */
   renderMessageAudio: (props: MessageAudioProps) => ReactNode;
   /**
@@ -187,7 +189,7 @@ const ignoreNearBottom: ReportNearBottom = () => undefined;
 const noMessages = (): TMessage[] | undefined => undefined;
 
 /** The host rows read outside any provider before an app registers one: locale clock, no slots,
- *  no forking, no copying, no thread, no read-aloud, inert scrolling. */
+ *  no forking, no copying, no thread, no queued turn, no read-aloud, inert scrolling. */
 const fallbackHost: MessagesHost = {
   useHour12: () => undefined,
   renderFiles: () => null,
@@ -195,6 +197,7 @@ const fallbackHost: MessagesHost = {
   useForkConversation: () => null,
   useMessageCopy: () => fallbackMessageCopy,
   useGetMessages: () => noMessages,
+  useHasPendingTurn: () => false,
   renderMessageAudio: () => null,
   useScrolling: useInertScrolling,
   useScreenshotTarget: () => useRef<HTMLDivElement>(null),

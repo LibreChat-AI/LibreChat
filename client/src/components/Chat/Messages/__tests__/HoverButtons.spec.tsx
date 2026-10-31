@@ -1,11 +1,10 @@
 import React from 'react';
-import { getDefaultStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
+import { ChatContext } from '@librechat/chat/react';
 import { RecoilRoot, type MutableSnapshot } from 'recoil';
 import { HoverButtons } from '@librechat/chat/components';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { isSubmittingFamily, resetSubmitting } from '@librechat/chat/react';
 import {
   Constants,
   ContentTypes,
@@ -13,6 +12,7 @@ import {
   type TConversation,
   type TMessage,
 } from 'librechat-data-provider';
+import type { ChatContract } from '@librechat/chat/react';
 import {
   MessagesOperationsContext,
   type MessagesOperations,
@@ -21,11 +21,7 @@ import { hasCopyableText } from '~/hooks/Messages/useCopyToClipboard';
 import '~/Providers/MessagesHostContext';
 import store from '~/store';
 
-const setSubmitting = (value: boolean) => getDefaultStore().set(isSubmittingFamily(0), value);
-
-afterEach(() => {
-  resetSubmitting(getDefaultStore());
-});
+const chatContract = (isSubmitting: boolean) => ({ index: 0, isSubmitting }) as ChatContract;
 
 const conversation = {
   conversationId: 'convo-1',
@@ -80,30 +76,30 @@ function renderHoverButtons({
     }
   };
 
-  setSubmitting(isSubmitting);
-
   const { container } = render(
     <QueryClientProvider client={queryClient}>
       <RecoilRoot initializeState={initializeState}>
         <MessagesOperationsContext.Provider
           value={{ getMessages: () => thread } as unknown as MessagesOperations}
         >
-          <MemoryRouter>
-            <HoverButtons
-              index={0}
-              isLast={isLast}
-              isEditing={false}
-              message={message}
-              conversation={targetConversation}
-              enterEdit={jest.fn()}
-              regenerate={jest.fn()}
-              handleContinue={jest.fn()}
-              copyToClipboard={jest.fn()}
-              getCanCopy={getCanCopy}
-              latestMessageId={latestMessageId}
-              handleFeedback={handleFeedback}
-            />
-          </MemoryRouter>
+          <ChatContext.Provider value={chatContract(isSubmitting)}>
+            <MemoryRouter>
+              <HoverButtons
+                index={0}
+                isLast={isLast}
+                isEditing={false}
+                message={message}
+                conversation={targetConversation}
+                enterEdit={jest.fn()}
+                regenerate={jest.fn()}
+                handleContinue={jest.fn()}
+                copyToClipboard={jest.fn()}
+                getCanCopy={getCanCopy}
+                latestMessageId={latestMessageId}
+                handleFeedback={handleFeedback}
+              />
+            </MemoryRouter>
+          </ChatContext.Provider>
         </MessagesOperationsContext.Provider>
       </RecoilRoot>
     </QueryClientProvider>,
@@ -581,7 +577,7 @@ describe('HoverButtons edit affordance', () => {
 
 /**
  * The row above these controls no longer re-renders when a send starts or settles,
- * so the rerun gate has to follow the pane's submission state in the store on its own.
+ * so the rerun gate has to follow the pane's submission state on its own.
  */
 describe('HoverButtons submission state', () => {
   const assistantMessage = {
@@ -591,6 +587,14 @@ describe('HoverButtons submission state', () => {
     isCreatedByUser: false,
     text: 'An earlier answer',
   } as TMessage;
+
+  let setSubmitting: (value: boolean) => void = () => undefined;
+  /** Holds the pane's chat contract; the toolbar element itself never changes. */
+  function SubmittingHost({ children }: { children: React.ReactNode }) {
+    const [submitting, setState] = React.useState(false);
+    setSubmitting = setState;
+    return <ChatContext.Provider value={chatContract(submitting)}>{children}</ChatContext.Provider>;
+  }
 
   it('withholds and restores rerun on a settled row as a send starts and ends', () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -619,7 +623,9 @@ describe('HoverButtons submission state', () => {
               } as unknown as MessagesOperations
             }
           >
-            <MemoryRouter>{buttons}</MemoryRouter>
+            <MemoryRouter>
+              <SubmittingHost>{buttons}</SubmittingHost>
+            </MemoryRouter>
           </MessagesOperationsContext.Provider>
         </RecoilRoot>
       </QueryClientProvider>,

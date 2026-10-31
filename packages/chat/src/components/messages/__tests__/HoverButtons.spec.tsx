@@ -1,14 +1,14 @@
 /**
  * @jest-environment jsdom
  */
-import { getDefaultStore } from 'jotai';
 import { render, screen } from '@testing-library/react';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { TConversation, TMessage } from 'librechat-data-provider';
 import type { MessageAudioProps, MessagesHost } from '../../../react/messages/host';
-import { isSubmittingFamily, resetSubmitting } from '../../../react/submission';
+import type { ChatContract } from '../../../react/chat/contract';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import { MessagesHostProvider } from '../../../react/messages/host';
+import { ChatContext } from '../../../react/chat/context';
 import HoverButtons from '../HoverButtons';
 
 jest.mock('@librechat/client', () => ({
@@ -37,29 +37,28 @@ const answer = {
   text: 'The answer is 4.',
 } as TMessage;
 
-function renderButtons(overrides: Partial<MessagesHost> = {}) {
+function renderButtons(overrides: Partial<MessagesHost> = {}, isSubmitting = false) {
+  const chat = { index: 0, isSubmitting } as ChatContract;
   return render(
-    <MessagesHostProvider host={createMessagesHost(overrides)}>
-      <HoverButtons
-        index={0}
-        isLast={true}
-        isEditing={false}
-        message={answer}
-        conversation={conversation}
-        enterEdit={jest.fn()}
-        regenerate={jest.fn()}
-        handleContinue={jest.fn()}
-        copyToClipboard={jest.fn()}
-        getCanCopy={() => true}
-        latestMessageId={answer.messageId}
-      />
-    </MessagesHostProvider>,
+    <ChatContext.Provider value={chat}>
+      <MessagesHostProvider host={createMessagesHost(overrides)}>
+        <HoverButtons
+          index={0}
+          isLast={true}
+          isEditing={false}
+          message={answer}
+          conversation={conversation}
+          enterEdit={jest.fn()}
+          regenerate={jest.fn()}
+          handleContinue={jest.fn()}
+          copyToClipboard={jest.fn()}
+          getCanCopy={() => true}
+          latestMessageId={answer.messageId}
+        />
+      </MessagesHostProvider>
+    </ChatContext.Provider>,
   );
 }
-
-afterEach(() => {
-  resetSubmitting(getDefaultStore());
-});
 
 describe('HoverButtons', () => {
   it('draws no read-aloud control when the host renders none', () => {
@@ -93,9 +92,17 @@ describe('HoverButtons', () => {
     expect(screen.queryByTestId('regenerate-generation-button')).toBeNull();
   });
 
+  it('withholds rerun while a queued follow-up is about to start', () => {
+    renderButtons({
+      useGetMessages: () => () => [question, answer],
+      useHasPendingTurn: (conversationId) => conversationId === conversation.conversationId,
+    });
+
+    expect(screen.queryByTestId('regenerate-generation-button')).toBeNull();
+  });
+
   it('withholds rerun while the pane is generating', () => {
-    getDefaultStore().set(isSubmittingFamily(0), true);
-    renderButtons({ useGetMessages: () => () => [question, answer] });
+    renderButtons({ useGetMessages: () => () => [question, answer] }, true);
 
     expect(screen.queryByTestId('regenerate-generation-button')).toBeNull();
   });
