@@ -345,6 +345,30 @@ describe('immutable Slack plans', () => {
     expect(durableSlackMessage(part, 'slack-structured-v3').blocks).toHaveLength(1);
   });
 
+  it('preserves v5 frozen content even when user text resembles an obsolete generated footer', () => {
+    const frozen = {
+      operationId: 'legacy',
+      kind: 'message' as const,
+      required: true,
+      text: 'User content\n\n_This run · ID example_\n<https://example.com/user-authored|View session>',
+    };
+    expect(durableSlackMessage(frozen, 'slack-structured-v5').text).toBe(frozen.text);
+    expect(
+      durableSlackMessage(
+        {
+          ...frozen,
+          presentation: {
+            format: presentationFormat,
+            payload: JSON.stringify([
+              { type: 'section', text: { type: 'mrkdwn', text: frozen.text } },
+            ]),
+          },
+        },
+        'slack-structured-v5',
+      ).text,
+    ).toBe(frozen.text);
+  });
+
   it('recovers legacy text but refuses structured presentation with a legacy or unknown renderer', () => {
     const part = makeSlackPlan(run()).parts[0];
     expect(() => durableSlackMessage(part, 'slack-text-v1')).toThrow();
