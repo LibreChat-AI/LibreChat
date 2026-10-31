@@ -61,7 +61,7 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
     owner: ResponseOwner,
     agentId?: string,
   ) {
-    if (binding.kind !== 'channel_run') return null;
+    if (binding.kind !== 'channel_run' || !keyId) return null;
     const [channelId, runId, extra] = binding.id.split('/');
     if (!channelId || !runId || extra != null) return null;
     const run = await deps.storage.read(owner.tenantId || '_', channelId, runId);
@@ -73,20 +73,21 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
       (agentId != null && run.agentId !== agentId)
     )
       return null;
-    const channel = await deps.getChannel(channelId);
-    if (
-      !channel ||
-      !(await hasChannelRunAuthority(channel, run, deps.resolvePrincipal)) ||
-      !(await isCurrent(run))
-    )
-      return null;
-    return run;
+    const [authorized, key] = await Promise.all([
+      deps
+        .getChannel(channelId)
+        .then((channel) =>
+          channel ? hasChannelRunAuthority(channel, run, deps.resolvePrincipal) : false,
+        ),
+      deps.getKey(keyId, run.principal.userId),
+    ]);
+    // A key read early must still be unexpired after the independent policy lookup finishes.
+    return authorized && eligibleKey(run, key) ? run : null;
   }
-  async function isCurrent(run: ChannelRunRecord): Promise<boolean> {
+  function eligibleKey(run: ChannelRunRecord, key: AgentApiKeyListItem | null): boolean {
     const execution = run.execution;
-    if (!execution?.apiKeyId) return true;
-    if (execution.protocol !== 'responses' || !execution.encryptedApiKey) return false;
-    const key = await deps.getKey(execution.apiKeyId, run.principal.userId);
+    if (!execution?.apiKeyId || execution.protocol !== 'responses' || !execution.encryptedApiKey)
+      return false;
     const binding = bindingFor(run);
     return Boolean(
       key &&
@@ -97,6 +98,12 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
           (Number.isFinite(new Date(key.expiresAt).getTime()) &&
             new Date(key.expiresAt).getTime() > now())),
     );
+  }
+  async function isCurrent(run: ChannelRunRecord): Promise<boolean> {
+    const execution = run.execution;
+    if (!execution?.apiKeyId) return true;
+    if (execution.protocol !== 'responses' || !execution.encryptedApiKey) return false;
+    return eligibleKey(run, await deps.getKey(execution.apiKeyId, run.principal.userId));
   }
   async function reveal(run: ChannelRunRecord): Promise<string> {
     const execution = run.execution;
@@ -188,6 +195,7 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
       const path = /^\/api\/agents\/v1\/responses\/(resp_[\w-]+)(\/cancel)?$/.exec(pathname);
       if (!path || (path[2] ? input.request.method !== 'POST' : input.request.method !== 'GET'))
         return false;
+      if (path[2] && !run.cancellationRequested) return false;
       const response = await deps.responses.read(owner, path[1]);
       return Boolean(
         response &&

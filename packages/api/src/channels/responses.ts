@@ -19,7 +19,7 @@ export interface ChannelResponseProjectionDependencies {
 
 /** Revoked channel authority can retire its exact response without recovering execution authority. */
 export function createChannelResponseRetirement(deps: {
-  storage: Pick<ResponseStorage, 'read'>;
+  storage: Pick<ResponseStorage, 'readCleanupIdentity'>;
   recovery: Pick<ChannelRunStorage, 'recoverResponse'>;
   retireResponse: (owner: ResponseOwner, responseId: string) => Promise<'stopped' | 'pending'>;
   now?: () => number;
@@ -47,16 +47,21 @@ export function createChannelResponseRetirement(deps: {
       userId: run.principal.userId,
       tenantId: run.tenantId === '_' ? undefined : run.tenantId,
     };
-    const stored = await deps.storage.read(owner, responseId);
+    const stored = await deps.storage.readCleanupIdentity(owner, responseId);
     if (
-      !stored ||
-      stored.agentId !== run.agentId ||
-      stored.requestKey !== `channel:${run.runId}` ||
-      stored.conversationId !== run.execution!.conversationId ||
-      stored.parentMessageId !== run.execution!.parentMessageId ||
-      (run.execution!.apiKeyId != null && stored.sourceKeyId !== run.execution!.apiKeyId)
+      stored &&
+      (stored.responseId !== responseId ||
+        stored.userId !== owner.userId ||
+        (stored.tenantId || undefined) !== (owner.tenantId || undefined) ||
+        stored.agentId !== run.agentId ||
+        stored.requestKey !== `channel:${run.runId}` ||
+        stored.conversationId !== run.execution!.conversationId ||
+        stored.parentMessageId !== run.execution!.parentMessageId ||
+        (run.execution!.apiKeyId != null && stored.sourceKeyId !== run.execution!.apiKeyId))
     )
       throw new ChannelExecutionError('execution_identity_changed');
+    // The private retirement owner resolves missing rows from cleanup/job identities;
+    // absence here never proves that a provider stopped.
     return deps.retireResponse(owner, responseId);
   };
 }
