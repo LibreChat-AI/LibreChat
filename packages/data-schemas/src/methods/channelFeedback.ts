@@ -345,6 +345,7 @@ export function createChannelFeedbackStorage(
       },
       async pendingChannelFeedbackEvents(tenantId, limit, now = Date.now()) {
         page(tenantId, limit);
+        // Rotation must remain fair even when the retry delay expires between scans.
         return events()
           .find({
             tenantId,
@@ -354,7 +355,7 @@ export function createChannelFeedbackStorage(
               { $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }] },
             ],
           })
-          .sort({ createdAt: 1 })
+          .sort({ updatedAt: 1, _id: 1 })
           .limit(limit)
           .session(session ?? null)
           .lean();
