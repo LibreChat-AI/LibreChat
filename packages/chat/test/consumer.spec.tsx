@@ -15,6 +15,8 @@ import {
   HoverButtons,
   MessagesView,
   SiblingSwitch,
+  ComposerField,
+  ComposerActions,
   getHeaderHoverLabel,
   EventSubagentActivityGroup,
 } from '@librechat/chat/components';
@@ -45,6 +47,7 @@ import type {
   ChatSurface,
   ChatContract,
   MessagesHost,
+  SteeringControls,
   MessagePartsHost,
 } from '@librechat/chat/react';
 import type { ReactElement } from 'react';
@@ -492,6 +495,53 @@ describe('a consumer built on the public entries', () => {
     expect(
       within(screen.getByRole('list', { name: 'Messages' })).getByText('Question'),
     ).toBeInTheDocument();
+  });
+
+  it('drafts in the composer field and offers send once there is text', () => {
+    const textAreaRef = { current: null as HTMLTextAreaElement | null };
+    function Composer(): ReactElement {
+      const [text, setText] = useState('');
+      return (
+        <ThemeProvider themeDefinition={clickHouseTheme} persistThemeDefinition={false}>
+          <ComposerField
+            textAreaRef={textAreaRef}
+            ariaLabel="Message"
+            textareaProps={{ value: text, onChange: (event) => setText(event.target.value) }}
+            value={text}
+            listening={false}
+            dictationActive={false}
+            locked={false}
+          />
+          <ComposerActions
+            text={text}
+            submitButtonRef={{ current: null }}
+            isSubmitting={false}
+            answersAsk={false}
+            hasEndpoint
+            steering={{ duringRunActive: false } as SteeringControls}
+            isNewConversation
+            getText={() => text}
+            onConsumed={() => undefined}
+            enterToSend
+            fileCount={0}
+            sendDisabled={false}
+            duringRunDisabled={false}
+            showStopButton={false}
+            setShowStopButton={() => undefined}
+            stop={() => undefined}
+            canStop
+            isPreparingFromUrl={false}
+          />
+        </ThemeProvider>
+      );
+    }
+    render(<Composer />);
+
+    const field = screen.getByRole('textbox', { name: 'Message' });
+    expect(textAreaRef.current).toBe(field);
+    expect(screen.getByTestId('send-button')).toBeDisabled();
+    fireEvent.change(field, { target: { value: 'Hello' } });
+    expect(screen.getByTestId('send-button')).toBeEnabled();
   });
 });
 
