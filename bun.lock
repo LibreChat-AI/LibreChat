@@ -55,7 +55,7 @@
         "@azure/storage-blob": "^12.30.0",
         "@google/genai": "^2.8.0",
         "@keyv/redis": "5.1.6",
-        "@librechat/agents": "^4.1.1",
+        "@librechat/agents": "^4.2.1",
         "@librechat/api": "*",
         "@librechat/data-schemas": "*",
         "@microsoft/microsoft-graph-client": "^3.0.7",
@@ -378,7 +378,7 @@
         "@azure/identity": "^4.14.0",
         "@azure/storage-blob": "^12.30.0",
         "@keyv/redis": "5.1.6",
-        "@librechat/agents": "^4.1.1",
+        "@librechat/agents": "^4.2.1",
         "@librechat/data-schemas": "*",
         "@modelcontextprotocol/sdk": "^1.32.1",
         "@opentelemetry/api": "^1.9.0",
@@ -1597,7 +1597,7 @@
 
     "@lezer/lr": ["@lezer/lr@1.4.2", "", { "dependencies": { "@lezer/common": "^1.0.0" } }, "sha512-pu0K1jCIdnQ12aWNaAVU5bzi7Bd1w54J3ECgANPmYLtQKP0HBj2cE/5coBD66MT10xbtIuUr7tg0Shbsvk0mDA=="],
 
-    "@librechat/agents": ["@librechat/agents@4.1.1", "", { "dependencies": { "@anthropic-ai/sdk": "^0.115.0", "@aws-sdk/client-bedrock-runtime": "^3.1075.0", "@langchain/anthropic": "1.5.2", "@langchain/aws": "^1.4.2", "@langchain/core": "1.2.8", "@langchain/deepseek": "^1.1.3", "@langchain/google-common": "2.2.0", "@langchain/google-gauth": "2.2.0", "@langchain/google-genai": "2.2.0", "@langchain/google-vertexai": "2.2.0", "@langchain/langgraph": "1.4.8", "@langchain/mistralai": "^1.2.0", "@langchain/openai": "1.5.8", "@langchain/textsplitters": "^1.0.1", "@langchain/xai": "^1.4.3", "@langfuse/core": "^5.10.1", "@langfuse/langchain": "^5.10.1", "@langfuse/otel": "^5.10.1", "@langfuse/tracing": "^5.10.1", "@opentelemetry/context-async-hooks": "^2.9.0", "@opentelemetry/sdk-node": "^0.220.0", "@types/diff": "^7.0.2", "ai-tokenizer": "^1.0.6", "axios": "^1.20.0", "cheerio": "^1.2.0", "diff": "^9.0.0", "dotenv": "^16.4.7", "https-proxy-agent": "^7.0.6", "mathjs": "^15.2.0", "nanoid": "^3.3.18", "okapibm25": "^1.4.1", "openai": "^6.46.0", "reova": "^0.4.1", "socks-proxy-agent": "^8.0.5", "uuid": "^11.1.1", "zod": "3.25.67", "zod-to-json-schema": "3.25.2", "zod-v4": "npm:zod@4.6.7" }, "peerDependencies": { "@anthropic-ai/sandbox-runtime": "^0.0.78" }, "optionalPeers": ["@anthropic-ai/sandbox-runtime"] }, "sha512-vbZcHgFPFox+crvvDwt2lBg6tJzl5ADOkzw6HgyOJlkOigScYjS51EGWS3sDoaemBtv4EndRNSlJSGQvJvW/iw=="],
+    "@librechat/agents": ["@librechat/agents@4.2.1", "", { "dependencies": { "@anthropic-ai/sdk": "^0.115.0", "@aws-sdk/client-bedrock-runtime": "^3.1075.0", "@langchain/anthropic": "1.5.2", "@langchain/aws": "^1.4.2", "@langchain/core": "1.2.8", "@langchain/deepseek": "^1.1.3", "@langchain/google-common": "2.2.0", "@langchain/google-gauth": "2.2.0", "@langchain/google-genai": "2.2.0", "@langchain/google-vertexai": "2.2.0", "@langchain/langgraph": "1.4.8", "@langchain/mistralai": "^1.2.0", "@langchain/openai": "1.5.8", "@langchain/textsplitters": "^1.0.1", "@langchain/xai": "^1.4.3", "@langfuse/core": "^5.10.1", "@langfuse/langchain": "^5.10.1", "@langfuse/otel": "^5.10.1", "@langfuse/tracing": "^5.10.1", "@opentelemetry/context-async-hooks": "^2.9.0", "@opentelemetry/sdk-node": "^0.220.0", "@types/diff": "^7.0.2", "ai-tokenizer": "^1.0.6", "axios": "^1.20.0", "cheerio": "^1.2.0", "diff": "^9.0.0", "dotenv": "^16.4.7", "https-proxy-agent": "^7.0.6", "mathjs": "^15.2.0", "nanoid": "^3.3.18", "okapibm25": "^1.4.1", "openai": "^6.46.0", "reova": "^0.4.1", "socks-proxy-agent": "^8.0.5", "uuid": "^11.1.1", "zod": "4.6.7", "zod-to-json-schema": "3.25.2" }, "peerDependencies": { "@anthropic-ai/sandbox-runtime": "^0.0.78" }, "optionalPeers": ["@anthropic-ai/sandbox-runtime"] }, "sha512-HDgD95i7Vx9cx/SqgV1LlQG4fS9ZixJANxFP6wfS8dBXJCeqY27j/lYwtmyswTo45Q7dDRTR6XnN/qYsMToAHg=="],
 
     "@librechat/api": ["@librechat/api@workspace:packages/api"],
 
@@ -5249,8 +5249,6 @@
 
     "zod-to-json-schema": ["zod-to-json-schema@3.25.2", "", { "peerDependencies": { "zod": "^3.25.28 || ^4" } }, "sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA=="],
 
-    "zod-v4": ["zod@4.6.7", "", {}, "sha512-g8W2D2kU6a8untc053fX1uVBKzM7yqAxW/3zwk83+6RyF2+SKOuV+c0wBDhUwzV1PaGapmZH+rmcUzPf+3CGwg=="],
-
     "zone.js": ["zone.js@0.16.2", "", {}, "sha512-Eky7p2Z1Ig3NnbfodSPoARCjKBSTFMnE/ACsP1L/XJEfY4SdOFce19BsUCWVwL6K5ABZFy5J3bjcMWffX+YM3Q=="],
 
     "zwitch": ["zwitch@2.0.4", "", {}, "sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A=="],
@@ -5370,8 +5368,6 @@
     "@librechat/agents/@opentelemetry/sdk-node": ["@opentelemetry/sdk-node@0.220.0", "", { "dependencies": { "@opentelemetry/api-logs": "0.220.0", "@opentelemetry/configuration": "0.220.0", "@opentelemetry/context-async-hooks": "2.9.0", "@opentelemetry/core": "2.9.0", "@opentelemetry/exporter-logs-otlp-grpc": "0.220.0", "@opentelemetry/exporter-logs-otlp-http": "0.220.0", "@opentelemetry/exporter-logs-otlp-proto": "0.220.0", "@opentelemetry/exporter-metrics-otlp-grpc": "0.220.0", "@opentelemetry/exporter-metrics-otlp-http": "0.220.0", "@opentelemetry/exporter-metrics-otlp-proto": "0.220.0", "@opentelemetry/exporter-prometheus": "0.220.0", "@opentelemetry/exporter-trace-otlp-grpc": "0.220.0", "@opentelemetry/exporter-trace-otlp-http": "0.220.0", "@opentelemetry/exporter-trace-otlp-proto": "0.220.0", "@opentelemetry/exporter-zipkin": "2.9.0", "@opentelemetry/instrumentation": "0.220.0", "@opentelemetry/otlp-exporter-base": "0.220.0", "@opentelemetry/otlp-grpc-exporter-base": "0.220.0", "@opentelemetry/propagator-b3": "2.9.0", "@opentelemetry/propagator-jaeger": "2.9.0", "@opentelemetry/resources": "2.9.0", "@opentelemetry/sdk-logs": "0.220.0", "@opentelemetry/sdk-metrics": "2.9.0", "@opentelemetry/sdk-trace": "2.9.0", "@opentelemetry/sdk-trace-base": "2.9.0", "@opentelemetry/sdk-trace-node": "2.9.0", "@opentelemetry/semantic-conventions": "^1.29.0" }, "peerDependencies": { "@opentelemetry/api": ">=1.3.0 <1.10.0" } }, "sha512-wHtGyHhSKHNH3fym33xRu4Ef/HXTFvX8eQ42xdQdEO9LYx9Y2qNyBDJytyqVlvmo6abWZlNYTUthuAGUMYqYnQ=="],
 
     "@librechat/agents/diff": ["diff@9.0.0", "", {}, "sha512-svtcdpS8CgJyqAjEQIXdb3OjhFVVYjzGAPO8WGCmRbrml64SPw/jJD4GoE98aR7r25A0XcgrK3F02yw9R/vhQw=="],
-
-    "@librechat/agents/zod": ["zod@3.25.67", "", {}, "sha512-idA2YXwpCdqUSKRCACDE6ItZD9TZzy3OZMtpfLoh6oPR47lipysRrJfjzMqFxQ3uJuUPyUeWe1r9vLH33xO/Qw=="],
 
     "@librechat/api/@librechat/code": ["@librechat/code@file:vendor/code", {}],
 
