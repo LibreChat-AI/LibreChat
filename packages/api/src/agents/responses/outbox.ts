@@ -89,7 +89,10 @@ export function createResponseDispatchOutbox(deps: {
               return;
             const kind = record.dispatchOutbox.kind;
             if (kind === 'resume' && !deps.resume) return;
-            const tokenId = kind === 'create' ? record.responseId : record.resume?.intentId;
+            const tokenId =
+              kind === 'create'
+                ? record.responseId
+                : (record.resume?.intentId ?? record.dispatchOutbox.id);
             if (record.dispatchOutbox.id !== tokenId || record.dispatchOutbox.state === 'settled')
               return;
             if (
