@@ -1,6 +1,6 @@
 import { Types } from 'mongoose';
 import { Run, Providers, GraphEvents } from '@librechat/agents';
-import { AIMessage, HumanMessage } from '@librechat/agents/langchain/messages';
+import { AIMessage, ToolMessage, HumanMessage } from '@librechat/agents/langchain/messages';
 import { Tools, MemoryScope, EModelEndpoint, AgentCapabilities } from 'librechat-data-provider';
 import type { FiltersConfig } from 'librechat-data-provider';
 import type { RuntimeProviderName } from '@librechat/agents';
@@ -9,7 +9,9 @@ import type { Response } from 'express';
 import type { ServerRequest } from '~/types';
 import {
   processMemory,
+  selectMemoryWindow,
   memoryInstructions,
+  MEMORY_REVIEW_REMINDER,
   formatMemoryContext,
   createMemoryProcessor,
   createMemoryTool,
@@ -467,6 +469,13 @@ describe('Memory Agent Header Resolution', () => {
     // For Bedrock, instructions should NOT be passed to graphConfig
     expect(runConfig.graphConfig.instructions).toBeUndefined();
     expect(runConfig.graphConfig.additional_instructions).toBeUndefined();
+
+    const { processStream } = (Run.create as jest.Mock).mock.results[0].value;
+    const [{ messages }] = processStream.mock.calls[0];
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toBe(
+      `test instructions\n\n# Existing memory:\nexisting memory\n\ntest chat content\n\n${MEMORY_REVIEW_REMINDER}`,
+    );
   });
 
   it('should pass instructions to graphConfig for non-Bedrock providers', async () => {
@@ -1385,4 +1394,104 @@ it('forwards generation cancellation into the automatic memory SDK run', async (
     expect.anything(),
     expect.objectContaining({ signal: controller.signal }),
   );
+});
+
+describe('processMemory review reminder', () => {
+  it('appends the reminder after the transcript for non-Bedrock providers', async () => {
+    await processMemory({
+      res: {} as Response,
+      userId: 'owner',
+      messageId: 'response',
+      conversationId: 'conversation',
+      messages: [new HumanMessage('# Current Chat:\n\nHuman: What are my campaigns?')],
+      memory: '',
+      instructions: 'Extract',
+      llmConfig: { provider: Providers.OPENAI, model: 'gpt-4o-mini' },
+      setMemory: jest.fn(),
+      deleteMemory: jest.fn(),
+    });
+
+    const runConfig = (Run.create as jest.Mock).mock.calls[0][0];
+    expect(runConfig.graphConfig.instructions).toBe('Extract');
+    const { processStream } = (Run.create as jest.Mock).mock.results[0].value;
+    const [{ messages }] = processStream.mock.calls[0];
+    expect(messages).toHaveLength(1);
+    expect(messages[0].content).toBe(
+      `# Current Chat:\n\nHuman: What are my campaigns?\n\n${MEMORY_REVIEW_REMINDER}`,
+    );
+  });
+});
+
+describe('selectMemoryWindow', () => {
+  const toolCall = (id: string, name: string) =>
+    new AIMessage({ content: '', tool_calls: [{ id, name, args: {} }] });
+  const toolResult = (id: string, content: string) =>
+    new ToolMessage({ content, tool_call_id: id });
+
+  it('drops tool exchanges so the window keeps the user turns', () => {
+    const window = selectMemoryWindow(
+      [
+        new HumanMessage('How many rows for Canada?'),
+        toolCall('1', 'submit_query'),
+        toolResult('1', '{"query_id":"q1"}'),
+        toolCall('2', 'get_query_status'),
+        toolResult('2', '{"state":"FINISHED"}'),
+        toolCall('3', 'get_query_results'),
+        toolResult('3', '[[95820092]]'),
+        new AIMessage('Canada has 95,820,092 rows.'),
+        new HumanMessage('Remember that I work on org 499'),
+      ],
+      5,
+    );
+
+    expect(window.map((message) => message.content)).toEqual([
+      'How many rows for Canada?',
+      'Canada has 95,820,092 rows.',
+      'Remember that I work on org 499',
+    ]);
+  });
+
+  it('starts a cut window at a user message', () => {
+    const window = selectMemoryWindow(
+      [
+        new HumanMessage('Message 1'),
+        new AIMessage('Response 1'),
+        new HumanMessage('Message 2'),
+        new AIMessage('Response 2'),
+        new HumanMessage('Message 3'),
+      ],
+      4,
+    );
+
+    expect(window.map((message) => message.content)).toEqual([
+      'Message 2',
+      'Response 2',
+      'Message 3',
+    ]);
+  });
+
+  it('keeps the text of AI messages that also call tools, without the call payload', () => {
+    const message = new AIMessage({
+      content: [
+        { type: 'text', text: 'Let me check the status.' },
+        { type: 'tool_use', id: '1', name: 'get_query_status', input: {} },
+      ],
+      tool_calls: [{ id: '1', name: 'get_query_status', args: {} }],
+    });
+
+    const [, kept] = selectMemoryWindow([new HumanMessage('Status?'), message], 5);
+
+    expect(kept._getType()).toBe('ai');
+    expect(kept.content).toBe('Let me check the status.');
+    expect((kept as AIMessage).tool_calls ?? []).toHaveLength(0);
+  });
+
+  it('returns messages that fit the window unchanged', () => {
+    const messages = [new AIMessage('Welcome!'), new HumanMessage('Hi')];
+
+    const window = selectMemoryWindow(messages, 5);
+
+    expect(window).toEqual(messages);
+    expect(window[0]).toBe(messages[0]);
+  });
 });

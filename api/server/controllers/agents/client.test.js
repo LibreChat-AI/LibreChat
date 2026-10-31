@@ -8532,6 +8532,35 @@ describe('AgentClient - titleConvo', () => {
       expect(processedMessage.content).not.toContain('Response 1');
     });
 
+    it('should keep user turns in the window when the history contains tool calls', async () => {
+      const {
+        AIMessage,
+        ToolMessage,
+        HumanMessage,
+      } = require('@librechat/agents/langchain/messages');
+      const toolCall = (id) =>
+        new AIMessage({ content: '', tool_calls: [{ id, name: 'get_query_status', args: {} }] });
+      const messages = [
+        new HumanMessage('Remember that I work on org 499'),
+        toolCall('1'),
+        new ToolMessage({ content: 'QUEUED', tool_call_id: '1' }),
+        toolCall('2'),
+        new ToolMessage({ content: 'FINISHED', tool_call_id: '2' }),
+        new AIMessage('Noted.'),
+      ];
+
+      // Window size is set to 3 in mockReq
+      await client.runMemory(messages);
+
+      expect(mockProcessMemory).toHaveBeenCalledTimes(1);
+      const [[processedMessage], inspectionMessages] = mockProcessMemory.mock.calls[0];
+      expect(processedMessage.content).toContain('Human: Remember that I work on org 499');
+      expect(processedMessage.content).toContain('AI: Noted.');
+      expect(processedMessage.content).not.toContain('get_query_status');
+      expect(processedMessage.content).not.toContain('Tool:');
+      expect(inspectionMessages).toHaveLength(2);
+    });
+
     it('should cap memory input tokens and preserve recent content', async () => {
       const { HumanMessage, AIMessage } = require('@librechat/agents/langchain/messages');
       mockReq.config.memory.maxInputTokens = 12;
