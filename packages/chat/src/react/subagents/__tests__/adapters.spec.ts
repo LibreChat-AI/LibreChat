@@ -1,12 +1,11 @@
 import { ContentTypes } from 'librechat-data-provider';
-import { initSubagentAggregatorState, initSubagentTickerState } from '@librechat/chat';
 import type {
   SubagentThreadView,
   SubagentUpdateEvent,
   TMessageContentParts,
   FullToolCall,
 } from 'librechat-data-provider';
-import type { ChildConversationTurn } from './adapters';
+import type { ChildConversationTurn } from '../adapters';
 import {
   adaptDurableThreadActivity,
   adaptDurableThreadConversation,
@@ -14,8 +13,9 @@ import {
   MAX_RETAINED_MOVING_WINDOW_TURNS,
   mergeChildConversationTurns,
   retainBoundedMovingWindowTurns,
-} from './adapters';
-import { aggregateSubagentContent } from 'test/subagents';
+} from '../adapters';
+import { initSubagentAggregatorState, initSubagentTickerState } from '../../../core';
+import { aggregateSubagentContent } from '../../../core/__fixtures__/subagents';
 
 describe('child activity adapters', () => {
   it('passes child dispatch and completed durations to the generic tool card', () => {

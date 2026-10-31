@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAtom } from 'jotai';
-import { activeSubagentPanel } from '@librechat/chat/react';
 import { OGDialog, OGDialogContent, OGDialogHeader, OGDialogTitle } from '@librechat/client';
+import {
+  activeSubagentPanel,
+  adaptLivePersistedActivity,
+  resolveSubagentAgentId,
+} from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import {
   isSelfSpawn as isSelfSpawnType,
@@ -13,8 +17,6 @@ import {
 import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
 import { SubagentActivityScrollSurface } from './SubagentActivity';
 import SubagentConversation from './SubagentConversation';
-import { adaptLivePersistedActivity } from './adapters';
-import { resolveSubagentAgentId } from './identity';
 import { useAgentsMapContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
 

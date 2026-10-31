@@ -1,4 +1,4 @@
-import { resolveSubagentAgentId } from './identity';
+import { resolveSubagentAgentId } from '../identity';
 
 describe('resolveSubagentAgentId', () => {
   const agent = { subagentKind: 'agent' as const, subagentAgentId: 'agent-1' };

@@ -1,4 +1,3 @@
-import { createStreamState, reduceStep, applySteerPart } from '@librechat/chat';
 import {
   ContentTypes,
   EModelEndpoint,
@@ -14,7 +13,8 @@ import type {
   FullToolCall,
   PartMetadata,
 } from 'librechat-data-provider';
-import type { StreamState, StepContext } from '@librechat/chat';
+import type { StreamState, StepContext } from '../../core';
+import { createStreamState, reduceStep, applySteerPart } from '../../core';
 import { isLiveSubagentStatus } from './status';
 
 export type RecoveredContent = {
@@ -211,7 +211,7 @@ function applyRecoveredContent(
 export const recoveredToolPart = (
   snapshot: SubagentTaskContentSnapshot,
   params: { partIndex: number; toolCallId?: string; stepId?: string; agentId?: string },
-) => {
+): { partIndex: number; tool_call: FullToolCall } | null => {
   const matches = (index: number) => {
     const part = snapshot.content[index];
     if (part?.type !== ContentTypes.TOOL_CALL) return false;

@@ -9,6 +9,9 @@ import {
   subagentProgressKey,
   useSubagentProgress,
   useToolCallIntent,
+  resolveSubagentAgentId,
+  subagentStatusLabelKey,
+  getSubagentPrompt,
 } from '@librechat/chat/react';
 import type {
   PartMetadata,
@@ -20,10 +23,7 @@ import type { SubagentContentPreview } from '@librechat/chat/react';
 import type { SubagentTickerLine } from '@librechat/chat';
 import { useParentSubagents } from '~/components/Chat/Subagents/ParentSubagentsProvider';
 import { isSelfSpawn as isSelfSpawnType } from '~/components/Chat/Subagents/author';
-import { resolveSubagentAgentId } from '~/components/Chat/Subagents/identity';
-import { subagentStatusLabelKey } from '~/components/Chat/Subagents/status';
 import { useOpenSubagentPanel } from '~/components/Chat/Subagents/surface';
-import { getSubagentPrompt } from '~/components/Chat/Subagents/prompt';
 import { MessageContext } from '~/Providers/MessageContext';
 import { useShareContext } from '~/Providers/ShareContext';
 import MessageIcon from '~/components/Share/MessageIcon';
