@@ -1,5 +1,7 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
+import { channelGatewayPolicySchema } from 'librechat-data-provider';
+import type { ChannelGatewayPolicy } from 'librechat-data-provider';
 
 const identifier = z
   .string()
@@ -7,10 +9,6 @@ const identifier = z
   .max(256)
   .regex(/^[^/\\?#\s:]+$/);
 const positive = (fallback: number) => z.coerce.number().int().positive().default(fallback);
-const flag = z
-  .enum(['true', 'false'])
-  .default('false')
-  .transform((value) => value === 'true');
 const environment = z.object({
   PORT: positive(8080).refine((value) => value <= 65535),
   LISTEN_HOST: z
@@ -28,18 +26,27 @@ const environment = z.object({
     .max(40)
     .regex(/^[^<>|\p{Cc}]+$/u)
     .default('LibreChat'),
-  SLACK_TRANSPORT: z.enum(['socket_mode', 'webhook']).default('webhook'),
+  /** Optional deployment assertion; the service policy selects the actual ingress. */
+  SLACK_TRANSPORT: z.enum(['socket_mode', 'webhook']).optional(),
   SLACK_APP_TOKEN: z.string().optional(),
   SLACK_API_BASE_URL: z.url().default('https://slack.com/api/'),
-  SLACK_NATIVE_SESSIONS: flag,
-  SLACK_LIFECYCLE_REACTIONS: flag,
   API_CALL_TIMEOUT_MS: positive(10000),
   AGENT_INVOKE_TIMEOUT_MS: positive(120000),
-  SLACK_SIGNATURE_TOLERANCE_SECS: positive(300),
 });
 export type GatewayConfig = z.infer<typeof environment>;
+export type GatewayRuntimeConfig = GatewayConfig & {
+  SLACK_TRANSPORT: ChannelGatewayPolicy['transport'];
+};
 
 export function loadConfig(env: NodeJS.ProcessEnv): GatewayConfig {
+  if (
+    ['SLACK_NATIVE_SESSIONS', 'SLACK_LIFECYCLE_REACTIONS', 'SLACK_SIGNATURE_TOLERANCE_SECS'].some(
+      (key) => env[key] !== undefined,
+    )
+  )
+    throw new Error(
+      'Configure gateway features and signature policy in librechat.yaml channel settings',
+    );
   const input = {
     ...env,
     CHANNEL_TENANT_ID: env.CHANNEL_TENANT_ID ?? env.SLACK_SOCKET_TENANT_ID,
@@ -72,7 +79,20 @@ export function loadConfig(env: NodeJS.ProcessEnv): GatewayConfig {
     )
       throw new Error('Invalid gateway service URL');
   }
-  if (config.SLACK_TRANSPORT === 'socket_mode' && !config.SLACK_APP_TOKEN)
-    throw new Error('SLACK_APP_TOKEN is required for Socket Mode');
   return config;
+}
+
+/** Bootstrap settings cannot override the server's current installation/ingress policy. */
+export function resolveGatewayConfig(
+  config: GatewayConfig,
+  value: ChannelGatewayPolicy,
+): GatewayRuntimeConfig {
+  const parsed = channelGatewayPolicySchema.safeParse(value);
+  if (!parsed.success) throw new Error('Invalid channel gateway policy');
+  const policy = parsed.data;
+  if (config.SLACK_TRANSPORT && config.SLACK_TRANSPORT !== policy.transport)
+    throw new Error('Gateway transport does not match channel policy');
+  if (policy.transport === 'socket_mode' && !config.SLACK_APP_TOKEN)
+    throw new Error('SLACK_APP_TOKEN is required for Socket Mode');
+  return { ...config, SLACK_TRANSPORT: policy.transport };
 }

@@ -1202,6 +1202,26 @@ export const CHANNEL_DELIVERY_PARTS_HARD_MAX = 100;
 export const CHANNEL_ARTIFACT_FILES_HARD_MAX = 20;
 export const CHANNEL_ARTIFACT_READ_TIMEOUT_HARD_MAX_MS = 60_000;
 
+/** One policy controls installation, ingress and optional Slack effects across gateway replicas. */
+export const channelGatewayPolicySchema = z.object({
+  transport: z.enum(['socket_mode', 'webhook']),
+  nativeSessions: z.boolean(),
+  lifecycleReactions: z.boolean(),
+  signatureToleranceSeconds: z.number().int().min(1).max(300),
+});
+export type ChannelGatewayPolicy = z.infer<typeof channelGatewayPolicySchema>;
+export const DEFAULT_CHANNEL_GATEWAY_POLICY: ChannelGatewayPolicy = {
+  transport: 'socket_mode',
+  nativeSessions: false,
+  lifecycleReactions: false,
+  signatureToleranceSeconds: 300,
+};
+export const CHANNEL_GATEWAY_POLICY_VERSION = 1;
+export const channelGatewayWirePolicySchema = channelGatewayPolicySchema.extend({
+  version: z.literal(CHANNEL_GATEWAY_POLICY_VERSION),
+});
+export type ChannelGatewayWirePolicy = z.infer<typeof channelGatewayWirePolicySchema>;
+
 /** Storage work per claim transaction; shared by configuration and injected storage defaults. */
 export const channelStorageConfigSchema = z.object({
   erasureBatchSize: z.number().int().min(1).max(1000).default(250),
@@ -1222,7 +1242,18 @@ export type ChannelStorageConfig = z.infer<typeof channelStorageConfigSchema>;
 /** Channel runtime and operator policy; execution remains disabled by default. */
 export const channelConfigSchema = channelStorageConfigSchema.extend({
   enabled: z.boolean().default(false),
-  transport: z.enum(['socket_mode', 'webhook']).default('socket_mode'),
+  transport: channelGatewayPolicySchema.shape.transport.default(
+    DEFAULT_CHANNEL_GATEWAY_POLICY.transport,
+  ),
+  nativeSessions: channelGatewayPolicySchema.shape.nativeSessions.default(
+    DEFAULT_CHANNEL_GATEWAY_POLICY.nativeSessions,
+  ),
+  lifecycleReactions: channelGatewayPolicySchema.shape.lifecycleReactions.default(
+    DEFAULT_CHANNEL_GATEWAY_POLICY.lifecycleReactions,
+  ),
+  signatureToleranceSeconds: channelGatewayPolicySchema.shape.signatureToleranceSeconds.default(
+    DEFAULT_CHANNEL_GATEWAY_POLICY.signatureToleranceSeconds,
+  ),
   gatewayUrl: z.string().url().optional(),
   ticketLifetimeMs: z
     .number()

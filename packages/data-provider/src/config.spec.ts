@@ -3313,6 +3313,44 @@ describe('channel erasure configuration', () => {
 });
 
 describe('complete channel operator configuration', () => {
+  it('owns gateway feature and signature policy with behavior-preserving defaults', () => {
+    expect(agentsEndpointSchema.parse({ channels: {} }).channels).toMatchObject({
+      transport: 'socket_mode',
+      nativeSessions: false,
+      lifecycleReactions: false,
+      signatureToleranceSeconds: 300,
+    });
+    expect(
+      configSchema.parse({
+        version: '1.2.1',
+        endpoints: {
+          agents: {
+            channels: {
+              enabled: true,
+              transport: 'webhook',
+              nativeSessions: true,
+              lifecycleReactions: true,
+              signatureToleranceSeconds: 60,
+            },
+          },
+        },
+      }).endpoints?.agents?.channels,
+    ).toMatchObject({
+      transport: 'webhook',
+      nativeSessions: true,
+      lifecycleReactions: true,
+      signatureToleranceSeconds: 60,
+    });
+  });
+  it.each([
+    { nativeSessions: 'true' },
+    { lifecycleReactions: 'false' },
+    { signatureToleranceSeconds: 0 },
+    { signatureToleranceSeconds: 301 },
+    { signatureToleranceSeconds: 1.5 },
+  ])('rejects malformed shared gateway policy %p', (channels) => {
+    expect(agentsEndpointSchema.safeParse({ channels }).success).toBe(false);
+  });
   it('keeps channel execution disabled by default and accepts explicit enablement with runtime limits', () => {
     expect(agentsEndpointSchema.parse({ channels: {} }).channels?.enabled).toBe(false);
     const parsed = configSchema.parse({

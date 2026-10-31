@@ -1,13 +1,5 @@
-import type { AgentChannel, ResponseReviewView } from 'librechat-data-provider';
-
-export interface ChannelBundle {
-  channel: AgentChannel & {
-    revision: string;
-    slack: { teamId: string; appId: string; botUserId: string };
-  };
-  credentials: { botToken: string; signingSecret?: string };
-  agent: { id: string; name?: string };
-}
+import type { ResponseReviewView } from 'librechat-data-provider';
+export type { ChannelServiceBundle as ChannelBundle } from 'librechat-data-provider';
 export type {
   ChannelRunLease as Lease,
   ChannelRunLeaseRenewal as LeaseRenewal,

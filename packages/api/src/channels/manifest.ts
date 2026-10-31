@@ -1,19 +1,10 @@
-export interface SlackChannelManifest {
-  display_information: { name: string };
-  features: {
-    bot_user: { display_name: string };
-    agent_view: { agent_description: string };
-    app_home: { messages_tab_enabled: true; messages_tab_read_only_enabled: false };
-  };
-  oauth_config: { scopes: { bot: string[] } };
-  settings: {
-    socket_mode_enabled: boolean;
-    event_subscriptions: { bot_events: string[]; request_url?: string };
-    interactivity: { is_enabled: boolean; request_url?: string };
-    org_deploy_enabled: false;
-    token_rotation_enabled: false;
-  };
-}
+import {
+  DEFAULT_CHANNEL_GATEWAY_POLICY,
+  SLACK_CHANNEL_BOT_SCOPES,
+  SLACK_CHANNEL_BOT_EVENTS,
+} from 'librechat-data-provider';
+import type { SlackChannelManifest } from 'librechat-data-provider';
+export type { SlackChannelManifest } from 'librechat-data-provider';
 
 /** Declarative installation requirements only; generating a manifest grants no Slack access. */
 export function buildSlackChannelManifest(input: {
@@ -23,7 +14,7 @@ export function buildSlackChannelManifest(input: {
   transport?: 'socket_mode' | 'webhook';
   gatewayUrl?: string;
 }): SlackChannelManifest {
-  const socket = input.transport !== 'webhook';
+  const socket = (input.transport ?? DEFAULT_CHANNEL_GATEWAY_POLICY.transport) === 'socket_mode';
   let gateway: string | undefined;
   if (!socket) {
     const url = new URL(input.gatewayUrl ?? '');
@@ -50,27 +41,13 @@ export function buildSlackChannelManifest(input: {
     },
     oauth_config: {
       scopes: {
-        bot: [
-          'app_mentions:read',
-          'chat:write',
-          'reactions:read',
-          'reactions:write',
-          'files:write',
-          'im:write',
-          'im:history',
-        ],
+        bot: [...SLACK_CHANNEL_BOT_SCOPES],
       },
     },
     settings: {
       socket_mode_enabled: socket,
       event_subscriptions: {
-        bot_events: [
-          'app_mention',
-          'message.im',
-          'agent_session_stopped',
-          'reaction_added',
-          'reaction_removed',
-        ],
+        bot_events: [...SLACK_CHANNEL_BOT_EVENTS],
         ...(!socket ? { request_url: `${gateway}/slack/events/${binding}` } : {}),
       },
       interactivity: {

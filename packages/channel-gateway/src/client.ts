@@ -1,5 +1,8 @@
 import { createHash } from 'node:crypto';
-import { CHANNEL_RUN_MAX_JSON_BYTES } from 'librechat-data-provider';
+import {
+  CHANNEL_RUN_MAX_JSON_BYTES,
+  channelGatewayWirePolicySchema,
+} from 'librechat-data-provider';
 import type {
   ChannelRunActor,
   ChannelRunAdmission,
@@ -152,7 +155,9 @@ export class ChannelClient {
       channel.agentId !== agent.id
     )
       throw new Error('Invalid active channel binding');
-    return value;
+    const policy = channelGatewayWirePolicySchema.safeParse(value.gateway);
+    if (!policy.success) throw new Error('Unsupported channel gateway policy');
+    return { ...value, gateway: policy.data };
   }
   async runs<T>(suffix: string, body: object, signal?: AbortSignal, empty?: T): Promise<T> {
     return this.request<T>(this.root + '/runs' + suffix, body, signal, empty);

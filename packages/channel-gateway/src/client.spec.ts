@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   CHANNEL_RUN_MAX_JSON_BYTES,
+  DEFAULT_CHANNEL_GATEWAY_POLICY,
   CHANNEL_DELIVERY_TEXT_MAX_CHARS,
   CHANNEL_DELIVERY_PARTS_HARD_MAX,
   CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES,
@@ -46,6 +47,7 @@ const bundle: ChannelBundle = {
   },
   agent: { id: 'agent-1' },
   credentials: { botToken: 'private-slack-token' },
+  gateway: { version: 1, ...DEFAULT_CHANNEL_GATEWAY_POLICY },
 };
 const run: ChannelRunView = {
   runId: 'run-1',
@@ -66,6 +68,20 @@ const run: ChannelRunView = {
 };
 
 describe('ChannelClient service boundary', () => {
+  test.each([
+    undefined,
+    { ...bundle.gateway, version: 2 },
+    { version: 1 },
+    { ...bundle.gateway, nativeSessions: 'true' },
+    { ...bundle.gateway, signatureToleranceSeconds: 301 },
+  ])('rejects missing or unsupported authoritative gateway policy %#', async (gateway) => {
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockImplementation(async () => json({ ...bundle, gateway }));
+    await expect(new ChannelClient(config, transport).channel()).rejects.toThrow(
+      'Unsupported channel gateway policy',
+    );
+  });
   test('returns a valid worker-bound claim', async () => {
     const lease = { run, fence, leaseExpiresAt: Date.now() + 60_000 };
     const transport = jest

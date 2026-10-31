@@ -45,6 +45,7 @@ export interface ChannelLaneRecord {
   activeRunId?: string;
   conversationId?: string;
   responseId?: string;
+  stopObservation?: { eventAt: number; before: number; runId?: string; epoch?: number };
 }
 
 export function createChannelRunModel(
@@ -169,6 +170,12 @@ export function createChannelLaneModel(
       activeRunId: String,
       conversationId: String,
       responseId: String,
+      stopObservation: {
+        type: new Schema(
+          { eventAt: Number, before: Number, runId: String, epoch: Number },
+          { _id: false },
+        ),
+      },
     },
     { timestamps: true },
   );

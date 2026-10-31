@@ -32,6 +32,18 @@ const envelopeSchema = z.object({
 });
 
 export type SlackEnvelope = z.infer<typeof envelopeSchema>;
+export const SLACK_REQUEST_MAX_BYTES = 1024 * 1024;
+export type SlackWebhookRequest =
+  | { kind: 'challenge'; challenge: string }
+  | { kind: 'event'; envelope: SlackEnvelope }
+  | { kind: 'interaction'; payload: unknown };
+export type SlackWebhookResult =
+  | { ok: true; request: SlackWebhookRequest }
+  | {
+      ok: false;
+      status: 400 | 401 | 413;
+      code: 'invalid_signature' | 'invalid_payload' | 'payload_too_large';
+    };
 export type NormalizedEvent =
   | { kind: 'message'; admission: ChannelRunAdmission }
   | { kind: 'reaction'; reaction: ChannelReactionEvent }
@@ -79,6 +91,56 @@ export function parseEnvelope(body: unknown, bundle: ChannelBundle): SlackEnvelo
   )
     throw new Error('Slack workspace or application mismatch');
   return envelope;
+}
+
+/** Every webhook payload, including installation challenges, must authenticate its original bytes. */
+export function parseWebhookRequest(
+  body: Buffer,
+  headers: { signature?: unknown; timestamp?: unknown; contentType?: unknown },
+  bundle: ChannelBundle,
+  interactive: boolean,
+  now = Date.now(),
+): SlackWebhookResult {
+  if (body.byteLength > SLACK_REQUEST_MAX_BYTES)
+    return { ok: false, status: 413, code: 'payload_too_large' };
+  if (
+    typeof headers.signature !== 'string' ||
+    typeof headers.timestamp !== 'string' ||
+    !verifySignature(
+      body,
+      headers.signature,
+      headers.timestamp,
+      bundle.credentials.signingSecret ?? '',
+      bundle.gateway.signatureToleranceSeconds,
+      now,
+    )
+  )
+    return { ok: false, status: 401, code: 'invalid_signature' };
+  if (bundle.gateway.transport !== 'webhook')
+    return { ok: false, status: 400, code: 'invalid_payload' };
+  try {
+    if (interactive) {
+      if (
+        typeof headers.contentType !== 'string' ||
+        headers.contentType.split(';')[0].trim() !== 'application/x-www-form-urlencoded'
+      )
+        return { ok: false, status: 400, code: 'invalid_payload' };
+      const form = new URLSearchParams(body.toString());
+      if (form.getAll('payload').length !== 1)
+        return { ok: false, status: 400, code: 'invalid_payload' };
+      const payload: unknown = JSON.parse(form.get('payload') ?? '');
+      return { ok: true, request: { kind: 'interaction', payload } };
+    }
+    const value: unknown = JSON.parse(body.toString());
+    const challenge = z
+      .object({ type: z.literal('url_verification'), challenge: z.string().min(1).max(2048) })
+      .safeParse(value);
+    if (challenge.success)
+      return { ok: true, request: { kind: 'challenge', challenge: challenge.data.challenge } };
+    return { ok: true, request: { kind: 'event', envelope: parseEnvelope(value, bundle) } };
+  } catch {
+    return { ok: false, status: 400, code: 'invalid_payload' };
+  }
 }
 
 export function normalizeEvent(

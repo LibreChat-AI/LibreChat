@@ -181,7 +181,16 @@ describe('createEndpointsConfigService', () => {
       'exposes only channel availability to the agent builder when enabled=%s',
       async (enabled) => {
         const channels =
-          enabled == null ? undefined : { enabled, leaseMs: 60_000, cleanup: { batchSize: 25 } };
+          enabled == null
+            ? undefined
+            : {
+                enabled,
+                leaseMs: 60_000,
+                cleanup: { batchSize: 25 },
+                nativeSessions: true,
+                lifecycleReactions: true,
+                signatureToleranceSeconds: 60,
+              };
         const deps = createMockDeps({
           loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
             [EModelEndpoint.agents]: { userProvide: false, order: 0 },

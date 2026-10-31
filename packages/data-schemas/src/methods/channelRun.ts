@@ -74,6 +74,12 @@ export interface ChannelRunStorage {
   ): Promise<boolean>;
   read(tenantId: string, channelId: string, runId: string): Promise<ChannelRunRecord | null>;
   readActiveThread(scope: ChannelLaneScope, before: number): Promise<ChannelRunRecord | null>;
+  /** Persist one click's immutable target/cutoff; null means no eligible retained target. */
+  observeThreadStop(
+    scope: ChannelLaneScope,
+    eventAt: number,
+    observedAt: number,
+  ): Promise<{ run: ChannelRunRecord; before: number } | null>;
   prepareExecution(
     tenantId: string,
     fence: ChannelRunFence,
@@ -1053,6 +1059,67 @@ export function createChannelRunStorage(
           receivedAt: { $lte: before },
         })
         .lean();
+    },
+    async observeThreadStop(scope, eventAt, observedAt) {
+      if (!Number.isSafeInteger(eventAt) || eventAt <= 0 || !Number.isFinite(observedAt))
+        throw new ChannelRunConflict('invalid_transition');
+      const { tenantId, channelId } = scope;
+      const laneId = laneKey(scope);
+      return transaction(async (session) => {
+        const lane = await lanes().findOne({ tenantId, channelId, laneId }).session(session).lean();
+        let observation = lane?.stopObservation;
+        if (observation && observation.eventAt > eventAt) return null;
+        if (!observation || observation.eventAt < eventAt) {
+          const before = Math.min(eventAt, observedAt);
+          const run = lane?.activeRunId
+            ? await runs()
+                .findOne({
+                  tenantId,
+                  channelId,
+                  laneId,
+                  runId: lane.activeRunId,
+                  state: { $in: ['queued', 'executing', 'requires_action'] },
+                  claimCheckedAt: { $lte: before },
+                  receivedAt: { $lte: before },
+                })
+                .session(session)
+                .lean()
+            : null;
+          observation = {
+            eventAt,
+            before,
+            ...(run ? { runId: run.runId, epoch: run.leaseEpoch } : {}),
+          };
+          // Persist even absence: a retried click must not acquire work admitted later.
+          await lanes().updateOne(
+            { tenantId, laneId },
+            {
+              $set: { stopObservation: observation },
+              $setOnInsert: {
+                channelId,
+                userId: scope.principal.userId,
+                nextSequence: 0,
+              },
+            },
+            { upsert: true, session },
+          );
+        }
+        if (!observation.runId || observation.epoch == null) return null;
+        const run = await runs()
+          .findOne({
+            tenantId,
+            channelId,
+            laneId,
+            runId: observation.runId,
+            leaseEpoch: observation.epoch,
+            state: { $in: ['queued', 'executing', 'requires_action'] },
+            claimCheckedAt: { $lte: observation.before },
+            receivedAt: { $lte: observation.before },
+          })
+          .session(session)
+          .lean();
+        return run ? { run, before: observation.before } : null;
+      });
     },
     async requestCancel(scope, runId, observed) {
       const { tenantId, channelId } = scope;
