@@ -12,7 +12,7 @@ import type {
   ResponseAccounting,
 } from 'librechat-data-provider';
 
-export const rendererVersion = 'slack-structured-v5';
+export const rendererVersion = 'slack-structured-v6';
 export const presentationFormat = 'slack-blocks-v1';
 export const artifactFailureNotice =
   'One or more attachments could not be confirmed. The answer is preserved; uncertain uploads will not be duplicated automatically.';
@@ -20,6 +20,7 @@ const chunkLimit = 39_000;
 const presentationLimit = 64_000;
 const supportedStructured = new Set([
   rendererVersion,
+  'slack-structured-v5',
   'slack-structured-v4',
   'slack-structured-v3',
   'slack-structured-v2',
@@ -51,7 +52,7 @@ const blockSchema = z.discriminatedUnion('type', [
   z.strictObject({ type: z.literal('markdown'), text: boundedText(12_000) }),
   z.strictObject({
     type: z.literal('section'),
-    text: text('mrkdwn', 3000),
+    text: z.union([text('mrkdwn', 3000), text('plain_text', 3000)]),
     expand: z.boolean().optional(),
   }),
   z.strictObject({ type: z.literal('header'), text: text('plain_text', 150) }),
@@ -290,6 +291,91 @@ export function chunkText(value: string, limit: number): string[] {
   return chunks;
 }
 
+/** Recognize wire-format atoms before enforcing Slack's per-section byte limit. */
+function mrkdwnChunks(value: string, limit: number): string[] | null {
+  const atoms = /<[^<>\n]+>|&(?:amp|lt|gt);|`+|[*_~]/g;
+  const chunks: string[] = [];
+  let chunk = '';
+  let bytes = 0;
+  let cursor = 0;
+  const addText = (text: string) => {
+    for (const character of text) {
+      const size = Buffer.byteLength(character);
+      if (bytes + size > limit) {
+        chunks.push(chunk);
+        chunk = '';
+        bytes = 0;
+      }
+      chunk += character;
+      bytes += size;
+    }
+  };
+  let match: RegExpExecArray | null;
+  while ((match = atoms.exec(value))) {
+    let atom = match[0];
+    let end = atoms.lastIndex;
+    if (/^[`*_~]/.test(atom)) {
+      // A bounded search avoids rescanning an unbounded sequence of unmatched delimiters.
+      const window = value.slice(end, end + limit + 1);
+      if (atom[0] === '`') {
+        const closing = /`+/g;
+        closing.lastIndex = end;
+        let run: RegExpExecArray | null;
+        let found = false;
+        while ((run = closing.exec(value))) {
+          if (run.index - match.index > limit) return null;
+          if (run[0].length === atom.length) {
+            end = closing.lastIndex;
+            found = true;
+            break;
+          }
+        }
+        if (!found) return null;
+      } else {
+        const close = window.indexOf(atom);
+        if (close < 0) {
+          if (value.indexOf(atom, end) >= 0) return null;
+          continue;
+        }
+        end += close + atom.length;
+      }
+      atom = value.slice(match.index, end);
+    }
+    const size = Buffer.byteLength(atom);
+    if (size > limit) return null;
+    addText(value.slice(cursor, match.index));
+    if (bytes + size > limit) {
+      chunks.push(chunk);
+      chunk = '';
+      bytes = 0;
+    }
+    chunk += atom;
+    bytes += size;
+    cursor = end;
+    atoms.lastIndex = end;
+  }
+  addText(value.slice(cursor));
+  if (chunk || !chunks.length) chunks.push(chunk);
+  return chunks;
+}
+
+function plainMessage(value: string): SlackMessage {
+  return {
+    text: value,
+    blocks: chunkText(
+      value.replace(/&(amp|lt|gt);/g, (_match, entity: string) => {
+        if (entity === 'amp') return '&';
+        if (entity === 'lt') return '<';
+        return '>';
+      }),
+      2800,
+    ).map((chunk) => ({
+      type: 'section',
+      text: { type: 'plain_text', text: chunk },
+    })),
+  };
+}
+
 function tableRow(line: string): { type: 'raw_text'; text: string }[] {
   return line
     .trim()
@@ -325,10 +411,20 @@ export function renderSlackDocument(markdown: string): SlackMessage[] {
     current.blocks?.push(block);
   };
   const prose = (value: string) => {
-    for (const chunk of chunkText(safeMrkdwn(value), 2800)) {
-      if (chunk.trim()) {
-        add(chunk, { type: 'section', text: { type: 'mrkdwn', text: chunk }, expand: true });
+    const formatted = mrkdwnChunks(safeMrkdwn(value), 2800);
+    if (!formatted) {
+      for (const chunk of chunkText(value, 2800)) {
+        if (chunk.trim())
+          add(escapeSlackText(chunk), {
+            type: 'section',
+            text: { type: 'plain_text', text: chunk },
+          });
       }
+      return;
+    }
+    for (const chunk of formatted) {
+      if (chunk.trim())
+        add(chunk, { type: 'section', text: { type: 'mrkdwn', text: chunk }, expand: true });
     }
   };
   const lines = markdown.replace(/\r\n/g, '\n').split('\n');
@@ -724,8 +820,9 @@ export function makeSlackPlan(
       messages.map((message) => message.text).join('\n\n'),
       chunkLimit - Buffer.byteLength(notice),
     );
-    messages = plain.slice(0, budget).map((text) => ({ text }));
-    if (plain.length > budget) messages[messages.length - 1].text += notice;
+    const selected = plain.slice(0, budget);
+    if (plain.length > budget) selected[selected.length - 1] += notice;
+    messages = selected.map(plainMessage);
   }
   if (!messages.length || messages.length > 64) {
     throw new Error('Durable answer exceeds part budget');
@@ -801,17 +898,18 @@ export function makeSlackPlan(
     );
     const artifacts = parts.filter((part) => part.kind === 'artifact');
     const status = parts.find((part) => part.operationId.endsWith(':artifact-status'));
-    const selected =
-      remaining >= 2 && status
-        ? [...artifacts.slice(0, remaining - 1), status]
-        : optional.slice(0, remaining);
+    const selected = remaining >= 2 && status ? [...artifacts.slice(0, remaining - 1), status] : [];
+    selected.push(...optional.slice(0, remaining - selected.length));
     parts.splice(0, parts.length, ...required, ...selected);
     const last = required[required.length - 1];
     const notice =
       '\n\nSome attachments or session links were omitted by this channel’s delivery limit.';
     last.text += notice;
-    // The text fallback now carries the complete bounded reply and the omission notice.
-    delete last.presentation;
+    // Reflow as explicit plain text; never split an existing formatted atom to add a notice.
+    last.presentation = {
+      format: presentationFormat,
+      payload: JSON.stringify(plainMessage(last.text).blocks),
+    };
   }
   const plan = { revision: '', rendererVersion, parts };
   plan.revision = createHash('sha256').update(JSON.stringify(plan)).digest('hex');

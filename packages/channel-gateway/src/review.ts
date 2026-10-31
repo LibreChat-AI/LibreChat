@@ -4,8 +4,8 @@ import type { PlainTextElement, ModalView, InputBlock, Button } from '@slack/typ
 import type { SlackClient, SlackBlocks } from './slack';
 import type { ChannelBundle, Review } from './types';
 import type { ChannelClient } from './client';
+import { ServiceError, expectedServiceFailure as expectedFailure } from './client';
 import { IdentityFlow, safePrivateURL } from './identity';
-import { ServiceError } from './client';
 
 type PendingAction = NonNullable<Review['pendingAction']>;
 type Question = Agents.AskUserQuestionRequest &
@@ -70,9 +70,6 @@ function notice(title: string, text: string): ReviewAck {
       blocks: [{ type: 'section', text: plain(text) }],
     },
   };
-}
-function expectedFailure(error: unknown): boolean {
-  return error instanceof ServiceError && [400, 403, 404, 409, 410].includes(error.status);
 }
 function parseReference(value: string): Reference {
   if (value.length > 3000) throw new Error('Invalid private review reference');

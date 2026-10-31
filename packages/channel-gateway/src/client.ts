@@ -36,6 +36,11 @@ export class ServiceError extends Error {
   }
 }
 
+/** Expected stale/authorization failures may be acknowledged privately; outages must propagate. */
+export function expectedServiceFailure(error: unknown): boolean {
+  return error instanceof ServiceError && [400, 403, 404, 409, 410].includes(error.status);
+}
+
 const validId = (value: unknown): value is string =>
   typeof value === 'string' && /^[\w:.-]{1,256}$/.test(value);
 
@@ -339,19 +344,17 @@ export class ChannelClient {
       signal,
     );
   }
-  async identity<T extends ChannelLinkView | ChannelLinkTicket | null>(
+  identity<T extends ChannelLinkView | ChannelLinkTicket | null>(
     actor: string,
     suffix = '',
     body?: object,
     signal?: AbortSignal,
-  ): Promise<T> {
-    const result = await this.request<ChannelIdentityResult<T>>(
+  ): Promise<ChannelIdentityResult<T>> {
+    return this.request<ChannelIdentityResult<T>>(
       `${this.root}/identity/${encodeURIComponent(actor)}${suffix}`,
       body,
       signal,
     );
-    if (!result.ok) throw new Error('Channel identity unavailable or changed');
-    return result.value;
   }
   async response(
     grant: ResponseGrant,
