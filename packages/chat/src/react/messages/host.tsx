@@ -1,5 +1,11 @@
 import { useRef, createContext, useContext } from 'react';
-import type { TMessage, TForkConvoRequest } from 'librechat-data-provider';
+import type {
+  Agent,
+  TMessage,
+  Assistant,
+  TConversation,
+  TForkConvoRequest,
+} from 'librechat-data-provider';
 import type { MouseEvent, ReactNode, RefObject } from 'react';
 
 /** The scroll machinery of the message list, as the app's scrolling hook drives it. */
@@ -45,6 +51,21 @@ export type ForkEvents = {
 /** Starts a fork of a conversation. */
 export type ForkConversation = (request: TForkConvoRequest, events: ForkEvents) => void;
 
+/** What a message author's icon is drawn from: the endpoint and model, or the agent or
+ *  assistant that wrote it. */
+export type MessageIconData = { endpoint?: string | null; isCreatedByUser?: boolean } & Pick<
+  TConversation,
+  'modelLabel'
+> &
+  Pick<TMessage, 'model' | 'iconURL'>;
+
+/** The props the app's message icon renders from. */
+export type MessageIconProps = {
+  iconData?: MessageIconData;
+  assistant?: Assistant;
+  agent?: Agent;
+};
+
 /**
  * Everything the message list reads from the app: viewer preferences, and render slots for the
  * pieces of a row that have not moved into this package yet. Members are hooks or slots, called
@@ -83,6 +104,9 @@ export interface MessagesHost {
     measureNearBottom: () => boolean | null,
     isResponseRendered: (messageId: string) => boolean,
   ) => ReportNearBottom;
+
+  /** Renders a message author's icon with the app's endpoint and avatar icons. */
+  renderMessageIcon: (props: MessageIconProps) => ReactNode;
 }
 
 const noop = (): void => undefined;
@@ -124,6 +148,7 @@ const fallbackHost: MessagesHost = {
   useScreenshotTarget: () => useRef<HTMLDivElement>(null),
   useAutoScroll: () => false,
   useConversationSeen: () => ignoreNearBottom,
+  renderMessageIcon: () => null,
 };
 
 const MessagesHostContext = createContext<MessagesHost | null>(null);
@@ -152,4 +177,9 @@ export function MessagesHostProvider({
 /** The host of the nearest provider, else the registered default, else the fallback. */
 export function useMessagesHost(): MessagesHost {
   return useContext(MessagesHostContext) ?? defaultHost;
+}
+
+/** A message author's icon, drawn by the host's slot. */
+export function MessageIconSlot(props: MessageIconProps): ReactNode {
+  return useMessagesHost().renderMessageIcon(props);
 }

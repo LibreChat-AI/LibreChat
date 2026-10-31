@@ -25,3 +25,4 @@ export { strongDirection } from './direction';
 export * from './shortcuts';
 export { removeCharIfLast } from './textarea';
 export * from './pane';
+export * from './documents';

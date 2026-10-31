@@ -9,6 +9,8 @@ import { ShareMessagesProvider } from './ShareMessagesProvider';
 import { AgentsMapContext } from '~/Providers/AgentsMapContext';
 import { ShareContext } from '~/Providers/ShareContext';
 import MessagesView from './MessagesView';
+import '~/Providers/MessagePartsHostContext';
+import '~/Providers/MessagesHostContext';
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
