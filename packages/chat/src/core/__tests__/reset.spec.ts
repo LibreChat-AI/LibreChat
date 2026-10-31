@@ -1,5 +1,5 @@
 import { Constants } from 'librechat-data-provider';
-import { shouldResetSubagentAtomsOnConversationChange } from '../cleanup';
+import { shouldResetSubagentAtomsOnConversationChange } from '../turns/reset';
 
 describe('subagent atom cleanup', () => {
   it('preserves live subagent atoms when the active new chat receives its saved id', () => {
