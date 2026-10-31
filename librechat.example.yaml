@@ -1124,6 +1124,9 @@ endpoints:
   #   # (optional) Authenticate machine clients for the Agent Management API.
   #   # Each verified OAuth client is bound server-side to one existing LibreChat
   #   # user and tenant; that user's normal role and Agent ACLs still apply.
+  #   # Omit tenantId on a deployment that does not use tenants: the client is then
+  #   # bound to a user without a tenant and its requests run without a tenant, like
+  #   # that user's browser session (refused when TENANT_ISOLATION_STRICT=true).
   #   managementApi:
   #     auth:
   #       oidc:
@@ -1139,7 +1142,7 @@ endpoints:
   #         - clientId: 'machine-client-id'
   #           # subject: 'provider-specific-service-principal-subject'
   #           userId: '507f1f77bcf86cd799439011'
-  #           tenantId: 'tenant-id'
+  #           tenantId: 'tenant-id' # omit on a deployment that does not use tenants
 
   # (optional) Title settings under `endpoints.all` apply to every endpoint one field at a
   # time: a field set here wins over the endpoint's own value, and a field left out keeps it.

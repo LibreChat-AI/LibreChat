@@ -35,7 +35,7 @@ let _checkedThread = false;
 
 let _strictMode: boolean | undefined;
 
-function isStrict(): boolean {
+export function isStrict(): boolean {
   return (_strictMode ??= process.env.TENANT_ISOLATION_STRICT === 'true');
 }
 

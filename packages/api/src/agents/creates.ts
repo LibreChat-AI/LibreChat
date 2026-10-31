@@ -73,7 +73,7 @@ export function createAgentManagementCreateHandler(
   return async function create(req: Request, res: Response): Promise<Response> {
     try {
       const user = req.user as IUser | undefined;
-      if (!user?.id || !user.tenantId) {
+      if (!user?.id) {
         return sendError(res, 'permission_denied');
       }
 

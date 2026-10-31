@@ -20,6 +20,7 @@ export {
   resolveRequestTenantId,
 } from './tenant';
 export { preAuthTenantMiddleware } from './preAuthTenant';
+export { rejectTenantHeader } from './tenantHeader';
 export * from './concurrency';
 export * from './checkBalance';
 export * from './remoteAgentAuth';
