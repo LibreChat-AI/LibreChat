@@ -1,0 +1,52 @@
+name: Channel Gateway
+
+on:
+  pull_request:
+    paths:
+      - 'packages/channel-gateway/**'
+      - 'packages/data-provider/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/typecheck.mts'
+      - '.github/workflows/channel-gateway.yml'
+  push:
+    branches: [dev]
+    paths:
+      - 'packages/channel-gateway/**'
+      - 'packages/data-provider/**'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'scripts/typecheck.mts'
+      - '.github/workflows/channel-gateway.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gateway:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      SCARF_ANALYTICS: 'false'
+      HUSKY: '0'
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.1'
+          cache: npm
+      - name: Install gateway and shared contracts
+        run: npm ci --ignore-scripts --no-audit --workspace @librechat/channel-gateway --workspace librechat-data-provider --include-workspace-root=false
+      - name: Build shared contracts
+        run: npm run build --workspace librechat-data-provider
+      - name: Typecheck gateway
+        run: npm run typecheck --workspace @librechat/channel-gateway
+      - name: Test gateway
+        run: npm run test:ci --workspace @librechat/channel-gateway
+      - name: Build gateway
+        run: npm run build --workspace @librechat/channel-gateway
