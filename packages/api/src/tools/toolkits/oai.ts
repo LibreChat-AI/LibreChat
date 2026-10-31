@@ -1,3 +1,5 @@
+import type FormData from 'form-data';
+
 import type { ExtendedJsonSchema } from '../registry/schema';
 
 /** Default descriptions for image generation tool  */
@@ -70,6 +72,42 @@ const getImageEditPromptDescription = () => {
 /** `auto` or `WIDTHxHEIGHT`; the image API enforces which dimensions the configured model supports. */
 export const IMAGE_SIZE_PATTERN = '^(auto|[1-9][0-9]*x[1-9][0-9]*)$';
 
+export const resolveImageOutputFormat = (background: string, outputFormat: string): string => {
+  if (background === 'transparent' && outputFormat !== 'png' && outputFormat !== 'webp') {
+    return 'png';
+  }
+  return outputFormat;
+};
+
+export const appendImageEditOptions = (
+  formData: FormData,
+  options: {
+    background?: string;
+    configuredOutputFormat: string;
+    quality?: string;
+    size?: string;
+  },
+): string => {
+  const { background = 'auto', configuredOutputFormat, quality = 'auto', size = 'auto' } = options;
+  const outputFormat = resolveImageOutputFormat(background, configuredOutputFormat);
+
+  if (background !== 'auto') {
+    formData.append('background', background);
+  }
+  formData.append('output_format', outputFormat);
+  formData.append('quality', quality);
+  formData.append('size', size);
+
+  return outputFormat;
+};
+
+const imageBackgroundSchema: ExtendedJsonSchema = {
+  type: 'string',
+  enum: ['transparent', 'opaque', 'auto'],
+  description:
+    'Sets transparency for the background. Must be one of transparent, opaque or auto (default). When transparent, the output format defaults to PNG unless PNG or WebP is configured.',
+};
+
 const imageGenOaiJsonSchema: ExtendedJsonSchema = {
   type: 'object',
   properties: {
@@ -78,12 +116,7 @@ const imageGenOaiJsonSchema: ExtendedJsonSchema = {
       maxLength: 32000,
       description: getImageGenPromptDescription(),
     },
-    background: {
-      type: 'string',
-      enum: ['transparent', 'opaque', 'auto'],
-      description:
-        'Sets transparency for the background. Must be one of transparent, opaque or auto (default). When transparent, the output format should be png or webp.',
-    },
+    background: imageBackgroundSchema,
     quality: {
       type: 'string',
       enum: ['auto', 'high', 'medium', 'low'],
@@ -118,6 +151,7 @@ Guidelines:
       maxLength: 32000,
       description: getImageEditPromptDescription(),
     },
+    background: imageBackgroundSchema,
     quality: {
       type: 'string',
       enum: ['auto', 'high', 'medium', 'low'],
