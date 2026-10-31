@@ -1,5 +1,9 @@
 import { isIP } from 'node:net';
-import { configCapability, SystemCapabilities } from '@librechat/data-schemas';
+import {
+  configCapability,
+  SystemCapabilities,
+  isServerAuthoredMessage,
+} from '@librechat/data-schemas';
 import type {
   ChannelRunSummary,
   ChannelRunSnapshot,
@@ -137,7 +141,7 @@ async function session(
     (message.tenantId || '_') !== run.tenantId ||
     message.conversationId !== run.execution.conversationId ||
     message.messageId !== snapshot.responseId ||
-    message.isCreatedByUser !== false ||
+    !isServerAuthoredMessage(message) ||
     (message.expiredAt != null &&
       (!Number.isFinite(new Date(message.expiredAt).getTime()) ||
         new Date(message.expiredAt).getTime() <= Date.now())) ||

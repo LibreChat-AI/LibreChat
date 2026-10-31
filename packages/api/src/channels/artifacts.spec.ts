@@ -8,6 +8,7 @@ import type {
   ChannelRunRecord,
   RunArtifactScope,
   RunArtifactContent,
+  ResponseArtifactFile,
 } from '@librechat/data-schemas';
 import type { ChannelArtifactDependencies } from './artifacts';
 import { createChannelArtifactService } from './artifacts';
@@ -29,7 +30,12 @@ const scope: RunArtifactScope = {
 };
 const contentByFile = new Map<string, Buffer>();
 const digest = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
-let limits = { artifactMaxBytes: 10000, artifactMaxFiles: 3, artifactReadTimeoutMs: 1000 };
+let limits = {
+  artifactMaxBytes: 10000,
+  artifactMaxFiles: 3,
+  artifactReadTimeoutMs: 1000,
+  artifactAnswerFileThresholdBytes: 6000,
+};
 
 async function publish(
   bytes = 'result',
@@ -91,7 +97,12 @@ beforeEach(async () => {
     }),
   );
   contentByFile.clear();
-  limits = { artifactMaxBytes: 10000, artifactMaxFiles: 3, artifactReadTimeoutMs: 1000 };
+  limits = {
+    artifactMaxBytes: 10000,
+    artifactMaxFiles: 3,
+    artifactReadTimeoutMs: 1000,
+    artifactAnswerFileThresholdBytes: 6000,
+  };
   run = {
     tenantId: 'tenant-a',
     channelId: 'channel-a',
@@ -299,7 +310,7 @@ it('bounds source fallback at listing and honors a reduced byte limit at downloa
   expect((await service.list(run, run.snapshot!)).artifacts).toEqual([]);
 });
 
-it('destroys timed out or invalid streams, reports unavailable and keeps the text fallback', async () => {
+it('destroys timed out or invalid streams without losing retained response text', async () => {
   await publish();
   limits.artifactReadTimeoutMs = 15;
   run.snapshot!.text = '```text\nanswer\n```';
@@ -308,7 +319,8 @@ it('destroys timed out or invalid streams, reports unavailable and keeps the tex
   const listed = await service.list(run, run.snapshot!);
   expect(hanging.destroyed).toBe(true);
   expect(listed.unavailable).toBe(true);
-  expect(listed.artifacts).toHaveLength(1);
+  expect(listed.artifacts).toEqual([]);
+  expect(run.snapshot!.text).toBe('```text\nanswer\n```');
   const invalid = Readable.from([{ unexpected: 'object' }]);
   jest.mocked(deps.readFile).mockResolvedValueOnce(invalid);
   expect((await service.list(run, run.snapshot!)).unavailable).toBe(true);
@@ -418,7 +430,7 @@ it('bounds stream acquisition even when its reader ignores cancellation and dest
   jest.mocked(deps.readFile).mockReturnValueOnce(stalled);
   const listed = await service.list(run, run.snapshot!);
   expect(listed.unavailable).toBe(true);
-  expect(listed.artifacts[0].filename).toBe('agent-response.md');
+  expect(listed.artifacts).toEqual([]);
   const late = new Readable({
     read() {},
     destroy(_error, callback) {
@@ -490,4 +502,197 @@ it('requires the actual response attachment and rejects expired, foreign-owner a
     ),
   );
   expect(await deps.readArtifacts(scope, { kind: 'authorize' })).toBeNull();
+});
+
+it.each([0, 1])(
+  'bounds all files and policy resolution after %i successful reads by one deadline',
+  async (successful) => {
+    const files: ResponseArtifactFile[] = [];
+    for (let index = 0; index < 3; index++)
+      files.push(await publish('result', { ...scope, sourceFileId: `source-${index}` }));
+    deps.readArtifacts = jest.fn(async (_scope, query) => (query.kind === 'list' ? files : []));
+    limits.artifactReadTimeoutMs = 50;
+    const late: Array<(stream: Readable) => void> = [];
+    let reads = 0;
+    jest
+      .mocked(deps.readFile)
+      .mockImplementation(() =>
+        reads++ < successful
+          ? Promise.resolve(Readable.from(['result']))
+          : new Promise<Readable>((resolve) => late.push(resolve)),
+      );
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    try {
+      deps.limits = () => new Promise((resolve) => setTimeout(() => resolve(limits), 20));
+      let settled = false;
+      const listing = service.list(run, run.snapshot!).then((result) => {
+        settled = true;
+        return result;
+      });
+      await jest.advanceTimersByTimeAsync(50);
+      const settledAtBudget = settled;
+      await jest.advanceTimersByTimeAsync(200);
+      const result = await listing;
+      expect(settledAtBudget).toBe(true);
+      expect(deps.readFile).toHaveBeenCalledTimes(successful + 1);
+      expect(result).toEqual({ artifacts: [], unavailable: true });
+    } finally {
+      jest.useRealTimers();
+      for (const resolve of late) resolve(Readable.from(['late']));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  },
+);
+
+it.each(['list', 'authorize'] as const)(
+  'bounds a stalled %s query without exposing an unverified answer file',
+  async (stalledKind) => {
+    limits.artifactReadTimeoutMs = 50;
+    run.snapshot!.text = '```text\nanswer\n```';
+    let release!: () => void;
+    const stalled = new Promise<[]>((resolve) => {
+      release = () => resolve([]);
+    });
+    deps.readArtifacts = jest.fn(async (_scope, query) =>
+      query.kind === stalledKind ? stalled : [],
+    );
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    try {
+      let settled = false;
+      const listing = service.list(run, run.snapshot!).then((result) => {
+        settled = true;
+        return result;
+      });
+      await jest.advanceTimersByTimeAsync(50);
+      const settledAtBudget = settled;
+      release();
+      const result = await listing;
+      expect(settledAtBudget).toBe(true);
+      expect(result).toEqual({ artifacts: [], unavailable: true });
+      expect(deps.readFile).not.toHaveBeenCalled();
+    } finally {
+      release();
+      jest.useRealTimers();
+    }
+  },
+);
+
+it('rejects user-submitted assistant-shaped rows for all catalog reads and saved descriptors', async () => {
+  const file = await publish();
+  const listed = await service.list(run, run.snapshot!);
+  run.snapshot!.artifacts = listed.artifacts;
+  await tenantStorage.run({ tenantId: scope.tenantId ?? undefined }, () =>
+    mongoose.models.Message.updateOne(
+      { messageId: scope.runId, user: userId },
+      { $set: { isUserSubmitted: true } },
+    ),
+  );
+  for (const query of [
+    { kind: 'list', limit: 4 },
+    { kind: 'file', fileId: file.file_id },
+    { kind: 'authorize' },
+  ] as const)
+    expect(await deps.readArtifacts(scope, query)).toBeNull();
+  await expect(service.content(run, listed.artifacts[0].artifactId)).rejects.toMatchObject({
+    code: 'artifact_unavailable',
+  });
+  run.snapshot!.text = '```text\nanswer\n```';
+  expect(await service.list(run, run.snapshot!)).toEqual({ artifacts: [], unavailable: true });
+});
+
+it('uses the configured byte threshold for new answer files and preserves authorized saved identities', async () => {
+  run.snapshot!.text = 'ééé';
+  limits.artifactAnswerFileThresholdBytes = 5;
+  const listed = await service.list(run, run.snapshot!);
+  expect(listed.artifacts).toHaveLength(1);
+  expect(listed.artifacts[0].bytes).toBe(6);
+  run.snapshot!.artifacts = listed.artifacts;
+  limits.artifactAnswerFileThresholdBytes = 6;
+  expect((await service.list(run, run.snapshot!)).artifacts).toEqual([]);
+  expect((await service.content(run, listed.artifacts[0].artifactId)).bytes.toString()).toBe('ééé');
+  run.snapshot!.text = '```text\nshort\n```';
+  expect((await service.list(run, run.snapshot!)).artifacts).toHaveLength(1);
+});
+
+it('bounds a stalled policy lookup by the schema hard maximum and never starts late catalog work', async () => {
+  let release!: () => void;
+  deps.limits = () =>
+    new Promise((resolve) => {
+      release = () => resolve(limits);
+    });
+  deps.readArtifacts = jest.fn(async () => []);
+  jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  try {
+    const listing = service.list(run, run.snapshot!);
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(await listing).toEqual({ artifacts: [], unavailable: true });
+    release();
+    await Promise.resolve();
+    expect(deps.readArtifacts).not.toHaveBeenCalled();
+  } finally {
+    release();
+    jest.useRealTimers();
+  }
+});
+
+it('keeps downloads inside the same budget through final reauthorization', async () => {
+  const file = await publish();
+  const listed = await service.list(run, run.snapshot!);
+  run.snapshot!.artifacts = listed.artifacts;
+  limits.artifactReadTimeoutMs = 50;
+  let release!: () => void;
+  const authorization = new Promise<[]>((resolve) => {
+    release = () => resolve([]);
+  });
+  deps.readArtifacts = jest.fn(async (_scope, query) =>
+    query.kind === 'file' ? [file] : authorization,
+  );
+  jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  try {
+    let settled = false;
+    const download = service.content(run, listed.artifacts[0].artifactId).then(
+      () => {
+        settled = true;
+        return undefined;
+      },
+      (error: Error) => {
+        settled = true;
+        return error;
+      },
+    );
+    await jest.advanceTimersByTimeAsync(50);
+    const settledAtBudget = settled;
+    release();
+    expect(await download).toMatchObject({ code: 'artifact_unavailable' });
+    expect(settledAtBudget).toBe(true);
+  } finally {
+    release();
+    jest.useRealTimers();
+  }
+});
+
+it('uses at most one storage stream while listing the maximum number of artifacts', async () => {
+  limits.artifactMaxFiles = 20;
+  for (let index = 0; index < 20; index++)
+    await publish('result', { ...scope, sourceFileId: `bounded-${index}` });
+  let active = 0;
+  let maximumActive = 0;
+  jest.mocked(deps.readFile).mockImplementation(async () => {
+    active++;
+    maximumActive = Math.max(maximumActive, active);
+    return new Readable({
+      read() {
+        this.push('result');
+        this.push(null);
+      },
+      destroy(_error, callback) {
+        active--;
+        callback(null);
+      },
+    });
+  });
+  const listed = await service.list(run, run.snapshot!);
+  expect(listed.artifacts).toHaveLength(20);
+  expect(maximumActive).toBe(1);
+  expect(active).toBe(0);
 });
