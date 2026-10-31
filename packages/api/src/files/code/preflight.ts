@@ -160,8 +160,7 @@ export async function preflightCodeOutputBatch(
       sessionId: file.storage_session_id ?? input.artifact?.session_id,
     });
   }
-  const inspectionCountExceeded = entries.length > CODE_OUTPUT_PREFLIGHT_MAX_COUNT;
-  if (configuredCountExceeded || inspectionCountExceeded) {
+  if (configuredCountExceeded) {
     if (inspectionActive) {
       throw new UninspectableFileError(resourceField);
     }
