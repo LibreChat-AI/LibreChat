@@ -58,6 +58,16 @@ export function laneKey(scope: ChannelLaneScope): string {
     linkId: scope.principal.linkId ?? null,
   });
 }
+/** Provider occurrence identity survives changes to the versioned execution principal. */
+export function stopScopeKey(scope: ChannelLaneScope): string {
+  return digest({
+    tenantId: scope.tenantId,
+    channelId: scope.channelId,
+    actor: scope.admission.actor,
+    thread: scope.admission.externalThreadKey,
+    externalChannelId: scope.admission.externalChannelId,
+  });
+}
 export const activeStates: string[] = [
   'queued',
   'executing',

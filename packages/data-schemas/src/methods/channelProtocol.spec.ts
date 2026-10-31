@@ -1,6 +1,6 @@
 import type { ChannelDeliveryOutcome, ChannelRunSnapshot } from 'librechat-data-provider';
 import type { ChannelRunRecord } from '~/models/channelRun';
-import { deliveryDisposition, snapshotPatch } from './channelProtocol';
+import { deliveryDisposition, snapshotPatch, stopScopeKey } from './channelProtocol';
 
 function run(): ChannelRunRecord {
   return {
@@ -130,4 +130,32 @@ it('rejects duplicate receipt identities instead of treating an incomplete plan 
   const current = run();
   current.receipts[1] = current.receipts[0];
   expect(() => deliveryDisposition(current, 100)).toThrow('invalid_transition');
+});
+
+it('separates stable provider Stop identity from versioned execution authority', () => {
+  const source = run();
+  const expected = stopScopeKey(source);
+  expect(
+    stopScopeKey({
+      ...source,
+      agentId: 'other-agent',
+      principal: {
+        userId: 'other-user',
+        channelRevision: 'other-revision',
+        linkId: 'other-link',
+        linkRevision: 'other-link-revision',
+      },
+    }),
+  ).toBe(expected);
+  for (const changed of [
+    { ...source, tenantId: 'other-tenant' },
+    { ...source, channelId: 'other-channel' },
+    { ...source, admission: { ...source.admission, externalThreadKey: 'C:other' } },
+    { ...source, admission: { ...source.admission, externalChannelId: 'other-C' } },
+    ...['teamId', 'appId', 'externalUserId'].map((field) => ({
+      ...source,
+      admission: { ...source.admission, actor: { ...source.admission.actor, [field]: 'other' } },
+    })),
+  ])
+    expect(stopScopeKey(changed)).not.toBe(expected);
 });
