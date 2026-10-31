@@ -1,15 +1,13 @@
 import { memo, useEffect, useRef, useCallback } from 'react';
 import { useAtom } from 'jotai';
-import { activityParentMessageIds, hasParallelLanes } from '@librechat/chat';
-import {
-  siblingKey,
-  useMessagesHost,
-  siblingIdxFamily,
-  useRowMountWindow,
-} from '@librechat/chat/react';
-import type { MessageRowSlotProps } from '@librechat/chat/react';
+import type { NamedExoticComponent, ReactElement, ReactNode } from 'react';
 import type { TMessage } from 'librechat-data-provider';
-import type { ReactNode } from 'react';
+import type { MessageRowSlotProps } from '../../../react/messages/host';
+import { useRowMountWindow } from '../../../react/messages/useProgressiveRowMount';
+import { siblingIdxFamily, siblingKey } from '../../../react/thread';
+import { activityParentMessageIds } from '../../../core/activity';
+import { useMessagesHost } from '../../../react/messages/host';
+import { hasParallelLanes } from '../../../core/lanes';
 
 type MultiMessageProps = Pick<MessageRowSlotProps, 'currentEditId' | 'setCurrentEditId'> & {
   /** The parent whose children this level picks one of; the conversation id at the root. */
@@ -27,7 +25,7 @@ function MultiMessage({
   messagesTree,
   currentEditId,
   setCurrentEditId,
-}: MultiMessageProps) {
+}: MultiMessageProps): ReactElement | null {
   const { renderMessageRow, renderActivity } = useMessagesHost();
   const [siblingIdx, setSiblingIdx] = useAtom(siblingIdxFamily(siblingKey(messageId)));
   const mountWindow = useRowMountWindow();
@@ -219,6 +217,6 @@ function MultiMessage({
   );
 }
 
-const MemoizedMultiMessage = memo(MultiMessage);
+const MemoizedMultiMessage: NamedExoticComponent<MultiMessageProps> = memo(MultiMessage);
 
 export default MemoizedMultiMessage;

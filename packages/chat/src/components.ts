@@ -103,6 +103,7 @@ export type {
 
 /** Message list root: the scroll container, mount window and pending tail around the thread. */
 export { default as MessagesView } from './components/messages/MessagesView';
+export { default as MessagesThread } from './components/messages/thread/Thread';
 export type {
   MessagesViewProps,
   MessagesThreadProps,
