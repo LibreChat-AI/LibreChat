@@ -1363,7 +1363,7 @@ describe('useChatFunctions ask compaction', () => {
     expect(rendered.map((message) => message.messageId)).toEqual([
       'u1',
       'a1',
-      submission.initialResponse.messageId,
+      submission.initialResponse?.messageId,
     ]);
   });
 
