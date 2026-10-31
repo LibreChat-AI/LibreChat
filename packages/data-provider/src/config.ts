@@ -1203,11 +1203,19 @@ export const CHANNEL_ARTIFACT_FILES_HARD_MAX = 20;
 export const CHANNEL_ARTIFACT_READ_TIMEOUT_HARD_MAX_MS = 60_000;
 
 /** One policy controls installation, ingress and optional Slack effects across gateway replicas. */
+const SOCKET_RECONNECT_DELAY_DEFAULT_MS = 5000;
 export const channelGatewayPolicySchema = z.object({
   transport: z.enum(['socket_mode', 'webhook']),
   nativeSessions: z.boolean(),
   lifecycleReactions: z.boolean(),
   signatureToleranceSeconds: z.number().int().min(1).max(300),
+  /** Additive v1 pacing setting; omitted older bundles retain the SDK's existing base delay. */
+  socketReconnectDelayMs: z
+    .number()
+    .int()
+    .min(100)
+    .max(60_000)
+    .default(SOCKET_RECONNECT_DELAY_DEFAULT_MS),
 });
 export type ChannelGatewayPolicy = z.infer<typeof channelGatewayPolicySchema>;
 export const DEFAULT_CHANNEL_GATEWAY_POLICY: ChannelGatewayPolicy = {
@@ -1215,6 +1223,7 @@ export const DEFAULT_CHANNEL_GATEWAY_POLICY: ChannelGatewayPolicy = {
   nativeSessions: false,
   lifecycleReactions: false,
   signatureToleranceSeconds: 300,
+  socketReconnectDelayMs: SOCKET_RECONNECT_DELAY_DEFAULT_MS,
 };
 export const CHANNEL_GATEWAY_POLICY_VERSION = 1;
 export const channelGatewayWirePolicySchema = channelGatewayPolicySchema.extend({
@@ -1254,6 +1263,7 @@ export const channelConfigSchema = channelStorageConfigSchema.extend({
   signatureToleranceSeconds: channelGatewayPolicySchema.shape.signatureToleranceSeconds.default(
     DEFAULT_CHANNEL_GATEWAY_POLICY.signatureToleranceSeconds,
   ),
+  socketReconnectDelayMs: channelGatewayPolicySchema.shape.socketReconnectDelayMs,
   gatewayUrl: z.string().url().optional(),
   ticketLifetimeMs: z
     .number()

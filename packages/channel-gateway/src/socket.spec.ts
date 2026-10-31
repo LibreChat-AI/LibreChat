@@ -7,13 +7,16 @@ import { ChannelClient } from './client';
 import { SlackClient } from './slack';
 import { GatewayApp } from './app';
 
-const config = loadConfig({
-  CHANNEL_SERVICE_TOKEN: 'test-service',
-  CHANNEL_TENANT_ID: 'tenant',
-  CHANNEL_ID: 'binding',
-  SLACK_TRANSPORT: 'socket_mode',
-  SLACK_APP_TOKEN: 'test-app',
-});
+const config = resolveGatewayConfig(
+  loadConfig({
+    CHANNEL_SERVICE_TOKEN: 'test-service',
+    CHANNEL_TENANT_ID: 'tenant',
+    CHANNEL_ID: 'binding',
+    SLACK_TRANSPORT: 'socket_mode',
+    SLACK_APP_TOKEN: 'test-app',
+  }),
+  DEFAULT_CHANNEL_GATEWAY_POLICY,
+);
 const bundle: ChannelBundle = {
   gateway: { version: 1, ...DEFAULT_CHANNEL_GATEWAY_POLICY, transport: 'socket_mode' },
   channel: {
@@ -189,7 +192,7 @@ describe('Socket Mode app binding', () => {
   test('events before verified hello cannot reach application dispatch', async () => {
     const { app, backend, log } = setup();
     const controller = new AbortController();
-    const socket = await connectSocket(config, app, 'A1', log, controller.signal);
+    const { socket } = await connectSocket(config, app, 'A1', log, controller.signal);
     const delivery = event();
     socket.emit('slack_event', delivery);
     await tick();
@@ -201,7 +204,7 @@ describe('Socket Mode app binding', () => {
   test('marks the app unready when its current channel changes Socket application', async () => {
     const { app, backend, log } = setup();
     const controller = new AbortController();
-    const socket = await connectSocket(config, app, 'A1', log, controller.signal);
+    const { socket } = await connectSocket(config, app, 'A1', log, controller.signal);
     try {
       socket.emit('ws_message', hello(), false);
       await tick();
@@ -230,7 +233,7 @@ describe('Socket Mode app binding', () => {
   test('valid hello permits durable admission followed by acknowledgment', async () => {
     const { app, backend, log } = setup();
     const controller = new AbortController();
-    const socket = await connectSocket(config, app, 'A1', log, controller.signal);
+    const { socket } = await connectSocket(config, app, 'A1', log, controller.signal);
     socket.emit('ws_message', hello(), false);
     await tick();
     const delivery = event();
@@ -246,7 +249,7 @@ describe('Socket Mode app binding', () => {
   test('a wrong hello stops delivery and repeated wrong hello never becomes ready', async () => {
     const { app, backend, log } = setup();
     const controller = new AbortController();
-    const socket = await connectSocket(config, app, 'A1', log, controller.signal);
+    const { socket } = await connectSocket(config, app, 'A1', log, controller.signal);
     socket.emit('ws_message', hello('wrong'), false);
     await tick();
     socket.emit('slack_event', event());
@@ -264,7 +267,7 @@ describe('Socket Mode app binding', () => {
   test('reconnect requires another valid hello before accepting more events', async () => {
     const { app, backend, log } = setup();
     const controller = new AbortController();
-    const socket = await connectSocket(config, app, 'A1', log, controller.signal);
+    const { socket } = await connectSocket(config, app, 'A1', log, controller.signal);
     socket.emit('ws_message', hello(), false);
     await tick();
     socket.emit('reconnecting');
@@ -288,7 +291,7 @@ describe('Socket Mode app binding', () => {
         ? json(bundle)
         : Promise.reject(new Error('private provider credential')),
     );
-    const socket = await connectSocket(config, app, 'A1', log, controller.signal);
+    const { socket } = await connectSocket(config, app, 'A1', log, controller.signal);
     socket.emit('ws_message', hello(), false);
     await tick();
     socket.emit('error', new Error('private Slack app token'));
@@ -307,7 +310,7 @@ describe('Socket Mode app binding', () => {
   test('invalid SDK deliveries are ignored without authority or acknowledgement', async () => {
     const { app, backend, log } = setup();
     const controller = new AbortController();
-    const socket = await connectSocket(config, app, 'A1', log, controller.signal);
+    const { socket } = await connectSocket(config, app, 'A1', log, controller.signal);
     socket.emit('ws_message', hello(), false);
     await tick();
     for (const delivery of [
@@ -319,6 +322,77 @@ describe('Socket Mode app binding', () => {
     await tick();
     expect(backend).not.toHaveBeenCalled();
     controller.abort();
+  });
+
+  test('initial startup failure is owned and closes the transport', async () => {
+    const { app, log } = setup();
+    const controller = new AbortController();
+    start.mockRejectedValueOnce(new Error('private startup failure'));
+    await expect(connectSocket(config, app, 'A1', log, controller.signal)).rejects.toThrow();
+    expect(disconnect).toHaveBeenCalled();
+    expect(app.connected).toBe(false);
+  });
+
+  test('retries a failed reconnect and requires a fresh authenticated hello', async () => {
+    const { app, log } = setup();
+    const controller = new AbortController();
+    const connection = await connectSocket(
+      { ...config, socketReconnectDelayMs: 100 },
+      app,
+      'A1',
+      log,
+      controller.signal,
+    );
+    try {
+      connection.socket.emit('ws_message', hello(), false);
+      await tick();
+      expect(app.connected).toBe(true);
+      start.mockRejectedValueOnce(new Error('private retry failure'));
+      connection.socket.emit('disconnected');
+      await tick();
+      expect(app.connected).toBe(false);
+      const deadline = Date.now() + 3000;
+      while (start.mock.calls.length < 3 && Date.now() < deadline)
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(start).toHaveBeenCalledTimes(3);
+      expect(app.connected).toBe(false);
+      expect(log.warn).toHaveBeenCalledWith('slack_socket_reconnect_failed');
+      connection.socket.emit('ws_message', hello(), false);
+      await tick();
+      expect(app.connected).toBe(true);
+    } finally {
+      controller.abort();
+      await connection.closed;
+    }
+  });
+
+  test('abort during a pending reconnect drains without an unhandled rejection', async () => {
+    const { app, log } = setup();
+    const controller = new AbortController();
+    const connection = await connectSocket(
+      { ...config, socketReconnectDelayMs: 100 },
+      app,
+      'A1',
+      log,
+      controller.signal,
+    );
+    let fail: (error: Error) => void = () => {};
+    start.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          fail = reject;
+        }),
+    );
+    connection.socket.emit('disconnected');
+    const deadline = Date.now() + 3000;
+    while (start.mock.calls.length < 2 && Date.now() < deadline)
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(start).toHaveBeenCalledTimes(2);
+    controller.abort();
+    fail(new Error('private late rejection'));
+    await expect(connection.closed).resolves.toBeUndefined();
+    expect(app.connected).toBe(false);
+    expect(disconnect).toHaveBeenCalled();
   });
 
   test('pre-aborted startup never starts the SDK', async () => {
@@ -351,7 +425,7 @@ describe('Socket Mode app binding', () => {
   test('aborted active transport cannot dispatch or acknowledge later input', async () => {
     const { app, backend, log } = setup();
     const controller = new AbortController();
-    const socket = await connectSocket(config, app, 'A1', log, controller.signal);
+    const { socket } = await connectSocket(config, app, 'A1', log, controller.signal);
     socket.emit('ws_message', hello(), false);
     await tick();
     controller.abort();

@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { LogLevel } from '@slack/web-api';
 import { SocketModeClient } from '@slack/socket-mode';
+import { setTimeout as delay } from 'node:timers/promises';
+import type { GatewayRuntimeConfig } from './config';
 import type { GatewayConfig } from './config';
 import type { GatewayApp } from './app';
 import type { Logger } from './types';
@@ -33,6 +35,8 @@ export class BoundSocket extends SocketModeClient {
     super({
       appToken: config.SLACK_APP_TOKEN!,
       logger: quiet,
+      // SDK 3.1's automatic reconnect discards start rejections. The gateway owns that task.
+      autoReconnectEnabled: false,
       clientOptions: {
         slackApiUrl: config.SLACK_API_BASE_URL.replace(/\/?$/, '/'),
         timeout: config.API_CALL_TIMEOUT_MS,
@@ -49,6 +53,13 @@ export class BoundSocket extends SocketModeClient {
             ]),
           }),
       },
+    });
+    this.on('connecting', () => {
+      // An aborted URL fetch may already have settled; close a late-created SDK socket too.
+      if (signal?.aborted)
+        queueMicrotask(() => {
+          void this.disconnect().catch(() => {});
+        });
     });
     for (const phase of ['connecting', 'reconnecting', 'disconnected'])
       this.on(phase, () => {
@@ -105,17 +116,46 @@ export class BoundSocket extends SocketModeClient {
           return;
       } else if (value.type !== 'interactive') return;
     }
-    await super.onWebSocketMessage(data, binary);
+    try {
+      await super.onWebSocketMessage(data, binary);
+    } catch {
+      // The SDK invokes this async callback without awaiting it. Contain malformed frames here.
+      this.validated = false;
+      this.state(false);
+      this.emit('error', new Error('Socket message rejected'));
+      await this.disconnect().catch(() => {});
+    }
+  }
+}
+
+export interface SocketConnection {
+  socket: BoundSocket;
+  /** Owned supervision/cleanup; rejects only an unexpected lifecycle failure. */
+  closed: Promise<void>;
+}
+
+async function untilAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  let stop: () => void = () => {};
+  const aborted = new Promise<never>((_resolve, reject) => {
+    stop = () => reject(new Error('Gateway stopped'));
+    if (signal.aborted) stop();
+    else signal.addEventListener('abort', stop, { once: true });
+  });
+  try {
+    return await Promise.race([work, aborted]);
+  } finally {
+    signal.removeEventListener('abort', stop);
   }
 }
 
 export async function connectSocket(
-  config: GatewayConfig,
+  config: GatewayRuntimeConfig,
   app: GatewayApp,
   appId: string,
   log: Logger,
   signal: AbortSignal,
-): Promise<BoundSocket> {
+): Promise<SocketConnection> {
+  signal.throwIfAborted();
   app.bindSocketApp(appId);
   app.connected = false;
   const socket = new BoundSocket(
@@ -126,15 +166,10 @@ export async function connectSocket(
     config,
     signal,
   );
-  socket.on('connecting', () => {
-    app.connected = false;
-  });
-  socket.on('reconnecting', () => {
-    app.connected = false;
-  });
-  socket.on('disconnected', () => {
-    app.connected = false;
-  });
+  for (const phase of ['connecting', 'reconnecting', 'disconnected'])
+    socket.on(phase, () => {
+      app.connected = false;
+    });
   socket.on('error', () => log.warn('slack_socket_transport_error'));
   socket.on('slack_event', (input: unknown) => {
     if (!app.connected || signal.aborted) return;
@@ -151,31 +186,87 @@ export async function connectSocket(
       .then((payload) => delivery.data.ack(payload))
       .catch(() => log.warn('slack_socket_delivery_not_accepted'));
   });
-  if (signal.aborted) throw new Error('Gateway stopped');
-  let rejectAborted: (error: Error) => void = () => {};
-  const aborted = new Promise<never>((_resolve, reject) => {
-    rejectAborted = reject;
+
+  let resolveReady: () => void = () => {};
+  let rejectReady: (error: unknown) => void = () => {};
+  const ready = new Promise<void>((resolve, reject) => {
+    resolveReady = resolve;
+    rejectReady = reject;
   });
+  let cleanup: Promise<void> | undefined;
+  const close = () => {
+    if (!cleanup)
+      cleanup = (async () => {
+        app.connected = false;
+        let disconnect: Promise<void>;
+        try {
+          disconnect = socket.disconnect();
+        } catch (error) {
+          disconnect = Promise.reject(error);
+        }
+        const results = await Promise.allSettled([disconnect]);
+        if (results.some((result) => result.status === 'rejected'))
+          log.warn('slack_socket_shutdown_unconfirmed');
+      })();
+    return cleanup;
+  };
   const stop = () => {
     app.connected = false;
-    void socket.disconnect().catch(() => {});
-    rejectAborted(new Error('Gateway stopped'));
+    void close();
   };
   signal.addEventListener('abort', stop, { once: true });
-  const started = socket.start();
-  void started.then(
-    () => {
-      if (signal.aborted) void socket.disconnect().catch(() => {});
-    },
-    () => {},
-  );
+  const closed = (async () => {
+    let hasConnected = false;
+    let failures = 0;
+    try {
+      while (!signal.aborted) {
+        let disconnected: () => void = () => {};
+        const ended = new Promise<void>((resolve) => {
+          disconnected = resolve;
+        });
+        socket.once('disconnected', disconnected);
+        try {
+          await untilAbort(socket.start(), signal);
+          signal.throwIfAborted();
+          failures = 0;
+          if (!hasConnected) {
+            hasConnected = true;
+            resolveReady();
+          }
+          await untilAbort(ended, signal);
+        } catch (error) {
+          if (signal.aborted) break;
+          if (!hasConnected) throw error;
+          log.warn('slack_socket_reconnect_failed');
+        } finally {
+          socket.removeListener('disconnected', disconnected);
+          app.connected = false;
+        }
+        if (signal.aborted) break;
+        failures++;
+        // Node's timer ceiling is a platform constraint, not a retry policy limit.
+        const wait = Math.min(config.socketReconnectDelayMs * failures, 2_147_483_647);
+        try {
+          await delay(wait, undefined, { signal });
+        } catch {
+          break;
+        }
+        socket.emit('reconnecting');
+      }
+    } finally {
+      if (!hasConnected && signal.aborted) rejectReady(new Error('Gateway stopped'));
+      signal.removeEventListener('abort', stop);
+      await close();
+    }
+  })();
+  // Own failures even before the initial handle can be returned; main also observes completion.
+  void closed.catch(rejectReady);
   try {
-    await Promise.race([started, aborted]);
+    await ready;
+    signal.throwIfAborted();
   } catch (error) {
-    signal.removeEventListener('abort', stop);
-    await socket.disconnect().catch(() => {});
+    await closed.catch(() => {});
     throw error;
   }
-  signal.throwIfAborted();
-  return socket;
+  return { socket, closed };
 }

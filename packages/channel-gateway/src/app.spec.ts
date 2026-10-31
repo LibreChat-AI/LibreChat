@@ -273,7 +273,7 @@ describe('durable Slack ingress', () => {
     jest.spyOn(SocketModeClient.prototype, 'start').mockResolvedValue({ ok: true });
     jest.spyOn(SocketModeClient.prototype, 'disconnect').mockResolvedValue(undefined);
     const controller = new AbortController();
-    const socket = await connectSocket(config, app, 'A1', log, controller.signal);
+    const { socket } = await connectSocket(config, app, 'A1', log, controller.signal);
     socket.emit(
       'ws_message',
       JSON.stringify({ type: 'hello', connection_info: { app_id: 'A1' } }),

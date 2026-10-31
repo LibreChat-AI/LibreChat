@@ -25,6 +25,21 @@ describe('gateway configuration', () => {
     ).toBe(channelConfigSchema.parse({}).transport);
   });
 
+  test('older v1 policies default only reconnect pacing and newer ones honor the override', () => {
+    const bootstrap = loadConfig({ ...required, SLACK_APP_TOKEN: 'test-app-token' });
+    const older = {
+      transport: 'socket_mode' as const,
+      nativeSessions: false,
+      lifecycleReactions: false,
+      signatureToleranceSeconds: 300,
+    };
+    expect(resolveGatewayConfig(bootstrap, older).socketReconnectDelayMs).toBe(5000);
+    expect(
+      resolveGatewayConfig(bootstrap, { ...older, socketReconnectDelayMs: 100 })
+        .socketReconnectDelayMs,
+    ).toBe(100);
+  });
+
   test('supports legacy binding aliases and equal canonical/legacy values', () => {
     const legacy = {
       CHANNEL_SERVICE_TOKEN: required.CHANNEL_SERVICE_TOKEN,
