@@ -2,7 +2,13 @@ import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import type { GraphEdge } from 'librechat-data-provider';
 import type { AgentDetail } from './agents.helpers';
-import { cleanupAgent, openAgentBuilder, selectMockModel, uniqueAgentName } from './agents.helpers';
+import {
+  cleanupAgent,
+  openAgentBuilder,
+  selectMockModel,
+  uniqueAgentName,
+  closeMobileDrawer,
+} from './agents.helpers';
 import {
   MOCK_ENDPOINTS,
   fetchJson,
@@ -168,10 +174,7 @@ async function selectAgentForChat(page: Page, agentName: string): Promise<void> 
   await expect(form.getByLabel('Agent name')).toHaveValue(agentName);
   await form.getByRole('button', { name: 'Select Agent' }).click();
   /** On narrow viewports the builder drawer stays open over the composer. */
-  const closeSidebar = page.getByRole('button', { name: 'Close sidebar' });
-  if (await closeSidebar.isVisible()) {
-    await closeSidebar.click();
-  }
+  await closeMobileDrawer(page);
   await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible();
 }
 
@@ -283,6 +286,7 @@ test.describe('agent handoffs', () => {
 
       await closeOrchestration(page);
       await reopenedForm.getByRole('button', { name: 'Select Agent' }).click();
+      await closeMobileDrawer(page);
       await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible();
 
       const label = `scratch-bare-${Date.now()}`;
