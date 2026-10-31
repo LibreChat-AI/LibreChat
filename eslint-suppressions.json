@@ -410,11 +410,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/HoverButtons.tsx": {
-    "shadcn/require-static-classes": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/MessageNav.tsx": {
     "design/disabled-recipe": {
       "count": 1
@@ -1409,6 +1404,11 @@
   "packages/chat/src/components/messages/HeaderLabel.tsx": {
     "shadcn/no-arbitrary-values": {
       "count": 5
+    }
+  },
+  "packages/chat/src/components/messages/HoverButtons.tsx": {
+    "shadcn/require-static-classes": {
+      "count": 1
     }
   },
   "packages/chat/src/components/messages/MessageRow.tsx": {

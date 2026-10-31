@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef } from 'react';
-import { useRecoilState } from 'recoil';
+import { useRecoilState, useRecoilValue } from 'recoil';
 import { setDefaultMessagesHost } from '@librechat/chat/react';
 import type {
   ForkEvents,
@@ -8,13 +8,17 @@ import type {
   MessageCopyInput,
   ForkPreferences,
   ForkConversation,
+  MessageAudioProps,
 } from '@librechat/chat/react';
+import type { TMessage } from 'librechat-data-provider';
 import {
   hasCopyableText,
   useNavigateToConvo,
   getMessageClipboardSource,
   useCopyMessageToClipboard,
 } from '~/hooks';
+import { useOptionalMessagesOperations } from './MessagesViewContext';
+import MessageAudio from '~/components/Chat/Messages/MessageAudio';
 import Files from '~/components/Chat/Messages/Content/Files';
 import { useForkConvoMutation } from '~/data-provider';
 import useClockFormat from '~/hooks/useClockFormat';
@@ -72,6 +76,19 @@ function useAppMessageCopy({ message, searchResults, variant }: MessageCopyInput
   return { copyToClipboard, canCopy };
 }
 
+function useAppGetMessages(): () => TMessage[] | undefined {
+  return useOptionalMessagesOperations().getMessages;
+}
+
+/** Read-aloud follows the viewer's text-to-speech setting; off, the row draws no control. */
+function AppMessageAudio(props: MessageAudioProps) {
+  const textToSpeech = useRecoilValue<boolean>(store.textToSpeech);
+  if (!textToSpeech) {
+    return null;
+  }
+  return <MessageAudio {...props} />;
+}
+
 /** What the message list reads from the app: the viewer's clock format and fork defaults, the
  *  fork request, the rich-text copy, and the row pieces that still live here. Registered as the default when this
  *  module loads, so rows read it on every route, the shared view included. */
@@ -81,6 +98,8 @@ export const appMessagesHost: MessagesHost = {
   useForkPreferences: useAppForkPreferences,
   useForkConversation: useAppForkConversation,
   useMessageCopy: useAppMessageCopy,
+  useGetMessages: useAppGetMessages,
+  renderMessageAudio: (props) => <AppMessageAudio {...props} />,
 };
 
 setDefaultMessagesHost(appMessagesHost);

@@ -138,6 +138,8 @@ export type {
   MessageCopyInput,
   ForkPreferences,
   ForkConversation,
+  MessageAudioProps,
+  MessageAudioButtonProps,
 } from './react/messages/host';
 export {
   SoleToolContext,
