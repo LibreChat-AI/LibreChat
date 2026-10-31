@@ -196,6 +196,61 @@ it('requires all tool decisions and joins review configuration by tool call id',
   });
 });
 
+it('retains a rich multi-tool batch through pending and uncertain acknowledgement before exact retry', async () => {
+  const review = tools();
+  const payload = review.pendingAction?.payload;
+  if (!payload || payload.type !== 'tool_approval') throw new Error('missing fixture');
+  payload.action_requests.push({ name: 'write', arguments: {}, tool_call_id: 'call-2' });
+  payload.review_configs[0].allowed_decisions = ['edit'];
+  payload.review_configs.push({
+    action_name: 'write',
+    tool_call_id: 'call-2',
+    allowed_decisions: ['respond'],
+  });
+  const pending = Promise.withResolvers<object>();
+  post.mockImplementationOnce(() => pending.promise);
+  const view = mount(review);
+  const [first, second] = screen.getAllByTestId('tool-approval');
+  await userEvent.click(within(first).getByRole('button', { name: translation.com_ui_edit }));
+  fireEvent.change(within(first).getByRole('textbox', { name: translation.com_ui_edit }), {
+    target: { value: '{"query":"safe","nested":{"retry":false}}' },
+  });
+  await userEvent.click(within(second).getByRole('button', { name: translation.com_ui_respond }));
+  fireEvent.change(within(second).getByRole('textbox', { name: translation.com_ui_respond }), {
+    target: { value: 'Use the existing output.' },
+  });
+  await userEvent.click(screen.getByRole('button', { name: translation.com_ui_submit_decisions }));
+  const decision = {
+    actionId,
+    decisions: [
+      {
+        tool_call_id: 'call-1',
+        decision: 'edit',
+        editedArguments: { query: 'safe', nested: { retry: false } },
+      },
+      { tool_call_id: 'call-2', decision: 'respond', responseText: 'Use the existing output.' },
+    ],
+  };
+  expect(post).toHaveBeenCalledWith('/api/agents/responses/resp_review/review', decision);
+  expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  fireEvent.click(screen.getByRole('button', { name: translation.com_ui_submitting }));
+  expect(post).toHaveBeenCalledTimes(1);
+  await act(async () => {
+    pending.reject(new Error('private acknowledgement failure'));
+  });
+  await waitFor(() => expect(view.refresh).toHaveBeenCalledTimes(1));
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    translation.com_ui_response_review_decision_error,
+  );
+  expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+  expect(document.body.textContent).not.toContain('private acknowledgement failure');
+  await userEvent.click(screen.getByRole('button', { name: translation.com_ui_retry }));
+  expect(post).toHaveBeenNthCalledWith(2, '/api/agents/responses/resp_review/review', decision);
+  expect(
+    await screen.findByText(translation.com_ui_response_review_decision_queued),
+  ).toBeInTheDocument();
+});
+
 it('restores only the immutable journaled decision and retries that exact payload', async () => {
   const decision: ResponseReviewDecision = { actionId, answer: 'saved answer' };
   mount({ ...question(), pendingDecision: { intentId: 'reserved-1', decision } });
