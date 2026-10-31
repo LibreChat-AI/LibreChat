@@ -18,6 +18,7 @@ const config = resolveGatewayConfig(
   DEFAULT_CHANNEL_GATEWAY_POLICY,
 );
 const bundle: ChannelBundle = {
+  delivery: { maxDeliveryParts: 100 },
   gateway: { version: 1, ...DEFAULT_CHANNEL_GATEWAY_POLICY, transport: 'socket_mode' },
   channel: {
     channelId: 'binding',

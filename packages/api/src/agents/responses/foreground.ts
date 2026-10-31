@@ -413,10 +413,6 @@ export function createResponseTerminal<
   };
 }
 
-/** Compatibility name for existing foreground callers. */
-export const createForegroundResponseTerminal: typeof createResponseTerminal =
-  createResponseTerminal;
-
 interface CompletionRequest
   extends Omit<TurnConversationRequest, 'config' | 'resolvedConversation'> {
   config?: AppConfig;

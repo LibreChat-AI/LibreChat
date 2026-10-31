@@ -42,7 +42,7 @@ export function channelExternalIdentity(
   return {
     tenantId: channel.tenantId || '_',
     channelId: channel.channelId,
-    channelRevision: channel.revision ?? channel.channelId,
+    channelRevision: channel.revision,
     teamId: channel.slack?.teamId ?? '',
     externalUserId,
     agentId: channel.agentId,
@@ -67,7 +67,7 @@ export function createChannelAuthority(deps: ChannelAuthorityDependencies): Chan
       (channel.tenantId || '_') === identity.tenantId &&
       channel.agentId === identity.agentId &&
       channel.slack?.teamId === identity.teamId &&
-      (channel.revision ?? channel.channelId) === identity.channelRevision
+      channel.revision === identity.channelRevision
       ? channel
       : null;
   }
@@ -115,7 +115,7 @@ export function createChannelAuthority(deps: ChannelAuthorityDependencies): Chan
     if (!linked.ok) return null;
     return {
       userId: linked.value.userId,
-      channelRevision: channel.revision ?? channel.channelId,
+      channelRevision: channel.revision,
       linkId: linked.value.linkId,
       linkRevision: linked.value.revision,
     };

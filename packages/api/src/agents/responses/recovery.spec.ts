@@ -325,7 +325,14 @@ it('does not replace another terminal receipt after a staging conflict', () =>
     const { record, receipt } = await setup();
     const competing = { ...receipt, ownerId: 'another-worker' };
     expect(
-      (await storage.stageTerminal(owner, record.responseId, record.revision, competing)).ok,
+      (
+        await storage.stageTerminal(
+          owner,
+          record.responseId,
+          { execution: (await storage.read(owner, record.responseId))! },
+          competing,
+        )
+      ).ok,
     ).toBe(true);
     const stage = jest.spyOn(storage, 'stageTerminal');
     const cleanup = jest.fn(async () => {});
@@ -371,7 +378,7 @@ it.each(['provider', 'another-provider'])(
       const reviewed = await storage.publishReview(
         owner,
         record.responseId,
-        record.revision,
+        { execution: (await storage.read(owner, record.responseId))! },
         receipt.generationCreatedAt,
         {
           actionId: 'new-action',
@@ -405,7 +412,7 @@ it.each([false, true])(
       const reviewed = await storage.publishReview(
         owner,
         record.responseId,
-        record.revision,
+        { execution: (await storage.read(owner, record.responseId))! },
         receipt.generationCreatedAt,
         {
           actionId: 'action',
@@ -463,7 +470,12 @@ it.each([false, true])(
 it('lets authorized polling recover a saved result without queueing or observing execution', () =>
   scoped(async () => {
     const { record, receipt } = await setup();
-    await storage.stageTerminal(owner, record.responseId, record.revision, receipt);
+    await storage.stageTerminal(
+      owner,
+      record.responseId,
+      { execution: (await storage.read(owner, record.responseId))! },
+      receipt,
+    );
     const completion = createResponseCompletion({
       confirmExecution: async () => null,
       releaseExecution: async () => {},
@@ -497,7 +509,12 @@ it('lets authorized polling recover a saved result without queueing or observing
 it('does not let a late Stop overwrite the saved result or require a transient job to survive', () =>
   scoped(async () => {
     const { record, receipt } = await setup();
-    await storage.stageTerminal(owner, record.responseId, record.revision, receipt);
+    await storage.stageTerminal(
+      owner,
+      record.responseId,
+      { execution: (await storage.read(owner, record.responseId))! },
+      receipt,
+    );
     const completion = createResponseCompletion({
       confirmExecution: async () => null,
       releaseExecution: async () => {},
@@ -527,7 +544,12 @@ it('does not let a late Stop overwrite the saved result or require a transient j
 it('does not recover or disclose a saved reply after source authorization is revoked', () =>
   scoped(async () => {
     const { record, receipt } = await setup();
-    await storage.stageTerminal(owner, record.responseId, record.revision, receipt);
+    await storage.stageTerminal(
+      owner,
+      record.responseId,
+      { execution: (await storage.read(owner, record.responseId))! },
+      receipt,
+    );
     const recoverTerminal = jest.fn(async () => {
       throw new Error('Unauthorized recovery');
     });
@@ -555,7 +577,12 @@ it('does not recover or disclose a saved reply after source authorization is rev
 it('converges concurrent finishers on one immutable canonical result', () =>
   scoped(async () => {
     const { record, receipt } = await setup();
-    const staged = await storage.stageTerminal(owner, record.responseId, record.revision, receipt);
+    const staged = await storage.stageTerminal(
+      owner,
+      record.responseId,
+      { execution: (await storage.read(owner, record.responseId))! },
+      receipt,
+    );
     if (!staged.ok) throw new Error('Stage failed');
     const completion = createResponseCompletion({
       confirmExecution: async () => null,
@@ -635,7 +662,12 @@ it.each(['owner', 'conversation'] as const)(
   (kind) =>
     scoped(async () => {
       const { record, receipt } = await setup();
-      await storage.stageTerminal(owner, record.responseId, record.revision, receipt);
+      await storage.stageTerminal(
+        owner,
+        record.responseId,
+        { execution: (await storage.read(owner, record.responseId))! },
+        receipt,
+      );
       const completion = createResponseCompletion({
         confirmExecution: async () => null,
         releaseExecution: async () => {},

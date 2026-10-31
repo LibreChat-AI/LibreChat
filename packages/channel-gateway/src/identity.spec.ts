@@ -12,6 +12,7 @@ const config = loadConfig({
   CHANNEL_ID: 'binding',
 });
 const bundle: ChannelBundle = {
+  delivery: { maxDeliveryParts: 100 },
   gateway: { version: 1, ...DEFAULT_CHANNEL_GATEWAY_POLICY },
   channel: {
     channelId: 'binding',

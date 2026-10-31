@@ -1,26 +1,19 @@
-import type {
-  ChannelReplyMapping,
-  ChannelFeedbackActor,
-  ChannelFeedbackVote,
-} from 'librechat-data-provider';
+import type { ChannelReplyMapping, ChannelFeedbackActor } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { ChannelFeedbackLedger, ChannelFeedbackEventRecord } from '~/models/channelFeedback';
 import type { ChannelFeedbackReplySource } from './channelFeedbackSource';
 import type { ChannelFeedbackSourceState } from './channelFeedbackScope';
-import type { FeedbackCheckpoint } from './channelFeedbackCompaction';
+import type { FeedbackCheckpoint } from './channelFeedbackCheckpoint';
 import {
   withChannelFeedbackAuthority,
   sameFeedbackSource,
-  readChannelFeedbackRetention,
   ChannelFeedbackAuthorityError,
 } from './channelFeedbackScope';
 import {
   feedbackCheckpoint,
   pinFeedbackCheckpoint,
   acknowledgeFeedbackReceipt,
-  compactFeedbackReceipts,
-} from './channelFeedbackCompaction';
-import { CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX } from './channelFeedbackProtocol';
+} from './channelFeedbackCheckpoint';
 import { readChannelFeedbackReplySource } from './channelFeedbackSource';
 import { createChannelIndexGate } from './channelIndexes';
 import { assertChannelTenant } from './channelScope';
@@ -36,13 +29,6 @@ export {
   isLaterChannelFeedbackEvent,
 } from './channelFeedbackProtocol';
 export interface ChannelFeedbackStorage {
-  repairChannelFeedbackRetention(tenantId: string, limit: number): Promise<number>;
-  compactChannelFeedbackEvents(
-    tenantId: string,
-    limit: number,
-    now?: number,
-    retryMs?: number,
-  ): Promise<number>;
   deferChannelFeedbackEvent(record: ChannelFeedbackEventRecord, retryAtMs: number): Promise<void>;
   deferChannelFeedbackExport(
     record: ChannelFeedbackLedger,
@@ -60,11 +46,6 @@ export interface ChannelFeedbackStorage {
     actor: ChannelFeedbackActor,
     externalMessageKey: string,
   ): Promise<ChannelFeedbackReplySource | null>;
-  rebuildVotes(
-    tenantId: string,
-    ledgerKey: string,
-    requiredEventIds: string[],
-  ): Promise<ChannelFeedbackVote[] | null>;
   putChannelReply(mapping: ChannelReplyMapping): Promise<ChannelReplyMapping>;
   getChannelReply(
     actor: ChannelFeedbackActor,
@@ -145,90 +126,12 @@ export function createChannelFeedbackStorage(
     function retainedInsert(record: object, expiredAt: Date | null) {
       const insert = { ...record } as Record<string, unknown>;
       delete insert.expiredAt;
-      delete insert.retentionVersion;
       return {
         $setOnInsert: insert,
-        $set: { retentionVersion: 1 },
         ...(expiredAt ? { $min: { expiredAt } } : {}),
       };
     }
-    async function retainLegacyNull(
-      name: string,
-      filter: object,
-      expiredAt: Date | null,
-      active: ClientSession,
-    ) {
-      if (expiredAt)
-        await mongoose
-          .model(name)
-          .updateOne({ ...filter, expiredAt: null }, { $set: { expiredAt } }, { session: active });
-    }
     const storage: ChannelFeedbackStorage = {
-      async compactChannelFeedbackEvents(tenantId, limit, now = Date.now(), retryMs = 5000) {
-        page(tenantId, limit);
-        if (!Number.isSafeInteger(now) || !Number.isSafeInteger(retryMs) || retryMs < 1)
-          throw new TypeError('Invalid feedback compaction clock');
-        await ensureIndexes();
-        return compactFeedbackReceipts(mongoose, tenantId, limit, now, retryMs, (key, active) =>
-          createStorage(active).rebuildVotes(tenantId, key, []),
-        );
-      },
-      async repairChannelFeedbackRetention(tenantId, limit) {
-        page(tenantId, limit);
-        await ensureIndexes();
-        let repaired = 0;
-        const retention = new Map<string, Date | null>();
-        for (const name of ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback']) {
-          const model = mongoose.model(name);
-          const rows = await model
-            .find({ tenantId, retentionVersion: { $ne: 1 } })
-            .select(
-              name === 'ChannelReply'
-                ? 'tenantId principalId conversationId messageId'
-                : 'mapping.tenantId mapping.principalId mapping.conversationId mapping.messageId',
-            )
-            .sort({ _id: 1 })
-            .limit(limit)
-            .lean();
-          for (const row of rows) {
-            const mapping = (name === 'ChannelReply' ? row : row.mapping) as ChannelReplyMapping;
-            const key = JSON.stringify([
-              mapping.tenantId,
-              mapping.principalId,
-              mapping.conversationId,
-              mapping.messageId,
-            ]);
-            if (!retention.has(key)) {
-              try {
-                retention.set(key, await readChannelFeedbackRetention(mongoose, mapping));
-              } catch (error) {
-                if (!(error instanceof ChannelFeedbackAuthorityError)) throw error;
-                retention.set(key, new Date(0));
-              }
-            }
-            const expiredAt = retention.get(key)!;
-            const filter = { _id: row._id, tenantId, retentionVersion: { $ne: 1 } };
-            const result = await model.updateOne(
-              {
-                ...filter,
-                ...(expiredAt
-                  ? { $or: [{ expiredAt: null }, { expiredAt: { $gt: expiredAt } }] }
-                  : {}),
-              },
-              { $set: { retentionVersion: 1, ...(expiredAt ? { expiredAt } : {}) } },
-            );
-            repaired += result.modifiedCount;
-            if (expiredAt && !result.modifiedCount) {
-              const retained = await model.updateOne(
-                { ...filter, expiredAt: { $lte: expiredAt } },
-                { $set: { retentionVersion: 1 } },
-              );
-              repaired += retained.modifiedCount;
-            }
-          }
-        }
-        return repaired;
-      },
       async deferChannelFeedbackEvent(record, retryAtMs) {
         assertChannelTenant(record.tenantId);
         if (!Number.isSafeInteger(retryAtMs) || retryAtMs < 0)
@@ -285,64 +188,6 @@ export function createChannelFeedbackStorage(
         }
       },
       readReplySource: (actor, key) => readChannelFeedbackReplySource(mongoose, actor, key),
-      async rebuildVotes(tenantId, ledgerKey, requiredEventIds) {
-        assertChannelTenant(tenantId);
-        if (requiredEventIds.length > CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX)
-          throw new TypeError('Invalid feedback vote footprint');
-        const ids = [...new Set(requiredEventIds)];
-        if (
-          (await events()
-            .countDocuments({ tenantId, ledgerKey, eventId: { $in: ids } })
-            .session(session ?? null)) !== ids.length
-        )
-          return null;
-        return events()
-          .aggregate<ChannelFeedbackVote>([
-            {
-              $match: {
-                tenantId,
-                ledgerKey,
-                'event.reaction': { $regex: '^(\\+1|thumbsup|-1|thumbsdown)(::skin-tone-[2-6])?$' },
-              },
-            },
-            { $sort: { 'event.eventTimestampUs': -1, 'event.eventId': -1 } },
-            {
-              $addFields: {
-                reaction: {
-                  $replaceOne: {
-                    input: {
-                      $replaceOne: {
-                        input: '$event.reaction',
-                        find: '+1',
-                        replacement: 'thumbsup',
-                      },
-                    },
-                    find: '-1',
-                    replacement: 'thumbsdown',
-                  },
-                },
-              },
-            },
-            {
-              $group: {
-                _id: { externalMessageKey: '$event.externalMessageKey', reaction: '$reaction' },
-                vote: {
-                  $first: {
-                    externalMessageKey: '$event.externalMessageKey',
-                    reaction: '$reaction',
-                    rating: '$rating',
-                    active: { $eq: ['$event.action', 'added'] },
-                    eventId: '$event.eventId',
-                    eventTimestampUs: '$event.eventTimestampUs',
-                  },
-                },
-              },
-            },
-            { $limit: CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX + 1 },
-            { $replaceRoot: { newRoot: '$vote' } },
-          ])
-          .session(session ?? null);
-      },
       async putChannelReply(mapping) {
         return guard(mapping, async (active, expiredAt) => {
           const filter = {
@@ -355,7 +200,7 @@ export function createChannelFeedbackStorage(
             upsert: true,
             session: active,
           });
-          await retainLegacyNull('ChannelReply', filter, expiredAt, active);
+
           const stored = await replies().findOne(filter).session(active).lean();
           if (!stored) throw new Error('Channel reply disappeared during admission');
           return stored;
@@ -386,7 +231,7 @@ export function createChannelFeedbackStorage(
             upsert: true,
             session: active,
           });
-          await retainLegacyNull('ChannelFeedbackEvent', filter, expiredAt, active);
+
           const stored = await events().findOne(filter).session(active).lean();
           if (!stored) throw new Error('Channel feedback event disappeared during admission');
           return stored;
@@ -439,7 +284,7 @@ export function createChannelFeedbackStorage(
             ),
             { upsert: true, session: active },
           );
-          await retainLegacyNull('ChannelFeedback', filter, expiredAt, active);
+
           const stored = await ledger().findOne(filter).session(active).lean();
           if (!stored) throw new Error('Channel feedback ledger disappeared during admission');
           remember(stored);
@@ -485,20 +330,8 @@ export function createChannelFeedbackStorage(
         )
           throw new TypeError('Invalid feedback lease');
         return guard(candidate.mapping, async (active) => {
-          if (!candidate.scoreTimestamp) {
-            const scoreTimestamp = candidate.createdAt ?? new Date();
-            if (!Number.isFinite(scoreTimestamp.getTime()))
-              throw new TypeError('Invalid feedback score timestamp');
-            await ledger().updateOne(
-              {
-                tenantId: candidate.tenantId,
-                key: candidate.key,
-                scoreTimestamp: null,
-              },
-              { $set: { scoreTimestamp } },
-              { session: active, timestamps: false },
-            );
-          }
+          if (!candidate.scoreTimestamp || !Number.isFinite(candidate.scoreTimestamp.getTime()))
+            throw new TypeError('Invalid feedback score timestamp');
           return ledger()
             .findOneAndUpdate(
               {

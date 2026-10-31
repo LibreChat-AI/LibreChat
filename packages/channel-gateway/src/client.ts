@@ -168,7 +168,10 @@ export class ChannelClient {
     if (!policy.success) throw new Error('Unsupported channel gateway policy');
     const delivery = channelStorageConfigSchema
       .pick({ maxDeliveryParts: true })
-      .safeParse(value.delivery === undefined ? {} : value.delivery);
+      .extend({
+        maxDeliveryParts: channelStorageConfigSchema.shape.maxDeliveryParts.removeDefault(),
+      })
+      .safeParse(value.delivery);
     if (!delivery.success) throw new Error('Invalid channel delivery policy');
     return { ...value, gateway: policy.data, delivery: delivery.data };
   }

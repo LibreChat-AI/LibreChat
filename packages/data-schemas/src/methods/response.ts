@@ -85,17 +85,12 @@ export type ResponseResumeResult =
   | { ok: false; code: 'resume_conflict' };
 
 /** Canonical execution writes are independent of polling's projection revision. */
-export type ResponseExecutionGuard =
-  | number
-  | {
-      execution: Pick<
-        StoredResponseRecord,
-        'agentId' | 'sourceKeyId' | 'conversationId' | 'generationCreatedAt' | 'review' | 'resume'
-      >;
-    };
-
-/** Compatibility name for existing terminal producers. */
-export type ResponseTerminalGuard = ResponseExecutionGuard;
+export interface ResponseExecutionGuard {
+  execution: Pick<
+    StoredResponseRecord,
+    'agentId' | 'sourceKeyId' | 'conversationId' | 'generationCreatedAt' | 'review' | 'resume'
+  >;
+}
 
 function responseReviewFilter(
   review: ResponseReviewCheckpoint | undefined,
@@ -122,7 +117,7 @@ function responseReviewFilter(
   return filter;
 }
 
-function responseExecutionFilter(guard: Exclude<ResponseExecutionGuard, number>) {
+function responseExecutionFilter(guard: ResponseExecutionGuard) {
   const { execution } = guard;
   const filter: Record<string, unknown> = {
     agentId: execution.agentId,
@@ -158,13 +153,13 @@ export interface ResponseStorage {
   prepareTerminal(
     owner: ResponseOwner,
     responseId: string,
-    guard: Exclude<ResponseExecutionGuard, number>,
+    guard: ResponseExecutionGuard,
     receipt: ResponseTerminalReceipt,
   ): Promise<ResponseMutationResult>;
   stageTerminal(
     owner: ResponseOwner,
     responseId: string,
-    guard: ResponseTerminalGuard,
+    guard: ResponseExecutionGuard,
     receipt: ResponseTerminalReceipt,
     promotion?: { receipt: ResponseTerminalReceipt; cancellationRequestedAt?: number },
   ): Promise<ResponseMutationResult>;
@@ -438,12 +433,9 @@ export function createResponseStorage(
           prepared.checkpointConfigJSON !== receipt.checkpointConfigJSON)
       )
         return { ok: false, code: 'response_conflict' };
-      if (
-        typeof guard !== 'number' &&
-        guard.execution.generationCreatedAt !== receipt.generationCreatedAt
-      )
+      if (guard.execution.generationCreatedAt !== receipt.generationCreatedAt)
         return { ok: false, code: 'response_conflict' };
-      const execution = typeof guard === 'number' ? undefined : responseExecutionFilter(guard);
+      const execution = responseExecutionFilter(guard);
       const pendingTerminal = terminalReceipt(receipt);
       return commitInOpenScope<ResponseMutationResult>(
         owner,
@@ -454,7 +446,7 @@ export function createResponseStorage(
               {
                 ...scope(owner),
                 responseId,
-                ...(execution ?? { revision: guard }),
+                ...execution,
                 generationCreatedAt: receipt.generationCreatedAt,
                 status: promotion && receipt.turnJSON != null ? 'materializing' : { $in: active },
                 pendingTerminal: { $exists: false },
@@ -568,28 +560,24 @@ export function createResponseStorage(
       );
     },
     async publishReview(owner, responseId, guard, generationCreatedAt, review, responseJSON) {
-      if (typeof guard !== 'number' && guard.execution.generationCreatedAt !== generationCreatedAt)
+      if (guard.execution.generationCreatedAt !== generationCreatedAt)
         return { ok: false, code: 'response_conflict' };
-      const execution = typeof guard === 'number' ? undefined : responseExecutionFilter(guard);
-      const receiptFilter =
-        typeof guard === 'number'
-          ? undefined
-          : {
-              ...scope(owner),
-              responseId,
-              generationCreatedAt,
-              agentId: guard.execution.agentId,
-              sourceKeyId: guard.execution.sourceKeyId ?? { $exists: false },
-              conversationId: guard.execution.conversationId,
-              ...responseReviewFilter(review),
-              status: 'requires_action',
-              resume: { $exists: false },
-              pendingTerminal: { $exists: false },
-              preparedTerminal: { $exists: false },
-              cancellationRequestedAt: { $exists: false },
-            };
+      const execution = responseExecutionFilter(guard);
+      const receiptFilter = {
+        ...scope(owner),
+        responseId,
+        generationCreatedAt,
+        agentId: guard.execution.agentId,
+        sourceKeyId: guard.execution.sourceKeyId ?? { $exists: false },
+        conversationId: guard.execution.conversationId,
+        ...responseReviewFilter(review),
+        status: 'requires_action',
+        resume: { $exists: false },
+        pendingTerminal: { $exists: false },
+        preparedTerminal: { $exists: false },
+        cancellationRequestedAt: { $exists: false },
+      };
       if (
-        typeof guard !== 'number' &&
         guard.execution.review?.actionId === review.actionId &&
         guard.execution.review.providerExecutionId === review.providerExecutionId &&
         guard.execution.resume == null
@@ -602,7 +590,7 @@ export function createResponseStorage(
           {
             ...scope(owner),
             responseId,
-            ...(execution ?? { revision: guard }),
+            ...execution,
             generationCreatedAt,
             status: { $in: ['in_progress', 'requires_action'] },
             pendingTerminal: { $exists: false },
@@ -877,28 +865,11 @@ export function createResponseStorage(
         'dispatchOutbox.state': 'pending',
         'dispatchOutbox.kind': { $in: includeResume ? ['create', 'resume'] : ['create'] },
       };
-      const candidates: Record<string, unknown>[] = [
-        pending,
-        { status: 'queued', dispatchOutbox: { $exists: false } },
-      ];
-      if (includeResume)
-        candidates.push({
-          status: { $in: ['requires_action', 'in_progress'] },
-          'resume.state': 'reserved',
-          $or: [
-            { dispatchOutbox: { $exists: false } },
-            {
-              'dispatchOutbox.kind': { $in: ['create', 'resume'] },
-              'dispatchOutbox.state': { $in: ['pending', 'settled'] },
-            },
-          ],
-          $expr: { $ne: [{ $ifNull: ['$dispatchOutbox.id', null] }, '$resume.intentId'] },
-        });
       const rows = await model
         .find({
           ...(cursor ? { _id: { $gt: new mongoose.Types.ObjectId(cursor) } } : {}),
           $and: [activeExpirationFilter<StoredResponseRecord>()],
-          $or: candidates,
+          ...pending,
         })
         .select('_id tenantId userId responseId')
         .sort({ _id: 1 })
@@ -923,23 +894,17 @@ export function createResponseStorage(
         async (session, record) => {
           const marker = record.dispatchOutbox;
           if (
-            marker &&
-            (!['create', 'resume'].includes(marker.kind) ||
-              !['pending', 'settled'].includes(marker.state))
+            !marker ||
+            !['create', 'resume'].includes(marker.kind) ||
+            !['pending', 'settled'].includes(marker.state)
           )
             return false;
-          const same = marker?.kind === token.kind && marker.id === token.id;
+          if (marker.kind !== token.kind || marker.id !== token.id) return false;
+          // A consumed resume may pause again and clear its intent before enqueue acknowledgement.
           if (token.kind === 'create') {
-            if (
-              token.id !== record.responseId ||
-              record.resume?.state === 'reserved' ||
-              (marker && !same)
-            )
-              return false;
-          } else if (!same && record.resume?.intentId !== token.id) return false;
-          if (token.kind === 'resume' && record.resume && record.resume.intentId !== token.id)
-            return false;
-          if (same && marker.state === 'settled') return true;
+            if (token.id !== record.responseId || record.resume?.state === 'reserved') return false;
+          } else if (record.resume && record.resume.intentId !== token.id) return false;
+          if (marker.state === 'settled') return true;
           const updated = await model.updateOne(
             { ...scope(owner), responseId },
             {

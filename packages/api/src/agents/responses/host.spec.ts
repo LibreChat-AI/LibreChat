@@ -11,7 +11,7 @@ import {
   tenantStorage,
   runAsSystem,
   AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1,
-  AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V1,
 } from '@librechat/data-schemas';
 import type { AppConfig, IUser, ResponseStorage } from '@librechat/data-schemas';
 import type { RequestHandler } from 'express';
@@ -30,14 +30,12 @@ import {
 import { createAgentTriggerService, createAgentTriggerProducerBinding } from '../triggers/service';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
-import { prepareAgentTriggerDelivery } from '../triggers/delivery';
 import { createCheckpointNamespace } from '~/stream/checkpoints';
 import { createRequireApiKeyAuth } from '~/apiKeys/middleware';
 import { buildPendingBackgroundResponse } from './background';
 import { mintBackgroundResponseWorkerToken } from './worker';
 import { enrollAgentExecution } from '../remote/lifecycle';
 import { createResponseExecutionRuntime } from './runtime';
-import { createBackgroundResponseEnvelope } from './queue';
 import { buildResponseInputChain } from './persistence';
 import { createBackgroundResponsesHost } from './host';
 import { getSafeErrorMetadata } from '~/utils/errors';
@@ -430,7 +428,7 @@ async function ownerPause(keyId: string) {
         const published = await storage.publishReview(
           owner,
           id,
-          1,
+          { execution: (await storage.read(owner, id))! },
           execution.createdAt,
           {
             actionId: action.actionId,
@@ -570,46 +568,7 @@ it('reuses canonical decision receipts and source preflight for a trusted native
   });
 });
 
-it('drains the original V2 delivery after interactive worker activation without rewriting its identity or capability', async () => {
-  let deliveryKey = '';
-  const f = await fixture(
-    undefined,
-    {
-      validate: async () => true,
-      admitResume: async () => ({ ok: false, code: 'response_resume_unavailable' }),
-    },
-    '127.0.0.1',
-    async (phase, _client, _key, credentialId) => {
-      if (phase !== 'queue-starting') return;
-      const record = await reserveUnstarted(credentialId, '7aa6f6cc-0eef-4df4-9103-4205ed190804');
-      const prepared = prepareAgentTriggerDelivery(createBackgroundResponseEnvelope(record), {
-        requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2,
-      });
-      deliveryKey = prepared.deliveryKey;
-      const attached = await scoped(() =>
-        storage.attachDelivery(record, record.responseId, deliveryKey),
-      );
-      expect(attached.ok).toBe(true);
-      await runAsSystem(() => db.enqueueAgentTriggerDelivery(prepared));
-    },
-  );
-  await f.readUntil('resp_delayed_worker', 'completed');
-  expect(f.inputs).toHaveLength(1);
-  await f.stopQueue();
-  const deliveries = await runAsSystem(() => mongoose.models.AgentTriggerDelivery.find({}).lean());
-  expect(deliveries).toHaveLength(1);
-  expect(deliveries[0]).toMatchObject({
-    deliveryKey,
-    requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2,
-  });
-  const dispatcher = f.host.sourceDispatchers.get('responses')!;
-  expect(dispatcher.workerCapability).toBe(AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1);
-  expect(dispatcher.compatibleWorkerCapabilities).toEqual([
-    AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2,
-  ]);
-});
-
-it('registers only resume-capable initial/resume workers and dispatches saved intent through signed Responses ingress', async () => {
+it('registers distinct initial/resume workers and dispatches saved intent through signed Responses ingress', async () => {
   const admitResume = jest.fn<
     ReturnType<NonNullable<BackgroundResponsesHostDependencies['interactive']>['admitResume']>,
     Parameters<NonNullable<BackgroundResponsesHostDependencies['interactive']>['admitResume']>
@@ -617,9 +576,12 @@ it('registers only resume-capable initial/resume workers and dispatches saved in
   const validate = jest.fn(async () => true);
   const f = await fixture(undefined, { validate, admitResume });
   expect([...f.host.sourceDispatchers.keys()].sort()).toEqual(['responses', 'responses.resume']);
-  for (const dispatcher of f.host.sourceDispatchers.values()) {
-    expect(dispatcher.workerCapability).toBe(AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1);
-  }
+  expect(f.host.sourceDispatchers.get('responses')?.workerCapability).toBe(
+    AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V1,
+  );
+  expect(f.host.sourceDispatchers.get('responses.resume')?.workerCapability).toBe(
+    AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1,
+  );
   const { id, action, owner } = await ownerPause(f.credential.id);
   const receipt = await f.client
     .post(`/api/agents/responses/${id}/review`)
@@ -715,7 +677,7 @@ it('does not publish a completed response while its provider has durably paused 
         const published = await storage.publishReview(
           record,
           record.responseId,
-          record.revision,
+          { execution: (await storage.read(record, record.responseId))! },
           execution.createdAt,
           {
             actionId: action.actionId,

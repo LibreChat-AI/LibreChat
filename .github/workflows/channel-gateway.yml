@@ -80,8 +80,9 @@ jobs:
           const { createHmac } = require('node:crypto');
           const { setTimeout: delay } = require('node:timers/promises');
           const bundle = {
+            delivery: { maxDeliveryParts: 100 },
             channel: { channelId: 'fixture', tenantId: 'fixture', agentId: 'agent_fixture', createdBy: 'owner', type: 'slack', status: 'active', revision: 'fixture', slack: { teamId: 'T1', appId: 'A1', botUserId: 'U1' } },
-            gateway: { version: 1, transport: 'webhook', nativeSessions: false, lifecycleReactions: false, signatureToleranceSeconds: 300 },
+            gateway: { version: 1, transport: 'webhook', nativeSessions: false, lifecycleReactions: false, signatureToleranceSeconds: 300, socketReconnectDelayMs: 5000 },
             credentials: { botToken: 'fixture', signingSecret: 'fixture-signing' }, agent: { id: 'agent_fixture' },
           };
           const backend = http.createServer((req, res) => {
@@ -115,7 +116,8 @@ jobs:
               child.kill('SIGTERM');
               if (await exited !== 0) throw new Error('Gateway did not exit cleanly');
               console.log('Standalone gateway became healthy and stopped cleanly.');
-            } catch {
+          } catch (error) {
+            console.error(error.message);
               child.kill('SIGKILL'); process.exitCode = 1;
             } finally {
               clearTimeout(deadline); backend.closeAllConnections(); backend.close();

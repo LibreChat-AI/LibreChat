@@ -30,10 +30,6 @@ export function createChannelIdentityModel(
     },
     { _id: false },
   );
-  // Channel revisions are opaque tokens: require presence without rejecting an empty string.
-  Object.assign(identity.path('channelRevision'), {
-    checkRequired: (value: unknown) => typeof value === 'string',
-  });
   const schema = new Schema<ChannelIdentityRecord>(
     {
       tenantId: { type: String, required: true },

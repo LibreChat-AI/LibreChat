@@ -99,7 +99,7 @@ async function pausedDecision(): Promise<StoredResponseRecord> {
       const result = await storage.publishReview(
         owner,
         responseId,
-        1,
+        { execution: (await storage.read(owner, responseId))! },
         execution.createdAt,
         {
           actionId: action.actionId,

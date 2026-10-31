@@ -18,7 +18,6 @@ let mongo: MongoMemoryReplSet;
 let db: ReturnType<typeof createMethods>;
 let app: express.Express;
 let deps: ChannelDependencies;
-let revokedKeys: string[];
 
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({
@@ -38,19 +37,13 @@ afterAll(async () => {
 beforeEach(async () => {
   await runAsSystem(async () => {
     await mongoose.models.AgentChannel.deleteMany({});
-    await mongoose.models.AgentChannelThread.deleteMany({});
     await mongoose.models.ChannelRun.deleteMany({});
   });
-  revokedKeys = [];
   deps = {
     db,
     serviceToken: () => serviceToken,
     config: async () => ({ enabled: true }),
     getAgent: async (id) => ({ id, name: 'Test Agent' }),
-    deleteApiKey: async (id) => {
-      revokedKeys.push(id);
-      return true;
-    },
     verifySlackToken: async () => ({ teamId: 'TTEST', botUserId: 'UTEST' }),
     logError: jest.fn(),
   };
@@ -100,8 +93,8 @@ it('persists encrypted credentials and returns them only through the authenticat
   const stored = await tenantStorage.run({ tenantId }, async () => db.getAgentChannel(id));
   expect(stored?.tenantId).toBe(tenantId);
   expect(stored?.encryptedBotToken).toMatch(/^v3:/);
-  expect(stored?.encryptedApiKey).toBe('');
-  expect(stored?.apiKeyId).toBe('');
+  expect(stored).not.toHaveProperty('encryptedApiKey');
+  expect(stored).not.toHaveProperty('apiKeyId');
   expect(JSON.stringify(publicChannel(stored!))).not.toContain('encrypted');
   await request(app).get(`/service/slack/${tenantId}/${id}`).expect(401);
   await request(app)
@@ -210,36 +203,12 @@ it('isolates durable thread mappings and denies disabled channels', async () => 
   });
 });
 
-it('fails closed when retiring a legacy unrestricted owner key fails', async () => {
-  const id = await createChannel();
-  await activation(id).expect(200);
-  await request(app)
-    .patch(`/ui/agent-test/channels/${id}`)
-    .send({ status: 'disabled' })
-    .expect(200);
-  await tenantStorage.run({ tenantId }, () =>
-    db.updateAgentChannel(id, owner, { apiKeyId: 'legacy-key' }),
-  );
-  deps.deleteApiKey = async (keyId) => {
-    revokedKeys.push(keyId);
-    throw new Error('sensitive upstream diagnostics');
-  };
-  await activation(id).expect(503);
-  expect(revokedKeys).toContain('legacy-key');
-  const stored = await tenantStorage.run({ tenantId }, async () => db.getAgentChannel(id));
-  expect(stored?.apiKeyId).toBe('legacy-key');
-  expect(stored?.status).toBe('disabled');
-});
-
 it('leaves a failed deletion closed and retryable without allowing reactivation', async () => {
   const id = await createChannel();
   await activation(id).expect(200);
-  await tenantStorage.run({ tenantId }, () =>
-    db.updateAgentChannel(id, owner, { apiKeyId: 'legacy-key' }),
-  );
-  deps.deleteApiKey = async () => {
-    throw new Error('sensitive upstream diagnostics');
-  };
+  const deletion = jest
+    .spyOn(deps.db, 'deleteAgentChannel')
+    .mockRejectedValueOnce(new Error('sensitive upstream diagnostics'));
   const failed = await request(app).delete(`/ui/agent-test/channels/${id}`).expect(503);
   expect(failed.body).toEqual({ error: 'channel_operation_failed' });
   await activation(id).expect(409);
@@ -247,7 +216,7 @@ it('leaves a failed deletion closed and retryable without allowing reactivation'
     .get(`/service/slack/${tenantId}/${id}`)
     .set('Authorization', `Bearer ${serviceToken}`)
     .expect(404);
-  deps.deleteApiKey = async () => true;
+  deletion.mockRestore();
   await request(app).delete(`/ui/agent-test/channels/${id}`).expect(204);
 });
 
@@ -282,25 +251,9 @@ it('returns a safe deleting state while a persisted run is still active', async 
   });
 });
 
-it('retains the deleting parent when dependent thread cleanup fails', async () => {
+it('retains the deleting parent when dependent feedback cleanup fails', async () => {
   const id = await createChannel();
-  await tenantStorage.run({ tenantId }, async () => {
-    await mongoose.models.AgentChannelThread.create({
-      channelId: id,
-      tenantId,
-      externalThreadKey: 'CTEST:123.456',
-      conversationId: 'resp_test',
-    });
-    expect(await db.deleteAgentChannel(id, 'another-owner')).toEqual({ status: 'not_found' });
-    expect(
-      await mongoose.models.AgentChannelThread.findOne({
-        channelId: id,
-        tenantId,
-        externalThreadKey: 'CTEST:123.456',
-      }),
-    ).not.toBeNull();
-  });
-  const cleanup = jest.spyOn(mongoose.models.AgentChannelThread, 'deleteMany');
+  const cleanup = jest.spyOn(mongoose.models.ChannelReply, 'deleteMany');
   cleanup.mockRejectedValueOnce(new Error('temporary database failure'));
   try {
     await request(app).delete(`/ui/agent-test/channels/${id}`).expect(503);
@@ -308,16 +261,7 @@ it('retains the deleting parent when dependent thread cleanup fails', async () =
     expect(stored?.status).toBe('deleting');
     await activation(id).expect(409);
     await request(app).delete(`/ui/agent-test/channels/${id}`).expect(204);
-    await tenantStorage.run({ tenantId }, async () => {
-      expect(await db.getAgentChannel(id)).toBeNull();
-      expect(
-        await mongoose.models.AgentChannelThread.findOne({
-          channelId: id,
-          tenantId,
-          externalThreadKey: 'CTEST:123.456',
-        }),
-      ).toBeNull();
-    });
+    expect(await tenantStorage.run({ tenantId }, () => db.getAgentChannel(id))).toBeNull();
   } finally {
     cleanup.mockRestore();
   }

@@ -448,24 +448,12 @@ it(
   }),
 );
 
-it.each(['current', 'legacy'] as const)(
+it.each(['current'] as const)(
   'keeps distinct skin-tone slots and canonical aliases (%s)',
-  (mode) =>
+  (_mode) =>
     tenantStorage.run({ tenantId: actor.tenantId }, async () => {
       await service.record(actor, event('tone-two', 100, { reaction: 'thumbsup::skin-tone-2' }));
       await service.record(actor, event('tone-three', 200, { reaction: 'thumbsup::skin-tone-3' }));
-      if (mode === 'legacy') {
-        const record = (
-          await deps.storage.pendingChannelFeedbackExports(actor.tenantId, clock, 10)
-        )[0];
-        const { reaction: _identity, ...collapsed } = record.votes.find(
-          (vote) => vote.eventId === 'tone-three',
-        )!;
-        await mongoose.models.ChannelFeedback.updateOne(
-          { tenantId: actor.tenantId, key: record.key },
-          { $set: { votes: [collapsed] } },
-        );
-      }
       expect(
         await service.record(
           actor,

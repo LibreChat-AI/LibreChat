@@ -15,7 +15,7 @@ export function projectCanonicalResponseTurn(
   record: StoredResponseRecord,
   receipt: ResponseTerminalReceipt,
 ): ResponseTurnWrites | undefined {
-  if (!receipt.turnJSON) return undefined; // Legacy already-drained receipts have no history intent.
+  if (!receipt.turnJSON) return undefined; // Failures before turn preparation have no history to materialize.
   const intent = JSON.parse(receipt.turnJSON) as ResponseTurnIntent;
   if (
     intent.version !== 1 ||

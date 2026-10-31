@@ -64,7 +64,7 @@ export function createChannelIdentityStorage(
       assertChannelTenant(record.tenantId);
       if (record.tenantId !== record.identity.tenantId)
         throw new TypeError('Channel identity tenant mismatch');
-      if (typeof record.identity.channelRevision !== 'string')
+      if (typeof record.identity.channelRevision !== 'string' || !record.identity.channelRevision)
         throw new TypeError('Channel revision required');
       await ensureIndexes();
       if (

@@ -212,27 +212,7 @@ export function createChannelRunStorage(
   const limits = channelStorageConfigSchema.parse(options);
   const runs = () => mongoose.model<ChannelRunRecord>('ChannelRun');
   const lanes = () => mongoose.model<ChannelLaneRecord>('ChannelLane');
-  const ensureIndexes = createChannelIndexGate(
-    () => [runs(), lanes()],
-    async () => {
-      // The prototype index was narrower than provider event identity. Build its
-      // replacement first, then remove only that exact old unique constraint.
-      const legacy = {
-        tenantId: 1,
-        channelId: 1,
-        'admission.actor.teamId': 1,
-        'admission.eventId': 1,
-      };
-      for (const index of await runs().listIndexes()) {
-        if (!index.unique || !index.name || digest(index.key) !== digest(legacy)) continue;
-        try {
-          await runs().cleanIndexes({ toDrop: [index.name] });
-        } catch (error) {
-          if (!(error instanceof mongoose.mongo.MongoServerError) || error.code !== 27) throw error;
-        }
-      }
-    },
-  );
+  const ensureIndexes = createChannelIndexGate(() => [runs(), lanes()]);
   async function transaction<T>(work: (session: ClientSession) => Promise<T>): Promise<T> {
     await ensureIndexes();
     const session = await mongoose.startSession();
