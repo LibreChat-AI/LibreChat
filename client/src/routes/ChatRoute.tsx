@@ -22,6 +22,7 @@ import {
   isTemporaryConversation,
   logger,
   clearMessagesCache,
+  reconcileModelSpecConversation,
 } from '~/utils';
 import {
   useGetConvoIdQuery,
@@ -260,10 +261,14 @@ export default function ChatRoute() {
       hasSetConversation.current = true;
     } else if (initialConvoQuery.data && endpointsQuery.data && modelsQuery.data) {
       logger.log('conversation', 'ChatRoute initialConvoQuery', initialConvoQuery.data);
+      const currentConversation = reconcileModelSpecConversation(
+        initialConvoQuery.data,
+        startupConfig,
+      );
       newConversation({
-        template: initialConvoQuery.data,
+        template: currentConversation,
         /* this is necessary to load all existing settings */
-        preset: initialConvoQuery.data as TPreset,
+        preset: currentConversation as TPreset,
         modelsData: modelsQuery.data,
       });
       hasSetConversation.current = true;
@@ -311,9 +316,13 @@ export default function ChatRoute() {
       assistantListMap[EModelEndpoint.azureAssistants]
     ) {
       logger.log('conversation', 'ChatRoute convo, assistants effect', initialConvoQuery.data);
+      const currentConversation = reconcileModelSpecConversation(
+        initialConvoQuery.data,
+        startupConfig,
+      );
       newConversation({
-        template: initialConvoQuery.data,
-        preset: initialConvoQuery.data as TPreset,
+        template: currentConversation,
+        preset: currentConversation as TPreset,
         modelsData: modelsQuery.data,
       });
       hasSetConversation.current = true;
