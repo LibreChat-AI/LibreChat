@@ -66,3 +66,44 @@ it('keeps a new-chat selection new', () => {
     } as TConversation).conversationId,
   ).toBe('new');
 });
+
+describe('model identity during endpoint switches', () => {
+  const conversation = {
+    conversationId: 'saved',
+    endpoint: EModelEndpoint.openAI,
+    model: 'gpt-4o',
+  } as TConversation;
+  beforeEach(() => localStorage.clear());
+  it('clears an inherited model before destination discovery', () => {
+    const { template } = getConvoSwitchLogic({
+      conversation,
+      newEndpoint: EModelEndpoint.anthropic,
+      endpointsConfig: {},
+      modularChat: true,
+    });
+    expect(template.model).toBeUndefined();
+    const next = buildDefaultConvo({
+      conversation,
+      endpoint: EModelEndpoint.anthropic,
+      lastConversationSetup: template,
+    });
+    expect(next.model).toBeUndefined();
+  });
+  it('preserves an explicit destination model without needing its catalog', () => {
+    const next = buildDefaultConvo({
+      conversation,
+      endpoint: EModelEndpoint.anthropic,
+      lastConversationSetup: { endpoint: EModelEndpoint.anthropic, model: 'claude-explicit' },
+    });
+    expect(next.model).toBe('claude-explicit');
+  });
+  it('uses only destination models when resolving an endpoint fallback', () => {
+    const next = buildDefaultConvo({
+      conversation,
+      endpoint: EModelEndpoint.anthropic,
+      lastConversationSetup: conversation,
+      models: ['claude-default'],
+    });
+    expect(next.model).toBe('claude-default');
+  });
+});

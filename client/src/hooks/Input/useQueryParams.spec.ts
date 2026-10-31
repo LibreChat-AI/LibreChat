@@ -206,6 +206,7 @@ describe('useQueryParams', () => {
     options: {
       conversation?: Partial<TConversation>;
       queryClient?: Record<string, unknown>;
+      routePending?: boolean;
     } = {},
   ) => {
     const textAreaRef = { current: document.createElement('textarea') };
@@ -244,10 +245,14 @@ describe('useQueryParams', () => {
     updateConversation(
       options.conversation ?? { endpoint: EModelEndpoint.openAI, model: 'gpt-4o' },
     );
-    const hook = renderHook(() => useQueryParams({ textAreaRef }));
+    const readiness = { pending: options.routePending ?? false };
+    const hook = renderHook(() => useQueryParams({ textAreaRef, routePending: readiness.pending }));
     act(() => jest.advanceTimersByTime(100));
     return {
       ...hook,
+      updatePending: (pending: boolean) => {
+        readiness.pending = pending;
+      },
       mockSetValue,
       mockSubmitMessage,
       mockNewConversation,
@@ -288,6 +293,23 @@ describe('useQueryParams', () => {
     );
     act(() => jest.advanceTimersByTime(4000));
     hook.rerender();
+    expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('resumes a staged agent launch on readiness alone without expiring its settings clock', () => {
+    const hook = mountQuery({ agent_id: 'agent_test', q: 'hi', submit: 'true' });
+    const selected = { endpoint: EModelEndpoint.agents, agent_id: 'agent_test' };
+    hook.updateConversation(selected);
+    hook.updatePending(true);
+    hook.rerender();
+    act(() => jest.advanceTimersByTime(4000));
+    expect(hook.mockSubmitMessage).not.toHaveBeenCalled();
+    expect(hook.result.current.settingsError).toBe(false);
+    hook.updatePending(false);
+    hook.rerender();
+    expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
+    expect(hook.result.current.isPreparing).toBe(false);
+    act(() => jest.advanceTimersByTime(4000));
     expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
   });
 
