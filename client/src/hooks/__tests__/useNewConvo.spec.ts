@@ -1919,6 +1919,21 @@ describe('remembered New Chat identity', () => {
     },
   );
 
+  it('restores an Azure resource alias when returning from a different endpoint', async () => {
+    localStorage.setItem(
+      `${LocalStorageKeys.LAST_CONVO_SETUP}_0`,
+      JSON.stringify({ endpoint: 'openAI', model: 'gpt-4o' }),
+    );
+    localStorage.setItem(`${LocalStorageKeys.ASST_ID_PREFIX}0azureAssistants`, 'asst_remembered');
+    localStorage.setItem(
+      LocalStorageKeys.LAST_MODEL,
+      JSON.stringify({ openAI: 'gpt-4o', azureAssistants: 'remembered-resource' }),
+    );
+    const selected = await open(0, { template: { endpoint: EModelEndpoint.azureAssistants } });
+    expect(selected.assistant_id).toBe('asst_remembered');
+    expect(selected.model).toBe('remembered-resource');
+  });
+
   it('does not route a remembered assistant using another assistant’s saved alias', async () => {
     localStorage.setItem(
       `${LocalStorageKeys.LAST_CONVO_SETUP}_0`,

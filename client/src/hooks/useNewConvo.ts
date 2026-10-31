@@ -104,7 +104,14 @@ function restoreRememberedTarget(
   let model: string | null | undefined;
   try {
     const setup = stored ? (JSON.parse(stored) as Partial<TConversation>) : undefined;
-    if (setup?.endpoint === endpoint && setup.assistant_id === assistantId) model = setup.model;
+    if (setup?.endpoint === endpoint) {
+      if (setup.assistant_id === assistantId) model = setup.model;
+    } else {
+      const models = localStorage.getItem(LocalStorageKeys.LAST_MODEL);
+      model = models
+        ? (JSON.parse(models) as Record<string, string | undefined>)[endpoint]
+        : undefined;
+    }
   } catch {
     // The remembered ID can still be resolved without a saved setup.
   }
