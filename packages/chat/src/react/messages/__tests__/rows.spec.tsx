@@ -1,14 +1,16 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
 import { Provider, createStore } from 'jotai';
 import { renderHook } from '@testing-library/react';
-import { resolveThreadRows } from '@librechat/chat';
 import type { TMessage } from 'librechat-data-provider';
-import useThreadRows from '../useThreadRows';
+import { resolveThreadRows } from '../../../core/thread';
+import useThreadRows from '../rows';
 
-/** The thread helpers are package exports, which cannot be spied on in place; wrap the real
- *  resolver so calls are recorded and rows still resolve. */
-jest.mock('@librechat/chat', () => {
-  const actual = jest.requireActual('@librechat/chat');
+/** Wrap the real resolver so calls are recorded and rows still resolve. */
+jest.mock('../../../core/thread', () => {
+  const actual = jest.requireActual('../../../core/thread');
   return { ...actual, resolveThreadRows: jest.fn(actual.resolveThreadRows) };
 });
 

@@ -1,16 +1,19 @@
 import { memo, useCallback } from 'react';
 import { useSetAtom } from 'jotai';
-import { siblingIdxFamily, useMessagesHost } from '@librechat/chat/react';
-import { activityParentMessageIds, hasParallelLanes } from '@librechat/chat';
-import type { MessageRowSlotProps } from '@librechat/chat/react';
-import type { ThreadRow } from '@librechat/chat';
+import type { NamedExoticComponent, ReactElement } from 'react';
+import type { MessageRowSlotProps } from '../../../react/messages/host';
+import type { ThreadRow } from '../../../core/thread';
+import { activityParentMessageIds } from '../../../core/activity';
+import { useMessagesHost } from '../../../react/messages/host';
+import { siblingIdxFamily } from '../../../react/thread';
+import { hasParallelLanes } from '../../../core/lanes';
 
 type RowProps = Pick<MessageRowSlotProps, 'currentEditId' | 'setCurrentEditId'> & {
   row: ThreadRow;
 };
 
 /** One visible row of the flat thread: the message plus its activity group. */
-function Row({ row, currentEditId, setCurrentEditId }: RowProps) {
+function Row({ row, currentEditId, setCurrentEditId }: RowProps): ReactElement {
   const { renderMessageRow, renderActivity } = useMessagesHost();
   const { message, siblingIdx, siblingCount, parentKey } = row;
   const setSiblingIdx = useSetAtom(siblingIdxFamily(parentKey));
@@ -47,4 +50,6 @@ function Row({ row, currentEditId, setCurrentEditId }: RowProps) {
   );
 }
 
-export default memo(Row);
+const MemoizedRow: NamedExoticComponent<RowProps> = memo(Row);
+
+export default MemoizedRow;

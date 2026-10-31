@@ -1,15 +1,9 @@
 import { useState, useCallback, useEffect } from 'react';
 import { Constants } from 'librechat-data-provider';
 import { cn, useLocalize } from '@librechat/client';
-import type {
-  Dispatch,
-  RefObject,
-  ReactNode,
-  MouseEvent,
-  ReactElement,
-  SetStateAction,
-} from 'react';
+import type { RefObject, ReactNode, MouseEvent, ReactElement } from 'react';
 import type { TMessage } from 'librechat-data-provider';
+import type { MessagesThreadProps } from './thread/Thread';
 import {
   RowMountProvider,
   useProgressiveRowMount,
@@ -18,16 +12,9 @@ import useScrollbarGutter from '../../react/messages/useScrollbarGutter';
 import { useMessagesHost } from '../../react/messages/host';
 import { useChatContext } from '../../react/chat/context';
 import { useMessagePartsHost } from '../../react/host';
+import Thread from './thread/Thread';
 
-/** What the thread slot renders the conversation from. */
-export type MessagesThreadProps = {
-  messagesTree?: TMessage[];
-  messages?: TMessage[] | null;
-  /** The conversation that owns the rendered tree. */
-  conversationId?: string | null;
-  currentEditId: string | number | null;
-  setCurrentEditId: Dispatch<SetStateAction<string | number | null>>;
-};
+export type { MessagesThreadProps };
 
 /** What the scroll-to-bottom slot needs to watch the end marker and scroll to it. */
 export type MessagesScrollButtonProps = {
@@ -47,8 +34,10 @@ export type MessagesViewProps = {
   showScrollButton: boolean;
   /** The viewer's chat-width preference. */
   maximizeChatSpace: boolean;
-  /** Renders the conversation's rows. */
-  renderThread: (props: MessagesThreadProps) => ReactNode;
+  /** Renders the thread as a flat row list (the default) or, when `false`, as a recursive tree. */
+  flatThread?: boolean;
+  /** Renders the conversation's rows; the package thread by default. */
+  renderThread?: (props: MessagesThreadProps) => ReactNode;
   /** Renders the turn the reader just sent, ahead of its reply, at the thread's tail. */
   renderPendingTurn?: (props: {
     scrollableRef: RefObject<HTMLDivElement>;
@@ -70,6 +59,8 @@ export type MessagesViewProps = {
   }) => ReactNode;
 };
 
+const renderDefaultThread = (props: MessagesThreadProps): ReactNode => <Thread {...props} />;
+
 /**
  * The message list: the scroll container, the rendered thread with its progressive mount
  * window, the pending tail, and the end marker the scroll and seen reporting watch. The rows,
@@ -80,7 +71,8 @@ export default function MessagesView({
   messages,
   showScrollButton,
   maximizeChatSpace,
-  renderThread,
+  flatThread = true,
+  renderThread = renderDefaultThread,
   renderPendingTurn,
   renderPendingSteers,
   renderScrollButton,
@@ -215,6 +207,7 @@ export default function MessagesView({
                       messagesTree,
                       messages,
                       conversationId: treeConversationId,
+                      flat: flatThread,
                       currentEditId,
                       setCurrentEditId,
                     })}

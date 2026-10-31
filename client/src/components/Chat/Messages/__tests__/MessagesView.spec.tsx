@@ -1,13 +1,9 @@
 import React from 'react';
-import { Provider, createStore } from 'jotai';
-import { ChatContext } from '@librechat/chat/react';
-import { resolveThreadRows } from '@librechat/chat';
 import { render, screen } from '@testing-library/react';
-import type { ChatContract } from '@librechat/chat/react';
+import { ChatContext, setDefaultMessagesHost } from '@librechat/chat/react';
+import type { ChatContract, MessagesHost } from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import type { ReactElement } from 'react';
-import { siblingIdxFamily } from '~/components/Chat/Messages/Thread/state';
-import useThreadRows from '~/hooks/Messages/useThreadRows';
 
 let mockMessagesKey = 'convo-1';
 let mockMaximizeChatSpace = false;
@@ -29,11 +25,6 @@ jest.mock('~/Providers', () => ({
   useFileMapContext: () => ({}),
 }));
 
-jest.mock('~/hooks/Messages/useThreadRows', () => ({
-  __esModule: true,
-  default: jest.fn(() => []),
-}));
-
 jest.mock('@librechat/chat/react', () => ({
   ...jest.requireActual('@librechat/chat/react'),
   useChatSurface: () => ({ showScrollButton: false, maximizeChatSpace: mockMaximizeChatSpace }),
@@ -48,14 +39,6 @@ jest.mock('../Thread', () => ({
   get FLAT_THREAD() {
     return mockFlatThread;
   },
-  ThreadList: () => <div data-testid="flat-thread" />,
-}));
-
-jest.mock('../MultiMessage', () => ({
-  __esModule: true,
-  default: ({ messageId }: { messageId: string | null }) => (
-    <div data-testid="multi-message" data-parent-id={messageId} />
-  ),
 }));
 
 jest.mock('../Content/Parts/PendingSteers', () => ({
@@ -93,12 +76,45 @@ jest.mock('../MessageNav', () => {
 
 import MessagesView from '../MessagesView';
 
-/** The thread helpers are package exports, which cannot be spied on in place; wrap the real
- *  resolver so calls are recorded and rows still resolve. */
-jest.mock('@librechat/chat', () => {
-  const actual = jest.requireActual('@librechat/chat');
-  return { ...actual, resolveThreadRows: jest.fn(actual.resolveThreadRows) };
+/** Rows render as their message id, so a spec can tell which messages the thread rendered. */
+const host: MessagesHost = {
+  useHour12: () => undefined,
+  renderFiles: () => null,
+  useForkPreferences: () => ({
+    option: '',
+    setOption: () => undefined,
+    splitAtTarget: false,
+    setSplitAtTarget: () => undefined,
+    rememberOption: false,
+    setRememberOption: () => undefined,
+  }),
+  useForkConversation: () => null,
+  useMessageCopy: () => ({ copyToClipboard: () => undefined, canCopy: false }),
+  useGetMessages: () => () => undefined,
+  useHasPendingTurn: () => false,
+  renderMessageAudio: () => null,
+  useScrolling: () => ({
+    contentRef: { current: null },
+    scrollableRef: { current: null },
+    messagesEndRef: { current: null },
+    handleSmoothToRef: () => undefined,
+    debouncedHandleScroll: () => undefined,
+    handleNearBottomChange: () => undefined,
+  }),
+  useScreenshotTarget: () => undefined,
+  useAutoScroll: () => false,
+  useConversationSeen: () => () => undefined,
+  renderMessageIcon: () => null,
+  renderMessageRow: ({ message }) => <div data-testid="row">{message.messageId}</div>,
+  renderActivity: () => null,
+  useFileMap: () => undefined,
+};
+
+beforeAll(() => {
+  setDefaultMessagesHost(host);
 });
+
+const renderedRows = () => screen.queryAllByTestId('row').map((row) => row.textContent);
 
 /** The pane's chat contract, as far as the list reads it: the pane and the routed key. */
 const withChat = (ui: ReactElement) => (
@@ -128,15 +144,25 @@ describe('MessagesView pending steers', () => {
     mockMessagesKey = 'convo-1';
     mockMaximizeChatSpace = false;
     mockFlatThread = false;
-    jest.mocked(useThreadRows).mockReset().mockReturnValue([]);
   });
 
   it('keeps the failed-steer surface mounted in the recursive renderer', () => {
     render(withChat(<MessagesView messagesTree={messageTree} messages={messageTree} />));
 
-    expect(screen.getByTestId('multi-message')).toBeInTheDocument();
+    expect(renderedRows()).toEqual(['assistant-1']);
     expect(screen.getByTestId('pending-steers')).toHaveAttribute('data-conversation-id', 'convo-1');
-    expect(screen.queryByTestId('flat-thread')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [true, 'from-messages'],
+    [false, 'from-tree'],
+  ])('renders the package thread with FLAT_THREAD %s', (flat, rendered) => {
+    mockFlatThread = flat;
+    const tree = [{ ...messageTree[0], messageId: 'from-tree' }];
+    const messages = [{ ...messageTree[0], messageId: 'from-messages' }];
+    render(withChat(<MessagesView messagesTree={tree} messages={messages} />));
+
+    expect(renderedRows()).toEqual([rendered]);
   });
 
   it.each([false, true])(
@@ -157,9 +183,8 @@ describe('MessagesView pending steers', () => {
     mockFlatThread = true;
     render(withChat(<MessagesView messagesTree={messageTree} messages={messageTree} />));
 
-    expect(screen.getByTestId('flat-thread')).toBeInTheDocument();
+    expect(renderedRows()).toEqual(['assistant-1']);
     expect(screen.getByTestId('pending-steers')).toHaveAttribute('data-full-width', 'true');
-    expect(screen.queryByTestId('multi-message')).not.toBeInTheDocument();
   });
 
   it('keys the pending surface to the rendered tree, not the lagging context', () => {
@@ -175,66 +200,13 @@ describe('MessagesView pending steers', () => {
     expect(screen.getByTestId('pending-steers')).toHaveAttribute('data-conversation-id', 'convo-2');
   });
 
-  it('does not reuse outgoing rows while the conversation context still names the source', () => {
-    mockFlatThread = true;
-    jest
-      .mocked(useThreadRows)
-      .mockImplementation(jest.requireActual('~/hooks/Messages/useThreadRows').default);
-    const resolve = jest.mocked(resolveThreadRows);
-    resolve.mockClear();
-    const large = Array.from({ length: 12_000 }, (_, index) => ({
-      ...messageTree[0],
-      messageId: `large-${index}`,
-      parentMessageId: index === 0 ? null : `large-${index - 1}`,
-    }));
-    const view = render(withChat(<MessagesView messagesTree={large} messages={large} />));
-    const small = [{ ...messageTree[0], conversationId: 'convo-2', messageId: 'small' }];
-    view.rerender(withChat(<MessagesView messagesTree={small} messages={small} />));
-
-    expect(resolve).toHaveBeenLastCalledWith(expect.anything(), 'convo-2', expect.anything(), null);
-    view.unmount();
-    jest.mocked(useThreadRows).mockReset().mockReturnValue([]);
-  });
-
-  it('preserves the destination root branch while the context still names the source', () => {
-    mockFlatThread = true;
-    jest
-      .mocked(useThreadRows)
-      .mockImplementation(jest.requireActual('~/hooks/Messages/useThreadRows').default);
-    const resolve = jest.mocked(resolveThreadRows);
-    resolve.mockClear();
-    const jotaiStore = createStore();
-    jotaiStore.set(siblingIdxFamily('convo-2'), 1);
-    const destination = [
-      { ...messageTree[0], messageId: 'older-root', conversationId: 'convo-2' },
-      { ...messageTree[0], messageId: 'newer-root', conversationId: 'convo-2' },
-    ];
-    render(
-      <Provider store={jotaiStore}>
-        {withChat(<MessagesView messagesTree={destination} messages={destination} />)}
-      </Provider>,
-    );
-
-    expect(resolve.mock.results.at(-1)?.value[0].source.messageId).toBe('older-root');
-    expect(jotaiStore.get(siblingIdxFamily('convo-2'))).toBe(1);
-    expect(screen.getByTestId('message-nav')).toHaveAttribute('data-conversation-id', 'convo-2');
-  });
-
-  it('uses the rendered owner for recursive root sibling choices too', () => {
-    const destination = [{ ...messageTree[0], conversationId: 'convo-2' }];
-    render(withChat(<MessagesView messagesTree={destination} messages={destination} />));
-
-    expect(screen.getByTestId('multi-message')).toHaveAttribute('data-parent-id', 'convo-2');
-  });
-
   it('shows the empty note instead of a thread while the destination tree is empty', () => {
     mockFlatThread = true;
     mockMessagesKey = 'convo-2';
     render(withChat(<MessagesView messagesTree={[]} messages={[]} />));
 
     expect(screen.getByText('Nothing found')).toBeInTheDocument();
-    expect(screen.queryByTestId('flat-thread')).not.toBeInTheDocument();
-    expect(useThreadRows).not.toHaveBeenCalled();
+    expect(renderedRows()).toEqual([]);
   });
 
   it('pins the screenshot identity to the rendered transcript and replaces it on navigation', () => {
