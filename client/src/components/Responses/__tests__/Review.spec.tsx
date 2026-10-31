@@ -419,3 +419,23 @@ it('does not refresh or reopen an old owner view when an acknowledgement fails a
   expect(view.refresh).not.toHaveBeenCalled();
   expect(post).toHaveBeenCalledTimes(1);
 });
+
+it('keeps long-lived decisions available across chunks and removes them at the real deadline', () => {
+  jest.useFakeTimers();
+  try {
+    const limit = 2147483647;
+    const review = question();
+    if (review.pendingAction) review.pendingAction.expiresAt = Date.now() + limit + 2000;
+    mount(review);
+    act(() => jest.advanceTimersByTime(limit));
+    expect(screen.getByRole('textbox')).toBeInTheDocument();
+    act(() => jest.advanceTimersByTime(1999));
+    expect(screen.getByRole('textbox')).toBeInTheDocument();
+    act(() => jest.advanceTimersByTime(1));
+    expect(screen.queryByRole('textbox')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent(translation.com_ui_approval_expired);
+    expect(post).not.toHaveBeenCalled();
+  } finally {
+    jest.useRealTimers();
+  }
+});

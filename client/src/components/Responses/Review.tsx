@@ -11,6 +11,7 @@ import AskUserQuestion from '~/components/Chat/Messages/Content/AskUserQuestion'
 import ToolApproval from '~/components/Chat/Messages/Content/ToolApproval';
 import { useResponseReviewDecision } from '~/data-provider/Responses';
 import { useResponseInteraction } from './Controls';
+import useDeadline from './useDeadline';
 import { useLocalize } from '~/hooks';
 
 interface ReviewProps {
@@ -44,7 +45,6 @@ function Decision({ review, userId, tenantId, refresh }: ReviewProps) {
   const [failed, setFailed] = useState(false);
   const [correctable, setCorrectable] = useState(false);
   const [submitted, setSubmitted] = useState(false);
-  const [now, setNow] = useState(Date.now);
   const inFlight = useRef(false);
   const enabled = useResponseInteraction();
   const mounted = useRef(true);
@@ -57,18 +57,7 @@ function Decision({ review, userId, tenantId, refresh }: ReviewProps) {
   const current = useRef({ review, enabled });
   current.current = { review, enabled };
   const action = review.pendingAction;
-  const expiresAt = action?.expiresAt;
-  useEffect(() => {
-    setNow(Date.now());
-    if (expiresAt == null || expiresAt <= Date.now()) return;
-    const timer = setTimeout(
-      () => setNow(Date.now()),
-      Math.min(expiresAt - Date.now(), 2147483647),
-    );
-    return () => clearTimeout(timer);
-  }, [expiresAt]);
-
-  const expired = expiresAt != null && expiresAt <= now;
+  const expired = useDeadline(action?.expiresAt);
   const running = review.status === 'queued' || review.status === 'in_progress';
   const actionAvailable = running && review.canSubmitDecision === true && !expired;
   const available = enabled && actionAvailable;

@@ -1,10 +1,7 @@
 const mongoose = require('mongoose');
 const {
-  createBackgroundResponsesHost,
+  createInteractiveResponsesHost,
   createAgentTriggerProducerBinding,
-  createBackgroundResponseAuthority,
-  createResponseResumeValidation,
-  createResponseResumeAdmission,
   checkRemoteAgentAccess,
   getRemoteAgentPermissions,
   getAgentCheckpointer,
@@ -14,7 +11,6 @@ const {
   getSafeErrorMetadata,
 } = require('@librechat/api');
 const { createResponseStorage, logger } = require('@librechat/data-schemas');
-const { PermissionBits, hasPermissions } = require('librechat-data-provider');
 const { getEffectivePermissions } = require('./PermissionService');
 const { decryptMetadata } = require('./ActionService');
 const { getAppConfig } = require('./Config');
@@ -54,10 +50,9 @@ const dependencies = {
   onError: (error) =>
     logger.error('[Responses background] Operation failed', getSafeErrorMetadata(error)),
 };
-const validation = createResponseResumeValidation({
-  jobs: GenerationJobManager,
-  findUser: dependencies.findUser,
-  getConfig: dependencies.getConfig,
+const host = createInteractiveResponsesHost({
+  ...dependencies,
+  getRemotePermissions: getRemoteAgentPermissions.bind(null, { getEffectivePermissions }),
   projects: {
     getConvo: db.getConvo,
     getChatProject: db.getChatProject,
@@ -74,24 +69,6 @@ const validation = createResponseResumeValidation({
     getUserMemories: db.getUserMemories,
     getRoleByName: db.getRoleByName,
     decryptMetadata,
-    canAccessAgent: (agent, user) =>
-      getRemoteAgentPermissions({ getEffectivePermissions }, user.id, user.role, agent._id).then(
-        (permissions) => hasPermissions(permissions, PermissionBits.VIEW),
-      ),
-  },
-});
-const authority = createBackgroundResponseAuthority(dependencies);
-const admitResume = createResponseResumeAdmission({
-  storage: dependencies.storage,
-  jobs: GenerationJobManager,
-  authorize: (record) => authority(record, record.agentId, record.sourceKeyId),
-  validate: validation.validateResume,
-});
-const host = createBackgroundResponsesHost({
-  ...dependencies,
-  interactive: {
-    validate: validation.validateDecision,
-    admitResume: (record, _user, intentId) => admitResume(record, record.responseId, intentId),
   },
 });
 

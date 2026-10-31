@@ -142,3 +142,42 @@ it('rebinds after scope changes and ignores the previous owner completion', asyn
   expect(button()).toBeEnabled();
   expect(post).toHaveBeenCalledTimes(2);
 });
+
+it('keeps a long authorization valid across timer chunks and expires at its real deadline', async () => {
+  jest.useFakeTimers();
+  try {
+    const limit = 2147483647;
+    const value = { ...prompt(), expiresAt: Date.now() + limit + 2000 };
+    render(<OAuth prompt={value} />);
+    await act(async () => {});
+    act(() => jest.advanceTimersByTime(limit));
+    expect(button()).toBeEnabled();
+    act(() => jest.advanceTimersByTime(1999));
+    expect(button()).toBeEnabled();
+    act(() => jest.advanceTimersByTime(1));
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_response_review_oauth_expired');
+  } finally {
+    jest.useRealTimers();
+  }
+});
+
+it('replaces the expiry timer when a deadline changes and cleans up on unmount', async () => {
+  jest.useFakeTimers();
+  try {
+    const value = { ...prompt(), expiresAt: Date.now() + 1000 };
+    const view = render(<OAuth prompt={value} />);
+    await act(async () => {});
+    act(() => jest.advanceTimersByTime(1000));
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    view.rerender(<OAuth prompt={{ ...value, expiresAt: Date.now() + 5000 }} />);
+    await act(async () => {});
+    expect(button()).toBeEnabled();
+    act(() => jest.advanceTimersByTime(4999));
+    expect(button()).toBeEnabled();
+    view.unmount();
+    expect(jest.getTimerCount()).toBe(0);
+  } finally {
+    jest.useRealTimers();
+  }
+});
