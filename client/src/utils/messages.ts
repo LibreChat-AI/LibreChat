@@ -295,14 +295,7 @@ export const preserveStreamedContentIdentity = (
   return stamped ?? finalContent;
 };
 
-/** Render-identity index for content-part keys: the streamed position stamped
- * by the final handler survives the sparse→compact swap; everything else keys
- * by the live index. Coordinate logic (edit indexes, phase bounds, cursor)
- * must keep using the live index. */
-export const getPartKeyIndex = (part: TMessageContentParts | undefined, idx: number): number =>
-  part?.streamedIndex ?? idx;
-
-export { isSubmittableMessage } from '@librechat/chat';
+export { isSubmittableMessage, getPartKeyIndex } from '@librechat/chat';
 
 export const markStreamStartFailedMetadata = (
   metadata?: TMessage['metadata'],

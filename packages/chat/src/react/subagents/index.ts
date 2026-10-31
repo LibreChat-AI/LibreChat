@@ -7,3 +7,4 @@ export * from './identity';
 export * from './adapters';
 export * from './recovery';
 export * from './eventSelection';
+export * from './attachments';

@@ -1,10 +1,10 @@
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import {
-  collectNestedCalls,
   assignNestedAttachments,
   selectUnclaimedAttachments,
   selectExactlyNestedAttachments,
-} from './attachments';
+} from '../attachments';
+import { collectNestedCalls } from '../state';
 
 const file = (toolCallId?: string) =>
   ({ file_id: `file-${toolCallId}`, toolCallId }) as TAttachment;
@@ -142,7 +142,7 @@ describe('subagent attachments', () => {
     }
     const calls = collectNestedCalls([deepest]);
     expect(calls).toHaveLength(10_001);
-    expect(calls.at(-1)).toEqual({ id: 'deepest-call' });
+    expect(calls[calls.length - 1]).toEqual({ id: 'deepest-call' });
   });
 
   it('uses the run owner for its own top-level calls only', () => {

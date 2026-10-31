@@ -1,22 +1,22 @@
-import { parseSubagentBackgroundHandle } from '@librechat/chat';
 import { Constants, ContentTypes } from 'librechat-data-provider';
 import type { SubagentIdentity, TMessage } from 'librechat-data-provider';
+import { parseSubagentBackgroundHandle } from '../parts';
 
-type Dispatch = {
+export type SubagentDispatch = {
   message: TMessage;
   subagentType: string;
   identity?: SubagentIdentity;
   agentId?: string;
 };
 
-const indexes = new WeakMap<TMessage[], Map<string, Dispatch>>();
+const indexes = new WeakMap<TMessage[], Map<string, SubagentDispatch>>();
 
 /** Public transcripts carry dispatch metadata instead of an authenticated child
  *  index. Match the host-issued handle, sharing one scan per transcript snapshot. */
 export function findSubagentDispatch(
   messages: TMessage[] | undefined,
   threadId: string | undefined,
-): Dispatch | undefined {
+): SubagentDispatch | undefined {
   if (messages == null || !threadId) return undefined;
   let index = indexes.get(messages);
   if (index == null) {
