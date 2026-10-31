@@ -4,6 +4,7 @@ import { apiBaseUrl, dataService } from 'librechat-data-provider';
 import type { ResponseReviewView } from 'librechat-data-provider';
 import { useResponseInteraction } from './Controls';
 import { openInNewTab } from '~/utils/links';
+import useDeadline from './useDeadline';
 import { useLocalize } from '~/hooks';
 
 function resolveBinding(authURL: string) {
@@ -45,7 +46,7 @@ export default function OAuth({ prompt }: { prompt: ResponseReviewView['oauth'][
   const enabled = useResponseInteraction();
   const target = useMemo(() => resolveBinding(prompt.authURL), [prompt.authURL]);
   const [binding, setBinding] = useState<'pending' | 'bound' | 'failed'>('pending');
-  const [expired, setExpired] = useState(() => prompt.expiresAt <= Date.now());
+  const expired = useDeadline(prompt.expiresAt);
   const active = useRef(false);
   const bindingInFlight = useRef(false);
   const bind = useCallback(async () => {
@@ -71,15 +72,6 @@ export default function OAuth({ prompt }: { prompt: ResponseReviewView['oauth'][
       active.current = false;
     };
   }, [bind]);
-  useEffect(() => {
-    const remaining = prompt.expiresAt - Date.now();
-    if (remaining <= 0) {
-      setExpired(true);
-      return;
-    }
-    const timer = setTimeout(() => setExpired(true), Math.min(remaining, 2147483647));
-    return () => clearTimeout(timer);
-  }, [prompt.expiresAt]);
   const authorize = () => {
     if (
       !enabled ||
