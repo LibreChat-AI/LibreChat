@@ -100,3 +100,11 @@ export type {
   ComposerHintKind,
   ComposerHintState,
 } from './components/composer/bar/hint';
+
+/** Message list root: the scroll container, mount window and pending tail around the thread. */
+export { default as MessagesView } from './components/messages/MessagesView';
+export type {
+  MessagesViewProps,
+  MessagesThreadProps,
+  MessagesScrollButtonProps,
+} from './components/messages/MessagesView';

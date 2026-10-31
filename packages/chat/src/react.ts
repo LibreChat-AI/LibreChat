@@ -128,7 +128,7 @@ export {
   MessagesHostProvider,
   setDefaultMessagesHost,
 } from './react/messages/host';
-export type { MessagesHost } from './react/messages/host';
+export type { MessagesHost, MessagesScrolling, ReportNearBottom } from './react/messages/host';
 export {
   SoleToolContext,
   LoneGroupContext,

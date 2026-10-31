@@ -1,7 +1,10 @@
 import React from 'react';
 import { Provider, createStore } from 'jotai';
+import { ChatContext } from '@librechat/chat/react';
 import { render, screen } from '@testing-library/react';
+import type { ChatContract } from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
+import type { ReactElement } from 'react';
 import { siblingIdxFamily } from '~/components/Chat/Messages/Thread/state';
 import useThreadRows from '~/hooks/Messages/useThreadRows';
 import * as thread from '~/utils/thread';
@@ -21,32 +24,9 @@ jest.mock('recoil', () => ({
   useRecoilValue: () => false,
 }));
 
-jest.mock('~/hooks', () => ({
-  useScreenshot: () => ({ screenshotTargetRef: { current: null } }),
-  useMessageScrolling: () => ({
-    conversation: { conversationId: 'convo-1' },
-    contentRef: { current: null },
-    scrollableRef: { current: null },
-    messagesEndRef: { current: null },
-    handleSmoothToRef: jest.fn(),
-    debouncedHandleScroll: jest.fn(),
-    handleNearBottomChange: jest.fn(),
-  }),
-  useConversationSeen: () => jest.fn(),
-  useLocalize: () => (key: string) => key,
-}));
-
 jest.mock('~/Providers', () => ({
   MessagesViewProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  useChatContext: () => ({ index: 0, latestMessageDepth: 0, messagesKey: mockMessagesKey }),
   useFileMapContext: () => ({}),
-}));
-
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useScrollbarGutter: jest.fn(),
-  RowMountProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  useProgressiveRowMount: () => null,
 }));
 
 jest.mock('~/hooks/Messages/useThreadRows', () => ({
@@ -58,7 +38,6 @@ jest.mock('~/components/Chat/Subagents/surface', () => ({
   useChatSurface: () => ({ showScrollButton: false, maximizeChatSpace: mockMaximizeChatSpace }),
 }));
 
-jest.mock('~/store/autoScroll', () => ({ autoScrollAtom: {} }));
 jest.mock('~/store', () => ({
   __esModule: true,
   default: {},
@@ -111,11 +90,23 @@ jest.mock('../MessageNav', () => {
   };
 });
 
-jest.mock('~/utils', () => ({
-  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
-}));
-
 import MessagesView from '../MessagesView';
+
+/** The pane's chat contract, as far as the list reads it: the pane and the routed key. */
+const withChat = (ui: ReactElement) => (
+  <ChatContext.Provider
+    value={
+      {
+        index: 0,
+        isSubmitting: false,
+        latestMessageDepth: 0,
+        messagesKey: mockMessagesKey,
+      } as unknown as ChatContract
+    }
+  >
+    {ui}
+  </ChatContext.Provider>
+);
 
 const messageTree = [
   {
@@ -133,7 +124,7 @@ describe('MessagesView pending steers', () => {
   });
 
   it('keeps the failed-steer surface mounted in the recursive renderer', () => {
-    render(<MessagesView messagesTree={messageTree} messages={messageTree} />);
+    render(withChat(<MessagesView messagesTree={messageTree} messages={messageTree} />));
 
     expect(screen.getByTestId('multi-message')).toBeInTheDocument();
     expect(screen.getByTestId('pending-steers')).toHaveAttribute('data-conversation-id', 'convo-1');
@@ -144,7 +135,7 @@ describe('MessagesView pending steers', () => {
     'passes the host chat width preference (%s) to pending steers',
     (fullWidth) => {
       mockMaximizeChatSpace = fullWidth;
-      render(<MessagesView messagesTree={messageTree} messages={messageTree} />);
+      render(withChat(<MessagesView messagesTree={messageTree} messages={messageTree} />));
 
       expect(screen.getByTestId('pending-steers')).toHaveAttribute(
         'data-full-width',
@@ -156,7 +147,7 @@ describe('MessagesView pending steers', () => {
   it('passes the full-width preference in the flat renderer too', () => {
     mockMaximizeChatSpace = true;
     mockFlatThread = true;
-    render(<MessagesView messagesTree={messageTree} messages={messageTree} />);
+    render(withChat(<MessagesView messagesTree={messageTree} messages={messageTree} />));
 
     expect(screen.getByTestId('flat-thread')).toBeInTheDocument();
     expect(screen.getByTestId('pending-steers')).toHaveAttribute('data-full-width', 'true');
@@ -171,7 +162,7 @@ describe('MessagesView pending steers', () => {
       { messageId: 'assistant-2', conversationId: 'convo-2' },
     ] as unknown as TMessage[];
 
-    render(<MessagesView messagesTree={destinationTree} messages={destinationTree} />);
+    render(withChat(<MessagesView messagesTree={destinationTree} messages={destinationTree} />));
 
     expect(screen.getByTestId('pending-steers')).toHaveAttribute('data-conversation-id', 'convo-2');
   });
@@ -187,9 +178,9 @@ describe('MessagesView pending steers', () => {
       messageId: `large-${index}`,
       parentMessageId: index === 0 ? null : `large-${index - 1}`,
     }));
-    const view = render(<MessagesView messagesTree={large} messages={large} />);
+    const view = render(withChat(<MessagesView messagesTree={large} messages={large} />));
     const small = [{ ...messageTree[0], conversationId: 'convo-2', messageId: 'small' }];
-    view.rerender(<MessagesView messagesTree={small} messages={small} />);
+    view.rerender(withChat(<MessagesView messagesTree={small} messages={small} />));
 
     expect(resolve).toHaveBeenLastCalledWith(expect.anything(), 'convo-2', expect.anything(), null);
     view.unmount();
@@ -210,7 +201,7 @@ describe('MessagesView pending steers', () => {
     ];
     render(
       <Provider store={jotaiStore}>
-        <MessagesView messagesTree={destination} messages={destination} />
+        {withChat(<MessagesView messagesTree={destination} messages={destination} />)}
       </Provider>,
     );
 
@@ -221,25 +212,31 @@ describe('MessagesView pending steers', () => {
 
   it('uses the rendered owner for recursive root sibling choices too', () => {
     const destination = [{ ...messageTree[0], conversationId: 'convo-2' }];
-    render(<MessagesView messagesTree={destination} messages={destination} />);
+    render(withChat(<MessagesView messagesTree={destination} messages={destination} />));
 
     expect(screen.getByTestId('multi-message')).toHaveAttribute('data-parent-id', 'convo-2');
   });
 
-  it('uses the routed owner for flat rows when the destination tree is empty', () => {
+  it('shows the empty note instead of a thread while the destination tree is empty', () => {
     mockFlatThread = true;
     mockMessagesKey = 'convo-2';
-    render(<MessagesView messagesTree={[]} messages={[]} />);
+    render(withChat(<MessagesView messagesTree={[]} messages={[]} />));
 
-    expect(useThreadRows).toHaveBeenLastCalledWith([], 'convo-2', expect.anything());
+    expect(screen.getByText('Nothing found')).toBeInTheDocument();
+    expect(screen.queryByTestId('flat-thread')).not.toBeInTheDocument();
+    expect(useThreadRows).not.toHaveBeenCalled();
   });
 
   it('pins the screenshot identity to the rendered transcript and replaces it on navigation', () => {
-    const view = render(<MessagesView messagesTree={messageTree} messages={messageTree} />);
+    const view = render(
+      withChat(<MessagesView messagesTree={messageTree} messages={messageTree} />),
+    );
     const initialTarget = screen.getByTestId('screenshot-target');
     expect(initialTarget).toHaveAttribute('data-conversation-id', 'convo-1');
     const destinationTree = [{ ...messageTree[0], conversationId: 'convo-2' }];
-    view.rerender(<MessagesView messagesTree={destinationTree} messages={destinationTree} />);
+    view.rerender(
+      withChat(<MessagesView messagesTree={destinationTree} messages={destinationTree} />),
+    );
     const destinationTarget = screen.getByTestId('screenshot-target');
     expect(destinationTarget).toHaveAttribute('data-conversation-id', 'convo-2');
     expect(destinationTarget).not.toBe(initialTarget);
@@ -247,22 +244,24 @@ describe('MessagesView pending steers', () => {
   });
 
   it('releases the outgoing navigation rail on a warm switch, not on same-chat updates', () => {
-    const view = render(<MessagesView messagesTree={messageTree} messages={messageTree} />);
+    const view = render(
+      withChat(<MessagesView messagesTree={messageTree} messages={messageTree} />),
+    );
     expect(mockNavMount).toHaveBeenCalledTimes(1);
     const updated = [{ ...messageTree[0], text: 'updated' }];
-    view.rerender(<MessagesView messagesTree={updated} messages={updated} />);
+    view.rerender(withChat(<MessagesView messagesTree={updated} messages={updated} />));
     expect(mockNavMount).toHaveBeenCalledTimes(1);
     expect(mockNavUnmount).not.toHaveBeenCalled();
 
     const destination = [{ ...messageTree[0], conversationId: 'convo-2' }];
-    view.rerender(<MessagesView messagesTree={destination} messages={destination} />);
+    view.rerender(withChat(<MessagesView messagesTree={destination} messages={destination} />));
 
     expect(mockNavUnmount).toHaveBeenCalledTimes(1);
     expect(mockNavMount).toHaveBeenCalledTimes(2);
   });
 
   it('keeps recovery visible while the message tree is temporarily empty', () => {
-    render(<MessagesView messagesTree={[]} messages={[]} />);
+    render(withChat(<MessagesView messagesTree={[]} messages={[]} />));
 
     expect(screen.getByTestId('pending-steers')).toHaveAttribute('data-conversation-id', 'convo-1');
   });
@@ -271,7 +270,7 @@ describe('MessagesView pending steers', () => {
     /** Warm navigation to a chat whose tree is still empty: no message names the
      *  destination, and the context still names the source run. */
     mockMessagesKey = 'convo-2';
-    render(<MessagesView messagesTree={[]} messages={[]} />);
+    render(withChat(<MessagesView messagesTree={[]} messages={[]} />));
 
     expect(screen.getByTestId('pending-steers')).toHaveAttribute('data-conversation-id', 'convo-2');
   });

@@ -439,11 +439,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Messages/MessagesView.tsx": {
-    "shadcn/no-inline-styles": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Messages/MinimalHoverButtons.tsx": {
     "shadcn/no-restyle": {
       "count": 2
