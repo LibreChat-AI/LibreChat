@@ -15,8 +15,14 @@ import type {
   ResponseAccounting,
 } from 'librechat-data-provider';
 import type { Nodes, Root, Definition } from 'mdast';
+import {
+  richSlackBlockSchema,
+  parsePresentation,
+  presentComponent,
+  richBlockCount,
+} from './presentation';
 
-export const rendererVersion = 'slack-structured-v6';
+export const rendererVersion = 'slack-structured-v7';
 export const presentationFormat = 'slack-blocks-v1';
 export const artifactFailureNotice =
   'One or more attachments could not be confirmed. The answer is preserved; uncertain uploads will not be duplicated automatically.';
@@ -24,6 +30,7 @@ const chunkLimit = 39_000;
 const presentationLimit = 64_000;
 const supportedStructured = new Set([
   rendererVersion,
+  'slack-structured-v6',
   'slack-structured-v5',
   'slack-structured-v4',
   'slack-structured-v3',
@@ -52,7 +59,7 @@ const feedbackButton = z.strictObject({
   value: z.enum(['+1', '-1']),
   accessibility_label: boundedText(75),
 });
-const blockSchema = z.discriminatedUnion('type', [
+const blockSchema = z.union([
   z.strictObject({ type: z.literal('markdown'), text: boundedText(12_000) }),
   z.strictObject({
     type: z.literal('section'),
@@ -61,7 +68,13 @@ const blockSchema = z.discriminatedUnion('type', [
   }),
   z.strictObject({ type: z.literal('header'), text: text('plain_text', 150) }),
   z.strictObject({ type: z.literal('divider') }),
-  z.strictObject({ type: z.literal('context'), elements: z.array(text('mrkdwn', 3000)).length(1) }),
+  z.strictObject({
+    type: z.literal('context'),
+    elements: z
+      .array(z.union([text('mrkdwn', 3000), text('plain_text', 2000)]))
+      .min(1)
+      .max(10),
+  }),
   z.strictObject({
     type: z.literal('rich_text'),
     elements: z
@@ -99,8 +112,19 @@ const blockSchema = z.discriminatedUnion('type', [
       )
       .length(1),
   }),
+  richSlackBlockSchema,
 ]);
-const blocksSchema = z.array(blockSchema).min(1).max(40);
+const blocksSchema = z
+  .array(blockSchema)
+  .min(1)
+  .max(40)
+  .refine(
+    (blocks) =>
+      blocks.reduce((sum, block) => {
+        const rich = richSlackBlockSchema.safeParse(block);
+        return sum + (rich.success ? richBlockCount(rich.data) : 1);
+      }, 0) <= 40,
+  );
 export type SlackBlock = z.infer<typeof blockSchema>;
 export interface SlackMessage {
   text: string;
@@ -154,7 +178,10 @@ function legacyMessage(text: string, blocks?: SlackBlock[]): SlackMessage {
 
 export function durableSlackMessage(part: ChannelDeliveryPart, renderer: string): SlackMessage {
   const preserve =
-    renderer === rendererVersion || renderer === 'slack-structured-v5' || !!part.traceUrl;
+    renderer === rendererVersion ||
+    renderer === 'slack-structured-v6' ||
+    renderer === 'slack-structured-v5' ||
+    !!part.traceUrl;
   if (!part.presentation) {
     return preserve ? { text: part.text } : legacyMessage(part.text);
   }
@@ -330,6 +357,16 @@ function inlineDocument(document: MarkdownDocument, initial: Nodes, wire = true)
         )[node.type]
       : undefined;
     const children = node.children;
+    // GFM autolinks can synthesize children without source positions. Preserve that
+    // source subtree literally rather than invent offsets or fail delivery.
+    if (
+      children.some(
+        (child) => child.position?.start.offset == null || child.position.end.offset == null,
+      )
+    ) {
+      pending.push(literal(raw(node)));
+      continue;
+    }
     const [start, end] = bounds(node);
     const tasks: Task[] = [];
     if (style) tasks.push({ text: style, plain: '' });
@@ -610,6 +647,29 @@ export function renderAgentAnswer(value: string): RenderedMessage[] {
   return [
     { text: fallback.text, plain: fallback.plain, blocks: [{ type: 'markdown', text: native }] },
   ];
+}
+
+/** Render explicit semantic output independently of the native Agent session feature. */
+export function renderRichAnswer(value: string, native = false, notice = ''): RenderedMessage[] {
+  const parsed = parsePresentation(value);
+  const prose = native ? renderAgentAnswer : renderSlackDocument;
+  if (!parsed) return prose(value + notice);
+  const messages = parsed.text.trim() ? prose(parsed.text) : [];
+  for (const component of parsed.presentation.blocks) {
+    const rendered = presentComponent(component);
+    const message = {
+      text: escapeSlackText(rendered.plain),
+      plain: rendered.plain,
+      blocks: [rendered.block],
+    };
+    // Oversized nested layouts, JSON escaping and multibyte text all share the durable boundary.
+    // Keep every datum in the text renderer when a component cannot fit in one rich message.
+    if (Buffer.byteLength(message.text) <= chunkLimit && presentationFor(message))
+      messages.push(message);
+    else messages.push(...plainChunks(rendered.plain, 2700).filter(Boolean).map(plainMessage));
+  }
+  if (notice) messages.push(...prose(notice.trim()));
+  return messages;
 }
 
 const decimal = /^(0|[1-9][0-9]{0,63})(\.[0-9]{1,18})?$/;
@@ -899,10 +959,13 @@ export function makeSlackPlan(
         ? ' Attachments are subject to this channel’s delivery limits.'
         : '');
   }
-  if (snapshot.artifactsUnavailable) {
-    answer += '\n\nAttachments are unavailable. The answer is preserved.';
-  }
-  let messages = native ? renderAgentAnswer(answer) : renderSlackDocument(answer);
+  const notice = snapshot.artifactsUnavailable
+    ? '\n\nAttachments are unavailable. The answer is preserved.'
+    : '';
+  let messages: RenderedMessage[];
+  if (snapshot.status === 'completed') messages = renderRichAnswer(answer, native, notice);
+  else
+    messages = native ? renderAgentAnswer(answer + notice) : renderSlackDocument(answer + notice);
   appendFooter(messages, run);
   if (native && snapshot.status === 'completed' && !empty) {
     appendFeedback(messages);
