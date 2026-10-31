@@ -88,6 +88,7 @@ const ASSET_EVENTS = new Map<string, { name: string; level: ClientLogLevel }>([
   ['stale-asset-recovery-declined', { name: 'stale_asset.recovery_declined', level: 'warn' }],
   ['asset-load-error', { name: 'asset.load_error', level: 'warn' }],
   ['dynamic-import-error', { name: 'asset.dynamic_import_error', level: 'warn' }],
+  ['chunk-reference-error', { name: 'asset.chunk_reference_error', level: 'warn' }],
 ]);
 
 const RECORDS_PLACEHOLDER = '__librechat_log_records__';
