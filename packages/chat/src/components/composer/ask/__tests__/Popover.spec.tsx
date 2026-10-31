@@ -101,13 +101,16 @@ describe('AskPopover', () => {
   it('returns focus to the draft after the chevron moves the question too', () => {
     const ask = view();
     render(<Host initial={ask} />);
+    const chevron = screen.getByRole('button', { name: 'com_ui_ask_move_to_chat' });
+    chevron.focus();
 
     act(() => {
-      fireEvent.click(screen.getByRole('button', { name: 'com_ui_ask_move_to_chat' }));
+      fireEvent.click(chevron);
     });
 
     expect(ask.collapse).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('Which environment?')).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Composer' }));
   });
 
   it('hands arrow and digit keys from inside the popover to the host', () => {

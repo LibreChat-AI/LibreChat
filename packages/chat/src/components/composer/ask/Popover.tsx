@@ -107,7 +107,6 @@ function QuestionPanel({
     submit,
     submitOption,
     skip,
-    collapse,
     handlePopoverKeyDown,
   } = ask;
 
@@ -162,7 +161,7 @@ function QuestionPanel({
               </p>
             )}
           </div>
-          <MoveToChatButton onClick={collapse} />
+          <MoveToChatButton onClick={onEscape} />
         </div>
         <AskOptions
           options={options}
@@ -259,7 +258,7 @@ export default function AskPopover({
             liveAsk,
             questions: liveAsk.questions,
             onEscape: escapeToChat,
-            headerAction: <MoveToChatButton onClick={collapse} />,
+            headerAction: <MoveToChatButton onClick={escapeToChat} />,
           })}
         </div>
       </div>
