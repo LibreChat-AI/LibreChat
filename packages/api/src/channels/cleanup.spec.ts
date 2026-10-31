@@ -11,6 +11,7 @@ import {
 import type { ChannelRunRecord } from '@librechat/data-schemas';
 import type { ChannelCleanupDependencies } from './cleanup';
 import { createChannelCleanupRuntime } from './cleanup';
+import * as recovery from '~/agents/recovery';
 
 let mongo: MongoMemoryReplSet;
 let db: ReturnType<typeof createMethods>;
@@ -449,4 +450,94 @@ it('holds an invalid issued credential lane until exact retirement confirms prov
     await scope(() => mongoose.models.ChannelLane.findOne({ activeRunId: run.runId }).lean()),
   ).toBeNull();
   expect(deps.onError).not.toHaveBeenCalled();
+});
+
+it.each(['read', 'parse'] as const)(
+  'retries failed %s initialization with one shared attempt',
+  async (failure) => {
+    await admit();
+    allowed = false;
+    const original = deps.getConfig;
+    let fail = true;
+    const read = jest.fn(async () => {
+      if (fail) {
+        if (failure === 'read') throw new Error('configuration unavailable');
+        const invalid = channelConfigSchema.parse({});
+        invalid.cleanup.intervalMs = 0;
+        return invalid;
+      }
+      return original();
+    });
+    deps.getConfig = read;
+    const first = runtime.initialize();
+    expect(runtime.initialize()).toBe(first);
+    await expect(first).rejects.toThrow();
+    fail = false;
+    const retry = runtime.initialize();
+    expect(runtime.initialize()).toBe(retry);
+    await retry;
+    expect(retired).toHaveLength(1);
+    const calls = read.mock.calls.length;
+    await runtime.initialize();
+    expect(read).toHaveBeenCalledTimes(calls);
+  },
+);
+
+it('keeps stop permanent after an initialization failure', async () => {
+  const read = jest.fn(async () => {
+    throw new Error('configuration unavailable');
+  });
+  deps.getConfig = read;
+  await expect(runtime.initialize()).rejects.toThrow('configuration unavailable');
+  await runtime.stop();
+  await runtime.initialize();
+  runtime.wake();
+  expect(read).toHaveBeenCalledTimes(1);
+  expect(retired).toHaveLength(0);
+});
+
+it('disposes a partially started worker before retrying initialization', async () => {
+  await admit();
+  allowed = false;
+  const create = recovery.createIdleRecoveryLoop;
+  const partial = create({
+    intervalMs: 60000,
+    maxIdleIntervalMs: 60000,
+    scan: async () => true,
+    onError: jest.fn(),
+  });
+  const start = jest
+    .spyOn(partial, 'start')
+    .mockRejectedValueOnce(new Error('initial scan failed'));
+  const stop = jest.spyOn(partial, 'stop');
+  const factory = jest.spyOn(recovery, 'createIdleRecoveryLoop').mockReturnValueOnce(partial);
+  try {
+    await expect(runtime.initialize()).rejects.toThrow('initial scan failed');
+    expect(start).toHaveBeenCalledTimes(1);
+    expect(stop).toHaveBeenCalledTimes(1);
+    await runtime.initialize();
+    expect(retired).toHaveLength(1);
+    expect(factory).toHaveBeenCalledTimes(2);
+  } finally {
+    factory.mockRestore();
+    start.mockRestore();
+    stop.mockRestore();
+  }
+});
+
+it('does not reopen when a pending initialization rejects during shutdown', async () => {
+  let reject!: (error: Error) => void;
+  const gate = new Promise<Awaited<ReturnType<typeof deps.getConfig>>>((_resolve, fail) => {
+    reject = fail;
+  });
+  const read = jest.fn(() => gate);
+  deps.getConfig = read;
+  const initializing = runtime.initialize();
+  const stopping = runtime.stop();
+  reject(new Error('startup unavailable'));
+  await expect(initializing).rejects.toThrow('startup unavailable');
+  await stopping;
+  await runtime.initialize();
+  expect(read).toHaveBeenCalledTimes(1);
+  expect(retired).toHaveLength(0);
 });
