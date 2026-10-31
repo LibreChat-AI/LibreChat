@@ -1,11 +1,12 @@
-import { useCallback } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useAtom, useSetAtom } from 'jotai';
+import { useQueryClient } from '@tanstack/react-query';
 import { useRecoilValue, useRecoilCallback } from 'recoil';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { filesFamily, submissionByIndex } from '@librechat/chat/react';
-import { useGetModelsQuery } from 'librechat-data-provider/react-query';
 import {
   Constants,
+  QueryKeys,
   FileSources,
   Permissions,
   EModelEndpoint,
@@ -24,12 +25,13 @@ import type {
   TModelsConfig,
   TConversation,
   TEndpointsConfig,
+  TAgentsMap,
+  Agent,
 } from 'librechat-data-provider';
 import type { NewConversationOptions } from './Chat/contract';
-import type { AssistantListItem } from '~/common';
 import {
-  updateLastSelectedModel,
   getLocalStorageItems,
+  isNotFoundError,
   getDefaultModelSpec,
   getDefaultEndpoint,
   getModelSpecPreset,
@@ -55,11 +57,9 @@ import {
 import { useDeleteFilesMutation, useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
 import { supersedeNavigation } from './Conversations/useNavigateToConvo';
 import useGetConversation from './Conversations/useGetConversation';
-import useAssistantListMap from './Assistants/useAssistantListMap';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { clearUploadRecovery } from './Files/useFileHandling';
 import { useApplyModelSpecEffects } from './Agents';
-import { useAgentsMapContext } from '~/Providers';
 import { usePauseGlobalAudio } from './Audio';
 import { useHasAccess } from '~/hooks';
 import store from '~/store';
@@ -90,15 +90,20 @@ const useNewConvo = (index = 0) => {
   const [files, setFiles] = useAtom(filesFamily(index));
   const setSubmission = useSetAtom(submissionByIndex(index));
   const { data: endpointsConfig = {} as TEndpointsConfig } = useGetEndpointsQuery();
-  const agentsMap = useAgentsMapContext();
+  const queryClient = useQueryClient();
+  const storedAgentId = getLocalStorageItems().lastConversationSetup?.agent_id;
+  const storedAgent = queryClient.getQueryState<Agent>([QueryKeys.agent, storedAgentId]);
+  const agentsMap = useMemo<TAgentsMap | undefined>(() => {
+    if (storedAgent?.data) return { [storedAgent.data.id]: storedAgent.data };
+    if (storedAgent?.status === 'error' && isNotFoundError(storedAgent.error)) return {};
+    return undefined;
+  }, [storedAgent?.data, storedAgent?.status, storedAgent?.error]);
 
   const hasAgentAccess = useHasAccess({
     permissionType: PermissionTypes.AGENTS,
     permission: Permissions.USE,
   });
 
-  const modelsQuery = useGetModelsQuery();
-  const assistantsListMap = useAssistantListMap();
   const { pauseGlobalAudio } = usePauseGlobalAudio(index);
   const { saveDrafts } = useChatSettings();
 
@@ -122,7 +127,6 @@ const useNewConvo = (index = 0) => {
         disableFocus?: boolean,
         _disableParams?: boolean,
       ) => {
-        const modelsConfig = modelsData ?? modelsQuery.data;
         const { endpoint = null } = conversation;
         const buildDefaultConversation = (endpoint === null || buildDefault) ?? false;
         const hasExplicitChatProjectId = Object.prototype.hasOwnProperty.call(
@@ -196,46 +200,20 @@ const useNewConvo = (index = 0) => {
             conversation.endpointType = undefined;
           }
 
-          const isAssistantEndpoint = isAssistantsEndpoint(defaultEndpoint);
-          const assistants: AssistantListItem[] = assistantsListMap[defaultEndpoint] ?? [];
-          const currentAssistantId = conversation.assistant_id ?? '';
-          const currentAssistant = assistantsListMap[defaultEndpoint]?.[currentAssistantId] as
-            | AssistantListItem
-            | undefined;
-
-          if (currentAssistantId && !currentAssistant) {
+          if (!isAssistantsEndpoint(defaultEndpoint)) {
             conversation.assistant_id = undefined;
           }
 
-          if (!currentAssistantId && isAssistantEndpoint) {
-            conversation.assistant_id =
-              localStorage.getItem(
-                `${LocalStorageKeys.ASST_ID_PREFIX}${index}${defaultEndpoint}`,
-              ) ?? assistants[0]?.id;
-          }
-
-          if (
-            currentAssistantId &&
-            isAssistantEndpoint &&
-            conversation.conversationId === Constants.NEW_CONVO
-          ) {
-            const assistant = assistants.find((asst) => asst.id === currentAssistantId);
-            conversation.model = assistant?.model;
-            updateLastSelectedModel({
-              endpoint: defaultEndpoint,
-              model: conversation.model,
-            });
-          }
-
-          if (currentAssistantId && !isAssistantEndpoint) {
-            conversation.assistant_id = undefined;
-          }
-
-          const models = modelsConfig?.[defaultEndpoint] ?? [];
+          const models =
+            modelsData?.[defaultEndpoint] ??
+            queryClient.getQueryData<TModelsConfig>([QueryKeys.models, defaultEndpoint])?.[
+              defaultEndpoint
+            ];
           const defaultParamsEndpoint = getDefaultParamsEndpoint(endpointsConfig, defaultEndpoint);
           conversation = buildDefaultConvo({
             conversation,
-            lastConversationSetup: activePreset as TConversation,
+            lastConversationSetup:
+              activePreset ?? (conversation.endpoint === defaultEndpoint ? conversation : null),
             endpoint: defaultEndpoint,
             models,
             defaultParamsEndpoint,
@@ -311,14 +289,7 @@ const useNewConvo = (index = 0) => {
         }
         navigate(path, { replace: true });
       },
-    [
-      endpointsConfig,
-      defaultPreset,
-      assistantsListMap,
-      modelsQuery.data,
-      hasAgentAccess,
-      searchParams,
-    ],
+    [endpointsConfig, defaultPreset, queryClient, hasAgentAccess, searchParams],
   );
 
   const newConversation = useCallback(

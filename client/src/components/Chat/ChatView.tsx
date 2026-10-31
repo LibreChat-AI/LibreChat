@@ -17,6 +17,8 @@ import type { ChatScreenMessagesSlots } from '@librechat/chat/components';
 import type { TChatProject, TMessage } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { AddedChatContext, ChatFormProvider, useChatContext, useFileMapContext } from '~/Providers';
+import { AssistantsMapContext, useAssistantsMapContext } from '~/Providers/AssistantsMapContext';
+import { AgentsMapContext, useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import Footer, { useLandingFooter, useConfiguredFooter } from './Footer';
 import PendingSteers from './Messages/Content/Parts/PendingSteers';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
@@ -26,6 +28,8 @@ import ProjectBadge from '~/components/Projects/ProjectBadge';
 import { OwnerTextProvider } from './Messages/PrivateText';
 import PendingTurn from './Messages/PendingTurn';
 import { FLAT_THREAD } from './Messages/Thread';
+import { TargetContext } from '~/Providers/TargetContext';
+import useTarget from '~/hooks/Chat/target';
 import { useAddedResponse } from '~/hooks';
 import Presentation from './Presentation';
 import ChatForm from './Input/ChatForm';
@@ -103,9 +107,45 @@ function ChatViewPane({
 
   const fileMap = useFileMapContext();
   const chat = useChatContext();
+  const target = useTarget(chat.conversation, chat.setConversation);
+  const agentsMap = useAgentsMapContext();
+  const assistantsMap = useAssistantsMapContext();
+  const selectedAgents = useMemo(
+    () => (target.agent ? { ...agentsMap, [target.agent.id]: target.agent } : agentsMap),
+    [agentsMap, target.agent],
+  );
+  const selectedAssistants = useMemo(
+    () =>
+      target.assistant && chat.conversation?.endpoint
+        ? {
+            ...assistantsMap,
+            [chat.conversation.endpoint]: {
+              ...assistantsMap?.[chat.conversation.endpoint],
+              [target.assistant.id]: target.assistant,
+            },
+          }
+        : assistantsMap,
+    [assistantsMap, target.assistant, chat.conversation?.endpoint],
+  );
   const addedChatHelpers = useAddedResponse();
+  const addedTarget = useTarget(addedChatHelpers.conversation, addedChatHelpers.setConversation);
+  const readiness = useMemo(
+    () => ({
+      ready: target.ready && (addedChatHelpers.conversation == null || addedTarget.ready),
+      pending: target.pending || (addedChatHelpers.conversation != null && addedTarget.pending),
+      failed: target.failed || (addedChatHelpers.conversation != null && addedTarget.failed),
+      retry: () => {
+        target.retry();
+        if (addedChatHelpers.conversation) addedTarget.retry();
+      },
+    }),
+    [target, addedTarget, addedChatHelpers.conversation],
+  );
 
   return (
+    <TargetContext.Provider value={readiness}>
+      <AgentsMapContext.Provider value={selectedAgents}>
+        <AssistantsMapContext.Provider value={selectedAssistants}>
     <AskAnswerHostProvider saveDrafts={saveDrafts}>
       <ChatFormProvider {...methods}>
         <ComposerRestoreProvider>
@@ -166,6 +206,9 @@ function ChatViewPane({
         </ComposerRestoreProvider>
       </ChatFormProvider>
     </AskAnswerHostProvider>
+        </AssistantsMapContext.Provider>
+      </AgentsMapContext.Provider>
+    </TargetContext.Provider>
   );
 }
 

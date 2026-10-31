@@ -5,7 +5,7 @@ import {
   isEphemeralAgentId,
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
-import type { TConversation, EndpointSchemaKey } from 'librechat-data-provider';
+import type { TConversation, TPreset, EndpointSchemaKey } from 'librechat-data-provider';
 import { clearModelForNonEphemeralAgent } from './endpoints';
 import { getLocalStorageItems } from './localStorage';
 
@@ -16,10 +16,10 @@ const buildDefaultConvo = ({
   lastConversationSetup,
   defaultParamsEndpoint,
 }: {
-  models: string[];
+  models?: string[];
   conversation: TConversation;
   endpoint?: EModelEndpoint | null;
-  lastConversationSetup: TConversation | null;
+  lastConversationSetup: Partial<TConversation | TPreset> | null;
   defaultParamsEndpoint?: string | null;
 }): TConversation => {
   const { lastSelectedModel, lastSelectedTools } = getLocalStorageItems();
@@ -33,26 +33,21 @@ const buildDefaultConvo = ({
     };
   }
 
-  const availableModels = models;
-  const model = lastConversationSetup?.model ?? lastSelectedModel?.[endpoint] ?? '';
-
-  let possibleModels: string[];
-
-  if (availableModels.includes(model)) {
-    possibleModels = [model, ...availableModels];
-  } else {
-    possibleModels = [...availableModels];
-  }
+  // Discovery supplies a default, never replaces an explicit selection.
+  const model = lastConversationSetup?.model ?? conversation.model ?? lastSelectedModel?.[endpoint];
+  const possibleModels = model ? [model] : models;
 
   const convo = parseConvo({
     endpoint: endpoint as EndpointSchemaKey,
     endpointType: endpointType as EndpointSchemaKey,
     conversation: lastConversationSetup,
-    possibleValues: {
-      models: possibleModels,
-    },
+    possibleValues: possibleModels ? { models: possibleModels } : undefined,
     defaultParamsEndpoint,
   });
+
+  if (!model && models == null && convo) {
+    convo.model = undefined;
+  }
 
   const defaultConvo = {
     ...conversation,
