@@ -136,3 +136,5 @@ export type {
   MessagesThreadProps,
   MessagesScrollButtonProps,
 } from './components/messages/MessagesView';
+
+export { EventSubagentActivityGroup } from './components/subagents/activity';

@@ -11,6 +11,7 @@ const createHost = (fontSize: string): MessagePartsHost => ({
   useSmoothStreaming: () => false,
   useAgent: () => undefined,
   renderAgentIcon: () => null,
+  renderAgentAvatar: () => null,
   useFontSize: () => fontSize,
   useShowThinking: () => false,
   useAutoExpandTools: () => false,
@@ -29,6 +30,7 @@ const createHost = (fontSize: string): MessagePartsHost => ({
   useSteerEscalating: () => false,
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, jest.fn()],
+  useShare: () => ({}),
 });
 
 function FontSize() {

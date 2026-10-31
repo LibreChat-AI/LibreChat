@@ -5,12 +5,14 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { Chat } from '@librechat/chat';
 import { createInstance } from 'i18next';
 import { ContentTypes } from 'librechat-data-provider';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
   Part,
   Text,
   MessageRow,
   MentionPopover,
   getHeaderHoverLabel,
+  EventSubagentActivityGroup,
 } from '@librechat/chat/components';
 import { initReactI18next, I18nextProvider } from 'react-i18next';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
@@ -18,13 +20,26 @@ import { Button, Textarea, ThemeProvider, clickHouseTheme } from '@librechat/cli
 import {
   MessageContext,
   MessagePartIndex,
+  StreamHostProvider,
+  ChatSurfaceProvider,
   MessagesHostProvider,
   MessagePartsHostProvider,
+  ParentSubagentsProvider,
 } from '@librechat/chat/react';
-import type { ChatEvent, TMessage, TMessageContentParts } from 'librechat-data-provider';
+import type {
+  ChatEvent,
+  TMessage,
+  ParentSubagentIndex,
+  TMessageContentParts,
+} from 'librechat-data-provider';
 import type { ChatState, ChatStream, ChatTransport } from '@librechat/chat';
 import type { PartRenderers } from '@librechat/chat/components';
-import type { MessagesHost, MessagePartsHost } from '@librechat/chat/react';
+import type {
+  StreamHost,
+  ChatSurface,
+  MessagesHost,
+  MessagePartsHost,
+} from '@librechat/chat/react';
 import type { ReactElement } from 'react';
 
 /**
@@ -161,6 +176,7 @@ const host: MessagePartsHost = {
   useSmoothStreaming: () => false,
   useAgent: () => undefined,
   renderAgentIcon: () => null,
+  renderAgentAvatar: () => null,
   useFontSize: () => 'text-base',
   useShowThinking: () => false,
   useAutoExpandTools: () => false,
@@ -179,6 +195,7 @@ const host: MessagePartsHost = {
   useSteerEscalating: () => false,
   usePaneConversationId: () => null,
   useLiveAppliedSteer: () => [false, () => undefined],
+  useShare: () => ({}),
 };
 
 const messagesHost: MessagesHost = {
@@ -398,5 +415,86 @@ describe('a consumer built on the public entries', () => {
     fireEvent.keyDown(combobox, { key: 'Enter' });
     expect(onSelectMention).toHaveBeenCalledWith(expect.objectContaining({ value: 'review' }));
     textarea.remove();
+  });
+});
+
+describe('a consumer rendering subagent activity', () => {
+  const index: ParentSubagentIndex = {
+    parentConversationId: 'convo',
+    childrenTruncated: false,
+    children: [
+      {
+        threadId: 'thread-1',
+        parentMessageId: 'reply-1',
+        subagentType: 'researcher',
+        subagentKind: 'agent',
+        title: 'Researcher',
+        origin: 'event',
+        actorId: 'researcher-a',
+        status: 'running',
+        latestTaskId: 'task-1',
+        tasks: [{ taskId: 'task-1', status: 'running' }],
+        tasksTruncated: false,
+      },
+    ],
+  };
+  const unused = () => {
+    throw new Error('not part of the activity consumer');
+  };
+  const streamHost: StreamHost = {
+    useResumableServices: unused,
+    useLegacyStream: unused,
+    useTransport: () => null,
+    useQueuedTurnReceipts: unused,
+    useActiveJobs: unused,
+    extendActiveJobsGrace: unused,
+    useStreamStatus: unused,
+    useResumeSettings: unused,
+    useParentSubagentIndex: () => ({
+      data: index,
+      isError: false,
+      refetch: async () => ({ data: index }),
+    }),
+  };
+
+  it('lists the children under their reply and opens one through the surface it supplies', () => {
+    const claimForeground = jest.fn();
+    const surface: ChatSurface = {
+      enterToSend: true,
+      maximizeChatSpace: false,
+      showScrollButton: false,
+      composerBindings: {
+        shortcutsEnabled: true,
+        submitOverride: undefined,
+        yieldedChords: new Set<string>(),
+      },
+      claimForeground,
+      handOffComposerText: () => undefined,
+    };
+    render(
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={new QueryClient()}>
+          <StreamHostProvider host={streamHost}>
+            <MessagePartsHostProvider host={host}>
+              <ChatSurfaceProvider value={surface}>
+                <ParentSubagentsProvider conversationId="convo" enabled>
+                  <EventSubagentActivityGroup
+                    conversationId="convo"
+                    parentMessageIds={['reply-1']}
+                  />
+                </ParentSubagentsProvider>
+              </ChatSurfaceProvider>
+            </MessagePartsHostProvider>
+          </StreamHostProvider>
+        </QueryClientProvider>
+      </I18nextProvider>,
+    );
+
+    const group = screen.getByRole('region');
+    fireEvent.click(within(group).getAllByRole('button')[0]);
+    const child = group.querySelector('[data-subagent-thread="thread-1"]');
+    expect(child).toHaveTextContent('researcher-a');
+    fireEvent.click(child as HTMLElement);
+    expect(claimForeground).toHaveBeenCalledTimes(1);
   });
 });

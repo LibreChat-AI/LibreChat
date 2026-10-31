@@ -431,17 +431,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Subagents/EventSubagentActivityGroup.tsx": {
-    "design/disabled-recipe": {
-      "count": 1
-    },
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 4
-    }
-  },
   "client/src/components/Chat/Subagents/SharedSubagentActivityDialog.tsx": {
     "shadcn/no-restyle": {
       "count": 2
@@ -1417,6 +1406,17 @@
   "packages/chat/src/components/messages/styles.ts": {
     "shadcn/no-arbitrary-values": {
       "count": 1
+    }
+  },
+  "packages/chat/src/components/subagents/activity.tsx": {
+    "design/disabled-recipe": {
+      "count": 1
+    },
+    "shadcn/no-arbitrary-values": {
+      "count": 1
+    },
+    "shadcn/no-restyle": {
+      "count": 4
     }
   },
   "packages/client/src/components/Badge.tsx": {

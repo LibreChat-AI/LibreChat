@@ -24,6 +24,7 @@ import type {
 import type { MessagesEditing } from './MessagesViewContext';
 import type { Artifact } from '~/common';
 import {
+  useShareContext,
   useMessageContext,
   useFileMapContext,
   useAgentsMapContext,
@@ -38,6 +39,7 @@ import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { chatDirectionAtom } from '~/store/chatDirection';
 import { showThinkingAtom } from '~/store/showThinking';
 import { fontSizeAtom } from '~/store/fontSize';
+import { renderAgentAvatar } from '~/utils';
 import store from '~/store';
 
 function useAppMessage(): MessagePartMessage {
@@ -129,6 +131,7 @@ export const appMessagePartsHost: MessagePartsHost = {
   useSmoothStreaming,
   useAgent: useAppAgent,
   renderAgentIcon: (agent) => getAppPartRenderers().renderAgentIcon(agent),
+  renderAgentAvatar: (agent) => renderAgentAvatar(agent, { size: 'icon', showBorder: false }),
   useFontSize: () => useAtomValue(fontSizeAtom),
   useShowThinking: () => useAtomValue(showThinkingAtom),
   useAutoExpandTools: () => useRecoilValue<boolean>(store.autoExpandTools),
@@ -153,6 +156,10 @@ export const appMessagePartsHost: MessagePartsHost = {
   useLiveAppliedSteer: useAppLiveAppliedSteer,
   useMessagesEditing: useAppMessagesEditing,
   useMessagesAsk: () => useOptionalMessagesOperations().ask,
+  useShare: () => {
+    const { isSharedConvo, shareId } = useShareContext();
+    return useMemo(() => ({ isSharedConvo, shareId }), [isSharedConvo, shareId]);
+  },
 };
 
 setDefaultMessagePartsHost(appMessagePartsHost);

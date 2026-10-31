@@ -5,6 +5,7 @@ import { FOLD_GLYPH_CLASS } from '@librechat/chat/components';
 import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
 import { parseSubagentBackgroundHandle, tailOverflowDirection } from '@librechat/chat';
 import {
+  useOpenSubagentPanel,
   activeSubagentPanel,
   subagentProgressKey,
   useSubagentProgress,
@@ -23,7 +24,6 @@ import type {
 } from 'librechat-data-provider';
 import type { SubagentContentPreview } from '@librechat/chat/react';
 import type { SubagentTickerLine } from '@librechat/chat';
-import { useOpenSubagentPanel } from '~/components/Chat/Subagents/surface';
 import { MessageContext } from '~/Providers/MessageContext';
 import { useShareContext } from '~/Providers/ShareContext';
 import MessageIcon from '~/components/Share/MessageIcon';

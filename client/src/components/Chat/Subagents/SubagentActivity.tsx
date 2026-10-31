@@ -11,6 +11,7 @@ import {
   subagentStatusIcon,
   subagentStatusLabelKey,
   ToolContentQueryContext,
+  useChatSurface,
 } from '@librechat/chat/react';
 import type { ChildActivity, ChildActivityItem, ToolContentQuery } from '@librechat/chat/react';
 import type { SearchResultData, TMessageContentParts } from 'librechat-data-provider';
@@ -25,7 +26,6 @@ import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import Container from '~/components/Chat/Messages/Content/Container';
 import { EmptyText } from '~/components/Chat/Messages/Content/Parts';
 import ScrollToBottom from '~/components/Messages/ScrollToBottom';
-import { useChatSurface } from './surface';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 

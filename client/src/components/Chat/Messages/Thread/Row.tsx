@@ -1,9 +1,9 @@
 import { memo, useCallback } from 'react';
 import { useSetAtom } from 'jotai';
 import { isAssistantsEndpoint } from 'librechat-data-provider';
+import { EventSubagentActivityGroup } from '@librechat/chat/components';
 import type { ThreadRow } from '~/utils/thread';
 import type { TMessageProps } from '~/common';
-import EventSubagentActivityGroup from '~/components/Chat/Subagents/EventSubagentActivityGroup';
 import MessageContent from '~/components/Messages/MessageContent';
 import { hasParallelLanes } from '~/utils/lanes';
 import MessageParts from '../MessageParts';
