@@ -1,6 +1,13 @@
 import { createHmac } from 'node:crypto';
+import { DEFAULT_CHANNEL_GATEWAY_POLICY } from 'librechat-data-provider';
 import type { ChannelBundle } from './types';
-import { eventTimestampUs, normalizeEvent, parseEnvelope, verifySignature } from './events';
+import {
+  eventTimestampUs,
+  normalizeEvent,
+  parseEnvelope,
+  verifySignature,
+  parseWebhookRequest,
+} from './events';
 
 const bundle: ChannelBundle = {
   channel: {
@@ -16,6 +23,7 @@ const bundle: ChannelBundle = {
   },
   agent: { id: 'agent' },
   credentials: { botToken: 'test-bot', signingSecret: 'test-signing' },
+  gateway: { version: 1, ...DEFAULT_CHANNEL_GATEWAY_POLICY, transport: 'webhook' },
 };
 const envelope = (event: object) => ({
   type: 'event_callback',
@@ -32,6 +40,103 @@ const envelope = (event: object) => ({
   },
 });
 const normalize = (event: object) => normalizeEvent(parseEnvelope(envelope(event), bundle), bundle);
+
+describe('authenticated Slack webhook protocol', () => {
+  const now = 1_793_000_000_000;
+  const signed = (body: Buffer, seconds = now / 1000) => ({
+    signature:
+      'v0=' +
+      createHmac('sha256', bundle.credentials.signingSecret!)
+        .update(`v0:${seconds}:`)
+        .update(body)
+        .digest('hex'),
+    timestamp: String(seconds),
+    contentType: 'application/json',
+  });
+  const challenge = Buffer.from(
+    JSON.stringify({
+      type: 'url_verification',
+      challenge: 'verified-challenge',
+      token: 'deprecated-token',
+    }),
+  );
+  test('authenticates a setup challenge before exposing only its bounded challenge value', () => {
+    expect(parseWebhookRequest(challenge, signed(challenge), bundle, false, now)).toEqual({
+      ok: true,
+      request: { kind: 'challenge', challenge: 'verified-challenge' },
+    });
+    expect(parseWebhookRequest(challenge, {}, bundle, false, now)).toEqual({
+      ok: false,
+      status: 401,
+      code: 'invalid_signature',
+    });
+    expect(
+      parseWebhookRequest(
+        Buffer.concat([challenge, Buffer.from(' ')]),
+        signed(challenge),
+        bundle,
+        false,
+        now,
+      ),
+    ).toMatchObject({ ok: false, status: 401 });
+    expect(
+      parseWebhookRequest(
+        challenge,
+        signed(challenge),
+        { ...bundle, gateway: { ...bundle.gateway, transport: 'socket_mode' } },
+        false,
+        now,
+      ),
+    ).toMatchObject({ ok: false, status: 400 });
+  });
+  test('uses the server policy freshness window for every payload including challenges', () => {
+    const policy = { ...bundle, gateway: { ...bundle.gateway, signatureToleranceSeconds: 60 } };
+    expect(
+      parseWebhookRequest(challenge, signed(challenge, now / 1000 - 61), policy, false, now),
+    ).toMatchObject({ ok: false, status: 401 });
+    expect(
+      parseWebhookRequest(challenge, signed(challenge, now / 1000 - 59), policy, false, now),
+    ).toMatchObject({ ok: true });
+  });
+  test('retains callback app/team binding and enforces the distinct interactive form contract', () => {
+    const valid = Buffer.from(JSON.stringify(envelope({})));
+    expect(parseWebhookRequest(valid, signed(valid), bundle, false, now)).toMatchObject({
+      ok: true,
+      request: { kind: 'event' },
+    });
+    const foreign = Buffer.from(JSON.stringify({ ...envelope({}), api_app_id: 'A2' }));
+    expect(parseWebhookRequest(foreign, signed(foreign), bundle, false, now)).toMatchObject({
+      ok: false,
+      status: 400,
+    });
+    const form = Buffer.from(
+      new URLSearchParams({ payload: JSON.stringify({ type: 'view_submission' }) }).toString(),
+    );
+    expect(
+      parseWebhookRequest(
+        form,
+        { ...signed(form), contentType: 'application/x-www-form-urlencoded' },
+        bundle,
+        true,
+        now,
+      ),
+    ).toMatchObject({ ok: true, request: { kind: 'interaction' } });
+    expect(parseWebhookRequest(challenge, signed(challenge), bundle, true, now)).toMatchObject({
+      ok: false,
+      status: 400,
+    });
+    const duplicate = Buffer.from(form.toString() + '&' + form.toString());
+    expect(
+      parseWebhookRequest(
+        duplicate,
+        { ...signed(duplicate), contentType: 'application/x-www-form-urlencoded' },
+        bundle,
+        true,
+        now,
+      ),
+    ).toMatchObject({ ok: false, status: 400 });
+  });
+});
 
 describe('Slack message normalization', () => {
   test('binds actor, admission identity and thread to the exact envelope', () => {

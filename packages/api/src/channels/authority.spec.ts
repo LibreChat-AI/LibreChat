@@ -615,6 +615,30 @@ it.each(['per_user', 'shared'] as const)(
     }),
 );
 
+it.each([500, 300_000, 300_001])(
+  'bounds native Stop clock lead of %dms using the service policy',
+  (lead) =>
+    scoped(async () => {
+      await link('U1', users[0]);
+      const admission = event();
+      const admitted = await post('runs').send(admission).expect(201);
+      await post('runs/claim').send({ owner: 'worker' }).expect(200);
+      fakeNow = Date.now() + 10;
+      const accepted = lead <= 300_000;
+      await post('runs/stop-thread')
+        .send({
+          actor: admission.actor,
+          externalThreadKey: admission.externalThreadKey,
+          externalChannelId: admission.externalChannelId,
+          eventAt: fakeNow + lead,
+        })
+        .expect(accepted ? 202 : 400);
+      expect(
+        (await storage.read(tenantId, 'channel', admitted.body.runId))?.cancellationRequested,
+      ).toBe(accepted);
+    })(),
+);
+
 it(
   'native Stop resolves only the current actor lane and ignores stale or foreign clicks',
   scoped(async () => {

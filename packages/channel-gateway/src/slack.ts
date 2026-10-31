@@ -76,7 +76,35 @@ const diagnosticCodes = new Set([
   'internal_error',
   'fatal_error',
   'ratelimited',
+  'service_unavailable',
 ]);
+/** Only explicit method/authorization rejections prove that Slack did not execute a write. */
+const permanentRejections = new Set([
+  'invalid_arguments',
+  'invalid_arg_name',
+  'invalid_post_type',
+  'invalid_json',
+  'invalid_blocks',
+  'invalid_attachments',
+  'missing_scope',
+  'not_allowed',
+  'channel_not_found',
+  'thread_not_found',
+  'invalid_thread_ts',
+  'invalid_status',
+  'invalid_auth',
+  'not_authed',
+  'token_expired',
+  'token_revoked',
+  'account_inactive',
+  'no_permission',
+  'not_in_channel',
+  'is_archived',
+  'user_not_found',
+  'unknown_method',
+  'method_not_supported_for_channel_type',
+]);
+const permanentHttpRejections = new Set([400, 401, 403, 404, 405, 406, 410, 413, 414, 415, 422]);
 const mutedLogger = {
   debug() {},
   info() {},
@@ -192,10 +220,8 @@ export class SlackClient {
           outcome = 'retryable';
           if (error instanceof WebAPIRateLimitedError) retryAfterMs = error.retryAfter * 1000;
         } else if (error instanceof WebAPIPlatformError && validEnvelope) {
-          outcome = ['internal_error', 'fatal_error'].includes(error.data.error)
-            ? uncertain
-            : 'permanent';
-        } else if (status && (status < 200 || status >= 300) && status < 500) {
+          outcome = permanentRejections.has(error.data.error) ? 'permanent' : uncertain;
+        } else if (permanentHttpRejections.has(status)) {
           outcome = 'permanent';
         }
         const code =
