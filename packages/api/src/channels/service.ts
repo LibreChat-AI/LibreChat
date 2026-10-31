@@ -429,6 +429,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
       },
       credentials: { botToken, signingSecret },
       agent: { id: agent.id, name: agent.name ?? 'Agent' },
+      delivery: { maxDeliveryParts: config.maxDeliveryParts },
       gateway: channelGatewayWirePolicySchema.parse({
         version: CHANNEL_GATEWAY_POLICY_VERSION,
         ...config,

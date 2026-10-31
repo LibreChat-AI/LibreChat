@@ -8,7 +8,8 @@ import { IdentityFlow, safePrivateURL } from './identity';
 import { ServiceError } from './client';
 
 type PendingAction = NonNullable<Review['pendingAction']>;
-type Question = Agents.AskUserQuestionRequest & { id?: string };
+type Question = Agents.AskUserQuestionRequest &
+  Partial<Pick<Agents.AskUserQuestionBatchItem, 'id' | 'header'>>;
 export interface ReviewInteraction {
   teamId: string;
   appId: string;
@@ -147,6 +148,10 @@ export function reviewModal(ref: Reference, action: PendingAction): ModalView | 
         (question.options?.length ?? 0) > 100
       )
         return null;
+      if (question.header) {
+        if (question.header.length > 150) return null;
+        blocks.push({ type: 'header', text: plain(question.header) });
+      }
       blocks.push({ type: 'section', text: plain(question.question) });
       if (question.options?.length) {
         if (question.options.some((option) => !option.label || option.label.length > 75))
@@ -517,32 +522,43 @@ export class ReviewFlow {
     if (value.length > 3000) throw new Error('Invalid private choice');
     const ref = choiceSchema.parse(JSON.parse(value));
     if (!validReference(ref, interaction, bundle)) return this.reject(interaction, bundle, signal);
-    const review = await this.client.review(ref.runId, caller, ref.revision, ref.channelId, signal);
-    if (
-      !matches(ref, review) ||
-      review.pendingDecision ||
-      !simpleChoices(review.pendingAction) ||
-      review.pendingAction.payload.type !== 'ask_user_question'
-    )
-      return this.reject(interaction, bundle, signal);
-    const option = review.pendingAction.payload.question.options?.[ref.choice];
-    if (!option) throw new Error('Private choice changed');
-    await this.client.decide(
-      ref.runId,
-      caller,
-      ref.revision,
-      ref.channelId,
-      { actionId: ref.actionId, answer: option.value },
-      signal,
-    );
-    await this.identity.notify(
-      ref.channelId,
-      ref.actorId,
-      'Answer received.',
-      bundle,
-      undefined,
-      signal,
-    );
+    try {
+      const review = await this.client.review(
+        ref.runId,
+        caller,
+        ref.revision,
+        ref.channelId,
+        signal,
+      );
+      if (
+        !matches(ref, review) ||
+        review.pendingDecision ||
+        !simpleChoices(review.pendingAction) ||
+        review.pendingAction.payload.type !== 'ask_user_question'
+      )
+        return this.reject(interaction, bundle, signal);
+      const option = review.pendingAction.payload.question.options?.[ref.choice];
+      if (!option) throw new Error('Private choice changed');
+      await this.client.decide(
+        ref.runId,
+        caller,
+        ref.revision,
+        ref.channelId,
+        { actionId: ref.actionId, answer: option.value },
+        signal,
+      );
+      await this.identity.notify(
+        ref.channelId,
+        ref.actorId,
+        'Answer received.',
+        bundle,
+        undefined,
+        signal,
+      );
+    } catch (error) {
+      if (!expectedFailure(error)) throw error;
+      await this.reject(interaction, bundle, signal);
+    }
   }
 
   async submit(

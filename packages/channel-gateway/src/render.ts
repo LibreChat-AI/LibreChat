@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
 import { createHash } from 'node:crypto';
+import { channelStorageConfigSchema } from 'librechat-data-provider';
 import type {
   ChannelArtifact,
   ChannelRunView,
@@ -211,22 +212,53 @@ function transformProse(
   return result + prose(value.slice(cursor));
 }
 
-function sanitizeProseLinks(value: string): string {
-  return value.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (match, label: string, url: string) =>
-    displayUrl(url) ? match : label,
-  );
+/** A single scanner handles nested and escaped URL parentheses in both Slack formats. */
+function proseLinks(value: string, slack: boolean): string {
+  const starts = /\[([^\][\n]+)\]\(/g;
+  let result = '';
+  let cursor = 0;
+  let match: RegExpExecArray | null;
+  const escape = slack ? escapeSlackText : (text: string) => text;
+  while ((match = starts.exec(value))) {
+    let depth = 1;
+    let end = starts.lastIndex;
+    let url = '';
+    for (; end < value.length; end++) {
+      let char = value[end];
+      if (char === '\\' && /[()\\]/.test(value[end + 1] ?? '')) {
+        char = value[++end];
+        url += char;
+        continue;
+      }
+      if (/\s/.test(char)) break;
+      if (char === '(') depth++;
+      if (char === ')' && --depth === 0) break;
+      url += char;
+    }
+    if (depth !== 0) {
+      starts.lastIndex = end;
+      continue;
+    }
+    result += escape(value.slice(cursor, match.index));
+    const label = match[1];
+    if (!displayUrl(url)) result += escape(label);
+    else if (slack) result += `<${escapeSlackText(url)}|${escapeSlackText(label)}>`;
+    else result += value.slice(match.index, end + 1);
+    cursor = end + 1;
+    starts.lastIndex = cursor;
+  }
+  return result + escape(value.slice(cursor));
 }
 
 function sanitizedLinks(value: string): string {
-  return transformProse(value, sanitizeProseLinks);
+  return transformProse(value, (prose) => proseLinks(prose, false));
 }
 
 export function safeMrkdwn(value: string): string {
   return transformProse(
     value,
     (prose) =>
-      escapeSlackText(sanitizeProseLinks(prose))
-        .replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, '<$2|$1>')
+      proseLinks(prose, true)
         .replace(/\*\*([^*]+)\*\*/g, '*$1*')
         .replace(/__([^_]+)__/g, '*$1*')
         .replace(/^#{1,6}\s+(.+)$/gm, '*$1*'),
@@ -646,7 +678,12 @@ export function validArtifact(artifact: ChannelArtifact): boolean {
   );
 }
 
-export function makeSlackPlan(run: ChannelRunView, native = false): ChannelDeliveryPlan {
+export function makeSlackPlan(
+  run: ChannelRunView,
+  native = false,
+  maxDeliveryParts = channelStorageConfigSchema.shape.maxDeliveryParts.parse(undefined),
+): ChannelDeliveryPlan {
+  const budget = channelStorageConfigSchema.shape.maxDeliveryParts.parse(maxDeliveryParts);
   if (run.plan) {
     throw new Error('Existing delivery plans must not be regenerated');
   }
@@ -668,15 +705,27 @@ export function makeSlackPlan(run: ChannelRunView, native = false): ChannelDeliv
   if (empty) {
     answer =
       'The Agent finished without a text reply.' +
-      (snapshot.artifacts?.length ? ' Any available attachments follow.' : '');
+      (snapshot.artifacts?.length
+        ? ' Attachments are subject to this channel’s delivery limits.'
+        : '');
   }
   if (snapshot.artifactsUnavailable) {
     answer += '\n\nAttachments are unavailable. The answer is preserved.';
   }
-  const messages = native ? renderAgentAnswer(answer) : renderSlackDocument(answer);
+  let messages = native ? renderAgentAnswer(answer) : renderSlackDocument(answer);
   appendFooter(messages, run);
   if (native && snapshot.status === 'completed' && !empty) {
     appendFeedback(messages);
+  }
+  if (messages.length > budget) {
+    const notice =
+      '\n\nReply shortened to fit this channel’s delivery limit. The full answer remains in the saved execution.';
+    const plain = chunkText(
+      messages.map((message) => message.text).join('\n\n'),
+      chunkLimit - Buffer.byteLength(notice),
+    );
+    messages = plain.slice(0, budget).map((text) => ({ text }));
+    if (plain.length > budget) messages[messages.length - 1].text += notice;
   }
   if (!messages.length || messages.length > 64) {
     throw new Error('Durable answer exceeds part budget');
@@ -740,8 +789,29 @@ export function makeSlackPlan(run: ChannelRunView, native = false): ChannelDeliv
       text: 'One or more attachments are unavailable. The answer is preserved.',
     });
   }
-  if (parts.length > 100) {
-    throw new Error('Durable answer exceeds part budget');
+  if (parts.length > budget) {
+    const required = parts.filter((part) => part.required);
+    const remaining = budget - required.length;
+    // Artifact delivery and its failure notice form a group. Never publish uploads without it.
+    const optional = parts.filter(
+      (part) =>
+        !part.required &&
+        part.kind !== 'artifact' &&
+        !part.operationId.endsWith(':artifact-status'),
+    );
+    const artifacts = parts.filter((part) => part.kind === 'artifact');
+    const status = parts.find((part) => part.operationId.endsWith(':artifact-status'));
+    const selected =
+      remaining >= 2 && status
+        ? [...artifacts.slice(0, remaining - 1), status]
+        : optional.slice(0, remaining);
+    parts.splice(0, parts.length, ...required, ...selected);
+    const last = required[required.length - 1];
+    const notice =
+      '\n\nSome attachments or session links were omitted by this channel’s delivery limit.';
+    last.text += notice;
+    // The text fallback now carries the complete bounded reply and the omission notice.
+    delete last.presentation;
   }
   const plan = { revision: '', rendererVersion, parts };
   plan.revision = createHash('sha256').update(JSON.stringify(plan)).digest('hex');
