@@ -53,8 +53,14 @@ export default function PromptsPopover<T extends CommandOption>({
   const openChangeRef = useRef(onOpenChange);
   openChangeRef.current = onOpenChange;
 
+  /** The popover mounts closed and opens from its input's ref, which may already have moved the
+   *  text typed after the `/` into the search; only a real close clears it. */
+  const wasOpen = useRef(false);
   useEffect(() => {
-    if (!open) {
+    if (open) {
+      wasOpen.current = true;
+    } else if (wasOpen.current) {
+      wasOpen.current = false;
       setActiveIndex(0);
       setSearchValue('');
     }

@@ -63,6 +63,28 @@ describe('PromptsPopover', () => {
     expect(input()).toHaveAttribute('aria-activedescendant', 'prompt-item-0');
   });
 
+  it('keeps the text typed after the slash as the search when it opens', () => {
+    const textarea = document.createElement('textarea');
+    textarea.value = '/tra';
+    document.body.appendChild(textarea);
+    render(
+      <PromptsPopover
+        textAreaRef={{ current: textarea }}
+        placeholder="Prompts"
+        prompts={prompts}
+        isLoading={false}
+        onClose={jest.fn()}
+        onSelectPrompt={jest.fn()}
+      />,
+    );
+
+    expect(input()).toHaveValue('tra');
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'translate',
+    ]);
+    expect(textarea.value).toBe('');
+  });
+
   it('hands an Enter pick to the host after closing, without submitting the form', () => {
     const { onClose, onSelectPrompt, textarea } = renderPrompts();
     textarea.value = 'draft /';
