@@ -1,7 +1,7 @@
 import { Suspense, useMemo, Fragment } from 'react';
 import { DelayedRender } from '@librechat/client';
 import { ContentTypes } from 'librechat-data-provider';
-import { MessagePartIndex } from '@librechat/chat/react';
+import { MessageContext, useMessageContext } from '@librechat/chat/react';
 import type {
   Agents,
   TMessage,
@@ -40,6 +40,7 @@ const SearchContent = ({
   authorHeader?: ReactNode;
 }) => {
   const { enableUserMsgMarkdown } = useMessagePartsHost().useUserTextPreferences();
+  const messageContext = useMessageContext();
   const { messageId } = message;
 
   const attachmentMap = useMemo(() => mapAttachments(attachments ?? []), [attachments]);
@@ -69,7 +70,6 @@ const SearchContent = ({
             }
             const partElement: ReactElement = (
               <Part
-                key={`display-${messageId}-${idx}`}
                 showCursor={false}
                 isSubmitting={false}
                 isCreatedByUser={message.isCreatedByUser}
@@ -77,17 +77,29 @@ const SearchContent = ({
                 part={part}
               />
             );
-            /** An error part resolves the agent a handoff made active from its own position,
-             *  which it reads from the message context; persisted content is compacted, so `idx` is
+            /** Every part gets the row's message id so file-card dedup
+             *  (`useToolArtifactClaim`) scopes correctly regardless of
+             *  caller: the search-results route renders `SearchContent`
+             *  with no ambient `MessageContext`, while `Share/Message.tsx`
+             *  already provides one with `messageId` set — this explicit
+             *  per-part provider keeps both paths consistent instead of
+             *  relying on whichever context happens to be ambient.
+             *  An error part additionally resolves the agent a handoff made
+             *  active from its own position, which it reads from
+             *  `MessageContext`; persisted content is compacted, so `idx` is
              *  that position in `message.content`. */
-            const rendered: ReactElement =
-              part.type === ContentTypes.ERROR ? (
-                <MessagePartIndex key={`display-${messageId}-${idx}`} index={idx}>
-                  {partElement}
-                </MessagePartIndex>
-              ) : (
-                partElement
-              );
+            const rendered: ReactElement = (
+              <MessageContext.Provider
+                key={`display-${messageId}-${idx}`}
+                value={{
+                  ...messageContext,
+                  messageId,
+                  ...(part.type === ContentTypes.ERROR ? { partIndex: idx } : {}),
+                }}
+              >
+                {partElement}
+              </MessageContext.Provider>
+            );
             if (!resumesAfterSteer) {
               return rendered;
             }
