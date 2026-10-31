@@ -1,4 +1,4 @@
-import React, { useMemo, useEffect, useRef } from 'react';
+import React, { useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   isAgentsEndpoint,
   LocalStorageKeys,
@@ -74,15 +74,18 @@ export default function useSelectorEffects({
 
   const debounceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const debouncedSetSelectedValues = (values: SelectedValues) => {
-    if (debounceTimeoutRef.current) {
-      clearTimeout(debounceTimeoutRef.current);
-    }
+  const debouncedSetSelectedValues = useCallback(
+    (values: SelectedValues) => {
+      if (debounceTimeoutRef.current) {
+        clearTimeout(debounceTimeoutRef.current);
+      }
 
-    debounceTimeoutRef.current = setTimeout(() => {
-      setSelectedValues(values);
-    }, 150);
-  };
+      debounceTimeoutRef.current = setTimeout(() => {
+        setSelectedValues(values);
+      }, 150);
+    },
+    [setSelectedValues],
+  );
 
   useEffect(() => {
     if (!conversation?.endpoint) {
@@ -126,5 +129,6 @@ export default function useSelectorEffects({
     conversation?.endpoint,
     conversation?.agent_id,
     conversation?.assistant_id,
+    debouncedSetSelectedValues,
   ]);
 }
