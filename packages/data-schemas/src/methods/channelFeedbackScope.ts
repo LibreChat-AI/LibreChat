@@ -29,11 +29,53 @@ export function sameFeedbackSource(left: ChannelReplyMapping, right: ChannelRepl
   );
 }
 
+/** Retention maintenance does not depend on whether channel feedback is currently enabled. */
+export async function readChannelFeedbackRetention(
+  mongoose: typeof import('mongoose'),
+  mapping: ChannelReplyMapping,
+  session?: ClientSession,
+): Promise<Date | null> {
+  assertChannelTenant(mapping.tenantId);
+  const owner = {
+    userId: mapping.principalId,
+    tenantId: mapping.tenantId === '_' ? undefined : mapping.tenantId,
+  };
+  // MongoDB does not support parallel operations within one transaction session.
+  const messageQuery = mongoose
+    .model('Message')
+    .findOne({
+      user: mapping.principalId,
+      tenantId: owner.tenantId ?? { $in: [null, ''] },
+      conversationId: mapping.conversationId,
+      messageId: mapping.messageId,
+      ...SERVER_AUTHORED_MESSAGE_FILTER,
+    })
+    .select('expiredAt')
+    .session(session ?? null)
+    .lean<{ expiredAt?: Date | null }>();
+  const anchorsQuery = createResponseScopeModel(mongoose)
+    .find({ _id: { $in: responseScopeKeys(owner, mapping.conversationId) } })
+    .select('expiredAt closed')
+    .session(session ?? null)
+    .lean();
+  const [message, anchors] = session
+    ? ([await messageQuery, await anchorsQuery] as const)
+    : await Promise.all([messageQuery, anchorsQuery]);
+  if (!message || anchors.some((anchor) => anchor.closed))
+    throw new ChannelFeedbackAuthorityError();
+  const deadlines = [message, ...anchors].flatMap((item) =>
+    item.expiredAt == null ? [] : [new Date(item.expiredAt).getTime()],
+  );
+  if (deadlines.some((deadline) => !Number.isFinite(deadline)))
+    throw new ChannelFeedbackAuthorityError();
+  return deadlines.length ? new Date(Math.min(...deadlines)) : null;
+}
+
 /** Every private feedback write serializes with account, conversation and channel retirement. */
 export async function withChannelFeedbackAuthority<T>(
   mongoose: typeof import('mongoose'),
   mapping: ChannelReplyMapping,
-  work: (session: ClientSession) => Promise<T>,
+  work: (session: ClientSession, expiredAt: Date | null) => Promise<T>,
 ): Promise<T> {
   assertChannelTenant(mapping.tenantId);
   if (
@@ -84,33 +126,10 @@ export async function withChannelFeedbackAuthority<T>(
         ))
       )
         throw new ChannelFeedbackAuthorityError();
-      const message = await mongoose
-        .model('Message')
-        .findOne({
-          user: mapping.principalId,
-          tenantId: owner.tenantId ?? { $in: [null, ''] },
-          conversationId: mapping.conversationId,
-          messageId: mapping.messageId,
-          ...SERVER_AUTHORED_MESSAGE_FILTER,
-          $or: [{ expiredAt: null }, { expiredAt: { $gt: at } }],
-        })
-        .select('expiredAt')
-        .session(session)
-        .lean<{ expiredAt?: Date | null }>();
-      if (!message) throw new ChannelFeedbackAuthorityError();
-      const anchors = await createResponseScopeModel(mongoose)
-        .find({ _id: { $in: keys } })
-        .select('expiredAt')
-        .session(session)
-        .lean();
-      const deadlines = [message, ...anchors].flatMap((item) =>
-        item.expiredAt == null ? [] : [new Date(item.expiredAt).getTime()],
-      );
-      if (deadlines.some((deadline) => !Number.isFinite(deadline)))
-        throw new ChannelFeedbackAuthorityError();
-      value = await work(session);
-      if (deadlines.some((deadline) => deadline <= Date.now()))
-        throw new ChannelFeedbackAuthorityError();
+      const expiredAt = await readChannelFeedbackRetention(mongoose, mapping, session);
+      if (expiredAt && expiredAt.getTime() <= Date.now()) throw new ChannelFeedbackAuthorityError();
+      value = await work(session, expiredAt);
+      if (expiredAt && expiredAt.getTime() <= Date.now()) throw new ChannelFeedbackAuthorityError();
     });
     return value;
   } finally {

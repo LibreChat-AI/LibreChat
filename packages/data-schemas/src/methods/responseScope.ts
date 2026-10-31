@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto';
 import type { ClientSession } from 'mongoose';
 import type { ResponseOwner } from '~/models/response';
-import { eraseChannelFeedbackForOwner } from './channelFeedbackErasure';
+import {
+  eraseChannelFeedbackForOwner,
+  retainChannelFeedbackForOwner,
+} from './channelFeedbackErasure';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
 import { getTransactionSupport } from '~/utils/transactions';
@@ -109,6 +112,13 @@ export function createResponseRetention(
         },
         { $set: { expiredAt: anchor.expiredAt } },
         session ? { session } : {},
+      );
+      await retainChannelFeedbackForOwner(
+        mongoose,
+        owner,
+        conversationId,
+        anchor.expiredAt,
+        session,
       );
     };
     if (parentSession) return apply(parentSession);

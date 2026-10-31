@@ -131,6 +131,118 @@ beforeEach(async () => {
   );
 });
 
+it.each(['map', 'record'] as const)(
+  'rejects principal opt-out before any durable %s admission',
+  (action) =>
+    scoped(async () => {
+      await mongoose.models.ChannelReply.deleteMany({});
+      deps.canRecord = async (source) => !('principalId' in source);
+      const result =
+        action === 'map'
+          ? await service.mapReply(actor, mapping.externalMessageKey)
+          : await service.record(actor, event('opted-out', 1));
+      expect(result).toMatchObject({ ok: false, error: { code: 'forbidden' } });
+      for (const name of ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback'])
+        expect(await mongoose.models[name].countDocuments({})).toBe(0);
+    })(),
+);
+
+it(
+  'backs rejected recovery receipts off so a later valid receipt can progress',
+  scoped(async () => {
+    for (let index = 0; index < 3; index++) {
+      const input = event(`recover-${index}`, index + 1, { externalMessageKey: `C1:${index}` });
+      await deps.storage.admitChannelFeedbackEvent({
+        tenantId: actor.tenantId,
+        channelId: actor.channelId,
+        eventId: input.eventId,
+        digest: input.eventId,
+        ledgerKey: input.eventId,
+        event: input,
+        mapping: { ...mapping, externalMessageKey: input.externalMessageKey },
+        rating: 'thumbsUp',
+        processed: false,
+      });
+    }
+    deps.canRecord = async (source) =>
+      !('externalMessageKey' in source) || source.externalMessageKey === 'C1:2';
+    expect(await service.recover(actor.tenantId, 2)).toBe(0);
+    expect(await service.recover(actor.tenantId, 2)).toBe(1);
+    deps.canRecord = async () => true;
+    clock += deps.exportRetryMs + 1;
+    expect(await service.recover(actor.tenantId, 2)).toBe(2);
+  }),
+);
+
+it(
+  'backs unclaimable export rows off without starving a later live source',
+  scoped(async () => {
+    const live = {
+      ...mapping,
+      runId: 'live-run',
+      messageId: 'live-response',
+      responseId: 'live-response',
+    };
+    await mongoose.models.Message.create({
+      tenantId: actor.tenantId,
+      user: mapping.principalId,
+      messageId: live.messageId,
+      conversationId: live.conversationId,
+      isCreatedByUser: false,
+      sender: 'Agent',
+      endpoint: 'agents',
+      model: actor.agentId,
+      text: 'answer',
+    });
+    for (let index = 0; index < 3; index++) {
+      const source = index < 2 ? mapping : live;
+      await deps.storage.ensureChannelFeedback({
+        tenantId: actor.tenantId,
+        key: `export-${index}`,
+        mapping: source,
+        externalUserId: 'U1',
+        scoreId: `score-${index}`,
+        votes: [],
+        revision: 1,
+        rating: 'thumbsUp',
+        exportStatus: 'pending',
+        retryAtMs: 0,
+      });
+    }
+    await mongoose.models.Message.updateOne(
+      { messageId: mapping.messageId },
+      { $set: { expiredAt: new Date(0) } },
+    );
+    expect(await service.flush(actor.tenantId, 2)).toBe(0);
+    expect(await service.flush(actor.tenantId, 2)).toBe(1);
+    expect(deps.sendScore).toHaveBeenCalledTimes(1);
+  }),
+);
+
+it(
+  'persists one score timestamp through next-day updates, retry and process restart',
+  scoped(async () => {
+    await service.record(actor, event('first-day', 1));
+    await service.flush(actor.tenantId, 10);
+    const first = jest.mocked(deps.sendScore).mock.calls[0][0];
+    expect(first.scoreTimestamp).toEqual(expect.any(String));
+    clock += 86400000;
+    await service.record(actor, event('second-day', 2, { reaction: 'thumbsdown' }));
+    service = createChannelFeedbackService(deps);
+    jest.mocked(deps.sendScore).mockRejectedValueOnce(new Error('provider outage'));
+    await expect(service.flush(actor.tenantId, 10)).rejects.toThrow('provider outage');
+    clock += deps.exportRetryMs + 1;
+    await service.flush(actor.tenantId, 10);
+    const calls = jest.mocked(deps.sendScore).mock.calls.map(([input]) => input);
+    expect(new Set(calls.map((input) => input.scoreId)).size).toBe(1);
+    expect(calls.map((input) => input.scoreTimestamp)).toEqual([
+      first.scoreTimestamp,
+      first.scoreTimestamp,
+      first.scoreTimestamp,
+    ]);
+  }),
+);
+
 it(
   'normalizes supported ratings and ignores unrelated/status reactions without invoking an agent',
   scoped(async () => {

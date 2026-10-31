@@ -17,6 +17,8 @@ export type SendFeedbackScoreParams = {
   traceId: string;
   /** Stable source-specific identity; omitted for the existing browser feedback score. */
   scoreId?: string;
+  /** Retained provider identity date for durable channel feedback updates. */
+  scoreTimestamp?: string;
   signal?: AbortSignal;
   /** Internal dispatch fence for callers holding a bounded export lease. Never serialized. */
   assertActive?: () => void;
@@ -46,6 +48,7 @@ type LangfuseScorePayload = {
   id: string;
   traceId: string;
   name: 'user-feedback';
+  timestamp?: string;
   value: number;
   dataType: 'BOOLEAN';
   comment?: string;
@@ -110,12 +113,14 @@ async function createScore(
 
 function buildScorePayload({
   scoreId,
+  scoreTimestamp,
   traceId,
   feedback,
   metadata,
   observationId,
 }: {
   scoreId: string;
+  scoreTimestamp?: string;
   traceId: string;
   feedback: LangfuseFeedback;
   metadata: LangfuseFeedbackMetadata;
@@ -123,6 +128,7 @@ function buildScorePayload({
 }): LangfuseScorePayload {
   return {
     id: scoreId,
+    ...(scoreTimestamp ? { timestamp: scoreTimestamp } : {}),
     traceId,
     name: 'user-feedback',
     value: feedback.rating === 'thumbsUp' ? 1 : 0,
@@ -137,6 +143,7 @@ function buildScorePayload({
 export async function sendFeedbackScore({
   traceId,
   scoreId: requestedScoreId,
+  scoreTimestamp,
   signal,
   assertActive,
   sampled,
@@ -166,7 +173,7 @@ export async function sendFeedbackScore({
 
   const scoreId = requestedScoreId ?? `feedback-${traceId}`;
   const payload = feedback?.rating
-    ? buildScorePayload({ scoreId, traceId, feedback, metadata, observationId })
+    ? buildScorePayload({ scoreId, scoreTimestamp, traceId, feedback, metadata, observationId })
     : undefined;
 
   const results = await Promise.allSettled(

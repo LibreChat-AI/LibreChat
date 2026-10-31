@@ -205,6 +205,7 @@ export function createChannelFeedbackService(deps: ChannelFeedbackDependencies) 
     const mapping = await deps.resolveReply(actor, externalMessageKey);
     if (!mapping || !matches(actor, mapping) || mapping.externalMessageKey !== externalMessageKey)
       return failure('mapping_not_found');
+    if (!(await deps.canRecord(mapping))) return failure('forbidden');
     try {
       const stored = await deps.storage.putChannelReply(mapping);
       if (
@@ -292,9 +293,18 @@ export function createChannelFeedbackService(deps: ChannelFeedbackDependencies) 
     },
     /** Recover accepted receipts after a process exits between admission and projection. */
     async recover(tenantId: string, limit: number): Promise<number> {
-      const events = await deps.storage.pendingChannelFeedbackEvents(tenantId, limit);
+      await deps.storage.repairChannelFeedbackRetention(tenantId, limit);
+      const events = await deps.storage.pendingChannelFeedbackEvents(tenantId, limit, now());
       let processed = 0;
-      for (const event of events) if ((await project(event)).ok) processed++;
+      for (const event of events) {
+        try {
+          if ((await project(event)).ok) processed++;
+          else await deps.storage.deferChannelFeedbackEvent(event, now() + deps.exportRetryMs);
+        } catch (error) {
+          await deps.storage.deferChannelFeedbackEvent(event, now() + deps.exportRetryMs);
+          throw error;
+        }
+      }
       return processed;
     },
     /** Durable retry state is not tied to the incoming Slack request's lifetime. */
@@ -314,7 +324,14 @@ export function createChannelFeedbackService(deps: ChannelFeedbackDependencies) 
             leaseUntil,
           );
         } catch (error) {
-          if (error instanceof ChannelFeedbackAuthorityError) continue;
+          if (error instanceof ChannelFeedbackAuthorityError) {
+            await deps.storage.deferChannelFeedbackExport(
+              candidate,
+              now(),
+              now() + deps.exportRetryMs,
+            );
+            continue;
+          }
           throw error;
         }
         if (!record) continue;
@@ -351,6 +368,7 @@ export function createChannelFeedbackService(deps: ChannelFeedbackDependencies) 
             await deps.sendScore(
               {
                 scoreId: record.scoreId,
+                scoreTimestamp: record.scoreTimestamp?.toISOString(),
                 traceId: record.mapping.traceId,
                 isTemporary: record.mapping.isTemporary,
                 sampled: record.mapping.sampled,

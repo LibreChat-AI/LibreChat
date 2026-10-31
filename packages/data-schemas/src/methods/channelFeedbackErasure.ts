@@ -1,3 +1,4 @@
+import type { ClientSession } from 'mongoose';
 import type { ResponseOwner } from '~/models/response';
 import {
   createChannelReplyModel,
@@ -39,4 +40,37 @@ export async function eraseChannelFeedbackForChannel(
     tenantId: partition,
     'mapping.channelId': channelId,
   });
+}
+
+/** Retention only moves earlier and shares the canonical conversation write transaction. */
+export async function retainChannelFeedbackForOwner(
+  mongoose: typeof import('mongoose'),
+  owner: ResponseOwner,
+  conversationId: string,
+  expiredAt: Date,
+  session?: ClientSession,
+): Promise<void> {
+  const tenantId = owner.tenantId || '_';
+  const deadline = { $or: [{ expiredAt: null }, { expiredAt: { $gt: expiredAt } }] };
+  await createChannelReplyModel(mongoose).updateMany(
+    { tenantId, principalId: owner.userId, conversationId, ...deadline },
+    { $set: { expiredAt } },
+    { session },
+  );
+  const filter = {
+    tenantId,
+    'mapping.principalId': owner.userId,
+    'mapping.conversationId': conversationId,
+    ...deadline,
+  };
+  await createChannelFeedbackEventModel(mongoose).updateMany(
+    filter,
+    { $set: { expiredAt } },
+    { session },
+  );
+  await createChannelFeedbackModel(mongoose).updateMany(
+    filter,
+    { $set: { expiredAt } },
+    { session },
+  );
 }

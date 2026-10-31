@@ -81,3 +81,29 @@ test('checks the original export deadline again after asynchronous destination r
   expect(checks).toBe(2);
   expect(fetchMock).not.toHaveBeenCalled();
 });
+
+test('sends the retained timestamp as part of the complete channel score identity', async () => {
+  const scoreTimestamp = '2026-10-01T23:59:00.000Z';
+  for (const rating of ['thumbsUp', 'thumbsDown'] as const)
+    await sendFeedbackScore({
+      traceId: 'trace',
+      scoreId: 'retained-score',
+      scoreTimestamp,
+      feedback: { rating },
+    });
+  const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse(init!.body as string));
+  expect(bodies).toEqual([
+    expect.objectContaining({
+      id: 'retained-score',
+      name: 'user-feedback',
+      timestamp: scoreTimestamp,
+      value: 1,
+    }),
+    expect.objectContaining({
+      id: 'retained-score',
+      name: 'user-feedback',
+      timestamp: scoreTimestamp,
+      value: 0,
+    }),
+  ]);
+});

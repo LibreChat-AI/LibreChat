@@ -521,7 +521,8 @@ it('honors the source principal feedback override before durable event admission
         } as AppConfig)
       : config;
   await post().expect(403, { error: 'forbidden' });
-  expect(await scope(() => mongoose.models.ChannelFeedbackEvent.countDocuments({}))).toBe(0);
+  for (const name of ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback'])
+    expect(await scope(() => mongoose.models[name].countDocuments({}))).toBe(0);
   expect(deps.sendScore).not.toHaveBeenCalled();
 });
 
