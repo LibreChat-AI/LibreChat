@@ -3328,6 +3328,7 @@ describe('complete channel operator configuration', () => {
       nativeSessions: false,
       lifecycleReactions: false,
       signatureToleranceSeconds: 300,
+      socketReconnectDelayMs: 5000,
     });
     expect(
       configSchema.parse({
@@ -3340,6 +3341,7 @@ describe('complete channel operator configuration', () => {
               nativeSessions: true,
               lifecycleReactions: true,
               signatureToleranceSeconds: 60,
+              socketReconnectDelayMs: 100,
             },
           },
         },
@@ -3349,9 +3351,14 @@ describe('complete channel operator configuration', () => {
       nativeSessions: true,
       lifecycleReactions: true,
       signatureToleranceSeconds: 60,
+      socketReconnectDelayMs: 100,
     });
   });
   it.each([
+    { socketReconnectDelayMs: 99 },
+    { socketReconnectDelayMs: 60001 },
+    { socketReconnectDelayMs: 100.5 },
+    { socketReconnectDelayMs: '5000' },
     { nativeSessions: 'true' },
     { lifecycleReactions: 'false' },
     { signatureToleranceSeconds: 0 },

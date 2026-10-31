@@ -190,6 +190,7 @@ describe('createEndpointsConfigService', () => {
                 nativeSessions: true,
                 lifecycleReactions: true,
                 signatureToleranceSeconds: 60,
+                socketReconnectDelayMs: 100,
               };
         const deps = createMockDeps({
           loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
