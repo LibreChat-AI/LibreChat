@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const {
   createBackgroundResponsesHost,
+  createAgentTriggerProducerBinding,
   checkRemoteAgentAccess,
   GenerationJobManager,
   getSafeErrorMetadata,
@@ -10,7 +11,7 @@ const { getEffectivePermissions } = require('./PermissionService');
 const { getAppConfig } = require('./Config');
 const db = require('~/models');
 
-let enqueueResponse;
+const producer = createAgentTriggerProducerBinding();
 const dependencies = {
   storage: createResponseStorage(mongoose, { getMCPAppMessageBudget: db.getMCPAppMessageBudget }),
   jobs: GenerationJobManager,
@@ -37,7 +38,8 @@ const dependencies = {
   isPrincipalActive: db.isAgentTriggerPrincipalActive,
   getMessage: db.getMessage,
   getConvoRetention: db.getConvoRetention,
-  enqueue: (...args) => enqueueResponse(...args),
+  enqueue: producer.enqueue,
+  isQueueReady: producer.isReady,
   signingSecret: () => process.env.JWT_SECRET,
   onError: (error) =>
     logger.error('[Responses background] Operation failed', getSafeErrorMetadata(error)),
@@ -45,6 +47,7 @@ const dependencies = {
 const host = createBackgroundResponsesHost(dependencies);
 
 module.exports = {
+  configureBackgroundResponseQueue: producer.bind,
   readInteractiveReview: host.readInteractiveReview,
   submitInteractiveReview: host.submitInteractiveReview,
   reviewBackgroundResponse: host.review,
@@ -53,10 +56,7 @@ module.exports = {
   retireBackgroundResponse: host.retireResponse,
   readBackgroundResponse: host.readResponse,
   cancelBackgroundResponse: host.cancelResponse,
-  initializeBackgroundResponses: (address, enqueue) => {
-    enqueueResponse = enqueue;
-    host.initialize(address);
-  },
+  initializeBackgroundResponses: host.initialize,
   backgroundResponseSourceDispatchers: host.sourceDispatchers,
   createBackgroundResponseHandlers: host.handlers,
   authenticateBackgroundResponses: host.authenticate,
