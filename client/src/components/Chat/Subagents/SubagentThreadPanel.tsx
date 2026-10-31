@@ -30,6 +30,7 @@ import {
   resolveSubagentAgentId,
   isLiveSubagentStatus,
   getSubagentPrompt,
+  useParentSubagents,
 } from '@librechat/chat/react';
 import type {
   ParentSubagentTaskSummary,
@@ -64,7 +65,6 @@ import { TaskContentScopeContext } from '~/data-provider/Subagents/content';
 import { useFocusTrap, useLocalize, useNavigateToConvo } from '~/hooks';
 import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import { useConfiguredFooter } from '~/components/Chat/Footer';
-import { useParentSubagents } from './ParentSubagentsProvider';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import SubagentConversation from './SubagentConversation';
 import { useAgentsMapContext } from '~/Providers';

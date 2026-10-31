@@ -6,6 +6,7 @@ import {
   useAgentQueuedTurns,
   extendActiveJobsGrace,
 } from '~/data-provider';
+import { useParentSubagentIndex } from '~/data-provider/Subagents/parents';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { useResumableServices } from '~/hooks/SSE/resumable';
@@ -41,6 +42,7 @@ export const appStreamHost: StreamHost = {
       conversation: usePaneConversation(runIndex),
     };
   },
+  useParentSubagentIndex,
 };
 
 export { StreamHostProvider, useStreamHost } from '@librechat/chat/react';

@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
 import { findSubagentDispatch } from '@librechat/chat';
 import { MessageRow } from '@librechat/chat/components';
+import { useParentSubagents } from '@librechat/chat/react';
 import type { WakeupTask } from '@librechat/chat';
 import type { ComponentProps } from 'react';
 import {
@@ -9,7 +10,6 @@ import {
   findAgentAuthorMessage,
   useParentAuthor,
 } from '~/components/Chat/Subagents/author';
-import { useParentSubagents } from '~/components/Chat/Subagents/ParentSubagentsProvider';
 import { useOptionalMessagesOperations } from '~/Providers/MessagesViewContext';
 import { useShareContext } from '~/Providers/ShareContext';
 import { useAgentsMapContext } from '~/Providers';

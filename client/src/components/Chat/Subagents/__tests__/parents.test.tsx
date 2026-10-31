@@ -2,15 +2,18 @@ import React from 'react';
 import { QueryKeys } from 'librechat-data-provider';
 import { act, render, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { ParentSubagentsProvider, useParentSubagents } from '@librechat/chat/react';
 import type { ParentSubagentIndex, ParentSubagentSummary } from 'librechat-data-provider';
-import { ParentSubagentsProvider, useParentSubagents } from './ParentSubagentsProvider';
+import { SubagentIndexHostProvider } from 'test/streamHost';
 
 const mockUseParentSubagentsQuery = jest.fn();
 
 const renderProvider = (element: React.ReactElement, client = new QueryClient()) =>
   render(element, {
     wrapper: ({ children }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      <QueryClientProvider client={client}>
+        <SubagentIndexHostProvider>{children}</SubagentIndexHostProvider>
+      </QueryClientProvider>
     ),
   });
 

@@ -7,9 +7,10 @@ import type {
   ParentSubagentIndex,
   ParentSubagentSummary,
 } from 'librechat-data-provider';
-import { useParentSubagentsQuery } from '~/data-provider';
+import type { ReactNode } from 'react';
+import { useStreamHost } from '../stream/host';
 
-type ParentSubagentsContextValue = {
+export type ParentSubagentsContextValue = {
   conversationId: string;
   byMessageId: ReadonlyMap<string, ParentSubagentSummary[]>;
   byThreadId: ReadonlyMap<string, ParentSubagentSummary>;
@@ -40,9 +41,10 @@ export function ParentSubagentsProvider({
   conversationId: string;
   enabled: boolean;
   isSubmitting?: boolean;
-  children: React.ReactNode;
-}) {
+  children: ReactNode;
+}): ReactNode {
   const queryClient = useQueryClient();
+  const { useParentSubagentIndex } = useStreamHost();
   const parent = useContext(ParentSubagentsContext);
   const inherited =
     parent.conversationId === conversationId && parent.discoveryEnabled ? parent : null;
@@ -71,9 +73,9 @@ export function ParentSubagentsProvider({
   if (discovery.conversationId !== conversationId || discovery.enabled !== discoveryEnabled) {
     setDiscovery({ conversationId, enabled: discoveryEnabled });
   }
-  const { data, refetch, isError } = useParentSubagentsQuery(
+  const { data, refetch, isError } = useParentSubagentIndex(
     conversationId,
-    { enabled: discoveryEnabled && inherited == null },
+    discoveryEnabled && inherited == null,
     isSubmitting,
   );
   const refresh = useCallback(async () => {
@@ -105,4 +107,5 @@ export function ParentSubagentsProvider({
   );
 }
 
-export const useParentSubagents = () => useContext(ParentSubagentsContext);
+export const useParentSubagents = (): ParentSubagentsContextValue =>
+  useContext(ParentSubagentsContext);

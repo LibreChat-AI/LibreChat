@@ -29,6 +29,7 @@ const host: StreamHost = {
     isFetching: false,
   }),
   useResumeSettings: () => ({ configLoaded: true, conversation: null }),
+  useParentSubagentIndex: () => ({ isError: false, refetch: async () => ({}) }),
 };
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (
