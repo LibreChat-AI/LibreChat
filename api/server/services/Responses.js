@@ -2,12 +2,21 @@ const mongoose = require('mongoose');
 const {
   createBackgroundResponsesHost,
   createAgentTriggerProducerBinding,
+  createBackgroundResponseAuthority,
+  createResponseResumeValidation,
+  createResponseResumeAdmission,
   checkRemoteAgentAccess,
+  getRemoteAgentPermissions,
+  getAgentCheckpointer,
+  checkAccess,
+  reportLocatorTraversalFailure,
   GenerationJobManager,
   getSafeErrorMetadata,
 } = require('@librechat/api');
 const { createResponseStorage, logger } = require('@librechat/data-schemas');
+const { PermissionBits, hasPermissions } = require('librechat-data-provider');
 const { getEffectivePermissions } = require('./PermissionService');
+const { decryptMetadata } = require('./ActionService');
 const { getAppConfig } = require('./Config');
 const db = require('~/models');
 
@@ -15,6 +24,7 @@ const producer = createAgentTriggerProducerBinding();
 const dependencies = {
   storage: createResponseStorage(mongoose, { getMCPAppMessageBudget: db.getMCPAppMessageBudget }),
   jobs: GenerationJobManager,
+  publicBaseURL: process.env.DOMAIN_CLIENT,
   findUser: (userId) => db.findUser({ _id: userId }),
   getKey: db.getAgentApiKeyById,
   authorizeBinding: (...args) =>
@@ -44,7 +54,46 @@ const dependencies = {
   onError: (error) =>
     logger.error('[Responses background] Operation failed', getSafeErrorMetadata(error)),
 };
-const host = createBackgroundResponsesHost(dependencies);
+const validation = createResponseResumeValidation({
+  jobs: GenerationJobManager,
+  findUser: dependencies.findUser,
+  getConfig: dependencies.getConfig,
+  projects: {
+    getConvo: db.getConvo,
+    getChatProject: db.getChatProject,
+    getProjectFiles: db.getProjectFiles,
+  },
+  content: {
+    onTraversalFailure: reportLocatorTraversalFailure,
+    getAgentCheckpointer,
+    checkAccess,
+    getMessages: db.getMessages,
+    getFiles: db.getFiles,
+    getAgent: db.getAgent,
+    getActions: db.getActions,
+    getUserMemories: db.getUserMemories,
+    getRoleByName: db.getRoleByName,
+    decryptMetadata,
+    canAccessAgent: (agent, user) =>
+      getRemoteAgentPermissions({ getEffectivePermissions }, user.id, user.role, agent._id).then(
+        (permissions) => hasPermissions(permissions, PermissionBits.VIEW),
+      ),
+  },
+});
+const authority = createBackgroundResponseAuthority(dependencies);
+const admitResume = createResponseResumeAdmission({
+  storage: dependencies.storage,
+  jobs: GenerationJobManager,
+  authorize: (record) => authority(record, record.agentId, record.sourceKeyId),
+  validate: validation.validateResume,
+});
+const host = createBackgroundResponsesHost({
+  ...dependencies,
+  interactive: {
+    validate: validation.validateDecision,
+    admitResume: (record, _user, intentId) => admitResume(record, record.responseId, intentId),
+  },
+});
 
 module.exports = {
   configureBackgroundResponseQueue: producer.bind,
