@@ -6,10 +6,10 @@ module.exports = {
   coverageReporters: ['text', 'cobertura'],
   maxWorkers,
   restoreMocks: true,
-  // sse.js, some of @librechat/client's dependencies and the micromark/mdast markdown parser
+  // sse.js, react-dnd, some of @librechat/client's dependencies and the micromark/mdast markdown parser
   // ship ES modules only, so jest transforms them like the package's own sources.
   transformIgnorePatterns: [
-    '/node_modules/(?!(sse\\.js|@dicebear|lucide|lucide-react|morphicons|@ariakit/(react-components|react-utils|react-store|components|store|utils)|micromark.*|mdast-.*|unist-.*|decode-named-character-reference|character-.*|devlop|ccount|longest-streak|markdown-table|zwitch|escape-string-regexp|parse-entities|stringify-entities|is-.*)/)',
+    '/node_modules/(?!(sse\\.js|@react-dnd|react-dnd.*|dnd-core|@dicebear|lucide|lucide-react|morphicons|@ariakit/(react-components|react-utils|react-store|components|store|utils)|micromark.*|mdast-.*|unist-.*|decode-named-character-reference|character-.*|devlop|ccount|longest-streak|markdown-table|zwitch|escape-string-regexp|parse-entities|stringify-entities|is-.*)/)',
   ],
   // The component library's resolver: its ESM-only @ariakit packages need the `import` condition.
   resolver: '<rootDir>/../client/jest.resolver.cjs',

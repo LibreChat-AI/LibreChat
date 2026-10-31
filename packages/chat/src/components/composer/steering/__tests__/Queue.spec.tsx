@@ -1,27 +1,28 @@
+/**
+ * @jest-environment jsdom
+ */
 import React from 'react';
-import { RecoilRoot } from 'recoil';
 import { DndProvider } from 'react-dnd';
 import { getDefaultStore, useSetAtom } from 'jotai';
 import { HTML5Backend } from 'react-dnd-html5-backend';
 import { ReasoningEffort } from 'librechat-data-provider';
-import { hasQueuedIntent, releaseQueuedIntent } from '@librechat/chat';
-import { queuedMessagesByConvoId, resetQueueFamilies } from '@librechat/chat/react';
-import { revealedQueuedTurnFamily, resetSteerFamilies } from '@librechat/chat/react';
 import { act, render, screen, within, waitFor, fireEvent } from '@testing-library/react';
-import { QueuedTurnPortalProvider, useQueuedTurnPortal } from '@librechat/chat/components';
-import type { SteeringControls } from '@librechat/chat/react';
-import type { QueuedMessage } from '@librechat/chat';
+import type { SteeringControls } from '../../../../react/steering/useSteering';
+import type { QueuedMessage } from '../../../../core/steer/types';
+import { revealedQueuedTurnFamily, resetSteerFamilies } from '../../../../react/steer/atoms';
+import { queuedMessagesByConvoId, resetQueueFamilies } from '../../../../react/steer/queue';
+import { hasQueuedIntent, releaseQueuedIntent } from '../../../../core/steer/intent';
+import { QueuedTurnPortalProvider, useQueuedTurnPortal } from '../QueuedTurnPortal';
 import Queue from '../Queue';
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string, options?: Record<string, string | number>) => {
-    if (!options) {
-      return key;
-    }
-    const value = options.count ?? options['0'];
-    return `${key}:${value}`;
-  },
-}));
 
+/** Seeds the default Jotai store before the first render, where the app's queue state lives. */
+function SeedStore({ init, children }: { init?: () => void; children: React.ReactNode }) {
+  React.useState(() => {
+    init?.();
+    return null;
+  });
+  return <>{children}</>;
+}
 const mockShowToast = jest.fn();
 jest.mock('@librechat/client', () => {
   const ReactActual = jest.requireActual('react') as typeof React;
@@ -177,9 +178,7 @@ function renderQueue(
   } = {},
 ) {
   return render(
-    <RecoilRoot
-      initializeState={() => getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), items)}
-    >
+    <SeedStore init={() => getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), items)}>
       {/* Mirrors `App`, which mounts the provider around the whole tree. */}
       <DndProvider backend={HTML5Backend}>
         <QueuedTurnPortalProvider>
@@ -197,7 +196,7 @@ function renderQueue(
           )}
         </QueuedTurnPortalProvider>
       </DndProvider>
-    </RecoilRoot>,
+    </SeedStore>,
   );
 }
 
@@ -716,7 +715,7 @@ describe('Queue', () => {
     ]);
     render(
       <DndProvider backend={HTML5Backend}>
-        <RecoilRoot>
+        <SeedStore>
           <Queue
             steering={{ ...steering, queueKey: 'left-convo' }}
             conversationId="left-convo"
@@ -724,8 +723,8 @@ describe('Queue', () => {
             canRestoreToComposer={() => true}
             onStartNewChat={jest.fn()}
           />
-        </RecoilRoot>
-        <RecoilRoot>
+        </SeedStore>
+        <SeedStore>
           <Queue
             steering={{ ...steering, queueKey: 'right-convo' }}
             conversationId="right-convo"
@@ -733,7 +732,7 @@ describe('Queue', () => {
             canRestoreToComposer={() => true}
             onStartNewChat={jest.fn()}
           />
-        </RecoilRoot>
+        </SeedStore>
       </DndProvider>,
     );
 
@@ -763,8 +762,8 @@ describe('Queue', () => {
       return null;
     };
     render(
-      <RecoilRoot
-        initializeState={() =>
+      <SeedStore
+        init={() =>
           getDefaultStore().set(queuedMessagesByConvoId(CONVO_ID), [
             queued({ id: 'q1' }),
             queued({ id: 'q2' }),
@@ -781,7 +780,7 @@ describe('Queue', () => {
             onStartNewChat={jest.fn()}
           />
         </DndProvider>
-      </RecoilRoot>,
+      </SeedStore>,
     );
 
     fireEvent.keyDown(screen.getAllByTestId('queued-message-grip')[0], { key: 'ArrowDown' });
