@@ -101,6 +101,18 @@ describe('ChannelClient service boundary', () => {
       maxDeliveryParts: 1,
     });
   });
+  test('preserves identity domain results and null absence without converting conflicts to exceptions', async () => {
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockResolvedValueOnce(json({ ok: false, error: { code: 'changed' } }))
+      .mockResolvedValueOnce(json({ ok: true, value: null }));
+    const client = new ChannelClient(config, transport);
+    await expect(client.identity('U1', '/confirm', {})).resolves.toEqual({
+      ok: false,
+      error: { code: 'changed' },
+    });
+    await expect(client.identity('U1')).resolves.toEqual({ ok: true, value: null });
+  });
   test('returns a valid worker-bound claim', async () => {
     const lease = { run, fence, leaseExpiresAt: Date.now() + 60_000 };
     const transport = jest

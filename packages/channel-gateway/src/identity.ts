@@ -3,6 +3,7 @@ import type { ChannelLinkView, ChannelLinkTicket } from 'librechat-data-provider
 import type { SlackClient, SlackBlocks } from './slack';
 import type { ChannelClient } from './client';
 import type { ChannelBundle } from './types';
+import { expectedServiceFailure } from './client';
 
 const confirmationSchema = z
   .object({ linkId: z.string().min(1), revision: z.string().min(1) })
@@ -107,55 +108,97 @@ export class IdentityFlow {
     );
   }
 
+  private unavailable(
+    channelId: string,
+    actorId: string,
+    bundle: ChannelBundle,
+    signal?: AbortSignal,
+  ) {
+    return this.notify(
+      channelId,
+      actorId,
+      'This account-link action is stale or unavailable. Retry your mention to check your own account link. The original request was not run.',
+      bundle,
+      undefined,
+      signal,
+    );
+  }
+
+  private async withAvailability(
+    channelId: string,
+    actorId: string,
+    bundle: ChannelBundle,
+    signal: AbortSignal | undefined,
+    work: () => Promise<void>,
+  ): Promise<void> {
+    try {
+      await work();
+    } catch (error) {
+      if (!expectedServiceFailure(error)) throw error;
+      await this.unavailable(channelId, actorId, bundle, signal);
+    }
+  }
+
   async prompt(
     channelId: string,
     actorId: string,
     bundle: ChannelBundle,
     signal?: AbortSignal,
   ): Promise<void> {
-    const view = await this.client.identity<ChannelLinkView | null>(actorId, '', undefined, signal);
-    if (view?.state === 'accepted') {
-      if (
-        !validActorView(view, this.client.config.CHANNEL_TENANT_ID, actorId, bundle) ||
-        !safeAccountLabel(view.accountLabel)
-      )
-        throw new Error('Accepted account identity cannot be safely confirmed');
-      const label = `Confirm linking ${view.accountLabel} to you`;
-      return this.notify(
-        channelId,
+    return this.withAvailability(channelId, actorId, bundle, signal, async () => {
+      const current = await this.client.identity<ChannelLinkView | null>(
         actorId,
-        `${label}. Confirm only if this is the account you intended to use. Then retry your mention.`,
-        bundle,
-        {
-          label: [...label].length <= 75 ? label : 'Confirm the account shown above',
-          action: 'channel_link_confirm',
-          value: JSON.stringify({ linkId: view.linkId, revision: view.revision }),
-        },
-        signal,
-      );
-    }
-    if (view?.state === 'active') {
-      if (!validActorView(view, this.client.config.CHANNEL_TENANT_ID, actorId, bundle))
-        throw new Error('Channel account link changed');
-      return this.notify(
-        channelId,
-        actorId,
-        'Your account is linked, but this channel has not authorized this request. Check your channel access with its owner, then retry your mention.',
-        bundle,
+        '',
         undefined,
         signal,
       );
-    }
-    const ticket = await this.client.identity<ChannelLinkTicket>(actorId, '/ticket', {}, signal);
-    if (!safeIdentityTicket(ticket)) throw new Error('Invalid private account-link ticket');
-    await this.notify(
-      channelId,
-      actorId,
-      'Link your account in the browser, then mention me again to confirm the exact account here in Slack. Your original request will not run automatically.',
-      bundle,
-      { label: 'Link your account', action: 'channel_link_open', url: ticket.url },
-      signal,
-    );
+      if (!current.ok) return this.unavailable(channelId, actorId, bundle, signal);
+      const view = current.value;
+      if (view?.state === 'accepted') {
+        if (
+          !validActorView(view, this.client.config.CHANNEL_TENANT_ID, actorId, bundle) ||
+          !safeAccountLabel(view.accountLabel)
+        )
+          throw new Error('Accepted account identity cannot be safely confirmed');
+        const label = `Confirm linking ${view.accountLabel} to you`;
+        return this.notify(
+          channelId,
+          actorId,
+          `${label}. Confirm only if this is the account you intended to use. Then retry your mention.`,
+          bundle,
+          {
+            label: [...label].length <= 75 ? label : 'Confirm the account shown above',
+            action: 'channel_link_confirm',
+            value: JSON.stringify({ linkId: view.linkId, revision: view.revision }),
+          },
+          signal,
+        );
+      }
+      if (view?.state === 'active') {
+        if (!validActorView(view, this.client.config.CHANNEL_TENANT_ID, actorId, bundle))
+          throw new Error('Channel account link changed');
+        return this.notify(
+          channelId,
+          actorId,
+          'Your account is linked, but this channel has not authorized this request. Check your channel access with its owner, then retry your mention.',
+          bundle,
+          undefined,
+          signal,
+        );
+      }
+      const issued = await this.client.identity<ChannelLinkTicket>(actorId, '/ticket', {}, signal);
+      if (!issued.ok) return this.unavailable(channelId, actorId, bundle, signal);
+      const ticket = issued.value;
+      if (!safeIdentityTicket(ticket)) throw new Error('Invalid private account-link ticket');
+      await this.notify(
+        channelId,
+        actorId,
+        'Link your account in the browser, then mention me again to confirm the exact account here in Slack. Your original request will not run automatically.',
+        bundle,
+        { label: 'Link your account', action: 'channel_link_open', url: ticket.url },
+        signal,
+      );
+    });
   }
 
   async confirm(
@@ -167,41 +210,52 @@ export class IdentityFlow {
   ): Promise<void> {
     if (value.length > 1024) throw new Error('Invalid account confirmation reference');
     const confirmation = confirmationSchema.parse(JSON.parse(value));
-    const view = await this.client.identity<ChannelLinkView | null>(actorId, '', undefined, signal);
-    if (
-      !validActorView(view, this.client.config.CHANNEL_TENANT_ID, actorId, bundle) ||
-      view.linkId !== confirmation.linkId ||
-      view.revision !== confirmation.revision ||
-      view.state !== 'accepted'
-    ) {
-      return this.notify(
+    return this.withAvailability(channelId, actorId, bundle, signal, async () => {
+      const current = await this.client.identity<ChannelLinkView | null>(
+        actorId,
+        '',
+        undefined,
+        signal,
+      );
+      if (!current.ok) return this.unavailable(channelId, actorId, bundle, signal);
+      const view = current.value;
+      if (
+        !validActorView(view, this.client.config.CHANNEL_TENANT_ID, actorId, bundle) ||
+        view.linkId !== confirmation.linkId ||
+        view.revision !== confirmation.revision ||
+        view.state !== 'accepted'
+      ) {
+        return this.notify(
+          channelId,
+          actorId,
+          'This confirmation is stale or does not belong to you. Please retry your mention to check your own account link.',
+          bundle,
+          undefined,
+          signal,
+        );
+      }
+      const result = await this.client.identity<ChannelLinkView>(
+        actorId,
+        '/confirm',
+        confirmation,
+        signal,
+      );
+      if (!result.ok) return this.unavailable(channelId, actorId, bundle, signal);
+      const confirmed = result.value;
+      if (
+        !validActorView(confirmed, this.client.config.CHANNEL_TENANT_ID, actorId, bundle) ||
+        confirmed.linkId !== confirmation.linkId ||
+        confirmed.state !== 'active'
+      )
+        throw new Error('Account confirmation not committed');
+      await this.notify(
         channelId,
         actorId,
-        'This confirmation is stale or does not belong to you. Please retry your mention to check your own account link.',
+        'Your account link is confirmed. Please retry your mention; the earlier request was not run.',
         bundle,
         undefined,
         signal,
       );
-    }
-    const confirmed = await this.client.identity<ChannelLinkView>(
-      actorId,
-      '/confirm',
-      confirmation,
-      signal,
-    );
-    if (
-      !validActorView(confirmed, this.client.config.CHANNEL_TENANT_ID, actorId, bundle) ||
-      confirmed.linkId !== confirmation.linkId ||
-      confirmed.state !== 'active'
-    )
-      throw new Error('Account confirmation not committed');
-    await this.notify(
-      channelId,
-      actorId,
-      'Your account link is confirmed. Please retry your mention; the earlier request was not run.',
-      bundle,
-      undefined,
-      signal,
-    );
+    });
   }
 }

@@ -90,6 +90,115 @@ describe('Slack answer rendering', () => {
     expect(view.snapshot!.text.length).toBe(105000);
   });
 
+  it.each([2795, 2799, 2800, 2801])(
+    'keeps complete formatting tokens at the %i-byte boundary',
+    (prefix) => {
+      for (const token of [
+        [
+          '[docs](https://example.com/Foo_(bar)?x=1&y=2)',
+          '<https://example.com/Foo_(bar)?x=1&amp;y=2|docs>',
+        ],
+        ['`code <@U1> **literal**`', '`code &lt;@U1&gt; **literal**`'],
+        ['**bold words**', '*bold words*'],
+        ['**bold\nwords**', '*bold\nwords*'],
+        ['_italic words_', '_italic words_'],
+        ['~strike words~', '~strike words~'],
+        ['&', '&amp;'],
+      ]) {
+        const source = 'x'.repeat(prefix) + token[0] + ' tail';
+        const blocks = renderSlackDocument(source).flatMap((message) => message.blocks ?? []);
+        const texts = blocks.flatMap((block) =>
+          block.type === 'section' ? [block.text.text] : [],
+        );
+        expect(texts.some((text) => text.includes(token[1]))).toBe(true);
+        expect(texts.every((text) => Buffer.byteLength(text) <= 2800)).toBe(true);
+        expect(texts.join('')).toBe(safeMrkdwn(source));
+      }
+    },
+  );
+
+  it('preserves UTF8 and large atomic tokens with bounded explicit plain-text fallback', () => {
+    const source = '🙂'.repeat(699) + '[docs](https://example.com/a_(b))';
+    const texts = renderSlackDocument(source)
+      .flatMap((message) => message.blocks ?? [])
+      .flatMap((block) => (block.type === 'section' ? [block.text.text] : []));
+    expect(texts.join('')).toBe(safeMrkdwn(source));
+    expect(texts.every((text) => Buffer.byteLength(text) <= 2800)).toBe(true);
+    for (const large of [
+      '[docs](https://example.com/' + 'a'.repeat(3000) + ')',
+      '`' + 'x'.repeat(3000) + '`',
+      '**' + 'x'.repeat(3000) + '**',
+    ]) {
+      const blocks = renderSlackDocument(large).flatMap((message) => message.blocks ?? []);
+      expect(
+        blocks.every((block) => block.type === 'section' && block.text.type === 'plain_text'),
+      ).toBe(true);
+      expect(
+        blocks.flatMap((block) => (block.type === 'section' ? [block.text.text] : [])).join(''),
+      ).toBe(large);
+    }
+  });
+
+  it('fills every usable slot while preserving artifact/status grouping', () => {
+    const view = run();
+    view.snapshot!.artifacts = [artifact, { ...artifact, artifactId: 'bad', filename: '../bad' }];
+    view.snapshot!.summary = {
+      version: 1,
+      scope: 'actor_lane',
+      includesCurrent: true,
+      throughSequence: 1,
+      expectedRuns: 1,
+      observedRuns: 1,
+      priorRuns: 0,
+      costUSD: { coverage: 'unavailable', coveredRuns: 0 },
+      elapsedMs: { coverage: 'unavailable', coveredRuns: 0 },
+      tokens: { coverage: 'unavailable', coveredRuns: 0 },
+      session: { url: 'https://chat.example.com/c/session' },
+    };
+    for (const budget of [1, 2, 3, 4, 5, 6]) {
+      const plan = makeSlackPlan(view, false, budget);
+      expect(plan.parts).toHaveLength(Math.min(budget, 5));
+      expect(plan.parts[0].required).toBe(true);
+      if (plan.parts.some((part) => part.kind === 'artifact'))
+        expect(plan.parts.some((part) => part.operationId.endsWith(':artifact-status'))).toBe(true);
+      for (const part of plan.parts)
+        expect(() => durableSlackMessage(part, rendererVersion)).not.toThrow();
+      expect(makeSlackPlan(view, false, budget)).toEqual(plan);
+      if (budget >= 4) expect(plan.parts.some((part) => part.traceUrl)).toBe(true);
+    }
+  });
+
+  it('reflows reduced-budget output as bounded plain text without splitting formatted block syntax', () => {
+    const view = run();
+    view.snapshot!.text =
+      'x'.repeat(38990) + ' [docs](https://example.com/a_(b)) ' + 'tail '.repeat(500);
+    const plan = makeSlackPlan(view, false, 1);
+    expect(plan.parts).toHaveLength(1);
+    const message = durableSlackMessage(plan.parts[0], rendererVersion);
+    expect(
+      message.blocks?.every(
+        (block) => block.type === 'section' && block.text.type === 'plain_text',
+      ),
+    ).toBe(true);
+    expect(message.text).toContain('Reply shortened');
+    expect(Buffer.byteLength(message.text)).toBeLessThan(40000);
+    expect(supportedRenderer('slack-structured-v5')).toBe(true);
+    expect(() =>
+      durableSlackMessage(
+        {
+          ...plan.parts[0],
+          presentation: {
+            format: presentationFormat,
+            payload: JSON.stringify([
+              { type: 'section', text: { type: 'mrkdwn', text: 'legacy' } },
+            ]),
+          },
+        },
+        'slack-structured-v5',
+      ),
+    ).not.toThrow();
+  });
+
   it('converts prose but leaves code syntax untouched', () => {
     expect(
       safeMrkdwn(
@@ -253,7 +362,7 @@ describe('immutable Slack plans', () => {
     '[{}]',
     '[{"type":"unknown"}]',
     '[{"type":"divider","url":"https://example.com"}]',
-    '[{"type":"section","text":{"type":"plain_text","text":"wrong"}}]',
+    '[{"type":"section","text":{"type":"html","text":"wrong"}}]',
     '[{"type":"rich_text","elements":[]}]',
     '[{"type":"table","rows":[[{"type":"raw_text","text":"x"}],[]]}]',
     '[{"type":"divider"}] {}',
