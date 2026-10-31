@@ -4,6 +4,7 @@ import type { ResponseOwner } from '~/models/response';
 import { createAgentChannelModel, createAgentChannelThreadModel } from '~/models/channel';
 import { createChannelRunModel, createChannelLaneModel } from '~/models/channelRun';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
+import { createAgentApiKeyModel } from '~/models/agentApiKey';
 import { createIndexesWithRetry } from '~/utils/retry';
 import { retireAgentChannel } from './channelScope';
 
@@ -22,6 +23,10 @@ export async function eraseChannelPersistenceForUser(
 ): Promise<void> {
   const { erasureBatchSize } = resolveChannelErasureConfig(options);
   const tenantId = owner.tenantId || '_';
+  await createAgentApiKeyModel(mongoose).deleteMany({
+    userId: owner.userId,
+    tenantId: owner.tenantId || { $in: [null, ''] },
+  });
   const runs = createChannelRunModel(mongoose);
   const lanes = createChannelLaneModel(mongoose);
   const filter = { tenantId, 'principal.userId': owner.userId };
