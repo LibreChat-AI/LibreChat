@@ -1,5 +1,5 @@
 import { v4 } from 'uuid';
-import { ContentTypes, tMessageSchema, isAssistantsEndpoint } from 'librechat-data-provider';
+import { ContentTypes, tMessageSchema } from 'librechat-data-provider';
 import type { TMessage, EventSubmission, TMessageContentParts } from 'librechat-data-provider';
 import type { TResData } from './types';
 import { getPartKeyIndex, isEmptyContentPart, preserveStreamedContentIdentity } from '../content';
@@ -8,22 +8,18 @@ import { responseParentMessageId } from '../resumable/messages';
 const CONNECTION_ERROR_TEXT = 'Error connecting to server, try refreshing the page.';
 
 /**
- * A settled error the Assistants routes write: final, addressed to the conversation they created,
- * and never saved (their error handler sends with `shouldSaveMessage: false`). Rebuilding the
- * new-chat pane into that conversation refetches its messages, and the copy the server returns
- * has no error row, so the pane keeps the failure on screen instead.
+ * A settled error (`final` and `error`) the server sent without saving it. `sendError` attaches the
+ * conversation's reply stamp only after it saves the error turn, so a settled error without one was
+ * never persisted: rebuilding the new-chat pane into its conversation would refetch a copy that has
+ * no error row. Errors that are not settled messages keep the existing recovery.
  */
-const isUnsavedSettledError = (data: TResData, submission: EventSubmission): boolean => {
-  const settled = data as Partial<TMessage> & { final?: boolean };
+const isUnsavedSettledError = (data: TResData): boolean => {
+  const settled = data as Partial<TResData> & { final?: boolean; error?: boolean };
   if (settled.final !== true || settled.error !== true) {
     return false;
   }
-  const endpoint =
-    settled.endpoint ??
-    submission.conversation?.endpointType ??
-    submission.conversation?.endpoint ??
-    submission.initialResponse?.endpoint;
-  return isAssistantsEndpoint(endpoint);
+  const lastResponseAt = settled.conversation?.lastResponseAt;
+  return typeof lastResponseAt !== 'string' || lastResponseAt.length === 0;
 };
 
 /**
@@ -234,7 +230,7 @@ export const resolveErrorTurn = ({
   }
   return {
     conversationId: receivedConvoId,
-    recover: isNewConversationRoute && !isUnsavedSettledError(data, submission),
+    recover: isNewConversationRoute && !isUnsavedSettledError(data),
     errorResponse: build(
       tMessageSchema.parse({
         ...data,
