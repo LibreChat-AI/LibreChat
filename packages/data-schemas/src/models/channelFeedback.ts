@@ -8,7 +8,14 @@ import type {
 import type { Model } from 'mongoose';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
 
-export interface ChannelFeedbackEventRecord {
+export interface ChannelFeedbackRetention {
+  expiredAt?: Date | null;
+  retentionVersion?: number;
+}
+
+export type ChannelReplyRecord = ChannelReplyMapping & ChannelFeedbackRetention;
+
+export interface ChannelFeedbackEventRecord extends ChannelFeedbackRetention {
   tenantId: string;
   channelId: string;
   eventId: string;
@@ -18,14 +25,17 @@ export interface ChannelFeedbackEventRecord {
   mapping: ChannelReplyMapping;
   rating: ChannelRating;
   processed: boolean;
+  retryAtMs?: number;
 }
 
-export interface ChannelFeedbackLedger {
+export interface ChannelFeedbackLedger extends ChannelFeedbackRetention {
   tenantId: string;
   key: string;
   mapping: ChannelReplyMapping;
   externalUserId: string;
   scoreId: string;
+  scoreTimestamp?: Date;
+  createdAt?: Date;
   votes: ChannelFeedbackVote[];
   revision: number;
   rating: ChannelRating | null;
@@ -35,8 +45,8 @@ export interface ChannelFeedbackLedger {
   leaseUntilMs?: number;
 }
 
-function mappingSchema(): Schema<ChannelReplyMapping> {
-  return new Schema<ChannelReplyMapping>(
+function mappingSchema(): Schema<ChannelReplyRecord> {
+  return new Schema<ChannelReplyRecord>(
     {
       tenantId: { type: String, required: true },
       channelId: { type: String, required: true },
@@ -54,6 +64,8 @@ function mappingSchema(): Schema<ChannelReplyMapping> {
       sampled: Boolean,
       destinationIds: { type: [String], default: undefined },
       centralTraceExportEnabled: { type: Boolean, required: true },
+      expiredAt: Date,
+      retentionVersion: Number,
     },
     { _id: false },
   );
@@ -61,14 +73,14 @@ function mappingSchema(): Schema<ChannelReplyMapping> {
 
 export function createChannelReplyModel(
   mongoose: typeof import('mongoose'),
-): Model<ChannelReplyMapping> {
+): Model<ChannelReplyRecord> {
   const schema = mappingSchema();
   schema.index({ tenantId: 1, channelId: 1, teamId: 1, externalMessageKey: 1 }, { unique: true });
   schema.index({ tenantId: 1, principalId: 1, conversationId: 1 });
+  schema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
+  schema.index({ tenantId: 1, retentionVersion: 1, _id: 1 });
   applyTenantIsolation(schema);
-  return (
-    mongoose.models.ChannelReply ?? mongoose.model<ChannelReplyMapping>('ChannelReply', schema)
-  );
+  return mongoose.models.ChannelReply ?? mongoose.model<ChannelReplyRecord>('ChannelReply', schema);
 }
 
 export function createChannelFeedbackEventModel(
@@ -96,13 +108,18 @@ export function createChannelFeedbackEventModel(
       mapping: { type: mappingSchema(), required: true },
       rating: { type: String, enum: ['thumbsUp', 'thumbsDown'], required: true },
       processed: { type: Boolean, required: true },
+      retryAtMs: { type: Number, default: 0 },
+      expiredAt: Date,
+      retentionVersion: Number,
     },
     { timestamps: true },
   );
   schema.index({ tenantId: 1, channelId: 1, eventId: 1 }, { unique: true });
-  schema.index({ tenantId: 1, processed: 1, createdAt: 1 });
+  schema.index({ tenantId: 1, processed: 1, retryAtMs: 1, createdAt: 1 });
   schema.index({ tenantId: 1, ledgerKey: 1, 'event.eventTimestampUs': -1, 'event.eventId': -1 });
   schema.index({ tenantId: 1, 'mapping.principalId': 1, 'mapping.conversationId': 1 });
+  schema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
+  schema.index({ tenantId: 1, retentionVersion: 1, _id: 1 });
   applyTenantIsolation(schema);
   return (
     mongoose.models.ChannelFeedbackEvent ??
@@ -131,6 +148,9 @@ export function createChannelFeedbackModel(
       mapping: { type: mappingSchema(), required: true },
       externalUserId: { type: String, required: true },
       scoreId: { type: String, required: true },
+      scoreTimestamp: Date,
+      expiredAt: Date,
+      retentionVersion: Number,
       votes: { type: [vote], default: [] },
       revision: { type: Number, required: true },
       rating: { type: String, enum: ['thumbsUp', 'thumbsDown', null], default: null },
@@ -145,6 +165,8 @@ export function createChannelFeedbackModel(
   schema.index({ tenantId: 1, exportStatus: 1, retryAtMs: 1 });
   schema.index({ tenantId: 1, 'mapping.principalId': 1, 'mapping.conversationId': 1 });
   schema.index({ tenantId: 1, 'mapping.channelId': 1 });
+  schema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
+  schema.index({ tenantId: 1, retentionVersion: 1, _id: 1 });
   applyTenantIsolation(schema);
   return (
     mongoose.models.ChannelFeedback ??

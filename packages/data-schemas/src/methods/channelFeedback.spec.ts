@@ -3,8 +3,12 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { ChannelReplyMapping } from 'librechat-data-provider';
 import type { ChannelFeedbackLedger, ChannelFeedbackEventRecord } from '~/models/channelFeedback';
 import type { ChannelRunRecord } from '~/models/channelRun';
+import {
+  closeResponseScopes,
+  eraseResponseRecords,
+  createResponseRetention,
+} from './responseScope';
 import { createChannelFeedbackStorage, ChannelFeedbackAuthorityError } from './channelFeedback';
-import { closeResponseScopes, eraseResponseRecords } from './responseScope';
 import { runAsSystem, tenantStorage } from '~/config/tenantContext';
 import { createModels } from '~/models';
 import { createMethods } from './index';
@@ -165,6 +169,156 @@ beforeEach(async () => {
     await message();
   });
 });
+
+it(
+  'physically expires every feedback record with its source message',
+  () =>
+    scope(async () => {
+      await mongoose.connection.db!.admin().command({ setParameter: 1, ttlMonitorSleepSecs: 1 });
+      const expiredAt = new Date(Date.now() + 5000);
+      await mongoose.models.Message.updateOne(
+        { messageId: mapping.messageId },
+        { $set: { expiredAt } },
+      );
+      await persist();
+      for (const name of ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback']) {
+        expect(await mongoose.models[name].findOne({ tenantId }).lean()).toMatchObject({
+          expiredAt,
+        });
+        expect(mongoose.models[name].schema.indexes()).toContainEqual([
+          { expiredAt: 1 },
+          expect.objectContaining({ expireAfterSeconds: 0 }),
+        ]);
+      }
+      for (let attempt = 0; attempt < 30; attempt++) {
+        const counts = await Promise.all(
+          ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback'].map((name) =>
+            mongoose.models[name].countDocuments({ tenantId }),
+          ),
+        );
+        if (counts.every((count) => count === 0)) break;
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      }
+      await assertEmpty();
+    }),
+  25000,
+);
+
+it('tightens existing feedback deadlines with canonical conversation retention', () =>
+  scope(async () => {
+    await persist();
+    const expiredAt = new Date(Date.now() + 60000);
+    await createResponseRetention(mongoose)(
+      { userId, tenantId },
+      mapping.conversationId,
+      expiredAt,
+    );
+    for (const name of ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback'])
+      expect(await mongoose.models[name].findOne({ tenantId }).lean()).toMatchObject({ expiredAt });
+    await createResponseRetention(mongoose)(
+      { userId, tenantId },
+      mapping.conversationId,
+      new Date(Date.now() + 120000),
+    );
+    for (const name of ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback'])
+      expect(await mongoose.models[name].findOne({ tenantId }).lean()).toMatchObject({ expiredAt });
+  }));
+
+it('repairs bounded legacy feedback retention even when a channel is disabled', () =>
+  scope(async () => {
+    const expiredAt = new Date(Date.now() + 60000);
+    await mongoose.models.Message.updateOne(
+      { messageId: mapping.messageId },
+      { $set: { expiredAt } },
+    );
+    await persist();
+    for (const name of ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback'])
+      await mongoose.models[name].collection.updateMany(
+        { tenantId },
+        { $set: { expiredAt: null }, $unset: { retentionVersion: '' } },
+      );
+    await mongoose.models.AgentChannel.updateOne(
+      { channelId: mapping.channelId },
+      { $set: { status: 'disabled' } },
+    );
+    expect(await storage.repairChannelFeedbackRetention(tenantId, 1)).toBe(3);
+    for (const name of ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback'])
+      expect(await mongoose.models[name].findOne({ tenantId }).lean()).toMatchObject({
+        expiredAt,
+        retentionVersion: 1,
+      });
+    expect(await storage.repairChannelFeedbackRetention(tenantId, 1)).toBe(0);
+  }));
+
+it('expires legacy orphan rows without touching another tenant or dropping permanent live rows', () =>
+  scope(async () => {
+    await persist();
+    for (const name of ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback'])
+      await mongoose.models[name].collection.updateMany(
+        { tenantId },
+        { $unset: { expiredAt: '', retentionVersion: '' } },
+      );
+    await mongoose.models.ChannelReply.collection.insertOne({
+      ...mapping,
+      tenantId: 'foreign-retention-tenant',
+    });
+    expect(await storage.repairChannelFeedbackRetention(tenantId, 1)).toBe(3);
+    for (const name of ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback']) {
+      const row = await mongoose.models[name].findOne({ tenantId }).lean<{ expiredAt?: Date }>();
+      expect(row).toMatchObject({ retentionVersion: 1 });
+      expect(row?.expiredAt).toBeUndefined();
+      await mongoose.models[name].collection.updateMany(
+        { tenantId },
+        { $unset: { retentionVersion: '' } },
+      );
+    }
+    await mongoose.models.Message.deleteOne({ messageId: mapping.messageId });
+    expect(await storage.repairChannelFeedbackRetention(tenantId, 1)).toBe(3);
+    for (const name of ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback'])
+      expect(await mongoose.models[name].findOne({ tenantId }).lean()).toMatchObject({
+        expiredAt: new Date(0),
+      });
+    expect(
+      await mongoose.models.ChannelReply.collection.findOne({
+        tenantId: 'foreign-retention-tenant',
+      }),
+    ).not.toHaveProperty('retentionVersion');
+  }));
+
+it('metadata backoff cannot modify a current export lease or recreate erased feedback', () =>
+  scope(async () => {
+    await persist();
+    const candidate = (await storage.getChannelFeedback(tenantId, mapping.runId))!;
+    const now = Date.now();
+    await storage.claimChannelFeedbackExport(candidate, 'live-lease', now, now + 60000);
+    await storage.deferChannelFeedbackExport(candidate, now, now + 1000);
+    expect(await storage.getChannelFeedback(tenantId, mapping.runId)).toMatchObject({
+      retryAtMs: 0,
+      leaseId: 'live-lease',
+    });
+    await mongoose.models.ChannelFeedback.deleteMany({});
+    await mongoose.models.ChannelFeedbackEvent.deleteMany({});
+    await storage.deferChannelFeedbackExport(candidate, now, now + 1000);
+    await storage.deferChannelFeedbackEvent(event(), now + 1000);
+    expect(await mongoose.models.ChannelFeedback.countDocuments({})).toBe(0);
+    expect(await mongoose.models.ChannelFeedbackEvent.countDocuments({})).toBe(0);
+  }));
+
+it('pins legacy score dates once from ledger creation across lease takeover', () =>
+  scope(async () => {
+    await persist();
+    const original = (await storage.getChannelFeedback(tenantId, mapping.runId))!;
+    await mongoose.models.ChannelFeedback.updateOne(
+      { key: mapping.runId },
+      { $set: { scoreTimestamp: null } },
+    );
+    const candidate = (await storage.getChannelFeedback(tenantId, mapping.runId))!;
+    const now = Date.now();
+    const first = (await storage.claimChannelFeedbackExport(candidate, 'first', now, now + 1000))!;
+    expect(first.scoreTimestamp).toEqual(original.createdAt);
+    const next = (await storage.claimChannelFeedbackExport(first, 'next', now + 2000, now + 3000))!;
+    expect(next.scoreTimestamp).toEqual(first.scoreTimestamp);
+  }));
 
 it('erases all owner feedback and rejects delayed standalone writes after actual account deletion', () =>
   scope(async () => {
