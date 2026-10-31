@@ -310,3 +310,14 @@ it('hides expired prompts and requires a trusted review base URL', async () => {
     await createResponseReview({ jobs, publicBaseURL: 'http://untrusted.example' }).observe(record),
   ).toBeNull();
 });
+
+it('keeps the private materialization phase out of the review wire status and ignores live prompts', async () => {
+  await scope(() => prompt());
+  const view = await scope(() =>
+    createResponseReview({
+      jobs,
+      publicBaseURL: 'https://agents.example',
+    }).privateView({ ...record, status: 'materializing' }),
+  );
+  expect(view).toEqual({ responseId: record.responseId, status: 'in_progress', oauth: [] });
+});
