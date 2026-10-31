@@ -9,6 +9,8 @@ import { getBackgroundResponseWorkerRecord } from './worker';
 import { responseTenantId } from './scope';
 
 export interface BackgroundResponseHttpDependencies {
+  /** Fail before any durable reservation; ordinary and worker execution do not use producer admission. */
+  isAdmissionReady?: () => boolean;
   service: (req: Request) => ReturnType<typeof createBackgroundResponseService>;
   /** Foreground-only fallback; canonical background history remains journal-owned. */
   ordinary: { create: RequestHandler; retrieve: RequestHandler };
@@ -51,6 +53,14 @@ export function createBackgroundResponseHttpHandlers(deps: BackgroundResponseHtt
     create: async (req, res, next) => {
       if (getBackgroundResponseWorkerRecord(req) || req.body?.background !== true)
         return deps.ordinary.create(req, res, next);
+      if (deps.isAdmissionReady?.() === false)
+        return void sendResponsesErrorResponse(
+          res,
+          503,
+          'Response service is unavailable.',
+          'server_error',
+          'response_service_unavailable',
+        );
       const validation = validateResponseRequest(req.body);
       if (!validation.valid || !validation.request)
         return void sendResponsesErrorResponse(

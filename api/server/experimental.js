@@ -70,8 +70,12 @@ const { startSkillDeletionSweep } = require('./services/Skills/deletion');
 const {
   initializeAgentTriggerService,
   enqueueAgentTrigger,
+  isAgentTriggerServiceReady,
 } = require('./services/Agents/triggers');
-const { initializeBackgroundResponses } = require('./services/Responses');
+const {
+  initializeBackgroundResponses,
+  configureBackgroundResponseQueue,
+} = require('./services/Responses');
 const {
   initializeChannelFeedback,
   stopChannelFeedback,
@@ -717,6 +721,10 @@ if (cluster.isMaster) {
     app.use(ErrorController);
 
     /** Start listening on shared port (cluster will distribute connections) */
+    configureBackgroundResponseQueue({
+      enqueue: enqueueAgentTrigger,
+      isReady: isAgentTriggerServiceReady,
+    });
     const server = app.listen(port, host, async (err) => {
       if (err) {
         logger.error(`Worker ${process.pid} failed to start server:`, err);
@@ -741,7 +749,7 @@ if (cluster.isMaster) {
         await initializeMCPs();
         await initializeOAuthReconnectManager();
         await checkMigrations();
-        initializeBackgroundResponses(server.address(), enqueueAgentTrigger);
+        initializeBackgroundResponses(server.address());
         await initializeAgentTriggerService({
           address: server.address(),
           completionResultBatchSize:

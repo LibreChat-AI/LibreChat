@@ -1356,6 +1356,7 @@ describe('background Responses execution handoff', () => {
       });
       // Exercise the compiled host and its actual foreground fallback over committed history.
       const readHost = compiled.createBackgroundResponsesHost({
+        isQueueReady: () => false,
         storage,
         jobs: GenerationJobManager,
         findUser: async () => user,

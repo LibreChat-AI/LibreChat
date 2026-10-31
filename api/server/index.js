@@ -89,8 +89,12 @@ const { startSkillDeletionSweep } = require('./services/Skills/deletion');
 const {
   initializeAgentTriggerService,
   enqueueAgentTrigger,
+  isAgentTriggerServiceReady,
 } = require('./services/Agents/triggers');
-const { initializeBackgroundResponses } = require('./services/Responses');
+const {
+  initializeBackgroundResponses,
+  configureBackgroundResponseQueue,
+} = require('./services/Responses');
 const {
   initializeChannelFeedback,
   stopChannelFeedback,
@@ -516,6 +520,10 @@ const startServer = async () => {
 
   configureGenerationStreams();
 
+  configureBackgroundResponseQueue({
+    enqueue: enqueueAgentTrigger,
+    isReady: isAgentTriggerServiceReady,
+  });
   const server = app.listen(port, host, async (err) => {
     if (err) {
       logger.error('Failed to start server:', err);
@@ -557,7 +565,7 @@ const startServer = async () => {
       if (inspectFlags || isEnabled(process.env.MEM_DIAG)) {
         memoryDiagnostics.start();
       }
-      initializeBackgroundResponses(server.address(), enqueueAgentTrigger);
+      initializeBackgroundResponses(server.address());
       await initializeAgentTriggerService({
         address: server.address(),
         completionResultBatchSize:
