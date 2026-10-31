@@ -44,7 +44,10 @@
     "b:build": "bun run b:clean && bun run tsdown",
     "test:contracts:favorites": "jest --config jest.favorite.config.mjs --coverage=false",
     "test:mutations:favorites": "cd ../.. && stryker run packages/data-schemas/stryker.config.mjs",
-    "test:quality:favorites": "jest --config jest.favorite.config.mjs --coverage && node ../../scripts/crap.mts coverage/favorites/coverage-final.json src/methods/favorite.ts"
+    "test:quality:favorites": "jest --config jest.favorite.config.mjs --coverage && node ../../scripts/crap.mts coverage/favorites/coverage-final.json src/methods/favorite.ts",
+    "test:contracts:leases": "jest --config jest.lease.config.mjs --coverage=false",
+    "test:mutations:leases": "cd ../.. && stryker run packages/data-schemas/stryker.lease.config.mjs",
+    "test:quality:leases": "jest --config jest.lease.config.mjs --coverage && node ../../scripts/crap.mts coverage/leases/coverage-final.json src/methods/resourceLock.ts"
   },
   "repository": {
     "type": "git",
