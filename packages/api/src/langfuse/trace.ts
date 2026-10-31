@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 
 type TraceRefFields = {
+  langfuseCentralTraceExportEnabled?: boolean | null;
   langfuseSampled?: boolean | null;
   langfuseDestinationIds?: string[] | null;
   langfuseRunId?: string | null;
@@ -21,6 +22,7 @@ export function withoutTraceRefs<T extends TraceRefFields>(
   message: T,
 ): Omit<T, keyof TraceRefFields> & { langfuseSampled: false } {
   const {
+    langfuseCentralTraceExportEnabled: _central,
     langfuseSampled: _sampled,
     langfuseDestinationIds: _destinations,
     langfuseRunId: _runId,

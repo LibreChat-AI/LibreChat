@@ -544,6 +544,7 @@ export const CLIENT_MESSAGE_SELECT: string = [
   '-privateText',
   '-privateTextTokens',
   '-contextMeta',
+  '-langfuseCentralTraceExportEnabled',
   '-langfuseSampled',
   '-langfuseDestinationIds',
   '-langfuseRunId',
