@@ -7,12 +7,11 @@ import {
   extendActiveJobsGrace,
 } from '~/data-provider';
 import { useParentSubagentIndex } from '~/data-provider/Subagents/parents';
+import useEventServices, { useLegacyServices } from '~/hooks/SSE/services';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { useResumableServices } from '~/hooks/SSE/resumable';
 import { useAuthContext } from '~/hooks/AuthContext';
-import useEventServices from '~/hooks/SSE/services';
-import useSSE from '~/hooks/SSE/useSSE';
 
 function useTransport() {
   const { token, isAuthenticated } = useAuthContext();
@@ -28,7 +27,7 @@ function useTransport() {
  *  other feeds attach through. */
 export const appStreamHost: StreamHost = {
   useResumableServices,
-  useLegacyStream: useSSE,
+  useLegacyServices,
   useTransport,
   /** Observes the receipts `useSteering` fetches, without competing for the fetch. */
   useQueuedTurnReceipts: (conversationId) => useAgentQueuedTurns(conversationId, false),

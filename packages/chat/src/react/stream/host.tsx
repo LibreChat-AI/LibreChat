@@ -1,6 +1,5 @@
 import { createContext, useContext } from 'react';
 import type {
-  TSubmission,
   ChatTransport,
   RetentionMode,
   TConversation,
@@ -8,8 +7,8 @@ import type {
   TAgentQueuedTurnReceipt,
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
+import type { EventServices, EventServicesParams, LegacyStreamServices } from './services';
 import type { ResumableHost, ResumableRun, StreamStatusResponse } from '../../core';
-import type { EventServices, EventServicesParams } from './services';
 import type { ChatContract } from '../chat/contract';
 
 /** The chat members a stream writes through: the message cache, the pane's conversation and its
@@ -73,13 +72,8 @@ export interface StreamHost {
    * latest render; it changes only when they do.
    */
   useResumableServices(params: ResumableStreamParams): () => ResumableServices;
-  /** Streams a turn that carries its own response (Assistants), for `submission` or none. */
-  useLegacyStream(
-    submission: TSubmission | null,
-    chat: StreamChat,
-    isAddedRequest: boolean,
-    runIndex: number,
-  ): void;
+  /** The transport, balance refresh and terms check the Assistants stream posts its turn with. */
+  useLegacyServices(): LegacyStreamServices;
   /**
    * The signed-in user's stream transport, or `null` before sign-in, for feeds outside a chat
    * turn such as a subagent's activity. Changes when the token does.
