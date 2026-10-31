@@ -5,6 +5,36 @@
  * @see https://openresponses.org/specification
  */
 
+export {
+  ResponsePersistenceError,
+  selectResponseHistory,
+  selectStoredResponse,
+  buildResponseInputChain,
+  projectResponseMessage,
+  resolveResponseContinuation,
+} from './persistence';
+
+export {
+  createResponseAccountingCollector,
+  createResponseAccountingSnapshot,
+  captureResponseAccountingUsage,
+  createApplicationBillingQuote,
+  buildCollectedResponseAccounting,
+  buildPersistedResponseAccounting,
+} from './accounting';
+export type {
+  AccountingQuote,
+  AccountingCollectorOptions,
+  AccountingInvocationIdentity,
+  CollectedResponseAccountingUsage,
+} from './accounting';
+export type {
+  AccountingBasis,
+  AccountingModelSource,
+  ResponseAccountingCall,
+  ResponseAccounting,
+} from './types';
+
 // Types
 export type {
   // Enums
@@ -180,3 +210,8 @@ export {
 
 // Client-side tool execution
 export { createClientToolHandoff, type ClientToolHandoff } from './clientTools';
+
+export * from './foreground';
+export * from './stored';
+
+export * from './completion';
