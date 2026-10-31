@@ -18,6 +18,7 @@ import type { StoredResponseRecord } from '~/models/response';
 import {
   digest,
   laneKey,
+  stopScopeKey,
   activeStates,
   assertReconciliation,
   assertDeliveryEvidence,
@@ -28,7 +29,7 @@ import {
   leaseDeadline,
   ChannelRunConflict,
 } from './channelProtocol';
-import { initializeChannelScope, touchChannelAuthority } from './channelScope';
+import { initializeChannelScope, touchChannelAuthority, touchChannelScope } from './channelScope';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
 import { responseOwnerFilter } from './responseScope';
@@ -1065,11 +1066,36 @@ export function createChannelRunStorage(
         throw new ChannelRunConflict('invalid_transition');
       const { tenantId, channelId } = scope;
       const laneId = laneKey(scope);
+      const scopeId = stopScopeKey(scope);
+      const ownerAdmission = await prepareChannelOwnerAdmission(mongoose, {
+        userId: scope.principal.userId,
+        tenantId: tenantId === '_' ? undefined : tenantId,
+      });
+      await initializeChannelScope(mongoose, tenantId, channelId);
       return transaction(async (session) => {
-        const lane = await lanes().findOne({ tenantId, channelId, laneId }).session(session).lean();
-        let observation = lane?.stopObservation;
-        if (observation && observation.eventAt > eventAt) return null;
+        // Serialize occurrence ownership across principal lanes, including empty targets.
+        // This records an observation, not permission; the caller still checks live authority.
+        if (
+          !(await ownerAdmission(session)) ||
+          !(await touchChannelScope(mongoose, tenantId, channelId, session))
+        )
+          return null;
+        const previousLane = await lanes()
+          .findOne({ tenantId, channelId, 'stopObservation.scopeId': scopeId })
+          .session(session)
+          .lean();
+        let observation = previousLane?.stopObservation;
+        if (
+          observation &&
+          (observation.eventAt > eventAt ||
+            (observation.eventAt === eventAt && previousLane?.laneId !== laneId))
+        )
+          return null;
         if (!observation || observation.eventAt < eventAt) {
+          const lane =
+            previousLane?.laneId === laneId
+              ? previousLane
+              : await lanes().findOne({ tenantId, channelId, laneId }).session(session).lean();
           const before = Math.min(eventAt, observedAt);
           const run = lane?.activeRunId
             ? await runs()
@@ -1086,18 +1112,26 @@ export function createChannelRunStorage(
                 .lean()
             : null;
           observation = {
+            scopeId,
             eventAt,
             before,
             ...(run ? { runId: run.runId, epoch: run.leaseEpoch } : {}),
           };
           // Persist even absence: a retried click must not acquire work admitted later.
+          // A newer click moves its one bounded observation to the current owning lane.
+          if (previousLane && previousLane.laneId !== laneId) {
+            await lanes().updateOne(
+              { tenantId, channelId, laneId: previousLane.laneId },
+              { $unset: { stopObservation: 1 } },
+              { session },
+            );
+          }
           await lanes().updateOne(
             { tenantId, laneId },
             {
-              $set: { stopObservation: observation },
+              $set: { stopObservation: observation, userId: scope.principal.userId },
               $setOnInsert: {
                 channelId,
-                userId: scope.principal.userId,
                 nextSequence: 0,
               },
             },
