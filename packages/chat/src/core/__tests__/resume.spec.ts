@@ -1,4 +1,10 @@
-import { Constants, StepEvents, tMessageSchema } from 'librechat-data-provider';
+import {
+  Constants,
+  StepTypes,
+  StepEvents,
+  ContentTypes,
+  tMessageSchema,
+} from 'librechat-data-provider';
 import type { Agents, TMessage, TSubmission } from 'librechat-data-provider';
 import {
   getStepEventId,
@@ -80,6 +86,70 @@ describe('buildMinimalResumeSubmission', () => {
 });
 
 describe('buildSubmissionFromResumeState', () => {
+  it.each([undefined, 'in_progress', 'completed', 'failed', 'cancelled'] as const)(
+    'restores a metadata-only summary from a %s run step',
+    (status) => {
+      const snapshot = resumeState({
+        aggregatedContent: [{ type: ContentTypes.SUMMARY, model: 'summary-model' }],
+        runSteps: [
+          {
+            id: 'summary-step',
+            runId: 'r-1',
+            index: 0,
+            stepIndex: 0,
+            type: StepTypes.MESSAGE_CREATION,
+            stepDetails: {
+              type: StepTypes.MESSAGE_CREATION,
+              message_creation: { message_id: 'summary-step' },
+            },
+            summary: { type: ContentTypes.SUMMARY, model: 'summary-model' },
+            status,
+          },
+        ],
+      });
+      const original = structuredClone(snapshot);
+      const submission = buildSubmissionFromResumeState(snapshot, 'c-1', [user], 'c-1');
+      const pending = status == null || status === 'in_progress';
+      expect(submission.initialResponse.content?.[0]).toEqual({
+        ...snapshot.aggregatedContent?.[0],
+        ...(pending && { summarizing: true }),
+      });
+      const synced = buildResumeEventSubmission(submission, user, snapshot);
+      expect(synced.initialResponse.content).toEqual(submission.initialResponse.content);
+      expect(snapshot).toEqual(original);
+    },
+  );
+
+  it('leaves settled summaries and other response steps untouched during sync', () => {
+    const content = [
+      {
+        type: ContentTypes.SUMMARY,
+        boundary: { messageId: 'u-1', contentIndex: 0 },
+        content: [{ type: ContentTypes.TEXT, text: 'Saved summary' }],
+      },
+      { type: ContentTypes.SUMMARY, failed: true },
+      { type: ContentTypes.SUMMARY, summarizing: false },
+      { type: ContentTypes.SUMMARY },
+    ];
+    const snapshot = resumeState({
+      aggregatedContent: content,
+      runSteps: content.map((_, index) => ({
+        id: `summary-${index}`,
+        runId: index === 3 ? 'other-response' : 'r-1',
+        index,
+        stepIndex: index,
+        type: StepTypes.MESSAGE_CREATION,
+        stepDetails: {
+          type: StepTypes.MESSAGE_CREATION,
+          message_creation: { message_id: `summary-${index}` },
+        },
+        summary: { type: ContentTypes.SUMMARY },
+      })),
+    });
+    const submission = buildSubmissionFromResumeState(snapshot, 'c-1', [user], 'c-1');
+    expect(submission.initialResponse.content).toBe(content);
+  });
+
   it('strips the persisted pair a fresh resume re-supplies', () => {
     const submission = buildSubmissionFromResumeState(
       resumeState(),

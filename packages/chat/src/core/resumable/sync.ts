@@ -99,7 +99,8 @@ export function handleSync(ctx: StreamContext, data: ChatSyncFrame): void {
   if (data.resumeState?.aggregatedContent && sub.userMessage?.messageId) {
     const messages = host.messages.get() ?? [];
     const userMsgId = sub.userMessage.messageId;
-    const hasResumedContent = data.resumeState.aggregatedContent.length > 0;
+    const resumedContent = resumeSubmission.initialResponse.content;
+    const hasResumedContent = (resumedContent?.length ?? 0) > 0;
     const responseId = resumeSubmission.initialResponse.messageId;
     const messageIndexes = getResumeMessageIndexes(
       messages,
@@ -148,7 +149,7 @@ export function handleSync(ctx: StreamContext, data: ChatSyncFrame): void {
         ...messages[responseIdx],
         messageId: responseId,
         parentMessageId: userMsgId,
-        content: preserveLoadedContent ? oldContent : data.resumeState.aggregatedContent,
+        content: preserveLoadedContent ? oldContent : resumedContent,
         sender: messages[responseIdx]?.sender ?? resumeSubmission.initialResponse.sender,
         iconURL: preferDefinedString(
           messages[responseIdx]?.iconURL,
@@ -188,7 +189,7 @@ export function handleSync(ctx: StreamContext, data: ChatSyncFrame): void {
         ...resumeSubmission.initialResponse,
         messageId: responseId,
         parentMessageId: userMsgId,
-        content: data.resumeState.aggregatedContent,
+        content: resumedContent,
         isCreatedByUser: false,
       } as TMessage;
       host.messages.set(

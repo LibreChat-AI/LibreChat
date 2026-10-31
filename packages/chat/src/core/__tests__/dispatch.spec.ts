@@ -1,4 +1,4 @@
-import { StepEvents } from 'librechat-data-provider';
+import { StepEvents, StepTypes, ContentTypes } from 'librechat-data-provider';
 import type {
   ChatEvent,
   TMessage,
@@ -145,6 +145,45 @@ describe('handleFrame', () => {
 });
 
 describe('handleSync', () => {
+  it('keeps the summary placeholder pending when sync replaces the replayed run step', async () => {
+    const { host, emit } = attach({ isResume: true });
+    host.messages.set([userMessage, submission.initialResponse as TMessage]);
+    await emit({
+      type: 'sync',
+      data: {
+        sync: true,
+        resumeState: {
+          runSteps: [
+            {
+              id: 'summary-step',
+              runId: 'r-1',
+              index: 0,
+              stepIndex: 0,
+              type: StepTypes.MESSAGE_CREATION,
+              stepDetails: {
+                type: StepTypes.MESSAGE_CREATION,
+                message_creation: { message_id: 'summary-step' },
+              },
+              summary: { type: ContentTypes.SUMMARY, model: 'summary-model' },
+              status: 'in_progress',
+            },
+          ],
+          aggregatedContent: [{ type: ContentTypes.SUMMARY, model: 'summary-model' }],
+          userMessage: { messageId: 'u-1', parentMessageId: null, text: 'Hello' },
+          responseMessageId: 'r-1',
+          conversationId: 'c-1',
+        },
+      },
+    } as ChatEvent);
+    const response = host.messages.get()?.find((message) => message.messageId === 'r-1');
+    expect(response?.content?.[0]).toMatchObject({
+      type: ContentTypes.SUMMARY,
+      model: 'summary-model',
+      summarizing: true,
+    });
+    expect(host.events.syncStepMessage).toHaveBeenCalledWith(response);
+  });
+
   it('rebuilds the response from the resume snapshot', async () => {
     const { host, emit, run } = attach({ isResume: true });
     host.messages.set([userMessage, submission.initialResponse as TMessage]);

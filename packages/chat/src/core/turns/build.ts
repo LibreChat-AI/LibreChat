@@ -316,7 +316,9 @@ export function buildTurn({
     null;
   /** Set only for edited resubmissions; see `TSubmission.editPrefixLength`. */
   let editPrefixLength: number | undefined;
+  /** Compaction appends a new turn; a regeneration alias can equal its saved anchor. */
   const initialResponseId =
+    (compact ? `${v4()}_` : null) ??
     responseMessageId ??
     getPreliminaryRegenerateResponseMessageId(`${regenerateShaped ? messageId : intermediateId}`) ??
     `${v4()}_`;
