@@ -2,6 +2,7 @@
  * @jest-environment jsdom
  */
 import React from 'react';
+import { ReasoningEffort } from 'librechat-data-provider';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { SettingDefinition, TConversation } from 'librechat-data-provider';
 import Effort, { effortRank, leanFor, resolveEffortLabel } from '../Effort';
@@ -57,7 +58,12 @@ describe('Effort', () => {
   it('is a radiogroup whose arrow keys move the selection to the next stop', () => {
     const onChange = jest.fn();
     render(
-      <Effort setting={setting} conversation={conversation} value="low" onChange={onChange} />,
+      <Effort
+        setting={setting}
+        conversation={conversation}
+        value={{ key: 'reasoning_effort', value: ReasoningEffort.low }}
+        onChange={onChange}
+      />,
     );
 
     expect(
