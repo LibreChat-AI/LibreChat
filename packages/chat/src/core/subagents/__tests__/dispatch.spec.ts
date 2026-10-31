@@ -1,6 +1,6 @@
 import { ContentTypes } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
-import { findSubagentDispatch } from './dispatch';
+import { findSubagentDispatch } from '../dispatch';
 
 const output = JSON.stringify({
   background_task_id: 'task',
