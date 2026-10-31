@@ -146,6 +146,7 @@ export interface BackgroundResponseQueueDependencies {
   enqueue: AgentTriggerService['enqueue'];
   authorize: (record: StoredResponseRecord) => Promise<boolean>;
   workerCapability?: string;
+  compatibleWorkerCapabilities?: readonly string[];
   /** Execute the persisted Responses payload with its exact stable identity.
    * Admission MUST be idempotent: a repeated delivery attaches rather than starting a second run.
    * The runtime also owns cancellation-before-start and already terminal reconciliation. */
@@ -215,6 +216,7 @@ export function createBackgroundResponseQueue(
         BACKGROUND_RESPONSE_SOURCE,
         {
           workerCapability: deps.workerCapability ?? AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2,
+          compatibleWorkerCapabilities: deps.compatibleWorkerCapabilities,
           dispatch,
         },
       ],

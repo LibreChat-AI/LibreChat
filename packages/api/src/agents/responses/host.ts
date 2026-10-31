@@ -1,5 +1,6 @@
 import {
   AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1,
+  AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2,
   createChatExpirationDate,
   createFallbackRetentionDate,
 } from '@librechat/data-schemas';
@@ -147,6 +148,9 @@ export function createBackgroundResponsesHost(
     enqueue: deps.enqueue,
     authorize: (record) => authorize(record, record.agentId, record.sourceKeyId),
     execute: transport,
+    compatibleWorkerCapabilities: deps.interactive
+      ? [AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2]
+      : undefined,
     workerCapability: deps.interactive
       ? AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1
       : undefined,
