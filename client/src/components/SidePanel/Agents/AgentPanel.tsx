@@ -45,8 +45,6 @@ import { useSelectAgent, useLocalize, useAuthContext } from '~/hooks';
 import { useAgentPanelContext } from '~/Providers/AgentPanelContext';
 import { resolveCapabilityTools } from './Tools/items/capabilities';
 import ResetApprovals from '~/components/Agents/ResetApprovals';
-import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
-import useSidebarState from '~/hooks/Nav/useSidebarState';
 import AgentPanelSkeleton from './AgentPanelSkeleton';
 import AdvancedPanel from './Advanced/AdvancedPanel';
 import { Panel, isEphemeralAgent } from '~/common';
@@ -470,6 +468,7 @@ export default function AgentPanel() {
   const { showToast } = useToastContext();
   const {
     activePanel,
+    revealChat,
     agentsConfig,
     startupConfig,
     setActivePanel,
@@ -484,8 +483,6 @@ export default function AgentPanel() {
     ) ?? 'user';
 
   const { onSelect: onSelectAgent } = useSelectAgent();
-  const { isSmallScreen } = useSidebarState();
-  const { setSidebarOpen } = useSidebarToggle();
 
   const modelsQuery = useGetModelsQuery({ refetchOnMount: 'always' });
   const basicAgentQuery = useGetAgentByIdQuery(current_agent_id);
@@ -964,18 +961,13 @@ export default function AgentPanel() {
     ],
   );
 
-  /** Selecting an agent starts a chat with it, so on the narrow layout the drawer the builder
-   *  sits in closes first, as picking a conversation does; the new chat rides the slide. */
+  /** Selecting an agent starts a chat with it, so the host first reveals the chat (on the
+   *  narrow layout, by closing the drawer this builder sits in). */
   const handleSelectAgent = useCallback(() => {
-    if (!agent_id) {
-      return;
+    if (agent_id) {
+      revealChat(() => onSelectAgent(agent_id));
     }
-    if (isSmallScreen) {
-      setSidebarOpen(false, () => onSelectAgent(agent_id));
-      return;
-    }
-    onSelectAgent(agent_id);
-  }, [agent_id, isSmallScreen, onSelectAgent, setSidebarOpen]);
+  }, [agent_id, onSelectAgent, revealChat]);
 
   const canEditAgent = useMemo(() => {
     if (!agentQuery.data?.id) {

@@ -33,6 +33,7 @@ let mockAgentPanelContext = {
   endpointsConfig: {},
   setCurrentAgentId: jest.fn(),
   agent_id: 'agent-123' as string | undefined,
+  revealChat: undefined as ((start: () => void) => void) | undefined,
 };
 
 // Mock notification severity enum before other imports
@@ -117,18 +118,7 @@ jest.mock('~/utils', () => ({
 }));
 
 const mockSelectAgent = jest.fn();
-const mockSetSidebarOpen = jest.fn();
-let mockIsSmallScreen = false;
-
-jest.mock('~/hooks/Nav/useSidebarState', () => ({
-  __esModule: true,
-  default: () => ({ isSmallScreen: mockIsSmallScreen, expanded: true, setExpanded: jest.fn() }),
-}));
-
-jest.mock('~/hooks/Nav/useSidebarToggle', () => ({
-  __esModule: true,
-  default: () => ({ setSidebarOpen: mockSetSidebarOpen, toggleSidebar: jest.fn() }),
-}));
+const mockRevealChat = jest.fn();
 
 jest.mock('~/hooks', () => ({
   useSelectAgent: () => ({ onSelect: mockSelectAgent }),
@@ -354,6 +344,7 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
       endpointsConfig: { openai: {} },
       setCurrentAgentId: jest.fn(),
       agent_id: 'agent-123',
+      revealChat: jest.fn(),
     };
     localStorage.clear();
   });
@@ -1355,34 +1346,21 @@ describe('AgentPanel - Select Agent', () => {
       endpointsConfig: { openai: {} },
       setCurrentAgentId: jest.fn(),
       agent_id: 'agent-123',
+      revealChat: mockRevealChat,
     };
     const { mockUseGetAgentByIdQuery } = setupMocks();
     mockAgentQuery(mockUseGetAgentByIdQuery, {});
   });
 
-  const clickSelect = () => {
+  it('reveals the chat through the host before starting it with the agent', () => {
     render(<AgentPanel />, { wrapper: createWrapper() });
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_select_agent' }));
-  };
 
-  it('closes the mobile drawer before starting the chat with the agent', () => {
-    mockIsSmallScreen = true;
-    clickSelect();
-
-    expect(mockSetSidebarOpen).toHaveBeenCalledTimes(1);
-    expect(mockSetSidebarOpen).toHaveBeenCalledWith(false, expect.any(Function));
+    expect(mockRevealChat).toHaveBeenCalledTimes(1);
     expect(mockSelectAgent).not.toHaveBeenCalled();
 
-    const afterSlide = mockSetSidebarOpen.mock.calls[0][1] as () => void;
-    afterSlide();
-    expect(mockSelectAgent).toHaveBeenCalledWith('agent-123');
-  });
-
-  it('leaves the desktop sidebar as it is and starts the chat at once', () => {
-    mockIsSmallScreen = false;
-    clickSelect();
-
-    expect(mockSetSidebarOpen).not.toHaveBeenCalled();
+    const start = mockRevealChat.mock.calls[0][0] as () => void;
+    start();
     expect(mockSelectAgent).toHaveBeenCalledWith('agent-123');
   });
 });
