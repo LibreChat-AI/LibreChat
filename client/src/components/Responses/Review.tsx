@@ -6,8 +6,6 @@ import type { ResponseReviewDecision, ResponseReviewView } from 'librechat-data-
 import type { ResumeSubmitTransport } from '~/components/Chat/Messages/Content/ApprovalContext';
 import ApprovalProvider, {
   ResumeSubmitContext,
-  useApprovalContext,
-  useAskSubmitStatus,
 } from '~/components/Chat/Messages/Content/ApprovalContext';
 import AskUserQuestion from '~/components/Chat/Messages/Content/AskUserQuestion';
 import ToolApproval from '~/components/Chat/Messages/Content/ToolApproval';
@@ -42,8 +40,6 @@ export default function Review(props: ReviewProps) {
 function Decision({ review, userId, tenantId, refresh }: ReviewProps) {
   const localize = useLocalize();
   const mutation = useResponseReviewDecision(review.responseId, userId, tenantId);
-  const { getDecisions, isReady, setStatus } = useApprovalContext();
-  const { setAskStatus } = useAskSubmitStatus();
   const [attempt, setAttempt] = useState<ResponseReviewDecision>();
   const [failed, setFailed] = useState(false);
   const [correctable, setCorrectable] = useState(false);
@@ -78,7 +74,7 @@ function Decision({ review, userId, tenantId, refresh }: ReviewProps) {
   const available = enabled && actionAvailable;
   const saved = review.pendingDecision?.decision ?? attempt;
   const submit = useCallback(
-    async (decision: ResponseReviewDecision, onSuccess?: () => void) => {
+    async (decision: ResponseReviewDecision) => {
       const { review: latest, enabled: interactive } = current.current;
       const pending = latest.pendingAction;
       if (
@@ -91,23 +87,18 @@ function Decision({ review, userId, tenantId, refresh }: ReviewProps) {
         pending.actionId !== decision.actionId ||
         (pending.expiresAt != null && pending.expiresAt <= Date.now())
       )
-        return;
+        throw new Error('Response review is unavailable');
       inFlight.current = true;
       setFailed(false);
       setCorrectable(false);
       setSubmitted(false);
       setAttempt(decision);
-      setStatus(decision.actionId, 'submitting');
-      setAskStatus(decision.actionId, 'submitting');
       try {
         await mutation.mutateAsync(decision);
-        if (!mounted.current) return;
+        if (!mounted.current) throw new Error('Response review is unavailable');
         setSubmitted(true);
-        setStatus(decision.actionId, 'submitted');
-        setAskStatus(decision.actionId, 'submitted');
-        onSuccess?.();
       } catch (error) {
-        if (!mounted.current) return;
+        if (!mounted.current) throw error;
         setFailed(true);
         // The request may already have reserved a durable decision. Keep the exact
         // attempt immutable until the owner's refreshed view confirms its state.
@@ -128,29 +119,25 @@ function Decision({ review, userId, tenantId, refresh }: ReviewProps) {
         ) {
           setAttempt(undefined);
           setCorrectable(true);
-          setStatus(decision.actionId, 'idle');
-          setAskStatus(decision.actionId, 'idle');
         }
+        throw error;
       } finally {
         inFlight.current = false;
       }
     },
-    [mutation, refresh, setAskStatus, setStatus],
+    [mutation, refresh],
   );
   const transport: ResumeSubmitTransport = {
-    submitAskAnswer: (actionId, resolution, opts) => {
-      if (saved) return;
-      void submit(
-        {
-          actionId,
-          ...(typeof resolution === 'string' ? { answer: resolution } : { answers: resolution }),
-        },
-        opts?.onSuccess,
-      );
+    submitAskAnswer: (actionId, resolution) => {
+      if (saved) throw new Error('Response review is unavailable');
+      return submit({
+        actionId,
+        ...(typeof resolution === 'string' ? { answer: resolution } : { answers: resolution }),
+      });
     },
-    submitToolApproval: (actionId) => {
-      if (saved || !isReady(actionId)) return;
-      void submit({ actionId, decisions: getDecisions(actionId) });
+    submitToolApproval: (actionId, decisions) => {
+      if (saved) throw new Error('Response review is unavailable');
+      return submit({ actionId, decisions });
     },
   };
 
@@ -184,7 +171,7 @@ function Decision({ review, userId, tenantId, refresh }: ReviewProps) {
           {!submitted && (
             <Button
               disabled={!available || mutation.isLoading || saved.actionId !== action?.actionId}
-              onClick={() => void submit(saved)}
+              onClick={() => void submit(saved).catch(() => {})}
             >
               {localize(mutation.isLoading ? 'com_ui_submitting' : 'com_ui_retry')}
             </Button>
