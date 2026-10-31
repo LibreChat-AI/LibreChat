@@ -4,6 +4,7 @@ import { getTenantId, tenantStorage } from '@librechat/data-schemas';
 import type { IUser, ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
 import type { Request, RequestHandler } from 'express';
 import type { ResumedAgentExecutionIdentity } from '../remote/lifecycle';
+import type { TurnConversationRequest } from '~/conversations/save';
 import type { ResponseResumeAdmissionResult } from './types';
 import type { ContextRequest } from '~/middleware/tenant';
 import type { ServerRequest } from '~/types/http';
@@ -240,12 +241,19 @@ export function createBackgroundResponseWorkerAuth(
             checkpointNamespace: result.checkpointNamespace,
           };
         }
-        const request = req as ServerRequest & Pick<ContextRequest, 'tenantId'>;
+        const request = req as ServerRequest &
+          Pick<ContextRequest, 'tenantId'> &
+          TurnConversationRequest;
         // findUser supplies a lean auth DTO; do not mutate its cached tenant representation.
         request.user = Object.assign({}, user, { id: record.userId, tenantId: claims.tenantId });
         request.tenantId = claims.tenantId;
         // Caller body/headers cannot replace the persisted, already validated request.
         request.body = JSON.parse(record.requestJSON);
+        if (record.expiredAt)
+          request._agentEventBindingRetention = {
+            expiredAt: record.expiredAt,
+            isTemporary: record.isTemporary,
+          };
         admitted.set(req, {
           record,
           storage: deps.storage,
