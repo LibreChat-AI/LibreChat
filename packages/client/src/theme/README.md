@@ -316,6 +316,7 @@ function MyComponent() {
 - `bg-surface-dialog` - Dialog/modal background
 - `bg-surface-overlay` - Dialog/modal scrim, adapted per theme
 - `bg-surface-media-overlay` - Scrim, chip or progress drawn over the user's own media (lightbox, image preview, upload); `text-text-on-media` is its ink. Black and white in every bundled theme, since they frame the image rather than the page
+- `bg-surface-media-chip` - A source badge pinned over the user's media: the page tone, translucent (white at 75% in light, black at 65% in dark by default; the opacity is the `--surface-media-chip-alpha` property)
 - `bg-surface-chat` - Chat interface background
 - `bg-surface-code` - Code block chrome: toolbar, output and result switcher
 - `bg-surface-code-body` - Code block pane behind the highlighted code

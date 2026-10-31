@@ -56,6 +56,7 @@ export const defaultTheme: IThemeRGB = {
   'rgb-surface-overlay': '89 89 89', // #595959 (gray-500)
   'rgb-surface-media-overlay': '0 0 0', // #000 (black, over the user's media in both modes)
   'rgb-text-on-media': '255 255 255', // #fff (white)
+  'rgb-surface-media-chip': '255 255 255', // #fff (white), carried at 0.75 alpha
   'rgb-surface-submit': '4 120 87', // #047857 (green-700)
   'rgb-surface-submit-hover': '6 95 70', // #065f46 (green-800)
   'rgb-surface-destructive': '185 28 28', // #b91c1c (red-700)

@@ -392,6 +392,8 @@ const colorSources: Record<ThemeMode, Partial<Record<keyof IThemeRGB, string>>> 
 /** Values the theme sets on purpose without a Click UI source, and why. */
 const MEDIA_OVERLAY_REASON =
   'Click UI has no media scrim; the image frame stays black in both modes';
+const MEDIA_CHIP_REASON =
+  'Click UI has no source badge over media; the theme keeps the stock white and black chip';
 const STYLESHEET_ROLE_REASON =
   'Click UI has no scrollbar, secondary button fill or toast edge; the theme keeps the stock role';
 const STROKE_INK_REASON =
@@ -399,6 +401,7 @@ const STROKE_INK_REASON =
 
 const STYLESHEET_ROLES: Partial<Record<keyof IThemeRGB, string>> = {
   'rgb-surface-media-overlay': MEDIA_OVERLAY_REASON,
+  'rgb-surface-media-chip': MEDIA_CHIP_REASON,
   'rgb-scrollbar-thumb': STYLESHEET_ROLE_REASON,
   'rgb-button-neutral-hover': STYLESHEET_ROLE_REASON,
   'rgb-toast-edge': STYLESHEET_ROLE_REASON,

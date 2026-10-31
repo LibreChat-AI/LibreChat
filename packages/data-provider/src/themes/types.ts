@@ -68,6 +68,9 @@ export interface IThemeRGB {
    *  than the page, so every bundled theme keeps them black and white in both modes. */
   'rgb-surface-media-overlay'?: string;
   'rgb-text-on-media'?: string;
+  /** A source badge pinned over the user's media: the page's own tone, translucent, so the
+   *  provider mark reads on any image. Its opacity stays in CSS as `--surface-media-chip-alpha`. */
+  'rgb-surface-media-chip'?: string;
   'rgb-surface-submit'?: string;
   'rgb-surface-submit-hover'?: string;
   'rgb-surface-destructive'?: string;
@@ -326,6 +329,7 @@ export interface IThemeVariables {
   '--surface-overlay': string;
   '--surface-media-overlay': string;
   '--text-on-media': string;
+  '--surface-media-chip': string;
   '--surface-submit': string;
   '--surface-submit-hover': string;
   '--surface-destructive': string;
@@ -507,6 +511,7 @@ export interface IThemeColors {
   'surface-overlay'?: string;
   'surface-media-overlay'?: string;
   'text-on-media'?: string;
+  'surface-media-chip'?: string;
   'surface-submit'?: string;
   'surface-submit-hover'?: string;
   'surface-destructive'?: string;
