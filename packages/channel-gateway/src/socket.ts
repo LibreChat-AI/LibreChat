@@ -25,7 +25,7 @@ const event = z.object({
 
 /** The SDK hides hello's connection_info; validate it before permitting its event dispatch. */
 export class BoundSocket extends SocketModeClient {
-  private validated = false;
+  private phase: 'handshaking' | 'verified' | 'inactive' = 'handshaking';
   constructor(
     private readonly appId: string,
     private readonly state: (connected: boolean) => void,
@@ -61,9 +61,9 @@ export class BoundSocket extends SocketModeClient {
           void this.disconnect().catch(() => {});
         });
     });
-    for (const phase of ['connecting', 'reconnecting', 'disconnected'])
+    for (const phase of ['connecting', 'reconnecting', 'disconnecting', 'disconnected', 'error'])
       this.on(phase, () => {
-        this.validated = false;
+        this.phase = phase === 'connecting' ? 'handshaking' : 'inactive';
         this.state(false);
       });
   }
@@ -97,17 +97,18 @@ export class BoundSocket extends SocketModeClient {
         .safeParse(value.connection_info);
       if (!connection.success) {
         this.state(false);
-        this.validated = false;
+        this.phase = 'inactive';
         await this.disconnect().catch(() => {});
         return;
       }
-      this.validated = true;
+      if (this.phase !== 'handshaking') return;
+      this.phase = 'verified';
       this.state(true);
     } else if (value.type === 'disconnect') {
-      this.validated = false;
+      this.phase = 'inactive';
       this.state(false);
     } else {
-      if (!this.validated || !value.envelope_id || !value.payload) return;
+      if (this.phase !== 'verified' || !value.envelope_id || !value.payload) return;
       if (value.type === 'events_api') {
         if (
           !z.object({ event: z.object({ type: z.string().min(1) }) }).safeParse(value.payload)
@@ -120,7 +121,7 @@ export class BoundSocket extends SocketModeClient {
       await super.onWebSocketMessage(data, binary);
     } catch {
       // The SDK invokes this async callback without awaiting it. Contain malformed frames here.
-      this.validated = false;
+      this.phase = 'inactive';
       this.state(false);
       this.emit('error', new Error('Socket message rejected'));
       await this.disconnect().catch(() => {});
