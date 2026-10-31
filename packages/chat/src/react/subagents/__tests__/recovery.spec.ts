@@ -4,7 +4,7 @@ import type {
   SubagentTaskContentSuffix,
   SubagentContentEvent,
 } from 'librechat-data-provider';
-import { reduceRecoveredContent, recoverTaskContent, recoveredToolPart } from './recovery';
+import { reduceRecoveredContent, recoverTaskContent, recoveredToolPart } from '../recovery';
 
 const snapshot = (
   overrides: Partial<SubagentTaskContentSnapshot> = {},

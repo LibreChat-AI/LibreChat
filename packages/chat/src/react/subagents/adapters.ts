@@ -1,5 +1,4 @@
 import { ContentTypes } from 'librechat-data-provider';
-import { REDACTED_REASONING_MARKER } from '@librechat/chat/react';
 import type {
   Agents,
   PartMetadata,
@@ -13,7 +12,8 @@ import type {
   TAttachment,
   FullToolCall,
 } from 'librechat-data-provider';
-import type { SubagentProgress } from '@librechat/chat/react';
+import type { SubagentProgress } from './state';
+import { REDACTED_REASONING_MARKER } from './state';
 
 export type ChildActivityItem =
   | Extract<SubagentActivityItem, { type: 'steer' }>
@@ -253,7 +253,7 @@ const mergePersistedAndLiveActivity = (
       continue;
     }
 
-    const previous = merged.at(-1);
+    const previous = merged[merged.length - 1];
     if (previous?.type !== item.type) {
       merged.push(item);
       continue;

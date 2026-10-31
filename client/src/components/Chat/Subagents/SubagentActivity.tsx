@@ -4,20 +4,19 @@ import { Alert, Button } from '@librechat/client';
 import { Maximize2, Minimize2 } from 'lucide-react';
 import { CSSTransition } from 'react-transition-group';
 import { MessageTimestamp } from '@librechat/chat/components';
-import { ToolContentQueryContext } from '@librechat/chat/react';
 import { ContentTypes, QueryKeys, dataService } from 'librechat-data-provider';
-import type { SearchResultData, TMessageContentParts } from 'librechat-data-provider';
-import type { SteerReceiptState } from '@librechat/chat/components';
-import type { ToolContentQuery } from '@librechat/chat/react';
-import type { TaskContentScope } from '~/data-provider/Subagents/content';
-import type { ChildActivity, ChildActivityItem } from './adapters';
-import type { TranslationKeys } from '~/hooks';
 import {
   isAbnormalTerminalStatus,
   isLiveSubagentStatus,
   subagentStatusIcon,
   subagentStatusLabelKey,
-} from './status';
+  ToolContentQueryContext,
+} from '@librechat/chat/react';
+import type { ChildActivity, ChildActivityItem, ToolContentQuery } from '@librechat/chat/react';
+import type { SearchResultData, TMessageContentParts } from 'librechat-data-provider';
+import type { SteerReceiptState } from '@librechat/chat/components';
+import type { TaskContentScope } from '~/data-provider/Subagents/content';
+import type { TranslationKeys } from '~/hooks';
 import { TaskContentScopeContext } from '~/data-provider/Subagents/content';
 import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
 import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
