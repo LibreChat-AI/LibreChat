@@ -33,7 +33,7 @@ router.use('/actions', configMiddleware, actions);
  * @route GET /agents/tools
  */
 router.use('/tools', configMiddleware, tools);
-router.use('/:agentId/channels', configMiddleware, channels);
+router.use('/:agentId/channels', channels);
 
 /**
  * Get all agent categories with counts

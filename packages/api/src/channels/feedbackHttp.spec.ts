@@ -12,8 +12,11 @@ import {
   SYSTEM_TENANT_ID,
 } from '@librechat/data-schemas';
 import type { AppConfig, ChannelRunRecord } from '@librechat/data-schemas';
+import type { IUser } from '@librechat/data-schemas';
 import type { ChannelFeedbackHostDependencies } from './feedbackHost';
+import { createChannelApplicationPolicy } from './applicationPolicy';
 import { getLangfuseDestinationId } from '~/langfuse/destinations';
+import { createChannelFeedbackRuntime } from './feedbackRuntime';
 import { createChannelFeedbackHandlers } from './feedbackHttp';
 import { createChannelFeedbackWorker } from './feedbackWorker';
 import { createChannelFeedbackHost } from './feedbackHost';
@@ -31,7 +34,8 @@ let feedback: ReturnType<typeof createChannelFeedbackHost>;
 let deps: ChannelFeedbackHostDependencies;
 let config: AppConfig;
 let central: boolean | null;
-let runtimeEnabled: boolean;
+let policyEnabled: boolean;
+let readPolicyConfig: (tenantId: string, principalId?: string) => Promise<AppConfig | undefined>;
 const scope = <T>(work: () => Promise<T>) => tenantStorage.run({ tenantId }, work);
 const event = {
   eventId: 'Ev1',
@@ -81,7 +85,7 @@ beforeEach(async () => {
       await mongoose.models[name].deleteMany({});
   });
   central = true;
-  runtimeEnabled = true;
+  policyEnabled = true;
   config = {
     interfaceConfig: { feedback: true },
     endpoints: { agents: {} },
@@ -156,13 +160,16 @@ beforeEach(async () => {
       feedback: { rating: 'thumbsDown' },
     });
   });
+  readPolicyConfig = async () => config;
   deps = {
     channels: db,
-    getConfig: async () => ({ enabled: runtimeEnabled }),
     storage: createChannelFeedbackStorage(mongoose),
-    getAppConfig: async () => config,
-    currentTracePolicy: async () =>
-      central === null ? null : { centralTraceExportEnabled: central },
+    getPolicy: async ({ tenantId: scopeTenant, userId }) => {
+      const appConfig = await readPolicyConfig(scopeTenant, userId);
+      return policyEnabled && appConfig && appConfig.interfaceConfig?.feedback !== false
+        ? { appConfig, centralTraceExportEnabled: central === true }
+        : null;
+    },
     sendScore: jest.fn().mockResolvedValue(undefined),
     maxConflictRetries: 8,
     exportTimeoutMs: 500,
@@ -595,7 +602,7 @@ it('carries the original deadline through delayed source configuration and rejec
   });
   let principalLookups = 0;
   deps.now = () => clock;
-  deps.getAppConfig = async (_tenant, principalId) => {
+  readPolicyConfig = async (_tenant, principalId) => {
     if (principalId && ++principalLookups === 2) {
       enter();
       await gate;
@@ -635,7 +642,7 @@ it('rechecks source authority after delayed configuration before dispatching to 
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
-  deps.getAppConfig = async (_tenant, principalId) => {
+  readPolicyConfig = async (_tenant, principalId) => {
     if (principalId) {
       enter();
       await gate;
@@ -654,7 +661,13 @@ it('rechecks source authority after delayed configuration before dispatching to 
 });
 
 it('honors the source principal feedback override before durable event admission', async () => {
-  deps.getAppConfig = async (_tenant, principalId) =>
+  await scope(() =>
+    mongoose.models.AgentChannel.updateOne(
+      { channelId: 'channel-a' },
+      { $set: { createdBy: 'channel-owner' } },
+    ),
+  );
+  readPolicyConfig = async (_tenant, principalId) =>
     principalId === 'user-a'
       ? ({
           ...config,
@@ -670,7 +683,7 @@ it('honors the source principal feedback override before durable event admission
 it('rechecks a source principal override before export and retries only after re-enablement', async () => {
   await post().expect(200);
   let enabled = false;
-  deps.getAppConfig = async (_tenant, principalId) =>
+  readPolicyConfig = async (_tenant, principalId) =>
     principalId === 'user-a' && !enabled
       ? ({
           ...config,
@@ -683,4 +696,77 @@ it('rechecks a source principal override before export and retries only after re
   await scope(() => mongoose.models.ChannelFeedback.updateMany({}, { $set: { retryAtMs: 0 } }));
   await scope(() => feedback.flush(tenantId, 10));
   expect(deps.sendScore).toHaveBeenCalledTimes(1);
+});
+
+it('starts recovery and admits scoped feedback with a disabled deployment default', async () => {
+  const readConfig = jest.fn(
+    async (options) =>
+      ({
+        ...config,
+        endpoints: {
+          agents: { channels: { enabled: !options.baseOnly && options.tenantId === tenantId } },
+        },
+      }) as unknown as AppConfig,
+  );
+  const policy = createChannelApplicationPolicy({
+    readAppConfig: readConfig,
+    findUser: async ({ _id }) => ({ _id, tenantId, role: 'USER' }) as unknown as IUser,
+    isPrincipalActive: async () => true,
+  });
+  const guard = createChannelHandlers({
+    db,
+    serviceToken: () => serviceToken,
+    config: async (req, channel) => policy.requestConfig(req, channel),
+    getAgent: async () => ({ id: 'agent-a' }),
+    deleteApiKey: async () => false,
+    verifySlackToken: async () => null,
+    logError: () => {},
+  }).service;
+  const onError = jest.fn();
+  const observed: Array<string | undefined> = [];
+  const sendScore = jest.fn(async () => {
+    observed.push(getTenantId());
+  });
+  const runtime = createChannelFeedbackRuntime({
+    getWorkerSettings: policy.workerSettings,
+    guard,
+    hostDeps: { ...deps, getPolicy: policy.feedbackPolicy, sendScore },
+    workerDeps: { listChannels: db.listAgentChannelTenants, onError },
+  });
+  app = express();
+  app.use(express.json());
+  app.post('/service/:channelId/reactions', runtime.handlers.reaction);
+  try {
+    // A real durable event is recovered at startup, even when the default tenant is disabled.
+    await scope(() =>
+      feedback.record(
+        {
+          tenantId,
+          channelId: 'channel-a',
+          channelRevision: 'rev-1',
+          agentId: 'agent-a',
+          teamId: 'T1',
+        },
+        { ...event, action: 'added' },
+      ),
+    );
+    await runtime.initialize();
+    expect(onError).not.toHaveBeenCalled();
+    expect(sendScore).toHaveBeenCalledTimes(1);
+    expect(observed).toEqual([tenantId]);
+    expect(readConfig.mock.calls.some(([options]) => options.baseOnly)).toBe(true);
+    expect(
+      readConfig.mock.calls.some(
+        ([options]) => options.tenantId === tenantId && options.userId === 'user-a',
+      ),
+    ).toBe(true);
+    await post({ ...event, eventId: 'Ev2', eventTimestampUs: event.eventTimestampUs + 1 })
+      .set('x-tenant-id', 'forged-tenant')
+      .expect(404);
+    await post({ ...event, eventId: 'Ev2', eventTimestampUs: event.eventTimestampUs + 1 }).expect(
+      200,
+    );
+  } finally {
+    await runtime.stop();
+  }
 });

@@ -86,7 +86,6 @@ const runs = createChannelRunHandlers({
   artifacts,
   storage,
   guard: handlers.service,
-  publicBaseUrl: process.env.DOMAIN_CLIENT || 'http://localhost:3080',
   getLeaseMs: async () => (await getChannelConfig()).leaseMs,
   resolvePrincipal: authority.resolvePrincipal,
   advance: execution.advance,
@@ -100,7 +99,7 @@ const cleanup = createChannelCleanupRuntime({
   retireForAuthorityLoss: execution.retireForAuthorityLoss,
   deleteApiKey: db.deleteAgentApiKey,
   isCredentialCurrent: responseCredentials.isCurrent,
-  getConfig: getChannelConfig,
+  getWorkerSettings: policy.workerSettings,
   onError: (error) =>
     logger.error('[Channels] Cleanup recovery failed', getSafeErrorMetadata(error)),
 });
@@ -110,12 +109,11 @@ const identityHandlers = createChannelIdentityHandlers({
 });
 const feedback = createChannelFeedbackRuntime({
   guard: handlers.service,
-  getConfig: getChannelConfig,
+  getWorkerSettings: policy.workerSettings,
   hostDeps: {
     channels: db,
     storage: createChannelFeedbackStorage(mongoose),
-    getAppConfig: policy.appConfig,
-    currentTracePolicy: policy.tracePolicy,
+    getPolicy: policy.feedbackPolicy,
     sendScore: sendFeedbackScore,
   },
   workerDeps: {

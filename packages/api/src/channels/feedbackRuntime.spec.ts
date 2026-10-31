@@ -82,17 +82,21 @@ beforeEach(async () => {
     logError: () => {},
   });
   deps = {
-    getConfig: async () => channelConfigSchema.parse({ enabled }),
+    getWorkerSettings: async () => channelConfigSchema.parse({ enabled }),
     guard: guarded.service,
     hostDeps: {
       channels: db,
       storage: createChannelFeedbackStorage(mongoose),
-      getAppConfig: async () =>
-        ({
-          interfaceConfig: { feedback: true },
-          endpoints: { agents: {} },
-        }) as AppConfig,
-      currentTracePolicy: async () => null,
+      getPolicy: async () =>
+        enabled
+          ? {
+              appConfig: {
+                interfaceConfig: { feedback: true },
+                endpoints: { agents: {} },
+              } as AppConfig,
+              centralTraceExportEnabled: false,
+            }
+          : null,
       sendScore: jest.fn().mockResolvedValue(undefined),
     },
     workerDeps: { listChannels: jest.fn(async () => ({ channels: [] })), onError: jest.fn() },
@@ -118,11 +122,11 @@ test('does not start work by construction, initializes once, and stops permanent
   expect(deps.hostDeps.sendScore).not.toHaveBeenCalled();
 });
 
-test('disabled startup and live disable both fail closed without exporting', async () => {
+test('scoped disable fails closed while global lifecycle remains initialized', async () => {
   enabled = false;
   await runtime.initialize();
-  await post().expect(503);
-  expect(deps.workerDeps.listChannels).not.toHaveBeenCalled();
+  await post().expect(404);
+  expect(deps.workerDeps.listChannels).toHaveBeenCalledTimes(1);
   await runtime.stop();
   enabled = true;
   runtime = createChannelFeedbackRuntime(deps);
@@ -131,13 +135,13 @@ test('disabled startup and live disable both fail closed without exporting', asy
   app.post('/service/:channelId/reactions', runtime.handlers.reaction);
   await runtime.initialize();
   enabled = false;
-  await post().expect(503);
+  await post().expect(404);
   expect(deps.hostDeps.sendScore).not.toHaveBeenCalled();
 });
 
 test('stop racing configuration resolution prevents worker creation', async () => {
   let release!: (config: ReturnType<typeof channelConfigSchema.parse>) => void;
-  deps.getConfig = () =>
+  deps.getWorkerSettings = () =>
     new Promise((resolve) => {
       release = resolve;
     });
@@ -150,7 +154,7 @@ test('stop racing configuration resolution prevents worker creation', async () =
 });
 
 test('invalid timeout/lease relationship never starts a recovery worker', async () => {
-  deps.getConfig = async () =>
+  deps.getWorkerSettings = async () =>
     channelConfigSchema.parse({
       enabled: true,
       feedback: { exportTimeoutMs: 60000, exportLeaseMs: 60000 },
@@ -193,9 +197,9 @@ test('normalizes default tenants only at the feedback worker application boundar
 test.each(['read', 'schema', 'settings'] as const)(
   'retries failed %s initialization while keeping ingress unavailable until ready',
   async (failure) => {
-    const original = deps.getConfig;
+    const original = deps.getWorkerSettings;
     let fail = true;
-    deps.getConfig = async () => {
+    deps.getWorkerSettings = async () => {
       if (!fail) return original();
       if (failure === 'read') throw new Error('configuration unavailable');
       const config = channelConfigSchema.parse({ enabled: true });
@@ -250,11 +254,11 @@ test('disposes a partially started feedback worker before retrying and exposing 
 
 test('keeps feedback stopped when pending initialization fails during shutdown', async () => {
   let reject!: (error: Error) => void;
-  const gate = new Promise<Awaited<ReturnType<typeof deps.getConfig>>>((_resolve, fail) => {
+  const gate = new Promise<Awaited<ReturnType<typeof deps.getWorkerSettings>>>((_resolve, fail) => {
     reject = fail;
   });
   const read = jest.fn(() => gate);
-  deps.getConfig = read;
+  deps.getWorkerSettings = read;
   const initializing = runtime.initialize();
   const stopping = runtime.stop();
   reject(new Error('configuration unavailable'));
@@ -264,4 +268,11 @@ test('keeps feedback stopped when pending initialization fails during shutdown',
   await post().expect(503);
   expect(read).toHaveBeenCalledTimes(1);
   expect(deps.workerDeps.listChannels).not.toHaveBeenCalled();
+});
+
+test('initializes scoped ingress even when deployment worker defaults are disabled', async () => {
+  deps.getWorkerSettings = async () => channelConfigSchema.parse({ enabled: false });
+  await runtime.initialize();
+  expect(deps.workerDeps.listChannels).toHaveBeenCalledTimes(1);
+  await post().expect(200);
 });
