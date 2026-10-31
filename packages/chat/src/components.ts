@@ -20,6 +20,7 @@ export type {
 export { default as StopButton } from './components/composer/StopButton';
 export { default as MentionItem } from './components/composer/MentionItem';
 export { default as MentionPopover } from './components/composer/popover/Mention';
+export { default as PromptsPopover } from './components/composer/popover/Prompts';
 export { default as CommandPopover } from './components/composer/popover/Command';
 export { default as CollapseChat } from './components/composer/CollapseChat';
 export { default as ComposerChip } from './components/composer/bar/Chip';
@@ -34,6 +35,7 @@ export {
 export type { ComposerSubmitRoute } from './components/composer/submit';
 export type { MentionItemProps } from './components/composer/MentionItem';
 export type { MentionPopoverProps } from './components/composer/popover/Mention';
+export type { PromptsPopoverProps } from './components/composer/popover/Prompts';
 export type {
   CommandOption,
   CommandPopoverProps,
