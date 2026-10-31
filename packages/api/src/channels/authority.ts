@@ -30,7 +30,8 @@ export interface ChannelAuthorityDependencies {
   getRole: (role: string) => Promise<IRole | null>;
   isPrincipalActive: (userId: string) => Promise<boolean>;
   getAgentPermissions: (agentId: string, user: { id: string; role: string }) => Promise<number>;
-  publicBaseUrl: string;
+  /** Installed by the composition that supplies the link page. */
+  publicBaseUrl?: string;
   getLifetimes?: ChannelIdentityDependencies['getLifetimes'];
 }
 

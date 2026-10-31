@@ -1354,6 +1354,7 @@ describe('background Responses execution handoff', () => {
         createBackgroundResponsesHost: typeof import('./host').createBackgroundResponsesHost;
       }>('@librechat/api');
       const readHost = compiled.createBackgroundResponsesHost({
+        isQueueReady: () => false,
         storage,
         jobs: GenerationJobManager,
         findUser: async () => user,
