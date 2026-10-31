@@ -1464,17 +1464,46 @@ describe('dedupeDocumentNames', () => {
     expect(content[1].document.name).toBe('notes');
   });
 
-  it('shares the part budget across messages and nested steer media', () => {
-    const media: PayloadContentPart[] = new Array(CONTENT_TRAVERSAL_MAX_NODES - 3);
-    const messages: Message[] = [
-      { content: [{ type: 'steer', media }] },
-      { content: [bedrock('x')] },
-    ];
+  it('allows long histories while keeping document names unique across messages', () => {
+    const content: PayloadContentPart[] = [{ type: 'text' }, bedrock('notes')];
+    const messages: Message[] = Array.from({ length: CONTENT_TRAVERSAL_MAX_NODES + 1 }, () => ({
+      content,
+    }));
 
-    expect(() => dedupeDocumentNames(messages)).toThrow(ContentTraversalLimitError);
+    dedupeDocumentNames(messages, [{ provider: Providers.BEDROCK }]);
+
+    expect(names(contentOf(messages[0]))).toEqual(['notes']);
+    expect(names(contentOf(messages[messages.length - 1]))).toEqual([`notes (${messages.length})`]);
+    expect(new Set(messages.flatMap((message) => names(contentOf(message)))).size).toBe(
+      messages.length,
+    );
+    expect(names(content)).toEqual(['notes']);
   });
 
-  it('accepts a replay exactly at the node budget and bounds the message array', () => {
+  it('resets the part budget for each message, including nested steer media', () => {
+    const media: PayloadContentPart[] = new Array(CONTENT_TRAVERSAL_MAX_NODES - 2).fill({
+      type: 'text',
+    });
+    const messages: Message[] = [
+      { content: [{ type: 'steer', media }] },
+      { content: [bedrock('x'), bedrock('x')] },
+    ];
+
+    dedupeDocumentNames(messages);
+
+    expect(names(contentOf(messages[1]))).toEqual(['x', 'x (2)']);
+  });
+
+  it('shares a message budget across its top-level parts and nested steer media', () => {
+    const media: PayloadContentPart[] = new Array(CONTENT_TRAVERSAL_MAX_NODES - 2);
+    const content = [{ type: 'steer', media }, bedrock('x')];
+    const messages: Message[] = [{ content }];
+
+    expect(() => dedupeDocumentNames(messages)).toThrow(ContentTraversalLimitError);
+    expect(messages[0].content).toBe(content);
+  });
+
+  it('accepts a message exactly at the node budget and rejects sparse histories', () => {
     const messages: Message[] = [{ content: new Array(CONTENT_TRAVERSAL_MAX_NODES - 1) }];
 
     expect(() => dedupeDocumentNames(messages)).not.toThrow();
