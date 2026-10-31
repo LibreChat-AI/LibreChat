@@ -89,6 +89,8 @@ function setup(env: NodeJS.ProcessEnv = {}) {
     new SlackClient(config, undefined, slack),
     log,
   );
+  if (config.SLACK_TRANSPORT === 'socket_mode')
+    app.bindSocketApp(currentBundle.channel.slack.appId);
   return { app, backend, slack, log, config, bundle: currentBundle };
 }
 async function serve(app: GatewayApp, check: (base: string) => Promise<void>) {
@@ -369,6 +371,14 @@ describe('durable Slack ingress', () => {
 });
 
 describe('signed webhook boundary', () => {
+  test('a Socket process cannot replace its authenticated app binding in place', () => {
+    const { app } = setup({ SLACK_TRANSPORT: 'socket_mode', SLACK_APP_TOKEN: 'test-app' });
+    app.ready = true;
+    app.connected = true;
+    expect(() => app.bindSocketApp('A2')).toThrow('restart required');
+    expect(app.ready).toBe(false);
+    expect(app.connected).toBe(false);
+  });
   test.each([
     ['webhook', false, false, 503],
     ['webhook', true, false, 200],

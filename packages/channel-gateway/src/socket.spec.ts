@@ -198,6 +198,35 @@ describe('Socket Mode app binding', () => {
     controller.abort();
   });
 
+  test('marks the app unready when its current channel changes Socket application', async () => {
+    const { app, backend, log } = setup();
+    const controller = new AbortController();
+    const socket = await connectSocket(config, app, 'A1', log, controller.signal);
+    try {
+      socket.emit('ws_message', hello(), false);
+      await tick();
+      app.ready = true;
+      backend.mockImplementation(async () =>
+        json({
+          ...bundle,
+          channel: {
+            ...bundle.channel,
+            revision: 'r2',
+            slack: { ...bundle.channel.slack, appId: 'A2' },
+          },
+        }),
+      );
+      const delivery = event();
+      socket.emit('slack_event', delivery);
+      await tick();
+      expect(delivery.ack).not.toHaveBeenCalled();
+      expect(app.ready).toBe(false);
+      expect(backend).toHaveBeenCalledTimes(1);
+    } finally {
+      controller.abort();
+    }
+  });
+
   test('valid hello permits durable admission followed by acknowledgment', async () => {
     const { app, backend, log } = setup();
     const controller = new AbortController();
