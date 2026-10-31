@@ -60,12 +60,13 @@ describe('AgentPanelSwitch authorization observers', () => {
     expect(mockObserveToolAuthorization).toHaveBeenLastCalledWith(true);
   });
 
-  it('keeps observers disabled for a hydrated ephemeral agent', () => {
+  it('enables builder observers while chatting with an ephemeral agent', () => {
     renderWithConversation({
       conversationId: 'new',
       endpoint: EModelEndpoint.agents,
       agent_id: 'ephemeral',
     } as TConversation);
-    expect(mockObserveToolAuthorization).toHaveBeenLastCalledWith(false);
+    expect(mockObserveToolAuthorization).toHaveBeenLastCalledWith(true);
+    expect(mockSetCurrentAgentId).not.toHaveBeenCalled();
   });
 });

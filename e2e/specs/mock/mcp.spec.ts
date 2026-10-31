@@ -13,6 +13,7 @@ import {
   fetchJson,
   getAccessToken,
   mockReply,
+  selectModelSpec,
   sendMessageAndWaitForCompletion,
 } from './helpers';
 
@@ -81,6 +82,55 @@ async function expectSelectedMCPServerTools(form: Locator) {
 }
 
 test.describe('agent builder MCP tools', () => {
+  test('discovers builder tools while the current chat uses an ephemeral agent', async ({
+    page,
+  }) => {
+    await page.goto('/c/new');
+    await selectModelSpec(page, 'E2E Builder MCP');
+    // Start with a cold query cache and a model spec whose composer does not observe tools.
+    await page.reload();
+    await expect(page.getByRole('button', { name: 'Select a model' }).first()).toContainText(
+      'E2E Builder MCP',
+    );
+
+    const toolResponses: string[] = [];
+    page.on('response', (response) => {
+      const pathname = new URL(response.url()).pathname;
+      if (pathname === '/api/mcp/tools' || pathname === '/api/mcp/connection/status') {
+        toolResponses.push(pathname);
+      }
+    });
+    const form = await openAgentBuilder(page, { navigate: false });
+    await form.getByRole('button', { name: 'Add tools' }).click();
+    const dialog = page.getByRole('dialog', { name: 'Tool Library' });
+    await dialog.getByRole('textbox', { name: 'Search tools…' }).fill(MCP_SERVER_NAME);
+    const serverCard = dialog.getByRole('button', { name: new RegExp(MCP_SERVER_NAME) }).first();
+    await expect(serverCard).toBeVisible();
+
+    await serverCard.locator('..').getByRole('button', { name: 'Configure', exact: true }).click();
+    const details = page.getByRole('dialog', { name: MCP_SERVER_NAME, exact: true });
+    await expect(details).toBeVisible();
+    await expect.soft(details.getByText('Connected', { exact: true })).toBeVisible();
+    await test.info().attach('builder-status', {
+      body: await page.screenshot({
+        path: test.info().outputPath('builder-status.png'),
+        animations: 'disabled',
+      }),
+      contentType: 'image/png',
+    });
+
+    // This must be populated by the builder itself; prefetching the catalog through the
+    // test API or selecting a persistent chat agent would hide the regression.
+    await expect
+      .poll(() => toolResponses)
+      .toEqual(expect.arrayContaining(['/api/mcp/tools', '/api/mcp/connection/status']));
+    await details.getByRole('button', { name: /^Close( dialog)?$/ }).click();
+    await serverCard.click();
+    await expect(serverCard).toHaveAttribute('aria-pressed', 'true');
+    await dialog.getByRole('button', { name: /^Close( dialog)?$/ }).click();
+    await expect(form.getByText(MCP_SERVER_NAME, { exact: true })).toBeVisible();
+  });
+
   test('creates an agent with MCP server tools and persists the selection', async ({ page }) => {
     test.setTimeout(120000);
 
