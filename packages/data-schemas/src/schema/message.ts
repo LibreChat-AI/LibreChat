@@ -122,6 +122,7 @@ const messageSchema: Schema<IMessage> = new Schema(
       default: undefined,
       required: false,
     },
+    langfuseCentralTraceExportEnabled: { type: Boolean },
     langfuseSampled: {
       type: Boolean,
     },

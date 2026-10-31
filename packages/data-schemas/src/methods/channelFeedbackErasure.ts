@@ -63,12 +63,12 @@ export async function retainChannelFeedbackForOwner(
     'mapping.conversationId': conversationId,
     ...deadline,
   };
-  await createChannelFeedbackEventModel(mongoose).updateMany(
+  await createChannelFeedbackModel(mongoose).updateMany(
     filter,
     { $set: { expiredAt } },
     { session },
   );
-  await createChannelFeedbackModel(mongoose).updateMany(
+  await createChannelFeedbackEventModel(mongoose).updateMany(
     filter,
     { $set: { expiredAt } },
     { session },

@@ -221,6 +221,58 @@ it(
 );
 
 it(
+  'retains only current checkpoints plus a bounded obsolete receipt window across GC and replay',
+  scoped(async () => {
+    for (let index = 0; index < 20; index++)
+      await service.record(
+        actor,
+        event(`toggle-${index}`, index + 1, { action: index % 2 ? 'removed' : 'added' }),
+      );
+    const rows = await mongoose.models.ChannelFeedbackEvent.find({
+      tenantId: actor.tenantId,
+    }).lean();
+    expect(rows.filter((row) => row.receiptExpiresAt instanceof Date)).toHaveLength(19);
+    const first = await mongoose.models.ChannelFeedbackEvent.findOne({ eventId: 'toggle-0' }).lean<{
+      receiptExpiresAt: Date;
+    }>();
+    expect(first?.receiptExpiresAt.getTime()).toBeGreaterThan(Date.now() + 6 * 86400000);
+    await service.record(actor, event('toggle-0', 1));
+    expect(
+      (
+        await mongoose.models.ChannelFeedbackEvent.findOne({ eventId: 'toggle-0' }).lean<{
+          receiptExpiresAt: Date;
+        }>()
+      )?.receiptExpiresAt,
+    ).toEqual(first?.receiptExpiresAt);
+    const key = (await mongoose.models.ChannelFeedback.findOne({}).lean<{ key: string }>())!.key;
+    await service.flush(actor.tenantId, 10);
+    const before = (await deps.storage.getChannelFeedback(actor.tenantId, key))!;
+    await mongoose.connection.db!.admin().command({ setParameter: 1, ttlMonitorSleepSecs: 1 });
+    await mongoose.models.ChannelFeedbackEvent.collection.updateMany(
+      { eventId: { $ne: 'toggle-19' } },
+      { $set: { receiptExpiresAt: new Date(0) } },
+    );
+    for (let attempt = 0; attempt < 30; attempt++) {
+      if ((await mongoose.models.ChannelFeedbackEvent.countDocuments({})) === 1) break;
+      await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    expect(await mongoose.models.ChannelFeedbackEvent.countDocuments({})).toBe(1);
+    expect(
+      await mongoose.models.ChannelFeedbackEvent.findOne({ eventId: 'toggle-19' }).lean(),
+    ).not.toHaveProperty('receiptExpiresAt');
+    await service.record(actor, event('toggle-0', 1));
+    await service.flush(actor.tenantId, 10);
+    expect(await deps.storage.getChannelFeedback(actor.tenantId, key)).toMatchObject({
+      revision: before.revision,
+      votes: before.votes,
+      rating: before.rating,
+    });
+    expect(deps.sendScore).toHaveBeenCalledTimes(1);
+  }),
+  30000,
+);
+
+it(
   'persists one score timestamp through next-day updates, retry and process restart',
   scoped(async () => {
     await service.record(actor, event('first-day', 1));
