@@ -9,9 +9,14 @@ import Markdown from '../Markdown';
 const agentMessage = { endpoint: EModelEndpoint.agents, isCreatedByUser: false } as TMessage;
 
 setAppPartRenderers({
-  renderMarkdown: ({ content, variant, isLatestMessage }: MessagePartsMarkdownProps) =>
+  renderMarkdown: ({
+    content,
+    variant,
+    isLatestMessage,
+    codeExecution,
+  }: MessagePartsMarkdownProps) =>
     variant === 'lite' ? (
-      <MarkdownLite content={content} />
+      <MarkdownLite content={content} codeExecution={codeExecution} />
     ) : (
       <Markdown content={content} isLatestMessage={isLatestMessage} />
     ),

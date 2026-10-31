@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAtom } from 'jotai';
+import { SubagentActivityScrollSurface } from '@librechat/chat/components';
 import { OGDialog, OGDialogContent, OGDialogHeader, OGDialogTitle } from '@librechat/client';
 import {
   activeSubagentPanel,
@@ -13,7 +14,6 @@ import {
 } from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
-import { SubagentActivityScrollSurface } from './SubagentActivity';
 import SubagentConversation from './SubagentConversation';
 import { useAgentsMapContext } from '~/Providers';
 import { useLocalize } from '~/hooks';

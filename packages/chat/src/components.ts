@@ -138,3 +138,11 @@ export type {
 } from './components/messages/MessagesView';
 
 export { EventSubagentActivityGroup } from './components/subagents/activity';
+export { default as ScrollToBottom } from './components/messages/ScrollToBottom';
+export {
+  SubagentStatus,
+  SubagentActivity,
+  getActivityContent,
+  SubagentActivityContent,
+  SubagentActivityScrollSurface,
+} from './components/subagents/transcript';

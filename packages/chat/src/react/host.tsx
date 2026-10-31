@@ -49,6 +49,8 @@ export type MessagePartsMarkdownProps = {
   variant: 'full' | 'lite';
   /** Whether the text belongs to the tail of the active branch. */
   isLatestMessage: boolean;
+  /** `false` draws code blocks without run controls, for text that is shown and never run. */
+  codeExecution?: boolean;
 };
 
 /**

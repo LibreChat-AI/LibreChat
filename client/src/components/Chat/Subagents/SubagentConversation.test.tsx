@@ -13,6 +13,7 @@ import type { ChatContract } from '~/hooks/Chat/contract';
 import SubagentConversation from './SubagentConversation';
 import { ChatContext } from '~/Providers/ChatContext';
 import { ChatSurfaceHarness } from 'test/harness';
+import '~/Providers/SubagentsHostContext';
 
 const mockRecoveredQuery = jest.fn();
 jest.mock('~/data-provider/Subagents/content', () => ({
@@ -25,22 +26,19 @@ const mockRenderedContent = jest.fn();
 const mockPartScope = jest.fn();
 const mockParentAsk = jest.fn();
 
+/** The package's own provider, so the transcript, which reads the package host, sees the same
+ *  host as the conversation around it. Registered as the default, as the app entry does. */
 jest.mock('~/Providers/MessagePartsHostContext', () => {
-  const React = jest.requireActual<typeof import('react')>('react');
-  const Context = React.createContext({
+  const chat = jest.requireActual<typeof import('@librechat/chat/react')>('@librechat/chat/react');
+  chat.setDefaultMessagePartsHost({
     useShowThinking: () => false,
     useAutoExpandTools: () => false,
     useMessagesAsk: () => mockParentAsk,
-  });
+    renderMarkdown: ({ content }: { content: string }) => content,
+  } as unknown as Parameters<typeof chat.setDefaultMessagePartsHost>[0]);
   return {
-    MessagePartsHostProvider: ({
-      host,
-      children,
-    }: {
-      host: React.ContextType<typeof Context>;
-      children: React.ReactNode;
-    }) => <Context.Provider value={host}>{children}</Context.Provider>,
-    useMessagePartsHost: () => React.useContext(Context),
+    MessagePartsHostProvider: chat.MessagePartsHostProvider,
+    useMessagePartsHost: chat.useMessagePartsHost,
   };
 });
 
@@ -53,6 +51,11 @@ jest.mock('~/components/Chat/Messages/MinimalHoverButtons', () => ({
 }));
 
 jest.mock('~/hooks', () => ({
+  useLocalize: () => (key: string) => key,
+}));
+
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string) => key,
 }));
 
@@ -92,12 +95,6 @@ jest.mock('~/components/Chat/Messages/Content/ContentParts', () => ({
 jest.mock('~/components/Chat/Messages/Content/Container', () => ({
   __esModule: true,
   default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-}));
-
-jest.mock('~/components/Chat/Messages/Content/Parts', () => ({
-  EmptyText: ({ underHeaderIcon }: { underHeaderIcon?: boolean }) => (
-    <div data-testid="thinking-cursor" data-under-header-icon={String(underHeaderIcon === true)} />
-  ),
 }));
 
 jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
@@ -192,7 +189,8 @@ describe('SubagentConversation', () => {
     /** Both halves of the main chat author column: the shared glyph, and the
      *  streaming dot inset onto that glyph's axis the way main chat insets it. */
     expect(screen.getAllByTestId('child-face')).toHaveLength(2);
-    expect(screen.getByTestId('thinking-cursor')).toHaveAttribute('data-under-header-icon', 'true');
+    const dot = container.querySelector('.result-thinking');
+    expect(dot?.parentElement?.parentElement).toHaveClass('ps-1.5');
     expect(container.querySelectorAll('.message-render')).toHaveLength(4);
     expect(container.querySelectorAll('.user-turn')).toHaveLength(1);
     expect(container.querySelectorAll('.agent-turn')).toHaveLength(2);

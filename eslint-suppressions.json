@@ -436,11 +436,6 @@
       "count": 2
     }
   },
-  "client/src/components/Chat/Subagents/SubagentActivity.tsx": {
-    "shadcn/no-restyle": {
-      "count": 12
-    }
-  },
   "client/src/components/Chat/Subagents/SubagentConversation.tsx": {
     "shadcn/require-static-classes": {
       "count": 1
@@ -655,11 +650,6 @@
     },
     "shadcn/no-restyle": {
       "count": 4
-    }
-  },
-  "client/src/components/Messages/ScrollToBottom.tsx": {
-    "shadcn/no-restyle": {
-      "count": 1
     }
   },
   "client/src/components/Nav/AccountSettings.tsx": {
@@ -1398,6 +1388,11 @@
       "count": 1
     }
   },
+  "packages/chat/src/components/messages/ScrollToBottom.tsx": {
+    "shadcn/no-restyle": {
+      "count": 1
+    }
+  },
   "packages/chat/src/components/messages/SiblingSwitch.tsx": {
     "shadcn/no-restyle": {
       "count": 2
@@ -1417,6 +1412,11 @@
     },
     "shadcn/no-restyle": {
       "count": 4
+    }
+  },
+  "packages/chat/src/components/subagents/transcript.tsx": {
+    "shadcn/no-restyle": {
+      "count": 12
     }
   },
   "packages/client/src/components/Badge.tsx": {

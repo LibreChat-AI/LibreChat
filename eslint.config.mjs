@@ -352,6 +352,7 @@ export default [
             // that stylesheet, so its lint has no Tailwind entry that declares them.
             'markdown',
             'prose',
+            'prose-sm',
             'message-content',
             'submitting',
             'result-streaming',

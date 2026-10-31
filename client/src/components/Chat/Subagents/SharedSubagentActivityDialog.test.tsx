@@ -36,12 +36,12 @@ jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
 }));
 jest.mock('~/hooks/MCP', () => ({ useMCPServerNames: () => [] }));
 
-jest.mock('./SubagentActivity', () => ({
-  __esModule: true,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   SubagentActivityScrollSurface: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="shared-scroll-surface">{children}</div>
   ),
-  default: ({
+  SubagentActivity: ({
     activity,
   }: {
     activity: { title: string; items: Array<{ type: string; text?: string }> };
