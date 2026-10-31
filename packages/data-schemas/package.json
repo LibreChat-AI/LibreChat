@@ -41,7 +41,10 @@
     "test:ci": "jest --coverage --ci",
     "verify": "npm run test:ci",
     "b:clean": "bun run rimraf dist",
-    "b:build": "bun run b:clean && bun run tsdown"
+    "b:build": "bun run b:clean && bun run tsdown",
+    "test:contracts:favorites": "jest --config jest.favorite.config.mjs --coverage=false",
+    "test:mutations:favorites": "cd ../.. && stryker run packages/data-schemas/stryker.config.mjs",
+    "test:quality:favorites": "jest --config jest.favorite.config.mjs --coverage && node ../../scripts/crap.mts coverage/favorites/coverage-final.json src/methods/favorite.ts"
   },
   "repository": {
     "type": "git",
@@ -64,6 +67,8 @@
     "micromark-util-decode-string": "^2.0.0"
   },
   "devDependencies": {
+    "@stryker-mutator/core": "10.1.1",
+    "@stryker-mutator/jest-runner": "10.1.1",
     "@types/jest": "^29.5.2",
     "@types/node": "^24.12.4",
     "jest": "^30.2.0",
