@@ -300,6 +300,119 @@ it('retains the first run target after it completes instead of cancelling the ne
     );
   }));
 
+it('keeps one external Stop observation across changes to the linked execution principal', () =>
+  scope(async () => {
+    const first = event('first');
+    const second = { ...event('second'), principal: { ...first.principal, userId: 'new-account' } };
+    await storage.admit(first, 100);
+    const a = (await storage.claim(tenantId, 'channel', 'a', 101, 1000))!;
+    expect(await storage.observeThreadStop(first, 120, 105)).toMatchObject({
+      run: { runId: a.runId },
+    });
+    await storage.admit(second, 106);
+    const b = (await storage.claim(tenantId, 'channel', 'b', 107, 1000))!;
+    expect(await storage.observeThreadStop(second, 120, 110)).toBeNull();
+    expect(await storage.observeThreadStop(second, 119, 110)).toBeNull();
+    expect((await storage.read(tenantId, 'channel', b.runId))?.cancellationRequested).toBe(false);
+    expect(await storage.observeThreadStop(second, 121, 111)).toMatchObject({
+      run: { runId: b.runId },
+      before: 111,
+    });
+    expect(
+      await mongoose.models.ChannelLane.countDocuments({
+        tenantId,
+        stopObservation: { $exists: true },
+      }),
+    ).toBe(1);
+    expect(await storage.observeThreadStop(first, 120, 112)).toBeNull();
+  }));
+
+it('serializes duplicate Stop observations across principal lanes without rebinding either target', () =>
+  scope(async () => {
+    const first = event('first');
+    const second = { ...event('second'), principal: { ...first.principal, userId: 'new-account' } };
+    await storage.admit(first, 100);
+    await storage.claim(tenantId, 'channel', 'a', 101, 1000);
+    await storage.admit(second, 102);
+    await storage.claim(tenantId, 'channel', 'b', 103, 1000);
+    const replica = createChannelRunStorage(mongoose);
+    const observations = await Promise.all([
+      storage.observeThreadStop(first, 120, 105),
+      replica.observeThreadStop(second, 120, 106),
+    ]);
+    expect(observations.filter(Boolean)).toHaveLength(1);
+    expect(
+      await mongoose.models.ChannelLane.countDocuments({
+        tenantId,
+        stopObservation: { $exists: true },
+      }),
+    ).toBe(1);
+    const replay = await Promise.all([
+      storage.observeThreadStop(first, 120, 108),
+      replica.observeThreadStop(second, 120, 109),
+    ]);
+    expect(replay.filter(Boolean)).toHaveLength(1);
+    expect(replay.find(Boolean)?.run.runId).toBe(observations.find(Boolean)?.run.runId);
+    expect(replay.find(Boolean)?.before).toBe(observations.find(Boolean)?.before);
+  }));
+
+it('preserves an absent Stop target through a principal transition', () =>
+  scope(async () => {
+    const first = event();
+    expect(await storage.observeThreadStop(first, 120, 100)).toBeNull();
+    const second = { ...event('next'), principal: { ...first.principal, userId: 'new-account' } };
+    await storage.admit(second, 101);
+    const claimed = (await storage.claim(tenantId, 'channel', 'b', 102, 1000))!;
+    expect(await storage.observeThreadStop(second, 120, 110)).toBeNull();
+    expect((await storage.read(tenantId, 'channel', claimed.runId))?.cancellationRequested).toBe(
+      false,
+    );
+    expect(await storage.observeThreadStop(second, 121, 111)).toMatchObject({
+      run: { runId: claimed.runId },
+    });
+  }));
+
+it('does not couple Stop occurrences for distinct external actors', () =>
+  scope(async () => {
+    const first = event('first', 'one');
+    const second = event('second', 'two');
+    await storage.admit(first, 100);
+    const a = (await storage.claim(tenantId, 'channel', 'a', 101, 1000))!;
+    await storage.admit(second, 102);
+    const b = (await storage.claim(tenantId, 'channel', 'b', 103, 1000))!;
+    const observations = await Promise.all([
+      storage.observeThreadStop(first, 120, 105),
+      storage.observeThreadStop(second, 120, 106),
+    ]);
+    expect(observations.map((o) => o?.run.runId)).toEqual([a.runId, b.runId]);
+  }));
+
+it('owns legacy empty Stop lanes for erasure and cannot recreate them after account deletion', () =>
+  scope(async () => {
+    const user = await mongoose.models.User.create({
+      email: 'stop-erasure@example.com',
+      provider: 'local',
+      tenantId,
+    });
+    const input = { ...event(), principal: { ...event().principal, userId: String(user._id) } };
+    await storage.admit(input, 100);
+    // Retained legacy lane after run cleanup, before lane ownership was recorded.
+    await mongoose.models.ChannelRun.deleteMany({ tenantId });
+    await mongoose.models.ChannelLane.updateMany(
+      { userId: input.principal.userId },
+      { $unset: { userId: 1 } },
+    );
+    await storage.observeThreadStop(input, 120, 101);
+    await createUserMethods(mongoose).deleteUserById(input.principal.userId);
+    expect(await storage.observeThreadStop(input, 121, 110)).toBeNull();
+    expect(
+      await mongoose.models.ChannelLane.countDocuments({
+        tenantId,
+        userId: input.principal.userId,
+      }),
+    ).toBe(0);
+  }));
+
 it('atomically rejects a delayed cancellation after the observed run is reclaimed', () =>
   scope(async () => {
     await storage.admit(event(), 100);
