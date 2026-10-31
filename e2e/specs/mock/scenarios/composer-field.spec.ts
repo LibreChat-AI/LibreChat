@@ -39,16 +39,17 @@ test.describe('composer field', () => {
       return node.dataset.e2eMarker;
     });
     expect(marker).toBe('kept');
+    const height = () => input.evaluate((node) => node.getBoundingClientRect().height);
+    const expanded = await height();
 
     await page.getByRole('button', { name: 'Collapse Chat' }).click();
     await expect(page.getByRole('button', { name: 'Expand Chat' })).toBeVisible();
-    const collapsed = await input.evaluate((node) => node.getBoundingClientRect().height);
+    /* The max height eases over 200ms, so wait for the draft to settle at one line. */
+    await expect.poll(height).toBeLessThan(80);
 
     await input.click();
     await expect(page.getByRole('button', { name: 'Collapse Chat' })).toBeVisible();
-    await expect
-      .poll(() => input.evaluate((node) => node.getBoundingClientRect().height))
-      .toBeGreaterThan(collapsed);
+    await expect.poll(height).toBe(expanded);
     await expect(input).toHaveAttribute('data-e2e-marker', 'kept');
     await expect(input).toHaveValue(/line 8$/);
   });
