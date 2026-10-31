@@ -15,6 +15,7 @@ import type { MCPOAuthTokens } from '~/mcp/oauth';
 import { MCPTokenStorage, MCPOAuthHandler, ReauthenticationRequiredError } from '~/mcp/oauth';
 import { MockKeyv, createOAuthMCPServer } from './helpers/oauthTestServer';
 import { OAuthLifecycleRelay } from '~/mcp/oauth/pending';
+import { getMCPOAuthLeaseId } from '~/mcp/oauth/tokens';
 import { FlowStateManager } from '~/flow/manager';
 
 jest.mock('@librechat/data-schemas', () => ({
@@ -54,42 +55,85 @@ describe('MCP OAuth Race Condition Fixes', () => {
   });
 
   describe('Fix 1: Connection mutex coalesces concurrent attempts', () => {
-    it('does not overwrite a newer prompt while inspecting stored flow state', async () => {
+    it('replays only the canonical prompt after joining an in-flight publication', async () => {
+      const flowManager = new FlowStateManager<MCPOAuthTokens | null>(
+        new MockKeyv() as unknown as Keyv,
+        { ttl: 30000, ci: true },
+      );
+      const userId = 'relay-user';
+      const serverName = 'relay-server';
+      const flowId = MCPOAuthHandler.generateFlowId(userId, serverName);
+      const lease = await flowManager.acquireLease(getMCPOAuthLeaseId(userId, serverName));
+      if (!lease) throw new Error('Fixture lease unavailable');
       const ownerOAuthStart = jest.fn().mockResolvedValue(undefined);
       const waiterOAuthStart = jest.fn().mockResolvedValue(undefined);
-      let resolveFlow: ((flow: object) => void) | undefined;
-      const flowManager = {
-        getFlowState: jest.fn(
-          () =>
-            new Promise<object>((resolve) => {
-              resolveFlow = resolve;
-            }),
-        ),
-      };
       const relay = new OAuthLifecycleRelay({
         oauthStart: ownerOAuthStart,
         logPrefix: '[MCP][test]',
       });
-
-      await relay.start('https://auth.example.com/old');
       const addWaiter = relay.add({
         oauthStart: waiterOAuthStart,
-        flowManager: flowManager as never,
-        userId: 'user-1',
-        serverName: 'test-server',
+        flowManager,
+        userId,
+        serverName,
       });
-
-      expect(flowManager.getFlowState).toHaveBeenCalledTimes(1);
-      await relay.start('https://auth.example.com/new');
-      resolveFlow?.({
-        createdAt: Date.now(),
-        metadata: { authorizationUrl: 'https://auth.example.com/old' },
-        status: 'PENDING',
-      });
+      try {
+        await flowManager.initFlow(flowId, 'mcp_oauth', {
+          authorizationUrl: 'https://auth.example.com/new',
+        });
+        await relay.start('https://auth.example.com/new');
+      } finally {
+        await lease.release();
+      }
       await addWaiter;
-
       expect(waiterOAuthStart).toHaveBeenCalledTimes(1);
-      expect(waiterOAuthStart).toHaveBeenCalledWith('https://auth.example.com/new', undefined);
+      expect(waiterOAuthStart).toHaveBeenCalledWith(
+        'https://auth.example.com/new',
+        expect.objectContaining({ onPublished: expect.any(Function) }),
+      );
+    });
+
+    it('does not replay a cached URL after the canonical flow was removed', async () => {
+      const flowManager = new FlowStateManager<MCPOAuthTokens | null>(
+        new MockKeyv() as unknown as Keyv,
+        { ttl: 30000, ci: true },
+      );
+      const userId = 'erased-relay-user';
+      const serverName = 'erased-relay-server';
+      const flowId = MCPOAuthHandler.generateFlowId(userId, serverName);
+      await flowManager.initFlow(flowId, 'mcp_oauth', {
+        authorizationUrl: 'https://auth.example.com/removed',
+      });
+      const relay = new OAuthLifecycleRelay({
+        oauthStart: jest.fn().mockResolvedValue(undefined),
+        logPrefix: '[MCP][test]',
+      });
+      await relay.start('https://auth.example.com/removed');
+      const lease = await flowManager.acquireLease(getMCPOAuthLeaseId(userId, serverName), {
+        advanceGeneration: true,
+      });
+      if (!lease) throw new Error('Fixture lease unavailable');
+      try {
+        await flowManager.deleteFlow(flowId, 'mcp_oauth');
+      } finally {
+        await lease.release();
+      }
+      const late = jest.fn().mockResolvedValue(undefined);
+      await relay.add({ oauthStart: late, flowManager, userId, serverName });
+      expect(late).not.toHaveBeenCalled();
+    });
+
+    it('retries the same URL after publication fails instead of caching a failed acknowledgement', async () => {
+      const start = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('Publication unavailable'))
+        .mockResolvedValue(undefined);
+      const relay = new OAuthLifecycleRelay({ oauthStart: start, logPrefix: '[MCP][test]' });
+      await expect(relay.start('https://auth.example.com/retry')).rejects.toThrow(
+        'Publication unavailable',
+      );
+      await relay.start('https://auth.example.com/retry');
+      expect(start).toHaveBeenCalledTimes(2);
     });
 
     it('should return the same pending promise for concurrent getUserConnection calls', async () => {
@@ -466,7 +510,10 @@ describe('MCP OAuth Race Condition Fixes', () => {
         for (let i = 0; i < 20 && firstOAuthStart.mock.calls.length === 0; i++) {
           await new Promise((resolve) => setTimeout(resolve, 5));
         }
-        expect(firstOAuthStart).toHaveBeenCalledWith(authorizationUrl, undefined);
+        expect(firstOAuthStart).toHaveBeenCalledWith(
+          authorizationUrl,
+          expect.objectContaining({ onPublished: expect.any(Function) }),
+        );
 
         const joinedOAuthStart = jest.fn().mockResolvedValue(undefined);
         const joinedOAuthEnd = jest.fn().mockResolvedValue(undefined);

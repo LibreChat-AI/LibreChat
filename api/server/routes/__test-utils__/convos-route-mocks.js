@@ -1,5 +1,7 @@
 const archiveAllHandler = jest.fn();
 const generationJobManager = {
+  getJob: jest.fn().mockResolvedValue(null),
+  getResumeState: jest.fn().mockResolvedValue(null),
   getCleanupJob: jest.fn().mockResolvedValue(null),
   abortJob: jest.fn().mockResolvedValue({ success: true }),
   getCleanupBlockingJobIdsForUser: jest.fn().mockResolvedValue([]),
@@ -79,6 +81,9 @@ module.exports = {
   agents: () => ({ sleep: jest.fn() }),
 
   api: (overrides = {}) => ({
+    createGetConversationHandler: jest.requireActual(
+      '../../../../packages/api/src/conversations/load.ts',
+    ).createGetConversationHandler,
     withToolCallPreviews: (_req, result) => result,
     createGeneratedTitleHandler: jest.fn(() => jest.fn()),
     createRenameConversationHandler: jest.fn((deps) => {

@@ -64,6 +64,9 @@ export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): J
   if (metadata.agent_id) {
     patch.agent_id = metadata.agent_id;
   }
+  if (metadata.isNewConversation !== undefined) {
+    patch.isNewConversation = metadata.isNewConversation;
+  }
   if (metadata.isTemporary !== undefined) {
     patch.isTemporary = metadata.isTemporary;
   }

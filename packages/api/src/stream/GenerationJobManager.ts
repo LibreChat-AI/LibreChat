@@ -3148,6 +3148,7 @@ class GenerationJobManagerClass {
         agent_id: jobData.agent_id,
         // Surface whether the turn was temporary so a resume keeps it non-persisted.
         isTemporary: jobData.isTemporary,
+        isNewConversation: jobData.isNewConversation,
         retentionExpiresAt: jobData.retentionExpiresAt,
         agentEventDeliveryKey: jobData.agentEventDeliveryKey,
         agentEventInvocationKey: jobData.agentEventInvocationKey,
@@ -4042,10 +4043,14 @@ class GenerationJobManagerClass {
     if (job.agentEventDeliveryKey == null) {
       return;
     }
+    await this.persistRunStepEvidence(streamId, job.createdAt);
+  }
+
+  private async persistRunStepEvidence(streamId: string, createdAt: number): Promise<void> {
     const buffered = this.runStepBuffers?.get(streamId);
-    if (buffered?.createdAt === job.createdAt && this.jobStore.saveRunSteps != null) {
+    if (buffered?.createdAt === createdAt && this.jobStore.saveRunSteps != null) {
       await this.queueJobWrite(this.runStepWriteQueues, streamId, () =>
-        this.jobStore.saveRunSteps!(streamId, [...buffered.steps], job.createdAt),
+        this.jobStore.saveRunSteps!(streamId, [...buffered.steps], createdAt),
       );
     }
   }
@@ -7158,6 +7163,7 @@ class GenerationJobManagerClass {
         eventData as Record<string, unknown>,
         runtime.createdAt,
       );
+      if (options?.durable === true) await this.persistRunStepEvidence(streamId, runtime.createdAt);
     }
 
     /**
@@ -7989,7 +7995,7 @@ class GenerationJobManagerClass {
       void this.queueJobWrite(this.runStepWriteQueues, streamId, () =>
         this.jobStore.saveRunSteps!(streamId, snapshot, expectedCreatedAt),
       ).catch((err) => {
-        logger.error(`[GenerationJobManager] Failed to save run steps:`, err);
+        logger.error(`[GenerationJobManager] Failed to save run steps:`, getSafeErrorMetadata(err));
       });
     }
   }
@@ -9004,19 +9010,29 @@ class GenerationJobManagerClass {
     options?: {
       durableOnly?: boolean;
       validateEarlyBufferRecovery?: boolean;
+      /** Synchronous eligibility guard on both canonical reads; false means no snapshot. */
+      readIf?: (job: Readonly<SerializableJobData>) => boolean;
       onContentSnapshot?: (snapshot: Awaited<ReturnType<IJobStore['getContentParts']>>) => void;
     },
   ): Promise<t.ResumeState | null> {
     const recoveryStartedAt =
       options?.validateEarlyBufferRecovery === true ? Date.now() : undefined;
     let jobData = await this.jobStore.getJob(streamId);
-    if (!jobData || (expectedCreatedAt != null && jobData.createdAt !== expectedCreatedAt)) {
+    if (
+      !jobData ||
+      (expectedCreatedAt != null && jobData.createdAt !== expectedCreatedAt) ||
+      options?.readIf?.(jobData) === false
+    ) {
       return null;
     }
     if (jobData.earlyBufferOverflow?.persistencePending === true) {
       const initialCreatedAt = jobData.createdAt;
       jobData = await this.waitForFinalizedEarlyBufferOverflow(streamId, jobData);
-      if (!jobData || jobData.createdAt !== initialCreatedAt) {
+      if (
+        !jobData ||
+        jobData.createdAt !== initialCreatedAt ||
+        options?.readIf?.(jobData) === false
+      ) {
         return null;
       }
       if (
@@ -9168,7 +9184,11 @@ class GenerationJobManagerClass {
      * not turn that into a plausible-looking snapshot with predecessor
      * metadata; verify the same generation is still live after the snapshot. */
     const verifiedJob = await this.jobStore.getJob(streamId);
-    if (!verifiedJob || verifiedJob.createdAt !== jobData.createdAt) {
+    if (
+      !verifiedJob ||
+      verifiedJob.createdAt !== jobData.createdAt ||
+      options?.readIf?.(verifiedJob) === false
+    ) {
       return null;
     }
     /** Redis reconstruction has no completion event for ask_user_question.

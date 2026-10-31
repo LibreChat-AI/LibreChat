@@ -57,6 +57,8 @@ export interface GenerationJobMetadata {
   promptTokens?: number;
   /** Agent that initiated the run; a HITL resume verifies it rebuilds the same agent. */
   agent_id?: string;
+  /** Server-established first turn, permitting recovery before history is persisted. */
+  isNewConversation?: boolean;
   /** Whether the originating turn was a temporary chat; a HITL resume keeps it so. */
   isTemporary?: boolean;
   /** Original server-authenticated retention deadline, serialized across replicas. */

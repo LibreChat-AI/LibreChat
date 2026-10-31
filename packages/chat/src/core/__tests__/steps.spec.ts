@@ -108,6 +108,144 @@ const streamText = (message: TMessage, step: Agents.RunStep, chunks: string[], o
   );
 
 describe('steps', () => {
+  describe('OAuth auxiliary presentation', () => {
+    const prompt = (id: string) =>
+      toolStep(`step-${id}`, 0, [
+        {
+          id,
+          name: `oauth_mcp_${id}`,
+          args: '',
+          type: ToolCallTypes.TOOL_CALL,
+        },
+      ]);
+    const publish = (message: TMessage, step: Agents.RunStep, id: string) => {
+      const opened = applyToolCallsStep(message, step, 0).message;
+      return applyToolCallDelta(
+        opened,
+        step,
+        {
+          id: step.id,
+          delta: {
+            type: StepTypes.TOOL_CALLS,
+            tool_calls: [{ id, args: '' } as Agents.ToolCallChunk],
+            auth: `https://auth.example/${id}`,
+            expires_at: Date.now() + 60_000,
+          },
+        },
+        id,
+        0,
+      )!;
+    };
+
+    it('preserves existing text, reasoning and tool results when a synthetic index reuses zero', () => {
+      let message = streamText(createResponse(), messageStep('text', 0), ['Before']);
+      message = applyReasoningDelta(
+        message,
+        messageStep('reason', 1),
+        thinkDelta('reason', 'Think'),
+        0,
+      ).message;
+      const native = toolStep('native', 2, [
+        { id: 'native-call', name: 'search', args: {}, type: ToolCallTypes.TOOL_CALL },
+      ]);
+      message = applyToolCallsStep(message, native, 0).message;
+      message = applyToolCallCompleted(
+        message,
+        native,
+        toolEnd('native', { id: 'native-call', name: 'search', output: 'saved' }),
+        0,
+      );
+      const prefix = message.content;
+      const result = publish(message, prompt('oauth:a'), 'oauth:a');
+      expect(result.content?.slice(0, 3)).toEqual(prefix);
+      expect(toolCallAt(result, 3)).toMatchObject({
+        id: 'oauth:a',
+        auth: 'https://auth.example/oauth:a',
+      });
+      expect(message.content).toEqual(prefix);
+    });
+
+    it('retains parallel active prompts through native progress and retires only the completed identity', () => {
+      const first = prompt('oauth:a');
+      const second = prompt('oauth:b');
+      let message = publish(createResponse(), first, 'oauth:a');
+      message = publish(message, second, 'oauth:b');
+      message = streamText(message, messageStep('text', 0), ['Ready']);
+      expect(message.content?.[0]).toEqual({ type: ContentTypes.TEXT, text: 'Ready' });
+      expect(toolCallAt(message, 1)?.id).toBe('oauth:a');
+      expect(toolCallAt(message, 2)?.id).toBe('oauth:b');
+      message = applyToolCallCompleted(
+        message,
+        first,
+        toolEnd(first.id, { id: 'oauth:a', name: 'oauth_mcp_oauth:a', output: 'ended' }),
+        0,
+      );
+      expect(message.content).toHaveLength(2);
+      expect(toolCallAt(message, 1)?.id).toBe('oauth:b');
+      message = streamText(message, messageStep('next', 1), ['Next']);
+      expect(message.content?.[1]).toEqual({ type: ContentTypes.TEXT, text: 'Next' });
+      expect(toolCallAt(message, 2)?.id).toBe('oauth:b');
+      expect(
+        applyRunStepClosed(
+          message,
+          toolStep('missed-native', 2, []),
+          {
+            id: 'missed-native',
+            index: 2,
+            type: StepTypes.TOOL_CALLS,
+            status: 'completed',
+            created_at: 1,
+            closed_at: 2,
+          },
+          0,
+        ),
+      ).toBeUndefined();
+    });
+
+    it('does not close a legacy native tool through an OAuth synthetic index', () => {
+      const native = {
+        type: ContentTypes.TOOL_CALL,
+        tool_call: {
+          id: 'native',
+          name: 'search',
+          args: '{}',
+          output: 'saved',
+          type: ToolCallTypes.TOOL_CALL,
+        },
+      } as TMessageContentParts;
+      const step = prompt('oauth:a');
+      const message = publish(createResponse([native]), step, 'oauth:a');
+      expect(
+        applyRunStepClosed(
+          message,
+          step,
+          {
+            id: step.id,
+            index: 0,
+            type: StepTypes.TOOL_CALLS,
+            status: 'completed',
+            created_at: 1,
+            closed_at: 2,
+          },
+          0,
+        ),
+      ).toBeUndefined();
+      expect(message.content?.[0]).toEqual(native);
+    });
+
+    it('keeps native sparse indices when migrating an interleaved legacy prompt', () => {
+      const legacy = publish(createResponse(), prompt('oauth:a'), 'oauth:a');
+      const content = [...(legacy.content ?? [])];
+      content[2] = { type: ContentTypes.TEXT, text: 'Later' };
+      const result = publish({ ...legacy, content }, prompt('oauth:b'), 'oauth:b');
+      expect(result.content?.[0]).toBeUndefined();
+      expect(result.content?.[1]).toBeUndefined();
+      expect(result.content?.[2]).toEqual({ type: ContentTypes.TEXT, text: 'Later' });
+      expect(toolCallAt(result, 3)?.id).toBe('oauth:a');
+      expect(toolCallAt(result, 4)?.id).toBe('oauth:b');
+    });
+  });
+
   describe('text deltas', () => {
     it('appends a recorded sequence of chunks into the step slot', () => {
       const step = messageStep('step-text', 0);
