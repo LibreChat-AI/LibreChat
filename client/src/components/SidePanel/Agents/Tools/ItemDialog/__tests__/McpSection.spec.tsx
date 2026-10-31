@@ -179,8 +179,8 @@ const item: McpItem = {
     serverName: 'srv',
     isConfigured: true,
     tools: [
-      { tool_id: 'mcp:srv:a', name: 'A' },
-      { tool_id: 'mcp:srv:b', name: 'B' },
+      { tool_id: 'mcp:srv:a', metadata: { name: 'A' } },
+      { tool_id: 'mcp:srv:b', metadata: { name: 'B' } },
     ],
     metadata: { description: 'desc' },
   } as never,
@@ -223,6 +223,29 @@ describe('McpSection', () => {
     render(<McpSection item={item} />);
     expect(screen.getByTestId('tool-mcp:srv:a')).toBeInTheDocument();
     expect(screen.getByTestId('tool-mcp:srv:b')).toBeInTheDocument();
+  });
+
+  test('lists tools by display name, ignoring case and comparing numbers by value', () => {
+    const unsortedItem: McpItem = {
+      ...item,
+      server: {
+        ...item.server,
+        tools: [
+          { tool_id: 'mcp:srv:t10', metadata: { name: 'tool10' } },
+          { tool_id: 'mcp:srv:beta', metadata: { name: 'Beta' } },
+          { tool_id: 'mcp:srv:t2', metadata: { name: 'tool2' } },
+          { tool_id: 'mcp:srv:alpha', metadata: { name: 'alpha' } },
+        ],
+      } as never,
+      toolCount: 4,
+    };
+    render(<McpSection item={unsortedItem} />);
+    expect(screen.getAllByTestId(/^tool-/).map((el) => el.dataset.testid)).toEqual([
+      'tool-mcp:srv:alpha',
+      'tool-mcp:srv:beta',
+      'tool-mcp:srv:t2',
+      'tool-mcp:srv:t10',
+    ]);
   });
 
   test('interpolates the server name when another manager reports a connecting state', () => {
