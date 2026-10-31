@@ -13,7 +13,7 @@ import {
 import type { AppConfig } from '@librechat/data-schemas';
 import type { ChannelFeedbackRuntimeDependencies } from './feedbackRuntime';
 import { createChannelFeedbackRuntime } from './feedbackRuntime';
-import { createChannelFeedbackWorker } from './feedbackWorker';
+import * as feedbackWorkers from './feedbackWorker';
 import { createChannelHandlers } from './service';
 
 let mongo: MongoMemoryReplSet;
@@ -163,7 +163,7 @@ test('invalid timeout/lease relationship never starts a recovery worker', async 
 test('normalizes default tenants only at the feedback worker application boundary', async () => {
   const contexts: Array<{ partition: string; tenantId?: string }> = [];
   const onError = jest.fn();
-  const worker = createChannelFeedbackWorker({
+  const worker = feedbackWorkers.createChannelFeedbackWorker({
     listChannels: async () => ({ channels: [{}, { tenantId: 'named' }] }),
     feedback: {
       recover: async (partition) => {
@@ -187,4 +187,80 @@ test('normalizes default tenants only at the feedback worker application boundar
     { partition: 'named', tenantId: 'named' },
   ]);
   expect(onError).not.toHaveBeenCalled();
+});
+
+test.each(['read', 'schema', 'settings'] as const)(
+  'retries failed %s initialization while keeping ingress unavailable until ready',
+  async (failure) => {
+    const original = deps.getConfig;
+    let fail = true;
+    deps.getConfig = async () => {
+      if (!fail) return original();
+      if (failure === 'read') throw new Error('configuration unavailable');
+      const config = channelConfigSchema.parse({ enabled: true });
+      if (failure === 'schema') config.feedback.intervalMs = 0;
+      else config.feedback.exportLeaseMs = config.feedback.exportTimeoutMs;
+      return config;
+    };
+    const first = runtime.initialize();
+    expect(runtime.initialize()).toBe(first);
+    await expect(first).rejects.toThrow();
+    await post().expect(503);
+    fail = false;
+    const retry = runtime.initialize();
+    expect(runtime.initialize()).toBe(retry);
+    await retry;
+    await post().expect(200);
+    await runtime.initialize();
+    expect(deps.workerDeps.listChannels).toHaveBeenCalledTimes(1);
+    expect(deps.hostDeps.sendScore).not.toHaveBeenCalled();
+  },
+);
+
+test('disposes a partially started feedback worker before retrying and exposing handlers', async () => {
+  const partial = feedbackWorkers.createChannelFeedbackWorker({
+    ...deps.workerDeps,
+    feedback: { recover: async () => 0, flush: async () => 0 },
+    batchSize: 1,
+    intervalMs: 60000,
+    maxIdleIntervalMs: 60000,
+  });
+  const start = jest
+    .spyOn(partial, 'start')
+    .mockRejectedValueOnce(new Error('worker startup failed'));
+  const stop = jest.spyOn(partial, 'stop');
+  const factory = jest
+    .spyOn(feedbackWorkers, 'createChannelFeedbackWorker')
+    .mockReturnValueOnce(partial);
+  try {
+    await expect(runtime.initialize()).rejects.toThrow('worker startup failed');
+    await post().expect(503);
+    expect(stop).toHaveBeenCalledTimes(1);
+    await runtime.initialize();
+    await post().expect(200);
+    expect(factory).toHaveBeenCalledTimes(2);
+    expect(deps.workerDeps.listChannels).toHaveBeenCalledTimes(1);
+  } finally {
+    factory.mockRestore();
+    start.mockRestore();
+    stop.mockRestore();
+  }
+});
+
+test('keeps feedback stopped when pending initialization fails during shutdown', async () => {
+  let reject!: (error: Error) => void;
+  const gate = new Promise<Awaited<ReturnType<typeof deps.getConfig>>>((_resolve, fail) => {
+    reject = fail;
+  });
+  const read = jest.fn(() => gate);
+  deps.getConfig = read;
+  const initializing = runtime.initialize();
+  const stopping = runtime.stop();
+  reject(new Error('configuration unavailable'));
+  await expect(initializing).rejects.toThrow('configuration unavailable');
+  await stopping;
+  await runtime.initialize();
+  await post().expect(503);
+  expect(read).toHaveBeenCalledTimes(1);
+  expect(deps.workerDeps.listChannels).not.toHaveBeenCalled();
 });
