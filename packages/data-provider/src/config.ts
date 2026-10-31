@@ -2238,7 +2238,7 @@ export const agentsEndpointSchema = baseEndpointSchema
         .optional(),
       managementApi: managementApiSchema.optional(),
       remoteApi: remoteApiSchema.optional(),
-      channels: channelStorageConfigSchema.optional(),
+      channels: channelStorageConfigSchema.strict().optional(),
       /** Human-in-the-loop tool approval policy. Off by default. */
       toolApproval: toolApprovalPolicySchema,
       /** Ask User question behavior; see {@link askUserQuestionConfigSchema}. */

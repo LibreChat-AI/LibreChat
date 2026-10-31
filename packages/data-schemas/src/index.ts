@@ -23,6 +23,7 @@ export type {
 } from './methods/response';
 export {
   createMethods,
+  createChannelIdentityStorage,
   createChannelRunStorage,
   createChannelSummaryStorage,
   CHANNEL_SUMMARY_MAX_PRIOR_ROWS,
@@ -115,7 +116,7 @@ export {
   AUDIT_ACTION_CATEGORY,
 } from './types/admin';
 export { GENESIS_HASH, PLATFORM_CHAIN_KEY } from './schema/auditLog';
-
+export type { AgentChannelRecord } from './models/channel';
 export { default as logger, baseLogFormat } from './config/winston';
 export { default as meiliLogger } from './config/meiliLogger';
 export { jsonTruncateFormat, redactMessage } from './config/parsers';
