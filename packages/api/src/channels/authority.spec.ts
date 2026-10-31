@@ -1776,3 +1776,36 @@ it(
     expect(invoked).toHaveLength(0);
   }),
 );
+
+it.each([0, 1])('keeps Stop retries bound across relinking to account %i', (target) =>
+  scoped(async () => {
+    const linked = await link('U1', users[0]);
+    fakeNow = Date.now() + 1000;
+    const admission = event();
+    await post('runs').send(admission).expect(201);
+    await post('runs/claim').send({ owner: 'first-worker' }).expect(200);
+    const stop = {
+      actor: admission.actor,
+      externalThreadKey: admission.externalThreadKey,
+      externalChannelId: admission.externalChannelId,
+      eventAt: fakeNow + 60000,
+    };
+    await post('runs/stop-thread').send(stop).expect(202);
+    value(
+      await authority.identity.revoke(
+        { tenantId, userId: users[0].id, accountLabel: 'A' },
+        linked.linkId,
+        linked.revision,
+      ),
+    );
+    await link('U1', users[target]);
+    fakeNow += 1000;
+    const second = await post('runs').send(event('U1', 'after-relink')).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'second-worker' }).expect(200);
+    expect(claimed.body.run.runId).toBe(second.body.runId);
+    await post('runs/stop-thread').send(stop).expect(200, { cancellationRequested: false });
+    expect(
+      (await storage.read(tenantId, 'channel', second.body.runId))?.cancellationRequested,
+    ).toBe(false);
+  })(),
+);
