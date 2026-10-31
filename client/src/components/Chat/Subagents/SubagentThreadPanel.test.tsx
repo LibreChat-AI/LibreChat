@@ -131,6 +131,11 @@ jest.mock('~/data-provider', () => ({
 jest.mock('@librechat/chat/react', () => ({
   ...jest.requireActual('@librechat/chat/react'),
   useSubagentActivityStream: (...args: unknown[]) => mockUseSubagentActivityStream(...args),
+  useParentSubagents: () => ({
+    byMessageId: mockParentChildrenByMessage,
+    byThreadId: mockParentChildrenByThread,
+    refresh: mockRefreshParentChildren,
+  }),
 }));
 
 jest.mock('~/hooks', () => ({
@@ -168,14 +173,6 @@ jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
       <span data-testid="author-face" />
     );
   },
-}));
-
-jest.mock('./ParentSubagentsProvider', () => ({
-  useParentSubagents: () => ({
-    byMessageId: mockParentChildrenByMessage,
-    byThreadId: mockParentChildrenByThread,
-    refresh: mockRefreshParentChildren,
-  }),
 }));
 
 jest.mock('~/components/Chat/Messages/Content/ApprovalContext', () => ({

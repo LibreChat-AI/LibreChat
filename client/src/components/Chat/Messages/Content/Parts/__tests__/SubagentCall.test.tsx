@@ -87,7 +87,8 @@ jest.mock('~/Providers', () => ({
     },
   }),
 }));
-jest.mock('~/components/Chat/Subagents/ParentSubagentsProvider', () => ({
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useParentSubagents: () => ({ byThreadId: mockIndexedChildren }),
 }));
 jest.mock('~/components/Share/MessageIcon', () => ({

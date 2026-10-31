@@ -1,13 +1,13 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import userEvent from '@testing-library/user-event';
-import { activeSubagentPanel } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { ContentTypes, QueryKeys, dataService } from 'librechat-data-provider';
+import { activeSubagentPanel, ParentSubagentsProvider } from '@librechat/chat/react';
 import type { ParentSubagentSummary, BackgroundTaskIndex, TMessage } from 'librechat-data-provider';
 import type { JotaiStore } from 'test/harness';
-import { ParentSubagentsProvider } from '~/components/Chat/Subagents/ParentSubagentsProvider';
+import { SubagentIndexHostProvider } from 'test/streamHost';
 import { ChatSurfaceHarness } from 'test/harness';
 import BackgroundTasksButton from '../Button';
 
@@ -101,9 +101,11 @@ const renderButton = (children: ParentSubagentSummary[] = [], initialMessages = 
     >
       <RecoilRoot>
         <QueryClientProvider client={queryClient}>
-          <ParentSubagentsProvider conversationId={conversationId} enabled>
-            <BackgroundTasksButton conversationId={conversationId} isSubmitting={false} />
-          </ParentSubagentsProvider>
+          <SubagentIndexHostProvider>
+            <ParentSubagentsProvider conversationId={conversationId} enabled>
+              <BackgroundTasksButton conversationId={conversationId} isSubmitting={false} />
+            </ParentSubagentsProvider>
+          </SubagentIndexHostProvider>
         </QueryClientProvider>
       </RecoilRoot>
     </ChatSurfaceHarness>,
@@ -130,9 +132,11 @@ describe('BackgroundTasksButton', () => {
     const panel = (hostId: string) => (
       <RecoilRoot>
         <QueryClientProvider client={queryClient}>
-          <ParentSubagentsProvider conversationId={hostId} enabled>
-            <BackgroundTasksButton conversationId={conversationId} isSubmitting={false} />
-          </ParentSubagentsProvider>
+          <SubagentIndexHostProvider>
+            <ParentSubagentsProvider conversationId={hostId} enabled>
+              <BackgroundTasksButton conversationId={conversationId} isSubmitting={false} />
+            </ParentSubagentsProvider>
+          </SubagentIndexHostProvider>
         </QueryClientProvider>
       </RecoilRoot>
     );

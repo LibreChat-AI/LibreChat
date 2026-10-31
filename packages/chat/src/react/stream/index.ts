@@ -33,4 +33,5 @@ export type {
   ResumeStatusQuery,
   ResumableServices,
   ResumableStreamParams,
+  ParentSubagentIndexQuery,
 } from './host';
