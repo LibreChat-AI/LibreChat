@@ -53,10 +53,10 @@ export default function AssistantPanel({
 }: AssistantPanelProps & { assistantsConfig?: TConfig | null }) {
   const modelsQuery = useModelCatalog(
     { refetchOnMount: 'always' },
-    { endpoints: Object.keys(endpointsConfig ?? {}) },
+    { eager: true, endpoints: [endpoint] },
   );
   const models = useMemo(() => modelsQuery.data?.[endpoint] ?? [], [endpoint, modelsQuery.data]);
-  const modelsReady = modelsQuery.isFetchedAfterMount && !modelsQuery.isFetching;
+  const modelsReady = modelsQuery.endpointQueries[endpoint]?.isFetched === true;
   const [lastSelectedModels] = useLocalStorage<LastSelectedModels | undefined>(
     LocalStorageKeys.LAST_MODEL,
     {} as LastSelectedModels,

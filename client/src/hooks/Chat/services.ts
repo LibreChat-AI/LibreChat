@@ -65,8 +65,8 @@ export default function useTurnServices({
     resolveCode: (submitted) => {
       const latest = getConversation();
       if (
-        !config.loaded ||
-        !isTargetReady(queryClient, latest) ||
+        config.loaded === false ||
+        !isTargetReady(queryClient, submitted) ||
         (addedConversation != null && !isTargetReady(queryClient, addedConversation))
       ) {
         return null;

@@ -488,14 +488,17 @@ export const getAssistantById = ({
   endpoint,
   assistant_id,
   version,
+  model,
 }: {
   endpoint: s.AssistantsEndpoint;
   assistant_id: string;
-  version: number | string | number;
+  version: number | string;
+  model?: string | null;
 }): Promise<a.Assistant> => {
   return request.get(
     endpoints.assistants({
-      path: assistant_id,
+      path: encodeURIComponent(assistant_id),
+      options: model ? { model } : undefined,
       endpoint,
       version,
     }),

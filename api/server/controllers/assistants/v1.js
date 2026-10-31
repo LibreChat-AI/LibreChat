@@ -11,6 +11,7 @@ const {
   getAssistantErrorStatus,
   resolveAssistantAvatarIdentity,
   commitAssistantAvatar,
+  createAssistantRetriever,
 } = require('@librechat/api');
 const { FileContext } = require('librechat-data-provider');
 const {
@@ -30,7 +31,8 @@ const { uploadImageBuffer, filterFile } = require('~/server/services/Files/proce
 const validateAuthor = require('~/server/middleware/assistants/validateAuthor');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { deleteAssistantActions } = require('~/server/services/ActionService');
-const { getOpenAIClient, fetchAssistants } = require('./helpers');
+const { getOpenAIClient, fetchAssistants, filterAssistants } = require('./helpers');
+const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const {
   healMcpToolNames,
   getAssistantToolDefinitions,
@@ -166,18 +168,11 @@ const createAssistant = async (req, res) => {
  * @param {string} req.params.id - Assistant identifier.
  * @returns {Assistant} 200 - success response - application/json
  */
-const retrieveAssistant = async (req, res) => {
-  try {
-    /* NOTE: not actually being used right now */
-    const { openai } = await getOpenAIClient({ req, res });
-    const assistant_id = req.params.id;
-    const assistant = await openai.beta.assistants.retrieve(assistant_id);
-    res.json(assistant);
-  } catch (error) {
-    logger.error('[/assistants/:id] Error retrieving assistant', error);
-    res.status(500).json({ error: error.message });
-  }
-};
+const retrieveAssistant = createAssistantRetriever({
+  getOpenAIClient,
+  filterAssistants,
+  hasCapability,
+});
 
 /**
  * Modifies an assistant.

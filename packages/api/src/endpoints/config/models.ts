@@ -9,6 +9,7 @@ import {
 import type { TModelsConfig, TEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest, GetUserKeyValuesFunction, UserKeyValues } from '~/types';
+import type { ServedCustomEndpoint } from '~/endpoints/custom/config';
 import type { FetchModelsParams } from '~/endpoints/models';
 import type { GetAppConfigOptions } from '~/app/service';
 import { isServedCustomEndpoint, resolveServedCustomEndpoints } from '~/endpoints/custom/config';
@@ -72,7 +73,7 @@ function headersFingerprint(headers: Record<string, string> | undefined): string
 
 interface ResolvedEndpoint {
   name: string;
-  endpoint: TEndpoint;
+  endpoint: ServedCustomEndpoint;
   apiKey: string;
   baseURL: string;
   apiKeyIsUserProvided: boolean;
@@ -136,7 +137,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
       requestedEndpoint == null
         ? undefined
         : resolveServedCustomEndpoints(definitions).get(requestedEndpoint);
-    let customEndpoints: TEndpoint[];
+    let customEndpoints: ServedCustomEndpoint[];
     if (requestedEndpoint == null) customEndpoints = definitions.filter(isServedCustomEndpoint);
     else customEndpoints = selected ? [selected] : [];
 
@@ -145,7 +146,7 @@ export function createLoadConfigModels(deps: LoadConfigModelsDeps) {
     /** tokenKey the deduped fetch cached its token config under, so siblings
      *  sharing the fetch can be backfilled with the same config afterward */
     const uniqueKeyToTokenKey: Record<string, string> = {};
-    const endpointsMap: Record<string, TEndpoint> = {};
+    const endpointsMap: Record<string, ServedCustomEndpoint> = {};
     const tenantId = req.user?.tenantId;
 
     const resolved: ResolvedEndpoint[] = [];

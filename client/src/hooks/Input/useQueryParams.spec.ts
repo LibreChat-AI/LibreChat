@@ -1018,4 +1018,37 @@ describe('useQueryParams', () => {
     expect(params.toString()).toBe('');
     expect(options).toEqual(expect.objectContaining({ replace: true }));
   });
+
+  describe('selected-target startup readiness', () => {
+    it('keeps URL auto-submit pending until the target is ready, then sends exactly once', () => {
+      const submitMessage = jest.fn();
+      (useSubmitMessage as jest.Mock).mockReturnValue({ submitMessage });
+      (useChatFormContext as jest.Mock).mockReturnValue({
+        setValue: jest.fn(),
+        getValues: jest.fn().mockReturnValue('hello'),
+        handleSubmit: (callback: (value: { text: string }) => void) => () =>
+          callback({ text: 'hello' }),
+      });
+      setUrlParams({ q: 'hello', submit: 'true' });
+      const textAreaRef = {
+        current: {
+          focus: jest.fn(),
+          setSelectionRange: jest.fn(),
+        } as unknown as HTMLTextAreaElement,
+      };
+      const { rerender } = renderHook(
+        ({ pending }) => useQueryParams({ textAreaRef, routePending: pending }),
+        {
+          initialProps: { pending: true },
+        },
+      );
+      act(() => jest.advanceTimersByTime(600));
+      expect(submitMessage).not.toHaveBeenCalled();
+      rerender({ pending: false });
+      act(() => jest.advanceTimersByTime(600));
+      expect(submitMessage).toHaveBeenCalledTimes(1);
+      act(() => jest.advanceTimersByTime(600));
+      expect(submitMessage).toHaveBeenCalledTimes(1);
+    });
+  });
 });
