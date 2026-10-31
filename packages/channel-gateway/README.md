@@ -96,3 +96,55 @@ The runnable consumer preserves canonical execution identities and frozen delive
 Socket connections use one gateway-owned supervision task. Connection loss immediately fails readiness; retries own every SDK startup result and require a fresh matching-app hello before ingress resumes. Shutdown aborts API requests and backoff, closes the SDK, lets the SDK close its WebSocket transport and drains supervision alongside the worker.
 
 The private bundle also supplies the server’s `maxDeliveryParts` storage limit. New plans reserve required answer output first, group attachment attempts with their failure notice, and explicitly report shortening or omitted optional effects. Already persisted plans retain their frozen operations.
+
+## Rich Agent messages
+
+An Agent can return semantic presentation data in its final answer. The gateway validates the document and converts it deterministically to Slack Block Kit; it does not accept arbitrary Slack JSON, callback IDs, approval controls, file identifiers or modal definitions. Ordinary Markdown remains unchanged. This works in both ordinary threads and native Agent sessions, without a new OAuth scope or a configuration migration.
+
+To enable this behavior for an Agent, add the following to its instructions using the existing Agent editor (or include it in a request when testing):
+
+> When a chart, table, image or card would help, write a short readable answer followed by exactly one final, top-level fenced code block named `librechat-presentation`. Its JSON must be `{ "version": 1, "blocks": [...] }`. Use only the semantic components described below; never emit raw Slack blocks or interactive callback IDs. Use ordinary Markdown for other answers. Use public HTTPS URLs for images and links. The gateway generates complete text fallbacks from the data, so do not repeat every value in the introductory answer.
+
+For example, ask the Agent to compare the following measured results and show both a chart and a table. Its final answer can be:
+
+````text
+Latency fell from 20 ms to 17 ms.
+
+```librechat-presentation
+{
+  "version": 1,
+  "blocks": [
+    {
+      "type": "chart",
+      "title": "Latency",
+      "chart": {
+        "type": "line",
+        "axis_config": { "categories": ["Mon", "Tue"], "y_label": "ms" },
+        "series": [{ "name": "p95", "data": [{ "label": "Mon", "value": 20 }, { "label": "Tue", "value": 17 }] }]
+      }
+    },
+    { "type": "table", "title": "Measurements", "columns": ["Day", "p95 (ms)"], "rows": [["Mon", 20], ["Tue", 17]] }
+  ]
+}
+```
+````
+
+| Semantic component                  | Fields and constraints                                                                                                                                                                                                                            |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `text`, `header`, `context`, `code` | `text` string; maximum 3000, 150, 2000 and 3000 Unicode characters respectively. Text components use literal text, so mentions cannot grant interaction authority. Use ordinary Markdown outside the document for formatted prose.                |
+| `divider`                           | No additional fields.                                                                                                                                                                                                                             |
+| `image`                             | `url`, `alt`, optional `title` (150 characters). HTTPS URLs only; alt text is required (2000 characters). The gateway never fetches remote media.                                                                                                 |
+| `card`                              | Required `title` (150), optional `subtitle` (150), `body` (200), `image: {url, alt}`, and up to three `links: [{label, url}]`. Labels are at most 75 characters. Links navigate only; they cannot run an Agent action.                            |
+| `carousel`                          | `cards`: 1–10 cards.                                                                                                                                                                                                                              |
+| `table`                             | `title` (150), `columns`: 1–20 labels (150 each), `rows`: 1–200 rectangular rows of strings or finite numbers. Maximum 20,000 characters across cells including headers. Numeric cells retain numeric sorting.                                    |
+| `chart`                             | `title` (50), `chart` as described below.                                                                                                                                                                                                         |
+| `container`                         | `title` (150), `blocks`: 1–10 text, header, context, code, divider or image components.                                                                                                                                                           |
+| `layout`                            | `title` (150), `rows`: 1–5 arrays of 1–3 components, including containers. Charts, tables and carousels each occupy their own row. Layouts cannot nest. The gateway makes the title visible and generates explicit compatibility fallback blocks. |
+
+Charts support `line`, `bar` and `area` with `axis_config: {categories, x_label?, y_label?}` and `series: [{name, data: [{label, value}]}]`. Categories have 1–20 distinct labels; each series must have exactly one point per category. Series names are distinct; at most 12 series are allowed. Names and labels are at most 20 characters, axis titles 50. Values must be finite; negative values are supported. Pie charts instead use `chart: {type: "pie", segments: [{label, value}]}` with 1–12 distinct labels and positive finite values.
+
+A document has at most 40 components and the final answer must fit the 128,000-byte presentation parsing boundary. Malformed, incomplete, quoted, ambiguous or unrecognized documents stay on the ordinary text path. The gateway isolates components into messages, counts nested blocks, enforces two charts and 20,000 table characters per message, and preserves every value and link in generated text. Components which exceed Slack's nested block or serialized payload limits become text. The server's existing `maxDeliveryParts` policy still applies, with an explicit shortening notice when needed.
+
+The gateway freezes versioned blocks and text together before posting. Retries replay that plan. A definitive Slack `invalid_blocks` or `invalid_attachments` rejection permits a text-only retry; ambiguous network outcomes retain the existing reconciliation behavior. Clients that cannot render layouts receive the generated stable fallback blocks.
+
+This is rich **message** support. Existing app-owned Stop, approval, question and feedback workflows remain responsible for interactions. New input forms, App Home, modals, Work Objects, plan/task execution controls and embedded video are not exposed to Agent output. Authorized file attachments continue through the existing artifact delivery path. Slack may limit newer blocks by client or app availability; automated tests cover SDK payloads and rejection fallback, while live rendering requires a configured Slack workspace.
