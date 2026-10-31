@@ -72,7 +72,7 @@ export class GatewayApp {
     private readonly log: Logger,
   ) {
     this.identity = new IdentityFlow(client, slack);
-    this.review = new ReviewFlow(client, slack, config.APP_TITLE);
+    this.review = new ReviewFlow(client, slack);
   }
 
   /** No queue before admission: overload is left unacknowledged for Slack redelivery. */
