@@ -1,5 +1,6 @@
 import axios from 'axios';
 import yaml from 'js-yaml';
+import { createHash } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
 import {
   configSchema,
@@ -22,11 +23,40 @@ export interface CustomConfigLoadOptions {
   mode?: CustomConfigLoadMode;
 }
 
+export interface LoadedCustomConfig {
+  config: TCustomConfig;
+  /** {@link hashCustomConfig} of the file as parsed, before any check rewrote part of it. */
+  digest: string;
+}
+
 export interface CustomConfigLoaderOptions {
   defaultConfigPath: string;
   loadLocal: (configPath: string) => unknown;
   fetchRemote?: (configPath: string) => Promise<unknown>;
   redactConfig: (config: TCustomConfig) => TCustomConfig;
+  /** Runs after each successful load, at startup and on reload, before the config is returned. */
+  onLoad?: (loaded: LoadedCustomConfig) => void;
+}
+
+const CONFIG_DIGEST_LENGTH = 12;
+
+/** Keys are unique within an object, and code-unit order does not vary by locale. */
+function sortKeys(_key: string, value: unknown): unknown {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return value;
+  }
+  return Object.fromEntries(Object.entries(value).sort(([a], [b]) => (a < b ? -1 : 1)));
+}
+
+/**
+ * A short, stable hash of a parsed librechat.yaml: comments, formatting and key order do not
+ * change it, so it moves only when the configuration does. Values are hashed, never logged.
+ */
+export function hashCustomConfig(config: unknown): string {
+  return createHash('sha256')
+    .update(JSON.stringify(config, sortKeys))
+    .digest('hex')
+    .slice(0, CONFIG_DIGEST_LENGTH);
 }
 
 export class ConfigReloadError extends Error {
@@ -139,6 +169,7 @@ export function createCustomConfigLoader({
   defaultConfigPath,
   loadLocal,
   redactConfig,
+  onLoad,
   fetchRemote = async (configPath: string): Promise<unknown> =>
     (await axios.get(configPath, serviceRequestBudget())).data,
 }: CustomConfigLoaderOptions): (
@@ -229,6 +260,8 @@ export function createCustomConfigLoader({
         }
       }
 
+      /** The checks below return copies, but `modelSpecs` is assigned onto this object later. */
+      const parsedConfig = loadedConfig;
       const themeCheck = checkConfigTheme(loadedConfig);
       loadedConfig = themeCheck.config;
       reportThemeCheck(configPath, themeCheck.errors, themeCheck.warnings);
@@ -288,6 +321,7 @@ export function createCustomConfigLoader({
         process.exit(1);
       }
 
+      const digest = hashCustomConfig(parsedConfig);
       const customConfig = loadedConfig as TCustomConfig;
       /** Expanded copies are discarded: AppService serves them, and the config stays as written. */
       for (const endpoint of (customConfig.endpoints?.custom ?? []) as TEndpoint[]) {
@@ -304,6 +338,7 @@ export function createCustomConfigLoader({
         logger.debug('Custom config:', loggableConfig);
       }
 
+      onLoad?.({ config: customConfig, digest });
       loadedSuccessfully = true;
       return customConfig;
     } catch (error) {
