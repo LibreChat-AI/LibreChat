@@ -1,4 +1,4 @@
-import { useId, useRef, useState } from 'react';
+import { useId, useRef, useState, useEffect } from 'react';
 import { Info, Plus, Power, Trash2 } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { dataService, MutationKeys, QueryKeys } from 'librechat-data-provider';
@@ -75,54 +75,78 @@ function Channel({
   const [appId, setAppId] = useState(channel.slack?.appId ?? '');
   const [botToken, setBotToken] = useState('');
   const [signingSecret, setSigningSecret] = useState('');
+  const credentials = useRef({ botToken: '', signingSecret: '' });
+  const active = useRef(true);
+  useEffect(() => {
+    active.current = true;
+    return () => {
+      active.current = false;
+      credentials.current = { botToken: '', signingSecret: '' };
+    };
+  }, []);
   const manifest = useQuery(
     [QueryKeys.agentChannelManifest, userId, tenantId, agentId, channel.channelId],
     () => dataService.getAgentChannelManifest(agentId, channel.channelId),
     { retry: false },
   );
   const needsSigningSecret = manifest.data?.settings.socket_mode_enabled === false;
+  let signingLabel: TranslationKeys = 'com_ui_channels_signing_secret';
+  if (needsSigningSecret) signingLabel = 'com_ui_channels_signing_secret_required';
+  else if (manifest.data?.settings.socket_mode_enabled === true)
+    signingLabel = 'com_ui_channels_signing_secret_optional';
   const canActivate =
     enabled &&
     manifest.isSuccess &&
     !manifest.isFetching &&
     Boolean(appId.trim() && botToken.trim() && (!needsSigningSecret || signingSecret.trim()));
   const manifestText = manifest.data ? JSON.stringify(manifest.data, null, 2) : '';
+  const readiness = useRef({ enabled, canActivate });
+  readiness.current = { enabled, canActivate };
   const clearCredentials = () => {
+    credentials.current = { botToken: '', signingSecret: '' };
+    if (!active.current) return;
     setBotToken('');
     setSigningSecret('');
   };
   const mutation = useMutation({
     mutationKey: [MutationKeys.agentChannels, userId, tenantId, agentId, channel.channelId],
-    // Keep credentials out of React Query's retained mutation variables.
+    // Cached callbacks retain only a revocable holder, never render snapshots of secrets.
     mutationFn: async (action: 'activate' | 'disable' | 'delete' | 'mode') => {
-      if (!enabled || channel.createdBy !== userId) throw new Error('Channel unavailable');
-      if (action === 'mode') {
-        if (!channel.revision || channel.status !== 'disabled')
-          throw new Error('Channel mode changed');
-        return dataService.changeAgentChannelMode(
-          agentId,
-          channel.channelId,
-          channel.credentialMode === 'shared' ? 'per_user' : 'shared',
-          channel.revision,
-        );
-      }
-      if (action === 'activate') {
-        if (!canActivate) throw new Error('Channel activation unavailable');
-        return dataService.activateAgentChannel(agentId, channel.channelId, {
-          slack: {
+      try {
+        if (!active.current || !readiness.current.enabled || channel.createdBy !== userId)
+          throw new Error('Channel unavailable');
+        if (action === 'mode') {
+          if (!channel.revision || channel.status !== 'disabled')
+            throw new Error('Channel mode changed');
+          return await dataService.changeAgentChannelMode(
+            agentId,
+            channel.channelId,
+            channel.credentialMode === 'shared' ? 'per_user' : 'shared',
+            channel.revision,
+          );
+        }
+        if (action === 'activate') {
+          const token = credentials.current.botToken.trim();
+          const secret = credentials.current.signingSecret.trim();
+          if (!readiness.current.canActivate || !token || (needsSigningSecret && !secret))
+            throw new Error('Channel activation unavailable');
+          const slack = {
             appId: appId.trim(),
-            botToken: botToken.trim(),
-            ...(signingSecret.trim() ? { signingSecret: signingSecret.trim() } : {}),
-          },
-        });
+            botToken: token,
+            ...(secret ? { signingSecret: secret } : {}),
+          };
+          // Consume the form before dispatch; only the pending HTTP invocation owns its payload.
+          clearCredentials();
+          return await dataService.activateAgentChannel(agentId, channel.channelId, { slack });
+        }
+        if (action === 'disable')
+          return await dataService.disableAgentChannel(agentId, channel.channelId);
+        await dataService.deleteAgentChannel(agentId, channel.channelId);
+      } finally {
+        clearCredentials();
       }
-      if (action === 'disable') {
-        return dataService.disableAgentChannel(agentId, channel.channelId);
-      }
-      await dataService.deleteAgentChannel(agentId, channel.channelId);
     },
     onSuccess: async () => {
-      clearCredentials();
       onClose();
       await queryClient.invalidateQueries([QueryKeys.agentChannels, userId, tenantId, agentId]);
       await queryClient.invalidateQueries([
@@ -180,6 +204,11 @@ function Channel({
         {mutation.isError && (
           <p role="alert" className="text-text-primary text-sm">
             {localize('com_ui_channels_action_error')}
+          </p>
+        )}
+        {mutation.isError && mutation.variables === 'activate' && (
+          <p className="text-text-secondary text-sm">
+            {localize('com_ui_channels_activation_retry')}
           </p>
         )}
         {panel === 'mode' && (
@@ -291,11 +320,14 @@ function Channel({
                 autoComplete="new-password"
                 value={botToken}
                 disabled={busy}
-                onChange={(event) => setBotToken(event.target.value)}
+                onChange={(event) => {
+                  credentials.current.botToken = event.target.value;
+                  setBotToken(event.target.value);
+                }}
               />
             </div>
             <div className="space-y-1">
-              <Label htmlFor={`${id}-secret`}>{localize('com_ui_channels_signing_secret')}</Label>
+              <Label htmlFor={`${id}-secret`}>{localize(signingLabel)}</Label>
               <Input
                 id={`${id}-secret`}
                 type="password"
@@ -304,7 +336,10 @@ function Channel({
                 autoComplete="new-password"
                 value={signingSecret}
                 disabled={busy}
-                onChange={(event) => setSigningSecret(event.target.value)}
+                onChange={(event) => {
+                  credentials.current.signingSecret = event.target.value;
+                  setSigningSecret(event.target.value);
+                }}
               />
             </div>
             <Button
