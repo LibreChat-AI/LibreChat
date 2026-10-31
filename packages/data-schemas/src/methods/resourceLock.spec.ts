@@ -137,6 +137,54 @@ describe('resource lease Mongo adapter', () => {
     expect(build).toHaveBeenCalledTimes(2);
   });
 
+  it.each([false, true])(
+    'clears the readiness timer when initialization fails: %s',
+    async (initializationFails) => {
+      jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+      const failure = new Error('lease storage unavailable');
+      const build = jest.spyOn(models[0], 'createIndexes');
+      if (initializationFails) {
+        build.mockRejectedValueOnce(failure);
+      } else {
+        build.mockResolvedValueOnce(undefined);
+        jest.spyOn(models[0].collection, 'insertOne').mockRejectedValueOnce(failure);
+      }
+      const methods = createResourceLockMethods(instances[0]);
+      await expect(
+        methods.acquireResourceLock({ key: 'cleanup', ownerId: 'a', ttlMs: 30_000 }),
+      ).rejects.toBe(failure);
+      expect(jest.getTimerCount()).toBe(0);
+    },
+  );
+
+  it('bounds a peer index build and retries initialization after its deadline', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    const conflict = new mongoose.mongo.MongoServerError({
+      code: 40333,
+      message: 'index build in progress',
+    });
+    const build = jest
+      .spyOn(models[0], 'createIndexes')
+      .mockRejectedValueOnce(conflict)
+      .mockRejectedValueOnce(conflict);
+    const methods = createResourceLockMethods(instances[0]);
+    const lock = { key: 'peer-build', ownerId: 'a', ttlMs: 30_000, readyWaitMs: 25 };
+    try {
+      const attempt = methods.acquireResourceLock(lock);
+      await jest.advanceTimersByTimeAsync(25);
+      expect(await attempt).toBe(false);
+      // The retry helper polls every five seconds; the second conflict is past the lease deadline.
+      await jest.advanceTimersByTimeAsync(5_000);
+      expect(build).toHaveBeenCalledTimes(2);
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+    expect(await harness.read(lock.key)).toBeNull();
+    expect(await methods.acquireResourceLock(lock)).toBe(true);
+    expect(build).toHaveBeenCalledTimes(3);
+  });
+
   it('returns false at the readiness deadline without writing, then can acquire after readiness', async () => {
     jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
     let finish!: () => void;
