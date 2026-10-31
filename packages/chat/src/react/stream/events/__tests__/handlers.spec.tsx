@@ -41,6 +41,7 @@ const host: StreamHost = {
   extendActiveJobsGrace: unused,
   useStreamStatus: unused,
   useResumeSettings: unused,
+  useParentSubagentIndex: unused,
   useEventServices: () => ({
     ...services,
     navigation: { ...services.navigation, conversationId: routeConversationId },

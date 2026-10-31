@@ -501,6 +501,7 @@ describe('useNewConvo reset cleanup', () => {
         extendActiveJobsGrace: unused,
         useStreamStatus: unused,
         useResumeSettings: unused,
+        useParentSubagentIndex: unused,
         useEventServices: () => ({
           conversations: createConversationCache(client),
           titles: appTitleServices,
