@@ -77,7 +77,6 @@ beforeEach(async () => {
     serviceToken: () => serviceToken,
     config: async () => ({ enabled }),
     getAgent: async () => ({ id: 'agent-a' }),
-    deleteApiKey: async () => false,
     verifySlackToken: async () => null,
     logError: () => {},
   });
@@ -175,7 +174,6 @@ test('normalizes default tenants only at the feedback worker application boundar
         return 0;
       },
       flush: async () => 0,
-      compact: async () => 0,
     },
     batchSize: 1,
     intervalMs: 60000,
@@ -225,7 +223,7 @@ test.each(['read', 'schema', 'settings'] as const)(
 test('disposes a partially started feedback worker before retrying and exposing handlers', async () => {
   const partial = feedbackWorkers.createChannelFeedbackWorker({
     ...deps.workerDeps,
-    feedback: { recover: async () => 0, flush: async () => 0, compact: async () => 0 },
+    feedback: { recover: async () => 0, flush: async () => 0 },
     batchSize: 1,
     intervalMs: 60000,
     maxIdleIntervalMs: 60000,

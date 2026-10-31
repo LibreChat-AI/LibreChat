@@ -69,7 +69,6 @@ beforeEach(async () => {
   await runAsSystem(async () => {
     for (const name of [
       'AgentChannel',
-      'AgentChannelThread',
       'ChannelScope',
       'ChannelIdentity',
       'ChannelRun',
@@ -418,30 +417,28 @@ it('serializes linked admission with bulk revocation without creating another ev
     expect(await mongoose.models.ChannelRun.countDocuments({})).toBe(0);
   }));
 
-it.each([undefined, ''] as const)(
-  'preserves canonical revision fallback semantics for %s',
-  (revision) =>
-    scope(async () => {
-      await channels().createAgentChannel({
-        tenantId,
-        channelId: 'legacy',
-        agentId: 'agent',
-        createdBy: creatorId,
-        type: 'slack',
-        status: 'active',
-        credentialMode: 'shared',
-        revision,
-        slack: { teamId: 'T1', appId: 'A1', botUserId: 'B1' },
-      });
-      const input = {
-        ...event(),
-        channelId: 'legacy',
-        principal: { ...event().principal, channelRevision: revision ?? 'legacy' },
-      };
-      await expect(runs().admit(input, Date.now())).resolves.toMatchObject({ duplicate: false });
-      await channels().updateAgentChannel('legacy', creatorId, { revision: 'rotated' });
-      await expect(runs().admit(input, Date.now())).rejects.toMatchObject({
-        code: 'invalid_transition',
-      });
-    }),
+it.each(['opaque-revision'] as const)('preserves an explicit opaque revision %s', (revision) =>
+  scope(async () => {
+    await channels().createAgentChannel({
+      tenantId,
+      channelId: 'legacy',
+      agentId: 'agent',
+      createdBy: creatorId,
+      type: 'slack',
+      status: 'active',
+      credentialMode: 'shared',
+      revision,
+      slack: { teamId: 'T1', appId: 'A1', botUserId: 'B1' },
+    });
+    const input = {
+      ...event(),
+      channelId: 'legacy',
+      principal: { ...event().principal, channelRevision: revision },
+    };
+    await expect(runs().admit(input, Date.now())).resolves.toMatchObject({ duplicate: false });
+    await channels().updateAgentChannel('legacy', creatorId, { revision: 'rotated' });
+    await expect(runs().admit(input, Date.now())).rejects.toMatchObject({
+      code: 'invalid_transition',
+    });
+  }),
 );

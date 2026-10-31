@@ -272,7 +272,7 @@ describe('Slack answer rendering', () => {
     ).toBe(true);
     expect(message.text).toContain('Reply shortened');
     expect(Buffer.byteLength(message.text)).toBeLessThan(40000);
-    expect(supportedRenderer('slack-structured-v5')).toBe(true);
+    expect(supportedRenderer(rendererVersion)).toBe(true);
     expect(() =>
       durableSlackMessage(
         {
@@ -280,11 +280,11 @@ describe('Slack answer rendering', () => {
           presentation: {
             format: presentationFormat,
             payload: JSON.stringify([
-              { type: 'section', text: { type: 'mrkdwn', text: 'legacy' } },
+              { type: 'section', text: { type: 'mrkdwn', text: 'current' } },
             ]),
           },
         },
-        'slack-structured-v5',
+        rendererVersion,
       ),
     ).not.toThrow();
   });
@@ -509,12 +509,20 @@ describe('immutable Slack plans', () => {
     expect(() => makeSlackPlan(view, true)).toThrow('must not be regenerated');
   });
 
-  it.each(['slack-structured-v2', 'slack-structured-v3', 'slack-structured-v4'])(
-    'recovers %s without rerendering',
+  it.each([
+    'slack-text-v1',
+    'slack-structured-v2',
+    'slack-structured-v3',
+    'slack-structured-v4',
+    'slack-structured-v5',
+    'slack-structured-v6',
+    'slack-structured-v7',
+  ])(
+    'rejects unsupported pre-release renderer %s instead of rewriting its saved payload',
     (version) => {
       const part = makeSlackPlan(run()).parts[0];
-      expect(durableSlackMessage(part, version).text).toBe(part.text);
-      expect(supportedRenderer(version)).toBe(true);
+      expect(supportedRenderer(version)).toBe(false);
+      expect(() => durableSlackMessage(part, version)).toThrow('Unsupported renderer');
     },
   );
 
@@ -524,41 +532,7 @@ describe('immutable Slack plans', () => {
       format: presentationFormat,
       payload: JSON.stringify([{ type: 'markdown', text: '🙂'.repeat(12000) }]),
     };
-    expect(durableSlackMessage(part, 'slack-structured-v3').blocks).toHaveLength(1);
-  });
-
-  it('preserves v5 frozen content even when user text resembles an obsolete generated footer', () => {
-    const frozen = {
-      operationId: 'legacy',
-      kind: 'message' as const,
-      required: true,
-      text: 'User content\n\n_This run · ID example_\n<https://example.com/user-authored|View session>',
-    };
-    expect(durableSlackMessage(frozen, 'slack-structured-v5').text).toBe(frozen.text);
-    expect(
-      durableSlackMessage(
-        {
-          ...frozen,
-          presentation: {
-            format: presentationFormat,
-            payload: JSON.stringify([
-              { type: 'section', text: { type: 'mrkdwn', text: frozen.text } },
-            ]),
-          },
-        },
-        'slack-structured-v5',
-      ).text,
-    ).toBe(frozen.text);
-  });
-
-  it('recovers legacy text but refuses structured presentation with a legacy or unknown renderer', () => {
-    const part = makeSlackPlan(run()).parts[0];
-    expect(() => durableSlackMessage(part, 'slack-text-v1')).toThrow();
-    expect(() => durableSlackMessage(part, 'future')).toThrow();
-    delete part.presentation;
-    expect(durableSlackMessage(part, 'slack-text-v1')).toEqual({ text: part.text });
-    expect(supportedRenderer('slack-text-v1')).toBe(true);
-    expect(supportedRenderer('future')).toBe(false);
+    expect(durableSlackMessage(part, rendererVersion).blocks).toHaveLength(1);
   });
 
   it.each([
@@ -783,34 +757,4 @@ describe('presentation boundaries', () => {
       }
     },
   );
-});
-
-test('legacy required footer recovery removes embedded trace capability while preserving answer and metrics', () => {
-  const url = 'https://chat.example.com/c/session';
-  const part = {
-    operationId: 'old:reply:0',
-    kind: 'message' as const,
-    required: true,
-    text: `Answer\n\n_This run · ID old_\n_This run: Cost unavailable_\n<${url}|View session>`,
-    presentation: {
-      format: presentationFormat,
-      payload: JSON.stringify([
-        { type: 'section', text: { type: 'mrkdwn', text: 'Answer' } },
-        {
-          type: 'context',
-          elements: [
-            { type: 'mrkdwn', text: `Cost unavailable · Run old · <${url}|View session>` },
-          ],
-        },
-      ]),
-    },
-  };
-  const snapshot = structuredClone(part);
-  for (const version of ['slack-structured-v2', 'slack-structured-v3', 'slack-structured-v4']) {
-    const message = durableSlackMessage(part, version);
-    expect(JSON.stringify(message)).not.toContain(url);
-    expect(message.text).toContain('Answer');
-    expect(message.text).toContain('Cost unavailable');
-  }
-  expect(part).toEqual(snapshot);
 });

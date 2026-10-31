@@ -10,6 +10,7 @@ import {
 } from './events';
 
 const bundle: ChannelBundle = {
+  delivery: { maxDeliveryParts: 100 },
   channel: {
     channelId: 'binding',
     tenantId: 'tenant',

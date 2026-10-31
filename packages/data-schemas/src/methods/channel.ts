@@ -5,7 +5,6 @@ import type { AgentChannelRecord } from '~/models/channel';
 import { retireAgentChannel, initializeChannelScope, touchChannelScope } from './channelScope';
 import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
-import { createAgentChannelThreadModel } from '~/models/channel';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createChannelIndexGate } from './channelIndexes';
 
@@ -21,7 +20,6 @@ export type AgentChannelMetadata = Pick<
   | 'credentialMode'
   | 'revision'
   | 'slack'
-  | 'apiKeyId'
 >;
 
 export type AgentChannelDeletionResult =
@@ -65,9 +63,8 @@ export function createAgentChannelMethods(
   getStorageConfig: () => Promise<Partial<ChannelStorageConfig>> = async () => ({}),
 ): AgentChannelMethods {
   const channel = () => mongoose.model<AgentChannelRecord>('AgentChannel');
-  const threads = () => createAgentChannelThreadModel(mongoose);
   const ensureIndexes = createChannelIndexGate(() => [channel()]);
-  const secrets = '+encryptedBotToken +encryptedSigningSecret +encryptedApiKey +apiKeyId';
+  const secrets = '+encryptedBotToken +encryptedSigningSecret';
 
   async function ownerWrite<T>(
     createdBy: string,
@@ -160,7 +157,6 @@ export function createAgentChannelMethods(
           'slack.teamId': 1,
           'slack.appId': 1,
           'slack.botUserId': 1,
-          apiKeyId: 1,
         })
         .lean();
     },
@@ -227,7 +223,6 @@ export function createAgentChannelMethods(
         return { status: 'pending_drain' };
       // Keep the deleting parent available for a retry if dependent cleanup fails.
       await eraseChannelFeedbackForChannel(mongoose, deleting.tenantId, channelId);
-      await threads().deleteMany({ channelId, tenantId: deleting.tenantId || { $in: [null, ''] } });
       const result = await channel().deleteOne({
         channelId,
         createdBy,

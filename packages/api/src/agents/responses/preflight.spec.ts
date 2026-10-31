@@ -197,7 +197,7 @@ async function fixture(
       const published = await storage.publishReview(
         owner,
         responseId,
-        1,
+        { execution: (await storage.read(owner, responseId))! },
         execution.createdAt,
         {
           actionId: action.actionId,

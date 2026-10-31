@@ -22,6 +22,11 @@ let mongo: MongoMemoryReplSet;
 let storage: ResponseStorage;
 const owner = { userId: 'owner', tenantId: 'tenant-a' };
 const scoped = <T>(work: () => Promise<T>) => tenantStorage.run({ tenantId: owner.tenantId }, work);
+async function executionGuard(responseId: string) {
+  const execution = await scoped(() => storage.read(owner, responseId));
+  if (!execution) throw new Error('Missing execution fixture');
+  return { execution };
+}
 const reservation = (overrides: Partial<ResponseReservation> = {}): ResponseReservation => ({
   ...owner,
   responseId: 'resp_one',
@@ -496,7 +501,7 @@ async function pause() {
   const paused = await storage.publishReview(
     owner,
     'resp_one',
-    1,
+    await executionGuard('resp_one'),
     10,
     review,
     '{"status":"requires_action"}',
@@ -506,11 +511,11 @@ async function pause() {
 
 it('retains a valid private visible-token seed and rejects fractional, negative or overflowing counters', () =>
   scoped(async () => {
-    await pause();
+    await runningForReview();
     const result = await storage.publishReview(
       owner,
       'resp_one',
-      2,
+      await executionGuard('resp_one'),
       10,
       { ...review, visibleOutputTokens: 13 },
       '{"status":"requires_action"}',
@@ -523,12 +528,12 @@ it('retains a valid private visible-token seed and rejects fractional, negative 
         storage.publishReview(
           owner,
           'resp_one',
-          result.record.revision,
+          await executionGuard('resp_one'),
           10,
           { ...review, visibleOutputTokens },
           '{}',
         ),
-      ).rejects.toThrow();
+      ).resolves.toEqual({ ok: false, code: 'response_conflict' });
     expect((await storage.read(owner, 'resp_one'))?.review?.visibleOutputTokens).toBe(13);
   }));
 
@@ -628,7 +633,16 @@ it('keeps review and resume mutations owner- and tenant-scoped', () =>
       { ...owner, tenantId: 'other' },
     ]) {
       await tenantStorage.run({ tenantId: stranger.tenantId }, async () => {
-        expect(await storage.publishReview(stranger, 'resp_one', 2, 10, review, '{}')).toEqual({
+        expect(
+          await storage.publishReview(
+            stranger,
+            'resp_one',
+            await executionGuard('resp_one'),
+            10,
+            review,
+            '{}',
+          ),
+        ).toEqual({
           ok: false,
           code: 'response_conflict',
         });
@@ -656,7 +670,16 @@ it('fences late pause callbacks and allows only the admitted next segment to pau
   scoped(async () => {
     await pause();
     await storage.reserveResume(owner, 'resp_one', resume(), 100);
-    expect(await storage.publishReview(owner, 'resp_one', 3, 10, review, '{}')).toEqual({
+    expect(
+      await storage.publishReview(
+        owner,
+        'resp_one',
+        await executionGuard('resp_one'),
+        10,
+        review,
+        '{}',
+      ),
+    ).toEqual({
       ok: false,
       code: 'response_conflict',
     });
@@ -686,12 +709,32 @@ it('fences late pause callbacks and allows only the admitted next segment to pau
         )
       ).ok,
     ).toBe(true);
-    expect(await storage.publishReview(owner, 'resp_one', 4, 10, review, '{}')).toEqual({
+    expect(
+      await storage.publishReview(
+        owner,
+        'resp_one',
+        await executionGuard('resp_one'),
+        10,
+        review,
+        '{}',
+      ),
+    ).toEqual({
       ok: false,
       code: 'response_conflict',
     });
     const next = { ...review, actionId: 'action-two', providerExecutionId: 'provider-two' };
-    expect((await storage.publishReview(owner, 'resp_one', 4, 10, next, '{}')).ok).toBe(true);
+    expect(
+      (
+        await storage.publishReview(
+          owner,
+          'resp_one',
+          await executionGuard('resp_one'),
+          10,
+          next,
+          '{}',
+        )
+      ).ok,
+    ).toBe(true);
     expect(await storage.read(owner, 'resp_one')).toMatchObject({
       status: 'requires_action',
       review: next,
@@ -712,7 +755,16 @@ it('cancellation prevents a reserved decision from admitting execution', () =>
     expect(
       await storage.admitResume(owner, 'resp_one', 'intent-one', 10, 'provider-two', '{}', 102),
     ).toEqual({ ok: false, code: 'response_conflict' });
-    expect(await storage.publishReview(owner, 'resp_one', 3, 10, review, '{}')).toEqual({
+    expect(
+      await storage.publishReview(
+        owner,
+        'resp_one',
+        await executionGuard('resp_one'),
+        10,
+        review,
+        '{}',
+      ),
+    ).toEqual({
       ok: false,
       code: 'response_conflict',
     });
@@ -733,7 +785,16 @@ it('does not admit or repause terminal responses but retains the identical decis
     expect(
       await storage.admitResume(owner, 'resp_one', 'intent-one', 10, 'provider-two', '{}', 102),
     ).toEqual({ ok: false, code: 'response_conflict' });
-    expect(await storage.publishReview(owner, 'resp_one', 4, 10, review, '{}')).toEqual({
+    expect(
+      await storage.publishReview(
+        owner,
+        'resp_one',
+        await executionGuard('resp_one'),
+        10,
+        review,
+        '{}',
+      ),
+    ).toEqual({
       ok: false,
       code: 'response_conflict',
     });
@@ -883,7 +944,10 @@ it('stages an initial terminal receipt without requiring a review or resume', ()
       responseJSON: '{}',
       generationCreatedAt: 10,
     });
-    expect((await storage.stageTerminal(owner, 'resp_one', 1, outcome)).ok).toBe(true);
+    expect(
+      (await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), outcome))
+        .ok,
+    ).toBe(true);
     expect((await storage.finishTerminal(owner, 'resp_one', 2, outcome)).ok).toBe(true);
   }));
 
@@ -893,7 +957,10 @@ it('stages the admitted provider terminal receipt without requiring another revi
     await storage.reserveResume(owner, 'resp_one', resume(), 100);
     await storage.admitResume(owner, 'resp_one', 'intent-one', 10, 'provider-two', '{}', 101);
     const current = { ...outcome, providerExecutionId: 'provider-two' };
-    expect((await storage.stageTerminal(owner, 'resp_one', 4, current)).ok).toBe(true);
+    expect(
+      (await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), current))
+        .ok,
+    ).toBe(true);
     expect((await storage.finishTerminal(owner, 'resp_one', 5, current)).ok).toBe(true);
   }));
 
@@ -923,18 +990,32 @@ it('rejects terminal receipts from an earlier segment after resume admission and
     await pause();
     await storage.reserveResume(owner, 'resp_one', resume(), 100);
     await storage.admitResume(owner, 'resp_one', 'intent-one', 10, 'provider-two', '{}', 101);
-    expect(await storage.stageTerminal(owner, 'resp_one', 4, outcome)).toEqual({
+    expect(
+      await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), outcome),
+    ).toEqual({
       ok: false,
       code: 'response_conflict',
     });
     const next = { ...review, actionId: 'action-two', providerExecutionId: 'provider-two' };
-    await storage.publishReview(owner, 'resp_one', 4, 10, next, '{}');
-    expect(await storage.stageTerminal(owner, 'resp_one', 5, outcome)).toEqual({
+    await storage.publishReview(
+      owner,
+      'resp_one',
+      await executionGuard('resp_one'),
+      10,
+      next,
+      '{}',
+    );
+    expect(
+      await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), outcome),
+    ).toEqual({
       ok: false,
       code: 'response_conflict',
     });
     const current = { ...outcome, providerExecutionId: 'provider-two' };
-    expect((await storage.stageTerminal(owner, 'resp_one', 5, current)).ok).toBe(true);
+    expect(
+      (await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), current))
+        .ok,
+    ).toBe(true);
     expect((await storage.finishTerminal(owner, 'resp_one', 6, current)).ok).toBe(true);
   }));
 
@@ -942,7 +1023,9 @@ it('durably stages one immutable terminal receipt while keeping its output priva
   scoped(async () => {
     await pause();
     const results = await Promise.all(
-      Array.from({ length: 12 }, () => storage.stageTerminal(owner, 'resp_one', 2, outcome)),
+      Array.from({ length: 12 }, async () =>
+        storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), outcome),
+      ),
     );
     expect(results.every((result) => result.ok)).toBe(true);
     const record = (await storage.read(owner, 'resp_one'))!;
@@ -953,24 +1036,39 @@ it('durably stages one immutable terminal receipt while keeping its output priva
     });
     expect(record.responseJSON).not.toContain('private until cleanup');
     expect(
-      await storage.stageTerminal(owner, 'resp_one', 3, { ...outcome, status: 'failed' }),
+      await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), {
+        ...outcome,
+        status: 'failed',
+      }),
     ).toEqual({ ok: false, code: 'response_conflict' });
     expect(
-      await storage.stageTerminal(owner, 'resp_one', 3, { ...outcome, ownerId: 'other-worker' }),
+      await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), {
+        ...outcome,
+        ownerId: 'other-worker',
+      }),
     ).toEqual({ ok: false, code: 'response_conflict' });
   }));
 
 it('prevents Stop, review and resume writes from overwriting a staged terminal outcome', () =>
   scoped(async () => {
     await pause();
-    await storage.stageTerminal(owner, 'resp_one', 2, outcome);
+    await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), outcome);
     expect(
       await storage.publish(owner, 'resp_one', 3, {
         status: 'cancelled',
         responseJSON: 'overwrite',
       }),
     ).toEqual({ ok: false, code: 'response_conflict' });
-    expect(await storage.publishReview(owner, 'resp_one', 3, 10, review, '{}')).toEqual({
+    expect(
+      await storage.publishReview(
+        owner,
+        'resp_one',
+        await executionGuard('resp_one'),
+        10,
+        review,
+        '{}',
+      ),
+    ).toEqual({
       ok: false,
       code: 'response_conflict',
     });
@@ -986,7 +1084,7 @@ it('prevents Stop, review and resume writes from overwriting a staged terminal o
 it('publishes only the exact saved receipt and removes it atomically with terminal publication', () =>
   scoped(async () => {
     await pause();
-    await storage.stageTerminal(owner, 'resp_one', 2, outcome);
+    await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), outcome);
     for (const changed of [
       { ownerId: 'other' },
       { checkpointNamespace: 'other' },
@@ -1007,7 +1105,9 @@ it('publishes only the exact saved receipt and removes it atomically with termin
       revision: 4,
     });
     expect(record.pendingTerminal).toBeUndefined();
-    expect(await storage.stageTerminal(owner, 'resp_one', 4, outcome)).toEqual({
+    expect(
+      await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), outcome),
+    ).toEqual({
       ok: false,
       code: 'response_conflict',
     });
@@ -1016,13 +1116,20 @@ it('publishes only the exact saved receipt and removes it atomically with termin
 it('does not stage or publish another user or tenant terminal result', () =>
   scoped(async () => {
     await pause();
-    await storage.stageTerminal(owner, 'resp_one', 2, outcome);
+    await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), outcome);
     for (const stranger of [
       { ...owner, userId: 'other' },
       { ...owner, tenantId: 'other' },
     ]) {
       await tenantStorage.run({ tenantId: stranger.tenantId }, async () => {
-        expect(await storage.stageTerminal(stranger, 'resp_one', 3, outcome)).toEqual({
+        expect(
+          await storage.stageTerminal(
+            stranger,
+            'resp_one',
+            await executionGuard('resp_one'),
+            outcome,
+          ),
+        ).toEqual({
           ok: false,
           code: 'response_conflict',
         });
@@ -1210,14 +1317,19 @@ it('requires checkpoint cleanup for an initial staged terminal without a review 
     });
     expect(running.ok).toBe(true);
     if (!running.ok) return;
-    const staged = await storage.stageTerminal(owner, 'resp_one', running.record.revision, {
-      generationCreatedAt: 42,
-      providerExecutionId: 'initial-provider',
-      status: 'failed',
-      responseJSON: '{}',
-      checkpointNamespace: 'checkpoint-one',
-      checkpointConfigJSON: '{"saver":"initial"}',
-    });
+    const staged = await storage.stageTerminal(
+      owner,
+      'resp_one',
+      await executionGuard('resp_one'),
+      {
+        generationCreatedAt: 42,
+        providerExecutionId: 'initial-provider',
+        status: 'failed',
+        responseJSON: '{}',
+        checkpointNamespace: 'checkpoint-one',
+        checkpointConfigJSON: '{"saver":"initial"}',
+      },
+    );
     expect(staged.ok).toBe(true);
     expect(await storage.readCleanupIdentity(owner, 'resp_one')).toMatchObject({
       checkpointNamespace: 'checkpoint-one',
@@ -1662,9 +1774,6 @@ it('stages one exact execution receipt independently of repeated projection revi
         ).ok,
       ).toBe(true);
     }
-    expect(
-      await storage.stageTerminal(owner, 'resp_one', running.record.revision, outcome),
-    ).toEqual({ ok: false, code: 'response_conflict' });
     const attempts = await Promise.all(
       Array.from({ length: 12 }, () =>
         storage.stageTerminal(owner, 'resp_one', { execution: running.record }, outcome),
@@ -1765,9 +1874,6 @@ it('publishes one immutable pause independently of polling before and after publ
         ).ok,
       ).toBe(true);
     }
-    expect(
-      await storage.publishReview(owner, 'resp_one', running.revision, 10, review, '{}'),
-    ).toEqual({ ok: false, code: 'response_conflict' });
     const attempts = await Promise.all(
       Array.from({ length: 12 }, () =>
         storage.publishReview(owner, 'resp_one', { execution: running }, 10, review, '{}'),
@@ -2053,7 +2159,7 @@ it('does not return an aborted attempt success when the transaction retries afte
   }));
 
 it.each(['prepared', 'pending'] as const)(
-  'fences new-format %s receipts from legacy-active writers and unfenced retries',
+  'keeps %s materialization private until exact publication completes',
   (phase) =>
     scoped(async () => {
       const running = await runningForReview();
@@ -2252,9 +2358,9 @@ it('fences late create acknowledgements from a newer resume and does not bump ex
     ).toEqual([]);
   }));
 
-it('recovers legacy reservations and resume intents without acknowledging another tenant or closed scope', () =>
+it('recovers pending dispatch tokens without acknowledging another tenant or closed scope', () =>
   scoped(async () => {
-    await storage.reserve(reservation());
+    await storage.reserve(reservation({ dispatch: true }));
     const page = await runAsSystem(() => storage.listPendingDispatches(undefined, 1, false));
     expect(page.responses).toEqual([{ ...owner, responseId: 'resp_one' }]);
     await expect(storage.listPendingDispatches(undefined, 1, false)).rejects.toThrow('system');
@@ -2270,7 +2376,7 @@ it('recovers legacy reservations and resume intents without acknowledging anothe
     ).toBe(false);
   }));
 
-it('finds legacy resume writes after an earlier create marker was settled', () =>
+it('does not repair an inconsistent resume marker from an earlier create', () =>
   scoped(async () => {
     await pause();
     await storage.reserveResume(owner, 'resp_one', resume(), 100);
@@ -2283,10 +2389,10 @@ it('finds legacy resume writes after an earlier create marker was settled', () =
     ).toEqual([]);
     expect(
       (await runAsSystem(() => storage.listPendingDispatches(undefined, 10, true))).responses,
-    ).toEqual([{ ...owner, responseId: 'resp_one' }]);
+    ).toEqual([]);
     expect(
       await storage.settleDispatch(owner, 'resp_one', { kind: 'resume', id: 'intent-one' }),
-    ).toBe(true);
+    ).toBe(false);
   }));
 
 it('bounds metadata pages across named and default tenants and omits expired requests', async () => {

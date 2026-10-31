@@ -45,6 +45,7 @@ function fixture() {
     AGENT_INVOKE_TIMEOUT_MS: '2000',
   });
   const bundle: ChannelBundle = {
+    delivery: { maxDeliveryParts: 100 },
     gateway: { version: 1, ...DEFAULT_CHANNEL_GATEWAY_POLICY, transport: 'socket_mode' },
     channel: {
       channelId: config.CHANNEL_ID,
