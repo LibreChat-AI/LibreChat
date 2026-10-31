@@ -1,3 +1,4 @@
+import type { ClientSession } from 'mongoose';
 import type {
   ResponseOwner,
   StoredResponseRecord,
@@ -6,6 +7,7 @@ import type {
   ResponseResumeIntent,
   ResponseTerminalReceipt,
 } from '~/models/response';
+import type { ResponseTurnWrites } from './responseTurn';
 import {
   responseScopeKeys,
   responseOwnerFilter,
@@ -17,6 +19,7 @@ import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
 import { getTransactionSupport } from '~/utils/transactions';
 import { activeExpirationFilter } from '~/utils/retention';
+import { materializeResponseTurn } from './responseTurn';
 import { createIndexesWithRetry } from '~/utils/retry';
 
 export type {
@@ -148,17 +151,25 @@ function responseExecutionFilter(guard: Exclude<ResponseExecutionGuard, number>)
 }
 
 export interface ResponseStorage {
+  prepareTerminal(
+    owner: ResponseOwner,
+    responseId: string,
+    guard: Exclude<ResponseExecutionGuard, number>,
+    receipt: ResponseTerminalReceipt,
+  ): Promise<ResponseMutationResult>;
   stageTerminal(
     owner: ResponseOwner,
     responseId: string,
     guard: ResponseTerminalGuard,
     receipt: ResponseTerminalReceipt,
+    promotion?: { receipt: ResponseTerminalReceipt; cancellationRequestedAt?: number },
   ): Promise<ResponseMutationResult>;
   finishTerminal(
     owner: ResponseOwner,
     responseId: string,
     revision: number,
     receipt: ResponseTerminalReceipt,
+    writes?: ResponseTurnWrites,
   ): Promise<ResponseMutationResult>;
   publishReview(
     owner: ResponseOwner,
@@ -210,20 +221,77 @@ export interface ResponseStorage {
 
 const active = ['queued', 'in_progress', 'requires_action'];
 
-function sameTerminal(a: ResponseTerminalReceipt, b: ResponseTerminalReceipt): boolean {
-  return (
-    a.generationCreatedAt === b.generationCreatedAt &&
-    a.providerExecutionId === b.providerExecutionId &&
-    a.ownerId === b.ownerId &&
-    a.status === b.status &&
-    a.responseJSON === b.responseJSON &&
-    a.checkpointNamespace === b.checkpointNamespace &&
-    a.checkpointConfigJSON === b.checkpointConfigJSON
+export function sameResponseTerminalReceipt(
+  a: ResponseTerminalReceipt,
+  b: ResponseTerminalReceipt,
+): boolean {
+  const fields: Record<keyof ResponseTerminalReceipt, boolean> = {
+    generationCreatedAt: a.generationCreatedAt === b.generationCreatedAt,
+    providerExecutionId: a.providerExecutionId === b.providerExecutionId,
+    ownerId: a.ownerId === b.ownerId,
+    status: a.status === b.status,
+    responseJSON: a.responseJSON === b.responseJSON,
+    turnJSON: a.turnJSON === b.turnJSON,
+    checkpointNamespace: a.checkpointNamespace === b.checkpointNamespace,
+    checkpointConfigJSON: a.checkpointConfigJSON === b.checkpointConfigJSON,
+  };
+  return Object.values(fields).every(Boolean);
+}
+
+function terminalReceipt(receipt: ResponseTerminalReceipt): ResponseTerminalReceipt {
+  return {
+    generationCreatedAt: receipt.generationCreatedAt,
+    providerExecutionId: receipt.providerExecutionId,
+    ...(receipt.ownerId == null ? {} : { ownerId: receipt.ownerId }),
+    status: receipt.status,
+    responseJSON: receipt.responseJSON,
+    ...(receipt.turnJSON == null ? {} : { turnJSON: receipt.turnJSON }),
+    ...(receipt.checkpointNamespace == null
+      ? {}
+      : { checkpointNamespace: receipt.checkpointNamespace }),
+    ...(receipt.checkpointConfigJSON == null
+      ? {}
+      : { checkpointConfigJSON: receipt.checkpointConfigJSON }),
+  };
+}
+
+function terminalFilter(prefix: string, receipt: ResponseTerminalReceipt): Record<string, unknown> {
+  const fields: Record<
+    keyof ResponseTerminalReceipt,
+    ResponseTerminalReceipt[keyof ResponseTerminalReceipt]
+  > = {
+    generationCreatedAt: receipt.generationCreatedAt,
+    providerExecutionId: receipt.providerExecutionId,
+    ownerId: receipt.ownerId,
+    status: receipt.status,
+    responseJSON: receipt.responseJSON,
+    turnJSON: receipt.turnJSON,
+    checkpointNamespace: receipt.checkpointNamespace,
+    checkpointConfigJSON: receipt.checkpointConfigJSON,
+  };
+  return Object.fromEntries(
+    Object.entries(fields).map(([key, value]) => [`${prefix}.${key}`, value ?? { $exists: false }]),
   );
 }
 
+function terminalProviderFilter(receipt: ResponseTerminalReceipt) {
+  return {
+    $or: [
+      { 'resume.state': 'admitted', 'resume.providerExecutionId': receipt.providerExecutionId },
+      {
+        'resume.state': { $ne: 'admitted' },
+        'review.providerExecutionId': receipt.providerExecutionId,
+      },
+      { review: { $exists: false }, resume: { $exists: false } },
+    ],
+  };
+}
+
 /** Authorization precedes this storage boundary; every read/write remains owner- and tenant-scoped. */
-export function createResponseStorage(mongoose: typeof import('mongoose')): ResponseStorage {
+export function createResponseStorage(
+  mongoose: typeof import('mongoose'),
+  options?: { getMCPAppMessageBudget?: () => Promise<number | undefined> },
+): ResponseStorage {
   const model = createStoredResponseModel(mongoose);
   let indexPromise: Promise<void> | undefined;
   let transactionSupport: boolean | null = null;
@@ -252,92 +320,233 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
     ...ownerScope(owner),
     $and: [activeExpirationFilter<StoredResponseRecord>()],
   });
+  async function commitInOpenScope<T>(
+    owner: ResponseOwner,
+    responseId: string,
+    apply: (session: ClientSession, record: StoredResponseRecord) => Promise<T>,
+    conflict: T,
+  ): Promise<T> {
+    transactionSupport = await getTransactionSupport(mongoose, transactionSupport);
+    if (!transactionSupport) throw new Error('Response publication requires transactions');
+    const current = await model.findOne({ ...scope(owner), responseId }).lean();
+    if (!current) return conflict;
+    const keys = responseScopeKeys(owner, current.conversationId);
+    await initializeResponseScopes(mongoose, keys);
+    const session = await mongoose.startSession();
+    try {
+      let result = conflict;
+      await session.withTransaction(async () => {
+        result = conflict;
+        const scopes = createResponseScopeModel(mongoose);
+        for (const key of keys) {
+          const touched = await scopes.updateOne(
+            { _id: key, closed: false, $and: [activeExpirationFilter()] },
+            { $inc: { revision: 1 } },
+            { session },
+          );
+          if (touched.matchedCount !== 1) return;
+        }
+        const record = await model
+          .findOne({ ...scope(owner), responseId })
+          .session(session)
+          .lean();
+        if (record) result = await apply(session, record);
+      });
+      return result;
+    } finally {
+      await session.endSession();
+    }
+  }
   return {
-    async stageTerminal(owner, responseId, guard, receipt) {
+    async prepareTerminal(owner, responseId, guard, receipt) {
+      if (guard.execution.generationCreatedAt !== receipt.generationCreatedAt)
+        return { ok: false, code: 'response_conflict' };
+      const execution = responseExecutionFilter(guard);
+      const preparedTerminal = terminalReceipt(receipt);
+      return commitInOpenScope<ResponseMutationResult>(
+        owner,
+        responseId,
+        async (session) => {
+          const record = await model
+            .findOneAndUpdate(
+              {
+                ...scope(owner),
+                responseId,
+                ...execution,
+                status: { $in: active },
+                preparedTerminal: { $exists: false },
+                pendingTerminal: { $exists: false },
+                ...terminalProviderFilter(receipt),
+              },
+              {
+                $set: {
+                  preparedTerminal,
+                  ...(receipt.turnJSON != null ? { status: 'materializing' } : {}),
+                },
+                $inc: { revision: 1 },
+              },
+              { new: true, runValidators: true, session },
+            )
+            .lean();
+          if (record) return { ok: true, record };
+          const existing = await model
+            .findOne({ ...scope(owner), responseId, ...execution })
+            .session(session)
+            .lean();
+          if (
+            existing?.preparedTerminal &&
+            (receipt.turnJSON != null
+              ? existing.status === 'materializing'
+              : active.includes(existing.status)) &&
+            !existing.pendingTerminal &&
+            sameResponseTerminalReceipt(existing.preparedTerminal, preparedTerminal)
+          )
+            return { ok: true, record: existing };
+          return { ok: false, code: 'response_conflict' };
+        },
+        { ok: false, code: 'response_conflict' },
+      );
+    },
+    async stageTerminal(owner, responseId, guard, receipt, promotion) {
+      const prepared = promotion?.receipt;
+      if (
+        prepared &&
+        (prepared.generationCreatedAt !== receipt.generationCreatedAt ||
+          prepared.providerExecutionId !== receipt.providerExecutionId ||
+          prepared.ownerId !== receipt.ownerId ||
+          prepared.turnJSON !== receipt.turnJSON ||
+          prepared.checkpointNamespace !== receipt.checkpointNamespace ||
+          prepared.checkpointConfigJSON !== receipt.checkpointConfigJSON)
+      )
+        return { ok: false, code: 'response_conflict' };
       if (
         typeof guard !== 'number' &&
         guard.execution.generationCreatedAt !== receipt.generationCreatedAt
       )
         return { ok: false, code: 'response_conflict' };
       const execution = typeof guard === 'number' ? undefined : responseExecutionFilter(guard);
-      const pendingTerminal: ResponseTerminalReceipt = {
-        generationCreatedAt: receipt.generationCreatedAt,
-        providerExecutionId: receipt.providerExecutionId,
-        ...(receipt.ownerId == null ? {} : { ownerId: receipt.ownerId }),
-        status: receipt.status,
-        responseJSON: receipt.responseJSON,
-        ...(receipt.checkpointNamespace == null
-          ? {}
-          : { checkpointNamespace: receipt.checkpointNamespace }),
-        ...(receipt.checkpointConfigJSON == null
-          ? {}
-          : { checkpointConfigJSON: receipt.checkpointConfigJSON }),
-      };
-      const record = await model
-        .findOneAndUpdate(
-          {
-            ...scope(owner),
-            responseId,
-            ...(execution ?? { revision: guard }),
-            generationCreatedAt: receipt.generationCreatedAt,
-            status: { $in: active },
-            pendingTerminal: { $exists: false },
-            $or: [
+      const pendingTerminal = terminalReceipt(receipt);
+      return commitInOpenScope<ResponseMutationResult>(
+        owner,
+        responseId,
+        async (session) => {
+          const record = await model
+            .findOneAndUpdate(
               {
-                'resume.state': 'admitted',
-                'resume.providerExecutionId': receipt.providerExecutionId,
+                ...scope(owner),
+                responseId,
+                ...(execution ?? { revision: guard }),
+                generationCreatedAt: receipt.generationCreatedAt,
+                status: promotion && receipt.turnJSON != null ? 'materializing' : { $in: active },
+                pendingTerminal: { $exists: false },
+                ...(promotion
+                  ? {
+                      ...terminalFilter('preparedTerminal', promotion.receipt),
+                      cancellationRequestedAt: promotion.cancellationRequestedAt ?? {
+                        $exists: false,
+                      },
+                    }
+                  : { preparedTerminal: { $exists: false } }),
+                ...terminalProviderFilter(receipt),
               },
               {
-                'resume.state': { $ne: 'admitted' },
-                'review.providerExecutionId': receipt.providerExecutionId,
+                $set: {
+                  pendingTerminal,
+                  ...(receipt.turnJSON != null ? { status: 'materializing' } : {}),
+                },
+                $unset: { preparedTerminal: 1 },
+                $inc: { revision: 1 },
               },
-              { review: { $exists: false }, resume: { $exists: false } },
-            ],
-          },
-          { $set: { pendingTerminal }, $inc: { revision: 1 } },
-          { new: true, runValidators: true },
-        )
-        .lean();
-      if (record) return { ok: true, record };
-      const existing = await model.findOne({ ...scope(owner), responseId, ...execution }).lean();
-      if (
-        existing?.generationCreatedAt === receipt.generationCreatedAt &&
-        existing.pendingTerminal &&
-        sameTerminal(existing.pendingTerminal, pendingTerminal)
-      )
-        return { ok: true, record: existing };
-      return { ok: false, code: 'response_conflict' };
+              { new: true, runValidators: true, session },
+            )
+            .lean();
+          if (record) return { ok: true, record };
+          const existing = await model
+            .findOne({ ...scope(owner), responseId, ...execution })
+            .session(session)
+            .lean();
+          if (
+            existing?.generationCreatedAt === receipt.generationCreatedAt &&
+            existing.pendingTerminal &&
+            (receipt.turnJSON != null
+              ? existing.status === 'materializing'
+              : active.includes(existing.status)) &&
+            sameResponseTerminalReceipt(existing.pendingTerminal, pendingTerminal)
+          )
+            return { ok: true, record: existing };
+          return { ok: false, code: 'response_conflict' };
+        },
+        { ok: false, code: 'response_conflict' },
+      );
     },
-    async finishTerminal(owner, responseId, revision, receipt) {
-      const record = await model
-        .findOneAndUpdate(
-          {
-            ...scope(owner),
-            responseId,
-            revision,
-            generationCreatedAt: receipt.generationCreatedAt,
-            status: { $in: active },
-            'pendingTerminal.generationCreatedAt': receipt.generationCreatedAt,
-            'pendingTerminal.providerExecutionId': receipt.providerExecutionId,
-            'pendingTerminal.ownerId': receipt.ownerId ?? { $exists: false },
-            'pendingTerminal.status': receipt.status,
-            'pendingTerminal.responseJSON': receipt.responseJSON,
-            'pendingTerminal.checkpointNamespace': receipt.checkpointNamespace ?? {
-              $exists: false,
-            },
-            'pendingTerminal.checkpointConfigJSON': receipt.checkpointConfigJSON ?? {
-              $exists: false,
-            },
-          },
-          {
-            $set: { status: receipt.status, responseJSON: receipt.responseJSON },
-            $unset: { pendingTerminal: 1 },
-            $inc: { revision: 1 },
-          },
-          { new: true },
-        )
-        .lean();
-      return record ? { ok: true, record } : { ok: false, code: 'response_conflict' };
+    async finishTerminal(owner, responseId, revision, receipt, writes) {
+      if (
+        (receipt.turnJSON != null) !== (writes != null) ||
+        (writes &&
+          (writes.intentJSON !== receipt.turnJSON || writes.context.userId !== owner.userId))
+      )
+        throw new Error('Response canonical projection identity changed');
+      // Resolve operator configuration before opening the database transaction.
+      const budget = writes ? await options?.getMCPAppMessageBudget?.() : undefined;
+      return commitInOpenScope<ResponseMutationResult>(
+        owner,
+        responseId,
+        async (session, current) => {
+          if (
+            current.revision !== revision ||
+            current.generationCreatedAt !== receipt.generationCreatedAt ||
+            (receipt.turnJSON != null
+              ? current.status !== 'materializing'
+              : !active.includes(current.status)) ||
+            !current.pendingTerminal ||
+            !sameResponseTerminalReceipt(current.pendingTerminal, receipt)
+          )
+            return { ok: false, code: 'response_conflict' };
+          if (writes) {
+            if (
+              writes.conversation.conversationId !== current.conversationId ||
+              writes.messages[writes.messages.length - 1]?.messageId !== current.responseId ||
+              writes.messages.some((message) => message.conversationId !== current.conversationId)
+            )
+              throw new Error('Response canonical history identity changed');
+            await materializeResponseTurn(
+              mongoose,
+              session,
+              {
+                ...writes,
+                context: {
+                  ...writes.context,
+                  ...(current.isTemporary === true ? { isTemporary: true } : {}),
+                  ...(current.expiredAt &&
+                  (!writes.context.expiredAt || current.expiredAt < writes.context.expiredAt)
+                    ? { expiredAt: current.expiredAt }
+                    : {}),
+                },
+              },
+              async () => budget,
+            );
+          }
+          const record = await model
+            .findOneAndUpdate(
+              {
+                ...scope(owner),
+                responseId,
+                revision,
+                ...terminalFilter('pendingTerminal', receipt),
+              },
+              {
+                $set: { status: receipt.status, responseJSON: receipt.responseJSON },
+                $unset: { pendingTerminal: 1, preparedTerminal: 1 },
+                $inc: { revision: 1 },
+              },
+              { new: true, session },
+            )
+            .lean();
+          if (!record) throw new Error('Response publication changed during materialization');
+          return { ok: true, record };
+        },
+        { ok: false, code: 'response_conflict' },
+      );
     },
     async publishReview(owner, responseId, guard, generationCreatedAt, review, responseJSON) {
       if (typeof guard !== 'number' && guard.execution.generationCreatedAt !== generationCreatedAt)
@@ -357,6 +566,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
               status: 'requires_action',
               resume: { $exists: false },
               pendingTerminal: { $exists: false },
+              preparedTerminal: { $exists: false },
               cancellationRequestedAt: { $exists: false },
             };
       if (
@@ -377,6 +587,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
             generationCreatedAt,
             status: { $in: ['in_progress', 'requires_action'] },
             pendingTerminal: { $exists: false },
+            preparedTerminal: { $exists: false },
             cancellationRequestedAt: { $exists: false },
             $or: [
               { review: { $exists: false }, resume: { $exists: false } },
@@ -436,6 +647,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
             generationCreatedAt: input.generationCreatedAt,
             status: 'requires_action',
             pendingTerminal: { $exists: false },
+            preparedTerminal: { $exists: false },
             cancellationRequestedAt: { $exists: false },
             resume: { $exists: false },
             'review.actionId': input.actionId,
@@ -494,6 +706,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
             generationCreatedAt,
             status: 'requires_action',
             pendingTerminal: { $exists: false },
+            preparedTerminal: { $exists: false },
             cancellationRequestedAt: { $exists: false },
             'resume.intentId': intentId,
             'resume.providerExecutionId': providerExecutionId,
@@ -629,13 +842,16 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
       }
     },
     async read(owner, responseId) {
-      return model.findOne({ ...scope(owner), responseId }).lean();
+      const record = await model.findOne({ ...scope(owner), responseId }).lean();
+      if (record && (await isResponseScopeClosed(mongoose, owner, record.conversationId)))
+        return null;
+      return record;
     },
     async readCleanupIdentity(owner, responseId, retained) {
       const record = await model
         .findOne({ ...ownerScope(owner), responseId })
         .select(
-          'userId tenantId responseId agentId conversationId generationCreatedAt expiredAt pendingTerminal.checkpointNamespace pendingTerminal.checkpointConfigJSON review.checkpointConfigJSON review.providerExecutionId',
+          'userId tenantId responseId agentId conversationId generationCreatedAt expiredAt pendingTerminal.checkpointNamespace pendingTerminal.checkpointConfigJSON preparedTerminal.checkpointNamespace preparedTerminal.checkpointConfigJSON review.checkpointConfigJSON review.providerExecutionId',
         )
         .lean();
       // Retained data comes only from an internal job/receipt, never request input.
@@ -688,7 +904,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
           : undefined;
       // A staged checkpoint is one binding: never fill an incomplete terminal
       // binding with settings from a prior review or retained provider segment.
-      const terminalCheckpoint = record?.pendingTerminal;
+      const terminalCheckpoint = record?.pendingTerminal ?? record?.preparedTerminal;
       const hasTerminalCheckpoint =
         terminalCheckpoint?.checkpointNamespace != null ||
         terminalCheckpoint?.checkpointConfigJSON != null;
@@ -742,6 +958,8 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
       return record ? { ok: true, record } : { ok: false, code: 'response_conflict' };
     },
     async publish(owner, responseId, revision, update) {
+      // This private phase can only be entered atomically with its terminal receipt.
+      if (update.status === 'materializing') return { ok: false, code: 'response_conflict' };
       if (
         update.generationCreatedAt != null &&
         (!Number.isSafeInteger(update.generationCreatedAt) || update.generationCreatedAt <= 0)
@@ -758,6 +976,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
             revision,
             status: { $in: predecessors },
             pendingTerminal: { $exists: false },
+            preparedTerminal: { $exists: false },
             ...(update.status === 'in_progress'
               ? {
                   $and: [
@@ -795,7 +1014,7 @@ export function createResponseStorage(mongoose: typeof import('mongoose')): Resp
         {
           ...scope(owner),
           responseId,
-          status: { $in: active },
+          status: { $in: [...active, 'materializing'] },
           cancellationRequestedAt: { $exists: false },
           pendingTerminal: { $exists: false },
         },

@@ -3817,9 +3817,42 @@ describe('Conversation Operations', () => {
         ).rejects.toThrow('drain failed');
         expect(await Conversation.exists({ conversationId })).not.toBeNull();
         expect(await mongoose.models.StoredResponse.countDocuments({ conversationId })).toBe(1);
-        expect(
-          await createResponseStorage(mongoose).read({ userId: 'user123' }, response.responseId),
-        ).not.toBeNull();
+        const storage = createResponseStorage(mongoose);
+        expect(await storage.read({ userId: 'user123' }, response.responseId)).toBeNull();
+        const retained = await runAsSystem(() =>
+          mongoose.models.StoredResponse.findOne({
+            userId: 'user123',
+            conversationId,
+            responseId: response.responseId,
+            tenantId: { $exists: false },
+          }).lean(),
+        );
+        expect(retained).toMatchObject({
+          requestJSON: response.requestJSON,
+          responseJSON: response.responseJSON,
+          status: 'completed',
+        });
+        const cleanup = await storage.readCleanupIdentity(
+          { userId: 'user123' },
+          response.responseId,
+        );
+        expect(cleanup).toMatchObject({
+          userId: 'user123',
+          conversationId,
+          responseId: response.responseId,
+          agentId: 'agent',
+          retirement: 'conversation_deleted',
+        });
+        for (const field of [
+          'requestJSON',
+          'responseJSON',
+          'preparedTerminal',
+          'pendingTerminal',
+          'review',
+          'resume',
+        ])
+          expect(cleanup).not.toHaveProperty(field);
+        expect(JSON.stringify(cleanup)).not.toContain('private');
         await deleteConvos('user123', { conversationId });
         expect(await mongoose.models.StoredResponse.countDocuments({ conversationId })).toBe(0);
       });

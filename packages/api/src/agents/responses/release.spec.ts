@@ -1,9 +1,9 @@
 import { tenantStorage } from '@librechat/data-schemas';
 import type { StoredResponseRecord, ResponseTerminalReceipt } from '@librechat/data-schemas';
+import { createResponseExecutionRelease, createResponseExecutionConfirmation } from './completion';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
-import { createResponseExecutionRelease } from './completion';
 
 const owner = { userId: 'release-owner', tenantId: 'release-tenant' };
 const scope = <T>(work: () => Promise<T>) => tenantStorage.run(owner, work);
@@ -22,18 +22,20 @@ afterEach(async () => {
   jest.restoreAllMocks();
 });
 
-async function fixture() {
+async function fixture(phase: 'running' | 'terminal' | 'drained' = 'drained') {
   const responseId = 'resp_release';
   const job = await jobs.createJob(responseId, owner.userId, 'conversation', {
     initialMetadata: { endpoint: 'responses', agent_id: 'agent', responseMessageId: responseId },
   });
   const providerExecutionId = job.metadata.providerExecutionId!;
   await jobs.beginProviderExecution(responseId, job.createdAt, providerExecutionId);
-  await jobs.completeJob(responseId, undefined, job.createdAt, {
-    expectedProviderExecutionId: providerExecutionId,
-    persistencePending: true,
-  });
-  await jobs.markProviderExecutionDrained(responseId, job.createdAt, providerExecutionId, true);
+  if (phase !== 'running')
+    await jobs.completeJob(responseId, undefined, job.createdAt, {
+      expectedProviderExecutionId: providerExecutionId,
+      persistencePending: true,
+    });
+  if (phase === 'drained')
+    await jobs.markProviderExecutionDrained(responseId, job.createdAt, providerExecutionId, true);
   const record: StoredResponseRecord = {
     ...owner,
     responseId,
@@ -57,9 +59,58 @@ async function fixture() {
     status: 'completed',
     responseJSON: '{}',
   };
-  expect((await jobs.getJob(responseId))?.metadata.terminalPersistencePending).toBe(true);
+  if (phase !== 'running')
+    expect((await jobs.getJob(responseId))?.metadata.terminalPersistencePending).toBe(true);
   return { record, receipt, release: createResponseExecutionRelease(jobs) };
 }
+
+it('confirms a prepared result only after the exact persisted provider outcome and drain', () =>
+  scope(async () => {
+    const f = await fixture('running');
+    const confirm = createResponseExecutionConfirmation(jobs);
+    expect(await confirm(f.record, f.receipt)).toBeNull();
+    await jobs.completeJob(f.record.responseId, undefined, f.receipt.generationCreatedAt, {
+      expectedProviderExecutionId: f.receipt.providerExecutionId,
+      persistencePending: true,
+    });
+    expect(await confirm(f.record, f.receipt)).toBeNull();
+    await jobs.markProviderExecutionDrained(
+      f.record.responseId,
+      f.receipt.generationCreatedAt,
+      f.receipt.providerExecutionId,
+      true,
+    );
+    expect(await confirm(f.record, f.receipt)).toBe('complete');
+    expect((await jobs.getJob(f.record.responseId))?.metadata.terminalPersistencePending).toBe(
+      true,
+    );
+    await f.release(f.record, f.receipt);
+    expect(await confirm(f.record, f.receipt)).toBeNull();
+  }));
+
+it('does not turn a confirmation lookup outage into missing or successful drain proof', () =>
+  scope(async () => {
+    const f = await fixture();
+    const failure = new Error('Injected job-store outage');
+    jest.spyOn(jobs, 'getJob').mockRejectedValueOnce(failure);
+    await expect(createResponseExecutionConfirmation(jobs)(f.record, f.receipt)).rejects.toBe(
+      failure,
+    );
+    expect((await jobs.getJob(f.record.responseId))?.metadata.terminalPersistencePending).toBe(
+      true,
+    );
+  }));
+
+it('rejects another provider owner when confirming a prepared result', () =>
+  scope(async () => {
+    const f = await fixture();
+    await expect(
+      createResponseExecutionConfirmation(jobs)(f.record, {
+        ...f.receipt,
+        ownerId: 'different-owner',
+      }),
+    ).rejects.toThrow('identity changed');
+  }));
 
 it('releases exact post-publication terminal proof with production default cleanup enabled', () =>
   scope(async () => {
@@ -86,6 +137,9 @@ it.each([
 ])('does not release another execution for mismatched record %j', (change) =>
   scope(async () => {
     const f = await fixture();
+    await expect(
+      createResponseExecutionConfirmation(jobs)({ ...f.record, ...change }, f.receipt),
+    ).rejects.toThrow('identity changed');
     await expect(f.release({ ...f.record, ...change }, f.receipt)).rejects.toThrow(
       'identity changed',
     );

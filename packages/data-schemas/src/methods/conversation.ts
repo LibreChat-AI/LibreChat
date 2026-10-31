@@ -14,6 +14,7 @@ import type {
   UpdateQuery,
 } from 'mongoose';
 import type { SearchParams } from 'meilisearch';
+import type { ClientSession } from 'mongoose';
 import type {
   IAgentEventActorCheckpoint,
   IAgentEventActorReconciliation,
@@ -63,6 +64,7 @@ import { isCompactionSemanticIndexProjection } from '~/types/compaction';
 import { withoutMeiliIndexing } from '~/models/plugins/mongoMeili';
 import { prepareSubagentContentDeletion } from './subagentContent';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { runAfterTransaction } from '~/utils/postCommit';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { decrementTagCounts } from './conversationTag';
 import logger from '~/config/winston';
@@ -658,6 +660,8 @@ export interface ConversationMethods {
 
 export interface ConversationMethodDeps
   extends Pick<MessageMethods, 'getMessages' | 'deleteMessages'> {
+  /** Private data-schemas transaction for canonical response turn saves. */
+  saveSession?: ClientSession;
   searchMessages?: MessageMethods['searchMessages'];
   deleteAgentQueuedTurns?: (
     user: string,
@@ -677,7 +681,7 @@ export function createConversationMethods(
   mongoose: typeof import('mongoose'),
   deps?: ConversationMethodDeps,
 ): ConversationMethods {
-  const retainResponses = createResponseRetention(mongoose);
+  const retainResponses = createResponseRetention(mongoose, deps?.saveSession);
   const prepareResponseReplacement = createResponseConversationReplacement(mongoose);
   let legacyReceiptExpiryCursor: Types.ObjectId | undefined;
 
@@ -2520,7 +2524,7 @@ export function createConversationMethods(
           const project = await ChatProject.exists({
             _id: new mongoose.Types.ObjectId(candidate),
             user: userId,
-          });
+          }).session(deps?.saveSession ?? null);
           if (project != null) {
             chatProjectIdOnInsert = candidate;
           }
@@ -2598,6 +2602,7 @@ export function createConversationMethods(
       const replacingConversationId = newConversationId && newConversationId !== conversationId;
       if (responseDeadline || replacingConversationId) {
         const stored = await Conversation.findOne({ user: userId, conversationId })
+          .session(deps?.saveSession ?? null)
           .select('tenantId expiredAt')
           .lean<Pick<IConversation, 'tenantId' | 'expiredAt'>>();
         const contextTenant = getTenantId();
@@ -2713,6 +2718,7 @@ export function createConversationMethods(
           new: true,
           upsert,
           includeResultMetadata: true,
+          session: deps?.saveSession,
           ...timestampOptions,
         }) as unknown as Promise<ConversationUpdateResult>;
 
@@ -2750,7 +2756,7 @@ export function createConversationMethods(
          * That is a live conversation, so confirm it is really gone before letting the
          * route answer 404, and retry the pair when it is not. */
         for (let attempt = 0; !conversationResult.value && attempt < 2; attempt++) {
-          if (!(await Conversation.exists(baseFilter))) {
+          if (!(await Conversation.exists(baseFilter).session(deps?.saveSession ?? null))) {
             break;
           }
           conversationResult = await runArchiveWrites();
@@ -2762,7 +2768,7 @@ export function createConversationMethods(
           /** Alternating archive and unarchive requests can split every attempt, so
            * exhausting the retries still proves nothing about whether the chat exists.
            * Answer with its actual current state rather than reporting it missing. */
-          const current = await Conversation.findOne(baseFilter);
+          const current = await Conversation.findOne(baseFilter).session(deps?.saveSession ?? null);
           if (current) {
             conversationResult = {
               value: current as unknown as ConversationUpdateResult['value'],
@@ -2802,7 +2808,7 @@ export function createConversationMethods(
             $or: [{ codeWorkspaces: { $in: [null] } }, { codeWorkspaces: { $size: 0 } }],
           },
           { $set: decisionOnInsert },
-          { timestamps: false },
+          { timestamps: false, session: deps?.saveSession },
         );
         if (seeded.modifiedCount > 0) {
           Object.assign(conversation, decisionOnInsert);
@@ -2832,7 +2838,7 @@ export function createConversationMethods(
             isTemporary: conversation.isTemporary === true ? true : { $ne: true },
           },
           { $set: { expiredAt: deadline } },
-          { timestamps: false },
+          { timestamps: false, session: deps?.saveSession },
         );
         if (result.modifiedCount > 0) {
           conversation.expiredAt = deadline;
@@ -2894,7 +2900,10 @@ export function createConversationMethods(
         await Conversation.updateOne(
           { _id: conversation._id, isTemporary: { $ne: false } },
           { $set: { isTemporary: false } },
-          preserveUpdatedAt || replyStampApplied ? { timestamps: false } : {},
+          {
+            ...(preserveUpdatedAt || replyStampApplied ? { timestamps: false } : {}),
+            session: deps?.saveSession,
+          },
         );
         conversation.isTemporary = false;
       }
@@ -2904,49 +2913,53 @@ export function createConversationMethods(
          on a different collection: letting one of their failures reach the catch below would
          answer a successful save with an error, dropping the stamp from the terminal event and
          presenting a reply the user already watched arrive as unread on the next refresh. */
-      try {
-        if (conversation.chatProjectId) {
-          const isRetentionVisibilityUpdate =
-            typeof update.isTemporary === 'boolean' ||
-            Object.prototype.hasOwnProperty.call(convo, 'expiredAt') ||
-            Object.prototype.hasOwnProperty.call(unsetFields, 'isTemporary') ||
-            Object.prototype.hasOwnProperty.call(unsetFields, 'expiredAt');
-          /**
-           * Saving a conversation that is itself archived or retention-hidden (e.g.
-           * renaming or title generation on an archived project chat) must recompute
-           * stats rather than take the incremental fast path, otherwise the project's
-           * lastConversationAt/Id would point at a chat the project workspace hides.
-           */
-          const isConversationHidden =
-            conversation.isArchived === true ||
-            conversation.isTemporary === true ||
-            (conversation.expiredAt != null &&
-              new Date(conversation.expiredAt).getTime() <= Date.now());
-          const isNewConversation = conversationResult.lastErrorObject?.updatedExisting === false;
-          const shouldRefreshProjectStats =
-            isNewConversation ||
-            typeof update.isArchived === 'boolean' ||
-            Object.prototype.hasOwnProperty.call(unsetFields, 'isArchived') ||
-            isRetentionVisibilityUpdate ||
-            isConversationHidden;
+      const maintainProject = async () => {
+        try {
+          if (conversation.chatProjectId) {
+            const isRetentionVisibilityUpdate =
+              typeof update.isTemporary === 'boolean' ||
+              Object.prototype.hasOwnProperty.call(convo, 'expiredAt') ||
+              Object.prototype.hasOwnProperty.call(unsetFields, 'isTemporary') ||
+              Object.prototype.hasOwnProperty.call(unsetFields, 'expiredAt');
+            /**
+             * Saving a conversation that is itself archived or retention-hidden (e.g.
+             * renaming or title generation on an archived project chat) must recompute
+             * stats rather than take the incremental fast path, otherwise the project's
+             * lastConversationAt/Id would point at a chat the project workspace hides.
+             */
+            const isConversationHidden =
+              conversation.isArchived === true ||
+              conversation.isTemporary === true ||
+              (conversation.expiredAt != null &&
+                new Date(conversation.expiredAt).getTime() <= Date.now());
+            const isNewConversation = conversationResult.lastErrorObject?.updatedExisting === false;
+            const shouldRefreshProjectStats =
+              isNewConversation ||
+              typeof update.isArchived === 'boolean' ||
+              Object.prototype.hasOwnProperty.call(unsetFields, 'isArchived') ||
+              isRetentionVisibilityUpdate ||
+              isConversationHidden;
 
-          if (shouldRefreshProjectStats) {
-            await refreshChatProjectStatsForUser(mongoose, userId, conversation.chatProjectId);
-          } else if (!preserveUpdatedAt) {
-            await updateChatProjectLastConversationForUser(
-              mongoose,
-              userId,
-              conversation.chatProjectId,
-              conversation,
-            );
+            if (shouldRefreshProjectStats) {
+              await refreshChatProjectStatsForUser(mongoose, userId, conversation.chatProjectId);
+            } else if (!preserveUpdatedAt) {
+              await updateChatProjectLastConversationForUser(
+                mongoose,
+                userId,
+                conversation.chatProjectId,
+                conversation,
+              );
+            }
           }
+        } catch (error) {
+          logger.error('[saveConvo] Failed to maintain project statistics', error);
         }
-      } catch (error) {
-        logger.error('[saveConvo] Failed to maintain project statistics', error);
-      }
+      };
+      await runAfterTransaction(deps?.saveSession, maintainProject);
 
       return conversation.toObject();
     } catch (error) {
+      if (deps?.saveSession) throw error;
       logger.error('[saveConvo] Error saving conversation', error);
       if (metadata?.context) {
         logger.info(`[saveConvo] ${metadata.context}`);

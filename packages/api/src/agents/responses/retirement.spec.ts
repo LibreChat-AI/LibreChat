@@ -7,12 +7,16 @@ import {
   tenantStorage,
   runAsSystem,
 } from '@librechat/data-schemas';
-import type { ResponseStorage, ResponseOwner } from '@librechat/data-schemas';
+import type { ResponseStorage, ResponseOwner, StoredResponseRecord } from '@librechat/data-schemas';
+import {
+  createResponseCompletion,
+  createResponseExecutionRelease,
+  createResponseExecutionConfirmation,
+} from './completion';
+import { buildPendingBackgroundResponse, createBackgroundResponseService } from './background';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
-import { createResponseCompletion, createResponseExecutionRelease } from './completion';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
-import { buildPendingBackgroundResponse } from './background';
 import { enrollAgentExecution } from '../remote/lifecycle';
 import { createResponseRetirement } from './retirement';
 
@@ -100,6 +104,7 @@ async function fixture(principal: ResponseOwner = owner, retainTerminalPersisten
   const completion = createResponseCompletion({
     storage,
     cleanupCheckpoint: async () => {},
+    confirmExecution: createResponseExecutionConfirmation(jobs),
     releaseExecution: createResponseExecutionRelease(jobs),
   });
   const retire = createResponseRetirement({
@@ -122,6 +127,44 @@ async function fixture(principal: ResponseOwner = owner, retainTerminalPersisten
   );
   return { execution, responseId, retire, completion };
 }
+
+it('signals and drains a prepared result through public Stop before publishing cancellation', () =>
+  scoped(async () => {
+    const f = await fixture();
+    const running = (await storage.read(owner, f.responseId))!;
+    const proposed = { ...buildPendingBackgroundResponse(running), status: 'completed' as const };
+    await f.completion.prepare(running, {
+      ...f.execution.getPersistenceIdentity(),
+      status: 'completed',
+      responseJSON: JSON.stringify(proposed),
+    });
+    expect((await storage.read(owner, f.responseId))?.pendingTerminal).toBeUndefined();
+    const cancel = jest.fn(async (record: StoredResponseRecord) => {
+      expect(record.cancellationRequestedAt).toEqual(expect.any(Number));
+      expect(await f.retire(record, record.responseId)).toBe('stopped');
+    });
+    const service = createBackgroundResponseService({
+      storage,
+      authorize: async () => true,
+      resolveContinuation: async () => ({
+        conversationId: running.conversationId,
+        parentMessageId: running.parentMessageId,
+      }),
+      enqueue: async () => {},
+      observe: async () => {
+        throw new Error('Prepared cancellation must use its completion owner');
+      },
+      recoverTerminal: f.completion.finish,
+      cancel,
+    });
+    expect(await service.cancel(owner, f.responseId)).toMatchObject({
+      ok: true,
+      response: { status: 'cancelled' },
+    });
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect((await storage.read(owner, f.responseId))?.preparedTerminal).toBeUndefined();
+    expect(await jobs.getJob(f.responseId)).toBeUndefined();
+  }));
 
 it('retains a running Stop after provider drain until canonical cancellation releases it with default cleanup', () =>
   scoped(async () => {
@@ -198,15 +241,85 @@ it('drains through the retained journal after conversation erasure closes admiss
       { conversationId: 'conversation' },
       {
         beforeDelete: async () => {
-          expect((await storage.read(owner, f.responseId))?.cancellationRequestedAt).toEqual(
-            expect.any(Number),
-          );
+          expect(await storage.read(owner, f.responseId)).toBeNull();
+          expect(await storage.readCleanupIdentity(owner, f.responseId)).toMatchObject({
+            retirement: 'conversation_deleted',
+          });
+          expect(
+            (
+              await mongoose.models.StoredResponse.findOne({
+                userId: owner.userId,
+                responseId: f.responseId,
+              }).lean<StoredResponseRecord>()
+            )?.cancellationRequestedAt,
+          ).toEqual(expect.any(Number));
           expect(await f.retire(owner, f.responseId)).toBe('stopped');
         },
       },
     );
     expect(await storage.read(owner, f.responseId)).toBeNull();
     expect(await jobs.getJob(f.responseId)).toBeUndefined();
+  }));
+
+it('cleans a scope closed inside the outer drain callback without recursively aborting or publishing', () =>
+  scoped(async () => {
+    const f = await fixture();
+    createModels(mongoose);
+    await mongoose.models.Conversation.create({
+      conversationId: 'conversation',
+      user: owner.userId,
+      tenantId: owner.tenantId,
+      endpoint: 'agents',
+    });
+    const db = createMethods(mongoose);
+    await jobs.updateMetadata(
+      f.responseId,
+      { checkpointNamespace: 'scope-drain', responseCheckpointConfigJSON: '{"type":"memory"}' },
+      f.execution.createdAt,
+    );
+    const cleanup = jest.fn(async () => {
+      expect((await jobs.getJob(f.responseId))?.metadata.providerDrained).toBe(true);
+    });
+    const retire = createResponseRetirement({
+      storage,
+      jobs,
+      cleanupCheckpoint: cleanup,
+      recoverTerminal: f.completion.finish,
+    });
+    jest
+      .mocked(jobs.abortJob)
+      .mockReset()
+      .mockImplementationOnce((id, options) =>
+        GenerationJobManagerClass.prototype.abortJob.call(jobs, id, {
+          ...options,
+          beforePublish: async (result) => {
+            await f.execution.settle();
+            await expect(
+              db.deleteConvos(
+                owner.userId,
+                { conversationId: 'conversation' },
+                {
+                  beforeDelete: async () => {
+                    throw new Error('Erasure interrupted after closure');
+                  },
+                },
+              ),
+            ).rejects.toThrow('Erasure interrupted after closure');
+            await options?.beforePublish?.(result);
+          },
+        }),
+      );
+    expect(await retire(owner, f.responseId)).toBe('stopped');
+    expect(jobs.abortJob).toHaveBeenCalledTimes(1);
+    expect(cleanup).toHaveBeenCalled();
+    expect(await jobs.getJob(f.responseId)).toBeUndefined();
+    expect(await storage.read(owner, f.responseId)).toBeNull();
+    const stored = await mongoose.models.StoredResponse.findOne({
+      userId: owner.userId,
+      responseId: f.responseId,
+    }).lean<StoredResponseRecord>();
+    expect(stored?.status).toBe('in_progress');
+    expect(stored?.pendingTerminal).toBeUndefined();
   }));
 
 it('does not relabel an already-completed provider as cancelled before its canonical publication', () =>
