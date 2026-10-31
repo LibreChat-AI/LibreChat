@@ -221,7 +221,7 @@ const getUserOwnedEntraGroups = async (accessToken, sub) => {
  * @param {string} accessToken - OpenID Connect access token
  * @param {string} sub - Subject identifier
  * @param {string} groupId - Entra ID group object ID
- * @returns {Promise<Array>} Array of member IDs (idOnTheSource values)
+ * @returns {Promise<Array|null>} Array of member IDs (idOnTheSource values), or null when the fetch fails
  */
 const getGroupMembers = async (accessToken, sub, groupId) => {
   try {
@@ -249,7 +249,7 @@ const getGroupMembers = async (accessToken, sub, groupId) => {
     return Array.from(allMembers);
   } catch (error) {
     logger.error('[getGroupMembers] Error fetching group members:', error);
-    return [];
+    return null;
   }
 };
 /**
@@ -258,7 +258,7 @@ const getGroupMembers = async (accessToken, sub, groupId) => {
  * @param {string} accessToken - OpenID Connect access token
  * @param {string} sub - Subject identifier
  * @param {string} groupId - Entra ID group object ID
- * @returns {Promise<Array>} Array of owner IDs (idOnTheSource values)
+ * @returns {Promise<Array|null>} Array of owner IDs (idOnTheSource values), or null when the fetch fails
  */
 const getGroupOwners = async (accessToken, sub, groupId) => {
   try {
@@ -280,7 +280,7 @@ const getGroupOwners = async (accessToken, sub, groupId) => {
     return allOwners;
   } catch (error) {
     logger.error('[getGroupOwners] Error fetching group owners:', error);
-    return [];
+    return null;
   }
 };
 
