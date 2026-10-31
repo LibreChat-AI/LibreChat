@@ -1,4 +1,5 @@
 import { useCallback, useMemo, useRef } from 'react';
+import { useAtomValue } from 'jotai';
 import { useRecoilState } from 'recoil';
 import { setDefaultMessagesHost } from '@librechat/chat/react';
 import type {
@@ -6,10 +7,16 @@ import type {
   MessagesHost,
   ForkPreferences,
   ForkConversation,
+  MessagesScrolling,
 } from '@librechat/chat/react';
+import type { TMessage } from 'librechat-data-provider';
+import useConversationSeen from '~/hooks/Conversations/useConversationSeen';
+import useMessageScrolling from '~/hooks/Messages/useMessageScrolling';
 import Files from '~/components/Chat/Messages/Content/Files';
+import { useScreenshot } from '~/hooks/ScreenshotContext';
 import { useForkConvoMutation } from '~/data-provider';
 import useClockFormat from '~/hooks/useClockFormat';
+import { autoScrollAtom } from '~/store/autoScroll';
 import { useNavigateToConvo } from '~/hooks';
 import store from '~/store';
 
@@ -51,14 +58,26 @@ function useAppForkConversation(): ForkConversation {
   );
 }
 
+/** The app's scrolling hook, as the message list reads it. */
+function useScrolling(messagesTree: TMessage[] | null | undefined): MessagesScrolling {
+  const { conversation, ...scrolling } = useMessageScrolling(messagesTree);
+  return { ...scrolling, conversationId: conversation?.conversationId };
+}
+
 /** What the message list reads from the app: the viewer's clock format and fork defaults, the
- *  fork request, and the row pieces that still live here. Registered as the default when this
- *  module loads, so rows read it on every route, the shared view included. */
+ *  fork request, its scrolling, screenshot and seen reporting, and the row pieces that still live
+ *  here. Registered as the default when this module loads, so rows read it on every route, the
+ *  shared view included. */
 export const appMessagesHost: MessagesHost = {
   useHour12: useClockFormat,
   renderFiles: (message) => <Files message={message} />,
   useForkPreferences: useAppForkPreferences,
   useForkConversation: useAppForkConversation,
+
+  useScrolling,
+  useScreenshotTarget: () => useScreenshot().screenshotTargetRef,
+  useAutoScroll: () => useAtomValue(autoScrollAtom),
+  useConversationSeen,
 };
 
 setDefaultMessagesHost(appMessagesHost);

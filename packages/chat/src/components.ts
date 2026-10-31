@@ -108,3 +108,11 @@ export { default as ChatPane } from './components/pane/ChatPane';
 export { getChatPaneView } from './components/pane/view';
 export type { ChatPaneProps } from './components/pane/ChatPane';
 export type { ChatPaneView, ChatPaneColumn } from './components/pane/view';
+
+/** Message list root: the scroll container, mount window and pending tail around the thread. */
+export { default as MessagesView } from './components/messages/MessagesView';
+export type {
+  MessagesViewProps,
+  MessagesThreadProps,
+  MessagesScrollButtonProps,
+} from './components/messages/MessagesView';

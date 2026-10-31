@@ -187,6 +187,17 @@ const messagesHost: MessagesHost = {
     setRememberOption: () => undefined,
   }),
   useForkConversation: () => null,
+  useScrolling: () => ({
+    contentRef: { current: null },
+    scrollableRef: { current: null },
+    messagesEndRef: { current: null },
+    handleSmoothToRef: () => undefined,
+    debouncedHandleScroll: () => undefined,
+    handleNearBottomChange: () => undefined,
+  }),
+  useScreenshotTarget: () => undefined,
+  useAutoScroll: () => false,
+  useConversationSeen: () => () => undefined,
 };
 
 const renderers: PartRenderers = {

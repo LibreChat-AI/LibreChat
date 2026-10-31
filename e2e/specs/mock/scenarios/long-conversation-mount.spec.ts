@@ -62,4 +62,28 @@ test.describe('long conversations', () => {
     await latest.scrollIntoViewIfNeeded();
     await expect(latest).toBeInViewport();
   });
+
+  test('the scroll control appears once the reader scrolls up and lands on the latest turn @scenario:scroll-control-lands-on-the-latest-turn', async ({
+    page,
+  }) => {
+    await page.goto(`/c/${conversationId}`);
+
+    const thread = page.locator(`[data-conversation-id="${conversationId}"]`);
+    await expect(thread.locator('.message-render')).toHaveCount(TURNS);
+    const latest = thread.getByText(`Turn ${TURNS} of the long conversation`, { exact: true });
+    await thread
+      .getByText('Turn 1 of the long conversation', { exact: true })
+      .scrollIntoViewIfNeeded();
+    await expect(latest).not.toBeInViewport();
+
+    /** The thread's own control, not the navigation rail's end marker, which shares its name. */
+    const scrollControl = page
+      .getByRole('button', { name: 'Scroll to bottom' })
+      .and(page.locator(':not([data-msg-id])'));
+    await expect(scrollControl).toBeEnabled();
+    await scrollControl.click();
+
+    await expect(latest).toBeInViewport();
+    await expect(scrollControl).toBeHidden();
+  });
 });
