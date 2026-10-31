@@ -1079,79 +1079,99 @@ it(
   }),
 );
 
-it(
-  'reauthorizes after artifact retrieval and never sends bytes after link revocation',
-  scoped(async () => {
-    const linked = await link('U1', users[0]);
-    await post('runs').send(event()).expect(201);
-    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
-    const fence = claimed.body.fence;
-    const run = await storage.prepareExecution(tenantId, fence, Date.now());
-    await bindFixtureResponse(run, 'response');
-    const file = await db.publishRunArtifactFile({
-      scope: {
-        userId: users[0].id,
-        tenantId,
-        conversationId: run.execution!.conversationId,
-        runId: 'response',
-        executionId: 'execution',
-        agentId: 'agent',
-        sourceFileId: 'source',
-      },
-      provenance: {
-        runId: 'response',
-        executionId: 'execution',
-        agentId: 'agent',
-        sourceFileId: 'source',
-        publishedAt: new Date().toISOString(),
-        inputFileIds: [],
-      },
-      file: {
+it.each(['revoked', 'renewed', 'expired', 'replaced'] as const)(
+  'checks refreshed authority and lease after artifact retrieval: %s',
+  (change) =>
+    scoped(async () => {
+      const linked = await link('U1', users[0]);
+      await post('runs').send(event()).expect(201);
+      const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+      const fence = claimed.body.fence;
+      const run = await storage.prepareExecution(tenantId, fence, Date.now());
+      await bindFixtureResponse(run, 'response');
+      const file = await db.publishRunArtifactFile({
+        scope: {
+          userId: users[0].id,
+          tenantId,
+          conversationId: run.execution!.conversationId,
+          runId: 'response',
+          executionId: 'execution',
+          agentId: 'agent',
+          sourceFileId: 'source',
+        },
+        provenance: {
+          runId: 'response',
+          executionId: 'execution',
+          agentId: 'agent',
+          sourceFileId: 'source',
+          publishedAt: new Date().toISOString(),
+          inputFileIds: [],
+        },
+        file: {
+          filename: 'result.txt',
+          filepath: '/synthetic/result.txt',
+          bytes: 4,
+          type: 'text/plain',
+          source: FileSources.local,
+        },
+      });
+      const sha256 = createHash('sha256').update('file').digest('hex');
+      const descriptor = {
+        artifactId: `${file.file_id}:${sha256}`,
         filename: 'result.txt',
-        filepath: '/synthetic/result.txt',
+        mediaType: 'text/plain',
         bytes: 4,
-        type: 'text/plain',
-        source: FileSources.local,
-      },
-    });
-    const sha256 = createHash('sha256').update('file').digest('hex');
-    const descriptor = {
-      artifactId: `${file.file_id}:${sha256}`,
-      filename: 'result.txt',
-      mediaType: 'text/plain',
-      bytes: 4,
-      sha256,
-    };
-    await storage.saveSnapshot(
-      tenantId,
-      fence,
-      {
-        status: 'completed',
-        responseId: 'response',
-        text: 'answer',
-        elapsedMs: 1,
-        artifacts: [descriptor],
-      },
-      Date.now(),
-    );
-    artifactRead = async () => {
-      value(
-        await authority.identity.revoke(
-          { tenantId, userId: users[0].id, accountLabel: 'A' },
-          linked.linkId,
-          linked.revision,
-        ),
+        sha256,
+      };
+      await storage.saveSnapshot(
+        tenantId,
+        fence,
+        {
+          status: 'completed',
+          responseId: 'response',
+          text: 'answer',
+          elapsedMs: 1,
+          artifacts: [descriptor],
+        },
+        Date.now(),
       );
-    };
-    const response = await post(
-      `runs/${run.runId}/artifacts/${encodeURIComponent(descriptor.artifactId)}`,
-    )
-      .send({ fence })
-      .expect(403);
-    expect(response.body).toEqual({ error: 'channel_authority_changed' });
-    expect(response.headers['x-artifact-sha256']).toBeUndefined();
-    expect((await storage.read(tenantId, 'channel', run.runId))?.state).toBe('cancelled');
-  }),
+      const initial = (await storage.read(tenantId, 'channel', run.runId))!;
+      artifactRead = async () => {
+        if (change === 'revoked') {
+          value(
+            await authority.identity.revoke(
+              { tenantId, userId: users[0].id, accountLabel: 'A' },
+              linked.linkId,
+              linked.revision,
+            ),
+          );
+          return;
+        }
+        if (change === 'renewed')
+          await storage.renew(tenantId, fence, initial.leaseExpiresAt - 1, 60000);
+        fakeNow = initial.leaseExpiresAt + 1;
+        if (change === 'replaced')
+          expect(
+            await storage.claim(tenantId, 'channel', 'replacement', fakeNow, 60000),
+          ).not.toBeNull();
+      };
+      const response = await post(
+        `runs/${run.runId}/artifacts/${encodeURIComponent(descriptor.artifactId)}`,
+      )
+        .send({ fence })
+        .expect({ renewed: 200, revoked: 403, expired: 409, replaced: 409 }[change]);
+      if (change === 'renewed') {
+        expect(response.body).toEqual(Buffer.from('file'));
+        expect(response.headers['x-artifact-sha256']).toBe(sha256);
+      } else {
+        expect(response.body).toEqual({
+          error: change === 'revoked' ? 'channel_authority_changed' : 'stale_fence',
+        });
+        expect(response.headers['x-artifact-sha256']).toBeUndefined();
+        if (change === 'revoked')
+          expect((await storage.read(tenantId, 'channel', run.runId))?.state).toBe('cancelled');
+      }
+    })(),
 );
 
 it.each(['expired', 'revoked', 'changed-binding'] as const)(
@@ -1258,4 +1278,57 @@ it(
     expect(retained.plan).toEqual(plan);
     expect(retained.snapshot!.summary!.costUSD).toEqual(first.body.snapshot.summary.costUSD);
   }),
+);
+
+it.each(['revoked', 'expired', 'foreign-binding'] as const)(
+  'rejects %s keys in both source and request authorization',
+  (change) =>
+    scoped(async () => {
+      await link('U1', users[0]);
+      await post('runs').send(event()).expect(201);
+      const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+      const run = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+      const credentials = responseCredentials();
+      await credentials.provision(run);
+      const saved = (await storage.read(tenantId, 'channel', run.runId))!;
+      const binding = { kind: 'channel_run' as const, id: `channel/${run.runId}` };
+      const keyId = saved.execution!.apiKeyId!;
+      const owner = { tenantId, userId: users[0].id };
+      const probe = express();
+      probe.use(express.json());
+      probe.post('/probe', async (req, res) => {
+        req.originalUrl = '/api/agents/v1/responses';
+        res.json({
+          allowed: await credentials.authorizeRequest({
+            keyId,
+            binding,
+            user: users[0],
+            request: req,
+          }),
+        });
+      });
+      const requestAllowed = async () =>
+        (
+          await request(probe)
+            .post('/probe')
+            .set('Idempotency-Key', `channel:${run.runId}`)
+            .send({ model: 'agent', input: run.admission.input, background: true, store: true })
+            .expect(200)
+        ).body.allowed;
+      expect(await credentials.authorizeSource(binding, keyId, owner, 'agent')).toBe(true);
+      expect(await requestAllowed()).toBe(true);
+      if (change === 'revoked') await db.deleteAgentApiKey(keyId, users[0].id);
+      else
+        await models.AgentApiKey.collection.updateOne(
+          { _id: new mongoose.Types.ObjectId(keyId) },
+          {
+            $set:
+              change === 'expired'
+                ? { expiresAt: new Date(0) }
+                : { binding: { kind: 'channel_run', id: 'other/run' } },
+          },
+        );
+      expect(await credentials.authorizeSource(binding, keyId, owner, 'agent')).toBe(false);
+      expect(await requestAllowed()).toBe(false);
+    })(),
 );
