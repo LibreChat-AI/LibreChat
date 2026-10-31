@@ -25,6 +25,7 @@ export const subagentIndexHost: StreamHost = {
   extendActiveJobsGrace: unused('extendActiveJobsGrace'),
   useStreamStatus: unused('useStreamStatus'),
   useResumeSettings: unused('useResumeSettings'),
+  useEventServices: unused('useEventServices'),
   useParentSubagentIndex,
 };
 
