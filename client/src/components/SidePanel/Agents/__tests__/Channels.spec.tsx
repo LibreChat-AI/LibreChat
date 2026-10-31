@@ -702,3 +702,28 @@ test.each(['success', 'failure', 'pending-close'] as const)(
       await act(async () => settle({ ...pending, status: 'active' }));
   },
 );
+
+test('a completed closed operation cannot close a new dialog for the same channel', async () => {
+  const user = userEvent.setup();
+  jest.mocked(dataService.listAgentChannels).mockResolvedValue([pending]);
+  let finish!: (value: AgentChannel) => void;
+  jest.mocked(dataService.activateAgentChannel).mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  renderChannels();
+  await openConnection(user);
+  await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
+  await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'old-operation-token');
+  await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
+  await waitFor(() => expect(dataService.activateAgentChannel).toHaveBeenCalledTimes(1));
+  await user.keyboard('{Escape}');
+  await openConnection(user);
+  await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'new-dialog-token');
+  await act(async () => finish({ ...pending, status: 'active' }));
+  expect(screen.getByRole('dialog')).toBeInTheDocument();
+  expect(screen.getByLabelText('com_ui_channels_bot_token')).toHaveValue('new-dialog-token');
+  expect(dataService.activateAgentChannel).toHaveBeenCalledTimes(1);
+});
