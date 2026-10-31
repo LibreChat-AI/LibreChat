@@ -405,6 +405,13 @@ modelSpecs:
         endpoint: 'Mock Provider B'
         model: 'mock-model-b'
 
+    - name: 'e2e-builder-mcp'
+      label: 'E2E Builder MCP'
+      hideBadgeRow: true
+      preset:
+        endpoint: 'Mock Provider C'
+        model: 'mock-model-c'
+
     - name: 'e2e-icon-spec'
       label: 'E2E Icon Spec'
       iconURL: '/assets/openai.svg'
