@@ -1510,3 +1510,101 @@ it('retries a failed initial ID assignment without reopening its unused source s
       await storage.reserve(reservation({ conversationId: input.newConversationId })),
     ).toMatchObject({ ok: true });
   }));
+
+it('stages one exact execution receipt independently of repeated projection revisions', () =>
+  scoped(async () => {
+    await storage.reserve(reservation({ sourceKeyId: 'original-key' }));
+    const running = await storage.publish(owner, 'resp_one', 0, {
+      status: 'in_progress',
+      generationCreatedAt: 10,
+      responseJSON: '{}',
+    });
+    if (!running.ok) throw new Error('Publication failed');
+    for (let i = 0; i < 30; i++) {
+      const current = (await storage.read(owner, 'resp_one'))!;
+      expect(
+        (
+          await storage.publish(owner, 'resp_one', current.revision, {
+            status: 'in_progress',
+            responseJSON: JSON.stringify({ progress: i }),
+          })
+        ).ok,
+      ).toBe(true);
+    }
+    expect(
+      await storage.stageTerminal(owner, 'resp_one', running.record.revision, outcome),
+    ).toEqual({ ok: false, code: 'response_conflict' });
+    const attempts = await Promise.all(
+      Array.from({ length: 12 }, () =>
+        storage.stageTerminal(owner, 'resp_one', { execution: running.record }, outcome),
+      ),
+    );
+    expect(attempts.every((result) => result.ok)).toBe(true);
+    const staged = (await storage.read(owner, 'resp_one'))!;
+    expect(staged.pendingTerminal).toEqual(outcome);
+    expect(staged.revision).toBe(running.record.revision + 31);
+    expect(
+      await storage.stageTerminal(
+        owner,
+        'resp_one',
+        { execution: running.record },
+        {
+          ...outcome,
+          ownerId: 'another-worker',
+        },
+      ),
+    ).toEqual({ ok: false, code: 'response_conflict' });
+    expect((await storage.finishTerminal(owner, 'resp_one', staged.revision, outcome)).ok).toBe(
+      true,
+    );
+  }));
+
+it.each(['agentId', 'conversationId', 'sourceKeyId', 'generationCreatedAt'] as const)(
+  'does not stage a retained execution with a mismatched %s',
+  (field) =>
+    scoped(async () => {
+      await storage.reserve(reservation({ sourceKeyId: 'original-key' }));
+      const running = await storage.publish(owner, 'resp_one', 0, {
+        status: 'in_progress',
+        generationCreatedAt: 10,
+        responseJSON: '{}',
+      });
+      if (!running.ok) throw new Error('Publication failed');
+      const execution = {
+        ...running.record,
+        [field]: field === 'generationCreatedAt' ? 11 : 'other',
+      };
+      expect(await storage.stageTerminal(owner, 'resp_one', { execution }, outcome)).toEqual({
+        ok: false,
+        code: 'response_conflict',
+      });
+      expect((await storage.read(owner, 'resp_one'))?.pendingTerminal).toBeUndefined();
+    }),
+);
+
+it('matches the complete reviewed and resumed execution binding rather than its projection', () =>
+  scoped(async () => {
+    await pause();
+    await storage.reserveResume(owner, 'resp_one', resume(), 100);
+    await storage.admitResume(owner, 'resp_one', 'intent-one', 10, 'provider-two', '{}', 101);
+    const retained = (await storage.read(owner, 'resp_one'))!;
+    const receipt = { ...outcome, providerExecutionId: 'provider-two' };
+    for (const execution of [
+      { ...retained, review: undefined },
+      { ...retained, review: { ...retained.review!, checkpointId: 'different' } },
+      { ...retained, resume: { ...retained.resume!, fingerprint: 'different' } },
+      { ...retained, resume: { ...retained.resume!, state: 'reserved' as const } },
+    ])
+      expect(await storage.stageTerminal(owner, 'resp_one', { execution }, receipt)).toEqual({
+        ok: false,
+        code: 'response_conflict',
+      });
+    const current = await storage.publish(owner, 'resp_one', retained.revision, {
+      status: 'in_progress',
+      responseJSON: '{"projection":"new"}',
+    });
+    expect(current.ok).toBe(true);
+    expect(
+      (await storage.stageTerminal(owner, 'resp_one', { execution: retained }, receipt)).ok,
+    ).toBe(true);
+  }));
