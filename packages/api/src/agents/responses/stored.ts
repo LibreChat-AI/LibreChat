@@ -97,6 +97,7 @@ const receiptSchema = z.object({
   createdAt: z.number(),
   completedAt: z.number().nullable(),
 });
+const backgroundReceiptSchema = z.object({ background: z.literal(true) });
 const textPart = z.object({ type: z.literal(ContentTypes.TEXT), text: z.string() });
 const toolPart = z.object({
   type: z.literal(ContentTypes.TOOL_CALL),
@@ -119,6 +120,10 @@ interface SavedConversation {
   updatedAt?: Date | string;
   agent_id?: string;
   model?: string;
+}
+
+function isBackgroundMessage(message: SavedMessage): boolean {
+  return backgroundReceiptSchema.safeParse(message.metadata?.responseReceipt).success;
 }
 export interface StoredForegroundResponseDependencies {
   getMessage: (query: { user: string; messageId: string }) => Promise<SavedMessage | null>;
@@ -216,7 +221,7 @@ function restoreOutputIdentity(
   return output;
 }
 
-/** Both response-ID and legacy conversation-ID reads remain owner/tenant scoped. */
+/** Foreground-only response-ID and legacy conversation-ID reads remain owner/tenant scoped. */
 export function createStoredForegroundResponseReader(
   deps: StoredForegroundResponseDependencies,
 ): RequestHandler {
@@ -239,7 +244,10 @@ export function createStoredForegroundResponseReader(
         : undefined;
       if (
         selected &&
-        (selected.isCreatedByUser || selected.isUserSubmitted || !selected.conversationId)
+        (selected.isCreatedByUser ||
+          selected.isUserSubmitted ||
+          !selected.conversationId ||
+          isBackgroundMessage(selected))
       )
         return missing();
       const conversationId = selected?.conversationId ?? responseId;
@@ -248,7 +256,7 @@ export function createStoredForegroundResponseReader(
         selected ? Promise.resolve([selected]) : deps.getMessages({ user: userId, conversationId }),
       ]);
       const message = selectStoredResponse(messages ?? [], responseId, selected != null)[0];
-      if (!conversation || !message) return missing();
+      if (!conversation || !message || isBackgroundMessage(message)) return missing();
       const receipt = receiptSchema.safeParse(message.metadata?.responseReceipt);
       const context = createResponseContext(
         {
@@ -281,7 +289,6 @@ export function createStoredForegroundResponseReader(
           : createResponseAccountingCollector().snapshot();
       if (receipt.success) {
         response.status = receipt.data.status ?? response.status;
-        response.background = receipt.data.background ?? response.background;
         response.error = receipt.data.error ?? null;
       }
       response.previous_response_id = receipt.success ? receipt.data.previousResponseId : null;
