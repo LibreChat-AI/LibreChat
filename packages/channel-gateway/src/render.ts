@@ -135,10 +135,10 @@ function legacyMessage(text: string, blocks?: SlackBlock[]): SlackMessage {
 }
 
 export function durableSlackMessage(part: ChannelDeliveryPart, renderer: string): SlackMessage {
+  const preserve =
+    renderer === rendererVersion || renderer === 'slack-structured-v5' || !!part.traceUrl;
   if (!part.presentation) {
-    return renderer === rendererVersion || part.traceUrl
-      ? { text: part.text }
-      : legacyMessage(part.text);
+    return preserve ? { text: part.text } : legacyMessage(part.text);
   }
   if (
     !supportedStructured.has(renderer) ||
@@ -149,9 +149,7 @@ export function durableSlackMessage(part: ChannelDeliveryPart, renderer: string)
   }
   try {
     const blocks = blocksSchema.parse(JSON.parse(part.presentation.payload));
-    return renderer === rendererVersion || part.traceUrl
-      ? { text: part.text, blocks }
-      : legacyMessage(part.text, blocks);
+    return preserve ? { text: part.text, blocks } : legacyMessage(part.text, blocks);
   } catch {
     throw new Error('Invalid persisted Slack blocks');
   }
