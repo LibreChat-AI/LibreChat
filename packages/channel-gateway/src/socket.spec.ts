@@ -1,8 +1,9 @@
 import { SocketModeClient } from '@slack/socket-mode';
+import { DEFAULT_CHANNEL_GATEWAY_POLICY } from 'librechat-data-provider';
 import type { ChannelBundle } from './types';
+import { loadConfig, resolveGatewayConfig } from './config';
 import { BoundSocket, connectSocket } from './socket';
 import { ChannelClient } from './client';
-import { loadConfig } from './config';
 import { SlackClient } from './slack';
 import { GatewayApp } from './app';
 
@@ -14,6 +15,7 @@ const config = loadConfig({
   SLACK_APP_TOKEN: 'test-app',
 });
 const bundle: ChannelBundle = {
+  gateway: { version: 1, ...DEFAULT_CHANNEL_GATEWAY_POLICY, transport: 'socket_mode' },
   channel: {
     channelId: 'binding',
     tenantId: 'tenant',
@@ -64,7 +66,12 @@ function setup() {
   return {
     backend,
     log,
-    app: new GatewayApp(config, new ChannelClient(config, backend), slack, log),
+    app: new GatewayApp(
+      resolveGatewayConfig(config, bundle.gateway),
+      new ChannelClient(config, backend),
+      slack,
+      log,
+    ),
   };
 }
 function event(ack = jest.fn().mockResolvedValue(undefined)) {
