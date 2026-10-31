@@ -70,6 +70,33 @@ describe('inferMimeType', () => {
     expect(inferMimeType('file.xyz', '')).toBe('');
   });
 
+  it('should infer text/plain for .reg files when browser reports application/octet-stream', () => {
+    expect(inferMimeType('settings.reg', 'application/octet-stream')).toBe('text/plain');
+    expect(
+      baseFileConfig.checkType(inferMimeType('settings.reg', 'application/octet-stream')),
+    ).toBe(true);
+  });
+
+  it('should infer text/plain for .reg files when browser type is empty', () => {
+    expect(inferMimeType('settings.reg', '')).toBe('text/plain');
+    expect(baseFileConfig.checkType(inferMimeType('settings.reg', ''))).toBe(true);
+  });
+
+  it('should fall back to extension mapping when browser reports application/octet-stream', () => {
+    expect(inferMimeType('script.ps1', 'application/octet-stream')).toBe('text/plain');
+    expect(inferMimeType('photo.heic', 'application/octet-stream')).toBe('image/heic');
+    expect(inferMimeType('query.sql', 'application/octet-stream')).toBe('application/sql');
+  });
+
+  it('should retain application/octet-stream for unknown extensions', () => {
+    expect(inferMimeType('unknown.xyz', 'application/octet-stream')).toBe(
+      'application/octet-stream',
+    );
+    expect(inferMimeType('noextension', 'application/octet-stream')).toBe(
+      'application/octet-stream',
+    );
+  });
+
   it('should produce a type accepted by checkType after normalizing text/x-python-script', () => {
     const normalized = inferMimeType('test.py', 'text/x-python-script');
     expect(baseFileConfig.checkType(normalized)).toBe(true);
