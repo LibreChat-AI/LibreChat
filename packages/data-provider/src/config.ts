@@ -1199,6 +1199,8 @@ const managementApiAuthSchema = z
   });
 
 export const CHANNEL_DELIVERY_PARTS_HARD_MAX = 100;
+export const CHANNEL_ARTIFACT_FILES_HARD_MAX = 20;
+export const CHANNEL_ARTIFACT_READ_TIMEOUT_HARD_MAX_MS = 60_000;
 
 /** Storage work per claim transaction; shared by configuration and injected storage defaults. */
 export const channelStorageConfigSchema = z.object({
@@ -1247,8 +1249,21 @@ export const channelConfigSchema = channelStorageConfigSchema.extend({
     .min(1)
     .max(50 * 1024 * 1024)
     .default(10 * 1024 * 1024),
-  artifactMaxFiles: z.number().int().min(1).max(20).default(5),
-  artifactReadTimeoutMs: z.number().int().min(1000).max(60_000).default(30_000),
+  artifactMaxFiles: z.number().int().min(1).max(CHANNEL_ARTIFACT_FILES_HARD_MAX).default(5),
+  /** Whole artifact operation budget, including catalog and authorization reads. */
+  artifactReadTimeoutMs: z
+    .number()
+    .int()
+    .min(1000)
+    .max(CHANNEL_ARTIFACT_READ_TIMEOUT_HARD_MAX_MS)
+    .default(30_000),
+  /** New plain-text answer files require more than this many UTF-8 bytes; fenced answers still qualify. */
+  artifactAnswerFileThresholdBytes: z
+    .number()
+    .int()
+    .min(0)
+    .max(50 * 1024 * 1024)
+    .default(6000),
   cleanup: z
     .object({
       batchSize: z.number().int().min(1).max(100).default(25),
