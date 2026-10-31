@@ -1,15 +1,15 @@
 import React, { memo, useState, useRef } from 'react';
-import { useRecoilState } from 'recoil';
 import * as Ariakit from '@ariakit/react';
 import { VisuallyHidden } from '@ariakit/react';
 import { GitFork, InfoIcon } from 'lucide-react';
 import { ForkOptions } from 'librechat-data-provider';
-import { hoverButtonClasses } from '@librechat/chat/components';
 import { GitCommit, GitBranchPlus, ListTree } from 'lucide-react';
-import { Button, Label, Checkbox, useToastContext } from '@librechat/client';
-import { TranslationKeys, useLocalize, useNavigateToConvo } from '~/hooks';
-import { useForkConvoMutation } from '~/data-provider';
-import store from '~/store';
+import { Button, Label, Checkbox, useLocalize, useToastContext } from '@librechat/client';
+import type { TForkConvoRequest } from 'librechat-data-provider';
+import type { TranslationKeys } from '@librechat/client';
+import type { NamedExoticComponent } from 'react';
+import { useMessagesHost } from '../../react/messages/host';
+import { hoverButtonClasses } from './styles';
 
 interface PopoverButtonProps {
   children: React.ReactNode;
@@ -23,11 +23,18 @@ interface PopoverButtonProps {
   label: string;
 }
 
-const optionLabels: Record<ForkOptions, TranslationKeys> = {
-  [ForkOptions.DIRECT_PATH]: 'com_ui_fork_visible',
-  [ForkOptions.INCLUDE_BRANCHES]: 'com_ui_fork_branches',
-  [ForkOptions.TARGET_LEVEL]: 'com_ui_fork_all_target',
-  [ForkOptions.DEFAULT]: 'com_ui_fork_from_message',
+/** Resolved per call: a module-scope map keyed by the enum crashes hosts that mock the data provider. */
+const optionLabel = (setting: ForkOptions): TranslationKeys => {
+  switch (setting) {
+    case ForkOptions.DIRECT_PATH:
+      return 'com_ui_fork_visible';
+    case ForkOptions.INCLUDE_BRANCHES:
+      return 'com_ui_fork_branches';
+    case ForkOptions.TARGET_LEVEL:
+      return 'com_ui_fork_all_target';
+    default:
+      return 'com_ui_fork_from_message';
+  }
 };
 
 const chevronDown = (
@@ -65,14 +72,14 @@ const PopoverButton: React.FC<PopoverButtonProps> = ({
                   clearTimeout(timeoutRef.current);
                   timeoutRef.current = null;
                 }
-                setActiveSetting(optionLabels[setting]);
+                setActiveSetting(optionLabel(setting));
               }}
               onMouseLeave={() => {
                 if (timeoutRef.current) {
                   clearTimeout(timeoutRef.current);
                 }
                 timeoutRef.current = setTimeout(() => {
-                  setActiveSetting(optionLabels[ForkOptions.DEFAULT]);
+                  setActiveSetting(optionLabel(ForkOptions.DEFAULT));
                 }, 175);
               }}
               onFocus={() => {
@@ -80,14 +87,14 @@ const PopoverButton: React.FC<PopoverButtonProps> = ({
                   clearTimeout(timeoutRef.current);
                   timeoutRef.current = null;
                 }
-                setActiveSetting(optionLabels[setting]);
+                setActiveSetting(optionLabel(setting));
               }}
               onBlur={() => {
                 if (timeoutRef.current) {
                   clearTimeout(timeoutRef.current);
                 }
                 timeoutRef.current = setTimeout(() => {
-                  setActiveSetting(optionLabels[ForkOptions.DEFAULT]);
+                  setActiveSetting(optionLabel(ForkOptions.DEFAULT));
                 }, 175);
               }}
               className="border-border-medium bg-surface-secondary text-text-secondary hover:bg-surface-hover hover:text-text-primary mx-0.5 w-14 flex-1 rounded-xl border-2 transition duration-200 ease-in-out"
@@ -200,31 +207,52 @@ const CheckboxOption: React.FC<CheckboxOptionProps> = ({
   );
 };
 
-function Fork({
-  messageId,
-  conversationId: _convoId,
-  forkingSupported = false,
-  getLatestMessageId,
-  isLast = false,
-}: {
+type ForkProps = {
   messageId: string;
   conversationId: string | null;
   forkingSupported?: boolean;
   /** Read when a fork starts: the split target must be the tail at click time. */
   getLatestMessageId?: () => string | undefined;
   isLast?: boolean;
-}) {
+};
+
+/** Whether a failed fork was refused by the rate limiter, however the transport reports it. */
+function isRateLimited(error: unknown): boolean {
+  if (typeof error !== 'object' || error == null) {
+    return false;
+  }
+  const { status, statusCode, response } = error as {
+    status?: number;
+    statusCode?: number;
+    response?: { status?: number };
+  };
+  return response?.status === 429 || status === 429 || statusCode === 429;
+}
+
+function Fork({
+  messageId,
+  conversationId: _convoId,
+  forkingSupported = false,
+  getLatestMessageId,
+  isLast = false,
+}: ForkProps) {
   const localize = useLocalize();
   const { showToast } = useToastContext();
   const [remember, setRemember] = useState(false);
   /** Per fork, never remembered: a copy without files is a recovery step, not a preference. */
   const [excludeFiles, setExcludeFiles] = useState(false);
-  const { navigateToConvo } = useNavigateToConvo();
+  const host = useMessagesHost();
+  const forkConversation = host.useForkConversation();
+  const {
+    option: forkSetting,
+    setOption: setForkSetting,
+    splitAtTarget,
+    setSplitAtTarget,
+    rememberOption: rememberGlobal,
+    setRememberOption: setRememberGlobal,
+  } = host.useForkPreferences();
   const timeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const [forkSetting, setForkSetting] = useRecoilState(store.forkSetting);
-  const [activeSetting, setActiveSetting] = useState(optionLabels.default);
-  const [splitAtTarget, setSplitAtTarget] = useRecoilState(store.splitAtTarget);
-  const [rememberGlobal, setRememberGlobal] = useRecoilState(store.rememberDefaultFork);
+  const [activeSetting, setActiveSetting] = useState(optionLabel(ForkOptions.DEFAULT));
   const popoverStore = Ariakit.usePopoverStore({
     placement: 'bottom',
   });
@@ -235,38 +263,25 @@ function Fork({
 
   const buttonStyle = hoverButtonClasses({ isActive, isLast });
 
-  const forkConvo = useForkConvoMutation({
-    onSuccess: (data) => {
-      navigateToConvo(data.conversation);
-      showToast({
-        message: localize('com_ui_fork_success'),
-        status: 'success',
-      });
-    },
-    onMutate: () => {
-      showToast({
-        message: localize('com_ui_fork_processing'),
-        status: 'info',
-      });
-    },
-    onError: (error) => {
-      /** Rate limit error (429 status code) */
-      const isRateLimitError =
-        (error as any)?.response?.status === 429 ||
-        (error as any)?.status === 429 ||
-        (error as any)?.statusCode === 429;
-
-      showToast({
-        message: isRateLimitError
-          ? localize('com_ui_fork_error_rate_limit')
-          : localize('com_ui_fork_error'),
-        status: 'error',
-      });
-    },
-  });
+  const startFork = (request: TForkConvoRequest) => {
+    if (forkConversation == null) {
+      return;
+    }
+    showToast({ message: localize('com_ui_fork_processing'), status: 'info' });
+    forkConversation(request, {
+      onSuccess: () => showToast({ message: localize('com_ui_fork_success'), status: 'success' }),
+      onError: (error) =>
+        showToast({
+          message: isRateLimited(error)
+            ? localize('com_ui_fork_error_rate_limit')
+            : localize('com_ui_fork_error'),
+          status: 'error',
+        }),
+    });
+  };
 
   const conversationId = _convoId ?? '';
-  if (!forkingSupported || !conversationId || !messageId) {
+  if (!forkingSupported || forkConversation == null || !conversationId || !messageId) {
     return null;
   }
 
@@ -276,7 +291,7 @@ function Fork({
       setForkSetting(option);
     }
 
-    forkConvo.mutate({
+    startFork({
       messageId,
       conversationId,
       option,
@@ -289,36 +304,36 @@ function Fork({
   const forkOptionsConfig = [
     {
       setting: ForkOptions.DIRECT_PATH,
-      label: localize(optionLabels[ForkOptions.DIRECT_PATH]),
+      label: localize(optionLabel(ForkOptions.DIRECT_PATH)),
       icon: <GitCommit className="h-full w-full rotate-90 p-2" aria-hidden="true" />,
       hoverTitle: (
         <>
           <GitCommit className="h-5 w-5 rotate-90" aria-hidden="true" />
-          {localize(optionLabels[ForkOptions.DIRECT_PATH])}
+          {localize(optionLabel(ForkOptions.DIRECT_PATH))}
         </>
       ),
       hoverDescription: localize('com_ui_fork_info_visible'),
     },
     {
       setting: ForkOptions.INCLUDE_BRANCHES,
-      label: localize(optionLabels[ForkOptions.INCLUDE_BRANCHES]),
+      label: localize(optionLabel(ForkOptions.INCLUDE_BRANCHES)),
       icon: <GitBranchPlus className="h-full w-full rotate-180 p-2" aria-hidden="true" />,
       hoverTitle: (
         <>
           <GitBranchPlus className="h-4 w-4 rotate-180" aria-hidden="true" />
-          {localize(optionLabels[ForkOptions.INCLUDE_BRANCHES])}
+          {localize(optionLabel(ForkOptions.INCLUDE_BRANCHES))}
         </>
       ),
       hoverDescription: localize('com_ui_fork_info_branches'),
     },
     {
       setting: ForkOptions.TARGET_LEVEL,
-      label: localize(optionLabels[ForkOptions.TARGET_LEVEL]),
+      label: localize(optionLabel(ForkOptions.TARGET_LEVEL)),
       icon: <ListTree className="h-full w-full p-2" aria-hidden="true" />,
       hoverTitle: (
         <>
           <ListTree className="h-5 w-5" aria-hidden="true" />
-          {`${localize(optionLabels[ForkOptions.TARGET_LEVEL])} (${localize('com_endpoint_default')})`}
+          {`${localize(optionLabel(ForkOptions.TARGET_LEVEL))} (${localize('com_endpoint_default')})`}
         </>
       ),
       hoverDescription: localize('com_ui_fork_info_target'),
@@ -337,7 +352,7 @@ function Fork({
             onClick={(e) => {
               if (rememberGlobal) {
                 e.preventDefault();
-                forkConvo.mutate({
+                startFork({
                   messageId,
                   splitAtTarget,
                   conversationId,
@@ -450,4 +465,6 @@ function Fork({
 }
 
 /** Memoized: a send re-renders every row's toolbar, and nothing here depends on it. */
-export default memo(Fork);
+const MemoFork: NamedExoticComponent<ForkProps> = memo(Fork);
+
+export default MemoFork;

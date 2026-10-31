@@ -70,6 +70,8 @@ export { default as MessageTimestamp } from './components/messages/MessageTimest
 export { getMessageRowWidthClass } from './components/messages/width';
 export { isValidTimestamp, getMessageTimestamp } from './components/messages/time';
 export type { MessageTimestamp as MessageTimestampParts } from './components/messages/time';
+export { default as Fork } from './components/messages/Fork';
+export { default as Feedback } from './components/messages/Feedback';
 
 /** Parts: the leaf components and row classes tool cards share. */
 export { default as Stdout } from './components/parts/Stdout';
