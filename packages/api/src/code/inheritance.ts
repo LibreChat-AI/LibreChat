@@ -12,6 +12,7 @@ import {
   isExecutableAttachedEnvironment,
   resolveAgentCodeEnvironmentRouting,
 } from '~/agents/execution';
+import { isStatefulDefaultEligible } from './agent';
 
 type SpawnConfig = Pick<NonNullable<Agent['subagents']>, 'enabled' | 'agent_ids'> & {
   graphs?: ReadonlyArray<
@@ -84,7 +85,8 @@ function toSubagentRoutingAgent(
   return {
     id: agent.id,
     routesCode:
-      agent.stateful_code_sessions === true && agent.tools?.includes(Tools.execute_code) === true,
+      (agent.stateful_code_sessions === true || isStatefulDefaultEligible(agent, environments)) &&
+      agent.tools?.includes(Tools.execute_code) === true,
     environmentId: agent.code_environment_id ?? defaultEnvironment?.id,
     environmentIds: agent.code_environment_ids,
     allowSelection,
