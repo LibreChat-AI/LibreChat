@@ -19,6 +19,8 @@ export type {
 /** Composer: the chat input, its controls and the steering queue. */
 export { default as StopButton } from './components/composer/StopButton';
 export { default as MentionItem } from './components/composer/MentionItem';
+export { default as MentionPopover } from './components/composer/popover/Mention';
+export { default as CommandPopover } from './components/composer/popover/Command';
 export { default as CollapseChat } from './components/composer/CollapseChat';
 export { default as ComposerChip } from './components/composer/bar/Chip';
 export { default as composerClearance } from './components/composer/clearance';
@@ -31,6 +33,12 @@ export {
 } from './components/composer/steering/QueuedTurnPortal';
 export type { ComposerSubmitRoute } from './components/composer/submit';
 export type { MentionItemProps } from './components/composer/MentionItem';
+export type { MentionPopoverProps } from './components/composer/popover/Mention';
+export type {
+  CommandOption,
+  CommandPopoverProps,
+  CommandDismissReason,
+} from './components/composer/popover/Command';
 export type { ChipProps as ComposerChipProps } from './components/composer/bar/Chip';
 export type { SteerReceiptState } from './components/composer/steering/Receipt';
 export { default as FileUpload } from './components/composer/files/FileUpload';

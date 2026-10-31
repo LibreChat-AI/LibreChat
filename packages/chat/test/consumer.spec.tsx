@@ -5,7 +5,13 @@ import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { Chat } from '@librechat/chat';
 import { createInstance } from 'i18next';
 import { ContentTypes } from 'librechat-data-provider';
-import { Part, Text, MessageRow, getHeaderHoverLabel } from '@librechat/chat/components';
+import {
+  Part,
+  Text,
+  MessageRow,
+  MentionPopover,
+  getHeaderHoverLabel,
+} from '@librechat/chat/components';
 import { initReactI18next, I18nextProvider } from 'react-i18next';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { Button, Textarea, ThemeProvider, clickHouseTheme } from '@librechat/client';
@@ -347,5 +353,38 @@ describe('a consumer built on the public entries', () => {
     expect(document.documentElement.style.getPropertyValue('--theme-mono-font-family')).toContain(
       'Inconsolata',
     );
+  });
+
+  it('picks a mention from the composer popover with the keyboard alone', () => {
+    /** jsdom lays nothing out, so it has no `scrollIntoView` for the active option to call. */
+    Element.prototype.scrollIntoView = jest.fn();
+    const textarea = document.createElement('textarea');
+    textarea.value = '@';
+    document.body.appendChild(textarea);
+    const onSelectMention = jest.fn();
+    render(
+      <ThemeProvider themeDefinition={clickHouseTheme} persistThemeDefinition={false}>
+        <MentionPopover
+          textAreaRef={{ current: textarea }}
+          placeholder="Mention"
+          options={[
+            { type: 'preset', value: 'draft', label: 'Draft' },
+            { type: 'preset', value: 'review', label: 'Review' },
+          ]}
+          isLoading={false}
+          assistantListMap={{}}
+          onSelectMention={onSelectMention}
+          onClose={jest.fn()}
+        />
+      </ThemeProvider>,
+    );
+
+    const combobox = screen.getByRole('combobox');
+    fireEvent.keyDown(combobox, { key: 'ArrowDown' });
+    const active = combobox.getAttribute('aria-activedescendant') ?? '';
+    expect(document.getElementById(active)).toHaveTextContent('Review');
+    fireEvent.keyDown(combobox, { key: 'Enter' });
+    expect(onSelectMention).toHaveBeenCalledWith(expect.objectContaining({ value: 'review' }));
+    textarea.remove();
   });
 });
