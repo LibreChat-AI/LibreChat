@@ -3,6 +3,7 @@ import { Provider } from 'jotai';
 import { RecoilRoot } from 'recoil';
 import { MemoryRouter } from 'react-router-dom';
 import { act, renderHook } from '@testing-library/react';
+import { useEventHandlers } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Constants, EModelEndpoint, QueryKeys, LocalStorageKeys } from 'librechat-data-provider';
 import type {
@@ -21,29 +22,19 @@ import {
 import { setFileSearchChoice, getFileSearchChoice, clearFileSearchChoices } from '~/utils/choices';
 import { beginFileSearchUpload, completeFileSearchUpload } from '~/hooks/Files/search';
 import useCodeWorkspace from '~/hooks/Agents/useCodeWorkspace';
-import useEventHandlers from '../useEventHandlers';
+import { StreamHostTestProvider } from 'test/streamHost';
 
 const mockStatus = jest.fn();
 const mockStartupConfig = jest.fn();
 const mockApplyAgentTemplate = jest.fn();
 const mockQueueTitleGeneration = jest.fn();
 const mockAnnounce = jest.fn();
-const mockReset = jest.fn();
 
 jest.mock('~/hooks/Agents', () => ({ useApplyAgentTemplate: () => mockApplyAgentTemplate }));
 jest.mock('~/hooks/AuthContext', () => ({ useAuthContext: () => ({ token: 'test' }) }));
 jest.mock('~/Providers', () => ({
   useLiveAnnouncer: () => ({ announcePolite: mockAnnounce }),
   useAgentsMapContext: () => ({}),
-}));
-jest.mock('~/hooks/SSE/useContentHandler', () => () => ({}));
-jest.mock('~/hooks/SSE/useAttachmentHandler', () => () => jest.fn());
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useStepHandler: () => ({
-    resetSubagentAtoms: mockReset,
-    resetPtcAtoms: mockReset,
-  }),
 }));
 jest.mock('~/hooks/Agents/workspacePreferences', () => ({
   useWorkspacePreferences: () => ({ get: () => undefined }),
@@ -94,7 +85,9 @@ function setup(
     <QueryClientProvider client={queryClient}>
       <Provider>
         <RecoilRoot>
-          <MemoryRouter initialEntries={['/c/new']}>{children}</MemoryRouter>
+          <MemoryRouter initialEntries={['/c/new']}>
+            <StreamHostTestProvider>{children}</StreamHostTestProvider>
+          </MemoryRouter>
         </RecoilRoot>
       </Provider>
     </QueryClientProvider>

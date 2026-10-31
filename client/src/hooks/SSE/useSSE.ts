@@ -6,6 +6,7 @@ import { startedAsNewConversation, buildCreatedInitialResponse } from '@librecha
 import { StepEvents, createPayload, removeNullishValues } from 'librechat-data-provider';
 import {
   useUsageHandler,
+  useEventHandlers,
   abortScrollFamily,
   showStopButtonByIndex,
   pendingApprovalActionFamily,
@@ -21,14 +22,13 @@ import type {
   ChatFinalFrame,
   EventSubmission,
 } from 'librechat-data-provider';
-import type { EventHandlerParams } from './useEventHandlers';
+import type { EventHandlerParams } from '@librechat/chat/react';
 import type { TResData, TFinalResData } from '~/common';
 import { clearComposerDrafts, applyPendingAction, findPendingActionMessageIndex } from '~/utils';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { reopenTermsOnRefusal } from '~/utils/terms';
 import { useGetUserBalance } from '~/data-provider';
-import useEventHandlers from './useEventHandlers';
 import useLocalize from '~/hooks/useLocalize';
 import { activeRunFamily } from './atoms';
 

@@ -1,20 +1,35 @@
 import { useCallback } from 'react';
 import { QueryKeys, Constants, isAssistantsEndpoint } from 'librechat-data-provider';
+import type { TMessage, TConversation, EventSubmission } from 'librechat-data-provider';
+import type { EventHandlerContext } from './context';
+import type { TFinalResData } from '../../../core';
 import {
   hasRealTitle,
+  getAllContentText,
   keepLocalCodeApprovalMode,
-  preserveStreamedContentIdentity,
   mergeRegenerateFinalMessages,
+  preserveStreamedContentIdentity,
   isInitialNewConversationSubmission,
   getExistingConversationAbortMessages,
-} from '@librechat/chat';
-import type { TMessage, TConversation, EventSubmission } from 'librechat-data-provider';
-import type { EventHandlerContext } from './handlers';
-import type { TFinalResData } from '~/common';
-import { getAllContentText } from '~/utils';
+} from '../../../core';
+
+type FirstPart = { text?: string | { value?: string }; tool_call?: { auth?: string } };
+
+/** The first content part's text value, read loosely the way a frame may carry it. */
+const firstTextValue = (message?: Partial<TMessage> | null): string | undefined => {
+  const text = (message?.content?.[0] as FirstPart | undefined)?.text;
+  return typeof text === 'object' ? text?.value : undefined;
+};
+
+/** The auth URL of a first tool call that stopped to ask for sign-in. */
+const firstToolAuth = (message?: Partial<TMessage> | null): string | undefined =>
+  (message?.content?.[0] as FirstPart | undefined)?.tool_call?.auth;
+
+/** Settles a turn from its final frame. */
+export type FinalHandler = (data: TFinalResData, submission: EventSubmission) => void;
 
 /** Settles a finished turn: the final messages, the conversation it belongs to, and an early abort that restores the draft. */
-export default function useFinalHandler(ctx: EventHandlerContext) {
+export default function useFinalHandler(ctx: EventHandlerContext): FinalHandler {
   const {
     getMessages,
     setMessages,
@@ -143,9 +158,8 @@ export default function useFinalHandler(ctx: EventHandlerContext) {
         };
 
         const hasNoResponse =
-          responseMessage?.content?.[0]?.['text']?.value ===
-            submission.initialResponse?.content?.[0]?.['text']?.value ||
-          !!responseMessage?.content?.[0]?.['tool_call']?.auth;
+          firstTextValue(responseMessage) === firstTextValue(submission.initialResponse) ||
+          !!firstToolAuth(responseMessage);
 
         /** Handle edge case where stream is cancelled before any response, which creates a blank page */
         if (!conversation.conversationId && hasNoResponse) {

@@ -1,5 +1,4 @@
 import { useCallback } from 'react';
-import { hasRealTitle, buildCreatedInitialResponse } from '@librechat/chat';
 import { QueryKeys, Constants, tConvoUpdateSchema } from 'librechat-data-provider';
 import type {
   TMessage,
@@ -7,8 +6,8 @@ import type {
   EventSubmission,
   ChatCreatedFrame,
 } from 'librechat-data-provider';
-import type { EventHandlerContext } from './handlers';
-import { MESSAGE_UPDATE_INTERVAL } from '~/common';
+import type { EventHandlerContext } from './context';
+import { hasRealTitle, MESSAGE_UPDATE_INTERVAL, buildCreatedInitialResponse } from '../../../core';
 export type TSyncData = {
   sync: boolean;
   thread_id: string;
@@ -46,7 +45,14 @@ export function acknowledgedCodeEnvironment(
 }
 
 /** The handlers that open a turn and keep its conversation current: legacy text, sync, created and title events. */
-export default function useTurnHandlers(ctx: EventHandlerContext) {
+export type TurnHandlers = {
+  messageHandler: (data: string | undefined, submission: EventSubmission) => void;
+  syncHandler: (data: TSyncData, submission: EventSubmission) => void;
+  createdHandler: (data: ChatCreatedFrame, submission: EventSubmission) => void;
+  titleHandler: (event: TTitleEvent) => void;
+};
+
+export default function useTurnHandlers(ctx: EventHandlerContext): TurnHandlers {
   const {
     queryClient,
     setMessages,

@@ -1,22 +1,33 @@
 import { useCallback } from 'react';
 import { v4 } from 'uuid';
 import { QueryKeys, Constants, isAssistantsEndpoint } from 'librechat-data-provider';
+import type { TMessage, TConversation, EventSubmission } from 'librechat-data-provider';
+import type { TResData, TFinalResData } from '../../../core';
+import type { EventHandlerContext } from './context';
 import {
   resolveErrorTurn,
   createErrorMessage,
   mergeErrorMessages,
   keepLocalCodeApprovalMode,
   resolveSettledErrorReadState,
-} from '@librechat/chat';
-import type { TMessage, TConversation, EventSubmission } from 'librechat-data-provider';
-import type { TResData, TFinalResData } from '~/common';
-import type { EventHandlerContext } from './handlers';
+} from '../../../core';
+
+/** The handlers for a turn that failed or was stopped. */
+export type AbortHandlers = {
+  cancelHandler: (data: TResData, submission: EventSubmission) => void;
+  errorHandler: (event: { data?: TResData; submission: EventSubmission }) => void;
+  abortConversation: (
+    conversationId: string | undefined,
+    submission: EventSubmission,
+    messages?: TMessage[],
+  ) => Promise<void>;
+};
 
 /** Writes a failed or stopped turn: the error card, a cancelled run, and an abort that settles from what streamed. */
 export default function useAbortHandlers(
   ctx: EventHandlerContext,
   finalHandler: (data: TFinalResData, submission: EventSubmission) => void,
-) {
+): AbortHandlers {
   const {
     services,
     setCompleted,

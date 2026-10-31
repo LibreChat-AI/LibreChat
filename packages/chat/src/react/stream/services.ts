@@ -1,4 +1,11 @@
-import type { TSubmission, TConversation, EventSubmission } from 'librechat-data-provider';
+import type {
+  ImageFile,
+  TSubmission,
+  TAttachment,
+  PartMetadata,
+  TConversation,
+  EventSubmission,
+} from 'librechat-data-provider';
 import type { AnnounceOptions, ConvoTitleState } from '../../core';
 import type { ChatContract } from '../chat/contract';
 import type { TurnLogger } from '../chat/host';
@@ -114,6 +121,14 @@ export type AbortRunRequest = {
   abortKey: string;
 };
 
+/** The app's file, memory and preview caches a streamed turn keeps in step. */
+export type FileServices = {
+  /** Records an attachment a tool produced (a file, a memory update, a preview). */
+  onAttachment: (attachment: TAttachment) => void;
+  /** Records an image file a content frame carries. */
+  onImageFile: (file: ImageFile & PartMetadata) => void;
+};
+
 /** The signed-in requests the handlers make themselves. */
 export type EventTransportServices = {
   /** Stops an Assistants run, which has no resumable generation to address. */
@@ -136,6 +151,7 @@ export type EventServices = {
   navigation: NavigationServices;
   focus: FocusServices;
   templates: TemplateServices;
+  files: FileServices;
   transport: EventTransportServices;
   logger: TurnLogger;
 };

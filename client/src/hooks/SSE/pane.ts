@@ -21,7 +21,7 @@ import type {
   DrainAfterAbort,
   RunEnd,
 } from '@librechat/chat';
-import type { EventHandlerParams } from './useEventHandlers';
+import type { EventHandlerParams } from '@librechat/chat/react';
 import { clearComposerDrafts, resolveRunEndTarget } from '~/utils';
 import { activeRunFamily } from './atoms';
 
