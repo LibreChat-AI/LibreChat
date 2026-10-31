@@ -19,6 +19,7 @@ const SUB = 'idp-sub-12345';
 
 const ORIGINAL_OPENID_SCOPE = process.env.OPENID_SCOPE;
 const ORIGINAL_OPENID_REFRESH_AUDIENCE = process.env.OPENID_REFRESH_AUDIENCE;
+const ORIGINAL_OPENID_RESOURCE = process.env.OPENID_RESOURCE;
 const ORIGINAL_OPENID_ISSUER = process.env.OPENID_ISSUER;
 
 function makeUser(overrides: Partial<IUser> = {}): IUser {
@@ -62,6 +63,7 @@ describe('buildOpenIDRefreshParams', () => {
   beforeEach(() => {
     delete process.env.OPENID_SCOPE;
     delete process.env.OPENID_REFRESH_AUDIENCE;
+    delete process.env.OPENID_RESOURCE;
   });
 
   afterAll(() => {
@@ -75,6 +77,12 @@ describe('buildOpenIDRefreshParams', () => {
       delete process.env.OPENID_REFRESH_AUDIENCE;
     } else {
       process.env.OPENID_REFRESH_AUDIENCE = ORIGINAL_OPENID_REFRESH_AUDIENCE;
+    }
+
+    if (ORIGINAL_OPENID_RESOURCE === undefined) {
+      delete process.env.OPENID_RESOURCE;
+    } else {
+      process.env.OPENID_RESOURCE = ORIGINAL_OPENID_RESOURCE;
     }
 
     if (ORIGINAL_OPENID_ISSUER === undefined) {
@@ -113,6 +121,32 @@ describe('buildOpenIDRefreshParams', () => {
   });
 
   it('returns no params when scope and refresh audience are unset', () => {
+    expect(buildOpenIDRefreshParams()).toEqual({});
+  });
+
+  it('adds the OPENID_RESOURCE indicator so refreshed access tokens stay bound to the API', () => {
+    process.env.OPENID_SCOPE = 'openid profile email offline_access';
+    process.env.OPENID_RESOURCE = ' https://api.example.com ';
+
+    expect(buildOpenIDRefreshParams()).toEqual({
+      scope: 'openid profile email offline_access',
+      resource: 'https://api.example.com',
+    });
+  });
+
+  it('sends resource alongside the refresh audience when both are set', () => {
+    process.env.OPENID_REFRESH_AUDIENCE = 'https://api.example.com';
+    process.env.OPENID_RESOURCE = 'https://api.example.com';
+
+    expect(buildOpenIDRefreshParams()).toEqual({
+      audience: 'https://api.example.com',
+      resource: 'https://api.example.com',
+    });
+  });
+
+  it('omits a blank resource', () => {
+    process.env.OPENID_RESOURCE = '  ';
+
     expect(buildOpenIDRefreshParams()).toEqual({});
   });
 });

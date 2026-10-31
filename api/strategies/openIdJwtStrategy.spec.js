@@ -39,6 +39,7 @@ jest.mock('@librechat/api', () => ({
   findOpenIDUser: jest.fn(),
   getOpenIdEmail: jest.requireActual('@librechat/api').getOpenIdEmail,
   getOpenIdIssuer: jest.fn(() => 'https://issuer.example.com'),
+  getOpenIdResource: jest.requireActual('@librechat/api').getOpenIdResource,
   normalizeOpenIdIssuer: jest.requireActual('@librechat/api').normalizeOpenIdIssuer,
   buildAuthUserDocCacheKey: jest.fn(() => 'auth-user-doc-key'),
   getAuthUserDocCacheMode: jest.fn(() => 'off'),
@@ -213,6 +214,42 @@ describe('openIdJwtStrategy – token validation', () => {
     );
 
     expect(capturedStrategyOptions.audience).toEqual(['librechat', 'control-plane-web']);
+  });
+
+  it('also accepts OPENID_RESOURCE, which RFC 8707 providers issue as the access token audience', () => {
+    withEnv(
+      {
+        OPENID_CLIENT_ID: 'librechat-client-id',
+        OPENID_AUDIENCE: undefined,
+        OPENID_RESOURCE: ' https://api.example.com ',
+      },
+      () => {
+        openIdJwtLogin(mockOpenIdConfig);
+      },
+    );
+
+    expect(capturedStrategyOptions.audience).toEqual([
+      'librechat-client-id',
+      'https://api.example.com',
+    ]);
+  });
+
+  it('deduplicates OPENID_RESOURCE against OPENID_AUDIENCE', () => {
+    withEnv(
+      {
+        OPENID_CLIENT_ID: 'librechat-client-id',
+        OPENID_AUDIENCE: 'https://api.example.com',
+        OPENID_RESOURCE: 'https://api.example.com',
+      },
+      () => {
+        openIdJwtLogin(mockOpenIdConfig);
+      },
+    );
+
+    expect(capturedStrategyOptions.audience).toEqual([
+      'librechat-client-id',
+      'https://api.example.com',
+    ]);
   });
 
   it('rejects OpenID JWTs whose issuer does not match the configured issuer', async () => {
@@ -462,6 +499,21 @@ describe('openIdJwtStrategy – token source handling', () => {
     withEnv(resourceEnv, () => openIdJwtLogin(mockOpenIdConfig));
 
     const claims = { ...payload, aud: 'api://resource-app' };
+    const rawToken = makeJwt(claims);
+    const req = { headers: { authorization: `Bearer ${rawToken}` } };
+
+    const { user } = await invokeVerify(req, claims);
+
+    expect(user.federatedTokens.access_token).toBe(rawToken);
+    expect(user.federatedTokens.expires_at).toBe(payload.exp);
+  });
+
+  it('should reuse a raw Bearer token whose audience is the OPENID_RESOURCE indicator', async () => {
+    withEnv({ OPENID_CLIENT_ID: 'client-id', OPENID_RESOURCE: 'https://api.example.com' }, () => {
+      openIdJwtLogin(mockOpenIdConfig);
+    });
+
+    const claims = { ...payload, aud: 'https://api.example.com' };
     const rawToken = makeJwt(claims);
     const req = { headers: { authorization: `Bearer ${rawToken}` } };
 

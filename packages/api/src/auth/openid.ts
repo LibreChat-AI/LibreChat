@@ -53,6 +53,15 @@ export function normalizeOpenIdIssuer(issuer: string | undefined): string | unde
   return normalized.slice(0, -OPENID_DISCOVERY_PATH.length) || undefined;
 }
 
+/**
+ * The RFC 8707 resource indicator from `OPENID_RESOURCE`, sent as `resource` on the authorization,
+ * authorization-code and refresh-token requests. Providers such as Logto ignore the Auth0-style
+ * `audience` and only issue a JWT access token for an API when the request names it this way.
+ */
+export function getOpenIdResource(): string | undefined {
+  return process.env.OPENID_RESOURCE?.trim() || undefined;
+}
+
 function getIssuerFromSource(source: OpenIdIssuerSource | null | undefined): string | undefined {
   if (source == null) return undefined;
 

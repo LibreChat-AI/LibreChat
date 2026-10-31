@@ -6,6 +6,7 @@ import type { FilterQuery } from 'mongoose';
 import type { AdminExchangeResponse } from '~/auth/exchange';
 
 import {
+  getOpenIdResource,
   isUserIssuerAllowed,
   normalizeOpenIdIssuer,
   getIssuerBoundConditions,
@@ -32,6 +33,7 @@ export interface RefreshTokenset {
 export interface OpenIDRefreshParams {
   scope?: string;
   audience?: string;
+  resource?: string;
 }
 
 export interface MintedToken {
@@ -135,6 +137,11 @@ export function buildOpenIDRefreshParams(): OpenIDRefreshParams {
 
   if (process.env.OPENID_REFRESH_AUDIENCE) {
     params.audience = process.env.OPENID_REFRESH_AUDIENCE;
+  }
+
+  const resource = getOpenIdResource();
+  if (resource) {
+    params.resource = resource;
   }
 
   return params;
