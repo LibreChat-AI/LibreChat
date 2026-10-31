@@ -43,7 +43,7 @@
   },
   "homepage": "https://librechat.ai",
   "dependencies": {
-    "axios": "^1.20.0",
+    "axios": "^1.21.0",
     "croner": "^10.0.1",
     "dayjs": "^1.11.13",
     "js-yaml": "^4.3.2",
