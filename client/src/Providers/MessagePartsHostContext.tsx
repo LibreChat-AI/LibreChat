@@ -32,7 +32,10 @@ import {
   useMessagesConversation,
   useOptionalMessagesOperations,
 } from '~/Providers';
-import { getAppPartRenderers } from '~/components/Chat/Messages/Content/Parts/slots';
+import {
+  getAppContentParts,
+  getAppPartRenderers,
+} from '~/components/Chat/Messages/Content/Parts/slots';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
@@ -131,6 +134,7 @@ export const appMessagePartsHost: MessagePartsHost = {
   useSmoothStreaming,
   useAgent: useAppAgent,
   renderAgentIcon: (agent) => getAppPartRenderers().renderAgentIcon(agent),
+  renderContentParts: (props) => getAppContentParts()(props),
   renderAgentAvatar: (agent) => renderAgentAvatar(agent, { size: 'icon', showBorder: false }),
   useFontSize: () => useAtomValue(fontSizeAtom),
   useShowThinking: () => useAtomValue(showThinkingAtom),

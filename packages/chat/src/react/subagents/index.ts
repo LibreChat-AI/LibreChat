@@ -13,3 +13,5 @@ export * from './author';
 export * from './surface';
 export * from './provider';
 export * from './task';
+export * from './scope';
+export * from './host';

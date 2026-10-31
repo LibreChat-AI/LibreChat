@@ -22,6 +22,9 @@ import {
   messageFooterClasses,
   ElapsedTimer,
   MessageRow,
+  SubagentActivityContent,
+  SubagentStatus,
+  getActivityContent,
 } from '@librechat/chat/components';
 import type { ChildConversationTurn, ToolContentQuery, TurnAuthor } from '@librechat/chat/react';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
@@ -35,7 +38,6 @@ import {
   useSubagentToolContentQuery,
 } from '~/data-provider/Subagents/content';
 import { MessagePartsHostProvider, useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { SubagentActivityContent, SubagentStatus, getActivityContent } from './SubagentActivity';
 import ResumeAuthorHeader from '~/components/Chat/Messages/Content/Parts/ResumeAuthorHeader';
 import { useSearchResultsByTurn } from '~/hooks/Messages/useSearchResultsByTurn';
 import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source';

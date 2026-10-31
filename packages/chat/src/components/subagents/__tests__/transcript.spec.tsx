@@ -1,239 +1,39 @@
-import React from 'react';
+/**
+ * @jest-environment jsdom
+ */
+import React, { useState } from 'react';
 import { ContentTypes } from 'librechat-data-provider';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Provider as JotaiProvider, createStore } from 'jotai';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { act, fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react';
 import type { TMessageContentParts, Agents } from 'librechat-data-provider';
-import type { ChildActivity } from '@librechat/chat/react';
-import SubagentActivity, { SubagentActivityScrollSurface } from './SubagentActivity';
-import { TaskContentScopeContext } from '~/data-provider/Subagents/content';
-import { ChatSurfaceHarness } from 'test/harness';
-
-const Wrapper = ({ children }: { children: React.ReactNode }) => (
-  <ChatSurfaceHarness>{children}</ChatSurfaceHarness>
-);
-const render = (ui: React.ReactElement) => rtlRender(ui, { wrapper: Wrapper });
+import type { ChildActivity } from '../../../react/subagents/adapters';
+import type { ChatSurface } from '../../../react/subagents/surface';
+import type { SubagentsHost } from '../../../react/subagents/host';
+import type { MessagePartsHost } from '../../../react/host';
+import { SubagentActivity, SubagentActivityScrollSurface } from '../transcript';
+import { TaskContentScopeContext } from '../../../react/subagents/scope';
+import { ChatSurfaceProvider } from '../../../react/subagents/provider';
+import { SubagentsHostProvider } from '../../../react/subagents/host';
+import { MessagePartsHostProvider } from '../../../react/host';
 
 const mockShowMore = 'com_ui_show_more';
 const mockReadControl = jest.fn();
-jest.mock('librechat-data-provider', () => {
-  const actual = jest.requireActual('librechat-data-provider');
-  return {
-    ...actual,
-    dataService: {
-      ...actual.dataService,
-      getSubagentControlReceipt: (...args: unknown[]) => mockReadControl(...args),
-    },
-  };
-});
 const mockContentParts = jest.fn();
 let mockAutoExpandTools = false;
 
-jest.mock('~/Providers/MessagePartsHostContext', () => ({
-  useMessagePartsHost: () => ({
-    useShowThinking: () => false,
-    useAutoExpandTools: () => mockAutoExpandTools,
-  }),
-}));
+const lastContentParts = () =>
+  mockContentParts.mock.calls[mockContentParts.mock.calls.length - 1]?.[0];
 
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
-}));
-
-jest.mock('~/components/Chat/Messages/Content/Parts/SteerPart', () => ({
+jest.mock('../../EmptyText', () => ({
   __esModule: true,
-  default: ({
-    steer,
-    steerId,
-    receiptState,
-    hasMore,
-    onExpand,
-  }: {
-    steer: string;
-    steerId?: string;
-    receiptState?: string | null;
-    hasMore?: boolean;
-    onExpand?: () => void;
-  }) => (
-    <div data-testid="shared-steer-part" data-receipt={receiptState} data-steer-id={steerId}>
-      {steer}
-      {hasMore && (
-        <button type="button" onClick={onExpand}>
-          {mockShowMore}
-        </button>
-      )}
-    </div>
-  ),
-}));
-
-jest.mock('~/components/Chat/Messages/Content/Parts', () => ({
-  EmptyText: () => <div data-testid="thinking-cursor" />,
-}));
-
-jest.mock('~/components/Chat/Messages/Content/ContentParts', () => ({
-  __esModule: true,
-  default: function MockContentParts({
-    content,
-    messageId,
-    ...props
-  }: {
-    content: Array<{
-      type: string;
-      text?: string;
-      phase?: string;
-      think?: string;
-      reasoning_label?: string;
-      activity_label?: string;
-      tool_call?: {
-        id: string;
-        name: string;
-        args?: unknown;
-        output?: string;
-        inputValidationError?: true;
-        approval?: unknown;
-        runStepStatus?: string;
-      };
-    }>;
-    messageId: string;
-    foldLiveActivity?: boolean;
-  }) {
-    mockContentParts({ content, messageId, ...props });
-    const { useState } = jest.requireActual<typeof import('react')>('react');
-    const [expandedTool, setExpandedTool] = useState<string | null>(null);
-    const tools = content.filter((part) => part?.type === 'tool_call');
-    return (
-      <div data-testid="regular-content-parts" data-message-id={messageId}>
-        {content.map((part, index) => {
-          if (part == null) return null;
-          if (part.type === 'text') {
-            return (
-              <div key={index} data-phase={part.phase}>
-                {part.text}
-              </div>
-            );
-          }
-          if (part.type === 'think') {
-            if ((part as { reasoning_unavailable?: boolean }).reasoning_unavailable === true) {
-              return <div key={index}>{`reasoning-marker:${part.reasoning_label ?? ''}`}</div>;
-            }
-            return <div key={index}>{part.reasoning_label ?? part.think}</div>;
-          }
-          if (part.type === 'activity_label') {
-            return <div key={index}>{part.activity_label}</div>;
-          }
-          if (part.type !== 'tool_call' || part.tool_call == null) return null;
-          const tool = part.tool_call;
-          return (
-            <div key={tool.id}>
-              <button
-                type="button"
-                aria-expanded={expandedTool === tool.id}
-                data-run-step-status={tool.runStepStatus}
-                data-input-validation-error={tool.inputValidationError}
-                onClick={() => setExpandedTool(expandedTool === tool.id ? null : tool.id)}
-              >
-                {tool.name}
-              </button>
-              {expandedTool === tool.id && (
-                <div>
-                  {JSON.stringify(tool.args)} {tool.output}
-                </div>
-              )}
-              {tool.approval != null && <div data-testid="tool-approval" />}
-            </div>
-          );
-        })}
-        {/* eslint-disable-next-line i18next/no-literal-string */}
-        {tools.length > 1 && <div>Used {tools.length} tools</div>}
-      </div>
-    );
-  },
-}));
-
-jest.mock('~/components/Chat/Messages/Content/Parts/Reasoning', () => ({
-  __esModule: true,
-  default: ({ reasoning }: { reasoning: string }) => <div>{reasoning}</div>,
-}));
-
-jest.mock('~/components/Chat/Messages/Content/MarkdownLite', () => ({
-  __esModule: true,
-  default: ({ content }: { content: string }) => <div>{content}</div>,
-}));
-
-jest.mock('~/components/Chat/Messages/Content/Container', () => ({
-  __esModule: true,
-  default: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
-}));
-
-jest.mock('~/components/Chat/Messages/Content/ToolCall', () => ({
-  __esModule: true,
-  default: function MockToolCall({
-    name,
-    args,
-    output,
-    runStepStatus,
-  }: {
-    name: string;
-    args: unknown;
-    output: string;
-    runStepStatus?: string;
-  }) {
-    const { useState } = jest.requireActual<typeof import('react')>('react');
-    const [open, setOpen] = useState(false);
-    return (
-      <div>
-        <button
-          type="button"
-          aria-expanded={open}
-          data-run-step-status={runStepStatus}
-          onClick={() => setOpen((value) => !value)}
-        >
-          {name}
-        </button>
-        {open && (
-          <div>
-            {JSON.stringify(args)} {output}
-          </div>
-        )}
-      </div>
-    );
-  },
-}));
-
-jest.mock('~/components/Chat/Messages/Content/ToolCallGroup', () => ({
-  __esModule: true,
-  default: ({
-    parts,
-    renderPart,
-    lastContentIdx,
-  }: {
-    parts: Array<{ part: unknown; idx: number }>;
-    renderPart: (part: unknown, idx: number, isLast: boolean) => React.ReactNode;
-    lastContentIdx: number;
-  }) => (
-    <div>
-      {/* eslint-disable-next-line i18next/no-literal-string */}
-      <div>Used {parts.length} tools</div>
-      {parts.map(({ part, idx }) => renderPart(part, idx, idx === lastContentIdx))}
-    </div>
-  ),
-}));
-
-jest.mock('~/components/Chat/Messages/Content/ToolApproval', () => ({
-  __esModule: true,
-  // eslint-disable-next-line i18next/no-literal-string
-  default: () => <div data-testid="tool-approval">approval</div>,
-}));
-
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  SteerReceipt: ({ state }: { state: string }) => (
-    <span data-testid="steer-receipt" data-receipt-state={state} />
-  ),
+  default: () => <div data-testid="thinking-cursor" />,
 }));
 
 jest.mock('@librechat/client', () => ({
   cn: jest.requireActual('@librechat/client').cn,
   useLanguage: () => 'en',
+  useLocalize: () => (key: string) => key,
   Alert: ({ children }: { children: React.ReactNode }) => <div role="alert">{children}</div>,
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => (
     <button {...props}>{children}</button>
@@ -249,6 +49,187 @@ jest.mock('lucide-react', () => ({
   Minimize2: () => null,
   XCircle: () => null,
 }));
+
+function MockContentParts({
+  content,
+  messageId,
+  ...props
+}: {
+  content: Array<{
+    type: string;
+    text?: string;
+    phase?: string;
+    think?: string;
+    reasoning_label?: string;
+    activity_label?: string;
+    tool_call?: {
+      id: string;
+      name: string;
+      args?: unknown;
+      output?: string;
+      inputValidationError?: true;
+      approval?: unknown;
+      runStepStatus?: string;
+    };
+  }>;
+  messageId: string;
+  foldLiveActivity?: boolean;
+}) {
+  mockContentParts({ content, messageId, ...props });
+  const { useState } = jest.requireActual<typeof import('react')>('react');
+  const [expandedTool, setExpandedTool] = useState<string | null>(null);
+  const tools = content.filter((part) => part?.type === 'tool_call');
+  return (
+    <div data-testid="regular-content-parts" data-message-id={messageId}>
+      {content.map((part, index) => {
+        if (part == null) return null;
+        if (part.type === 'text') {
+          return (
+            <div key={index} data-phase={part.phase}>
+              {part.text}
+            </div>
+          );
+        }
+        if (part.type === 'think') {
+          if ((part as { reasoning_unavailable?: boolean }).reasoning_unavailable === true) {
+            return <div key={index}>{`reasoning-marker:${part.reasoning_label ?? ''}`}</div>;
+          }
+          return <div key={index}>{part.reasoning_label ?? part.think}</div>;
+        }
+        if (part.type === 'activity_label') {
+          return <div key={index}>{part.activity_label}</div>;
+        }
+        if (part.type !== 'tool_call' || part.tool_call == null) return null;
+        const tool = part.tool_call;
+        return (
+          <div key={tool.id}>
+            <button
+              type="button"
+              aria-expanded={expandedTool === tool.id}
+              data-run-step-status={tool.runStepStatus}
+              data-input-validation-error={tool.inputValidationError}
+              onClick={() => setExpandedTool(expandedTool === tool.id ? null : tool.id)}
+            >
+              {tool.name}
+            </button>
+            {expandedTool === tool.id && (
+              <div>
+                {JSON.stringify(tool.args)} {tool.output}
+              </div>
+            )}
+            {tool.approval != null && <div data-testid="tool-approval" />}
+          </div>
+        );
+      })}
+      {tools.length > 1 && <div>Used {tools.length} tools</div>}
+    </div>
+  );
+}
+
+const MockSteerPart = ({
+  steer,
+  steerId,
+  receiptState,
+  hasMore,
+  onExpand,
+}: {
+  steer: string;
+  steerId?: string;
+  receiptState?: string | null;
+  hasMore?: boolean;
+  onExpand?: () => void;
+}) => (
+  <div data-testid="shared-steer-part" data-receipt={receiptState} data-steer-id={steerId}>
+    {steer}
+    {hasMore && (
+      <button type="button" onClick={onExpand}>
+        {mockShowMore}
+      </button>
+    )}
+  </div>
+);
+
+/** The receipt read the app supplies, over the same query and identity check. */
+const useRetainedControl: SubagentsHost['useRetainedControl'] = (scope, invocationId, enabled) => {
+  const query = useQuery(
+    [
+      'subagentControlReceipt',
+      scope.parentConversationId,
+      scope.threadId,
+      scope.taskId,
+      invocationId,
+    ],
+    async () => {
+      const response = await mockReadControl(
+        scope.parentConversationId,
+        scope.threadId,
+        scope.taskId,
+        invocationId,
+      );
+      if (response.receipt.invocationId !== invocationId)
+        throw new Error('subagent_control_identity_mismatch');
+      return response;
+    },
+    { enabled, retry: 1, staleTime: Infinity, refetchOnWindowFocus: false },
+  );
+  return {
+    message: query.data?.receipt.message,
+    isFetching: query.isFetching,
+    isError: query.isError,
+    refetch: () => void query.refetch(),
+  };
+};
+
+const subagentsHost: SubagentsHost = {
+  renderSteer: (props) => <MockSteerPart {...props} />,
+  useRetainedControl,
+};
+
+const partsHost: Partial<MessagePartsHost> = {
+  renderContentParts: (props) => (
+    <MockContentParts {...(props as Parameters<typeof MockContentParts>[0])} />
+  ),
+  useShowThinking: () => false,
+  useAutoExpandTools: () => mockAutoExpandTools,
+  renderMarkdown: ({ content }: { content: string }) => <div>{content}</div>,
+};
+
+const surface: ChatSurface = {
+  enterToSend: true,
+  maximizeChatSpace: false,
+  showScrollButton: true,
+  composerBindings: {
+    shortcutsEnabled: true,
+    submitOverride: undefined,
+    yieldedChords: new Set<string>(),
+  },
+  claimForeground: () => undefined,
+  handOffComposerText: () => undefined,
+};
+
+function Wrapper({ children }: { children: React.ReactNode }) {
+  const [store] = useState(() => createStore());
+  const [client] = useState(
+    () => new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+  );
+  return (
+    <JotaiProvider store={store}>
+      <QueryClientProvider client={client}>
+        <MessagePartsHostProvider host={partsHost as MessagePartsHost}>
+          <SubagentsHostProvider host={subagentsHost}>
+            <ChatSurfaceProvider value={surface}>{children}</ChatSurfaceProvider>
+          </SubagentsHostProvider>
+        </MessagePartsHostProvider>
+      </QueryClientProvider>
+    </JotaiProvider>
+  );
+}
+const render = (ui: React.ReactElement) => rtlRender(ui, { wrapper: Wrapper });
+
+beforeEach(() => {
+  mockContentParts.mockClear();
+  mockReadControl.mockReset();
+});
 
 const base: ChildActivity = {
   title: 'Research child',
@@ -332,7 +313,7 @@ describe('SubagentActivity', () => {
     expect(mockContentParts).toHaveBeenLastCalledWith(
       expect.objectContaining({ content, messageId: 'stable-response' }),
     );
-    expect(mockContentParts.mock.calls.at(-1)?.[0].content).toBe(content);
+    expect(lastContentParts().content).toBe(content);
   });
 
   it.each([false, true])(
@@ -343,7 +324,7 @@ describe('SubagentActivity', () => {
       expect(mockContentParts).toHaveBeenLastCalledWith(
         expect.objectContaining({ isSubmitting: true }),
       );
-      expect(mockContentParts.mock.calls.at(-1)?.[0].foldLiveActivity).toBeUndefined();
+      expect(lastContentParts().foldLiveActivity).toBeUndefined();
     },
   );
   it.each(['failed', 'cancelled'] as const)(
@@ -604,16 +585,14 @@ describe('SubagentActivity', () => {
 
   it('keeps the shared scroll surface pinned when activity grows at the bottom', () => {
     let resize!: ResizeObserverCallback;
-    const resizeObserver = window.ResizeObserver as unknown as jest.Mock;
-    const originalImplementation = resizeObserver.getMockImplementation();
-    resizeObserver.mockImplementation((callback: ResizeObserverCallback) => {
+    const original = window.ResizeObserver;
+    window.ResizeObserver = jest.fn((callback: ResizeObserverCallback) => {
       resize = callback;
       return { observe: jest.fn(), disconnect: jest.fn(), unobserve: jest.fn() };
-    });
+    }) as unknown as typeof ResizeObserver;
 
     const { container, unmount } = render(
       <SubagentActivityScrollSurface padded={false}>
-        {/* eslint-disable-next-line i18next/no-literal-string */}
         <div>Growing timeline</div>
       </SubagentActivityScrollSurface>,
     );
@@ -625,11 +604,7 @@ describe('SubagentActivity', () => {
     expect(surface?.scrollTop).toBe(640);
 
     unmount();
-    if (originalImplementation == null) {
-      resizeObserver.mockReset();
-    } else {
-      resizeObserver.mockImplementation(originalImplementation);
-    }
+    window.ResizeObserver = original;
   });
 
   it('renders a sanitized reasoning marker through regular ContentParts', () => {
@@ -731,7 +706,7 @@ it('does not repeat an applied control already rendered at its standard content 
     />,
   );
   expect(screen.queryByText('com_ui_subagent_control_status_applied')).not.toBeInTheDocument();
-  expect(mockContentParts.mock.calls.at(-1)?.[0].content[0]).toMatchObject({
+  expect(lastContentParts().content[0]).toMatchObject({
     type: ContentTypes.STEER,
     steerId: 'control-1',
   });
@@ -816,7 +791,7 @@ it('renders applied controls inline once instead of repeating them below all cur
     />,
   );
   expect(screen.queryByTestId('shared-steer-part')).not.toBeInTheDocument();
-  expect(mockContentParts.mock.calls.at(-1)?.[0].content).toEqual([
+  expect(lastContentParts().content).toEqual([
     part,
     { type: ContentTypes.TEXT, text: 'Work after guidance.' },
   ]);
@@ -875,13 +850,12 @@ it('suppresses only the corresponding number of legacy guidance bodies and does 
   expect(screen.getAllByTestId('shared-steer-part')).toHaveLength(1);
   expect(screen.getByTestId('shared-steer-part')).toHaveTextContent('Repeated guidance.');
   expect(screen.getByTestId('shared-steer-part')).toHaveAttribute('data-steer-id', 'one');
-  expect(mockContentParts.mock.calls.at(-1)?.[0].content).toEqual([
+  expect(lastContentParts().content).toEqual([
     { type: ContentTypes.STEER, steer: 'Repeated guidance.' },
   ]);
 });
 
 it('loads a budgeted retained body only after expansion while keeping Withdraw actionable', async () => {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const full = 'Full retained guidance. '.repeat(80);
   const control = {
     invocationId: 'budgeted',
@@ -898,13 +872,11 @@ it('loads a budgeted retained body only after expansion while keeping Withdraw a
   });
   const withdraw = jest.fn();
   const { unmount } = render(
-    <QueryClientProvider client={client}>
-      <TaskContentScopeContext.Provider
-        value={{ parentConversationId: 'parent', threadId: 'child', taskId: 'task' }}
-      >
-        <SubagentActivity activity={{ ...base, controls: [control] }} onCancelControl={withdraw} />
-      </TaskContentScopeContext.Provider>
-    </QueryClientProvider>,
+    <TaskContentScopeContext.Provider
+      value={{ parentConversationId: 'parent', threadId: 'child', taskId: 'task' }}
+    >
+      <SubagentActivity activity={{ ...base, controls: [control] }} onCancelControl={withdraw} />
+    </TaskContentScopeContext.Provider>,
   );
   expect(mockReadControl).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: mockShowMore }));
@@ -917,7 +889,6 @@ it('loads a budgeted retained body only after expansion while keeping Withdraw a
   expect(withdraw).toHaveBeenCalledWith('pending-control');
   expect(screen.queryByText('Message shortened for display.')).not.toBeInTheDocument();
   unmount();
-  client.clear();
 });
 
 it.each(['submitted', 'accepted', 'failed'] as const)(
@@ -948,7 +919,7 @@ it.each(['submitted', 'accepted', 'failed'] as const)(
       />,
     );
     expect(screen.queryByTestId('shared-steer-part')).not.toBeInTheDocument();
-    expect(mockContentParts.mock.calls.at(-1)?.[0].content).toContainEqual(applied);
+    expect(lastContentParts().content).toContainEqual(applied);
   },
 );
 
@@ -1037,7 +1008,7 @@ it.each(['submitted', 'failed'] as const)(
       />,
     );
     expect(screen.queryByTestId('shared-steer-part')).not.toBeInTheDocument();
-    expect(mockContentParts.mock.calls.at(-1)?.[0].content).toEqual([
+    expect(lastContentParts().content).toEqual([
       {
         type: ContentTypes.STEER,
         steer: 'Durably applied guidance.',

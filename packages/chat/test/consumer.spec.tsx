@@ -177,6 +177,7 @@ const host: MessagePartsHost = {
   useAgent: () => undefined,
   renderAgentIcon: () => null,
   renderAgentAvatar: () => null,
+  renderContentParts: () => null,
   useFontSize: () => 'text-base',
   useShowThinking: () => false,
   useAutoExpandTools: () => false,

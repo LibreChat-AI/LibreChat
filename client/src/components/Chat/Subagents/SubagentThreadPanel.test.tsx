@@ -194,12 +194,12 @@ jest.mock('~/components/Chat/Messages/Content/MarkdownLite', () => ({
   default: ({ content }: { content: string }) => <div>{content}</div>,
 }));
 
-jest.mock('./SubagentActivity', () => ({
-  __esModule: true,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
   SubagentActivityScrollSurface: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="shared-scroll-surface">{children}</div>
   ),
-  default: function MockActivity({
+  SubagentActivity: function MockActivity({
     activity,
     activityId,
     state,

@@ -83,6 +83,7 @@ const host: MessagePartsHost = {
   useAgent: (agentId) => agents[agentId] as ReturnType<MessagePartsHost['useAgent']>,
   renderAgentIcon: () => null,
   renderAgentAvatar: () => <span data-testid="agent-avatar" />,
+  renderContentParts: () => null,
   useFontSize: () => 'text-base',
   useShowThinking: () => false,
   useAutoExpandTools: () => false,

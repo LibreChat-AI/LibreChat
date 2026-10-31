@@ -1,33 +1,28 @@
 import { useCallback, useEffect, useId, useMemo, useContext, useRef, useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-import { Alert, Button } from '@librechat/client';
 import { Maximize2, Minimize2 } from 'lucide-react';
-import { CSSTransition } from 'react-transition-group';
-import { MessageTimestamp } from '@librechat/chat/components';
-import { ContentTypes, QueryKeys, dataService } from 'librechat-data-provider';
+import { ContentTypes } from 'librechat-data-provider';
+import { Alert, Button, cn, useLocalize } from '@librechat/client';
+import type { SearchResultData, TMessageContentParts } from 'librechat-data-provider';
+import type { TranslationKeys } from '@librechat/client';
+import type { ReactNode, UIEvent } from 'react';
+import type { ChildActivity, ChildActivityItem } from '../../react/subagents/adapters';
+import type { SteerReceiptState } from '../composer/steering/Receipt';
+import type { ToolContentQuery } from '../../react/parts/disclosure';
+import type { TaskContentScope } from '../../react/subagents/scope';
 import {
   isAbnormalTerminalStatus,
   isLiveSubagentStatus,
   subagentStatusIcon,
   subagentStatusLabelKey,
-  ToolContentQueryContext,
-  useChatSurface,
-} from '@librechat/chat/react';
-import type { ChildActivity, ChildActivityItem, ToolContentQuery } from '@librechat/chat/react';
-import type { SearchResultData, TMessageContentParts } from 'librechat-data-provider';
-import type { SteerReceiptState } from '@librechat/chat/components';
-import type { TaskContentScope } from '~/data-provider/Subagents/content';
-import type { TranslationKeys } from '~/hooks';
-import { TaskContentScopeContext } from '~/data-provider/Subagents/content';
-import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
-import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
-import SteerPart from '~/components/Chat/Messages/Content/Parts/SteerPart';
-import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import Container from '~/components/Chat/Messages/Content/Container';
-import { EmptyText } from '~/components/Chat/Messages/Content/Parts';
-import ScrollToBottom from '~/components/Messages/ScrollToBottom';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
+} from '../../react/subagents/status';
+import { ToolContentQueryContext } from '../../react/parts/disclosure';
+import { TaskContentScopeContext } from '../../react/subagents/scope';
+import { useChatSurface } from '../../react/subagents/surface';
+import { useSubagentsHost } from '../../react/subagents/host';
+import MessageTimestamp from '../messages/MessageTimestamp';
+import ScrollToBottom from '../messages/ScrollToBottom';
+import { useMessagePartsHost } from '../../react/host';
+import EmptyText from '../EmptyText';
 
 const AT_BOTTOM_THRESHOLD_PX = 120;
 const CONTROL_ACTION_LABELS = {
@@ -69,45 +64,26 @@ function RetainedControlMessage({
   scope,
 }: ControlMessageProps & { scope: TaskContentScope }) {
   const localize = useLocalize();
+  const { renderSteer } = useSubagentsHost();
   const [expanded, setExpanded] = useState(false);
   const reveal = useCallback(() => setExpanded(true), []);
-  const query = useQuery(
-    [
-      QueryKeys.subagentControlReceipt,
-      scope.parentConversationId,
-      scope.threadId,
-      scope.taskId,
-      control.invocationId,
-    ],
-    async () => {
-      const response = await dataService.getSubagentControlReceipt(
-        scope.parentConversationId,
-        scope.threadId,
-        scope.taskId,
-        control.invocationId,
-      );
-      if (response.receipt.invocationId !== control.invocationId)
-        throw new Error('subagent_control_identity_mismatch');
-      return response;
-    },
-    { enabled: expanded, retry: 1, staleTime: Infinity, refetchOnWindowFocus: false },
-  );
+  const retained = useSubagentsHost().useRetainedControl(scope, control.invocationId, expanded);
   return (
     <>
-      <SteerPart
-        steer={query.data?.receipt.message ?? control.message ?? ''}
-        steerId={control.controlId ?? control.invocationId}
-        createdAt={Date.parse(control.createdAt)}
-        receiptState={receiptState}
-        isSubmitting={pending}
-        hasMore={query.data == null}
-        onExpand={reveal}
-      />
-      {query.isFetching && <span role="status">{localize('com_ui_loading')}</span>}
-      {query.isError && (
+      {renderSteer({
+        steer: retained.message ?? control.message ?? '',
+        steerId: control.controlId ?? control.invocationId,
+        createdAt: Date.parse(control.createdAt),
+        receiptState,
+        isSubmitting: pending,
+        hasMore: retained.message == null,
+        onExpand: reveal,
+      })}
+      {retained.isFetching && <span role="status">{localize('com_ui_loading')}</span>}
+      {retained.isError && (
         <Alert variant="error">
           <span>{localize('com_ui_conversation_load_error')}</span>
-          <Button variant="ghost" size="sm" onClick={() => void query.refetch()}>
+          <Button variant="ghost" size="sm" onClick={retained.refetch}>
             {localize('com_ui_retry')}
           </Button>
         </Alert>
@@ -118,17 +94,16 @@ function RetainedControlMessage({
 
 function ControlMessage(props: ControlMessageProps) {
   const scope = useContext(TaskContentScopeContext);
+  const { renderSteer } = useSubagentsHost();
   if (props.control.messageTruncated === true && scope != null)
     return <RetainedControlMessage {...props} scope={scope} />;
-  return (
-    <SteerPart
-      steer={props.control.message ?? ''}
-      steerId={props.control.controlId ?? props.control.invocationId}
-      createdAt={Date.parse(props.control.createdAt)}
-      receiptState={props.receiptState}
-      isSubmitting={props.pending}
-    />
-  );
+  return renderSteer({
+    steer: props.control.message ?? '',
+    steerId: props.control.controlId ?? props.control.invocationId,
+    createdAt: Date.parse(props.control.createdAt),
+    receiptState: props.receiptState,
+    isSubmitting: props.pending,
+  });
 }
 
 function SubagentControlHistory({
@@ -255,18 +230,17 @@ export function SubagentActivityScrollSurface({
   padded = true,
   headerInset = false,
 }: {
-  children: React.ReactNode;
+  children: ReactNode;
   padded?: boolean;
   /** Clears the panel's overlay header, which floats above this surface so the
    *  thread scrolls under it rather than starting below a solid bar. */
   headerInset?: boolean;
-}) {
+}): ReactNode {
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
-  const scrollButtonRef = useRef<HTMLDivElement>(null);
   const [isAtBottom, setIsAtBottom] = useState(true);
-  const [isSettled, setIsSettled] = useState(false);
   const { showScrollButton: scrollButtonPreference, maximizeChatSpace } = useChatSurface();
+  const { renderJumpToLatest } = useSubagentsHost();
 
   useEffect(() => {
     const scroll = scrollRef.current;
@@ -279,7 +253,7 @@ export function SubagentActivityScrollSurface({
     return () => observer.disconnect();
   }, [isAtBottom]);
 
-  const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
+  const handleScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
     const element = event.currentTarget;
     setIsAtBottom(
       element.scrollHeight - element.scrollTop - element.clientHeight <= AT_BOTTOM_THRESHOLD_PX,
@@ -294,6 +268,20 @@ export function SubagentActivityScrollSurface({
     setIsAtBottom(true);
   }, []);
 
+  const jumpVisible = !isAtBottom && scrollButtonPreference;
+  let jump: ReactNode = null;
+  if (renderJumpToLatest != null) {
+    jump = renderJumpToLatest({ visible: jumpVisible, onClick: scrollToBottom, maximizeChatSpace });
+  } else if (jumpVisible) {
+    jump = (
+      <ScrollToBottom
+        scrollHandler={scrollToBottom}
+        maximizeChatSpace={maximizeChatSpace}
+        interactive
+      />
+    );
+  }
+
   return (
     <div className="relative flex min-h-0 flex-1 flex-col">
       <div
@@ -306,23 +294,7 @@ export function SubagentActivityScrollSurface({
           {children}
         </div>
       </div>
-      <CSSTransition
-        in={!isAtBottom && scrollButtonPreference}
-        timeout={{ enter: 300, exit: 180 }}
-        classNames="scroll-animation"
-        unmountOnExit={true}
-        appear={true}
-        nodeRef={scrollButtonRef}
-        onEntered={() => setIsSettled(true)}
-        onExit={() => setIsSettled(false)}
-      >
-        <ScrollToBottom
-          ref={scrollButtonRef}
-          scrollHandler={scrollToBottom}
-          maximizeChatSpace={maximizeChatSpace}
-          interactive={isSettled}
-        />
-      </CSSTransition>
+      {jump}
     </div>
   );
 }
@@ -403,6 +375,7 @@ export const getActivityContent = (activity: ChildActivity): TMessageContentPart
 
 function SubagentPrompt({ prompt }: { prompt: string }) {
   const localize = useLocalize();
+  const { renderMarkdown } = useMessagePartsHost();
   const [expanded, setExpanded] = useState(false);
   const headingId = useId();
   const contentId = useId();
@@ -438,7 +411,12 @@ function SubagentPrompt({ prompt }: { prompt: string }) {
         )}
       >
         <div className="markdown prose prose-sm message-content light text-text-primary w-full max-w-none break-words">
-          <MarkdownLite content={prompt} codeExecution={false} />
+          {renderMarkdown({
+            content: prompt,
+            variant: 'lite',
+            isLatestMessage: false,
+            codeExecution: false,
+          })}
         </div>
         {!expanded && (
           <div
@@ -465,7 +443,7 @@ export function SubagentActivityContent({
   toolContentQuery,
 }: {
   toolContentQuery?: ToolContentQuery;
-  authorHeader?: React.ReactNode;
+  authorHeader?: ReactNode;
   searchResults?: Record<string, SearchResultData>;
   content?: TMessageContentParts[];
   activity: ChildActivity;
@@ -478,7 +456,7 @@ export function SubagentActivityContent({
    *  chat (see `EmptyTextPart`). */
   underHeaderIcon?: boolean;
   onCancelControl?: (controlId: string) => void;
-}) {
+}): ReactNode {
   const localize = useLocalize();
   const host = useMessagePartsHost();
   const showThinking = host.useShowThinking();
@@ -490,37 +468,26 @@ export function SubagentActivityContent({
     </Alert>
   );
 
-  let body: React.ReactNode;
+  let body: ReactNode;
   if (state === 'loading' && parts.length === 0) {
-    body = (
-      <Container>
-        <EmptyText underHeaderIcon={underHeaderIcon} />
-      </Container>
-    );
+    body = <EmptyText underHeaderIcon={underHeaderIcon} />;
   } else if (state === 'error' && parts.length === 0) {
     body = errorNotice;
   } else if (parts.length === 0) {
-    body = isSubmitting ? (
-      <Container>
-        <EmptyText underHeaderIcon={underHeaderIcon} />
-      </Container>
-    ) : null;
+    body = isSubmitting ? <EmptyText underHeaderIcon={underHeaderIcon} /> : null;
   } else {
     body = (
       <ToolContentQueryContext.Provider value={toolContentQuery ?? null}>
-        <ContentParts
-          content={parts}
-          messageId={activity.messageId ?? activityId ?? 'subagent-activity-panel'}
-          conversationId={conversationId}
-          attachments={activity.attachments}
-          searchResults={searchResults}
-          authorHeader={authorHeader}
-          isCreatedByUser={false}
-          isLast
-          isSubmitting={isSubmitting}
-          showThinking={showThinking}
-          isLatestMessage={isSubmitting}
-        />
+        {host.renderContentParts({
+          content: parts,
+          messageId: activity.messageId ?? activityId ?? 'subagent-activity-panel',
+          conversationId,
+          attachments: activity.attachments,
+          searchResults,
+          authorHeader,
+          isSubmitting,
+          showThinking,
+        })}
       </ToolContentQueryContext.Provider>
     );
   }
@@ -556,7 +523,7 @@ export function SubagentActivityContent({
   );
 }
 
-export function SubagentStatus({ activity }: { activity: ChildActivity }) {
+export function SubagentStatus({ activity }: { activity: ChildActivity }): ReactNode {
   const localize = useLocalize();
   const StatusIcon = subagentStatusIcon(activity.status);
   return (
@@ -575,7 +542,8 @@ export function SubagentStatus({ activity }: { activity: ChildActivity }) {
   );
 }
 
-export default function SubagentActivity({
+/** One child run's transcript: its prompt, content and guidance history, scrollable or embedded. */
+export function SubagentActivity({
   activity,
   activityId,
   state = 'ready',
@@ -591,9 +559,9 @@ export default function SubagentActivity({
   embedded?: boolean;
   showPrompt?: boolean;
   headerInset?: boolean;
-  notice?: React.ReactNode;
+  notice?: ReactNode;
   onCancelControl?: (controlId: string) => void;
-}) {
+}): ReactNode {
   const statusHeader = isAbnormalTerminalStatus(activity.status) ? (
     <div className="border-border-light shrink-0 border-b px-4 py-2">
       <SubagentStatus activity={activity} />
