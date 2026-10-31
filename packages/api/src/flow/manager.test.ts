@@ -479,6 +479,84 @@ describe('FlowStateManager', () => {
     });
   });
 
+  describe('completeFlowIfPending', () => {
+    const flowId = 'atomic-flow';
+    const type = 'mcp_elicit';
+    const flowKey = `${type}:${flowId}`;
+
+    it('lets exactly one of two concurrent callers win', async () => {
+      await flowManager.initFlow(flowId, type);
+
+      const [resultA, resultB] = await Promise.all([
+        flowManager.completeFlowIfPending(flowId, type, 'result-A'),
+        flowManager.completeFlowIfPending(flowId, type, 'result-B'),
+      ]);
+
+      // Exactly one of the two calls won the race.
+      expect([resultA, resultB].filter((won) => won === true)).toHaveLength(1);
+
+      const state = await store.get(flowKey);
+      expect(state!.status).toBe('COMPLETED');
+      const winningResult = resultA ? 'result-A' : 'result-B';
+      expect(state!.result).toBe(winningResult);
+    });
+
+    it('waits for the distributed-lock holder to settle before conceding', async () => {
+      // A lockable (Redis-backed) store: the caller loses the lock while the
+      // holder is still between its read and its write. Conceding immediately
+      // would make the route re-read a PENDING state and answer 409 with no
+      // winning action, so the loser's card shows its own attempted action.
+      await flowManager.initFlow(flowId, type);
+      const lockable = store as unknown as {
+        acquireLock: (key: string) => Promise<string | null>;
+        releaseLock: (key: string, token: string) => Promise<void>;
+      };
+      lockable.acquireLock = jest.fn().mockResolvedValue(null);
+      lockable.releaseLock = jest.fn().mockResolvedValue(undefined);
+      const locked = new FlowStateManager(store as unknown as Keyv, { ttl: 30000, ci: true });
+
+      // The holder settles the flow shortly after the first failed acquisition.
+      setTimeout(() => {
+        void store.set(flowKey, {
+          type,
+          status: 'COMPLETED',
+          result: 'holder-result',
+          createdAt: Date.now(),
+          completedAt: Date.now(),
+        } as never);
+      }, 60);
+
+      const won = await locked.completeFlowIfPending(flowId, type, 'loser-result');
+
+      expect(won).toBe(false);
+      // It retried rather than conceding on the first miss.
+      expect((lockable.acquireLock as jest.Mock).mock.calls.length).toBeGreaterThan(1);
+      const state = await store.get(flowKey);
+      expect(state!.result).toBe('holder-result');
+    });
+
+    it('returns false for an already-COMPLETED flow and leaves result untouched', async () => {
+      await flowManager.initFlow(flowId, type);
+      await flowManager.completeFlow(flowId, type, 'original-result');
+
+      const won = await flowManager.completeFlowIfPending(flowId, type, 'late-result');
+
+      expect(won).toBe(false);
+      const state = await store.get(flowKey);
+      expect(state!.status).toBe('COMPLETED');
+      expect(state!.result).toBe('original-result');
+    });
+
+    it('returns false for a missing flow', async () => {
+      expect(await store.get(flowKey)).toBeUndefined();
+
+      const won = await flowManager.completeFlowIfPending(flowId, type, 'result');
+
+      expect(won).toBe(false);
+      expect(await store.get(flowKey)).toBeUndefined();
+    });
+  });
+
   describe('initFlow', () => {
     const flowId = 'init-test-flow';
     const type = 'test-type';

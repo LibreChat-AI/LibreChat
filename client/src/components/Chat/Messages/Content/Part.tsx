@@ -50,6 +50,7 @@ import { isError } from './ToolOutput/OutputRenderer';
 import { ToolPreparation } from './preparation';
 import { ErrorMessage } from './MessageContent';
 import AskUserQuestion from './AskUserQuestion';
+import ElicitationForm from './ElicitationForm';
 import RetrievalCall from './RetrievalCall';
 import ToolApproval from './ToolApproval';
 import AgentHandoff from './AgentHandoff';
@@ -687,6 +688,8 @@ const renderers: PartRenderers = {
         </div>
       );
     },
+    [ContentTypes.ELICITATION]: ({ part }) =>
+      part.elicitation ? <ElicitationForm {...part.elicitation} /> : null,
     [ContentTypes.TOOL_CALL]: renderAssistantsToolCall,
     [ContentTypes.IMAGE_FILE]: ({ part, isCreatedByUser }) => {
       const imageFile = part[ContentTypes.IMAGE_FILE];
