@@ -1,5 +1,5 @@
 import { createContext, useContext } from 'react';
-import type { ReactNode } from 'react';
+import type { Context, ReactNode } from 'react';
 
 /** The author a message restates wherever its content resumes after a steer. */
 export type TMessageAuthor = {
@@ -13,5 +13,7 @@ export type TMessageAuthor = {
  * agents list, and a context change reaches only the headers that read it rather
  * than every part of the message.
  */
-export const AuthorContext = createContext<TMessageAuthor | null>(null);
-export const useAuthorContext = () => useContext(AuthorContext);
+export const AuthorContext: Context<TMessageAuthor | null> = createContext<TMessageAuthor | null>(
+  null,
+);
+export const useAuthorContext = (): TMessageAuthor | null => useContext(AuthorContext);

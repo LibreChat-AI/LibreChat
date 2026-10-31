@@ -2,7 +2,7 @@ import { createContext, useContext, useMemo } from 'react';
 import { ContentTypes } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import { useMessageContext } from '~/Providers/MessageContext';
+import { useMessageContext } from '../message';
 
 /** The fields of a message that say who produced a failure and when. */
 export type ErrorSource = Pick<TMessage, 'endpoint' | 'model' | 'createdAt'> & {
@@ -83,7 +83,7 @@ export function ErrorSourceProvider({
 }: {
   message: Pick<TMessage, 'endpoint' | 'model' | 'createdAt' | 'content'>;
   children: ReactNode;
-}) {
+}): ReactNode {
   const { endpoint, model, createdAt, content } = message;
   const positionsKey = useMemo(() => JSON.stringify(findAgentPositions(content)), [content]);
   const row = useMemo<RowSource>(
