@@ -1,8 +1,7 @@
 import { createContext, useContext } from 'react';
-import { areToolCallArgsComplete } from '@librechat/chat';
 import { Constants, actionDelimiter } from 'librechat-data-provider';
+import { areToolCallArgsComplete, getToolDisplayLabel } from '@librechat/chat';
 import type { PartMetadata } from 'librechat-data-provider';
-import { getToolDisplayLabel } from '~/utils/toolLabels';
 import { useLocalize } from '~/hooks';
 
 export interface ToolPreparationInput

@@ -7,13 +7,14 @@ import {
   hasPendingApprovalInPart,
   ASK_USER_QUESTION,
   getSubmittedAskAnswer,
+  getToolDisplayLabel,
+  parseToolName,
 } from '@librechat/chat';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import type { PartWithIndex } from './ParallelContent';
 import type { ToolMeta } from './outcome';
 import {
   cn,
-  getToolDisplayLabel,
   getPartKeyIndex,
   hasPendingAuthInPart,
   getBatchActivityLabelPart,
@@ -40,7 +41,6 @@ import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup, ReasoningCompact } from './Parts';
 import { getOutcomeStatus, summarizeSpan } from './outcome';
 import { MCPAppViews } from '~/components/MCPUIResource';
-import { parseToolName } from '~/utils/toolLabels';
 import { StackedToolIcons } from './ToolOutput';
 import { mapAttachments } from '~/utils/map';
 import { getSourceDomains } from './sources';

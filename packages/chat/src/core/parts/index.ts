@@ -12,3 +12,4 @@ export * from './approval';
 export * from './preview';
 export * from './questions';
 export * from './toolCallPhase';
+export * from './toolLabels';

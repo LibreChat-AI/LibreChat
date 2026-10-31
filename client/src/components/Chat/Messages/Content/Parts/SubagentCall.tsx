@@ -3,7 +3,11 @@ import { useSetAtom } from 'jotai';
 import { ChevronRight, Users } from 'lucide-react';
 import { FOLD_GLYPH_CLASS } from '@librechat/chat/components';
 import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
-import { parseSubagentBackgroundHandle, tailOverflowDirection } from '@librechat/chat';
+import {
+  parseSubagentBackgroundHandle,
+  tailOverflowDirection,
+  parseToolName,
+} from '@librechat/chat';
 import {
   useOpenSubagentPanel,
   activeSubagentPanel,
@@ -34,8 +38,8 @@ import { useAgentsMapContext } from '~/Providers';
 import { useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup } from './Attachment';
 import { useFailedReveal } from '../reveal';
-import { cn, parseToolName } from '~/utils';
 import { useLocalize } from '~/hooks';
+import { cn } from '~/utils';
 
 interface SubagentCallProps {
   toolCallId: string;

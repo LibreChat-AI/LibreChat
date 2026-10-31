@@ -1,5 +1,5 @@
 import { Constants } from 'librechat-data-provider';
-import { parseToolName, getToolDisplayLabel, TOOL_FRIENDLY_NAME_KEYS } from '../toolLabels';
+import { parseToolName, getToolDisplayLabel, getToolFriendlyNameKeys } from '../toolLabels';
 
 describe('parseToolName', () => {
   it('splits an MCP tool id into server + tool name', () => {
@@ -23,7 +23,7 @@ describe('parseToolName', () => {
       raw: 'web_search',
       mcpServer: '',
       toolName: 'web_search',
-      friendlyKey: TOOL_FRIENDLY_NAME_KEYS.web_search,
+      friendlyKey: getToolFriendlyNameKeys().web_search,
     });
   });
 
@@ -58,19 +58,19 @@ describe('getToolDisplayLabel', () => {
     /** The identity-localize stub returns the translation key itself,
      *  which is what the real `useLocalize` would resolve at render time. */
     expect(getToolDisplayLabel('web_search', identityLocalize)).toBe(
-      TOOL_FRIENDLY_NAME_KEYS.web_search,
+      getToolFriendlyNameKeys().web_search,
     );
   });
 
   it('returns the code translation key for bash PTC tool calls', () => {
     expect(getToolDisplayLabel(Constants.BASH_PROGRAMMATIC_TOOL_CALLING, identityLocalize)).toBe(
-      TOOL_FRIENDLY_NAME_KEYS[Constants.BASH_PROGRAMMATIC_TOOL_CALLING],
+      getToolFriendlyNameKeys()[Constants.BASH_PROGRAMMATIC_TOOL_CALLING],
     );
   });
 
   it('returns the code translation key for bash_tool calls', () => {
     expect(getToolDisplayLabel('bash_tool', identityLocalize)).toBe(
-      TOOL_FRIENDLY_NAME_KEYS.bash_tool,
+      getToolFriendlyNameKeys().bash_tool,
     );
   });
 
@@ -87,7 +87,9 @@ describe('getToolDisplayLabel', () => {
   });
 
   it.each(['set_memory', 'delete_memory'])('returns a friendly memory label for %s', (toolName) => {
-    expect(getToolDisplayLabel(toolName, identityLocalize)).toBe(TOOL_FRIENDLY_NAME_KEYS[toolName]);
+    expect(getToolDisplayLabel(toolName, identityLocalize)).toBe(
+      getToolFriendlyNameKeys()[toolName],
+    );
   });
 
   it('returns the raw name for an unknown native tool', () => {
