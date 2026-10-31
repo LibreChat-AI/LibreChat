@@ -1,8 +1,8 @@
 import React from 'react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { dataService, request, QueryKeys } from 'librechat-data-provider';
 import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react';
+import { dataService, request, QueryKeys, MutationKeys } from 'librechat-data-provider';
 import type { AgentChannel, SlackChannelManifest } from 'librechat-data-provider';
 import Channels from '../Channels';
 
@@ -158,7 +158,7 @@ test.each(['per_user', 'shared'] as const)(
     await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123{Enter}');
     expect(screen.getByLabelText('com_ui_channels_bot_token')).toHaveAttribute('type', 'password');
     await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
-    await user.type(screen.getByLabelText('com_ui_channels_signing_secret'), 'test-secret');
+    await user.type(screen.getByLabelText(/com_ui_channels_signing_secret/), 'test-secret');
     jest
       .mocked(dataService.listAgentChannels)
       .mockResolvedValue([{ ...pending, status: 'active' }]);
@@ -192,7 +192,7 @@ test('pending setup is resumable and closing clears secrets', async () => {
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   await openConnection(user);
   expect(screen.getByLabelText('com_ui_channels_bot_token')).toHaveValue('');
-  expect(screen.getByLabelText('com_ui_channels_signing_secret')).toHaveValue('');
+  expect(screen.getByLabelText(/com_ui_channels_signing_secret/)).toHaveValue('');
   expect(dataService.deleteAgentChannel).not.toHaveBeenCalled();
 });
 test('manifest is a read-only definition without editing or download controls', async () => {
@@ -373,7 +373,11 @@ test('list/manifest/activation errors can retry without exposing backend details
   await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
   await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
   await screen.findByText('com_ui_channels_action_error');
+  expect(screen.getByText('com_ui_channels_activation_retry')).toBeInTheDocument();
+  expect(screen.getByText('com_ui_channels_signing_secret_optional')).toBeInTheDocument();
   expect(screen.queryByText('private-error')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('com_ui_channels_bot_token')).toHaveValue('');
+  await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
   await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
   await waitFor(() =>
     expect(dataService.activateAgentChannel).toHaveBeenLastCalledWith('agent-1', 'channel-1', {
@@ -527,8 +531,10 @@ test('requires the signing secret advertised by a webhook manifest before activa
   await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
   const activate = screen.getByRole('button', { name: 'com_ui_channels_activate' });
   expect(activate).toBeDisabled();
-  const signing = screen.getByLabelText('com_ui_channels_signing_secret');
+  const signing = screen.getByLabelText(/com_ui_channels_signing_secret/);
   expect(signing).toBeRequired();
+  expect(screen.getByText('com_ui_channels_signing_secret_required')).toBeInTheDocument();
+  expect(screen.queryByText('com_ui_channels_signing_secret_optional')).not.toBeInTheDocument();
   await user.type(signing, 'test-secret');
   expect(activate).toBeEnabled();
   await user.click(activate);
@@ -545,7 +551,7 @@ test('does not send credentials when the installation manifest is unavailable', 
   await openConnection(user);
   await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
   await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
-  await user.type(screen.getByLabelText('com_ui_channels_signing_secret'), 'test-secret');
+  await user.type(screen.getByLabelText(/com_ui_channels_signing_secret/), 'test-secret');
   expect(screen.getByRole('button', { name: 'com_ui_channels_activate' })).toBeDisabled();
   expect(dataService.activateAgentChannel).not.toHaveBeenCalled();
 });
@@ -598,7 +604,7 @@ test('the actual activation adapter prevents credential-bearing failures reachin
     await openConnection(user);
     await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
     await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'test-token');
-    await user.type(screen.getByLabelText('com_ui_channels_signing_secret'), 'test-secret');
+    await user.type(screen.getByLabelText(/com_ui_channels_signing_secret/), 'test-secret');
     await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
     await screen.findByText('com_ui_channels_action_error');
     await user.keyboard('{Escape}');
@@ -646,3 +652,53 @@ test('switching owner isolates channel caches and discards the old credential fo
     mounted.client.getQueryData([QueryKeys.agentChannels, 'admin-2', 'tenant-b', 'agent-1']),
   );
 });
+
+test.each(['success', 'failure', 'pending-close'] as const)(
+  'cached activation callbacks cannot reuse credentials after %s',
+  async (outcome) => {
+    const user = userEvent.setup();
+    jest.mocked(dataService.listAgentChannels).mockResolvedValue([pending]);
+    let settle!: (value: AgentChannel) => void;
+    if (outcome === 'failure')
+      jest
+        .mocked(dataService.activateAgentChannel)
+        .mockRejectedValueOnce(new Error('safe failure'));
+    if (outcome === 'pending-close')
+      jest.mocked(dataService.activateAgentChannel).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            settle = resolve;
+          }),
+      );
+    const { client } = renderChannels();
+    await openConnection(user);
+    await user.type(screen.getByLabelText('com_ui_channels_app_id'), 'A123');
+    await user.type(screen.getByLabelText('com_ui_channels_bot_token'), 'one-use-token');
+    await user.type(screen.getByLabelText(/com_ui_channels_signing_secret/), 'one-use-secret');
+    await user.click(screen.getByRole('button', { name: 'com_ui_channels_activate' }));
+    await waitFor(() => expect(dataService.activateAgentChannel).toHaveBeenCalledTimes(1));
+    const cached = client.getMutationCache().find<AgentChannel | void, Error, 'activate'>({
+      mutationKey: [MutationKeys.agentChannels, 'admin-1', 'tenant-a', 'agent-1', 'channel-1'],
+      exact: true,
+    });
+    expect(cached?.options.mutationFn).toEqual(expect.any(Function));
+    if (outcome === 'failure') {
+      await screen.findByText('com_ui_channels_action_error');
+      expect(screen.getByLabelText('com_ui_channels_bot_token')).toHaveValue('');
+      expect(screen.getByLabelText(/com_ui_channels_signing_secret/)).toHaveValue('');
+    } else if (outcome === 'pending-close') {
+      await user.keyboard('{Escape}');
+    } else {
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    }
+    await act(async () => {
+      await expect(cached?.options.mutationFn?.('activate')).rejects.toThrow(/unavailable/);
+    });
+    expect(dataService.activateAgentChannel).toHaveBeenCalledTimes(1);
+    expect(dataService.activateAgentChannel).toHaveBeenCalledWith('agent-1', 'channel-1', {
+      slack: { appId: 'A123', botToken: 'one-use-token', signingSecret: 'one-use-secret' },
+    });
+    if (outcome === 'pending-close')
+      await act(async () => settle({ ...pending, status: 'active' }));
+  },
+);
