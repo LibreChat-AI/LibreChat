@@ -308,3 +308,65 @@ it('propagates database outages and rejects foreign tenant context without claim
       outage.mockRestore();
     }
   }));
+
+it('rebuilds canonical votes without merging skin tones and uses the latest event on ties', () =>
+  scope(async () => {
+    const inputs = [
+      { id: 'base-a-add', reaction: '+1', action: 'added', at: 20 },
+      { id: 'base-z-remove', reaction: 'thumbsup', action: 'removed', at: 20 },
+      { id: 'tone-two', reaction: '+1::skin-tone-2', action: 'added', at: 30 },
+      { id: 'tone-three', reaction: 'thumbsup::skin-tone-3', action: 'added', at: 40 },
+      { id: 'down', reaction: '-1', action: 'added', at: 50 },
+    ] as const;
+    for (const input of inputs) {
+      const record = event();
+      await storage.admitChannelFeedbackEvent({
+        ...record,
+        eventId: input.id,
+        digest: input.id,
+        rating: input.reaction === '-1' ? 'thumbsDown' : 'thumbsUp',
+        event: {
+          ...record.event,
+          eventId: input.id,
+          reaction: input.reaction,
+          action: input.action,
+          eventTimestampUs: input.at,
+        },
+      });
+    }
+    const ids = inputs.map((input) => input.id);
+    const votes = await storage.rebuildVotes(tenantId, mapping.runId, ids);
+    expect(votes).toHaveLength(4);
+    expect(votes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ reaction: 'thumbsup', active: false, eventId: 'base-z-remove' }),
+        expect.objectContaining({ reaction: 'thumbsup::skin-tone-2', active: true }),
+        expect.objectContaining({ reaction: 'thumbsup::skin-tone-3', active: true }),
+        expect.objectContaining({ reaction: 'thumbsdown', rating: 'thumbsDown', active: true }),
+      ]),
+    );
+    expect(await storage.rebuildVotes(tenantId, mapping.runId, [...ids, 'missing'])).toBeNull();
+  }));
+
+it('erases imported-conversation feedback while preserving another owner in that conversation', () =>
+  scope(async () => {
+    const other = {
+      ...mapping,
+      principalId: otherUserId,
+      responseId: 'other-response',
+      messageId: 'other-response',
+      runId: 'other-run',
+      externalMessageKey: 'C1:other-owner',
+    };
+    await message(other);
+    await persist();
+    await persist(other);
+    await db.deleteImportedConversations({
+      user: userId,
+      tenantId,
+      conversationIds: [mapping.conversationId],
+    });
+    await assertRetired();
+    expect(await storage.isAuthorityCurrent(other)).toBe(true);
+    expect(await storage.getChannelFeedback(tenantId, other.runId)).not.toBeNull();
+  }));

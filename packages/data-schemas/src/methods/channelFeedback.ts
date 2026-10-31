@@ -139,7 +139,7 @@ export function createChannelFeedbackStorage(
             },
             { $sort: { 'event.eventTimestampUs': -1, 'event.eventId': -1 } },
             {
-              $set: {
+              $addFields: {
                 reaction: {
                   $replaceOne: {
                     input: {
