@@ -101,6 +101,10 @@ describe('Agent Abort Endpoint', () => {
   beforeAll(() => {
     app = express();
     app.use(express.json());
+    app.use((req, _res, next) => {
+      req.config = { endpoints: { agents: { checkpointer: { type: 'memory' } } } };
+      next();
+    });
     app.use('/api/agents', agentRoutes);
   });
 

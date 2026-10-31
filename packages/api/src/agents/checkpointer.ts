@@ -1083,6 +1083,8 @@ export async function deleteAgentCheckpoint(
   }
   const saver = await getAgentCheckpointer(cfg);
   if (!saver) {
+    if (options?.throwOnError && resolveCheckpointerConfig(cfg).type !== 'memory')
+      throw new Error('Checkpoint database is unavailable');
     return;
   }
   try {
@@ -1100,6 +1102,7 @@ export async function deleteAgentCheckpoint(
       }
       const db = mongoose.connection.db;
       if (!db) {
+        if (options?.throwOnError) throw new Error('Checkpoint database is unavailable');
         return;
       }
       const resolved = resolveCheckpointerConfig(cfg);
@@ -1131,6 +1134,7 @@ export async function deleteAgentCheckpoint(
       }
       const db = mongoose.connection.db;
       if (!db) {
+        if (options?.throwOnError) throw new Error('Checkpoint database is unavailable');
         return;
       }
       const resolved = resolveCheckpointerConfig(cfg);
@@ -1145,7 +1149,10 @@ export async function deleteAgentCheckpoint(
       return;
     }
     const db = mongoose.connection.db;
-    if (!db) return;
+    if (!db) {
+      if (options?.throwOnError) throw new Error('Checkpoint database is unavailable');
+      return;
+    }
     const resolved = resolveCheckpointerConfig(cfg);
     const filter = { thread_id: threadId, ...legacyCheckpointStorageFilter() };
     await Promise.all([
