@@ -487,12 +487,15 @@ it('serializes revoked insertion with retirement and erases its private payload 
     expect(await mongoose.models.ChannelIdentity.countDocuments({ tenantId })).toBe(0);
   }));
 
-it('creates and activates a per-user link at an empty canonical channel revision and admits its run', () =>
+it('creates and activates a per-user link at the canonical channel revision and fences rotation', () =>
   scope(async () => {
     await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'connection-owner', {
-      revision: '',
+      revision: 'canonical',
     });
-    const pending = { ...identity(), identity: { ...identity().identity, channelRevision: '' } };
+    const pending = {
+      ...identity(),
+      identity: { ...identity().identity, channelRevision: 'canonical' },
+    };
     expect(await storage.saveChannelIdentity(pending, null)).toBe(true);
     const active = {
       ...pending,
@@ -501,19 +504,21 @@ it('creates and activates a per-user link at an empty canonical channel revision
       revision: 'active',
     };
     expect(await storage.saveChannelIdentity(active, 'one')).toBe(true);
-    expect((await storage.readChannelLink(tenantId, 'link'))?.identity.channelRevision).toBe('');
+    expect((await storage.readChannelLink(tenantId, 'link'))?.identity.channelRevision).toBe(
+      'canonical',
+    );
     const input = {
       tenantId,
       channelId: 'channel',
       agentId: 'agent',
       principal: {
         userId: 'linked-owner',
-        channelRevision: '',
+        channelRevision: 'canonical',
         linkId: 'link',
         linkRevision: 'active',
       },
       admission: {
-        eventId: 'empty-revision',
+        eventId: 'canonical-revision',
         externalChannelId: 'C1',
         externalThreadKey: '123.456',
         externalMessageKey: '123.457',
@@ -523,17 +528,17 @@ it('creates and activates a per-user link at an empty canonical channel revision
     };
     const runs = createChannelRunStorage(mongoose);
     await expect(runs.admit(input, 100)).resolves.toMatchObject({
-      run: { principal: { channelRevision: '' } },
+      run: { principal: { channelRevision: 'canonical' } },
     });
     await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'connection-owner', {
       revision: 'rotated',
     });
     await expect(
-      runs.admit({ ...input, admission: { ...input.admission, eventId: 'stale-empty' } }, 101),
+      runs.admit({ ...input, admission: { ...input.admission, eventId: 'stale-revision' } }, 101),
     ).rejects.toMatchObject({ code: 'invalid_transition' });
   }));
 
-it.each([undefined, null])(
+it.each([undefined, null, ''])(
   'still requires a channel revision when its value is %s',
   (channelRevision) =>
     scope(async () => {
@@ -549,7 +554,7 @@ it.each(['channelId', 'ticketHash'] as const)(
   'does not relax required nonempty %s validation',
   (field) =>
     scope(async () => {
-      const record = { ...identity(), identity: { ...identity().identity, channelRevision: '' } };
+      const record = identity();
       const model = new mongoose.models.ChannelIdentity(
         field === 'ticketHash'
           ? { ...record, ticketHash: '' }
