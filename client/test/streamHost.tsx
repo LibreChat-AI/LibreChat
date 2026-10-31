@@ -18,7 +18,7 @@ const unused = (member: string) => () => {
  *  specs that render the subagent provider without the stream bindings. */
 export const subagentIndexHost: StreamHost = {
   useResumableServices: unused('useResumableServices'),
-  useLegacyStream: unused('useLegacyStream'),
+  useLegacyServices: unused('useLegacyServices'),
   useTransport: () => null,
   useQueuedTurnReceipts: unused('useQueuedTurnReceipts'),
   useActiveJobs: unused('useActiveJobs'),

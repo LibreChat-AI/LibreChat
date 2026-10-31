@@ -83,6 +83,7 @@ const host: StreamHost = {
   extendActiveJobsGrace: unused,
   useStreamStatus: unused,
   useResumeSettings: unused,
+  useParentSubagentIndex: unused,
   useEventServices: () => createEventServices(),
 };
 const queryClient = new QueryClient();
