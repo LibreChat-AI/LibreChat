@@ -118,7 +118,6 @@ describe('mounted service-token advance cannot execute an unbound run', () => {
         serviceToken: () => token,
         config: async () => ({ enabled: true }),
         getAgent: async () => ({ id: fixture.agentId }),
-        deleteApiKey: async () => true,
         verifySlackToken: async () => null,
         logError: jest.fn(),
       });

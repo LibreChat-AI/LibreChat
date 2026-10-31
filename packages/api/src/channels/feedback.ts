@@ -148,19 +148,11 @@ export function createChannelFeedbackService(deps: ChannelFeedbackDependencies) 
           retryAtMs: 0,
         });
         for (let attempt = 0; attempt < deps.maxConflictRetries; attempt++) {
-          const legacy = ledger.votes.some((vote) => !vote.reaction);
-          const votes = legacy
-            ? await storage.rebuildVotes(
-                record.tenantId,
-                record.ledgerKey,
-                ledger.votes.map((vote) => vote.eventId),
-              )
-            : ledger.votes;
-          if (!votes) return failure('changed');
+          const votes = ledger.votes;
           if (votes.length > CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX) return failure('capacity');
           const next = projectChannelReaction(votes, record.event, record.rating);
           if (next.votes.length > CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX) return failure('capacity');
-          if (!next.changed && !legacy) {
+          if (!next.changed) {
             await storage.markChannelFeedbackEvent(record);
             return { ok: true, value: response(ledger) };
           }
@@ -279,18 +271,8 @@ export function createChannelFeedbackService(deps: ChannelFeedbackDependencies) 
       if (admitted.digest !== eventDigest) return failure('event_conflict');
       return project(admitted);
     },
-    /** Journal maintenance is independent of admission, recovery and provider export. */
-    async compact(tenantId: string, limit: number): Promise<number> {
-      return deps.storage.compactChannelFeedbackEvents(
-        tenantId,
-        limit,
-        Date.now(),
-        deps.exportRetryMs,
-      );
-    },
     /** Recover accepted receipts after a process exits between admission and projection. */
     async recover(tenantId: string, limit: number): Promise<number> {
-      await deps.storage.repairChannelFeedbackRetention(tenantId, limit);
       const events = await deps.storage.pendingChannelFeedbackEvents(tenantId, limit, now());
       let processed = 0;
       for (const event of events) {
