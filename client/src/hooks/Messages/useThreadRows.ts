@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useStore } from 'jotai';
-import type { TFile, TMessage } from 'librechat-data-provider';
-import type { ThreadIndex, ThreadRow } from '~/utils/thread';
 import {
   ROOT_KEY,
   buildThreadIndex,
   changedParentKeys,
   reconcileSiblingIdx,
   resolveThreadRows,
-} from '~/utils/thread';
+} from '@librechat/chat';
+import type { TFile, TMessage } from 'librechat-data-provider';
+import type { ThreadIndex, ThreadRow } from '@librechat/chat';
 import {
   siblingIdxFamily,
   siblingKey,

@@ -5,7 +5,7 @@ import {
   changedParentKeys,
   reconcileSiblingIdx,
   resolveThreadRows,
-} from './thread';
+} from '../thread';
 
 const ROOT = '00000000-0000-0000-0000-000000000000';
 
