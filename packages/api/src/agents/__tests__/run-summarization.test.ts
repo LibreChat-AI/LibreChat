@@ -1282,7 +1282,6 @@ describe('Azure deployment alias', () => {
         summarizeOnly: true,
         summarizationConfig: {
           model,
-          maxSummaryTokens: 1536,
           parameters: {
             streaming: false,
             apiKey: 'override-key',
@@ -1303,7 +1302,8 @@ describe('Azure deployment alias', () => {
       expect(requests[0].headers.get('api-key')).toBe('override-key');
       expect(requests[0].headers.get('X-Request')).toBe('resolved-user-header');
       expect(requests[0].body.model).toBe('user-deployment');
-      expect(requests[0].body[useResponsesApi ? 'max_output_tokens' : 'max_tokens']).toBe(1536);
+      const chatTokenKey = model === 'gpt-6-astra' ? 'max_completion_tokens' : 'max_tokens';
+      expect(requests[0].body[useResponsesApi ? 'max_output_tokens' : chatTokenKey]).toBe(1536);
       expect((agents[0].clientOptions as Record<string, unknown>).configuration).toEqual(
         configOptions,
       );
