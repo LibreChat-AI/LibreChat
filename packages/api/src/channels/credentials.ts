@@ -74,7 +74,11 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
     )
       return null;
     const channel = await deps.getChannel(channelId);
-    if (!channel || !(await hasChannelRunAuthority(channel, run, deps.resolvePrincipal)))
+    if (
+      !channel ||
+      !(await hasChannelRunAuthority(channel, run, deps.resolvePrincipal)) ||
+      !(await isCurrent(run))
+    )
       return null;
     return run;
   }

@@ -882,11 +882,11 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       const parsed = fenceBody.safeParse(req.body);
       const binding = await bound(req, res, channel, parsed.success ? parsed.data.fence : null);
       if (!binding) return;
-      const leased = () =>
-        binding.run.leaseOwner === binding.fence.owner &&
-        binding.run.leaseEpoch === binding.fence.epoch &&
-        binding.run.leaseExpiresAt > now();
-      if (!leased()) {
+      const leased = (run: ChannelRunRecord) =>
+        run.leaseOwner === binding.fence.owner &&
+        run.leaseEpoch === binding.fence.epoch &&
+        run.leaseExpiresAt > now();
+      if (!leased(binding.run)) {
         res.status(409).json({ error: 'stale_fence' });
         return;
       }
@@ -895,8 +895,9 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         return;
       }
       const content = await deps.artifacts.content(binding.run, req.params.artifactId);
-      if (!(await bound(req, res, channel, binding.fence))) return;
-      if (!leased()) {
+      const refreshed = await bound(req, res, channel, binding.fence);
+      if (!refreshed) return;
+      if (!leased(refreshed.run)) {
         res.status(409).json({ error: 'stale_fence' });
         return;
       }

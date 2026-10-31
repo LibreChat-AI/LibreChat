@@ -126,7 +126,17 @@ export function createChannelCleanupRuntime(deps: ChannelCleanupDependencies) {
         });
         await worker.start();
         if (stopped) await worker.stop();
-      })();
+      })().catch(async (error: unknown) => {
+        const failed = worker;
+        worker = undefined;
+        try {
+          await failed?.stop();
+        } catch {
+          /* Preserve the initialization failure after attempting owned worker disposal. */
+        }
+        initialization = undefined;
+        throw error;
+      });
       return initialization;
     },
     wake(): void {
