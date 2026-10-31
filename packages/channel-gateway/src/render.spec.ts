@@ -199,6 +199,35 @@ describe('Slack answer rendering', () => {
     ).not.toThrow();
   });
 
+  it('preserves existing formatting when an omission notice fits and bounds every serialized fallback', () => {
+    const view = run();
+    view.snapshot!.artifacts = [artifact];
+    const part = makeSlackPlan(view, false, 1).parts[0];
+    const message = durableSlackMessage(part, rendererVersion);
+    expect(
+      message.blocks?.some(
+        (block) =>
+          block.type === 'section' &&
+          block.text.type === 'mrkdwn' &&
+          block.text.text.includes('*world*'),
+      ),
+    ).toBe(true);
+    expect(
+      message.blocks?.some(
+        (block) =>
+          block.type === 'section' &&
+          block.text.type === 'plain_text' &&
+          block.text.text.includes('omitted'),
+      ),
+    ).toBe(true);
+    view.snapshot!.text = '\u0000'.repeat(15000);
+    for (const generated of makeSlackPlan(view, false, 1).parts) {
+      if (generated.presentation)
+        expect(Buffer.byteLength(generated.presentation.payload)).toBeLessThanOrEqual(64000);
+      expect(() => durableSlackMessage(generated, rendererVersion)).not.toThrow();
+    }
+  });
+
   it('converts prose but leaves code syntax untouched', () => {
     expect(
       safeMrkdwn(
