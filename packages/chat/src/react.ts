@@ -162,4 +162,9 @@ export { default as useElementSize } from './react/size';
 export { default as useAudioLevels, frameLevel } from './react/levels';
 export { default as useInitPopoverInput } from './react/popover';
 export { useComposerHost, ComposerHostProvider } from './react/input';
-export type { ComposerHost, ComposerShortcutAction } from './react/input';
+export type {
+  ComposerHost,
+  CommandListRow,
+  CommandListProps,
+  ComposerShortcutAction,
+} from './react/input';
