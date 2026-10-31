@@ -596,6 +596,36 @@ describe('Memory Agent Header Resolution', () => {
     });
   });
 
+  it.each([
+    [Providers.ANTHROPIC, 'claude-haiku-5-5'],
+    [Providers.ANTHROPIC, 'claude-sonnet-5-5'],
+    [Providers.BEDROCK, 'anthropic.claude-sonnet-5-v1:0'],
+  ])(
+    'should omit sampling parameters for %s model %s that rejects them',
+    async (provider, model) => {
+      await processMemory({
+        res: mockRes,
+        userId: 'user-123',
+        setMemory: mockMemoryMethods.setMemory,
+        deleteMemory: mockMemoryMethods.deleteMemory,
+        messages: [],
+        memory: 'existing memory',
+        messageId: 'msg-123',
+        conversationId: 'conv-123',
+        validKeys: ['preferences'],
+        instructions: 'test instructions',
+        llmConfig: { provider, model, topP: 0.9, topK: 40 },
+        user: testUser,
+      });
+
+      const { llmConfig: sent } = (Run.create as jest.Mock).mock.calls[0][0].graphConfig;
+      expect(sent.model).toBe(model);
+      expect(sent.temperature).toBeUndefined();
+      expect(sent.topP).toBeUndefined();
+      expect(sent.topK).toBeUndefined();
+    },
+  );
+
   it('should not modify temperature for Anthropic without thinking enabled', async () => {
     const llmConfig = {
       provider: Providers.ANTHROPIC,
