@@ -110,6 +110,7 @@
     "test:packages:data-schemas": "cd packages/data-schemas && npm run test:ci",
     "test:packages:chat": "npm run build:data-provider && cd packages/chat && npm run test:ci",
     "test:config": "jest --config config/jest.config.js",
+    "test:dependencies": "node --test scripts/dependencies.test.mjs",
     "test:all": "npm run test:client && npm run test:api && npm run test:packages:api && npm run test:packages:data-provider && npm run test:packages:data-schemas && npm run test:packages:chat",
     "test:turbo": "turbo run test:ci --concurrency=2 --filter=@librechat/frontend --filter=@librechat/client --filter=@librechat/backend --filter=@librechat/api --filter=librechat-data-provider --filter=@librechat/data-schemas --filter=@librechat/chat",
     "e2e:update": "npm run e2e:prepare && playwright test --config=e2e/playwright.config.local.ts --update-snapshots",
@@ -267,7 +268,23 @@
     "monaco-editor": {
       "dompurify": "3.4.17"
     },
-    "test-exclude": "^8.0.0",
+    "test-exclude": {
+      ".": "^8.0.0",
+      "glob": "^14.0.3",
+      "minimatch": "^11.0.3"
+    },
+    "@jest/reporters@30": {
+      "glob": "^14.0.3"
+    },
+    "jest-config@30": {
+      "glob": "^14.0.3"
+    },
+    "jest-runtime@30": {
+      "glob": "^14.0.3"
+    },
+    "@typescript-eslint/typescript-estree@8": {
+      "minimatch": "^11.0.3"
+    },
     "js-yaml": "^4.3.2",
     "ws": "^8.21.0",
     "@opentelemetry/core": "^2.9.0",
