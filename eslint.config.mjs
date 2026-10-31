@@ -362,6 +362,10 @@ export default [
             'message-render',
             'message-timestamp',
             'popover-animate',
+            // The thinking-level slider's spring curves, which have no theme token.
+            'composer-effort-glide',
+            'composer-effort-thumb',
+            'composer-effort-fill',
           ],
         },
       ],
