@@ -183,95 +183,106 @@ function displayUrl(raw: string): boolean {
   }
 }
 
-/** Recognize literal spans before any prose transformation, including unfinished fences. */
-function transformProse(
-  value: string,
-  prose: (text: string) => string,
-  code = (text: string) => text,
-): string {
-  const starts = /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)|`+/gm;
+/** Source atoms are assembled only after prose formatting; emitted URLs/code are immutable. */
+interface InlineDocument {
+  text: string;
+  spans: { start: number; end: number }[];
+}
+
+function inlineDocument(value: string, wire: boolean): InlineDocument {
+  let prefix = '\0' + createHash('sha256').update(value).digest('hex') + ':';
+  while (value.includes(prefix)) prefix += ':';
+  const atoms: string[] = [];
+  const hold = (atom: string) => `${prefix}${atoms.push(atom) - 1}\0`;
+  const nextTickEnd = new Map<number, number>();
+  const previousTick = new Map<number, number>();
+  const ticks = /`+/g;
+  let tick: RegExpExecArray | null;
+  while ((tick = ticks.exec(value))) {
+    const previous = previousTick.get(tick[0].length);
+    if (previous !== undefined) nextTickEnd.set(previous, ticks.lastIndex);
+    previousTick.set(tick[0].length, tick.index);
+  }
+  const starts = /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)|`+|\[([^\][\n]+)\]\(/gm;
   let cursor = 0;
-  let result = '';
+  let subject = '';
   let start: RegExpExecArray | null;
   while ((start = starts.exec(value))) {
-    const marker = start[1];
     let end = -1;
-    if (marker) {
-      const closing = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}[ \t]*(?:\n|$)`, 'gm');
-      closing.lastIndex = starts.lastIndex;
-      const match = closing.exec(value);
-      end = match ? closing.lastIndex : value.length;
-    } else {
-      const closing = /`+/g;
-      closing.lastIndex = starts.lastIndex;
-      let match: RegExpExecArray | null;
-      while ((match = closing.exec(value))) {
-        if (match[0].length === start[0].length) {
-          end = closing.lastIndex;
-          break;
+    let atom = '';
+    let trailing = '';
+    const marker = start[1];
+    const label = start[2];
+    if (label !== undefined) {
+      let depth = 1;
+      let url = '';
+      end = starts.lastIndex;
+      for (; end < value.length; end++) {
+        let char = value[end];
+        if (char === '\\' && /[()\\]/.test(value[end + 1] ?? '')) {
+          char = value[++end];
+          url += char;
+          continue;
         }
+        if (/\s/.test(char)) break;
+        if (char === '(') depth++;
+        if (char === ')' && --depth === 0) break;
+        url += char;
       }
+      if (depth !== 0) {
+        starts.lastIndex = end;
+        continue;
+      }
+      end++;
+      if (!displayUrl(url)) atom = wire ? escapeSlackText(label) : label;
+      else if (wire) atom = `<${escapeSlackText(url)}|${escapeSlackText(label)}>`;
+      else atom = value.slice(start.index, end);
+    } else {
+      if (marker) {
+        const closing = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}[ \t]*(?:\n|$)`, 'gm');
+        closing.lastIndex = starts.lastIndex;
+        end = closing.exec(value) ? closing.lastIndex : value.length;
+      } else {
+        end = nextTickEnd.get(start.index) ?? -1;
+      }
+      if (end < 0) continue;
+      const raw = value.slice(start.index, end);
+      // Keep document line boundaries visible to heading formatting outside the opaque atom.
+      trailing = raw.endsWith('\n') ? '\n' : '';
+      const literal = trailing ? raw.slice(0, -1) : raw;
+      atom = wire ? escapeSlackText(literal) : literal;
     }
-    if (end < 0) continue;
-    result += prose(value.slice(cursor, start.index)) + code(value.slice(start.index, end));
+    subject += value.slice(cursor, start.index) + hold(atom) + trailing;
     cursor = end;
     starts.lastIndex = end;
   }
-  return result + prose(value.slice(cursor));
-}
-
-/** A single scanner handles nested and escaped URL parentheses in both Slack formats. */
-function proseLinks(value: string, slack: boolean): string {
-  const starts = /\[([^\][\n]+)\]\(/g;
-  let result = '';
-  let cursor = 0;
-  let match: RegExpExecArray | null;
-  const escape = slack ? escapeSlackText : (text: string) => text;
-  while ((match = starts.exec(value))) {
-    let depth = 1;
-    let end = starts.lastIndex;
-    let url = '';
-    for (; end < value.length; end++) {
-      let char = value[end];
-      if (char === '\\' && /[()\\]/.test(value[end + 1] ?? '')) {
-        char = value[++end];
-        url += char;
-        continue;
-      }
-      if (/\s/.test(char)) break;
-      if (char === '(') depth++;
-      if (char === ')' && --depth === 0) break;
-      url += char;
-    }
-    if (depth !== 0) {
-      starts.lastIndex = end;
-      continue;
-    }
-    result += escape(value.slice(cursor, match.index));
-    const label = match[1];
-    if (!displayUrl(url)) result += escape(label);
-    else if (slack) result += `<${escapeSlackText(url)}|${escapeSlackText(label)}>`;
-    else result += value.slice(match.index, end + 1);
-    cursor = end + 1;
-    starts.lastIndex = cursor;
+  subject += value.slice(cursor);
+  if (wire)
+    subject = escapeSlackText(subject)
+      .replace(/\*\*([^*]+)\*\*/g, '*$1*')
+      .replace(/__([^_]+)__/g, '*$1*')
+      .replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
+  const spans: InlineDocument['spans'] = [];
+  const placeholders = new RegExp(`${prefix}(\\d+)\0`, 'g');
+  let text = '';
+  let restored = 0;
+  let placeholder: RegExpExecArray | null;
+  while ((placeholder = placeholders.exec(subject))) {
+    text += subject.slice(restored, placeholder.index);
+    const start = text.length;
+    text += atoms[Number(placeholder[1])];
+    spans.push({ start, end: text.length });
+    restored = placeholders.lastIndex;
   }
-  return result + escape(value.slice(cursor));
+  return { text: text + subject.slice(restored), spans };
 }
 
 function sanitizedLinks(value: string): string {
-  return transformProse(value, (prose) => proseLinks(prose, false));
+  return inlineDocument(value, false).text;
 }
 
 export function safeMrkdwn(value: string): string {
-  return transformProse(
-    value,
-    (prose) =>
-      proseLinks(prose, true)
-        .replace(/\*\*([^*]+)\*\*/g, '*$1*')
-        .replace(/__([^_]+)__/g, '*$1*')
-        .replace(/^#{1,6}\s+(.+)$/gm, '*$1*'),
-    escapeSlackText,
-  );
+  return inlineDocument(value, true).text;
 }
 
 /** Byte limits are stricter than Slack's character limits and never split a code point. */
@@ -299,8 +310,23 @@ export function chunkText(value: string, limit: number): string[] {
 }
 
 /** Recognize wire-format atoms before enforcing Slack's per-section byte limit. */
-function mrkdwnChunks(value: string, limit: number): string[] | null {
-  const atoms = /<[^<>\n]+>|&(?:amp|lt|gt);|`+|[*_~]/g;
+function mrkdwnChunks(document: InlineDocument, limit: number): string[] | null {
+  const value = document.text;
+  const protectedEnds = new Map(document.spans.map((span) => [span.start, span.end]));
+  const nextStyleEnd = new Map<number, number>();
+  const previousStyle = new Map<string, number>();
+  const styles = /[*_~]/g;
+  let style: RegExpExecArray | null;
+  let spanIndex = 0;
+  while ((style = styles.exec(value))) {
+    while (spanIndex < document.spans.length && document.spans[spanIndex].end <= style.index)
+      spanIndex++;
+    const span = document.spans[spanIndex];
+    if (span && span.start <= style.index) continue;
+    const previous = previousStyle.get(style[0]);
+    if (previous !== undefined) nextStyleEnd.set(previous, styles.lastIndex);
+    previousStyle.set(style[0], style.index);
+  }
   const chunks: string[] = [];
   let chunk = '';
   let bytes = 0;
@@ -317,40 +343,20 @@ function mrkdwnChunks(value: string, limit: number): string[] | null {
       bytes += size;
     }
   };
-  let match: RegExpExecArray | null;
-  while ((match = atoms.exec(value))) {
-    let atom = match[0];
-    let end = atoms.lastIndex;
-    if (/^[`*_~]/.test(atom)) {
-      // A bounded search avoids rescanning an unbounded sequence of unmatched delimiters.
-      const window = value.slice(end, end + limit + 1);
-      if (atom[0] === '`') {
-        const closing = /`+/g;
-        closing.lastIndex = end;
-        let run: RegExpExecArray | null;
-        let found = false;
-        while ((run = closing.exec(value))) {
-          if (run.index - match.index > limit) return null;
-          if (run[0].length === atom.length) {
-            end = closing.lastIndex;
-            found = true;
-            break;
-          }
-        }
-        if (!found) return null;
-      } else {
-        const close = window.indexOf(atom);
-        if (close < 0) {
-          if (value.indexOf(atom, end) >= 0) return null;
-          continue;
-        }
-        end += close + atom.length;
-      }
-      atom = value.slice(match.index, end);
+  for (let index = 0; index < value.length; ) {
+    let end = protectedEnds.get(index) ?? nextStyleEnd.get(index);
+    if (end === undefined && value[index] === '&') {
+      if (value.startsWith('&amp;', index)) end = index + 5;
+      else if (value.startsWith('&lt;', index) || value.startsWith('&gt;', index)) end = index + 4;
     }
+    if (end === undefined) {
+      index++;
+      continue;
+    }
+    const atom = value.slice(index, end);
     const size = Buffer.byteLength(atom);
     if (size > limit) return null;
-    addText(value.slice(cursor, match.index));
+    addText(value.slice(cursor, index));
     if (bytes + size > limit) {
       chunks.push(chunk);
       chunk = '';
@@ -359,7 +365,7 @@ function mrkdwnChunks(value: string, limit: number): string[] | null {
     chunk += atom;
     bytes += size;
     cursor = end;
-    atoms.lastIndex = end;
+    index = end;
   }
   addText(value.slice(cursor));
   if (chunk || !chunks.length) chunks.push(chunk);
@@ -418,7 +424,7 @@ export function renderSlackDocument(markdown: string): SlackMessage[] {
     current.blocks?.push(block);
   };
   const prose = (value: string) => {
-    const formatted = mrkdwnChunks(safeMrkdwn(value), 2800);
+    const formatted = mrkdwnChunks(inlineDocument(value, true), 2800);
     if (!formatted) {
       for (const chunk of chunkText(value, 2800)) {
         if (chunk.trim())

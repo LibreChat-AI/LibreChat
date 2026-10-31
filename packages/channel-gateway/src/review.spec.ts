@@ -72,7 +72,7 @@ const json = (body: object) =>
   new Response(JSON.stringify(body), { headers: { 'Content-Type': 'application/json' } });
 const receipt = () =>
   json({ responseId: 'resp_one', actionId: 'action', intentId: 'intent', status: 'queued' });
-function setup() {
+function setup(gatewayConfig = config) {
   const backend = jest.fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>();
   const slack = jest
     .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
@@ -81,9 +81,8 @@ function setup() {
     backend,
     slack,
     flow: new ReviewFlow(
-      new ChannelClient(config, backend),
-      new SlackClient(config, undefined, slack),
-      'LibreChat',
+      new ChannelClient(gatewayConfig, backend),
+      new SlackClient(gatewayConfig, undefined, slack),
     ),
   };
 }
@@ -317,6 +316,43 @@ describe('actor-bound review handling', () => {
       bundle,
     );
     expect(backend).not.toHaveBeenCalled();
+  });
+
+  test('uses only validated client branding for both modal and private browser recovery labels', async () => {
+    const title = 'A'.repeat(40);
+    const branding = (APP_TITLE: string) =>
+      loadConfig({
+        CHANNEL_SERVICE_TOKEN: config.CHANNEL_SERVICE_TOKEN,
+        CHANNEL_TENANT_ID: config.CHANNEL_TENANT_ID,
+        CHANNEL_ID: config.CHANNEL_ID,
+        APP_TITLE,
+      });
+    for (const invalid of ['A'.repeat(41), 'A'.repeat(76)])
+      expect(() => branding(invalid)).toThrow('APP_TITLE');
+    const { backend, slack, flow } = setup(branding(title));
+    const reference = ref();
+    backend.mockResolvedValueOnce(
+      json({
+        url: 'https://chat.example/review',
+        actionId: 'action',
+        pendingAction: action(reference.expiresAt),
+      }),
+    );
+    slack.mockResolvedValueOnce(json({ ok: false, error: 'invalid_arguments' }));
+    await flow.control(
+      'channel_run_review',
+      JSON.stringify({ runId: 'run', revision: 'r1' }),
+      interaction(),
+      bundle,
+    );
+    expect(slack).toHaveBeenCalledTimes(2);
+    const modal = new URLSearchParams(String(slack.mock.calls[0][1]?.body)).get('view')!;
+    const fallback = new URLSearchParams(String(slack.mock.calls[1][1]?.body));
+    expect(modal).toContain('Open in ' + title);
+    expect(fallback.get('blocks')).toContain('Review in ' + title);
+    expect(fallback.get('text')).toContain(title);
+    expect(('Open in ' + title).length).toBeLessThanOrEqual(75);
+    expect(('Review in ' + title).length).toBeLessThanOrEqual(75);
   });
 
   test('opens the modal only after actor-authorized lookup', async () => {
