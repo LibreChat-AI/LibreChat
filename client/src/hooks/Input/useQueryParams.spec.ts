@@ -207,6 +207,7 @@ describe('useQueryParams', () => {
       conversation?: Partial<TConversation>;
       queryClient?: Record<string, unknown>;
       routePending?: boolean;
+      targetReady?: boolean;
     } = {},
   ) => {
     const textAreaRef = { current: document.createElement('textarea') };
@@ -245,11 +246,23 @@ describe('useQueryParams', () => {
     updateConversation(
       options.conversation ?? { endpoint: EModelEndpoint.openAI, model: 'gpt-4o' },
     );
-    const readiness = { pending: options.routePending ?? false };
-    const hook = renderHook(() => useQueryParams({ textAreaRef, routePending: readiness.pending }));
+    const readiness = {
+      pending: options.routePending ?? false,
+      targetReady: options.targetReady ?? true,
+    };
+    const hook = renderHook(() =>
+      useQueryParams({
+        textAreaRef,
+        routePending: readiness.pending,
+        targetReady: readiness.targetReady,
+      }),
+    );
     act(() => jest.advanceTimersByTime(100));
     return {
       ...hook,
+      updateTargetReady: (ready: boolean) => {
+        readiness.targetReady = ready;
+      },
       updatePending: (pending: boolean) => {
         readiness.pending = pending;
       },
@@ -311,6 +324,74 @@ describe('useQueryParams', () => {
     expect(hook.result.current.isPreparing).toBe(false);
     act(() => jest.advanceTimersByTime(4000));
     expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('applies a replacement URL target and prompt while a restored agent is unavailable', () => {
+    (useLocation as jest.Mock).mockReturnValue({ pathname: '/c/saved-chat', key: 'origin' });
+    const hook = mountQuery(
+      { endpoint: 'MyProvider', model: 'valid-model', q: 'recover this chat', submit: 'true' },
+      { modelSpecs: { list: [] } },
+      {
+        conversation: {
+          conversationId: 'saved-chat',
+          endpoint: EModelEndpoint.agents,
+          agent_id: 'agent_deleted',
+        },
+        targetReady: false,
+        queryClient: { getQueryState: () => ({ status: 'success', data: [] }) },
+      },
+    );
+    expect(hook.mockNewConversation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        preset: expect.objectContaining({ endpoint: 'MyProvider', model: 'valid-model' }),
+      }),
+    );
+    expect(hook.textAreaRef.current.value).toBe('recover this chat');
+    expect(hook.mockSubmitMessage).not.toHaveBeenCalled();
+    expect(hook.mockSetSearchParams).not.toHaveBeenCalled();
+    hook.updateConversation({
+      conversationId: 'saved-chat',
+      endpoint: 'MyProvider' as EModelEndpoint,
+      endpointType: EModelEndpoint.custom,
+      model: 'valid-model',
+    });
+    hook.rerender();
+    act(() => jest.advanceTimersByTime(4000));
+    expect(hook.result.current.settingsError).toBe(false);
+    expect(hook.mockSubmitMessage).not.toHaveBeenCalled();
+    hook.updateTargetReady(true);
+    hook.rerender();
+    expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
+    expect(hook.mockSubmitMessage).toHaveBeenCalledWith({ text: 'recover this chat' });
+    act(() => jest.advanceTimersByTime(4000));
+    expect(hook.mockSubmitMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('stages a non-auto-submit prompt even when the selected target cannot load', () => {
+    const hook = mountQuery(
+      { q: 'keep this prompt' },
+      { modelSpecs: { list: [] } },
+      { targetReady: false },
+    );
+    expect(hook.textAreaRef.current.value).toBe('keep this prompt');
+    expect(hook.mockSubmitMessage).not.toHaveBeenCalled();
+    expect(hook.mockSetSearchParams).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not apply URL settings until route hydration finishes', () => {
+    const hook = mountQuery(
+      { endpoint: 'MyProvider', model: 'valid-model', q: 'after hydration', submit: 'true' },
+      { modelSpecs: { list: [] } },
+      { routePending: true, targetReady: false },
+    );
+    expect(hook.mockNewConversation).not.toHaveBeenCalled();
+    expect(hook.mockSetValue).not.toHaveBeenCalled();
+    hook.updatePending(false);
+    hook.rerender();
+    act(() => jest.advanceTimersByTime(100));
+    expect(hook.mockNewConversation).toHaveBeenCalled();
+    expect(hook.textAreaRef.current.value).toBe('after hydration');
+    expect(hook.mockSubmitMessage).not.toHaveBeenCalled();
   });
 
   it('matches the canonical custom endpoint instead of its URL casing', () => {
@@ -1059,7 +1140,7 @@ describe('useQueryParams', () => {
         } as unknown as HTMLTextAreaElement,
       };
       const { rerender } = renderHook(
-        ({ pending }) => useQueryParams({ textAreaRef, routePending: pending }),
+        ({ pending }) => useQueryParams({ textAreaRef, targetReady: !pending }),
         {
           initialProps: { pending: true },
         },
