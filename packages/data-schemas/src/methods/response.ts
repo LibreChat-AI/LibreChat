@@ -32,6 +32,8 @@ export type {
 } from '~/models/response';
 
 export interface ResponseReservation extends ResponseOwner {
+  /** A successful reservation durably accepts publication work. */
+  dispatch?: boolean;
   expiredAt?: Date;
   isTemporary?: boolean;
   responseId: string;
@@ -197,6 +199,21 @@ export interface ResponseStorage {
     now: number,
   ): Promise<ResponseMutationResult>;
   reserve(input: ResponseReservation): Promise<ResponseReservationResult>;
+  /** SYSTEM metadata scan only; request/answer/key material never crosses this boundary. */
+  listPendingDispatches(
+    cursor: string | undefined,
+    limit: number,
+    includeResume: boolean,
+  ): Promise<{
+    responses: Array<ResponseOwner & { responseId: string }>;
+    next?: string;
+  }>;
+  /** Scope-fenced acknowledgement of one exact source intent, independent of execution revision. */
+  settleDispatch(
+    owner: ResponseOwner,
+    responseId: string,
+    token: { kind: 'create' | 'resume'; id: string },
+  ): Promise<boolean>;
   read(owner: ResponseOwner, responseId: string): Promise<StoredResponseRecord | null>;
   readCleanupIdentity(
     owner: ResponseOwner,
@@ -669,6 +686,7 @@ export function createResponseStorage(
                 state: 'reserved',
                 reservedAt: now,
               },
+              dispatchOutbox: { kind: 'resume', id: input.intentId, state: 'pending' },
             },
             $inc: { revision: 1 },
           },
@@ -738,6 +756,7 @@ export function createResponseStorage(
       return { ok: false, code: 'response_conflict' };
     },
     async reserve(input) {
+      const { dispatch, ...reservationInput } = input;
       if (
         input.expiredAt != null &&
         (!(input.expiredAt instanceof Date) || !Number.isFinite(input.expiredAt.getTime()))
@@ -811,7 +830,10 @@ export function createResponseStorage(
           const [created] = await model.create(
             [
               {
-                ...input,
+                ...reservationInput,
+                ...(dispatch
+                  ? { dispatchOutbox: { kind: 'create', id: input.responseId, state: 'pending' } }
+                  : {}),
                 ...(conversation.expiredAt ? { expiredAt: conversation.expiredAt } : {}),
                 status: 'queued',
                 revision: 0,
@@ -842,6 +864,93 @@ export function createResponseStorage(
       } finally {
         await session.endSession();
       }
+    },
+    async listPendingDispatches(cursor, limit, includeResume) {
+      if (getTenantId() !== SYSTEM_TENANT_ID)
+        throw new Error('Response dispatch scan requires system context');
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000)
+        throw new TypeError('Invalid response dispatch page size');
+      if (cursor != null && !/^[a-f\d]{24}$/i.test(cursor))
+        throw new TypeError('Invalid response dispatch cursor');
+      await ensureIndexes();
+      const pending: Record<string, unknown> = {
+        'dispatchOutbox.state': 'pending',
+        'dispatchOutbox.kind': { $in: includeResume ? ['create', 'resume'] : ['create'] },
+      };
+      const candidates: Record<string, unknown>[] = [
+        pending,
+        { status: 'queued', dispatchOutbox: { $exists: false } },
+      ];
+      if (includeResume)
+        candidates.push({
+          status: { $in: ['requires_action', 'in_progress'] },
+          'resume.state': 'reserved',
+          $or: [
+            { dispatchOutbox: { $exists: false } },
+            {
+              'dispatchOutbox.kind': { $in: ['create', 'resume'] },
+              'dispatchOutbox.state': { $in: ['pending', 'settled'] },
+            },
+          ],
+          $expr: { $ne: [{ $ifNull: ['$dispatchOutbox.id', null] }, '$resume.intentId'] },
+        });
+      const rows = await model
+        .find({
+          ...(cursor ? { _id: { $gt: new mongoose.Types.ObjectId(cursor) } } : {}),
+          $and: [activeExpirationFilter<StoredResponseRecord>()],
+          $or: candidates,
+        })
+        .select('_id tenantId userId responseId')
+        .sort({ _id: 1 })
+        .limit(limit + 1)
+        .lean();
+      const page = rows.slice(0, limit);
+      return {
+        responses: page.map((row) => ({
+          userId: row.userId,
+          ...(row.tenantId ? { tenantId: row.tenantId } : {}),
+          responseId: row.responseId,
+        })),
+        ...(rows.length > limit ? { next: String(page[page.length - 1]._id) } : {}),
+      };
+    },
+    async settleDispatch(owner, responseId, token) {
+      if (!token.id || !['create', 'resume'].includes(token.kind))
+        throw new TypeError('Invalid response dispatch identity');
+      return commitInOpenScope(
+        owner,
+        responseId,
+        async (session, record) => {
+          const marker = record.dispatchOutbox;
+          if (
+            marker &&
+            (!['create', 'resume'].includes(marker.kind) ||
+              !['pending', 'settled'].includes(marker.state))
+          )
+            return false;
+          const same = marker?.kind === token.kind && marker.id === token.id;
+          if (token.kind === 'create') {
+            if (
+              token.id !== record.responseId ||
+              record.resume?.state === 'reserved' ||
+              (marker && !same)
+            )
+              return false;
+          } else if (!same && record.resume?.intentId !== token.id) return false;
+          if (token.kind === 'resume' && record.resume && record.resume.intentId !== token.id)
+            return false;
+          if (same && marker.state === 'settled') return true;
+          const updated = await model.updateOne(
+            { ...scope(owner), responseId },
+            {
+              $set: { dispatchOutbox: { ...token, state: 'settled' } },
+            },
+            { session },
+          );
+          return updated.matchedCount === 1;
+        },
+        false,
+      );
     },
     async read(owner, responseId) {
       const record = await model.findOne({ ...scope(owner), responseId }).lean();
