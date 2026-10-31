@@ -1,10 +1,19 @@
-import { useRef } from 'react';
-import { useQuery, useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
+import { useRef, useMemo, useEffect, useCallback } from 'react';
 import { QueryKeys, dataService, EModelEndpoint, PermissionBits } from 'librechat-data-provider';
+import {
+  useQuery,
+  useInfiniteQuery,
+  useQueryClient,
+  replaceEqualDeep,
+} from '@tanstack/react-query';
 import type {
   QueryObserverResult,
   UseQueryOptions,
   UseInfiniteQueryOptions,
+  InfiniteData,
+  UseInfiniteQueryResult,
+  QueryClient,
+  QueryKey,
 } from '@tanstack/react-query';
 import type t from 'librechat-data-provider';
 import { retryTransientQuery } from '../retry';
@@ -17,14 +26,8 @@ export const defaultAgentParams: t.AgentListParams = {
   requiredPermission: PermissionBits.EDIT,
 };
 
-/**
- * Page size for the internal pagination walk. Callers consume the flattened result, so
- * every page costs a serial round trip with no benefit: request the server's maximum
- * (`getListAgentsByAccess` caps at 1000) so realistic agent sets resolve in one request.
- * Kept out of the query key, and applied last so a caller-supplied `limit` cannot shrink
- * it: this is a transport detail, and a caller limit never bounds what the walk returns.
- */
-const WALK_PAGE_SIZE = 1000;
+/** Bound the first response; later pages populate the same catalog incrementally. */
+const CATALOG_PAGE_SIZE = 100;
 
 /**
  * A cursor is bound to the sort/filter request that produced it. During a rolling
@@ -50,31 +53,6 @@ const isCursorOrderingMismatch = (error: unknown): boolean => {
   return error.response.data.error === 'cursor_ordering_mismatch';
 };
 
-/** Walk the cursor pagination and return all pages flattened into one `AgentListResponse`. */
-async function fetchAllAgentPages(params: t.AgentListParams): Promise<t.AgentListResponse> {
-  const pages: t.AgentListResponse[] = [];
-  let cursor: string | null | undefined = params.cursor;
-  do {
-    const page = await dataService.listAgents({
-      ...params,
-      ...(cursor ? { cursor } : {}),
-      limit: WALK_PAGE_SIZE,
-    });
-    pages.push(page);
-    cursor = page.after;
-  } while (cursor);
-
-  const lastPage = pages[pages.length - 1];
-  return {
-    object: 'list',
-    data: pages.flatMap((p) => p.data),
-    has_more: false,
-    after: undefined,
-    first_id: pages[0]?.first_id ?? '',
-    last_id: lastPage?.last_id ?? '',
-  };
-}
-
 /**
  * Hook for getting all available tools for A
  */
@@ -91,37 +69,157 @@ export const useAvailableAgentToolsQuery = (): QueryObserverResult<t.TPlugin[]> 
   });
 };
 
-/**
- * Hook for listing all Agents the user has access to. Follows cursor
- * pagination internally and resolves with every page concatenated.
- * Cache key shape matches `allAgentViewAndEditQueryKeys` in `./mutations.ts`.
- */
-export const useListAgentsQuery = <TData = t.AgentListResponse>(
+export type AgentListCache = t.AgentListResponse | InfiniteData<t.AgentListResponse>;
+
+const flattenAgentList = (response: AgentListCache): t.AgentListResponse => {
+  if (!('pages' in response)) {
+    return response;
+  }
+  const first = response.pages[0];
+  const last = response.pages[response.pages.length - 1];
+  return {
+    object: first?.object ?? 'list',
+    data: response.pages.flatMap((page) => page.data),
+    first_id: first?.first_id ?? '',
+    last_id: last?.last_id ?? '',
+    has_more: !!last?.after,
+    after: last?.after,
+  };
+};
+
+export const getAgentListQueryData = (queryClient: QueryClient, queryKey: QueryKey) => {
+  const cached = queryClient.getQueryData<AgentListCache>(queryKey);
+  return cached ? flattenAgentList(cached) : undefined;
+};
+
+/** Apply existing list mutations without losing loaded pages or their continuation cursors. */
+export const setAgentListQueryData = (
+  queryClient: QueryClient,
+  queryKey: QueryKey,
+  update:
+    | t.AgentListResponse
+    | ((previous: t.AgentListResponse | undefined) => t.AgentListResponse | undefined),
+) => {
+  queryClient.setQueryData<AgentListCache>(queryKey, (cached) => {
+    const next = typeof update === 'function' ? update(cached && flattenAgentList(cached)) : update;
+    if (!next || !cached || !('pages' in cached)) {
+      return next;
+    }
+    const byId = new Map(next.data.map((agent) => [agent.id, agent]));
+    const loadedIds = new Set(cached.pages.flatMap((page) => page.data.map((agent) => agent.id)));
+    const added = next.data.filter((agent) => !loadedIds.has(agent.id));
+    return {
+      ...cached,
+      pages: cached.pages.map((page, index) => {
+        const data = index === 0 ? [...added] : [];
+        for (const agent of page.data) {
+          const updated = byId.get(agent.id);
+          if (updated) {
+            data.push(updated);
+          }
+        }
+        return { ...page, data, first_id: data[0]?.id ?? '', last_id: data.at(-1)?.id ?? '' };
+      }),
+    };
+  });
+};
+
+/** The cache key stays shared with agent mutations and every catalog observer. */
+export const useListAgentsInfiniteQuery = (
   params: t.AgentListParams = defaultAgentParams,
-  config?: UseQueryOptions<t.AgentListResponse, unknown, TData>,
-): QueryObserverResult<TData> => {
-  /** The shell owns fetching endpoints. Observe its query, but do not start a second
-   * request or couple this shared agent hook to the shell's Recoil gate. */
+  config?: UseInfiniteQueryOptions<t.AgentListResponse>,
+): UseInfiniteQueryResult<t.AgentListResponse> => {
   const { data: endpointsConfig } = useQuery<t.TEndpointsConfig>(
     [QueryKeys.endpoints],
     () => dataService.getAIEndpoints(),
     { enabled: false },
   );
+  return useInfiniteQuery<t.AgentListResponse>({
+    staleTime: 1000 * 5,
+    refetchOnWindowFocus: true,
+    refetchOnReconnect: true,
+    refetchOnMount: true,
+    retry: retryTransientQuery,
+    ...config,
+    queryKey: [QueryKeys.agents, params],
+    queryFn: ({ pageParam }) =>
+      dataService.listAgents({
+        ...params,
+        limit: params.limit ?? CATALOG_PAGE_SIZE,
+        cursor: pageParam ?? params.cursor,
+      }),
+    getNextPageParam: (lastPage) => lastPage?.after || undefined,
+    enabled: !!endpointsConfig?.[EModelEndpoint.agents] && (config?.enabled ?? true),
+  });
+};
 
-  const enabled = !!endpointsConfig?.[EModelEndpoint.agents];
-  return useQuery<t.AgentListResponse, unknown, TData>(
-    [QueryKeys.agents, params],
-    () => fetchAllAgentPages(params),
-    {
-      staleTime: 1000 * 5,
-      refetchOnWindowFocus: true,
-      refetchOnReconnect: true,
-      refetchOnMount: true,
-      retry: retryTransientQuery,
-      ...config,
-      enabled: config?.enabled !== undefined ? config.enabled && enabled : enabled,
+export type AgentListQueryOptions<TData> = Omit<
+  UseInfiniteQueryOptions<t.AgentListResponse>,
+  'select' | 'onSuccess' | 'onSettled'
+> & {
+  select?: (response: t.AgentListResponse) => TData;
+  onSuccess?: (response: TData) => void;
+  onSettled?: (response: TData | undefined, error: unknown) => void;
+};
+
+export type AgentCatalogQueryResult<TData> = Omit<
+  UseInfiniteQueryResult<t.AgentListResponse>,
+  'data' | 'refetch'
+> & {
+  data: TData | undefined;
+  refetch: () => Promise<QueryObserverResult<TData>>;
+  isComplete: boolean;
+};
+
+/** Publish each page immediately, and stop automatic pagination on an error until retry. */
+export const useListAgentsQuery = <TData = t.AgentListResponse>(
+  params: t.AgentListParams = defaultAgentParams,
+  config?: AgentListQueryOptions<TData>,
+): AgentCatalogQueryResult<TData> => {
+  const queryClient = useQueryClient();
+  const selectResponse = config?.select;
+  const select = useCallback(
+    (response: AgentListCache): TData => {
+      const flattened = flattenAgentList(response);
+      return selectResponse ? selectResponse(flattened) : (flattened as TData);
     },
+    [selectResponse],
   );
+  const { select: _select, onSuccess, onSettled, ...options } = config ?? {};
+  const query = useListAgentsInfiniteQuery(params, {
+    ...options,
+    onSuccess: onSuccess ? (response) => onSuccess(select(response)) : undefined,
+    onSettled: onSettled
+      ? (response, error) => onSettled(response ? select(response) : undefined, error)
+      : undefined,
+  });
+  const { fetchNextPage, hasNextPage, isFetching, isError } = query;
+  useEffect(() => {
+    if (config?.enabled !== false && hasNextPage && !isFetching && !isError) {
+      void fetchNextPage({ cancelRefetch: false });
+    }
+  }, [config?.enabled, fetchNextPage, hasNextPage, isFetching, isError]);
+
+  const previous = useRef<TData>();
+  const data = useMemo(() => {
+    const next = query.data ? select(query.data) : undefined;
+    previous.current = replaceEqualDeep(previous.current, next);
+    return previous.current;
+  }, [query.data, select]);
+  const refetchQuery = query.refetch;
+  const refetch = useCallback(async (): Promise<QueryObserverResult<TData>> => {
+    const fetchMeta: { fetchMore?: { direction?: string } } | undefined = queryClient.getQueryState(
+      [QueryKeys.agents, params],
+    )?.fetchMeta;
+    const nextPageFailed = query.isError && fetchMeta?.fetchMore?.direction === 'forward';
+    const result = nextPageFailed ? await fetchNextPage() : await refetchQuery();
+    return {
+      ...result,
+      data: result.data ? select(result.data) : undefined,
+      refetch,
+    } as QueryObserverResult<TData>;
+  }, [queryClient, params, query.isError, refetchQuery, fetchNextPage, select]);
+  return { ...query, data, refetch, isComplete: query.data != null && !hasNextPage && !isError };
 };
 
 /**

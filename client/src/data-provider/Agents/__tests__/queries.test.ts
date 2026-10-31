@@ -3,9 +3,15 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { dataService, QueryKeys, EModelEndpoint, PermissionBits } from 'librechat-data-provider';
 import type { AgentListResponse, AgentSortOption, TUserFavorite } from 'librechat-data-provider';
+import type { InfiniteData } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
+import {
+  useListAgentsQuery,
+  useMarketplaceAgentsInfiniteQuery,
+  getAgentListQueryData,
+  setAgentListQueryData,
+} from '../queries';
 import { useGetFavoritesQuery, useUpdateFavoritesMutation } from '../../Favorites';
-import { useListAgentsQuery, useMarketplaceAgentsInfiniteQuery } from '../queries';
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -57,10 +63,11 @@ const createWrapper = (queryClient: QueryClient) =>
 const renderListAgents = (params: Parameters<typeof useListAgentsQuery>[0]) => {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
+    logger: { log: console.log, warn: console.warn, error: () => {} },
   });
   /** The hook is gated on the agents endpoint being configured. */
   queryClient.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.agents]: {} });
-  return renderHook(() => useListAgentsQuery(params), {
+  return renderHook(() => useListAgentsQuery(params, { retry: false }), {
     wrapper: createWrapper(queryClient),
   });
 };
@@ -70,7 +77,7 @@ describe('useListAgentsQuery', () => {
     jest.clearAllMocks();
   });
 
-  it('requests the server maximum page size so a typical agent set resolves in one round trip', async () => {
+  it('bounds the first catalog response without waiting for a whole-list walk', async () => {
     listAgents.mockResolvedValue(page(['a', 'b'], null));
 
     const { result } = renderListAgents({ requiredPermission: PermissionBits.VIEW });
@@ -78,17 +85,17 @@ describe('useListAgentsQuery', () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     expect(listAgents).toHaveBeenCalledTimes(1);
     expect(listAgents).toHaveBeenCalledWith(
-      expect.objectContaining({ limit: 1000, requiredPermission: PermissionBits.VIEW }),
+      expect.objectContaining({ limit: 100, requiredPermission: PermissionBits.VIEW }),
     );
   });
 
-  it('keeps the walk page size when a caller supplies a smaller limit', async () => {
+  it('honors an explicit page size', async () => {
     listAgents.mockResolvedValue(page(['a'], null));
 
     const { result } = renderListAgents({ limit: 10, requiredPermission: PermissionBits.VIEW });
 
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(listAgents).toHaveBeenCalledWith(expect.objectContaining({ limit: 1000 }));
+    expect(listAgents).toHaveBeenCalledWith(expect.objectContaining({ limit: 10 }));
   });
 
   it('still walks every page and flattens the result when the server returns a cursor', async () => {
@@ -98,11 +105,108 @@ describe('useListAgentsQuery', () => {
 
     const { result } = renderListAgents({ requiredPermission: PermissionBits.VIEW });
 
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    await waitFor(() => expect(result.current.isComplete).toBe(true));
     expect(listAgents).toHaveBeenCalledTimes(2);
     expect(listAgents).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 'cursor-1' }));
     expect(result.current.data?.data.map((agent) => agent.id)).toEqual(['a', 'b', 'c']);
     expect(result.current.data?.has_more).toBe(false);
+  });
+
+  it('publishes the first page while a later page is pending', async () => {
+    let resolveNext!: (response: AgentListResponse) => void;
+    const next = new Promise<AgentListResponse>((resolve) => {
+      resolveNext = resolve;
+    });
+    listAgents.mockResolvedValueOnce(page(['a'], 'cursor-1')).mockReturnValueOnce(next);
+    const { result } = renderListAgents({ requiredPermission: PermissionBits.VIEW });
+
+    await waitFor(() => expect(result.current.isFetchingNextPage).toBe(true));
+    expect(result.current.data?.data.map((agent) => agent.id)).toEqual(['a']);
+    expect(result.current.isLoading).toBe(false);
+    expect(result.current.isComplete).toBe(false);
+    expect(result.current.data?.has_more).toBe(true);
+
+    await act(async () => {
+      resolveNext(page(['b'], null));
+    });
+    await waitFor(() => expect(result.current.isComplete).toBe(true));
+    expect(result.current.data?.data.map((agent) => agent.id)).toEqual(['a', 'b']);
+  });
+
+  it('retains loaded pages after a later failure and retries only that page', async () => {
+    const failure = new Error('Page unavailable');
+    listAgents.mockResolvedValueOnce(page(['a'], 'cursor-1')).mockRejectedValueOnce(failure);
+    const { result } = renderListAgents({ requiredPermission: PermissionBits.VIEW });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.data?.data.map((agent) => agent.id)).toEqual(['a']);
+    expect(result.current.isComplete).toBe(false);
+    expect(listAgents).toHaveBeenCalledTimes(2);
+
+    listAgents.mockResolvedValueOnce(page(['b'], null));
+    await act(async () => {
+      await result.current.refetch();
+    });
+    await waitFor(() => expect(result.current.isComplete).toBe(true));
+    expect(result.current.data?.data.map((agent) => agent.id)).toEqual(['a', 'b']);
+    expect(listAgents).toHaveBeenCalledTimes(3);
+    expect(listAgents).toHaveBeenLastCalledWith(expect.objectContaining({ cursor: 'cursor-1' }));
+  });
+
+  it('shares page requests across compatibility observers', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData([QueryKeys.endpoints], { [EModelEndpoint.agents]: {} });
+    listAgents
+      .mockResolvedValueOnce(page(['a'], 'cursor-1'))
+      .mockResolvedValueOnce(page(['b'], null));
+    const { result } = renderHook(
+      () => ({
+        first: useListAgentsQuery({ requiredPermission: PermissionBits.VIEW }),
+        second: useListAgentsQuery({ requiredPermission: PermissionBits.VIEW }),
+      }),
+      { wrapper: createWrapper(client) },
+    );
+
+    await waitFor(() => expect(result.current.first.isComplete).toBe(true));
+    expect(result.current.second.data?.data.map((agent) => agent.id)).toEqual(['a', 'b']);
+    expect(listAgents).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps mutation writes page-aware without changing cursors or legacy flat caches', () => {
+    const client = new QueryClient();
+    const key = [QueryKeys.agents, { requiredPermission: PermissionBits.VIEW }];
+    client.setQueryData<InfiniteData<AgentListResponse>>(key, {
+      pages: [page(['a'], 'cursor-1'), page(['b', 'c'], 'cursor-2')],
+      pageParams: [undefined, 'cursor-1'],
+    });
+    const flat = getAgentListQueryData(client, key)!;
+    setAgentListQueryData(client, key, {
+      ...flat,
+      data: [
+        page(['new'], null).data[0],
+        ...flat.data
+          .filter((agent) => agent.id !== 'a')
+          .map((agent) => ({ ...agent, name: `${agent.name} updated` })),
+      ],
+    });
+    const cached = client.getQueryData<InfiniteData<AgentListResponse>>(key)!;
+    expect(cached.pages.map((entry) => entry.data.map((agent) => agent.id))).toEqual([
+      ['new'],
+      ['b', 'c'],
+    ]);
+    expect(cached.pages[1].data[0].name).toBe('b updated');
+    expect(cached.pages.map((entry) => entry.after)).toEqual(['cursor-1', 'cursor-2']);
+    expect(cached.pageParams).toEqual([undefined, 'cursor-1']);
+    expect(getAgentListQueryData(client, key)?.data.map((agent) => agent.id)).toEqual([
+      'new',
+      'b',
+      'c',
+    ]);
+
+    const legacy = [QueryKeys.agents, { requiredPermission: PermissionBits.EDIT }];
+    client.setQueryData(legacy, page(['legacy'], null));
+    setAgentListQueryData(client, legacy, (previous) => previous && { ...previous, data: [] });
+    expect(client.getQueryData<AgentListResponse>(legacy)?.data).toEqual([]);
   });
 });
 describe('marketplace cursor recovery', () => {

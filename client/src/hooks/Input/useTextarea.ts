@@ -202,10 +202,12 @@ export default function useTextarea({
         return placeholder;
       }
 
-      const sender =
-        isAssistant || isAgent
-          ? getEntityName({ name: entityName, isAgent, localize })
-          : getSender(conversation as TEndpointOption);
+      let sender: string | undefined;
+      if (isAssistant || isAgent) {
+        sender = getEntityName({ name: entityName, isAgent, localize });
+      } else if (conversation) {
+        sender = getSender(conversation as TEndpointOption);
+      }
 
       return `${localize('com_endpoint_message_new', {
         0: sender ? sender : localize('com_endpoint_ai'),

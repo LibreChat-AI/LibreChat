@@ -543,8 +543,20 @@ export function mergeQuerySettingsWithSpec(
   specPreset: t.TPreset | undefined,
   querySettings: t.TPreset,
 ): t.TPreset {
+  const changesEndpoint =
+    querySettings.endpoint != null && querySettings.endpoint !== specPreset?.endpoint;
   return {
     ...specPreset,
+    ...(changesEndpoint
+      ? {
+          model: undefined,
+          agent_id: undefined,
+          assistant_id: undefined,
+          endpointType: undefined,
+          codeEnvironmentMode: undefined,
+          codeWorkspaces: undefined,
+        }
+      : {}),
     ...querySettings,
     ...(specPreset != null && querySettings.spec == null ? specDisplayFieldReset : {}),
   };

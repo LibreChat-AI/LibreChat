@@ -31,8 +31,13 @@ import {
   getConvoSwitchLogic,
   logger,
 } from '~/utils';
+import {
+  startupConfigKey,
+  useGetAgentByIdQuery,
+  getAgentListQueryData,
+  setAgentListQueryData,
+} from '~/data-provider';
 import { useAuthContext, useAgentsMap, useDefaultConvo, useSubmitMessage } from '~/hooks';
-import { startupConfigKey, useGetAgentByIdQuery } from '~/data-provider';
 import { useChatContext, useChatFormContext } from '~/Providers';
 import { isHistoryRevalidating } from '~/hooks/Chat/ask/guards';
 import { consumeComposerQuery } from '~/utils/drafts';
@@ -45,7 +50,7 @@ const injectAgentIntoAgentsMap = (
   agent: AgentListResponse['data'][number],
 ) => {
   const editCacheKey = [QueryKeys.agents, { requiredPermission: PermissionBits.EDIT }];
-  const editCache = queryClient.getQueryData<AgentListResponse>(editCacheKey);
+  const editCache = getAgentListQueryData(queryClient, editCacheKey);
 
   if (editCache?.data && !editCache.data.some((cachedAgent) => cachedAgent.id === agent.id)) {
     // Inject agent into EDIT cache so dropdown can display it
@@ -53,7 +58,7 @@ const injectAgentIntoAgentsMap = (
       ...editCache,
       data: [agent, ...editCache.data],
     };
-    queryClient.setQueryData(editCacheKey, updatedCache);
+    setAgentListQueryData(queryClient, editCacheKey, updatedCache);
     logger.log('agent', 'Injected URL agent into cache:', agent);
   }
 };
