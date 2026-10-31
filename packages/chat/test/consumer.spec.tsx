@@ -11,6 +11,7 @@ import {
   Text,
   MessageRow,
   MentionPopover,
+  ChatScreen,
   getHeaderHoverLabel,
   EventSubagentActivityGroup,
 } from '@librechat/chat/components';
@@ -18,6 +19,7 @@ import { initReactI18next, I18nextProvider } from 'react-i18next';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { Button, Textarea, ThemeProvider, clickHouseTheme } from '@librechat/client';
 import {
+  ChatContext,
   MessageContext,
   MessagePartIndex,
   StreamHostProvider,
@@ -37,6 +39,7 @@ import type { PartRenderers } from '@librechat/chat/components';
 import type {
   StreamHost,
   ChatSurface,
+  ChatContract,
   MessagesHost,
   MessagePartsHost,
 } from '@librechat/chat/react';
@@ -416,6 +419,48 @@ describe('a consumer built on the public entries', () => {
     fireEvent.keyDown(combobox, { key: 'Enter' });
     expect(onSelectMention).toHaveBeenCalledWith(expect.objectContaining({ value: 'review' }));
     textarea.remove();
+  });
+
+  it('lays out a chat screen from a session, with the app surfaces as slots', () => {
+    const root = '00000000-0000-0000-0000-000000000000';
+    const base = { conversationId: 'convo', createdAt: new Date().toISOString() };
+    const messages: TMessage[] = [
+      { ...base, messageId: 'u1', parentMessageId: root, isCreatedByUser: true, text: 'Question' },
+      { ...base, messageId: 'a1', parentMessageId: 'u1', isCreatedByUser: false, text: 'Answer' },
+    ];
+    const screenFor = (session: { conversationId?: string; messages: TMessage[] | null }) => (
+      <I18nextProvider i18n={i18n}>
+        <ChatContext.Provider
+          value={{ conversation: { conversationId: 'convo', title: 'Plans' } } as ChatContract}
+        >
+          <ChatScreen
+            {...session}
+            isLoading={false}
+            landingFooter={false}
+            configuredFooter={false}
+            landing={<p>Welcome</p>}
+            renderMessages={({ messagesTree }) => (
+              <ol aria-label="Messages">
+                {messagesTree?.map((message) => (
+                  <li key={message.messageId}>{message.text}</li>
+                ))}
+              </ol>
+            )}
+            renderComposer={() => <Textarea aria-label="Message" />}
+          />
+        </ChatContext.Provider>
+      </I18nextProvider>
+    );
+
+    const view = render(screenFor({ messages: null }));
+    expect(screen.getByText('Welcome')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Message' })).toBeInTheDocument();
+
+    view.rerender(screenFor({ conversationId: 'convo', messages }));
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Plans');
+    expect(
+      within(screen.getByRole('list', { name: 'Messages' })).getByText('Question'),
+    ).toBeInTheDocument();
   });
 });
 
