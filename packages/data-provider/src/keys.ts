@@ -38,6 +38,7 @@ export enum QueryKeys {
   assistant = 'assistant',
   agents = 'agents',
   agent = 'agent',
+  responseReview = 'responseReview',
   files = 'files',
   fileConfig = 'fileConfig',
   tools = 'tools',
@@ -139,6 +140,8 @@ export const DynamicQueryKeys = {
 export enum MutationKeys {
   approveCodeSetup = 'approveCodeSetup',
   denyCodeSetup = 'denyCodeSetup',
+  responseReviewDecision = 'responseReviewDecision',
+  responseCancel = 'responseCancel',
   resetToolApprovalGrants = 'resetToolApprovalGrants',
   subagentControl = 'subagentControl',
   cancelBackgroundTasks = 'cancelBackgroundTasks',

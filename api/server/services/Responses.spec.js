@@ -1,20 +1,42 @@
-const { PermissionBits, Permissions, PermissionTypes } = require('librechat-data-provider');
+const {
+  PermissionBits,
+  ResourceType,
+  Permissions,
+  PermissionTypes,
+} = require('librechat-data-provider');
 
-const mockCreateResponseResumeValidation = jest.fn(() => ({}));
+const mockCreateResponseResumeValidation = jest.fn(() => ({
+  validateResume: jest.fn(),
+  validateDecision: jest.fn(),
+}));
 const mockGetEffectivePermissions = jest.fn();
 const mockEnqueue = jest.fn();
 const mockIsQueueReady = jest.fn();
 const mockAuthorizeChannelResponseKeySource = jest.fn().mockResolvedValue(false);
 
+jest.mock('../../../packages/api/src/agents/responses/resume', () => ({
+  createResponseResumeValidation: (...args) => mockCreateResponseResumeValidation(...args),
+  createResponseResumeAdmission: jest.fn(() => jest.fn()),
+}));
+jest.mock('../../../packages/api/src/agents/responses/authority', () => ({
+  createBackgroundResponseAuthority: jest.fn(() => jest.fn()),
+}));
+jest.mock('../../../packages/api/src/agents/responses/host', () => ({
+  createBackgroundResponsesHost: jest.fn(() => ({ initialize: jest.fn() })),
+}));
 jest.mock('@librechat/api', () => ({
+  createInteractiveResponsesHost: jest.requireActual(
+    '../../../packages/api/src/agents/responses/interactive',
+  ).createInteractiveResponsesHost,
   createAgentTriggerProducerBinding:
     jest.requireActual('@librechat/api').createAgentTriggerProducerBinding,
   getRemoteAgentPermissions: jest.requireActual('../../../packages/api/src/apiKeys/service')
     .getRemoteAgentPermissions,
-  createResponseResumeValidation: (...args) => mockCreateResponseResumeValidation(...args),
-  createBackgroundResponseAuthority: jest.fn(() => jest.fn()),
-  createResponseResumeAdmission: jest.fn(() => jest.fn()),
-  createBackgroundResponsesHost: jest.fn(() => ({ initialize: jest.fn() })),
+  createBackgroundResponseAuthority: jest.requireMock(
+    '../../../packages/api/src/agents/responses/authority',
+  ).createBackgroundResponseAuthority,
+  createBackgroundResponsesHost: jest.requireMock('../../../packages/api/src/agents/responses/host')
+    .createBackgroundResponsesHost,
   GenerationJobManager: {},
 }));
 jest.mock('@librechat/data-schemas', () => ({
@@ -32,7 +54,11 @@ jest.mock('./ChannelAuthority', () => ({
   authorizeChannelResponseKeySource: (...args) => mockAuthorizeChannelResponseKeySource(...args),
 }));
 
-describe('Responses base production composition', () => {
+describe('Responses resume permission composition', () => {
+  let canAccessAgent;
+  const agent = { _id: 'stored-agent-resource-id' };
+  const user = { id: 'verified-owner', role: 'USER' };
+
   beforeEach(() => {
     jest.resetModules();
     jest.clearAllMocks();
@@ -40,13 +66,62 @@ describe('Responses base production composition', () => {
     mockEnqueue.mockReset().mockResolvedValue({ deliveryId: 'delivery' });
     mockIsQueueReady.mockReset().mockReturnValue(false);
     require('./Responses');
+    canAccessAgent = mockCreateResponseResumeValidation.mock.calls[0][0].content.canAccessAgent;
+  });
+
+  it('inherits Remote Agent access from current Agent SHARE without a separate remote grant', async () => {
+    mockGetEffectivePermissions.mockImplementation(async ({ resourceType }) =>
+      resourceType === ResourceType.AGENT ? PermissionBits.SHARE : 0,
+    );
+
+    await expect(canAccessAgent(agent, user)).resolves.toBe(true);
+    expect(mockGetEffectivePermissions).toHaveBeenCalledTimes(1);
+    expect(mockGetEffectivePermissions).toHaveBeenCalledWith({
+      userId: user.id,
+      role: user.role,
+      resourceType: ResourceType.AGENT,
+      resourceId: agent._id,
+    });
+  });
+
+  it('denies an unstored Agent without requesting unscoped permissions', async () => {
+    await expect(canAccessAgent({}, user)).resolves.toBe(false);
+    expect(mockGetEffectivePermissions).not.toHaveBeenCalled();
+  });
+
+  it('honors an explicit Remote Agent VIEW grant without Agent SHARE', async () => {
+    mockGetEffectivePermissions.mockImplementation(async ({ resourceType }) =>
+      resourceType === ResourceType.REMOTE_AGENT ? PermissionBits.VIEW : 0,
+    );
+
+    await expect(canAccessAgent(agent, user)).resolves.toBe(true);
+    expect(mockGetEffectivePermissions).toHaveBeenLastCalledWith({
+      userId: user.id,
+      role: user.role,
+      resourceType: ResourceType.REMOTE_AGENT,
+      resourceId: agent._id,
+    });
+  });
+
+  it('rejects absent grants and rechecks current permissions after revocation', async () => {
+    mockGetEffectivePermissions.mockResolvedValue(PermissionBits.SHARE);
+    await expect(canAccessAgent(agent, user)).resolves.toBe(true);
+
+    mockGetEffectivePermissions.mockResolvedValue(0);
+    await expect(canAccessAgent(agent, user)).resolves.toBe(false);
+    expect(mockGetEffectivePermissions).toHaveBeenLastCalledWith({
+      userId: user.id,
+      role: user.role,
+      resourceType: ResourceType.REMOTE_AGENT,
+      resourceId: agent._id,
+    });
   });
 
   it('delegates bound-key authority to Channels and still denies unknown bindings', async () => {
     const { tenantStorage } = jest.requireActual('@librechat/data-schemas');
     return tenantStorage.run({ tenantId: 'tenant' }, async () => {
-      const { createBackgroundResponsesHost } = require('@librechat/api');
-      const dependencies = createBackgroundResponsesHost.mock.calls[0][0];
+      const { createBackgroundResponseAuthority } = require('@librechat/api');
+      const dependencies = createBackgroundResponseAuthority.mock.calls[0][0];
       expect(dependencies.authorizeBinding).toEqual(expect.any(Function));
       const createAuthority =
         jest.requireActual('@librechat/api').createBackgroundResponseAuthority;
@@ -103,13 +178,21 @@ describe('Responses base production composition', () => {
   });
 });
 
-it('keeps browser discovery and interactive resume inactive before the owner page is installed', () => {
-  jest.resetModules();
-  jest.clearAllMocks();
-  require('./Responses');
-  const { createBackgroundResponsesHost } = require('@librechat/api');
-  const options = createBackgroundResponsesHost.mock.calls[0][0];
-  expect(options).not.toHaveProperty('publicBaseURL');
-  expect(options).not.toHaveProperty('interactive');
-  expect(mockCreateResponseResumeValidation).not.toHaveBeenCalled();
+it('installs browser discovery and resume with the owning review page', () => {
+  const oldOrigin = process.env.DOMAIN_CLIENT;
+  process.env.DOMAIN_CLIENT = 'https://chat.example.test';
+  try {
+    jest.resetModules();
+    jest.clearAllMocks();
+    require('./Responses');
+    const { createBackgroundResponsesHost } = require('@librechat/api');
+    const options = createBackgroundResponsesHost.mock.calls[0][0];
+    expect(options.publicBaseURL).toBe('https://chat.example.test');
+    expect(options.interactive.validate).toEqual(expect.any(Function));
+    expect(options.interactive.admitResume).toEqual(expect.any(Function));
+    expect(mockCreateResponseResumeValidation).toHaveBeenCalledTimes(1);
+  } finally {
+    if (oldOrigin === undefined) delete process.env.DOMAIN_CLIENT;
+    else process.env.DOMAIN_CLIENT = oldOrigin;
+  }
 });
