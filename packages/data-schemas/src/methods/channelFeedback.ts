@@ -10,6 +10,7 @@ import type { ChannelFeedbackReplySource } from './channelFeedbackSource';
 import {
   withChannelFeedbackAuthority,
   sameFeedbackSource,
+  readChannelFeedbackRetention,
   ChannelFeedbackAuthorityError,
 } from './channelFeedbackScope';
 import { readChannelFeedbackReplySource } from './channelFeedbackSource';
@@ -22,6 +23,13 @@ export { ChannelFeedbackAuthorityError } from './channelFeedbackScope';
 /** Two ratings, each with five supported skin tones plus the default emoji, per delivery part. */
 export const CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX: number = CHANNEL_DELIVERY_PARTS_HARD_MAX * 12;
 export interface ChannelFeedbackStorage {
+  repairChannelFeedbackRetention(tenantId: string, limit: number): Promise<number>;
+  deferChannelFeedbackEvent(record: ChannelFeedbackEventRecord, retryAtMs: number): Promise<void>;
+  deferChannelFeedbackExport(
+    record: ChannelFeedbackLedger,
+    now: number,
+    retryAtMs: number,
+  ): Promise<void>;
   withAuthority<T>(
     mapping: ChannelReplyMapping,
     work: (storage: ChannelFeedbackStorage) => Promise<T>,
@@ -47,6 +55,7 @@ export interface ChannelFeedbackStorage {
   pendingChannelFeedbackEvents(
     tenantId: string,
     limit: number,
+    now?: number,
   ): Promise<ChannelFeedbackEventRecord[]>;
   markChannelFeedbackEvent(record: ChannelFeedbackEventRecord): Promise<void>;
   ensureChannelFeedback(record: ChannelFeedbackLedger): Promise<ChannelFeedbackLedger>;
@@ -88,24 +97,134 @@ export function createChannelFeedbackStorage(
   function createStorage(
     session?: ClientSession,
     source?: ChannelReplyMapping,
+    sourceExpiry: Date | null = null,
   ): ChannelFeedbackStorage {
     async function guard<T>(
       mapping: ChannelReplyMapping,
-      work: (session: ClientSession) => Promise<T>,
+      work: (session: ClientSession, expiredAt: Date | null) => Promise<T>,
     ): Promise<T> {
       await ensureIndexes();
       if (session && source) {
         if (!sameFeedbackSource(source, mapping)) throw new ChannelFeedbackAuthorityError();
-        return work(session);
+        return work(session, sourceExpiry);
       }
       return withChannelFeedbackAuthority(mongoose, mapping, work);
     }
+    function retainedInsert(record: object, expiredAt: Date | null) {
+      const insert = { ...record } as Record<string, unknown>;
+      delete insert.expiredAt;
+      delete insert.retentionVersion;
+      return {
+        $setOnInsert: insert,
+        $set: { retentionVersion: 1 },
+        ...(expiredAt ? { $min: { expiredAt } } : {}),
+      };
+    }
+    async function retainLegacyNull(
+      name: string,
+      filter: object,
+      expiredAt: Date | null,
+      active: ClientSession,
+    ) {
+      if (expiredAt)
+        await mongoose
+          .model(name)
+          .updateOne({ ...filter, expiredAt: null }, { $set: { expiredAt } }, { session: active });
+    }
     const storage: ChannelFeedbackStorage = {
+      async repairChannelFeedbackRetention(tenantId, limit) {
+        page(tenantId, limit);
+        await ensureIndexes();
+        let repaired = 0;
+        const retention = new Map<string, Date | null>();
+        for (const name of ['ChannelReply', 'ChannelFeedbackEvent', 'ChannelFeedback']) {
+          const model = mongoose.model(name);
+          const rows = await model
+            .find({ tenantId, retentionVersion: { $ne: 1 } })
+            .select(
+              name === 'ChannelReply'
+                ? 'tenantId principalId conversationId messageId'
+                : 'mapping.tenantId mapping.principalId mapping.conversationId mapping.messageId',
+            )
+            .sort({ _id: 1 })
+            .limit(limit)
+            .lean();
+          for (const row of rows) {
+            const mapping = (name === 'ChannelReply' ? row : row.mapping) as ChannelReplyMapping;
+            const key = JSON.stringify([
+              mapping.tenantId,
+              mapping.principalId,
+              mapping.conversationId,
+              mapping.messageId,
+            ]);
+            if (!retention.has(key)) {
+              try {
+                retention.set(key, await readChannelFeedbackRetention(mongoose, mapping));
+              } catch (error) {
+                if (!(error instanceof ChannelFeedbackAuthorityError)) throw error;
+                retention.set(key, new Date(0));
+              }
+            }
+            const expiredAt = retention.get(key)!;
+            const filter = { _id: row._id, tenantId, retentionVersion: { $ne: 1 } };
+            const result = await model.updateOne(
+              {
+                ...filter,
+                ...(expiredAt
+                  ? { $or: [{ expiredAt: null }, { expiredAt: { $gt: expiredAt } }] }
+                  : {}),
+              },
+              { $set: { retentionVersion: 1, ...(expiredAt ? { expiredAt } : {}) } },
+            );
+            repaired += result.modifiedCount;
+            if (expiredAt && !result.modifiedCount) {
+              const retained = await model.updateOne(
+                { ...filter, expiredAt: { $lte: expiredAt } },
+                { $set: { retentionVersion: 1 } },
+              );
+              repaired += retained.modifiedCount;
+            }
+          }
+        }
+        return repaired;
+      },
+      async deferChannelFeedbackEvent(record, retryAtMs) {
+        assertChannelTenant(record.tenantId);
+        if (!Number.isSafeInteger(retryAtMs) || retryAtMs < 0)
+          throw new TypeError('Invalid feedback retry deadline');
+        await events().updateOne(
+          {
+            tenantId: record.tenantId,
+            channelId: record.channelId,
+            eventId: record.eventId,
+            digest: record.digest,
+            processed: false,
+          },
+          { $max: { retryAtMs } },
+        );
+      },
+      async deferChannelFeedbackExport(record, now, retryAtMs) {
+        assertChannelTenant(record.tenantId);
+        if (!Number.isSafeInteger(now) || !Number.isSafeInteger(retryAtMs) || retryAtMs < now)
+          throw new TypeError('Invalid feedback retry deadline');
+        await ledger().updateOne(
+          {
+            tenantId: record.tenantId,
+            key: record.key,
+            revision: record.revision,
+            exportStatus: 'pending',
+            $or: [{ leaseUntilMs: { $exists: false } }, { leaseUntilMs: { $lte: now } }],
+          },
+          { $max: { retryAtMs } },
+        );
+      },
       async withAuthority<T>(
         mapping: ChannelReplyMapping,
         work: (storage: ChannelFeedbackStorage) => Promise<T>,
       ): Promise<T> {
-        return guard(mapping, (active) => work(createStorage(active, mapping)));
+        return guard(mapping, (active, expiredAt) =>
+          work(createStorage(active, mapping, expiredAt)),
+        );
       },
       async isAuthorityCurrent(mapping) {
         try {
@@ -176,18 +295,18 @@ export function createChannelFeedbackStorage(
           .session(session ?? null);
       },
       async putChannelReply(mapping) {
-        return guard(mapping, async (active) => {
+        return guard(mapping, async (active, expiredAt) => {
           const filter = {
             tenantId: mapping.tenantId,
             channelId: mapping.channelId,
             teamId: mapping.teamId,
             externalMessageKey: mapping.externalMessageKey,
           };
-          await replies().updateOne(
-            filter,
-            { $setOnInsert: mapping },
-            { upsert: true, session: active },
-          );
+          await replies().updateOne(filter, retainedInsert(mapping, expiredAt), {
+            upsert: true,
+            session: active,
+          });
+          await retainLegacyNull('ChannelReply', filter, expiredAt, active);
           const stored = await replies().findOne(filter).session(active).lean();
           if (!stored) throw new Error('Channel reply disappeared during admission');
           return stored;
@@ -208,26 +327,33 @@ export function createChannelFeedbackStorage(
           .lean();
       },
       async admitChannelFeedbackEvent(record) {
-        return guard(record.mapping, async (active) => {
+        return guard(record.mapping, async (active, expiredAt) => {
           const filter = {
             tenantId: record.tenantId,
             channelId: record.channelId,
             eventId: record.eventId,
           };
-          await events().updateOne(
-            filter,
-            { $setOnInsert: record },
-            { upsert: true, session: active },
-          );
+          await events().updateOne(filter, retainedInsert(record, expiredAt), {
+            upsert: true,
+            session: active,
+          });
+          await retainLegacyNull('ChannelFeedbackEvent', filter, expiredAt, active);
           const stored = await events().findOne(filter).session(active).lean();
           if (!stored) throw new Error('Channel feedback event disappeared during admission');
           return stored;
         });
       },
-      async pendingChannelFeedbackEvents(tenantId, limit) {
+      async pendingChannelFeedbackEvents(tenantId, limit, now = Date.now()) {
         page(tenantId, limit);
         return events()
-          .find({ tenantId, processed: false })
+          .find({
+            tenantId,
+            processed: false,
+            $and: [
+              { $or: [{ retryAtMs: { $exists: false } }, { retryAtMs: { $lte: now } }] },
+              { $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }] },
+            ],
+          })
           .sort({ createdAt: 1 })
           .limit(limit)
           .session(session ?? null)
@@ -248,13 +374,17 @@ export function createChannelFeedbackStorage(
         });
       },
       async ensureChannelFeedback(record) {
-        return guard(record.mapping, async (active) => {
+        return guard(record.mapping, async (active, expiredAt) => {
           const filter = { tenantId: record.tenantId, key: record.key };
           await ledger().updateOne(
             filter,
-            { $setOnInsert: record },
+            retainedInsert(
+              { ...record, scoreTimestamp: record.scoreTimestamp ?? new Date() },
+              expiredAt,
+            ),
             { upsert: true, session: active },
           );
+          await retainLegacyNull('ChannelFeedback', filter, expiredAt, active);
           const stored = await ledger().findOne(filter).session(active).lean();
           if (!stored) throw new Error('Channel feedback ledger disappeared during admission');
           return stored;
@@ -293,8 +423,22 @@ export function createChannelFeedbackStorage(
           leaseUntilMs <= now
         )
           throw new TypeError('Invalid feedback lease');
-        return guard(candidate.mapping, async (active) =>
-          ledger()
+        return guard(candidate.mapping, async (active) => {
+          if (!candidate.scoreTimestamp) {
+            const scoreTimestamp = candidate.createdAt ?? new Date();
+            if (!Number.isFinite(scoreTimestamp.getTime()))
+              throw new TypeError('Invalid feedback score timestamp');
+            await ledger().updateOne(
+              {
+                tenantId: candidate.tenantId,
+                key: candidate.key,
+                scoreTimestamp: null,
+              },
+              { $set: { scoreTimestamp } },
+              { session: active, timestamps: false },
+            );
+          }
+          return ledger()
             .findOneAndUpdate(
               {
                 tenantId: candidate.tenantId,
@@ -307,8 +451,8 @@ export function createChannelFeedbackStorage(
               { $set: { leaseId, leaseUntilMs } },
               { new: true, session: active },
             )
-            .lean(),
-        );
+            .lean();
+        });
       },
       async finishChannelFeedbackExport(record, leaseId, success, retryAtMs, finishedAt) {
         await guard(record.mapping, async (active) => {
