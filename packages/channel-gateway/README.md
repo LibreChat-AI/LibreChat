@@ -93,4 +93,6 @@ Forward native Stop with its original occurrence time and complete actor/channel
 
 The runnable consumer preserves canonical execution identities and frozen delivery receipts across restarts. An uncertain required provider write requires reconciliation rather than a blind repeat. The standalone runtime's HTTP/Socket, worker, process and container checks validate that composition in addition to the adapter tests here.
 
-Socket connections use one gateway-owned supervision task. Connection loss immediately fails readiness; retries own every SDK startup result and require a fresh matching-app hello before ingress resumes. Shutdown aborts API requests and backoff, closes the SDK, destroys owned WebSocket transports and drains supervision alongside the worker.
+Socket connections use one gateway-owned supervision task. Connection loss immediately fails readiness; retries own every SDK startup result and require a fresh matching-app hello before ingress resumes. Shutdown aborts API requests and backoff, closes the SDK, lets the SDK close its WebSocket transport and drains supervision alongside the worker.
+
+The private bundle also supplies the server’s `maxDeliveryParts` storage limit. New plans reserve required answer output first, group attachment attempts with their failure notice, and explicitly report shortening or omitted optional effects. Already persisted plans retain their frozen operations.

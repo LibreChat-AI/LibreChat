@@ -324,7 +324,13 @@ export class ChannelWorker {
         run = await this.client.mutate(
           fence,
           'plan',
-          { plan: makeSlackPlan(run, bundle.gateway.nativeSessions) },
+          {
+            plan: makeSlackPlan(
+              run,
+              bundle.gateway.nativeSessions,
+              bundle.delivery?.maxDeliveryParts,
+            ),
+          },
           signal,
         );
         break;
