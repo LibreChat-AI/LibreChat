@@ -145,6 +145,8 @@ export type {
   ReportNearBottom,
   MessageIconData,
   MessageIconProps,
+  MessageAudioProps,
+  MessageAudioButtonProps,
 } from './react/messages/host';
 export {
   SoleToolContext,

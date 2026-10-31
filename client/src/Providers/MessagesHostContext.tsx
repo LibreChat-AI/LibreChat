@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
-import { useRecoilState } from 'recoil';
+import { useRecoilState, useRecoilValue } from 'recoil';
 import { setDefaultMessagesHost } from '@librechat/chat/react';
 import type {
   ForkEvents,
@@ -10,6 +10,7 @@ import type {
   ForkPreferences,
   ForkConversation,
   MessagesScrolling,
+  MessageAudioProps,
 } from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import {
@@ -20,6 +21,8 @@ import {
 } from '~/hooks';
 import useConversationSeen from '~/hooks/Conversations/useConversationSeen';
 import useMessageScrolling from '~/hooks/Messages/useMessageScrolling';
+import { useOptionalMessagesOperations } from './MessagesViewContext';
+import MessageAudio from '~/components/Chat/Messages/MessageAudio';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import Files from '~/components/Chat/Messages/Content/Files';
 import { useScreenshot } from '~/hooks/ScreenshotContext';
@@ -86,6 +89,19 @@ function useAppMessageCopy({ message, searchResults, variant }: MessageCopyInput
   return { copyToClipboard, canCopy };
 }
 
+function useAppGetMessages(): () => TMessage[] | undefined {
+  return useOptionalMessagesOperations().getMessages;
+}
+
+/** Read-aloud follows the viewer's text-to-speech setting; off, the row draws no control. */
+function AppMessageAudio(props: MessageAudioProps) {
+  const textToSpeech = useRecoilValue<boolean>(store.textToSpeech);
+  if (!textToSpeech) {
+    return null;
+  }
+  return <MessageAudio {...props} />;
+}
+
 /** What the message list reads from the app: the viewer's clock format and fork defaults, the
  *  fork request, the rich-text copy, its scrolling, screenshot and seen reporting, and the row
  *  pieces that still live here. Registered as the default when this module loads, so rows read it
@@ -96,6 +112,8 @@ export const appMessagesHost: MessagesHost = {
   useForkPreferences: useAppForkPreferences,
   useForkConversation: useAppForkConversation,
   useMessageCopy: useAppMessageCopy,
+  useGetMessages: useAppGetMessages,
+  renderMessageAudio: (props) => <AppMessageAudio {...props} />,
   useScrolling,
   useScreenshotTarget: () => useScreenshot().screenshotTargetRef,
   useAutoScroll: () => useAtomValue(autoScrollAtom),

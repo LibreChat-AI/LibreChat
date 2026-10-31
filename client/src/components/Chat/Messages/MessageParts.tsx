@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import {
+  HoverButtons,
   getHeaderHoverLabel,
   revealOnRowHoverClasses,
   messageFooterClasses,
@@ -26,7 +27,6 @@ import MessageIcon from '~/components/Chat/Messages/MessageIcon';
 import { showThinkingAtom } from '~/store/showThinking';
 import ContentParts from './Content/ContentParts';
 import { AuthorContext } from '~/Providers';
-import HoverButtons from './HoverButtons';
 import store from '~/store';
 
 /**
