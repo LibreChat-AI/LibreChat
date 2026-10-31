@@ -8,9 +8,15 @@ import type {
 } from '@librechat/data-schemas';
 import type { ChannelConfig } from 'librechat-data-provider';
 import type { Request } from 'express';
+import type {
+  ChannelWorkerSettings,
+  ChannelPolicySubject,
+  ChannelFeedbackPolicySnapshot,
+} from './settings';
 import type { GetAppConfigOptions } from '~/app/service';
 import type { ServerRequest } from '~/types/http';
 import { isLangfuseTracingEnabled } from '~/langfuse/policy';
+import { channelWorkerSettings } from './settings';
 
 export interface ChannelApplicationPolicyDependencies {
   readAppConfig: (options?: GetAppConfigOptions) => Promise<AppConfig>;
@@ -19,14 +25,12 @@ export interface ChannelApplicationPolicyDependencies {
 }
 export interface ChannelApplicationPolicy {
   config: (user?: IUser) => Promise<ChannelConfig>;
+  workerSettings: () => Promise<ChannelWorkerSettings>;
   requestConfig: (req: Request, channel?: AgentChannelRecord) => Promise<ChannelConfig>;
   appConfig: (tenantId: string, principalId?: string) => Promise<AppConfig>;
   runConfig: (run: ChannelRunRecord) => Promise<AppConfig>;
   traceConfig: (run: ChannelRunRecord) => Promise<AppConfig['langfuse']>;
-  tracePolicy: (owner: {
-    tenantId: string;
-    userId: string;
-  }) => Promise<{ centralTraceExportEnabled: boolean } | null>;
+  feedbackPolicy: (owner: ChannelPolicySubject) => Promise<ChannelFeedbackPolicySnapshot | null>;
 }
 const applicationTenant = (tenantId?: string | null): string | undefined =>
   tenantId === '_' ? undefined : tenantId || undefined;
@@ -61,6 +65,11 @@ export function createChannelApplicationPolicy(
     return userConfig(user);
   }
   return {
+    workerSettings: async () =>
+      channelWorkerSettings(
+        (await deps.readAppConfig({ baseOnly: true, failClosed: true })).endpoints?.agents
+          ?.channels,
+      ),
     config: async (user) =>
       channelConfigSchema.parse((await userConfig(user)).endpoints?.agents?.channels ?? {}),
     requestConfig: async (req, channel) => {
@@ -72,13 +81,14 @@ export function createChannelApplicationPolicy(
     appConfig: ownerConfig,
     runConfig: (run) => ownerConfig(run.tenantId, run.principal.userId),
     traceConfig: async (run) => (await ownerConfig(run.tenantId, run.principal.userId)).langfuse,
-    tracePolicy: async (owner) => {
+    feedbackPolicy: async (owner) => {
+      if (applicationTenant(owner.tenantId) !== applicationTenant(getTenantId()))
+        throw new Error('Channel policy tenant changed');
       if (!(await deps.isPrincipalActive(owner.userId))) return null;
-      const config = await ownerConfig(owner.tenantId, owner.userId);
-      return {
-        centralTraceExportEnabled:
-          isLangfuseTracingEnabled() && config.interfaceConfig?.feedback !== false,
-      };
+      const appConfig = await ownerConfig(owner.tenantId, owner.userId);
+      const config = channelConfigSchema.parse(appConfig.endpoints?.agents?.channels ?? {});
+      if (!config.enabled || appConfig.interfaceConfig?.feedback === false) return null;
+      return { appConfig, centralTraceExportEnabled: isLangfuseTracingEnabled() };
     },
   };
 }

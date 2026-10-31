@@ -73,11 +73,9 @@ it('rechecks current trace policy and propagates configuration outages', async (
   tenantStorage.run({ tenantId: 'tenant-a' }, async () => {
     const f = fixture('tenant-a');
     f.readAppConfig.mockResolvedValue({ ...f.config, interfaceConfig: { feedback: false } });
-    expect(await f.policy.tracePolicy({ tenantId: 'tenant-a', userId: 'user-a' })).toEqual({
-      centralTraceExportEnabled: false,
-    });
+    expect(await f.policy.feedbackPolicy({ tenantId: 'tenant-a', userId: 'user-a' })).toBeNull();
     f.isPrincipalActive.mockResolvedValue(false);
-    expect(await f.policy.tracePolicy({ tenantId: 'tenant-a', userId: 'user-a' })).toBeNull();
+    expect(await f.policy.feedbackPolicy({ tenantId: 'tenant-a', userId: 'user-a' })).toBeNull();
     f.readAppConfig.mockRejectedValue(new Error('private configuration outage'));
     await expect(f.policy.config(f.user)).rejects.toThrow('configuration outage');
   }));
@@ -90,7 +88,8 @@ it('allows central feedback export for a live source when current tracing policy
     process.env.LANGFUSE_SAMPLE_RATE = '1';
     try {
       const f = fixture('tenant-a');
-      expect(await f.policy.tracePolicy({ tenantId: 'tenant-a', userId: 'user-a' })).toEqual({
+      expect(await f.policy.feedbackPolicy({ tenantId: 'tenant-a', userId: 'user-a' })).toEqual({
+        appConfig: f.config,
         centralTraceExportEnabled: true,
       });
       expect(f.readAppConfig.mock.calls[0][0].failClosed).toBe(true);
@@ -101,3 +100,65 @@ it('allows central feedback export for a live source when current tracing policy
       else process.env.LANGFUSE_SAMPLE_RATE = sampleRate;
     }
   }));
+
+it('projects deployment scheduling settings without an enablement capability', async () => {
+  const f = fixture(undefined);
+  const settings = await f.policy.workerSettings();
+  expect(settings).not.toHaveProperty('enabled');
+  expect(settings.feedback).toBeDefined();
+  expect(f.readAppConfig).toHaveBeenCalledWith({ baseOnly: true, failClosed: true });
+});
+
+it('reads one active scoped feedback snapshot and denies a disabled source principal', async () =>
+  tenantStorage.run({ tenantId: 'tenant-a' }, async () => {
+    const f = fixture('tenant-a');
+    const result = await f.policy.feedbackPolicy({ tenantId: 'tenant-a', userId: 'user-a' });
+    expect(result?.appConfig).toBe(f.config);
+    expect(f.readAppConfig).toHaveBeenCalledTimes(1);
+    expect(f.isPrincipalActive).toHaveBeenCalledTimes(1);
+    f.readAppConfig.mockResolvedValue({ endpoints: { agents: { channels: { enabled: false } } } });
+    expect(await f.policy.feedbackPolicy({ tenantId: 'tenant-a', userId: 'user-a' })).toBeNull();
+    f.isPrincipalActive.mockResolvedValue(false);
+    f.readAppConfig.mockClear();
+    expect(await f.policy.feedbackPolicy({ tenantId: 'tenant-a', userId: 'user-a' })).toBeNull();
+    expect(f.readAppConfig).not.toHaveBeenCalled();
+  }));
+
+it('keeps deployment scheduling independent of named/default tenant and principal overrides', async () => {
+  const readAppConfig = jest.fn(
+    async (options) =>
+      ({
+        endpoints: {
+          agents: {
+            channels: {
+              enabled:
+                !options.baseOnly &&
+                options.tenantId !== 'disabled' &&
+                options.userId !== 'blocked',
+            },
+          },
+        },
+        interfaceConfig: { feedback: true },
+      }) as unknown as AppConfig,
+  );
+  const policy = createChannelApplicationPolicy({
+    readAppConfig,
+    findUser: async ({ _id }) =>
+      ({ _id, tenantId: tenantStorage.getStore()?.tenantId, role: 'USER' }) as unknown as IUser,
+    isPrincipalActive: async () => true,
+  });
+  expect(await policy.workerSettings()).not.toHaveProperty('enabled');
+  for (const tenantId of [undefined, 'enabled', 'disabled']) {
+    await tenantStorage.run({ tenantId }, async () => {
+      for (const userId of ['allowed', 'blocked']) {
+        readAppConfig.mockClear();
+        const result = await policy.feedbackPolicy({ tenantId: tenantId || '_', userId });
+        expect(Boolean(result)).toBe(tenantId !== 'disabled' && userId !== 'blocked');
+        expect(readAppConfig).toHaveBeenCalledTimes(1);
+        expect(readAppConfig).toHaveBeenCalledWith(
+          expect.objectContaining({ tenantId, userId, failClosed: true }),
+        );
+      }
+    });
+  }
+});

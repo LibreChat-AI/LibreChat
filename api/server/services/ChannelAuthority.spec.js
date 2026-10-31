@@ -61,7 +61,7 @@ it('loads effective current-principal policy without bypassing database override
   });
 });
 
-it('refuses an unsafe origin at actual ticket issuance before persisting a ticket', async () => {
+it('does not persist a browser ticket before the link page is installed', async () => {
   const leaf = require('./ChannelAuthority');
   mockGetChannelMetadata.mockResolvedValue({
     channelId: 'channel',
@@ -79,7 +79,6 @@ it('refuses an unsafe origin at actual ticket issuance before persisting a ticke
       teamId: 'T1',
       externalUserId: 'U1',
     }),
-  ).rejects.toThrow('HTTPS');
-  expect(mockGetChannelMetadata).toHaveBeenCalledWith('channel');
+  ).resolves.toEqual({ ok: false, error: { code: 'unavailable' } });
   expect(mockIdentityStorage.saveChannelIdentity).not.toHaveBeenCalled();
 });

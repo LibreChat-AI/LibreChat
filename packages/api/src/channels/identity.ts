@@ -21,7 +21,8 @@ export interface ChannelIdentityDependencies {
   /** Current principal existence, tenant membership, agent USE permission and deployment eligibility.
    * Shared owner-only mode additionally requires userId === channel.createdBy. */
   canUse: (identity: ChannelExternalIdentity, userId: string) => Promise<boolean>;
-  publicBaseUrl: string;
+  /** Absence disables new browser tickets without affecting existing identity authority. */
+  publicBaseUrl?: string;
   ticketLifetimeMs: number;
   linkLifetimeMs: number;
   getLifetimes?: () => Promise<{ ticketLifetimeMs: number; linkLifetimeMs: number }>;
@@ -100,6 +101,7 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
     async issue(
       identity: ChannelExternalIdentity,
     ): Promise<ChannelIdentityResult<ChannelLinkTicket>> {
+      if (!deps.publicBaseUrl) return failure('unavailable');
       if (!(await deps.channelIsCurrent(identity))) return failure('changed');
       const existing = await deps.storage.readChannelIdentity(identity);
       if (
