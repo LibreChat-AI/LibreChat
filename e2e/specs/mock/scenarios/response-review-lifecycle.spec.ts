@@ -63,4 +63,90 @@ for (const mode of ['light', 'dark']) {
     expect(writes).toBe(1);
     await expect(page.getByRole('button', { name: /Stop/, exact: false })).toBeDisabled();
   });
+  test(`owner tool review preserves the exact batch through uncertain acknowledgement (${mode})`, async ({
+    page,
+  }) => {
+    const acknowledgement = Promise.withResolvers<void>();
+    const decisions: object[] = [];
+    const review = {
+      responseId: 'resp_tool_browser',
+      status: 'in_progress',
+      oauth: [],
+      canSubmitDecision: true,
+      pendingAction: {
+        actionId: 'tools-browser',
+        expiresAt: Date.now() + 120_000,
+        payload: {
+          type: 'tool_approval',
+          action_requests: [
+            { name: 'write_file', arguments: { path: 'old.ts' }, tool_call_id: 'edit-call' },
+            { name: 'delete_file', arguments: { path: 'keep.ts' }, tool_call_id: 'reject-call' },
+          ],
+          review_configs: [
+            { action_name: 'write_file', tool_call_id: 'edit-call', allowed_decisions: ['edit'] },
+            {
+              action_name: 'delete_file',
+              tool_call_id: 'reject-call',
+              allowed_decisions: ['reject'],
+            },
+          ],
+        },
+      },
+    };
+    await page.addInitScript((theme) => localStorage.setItem('color-theme', theme), mode);
+    await page.route('**/api/agents/responses/resp_tool_browser/**', async (route) => {
+      if (route.request().method() === 'GET') return route.fulfill({ json: review });
+      decisions.push(route.request().postDataJSON());
+      if (decisions.length === 1) {
+        await acknowledgement.promise;
+        return route.fulfill({ status: 503, json: { error: 'response_service_unavailable' } });
+      }
+      return route.fulfill({
+        json: {
+          responseId: review.responseId,
+          actionId: review.pendingAction.actionId,
+          intentId: 'saved-browser-intent',
+          status: 'queued',
+        },
+      });
+    });
+    try {
+      await page.goto('/responses/resp_tool_browser/review');
+      const first = page.getByTestId('tool-approval').nth(0);
+      const second = page.getByTestId('tool-approval').nth(1);
+      await first.getByRole('button', { name: 'Edit', exact: true }).click();
+      await first
+        .getByRole('textbox', { name: 'Edit', exact: true })
+        .fill('{"path":"new.ts","nested":{"safe":true}}');
+      await second.getByRole('button', { name: 'Reject', exact: true }).click();
+      await second
+        .getByRole('textbox', { name: 'Reject', exact: true })
+        .fill('Keep the existing file.');
+      await page.getByRole('button', { name: /^Submit/ }).click();
+      await expect.poll(() => decisions.length).toBe(1);
+      const expected = {
+        actionId: 'tools-browser',
+        decisions: [
+          {
+            tool_call_id: 'edit-call',
+            decision: 'edit',
+            editedArguments: { path: 'new.ts', nested: { safe: true } },
+          },
+          { tool_call_id: 'reject-call', decision: 'reject', reason: 'Keep the existing file.' },
+        ],
+      };
+      expect(decisions[0]).toEqual(expected);
+      await expect(page.getByRole('textbox')).toHaveCount(0);
+      await expect(page.getByRole('button', { name: /Submitting/ })).toBeDisabled();
+      acknowledgement.resolve();
+      await expect(page.getByRole('alert')).toBeVisible();
+      await expect(page.getByRole('textbox')).toHaveCount(0);
+      await page.getByRole('button', { name: 'Retry', exact: true }).click();
+      await expect.poll(() => decisions.length).toBe(2);
+      expect(decisions[1]).toEqual(expected);
+      await expect(page.getByRole('status').filter({ hasText: /decision was received/i })).toBeVisible();
+    } finally {
+      acknowledgement.resolve();
+    }
+  });
 }
