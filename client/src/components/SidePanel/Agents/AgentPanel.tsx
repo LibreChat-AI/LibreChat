@@ -11,6 +11,8 @@ import {
   EModelEndpoint,
   LocalStorageKeys,
   PermissionBits,
+  PermissionTypes,
+  Permissions,
   removeCodeExecutionCaller,
   resolveModelCatalogKey,
   resolveStatefulCodeEnvironment,
@@ -40,8 +42,8 @@ import {
   getDefaultAgentFormValues,
 } from '~/utils';
 import { pruneAgentModelParameters, resolveAgentParameterSettings } from './parameters';
+import { useSelectAgent, useLocalize, useAuthContext, useHasAccess } from '~/hooks';
 import { useResourcePermissions } from '~/hooks/useResourcePermissions';
-import { useSelectAgent, useLocalize, useAuthContext } from '~/hooks';
 import { useAgentPanelContext } from '~/Providers/AgentPanelContext';
 import { resolveCapabilityTools } from './Tools/items/capabilities';
 import ResetApprovals from '~/components/Agents/ResetApprovals';
@@ -52,6 +54,7 @@ import AgentConfig from './AgentConfig';
 import AgentSelect from './AgentSelect';
 import AgentFooter from './AgentFooter';
 import ModelPanel from './ModelPanel';
+import Channels from './Channels';
 
 /* Helpers */
 function getUpdateToastMessage(
@@ -465,6 +468,14 @@ export const mayHavePersistedChange = (
 export default function AgentPanel() {
   const localize = useLocalize();
   const { user } = useAuthContext();
+  const canUseAgents = useHasAccess({
+    permissionType: PermissionTypes.AGENTS,
+    permission: Permissions.USE,
+  });
+  const canUseRemoteAgents = useHasAccess({
+    permissionType: PermissionTypes.REMOTE_AGENTS,
+    permission: Permissions.USE,
+  });
   const { showToast } = useToastContext();
   const {
     activePanel,
@@ -974,6 +985,17 @@ export default function AgentPanel() {
     return hasEditorAccess;
   }, [agentQuery.data?.id, hasEditorAccess]);
 
+  const showChannels =
+    activePanel === Panel.builder &&
+    !agentQuery.isInitialLoading &&
+    Boolean(user?.id) &&
+    agentsConfig?.channels?.enabled === true &&
+    canUseAgents &&
+    canUseRemoteAgents &&
+    (!isPersistedAgent ||
+      user?.role === SystemRoles.ADMIN ||
+      (!permissionsLoading && hasPermission(PermissionBits.SHARE)));
+
   return (
     <FormProvider {...methods}>
       <form
@@ -1025,12 +1047,22 @@ export default function AgentPanel() {
           </div>
           {agentQuery.isInitialLoading && <AgentPanelSkeleton />}
           {!canEditAgent && !agentQuery.isInitialLoading && (
-            <div className="flex h-[30vh] w-full items-center justify-center">
+            <div
+              className={
+                showChannels
+                  ? 'flex w-full justify-center'
+                  : 'flex h-[30vh] w-full items-center justify-center'
+              }
+            >
               <div className="text-center">
-                <h2 className="text-text-primary m-2 text-xl font-semibold">
-                  {localize('com_agents_not_available')}
-                </h2>
-                <p className="text-text-secondary">{localize('com_agents_no_access')}</p>
+                {!showChannels && (
+                  <>
+                    <h2 className="text-text-primary m-2 text-xl font-semibold">
+                      {localize('com_agents_not_available')}
+                    </h2>
+                    <p className="text-text-secondary">{localize('com_agents_no_access')}</p>
+                  </>
+                )}
                 {agentQuery.data?.id && <ResetApprovals agentId={agentQuery.data.id} />}
               </div>
             </div>
@@ -1048,6 +1080,13 @@ export default function AgentPanel() {
             <AgentConfig
               instructionsPromptStatus={instructionsPromptStatus}
               onRetryInstructionsPrompt={retryInstructionsPrompt}
+            />
+          )}
+          {showChannels && user?.id && (
+            <Channels
+              agentId={isPersistedAgent ? current_agent_id! : undefined}
+              userId={user.id}
+              tenantId={user.tenantId}
             />
           )}
           {canEditAgent && !agentQuery.isInitialLoading && activePanel === Panel.advanced && (

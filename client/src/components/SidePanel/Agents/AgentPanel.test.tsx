@@ -2,6 +2,7 @@
  * @jest-environment jsdom
  */
 import * as React from 'react';
+import userEvent from '@testing-library/user-event';
 import { render, waitFor, fireEvent, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { UseFormReturn } from 'react-hook-form';
@@ -26,9 +27,16 @@ let mockAgentConfigStatus: InstructionsPromptStatus | undefined;
 let mockAgentSelectAgentQueryData: Agent | undefined;
 let mockUserRole = 'USER';
 let mockHasPermission = true;
+let mockPermissionBits: number | undefined;
+let mockRolePermissions: Record<string, boolean> = {};
+let mockChannelsProps: unknown;
+let mockPersonalApprovalModesEnabled = true;
 let mockAgentPanelContext = {
   activePanel: 'builder',
-  agentsConfig: { allowedProviders: [] as string[] },
+  agentsConfig: {
+    allowedProviders: [] as string[],
+    channels: undefined as { enabled: boolean } | undefined,
+  },
   setActivePanel: jest.fn(),
   endpointsConfig: {},
   setCurrentAgentId: jest.fn(),
@@ -55,6 +63,7 @@ jest.mock('librechat-data-provider', () => {
     dataService: {
       createAgent: jest.fn(),
       updateAgent: jest.fn(),
+      resetToolApprovalGrants: jest.fn(),
     },
     Tools: actualModule.Tools || {
       execute_code: 'execute_code',
@@ -81,11 +90,7 @@ jest.mock('librechat-data-provider', () => {
 });
 
 jest.mock('@librechat/client', () => ({
-  Button: ({ children, onClick, ...props }: any) => (
-    <button onClick={onClick} {...props}>
-      {children}
-    </button>
-  ),
+  ...jest.requireActual('@librechat/client'),
   useToastContext: () => ({
     get showToast() {
       return mockShowToast || jest.fn();
@@ -118,13 +123,20 @@ jest.mock('~/utils', () => ({
 
 jest.mock('~/hooks', () => ({
   useSelectAgent: () => ({ onSelect: jest.fn() }),
+  useGetAgentsConfig: () => ({
+    agentsConfig: { toolApproval: { agentModes: mockPersonalApprovalModesEnabled } },
+  }),
   useLocalize: () => (key: string) => key,
+  useHasAccess: ({ permissionType }: { permissionType: string }) =>
+    mockRolePermissions[permissionType] !== false,
   useAuthContext: () => ({ user: { id: 'user-123', role: mockUserRole } }),
 }));
 
 jest.mock('~/hooks/useResourcePermissions', () => ({
   useResourcePermissions: () => ({
-    hasPermission: jest.fn(() => mockHasPermission),
+    hasPermission: jest.fn((required: number) =>
+      mockPermissionBits == null ? mockHasPermission : (mockPermissionBits & required) === required,
+    ),
     isLoading: false,
   }),
 }));
@@ -155,6 +167,13 @@ jest.mock('./Advanced/AdvancedPanel', () => ({
   default: () => <div>{`Advanced Panel`}</div>,
 }));
 
+jest.mock('./Channels', () => ({
+  __esModule: true,
+  default: (props: unknown) => {
+    mockChannelsProps = props;
+    return <div data-testid="channel-controls" />;
+  },
+}));
 jest.mock('./AgentConfig', () => ({
   __esModule: true,
   default: (props: { instructionsPromptStatus?: InstructionsPromptStatus }) => {
@@ -229,7 +248,7 @@ jest.mock('react-hook-form', () => {
 });
 
 // Import after mocks
-import { dataService } from 'librechat-data-provider';
+import { dataService, PermissionTypes, PermissionBits } from 'librechat-data-provider';
 import { useGetAgentByIdQuery, useGetExpandedAgentByIdQuery } from '~/data-provider';
 import AgentPanel from './AgentPanel';
 
@@ -327,6 +346,11 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
     mockAgentSelectAgentQueryData = undefined;
     mockUserRole = 'USER';
     mockHasPermission = true;
+    mockPermissionBits = undefined;
+    mockRolePermissions = {};
+    mockChannelsProps = undefined;
+    mockPersonalApprovalModesEnabled = true;
+    jest.mocked(dataService.resetToolApprovalGrants).mockResolvedValue({ reset: true });
     mockFormDefaults = {};
     mockModelsQuery = {
       data: { openai: ['gpt-4'] },
@@ -335,7 +359,7 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
     };
     mockAgentPanelContext = {
       activePanel: 'builder',
-      agentsConfig: { allowedProviders: [] },
+      agentsConfig: { allowedProviders: [], channels: undefined },
       setActivePanel: jest.fn(),
       endpointsConfig: { openai: {} },
       setCurrentAgentId: jest.fn(),
@@ -345,6 +369,79 @@ describe('AgentPanel - Update Agent Toast Messages', () => {
   });
 
   describe('AgentPanel', () => {
+    it.each([
+      [PermissionBits.SHARE, true, true],
+      [PermissionBits.SHARE, false, true],
+      [PermissionBits.SHARE, true, false],
+      [PermissionBits.VIEW, true, true],
+    ] as const)(
+      'keeps personal consent independent from channels and editing: bits=%s enabled=%s remote=%s',
+      async (bits, channelsEnabled, remote) => {
+        const { mockUseGetAgentByIdQuery } = setupMocks();
+        mockAgentQuery(mockUseGetAgentByIdQuery, { author: 'other-user' });
+        mockPermissionBits = bits;
+        mockRolePermissions = { [PermissionTypes.REMOTE_AGENTS]: remote };
+        mockAgentPanelContext = {
+          ...mockAgentPanelContext,
+          agentsConfig: { allowedProviders: [], channels: { enabled: channelsEnabled } },
+        };
+        const user = userEvent.setup();
+        const mounted = render(<AgentPanel />, { wrapper: createWrapper() });
+        const managesChannels = bits === PermissionBits.SHARE && channelsEnabled && remote;
+        await waitFor(() =>
+          expect(Boolean(mounted.queryByTestId('channel-controls'))).toBe(managesChannels),
+        );
+        expect(mounted.queryByTestId('save-agent-button')).not.toBeInTheDocument();
+        expect(mockAgentConfigStatus).toBeUndefined();
+        const reset = await mounted.findByRole('button', { name: 'com_ui_tool_approval_reset' });
+        expect(reset).toBeEnabled();
+        expect(Boolean(mounted.queryByText('com_agents_not_available'))).toBe(!managesChannels);
+        await user.click(reset);
+        await user.click(mounted.getByRole('menuitem', { name: 'com_ui_tool_approval_reset' }));
+        await waitFor(() =>
+          expect(dataService.resetToolApprovalGrants).toHaveBeenCalledWith({
+            agentId: 'agent-123',
+          }),
+        );
+      },
+    );
+
+    it.each([
+      ['USER', PermissionBits.EDIT | PermissionBits.SHARE, true, true, true],
+      ['USER', PermissionBits.EDIT, true, true, false],
+      ['USER', PermissionBits.SHARE, true, true, true],
+      ['ADMIN', 0, true, true, true],
+      ['ADMIN', 0, false, true, false],
+      ['USER', PermissionBits.EDIT | PermissionBits.SHARE, true, false, false],
+    ] as const)(
+      'matches channel management role/ACL visibility: %s bits=%s',
+      async (role, bits, remote, agents, visible) => {
+        const { mockUseGetAgentByIdQuery } = setupMocks();
+        mockAgentQuery(mockUseGetAgentByIdQuery, {});
+        mockUserRole = role;
+        mockPermissionBits = bits;
+        mockRolePermissions = {
+          [PermissionTypes.REMOTE_AGENTS]: remote,
+          [PermissionTypes.AGENTS]: agents,
+        };
+        mockAgentPanelContext = {
+          ...mockAgentPanelContext,
+          agentsConfig: { allowedProviders: [], channels: { enabled: true } },
+        };
+        const Wrapper = createWrapper();
+        const mounted = render(<AgentPanel />, { wrapper: Wrapper });
+        await waitFor(() =>
+          expect(Boolean(mounted.queryByTestId('channel-controls'))).toBe(visible),
+        );
+        if (visible)
+          expect(mockChannelsProps).toEqual({
+            agentId: 'agent-123',
+            userId: 'user-123',
+            tenantId: undefined,
+          });
+      },
+    );
+
     it('restores saved defaults from the current model catalogue', async () => {
       const { mockUseGetAgentByIdQuery } = setupMocks();
       mockAgentQuery(mockUseGetAgentByIdQuery, {});

@@ -1,8 +1,7 @@
 import { Button, Spinner } from '@librechat/client';
 import { buildLoginRedirectUrl } from 'librechat-data-provider';
 import { Navigate, useLocation, useParams } from 'react-router-dom';
-import TermsAndConditionsModal from '~/components/ui/TermsAndConditionsModal';
-import { useUserTermsQuery, useGetStartupConfig } from '~/data-provider';
+import { useOwnerActionPolicy, OwnerTermsModal } from '~/hooks/useOwnerActionPolicy';
 import { useResponseReview } from '~/data-provider/Responses';
 import { AuthContextProvider } from '~/hooks/AuthContext';
 import Controls from '~/components/Responses/Controls';
@@ -20,20 +19,8 @@ function OwnedReview({
   tenantId?: string;
 }) {
   const localize = useLocalize();
-  const { logout } = useAuthContext();
-  const config = useGetStartupConfig({ refetchOnMount: 'always', retry: false });
-  const termsConfig = config.data?.interface?.termsOfService;
-  const requiresTerms = termsConfig?.modalAcceptance === true;
-  const terms = useUserTermsQuery({
-    enabled: requiresTerms && config.isSuccess && !config.isFetching,
-    refetchOnMount: 'always',
-    retry: false,
-  });
-  const termsReady =
-    config.isSuccess &&
-    !config.isFetching &&
-    (!requiresTerms || (terms.isSuccess && !terms.isFetching && terms.data.termsAccepted));
-  const policyError = config.isError || (requiresTerms && terms.isError);
+  const policy = useOwnerActionPolicy();
+  const { config, terms, requiresTerms, termsReady, policyError } = policy;
   const query = useResponseReview(responseId, userId, tenantId);
   const review = query.data;
   const readError = query.isError || (!query.isLoading && !review);
@@ -105,15 +92,11 @@ function OwnedReview({
           <p className="text-text-secondary text-sm">{localize('com_ui_response_review_return')}</p>
         </>
       )}
-      <TermsAndConditionsModal
-        open={requiresTerms && terms.data?.termsAccepted === false}
-        onOpenChange={() => undefined}
-        onAccept={() => {
+      <OwnerTermsModal
+        policy={policy}
+        onAccepted={() => {
           void query.refetch();
         }}
-        onDecline={() => logout('/login?redirect=false')}
-        title={termsConfig?.modalTitle}
-        modalContent={termsConfig?.modalContent}
       />
     </main>
   );

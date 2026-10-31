@@ -26,6 +26,7 @@ module.exports = createChannelApplicationAuthority({
   findUser: (id) => db.findUser({ _id: id }),
   getRole: db.getRoleByName,
   isPrincipalActive: db.isAgentTriggerPrincipalActive,
+  publicBaseUrl: process.env.DOMAIN_CLIENT || 'http://localhost:3080',
   access: { getAgent: db.getAgent, getEffectivePermissions },
   credentials: {
     encrypt: encryptCredential,
