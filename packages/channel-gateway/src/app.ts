@@ -1,17 +1,21 @@
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import { setTimeout as delay } from 'node:timers/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { ChannelBundle, Logger } from './types';
+import type { GatewayRuntimeConfig } from './config';
 import type { ReviewInteraction } from './review';
-import type { GatewayConfig } from './config';
-import { eventTimestampUs, normalizeEvent, parseEnvelope, verifySignature } from './events';
+import {
+  eventTimestampUs,
+  normalizeEvent,
+  parseEnvelope,
+  parseWebhookRequest,
+  SLACK_REQUEST_MAX_BYTES,
+} from './events';
 import { ChannelClient, ServiceError } from './client';
 import { IdentityFlow } from './identity';
 import { ReviewFlow } from './review';
 import { SlackClient } from './slack';
 
-const maxBody = 1024 * 1024;
 const id = z.string().min(1).max(256);
 const stateValue = z
   .object({
@@ -61,7 +65,7 @@ export class GatewayApp {
   private readonly identity: IdentityFlow;
   private readonly review: ReviewFlow;
   constructor(
-    private readonly config: GatewayConfig,
+    private readonly config: GatewayRuntimeConfig,
     private readonly client: ChannelClient,
     slack: SlackClient,
     private readonly log: Logger,
@@ -81,7 +85,9 @@ export class GatewayApp {
     this.active++;
     const signal = AbortSignal.any([AbortSignal.timeout(2000), ...(parent ? [parent] : [])]);
     try {
+      signal.throwIfAborted();
       const bundle = verifiedBundle ?? (await this.client.channel(signal));
+      this.assertPolicy(bundle);
       if (interactive) {
         const callback = interactionSchema.parse(body);
         if (
@@ -205,34 +211,27 @@ export class GatewayApp {
       if (!event) return;
       if (event.kind === 'stop') {
         if (event.eventAt > Date.now()) this.log.warn('native_stop_future_timestamp');
-        if (this.config.SLACK_NATIVE_SESSIONS) {
-          // Preserve Slack's occurrence time: substituting receipt time could stop later work.
-          while (event.eventAt > Date.now()) {
-            const wait = event.eventAt - Date.now();
-            if (wait >= 2000)
-              throw new Error('Native Stop timestamp exceeds acknowledgement window');
-            await delay(wait, undefined, { signal });
-          }
-          signal.throwIfAborted();
-          try {
-            const result = await this.client.stop(
-              event.actor,
-              event.externalThreadKey,
-              event.eventAt,
-              event.externalChannelId,
-              signal,
-            );
-            this.log.info(
-              result.cancellationRequested ? 'native_stop_requested' : 'native_stop_no_active_run',
-            );
-          } catch (error) {
-            if (!(error instanceof ServiceError && [400, 403].includes(error.status))) throw error;
-            this.log.warn(
-              error.status === 400 ? 'native_stop_invalid_request' : 'native_stop_forbidden',
-            );
-            if (error.status === 400) throw error;
-          }
-        } else this.log.warn('native_stop_disabled');
+        // Emission policy does not revoke cancellation for an already-created native session.
+        // The service binds clock-skew normalization to one durable target across retries.
+        signal.throwIfAborted();
+        try {
+          const result = await this.client.stop(
+            event.actor,
+            event.externalThreadKey,
+            event.eventAt,
+            event.externalChannelId,
+            signal,
+          );
+          this.log.info(
+            result.cancellationRequested ? 'native_stop_requested' : 'native_stop_no_active_run',
+          );
+        } catch (error) {
+          if (!(error instanceof ServiceError && [400, 403].includes(error.status))) throw error;
+          this.log.warn(
+            error.status === 400 ? 'native_stop_invalid_request' : 'native_stop_forbidden',
+          );
+          if (error.status === 400) throw error;
+        }
       } else if (event.kind === 'reaction') await this.reaction(event.reaction, signal);
       else {
         try {
@@ -252,6 +251,13 @@ export class GatewayApp {
       signal.throwIfAborted();
     } finally {
       this.active--;
+    }
+  }
+
+  private assertPolicy(bundle: ChannelBundle): void {
+    if (bundle.gateway.transport !== this.config.SLACK_TRANSPORT) {
+      this.ready = false;
+      throw new Error('Gateway ingress policy changed; restart required');
     }
   }
 
@@ -307,7 +313,7 @@ export class GatewayApp {
       for await (const chunk of request) {
         const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         size += bytes.length;
-        if (size > maxBody) {
+        if (size > SLACK_REQUEST_MAX_BYTES) {
           send(413, { error: 'payload_too_large' });
           return;
         }
@@ -316,45 +322,29 @@ export class GatewayApp {
       }
       const body = Buffer.concat(chunks);
       const interactive = route[1] === 'interactions';
-      if (!interactive) {
-        const challenge = z
-          .object({ type: z.literal('url_verification'), challenge: z.string().max(2048) })
-          .safeParse(JSON.parse(body.toString()));
-        if (challenge.success) {
-          send(200, { challenge: challenge.data.challenge });
-          return;
-        }
-      }
       const bundle = await this.client.channel(controller.signal);
-      const signature = request.headers['x-slack-signature'];
-      const timestamp = request.headers['x-slack-request-timestamp'];
-      if (
-        typeof signature !== 'string' ||
-        typeof timestamp !== 'string' ||
-        !verifySignature(
-          body,
-          signature,
-          timestamp,
-          bundle.credentials.signingSecret ?? '',
-          this.config.SLACK_SIGNATURE_TOLERANCE_SECS,
-        )
-      ) {
-        send(401, { error: 'invalid_signature' });
+      controller.signal.throwIfAborted();
+      this.assertPolicy(bundle);
+      const parsed = parseWebhookRequest(
+        body,
+        {
+          signature: request.headers['x-slack-signature'],
+          timestamp: request.headers['x-slack-request-timestamp'],
+          contentType: request.headers['content-type'],
+        },
+        bundle,
+        interactive,
+      );
+      if (!parsed.ok) {
+        send(parsed.status, { error: parsed.code });
         return;
       }
-      let payload: unknown;
-      if (interactive) {
-        if (
-          request.headers['content-type']?.split(';')[0].trim() !==
-          'application/x-www-form-urlencoded'
-        ) {
-          send(400, { error: 'invalid_interaction' });
-          return;
-        }
-        const form = new URLSearchParams(body.toString());
-        if (form.getAll('payload').length !== 1) throw new Error('Invalid Slack payload');
-        payload = JSON.parse(form.get('payload') ?? '');
-      } else payload = JSON.parse(body.toString());
+      if (parsed.request.kind === 'challenge') {
+        send(200, { challenge: parsed.request.challenge });
+        return;
+      }
+      const payload =
+        parsed.request.kind === 'event' ? parsed.request.envelope : parsed.request.payload;
       const ack = await this.dispatch(payload, interactive, controller.signal, bundle);
       controller.signal.throwIfAborted();
       send(200, ack ?? {});
