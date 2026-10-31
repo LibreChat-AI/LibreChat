@@ -64,7 +64,7 @@ describe('Slack answer rendering', () => {
     );
     expect(safeMrkdwn('[unsafe](javascript:alert(1))')).toBe('unsafe');
     expect(safeMrkdwn('[unfinished](https://example.com/a_(b)')).toBe(
-      '[unfinished](https://example.com/a_(b)',
+      '[unfinished](<https://example.com/a_(b)>',
     );
   });
 
@@ -105,7 +105,7 @@ describe('Slack answer rendering', () => {
         ['~strike words~', '~strike words~'],
         ['&', '&amp;'],
       ]) {
-        const source = 'x'.repeat(prefix) + token[0] + ' tail';
+        const source = 'x'.repeat(prefix) + ' ' + token[0] + ' tail';
         const blocks = renderSlackDocument(source).flatMap((message) => message.blocks ?? []);
         const texts = blocks.flatMap((block) =>
           block.type === 'section' ? [block.text.text] : [],
@@ -124,10 +124,13 @@ describe('Slack answer rendering', () => {
       .flatMap((block) => (block.type === 'section' ? [block.text.text] : []));
     expect(texts.join('')).toBe(safeMrkdwn(source));
     expect(texts.every((text) => Buffer.byteLength(text) <= 2800)).toBe(true);
-    for (const large of [
-      '[docs](https://example.com/' + 'a'.repeat(3000) + ')',
-      '`' + 'x'.repeat(3000) + '`',
-      '**' + 'x'.repeat(3000) + '**',
+    for (const [large, plain] of [
+      [
+        '[docs](https://example.com/' + 'a'.repeat(3000) + ')',
+        'docs (https://example.com/' + 'a'.repeat(3000) + ')',
+      ],
+      ['`' + 'x'.repeat(3000) + '`', 'x'.repeat(3000)],
+      ['**' + 'x'.repeat(3000) + '**', 'x'.repeat(3000)],
     ]) {
       const blocks = renderSlackDocument(large).flatMap((message) => message.blocks ?? []);
       expect(
@@ -135,8 +138,58 @@ describe('Slack answer rendering', () => {
       ).toBe(true);
       expect(
         blocks.flatMap((block) => (block.type === 'section' ? [block.text.text] : [])).join(''),
-      ).toBe(large);
+      ).toBe(plain);
     }
+  });
+
+  it('uses GFM link grammar for nested labels, references and autolinks', () => {
+    const url = 'https://example.com/__file__?q=**value**';
+    expect(safeMrkdwn('[outer **bold** and `code`](' + url + ' "title")')).toBe(
+      '<' + url + '|outer bold and code>',
+    );
+    const source = '[guide][DOC] and [doc]\n\n[doc]: ' + url + ' "title"';
+    expect(safeMrkdwn(source)).toBe('<' + url + '|guide> and <' + url + '|doc>\n\n');
+    expect(renderAgentAnswer(source)[0].blocks).toEqual([{ type: 'markdown', text: source }]);
+    expect(renderSlackDocument(source)[0].text).toBe('<' + url + '|guide> and <' + url + '|doc>');
+    // Bare autolinks exclude trailing Markdown punctuation under GFM.
+    expect(safeMrkdwn(url + 'end')).toBe('<' + url + 'end>');
+    expect(safeMrkdwn('<' + url + '>')).toBe('<' + url + '>');
+    expect(safeMrkdwn('`[doc]`\n\n[doc]: ' + url)).toBe('`[doc]`\n\n');
+  });
+
+  it('sanitizes reference targets and oversized fallback without resurrecting credentials', () => {
+    const source = '[label][secret]\n\n[secret]: https://user:password@example.com/private';
+    for (const messages of [renderSlackDocument(source), renderAgentAnswer(source)]) {
+      expect(JSON.stringify(messages)).not.toContain('password');
+      expect(messages[0].text).toContain('label');
+    }
+    const large = '**' + 'x'.repeat(3000) + ' [private](https://user:password@example.com)**';
+    const messages = renderSlackDocument(large);
+    expect(JSON.stringify(messages)).not.toContain('password');
+    expect(
+      messages
+        .flatMap((message) => message.blocks ?? [])
+        .every((block) => block.type === 'section' && block.text.type === 'plain_text'),
+    ).toBe(true);
+    expect(messages.map((message) => message.plain).join('')).toContain('private');
+  });
+
+  it('bounds escaped semantic fallback and keeps safe link destinations readable', () => {
+    const view = run();
+    view.snapshot!.text = ('&'.repeat(3000) + ' [docs](https://example.com/__file__)\n\n').repeat(
+      8,
+    );
+    const plan = makeSlackPlan(view, false, 1);
+    expect(plan.parts).toHaveLength(1);
+    const message = durableSlackMessage(plan.parts[0], rendererVersion);
+    expect(Buffer.byteLength(message.text)).toBeLessThanOrEqual(39000);
+    expect(message.text).toContain('Reply shortened');
+    const plain = message.blocks
+      ?.flatMap((block) => (block.type === 'section' ? [block.text.text] : []))
+      .join('');
+    expect(plain).toContain('docs (https://example.com/__file__)');
+    expect(plain).not.toContain('<https://');
+    expect(plan.parts[0]).not.toHaveProperty('plain');
   });
 
   it('fills every usable slot while preserving artifact/status grouping', () => {
@@ -258,7 +311,9 @@ describe('Slack answer rendering', () => {
       '```txt\n__literal__\n```\n*<https://example.com/__file__|docs>*',
     );
     const forged = '\0' + 'a'.repeat(64) + ':0\0';
-    expect(safeMrkdwn(forged + link)).toBe(forged + '<https://example.com/__file__|docs>');
+    expect(safeMrkdwn(forged + link)).toBe(
+      forged.replaceAll('\0', '\ufffd') + '<https://example.com/__file__|docs>',
+    );
     const unmatched = Array.from({ length: 256 }, (_, i) => 'x' + '`'.repeat(i + 1) + 'y').join('');
     expect(safeMrkdwn(unmatched)).toBe(unmatched);
   });
