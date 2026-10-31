@@ -1,8 +1,8 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { ChatSurfaceProvider } from '@librechat/chat/react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
-import type { ChatSurface } from '~/components/Chat/Subagents/surface';
-import { ChatSurfaceProvider } from '~/components/Chat/Subagents/surface';
+import type { ChatSurface } from '@librechat/chat/react';
 import { MessageContext } from '~/Providers/MessageContext';
 import BackgroundTaskCall from '../BackgroundTaskCall';
 

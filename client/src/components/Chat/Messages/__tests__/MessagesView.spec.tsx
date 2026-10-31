@@ -34,7 +34,8 @@ jest.mock('~/hooks/Messages/useThreadRows', () => ({
   default: jest.fn(() => []),
 }));
 
-jest.mock('~/components/Chat/Subagents/surface', () => ({
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useChatSurface: () => ({ showScrollButton: false, maximizeChatSpace: mockMaximizeChatSpace }),
 }));
 

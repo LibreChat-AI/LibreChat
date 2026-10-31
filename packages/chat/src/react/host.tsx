@@ -35,6 +35,12 @@ export type MessagePartsUser = { id?: string; name?: string; username?: string }
 /** Shows a transient notification. */
 export type MessagePartsToast = (toast: TShowToast) => void;
 
+/** Where the calling message is rendered: a public share link, or the reader's own chat. */
+export type MessagePartsShare = {
+  isSharedConvo?: boolean;
+  shareId?: string;
+};
+
 /** What a part asks the host's markdown renderer to draw. */
 export type MessagePartsMarkdownProps = {
   /** The markdown source. */
@@ -68,6 +74,8 @@ export interface MessagePartsHost {
   useAgent: (agentId: string) => Agent | undefined;
   /** Renders an agent's avatar; `undefined` when the agent is unknown. */
   renderAgentIcon: (agent: Agent | undefined) => ReactNode;
+  /** Renders an agent's bare inline avatar, without the message icon around it. */
+  renderAgentAvatar: (agent: Agent | undefined) => ReactNode;
   /** The viewer's font size utility, applied to reasoning and summary text. */
   useFontSize: () => string;
   /** Whether the viewer wants reasoning expanded by default. */
@@ -104,6 +112,8 @@ export interface MessagePartsHost {
    * clears that mark for a steer id once the part has seen it.
    */
   useLiveAppliedSteer: (steerId: string) => [boolean, (steerId: string) => void];
+  /** Whether the calling message renders under a public share link, and which. */
+  useShare: () => MessagePartsShare;
 }
 
 const MessagePartsHostContext = createContext<MessagePartsHost | null>(null);

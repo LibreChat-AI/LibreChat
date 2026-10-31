@@ -33,9 +33,9 @@ jest.mock('~/components/Messages/MessageContent', () => ({
 }));
 jest.mock('../MessageParts', () => ({ __esModule: true, default: createRowStub() }));
 jest.mock('../Message', () => ({ __esModule: true, default: createRowStub() }));
-jest.mock('~/components/Chat/Subagents/EventSubagentActivityGroup', () => ({
-  __esModule: true,
-  default: ({
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  EventSubagentActivityGroup: ({
     parentMessageIds,
     hasParallelContent,
   }: {

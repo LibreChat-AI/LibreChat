@@ -15,6 +15,7 @@ export type {
   MessagePartsHost,
   MessagePartsUser,
   MessagePartsToast,
+  MessagePartsShare,
   MessagePartMessage,
   MessagePartsMarkdownProps,
   MessagePartsUserTextPreferences,

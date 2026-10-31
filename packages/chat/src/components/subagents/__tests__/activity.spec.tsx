@@ -1,11 +1,19 @@
-import React from 'react';
-import { useAtomValue, useSetAtom } from 'jotai';
+/**
+ * @jest-environment jsdom
+ */
+import React, { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { activeSubagentPanel, durableSubagentSelection } from '@librechat/chat/react';
+import { Provider as JotaiProvider, createStore, useAtomValue, useSetAtom } from 'jotai';
 import type { ParentSubagentSummary } from 'librechat-data-provider';
-import type { ActiveSubagentPanel } from '@librechat/chat/react';
-import EventSubagentActivityGroup from './EventSubagentActivityGroup';
-import { ChatSurfaceHarness, testChatSurface } from 'test/harness';
+import type { ReactNode } from 'react';
+import type { ActiveSubagentPanel } from '../../../react/subagents/state';
+import type { ChatSurface } from '../../../react/subagents/surface';
+import type { MessagePartsHost } from '../../../react/host';
+import { durableSubagentSelection } from '../../../react/subagents/eventSelection';
+import { ChatSurfaceProvider } from '../../../react/subagents/provider';
+import { activeSubagentPanel } from '../../../react/subagents/state';
+import { MessagePartsHostProvider } from '../../../react/host';
+import { EventSubagentActivityGroup } from '../activity';
 
 const mockRefresh = jest.fn().mockResolvedValue(undefined);
 const mockChild: ParentSubagentSummary = {
@@ -34,8 +42,8 @@ const mockCompletedChild: ParentSubagentSummary = {
 };
 let mockChildrenByMessage = new Map<string, ParentSubagentSummary[]>();
 
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
+jest.mock('../../../react/subagents/parents', () => ({
+  ...jest.requireActual('../../../react/subagents/parents'),
   useParentSubagents: () => ({
     byMessageId: mockChildrenByMessage,
     byThreadId: new Map([['event-thread', mockChild]]),
@@ -43,23 +51,12 @@ jest.mock('@librechat/chat/react', () => ({
   }),
 }));
 
-jest.mock('~/Providers', () => ({
-  useAgentsMapContext: () => ({
-    'agent-1': { id: 'agent-1', name: 'Visible Agent' },
-    'agent-2': { id: 'agent-2', name: 'Completed Agent' },
-  }),
-}));
-
-jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
-jest.mock('~/utils', () => ({
-  ...jest.requireActual('~/utils'),
-  renderAgentAvatar: () => <span data-testid="agent-avatar" />,
-}));
 jest.mock('@librechat/client', () => ({
   Button: ({ children, ...props }: React.ComponentProps<'button'>) => (
     <button {...props}>{children}</button>
   ),
   cn: (...values: Array<string | false | undefined>) => values.filter(Boolean).join(' '),
+  useLocalize: () => (key: string) => key,
 }));
 jest.mock('lucide-react', () => ({
   AlertCircle: () => null,
@@ -73,6 +70,65 @@ jest.mock('lucide-react', () => ({
   X: () => null,
   XCircle: () => null,
 }));
+
+const agents: Record<string, { id: string; name: string }> = {
+  'agent-1': { id: 'agent-1', name: 'Visible Agent' },
+  'agent-2': { id: 'agent-2', name: 'Completed Agent' },
+};
+
+const host: MessagePartsHost = {
+  useMessage: () => ({ messageId: 'parent-message' }),
+  renderMarkdown: ({ content }) => content,
+  useSmoothStreaming: () => false,
+  useAgent: (agentId) => agents[agentId] as ReturnType<MessagePartsHost['useAgent']>,
+  renderAgentIcon: () => null,
+  renderAgentAvatar: () => <span data-testid="agent-avatar" />,
+  useFontSize: () => 'text-base',
+  useShowThinking: () => false,
+  useAutoExpandTools: () => false,
+  useLaTeXParsing: () => false,
+  useChatDirection: () => 'ltr',
+  useUserTextPreferences: () => ({
+    usernameDisplay: false,
+    enableUserMsgMarkdown: false,
+    collapseLongUserMessages: false,
+  }),
+  useUser: () => undefined,
+  useFileMap: () => undefined,
+  useToast: () => jest.fn(),
+  useSandboxStarting: () => false,
+  useToolArtifactClaim: () => [null, jest.fn()],
+  useSteerEscalating: () => false,
+  usePaneConversationId: () => null,
+  useLiveAppliedSteer: () => [false, jest.fn()],
+  useShare: () => ({}),
+};
+
+const testChatSurface = (overrides: Partial<ChatSurface> = {}): ChatSurface => ({
+  enterToSend: true,
+  maximizeChatSpace: false,
+  showScrollButton: true,
+  composerBindings: {
+    shortcutsEnabled: true,
+    submitOverride: undefined,
+    yieldedChords: new Set<string>(),
+  },
+  claimForeground: () => undefined,
+  handOffComposerText: () => undefined,
+  ...overrides,
+});
+
+/** One test's own atom store, the surface, and the parts host the rows read agents through. */
+function ChatSurfaceHarness({ surface, children }: { surface?: ChatSurface; children: ReactNode }) {
+  const [store] = useState(() => createStore());
+  return (
+    <JotaiProvider store={store}>
+      <MessagePartsHostProvider host={host}>
+        <ChatSurfaceProvider value={surface ?? testChatSurface()}>{children}</ChatSurfaceProvider>
+      </MessagePartsHostProvider>
+    </JotaiProvider>
+  );
+}
 
 describe('EventSubagentActivityGroup', () => {
   beforeEach(() => {

@@ -1,9 +1,10 @@
 import { useCallback, useMemo } from 'react';
-import { durableSubagentSelection, useParentSubagents } from '@librechat/chat/react';
-import type { ActiveSubagentPanel } from '@librechat/chat/react';
-import { useShareContext } from '~/Providers/ShareContext';
+import type { ActiveSubagentPanel } from './state';
+import { durableSubagentSelection } from './eventSelection';
 import { useOpenSubagentPanel } from './surface';
-import { useMessageContext } from '~/Providers';
+import { useMessageContext } from '../message';
+import { useParentSubagents } from './parents';
+import { useMessagePartsHost } from '../host';
 
 /** One durable child task, as a wake-up or a background-task check names it. */
 export interface DurableSubagentTask {
@@ -22,7 +23,7 @@ export function useSubagentTaskPanel(
   task: DurableSubagentTask | null,
   conversationId?: string | null,
 ): { selection: ActiveSubagentPanel | null; open: (() => void) | null } {
-  const { isSharedConvo } = useShareContext();
+  const { isSharedConvo } = useMessagePartsHost().useShare();
   const { messageId } = useMessageContext();
   const { byThreadId } = useParentSubagents();
   const openPanel = useOpenSubagentPanel();

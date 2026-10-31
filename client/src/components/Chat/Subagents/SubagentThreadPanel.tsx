@@ -37,6 +37,7 @@ import {
   resolveChildAgent,
   readableSubagentType,
   useParentAuthor,
+  useChatSurface,
 } from '@librechat/chat/react';
 import type {
   ParentSubagentTaskSummary,
@@ -67,7 +68,6 @@ import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import SubagentConversation from './SubagentConversation';
 import { useAgentsMapContext } from '~/Providers';
 import { cn, renderAgentAvatar } from '~/utils';
-import { useChatSurface } from './surface';
 
 const EVENT_TASK_PAGE_SIZE = 3;
 const TERMINAL_CONTROL_REASONS = new Set([

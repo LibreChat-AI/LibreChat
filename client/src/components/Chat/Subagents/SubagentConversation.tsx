@@ -13,6 +13,7 @@ import {
   isLiveSubagentStatus,
   hasTerminalOutcome,
   standardContent,
+  useChatSurface,
 } from '@librechat/chat/react';
 import {
   SystemEventHeader,
@@ -43,7 +44,6 @@ import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
 import { AuthorContext } from '~/Providers/AuthorContext';
 import { ChatContext } from '~/Providers/ChatContext';
 import { isEmptyContentPart } from '~/utils/messages';
-import { useChatSurface } from './surface';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 

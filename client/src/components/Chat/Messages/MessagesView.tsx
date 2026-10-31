@@ -1,9 +1,9 @@
+import { useChatSurface } from '@librechat/chat/react';
 import { MessagesView as MessagesList } from '@librechat/chat/components';
 import type { MessagesThreadProps } from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import { MessagePartsHostProvider, appMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { MessagesViewProvider, useFileMapContext } from '~/Providers';
-import { useChatSurface } from '~/components/Chat/Subagents/surface';
 import useThreadRows from '~/hooks/Messages/useThreadRows';
 import PendingSteers from './Content/Parts/PendingSteers';
 import { FLAT_THREAD, ThreadList } from './Thread';

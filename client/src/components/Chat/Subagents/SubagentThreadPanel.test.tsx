@@ -8,6 +8,7 @@ import {
   activeSubagentPanel,
   subagentProgressByToolCallId,
   subagentProgressKey,
+  useOpenSubagentPanel,
 } from '@librechat/chat/react';
 import type {
   TMessage,
@@ -19,7 +20,6 @@ import type { ActiveSubagentPanel } from '@librechat/chat/react';
 import type { JotaiStore } from 'test/harness';
 import { ChatSurfaceHarness, testChatSurface } from 'test/harness';
 import SubagentThreadPanel from './SubagentThreadPanel';
-import { useOpenSubagentPanel } from './surface';
 import { getDraft } from '~/utils';
 import '~/Providers/MessagePartsHostContext';
 import '~/Providers/MessagesHostContext';

@@ -10,3 +10,6 @@ export * from './eventSelection';
 export * from './attachments';
 export * from './parents';
 export * from './author';
+export * from './surface';
+export * from './provider';
+export * from './task';
