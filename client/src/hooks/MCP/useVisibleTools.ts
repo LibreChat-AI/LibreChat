@@ -34,6 +34,17 @@ export function useVisibleTools(
     const regularToolIds: string[] = [];
 
     for (const toolId of selectedToolIds ?? []) {
+      // Legacy plugin keys use mcp_<server>, with a literal configured name
+      // taking precedence over another server's normalized alias.
+      const prefixedName = toolId.startsWith('mcp_') ? toolId.slice(4) : undefined;
+      let prefixedOwner: string | undefined;
+      if (prefixedName != null) {
+        prefixedOwner = mcpServersMap.has(prefixedName) ? prefixedName : aliases.get(prefixedName);
+      }
+      if (prefixedOwner != null) {
+        mcpServers.add(prefixedOwner);
+        continue;
+      }
       // MCP tools/servers
       if (toolId.includes(Constants.mcp_delimiter)) {
         const [, serverName] = splitMCPToolKey(toolId, candidates);

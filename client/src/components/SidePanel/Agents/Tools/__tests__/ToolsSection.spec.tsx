@@ -2,11 +2,13 @@ import React from 'react';
 import '@testing-library/jest-dom/extend-expect';
 import { render, screen, fireEvent } from '@testing-library/react';
 import type { AgentItem } from '../items/types';
-import { makeSkill } from 'test/itemFactories';
+import type { MCPServerInfo } from '~/common';
+import { makeSkill, makePlugin, makeMcpServer } from 'test/itemFactories';
 import ToolsSection from '../ToolsSection';
 
 let mockSelected: AgentItem[] = [];
 let mockAgentTools: string[] = [];
+let mockMcpServers = new Map<string, MCPServerInfo>();
 let mockFileEntries: {
   contextFiles: unknown[];
   knowledgeFiles: unknown[];
@@ -33,7 +35,7 @@ jest.mock('~/Providers', () => ({
   useAgentPanelContext: () => ({
     agentsConfig: { capabilities: ['skills'] },
     regularTools: [],
-    mcpServersMap: new Map(),
+    mcpServersMap: mockMcpServers,
     actions: [],
   }),
 }));
@@ -45,7 +47,7 @@ jest.mock('~/data-provider', () => ({
 
 jest.mock('~/hooks/MCP', () => ({
   useRemoveMCPTool: () => ({ removeTool: jest.fn() }),
-  useVisibleTools: () => ({ toolIds: [], mcpServerNames: [] }),
+  useVisibleTools: jest.requireActual('~/hooks/MCP/useVisibleTools').useVisibleTools,
 }));
 
 jest.mock('../hooks', () => ({
@@ -58,7 +60,12 @@ jest.mock('../hooks', () => ({
 jest.mock('../ToolRow', () => ({
   __esModule: true,
   default: ({ item, onRemove }: { item: AgentItem; onRemove: (item: AgentItem) => void }) => (
-    <button type="button" aria-label={`remove-${item.id}`} onClick={() => onRemove(item)}>
+    <button
+      type="button"
+      aria-label={`remove-${item.id}`}
+      data-status={item.status}
+      onClick={() => onRemove(item)}
+    >
       {item.id}
       {item.kind === 'mcp' ? <span>{item.toolCount}</span> : null}
     </button>
@@ -171,6 +178,7 @@ const skillItem: AgentItem = {
 beforeEach(() => {
   mockSelected = [];
   mockAgentTools = [];
+  mockMcpServers = new Map();
   mockFileEntries = { contextFiles: [], knowledgeFiles: [], codeFiles: [] };
   mockFormValues = {};
   mockSetValue.mockClear();
@@ -228,6 +236,54 @@ describe('ToolsSection', () => {
   test('renders the Tools empty state when nothing is selected', () => {
     render(<ToolsSection agentId="a" />);
     expect(screen.getByText('com_ui_tools_empty')).toBeInTheDocument();
+  });
+
+  test.each([
+    ['search_mcp_shared', '1'],
+    ['sys__server__sys_mcp_shared', '0'],
+    ['sys__all__sys_mcp_shared', '2'],
+    ['shared', '0'],
+    ['mcp_shared', '0'],
+  ])('shows an attached consume-only server referenced by %s', (token, count) => {
+    mockAgentTools = [token];
+    mockMcpServers.set(
+      'shared',
+      makeMcpServer({
+        serverName: 'shared',
+        consumeOnly: true,
+        isConfigured: true,
+        tools: [
+          {
+            tool_id: 'search_mcp_shared',
+            metadata: makePlugin({ pluginKey: 'search_mcp_shared' }),
+          },
+          { tool_id: 'read_mcp_shared', metadata: makePlugin({ pluginKey: 'read_mcp_shared' }) },
+        ],
+      }),
+    );
+
+    render(<ToolsSection agentId="a" />);
+
+    const row = screen.getByRole('button', { name: 'remove-shared' });
+    expect(row).toHaveTextContent(count);
+    expect(row).not.toHaveAttribute('data-status', 'needs_setup');
+    expect(screen.queryByText('com_ui_tools_empty')).not.toBeInTheDocument();
+    expect(mockSetValue).not.toHaveBeenCalled();
+  });
+
+  test('does not show an unattached consume-only server', () => {
+    mockMcpServers.set('shared', makeMcpServer({ serverName: 'shared', consumeOnly: true }));
+    render(<ToolsSection agentId="a" />);
+    expect(screen.queryByRole('button', { name: 'remove-shared' })).not.toBeInTheDocument();
+  });
+
+  test('keeps an attached missing server visible as needing setup', () => {
+    mockAgentTools = ['search_mcp_missing'];
+    render(<ToolsSection agentId="a" />);
+    expect(screen.getByRole('button', { name: 'remove-missing' })).toHaveAttribute(
+      'data-status',
+      'needs_setup',
+    );
   });
 
   test('counts every enumerable MCP tool when the server is attached by wildcard', () => {

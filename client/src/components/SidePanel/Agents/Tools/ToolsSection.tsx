@@ -208,39 +208,39 @@ export default function ToolsSection({ agentId }: Props) {
     mcpServersMap ?? new Map(),
   );
 
-  /** MCP servers still referenced by the agent's tools but absent from the available
-   * servers map (removed from config, or a legacy server-only token). The catalog is
-   * built from available servers, so these would otherwise be invisible and
-   * unremovable — surface them as removable "needs setup" rows, mirroring the old
-   * UnconfiguredMCPTool. */
-  const orphanedMcpItems = useMemo<AgentItem[]>(
-    () =>
-      attachedMcpServers
-        .filter((name) => mcpServersMap?.has(name) !== true)
-        .map((name) => ({
+  /** The attachable catalog omits consume-only servers, but their persisted
+   * tools still run through shared agents. Show every attached server absent
+   * from the selected catalog, retaining live metadata when available. */
+  const unlistedMcpItems = useMemo<AgentItem[]>(() => {
+    const listed = new Set(selected.filter((item) => item.kind === 'mcp').map((item) => item.id));
+    return attachedMcpServers
+      .filter((name) => !listed.has(name))
+      .map((name) => {
+        const server = mcpServersMap?.get(name);
+        return {
           kind: 'mcp',
           id: name,
-          name,
-          description: '',
+          name: server?.metadata?.name || name,
+          description: server?.metadata?.description ?? '',
           iconKey: 'mcp',
-          status: 'needs_setup',
+          status: server?.isConfigured ? undefined : 'needs_setup',
           toolCount: 0,
-          server: {
+          server: server ?? {
             serverName: name,
             tools: [],
             isConfigured: false,
             isConnected: false,
             metadata: { name, pluginKey: name, description: '' } as TPlugin,
           },
-        })),
-    [attachedMcpServers, mcpServersMap],
-  );
+        };
+      });
+  }, [attachedMcpServers, mcpServersMap, selected]);
 
   /** MCP rows show how many of the server's tools are enabled for this agent, not
    * the total the server exposes, so the count reflects what the agent can use. */
   const toolItems = useMemo(() => {
     const enabled = new Set(tools);
-    const withCounts = selected
+    return [...selected, ...unlistedMcpItems]
       .filter((item) => item.kind !== 'skill')
       .map((item) =>
         item.kind === 'mcp'
@@ -252,8 +252,7 @@ export default function ToolsSection({ agentId }: Props) {
             }
           : item,
       );
-    return [...withCounts, ...orphanedMcpItems];
-  }, [selected, orphanedMcpItems, tools]);
+  }, [selected, unlistedMcpItems, tools]);
   const skillItems = useMemo(() => selected.filter((item) => item.kind === 'skill'), [selected]);
 
   return (
