@@ -9,12 +9,12 @@ import type { ChatContract } from '../../../react/chat/contract';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import { MessagesHostProvider } from '../../../react/messages/host';
 import { ChatContext } from '../../../react/chat/context';
+import { initEnglish } from '../../../__fixtures__/i18n';
 import HoverButtons from '../HoverButtons';
 
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+beforeAll(async () => {
+  await initEnglish();
+});
 
 const conversation = {
   conversationId: 'convo-1',
@@ -65,25 +65,26 @@ describe('HoverButtons', () => {
     renderButtons();
 
     expect(screen.queryByTestId('read-aloud-button')).toBeNull();
-    expect(screen.getByTestId('copy-response-button')).toBeInTheDocument();
+    expect(screen.getByTestId('copy-response-button')).toHaveAccessibleName('Copy to clipboard');
   });
 
   it('hands the host the spoken text and draws its control as a toolbar button', () => {
     const renderMessageAudio = jest.fn(({ renderButton }: MessageAudioProps) =>
-      renderButton?.({ onClick: jest.fn(), title: 'com_ui_read_aloud', icon: null }),
+      renderButton?.({ onClick: jest.fn(), title: 'Read aloud', icon: null }),
     );
     renderButtons({ renderMessageAudio });
 
     expect(renderMessageAudio).toHaveBeenCalledWith(
       expect.objectContaining({ index: 0, messageId: answer.messageId, content: answer.text }),
     );
-    expect(screen.getByTestId('read-aloud-button')).toHaveAccessibleName('com_ui_read_aloud');
+    expect(screen.getByTestId('read-aloud-button')).toHaveAccessibleName('Read aloud');
   });
 
   it('offers rerun once the host thread shows the parent is the user turn', () => {
     renderButtons({ useGetMessages: () => () => [question, answer] });
 
     expect(screen.getByTestId('regenerate-generation-button')).toBeEnabled();
+    expect(screen.getByTestId('regenerate-generation-button')).toHaveAccessibleName('Regenerate');
   });
 
   it('withholds rerun when the host thread holds no parent to replay', () => {
