@@ -30,11 +30,19 @@ export function sameFeedbackSource(left: ChannelReplyMapping, right: ChannelRepl
 }
 
 /** Retention maintenance does not depend on whether channel feedback is currently enabled. */
-export async function readChannelFeedbackRetention(
+export interface ChannelFeedbackSourceState {
+  expiredAt: Date | null;
+  sampled?: boolean;
+  destinationIds?: string[];
+  langfuseRunId?: string;
+  centralTraceExportEnabled?: boolean;
+}
+
+export async function readChannelFeedbackSourceState(
   mongoose: typeof import('mongoose'),
   mapping: ChannelReplyMapping,
   session?: ClientSession,
-): Promise<Date | null> {
+): Promise<ChannelFeedbackSourceState> {
   assertChannelTenant(mapping.tenantId);
   const owner = {
     userId: mapping.principalId,
@@ -50,9 +58,17 @@ export async function readChannelFeedbackRetention(
       messageId: mapping.messageId,
       ...SERVER_AUTHORED_MESSAGE_FILTER,
     })
-    .select('expiredAt')
+    .select(
+      'expiredAt langfuseSampled langfuseDestinationIds langfuseRunId langfuseCentralTraceExportEnabled',
+    )
     .session(session ?? null)
-    .lean<{ expiredAt?: Date | null }>();
+    .lean<{
+      expiredAt?: Date | null;
+      langfuseSampled?: boolean;
+      langfuseDestinationIds?: string[];
+      langfuseRunId?: string;
+      langfuseCentralTraceExportEnabled?: boolean;
+    }>();
   const anchorsQuery = createResponseScopeModel(mongoose)
     .find({ _id: { $in: responseScopeKeys(owner, mapping.conversationId) } })
     .select('expiredAt closed')
@@ -68,14 +84,32 @@ export async function readChannelFeedbackRetention(
   );
   if (deadlines.some((deadline) => !Number.isFinite(deadline)))
     throw new ChannelFeedbackAuthorityError();
-  return deadlines.length ? new Date(Math.min(...deadlines)) : null;
+  return {
+    expiredAt: deadlines.length ? new Date(Math.min(...deadlines)) : null,
+    sampled: message.langfuseSampled,
+    destinationIds: message.langfuseDestinationIds,
+    langfuseRunId: message.langfuseRunId,
+    centralTraceExportEnabled: message.langfuseCentralTraceExportEnabled,
+  };
+}
+
+export async function readChannelFeedbackRetention(
+  mongoose: typeof import('mongoose'),
+  mapping: ChannelReplyMapping,
+  session?: ClientSession,
+): Promise<Date | null> {
+  return (await readChannelFeedbackSourceState(mongoose, mapping, session)).expiredAt;
 }
 
 /** Every private feedback write serializes with account, conversation and channel retirement. */
 export async function withChannelFeedbackAuthority<T>(
   mongoose: typeof import('mongoose'),
   mapping: ChannelReplyMapping,
-  work: (session: ClientSession, expiredAt: Date | null) => Promise<T>,
+  work: (
+    session: ClientSession,
+    expiredAt: Date | null,
+    state: ChannelFeedbackSourceState,
+  ) => Promise<T>,
 ): Promise<T> {
   assertChannelTenant(mapping.tenantId);
   if (
@@ -126,9 +160,10 @@ export async function withChannelFeedbackAuthority<T>(
         ))
       )
         throw new ChannelFeedbackAuthorityError();
-      const expiredAt = await readChannelFeedbackRetention(mongoose, mapping, session);
+      const state = await readChannelFeedbackSourceState(mongoose, mapping, session);
+      const { expiredAt } = state;
       if (expiredAt && expiredAt.getTime() <= Date.now()) throw new ChannelFeedbackAuthorityError();
-      value = await work(session, expiredAt);
+      value = await work(session, expiredAt, state);
       if (expiredAt && expiredAt.getTime() <= Date.now()) throw new ChannelFeedbackAuthorityError();
     });
     return value;
