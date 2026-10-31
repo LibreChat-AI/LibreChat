@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import {
   CHANNEL_RUN_MAX_JSON_BYTES,
   channelGatewayWirePolicySchema,
+  channelStorageConfigSchema,
 } from 'librechat-data-provider';
 import type {
   ChannelRunActor,
@@ -33,6 +34,11 @@ export class ServiceError extends Error {
   ) {
     super(`Channel service returned HTTP ${status}`);
   }
+}
+
+/** Expected stale/authorization failures may be acknowledged privately; outages must propagate. */
+export function expectedServiceFailure(error: unknown): boolean {
+  return error instanceof ServiceError && [400, 403, 404, 409, 410].includes(error.status);
 }
 
 const validId = (value: unknown): value is string =>
@@ -157,7 +163,11 @@ export class ChannelClient {
       throw new Error('Invalid active channel binding');
     const policy = channelGatewayWirePolicySchema.safeParse(value.gateway);
     if (!policy.success) throw new Error('Unsupported channel gateway policy');
-    return { ...value, gateway: policy.data };
+    const delivery = channelStorageConfigSchema
+      .pick({ maxDeliveryParts: true })
+      .safeParse(value.delivery === undefined ? {} : value.delivery);
+    if (!delivery.success) throw new Error('Invalid channel delivery policy');
+    return { ...value, gateway: policy.data, delivery: delivery.data };
   }
   async runs<T>(suffix: string, body: object, signal?: AbortSignal, empty?: T): Promise<T> {
     return this.request<T>(this.root + '/runs' + suffix, body, signal, empty);
@@ -334,19 +344,17 @@ export class ChannelClient {
       signal,
     );
   }
-  async identity<T extends ChannelLinkView | ChannelLinkTicket | null>(
+  identity<T extends ChannelLinkView | ChannelLinkTicket | null>(
     actor: string,
     suffix = '',
     body?: object,
     signal?: AbortSignal,
-  ): Promise<T> {
-    const result = await this.request<ChannelIdentityResult<T>>(
+  ): Promise<ChannelIdentityResult<T>> {
+    return this.request<ChannelIdentityResult<T>>(
       `${this.root}/identity/${encodeURIComponent(actor)}${suffix}`,
       body,
       signal,
     );
-    if (!result.ok) throw new Error('Channel identity unavailable or changed');
-    return result.value;
   }
   async response(
     grant: ResponseGrant,

@@ -82,6 +82,37 @@ describe('ChannelClient service boundary', () => {
       'Unsupported channel gateway policy',
     );
   });
+  test.each([0, 101, 1.5, '1', null])(
+    'rejects malformed delivery budget %p',
+    async (maxDeliveryParts) => {
+      const transport = jest
+        .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+        .mockResolvedValue(json({ ...bundle, delivery: { maxDeliveryParts } }));
+      await expect(new ChannelClient(config, transport).channel()).rejects.toThrow(
+        'Invalid channel delivery policy',
+      );
+    },
+  );
+  test('reads the server-selected reduced delivery budget', async () => {
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockResolvedValue(json({ ...bundle, delivery: { maxDeliveryParts: 1 } }));
+    expect((await new ChannelClient(config, transport).channel()).delivery).toEqual({
+      maxDeliveryParts: 1,
+    });
+  });
+  test('preserves identity domain results and null absence without converting conflicts to exceptions', async () => {
+    const transport = jest
+      .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
+      .mockResolvedValueOnce(json({ ok: false, error: { code: 'changed' } }))
+      .mockResolvedValueOnce(json({ ok: true, value: null }));
+    const client = new ChannelClient(config, transport);
+    await expect(client.identity('U1', '/confirm', {})).resolves.toEqual({
+      ok: false,
+      error: { code: 'changed' },
+    });
+    await expect(client.identity('U1')).resolves.toEqual({ ok: true, value: null });
+  });
   test('returns a valid worker-bound claim', async () => {
     const lease = { run, fence, leaseExpiresAt: Date.now() + 60_000 };
     const transport = jest
@@ -181,7 +212,10 @@ describe('ChannelClient service boundary', () => {
     const transport = jest
       .fn<ReturnType<typeof fetch>, Parameters<typeof fetch>>()
       .mockResolvedValue(json(bundle));
-    await expect(new ChannelClient(config, transport).channel()).resolves.toEqual(bundle);
+    await expect(new ChannelClient(config, transport).channel()).resolves.toEqual({
+      ...bundle,
+      delivery: { maxDeliveryParts: 100 },
+    });
     const [url, init] = transport.mock.calls[0];
     expect(url).toBe('http://127.0.0.1:3080/api/channels/service/slack/tenant-1/channel-1');
     expect(new Headers(init?.headers).get('authorization')).toBe('Bearer private-service-token');
