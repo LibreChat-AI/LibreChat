@@ -91,6 +91,9 @@ export { default as Fork } from './components/messages/Fork';
 export { default as Feedback } from './components/messages/Feedback';
 export { default as MinimalHoverButtons } from './components/messages/MinimalHoverButtons';
 export { default as HoverButtons } from './components/messages/HoverButtons';
+export { default as ContentRow } from './components/messages/ContentRow';
+export type { ContentRowProps } from './components/messages/ContentRow';
+export { getMessageAriaLabel, getHeaderPrefixForScreenReader } from './components/messages/labels';
 
 /** Parts: the leaf components and row classes tool cards share. */
 export { default as Stdout } from './components/parts/Stdout';
