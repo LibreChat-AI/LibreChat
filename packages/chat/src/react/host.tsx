@@ -45,7 +45,8 @@ export type MessagePartsToast = (toast: TShowToast) => void;
  *  state around them. Omitted row fields take an assistant reply's defaults: not the user's,
  *  the last row, and latest while it is submitting. */
 export type ContentPartsSlotProps = {
-  content: TMessageContentParts[];
+  /** Holes stay where a streaming or parallel index has no part yet; positions are part indexes. */
+  content: Array<TMessageContentParts | undefined>;
   messageId: string;
   conversationId: string | null;
   attachments?: TAttachment[];
