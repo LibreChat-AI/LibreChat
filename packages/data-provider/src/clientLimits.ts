@@ -6,6 +6,8 @@ const timeoutMs = z.number().int().positive().max(3_600_000).optional();
 export const clientLimitsSchema = z
   .object({
     refreshMs: timeoutMs,
+    /** Zero preserves Axios's unlimited default; positive values opt into a deadline. */
+    mcpConnectMs: z.number().int().nonnegative().max(3_600_000).optional(),
     ttsMs: timeoutMs,
     sharepointMs: timeoutMs,
     cloudfrontMs: timeoutMs,
@@ -17,6 +19,7 @@ export type TClientLimits = z.infer<typeof clientLimitsSchema>;
 
 export const DEFAULT_CLIENT_LIMITS: Required<TClientLimits> = {
   refreshMs: 30_000,
+  mcpConnectMs: 0,
   ttsMs: 60_000,
   sharepointMs: 5 * 60_000,
   cloudfrontMs: 15_000,

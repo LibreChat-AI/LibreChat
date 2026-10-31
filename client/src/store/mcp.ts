@@ -69,3 +69,22 @@ export const getServerInitState = (
 ): MCPServerInitState => {
   return states[serverName] || defaultServerInitState;
 };
+
+/** Session connection evidence, fenced by the latest explicit Connect operation. */
+export interface MCPConnectResult {
+  id: string;
+  configKey: string;
+  configurationUpdatedAt?: number;
+  /** Browser monotonic time; only newer status reads can prove recovery. */
+  settledAt?: number;
+  state: 'connecting' | 'connected' | 'error';
+  authorizationGeneration?: string;
+}
+
+export const mcpConnectResultsAtom = atom<Record<string, MCPConnectResult>>({});
+
+/** Clearing the map also fences late callbacks from the session that just ended. */
+export const resetMCPStateAtom = atom(null, (_get, set) => {
+  set(mcpServerInitStatesAtom, {});
+  set(mcpConnectResultsAtom, {});
+});

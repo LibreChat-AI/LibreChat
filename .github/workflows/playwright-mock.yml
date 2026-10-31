@@ -559,6 +559,15 @@ jobs:
           npx playwright test --config=e2e/playwright.config.mock.ts
           mcp-tool-list-changed.spec.ts --retries=0
 
+      - name: Test explicit MCP Connect across two replicas
+        if: matrix.replicas == 2
+        env:
+          E2E_STREAM_STORE: redis
+          REDIS_URI: redis://127.0.0.1:6379
+          E2E_MCP_CONNECTION_STATUS: 'true'
+          E2E_REPLICA_DIAGNOSTIC: 'true'
+        run: npx playwright test --config=e2e/playwright.config.mcp-connect.ts
+
       - name: Upload Playwright HTML report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4

@@ -3259,6 +3259,11 @@ export class MCPConnection extends EventEmitter {
     this.oauthTokens = tokens;
   }
 
+  /** A local observation only; callers must not infer other replicas' transport state. */
+  public getConnectionState(): t.ConnectionState {
+    return this.connectionState;
+  }
+
   /** Whether this connection's resolved runtime config uses MCP OAuth. */
   public usesOAuth(): boolean {
     return isOAuthServer(this.options);

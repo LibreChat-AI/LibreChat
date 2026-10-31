@@ -13,6 +13,8 @@ let shuttingDown = false;
 let mongoServer;
 let proxyServer;
 const children = [];
+const intentionallyStopped = new Set();
+let diagnosticTarget;
 
 function getTopology() {
   const baseURL = new URL(process.env.E2E_BASE_URL || DEFAULT_BASE_URL);
@@ -50,7 +52,7 @@ function startReplica(port, index, mongoUri) {
   });
   children.push(child);
   child.once('exit', (code, signal) => {
-    if (!shuttingDown) {
+    if (!shuttingDown && !intentionallyStopped.has(index)) {
       console.error(
         `[e2e] LibreChat replica ${index} exited unexpectedly (${signal || `code ${code}`})`,
       );
@@ -81,15 +83,41 @@ async function waitForReplica(port) {
 
 function startProxy(baseURL, targetPort) {
   proxyServer = http.createServer((request, response) => {
+    if (
+      process.env.E2E_REPLICA_DIAGNOSTIC === 'true' &&
+      request.url === '/__e2e/replica' &&
+      request.method === 'POST'
+    ) {
+      const index = Number(request.headers['x-e2e-target']);
+      if (![1, 2].includes(index)) {
+        response.writeHead(400).end();
+        return;
+      }
+      diagnosticTarget = Number(baseURL.port) + index;
+      if (request.headers['x-e2e-stop-primary'] === 'true') {
+        intentionallyStopped.add(1);
+        children[0].once('exit', () =>
+          response.end(JSON.stringify({ target: index, stopped: true })),
+        );
+        children[0].kill('SIGKILL');
+        return;
+      }
+      response.end(JSON.stringify({ target: index }));
+      return;
+    }
+    const servingPort = diagnosticTarget || targetPort;
     const upstream = http.request(
       {
         hostname: '127.0.0.1',
-        port: targetPort,
+        port: servingPort,
         path: request.url,
         method: request.method,
         headers: request.headers,
       },
       (upstreamResponse) => {
+        upstreamResponse.headers['x-e2e-serving-replica'] = String(
+          servingPort - Number(baseURL.port),
+        );
         response.writeHead(upstreamResponse.statusCode || 502, upstreamResponse.headers);
         upstreamResponse.pipe(response);
       },

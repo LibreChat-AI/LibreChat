@@ -31,7 +31,7 @@ jest.mock('./MCPCardActions', () => ({
 }));
 
 jest.mock('./MCPServerDialog', () => ({ __esModule: true, default: () => null }));
-jest.mock('./MCPStatusBadge', () => ({ getStatusDotColor: () => '' }));
+jest.mock('~/components/MCP/MCPStatusBadge', () => ({ getStatusDotColor: () => '' }));
 jest.mock('~/components/ui/CustomIcon', () => ({ __esModule: true, default: () => null }));
 jest.mock('~/components/MCP/McpOAuthDialog', () => ({
   __esModule: true,

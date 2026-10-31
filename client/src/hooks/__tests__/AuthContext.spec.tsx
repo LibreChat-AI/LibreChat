@@ -29,6 +29,7 @@ import {
   chatSortAtom,
   resetChatFilterSessionAtom,
 } from '~/components/Conversations/chatFilters';
+import { mcpConnectResultsAtom, mcpServerInitStatesAtom } from '~/store/mcp';
 import { AuthContextProvider, useAuthContext } from '../AuthContext';
 
 const mockNavigate = jest.fn();
@@ -514,6 +515,28 @@ describe('AuthContextProvider — logout onSuccess/onError handling', () => {
     expect(jotaiStore.get(chatFilterTagsAtom)).toEqual([]);
     expect(jotaiStore.get(chatSortAtom)).toEqual({ field: 'title', direction: 'asc' });
     jotaiStore.set(resetChatFilterSessionAtom);
+  });
+
+  it('clears MCP connection results and pending OAuth at logout', () => {
+    const session = getDefaultStore();
+    session.set(mcpConnectResultsAtom, {
+      server: { id: 'attempt', configKey: 'user-config', state: 'connected' },
+    });
+    session.set(mcpServerInitStatesAtom, {
+      server: {
+        isInitializing: true,
+        isCancellable: true,
+        oauthUrl: 'https://auth.example.test',
+        oauthStartTime: Date.now(),
+        connectionDeferred: false,
+      },
+    });
+    renderProvider();
+    act(() => {
+      mockCapturedLogoutOptions.onSuccess({ message: 'Logout successful' });
+    });
+    expect(session.get(mcpConnectResultsAtom)).toEqual({});
+    expect(session.get(mcpServerInitStatesAtom)).toEqual({});
   });
 
   it('ends the sidebar pull request queue at the logout session boundary', () => {

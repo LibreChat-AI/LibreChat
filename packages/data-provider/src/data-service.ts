@@ -14,8 +14,8 @@ import type * as tl from './types/tools';
 import type * as t from './types';
 import { codeSetupAttemptSchema, codeSetupApprovalRequestSchema } from './codeSetup';
 import { TOOL_CALL_PREVIEWS_PARAM, TOOL_CALL_PREVIEWS_VERSION } from './previews';
+import { setClientLimits, getClientLimit } from './clientLimits';
 import * as permissions from './accessPermissions';
-import { setClientLimits } from './clientLimits';
 import * as endpoints from './api-endpoints';
 import { uploadEventStream } from './upload';
 import * as mcp from './types/mcpServers';
@@ -406,7 +406,9 @@ export const updateUserPlugins = (payload: t.TUpdateUserPlugins) => {
 };
 
 export const reinitializeMCPServer = (serverName: string): Promise<mcp.MCPReinitializeResponse> => {
-  return request.post(endpoints.mcpReinitialize(serverName));
+  return request.post(endpoints.mcpReinitialize(serverName), undefined, {
+    timeout: getClientLimit('mcpConnectMs'),
+  });
 };
 
 export const bindMCPOAuth = (serverName: string): Promise<{ success: boolean }> => {

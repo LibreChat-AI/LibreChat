@@ -83,7 +83,7 @@ export function getStatusColor(
   }
 
   const status = connectionStatus?.[serverName];
-  if (!status) {
+  if (!status || status.connectionStateSource === 'unavailable') {
     return 'bg-status-neutral';
   }
 
@@ -94,7 +94,8 @@ export function getStatusColor(
     return 'bg-status-info';
   }
 
-  if (requestScoped) {
+  if (status.configurationState === 'needs_configuration') return 'bg-status-warning';
+  if (requestScoped && connectionState !== 'error') {
     return 'bg-status-info';
   }
 
@@ -131,7 +132,7 @@ export function getStatusTextKey(
   }
 
   const status = connectionStatus?.[serverName];
-  if (!status) {
+  if (!status || status.connectionStateSource === 'unavailable') {
     return 'com_nav_mcp_status_unknown';
   }
 
@@ -141,7 +142,9 @@ export function getStatusTextKey(
     return 'com_nav_mcp_status_connecting';
   }
 
-  if (requestScoped) {
+  if (status.configurationState === 'needs_configuration')
+    return 'com_ui_tools_mcp_status_unconfigured';
+  if (requestScoped && connectionState !== 'error') {
     return 'com_nav_mcp_status_on_demand';
   }
 
@@ -171,13 +174,13 @@ export function isMCPServerReadyForAgent(
   requestScoped: boolean,
   hasCustomUserVars = false,
 ): boolean {
-  if (requestScoped && hasCustomUserVars && status?.configurationState !== 'configured') {
+  if (status?.configurationState === 'needs_configuration') {
     return false;
   }
   if (status?.connectionState === 'connected') {
     return true;
   }
-  if (!requestScoped) {
+  if (!requestScoped || (hasCustomUserVars && status?.configurationState !== 'configured')) {
     return false;
   }
   return (
