@@ -341,6 +341,22 @@ describe('durable Slack ingress', () => {
     expect(backend.mock.calls.every(([url]) => String(url).includes('/service/slack/'))).toBe(true);
   });
 
+  test.each([0, 1, 2])(
+    'acknowledges presentation link %i without executing a control',
+    async (index) => {
+      const { app, backend, slack } = setup();
+      await expect(
+        app.dispatch(
+          callback(`channel_presentation_link_${index}`, 'untrusted control payload'),
+          true,
+        ),
+      ).resolves.toBeUndefined();
+      expect(backend).toHaveBeenCalledTimes(1);
+      expect(String(backend.mock.calls[0][0])).toContain('/service/slack/');
+      expect(slack).not.toHaveBeenCalled();
+    },
+  );
+
   test('stale controls cannot cancel work', async () => {
     const { app, backend, slack } = setup();
     await app.dispatch(
