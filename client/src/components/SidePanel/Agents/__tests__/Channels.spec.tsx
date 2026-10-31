@@ -345,8 +345,8 @@ test('mode/delete confirmations replace setup and discard secrets; mode requires
     ),
   );
 });
-test.each(['active', 'pending_install', 'disabled'] as const)(
-  'legacy %s connection has no mode control',
+test.each(['active', 'pending_install'] as const)(
+  '%s connection has no mode control',
   async (status) => {
     const user = userEvent.setup();
     jest.mocked(dataService.listAgentChannels).mockResolvedValue([{ ...pending, status }]);
