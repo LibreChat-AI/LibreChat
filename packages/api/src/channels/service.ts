@@ -39,7 +39,6 @@ export interface ChannelDependencies {
     channel?: AgentChannelRecord,
   ) => Promise<Partial<ChannelConfig> | undefined>;
   getAgent: (agentId: string) => Promise<{ id: string; name?: string | null } | null>;
-  deleteApiKey: (id: string, userId: string) => Promise<boolean>;
   verifySlackToken: (token: string) => Promise<SlackIdentity | null>;
   logError: (metadata: ReturnType<typeof getSafeErrorMetadata>) => void;
 }
@@ -93,7 +92,7 @@ export function publicChannel(
     type: channel.type,
     status: channel.status,
     credentialMode: channel.credentialMode,
-    revision: channel.revision ?? channel.channelId,
+    revision: channel.revision,
     slack: channel.slack,
   };
 }
@@ -233,30 +232,21 @@ export function createChannelHandlers(deps: ChannelDependencies): {
         res.status(409).json({ error: 'channel_changed' });
         return;
       }
-      if (disabled?.apiKeyId) {
-        await deps.deleteApiKey(disabled.apiKeyId, channel.createdBy);
-      }
       res.json(publicChannel(disabled));
       return;
     }
     const mode = modeInput.safeParse(req.body);
     if (mode.success) {
-      if (
-        channel.status !== 'disabled' ||
-        mode.data.revision !== (channel.revision ?? channel.channelId)
-      ) {
+      if (channel.status !== 'disabled' || mode.data.revision !== channel.revision) {
         res.status(409).json({ error: 'channel_changed' });
         return;
       }
-      if (channel.apiKeyId) await deps.deleteApiKey(channel.apiKeyId, channel.createdBy);
       const updated = await deps.db.updateAgentChannel(
         channel.channelId,
         channel.createdBy,
         {
           credentialMode: mode.data.credentialMode,
           revision: nanoid(),
-          encryptedApiKey: '',
-          apiKeyId: '',
         },
         'disabled',
         channel.revision,
@@ -282,8 +272,6 @@ export function createChannelHandlers(deps: ChannelDependencies): {
       res.status(400).json({ error: 'invalid_slack_token' });
       return;
     }
-    // Retire legacy unrestricted owner keys before granting a new channel revision.
-    if (channel.apiKeyId) await deps.deleteApiKey(channel.apiKeyId, channel.createdBy);
     const [encryptedBotToken, encryptedSigningSecret] = await Promise.all([
       encryptCredential(parsed.data.slack.botToken),
       parsed.data.slack.signingSecret
@@ -298,9 +286,8 @@ export function createChannelHandlers(deps: ChannelDependencies): {
         revision: nanoid(),
         slack: { ...identity, appId: parsed.data.slack.appId },
         encryptedBotToken,
-        encryptedApiKey: '',
+
         encryptedSigningSecret,
-        apiKeyId: '',
       },
       channel.status,
       channel.revision,
@@ -320,9 +307,6 @@ export function createChannelHandlers(deps: ChannelDependencies): {
     }
     const deleting = await deps.db.beginAgentChannelDeletion(channel.channelId, channel.createdBy);
     if (!deleting) return void res.status(204).end();
-    if (deleting?.apiKeyId) {
-      await deps.deleteApiKey(deleting.apiKeyId, channel.createdBy);
-    }
     const result = await deps.db.deleteAgentChannel(channel.channelId, channel.createdBy);
     if (result.status === 'pending_drain') {
       res.status(202).json(publicChannel(deleting));
@@ -424,7 +408,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
     res.json({
       channel: {
         ...publicChannel(channel),
-        revision: channel.revision ?? channel.channelId,
+        revision: channel.revision,
         slack,
       },
       credentials: { botToken, signingSecret },

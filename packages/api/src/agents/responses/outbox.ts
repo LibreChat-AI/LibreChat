@@ -82,35 +82,16 @@ export function createResponseDispatchOutbox(deps: {
             const record = await deps.storage.read(owner, owner.responseId);
             if (!record) return;
             if (
-              record.dispatchOutbox &&
-              (!['create', 'resume'].includes(record.dispatchOutbox.kind) ||
-                !['pending', 'settled'].includes(record.dispatchOutbox.state))
+              !record.dispatchOutbox ||
+              !['create', 'resume'].includes(record.dispatchOutbox.kind) ||
+              !['pending', 'settled'].includes(record.dispatchOutbox.state)
             )
               return;
-            const kind =
-              record.resume?.state === 'reserved'
-                ? 'resume'
-                : (record.dispatchOutbox?.kind ?? 'create');
-            if (!['create', 'resume'].includes(kind) || (kind === 'resume' && !deps.resume)) return;
-            const tokenId =
-              kind === 'create'
-                ? record.responseId
-                : (record.resume?.intentId ?? record.dispatchOutbox?.id);
-            if (
-              record.dispatchOutbox?.state === 'settled' &&
-              record.dispatchOutbox.kind === kind &&
-              record.dispatchOutbox.id === tokenId
-            )
+            const kind = record.dispatchOutbox.kind;
+            if (kind === 'resume' && !deps.resume) return;
+            const tokenId = kind === 'create' ? record.responseId : record.resume?.intentId;
+            if (record.dispatchOutbox.id !== tokenId || record.dispatchOutbox.state === 'settled')
               return;
-            if (kind === 'create' && !record.dispatchOutbox) {
-              const payload = JSON.parse(record.requestJSON) as {
-                background?: boolean;
-                store?: boolean;
-                stream?: boolean;
-              };
-              if (payload.background !== true || payload.store === false || payload.stream === true)
-                return;
-            }
             if (
               !terminal(record) &&
               (record.cancellationRequestedAt != null || !(await deps.authorize(record)))

@@ -162,7 +162,6 @@ beforeEach(async () => {
     serviceToken: () => token,
     config: async () => ({ enabled: true }),
     getAgent: async (id) => ({ id }),
-    deleteApiKey: async () => true,
     verifySlackToken: async () => null,
     logError: jest.fn(),
   });

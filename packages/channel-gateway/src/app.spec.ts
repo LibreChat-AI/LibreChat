@@ -11,6 +11,7 @@ import { SlackClient } from './slack';
 import { GatewayApp } from './app';
 
 const bundle: ChannelBundle = {
+  delivery: { maxDeliveryParts: 100 },
   gateway: { version: 1, ...DEFAULT_CHANNEL_GATEWAY_POLICY, transport: 'webhook' },
   channel: {
     channelId: 'binding',

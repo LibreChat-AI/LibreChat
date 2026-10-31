@@ -185,7 +185,7 @@ it('retires denied or cancelled work and never executes expired or closed scopes
   expect(f.onError).not.toHaveBeenCalled();
 });
 
-it('leaves unready publication untouched and repairs legacy background reservations only', async () => {
+it('leaves unready publication untouched and ignores records without a dispatch token', async () => {
   await reserve('legacy', owner, false);
   await reserve('foreground', owner, false, false);
   const f = fixture();
@@ -194,7 +194,7 @@ it('leaves unready publication untouched and repairs legacy background reservati
   expect(f.contexts).toEqual([]);
   f.setReady(true);
   await f.outbox.recoverPending(5, { found: false });
-  expect([...f.published.values()]).toEqual(['legacy']);
+  expect([...f.published.values()]).toEqual([]);
   expect(
     (await scoped(owner, () => storage.read(owner, 'foreground')))?.dispatchOutbox,
   ).toBeUndefined();

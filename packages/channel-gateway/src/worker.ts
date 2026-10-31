@@ -328,7 +328,7 @@ export class ChannelWorker {
             plan: makeSlackPlan(
               run,
               bundle.gateway.nativeSessions,
-              bundle.delivery?.maxDeliveryParts,
+              bundle.delivery.maxDeliveryParts,
             ),
           },
           signal,

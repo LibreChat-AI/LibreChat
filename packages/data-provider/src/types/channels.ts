@@ -26,7 +26,7 @@ export interface AgentChannel {
   status: 'pending_install' | 'active' | 'disabled' | 'deleting';
   credentialMode: 'shared' | 'per_user';
   /** Changes whenever existing identity/execution consent must be re-established. */
-  revision?: string;
+  revision: string;
   slack?: { teamId: string; appId: string; botUserId: string };
 }
 
@@ -64,6 +64,5 @@ export interface ChannelServiceBundle {
   credentials: { botToken: string; signingSecret?: string };
   agent: { id: string; name?: string };
   gateway: ChannelGatewayWirePolicy;
-  /** Absent on older servers: retain the shared default; never infer a replica-local limit. */
-  delivery?: Pick<ChannelStorageConfig, 'maxDeliveryParts'>;
+  delivery: Pick<ChannelStorageConfig, 'maxDeliveryParts'>;
 }

@@ -40,16 +40,6 @@ describe('gateway configuration', () => {
     ).toBe(100);
   });
 
-  test('supports legacy binding aliases and equal canonical/legacy values', () => {
-    const legacy = {
-      CHANNEL_SERVICE_TOKEN: required.CHANNEL_SERVICE_TOKEN,
-      SLACK_SOCKET_TENANT_ID: 'tenant-1',
-      SLACK_SOCKET_CHANNEL_ID: 'channel-1',
-    };
-    expect(loadConfig(legacy)).toMatchObject(required);
-    expect(loadConfig({ ...legacy, ...required })).toMatchObject(required);
-  });
-
   test.each(['CHANNEL_TENANT_ID', 'CHANNEL_ID'])(
     'never falls back from an explicitly empty canonical %s',
     (name) => {
@@ -64,16 +54,7 @@ describe('gateway configuration', () => {
     },
   );
 
-  test('conflicting bindings fail without disclosing either identifier', () => {
-    expect(() =>
-      loadConfig({ ...required, SLACK_SOCKET_CHANNEL_ID: 'private-other-channel' }),
-    ).toThrow('Conflicting channel bindings');
-  });
-
-  test('requires durable actor-bound execution and Socket Mode app token', () => {
-    expect(() => loadConfig({ ...required, DURABLE_RUNS_ENABLED: 'false' })).toThrow(
-      'Actor-bound durable execution is required',
-    );
+  test('requires a Socket Mode app token', () => {
     expect(() =>
       resolveGatewayConfig(loadConfig(required), DEFAULT_CHANNEL_GATEWAY_POLICY),
     ).toThrow('SLACK_APP_TOKEN is required');

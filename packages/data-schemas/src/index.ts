@@ -9,7 +9,6 @@ export { createResponseStorage, sameResponseTerminalReceipt } from './methods/re
 export type {
   ResponseOwner,
   ResponseStorage,
-  ResponseTerminalGuard,
   ResponseExecutionGuard,
   ResponseCleanupIdentity,
   ResponseReservation,
@@ -113,7 +112,6 @@ export {
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
   AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V1,
-  AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2,
   AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1,
 } from './types/triggerDelivery';
 export type * from './types';

@@ -469,12 +469,17 @@ it.each(['queued', 'pending', 'completed'] as const)(
         record = running.record;
         expect(
           (
-            await storage.stageTerminal(owner, record.responseId, record.revision, {
-              generationCreatedAt: 10,
-              providerExecutionId: 'provider',
-              status: 'completed',
-              responseJSON: JSON.stringify(response),
-            })
+            await storage.stageTerminal(
+              owner,
+              record.responseId,
+              { execution: (await storage.read(owner, record.responseId))! },
+              {
+                generationCreatedAt: 10,
+                providerExecutionId: 'provider',
+                status: 'completed',
+                responseJSON: JSON.stringify(response),
+              },
+            )
           ).ok,
         ).toBe(true);
       }

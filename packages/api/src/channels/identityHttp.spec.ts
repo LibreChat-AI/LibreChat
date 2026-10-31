@@ -59,7 +59,6 @@ beforeEach(async () => {
     serviceToken: () => serviceToken,
     config: async () => ({ enabled: true }),
     getAgent: async () => ({ id: 'agent-a' }),
-    deleteApiKey: async () => false,
     verifySlackToken: async () => null,
     logError: () => {},
   });

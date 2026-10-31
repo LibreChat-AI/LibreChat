@@ -48,20 +48,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): GatewayConfig {
     throw new Error(
       'Configure gateway features and signature policy in librechat.yaml channel settings',
     );
-  const input = {
-    ...env,
-    CHANNEL_TENANT_ID: env.CHANNEL_TENANT_ID ?? env.SLACK_SOCKET_TENANT_ID,
-    CHANNEL_ID: env.CHANNEL_ID ?? env.SLACK_SOCKET_CHANNEL_ID,
-  };
-  for (const [name, alias] of [
-    ['CHANNEL_TENANT_ID', 'SLACK_SOCKET_TENANT_ID'],
-    ['CHANNEL_ID', 'SLACK_SOCKET_CHANNEL_ID'],
-  ]) {
-    if (env[name] !== undefined && env[alias] && env[name] !== env[alias])
-      throw new Error('Conflicting channel bindings');
-  }
-  if (env.DURABLE_RUNS_ENABLED === 'false')
-    throw new Error('Actor-bound durable execution is required');
+  const input = env;
   const parsed = environment.safeParse(input);
   if (!parsed.success)
     throw new Error(

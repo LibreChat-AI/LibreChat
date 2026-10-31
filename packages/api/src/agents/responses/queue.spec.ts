@@ -132,7 +132,7 @@ it('executes queued Responses through its registered runtime, never through chat
     });
     expect(fetcher).not.toHaveBeenCalled();
     const delivery = await service.getDelivery(attached.record.deliveryKey!);
-    expect(delivery?.requiredWorkerCapability).toBe('responses_background_v2');
+    expect(delivery?.requiredWorkerCapability).toBe('responses_background_v1');
     expect(JSON.stringify(delivery?.envelope)).not.toContain('original-api-key');
     expect(JSON.stringify(delivery?.envelope)).not.toContain('Original input');
   }));
@@ -164,7 +164,7 @@ it('does not let a queue worker without the Responses capability claim the respo
     );
     if (!attached.ok) throw new Error('Attach failed');
     await queue.enqueue(attached.record);
-    for (const workerCapabilities of [[], ['responses_background_v1']]) {
+    for (const workerCapabilities of [[], ['unrelated_worker_v1']]) {
       const claimed = await runAsSystem(async () =>
         methods.claimNextAgentTriggerDelivery({
           workerId: 'old-worker',
@@ -213,7 +213,7 @@ async function reserveDecision(): Promise<StoredResponseRecord> {
   const paused = await storage.publishReview(
     owner,
     'resp_queue',
-    1,
+    { execution: (await storage.read(owner, 'resp_queue'))! },
     100,
     {
       actionId: 'action-one',
@@ -389,7 +389,7 @@ it('rejects an old delivery after a newer provider segment has paused for a diff
     await storage.publishReview(
       owner,
       record.responseId,
-      admitted.record.revision,
+      { execution: (await storage.read(owner, record.responseId))! },
       100,
       {
         actionId: 'action-two',

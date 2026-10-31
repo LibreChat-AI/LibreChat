@@ -22,6 +22,7 @@ jest.mock('librechat-data-provider', () => ({
   },
 }));
 const pending: AgentChannel = {
+  revision: 'revision-1',
   channelId: 'channel-1',
   agentId: 'agent-1',
   createdBy: 'admin-1',

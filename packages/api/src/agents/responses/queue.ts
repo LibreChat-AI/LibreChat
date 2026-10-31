@@ -1,5 +1,5 @@
 import {
-  AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2,
+  AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V1,
   AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1,
 } from '@librechat/data-schemas';
 import type { ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
@@ -145,8 +145,6 @@ export interface BackgroundResponseQueueDependencies {
   storage: ResponseStorage;
   enqueue: AgentTriggerService['enqueue'];
   authorize: (record: StoredResponseRecord) => Promise<boolean>;
-  workerCapability?: string;
-  compatibleWorkerCapabilities?: readonly string[];
   /** Execute the persisted Responses payload with its exact stable identity.
    * Admission MUST be idempotent: a repeated delivery attaches rather than starting a second run.
    * The runtime also owns cancellation-before-start and already terminal reconciliation. */
@@ -215,8 +213,7 @@ export function createBackgroundResponseQueue(
       [
         BACKGROUND_RESPONSE_SOURCE,
         {
-          workerCapability: deps.workerCapability ?? AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2,
-          compatibleWorkerCapabilities: deps.compatibleWorkerCapabilities,
+          workerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V1,
           dispatch,
         },
       ],
@@ -226,8 +223,7 @@ export function createBackgroundResponseQueue(
         throw new Error('Response queue identity changed');
       const receipt = await deps.enqueue(createBackgroundResponseEnvelope(record), {
         orderingKey: `responses:${responseTenantId(record.tenantId) ?? '_'}:${record.userId}:${record.conversationId}`,
-        requiredWorkerCapability:
-          deps.workerCapability ?? AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V2,
+        requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_V1,
       });
       if (receipt.deliveryKey !== record.deliveryKey)
         throw new Error('Response queue receipt identity changed');

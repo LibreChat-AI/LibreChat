@@ -22,21 +22,12 @@ import {
   richBlockCount,
 } from './presentation';
 
-export const rendererVersion = 'slack-structured-v7';
+export const rendererVersion = 'slack-structured-v1';
 export const presentationFormat = 'slack-blocks-v1';
 export const artifactFailureNotice =
   'One or more attachments could not be confirmed. The answer is preserved; uncertain uploads will not be duplicated automatically.';
 const chunkLimit = 39_000;
 const presentationLimit = 64_000;
-const supportedStructured = new Set([
-  rendererVersion,
-  'slack-structured-v6',
-  'slack-structured-v5',
-  'slack-structured-v4',
-  'slack-structured-v3',
-  'slack-structured-v2',
-]);
-
 function withinCharacters(value: string, limit: number): boolean {
   let count = 0;
   for (let index = 0; index < value.length; index++) {
@@ -146,55 +137,19 @@ function presentationFor(message: SlackMessage): ChannelDeliveryPart['presentati
 }
 
 export function supportedRenderer(version: string): boolean {
-  return version === 'slack-text-v1' || supportedStructured.has(version);
-}
-
-/** Legacy plans embedded session links in required footers; never replay that capability. */
-function legacyMessage(text: string, blocks?: SlackBlock[]): SlackMessage {
-  const footer = text.lastIndexOf('\n\n_This run · ID ');
-  const fallback =
-    footer < 0
-      ? text
-      : text.slice(0, footer) + text.slice(footer).replace(/\n<[^>\r\n]+\|View session>/g, '');
-  return {
-    text: fallback,
-    ...(blocks
-      ? {
-          blocks: blocks.map((block) =>
-            block.type === 'context'
-              ? {
-                  ...block,
-                  elements: block.elements.map((element) => ({
-                    ...element,
-                    text: element.text.replace(/ · <[^>\r\n]+\|View session>/g, ''),
-                  })),
-                }
-              : block,
-          ),
-        }
-      : {}),
-  };
+  return version === rendererVersion;
 }
 
 export function durableSlackMessage(part: ChannelDeliveryPart, renderer: string): SlackMessage {
-  const preserve =
-    renderer === rendererVersion ||
-    renderer === 'slack-structured-v6' ||
-    renderer === 'slack-structured-v5' ||
-    !!part.traceUrl;
-  if (!part.presentation) {
-    return preserve ? { text: part.text } : legacyMessage(part.text);
-  }
+  if (!supportedRenderer(renderer)) throw new Error('Unsupported renderer');
+  if (!part.presentation) return { text: part.text };
   if (
-    !supportedStructured.has(renderer) ||
     part.presentation.format !== presentationFormat ||
     Buffer.byteLength(part.presentation.payload) > presentationLimit
-  ) {
+  )
     throw new Error('Unsupported durable presentation');
-  }
   try {
-    const blocks = blocksSchema.parse(JSON.parse(part.presentation.payload));
-    return preserve ? { text: part.text, blocks } : legacyMessage(part.text, blocks);
+    return { text: part.text, blocks: blocksSchema.parse(JSON.parse(part.presentation.payload)) };
   } catch {
     throw new Error('Invalid persisted Slack blocks');
   }

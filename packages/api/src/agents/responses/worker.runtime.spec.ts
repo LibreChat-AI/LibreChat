@@ -518,7 +518,7 @@ describe('background Responses execution handoff', () => {
         const result = await storage.publishReview(
           owner,
           record.responseId,
-          1,
+          { execution: (await storage.read(owner, record.responseId))! },
           execution.createdAt,
           {
             actionId: action.actionId,

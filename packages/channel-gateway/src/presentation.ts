@@ -70,7 +70,8 @@ const pieChart = z.strictObject({
   segments: z
     .array(point.extend({ value: z.number().finite().positive() }))
     .min(1)
-    .max(12),
+    .max(12)
+    .refine((segments) => unique(segments.map((segment) => segment.label))),
 });
 const chart = z.strictObject({
   type: z.literal('data_visualization'),
@@ -141,7 +142,7 @@ const layout = z
   .strictObject({
     type: z.literal('layout'),
     label: characters(150),
-    is_label_visible: z.literal(true).optional(),
+    is_label_visible: z.literal(true),
     rows: z
       .array(
         z.strictObject({
@@ -197,10 +198,7 @@ const semanticStable = z.union([semanticText, semanticImage, divider]);
 const semanticChart = z.strictObject({
   type: z.literal('chart'),
   title: characters(50),
-  chart: z.union([
-    seriesChart,
-    pieChart.refine((chart) => unique(chart.segments.map((segment) => segment.label))),
-  ]),
+  chart: z.union([seriesChart, pieChart]),
 });
 const semanticTable = z
   .strictObject({
