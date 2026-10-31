@@ -178,6 +178,7 @@ export function loadCustomEndpointsConfig(
 
       customEndpointsConfig[name] = {
         type: EModelEndpoint.custom,
+        visible: endpoint.visible ?? true,
         userProvide: isUserProvided(resolvedApiKey) || userProvideURL,
         userProvideURL,
         customParams: resolvedCustomParams,
