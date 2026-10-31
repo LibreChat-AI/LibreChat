@@ -11,6 +11,7 @@ export * from './dispatch';
 export * from './orphan';
 export * from './extract';
 export * from './documents/crud';
+export * from './documents/pdfPreview';
 export * from './encode';
 export * from './filter';
 export * from './format';

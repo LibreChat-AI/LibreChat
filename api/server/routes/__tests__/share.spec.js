@@ -81,6 +81,7 @@ const mockCreateShareContentPreflight = jest.fn((filters, options = {}) => {
 jest.mock('@librechat/api', () => ({
   prepareResultToolCallPreviews: (...args) => mockPrepareResultToolCallPreviews(...args),
   resolveDownloadPath: (file) => file.storageKey || file.filepath,
+  sendOfficePdfPreview: jest.fn(async ({ res }) => res.status(200).send('PDF-PREVIEW')),
   assertModelBoundContent: (...args) => mockAssertModelBoundContent(...args),
   assertSharedFileMetadataAllowed: (...args) => mockAssertSharedFileMetadataAllowed(...args),
   createShareContentPreflight: (...args) => mockCreateShareContentPreflight(...args),
@@ -1840,6 +1841,29 @@ describe('share-scoped file routes', () => {
     expect(response.headers['content-type']).toContain('application/octet-stream');
     expect(response.headers['content-disposition']).toContain('attachment');
     expect(response.headers['x-content-type-options']).toBe('nosniff');
+  });
+
+  it('serves a PDF preview of a snapshotted file when preview=pdf is requested', async () => {
+    const getDownloadStream = jest.fn(async () => Readable.from(['deck']));
+    mockGetStrategyFunctions.mockReturnValue({ getDownloadStream });
+    getSharedLinkFile.mockResolvedValue({
+      file: {
+        file_id: 'file-1',
+        source: 'local',
+        filepath: '/uploads/owner/deck.pptx',
+        type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        filename: 'deck.pptx',
+      },
+      hasSnapshots: true,
+    });
+
+    const response = await request(buildApp()).get(
+      '/api/share/share-123/files/file-1/download?preview=pdf',
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.text).toBe('PDF-PREVIEW');
+    expect(getDownloadStream).toHaveBeenCalled();
   });
 
   it('downloads a snapshotted file as an attachment', async () => {

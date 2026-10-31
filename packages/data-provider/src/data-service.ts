@@ -952,8 +952,13 @@ export const uploadAgentAvatar = (data: m.AgentAvatarVariables): Promise<ag.Agen
   );
 };
 
-export const getFileDownload = async (userId: string, file_id: string): Promise<AxiosResponse> => {
+export const getFileDownload = async (
+  userId: string,
+  file_id: string,
+  params?: { preview?: 'pdf' },
+): Promise<AxiosResponse> => {
   return request.getResponse(`${endpoints.files()}/download/${userId}/${file_id}`, {
+    ...(params && { params }),
     responseType: 'blob',
     headers: {
       Accept: 'application/octet-stream',
@@ -972,8 +977,10 @@ export const getFileDownloadURL = async (
 export const getSharedFileDownload = async (
   shareId: string,
   file_id: string,
+  params?: { preview?: 'pdf' },
 ): Promise<AxiosResponse> => {
   return request.getResponse(endpoints.sharedFileDownload(shareId, file_id), {
+    ...(params && { params }),
     responseType: 'blob',
     headers: {
       Accept: 'application/octet-stream',

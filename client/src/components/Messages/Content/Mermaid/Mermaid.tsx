@@ -4,6 +4,7 @@ import { useLocation } from 'react-router-dom';
 import { Button, Spinner } from '@librechat/client';
 import { useRecoilValue, useSetRecoilState } from 'recoil';
 import type { ProcessedMermaidSvg } from '~/utils/diagram/export';
+import { isStrictlyNewer } from '~/components/Chat/Messages/Content/Parts/claim';
 import ArtifactRow from '~/components/Chat/Messages/Content/Parts/ArtifactRow';
 import { MERMAID_ARTIFACT_TYPE, type Artifact } from '~/common/artifacts';
 import { artifactRowKind } from '~/utils/artifacts';
@@ -81,11 +82,15 @@ const Mermaid: React.FC<MermaidProps> = memo((props) => {
   const artifactId = `mermaid-artifact-${artifactScope}-${id || instanceId}`;
   const artifact = useMemo<Artifact>(() => {
     if (artifactProp != null) {
+      /* Unlike the no-`artifactProp` branch below, `content` is NOT forced
+       * to `children` here: `ToolMermaidArtifact` may hand this a newer
+       * sibling's content (via `newestToolArtifactFamily`) so opening THIS
+       * card registers that newer version, while `children` below (the
+       * inline diagram) keeps rendering this message's own source. */
       return {
         ...artifactProp,
         type: artifactProp.type ?? MERMAID_ARTIFACT_TYPE,
         title: artifactProp.title ?? defaultTitle,
-        content: children,
         messageId: artifactProp.messageId ?? messageId,
       };
     }
@@ -112,6 +117,13 @@ const Mermaid: React.FC<MermaidProps> = memo((props) => {
         existingArtifact.type === artifact.type &&
         existingArtifact.title === artifact.title
       ) {
+        return previousArtifacts;
+      }
+      // Never downgrade an already-registered version that's strictly
+      // newer than what this instance is about to write — protects
+      // against a stale self-heal re-fire racing a sibling card's newer
+      // write for the same file identity.
+      if (existingArtifact != null && isStrictlyNewer(existingArtifact, artifact)) {
         return previousArtifacts;
       }
 

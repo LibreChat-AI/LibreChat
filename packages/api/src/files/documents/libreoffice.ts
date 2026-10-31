@@ -2,6 +2,11 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { spawn } from 'child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
+import {
+  OFFICE_DOC_DATA_SLOT,
+  OFFICE_FILE_SHELL_MARKER,
+  OFFICE_PDF_SHELL_MARKER,
+} from 'librechat-data-provider';
 
 /**
  * LibreOffice-backed office preview pipeline.
@@ -363,7 +368,18 @@ const PDF_JS_CDN = {
   worker: 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js',
 } as const;
 
-export function buildPdfEmbedDocument(pdfBase64: string): string {
+export function buildPdfEmbedDocument(
+  pdfBase64: string,
+  options: { fileShell?: boolean } = {},
+): string {
+  /* A file shell carries no PDF: the viewer fills the empty data slot from
+   * file storage (`?preview=pdf`). */
+  const shellMarkers = options.fileShell
+    ? `${OFFICE_FILE_SHELL_MARKER}\n${OFFICE_PDF_SHELL_MARKER}\n`
+    : '';
+  const dataElement = options.fileShell
+    ? OFFICE_DOC_DATA_SLOT
+    : `<script id="lc-pdf-data" type="application/octet-stream;base64">${pdfBase64}</script>`;
   /* CSP scoping:
    *   - `default-src 'none'`: lock everything down.
    *   - `script-src https://cdn.jsdelivr.net 'unsafe-inline'`: load
@@ -392,7 +408,7 @@ export function buildPdfEmbedDocument(pdfBase64: string): string {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
-<title>Preview</title>
+${shellMarkers}<title>Preview</title>
 <style>
 :root { color-scheme: light dark; --bg: #ffffff; --fg: #1f2937; --muted: #6b7280; }
 @media (prefers-color-scheme: dark) { :root { --bg: #1a1a2e; --fg: #e5e7eb; --muted: #9ca3af; } }
@@ -415,7 +431,7 @@ html, body { margin: 0; padding: 0; min-height: 100vh; background: var(--bg); co
     <div id="lc-fallback-reason"></div>
   </details>
 </div>
-<script id="lc-pdf-data" type="application/octet-stream;base64">${pdfBase64}</script>
+${dataElement}
 <script>
 (function () {
   var container = document.getElementById('lc-render');
@@ -460,7 +476,12 @@ html, body { margin: 0; padding: 0; min-height: 100vh; background: var(--bg); co
   pdfjsLib.GlobalWorkerOptions.workerSrc = '${PDF_JS_CDN.worker}';
 
   try {
-    var b64 = document.getElementById('lc-pdf-data').textContent.trim();
+    var dataEl = document.getElementById('lc-pdf-data') || document.getElementById('lc-doc-data');
+    var b64 = dataEl ? dataEl.textContent.trim() : '';
+    if (!b64) {
+      showFallback('pdf-data-unavailable');
+      return;
+    }
     var bytes = Uint8Array.from(atob(b64), function (c) { return c.charCodeAt(0); });
 
     pdfjsLib.getDocument({ data: bytes }).promise.then(function (pdf) {
@@ -534,12 +555,15 @@ html, body { margin: 0; padding: 0; min-height: 100vh; background: var(--bg); co
  * Output-size guarantee: returns `null` if the embedded HTML would exceed
  * the 512 KB `attachment.text` cache cap. Base64 inflates by ~33% so the
  * effective PDF cap is ~380 KB; LibreOffice's PDF/A-1 default produces
- * compact output for typical chat-emitted documents.
+ * compact output for typical chat-emitted documents. When the HTML would
+ * exceed the cap, `options.pdfShell` returns an empty PDF shell (the viewer
+ * fetches the PDF from file storage) instead of `null`.
  */
 export async function tryLibreOfficePreview(
   buffer: Buffer,
   extensionHint: string,
   outputCap: number,
+  options: { pdfShell?: boolean } = {},
 ): Promise<string | null> {
   if (IN_PROCESS_LIBREOFFICE_DISABLED) {
     return null;
@@ -552,7 +576,7 @@ export async function tryLibreOfficePreview(
     const base64 = pdf.toString('base64');
     const html = buildPdfEmbedDocument(base64);
     if (Buffer.byteLength(html, 'utf-8') > outputCap) {
-      return null;
+      return options.pdfShell ? buildPdfEmbedDocument('', { fileShell: true }) : null;
     }
     return html;
   } catch (err) {

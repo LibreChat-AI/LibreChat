@@ -45,6 +45,7 @@ jest.mock('sharp', () =>
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
   refreshS3FileUrls: jest.fn(),
+  sendOfficePdfPreview: jest.fn(async ({ res }) => res.status(200).send('PDF-PREVIEW')),
   getCodeExecutionBaseUrl: jest.fn((profile, environment) => {
     if (environment?.baseURL) {
       return environment.baseURL;
@@ -1170,6 +1171,39 @@ describe('File Routes - Delete with Agent Access', () => {
       expect(getDownloadStream).toHaveBeenCalledWith(
         expect.any(Object),
         'r/us-east-2/uploads/user/file.pdf',
+      );
+    });
+
+    it('serves a PDF preview instead of redirecting when preview=pdf is requested', async () => {
+      const { sendOfficePdfPreview } = require('@librechat/api');
+      const userFileId = uuidv4();
+      const getDownloadURL = jest
+        .fn()
+        .mockResolvedValue('https://cdn.example.com/deck.pptx?signed');
+      const getDownloadStream = jest.fn().mockResolvedValue(Readable.from(['deck']));
+      getStrategyFunctions.mockReturnValue({ getDownloadURL, getDownloadStream });
+
+      await createFile({
+        user: otherUserId,
+        file_id: userFileId,
+        filename: 'deck.pptx',
+        filepath: 'uploads/user/deck.pptx',
+        bytes: 200,
+        type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        source: FileSources.cloudfront,
+      });
+
+      const response = await request(app).get(
+        `/files/download/${otherUserId}/${userFileId}?direct=true&preview=pdf`,
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.text).toBe('PDF-PREVIEW');
+      expect(getDownloadURL).not.toHaveBeenCalled();
+      expect(sendOfficePdfPreview).toHaveBeenCalledWith(
+        expect.objectContaining({
+          file: expect.objectContaining({ filename: 'deck.pptx' }),
+        }),
       );
     });
 
