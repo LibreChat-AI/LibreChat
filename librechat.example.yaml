@@ -10,7 +10,10 @@ cache: true
 # Browser telemetry and session recording are independent opt-ins. Collector URL,
 # authentication and service settings remain in .env. YAML flags override .env;
 # omitting them preserves the corresponding environment settings.
+# stackTraceLimit (1 to 1000) sets how many frames each error stack records; unset keeps
+# Node's default of 10, or --stack-trace-limit from NODE_OPTIONS.
 # telemetry:
+#   stackTraceLimit: 50
 #   rum:
 #     enabled: true
 #     sessionReplay:

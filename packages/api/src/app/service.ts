@@ -30,6 +30,7 @@ import { resolveOverrideLayers, mergeOverrideLayersWithSource } from './override
 import { createEnvReferencePolicy, parseEnvAllowlist } from './allowlist';
 import { resolveRuntimeConfigSecrets } from '~/admin/secrets';
 import { normalizeEndpointReferences } from './references';
+import { getSafeErrorMetadata } from '~/utils/errors';
 import { getConfigLoadFailure } from './loader';
 import { checkAppConfigTheme } from './theme';
 
@@ -478,8 +479,10 @@ interface CacheStore {
 export interface AppConfigServiceDeps {
   /** Load the base AppConfig from YAML + AppService processing. */
   loadBaseConfig: (mode?: CustomConfigLoadMode) => Promise<AppConfig | undefined>;
+  /** Synchronous process-wide effects, after tools and the current base config publish. */
+  onBaseConfigPublished?: (config: AppConfig) => void;
   /** Cache tools after base config is loaded. */
-  setCachedTools: (tools: Record<string, unknown>) => Promise<void>;
+  setCachedTools: (tools: Record<string, unknown>) => Promise<boolean | void>;
   /** Get a cache store by key. */
   getCache: (key: string) => CacheStore;
   /** The CacheKeys constants from librechat-data-provider. */
@@ -613,7 +616,7 @@ export function _resetOverrideStrictCache(): void {
   _warnedNoTenantInStrictMode = false;
 }
 
-/** Versioned so older heads cannot supply override entries built under a stale tenant ID. */
+/** Versioned so older heads cannot supply entries built without the local base identity. */
 function overrideCacheKey(
   role: string | undefined,
   userId: string | undefined,
@@ -623,7 +626,7 @@ function overrideCacheKey(
   const tenant = tenantId ? `${tenantId}:tenant` : '__default__:global';
   const principal =
     userId && role ? `${role}:${userId}` : userId || role || BASE_CONFIG_PRINCIPAL_ID;
-  return `_OVERRIDE_:${tenant}:${principal}:tenant-v1:${scopeVersion}`;
+  return `_OVERRIDE_:${tenant}:${principal}:base-v2:${scopeVersion}`;
 }
 
 /**
@@ -696,6 +699,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
 } {
   const {
     loadBaseConfig,
+    onBaseConfigPublished,
     setCachedTools,
     getCache,
     cacheKeys,
@@ -710,6 +714,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
   const cache = getCache(cacheKeys.APP_CONFIG);
   const envAllowlist = parseEnvAllowlist(overrideEnvAllowlist);
   const envPolicies = new WeakMap<AppConfig, Map<string, EnvReferencePolicy>>();
+  const scopeVersions = new WeakMap<AppConfig, string>();
   const warnRebinding = createRebindingWarner();
   const runtimeConfigs = new WeakMap<AppConfig, AppConfig>();
 
@@ -754,6 +759,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     return policy;
   }
   let lastGoodBaseConfig: AppConfig | undefined;
+  let publishedBaseGeneration = -1;
   let baseConfigFlight: { promise: Promise<BaseConfigLoad>; generation: number } | undefined;
 
   /**
@@ -825,6 +831,7 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     if (generation !== baseGeneration) {
       return lastGood;
     }
+    publishedBaseGeneration = -1;
     const restorations = [cache.set(BASE_CONFIG_KEY, lastGood)];
     if (lastGood.availableTools) {
       restorations.push(setCachedTools(lastGood.availableTools));
@@ -832,13 +839,20 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     const results = await Promise.allSettled(restorations);
     for (const result of results) {
       if (result.status === 'rejected') {
-        logger.error('[ensureBaseConfig] Failed to restore last-good config state:', result.reason);
+        logger.error(
+          '[ensureBaseConfig] Failed to restore last-good config state:',
+          getSafeErrorMetadata(result.reason),
+        );
+      } else if (result.value === false) {
+        logger.error('[ensureBaseConfig] Cache refused last-good config restoration.');
       }
     }
     if (generation !== baseGeneration) {
       await cache.delete(BASE_CONFIG_KEY).catch((deleteError: unknown) => {
         logger.error('[ensureBaseConfig] Failed to drop an overtaken restoration:', deleteError);
       });
+    } else if (results.every((result) => result.status === 'fulfilled' && result.value !== false)) {
+      publishedBaseGeneration = generation;
     }
     return lastGood;
   }
@@ -863,18 +877,22 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     if (generation !== baseGeneration) {
       return baseConfig;
     }
-    if (baseConfig.availableTools) {
-      await setCachedTools(baseConfig.availableTools);
+    if (baseConfig.availableTools && (await setCachedTools(baseConfig.availableTools)) === false) {
+      throw new Error('Tool cache refused base configuration publication.');
     }
     if (generation !== baseGeneration) {
       return baseConfig;
     }
-    await cache.set(BASE_CONFIG_KEY, baseConfig);
+    if ((await cache.set(BASE_CONFIG_KEY, baseConfig)) === false) {
+      throw new Error('Base cache refused configuration publication.');
+    }
     if (generation !== baseGeneration) {
       await cache.delete(BASE_CONFIG_KEY);
       return baseConfig;
     }
+    onBaseConfigPublished?.(loaded);
     lastGoodBaseConfig = baseConfig;
+    publishedBaseGeneration = generation;
     return baseConfig;
   }
 
@@ -900,12 +918,9 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
    * subagent cap) end with the newest librechat.yaml rather than whichever read finished last.
    */
   async function loadBase(refresh?: boolean): Promise<BaseConfigLoad> {
-    const cached = (await cache.get(BASE_CONFIG_KEY)) as AppConfig | undefined;
-    if (cached) {
-      lastGoodBaseConfig ??= cached;
-      if (!refresh) {
-        return { config: cached };
-      }
+    // Another process's cached YAML cannot replace this process's runtime configuration.
+    if (!refresh && lastGoodBaseConfig && publishedBaseGeneration === baseGeneration) {
+      return { config: lastGoodBaseConfig };
     }
 
     const generation = baseGeneration;
@@ -1048,22 +1063,31 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
       }
     };
 
-    const scopeVersion = createHash('sha256')
-      .update(
-        JSON.stringify([
-          baseConfig.endpoints?.custom?.map(({ name, tenantId }) => [name, tenantId]),
-          baseConfig.config?.endpoints?.custom?.map(({ name, tenantId }) => [name, tenantId]),
-        ]),
-      )
-      .digest('hex');
+    let scopeVersion = scopeVersions.get(baseConfig);
+    if (!scopeVersion) {
+      // Hash once per local base, including derived settings and override policy, never values in keys.
+      scopeVersion = createHash('sha256')
+        .update(JSON.stringify([baseConfig, rederiveEndpoints, overrideEnvAllowlist]))
+        .digest('hex');
+      scopeVersions.set(baseConfig, scopeVersion);
+    }
     const cacheKey = overrideCacheKey(role, userId, cacheTenantId, scopeVersion);
     /**
      * The key names a role and user, not a principal set: principals resolved elsewhere are
      * cached only when a user id ties them to the key.
      */
-    const cacheable = bypassOverrideCache !== true && (resolvedPrincipals == null || !!userId);
+    let cacheable = bypassOverrideCache !== true && (resolvedPrincipals == null || !!userId);
     if (cacheable && !refresh) {
-      const cachedMerged = (await cache.get(cacheKey)) as AppConfig | undefined;
+      let cachedMerged: AppConfig | undefined;
+      try {
+        cachedMerged = (await cache.get(cacheKey)) as AppConfig | undefined;
+      } catch (error) {
+        cacheable = false;
+        logger.warn(
+          '[getAppConfig] Failed to read merged config cache; resolving uncached.',
+          getSafeErrorMetadata(error),
+        );
+      }
       if (cachedMerged) {
         return await augment(withRuntimeSecrets(cachedMerged));
       }
@@ -1108,9 +1132,16 @@ export function createAppConfigService(deps: AppConfigServiceDeps): {
     }
 
     if (cacheable && getOverrideGeneration(cacheTenantId) === generation) {
-      await cache.set(cacheKey, merged, overrideCacheTtl);
-      if (getOverrideGeneration(cacheTenantId) !== generation) {
-        await cache.delete(cacheKey);
+      try {
+        await cache.set(cacheKey, merged, overrideCacheTtl);
+        if (getOverrideGeneration(cacheTenantId) !== generation) {
+          await cache.delete(cacheKey);
+        }
+      } catch (error) {
+        logger.warn(
+          '[getAppConfig] Failed to cache merged config; serving the resolved configuration.',
+          getSafeErrorMetadata(error),
+        );
       }
     }
     return await augment(withRuntimeSecrets(merged));
