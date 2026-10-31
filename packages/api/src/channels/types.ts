@@ -14,8 +14,14 @@ export interface ChannelMessage {
   langfuseDestinationIds?: string[] | null;
 }
 import type { AgentChannelRecord } from '@librechat/data-schemas';
+import type { ChannelConfig } from 'librechat-data-provider';
 import type { Request, Response, RequestHandler } from 'express';
 
 export type ChannelServiceGuard = (
-  handler: (req: Request, res: Response, channel: AgentChannelRecord) => Promise<void>,
+  handler: (
+    req: Request,
+    res: Response,
+    channel: AgentChannelRecord,
+    config: ChannelConfig,
+  ) => Promise<void>,
 ) => RequestHandler;

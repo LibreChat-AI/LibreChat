@@ -45,6 +45,13 @@ export interface ChannelLaneRecord {
   activeRunId?: string;
   conversationId?: string;
   responseId?: string;
+  stopObservation?: {
+    scopeId: string;
+    eventAt: number;
+    before: number;
+    runId?: string;
+    epoch?: number;
+  };
 }
 
 export function createChannelRunModel(
@@ -169,10 +176,26 @@ export function createChannelLaneModel(
       activeRunId: String,
       conversationId: String,
       responseId: String,
+      stopObservation: {
+        type: new Schema(
+          {
+            scopeId: { type: String, required: true },
+            eventAt: Number,
+            before: Number,
+            runId: String,
+            epoch: Number,
+          },
+          { _id: false },
+        ),
+      },
     },
     { timestamps: true },
   );
   schema.index({ tenantId: 1, laneId: 1 }, { unique: true });
+  schema.index(
+    { tenantId: 1, channelId: 1, 'stopObservation.scopeId': 1 },
+    { partialFilterExpression: { 'stopObservation.scopeId': { $type: 'string' } } },
+  );
   schema.index({ tenantId: 1, userId: 1 });
   applyTenantIsolation(schema);
   return mongoose.models.ChannelLane ?? mongoose.model<ChannelLaneRecord>('ChannelLane', schema);

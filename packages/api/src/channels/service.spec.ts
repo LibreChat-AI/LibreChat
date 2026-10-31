@@ -342,7 +342,13 @@ it.each([undefined, '', '   '])(
 );
 
 it('uses one policy snapshot and supplies the verified webhook credentials only to the authenticated bundle', async () => {
-  const config = jest.fn(async () => ({ enabled: true, transport: 'webhook' as const }));
+  const config = jest.fn(async () => ({
+    enabled: true,
+    transport: 'webhook' as const,
+    nativeSessions: true,
+    lifecycleReactions: true,
+    signatureToleranceSeconds: 60,
+  }));
   deps.config = config;
   const id = await createChannel();
   config.mockClear();
@@ -365,6 +371,14 @@ it('uses one policy snapshot and supplies the verified webhook credentials only 
     .expect(200);
   expect(config).toHaveBeenCalledTimes(1);
   expect(result.body.credentials.signingSecret).toBe('private-signing-secret');
+  expect(result.body.gateway).toEqual({
+    version: 1,
+    transport: 'webhook',
+    nativeSessions: true,
+    lifecycleReactions: true,
+    signatureToleranceSeconds: 60,
+  });
+  expect(result.body.gateway).not.toHaveProperty('enabled');
 });
 
 it('fails closed if an existing socket-mode channel is switched to webhook transport without a secret', async () => {

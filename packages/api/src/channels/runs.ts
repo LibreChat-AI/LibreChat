@@ -1,7 +1,15 @@
 import { z } from 'zod';
 import { ChannelRunConflict } from '@librechat/data-schemas';
-import { responseReviewDecisionSchema } from 'librechat-data-provider';
+import {
+  responseReviewDecisionSchema,
+  CHANNEL_DELIVERY_PARTS_HARD_MAX,
+  CHANNEL_DELIVERY_TEXT_MAX_CHARS,
+  CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES,
+} from 'librechat-data-provider';
 import type {
+  ChannelRunLease,
+  ChannelRunLeaseRenewal,
+  ChannelResponsePreparation,
   ChannelRunPrincipal,
   ChannelRunAdmission,
   ChannelRunView,
@@ -77,8 +85,10 @@ const presentationSchema = z
     format: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
     payload: z
       .string()
-      .max(64_000)
-      .refine((value) => Buffer.byteLength(value, 'utf8') <= 64_000)
+      .max(CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES)
+      .refine(
+        (value) => Buffer.byteLength(value, 'utf8') <= CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES,
+      )
       .refine((value) => {
         try {
           const parsed: unknown = JSON.parse(value);
@@ -103,7 +113,7 @@ const planBody = z
                 operationId: id,
                 kind: z.enum(['message', 'artifact']),
                 required: z.boolean(),
-                text: z.string().max(40_000),
+                text: z.string().max(CHANNEL_DELIVERY_TEXT_MAX_CHARS),
                 presentation: presentationSchema.optional(),
                 artifactId: id.optional(),
                 traceUrl: z.string().url().optional(),
@@ -113,7 +123,7 @@ const planBody = z
               .refine((part) => !part.traceUrl || (part.kind === 'message' && !part.required)),
           )
           .min(1)
-          .max(100),
+          .max(CHANNEL_DELIVERY_PARTS_HARD_MAX),
       })
       .strict(),
   })
@@ -317,10 +327,10 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       await deps.storage.finishAuthorityLost(run.tenantId, fence, now());
   }
   const guarded = (handler: Parameters<ChannelServiceGuard>[0]) =>
-    deps.guard(async (req, res, channel) => {
+    deps.guard(async (req, res, channel, config) => {
       res.set('Cache-Control', 'no-store');
       try {
-        await handler(req, res, channel);
+        await handler(req, res, channel, config);
       } catch (error) {
         if (error instanceof ChannelDisclosureError) {
           res
@@ -415,13 +425,18 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
     return run;
   }
   return {
-    stopThread: guarded(async (req, res, channel) => {
+    stopThread: guarded(async (req, res, channel, config) => {
+      const observedAt = now();
       const parsed = z
         .object({
           actor: actorSchema,
           externalThreadKey: id,
           externalChannelId: id,
-          eventAt: z.number().int().positive().max(now()),
+          eventAt: z
+            .number()
+            .int()
+            .positive()
+            .max(observedAt + config.signatureToleranceSeconds * 1000),
         })
         .strict()
         .safeParse(req.body);
@@ -446,14 +461,15 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         principal,
         admission: { actor, externalThreadKey, externalChannelId },
       };
-      const run = await deps.storage.readActiveThread(scope, eventAt);
+      const observation = await deps.storage.observeThreadStop(scope, eventAt, observedAt);
+      const run = observation?.run;
       if (!run || !(await hasAuthority(channel, run))) {
         res.json({ cancellationRequested: false });
         return;
       }
       const accepted = await deps.storage.requestCancel(scope, run.runId, {
         epoch: run.leaseEpoch,
-        before: eventAt,
+        before: observation!.before,
       });
       res.status(accepted ? 202 : 200).json({ cancellationRequested: accepted });
     }),
@@ -600,9 +616,9 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       }
       res.json({
         run: await presentRun(channel, run),
-        fence: { runId: run.runId, owner: run.leaseOwner, epoch: run.leaseEpoch },
+        fence: { runId: run.runId, owner: run.leaseOwner!, epoch: run.leaseEpoch },
         leaseExpiresAt: run.leaseExpiresAt,
-      });
+      } satisfies ChannelRunLease);
     }),
     renew: guarded(async (req, res, channel) => {
       const parsed = fenceBody.safeParse(req.body);
@@ -614,7 +630,10 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         res.status(409).json({ error: 'stale_fence' });
         return;
       }
-      res.json({ fence: binding.fence, leaseExpiresAt: at + leaseMs });
+      res.json({
+        fence: binding.fence,
+        leaseExpiresAt: at + leaseMs,
+      } satisfies ChannelRunLeaseRenewal);
     }),
     yieldLease: guarded(async (req, res, channel) => {
       const parsed = fenceBody.safeParse(req.body);
@@ -648,7 +667,9 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
           binding.fence,
           now(),
         );
-        res.json({ settled: await presentRun(channel, settled) });
+        res.json({
+          settled: await presentRun(channel, settled),
+        } satisfies ChannelResponsePreparation);
         return;
       }
       if (run.cancellationRequested && !run.execution.responseId) {
@@ -685,7 +706,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
             ? {}
             : { previous_response_id: run.execution!.parentMessageId }),
         },
-      });
+      } satisfies ChannelResponsePreparation);
     }),
     bindResponse: guarded(async (req, res, channel) => {
       const parsed = z.object({ fence: fenceSchema, responseId: id }).strict().safeParse(req.body);
