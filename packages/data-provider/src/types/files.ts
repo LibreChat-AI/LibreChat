@@ -164,6 +164,11 @@ export type RunFileProvenance = {
 
 /** Shared wire bound, not a deployment setting. */
 export const MAX_FILE_TEXT_PREVIEW_LENGTH = 240;
+/** Identifies the bytes of one generated attachment when its file ID is reused. */
+export type CodeOutputProvenance = {
+  messageId: string;
+  sha256: string;
+};
 
 export type TFile = {
   _id?: string;
@@ -223,6 +228,7 @@ export type TFile = {
   previewError?: string;
   metadata?: {
     runFile?: RunFileProvenance;
+    codeOutput?: CodeOutputProvenance;
     fileIdentifier?: string;
     /**
      * Structured form of `fileIdentifier`. Persisted alongside the

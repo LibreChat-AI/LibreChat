@@ -6,6 +6,7 @@ import type {
   RunArtifactRunScope,
 } from '~/types/file';
 import { getTenantId, isReservedTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { SERVER_AUTHORED_MESSAGE_FILTER } from '~/utils/authored';
 
 /** Null denotes an absent/expired owned response; query failures remain operational errors. */
 export async function readResponseArtifactCatalog(
@@ -45,7 +46,7 @@ export async function readResponseArtifactCatalog(
     tenantId: partition,
     conversationId: scope.conversationId,
     messageId: scope.runId,
-    isCreatedByUser: false,
+    ...SERVER_AUTHORED_MESSAGE_FILTER,
     ...expiry,
   };
   const Message = mongoose.model('Message');
@@ -62,8 +63,16 @@ export async function readResponseArtifactCatalog(
         // eslint-disable-next-line no-restricted-syntax
         from: mongoose.model('File').collection.name,
         let: {
-          attachmentIds: {
-            $map: { input: '$attachments', as: 'attachment', in: '$$attachment.file_id' },
+          attachmentVersions: {
+            $map: {
+              input: '$attachments',
+              as: 'attachment',
+              in: [
+                '$$attachment.file_id',
+                '$$attachment.metadata.codeOutput.messageId',
+                '$$attachment.metadata.codeOutput.sha256',
+              ],
+            },
           },
         },
         pipeline: [
@@ -80,8 +89,21 @@ export async function readResponseArtifactCatalog(
                   $or: [
                     { context: FileContext.run_artifact, 'metadata.runFile.runId': scope.runId },
                     {
-                      context: FileContext.execute_code,
-                      $expr: { $in: ['$file_id', '$$attachmentIds'] },
+                      context: {
+                        $in: [FileContext.execute_code, FileContext.execute_code_snapshot],
+                      },
+                      'metadata.codeOutput.messageId': scope.runId,
+                      'metadata.codeOutput.sha256': /^[a-f0-9]{64}$/,
+                      $expr: {
+                        $in: [
+                          [
+                            '$file_id',
+                            '$metadata.codeOutput.messageId',
+                            '$metadata.codeOutput.sha256',
+                          ],
+                          '$$attachmentVersions',
+                        ],
+                      },
                     },
                   ],
                 },
@@ -106,6 +128,7 @@ export async function readResponseArtifactCatalog(
               source: 1,
               expiredAt: 1,
               expiresAt: 1,
+              sha256: '$metadata.codeOutput.sha256',
             },
           },
         ],

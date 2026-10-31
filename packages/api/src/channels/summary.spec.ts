@@ -292,12 +292,23 @@ describe('authorized saved session provenance', () => {
     { messageId: 'previous-response' },
     { conversationId: 'other' },
     { isCreatedByUser: true },
+    { isUserSubmitted: true },
     { langfuseSampled: false },
     { langfuseDestinationIds: [] },
     { langfuseDestinationIds: ['new-destination'] },
   ])('omits mismatched provenance %j', async (override) => {
     Object.assign(message, override);
     expect((await service([], trace).summarize(run(), snapshot())).session).toBeUndefined();
+  });
+  it('removes a frozen session link when the saved row becomes user-submitted while preserving metrics', async () => {
+    const frozen = await service([], trace).summarize(run(), snapshot());
+    const saved = run();
+    saved.snapshot = { ...snapshot(), summary: frozen };
+    message.isUserSubmitted = true;
+    const current = await service([], trace).summarize(saved, saved.snapshot);
+    expect(current.session).toBeUndefined();
+    expect(current.costUSD).toEqual(frozen.costUSD);
+    expect(current.tokens).toEqual(frozen.tokens);
   });
   it('fails closed on current authorization denial/outage without discarding metrics', async () => {
     for (const canViewSession of [
@@ -361,6 +372,8 @@ describe('authorized saved session provenance', () => {
         {
           user: 'user',
           conversationId: 'conversation',
+          isCreatedByUser: false,
+          isUserSubmitted: { $ne: true },
           langfuseSampled: true,
           langfuseDestinationIds: message.langfuseDestinationIds[0],
         },

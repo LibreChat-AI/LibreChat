@@ -1,5 +1,6 @@
 import path from 'path';
 import { v4 } from 'uuid';
+import { createHash } from 'node:crypto';
 import { megabyte, fileConfig, imageExtRegex, inferMimeType } from 'librechat-data-provider';
 import type { CodeEnvRef, FileSources, getEndpointFileConfig } from 'librechat-data-provider';
 import type { CodeFileCommitData } from '@librechat/data-schemas';
@@ -70,7 +71,7 @@ export interface CodeOutputProcessorDeps {
     Pick<
       CodeOutputStoredFile,
       'filepath' | 'bytes' | 'width' | 'height' | 'storageKey' | 'storageRegion'
-    >
+    > & { sha256: string }
   >;
   getStrategyFunctions: (source: FileSources) => {
     saveBuffer?: (input: {
@@ -269,6 +270,10 @@ export async function processCodeOutput(
         codeDestination: true,
         sourceDispatchedAt,
       };
+      const outputMetadata = (sha256: string) => ({
+        ...codeEnvMetadata,
+        codeOutput: { messageId, sha256 },
+      });
 
       if (isImage) {
         const usage = 1;
@@ -310,7 +315,7 @@ export async function processCodeOutput(
           updatedAt: formattedDate,
           source: appConfig.fileStrategy,
           context: outputPersistence.context,
-          metadata: codeEnvMetadata,
+          metadata: outputMetadata(_file.sha256),
           ...(await retentionExpiryPromise),
         };
         if (!(await outputPersistence.commit(file))) {
@@ -427,7 +432,7 @@ export async function processCodeOutput(
         tenantId: req.user.tenantId,
         bytes: buffer.length,
         updatedAt: formattedDate,
-        metadata: codeEnvMetadata,
+        metadata: outputMetadata(createHash('sha256').update(buffer).digest('hex')),
         source: appConfig.fileStrategy,
         context: outputPersistence.context,
         usage: 1,

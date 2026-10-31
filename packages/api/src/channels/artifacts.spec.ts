@@ -8,6 +8,7 @@ import type {
   ChannelRunRecord,
   RunArtifactScope,
   RunArtifactContent,
+  ResponseArtifactFile,
 } from '@librechat/data-schemas';
 import type { ChannelArtifactDependencies } from './artifacts';
 import { createChannelArtifactService } from './artifacts';
@@ -29,7 +30,15 @@ const scope: RunArtifactScope = {
 };
 const contentByFile = new Map<string, Buffer>();
 const digest = (bytes: Buffer | string) => createHash('sha256').update(bytes).digest('hex');
-let limits = { artifactMaxBytes: 10000, artifactMaxFiles: 3, artifactReadTimeoutMs: 1000 };
+const generatedMetadata = (messageId = scope.runId, bytes: Buffer | string = 'result') => ({
+  codeOutput: { messageId, sha256: digest(bytes) },
+});
+let limits = {
+  artifactMaxBytes: 10000,
+  artifactMaxFiles: 3,
+  artifactReadTimeoutMs: 1000,
+  artifactAnswerFileThresholdBytes: 6000,
+};
 
 async function publish(
   bytes = 'result',
@@ -59,6 +68,33 @@ async function publish(
   );
   contentByFile.set(file.file_id, Buffer.from(bytes));
   return file;
+}
+
+async function generate(bytes = 'before') {
+  const file_id = 'reused-code-output';
+  const metadata = generatedMetadata(scope.runId, bytes);
+  await tenantStorage.run({ tenantId: scope.tenantId ?? undefined }, async () => {
+    await mongoose.models.File.create({
+      file_id,
+      user: userId,
+      tenantId: scope.tenantId,
+      conversationId: scope.conversationId,
+      messageId: scope.runId,
+      filename: 'result.txt',
+      filepath: '/uploads/result.txt',
+      bytes: Buffer.byteLength(bytes),
+      type: 'text/plain',
+      source: FileSources.local,
+      context: FileContext.execute_code,
+      metadata,
+    });
+    await mongoose.models.Message.updateOne(
+      { messageId: scope.runId, user: userId },
+      { $set: { attachments: [{ file_id, metadata }] } },
+    );
+  });
+  contentByFile.set(file_id, Buffer.from(bytes));
+  return file_id;
 }
 
 beforeAll(async () => {
@@ -91,7 +127,12 @@ beforeEach(async () => {
     }),
   );
   contentByFile.clear();
-  limits = { artifactMaxBytes: 10000, artifactMaxFiles: 3, artifactReadTimeoutMs: 1000 };
+  limits = {
+    artifactMaxBytes: 10000,
+    artifactMaxFiles: 3,
+    artifactReadTimeoutMs: 1000,
+    artifactAnswerFileThresholdBytes: 6000,
+  };
   run = {
     tenantId: 'tenant-a',
     channelId: 'channel-a',
@@ -299,7 +340,7 @@ it('bounds source fallback at listing and honors a reduced byte limit at downloa
   expect((await service.list(run, run.snapshot!)).artifacts).toEqual([]);
 });
 
-it('destroys timed out or invalid streams, reports unavailable and keeps the text fallback', async () => {
+it('destroys timed out or invalid streams without losing retained response text', async () => {
   await publish();
   limits.artifactReadTimeoutMs = 15;
   run.snapshot!.text = '```text\nanswer\n```';
@@ -308,7 +349,8 @@ it('destroys timed out or invalid streams, reports unavailable and keeps the tex
   const listed = await service.list(run, run.snapshot!);
   expect(hanging.destroyed).toBe(true);
   expect(listed.unavailable).toBe(true);
-  expect(listed.artifacts).toHaveLength(1);
+  expect(listed.artifacts).toEqual([]);
+  expect(run.snapshot!.text).toBe('```text\nanswer\n```');
   const invalid = Readable.from([{ unexpected: 'object' }]);
   jest.mocked(deps.readFile).mockResolvedValueOnce(invalid);
   expect((await service.list(run, run.snapshot!)).unavailable).toBe(true);
@@ -343,52 +385,59 @@ it('binds both catalog and stored content to the exact execution response', asyn
   });
 });
 
-it('includes only generated attachments referenced by the owned response and projects bounded reader metadata', async () => {
-  await tenantStorage.run({ tenantId: scope.tenantId ?? undefined }, async () => {
-    for (let index = 0; index < 8; index++) {
-      const id = `ordinary-${index}`;
-      await mongoose.models.File.create({
-        file_id: id,
-        user: userId,
-        tenantId: scope.tenantId,
-        conversationId: scope.conversationId,
-        filename: `${id}.txt`,
-        filepath: `/uploads/${id}`,
-        type: 'text/plain',
-        source: FileSources.local,
-        bytes: 6,
-        context: FileContext.execute_code,
-        text: 'private extracted text',
-      });
-      contentByFile.set(id, Buffer.from('result'));
-    }
-    await mongoose.models.Message.updateOne(
-      { messageId: scope.runId, user: userId },
-      {
-        $set: {
-          attachments: Array.from({ length: 7 }, (_, index) => ({ file_id: `ordinary-${index}` })),
+it.each([FileContext.execute_code, FileContext.execute_code_snapshot])(
+  'includes only owned generated attachments and bounds reader metadata for %s',
+  async (context) => {
+    await tenantStorage.run({ tenantId: scope.tenantId ?? undefined }, async () => {
+      for (let index = 0; index < 8; index++) {
+        const id = `ordinary-${index}`;
+        await mongoose.models.File.create({
+          file_id: id,
+          user: userId,
+          tenantId: scope.tenantId,
+          conversationId: scope.conversationId,
+          filename: `${id}.txt`,
+          filepath: `/uploads/${id}`,
+          type: 'text/plain',
+          source: FileSources.local,
+          bytes: 6,
+          context,
+          metadata: generatedMetadata(),
+          text: 'private extracted text',
+        });
+        contentByFile.set(id, Buffer.from('result'));
+      }
+      await mongoose.models.Message.updateOne(
+        { messageId: scope.runId, user: userId },
+        {
+          $set: {
+            attachments: Array.from({ length: 7 }, (_, index) => ({
+              file_id: `ordinary-${index}`,
+              metadata: generatedMetadata(),
+            })),
+          },
         },
-      },
+      );
+      const catalog = await db.readResponseArtifacts(scope, { kind: 'list', limit: 3 });
+      expect(catalog).toHaveLength(3);
+      for (const file of catalog!) {
+        expect(file).not.toHaveProperty('text');
+        expect(file).not.toHaveProperty('metadata');
+        expect(file).not.toHaveProperty('_id');
+      }
+    });
+    limits.artifactMaxFiles = 2;
+    const listed = await service.list(run, run.snapshot!);
+    expect(listed.unavailable).toBe(true);
+    expect(listed.artifacts).toHaveLength(2);
+    expect(listed.artifacts.every((file) => !file.artifactId.startsWith('ordinary-7:'))).toBe(true);
+    run.snapshot!.artifacts = listed.artifacts;
+    limits.artifactMaxFiles = 1;
+    expect((await service.content(run, listed.artifacts[1].artifactId)).bytes.toString()).toBe(
+      'result',
     );
-    const catalog = await db.readResponseArtifacts(scope, { kind: 'list', limit: 3 });
-    expect(catalog).toHaveLength(3);
-    for (const file of catalog!) {
-      expect(file).not.toHaveProperty('text');
-      expect(file).not.toHaveProperty('metadata');
-      expect(file).not.toHaveProperty('_id');
-    }
-  });
-  limits.artifactMaxFiles = 2;
-  const listed = await service.list(run, run.snapshot!);
-  expect(listed.unavailable).toBe(true);
-  expect(listed.artifacts).toHaveLength(2);
-  expect(listed.artifacts.every((file) => !file.artifactId.startsWith('ordinary-7:'))).toBe(true);
-  run.snapshot!.artifacts = listed.artifacts;
-  limits.artifactMaxFiles = 1;
-  expect((await service.content(run, listed.artifacts[1].artifactId)).bytes.toString()).toBe(
-    'result',
-  );
-});
+  },
+);
 
 it('refuses expired response retention for generated files and answer fallbacks', async () => {
   await publish();
@@ -407,6 +456,72 @@ it('refuses expired response retention for generated files and answer fallbacks'
   expect(await service.list(run, run.snapshot!)).toEqual({ artifacts: [], unavailable: true });
 });
 
+it('never discovers a later turn through a reused generated-file ID, including an in-flight overwrite', () =>
+  tenantStorage.run({ tenantId: scope.tenantId ?? undefined }, async () => {
+    const file_id = await generate();
+    const original = await service.list(run, run.snapshot!);
+    expect(original.artifacts[0].sha256).toBe(digest('before'));
+    run.snapshot!.artifacts = original.artifacts;
+
+    // The object write can finish while the row still describes the previous bytes.
+    contentByFile.set(file_id, Buffer.from('after!'));
+    expect(await service.list(run, run.snapshot!)).toEqual({ artifacts: [], unavailable: true });
+    await expect(service.content(run, original.artifacts[0].artifactId)).rejects.toMatchObject({
+      code: 'artifact_unavailable',
+    });
+
+    const messageId = 'response-later';
+    const metadata = generatedMetadata(messageId, 'after!');
+    await mongoose.models.File.updateOne({ file_id }, { $set: { metadata } });
+    expect(
+      (await mongoose.models.File.findOne({ file_id }).lean<{ messageId: string }>())?.messageId,
+    ).toBe(scope.runId);
+    expect(await deps.readArtifacts(scope, { kind: 'list', limit: 21 })).toEqual([]);
+    expect(await deps.readArtifacts(scope, { kind: 'file', fileId: file_id })).toEqual([]);
+    await mongoose.models.Message.create({
+      user: userId,
+      tenantId: scope.tenantId,
+      conversationId: scope.conversationId,
+      messageId,
+      isCreatedByUser: false,
+      sender: 'Agent',
+      endpoint: 'agents',
+      model: 'agent-a',
+      text: 'Later response',
+      attachments: [{ file_id, metadata }],
+    });
+    const later = {
+      ...run,
+      execution: { ...run.execution!, responseId: messageId },
+      snapshot: { ...run.snapshot!, responseId: messageId },
+    };
+    const current = await service.list(later, later.snapshot);
+    expect(current.artifacts[0].sha256).toBe(digest('after!'));
+    later.snapshot.artifacts = current.artifacts;
+    expect((await service.content(later, current.artifacts[0].artifactId)).bytes.toString()).toBe(
+      'after!',
+    );
+  }));
+
+it('requires the attachment content witness even when a new write reuses the same message ID', () =>
+  tenantStorage.run({ tenantId: scope.tenantId ?? undefined }, async () => {
+    const file_id = await generate();
+    const original = await service.list(run, run.snapshot!);
+    run.snapshot!.artifacts = original.artifacts;
+    const metadata = generatedMetadata(scope.runId, 'after!');
+    contentByFile.set(file_id, Buffer.from('after!'));
+    await mongoose.models.File.updateOne({ file_id }, { $set: { metadata } });
+    expect(await deps.readArtifacts(scope, { kind: 'list', limit: 21 })).toEqual([]);
+    await mongoose.models.Message.updateOne(
+      { messageId: scope.runId, user: userId },
+      { $set: { attachments: [{ file_id, metadata }] } },
+    );
+    expect((await service.list(run, run.snapshot!)).artifacts[0].sha256).toBe(digest('after!'));
+    await expect(service.content(run, original.artifacts[0].artifactId)).rejects.toMatchObject({
+      code: 'artifact_changed',
+    });
+  }));
+
 it('bounds stream acquisition even when its reader ignores cancellation and destroys late streams', async () => {
   await publish();
   limits.artifactReadTimeoutMs = 15;
@@ -418,7 +533,7 @@ it('bounds stream acquisition even when its reader ignores cancellation and dest
   jest.mocked(deps.readFile).mockReturnValueOnce(stalled);
   const listed = await service.list(run, run.snapshot!);
   expect(listed.unavailable).toBe(true);
-  expect(listed.artifacts[0].filename).toBe('agent-response.md');
+  expect(listed.artifacts).toEqual([]);
   const late = new Readable({
     read() {},
     destroy(_error, callback) {
@@ -454,6 +569,9 @@ it('requires the actual response attachment and rejects expired, foreign-owner a
       ['foreign-owner', { user: new mongoose.Types.ObjectId() }],
       ['foreign-conversation', { conversationId: 'other' }],
       ['foreign-tenant', { tenantId: 'tenant-b' }],
+      ['unversioned', { metadata: {} }],
+      ['wrong-message', { metadata: generatedMetadata('another-response') }],
+      ['wrong-digest', { metadata: generatedMetadata(scope.runId, 'changed') }],
     ] as const) {
       await mongoose.models.File.collection.insertOne({
         file_id: id,
@@ -466,6 +584,7 @@ it('requires the actual response attachment and rejects expired, foreign-owner a
         type: 'text/plain',
         source: FileSources.local,
         context: FileContext.execute_code,
+        metadata: generatedMetadata(),
         ...extra,
       });
       if (id !== 'unreferenced-generated') attachmentIds.push(id);
@@ -474,7 +593,11 @@ it('requires the actual response attachment and rejects expired, foreign-owner a
   await tenantStorage.run({ tenantId: scope.tenantId ?? undefined }, () =>
     mongoose.models.Message.updateOne(
       { messageId: scope.runId, user: userId },
-      { $set: { attachments: attachmentIds.map((file_id) => ({ file_id })) } },
+      {
+        $set: {
+          attachments: attachmentIds.map((file_id) => ({ file_id, metadata: generatedMetadata() })),
+        },
+      },
     ),
   );
   expect(
@@ -490,4 +613,197 @@ it('requires the actual response attachment and rejects expired, foreign-owner a
     ),
   );
   expect(await deps.readArtifacts(scope, { kind: 'authorize' })).toBeNull();
+});
+
+it.each([0, 1])(
+  'bounds all files and policy resolution after %i successful reads by one deadline',
+  async (successful) => {
+    const files: ResponseArtifactFile[] = [];
+    for (let index = 0; index < 3; index++)
+      files.push(await publish('result', { ...scope, sourceFileId: `source-${index}` }));
+    deps.readArtifacts = jest.fn(async (_scope, query) => (query.kind === 'list' ? files : []));
+    limits.artifactReadTimeoutMs = 50;
+    const late: Array<(stream: Readable) => void> = [];
+    let reads = 0;
+    jest
+      .mocked(deps.readFile)
+      .mockImplementation(() =>
+        reads++ < successful
+          ? Promise.resolve(Readable.from(['result']))
+          : new Promise<Readable>((resolve) => late.push(resolve)),
+      );
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    try {
+      deps.limits = () => new Promise((resolve) => setTimeout(() => resolve(limits), 20));
+      let settled = false;
+      const listing = service.list(run, run.snapshot!).then((result) => {
+        settled = true;
+        return result;
+      });
+      await jest.advanceTimersByTimeAsync(50);
+      const settledAtBudget = settled;
+      await jest.advanceTimersByTimeAsync(200);
+      const result = await listing;
+      expect(settledAtBudget).toBe(true);
+      expect(deps.readFile).toHaveBeenCalledTimes(successful + 1);
+      expect(result).toEqual({ artifacts: [], unavailable: true });
+    } finally {
+      jest.useRealTimers();
+      for (const resolve of late) resolve(Readable.from(['late']));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+  },
+);
+
+it.each(['list', 'authorize'] as const)(
+  'bounds a stalled %s query without exposing an unverified answer file',
+  async (stalledKind) => {
+    limits.artifactReadTimeoutMs = 50;
+    run.snapshot!.text = '```text\nanswer\n```';
+    let release!: () => void;
+    const stalled = new Promise<[]>((resolve) => {
+      release = () => resolve([]);
+    });
+    deps.readArtifacts = jest.fn(async (_scope, query) =>
+      query.kind === stalledKind ? stalled : [],
+    );
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    try {
+      let settled = false;
+      const listing = service.list(run, run.snapshot!).then((result) => {
+        settled = true;
+        return result;
+      });
+      await jest.advanceTimersByTimeAsync(50);
+      const settledAtBudget = settled;
+      release();
+      const result = await listing;
+      expect(settledAtBudget).toBe(true);
+      expect(result).toEqual({ artifacts: [], unavailable: true });
+      expect(deps.readFile).not.toHaveBeenCalled();
+    } finally {
+      release();
+      jest.useRealTimers();
+    }
+  },
+);
+
+it('rejects user-submitted assistant-shaped rows for all catalog reads and saved descriptors', async () => {
+  const file = await publish();
+  const listed = await service.list(run, run.snapshot!);
+  run.snapshot!.artifacts = listed.artifacts;
+  await tenantStorage.run({ tenantId: scope.tenantId ?? undefined }, () =>
+    mongoose.models.Message.updateOne(
+      { messageId: scope.runId, user: userId },
+      { $set: { isUserSubmitted: true } },
+    ),
+  );
+  for (const query of [
+    { kind: 'list', limit: 4 },
+    { kind: 'file', fileId: file.file_id },
+    { kind: 'authorize' },
+  ] as const)
+    expect(await deps.readArtifacts(scope, query)).toBeNull();
+  await expect(service.content(run, listed.artifacts[0].artifactId)).rejects.toMatchObject({
+    code: 'artifact_unavailable',
+  });
+  run.snapshot!.text = '```text\nanswer\n```';
+  expect(await service.list(run, run.snapshot!)).toEqual({ artifacts: [], unavailable: true });
+});
+
+it('uses the configured byte threshold for new answer files and preserves authorized saved identities', async () => {
+  run.snapshot!.text = 'ééé';
+  limits.artifactAnswerFileThresholdBytes = 5;
+  const listed = await service.list(run, run.snapshot!);
+  expect(listed.artifacts).toHaveLength(1);
+  expect(listed.artifacts[0].bytes).toBe(6);
+  run.snapshot!.artifacts = listed.artifacts;
+  limits.artifactAnswerFileThresholdBytes = 6;
+  expect((await service.list(run, run.snapshot!)).artifacts).toEqual([]);
+  expect((await service.content(run, listed.artifacts[0].artifactId)).bytes.toString()).toBe('ééé');
+  run.snapshot!.text = '```text\nshort\n```';
+  expect((await service.list(run, run.snapshot!)).artifacts).toHaveLength(1);
+});
+
+it('bounds a stalled policy lookup by the schema hard maximum and never starts late catalog work', async () => {
+  let release!: () => void;
+  deps.limits = () =>
+    new Promise((resolve) => {
+      release = () => resolve(limits);
+    });
+  deps.readArtifacts = jest.fn(async () => []);
+  jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  try {
+    const listing = service.list(run, run.snapshot!);
+    await jest.advanceTimersByTimeAsync(60_000);
+    expect(await listing).toEqual({ artifacts: [], unavailable: true });
+    release();
+    await Promise.resolve();
+    expect(deps.readArtifacts).not.toHaveBeenCalled();
+  } finally {
+    release();
+    jest.useRealTimers();
+  }
+});
+
+it('keeps downloads inside the same budget through final reauthorization', async () => {
+  const file = await publish();
+  const listed = await service.list(run, run.snapshot!);
+  run.snapshot!.artifacts = listed.artifacts;
+  limits.artifactReadTimeoutMs = 50;
+  let release!: () => void;
+  const authorization = new Promise<[]>((resolve) => {
+    release = () => resolve([]);
+  });
+  deps.readArtifacts = jest.fn(async (_scope, query) =>
+    query.kind === 'file' ? [file] : authorization,
+  );
+  jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+  try {
+    let settled = false;
+    const download = service.content(run, listed.artifacts[0].artifactId).then(
+      () => {
+        settled = true;
+        return undefined;
+      },
+      (error: Error) => {
+        settled = true;
+        return error;
+      },
+    );
+    await jest.advanceTimersByTimeAsync(50);
+    const settledAtBudget = settled;
+    release();
+    expect(await download).toMatchObject({ code: 'artifact_unavailable' });
+    expect(settledAtBudget).toBe(true);
+  } finally {
+    release();
+    jest.useRealTimers();
+  }
+});
+
+it('uses at most one storage stream while listing the maximum number of artifacts', async () => {
+  limits.artifactMaxFiles = 20;
+  for (let index = 0; index < 20; index++)
+    await publish('result', { ...scope, sourceFileId: `bounded-${index}` });
+  let active = 0;
+  let maximumActive = 0;
+  jest.mocked(deps.readFile).mockImplementation(async () => {
+    active++;
+    maximumActive = Math.max(maximumActive, active);
+    return new Readable({
+      read() {
+        this.push('result');
+        this.push(null);
+      },
+      destroy(_error, callback) {
+        active--;
+        callback(null);
+      },
+    });
+  });
+  const listed = await service.list(run, run.snapshot!);
+  expect(listed.artifacts).toHaveLength(20);
+  expect(maximumActive).toBe(1);
+  expect(active).toBe(0);
 });

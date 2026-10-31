@@ -88,7 +88,7 @@ export type RunArtifactFile = TFile & {
   metadata: NonNullable<TFile['metadata']> & { runFile: RunFileProvenance };
 };
 
-/** Reader metadata only; ordinary generated attachments need no synthetic run-file provenance. */
+/** Reader metadata only; mutable generated files carry their attachment's expected digest. */
 export type ResponseArtifactFile = Pick<
   TFile,
   'file_id' | 'filename' | 'filepath' | 'storageKey' | 'storageRegion' | 'bytes' | 'type' | 'source'
@@ -98,6 +98,7 @@ export type ResponseArtifactFile = Pick<
   conversationId: string;
   expiredAt?: Date | null;
   expiresAt?: TFile['expiresAt'] | null;
+  sha256?: string;
 };
 
 export type ResponseArtifactQuery =
