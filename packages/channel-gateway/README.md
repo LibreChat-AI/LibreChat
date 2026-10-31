@@ -1,15 +1,18 @@
 # Slack transport adapters
 
-This private workspace contains the transport adapters for Agent Channels. The executable consumer is the [standalone gateway runtime in #17618](https://github.com/LibreChat-AI/LibreChat/pull/17618), which composes these adapters with native presentation, HTTP and Socket Mode ingress, durable workers, process lifecycle and container packaging.
+This private workspace contains transport, native presentation and private interaction adapters for Agent Channels. The executable consumer is the [standalone gateway runtime in #17618](https://github.com/LibreChat-AI/LibreChat/pull/17618), which composes these adapters with native presentation, HTTP and Socket Mode ingress, durable workers, process lifecycle and container packaging.
 
-The adapter build produces four internal modules:
+The adapter build produces seven internal modules:
 
-| Module   | Responsibility                                                                               |
-| -------- | -------------------------------------------------------------------------------------------- |
-| `client` | Private service authentication, channel/run identity checks and bounded API responses        |
-| `config` | Process bindings and resolution of the server-owned gateway policy                           |
-| `events` | Original-byte webhook authentication, installation challenges and scoped event normalization |
-| `slack`  | Bounded provider calls, conservative uncertain-write outcomes and artifact transport         |
+| Module     | Responsibility                                                                               |
+| ---------- | -------------------------------------------------------------------------------------------- |
+| `client`   | Private service authentication, channel/run identity checks and bounded API responses        |
+| `config`   | Process bindings and resolution of the server-owned gateway policy                           |
+| `events`   | Original-byte webhook authentication, installation challenges and scoped event normalization |
+| `slack`    | Bounded provider calls, conservative uncertain-write outcomes and artifact transport         |
+| `render`   | Deterministic bounded answer/progress plans and durable presentation replay                  |
+| `identity` | Actor-private account-link tickets and exact-account confirmation                            |
+| `review`   | Current actor/action validation, native forms and immutable saved-decision retry             |
 
 The application defaults `endpoints.agents.channels.enabled` to `false`. Enable the capability in a deployment that includes the matching executable consumer. These adapter artifacts are internal dependencies; deploying the runnable gateway also requires its entry point, presentation layer and durable worker.
 
