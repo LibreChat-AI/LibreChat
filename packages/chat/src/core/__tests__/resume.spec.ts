@@ -110,12 +110,12 @@ describe('buildSubmissionFromResumeState', () => {
       const original = structuredClone(snapshot);
       const submission = buildSubmissionFromResumeState(snapshot, 'c-1', [user], 'c-1');
       const pending = status == null || status === 'in_progress';
-      expect(submission.initialResponse.content?.[0]).toEqual({
+      expect(submission.initialResponse?.content?.[0]).toEqual({
         ...snapshot.aggregatedContent?.[0],
         ...(pending && { summarizing: true }),
       });
       const synced = buildResumeEventSubmission(submission, user, snapshot);
-      expect(synced.initialResponse.content).toEqual(submission.initialResponse.content);
+      expect(synced.initialResponse.content).toEqual(submission.initialResponse?.content);
       expect(snapshot).toEqual(original);
     },
   );
@@ -147,7 +147,7 @@ describe('buildSubmissionFromResumeState', () => {
       })),
     });
     const submission = buildSubmissionFromResumeState(snapshot, 'c-1', [user], 'c-1');
-    expect(submission.initialResponse.content).toBe(content);
+    expect(submission.initialResponse?.content).toBe(content);
   });
 
   it('strips the persisted pair a fresh resume re-supplies', () => {

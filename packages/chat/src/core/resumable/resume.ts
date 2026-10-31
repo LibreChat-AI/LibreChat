@@ -58,9 +58,6 @@ function restoreSummaryState(resumeState: Agents.ResumeState): TMessage['content
     if (
       step.summary == null ||
       (step.status != null && step.status !== 'in_progress') ||
-      step.completed_at != null ||
-      step.cancelled_at != null ||
-      step.failed_at != null ||
       (step.runId != null && step.runId !== resumeState.responseMessageId) ||
       part?.type !== ContentTypes.SUMMARY ||
       part.summarizing != null ||

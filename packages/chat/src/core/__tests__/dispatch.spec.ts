@@ -169,7 +169,7 @@ describe('handleSync', () => {
             },
           ],
           aggregatedContent: [{ type: ContentTypes.SUMMARY, model: 'summary-model' }],
-          userMessage: { messageId: 'u-1', parentMessageId: null, text: 'Hello' },
+          userMessage: { messageId: 'u-1', parentMessageId: 'root', text: 'Hello' },
           responseMessageId: 'r-1',
           conversationId: 'c-1',
         },
