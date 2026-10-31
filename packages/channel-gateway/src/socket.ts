@@ -116,6 +116,7 @@ export async function connectSocket(
   log: Logger,
   signal: AbortSignal,
 ): Promise<BoundSocket> {
+  app.bindSocketApp(appId);
   app.connected = false;
   const socket = new BoundSocket(
     appId,

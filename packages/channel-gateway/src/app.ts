@@ -62,6 +62,7 @@ export class GatewayApp {
   connected = false;
   private active = 0;
   private httpActive = 0;
+  private socketAppId?: string;
   private readonly identity: IdentityFlow;
   private readonly review: ReviewFlow;
   constructor(
@@ -254,9 +255,27 @@ export class GatewayApp {
     }
   }
 
-  private assertPolicy(bundle: ChannelBundle): void {
-    if (bundle.gateway.transport !== this.config.SLACK_TRANSPORT) {
+  bindSocketApp(appId: string): void {
+    if (
+      !appId ||
+      this.config.SLACK_TRANSPORT !== 'socket_mode' ||
+      (this.socketAppId !== undefined && this.socketAppId !== appId)
+    ) {
       this.ready = false;
+      this.connected = false;
+      throw new Error('Socket application binding changed; restart required');
+    }
+    this.socketAppId = appId;
+  }
+
+  private assertPolicy(bundle: ChannelBundle): void {
+    if (
+      bundle.gateway.transport !== this.config.SLACK_TRANSPORT ||
+      (this.config.SLACK_TRANSPORT === 'socket_mode' &&
+        bundle.channel.slack.appId !== this.socketAppId)
+    ) {
+      this.ready = false;
+      this.connected = false;
       throw new Error('Gateway ingress policy changed; restart required');
     }
   }
@@ -280,7 +299,10 @@ export class GatewayApp {
       return;
     }
     if (request.method === 'GET' && (path === '/healthz' || path === '/readyz')) {
-      const ready = this.ready && (this.config.SLACK_TRANSPORT !== 'socket_mode' || this.connected);
+      const ready =
+        this.ready &&
+        (this.config.SLACK_TRANSPORT !== 'socket_mode' ||
+          (this.connected && this.socketAppId !== undefined));
       send(ready ? 200 : 503, { status: ready ? 'ready' : 'not_ready' });
       return;
     }
