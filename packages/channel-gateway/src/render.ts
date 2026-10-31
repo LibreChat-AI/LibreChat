@@ -1,6 +1,9 @@
 import { z } from 'zod';
 import { isIP } from 'node:net';
 import { createHash } from 'node:crypto';
+import { gfm } from 'micromark-extension-gfm';
+import { gfmFromMarkdown } from 'mdast-util-gfm';
+import { fromMarkdown } from 'mdast-util-from-markdown';
 import { channelStorageConfigSchema } from 'librechat-data-provider';
 import type {
   ChannelArtifact,
@@ -11,6 +14,7 @@ import type {
   ChannelDeliveryPlan,
   ResponseAccounting,
 } from 'librechat-data-provider';
+import type { Nodes, Root, Definition } from 'mdast';
 
 export const rendererVersion = 'slack-structured-v6';
 export const presentationFormat = 'slack-blocks-v1';
@@ -103,6 +107,11 @@ export interface SlackMessage {
   blocks?: SlackBlock[];
 }
 
+/** Semantic text is construction state, never part of a durable or SDK message. */
+interface RenderedMessage extends SlackMessage {
+  plain: string;
+}
+
 /** Every presentation path uses the same block and serialized-payload boundary. */
 function presentationFor(message: SlackMessage): ChannelDeliveryPart['presentation'] {
   const blocks = blocksSchema.safeParse(message.blocks);
@@ -183,106 +192,188 @@ function displayUrl(raw: string): boolean {
   }
 }
 
-/** Source atoms are assembled only after prose formatting; emitted URLs/code are immutable. */
 interface InlineDocument {
   text: string;
+  plain: string;
   spans: { start: number; end: number }[];
+  replacements: { start: number; end: number; plain: string }[];
 }
 
-function inlineDocument(value: string, wire: boolean): InlineDocument {
-  let prefix = '\0' + createHash('sha256').update(value).digest('hex') + ':';
-  while (value.includes(prefix)) prefix += ':';
-  const atoms: string[] = [];
-  const hold = (atom: string) => `${prefix}${atoms.push(atom) - 1}\0`;
-  const nextTickEnd = new Map<number, number>();
-  const previousTick = new Map<number, number>();
-  const ticks = /`+/g;
-  let tick: RegExpExecArray | null;
-  while ((tick = ticks.exec(value))) {
-    const previous = previousTick.get(tick[0].length);
-    if (previous !== undefined) nextTickEnd.set(previous, ticks.lastIndex);
-    previousTick.set(tick[0].length, tick.index);
+interface MarkdownDocument {
+  source: string;
+  root: Root;
+  definitions: Map<string, Definition>;
+}
+
+function bounds(node: Nodes): [number, number] {
+  const start = node.position?.start.offset;
+  const end = node.position?.end.offset;
+  if (start === undefined || end === undefined) throw new Error('Missing Markdown position');
+  return [start, end];
+}
+
+function parseMarkdown(source: string): MarkdownDocument {
+  const root = fromMarkdown(source, {
+    // Slack renders no HTML; keep HTML-looking mentions as text, not opaque HTML blocks.
+    extensions: [gfm(), { disable: { null: ['htmlFlow', 'htmlText'] } }],
+    mdastExtensions: [gfmFromMarkdown()],
+  });
+  const definitions = new Map<string, Definition>();
+  const pending: Nodes[] = [root];
+  while (pending.length) {
+    const node = pending.pop()!;
+    if (node.type === 'definition' && !definitions.has(node.identifier))
+      definitions.set(node.identifier, node);
+    if ('children' in node)
+      for (let index = node.children.length - 1; index >= 0; index--)
+        pending.push(node.children[index]);
   }
-  const starts = /^ {0,3}(`{3,}|~{3,})[^\n]*(?:\n|$)|`+|\[([^\][\n]+)\]\(/gm;
-  let cursor = 0;
-  let subject = '';
-  let start: RegExpExecArray | null;
-  while ((start = starts.exec(value))) {
-    let end = -1;
-    let atom = '';
-    let trailing = '';
-    const marker = start[1];
-    const label = start[2];
-    if (label !== undefined) {
-      let depth = 1;
-      let url = '';
-      end = starts.lastIndex;
-      for (; end < value.length; end++) {
-        let char = value[end];
-        if (char === '\\' && /[()\\]/.test(value[end + 1] ?? '')) {
-          char = value[++end];
-          url += char;
-          continue;
-        }
-        if (/\s/.test(char)) break;
-        if (char === '(') depth++;
-        if (char === ')' && --depth === 0) break;
-        url += char;
-      }
-      if (depth !== 0) {
-        starts.lastIndex = end;
-        continue;
-      }
-      end++;
-      if (!displayUrl(url)) atom = wire ? escapeSlackText(label) : label;
-      else if (wire) atom = `<${escapeSlackText(url)}|${escapeSlackText(label)}>`;
-      else atom = value.slice(start.index, end);
-    } else {
-      if (marker) {
-        const closing = new RegExp(`^ {0,3}${marker[0]}{${marker.length},}[ \t]*(?:\n|$)`, 'gm');
-        closing.lastIndex = starts.lastIndex;
-        end = closing.exec(value) ? closing.lastIndex : value.length;
-      } else {
-        end = nextTickEnd.get(start.index) ?? -1;
-      }
-      if (end < 0) continue;
-      const raw = value.slice(start.index, end);
-      // Keep document line boundaries visible to heading formatting outside the opaque atom.
-      trailing = raw.endsWith('\n') ? '\n' : '';
-      const literal = trailing ? raw.slice(0, -1) : raw;
-      atom = wire ? escapeSlackText(literal) : literal;
-    }
-    subject += value.slice(cursor, start.index) + hold(atom) + trailing;
-    cursor = end;
-    starts.lastIndex = end;
-  }
-  subject += value.slice(cursor);
-  if (wire)
-    subject = escapeSlackText(subject)
-      .replace(/\*\*([^*]+)\*\*/g, '*$1*')
-      .replace(/__([^_]+)__/g, '*$1*')
-      .replace(/^#{1,6}\s+(.+)$/gm, '*$1*');
-  const spans: InlineDocument['spans'] = [];
-  const placeholders = new RegExp(`${prefix}(\\d+)\0`, 'g');
+  return { source, root, definitions };
+}
+
+function labelText(node: Nodes): string {
   let text = '';
-  let restored = 0;
-  let placeholder: RegExpExecArray | null;
-  while ((placeholder = placeholders.exec(subject))) {
-    text += subject.slice(restored, placeholder.index);
-    const start = text.length;
-    text += atoms[Number(placeholder[1])];
-    spans.push({ start, end: text.length });
-    restored = placeholders.lastIndex;
+  const pending: Nodes[] = [node];
+  while (pending.length) {
+    const child = pending.pop()!;
+    if ('children' in child) {
+      for (let index = child.children.length - 1; index >= 0; index--)
+        pending.push(child.children[index]);
+    } else if ('value' in child) text += child.value;
+    else if ('alt' in child) text += child.alt ?? '';
+    else if (child.type === 'break') text += '\n';
   }
-  return { text: text + subject.slice(restored), spans };
+  return text;
 }
 
-function sanitizedLinks(value: string): string {
-  return inlineDocument(value, false).text;
+/** Parse once; the AST owns grammar and emitted links/code never reenter a formatter. */
+function inlineDocument(document: MarkdownDocument, initial: Nodes, wire = true): InlineDocument {
+  const output: InlineDocument = { text: '', plain: '', spans: [], replacements: [] };
+  type Task =
+    | { node: Nodes }
+    | { text: string; plain: string; atomic?: boolean }
+    | { end: { start: number; end: number } };
+  const pending: Task[] = [{ node: initial }];
+  const raw = (node: Nodes) => document.source.slice(...bounds(node));
+  const literal = (value: string): Task => ({
+    text: wire ? escapeSlackText(value) : value,
+    plain: value,
+  });
+  while (pending.length) {
+    const task = pending.pop()!;
+    if ('end' in task) {
+      task.end.end = output.text.length;
+      continue;
+    }
+    if ('text' in task) {
+      const start = output.text.length;
+      output.text += task.text;
+      output.plain += task.plain;
+      const end = output.text.length;
+      if (task.atomic) output.spans.push({ start, end });
+      if (task.plain !== decodeSlackText(task.text))
+        output.replacements.push({ start, end, plain: task.plain });
+      continue;
+    }
+    const node = task.node;
+    if (
+      node.type === 'link' ||
+      node.type === 'image' ||
+      node.type === 'linkReference' ||
+      node.type === 'imageReference'
+    ) {
+      const target = 'url' in node ? node : document.definitions.get(node.identifier);
+      const label = labelText(node);
+      const url = target?.url;
+      if (url && displayUrl(url)) {
+        pending.push({
+          text: wire
+            ? '<' +
+              escapeSlackText(url) +
+              (label === url ? '' : '|' + escapeSlackText(label || url)) +
+              '>'
+            : raw(node),
+          plain: label && label !== url ? label + ' (' + url + ')' : url,
+          atomic: true,
+        });
+      } else {
+        // An unsafe autolink's label can itself contain credentials.
+        pending.push(literal(url && label === url ? 'Link unavailable' : label));
+      }
+      continue;
+    }
+    if (node.type === 'definition') {
+      if (!wire && displayUrl(node.url)) pending.push(literal(raw(node)));
+      continue;
+    }
+    if (node.type === 'code' || node.type === 'inlineCode') {
+      pending.push({
+        text: wire ? escapeSlackText(raw(node)) : raw(node),
+        plain: node.value,
+        atomic: true,
+      });
+      continue;
+    }
+    if (node.type === 'text') {
+      pending.push(wire ? literal(node.value) : literal(raw(node)));
+      continue;
+    }
+    if (!('children' in node)) {
+      pending.push(literal(node.type === 'break' && wire ? '\n' : raw(node)));
+      continue;
+    }
+    const style = wire
+      ? (
+          { strong: '*', emphasis: '_', delete: '~', heading: '*' } as Partial<
+            Record<Nodes['type'], string>
+          >
+        )[node.type]
+      : undefined;
+    const children = node.children;
+    const [start, end] = bounds(node);
+    const tasks: Task[] = [];
+    if (style) tasks.push({ text: style, plain: '' });
+    let cursor = style && children.length ? bounds(children[0])[0] : start;
+    for (const child of children) {
+      const [childStart, childEnd] = bounds(child);
+      if (cursor < childStart) tasks.push(literal(document.source.slice(cursor, childStart)));
+      tasks.push({ node: child });
+      cursor = childEnd;
+    }
+    if (!style && cursor < end) tasks.push(literal(document.source.slice(cursor, end)));
+    if (style) {
+      const span = { start: output.text.length, end: 0 };
+      output.spans.push(span);
+      tasks.push({ text: style, plain: '' }, { end: span });
+    }
+    for (let index = tasks.length - 1; index >= 0; index--) pending.push(tasks[index]);
+  }
+  return output;
+}
+
+function decodeSlackText(value: string): string {
+  return value.replace(/&(amp|lt|gt);/g, (_match, entity: string) => {
+    if (entity === 'amp') return '&';
+    if (entity === 'lt') return '<';
+    return '>';
+  });
+}
+
+function plainSlice(document: InlineDocument, start: number, end: number): string {
+  let plain = '';
+  let cursor = start;
+  for (const replacement of document.replacements) {
+    if (replacement.end <= start) continue;
+    if (replacement.start >= end) break;
+    plain += decodeSlackText(document.text.slice(cursor, replacement.start)) + replacement.plain;
+    cursor = replacement.end;
+  }
+  return plain + decodeSlackText(document.text.slice(cursor, end));
 }
 
 export function safeMrkdwn(value: string): string {
-  return inlineDocument(value, true).text;
+  const document = parseMarkdown(value);
+  return inlineDocument(document, document.root).text;
 }
 
 /** Byte limits are stricter than Slack's character limits and never split a code point. */
@@ -313,20 +404,6 @@ export function chunkText(value: string, limit: number): string[] {
 function mrkdwnChunks(document: InlineDocument, limit: number): string[] | null {
   const value = document.text;
   const protectedEnds = new Map(document.spans.map((span) => [span.start, span.end]));
-  const nextStyleEnd = new Map<number, number>();
-  const previousStyle = new Map<string, number>();
-  const styles = /[*_~]/g;
-  let style: RegExpExecArray | null;
-  let spanIndex = 0;
-  while ((style = styles.exec(value))) {
-    while (spanIndex < document.spans.length && document.spans[spanIndex].end <= style.index)
-      spanIndex++;
-    const span = document.spans[spanIndex];
-    if (span && span.start <= style.index) continue;
-    const previous = previousStyle.get(style[0]);
-    if (previous !== undefined) nextStyleEnd.set(previous, styles.lastIndex);
-    previousStyle.set(style[0], style.index);
-  }
   const chunks: string[] = [];
   let chunk = '';
   let bytes = 0;
@@ -344,7 +421,7 @@ function mrkdwnChunks(document: InlineDocument, limit: number): string[] | null 
     }
   };
   for (let index = 0; index < value.length; ) {
-    let end = protectedEnds.get(index) ?? nextStyleEnd.get(index);
+    let end = protectedEnds.get(index);
     if (end === undefined && value[index] === '&') {
       if (value.startsWith('&amp;', index)) end = index + 5;
       else if (value.startsWith('&lt;', index) || value.startsWith('&gt;', index)) end = index + 4;
@@ -372,166 +449,167 @@ function mrkdwnChunks(document: InlineDocument, limit: number): string[] | null 
   return chunks;
 }
 
-function plainMessage(value: string): SlackMessage {
+/** Escape before packing so entity expansion also obeys the wire byte budget. */
+function plainChunks(value: string, limit: number): string[] {
+  return (
+    mrkdwnChunks(
+      { text: escapeSlackText(value), plain: value, spans: [], replacements: [] },
+      limit,
+    ) ?? []
+  ).map(decodeSlackText);
+}
+
+function plainMessage(value: string): RenderedMessage {
   return {
-    text: value,
-    blocks: chunkText(
-      value.replace(/&(amp|lt|gt);/g, (_match, entity: string) => {
-        if (entity === 'amp') return '&';
-        if (entity === 'lt') return '<';
-        return '>';
-      }),
-      2800,
-    ).map((chunk) => ({
+    text: escapeSlackText(value),
+    plain: value,
+    blocks: plainChunks(value, 2800).map((chunk) => ({
       type: 'section',
       text: { type: 'plain_text', text: chunk },
     })),
   };
 }
 
-function tableRow(line: string): { type: 'raw_text'; text: string }[] {
-  return line
-    .trim()
-    .replace(/^\||\|$/g, '')
-    .split('|')
-    .map((cell) => ({
-      type: 'raw_text',
-      text: cell.trim(),
-    }));
-}
-
-function tableDivider(line: string): boolean {
-  return line.includes('|') && tableRow(line).every((cell) => /^:?-{3,}:?$/.test(cell.text));
-}
-
-export function renderSlackDocument(markdown: string): SlackMessage[] {
-  const parts: SlackMessage[] = [];
-  let current: SlackMessage = { text: '', blocks: [] };
+export function renderSlackDocument(markdown: string): RenderedMessage[] {
+  const document = parseMarkdown(markdown);
+  const parts: RenderedMessage[] = [];
+  let current: RenderedMessage = { text: '', plain: '', blocks: [] };
   const flush = () => {
     if (current.text || current.blocks?.length) {
       parts.push(current);
-      current = { text: '', blocks: [] };
+      current = { text: '', plain: '', blocks: [] };
     }
   };
-  const add = (fallback: string, block: SlackBlock) => {
+  const add = (fallback: string, block: SlackBlock, plain: string) => {
     if (
       (current.blocks?.length ?? 0) >= 40 ||
       Buffer.byteLength(current.text + fallback) + 2 > chunkLimit
-    ) {
+    )
       flush();
-    }
-    current.text += (current.text ? '\n\n' : '') + fallback;
+    const separator = current.text ? '\n\n' : '';
+    current.text += separator + fallback;
+    current.plain += separator + plain;
     current.blocks?.push(block);
   };
-  const prose = (value: string) => {
-    const formatted = mrkdwnChunks(inlineDocument(value, true), 2800);
+  const prose = (node: Nodes) => {
+    const inline = inlineDocument(document, node);
+    const formatted = mrkdwnChunks(inline, 2800);
     if (!formatted) {
-      for (const chunk of chunkText(value, 2800)) {
+      for (const chunk of plainChunks(inline.plain, 2800)) {
         if (chunk.trim())
-          add(escapeSlackText(chunk), {
-            type: 'section',
-            text: { type: 'plain_text', text: chunk },
-          });
+          add(
+            escapeSlackText(chunk),
+            {
+              type: 'section',
+              text: { type: 'plain_text', text: chunk },
+            },
+            chunk,
+          );
       }
       return;
     }
+    let offset = 0;
     for (const chunk of formatted) {
       if (chunk.trim())
-        add(chunk, { type: 'section', text: { type: 'mrkdwn', text: chunk }, expand: true });
+        add(
+          chunk,
+          {
+            type: 'section',
+            text: { type: 'mrkdwn', text: chunk },
+            expand: true,
+          },
+          plainSlice(inline, offset, offset + chunk.length),
+        );
+      offset += chunk.length;
     }
   };
-  const lines = markdown.replace(/\r\n/g, '\n').split('\n');
-  for (let index = 0; index < lines.length; ) {
-    const line = lines[index];
-    const trimmed = line.trim();
-    const marker = /^(`{3,}|~{3,})/.exec(trimmed)?.[0];
-    if (marker) {
-      const closing = new RegExp(`^${marker[0]}{${marker.length},}[ \t]*$`);
-      const code: string[] = [];
-      index++;
-      while (index < lines.length && !closing.test(lines[index].trim())) {
-        code.push(lines[index++]);
-      }
-      if (index < lines.length) {
-        index++;
-      }
-      for (const chunk of chunkText(code.join('\n'), 2700)) {
-        if (!chunk) {
-          add('```\n\n```', { type: 'section', text: { type: 'mrkdwn', text: '```\n\n```' } });
-        } else {
-          add('```\n' + escapeSlackText(chunk) + '\n```', {
-            type: 'rich_text',
-            elements: [
-              { type: 'rich_text_preformatted', elements: [{ type: 'text', text: chunk }] },
-            ],
-          });
-        }
+  for (const node of document.root.children) {
+    if (node.type === 'definition') continue;
+    if (node.type === 'code') {
+      for (const chunk of plainChunks(node.value, 2700)) {
+        if (!chunk)
+          add(
+            '```\n\n```',
+            {
+              type: 'section',
+              text: { type: 'mrkdwn', text: '```\n\n```' },
+            },
+            '',
+          );
+        else
+          add(
+            '```\n' + escapeSlackText(chunk) + '\n```',
+            {
+              type: 'rich_text',
+              elements: [
+                { type: 'rich_text_preformatted', elements: [{ type: 'text', text: chunk }] },
+              ],
+            },
+            chunk,
+          );
       }
       continue;
     }
-    if (index + 1 < lines.length && line.includes('|') && tableDivider(lines[index + 1])) {
-      const start = index;
-      const rows = [tableRow(line)];
-      index += 2;
-      while (index < lines.length && lines[index].includes('|') && lines[index].trim()) {
-        rows.push(tableRow(lines[index++]));
-      }
-      const fallback = safeMrkdwn(lines.slice(start, index).join('\n'));
+    if (node.type === 'table') {
+      const rows = node.children.map((row) =>
+        row.children.map((cell) => ({
+          type: 'raw_text',
+          text: inlineDocument(document, cell).plain,
+        })),
+      );
+      const inline = inlineDocument(document, node);
       const block = blockSchema.safeParse({ type: 'table', rows });
-      if (block.success && Buffer.byteLength(fallback) <= 2800) {
+      if (block.success && Buffer.byteLength(inline.text) <= 2800) {
         flush();
-        add(fallback, block.data);
+        add(inline.text, block.data, inline.plain);
         flush();
-      } else {
-        prose(lines.slice(start, index).join('\n'));
-      }
+      } else prose(node);
       continue;
     }
-    if (trimmed === '---' || trimmed === '***') {
-      add('────────', { type: 'divider' });
-      index++;
+    if (node.type === 'thematicBreak') {
+      add('────────', { type: 'divider' }, '────────');
       continue;
     }
-    const heading = /^#+\s+(.+)$/.exec(trimmed)?.[1];
-    if (heading && heading.length <= 150) {
-      add('*' + escapeSlackText(heading) + '*', {
-        type: 'header',
-        text: { type: 'plain_text', text: heading },
-      });
-      index++;
-      continue;
-    }
-    if (!trimmed) {
-      index++;
-      continue;
-    }
-    const start = index++;
-    while (index < lines.length) {
-      const next = lines[index].trim();
+    if (node.type === 'heading') {
+      const inline = inlineDocument(document, node);
       if (
-        !next ||
-        /^(#|```|~~~)/.test(next) ||
-        next === '---' ||
-        next === '***' ||
-        (index + 1 < lines.length && tableDivider(lines[index + 1]))
+        inline.plain &&
+        withinCharacters(inline.plain, 150) &&
+        Buffer.byteLength(inline.text) <= 2800
       ) {
-        break;
+        add(
+          inline.text,
+          { type: 'header', text: { type: 'plain_text', text: inline.plain } },
+          inline.plain,
+        );
+        continue;
       }
-      index++;
     }
-    prose(lines.slice(start, index).join('\n'));
+    prose(node);
   }
   flush();
-  return parts.length ? parts : [{ text: '_(the agent returned an empty reply)_' }];
+  return parts.length
+    ? parts
+    : [
+        {
+          text: '_(the agent returned an empty reply)_',
+          plain: '(the agent returned an empty reply)',
+        },
+      ];
 }
 
-export function renderAgentAnswer(value: string): SlackMessage[] {
+export function renderAgentAnswer(value: string): RenderedMessage[] {
   if (!value.trim() || !withinCharacters(value, 12_000) || /<[@!#]/.test(value)) {
     return renderSlackDocument(value);
   }
-  const fallback = safeMrkdwn(value);
-  if (Buffer.byteLength(fallback) > chunkLimit) return renderSlackDocument(value);
-  return [{ text: fallback, blocks: [{ type: 'markdown', text: sanitizedLinks(value) }] }];
+  const document = parseMarkdown(value);
+  const fallback = inlineDocument(document, document.root);
+  if (Buffer.byteLength(fallback.text) > chunkLimit) return renderSlackDocument(value);
+  const native = inlineDocument(document, document.root, false).text;
+  if (!withinCharacters(native, 12000)) return renderSlackDocument(value);
+  return [
+    { text: fallback.text, plain: fallback.plain, blocks: [{ type: 'markdown', text: native }] },
+  ];
 }
 
 const decimal = /^(0|[1-9][0-9]{0,63})(\.[0-9]{1,18})?$/;
@@ -706,7 +784,7 @@ function threadDetails(run: ChannelRunView): string[] {
   return parts;
 }
 
-function appendFooter(parts: SlackMessage[], run: ChannelRunView): void {
+function appendFooter(parts: RenderedMessage[], run: ChannelRunView): void {
   const snapshot = run.snapshot;
   if (!snapshot) {
     throw new Error('Missing run snapshot');
@@ -738,17 +816,20 @@ function appendFooter(parts: SlackMessage[], run: ChannelRunView): void {
     (last.blocks?.length ?? 0) >= 40 ||
     Buffer.byteLength(last.text + fallback) > chunkLimit
   ) {
-    last = { text: '', blocks: [] };
+    last = { text: '', plain: '', blocks: [] };
     parts.push(last);
   }
+  const footer = parseMarkdown(fallback);
+  last.plain =
+    (last.plain ?? decodeSlackText(last.text)) + inlineDocument(footer, footer.root).plain;
   last.text += fallback;
   (last.blocks ??= []).push({ type: 'context', elements: [{ type: 'mrkdwn', text: line }] });
 }
 
-function appendFeedback(parts: SlackMessage[]): void {
+function appendFeedback(parts: RenderedMessage[]): void {
   let last = parts[parts.length - 1];
   if (!last || (last.blocks?.length ?? 0) >= 40) {
-    last = { text: 'Answer feedback', blocks: [] };
+    last = { text: 'Answer feedback', plain: 'Answer feedback', blocks: [] };
     parts.push(last);
   }
   (last.blocks ??= []).push({
@@ -829,8 +910,8 @@ export function makeSlackPlan(
   if (messages.length > budget) {
     const notice =
       '\n\nReply shortened to fit this channel’s delivery limit. The full answer remains in the saved execution.';
-    const plain = chunkText(
-      messages.map((message) => message.text).join('\n\n'),
+    const plain = plainChunks(
+      messages.map((message) => message.plain).join('\n\n'),
       chunkLimit - Buffer.byteLength(notice),
     );
     const selected = plain.slice(0, budget);
@@ -924,7 +1005,8 @@ export function makeSlackPlan(
     ];
     // Preserve formatting when it fits; fallback obeys the same block and payload boundary.
     last.presentation =
-      presentationFor({ text: last.text, blocks }) ?? presentationFor(plainMessage(last.text));
+      presentationFor({ text: last.text, blocks }) ??
+      presentationFor(plainMessage(messages[required.length - 1].plain + notice));
   }
   const plan = { revision: '', rendererVersion, parts };
   plan.revision = createHash('sha256').update(JSON.stringify(plan)).digest('hex');
