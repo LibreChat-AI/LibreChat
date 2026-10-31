@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useStore, useSetAtom } from 'jotai';
 import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
-import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { buildRecoveryPreset, shouldResetSubagentAtomsOnConversationChange } from '@librechat/chat';
 import {
   useStepHandler,
@@ -14,13 +13,9 @@ import {
 import type { TMessage, TConversation, EventSubmission } from 'librechat-data-provider';
 import type { EventHandlerContext } from './handlers';
 import type { ConvoGenerator } from '~/common';
-import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
-import { useReconcileConversationCodeEnvironmentMutation } from '~/data-provider';
-import { getFailedCodeDecisionRequest } from '~/hooks/Agents/codeDecision';
 import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
 import useContentHandler from '~/hooks/SSE/useContentHandler';
-import { useApplyAgentTemplate } from '~/hooks/Agents';
-import { useLiveAnnouncer } from '~/Providers';
+import useEventServices from './services';
 import useTurnHandlers from './opening';
 import useAbortHandlers from './abort';
 import useFinalHandler from './final';
@@ -60,22 +55,20 @@ export default function useEventHandlers({
 }: EventHandlerParams) {
   const queryClient = useQueryClient();
   const reasoningStore = useStore();
-  const { announcePolite } = useLiveAnnouncer();
-  const applyAgentTemplate = useApplyAgentTemplate();
+  const services = useEventServices({ setConversation });
+  const { announce: announcePolite } = services.focus;
+  const reconcileFailedCode = services.templates.reconcileFailedCode;
   /** Cleared on every terminal path below: the elapsed anchor must not outlive
    *  its generation, or a later externally-started run attached at this index
    *  would inherit a stale baseline. Navigation teardown deliberately does not
    *  clear it: a reattach to a still-live run keeps its original start. */
   const setSubmissionStart = useSetAtom(submissionStartFamily(runIndex));
-  const { mutate: reconcileCodeDecision } =
-    useReconcileConversationCodeEnvironmentMutation(setConversation);
   const reconcileFailedCodeDecision = useCallback(
     (submission: EventSubmission, conversationId?: string) => {
       if (isAddedRequest) return;
-      const request = getFailedCodeDecisionRequest(submission, conversationId);
-      if (request != null) reconcileCodeDecision(request);
+      reconcileFailedCode(submission, conversationId);
     },
-    [isAddedRequest, reconcileCodeDecision],
+    [isAddedRequest, reconcileFailedCode],
   );
 
   const recoverConversation = useCallback(
@@ -106,8 +99,6 @@ export default function useEventHandlers({
     },
     [newConversation, queryClient],
   );
-  const navigate = useNavigate();
-  const location = useLocation();
 
   /** Re-stage request context when an early abort restores the draft, so a
    *  retry keeps the references and one-shot reasoning selection already
@@ -128,7 +119,7 @@ export default function useEventHandlers({
   );
 
   const lastAnnouncementTimeRef = useRef(Date.now());
-  const { conversationId: paramId } = useParams();
+  const paramId = services.navigation.conversationId;
 
   const { contentHandler, resetContentHandler } = useContentHandler({ setMessages, getMessages });
   /** `refetchType: 'all'` so cached-but-unmounted skill queries refresh too:
@@ -217,8 +208,6 @@ export default function useEventHandlers({
     [resetSubagentAtoms, resetPtcAtoms],
   );
 
-  const focusRegeneratedResponse = useFocusRegeneratedResponse();
-
   const ctx: EventHandlerContext = {
     queryClient,
     setMessages,
@@ -230,13 +219,8 @@ export default function useEventHandlers({
     setIsSubmitting,
     setShowStopButton,
     setSubmissionStart,
-    announcePolite,
+    services,
     lastAnnouncementTimeRef,
-    applyAgentTemplate,
-    focusRegeneratedResponse,
-    location,
-    navigate,
-    paramId,
     restorePendingContext,
     reconcileFailedCodeDecision,
     recoverConversation,

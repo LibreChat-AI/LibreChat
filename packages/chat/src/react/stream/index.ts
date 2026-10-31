@@ -35,3 +35,18 @@ export type {
   ResumableStreamParams,
   ParentSubagentIndexQuery,
 } from './host';
+export type {
+  ReplyStamp,
+  DraftServices,
+  EventServices,
+  TitleServices,
+  FocusServices,
+  AbortRunRequest,
+  TemplateRequest,
+  TemplateServices,
+  ConvoTitleRequest,
+  NavigationServices,
+  EventServicesParams,
+  EventTransportServices,
+  ConversationCacheServices,
+} from './services';
