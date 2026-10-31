@@ -288,6 +288,35 @@ function fixture() {
 }
 
 describe('durable Channels worker', () => {
+  test('a reduced server delivery budget reaches the persisted plan and completes without optional uploads', async () => {
+    const f = fixture();
+    f.bundle.delivery = { maxDeliveryParts: 1 };
+    f.hooks.advance = () => {
+      f.state.state = 'delivering';
+      f.state.snapshot = {
+        status: 'completed',
+        text: 'Final answer',
+        responseId: 'resp_test',
+        elapsedMs: 200,
+        artifacts: [
+          {
+            artifactId: 'file-1',
+            filename: 'report.txt',
+            mediaType: 'text/plain',
+            bytes: 1,
+            sha256: 'a'.repeat(64),
+          },
+        ],
+      };
+    };
+    await f.execute();
+    expect(f.state.plan?.parts).toHaveLength(1);
+    expect(f.state.plan?.parts[0].text).toContain('Final answer');
+    expect(f.state.plan?.parts[0].text).toContain('omitted');
+    expect(f.slackRequests.some((request) => request.method.startsWith('files.'))).toBe(false);
+    expect(f.state.state).toBe('delivered');
+  });
+
   test.each([false, true])(
     'uses the current server lifecycle-reaction policy (%s)',
     async (enabled) => {
