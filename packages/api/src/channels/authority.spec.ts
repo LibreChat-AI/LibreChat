@@ -28,6 +28,7 @@ import type {
   ChannelRunSummary,
 } from 'librechat-data-provider';
 import type { IUser, ChannelRunRecord } from '@librechat/data-schemas';
+import type { ChannelResponseCredentialDependencies } from './credentials';
 import type { BackgroundResponsesHost } from '~/agents/responses/host';
 import { createChannelAuthority, channelExternalIdentity } from './authority';
 import { createChannelResponseCredentials } from './credentials';
@@ -257,6 +258,14 @@ beforeEach(async () => {
   app.post('/service/:channelId/runs/:runId/review', runs.review);
   app.post('/service/:channelId/runs/:runId/review/decision', runs.submitReview);
   app.post('/service/:channelId/runs/:runId/plan', runs.plan);
+  app.post('/service/:channelId/runs/:runId/settle', runs.settle);
+  app.post('/service/:channelId/runs/:runId/commit', runs.commit);
+  app.post('/service/:channelId/runs/:runId/progress/plan', runs.planProgress);
+  app.post('/service/:channelId/runs/:runId/progress/begin', runs.beginProgress);
+  app.post('/service/:channelId/runs/:runId/progress/settle', runs.settleProgress);
+  app.post('/service/:channelId/runs/:runId/delivery/reconcile', runs.reconcileDelivery);
+  app.post('/service/:channelId/runs/:runId/progress/reconcile', runs.reconcileProgress);
+
   app.post('/service/:channelId/runs/:runId/begin', runs.begin);
   app.post('/service/:channelId/runs/:runId/artifacts/:artifactId', runs.artifact);
 });
@@ -311,7 +320,7 @@ async function bindFixtureResponse(run: ChannelRunRecord, responseId: string) {
   );
 }
 
-function responseCredentials() {
+function responseCredentials(overrides: Partial<ChannelResponseCredentialDependencies> = {}) {
   const key = randomBytes(32);
   return createChannelResponseCredentials({
     storage,
@@ -336,6 +345,7 @@ function responseCredentials() {
         'utf8',
       );
     },
+    ...overrides,
   });
 }
 
@@ -1331,4 +1341,210 @@ it.each(['revoked', 'expired', 'foreign-binding'] as const)(
       expect(await credentials.authorizeSource(binding, keyId, owner, 'agent')).toBe(false);
       expect(await requestAllowed()).toBe(false);
     })(),
+);
+
+it(
+  'requires persisted cancellation intent for a run-key cancel capability',
+  scoped(async () => {
+    await link('U1', users[0]);
+    await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const run = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+    const credentials = responseCredentials();
+    await credentials.provision(run);
+    const saved = (await storage.read(tenantId, 'channel', run.runId))!;
+    await bindFixtureResponse(saved, 'resp_cancel');
+    const probe = express();
+    probe.post('/probe', async (req, res) => {
+      req.originalUrl = '/api/agents/v1/responses/resp_cancel/cancel';
+      res.json({
+        allowed: await credentials.authorizeRequest({
+          keyId: saved.execution!.apiKeyId!,
+          binding: { kind: 'channel_run', id: `channel/${run.runId}` },
+          user: users[0],
+          request: req,
+        }),
+      });
+    });
+    expect((await request(probe).post('/probe').expect(200)).body.allowed).toBe(false);
+    await storage.requestCancel(saved, saved.runId);
+    expect((await request(probe).post('/probe').expect(200)).body.allowed).toBe(true);
+  }),
+);
+
+it.each([false, true])(
+  'starts independent authorization reads together and evaluates final expiry: %s',
+  (expires) =>
+    scoped(async () => {
+      await link('U1', users[0]);
+      await post('runs').send(event()).expect(201);
+      const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+      const run = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+      await responseCredentials().provision(run);
+      const saved = (await storage.read(tenantId, 'channel', run.runId))!;
+      const key = (await db.getAgentApiKeyById(saved.execution!.apiKeyId!, users[0].id))!;
+      let clock = Date.now();
+      key.expiresAt = new Date(clock + 10);
+      let entered!: () => void;
+      let release!: () => void;
+      const policyEntered = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const policyGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const readKey = jest.fn(async () => key);
+      const credentials = responseCredentials({
+        now: () => clock,
+        getKey: readKey,
+        resolvePrincipal: async () => {
+          entered();
+          await policyGate;
+          return saved.principal;
+        },
+      });
+      const result = credentials.authorizeSource(
+        { kind: 'channel_run', id: `channel/${run.runId}` },
+        saved.execution!.apiKeyId!,
+        { tenantId, userId: users[0].id },
+        'agent',
+      );
+      try {
+        await policyEntered;
+        expect(readKey).toHaveBeenCalledTimes(1);
+        if (expires) clock += 20;
+        release();
+        expect(await result).toBe(!expires);
+      } finally {
+        release();
+        await result.catch(() => undefined);
+      }
+    })(),
+);
+
+it(
+  'reconciles verified unknown delivery once and releases the actor lane without reexecution',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const first = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const next = await post('runs').send(event('U1', 'next')).expect(201);
+    const route = `runs/${admitted.body.runId}`;
+    nextSnapshot = { status: 'completed', text: 'Answer', elapsedMs: 1 };
+    await post(`${route}/advance`).send({ fence: first.body.fence }).expect(200);
+    await post(`${route}/plan`)
+      .send({
+        fence: first.body.fence,
+        plan: {
+          revision: 'plan',
+          rendererVersion: 'test',
+          parts: [{ operationId: 'answer', kind: 'message', required: true, text: 'Answer' }],
+        },
+      })
+      .expect(200);
+    await post(`${route}/begin`)
+      .send({ fence: first.body.fence, operationId: 'answer' })
+      .expect(200);
+    const receipt = { operationId: 'answer', outcome: 'unknown', attempts: 1 };
+    await post(`${route}/settle`).send({ fence: first.body.fence, receipt }).expect(200);
+    await post(`${route}/commit`)
+      .send({ fence: first.body.fence })
+      .expect(409, { error: 'delivery_incomplete' });
+    await post(`${route}/begin`)
+      .send({ fence: first.body.fence, operationId: 'answer' })
+      .expect(409);
+    fakeNow = (await storage.read(tenantId, 'channel', admitted.body.runId))!.leaseExpiresAt + 1;
+    const replacement = await post('runs/claim').send({ owner: 'reconciler' }).expect(200);
+    const fence = replacement.body.fence;
+    const verified = { ...receipt, outcome: 'confirmed', externalMessageKey: 'C1:verified' };
+    await post(`${route}/delivery/reconcile`)
+      .send({ fence: first.body.fence, receipt: verified })
+      .expect(409);
+    await post(`${route}/delivery/reconcile`)
+      .send({ fence, receipt: { ...verified, attempts: 2 } })
+      .expect(409);
+    await post(`${route}/delivery/reconcile`)
+      .send({ fence, receipt: { ...verified, externalMessageKey: 'C2:foreign' } })
+      .expect(400);
+    await post(`${route}/delivery/reconcile`)
+      .send({ fence, receipt: { ...receipt, outcome: 'confirmed' } })
+      .expect(409);
+    await post(`${route}/delivery/reconcile`).send({ fence, receipt: verified }).expect(200);
+    await post(`${route}/delivery/reconcile`).send({ fence, receipt: verified }).expect(200);
+    await post(`${route}/delivery/reconcile`)
+      .send({ fence, receipt: { ...verified, externalMessageKey: 'C1:changed' } })
+      .expect(409);
+    const delivered = await post(`${route}/commit`).send({ fence }).expect(200);
+    expect(delivered.body.state).toBe('delivered');
+    expect(delivered.body.receipts[0]).toMatchObject({
+      outcome: 'confirmed',
+      attempts: 1,
+      externalMessageKey: 'C1:verified',
+    });
+    expect(invoked).toHaveLength(1);
+    const nextClaim = await post('runs/claim').send({ owner: 'next-worker' }).expect(200);
+    expect(nextClaim.body.run.runId).toBe(next.body.runId);
+  }),
+);
+
+it(
+  'reconciles verified unknown progress with the same revision and provider identity',
+  scoped(async () => {
+    await link('U1', users[0]);
+    const admitted = await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const fence = claimed.body.fence;
+    const route = `runs/${admitted.body.runId}/progress`;
+    await post(`${route}/plan`)
+      .send({ fence, revision: 1, rendererVersion: 'test', text: 'Working' })
+      .expect(200);
+    await post(`${route}/begin`).send({ fence, revision: 1 }).expect(200);
+    await post(`${route}/settle`)
+      .send({ fence, revision: 1, receipt: { outcome: 'unknown', attempts: 1 } })
+      .expect(200);
+    const receipt = { outcome: 'confirmed', attempts: 1, externalMessageKey: 'C1:progress' };
+    await post(`${route}/reconcile`).send({ fence, revision: 2, receipt }).expect(409);
+    await post(`${route}/reconcile`)
+      .send({ fence, revision: 1, receipt: { ...receipt, externalMessageKey: 'C2:foreign' } })
+      .expect(400);
+    await post(`${route}/reconcile`).send({ fence, revision: 1, receipt }).expect(200);
+    await post(`${route}/reconcile`).send({ fence, revision: 1, receipt }).expect(200);
+    await post(`${route}/reconcile`)
+      .send({ fence, revision: 1, receipt: { ...receipt, externalMessageKey: 'C1:changed' } })
+      .expect(409);
+    const updated = await post(`${route}/plan`)
+      .send({ fence, revision: 2, rendererVersion: 'test', text: 'Updated' })
+      .expect(200);
+    expect(updated.body.progress).toMatchObject({
+      revision: 2,
+      text: 'Updated',
+      externalMessageKey: 'C1:progress',
+    });
+  }),
+);
+
+it(
+  'propagates key lookup outages without converting them to revocation',
+  scoped(async () => {
+    await link('U1', users[0]);
+    await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const run = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+    await responseCredentials().provision(run);
+    const saved = (await storage.read(tenantId, 'channel', run.runId))!;
+    const credentials = responseCredentials({
+      getKey: async () => {
+        throw new Error('key store unavailable');
+      },
+    });
+    await expect(
+      credentials.authorizeSource(
+        { kind: 'channel_run', id: `channel/${run.runId}` },
+        saved.execution!.apiKeyId!,
+        { tenantId, userId: users[0].id },
+        'agent',
+      ),
+    ).rejects.toThrow('key store unavailable');
+    expect((await storage.read(tenantId, 'channel', run.runId))?.cancellationRequested).toBe(false);
+  }),
 );

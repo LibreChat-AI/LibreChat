@@ -5,11 +5,15 @@ import {
   createModels,
   createMethods,
   createChannelRunStorage,
+  createResponseStorage,
   runAsSystem,
   tenantStorage,
 } from '@librechat/data-schemas';
 import type { ChannelRunRecord } from '@librechat/data-schemas';
 import type { ChannelCleanupDependencies } from './cleanup';
+import { createResponseRetirement } from '~/agents/responses/retirement';
+import { createChannelResponseRetirement } from './responses';
+import { createChannelExecutionAdapter } from './execution';
 import { createChannelCleanupRuntime } from './cleanup';
 import * as recovery from '~/agents/recovery';
 
@@ -47,6 +51,7 @@ beforeEach(async () => {
         'ChannelIdentity',
         'ChannelScope',
         'ResponseScope',
+        'StoredResponse',
       ].map((name) => mongoose.models[name].deleteMany({})),
     ),
   );
@@ -541,3 +546,84 @@ it('does not reopen when a pending initialization rejects during shutdown', asyn
   expect(read).toHaveBeenCalledTimes(1);
   expect(retired).toHaveLength(0);
 });
+
+it.each([false, true])(
+  'releases an expired Response lane only after canonical retirement proof: pending=%s',
+  async (pending) => {
+    await admit();
+    const claimed = (await scope(() =>
+      storage.claim(tenantId, 'channel', 'worker', clock, 60000),
+    ))!;
+    const fence = { runId: claimed.runId, owner: claimed.leaseOwner!, epoch: claimed.leaseEpoch };
+    const prepared = await scope(() => storage.prepareExecution(tenantId, fence, clock));
+    await scope(() =>
+      storage.attachResponseCredential(
+        tenantId,
+        fence,
+        { apiKeyId: 'issued', encryptedApiKey: 'encrypted' },
+        clock,
+      ),
+    );
+    const responses = createResponseStorage(mongoose);
+    const execution = prepared.execution!;
+    const owner = { userId: prepared.principal.userId, tenantId };
+    const responseId = `resp_${prepared.runId}`;
+    const reservation = await scope(() =>
+      responses.reserve({
+        ...owner,
+        responseId,
+        requestKey: `channel:${prepared.runId}`,
+        sourceKeyId: 'issued',
+        fingerprint: 'cleanup',
+        agentId: prepared.agentId,
+        requestJSON: JSON.stringify({
+          model: prepared.agentId,
+          input: prepared.admission.input,
+          background: true,
+          store: true,
+          ...(execution.parentMessageId === '00000000-0000-0000-0000-000000000000'
+            ? {}
+            : { previous_response_id: execution.parentMessageId }),
+        }),
+        conversationId: execution.conversationId,
+        parentMessageId: execution.parentMessageId,
+      }),
+    );
+    if (!reservation.ok) throw new Error('Reservation failed');
+    await scope(() => storage.bindResponse(tenantId, fence, responseId, clock));
+    await scope(() =>
+      mongoose.models.StoredResponse.updateOne(
+        { responseId },
+        { $set: { expiredAt: new Date(0), ...(pending ? { generationCreatedAt: 1234 } : {}) } },
+      ),
+    );
+    const jobs = {
+      getJob: jest.fn(async () => undefined),
+      abortJob: jest.fn(),
+      finishProviderTerminalPersistence: jest.fn(),
+    };
+    const adapter = createChannelExecutionAdapter({
+      responseProjection: async () => {
+        throw new Error('Cleanup must not project or execute');
+      },
+      responseRetirement: createChannelResponseRetirement({
+        storage: responses,
+        recovery: storage,
+        retireResponse: createResponseRetirement({ storage: responses, jobs }),
+      }),
+    });
+    deps.retireForAuthorityLoss = adapter.retireForAuthorityLoss;
+    deps.isCredentialCurrent = async () => false;
+    await runtime.initialize();
+    await runtime.stop();
+    const next = await admit('next');
+    const nextClaim = await scope(() =>
+      storage.claim(tenantId, 'channel', 'next-worker', clock + 60001, 60000),
+    );
+    if (pending) {
+      expect(nextClaim?.runId).toBe(claimed.runId);
+      expect(nextClaim?.errorCode).toBe('channel_authority_changed');
+    } else expect(nextClaim?.runId).toBe(next.run.runId);
+    expect(jobs.abortJob).not.toHaveBeenCalled();
+  },
+);

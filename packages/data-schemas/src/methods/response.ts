@@ -52,7 +52,8 @@ export type ResponseMutationResult =
   | { ok: true; record: StoredResponseRecord }
   | { ok: false; code: 'response_conflict' };
 
-/** Internal drain identity only; expired requests, answers and decisions are never returned. */
+/** Internal drain identity only; expired requests, answers and decisions are never returned.
+ * Stored rows include immutable request binding; older retained job identities may omit it. */
 export type ResponseCleanupIdentity = Pick<
   StoredResponseRecord,
   | 'userId'
@@ -62,13 +63,14 @@ export type ResponseCleanupIdentity = Pick<
   | 'conversationId'
   | 'generationCreatedAt'
   | 'expiredAt'
-> & {
-  /** Cleanup authority only; never permission to read output or execute a provider. */
-  retirement?: 'owner_deleted' | 'conversation_deleted' | 'expired';
-  checkpointNamespace?: string;
-  checkpointConfigJSON?: string;
-  requiresCheckpointCleanup?: boolean;
-};
+> &
+  Partial<Pick<StoredResponseRecord, 'requestKey' | 'sourceKeyId' | 'parentMessageId'>> & {
+    /** Cleanup authority only; never permission to read output or execute a provider. */
+    retirement?: 'owner_deleted' | 'conversation_deleted' | 'expired';
+    checkpointNamespace?: string;
+    checkpointConfigJSON?: string;
+    requiresCheckpointCleanup?: boolean;
+  };
 
 export interface ResponseResumeReservation
   extends Omit<ResponseResumeIntent, 'state' | 'reservedAt' | 'admittedAt'> {
@@ -851,7 +853,7 @@ export function createResponseStorage(
       const record = await model
         .findOne({ ...ownerScope(owner), responseId })
         .select(
-          'userId tenantId responseId agentId conversationId generationCreatedAt expiredAt pendingTerminal.checkpointNamespace pendingTerminal.checkpointConfigJSON preparedTerminal.checkpointNamespace preparedTerminal.checkpointConfigJSON review.checkpointConfigJSON review.providerExecutionId',
+          'userId tenantId responseId agentId conversationId requestKey sourceKeyId parentMessageId generationCreatedAt expiredAt pendingTerminal.checkpointNamespace pendingTerminal.checkpointConfigJSON preparedTerminal.checkpointNamespace preparedTerminal.checkpointConfigJSON review.checkpointConfigJSON review.providerExecutionId',
         )
         .lean();
       // Retained data comes only from an internal job/receipt, never request input.
@@ -928,6 +930,9 @@ export function createResponseStorage(
         responseId: id,
         agentId,
         conversationId,
+        ...(source.requestKey == null ? {} : { requestKey: source.requestKey }),
+        ...(source.sourceKeyId == null ? {} : { sourceKeyId: source.sourceKeyId }),
+        ...(source.parentMessageId == null ? {} : { parentMessageId: source.parentMessageId }),
         generationCreatedAt:
           generationCreatedAt ?? (retirement ? matchingRetained?.generationCreatedAt : undefined),
         expiredAt,

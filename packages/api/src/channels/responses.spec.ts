@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createModels,
+  createMethods,
   createResponseStorage,
   tenantStorage,
   runAsSystem,
@@ -21,7 +22,8 @@ import {
   buildPendingBackgroundResponse,
   createBackgroundResponseService,
 } from '~/agents/responses/background';
-import { createChannelResponseProjection } from './responses';
+import { createChannelResponseProjection, createChannelResponseRetirement } from './responses';
+import { createResponseRetirement } from '~/agents/responses/retirement';
 import { GenerationJobManager } from '~/stream';
 
 let mongo: MongoMemoryReplSet;
@@ -46,6 +48,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await runAsSystem(async () => {
     await mongoose.models.StoredResponse.deleteMany({});
+    await mongoose.models.Conversation.deleteMany({});
     await mongoose.models.ResponseScope?.deleteMany({});
   });
   const reserved = await scoped(() =>
@@ -270,3 +273,117 @@ it.each(['responseId', 'conversationId', 'parentMessageId', 'generationCreatedAt
       await expect(f.project(run)).rejects.toMatchObject({ code: 'execution_identity_changed' });
     }),
 );
+
+it.each(['expired', 'closed'] as const)(
+  'retires a %s bound Response through cleanup identity without disclosing payload',
+  (state) =>
+    scoped(async () => {
+      run.cancellationRequested = true;
+      run.errorCode = 'channel_authority_changed';
+      run.execution!.apiKeyId = 'key';
+      if (state === 'expired')
+        await mongoose.models.StoredResponse.updateOne(
+          { responseId: stored.responseId },
+          { $set: { expiredAt: new Date(0) } },
+        );
+      else {
+        await mongoose.models.Conversation.create({
+          user: owner.userId,
+          tenantId: owner.tenantId,
+          conversationId: stored.conversationId,
+          endpoint: 'agents',
+        });
+        await expect(
+          createMethods(mongoose).deleteConvos(
+            owner.userId,
+            { conversationId: stored.conversationId },
+            {
+              beforeDelete: async () => {
+                throw new Error('erasure paused after scope closure');
+              },
+            },
+          ),
+        ).rejects.toThrow('erasure paused after scope closure');
+      }
+      expect(await storage.read(owner, stored.responseId)).toBeNull();
+      const jobs = {
+        getJob: jest.fn(async () => undefined),
+        abortJob: jest.fn(),
+        finishProviderTerminalPersistence: jest.fn(),
+      };
+      const retire = createChannelResponseRetirement({
+        storage,
+        recovery: { recoverResponse: jest.fn() },
+        retireResponse: createResponseRetirement({ storage, jobs }),
+      });
+      await expect(retire(run)).resolves.toBe('stopped');
+      expect(jobs.abortJob).not.toHaveBeenCalled();
+    }),
+);
+
+it.each([
+  { requestKey: 'foreign' },
+  { sourceKeyId: 'foreign' },
+  { parentMessageId: 'foreign' },
+  { agentId: 'foreign' },
+  { conversationId: 'foreign' },
+])('refuses foreign cleanup binding metadata after expiry: %j', (change) =>
+  scoped(async () => {
+    run.cancellationRequested = true;
+    run.errorCode = 'channel_authority_changed';
+    run.execution!.apiKeyId = 'key';
+    await mongoose.models.StoredResponse.collection.updateOne(
+      { responseId: stored.responseId },
+      { $set: { expiredAt: new Date(0), ...change } },
+    );
+    const retireResponse = jest.fn(async () => 'stopped' as const);
+    const retire = createChannelResponseRetirement({
+      storage,
+      recovery: { recoverResponse: jest.fn() },
+      retireResponse,
+    });
+    await expect(retire(run)).rejects.toMatchObject({ code: 'execution_identity_changed' });
+    expect(retireResponse).not.toHaveBeenCalled();
+  }),
+);
+
+it('preserves pending retirement when an expired generation has no drain proof', () =>
+  scoped(async () => {
+    run.cancellationRequested = true;
+    run.errorCode = 'channel_authority_changed';
+    run.execution!.apiKeyId = 'key';
+    await mongoose.models.StoredResponse.updateOne(
+      { responseId: stored.responseId },
+      { $set: { expiredAt: new Date(0), generationCreatedAt: 1234 } },
+    );
+    const jobs = {
+      getJob: jest.fn(async () => undefined),
+      abortJob: jest.fn(),
+      finishProviderTerminalPersistence: jest.fn(),
+    };
+    const retire = createChannelResponseRetirement({
+      storage,
+      recovery: { recoverResponse: jest.fn() },
+      retireResponse: createResponseRetirement({ storage, jobs }),
+    });
+    await expect(retire(run)).resolves.toBe('pending');
+    expect(jobs.abortJob).not.toHaveBeenCalled();
+  }));
+
+it('does not treat a cleanup metadata outage as successful retirement', () =>
+  scoped(async () => {
+    run.cancellationRequested = true;
+    run.errorCode = 'channel_authority_changed';
+    const retireResponse = jest.fn(async () => 'stopped' as const);
+    const retire = createChannelResponseRetirement({
+      storage: {
+        readCleanupIdentity: async () => {
+          throw new Error('cleanup store unavailable');
+        },
+      },
+      recovery: { recoverResponse: jest.fn() },
+      retireResponse,
+    });
+    await expect(retire(run)).rejects.toThrow('cleanup store unavailable');
+    expect(retireResponse).not.toHaveBeenCalled();
+  }));
