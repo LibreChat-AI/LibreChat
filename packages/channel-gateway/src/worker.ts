@@ -214,7 +214,7 @@ export class ChannelWorker {
     const syncProgress = async (current: ChannelRunView) => {
       check();
       let native = false;
-      if (this.config.SLACK_NATIVE_SESSIONS) {
+      if (bundle.gateway.nativeSessions) {
         let status: 'active' | 'suspended' | 'processing' = 'processing';
         if (terminalSnapshot(current) || current.plan) status = 'active';
         else if (current.snapshot?.status === 'requires_action') status = 'suspended';
@@ -324,7 +324,7 @@ export class ChannelWorker {
         run = await this.client.mutate(
           fence,
           'plan',
-          { plan: makeSlackPlan(run, this.config.SLACK_NATIVE_SESSIONS) },
+          { plan: makeSlackPlan(run, bundle.gateway.nativeSessions) },
           signal,
         );
         break;
@@ -676,7 +676,7 @@ export class ChannelWorker {
     phase: 'started' | 'completed' | 'failed',
     signal: AbortSignal,
   ): Promise<void> {
-    if (!this.config.SLACK_LIFECYCLE_REACTIONS) return;
+    if (!bundle.gateway.lifecycleReactions) return;
     const prefix = run.admission.externalChannelId + ':';
     const ts = run.admission.externalMessageKey.slice(prefix.length);
     if (!run.admission.externalMessageKey.startsWith(prefix) || !ts || /[:\s]/.test(ts)) return;
