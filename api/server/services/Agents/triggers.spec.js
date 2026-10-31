@@ -48,6 +48,7 @@ describe('agent trigger service composition', () => {
     mockGenerationJobManager.supportsDetachedAgentEventActions = true;
     let completionResultBatchSize = 8;
     mockCreateAgentTriggerService.mockReturnValue({
+      isReady: jest.fn(() => false),
       initialize: jest.fn(async (options) => {
         completionResultBatchSize = options.completionResultBatchSize ?? 8;
       }),
@@ -76,7 +77,10 @@ describe('agent trigger service composition', () => {
   });
 
   it('installs Responses dispatch without obsolete channel chat-source authorization', () => {
-    require('./triggers');
+    const composition = require('./triggers');
+    expect(composition.isAgentTriggerServiceReady).toBe(
+      mockCreateAgentTriggerService.mock.results[0].value.isReady,
+    );
     const dependencies = mockCreateAgentTriggerService.mock.calls[0][0];
     expect(dependencies.sourceDispatchers).toBe(
       require('../Responses').backgroundResponseSourceDispatchers,

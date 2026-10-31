@@ -122,6 +122,27 @@ export class AgentTriggerServiceUnavailableError extends AgentTriggerDeliveryDef
   }
 }
 
+/** Acyclic composition seam: install the canonical producer before listening.
+ * Readiness remains owned by that producer; binding never caches a ready flag. */
+export function createAgentTriggerProducerBinding() {
+  let producer: Pick<AgentTriggerService, 'enqueue' | 'isReady'> | undefined;
+  return {
+    bind(value: Pick<AgentTriggerService, 'enqueue' | 'isReady'>): void {
+      if (producer && (producer.enqueue !== value.enqueue || producer.isReady !== value.isReady))
+        throw new Error('Agent trigger producer is already bound');
+      producer = { enqueue: value.enqueue, isReady: value.isReady };
+    },
+    isReady: (): boolean => producer?.isReady() === true,
+    enqueue: async (
+      ...args: Parameters<AgentTriggerService['enqueue']>
+    ): ReturnType<AgentTriggerService['enqueue']> => {
+      if (!producer)
+        throw new AgentTriggerServiceUnavailableError('Agent trigger producer is not bound');
+      return producer.enqueue(...args);
+    },
+  };
+}
+
 export interface AgentTriggerStoredHistoryEntry {
   attempt: number;
   outcome: 'succeeded' | 'retry' | 'dead';
@@ -206,6 +227,8 @@ export interface AgentTriggerDeliveryPersistence {
 }
 
 export interface AgentTriggerService {
+  /** Canonical producer admission capability, including shutdown and durable queue readiness. */
+  isReady: () => boolean;
   initialize: (options?: AgentTriggerServiceOptions) => Promise<void>;
   stop: () => Promise<void>;
   dispatch: (
@@ -402,13 +425,17 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
     ...(deps.timeoutMs != null && { timeoutMs: deps.timeoutMs }),
   });
 
+  const readyMethods = (): AgentTriggerDeliveryPersistence | undefined =>
+    deliveryReady && !isShutdownInProgress() ? deps.methods : undefined;
+
   const requireMethods = (): AgentTriggerDeliveryPersistence => {
-    if (deps.methods == null || !deliveryReady || isShutdownInProgress()) {
+    const methods = readyMethods();
+    if (methods == null) {
       throw new AgentTriggerServiceUnavailableError(
         'Durable agent trigger delivery is not ready on this server',
       );
     }
-    return deps.methods;
+    return methods;
   };
 
   const requireCleanupMethods = (): AgentTriggerDeliveryPersistence => {
@@ -646,6 +673,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
   }
 
   return {
+    isReady: () => readyMethods() != null,
     initialize: (options = {}) => {
       backgroundCompletionResultBatchSize = options.completionResultBatchSize ?? 8;
       backgroundCompletionReceiptBatching =

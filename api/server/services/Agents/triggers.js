@@ -102,6 +102,7 @@ const purgeAgentTriggerDeliveriesForUser = async (userId) => {
 };
 
 module.exports = {
+  isAgentTriggerServiceReady: service.isReady,
   initializeAgentTriggerService,
   stopAgentTriggerService,
   dispatchAgentTrigger: service.dispatch,
