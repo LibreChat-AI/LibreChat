@@ -147,7 +147,7 @@ function Channel({
       }
     },
     onSuccess: async () => {
-      onClose();
+      if (active.current) onClose();
       await queryClient.invalidateQueries([QueryKeys.agentChannels, userId, tenantId, agentId]);
       await queryClient.invalidateQueries([
         QueryKeys.agentChannelManifest,
