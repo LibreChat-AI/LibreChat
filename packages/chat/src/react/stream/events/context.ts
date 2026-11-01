@@ -1,9 +1,22 @@
-import type { TMessage, EventSubmission } from 'librechat-data-provider';
-import type { EventServices } from '@librechat/chat/react';
+import type { TMessage, TConversation, EventSubmission } from 'librechat-data-provider';
+import type { Dispatch, SetStateAction, MutableRefObject } from 'react';
 import type { QueryClient } from '@tanstack/react-query';
-import type { MutableRefObject } from 'react';
-import type useAttachmentHandler from './useAttachmentHandler';
-import type { EventHandlerParams } from './useEventHandlers';
+import type { NewConversationParams } from '../../chat/contract';
+import type { AttachmentHandler } from '../attachments';
+import type { EventServices } from '../services';
+
+/** The pane a set of stream event handlers writes to. */
+export type EventHandlerParams = {
+  isAddedRequest?: boolean;
+  runIndex?: number;
+  setCompleted: Dispatch<SetStateAction<Set<unknown>>>;
+  setMessages: (messages: TMessage[]) => void;
+  getMessages: () => TMessage[] | undefined;
+  setIsSubmitting: Dispatch<SetStateAction<boolean>>;
+  setConversation?: Dispatch<SetStateAction<TConversation | null>>;
+  newConversation?: (params: NewConversationParams) => void | TConversation;
+  setShowStopButton: Dispatch<SetStateAction<boolean>>;
+};
 
 /** What the stream event handlers share: the pane they write to and the app around it. */
 export type EventHandlerContext = Required<
@@ -32,7 +45,7 @@ export type EventHandlerContext = Required<
     ) => void;
     reconcileFailedCodeDecision: (submission: EventSubmission, conversationId?: string) => void;
     recoverConversation: (conversationId: string, submission: EventSubmission) => void;
-    attachmentHandler: ReturnType<typeof useAttachmentHandler>;
+    attachmentHandler: AttachmentHandler;
     /** The saved id a new chat's own run moves to, so its subagent atoms survive the move. */
     preserveSubagentAtomsForNewConvoIdRef: MutableRefObject<string | null>;
   };

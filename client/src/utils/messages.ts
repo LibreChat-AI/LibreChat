@@ -2,6 +2,7 @@ import { getBranchSiblingIndexesForTarget } from '@librechat/chat';
 import { QueryKeys, Constants, buildTree, ContentTypes } from 'librechat-data-provider';
 import {
   getPartKeyIndex,
+  getAllContentText,
   isEmptyContentPart,
   hasStreamStartFailed,
   stripStreamedIndexStamps,
@@ -16,6 +17,7 @@ import type { LocalizeFunction, TMessageProps } from '~/common';
 
 export {
   getPartKeyIndex,
+  getAllContentText,
   isEmptyContentPart,
   hasStreamStartFailed,
   stripStreamedIndexStamps,
@@ -125,31 +127,6 @@ export const getLatestText = (message?: TMessage | null, includeIndex?: boolean)
       }
     }
   }
-  return '';
-};
-
-export const getAllContentText = (message?: TMessage | null): string => {
-  if (!message) {
-    return '';
-  }
-
-  if (message.text) {
-    return message.text;
-  }
-
-  if (message.content && message.content.length > 0) {
-    return message.content
-      .filter((part) => part != null && part.type === ContentTypes.TEXT)
-      .map((part) => {
-        if (!('text' in part)) return '';
-        const text = part.text;
-        if (typeof text === 'string') return text;
-        return text?.value || '';
-      })
-      .filter((text) => text.length > 0)
-      .join('\n');
-  }
-
   return '';
 };
 

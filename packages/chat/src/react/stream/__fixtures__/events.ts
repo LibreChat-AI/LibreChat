@@ -28,6 +28,7 @@ export const createEventServices = (overrides: Partial<EventServices> = {}): Eve
     scrollToEnd: jest.fn(),
   },
   templates: { apply: jest.fn(), reconcileFailedCode: jest.fn() },
+  files: { onAttachment: jest.fn(), onImageFile: jest.fn() },
   transport: { abortRun: jest.fn(async () => new Response(null, { status: 204 })) },
   logger: { log: jest.fn(), dir: jest.fn(), warn: jest.fn() },
   ...overrides,

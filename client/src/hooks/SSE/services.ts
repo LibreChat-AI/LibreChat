@@ -11,6 +11,7 @@ import type {
   EventServicesParams,
   EventTransportServices,
   ConversationCacheServices,
+  FileServices,
 } from '@librechat/chat/react';
 import type { TStartupConfig } from 'librechat-data-provider';
 import type { QueryClient } from '@tanstack/react-query';
@@ -25,6 +26,7 @@ import {
   getConversationDraftId,
   upsertConvoInAllQueries,
   updateConvoInAllQueries,
+  addFileToCache,
   adoptComposerConversation,
   markLocallyCommittedReply,
   removeConvoFromAllQueries,
@@ -40,6 +42,7 @@ import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedRespons
 import { getFailedCodeDecisionRequest } from '~/hooks/Agents/codeDecision';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
+import { updateAttachmentCaches } from './useAttachmentHandler';
 import { useApplyAgentTemplate } from '~/hooks/Agents';
 import { useLiveAnnouncer } from '~/Providers';
 import { getConvoTitle } from './turns';
@@ -127,6 +130,13 @@ export default function useEventServices({ setConversation }: EventServicesParam
     }),
     [applyAgentTemplate, reconcileCodeDecision, queryClient],
   );
+  const files = useMemo<FileServices>(
+    () => ({
+      onAttachment: (attachment) => updateAttachmentCaches(queryClient, attachment),
+      onImageFile: (file) => addFileToCache(queryClient, file),
+    }),
+    [queryClient],
+  );
   const transport = useMemo<EventTransportServices>(
     () => ({ abortRun: (request) => chatTransport.abortRun(request, { token }) }),
     [chatTransport, token],
@@ -140,9 +150,10 @@ export default function useEventServices({ setConversation }: EventServicesParam
       navigation,
       focus,
       templates,
+      files,
       transport,
       logger,
     }),
-    [conversations, navigation, focus, templates, transport],
+    [conversations, navigation, focus, templates, files, transport],
   );
 }

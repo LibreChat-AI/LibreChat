@@ -2,47 +2,62 @@ import { useCallback, useEffect, useRef } from 'react';
 import { useStore, useSetAtom } from 'jotai';
 import { QueryKeys } from 'librechat-data-provider';
 import { useQueryClient } from '@tanstack/react-query';
-import { buildRecoveryPreset, shouldResetSubagentAtomsOnConversationChange } from '@librechat/chat';
+import type { TMessage, TConversation, EventSubmission } from 'librechat-data-provider';
+import type { EventHandlerContext, EventHandlerParams } from './context';
+import type { AttachmentHandler } from '../attachments';
+import type { ContentHandlers } from '../content';
+import type { TurnHandlers } from './opening';
+import type { AbortHandlers } from './abort';
+import type { StepHandlers } from '../step';
+import type { FinalHandler } from './final';
 import {
-  useStepHandler,
-  submissionStartFamily,
   getReasoningStateKey,
   pendingQuotesByConvoId,
   pendingReasoningOverrideFamily,
-} from '@librechat/chat/react';
-import type { TMessage, TConversation, EventSubmission } from 'librechat-data-provider';
-import type { EventHandlerContext } from './handlers';
-import type { ConvoGenerator } from '~/common';
-import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
-import useContentHandler from '~/hooks/SSE/useContentHandler';
-import useEventServices from './services';
+} from '../../composer';
+import { buildRecoveryPreset, shouldResetSubagentAtomsOnConversationChange } from '../../../core';
+import { submissionStartFamily } from '../../generation';
+import { useAttachmentHandler } from '../attachments';
+import { useContentHandler } from '../content';
+import { useStepHandler } from '../step';
+import { useStreamHost } from '../host';
 import useTurnHandlers from './opening';
 import useAbortHandlers from './abort';
 import useFinalHandler from './final';
 
-/** Skill caches refreshed when a chat turn authors a skill via `create_file`/`edit_file`. */
-const SKILL_QUERY_KEYS = [
+/** Skill caches refreshed when a chat turn authors a skill via `create_file`/`edit_file`.
+ *  Built on call: the keys come from data-provider, which app specs may mock at load. */
+const getSkillQueryKeys = (): readonly QueryKeys[] => [
   QueryKeys.skills,
   QueryKeys.skill,
   QueryKeys.skillFiles,
   QueryKeys.skillFileContent,
   QueryKeys.skillTree,
   QueryKeys.skillNodeContent,
-] as const;
+];
 
-export type EventHandlerParams = {
-  isAddedRequest?: boolean;
-  runIndex?: number;
-  setCompleted: React.Dispatch<React.SetStateAction<Set<unknown>>>;
-  setMessages: (messages: TMessage[]) => void;
-  getMessages: () => TMessage[] | undefined;
-  setIsSubmitting: React.Dispatch<React.SetStateAction<boolean>>;
-  setConversation?: React.Dispatch<React.SetStateAction<TConversation | null>>;
-  newConversation?: ConvoGenerator;
-  setShowStopButton: React.Dispatch<React.SetStateAction<boolean>>;
-};
+/** Every handler a pane's stream dispatches to, and the resets its owner calls between runs. */
+export type EventHandlers = Pick<
+  StepHandlers,
+  | 'stepHandler'
+  | 'clearStepMaps'
+  | 'syncStepMessage'
+  | 'prunePtcTraces'
+  | 'cancelPendingDeltaFlush'
+  | 'flushPendingDeltas'
+> &
+  ContentHandlers &
+  Pick<TurnHandlers, 'messageHandler' | 'syncHandler' | 'createdHandler' | 'titleHandler'> &
+  Pick<AbortHandlers, 'errorHandler' | 'abortConversation'> & {
+    finalHandler: FinalHandler;
+    attachmentHandler: AttachmentHandler;
+  };
 
-export default function useEventHandlers({
+/**
+ * The handlers one pane's stream events run through. App writes (conversation lists, drafts,
+ * route, focus, templates, files, the Assistants abort) go through the host's event services.
+ */
+export function useEventHandlers({
   setMessages,
   getMessages,
   setCompleted,
@@ -52,10 +67,10 @@ export default function useEventHandlers({
   setIsSubmitting,
   newConversation,
   setShowStopButton,
-}: EventHandlerParams) {
+}: EventHandlerParams): EventHandlers {
   const queryClient = useQueryClient();
   const reasoningStore = useStore();
-  const services = useEventServices({ setConversation });
+  const services = useStreamHost().useEventServices({ setConversation });
   const { announce: announcePolite } = services.focus;
   const reconcileFailedCode = services.templates.reconcileFailedCode;
   /** Cleared on every terminal path below: the elapsed anchor must not outlive
@@ -121,12 +136,16 @@ export default function useEventHandlers({
   const lastAnnouncementTimeRef = useRef(Date.now());
   const paramId = services.navigation.conversationId;
 
-  const { contentHandler, resetContentHandler } = useContentHandler({ setMessages, getMessages });
+  const { contentHandler, resetContentHandler } = useContentHandler({
+    setMessages,
+    getMessages,
+    onImageFile: services.files.onImageFile,
+  });
   /** `refetchType: 'all'` so cached-but-unmounted skill queries refresh too:
    *  they opt out of `refetchOnMount`, so a plain invalidation would leave
    *  the Skills panel stale until a manual refresh. */
   const onSkillAuthoringComplete = useCallback(() => {
-    for (const key of SKILL_QUERY_KEYS) {
+    for (const key of getSkillQueryKeys()) {
       queryClient.invalidateQueries({ queryKey: [key], refetchType: 'all' });
     }
   }, [queryClient]);
@@ -153,7 +172,7 @@ export default function useEventHandlers({
     onSkillAuthoringComplete,
     onSubagentIndexChange,
   });
-  const attachmentHandler = useAttachmentHandler(queryClient);
+  const attachmentHandler = useAttachmentHandler(services.files.onAttachment);
 
   /** Wipe the per-subagent Recoil atoms on conversation navigation.
    *  Historical subagent dialogs rehydrate from the persisted

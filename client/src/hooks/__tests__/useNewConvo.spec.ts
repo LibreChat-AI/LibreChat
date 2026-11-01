@@ -3,8 +3,10 @@ import { getDefaultStore, useAtom } from 'jotai';
 import { filesFamily } from '@librechat/chat/react';
 import { renderHook, act } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { StreamHostProvider, useEventHandlers } from '@librechat/chat/react';
 import { Constants, LocalStorageKeys, EModelEndpoint } from 'librechat-data-provider';
 import type { EventSubmission, TConversation } from 'librechat-data-provider';
+import type { StreamHost } from '@librechat/chat/react';
 import type { ExtendedFile } from '~/common';
 import {
   setFilesDraft,
@@ -25,7 +27,6 @@ import { appDraftServices, appTitleServices, createConversationCache } from '~/h
 import { setFileSearchChoice, transferFileSearchChoice } from '~/utils/choices';
 import { clearUploadRecovery } from '~/hooks/Files/useFileHandling';
 import { useAutoSave } from '~/hooks/Input/useAutoSave';
-import useTurnHandlers from '~/hooks/SSE/opening';
 
 const mockDeleteFiles = jest.fn();
 const mockUploadFile = jest.fn();
@@ -488,14 +489,47 @@ describe('useNewConvo reset cleanup', () => {
       global.URL.createObjectURL = jest.fn(() => 'blob:assistants-sync');
       global.URL.revokeObjectURL = jest.fn();
       const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const unused = (): never => {
+        throw new Error('not used by the sync handler');
+      };
+      const host: StreamHost = {
+        useResumableServices: unused,
+        useLegacyStream: unused,
+        useTransport: () => null,
+        useQueuedTurnReceipts: unused,
+        useActiveJobs: unused,
+        extendActiveJobsGrace: unused,
+        useStreamStatus: unused,
+        useResumeSettings: unused,
+        useParentSubagentIndex: unused,
+        useEventServices: () => ({
+          conversations: createConversationCache(client),
+          titles: appTitleServices,
+          drafts: appDraftServices,
+          navigation: { pathname: window.location.pathname, navigate: jest.fn() },
+          focus: {
+            announce: jest.fn(),
+            showRegenerated: jest.fn(),
+            focusComposer: jest.fn(),
+            scrollToEnd: jest.fn(),
+          },
+          templates: { apply: jest.fn(), reconcileFailedCode: jest.fn() },
+          files: { onAttachment: jest.fn(), onImageFile: jest.fn() },
+          transport: { abortRun: jest.fn() },
+          logger: { log: jest.fn(), dir: jest.fn(), warn: jest.fn() },
+        }),
+      };
       const wrapper = ({ children }: { children: React.ReactNode }) =>
-        React.createElement(QueryClientProvider, { client }, children);
+        React.createElement(
+          QueryClientProvider,
+          { client },
+          React.createElement(StreamHostProvider, { host }, children),
+        );
       const { result, rerender, unmount } = renderHook(
         ({ conversationId }) => {
           const [files, setFiles] = useAtom(filesFamily(2));
           useAutoSave({ index: 2, conversationId, isSubmitting: true, files, setFiles });
-          const handlers = useTurnHandlers({
-            queryClient: client,
+          const handlers = useEventHandlers({
             runIndex: 2,
             isAddedRequest: false,
             setMessages: jest.fn(),
@@ -503,28 +537,6 @@ describe('useNewConvo reset cleanup', () => {
             setCompleted: jest.fn(),
             setIsSubmitting: jest.fn(),
             setShowStopButton: jest.fn(),
-            setSubmissionStart: jest.fn(),
-            services: {
-              conversations: createConversationCache(client),
-              titles: appTitleServices,
-              drafts: appDraftServices,
-              navigation: { pathname: window.location.pathname, navigate: jest.fn() },
-              focus: {
-                announce: jest.fn(),
-                showRegenerated: jest.fn(),
-                focusComposer: jest.fn(),
-                scrollToEnd: jest.fn(),
-              },
-              templates: { apply: jest.fn(), reconcileFailedCode: jest.fn() },
-              transport: { abortRun: jest.fn() },
-              logger: { log: jest.fn(), dir: jest.fn(), warn: jest.fn() },
-            },
-            lastAnnouncementTimeRef: { current: 0 },
-            restorePendingContext: jest.fn(),
-            reconcileFailedCodeDecision: jest.fn(),
-            recoverConversation: jest.fn(),
-            attachmentHandler: jest.fn(),
-            preserveSubagentAtomsForNewConvoIdRef: { current: null },
           });
           return {
             files,
