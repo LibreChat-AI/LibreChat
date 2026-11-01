@@ -54,3 +54,8 @@ export function hydrateFileDeliveryMetadata(
   });
   return changed ? hydrated : persistedFiles;
 }
+
+/** Text-routed images use the file action so their extracted preview is reachable. */
+export function usesImagePreview(file: Partial<Pick<TFile, 'type' | 'llmDeliveryPath'>>): boolean {
+  return file.type?.startsWith('image/') === true && file.llmDeliveryPath !== 'text';
+}

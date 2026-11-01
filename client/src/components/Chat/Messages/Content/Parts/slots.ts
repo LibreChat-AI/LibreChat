@@ -3,7 +3,10 @@ import type { ReactNode } from 'react';
 import type { MessagePartsHost } from '~/hooks/Chat/contract';
 
 /** The host slots drawn with app components that import the markdown stack. */
-export type AppPartRenderers = Pick<MessagePartsHost, 'renderMarkdown' | 'renderAgentIcon'>;
+export type AppPartRenderers = Pick<
+  MessagePartsHost,
+  'renderMarkdown' | 'renderAgentIcon' | 'renderImage' | 'renderFilePreview'
+>;
 
 let appPartRenderers: AppPartRenderers | null = null;
 

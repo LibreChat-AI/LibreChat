@@ -1,14 +1,21 @@
-import React from 'react';
-import { RecoilRoot } from 'recoil';
-import { QueryKeys } from 'librechat-data-provider';
-import { STEER_ICON } from '@librechat/chat/components';
-import { Provider, createStore, useAtomValue } from 'jotai';
-import { liveAppliedSteerIdsAtom } from '@librechat/chat/react';
+/**
+ * @jest-environment jsdom
+ */
+import React, { useCallback } from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Provider, createStore, useAtomValue, useSetAtom } from 'jotai';
 import type { TMessage } from 'librechat-data-provider';
+import type {
+  MessagePartsHost,
+  MessagePartsUser,
+  MessagePartsImageProps,
+  MessagePartsMarkdownProps,
+  MessagePartsFilePreviewProps,
+} from '../../../react/host';
+import { liveAppliedSteerFamily, liveAppliedSteerIdsAtom } from '../../../react/steer/atoms';
+import { MessagePartsHostProvider } from '../../../react/host';
+import { STEER_ICON } from '../../composer/steering/identity';
 import SteerPart from '../SteerPart';
-import store from '~/store';
 
 let mockShareContext: { isSharedConvo?: boolean; shareId?: string } = {};
 let mockFileMap: Record<string, { llmDeliveryPath?: 'provider' | 'text' | 'none' }> = {};
@@ -18,55 +25,78 @@ jest.mock('@librechat/client', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
-jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
+jest.mock('../../messages/MessageTimestamp', () => ({
+  __esModule: true,
+  default: () => <time data-testid="steer-timestamp" />,
 }));
 
-jest.mock('~/Providers', () => ({
-  useShareContext: () => mockShareContext,
-  useFileMapContext: () => mockFileMap,
-}));
-
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
-  MessageTimestamp: () => <time data-testid="steer-timestamp" />,
-  FileContainer: ({ file, onClick }: { file: { filename?: string }; onClick?: () => void }) => (
+jest.mock('../../composer/files/FileContainer', () => ({
+  __esModule: true,
+  default: ({ file, onClick }: { file: { filename?: string }; onClick?: () => void }) => (
     <button type="button" data-testid="steer-file" onClick={onClick}>
       {file.filename}
     </button>
   ),
 }));
 
-jest.mock('~/components/Chat/Messages/Content/MarkdownLite', () => ({
-  __esModule: true,
-  default: ({ content }: { content: string }) => <span>{content}</span>,
-}));
+function useTestLiveAppliedSteer(steerId: string): [boolean, (steerId: string) => void] {
+  const isLiveApplied = useAtomValue(liveAppliedSteerFamily(steerId));
+  const setLiveAppliedIds = useSetAtom(liveAppliedSteerIdsAtom);
+  const consume = useCallback(
+    (id: string) =>
+      setLiveAppliedIds((prev) => (prev.includes(id) ? prev.filter((item) => item !== id) : prev)),
+    [setLiveAppliedIds],
+  );
+  return [isLiveApplied, consume];
+}
 
-jest.mock('~/components/Chat/Messages/Content/FilePreviewDialog', () => ({
-  __esModule: true,
-  default: ({
-    open,
-    fileName,
-    deliveryPath,
-  }: {
-    open: boolean;
-    fileName: string;
-    deliveryPath?: string;
-  }) =>
-    open ? (
-      <div data-testid="steer-file-preview" data-delivery-path={deliveryPath}>
-        {fileName}
-      </div>
-    ) : null,
-}));
+/** A host shaped like the app's: the signed-in user, its text preferences, the share route and
+ *  the file map, with the app's image, file preview and markdown renderers stubbed. */
+function createHost(user: MessagePartsUser | null): MessagePartsHost {
+  return {
+    useMessage: () => ({ messageId: 'msg-1', isSubmitting: false, isLatestMessage: true }),
+    renderMarkdown: ({ content }: MessagePartsMarkdownProps) => <span>{content}</span>,
+    renderImage: ({ altText }: MessagePartsImageProps) => (
+      <img alt={altText} data-testid="steer-image" />
+    ),
+    renderFilePreview: ({ open, fileName, deliveryPath }: MessagePartsFilePreviewProps) =>
+      open ? (
+        <div data-testid="steer-file-preview" data-delivery-path={deliveryPath}>
+          {fileName}
+        </div>
+      ) : null,
+    useSmoothStreaming: () => false,
+    useAgent: () => undefined,
+    renderAgentIcon: () => null,
+    renderAgentAvatar: () => null,
+    renderContentParts: () => null,
+    useFontSize: () => 'text-base',
+    useShowThinking: () => false,
+    useAutoExpandTools: () => false,
+    useLaTeXParsing: () => false,
+    useChatDirection: () => 'ltr',
+    useUserTextPreferences: () => ({
+      usernameDisplay: true,
+      enableUserMsgMarkdown: true,
+      collapseLongUserMessages: false,
+    }),
+    useUser: () => user ?? undefined,
+    useFileMap: () => mockFileMap as never,
+    useToast: () => jest.fn(),
+    useSandboxStarting: () => false,
+    useToolArtifactClaim: () => [null, jest.fn()],
+    useSteerEscalating: () => false,
+    usePaneConversationId: () => null,
+    useLiveAppliedSteer: useTestLiveAppliedSteer,
+    useShare: () => mockShareContext,
+  } as MessagePartsHost;
+}
 
-jest.mock('~/components/Chat/Messages/Content/Image', () => ({
-  __esModule: true,
-  default: ({ altText }: { altText: string }) => <img alt={altText} data-testid="steer-image" />,
-}));
+function Host({ user, children }: { user: MessagePartsUser | null; children: React.ReactNode }) {
+  return <MessagePartsHostProvider host={createHost(user)}>{children}</MessagePartsHostProvider>;
+}
 
-/** Seeds the user atom rather than mocking `useAuthContext`, matching the share
- * route where neither an auth context nor a user exists. */
+/** The host reports this user in the owner view; the share route reports none. */
 const SEEDED_USER = { name: 'Danny', username: 'danny' };
 
 function renderPart(
@@ -75,15 +105,10 @@ function renderPart(
    *  silently test the signed-in state instead of the anonymous share route. */
   user: { name: string; username: string } | null = SEEDED_USER,
 ) {
-  const queryClient = new QueryClient();
-  queryClient.setQueryData([QueryKeys.endpoints], {});
-
   return render(
-    <QueryClientProvider client={queryClient}>
-      <RecoilRoot initializeState={({ set }) => user && set(store.user, user as never)}>
-        <SteerPart steer="steered words" steerId="s1" createdAt={1} files={files} />
-      </RecoilRoot>
-    </QueryClientProvider>,
+    <Host user={user}>
+      <SteerPart steer="steered words" steerId="s1" createdAt={1} files={files} />
+    </Host>,
   );
 }
 
@@ -224,14 +249,14 @@ describe('SteerPart presentation', () => {
 
   it('renders quoted excerpts as reference blocks inside the bubble', () => {
     render(
-      <RecoilRoot initializeState={({ set }) => set(store.user, SEEDED_USER as never)}>
+      <Host user={SEEDED_USER}>
         <SteerPart
           steer="steered words"
           steerId="s1"
           createdAt={1}
           quotes={['the selected excerpt']}
         />
-      </RecoilRoot>,
+      </Host>,
     );
     const quotes = screen.getByTestId('message-quotes');
     expect(quotes).toHaveTextContent('the selected excerpt');
@@ -259,10 +284,10 @@ describe('SteerPart live receipt draw-in', () => {
   function renderLive(liveIds: string[]) {
     return render(
       <Provider store={seededStore(liveIds)}>
-        <RecoilRoot initializeState={({ set }) => set(store.user, SEEDED_USER as never)}>
+        <Host user={SEEDED_USER}>
           <SteerPart steer="steered words" steerId="s1" createdAt={1} />
           <LiveIdsProbe />
-        </RecoilRoot>
+        </Host>
       </Provider>,
     );
   }
@@ -295,9 +320,7 @@ describe('SteerPart live receipt draw-in', () => {
     const jotaiStore = seededStore(['s2']);
     const { rerender } = render(
       <Provider store={jotaiStore}>
-        <RecoilRoot initializeState={({ set }) => set(store.user, SEEDED_USER as never)}>
-          {partFor('s1')}
-        </RecoilRoot>
+        <Host user={SEEDED_USER}>{partFor('s1')}</Host>
       </Provider>,
     );
     expect(appliedChecks()).not.toHaveClass('animate-in');
@@ -305,9 +328,7 @@ describe('SteerPart live receipt draw-in', () => {
 
     rerender(
       <Provider store={jotaiStore}>
-        <RecoilRoot initializeState={({ set }) => set(store.user, SEEDED_USER as never)}>
-          {partFor('s2')}
-        </RecoilRoot>
+        <Host user={SEEDED_USER}>{partFor('s2')}</Host>
       </Provider>,
     );
     expect(appliedChecks()).toHaveClass('animate-in');
@@ -320,9 +341,9 @@ describe('SteerPart receipt settling', () => {
 
   it('keeps the steer identity while the owning response is still generating', () => {
     render(
-      <RecoilRoot initializeState={({ set }) => set(store.user, SEEDED_USER as never)}>
+      <Host user={SEEDED_USER}>
         <SteerPart steer="steered words" steerId="s1" createdAt={1} isSubmitting />
-      </RecoilRoot>,
+      </Host>,
     );
     expect(checks()).toHaveClass(STEER_ICON);
     expect(checks()).not.toHaveClass('text-text-secondary');
@@ -338,22 +359,12 @@ describe('SteerPart receipt settling', () => {
 });
 
 it('keeps an unsuccessful guidance body and timestamp without a waiting or applied receipt', () => {
-  const queryClient = new QueryClient();
-  queryClient.setQueryData([QueryKeys.endpoints], {});
   render(
-    <QueryClientProvider client={queryClient}>
-      <RecoilRoot>
-        <SteerPart
-          steer="unsuccessful guidance"
-          steerId="failed"
-          createdAt={1}
-          receiptState={null}
-        />
-      </RecoilRoot>
-    </QueryClientProvider>,
+    <Host user={null}>
+      <SteerPart steer="unsuccessful guidance" steerId="failed" createdAt={1} receiptState={null} />
+    </Host>,
   );
   expect(screen.getByText('unsuccessful guidance')).toBeVisible();
   expect(screen.getByTestId('steer-timestamp')).toBeInTheDocument();
   expect(screen.queryByTestId('steer-receipt')).not.toBeInTheDocument();
-  queryClient.clear();
 });

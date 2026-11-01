@@ -1,41 +1,17 @@
-import { memo, useMemo, useState, useEffect, useCallback } from 'react';
-import {
-  SteerReceipt,
-  FileContainer,
-  MessageQuotes,
-  CollapsibleText,
-  MessageTimestamp,
-} from '@librechat/chat/components';
-import type { SteerReceiptState } from '@librechat/chat/components';
+import { memo, useMemo, useState, useEffect, useCallback, Fragment } from 'react';
+import { cn, useLocalize } from '@librechat/client';
 import type { TFile, TMessage } from 'librechat-data-provider';
-import FilePreviewDialog from '~/components/Chat/Messages/Content/FilePreviewDialog';
-import { cn, hydrateFileDeliveryMetadata, usesImagePreview } from '~/utils';
-import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
-import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import Image from '~/components/Chat/Messages/Content/Image';
-import { useShareContext } from '~/Providers';
-import { useLocalize } from '~/hooks';
+import type { NamedExoticComponent } from 'react';
+import type { SteerReceiptState } from '../composer/steering/Receipt';
+import { hydrateFileDeliveryMetadata, usesImagePreview } from '../../core/files';
+import FileContainer from '../composer/files/FileContainer';
+import MessageTimestamp from '../messages/MessageTimestamp';
+import SteerReceipt from '../composer/steering/Receipt';
+import { useMessagePartsHost } from '../../react/host';
+import CollapsibleText from '../CollapsibleText';
+import MessageQuotes from './MessageQuotes';
 
-/**
- * A mid-run steering message rendered as a standard user message inside the
- * assistant response, with the same compact surface and text presentation as any
- * user turn, placed where the words enter the run so the visible order equals
- * what the next turn replays (`ContentTypes.STEER` splits back into a
- * HumanMessage server-side). Only the server-applied part renders here, at its
- * authoritative index; a steer still in flight lives in the composer's chip
- * stack. Renders identically live, on reload, and in shared/search views.
- */
-const SteerPart = memo(function SteerPart({
-  steer,
-  files,
-  quotes,
-  steerId,
-  createdAt,
-  isSubmitting = false,
-  receiptState = 'applied',
-  hasMore = false,
-  onExpand,
-}: {
+export interface SteerPartProps {
   steer: string;
   hasMore?: boolean;
   onExpand?: () => void;
@@ -52,12 +28,41 @@ const SteerPart = memo(function SteerPart({
   isSubmitting?: boolean;
   /** Pending renderer state must never claim server application early. */
   receiptState?: SteerReceiptState | null;
-}) {
+}
+
+/**
+ * A mid-run steering message rendered as a standard user message inside the
+ * assistant response, with the same compact surface and text presentation as any
+ * user turn, placed where the words enter the run so the visible order equals
+ * what the next turn replays (`ContentTypes.STEER` splits back into a
+ * HumanMessage server-side). Only the server-applied part renders here, at its
+ * authoritative index; a steer still in flight lives in the composer's chip
+ * stack. Renders identically live, on reload, and in shared/search views.
+ */
+const SteerPart: NamedExoticComponent<SteerPartProps> = memo(function SteerPart({
+  steer,
+  files,
+  quotes,
+  steerId,
+  createdAt,
+  isSubmitting = false,
+  receiptState = 'applied',
+  hasMore = false,
+  onExpand,
+}: SteerPartProps) {
   const localize = useLocalize();
-  const { useUser, useFileMap, useUserTextPreferences, useLiveAppliedSteer } =
-    useMessagePartsHost();
+  const {
+    useUser,
+    useShare,
+    useFileMap,
+    renderImage,
+    renderMarkdown,
+    renderFilePreview,
+    useUserTextPreferences,
+    useLiveAppliedSteer,
+  } = useMessagePartsHost();
   const user = useUser();
-  const { isSharedConvo } = useShareContext();
+  const { isSharedConvo } = useShare();
   const fileMap = useFileMap();
   const { usernameDisplay, enableUserMsgMarkdown, collapseLongUserMessages } =
     useUserTextPreferences();
@@ -146,13 +151,14 @@ const SteerPart = memo(function SteerPart({
               {imageFiles.length > 0 && (
                 <div className="ms-auto flex max-w-full flex-wrap justify-end gap-2">
                   {imageFiles.map((file) => (
-                    <Image
-                      key={file.file_id}
-                      imagePath={file.preview ?? file.filepath ?? ''}
-                      height={file.height ?? 1920}
-                      width={file.width ?? 1080}
-                      altText={file.filename ?? localize('com_ui_attached_image')}
-                    />
+                    <Fragment key={file.file_id}>
+                      {renderImage({
+                        imagePath: file.preview ?? file.filepath ?? '',
+                        height: file.height ?? 1920,
+                        width: file.width ?? 1080,
+                        altText: file.filename ?? localize('com_ui_attached_image'),
+                      })}
+                    </Fragment>
                   ))}
                 </div>
               )}
@@ -170,7 +176,9 @@ const SteerPart = memo(function SteerPart({
                 'text-text-primary',
               )}
             >
-              {enableUserMsgMarkdown ? <MarkdownLite content={steer} /> : steer}
+              {enableUserMsgMarkdown
+                ? renderMarkdown({ content: steer, variant: 'lite', isLatestMessage: false })
+                : steer}
             </div>
           </CollapsibleText>
         </div>
@@ -185,19 +193,18 @@ const SteerPart = memo(function SteerPart({
           )}
         </div>
       </div>
-      {otherFiles.length > 0 && (
-        <FilePreviewDialog
-          open={selectedFile !== null}
-          onOpenChange={handlePreviewClose}
-          fileName={selectedFile?.filename ?? ''}
-          fileId={selectedFile?.file_id}
-          filePath={selectedFile?.filepath}
-          fileType={selectedFile?.type ?? undefined}
-          fileSource={selectedFile?.source}
-          fileSize={(selectedFile as TFile | null)?.bytes}
-          deliveryPath={selectedFile?.llmDeliveryPath}
-        />
-      )}
+      {otherFiles.length > 0 &&
+        renderFilePreview({
+          open: selectedFile !== null,
+          onOpenChange: handlePreviewClose,
+          fileName: selectedFile?.filename ?? '',
+          fileId: selectedFile?.file_id,
+          filePath: selectedFile?.filepath,
+          fileType: selectedFile?.type ?? undefined,
+          fileSource: selectedFile?.source,
+          fileSize: (selectedFile as TFile | null)?.bytes,
+          deliveryPath: selectedFile?.llmDeliveryPath,
+        })}
     </div>
   );
 });

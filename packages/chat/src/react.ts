@@ -19,6 +19,8 @@ export type {
   ContentPartsSlotProps,
   MessagePartMessage,
   MessagePartsMarkdownProps,
+  MessagePartsImageProps,
+  MessagePartsFilePreviewProps,
   MessagePartsUserTextPreferences,
 } from './react/host';
 export {

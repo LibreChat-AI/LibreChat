@@ -131,6 +131,8 @@ function useAppLiveAppliedSteer(steerId: string): [boolean, (steerId: string) =>
 export const appMessagePartsHost: MessagePartsHost = {
   useMessage: useAppMessage,
   renderMarkdown: (props) => getAppPartRenderers().renderMarkdown(props),
+  renderImage: (props) => getAppPartRenderers().renderImage(props),
+  renderFilePreview: (props) => getAppPartRenderers().renderFilePreview(props),
   useSmoothStreaming,
   useAgent: useAppAgent,
   renderAgentIcon: (agent) => getAppPartRenderers().renderAgentIcon(agent),

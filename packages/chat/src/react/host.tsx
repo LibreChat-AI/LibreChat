@@ -73,6 +73,27 @@ export type MessagePartsShare = {
   shareId?: string;
 };
 
+/** What a part asks the host's image renderer to draw: an attached image, opened full size on click. */
+export type MessagePartsImageProps = {
+  imagePath: string;
+  altText: string;
+  width?: number;
+  height?: number;
+};
+
+/** What a part asks the host's file preview dialog to show for an attached file. */
+export type MessagePartsFilePreviewProps = {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  fileName: string;
+  fileId?: string;
+  filePath?: string;
+  fileType?: string;
+  fileSource?: string;
+  fileSize?: number;
+  deliveryPath?: TFile['llmDeliveryPath'];
+};
+
 /** What a part asks the host's markdown renderer to draw. */
 export type MessagePartsMarkdownProps = {
   /** The markdown source. */
@@ -102,6 +123,10 @@ export interface MessagePartsHost {
   useMessage: () => MessagePartMessage;
   /** Renders markdown with the app's renderer. */
   renderMarkdown: (props: MessagePartsMarkdownProps) => ReactNode;
+  /** Renders an attached image with the app's image viewer. */
+  renderImage: (props: MessagePartsImageProps) => ReactNode;
+  /** Renders the app's preview dialog for an attached file. */
+  renderFilePreview: (props: MessagePartsFilePreviewProps) => ReactNode;
   /** Whether streamed text fades in word by word: the viewer's setting, unless motion is reduced. */
   useSmoothStreaming: () => boolean;
   /** An agent the viewer can see, by id. */
