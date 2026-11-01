@@ -3,19 +3,13 @@ import { useRecoilValue } from 'recoil';
 import { parseWakeupMessage } from '@librechat/chat';
 import {
   HoverButtons,
-  revealOnRowHoverClasses,
-  messageFooterClasses,
-  Elapsed,
-  shouldShowElapsed,
+  MessageFooter,
   getHeaderHoverLabel,
-  SiblingSwitch,
-  SubRow,
   MessageRow,
 } from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon, TMessageChatContext } from '~/common';
 import {
-  cn,
   isSameTailRelation,
   getMessageAriaLabel,
   areMessageFieldsEqual,
@@ -196,49 +190,34 @@ const MessageRender = memo(function MessageRender({
           : undefined
       }
       footer={
-        <SubRow classes={cn(messageFooterClasses, isUserSide && 'justify-end')}>
-          {/* The reading holds the column start: it takes over the slot the streaming
-              dot vacates, so the retry navigation beside it — whose width the footer
-              reserves whether or not hover has revealed it — must never push the
-              timer inboard of that column. */}
-          {shouldShowElapsed({
-            isSubmitting,
-            isLatestMessage,
-            isCreatedByUser: msg.isCreatedByUser,
-            siblingIdx,
-            siblingCount,
-          }) && <Elapsed index={index} />}
-          {/* A user turn is right-aligned, so its retry navigation belongs at the
-              outer edge under the bubble rather than inboard of the actions.
-
-              While the answer is generating every other action is withheld, which
-              would otherwise leave this counter sitting alone under a half-written
-              response. It reveals on hover there, like the actions it sits with. */}
-          <SiblingSwitch
-            siblingIdx={siblingIdx}
-            siblingCount={siblingCount}
-            setSiblingIdx={setSiblingIdx}
-            className={cn(
-              isUserSide && 'order-last',
-              isSubmitting && isLatestMessage && revealOnRowHoverClasses,
-            )}
-          />
-          <HoverButtons
-            index={index}
-            isEditing={edit}
-            message={msg}
-            enterEdit={enterEdit}
-            conversation={conversation ?? null}
-            regenerate={handleRegenerateMessage}
-            copyToClipboard={copyToClipboard}
-            getCanCopy={getCanCopy}
-            handleContinue={handleContinue}
-            latestMessageId={latestMessageId}
-            getLatestMessageId={getLatestMessageId}
-            handleFeedback={handleFeedback}
-            isLast={isLast}
-          />
-        </SubRow>
+        <MessageFooter
+          index={index}
+          isSubmitting={isSubmitting}
+          isLatestMessage={isLatestMessage}
+          isCreatedByUser={msg.isCreatedByUser}
+          isUserSide={isUserSide}
+          siblingsLast={isUserSide}
+          siblingIdx={siblingIdx}
+          siblingCount={siblingCount}
+          setSiblingIdx={setSiblingIdx}
+          toolbar={
+            <HoverButtons
+              index={index}
+              isEditing={edit}
+              message={msg}
+              enterEdit={enterEdit}
+              conversation={conversation ?? null}
+              regenerate={handleRegenerateMessage}
+              copyToClipboard={copyToClipboard}
+              getCanCopy={getCanCopy}
+              handleContinue={handleContinue}
+              latestMessageId={latestMessageId}
+              getLatestMessageId={getLatestMessageId}
+              handleFeedback={handleFeedback}
+              isLast={isLast}
+            />
+          }
+        />
       }
     >
       <MessageContext.Provider value={messageContextValue}>

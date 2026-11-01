@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { cn, useLocalize } from '@librechat/client';
+import { useLocalize } from '@librechat/client';
 import type {
   Agent,
   TMessage,
@@ -11,16 +11,13 @@ import type {
 import type { ReactNode } from 'react';
 import type { MessageIconData } from '../../react/messages/host';
 import { getHeaderPrefixForScreenReader, getMessageAriaLabel } from './labels';
-import { revealOnRowHoverClasses, messageFooterClasses } from './styles';
 import { ErrorSourceProvider } from '../../react/messages/error';
 import { MessageIconSlot } from '../../react/messages/host';
 import { AuthorContext } from '../../react/messages/author';
-import Elapsed, { shouldShowElapsed } from './Elapsed';
 import { useMessagePartsHost } from '../../react/host';
 import { getHeaderHoverLabel } from './HeaderLabel';
-import SiblingSwitch from './SiblingSwitch';
+import MessageFooter from './MessageFooter';
 import MessageRow from './MessageRow';
-import SubRow from './SubRow';
 
 /** A message row whose body is its content parts: what the app's row hooks resolved for it. */
 export type ContentRowProps = {
@@ -65,7 +62,7 @@ export type ContentRowProps = {
 
 /**
  * The row of a message rendered from content parts: header, parts and footer (elapsed time,
- * sibling navigation and the caller's toolbar). The parts render through the host's content-parts
+ * sibling navigation and the caller's toolbar, through `MessageFooter`). The parts render through the host's content-parts
  * slot, inside the author and error-source contexts their headers and error cards read.
  */
 export default function ContentRow({
@@ -131,29 +128,17 @@ export default function ContentRow({
       fullWidth={fullWidth}
       isEditing={edit}
       footer={
-        <SubRow classes={cn(messageFooterClasses, isCreatedByUser && 'justify-end')}>
-          {/* The reading holds the column start: it takes over the slot the streaming
-              dot vacates, so the retry navigation beside it, whose width the footer
-              reserves whether or not hover has revealed it, must never push the
-              timer inboard of that column. */}
-          {shouldShowElapsed({
-            isSubmitting,
-            isLatestMessage,
-            isCreatedByUser: message.isCreatedByUser,
-            siblingIdx,
-            siblingCount,
-          }) && <Elapsed index={index} />}
-          {/* While the answer is generating every other action is withheld, which
-              would otherwise leave this counter sitting alone under a half-written
-              response. It reveals on hover there, like the actions it sits with. */}
-          <SiblingSwitch
-            siblingIdx={siblingIdx}
-            siblingCount={siblingCount}
-            setSiblingIdx={setSiblingIdx}
-            className={cn(isSubmitting && isLatestMessage && revealOnRowHoverClasses)}
-          />
-          {toolbar}
-        </SubRow>
+        <MessageFooter
+          index={index}
+          isSubmitting={isSubmitting}
+          isLatestMessage={isLatestMessage}
+          isCreatedByUser={message.isCreatedByUser}
+          isUserSide={isCreatedByUser}
+          siblingIdx={siblingIdx}
+          siblingCount={siblingCount}
+          setSiblingIdx={setSiblingIdx}
+          toolbar={toolbar}
+        />
       }
     >
       <AuthorContext.Provider value={author}>
