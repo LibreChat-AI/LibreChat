@@ -275,11 +275,15 @@ type CachedMeta = {
  *  attachment list and its sibling steps are the same ones. */
 const metaCache = new WeakMap<TMessageContentParts, CachedMeta>();
 
-const toolCallIdentity = (part: TMessageContentParts): { id: string; stepId?: string } => {
-  const toolCall = (part as { [ContentTypes.TOOL_CALL]?: { id?: string; stepId?: string } })[
-    ContentTypes.TOOL_CALL
-  ];
-  return { id: toolCall?.id ?? '', stepId: toolCall?.stepId };
+type ToolCallPart = Extract<TMessageContentParts, { type: ContentTypes.TOOL_CALL }>;
+
+const toolCallIdentity = (part: ToolCallPart): { id: string; stepId?: string } => {
+  const toolCall = part[ContentTypes.TOOL_CALL];
+  const stepId =
+    toolCall != null && 'stepId' in toolCall && typeof toolCall.stepId === 'string'
+      ? toolCall.stepId
+      : undefined;
+  return { id: toolCall?.id ?? '', stepId };
 };
 
 /**
