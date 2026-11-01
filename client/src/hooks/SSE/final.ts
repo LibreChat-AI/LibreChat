@@ -1,57 +1,40 @@
 import { useCallback } from 'react';
 import { QueryKeys, Constants, isAssistantsEndpoint } from 'librechat-data-provider';
 import {
+  hasRealTitle,
   keepLocalCodeApprovalMode,
+  preserveStreamedContentIdentity,
   mergeRegenerateFinalMessages,
   isInitialNewConversationSubmission,
   getExistingConversationAbortMessages,
 } from '@librechat/chat';
-import type {
-  TMessage,
-  TConversation,
-  TStartupConfig,
-  EventSubmission,
-} from 'librechat-data-provider';
+import type { TMessage, TConversation, EventSubmission } from 'librechat-data-provider';
 import type { EventHandlerContext } from './handlers';
 import type { TFinalResData } from '~/common';
-import {
-  setDraft,
-  getConversationDraftId,
-  hasRealTitle,
-  requestChatFocus,
-  getAllContentText,
-  updateConvoInAllQueries,
-  applyServerReplyStamp,
-  markLocallyCommittedReply,
-  removeConvoFromAllQueries,
-  preserveStreamedContentIdentity,
-} from '~/utils';
-import { startupConfigKey, queueTitleGeneration } from '~/data-provider';
-import { withFileSearchPreference } from '~/hooks/Files/search';
-import { getConvoTitle } from './turns';
+import { getAllContentText } from '~/utils';
 
 /** Settles a finished turn: the final messages, the conversation it belongs to, and an early abort that restores the draft. */
 export default function useFinalHandler(ctx: EventHandlerContext) {
   const {
-    navigate,
     getMessages,
     setMessages,
     queryClient,
     setCompleted,
     runIndex,
     isAddedRequest,
-    announcePolite,
+    services,
     setConversation,
     setIsSubmitting,
     setShowStopButton,
-    location,
-    applyAgentTemplate,
     attachmentHandler,
     setSubmissionStart,
     restorePendingContext,
     reconcileFailedCodeDecision,
     preserveSubagentAtomsForNewConvoIdRef,
   } = ctx;
+  const { conversations, drafts, focus, navigation, templates, titles } = services;
+  const { announce: announcePolite } = focus;
+  const { pathname, navigate } = navigation;
 
   const finalHandler = useCallback(
     (data: TFinalResData, submission: EventSubmission) => {
@@ -89,7 +72,7 @@ export default function useFinalHandler(ctx: EventHandlerContext) {
               [QueryKeys.messages, currentConvoId],
               abortMessages,
             );
-            setDraft({ id: currentConvoId, value: requestMessage?.text });
+            drafts.save({ id: currentConvoId, value: requestMessage?.text });
             restorePendingContext(
               currentConvoId,
               requestMessage?.quotes,
@@ -99,14 +82,14 @@ export default function useFinalHandler(ctx: EventHandlerContext) {
           }
 
           if (currentConvoId && currentConvoId !== Constants.NEW_CONVO) {
-            removeConvoFromAllQueries(queryClient, currentConvoId);
+            conversations.remove(currentConvoId);
             queryClient.removeQueries({ queryKey: [QueryKeys.conversation, currentConvoId] });
             queryClient.removeQueries({ queryKey: [QueryKeys.messages, currentConvoId] });
           }
           setMessages([]);
           queryClient.setQueryData<TMessage[]>([QueryKeys.messages, Constants.NEW_CONVO], []);
-          setDraft({
-            id: getConversationDraftId(runIndex, Constants.NEW_CONVO),
+          drafts.save({
+            id: drafts.getId(runIndex, Constants.NEW_CONVO),
             value: requestMessage?.text,
           });
           restorePendingContext(
@@ -114,7 +97,7 @@ export default function useFinalHandler(ctx: EventHandlerContext) {
             requestMessage?.quotes,
             requestMessage?.reasoningOverride,
           );
-          if (location.pathname !== `/c/${Constants.NEW_CONVO}`) {
+          if (pathname !== `/c/${Constants.NEW_CONVO}`) {
             navigate(`/c/${Constants.NEW_CONVO}`, { replace: true });
           }
           return;
@@ -151,7 +134,7 @@ export default function useFinalHandler(ctx: EventHandlerContext) {
 
         // Skip temporary conversations; the server never generates titles for them.
         if (isNewConvo && conversation.conversationId && !_isTemporary) {
-          queueTitleGeneration(conversation.conversationId);
+          titles.queue(conversation.conversationId);
         }
 
         const setFinalMessages = (id: string | null, _messages: TMessage[]) => {
@@ -169,16 +152,15 @@ export default function useFinalHandler(ctx: EventHandlerContext) {
           const currentConvoId =
             (submissionConvo.conversationId ?? conversation.conversationId) || Constants.NEW_CONVO;
           if (isNewConvo && submissionConvo.conversationId) {
-            removeConvoFromAllQueries(queryClient, submissionConvo.conversationId);
+            conversations.remove(submissionConvo.conversationId);
           }
 
           const isNewChat =
-            location.pathname === `/c/${Constants.NEW_CONVO}` &&
-            currentConvoId === Constants.NEW_CONVO;
+            pathname === `/c/${Constants.NEW_CONVO}` && currentConvoId === Constants.NEW_CONVO;
 
           setFinalMessages(currentConvoId, isNewChat ? [] : [...messages]);
-          setDraft({
-            id: getConversationDraftId(runIndex, currentConvoId),
+          drafts.save({
+            id: drafts.getId(runIndex, currentConvoId),
             value: requestMessage?.text,
           });
           restorePendingContext(
@@ -187,7 +169,7 @@ export default function useFinalHandler(ctx: EventHandlerContext) {
             requestMessage?.reasoningOverride,
           );
           if (isNewChat) {
-            requestChatFocus();
+            focus.focusComposer();
             navigate(`/c/${Constants.NEW_CONVO}`, { replace: true });
           }
           return;
@@ -247,7 +229,7 @@ export default function useFinalHandler(ctx: EventHandlerContext) {
         }
 
         if (isNewConvo && submissionConvo.conversationId) {
-          removeConvoFromAllQueries(queryClient, submissionConvo.conversationId);
+          conversations.remove(submissionConvo.conversationId);
         }
 
         /** Stream snapshots cannot overwrite a rename or generated title already in the cache. */
@@ -256,12 +238,7 @@ export default function useFinalHandler(ctx: EventHandlerContext) {
            * point/list cache events can ask useConversationSeen to acknowledge it. */
           const serverLastResponseAt = serverConversation.lastResponseAt;
           if (conversation.conversationId && !_isTemporary && serverLastResponseAt) {
-            markLocallyCommittedReply(
-              queryClient,
-              conversation.conversationId,
-              serverLastResponseAt,
-            );
-            applyServerReplyStamp(queryClient, conversation.conversationId, {
+            conversations.commitReply(conversation.conversationId, {
               lastResponseAt: serverLastResponseAt,
               lastResponseMessageId: serverConversation.lastResponseMessageId,
               updatedAt: serverConversation.updatedAt,
@@ -276,8 +253,7 @@ export default function useFinalHandler(ctx: EventHandlerContext) {
             if (prevState?.model != null && prevState.model !== submissionConvo.model) {
               update.model = prevState.model;
             }
-            const titleState = getConvoTitle({
-              queryClient,
+            const titleState = conversations.getTitle({
               conversationId: conversation.conversationId,
               titleSetByUser: conversation.titleSetByUser,
               titleRevision: conversation.titleRevision,
@@ -292,7 +268,7 @@ export default function useFinalHandler(ctx: EventHandlerContext) {
             });
             Object.assign(update, titleState);
             if (conversation.conversationId) {
-              updateConvoInAllQueries(queryClient, conversation.conversationId, (convo) => ({
+              conversations.update(conversation.conversationId, (convo) => ({
                 ...convo,
                 ...titleState,
               }));
@@ -315,15 +291,11 @@ export default function useFinalHandler(ctx: EventHandlerContext) {
           });
 
           if (conversation.conversationId && submission.ephemeralAgent) {
-            applyAgentTemplate({
+            templates.apply({
               targetId: conversation.conversationId,
               sourceId: submissionConvo.conversationId,
-              ephemeralAgent: withFileSearchPreference(
-                conversation.conversationId,
-                submission.ephemeralAgent,
-              ),
+              ephemeralAgent: submission.ephemeralAgent,
               specName: submission.conversation?.spec,
-              startupConfig: queryClient.getQueryData<TStartupConfig>(startupConfigKey(true)),
             });
           }
 
@@ -332,7 +304,7 @@ export default function useFinalHandler(ctx: EventHandlerContext) {
             queryClient.invalidateQueries([QueryKeys.project, conversation.chatProjectId]);
           }
 
-          if (location.pathname === `/c/${Constants.NEW_CONVO}`) {
+          if (pathname === `/c/${Constants.NEW_CONVO}`) {
             preserveSubagentAtomsForNewConvoIdRef.current = conversation.conversationId;
             navigate(`/c/${conversation.conversationId}`, { replace: true });
           }
@@ -354,8 +326,12 @@ export default function useFinalHandler(ctx: EventHandlerContext) {
       setConversation,
       setIsSubmitting,
       setShowStopButton,
-      location.pathname,
-      applyAgentTemplate,
+      pathname,
+      conversations,
+      drafts,
+      focus,
+      templates,
+      titles,
       attachmentHandler,
       setSubmissionStart,
       restorePendingContext,

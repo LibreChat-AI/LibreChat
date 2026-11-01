@@ -21,6 +21,7 @@ import {
   completeFileSearchUpload,
   transferFileSearchPreference,
 } from '~/hooks/Files/search';
+import { appDraftServices, appTitleServices, createConversationCache } from '~/hooks/SSE/services';
 import { setFileSearchChoice, transferFileSearchChoice } from '~/utils/choices';
 import { clearUploadRecovery } from '~/hooks/Files/useFileHandling';
 import { useAutoSave } from '~/hooks/Input/useAutoSave';
@@ -503,18 +504,22 @@ describe('useNewConvo reset cleanup', () => {
             setIsSubmitting: jest.fn(),
             setShowStopButton: jest.fn(),
             setSubmissionStart: jest.fn(),
-            announcePolite: jest.fn(),
-            lastAnnouncementTimeRef: { current: 0 },
-            applyAgentTemplate: jest.fn(),
-            focusRegeneratedResponse: jest.fn(),
-            location: {
-              pathname: window.location.pathname,
-              search: '',
-              hash: '',
-              state: null,
-              key: 'sync',
+            services: {
+              conversations: createConversationCache(client),
+              titles: appTitleServices,
+              drafts: appDraftServices,
+              navigation: { pathname: window.location.pathname, navigate: jest.fn() },
+              focus: {
+                announce: jest.fn(),
+                showRegenerated: jest.fn(),
+                focusComposer: jest.fn(),
+                scrollToEnd: jest.fn(),
+              },
+              templates: { apply: jest.fn(), reconcileFailedCode: jest.fn() },
+              transport: { abortRun: jest.fn() },
+              logger: { log: jest.fn(), dir: jest.fn(), warn: jest.fn() },
             },
-            navigate: jest.fn(),
+            lastAnnouncementTimeRef: { current: 0 },
             restorePendingContext: jest.fn(),
             reconcileFailedCodeDecision: jest.fn(),
             recoverConversation: jest.fn(),

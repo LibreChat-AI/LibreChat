@@ -1,31 +1,26 @@
 import { useCallback } from 'react';
 import { v4 } from 'uuid';
-import { mergeErrorMessages, keepLocalCodeApprovalMode } from '@librechat/chat';
 import { QueryKeys, Constants, isAssistantsEndpoint } from 'librechat-data-provider';
+import {
+  resolveErrorTurn,
+  createErrorMessage,
+  mergeErrorMessages,
+  keepLocalCodeApprovalMode,
+  resolveSettledErrorReadState,
+} from '@librechat/chat';
 import type { TMessage, TConversation, EventSubmission } from 'librechat-data-provider';
 import type { TResData, TFinalResData } from '~/common';
 import type { EventHandlerContext } from './handlers';
-import {
-  logger,
-  applyServerReplyStamp,
-  markLocallyCommittedReply,
-  removeConvoFromAllQueries,
-} from '~/utils';
-import { createErrorMessage, resolveErrorTurn, resolveSettledErrorReadState } from './turns';
-import { useChatTransport } from '~/Providers/ChatTransportContext';
-import { useChatSettings } from '~/Providers/ChatSettingsContext';
 
 /** Writes a failed or stopped turn: the error card, a cancelled run, and an abort that settles from what streamed. */
 export default function useAbortHandlers(
   ctx: EventHandlerContext,
   finalHandler: (data: TFinalResData, submission: EventSubmission) => void,
 ) {
-  const { token } = useChatSettings().auth;
-  const transport = useChatTransport();
   const {
+    services,
     setCompleted,
     setMessages,
-    paramId,
     setIsSubmitting,
     setShowStopButton,
     setSubmissionStart,
@@ -36,6 +31,7 @@ export default function useAbortHandlers(
     setConversation,
     isAddedRequest,
   } = ctx;
+  const { conversations, navigation, transport, logger } = services;
 
   const cancelHandler = useCallback(
     (data: TResData, submission: EventSubmission) => {
@@ -59,7 +55,7 @@ export default function useAbortHandlers(
 
       const isNewConvo = conversation.conversationId !== submission.conversation.conversationId;
       if (isNewConvo) {
-        removeConvoFromAllQueries(queryClient, submission.conversation.conversationId as string);
+        conversations.remove(submission.conversation.conversationId as string);
       }
 
       if (setConversation && !isAddedRequest) {
@@ -74,7 +70,7 @@ export default function useAbortHandlers(
 
       setIsSubmitting(false);
     },
-    [setMessages, setConversation, isAddedRequest, queryClient, setIsSubmitting],
+    [setMessages, setConversation, isAddedRequest, conversations, setIsSubmitting],
   );
 
   const errorHandler = useCallback(
@@ -86,15 +82,14 @@ export default function useAbortHandlers(
         data,
         submission,
         getMessages,
-        isNewConversationRoute: paramId === Constants.NEW_CONVO,
+        isNewConversationRoute: navigation.conversationId === Constants.NEW_CONVO,
       });
       const finalMessages = mergeErrorMessages({ ...submission, errorMessage: errorResponse });
       setMessages(finalMessages);
       queryClient.setQueryData<TMessage[]>([QueryKeys.messages, conversationId], finalMessages);
       const settled = resolveSettledErrorReadState({ data, submission, conversationId });
       if (settled) {
-        markLocallyCommittedReply(queryClient, conversationId, settled.lastResponseAt);
-        applyServerReplyStamp(queryClient, conversationId, settled);
+        conversations.commitReply(conversationId, settled);
       }
       if (recover) {
         recoverConversation(conversationId, submission);
@@ -105,11 +100,12 @@ export default function useAbortHandlers(
     [
       setCompleted,
       setMessages,
-      paramId,
+      navigation.conversationId,
       setIsSubmitting,
       setSubmissionStart,
       getMessages,
       queryClient,
+      conversations,
       recoverConversation,
       reconcileFailedCodeDecision,
     ],
@@ -169,10 +165,10 @@ export default function useAbortHandlers(
       }
 
       try {
-        const response = await transport.abortRun(
-          { endpoint: endpoint ?? '', abortKey: runAbortKey },
-          { token },
-        );
+        const response = await transport.abortRun({
+          endpoint: endpoint ?? '',
+          abortKey: runAbortKey,
+        });
 
         // Check if the response is JSON
         const contentType = response.headers.get('content-type');
@@ -217,7 +213,7 @@ export default function useAbortHandlers(
       }
     },
     [
-      token,
+      logger,
       transport,
       getMessages,
       setMessages,

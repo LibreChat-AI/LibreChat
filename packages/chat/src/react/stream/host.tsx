@@ -9,6 +9,7 @@ import type {
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
 import type { ResumableHost, ResumableRun, StreamStatusResponse } from '../../core';
+import type { EventServices, EventServicesParams } from './services';
 import type { ChatContract } from '../chat/contract';
 
 /** The chat members a stream writes through: the message cache, the pane's conversation and its
@@ -109,6 +110,8 @@ export interface StreamHost {
     enabled: boolean,
     isSubmitting: boolean,
   ): ParentSubagentIndexQuery;
+  /** The app services a pane's stream event handlers write through. */
+  useEventServices(params: EventServicesParams): EventServices;
 }
 
 const StreamHostContext = createContext<StreamHost | null>(null);

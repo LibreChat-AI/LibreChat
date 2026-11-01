@@ -1,27 +1,14 @@
 import { useCallback } from 'react';
-import { buildCreatedInitialResponse } from '@librechat/chat';
+import { hasRealTitle, buildCreatedInitialResponse } from '@librechat/chat';
 import { QueryKeys, Constants, tConvoUpdateSchema } from 'librechat-data-provider';
 import type {
   TMessage,
   TConversation,
-  TStartupConfig,
   EventSubmission,
   ChatCreatedFrame,
 } from 'librechat-data-provider';
 import type { EventHandlerContext } from './handlers';
-import {
-  scrollToEnd,
-  adoptComposerConversation,
-  hasRealTitle,
-  withoutListFlags,
-  setDocumentTitle,
-  upsertConvoInAllQueries,
-  updateConvoInAllQueries,
-} from '~/utils';
-import { transferFileSearchPreference, withFileSearchPreference } from '~/hooks/Files/search';
-import { startupConfigKey, markTitleGenerationProcessed } from '~/data-provider';
 import { MESSAGE_UPDATE_INTERVAL } from '~/common';
-import { getConvoTitle } from './turns';
 export type TSyncData = {
   sync: boolean;
   thread_id: string;
@@ -68,12 +55,11 @@ export default function useTurnHandlers(ctx: EventHandlerContext) {
     setConversation,
     isAddedRequest,
     runIndex,
-    announcePolite,
     lastAnnouncementTimeRef,
-    applyAgentTemplate,
-    focusRegeneratedResponse,
-    location,
+    services,
   } = ctx;
+  const { conversations, drafts, focus, navigation, templates, titles } = services;
+  const { announce: announcePolite } = focus;
 
   const messageHandler = useCallback(
     (data: string | undefined, submission: EventSubmission) => {
@@ -113,7 +99,7 @@ export default function useTurnHandlers(ctx: EventHandlerContext) {
     (data: TSyncData, submission: EventSubmission) => {
       const { conversationId, thread_id, responseMessage, requestMessage } = data;
       const { initialResponse, messages: _messages, userMessage, isTemporary = false } = submission;
-      adoptComposerConversation(submission.conversation, conversationId, runIndex);
+      drafts.adopt(submission.conversation, conversationId, runIndex);
       /** Swap the optimistic user row for the server-stamped one IN PLACE.
        *  Filtering it out and re-appending at the tail would order any of its
        *  already-present children (abandoned responses from preempted
@@ -140,8 +126,7 @@ export default function useTurnHandlers(ctx: EventHandlerContext) {
       let update = {} as TConversation;
       if (setConversation && !isAddedRequest) {
         setConversation((prevState) => {
-          const titleState = getConvoTitle({
-            queryClient,
+          const titleState = conversations.getTitle({
             conversationId,
             currentTitle: prevState?.title,
             titleSetByUser: prevState?.titleSetByUser,
@@ -159,11 +144,11 @@ export default function useTurnHandlers(ctx: EventHandlerContext) {
         });
 
         if (!isTemporary) {
-          const sidebarUpdate = withoutListFlags(update);
+          const sidebarUpdate = conversations.listEntry(update);
           if (requestMessage.parentMessageId === Constants.NO_PARENT) {
-            upsertConvoInAllQueries(queryClient, sidebarUpdate);
+            conversations.upsert(sidebarUpdate);
           } else {
-            updateConvoInAllQueries(queryClient, update.conversationId!, () => sidebarUpdate, true);
+            conversations.update(update.conversationId!, () => sidebarUpdate, true);
           }
           if (update.chatProjectId) {
             queryClient.invalidateQueries([QueryKeys.projects]);
@@ -193,6 +178,8 @@ export default function useTurnHandlers(ctx: EventHandlerContext) {
       setConversation,
       setShowStopButton,
       runIndex,
+      conversations,
+      drafts,
     ],
   );
 
@@ -216,19 +203,16 @@ export default function useTurnHandlers(ctx: EventHandlerContext) {
       });
       if (isRegenerate) {
         setMessages([...messages, initialResponse]);
-        focusRegeneratedResponse(initialResponse.parentMessageId);
+        focus.showRegenerated(initialResponse.parentMessageId);
       } else {
         setMessages([...messages, userMessage, initialResponse]);
       }
 
       const { conversationId, parentMessageId } = userMessage;
       if (conversationId) {
-        adoptComposerConversation(
-          submission.conversation,
-          conversationId,
-          runIndex,
-          transferFileSearchPreference,
-        );
+        drafts.adopt(submission.conversation, conversationId, runIndex, {
+          carryPreferences: true,
+        });
       }
       lastAnnouncementTimeRef.current = Date.now();
       announcePolite({
@@ -239,8 +223,7 @@ export default function useTurnHandlers(ctx: EventHandlerContext) {
       let update = {} as TConversation;
       if (setConversation && !isAddedRequest) {
         setConversation((prevState) => {
-          const titleState = getConvoTitle({
-            queryClient,
+          const titleState = conversations.getTitle({
             conversationId,
             currentTitle: prevState?.title,
             titleSetByUser: prevState?.titleSetByUser,
@@ -256,11 +239,11 @@ export default function useTurnHandlers(ctx: EventHandlerContext) {
         });
 
         if (!isTemporary) {
-          const sidebarUpdate = withoutListFlags(update);
+          const sidebarUpdate = conversations.listEntry(update);
           if (parentMessageId === Constants.NO_PARENT) {
-            upsertConvoInAllQueries(queryClient, sidebarUpdate);
+            conversations.upsert(sidebarUpdate);
           } else {
-            updateConvoInAllQueries(queryClient, update.conversationId!, () => sidebarUpdate, true);
+            conversations.update(update.conversationId!, () => sidebarUpdate, true);
           }
           if (update.chatProjectId) {
             queryClient.invalidateQueries([QueryKeys.projects]);
@@ -279,16 +262,15 @@ export default function useTurnHandlers(ctx: EventHandlerContext) {
       }
 
       if (conversationId) {
-        applyAgentTemplate({
+        templates.apply({
           targetId: conversationId,
           sourceId: submission.conversation?.conversationId,
-          ephemeralAgent: withFileSearchPreference(conversationId, submission.ephemeralAgent),
+          ephemeralAgent: submission.ephemeralAgent,
           specName: submission.conversation?.spec,
-          startupConfig: queryClient.getQueryData<TStartupConfig>(startupConfigKey(true)),
         });
       }
 
-      scrollToEnd();
+      focus.scrollToEnd();
     },
     [
       setMessages,
@@ -296,10 +278,12 @@ export default function useTurnHandlers(ctx: EventHandlerContext) {
       isAddedRequest,
       announcePolite,
       setConversation,
-      applyAgentTemplate,
-      focusRegeneratedResponse,
       lastAnnouncementTimeRef,
       runIndex,
+      conversations,
+      drafts,
+      focus,
+      templates,
     ],
   );
 
@@ -309,8 +293,7 @@ export default function useTurnHandlers(ctx: EventHandlerContext) {
       if (!conversationId || !hasRealTitle(generatedTitle)) {
         return;
       }
-      const titleState = getConvoTitle({
-        queryClient,
+      const titleState = conversations.getTitle({
         conversationId,
         currentTitle: generatedTitle,
       });
@@ -319,15 +302,15 @@ export default function useTurnHandlers(ctx: EventHandlerContext) {
       queryClient.setQueryData<TConversation>([QueryKeys.conversation, conversationId], (convo) =>
         convo ? { ...convo, ...titleState, title } : convo,
       );
-      updateConvoInAllQueries(queryClient, conversationId, (convo) => ({
+      conversations.update(conversationId, (convo) => ({
         ...convo,
         ...titleState,
         title,
       }));
-      markTitleGenerationProcessed(conversationId);
+      titles.markProcessed(conversationId);
 
-      if (location.pathname.includes(conversationId)) {
-        setDocumentTitle(title);
+      if (navigation.pathname.includes(conversationId)) {
+        titles.setDocumentTitle(title);
       }
 
       if (setConversation && !isAddedRequest) {
@@ -347,7 +330,7 @@ export default function useTurnHandlers(ctx: EventHandlerContext) {
         });
       }
     },
-    [queryClient, location.pathname, setConversation, isAddedRequest],
+    [queryClient, navigation.pathname, setConversation, isAddedRequest, conversations, titles],
   );
 
   return { messageHandler, syncHandler, createdHandler, titleHandler };

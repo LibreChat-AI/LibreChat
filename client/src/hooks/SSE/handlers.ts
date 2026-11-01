@@ -1,12 +1,9 @@
 import type { TMessage, EventSubmission } from 'librechat-data-provider';
-import type { Location, NavigateFunction } from 'react-router-dom';
+import type { EventServices } from '@librechat/chat/react';
 import type { QueryClient } from '@tanstack/react-query';
 import type { MutableRefObject } from 'react';
-import type useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
 import type useAttachmentHandler from './useAttachmentHandler';
 import type { EventHandlerParams } from './useEventHandlers';
-import type { useApplyAgentTemplate } from '~/hooks/Agents';
-import type { useLiveAnnouncer } from '~/Providers';
 
 /** What the stream event handlers share: the pane they write to and the app around it. */
 export type EventHandlerContext = Required<
@@ -24,13 +21,9 @@ export type EventHandlerContext = Required<
     queryClient: QueryClient;
     /** Clears the elapsed anchor on every terminal path. */
     setSubmissionStart: (start: number | null) => void;
-    announcePolite: ReturnType<typeof useLiveAnnouncer>['announcePolite'];
+    /** The app's caches, drafts, route, focus, templates and transport, grouped by owner. */
+    services: EventServices;
     lastAnnouncementTimeRef: MutableRefObject<number>;
-    applyAgentTemplate: ReturnType<typeof useApplyAgentTemplate>;
-    focusRegeneratedResponse: ReturnType<typeof useFocusRegeneratedResponse>;
-    location: Location;
-    navigate: NavigateFunction;
-    paramId?: string;
     /** Re-stages request context when an early abort restores the draft. */
     restorePendingContext: (
       convoId: string,

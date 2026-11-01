@@ -7,7 +7,7 @@ import type {
   ChatTransport,
   ChatTransportRequest,
 } from 'librechat-data-provider';
-import type { NewConversationParams } from '@librechat/chat/react';
+import type { AbortRunRequest, NewConversationParams } from '@librechat/chat/react';
 import type { SetStateAction, Dispatch } from 'react';
 import type { PendingSteer } from '@librechat/chat';
 import type {
@@ -129,14 +129,6 @@ export type PaneConversation = {
   /** The pane key, as the app keys its panes (`0` for the main chat). */
   index: string | number;
   conversationId: string | null;
-};
-
-/** The assistants abort route and the run it stops. */
-export type AbortRunRequest = {
-  /** The assistants endpoint whose `/abort` route owns the run. */
-  endpoint: string;
-  /** `conversationId:responseMessageId` of the run to stop. */
-  abortKey: string;
 };
 
 /**

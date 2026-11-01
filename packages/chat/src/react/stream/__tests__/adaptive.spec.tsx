@@ -6,6 +6,7 @@ import { renderHook } from '@testing-library/react';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { TSubmission } from 'librechat-data-provider';
 import type { StreamHost } from '../host';
+import { createEventServices } from '../__fixtures__/events';
 import { StreamHostProvider } from '../host';
 import useResumableSSE from '../resumable';
 import useAdaptiveSSE from '../adaptive';
@@ -13,6 +14,8 @@ import useAdaptiveSSE from '../adaptive';
 jest.mock('../resumable', () => jest.fn(() => ({ streamId: 'stream' })));
 
 const useLegacyStream = jest.fn();
+const eventServices = createEventServices();
+
 const host: StreamHost = {
   useResumableServices: () => () => {
     throw new Error('the resumable binding is replaced in this spec');
@@ -30,6 +33,7 @@ const host: StreamHost = {
   }),
   useResumeSettings: () => ({ configLoaded: true, conversation: null }),
   useParentSubagentIndex: () => ({ isError: false, refetch: async () => ({}) }),
+  useEventServices: () => eventServices,
 };
 
 const wrapper = ({ children }: { children: React.ReactNode }) => (
