@@ -1,25 +1,25 @@
-import React, { useState, useMemo, useCallback, memo } from 'react';
+import React, { useState, useMemo, useCallback, useContext, memo } from 'react';
 import { Copy, Check } from 'lucide';
-import { useAtomValue } from 'jotai';
-import { useRecoilState } from 'recoil';
-import { hasEditablePart } from '@librechat/chat';
-import { hoverButtonClasses, Fork, Feedback } from '@librechat/chat/components';
-import { useGenerationsByLatest, revealedQueuedTurnFamily } from '@librechat/chat/react';
 import { getSpeechText, findMessageById, isUserInitiatedCompaction } from 'librechat-data-provider';
 import {
+  cn,
   Button,
   EditIcon,
   MorphIcon,
+  useLocalize,
   ContinueIcon,
   TooltipAnchor,
   RegenerateIcon,
 } from '@librechat/client';
 import type { TConversation, TMessage, TFeedback } from 'librechat-data-provider';
-import { useMessagesIsSubmitting, useOptionalMessagesOperations } from '~/Providers';
-import MessageAudio from './MessageAudio';
-import { useLocalize } from '~/hooks';
-import { cn } from '~/utils';
-import store from '~/store';
+import type { NamedExoticComponent, ReactNode } from 'react';
+import { MessageAudioSlot, useMessagesHost } from '../../react/messages/host';
+import useGenerationsByLatest from '../../react/messages/generations';
+import { hasEditablePart } from '../../core/parts/editableParts';
+import { ChatContext } from '../../react/chat/context';
+import { hoverButtonClasses } from './styles';
+import Feedback from './Feedback';
+import Fork from './Fork';
 
 type THoverButtons = {
   isEditing: boolean;
@@ -105,15 +105,15 @@ const HoverButtons = ({
   getLatestMessageId,
   isLast,
   handleFeedback,
-}: THoverButtons) => {
+}: THoverButtons): ReactNode => {
   const localize = useLocalize();
-  /** Subscribed here rather than passed down: a send toggles the rerun controls on
-   *  every row, and only this toolbar has to re-render for it. */
-  const isSubmitting = useMessagesIsSubmitting();
+  /** Read from the pane's chat contract here rather than passed down: a send toggles the
+   *  rerun controls on every row, and only this toolbar has to re-render for it. */
+  const isSubmitting = useContext(ChatContext)?.isSubmitting === true;
   const [isCopied, setIsCopied] = useState(false);
-  const [TextToSpeech] = useRecoilState<boolean>(store.textToSpeech);
-  const { getMessages } = useOptionalMessagesOperations();
-  const pendingReveal = useAtomValue(revealedQueuedTurnFamily(conversation?.conversationId ?? ''));
+  const { useGetMessages, useHasPendingTurn } = useMessagesHost();
+  const getMessages = useGetMessages();
+  const hasPendingTurn = useHasPendingTurn(conversation?.conversationId ?? '');
 
   const endpoint = useMemo(() => {
     if (!conversation) {
@@ -128,8 +128,8 @@ const HoverButtons = ({
    *  is keyed on the parent id: `getMessages` is a cache read, not a subscription,
    *  and a parent's authorship never changes. Outside the messages view (a search
    *  row) the thread is unavailable and the answer stays unknown; with the thread
-   *  in hand a parent that does not resolve is absent — an imported reply the
-   *  lineage left at the root — and there is no turn to replay, which `regenerate`
+   *  in hand a parent that does not resolve is absent (an imported reply the
+   *  lineage left at the root) and there is no turn to replay, which `regenerate`
    *  can only log about once the button is pressed. */
   const parentIsUserMessage = useMemo(() => {
     if (message.isCreatedByUser === true) {
@@ -150,7 +150,7 @@ const HoverButtons = ({
    *  continuation may race it, exactly as while a run is submitting. */
   const generationCapabilities = useGenerationsByLatest({
     isEditing,
-    isSubmitting: isSubmitting || pendingReveal != null,
+    isSubmitting: isSubmitting || hasPendingTurn,
     error: message.error,
     endpoint: endpoint ?? '',
     messageId: message.messageId,
@@ -197,8 +197,8 @@ const HoverButtons = ({
   return (
     <div className="group visible flex justify-center gap-0.5 self-end focus-within:outline-hidden lg:justify-start">
       {/* Text to Speech */}
-      {TextToSpeech && !error && !isActiveStreamingMessage && speechText.length > 0 && (
-        <MessageAudio
+      {!error && !isActiveStreamingMessage && speechText.length > 0 && (
+        <MessageAudioSlot
           index={index}
           isLast={isLast}
           messageId={message.messageId}
@@ -291,4 +291,6 @@ const HoverButtons = ({
   );
 };
 
-export default memo(HoverButtons);
+const MemoHoverButtons: NamedExoticComponent<THoverButtons> = memo(HoverButtons);
+
+export default MemoHoverButtons;

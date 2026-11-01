@@ -1,6 +1,8 @@
 import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
+import { ChatContext } from '@librechat/chat/react';
 import { RecoilRoot, type MutableSnapshot } from 'recoil';
+import { HoverButtons } from '@librechat/chat/components';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import {
@@ -10,14 +12,16 @@ import {
   type TConversation,
   type TMessage,
 } from 'librechat-data-provider';
+import type { ChatContract } from '@librechat/chat/react';
 import {
   MessagesOperationsContext,
-  MessagesSubmittingContext,
   type MessagesOperations,
 } from '~/Providers/MessagesViewContext';
 import { hasCopyableText } from '~/hooks/Messages/useCopyToClipboard';
-import HoverButtons from '~/components/Chat/Messages/HoverButtons';
+import '~/Providers/MessagesHostContext';
 import store from '~/store';
+
+const chatContract = (isSubmitting: boolean) => ({ index: 0, isSubmitting }) as ChatContract;
 
 const conversation = {
   conversationId: 'convo-1',
@@ -43,6 +47,7 @@ function renderHoverButtons({
   handleFeedback,
   thread,
   voice,
+  textToSpeech = voice != null,
 }: {
   isSubmitting: boolean;
   message?: TMessage;
@@ -56,13 +61,15 @@ function renderHoverButtons({
   thread?: TMessage[];
   /** Enables Read Aloud on the browser engine with this voice selected. */
   voice?: string;
+  /** The viewer's read-aloud setting; on whenever a voice is set unless given. */
+  textToSpeech?: boolean;
 }) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
 
   const initializeState = ({ set }: MutableSnapshot) => {
-    set(store.textToSpeech, voice != null);
+    set(store.textToSpeech, textToSpeech);
     if (voice != null) {
       set(store.voice, voice);
       set(store.speechSettingsInitialized, true);
@@ -75,7 +82,7 @@ function renderHoverButtons({
         <MessagesOperationsContext.Provider
           value={{ getMessages: () => thread } as unknown as MessagesOperations}
         >
-          <MessagesSubmittingContext.Provider value={isSubmitting}>
+          <ChatContext.Provider value={chatContract(isSubmitting)}>
             <MemoryRouter>
               <HoverButtons
                 index={0}
@@ -92,7 +99,7 @@ function renderHoverButtons({
                 handleFeedback={handleFeedback}
               />
             </MemoryRouter>
-          </MessagesSubmittingContext.Provider>
+          </ChatContext.Provider>
         </MessagesOperationsContext.Provider>
       </RecoilRoot>
     </QueryClientProvider>,
@@ -582,15 +589,11 @@ describe('HoverButtons submission state', () => {
   } as TMessage;
 
   let setSubmitting: (value: boolean) => void = () => undefined;
-  /** Holds the pane's submission state; the toolbar element itself never changes. */
+  /** Holds the pane's chat contract; the toolbar element itself never changes. */
   function SubmittingHost({ children }: { children: React.ReactNode }) {
     const [submitting, setState] = React.useState(false);
     setSubmitting = setState;
-    return (
-      <MessagesSubmittingContext.Provider value={submitting}>
-        {children}
-      </MessagesSubmittingContext.Provider>
-    );
+    return <ChatContext.Provider value={chatContract(submitting)}>{children}</ChatContext.Provider>;
   }
 
   it('withholds and restores rerun on a settled row as a send starts and ends', () => {
@@ -744,6 +747,20 @@ describe('HoverButtons read aloud', () => {
       isLast: true,
       latestMessageId: 'assistant-1',
       voice: voiceName,
+    });
+
+    expect(screen.queryByTestId('read-aloud-button')).toBeNull();
+    expect(screen.getByTestId('copy-response-button')).toBeInTheDocument();
+  });
+
+  it('offers no read aloud while text to speech is off', () => {
+    renderHoverButtons({
+      isSubmitting: false,
+      message: { ...userMessage, messageId: 'assistant-1', isCreatedByUser: false },
+      isLast: true,
+      latestMessageId: 'assistant-1',
+      voice: voiceName,
+      textToSpeech: false,
     });
 
     expect(screen.queryByTestId('read-aloud-button')).toBeNull();

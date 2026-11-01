@@ -5,6 +5,7 @@ import type {
   TAskProps,
   TAskFunction,
   PaneOptionSettings,
+  MessageAudioProps,
   NewConversationParams,
 } from '@librechat/chat/react';
 import type { UseMutationResult } from '@tanstack/react-query';
@@ -417,22 +418,7 @@ export type VoiceOption = {
   label: string;
 };
 
-export type TMessageAudio = {
-  isLast?: boolean;
-  index: number;
-  messageId: string;
-  content: string;
-  className?: string;
-  renderButton?: (props: {
-    onClick: (e?: React.MouseEvent<HTMLButtonElement>) => void;
-    title: string;
-    icon: React.ReactNode;
-    isActive?: boolean;
-    isVisible?: boolean;
-    isDisabled?: boolean;
-    className?: string;
-  }) => React.ReactNode;
-};
+export type TMessageAudio = MessageAudioProps;
 
 export type OptionWithIcon = Option & { icon?: React.ReactNode };
 export type DropdownValueSetter = (value: string | Option | OptionWithIcon) => void;
