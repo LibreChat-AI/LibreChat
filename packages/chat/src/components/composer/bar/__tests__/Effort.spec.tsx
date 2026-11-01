@@ -6,11 +6,7 @@ import { ReasoningEffort } from 'librechat-data-provider';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { SettingDefinition, TConversation } from 'librechat-data-provider';
 import Effort, { effortRank, leanFor, resolveEffortLabel } from '../Effort';
-
-jest.mock('@librechat/client', () => ({
-  ...jest.requireActual('@librechat/client'),
-  useLocalize: () => (key: string) => key,
-}));
+import { initEnglish } from '../../../../__fixtures__/i18n';
 
 /**
  * The thinking-level track: a radiogroup of named stops that arrow keys move along, with the
@@ -26,7 +22,8 @@ const setting = {
 
 const conversation = { conversationId: 'c-1' } as TConversation;
 
-beforeAll(() => {
+beforeAll(async () => {
+  await initEnglish();
   window.matchMedia = jest.fn(() => ({
     matches: true,
     addEventListener: jest.fn(),
@@ -66,10 +63,9 @@ describe('Effort', () => {
       />,
     );
 
-    expect(
-      screen.getByRole('radiogroup', { name: 'com_ui_composer_thinking' }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole('radiogroup', { name: 'Thinking' })).toBeInTheDocument();
     const checked = screen.getByRole('radio', { checked: true });
+    expect(checked).toHaveAccessibleName('Low');
     fireEvent.keyDown(checked, { key: 'ArrowRight' });
 
     expect(onChange).toHaveBeenCalledWith({ key: 'reasoning_effort', value: 'medium' });
