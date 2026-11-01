@@ -152,6 +152,12 @@ export type {
   MessageAudioButtonProps,
   MessageRowSlotProps,
 } from './react/messages/host';
+export { AuthorContext, useAuthorContext } from './react/messages/author';
+export type { TMessageAuthor } from './react/messages/author';
+export { ErrorSourceProvider, useErrorSource } from './react/messages/error';
+export type { ErrorSource } from './react/messages/error';
+export { MessageSurfaceContext } from './react/messages/surface';
+export type { MessageSurface } from './react/messages/surface';
 export {
   SoleToolContext,
   LoneGroupContext,
