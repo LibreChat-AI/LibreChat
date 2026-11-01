@@ -151,6 +151,7 @@ export type {
   MessageAudioButtonProps,
 } from './react/messages/host';
 export {
+  GeneratedToolLabelContext,
   SoleToolContext,
   LoneGroupContext,
   useToolExpansion,

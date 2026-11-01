@@ -1,5 +1,6 @@
 import React, { useContext } from 'react';
 import { RecoilRoot } from 'recoil';
+import { GeneratedToolLabelContext } from '@librechat/chat/react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
 import { LoneGroupContext, SoleToolContext, useToolAutoExpand } from '@librechat/chat/react';
@@ -88,13 +89,7 @@ jest.mock('~/hooks', () => ({
     }
     return key;
   },
-  useExpandCollapse: (isExpanded: boolean) => ({
-    style: {
-      display: 'grid',
-      gridTemplateRows: isExpanded ? '1fr' : '0fr',
-    },
-    ref: { current: null },
-  }),
+  useExpandCollapse: jest.requireActual('~/hooks/Messages/useExpandCollapse').default,
   scheduleMessageContentLayoutReconcile: jest.fn(() => jest.fn()),
 }));
 
@@ -446,6 +441,21 @@ describe('ToolCallGroup image hoisting', () => {
     ).toBeInTheDocument();
     /** Collapsed: bodies not mounted. */
     expect(screen.queryByTestId('inner-0')).not.toBeInTheDocument();
+  });
+
+  it('keeps an unnamed streaming batch open between consecutive calls', () => {
+    const parts = [{ part: makePart('first', '', 'lookup'), idx: 0 }];
+    const view = renderGroup({ ...baseProps, parts, isSubmitting: true });
+    view.rerender(
+      <RecoilRoot>
+        <ToolCallGroup
+          {...baseProps}
+          parts={[{ part: makePart('first', 'done', 'lookup'), idx: 0 }]}
+          isSubmitting
+        />
+      </RecoilRoot>,
+    );
+    expect(screen.getByRole('button', { expanded: true })).toBeInTheDocument();
   });
 
   it('keeps a pending-label group expanded while its tool has no output', () => {
@@ -878,7 +888,7 @@ describe('ToolCallGroup image hoisting', () => {
       ],
     });
 
-    expect(screen.getByText('· Code ×2')).toBeInTheDocument();
+    expect(screen.getByText('· Code')).toBeInTheDocument();
     expect(screen.queryByText(/Code, bash_tool/)).not.toBeInTheDocument();
     expect(screen.getByTestId('stacked-icons')).toHaveAttribute(
       'data-tool-names',
@@ -1342,7 +1352,7 @@ describe('ToolCallGroup image hoisting', () => {
 
     expect(
       screen.getByRole('button', {
-        name: 'Ran 3 actions, Create File ×2, Edit File · 1/3 failed',
+        name: 'Ran 3 actions, Create File, Edit File · 1/3 failed',
       }),
     ).toBeInTheDocument();
   });
@@ -1553,7 +1563,7 @@ describe('ToolCallGroup image hoisting', () => {
      *  settled (past tense while still submitting) and count it as a
      *  failure even though the empty output never parses as an error. */
     expect(
-      screen.getByRole('button', { name: 'Ran 2 actions, Create File ×2 · 1/2 failed' }),
+      screen.getByRole('button', { name: 'Ran 2 actions, Create File · 1/2 failed' }),
     ).toBeInTheDocument();
   });
 
@@ -1582,7 +1592,7 @@ describe('ToolCallGroup image hoisting', () => {
      *  over the only other notice, so the header must carry it and must not
      *  count it as a failure. */
     expect(
-      screen.getByRole('button', { name: 'Ran 2 actions, Create File ×2 · 1 cancelled' }),
+      screen.getByRole('button', { name: 'Ran 2 actions, Create File · 1 cancelled' }),
     ).toBeInTheDocument();
   });
 
@@ -1864,9 +1874,11 @@ describe('ToolCallGroup failure fast path', () => {
     expect(screen.getByTestId('failed-reveal-pill')).toHaveTextContent('com_ui_n_actions_failed');
   });
 
-  it("keeps the count in text inside a phase, where the pill is the phase's", () => {
+  it('hides the redundant failure count inside a phase', () => {
     renderGroup({ ...props(jest.fn()), withinActivityPhase: true });
-    expect(screen.getByRole('button', { name: /· 1\/2 failed$/ })).toHaveTextContent('1/2 failed');
+    expect(screen.getByRole('button', { name: /· 1\/2 failed$/ })).not.toHaveTextContent(
+      '1/2 failed',
+    );
   });
 
   it('leaves the pill to a live phase without collapsing its running group', () => {
@@ -1880,7 +1892,7 @@ describe('ToolCallGroup failure fast path', () => {
 
     const group = screen.getByRole('button', { name: /1\/3 failed$/ });
     expect(group).toHaveAttribute('aria-expanded', 'true');
-    expect(group).toHaveTextContent('1/3 failed');
+    expect(group).not.toHaveTextContent('1/3 failed');
     expect(screen.queryByTestId('failed-reveal-pill')).not.toBeInTheDocument();
   });
 
@@ -2049,6 +2061,65 @@ describe('ToolCallGroup sole tool', () => {
       lastContentIdx: ids.length - 1,
       renderPart: (_p: TMessageContentParts, idx: number) => <Probe key={idx} idx={idx} />,
     }) satisfies React.ComponentProps<typeof ToolCallGroup>;
+
+  it('keeps a flattened result interactive rather than inert', () => {
+    render(
+      <RecoilRoot>
+        <GeneratedToolLabelContext.Provider value>
+          <ToolCallGroup {...props(['only'])} />
+        </GeneratedToolLabelContext.Provider>
+      </RecoilRoot>,
+    );
+    expect(screen.getByTestId('probe-0').closest('[inert]')).toBeNull();
+  });
+
+  it.each([['only'], ['first', 'second']])(
+    'only compresses a generated group containing one call: %j',
+    (...ids: string[]) => {
+      function LabelProbe() {
+        return (
+          <div data-testid="generated-label">{String(useContext(GeneratedToolLabelContext))}</div>
+        );
+      }
+      renderGroup({
+        ...props(ids),
+        labelPart: {
+          part: {
+            type: ContentTypes.ACTIVITY_LABEL,
+            activity_label: 'Checked weather',
+            pending: false,
+          } as TMessageContentParts,
+          idx: ids.length,
+        },
+        renderPart: (_part, idx) => <LabelProbe key={idx} />,
+      });
+      fireEvent.click(screen.getByRole('button', { expanded: false }));
+      expect(screen.getAllByTestId('generated-label')[0]).toHaveTextContent(
+        String(ids.length === 1),
+      );
+    },
+  );
+
+  it('keeps the tool header when Thoughts shares its group', () => {
+    function Probe() {
+      return <span data-testid="lone-with-thoughts">{String(useContext(LoneGroupContext))}</span>;
+    }
+    renderGroup({
+      ...props(['only']),
+      parts: [
+        { part: makePart('only'), idx: 0 },
+        { part: { type: ContentTypes.THINK, think: 'Checking' } as TMessageContentParts, idx: 1 },
+      ],
+      renderPart: () => <Probe />,
+    });
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('lone-with-thoughts')).toHaveTextContent('false');
+  });
+  it('lets the grid panel shrink below its content height', () => {
+    renderGroup(props(['first', 'second']));
+    fireEvent.click(screen.getByRole('button', { expanded: false }));
+    expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('min-h-0');
+  });
 
   it('opens the only tool call inside the group by default', () => {
     renderGroup(props(['only']));

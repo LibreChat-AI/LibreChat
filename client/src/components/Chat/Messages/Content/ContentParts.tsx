@@ -955,8 +955,14 @@ const ContentPartsBody = memo(function ContentPartsBody({
   const relativeLastContentIdx = lastCursorContentIdx(safeContent);
   const lastContentIdx = relativeLastContentIdx < 0 ? -1 : absoluteIndexAt(relativeLastContentIdx);
 
-  const renderGroups = (groups: ReturnType<typeof groupParts>, lastContentIdx: number) =>
-    groups.flatMap((group) => {
+  const renderGroups = (groups: ReturnType<typeof groupParts>, lastContentIdx: number) => {
+    let lastProseIndex = -1;
+    for (const group of groups) {
+      if (group.type === 'single' && group.part.part.type === ContentTypes.TEXT) {
+        lastProseIndex = Math.max(lastProseIndex, group.part.idx);
+      }
+    }
+    return groups.flatMap((group) => {
       const first = group.type === 'single' ? group.part : group.parts[0];
       const firstIdx = first?.idx ?? -1;
       const nodes: ReactElement[] = [];
@@ -977,6 +983,9 @@ const ContentPartsBody = memo(function ContentPartsBody({
         <ToolCallGroup
           key={`tool-group-${groupId}`}
           parts={group.parts}
+          followedByAnswer={
+            lastProseIndex > (group.labelPart?.idx ?? group.parts[group.parts.length - 1].idx)
+          }
           isSubmitting={effectiveIsSubmitting}
           /** The label part is CONSUMED into the header, not listed in
            *  `parts` — a filled label at the content tail must still
@@ -1001,6 +1010,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
       );
       return nodes;
     });
+  };
 
   const hasParallelContent = hasParallelLanes(content, messageLaneGroups);
   let phaseContent: ReactElement[] | undefined;

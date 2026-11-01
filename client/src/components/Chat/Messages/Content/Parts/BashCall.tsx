@@ -26,6 +26,7 @@ import { OutputRenderer } from '../ToolOutput';
 import { ERROR_PATTERNS } from './ExecuteCode';
 import { AttachmentGroup } from './Attachment';
 import PtcToolTrace from './PtcToolTrace';
+import CommandTime from './CommandTime';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -146,7 +147,8 @@ export default function BashCall({
       runStepStatus,
       extraError: backgroundFailed || result?.failed === true,
       extraCancelled: cancelledInBackground,
-      keepRow: backgroundHandle != null || intent != null,
+      keepRow: backgroundHandle != null,
+      keepLabelRow: intent != null,
     });
 
   const highlighted = useLazyHighlight(showCode ? command || undefined : undefined, 'bash');
@@ -195,7 +197,7 @@ export default function BashCall({
 
   return (
     <>
-      <BareStatus active={bare} text={finishedText} />
+      <BareStatus phase={phase} active={bare} text={finishedText} />
       {!bare && (
         <div
           className={TOOL_ROW_CLASSES}
@@ -214,8 +216,10 @@ export default function BashCall({
              *  covers the live card; the persisted `backgrounded` marker covers
              *  the card after harvest replaces the handle with real stdout
              *  (and after any reload), when no transient signal survives. */
-            durationMs={
-              backgroundHandle == null && backgrounded !== true ? runStepDurationMs : undefined
+            timer={
+              backgroundHandle == null && backgrounded !== true ? (
+                <CommandTime phase={phase} durationMs={runStepDurationMs} />
+              ) : undefined
             }
             icon={
               <LangIcon
@@ -233,13 +237,20 @@ export default function BashCall({
         </div>
       )}
       <div style={expandStyle}>
-        <div className="overflow-hidden" ref={expandRef}>
+        <div className="min-h-0 overflow-hidden" ref={expandRef}>
           <div
             className={cn(
               toolPanelSpacingClassName,
               'border-border-light overflow-hidden rounded-lg border',
             )}
           >
+            {bare && command && (
+              <div className="flex items-center justify-end px-3 pt-2">
+                {backgroundHandle == null && backgrounded !== true && (
+                  <CommandTime phase={phase} durationMs={runStepDurationMs} />
+                )}
+              </div>
+            )}
             {command && (
               // The command is a code surface, so it takes the role every other one takes
               // (`DiffView`, the user-turn code bars) instead of a palette shade a theme
