@@ -1,13 +1,4 @@
 import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
-import {
-  backgroundTaskOutcome,
-  parseBackgroundTaskOutput,
-  parseBackgroundHandle,
-  splitBackgroundAttachments,
-  isBashProgrammaticToolCall,
-  parseCommandOutput,
-  resolveToolCallPhase,
-} from '@librechat/chat';
 import type {
   Agents,
   TAttachment,
@@ -16,10 +7,15 @@ import type {
   TMessageContentParts,
 } from 'librechat-data-provider';
 import type { ToolPreparationInput } from './preparation';
-import { isMemoryFailureOutput } from './Parts/MemoryCall';
-import { filterAttachmentsForPart } from '~/utils/map';
+import { backgroundTaskOutcome, parseBackgroundTaskOutput } from './background';
+import { parseBackgroundHandle, splitBackgroundAttachments } from './handle';
+import { resolveToolCallPhase } from './toolCallPhase';
+import { isBashProgrammaticToolCall } from './routing';
+import { filterAttachmentsForPart } from '../files';
 import { isToolCallPreparing } from './preparation';
-import { isError } from './ToolOutput';
+import { isMemoryFailureOutput } from './memory';
+import { parseCommandOutput } from './command';
+import { isError } from './output';
 
 /**
  * The one place a tool call's outcome is decided for anything that SUMMARIZES
@@ -280,7 +276,9 @@ type CachedMeta = {
 const metaCache = new WeakMap<TMessageContentParts, CachedMeta>();
 
 const toolCallIdentity = (part: TMessageContentParts): { id: string; stepId?: string } => {
-  const toolCall = part[ContentTypes.TOOL_CALL] as { id?: string; stepId?: string } | undefined;
+  const toolCall = (part as { [ContentTypes.TOOL_CALL]?: { id?: string; stepId?: string } })[
+    ContentTypes.TOOL_CALL
+  ];
   return { id: toolCall?.id ?? '', stepId: toolCall?.stepId };
 };
 

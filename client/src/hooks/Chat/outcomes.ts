@@ -1,7 +1,6 @@
 import { ContentTypes } from 'librechat-data-provider';
+import { isMemoryFailureOutput, getToolMeta } from '@librechat/chat';
 import type { TMessage, TAttachment, UIMappingOptions } from 'librechat-data-provider';
-import { isMemoryFailureOutput } from '~/components/Chat/Messages/Content/Parts/MemoryCall';
-import { getToolMeta } from '~/components/Chat/Messages/Content/outcome';
 import { mergeAttachments } from '~/utils/attachments';
 import { mapAttachments } from '~/utils/map';
 

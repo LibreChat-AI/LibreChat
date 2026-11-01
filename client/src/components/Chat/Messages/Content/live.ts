@@ -12,6 +12,9 @@ import {
   getSubmittedAskAnswer,
   getToolDisplayLabel,
   parseToolName,
+  getToolIconName,
+  getToolMeta,
+  summarizeSpan,
 } from '@librechat/chat';
 import type {
   Agents,
@@ -19,11 +22,10 @@ import type {
   PartMetadata,
   TMessageContentParts,
 } from 'librechat-data-provider';
+import type { SpanOutcome, SpanSummary } from '@librechat/chat';
 import type { TOptions } from 'i18next';
-import type { SpanOutcome, SpanSummary } from './outcome';
 import type { TranslationKeys } from '~/hooks';
 import { getBatchActivityLabelPart, getActivityLabelText } from '~/utils/activityLabels';
-import { getToolIconName, getToolMeta, summarizeSpan } from './outcome';
 import { hasPendingAuthInPart } from '~/utils/groupToolCalls';
 import { isError } from './ToolOutput';
 

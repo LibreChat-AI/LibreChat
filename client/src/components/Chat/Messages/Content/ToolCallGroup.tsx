@@ -9,10 +9,12 @@ import {
   getSubmittedAskAnswer,
   getToolDisplayLabel,
   parseToolName,
+  getOutcomeStatus,
+  summarizeSpan,
 } from '@librechat/chat';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
+import type { ToolMeta } from '@librechat/chat';
 import type { PartWithIndex } from './ParallelContent';
-import type { ToolMeta } from './outcome';
 import {
   cn,
   getPartKeyIndex,
@@ -39,7 +41,6 @@ import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { ToolAuthWarning, ToolAuthWarningContext } from './auth';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup, ReasoningCompact } from './Parts';
-import { getOutcomeStatus, summarizeSpan } from './outcome';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { StackedToolIcons } from './ToolOutput';
 import { mapAttachments } from '~/utils/map';
