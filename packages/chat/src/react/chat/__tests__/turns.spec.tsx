@@ -4,7 +4,8 @@
 import React from 'react';
 import { createStore, Provider } from 'jotai';
 import { renderHook } from '@testing-library/react';
-import { Constants, EModelEndpoint } from 'librechat-data-provider';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryKeys, Constants, EModelEndpoint } from 'librechat-data-provider';
 import type { TMessage, TSubmission, TConversation } from 'librechat-data-provider';
 import type { ChatTurnsParams, TurnServices } from '../host';
 import type { ExtendedFile } from '../../../core';
@@ -15,6 +16,8 @@ import {
   pendingReasoningOverrideFamily,
 } from '../../composer';
 import { createTurnServices } from '../__fixtures__/services';
+import { siblingIdxFamily, siblingKey } from '../../thread';
+import { activeUsageResponseIdFamily } from '../../usage';
 import { isSubmittingFamily } from '../../submission';
 import { useTurns } from '../turns';
 
@@ -61,6 +64,7 @@ function setup({
   files = new Map<string, ExtendedFile>(),
   services = createTurnServices(),
   isSubmitting = false,
+  revalidating = false,
 }: {
   conversation?: TConversation | null;
   /** `null` stands for history that has not loaded. */
@@ -69,8 +73,18 @@ function setup({
   files?: Map<string, ExtendedFile>;
   services?: TurnServices;
   isSubmitting?: boolean;
+  /** The cached history is mid-refetch and older than a locally written tail. */
+  revalidating?: boolean;
 } = {}) {
   const store = createStore();
+  const queryClient = new QueryClient();
+  if (revalidating) {
+    const key = [QueryKeys.messages, conversationId];
+    queryClient.setQueryData(key, messages ?? [], { updatedAt: Date.now() - 60_000 });
+    void queryClient.invalidateQueries({ queryKey: key, refetchType: 'none' });
+    const query = queryClient.getQueryCache().find(key);
+    query?.setState({ fetchStatus: 'fetching' });
+  }
   let submission: TSubmission | null = null;
   let current = conversation;
   const written: TMessage[][] = [];
@@ -91,7 +105,11 @@ function setup({
     },
   };
   const { result } = renderHook(() => useTurns(params, services), {
-    wrapper: ({ children }) => <Provider store={store}>{children}</Provider>,
+    wrapper: ({ children }) => (
+      <QueryClientProvider client={queryClient}>
+        <Provider store={store}>{children}</Provider>
+      </QueryClientProvider>
+    ),
   });
   return {
     store,
@@ -120,8 +138,7 @@ describe('useTurns', () => {
       submission?.initialResponse?.messageId,
     ]);
     expect(chat.store.get(isSubmittingFamily(0))).toBe(true);
-    expect(chat.services.bindResponse).toHaveBeenCalledWith(
-      conversationId,
+    expect(chat.store.get(activeUsageResponseIdFamily(conversationId))).toBe(
       submission?.initialResponse?.messageId,
     );
     expect(chat.services.bindLaunch).toHaveBeenCalledWith(submission?.conversation, 0);
@@ -139,10 +156,7 @@ describe('useTurns', () => {
   it.each<[string, Parameters<typeof setup>[0]]>([
     ['while submitting', { isSubmitting: true }],
     ['before the history loads', { messages: null }],
-    [
-      'while the history revalidates',
-      { services: createTurnServices({ isHistoryRevalidating: () => true }) },
-    ],
+    ['while the history revalidates', { revalidating: true }],
     ['without a code workspace', { services: createTurnServices({ resolveCode: () => null }) }],
     [
       'onto a preliminary response',
@@ -257,6 +271,8 @@ describe('useTurns', () => {
   it('regenerates a response with the replayed user message and focuses it', () => {
     const chat = setup();
     chat.store.set(pendingManualSkillsByConvoId(conversationId), ['queued']);
+    /** An older sibling is on screen: the regeneration must bring the new one into view. */
+    chat.store.set(siblingIdxFamily(siblingKey('user-1')), 1);
 
     chat.turns.regenerate(response);
 
@@ -270,7 +286,7 @@ describe('useTurns', () => {
       },
     });
     expect(chat.written[0].map((message) => message.messageId)).toEqual(['user-1', 'response-1_']);
-    expect(chat.services.focusResponse).toHaveBeenCalledWith('user-1');
+    expect(chat.store.get(siblingIdxFamily(siblingKey('user-1')))).toBe(0);
     expect(chat.store.get(pendingManualSkillsByConvoId(conversationId))).toEqual(['queued']);
   });
 });
