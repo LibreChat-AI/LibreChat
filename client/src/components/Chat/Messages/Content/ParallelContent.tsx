@@ -1,12 +1,12 @@
 import { memo, useMemo, Fragment } from 'react';
 import { ContentTypes } from 'librechat-data-provider';
+import { MIN_PARALLEL_LANES, UNATTRIBUTED_LANE, isLaneMarkerPart } from '@librechat/chat';
 import type { TMessageContentParts, SearchResultData, TAttachment } from 'librechat-data-provider';
 import {
   getActivityLabelPart,
   getActivityLabelText,
   lastCursorContentIdx,
 } from '~/utils/activityLabels';
-import { MIN_PARALLEL_LANES, UNATTRIBUTED_LANE, isLaneMarkerPart } from '~/utils/lanes';
 import MemoryArtifacts from './MemoryArtifacts';
 import { cn, getPartKeyIndex } from '~/utils';
 import { SearchContext } from '~/Providers';
