@@ -26,6 +26,8 @@ export { default as CollapseChat } from './components/composer/CollapseChat';
 export { default as ComposerChip } from './components/composer/bar/Chip';
 export { default as composerClearance } from './components/composer/clearance';
 export { default as SteerReceipt } from './components/composer/steering/Receipt';
+export { default as ComposerQueue } from './components/composer/steering/Queue';
+export type { QueueProps as ComposerQueueProps } from './components/composer/steering/Queue';
 export { submitFromComposer } from './components/composer/submit';
 export { STEER_DOT, STEER_ICON, QUEUE_ICON } from './components/composer/steering/identity';
 export {
