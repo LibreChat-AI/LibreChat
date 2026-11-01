@@ -1,11 +1,11 @@
 import { memo, useCallback } from 'react';
 import { useSetAtom } from 'jotai';
+import { hasParallelLanes } from '@librechat/chat';
 import { isAssistantsEndpoint } from 'librechat-data-provider';
-import type { ThreadRow } from '~/utils/thread';
+import { EventSubagentActivityGroup } from '@librechat/chat/components';
+import type { ThreadRow } from '@librechat/chat';
 import type { TMessageProps } from '~/common';
-import EventSubagentActivityGroup from '~/components/Chat/Subagents/EventSubagentActivityGroup';
 import MessageContent from '~/components/Messages/MessageContent';
-import { hasParallelLanes } from '~/utils/lanes';
 import MessageParts from '../MessageParts';
 import { siblingIdxFamily } from './state';
 import Message from '../Message';

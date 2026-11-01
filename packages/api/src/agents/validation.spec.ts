@@ -15,6 +15,12 @@ import {
   validateAgentModel,
 } from './validation';
 
+import {
+  MAX_TOOL_OPTION_KEY_LENGTH,
+  MAX_TOOL_OPTION_ENTRIES,
+  MAX_TOOL_OPTION_KEY_BYTES,
+} from './options';
+
 const validGroupId = '507f1f77bcf86cd799439011';
 const validPromptId = '507f191e810c19729de860ea';
 
@@ -47,6 +53,34 @@ describe('agent Git identity validation', () => {
   ])('rejects an unsafe or incomplete identity: %j', (git_identity) => {
     expect(agentCreateSchema.safeParse({ ...base, git_identity }).success).toBe(false);
   });
+
+  it.each(['create', 'update'] as const)(
+    'rejects an oversized git email on %s without passing it to a regex',
+    (operation) => {
+      const schema = operation === 'create' ? agentCreateSchema : agentUpdateSchema;
+      const email = `1+${'a'.repeat(128_000)}!`;
+      const regexCheck = jest.spyOn(RegExp.prototype, 'test');
+
+      const result = schema.safeParse({ ...base, git_identity: { name: 'Lia', email } });
+      const regexCheckedEmail = regexCheck.mock.calls.some(
+        ([value], index) =>
+          value === email && !regexCheck.mock.contexts[index].source.startsWith('[\\uD800'),
+      );
+      regexCheck.mockRestore();
+
+      expect(result.success).toBe(false);
+      if (!result.success) {
+        expect(result.error.issues).toContainEqual(
+          expect.objectContaining({
+            code: 'too_big',
+            maximum: 254,
+            path: ['git_identity', 'email'],
+          }),
+        );
+      }
+      expect(regexCheckedEmail).toBe(false);
+    },
+  );
 
   it('accepts null only when updating to clear a configured identity', () => {
     expect(agentCreateSchema.safeParse({ ...base, git_identity: null }).success).toBe(false);
@@ -120,9 +154,113 @@ describe('agent instructions-prompt link validation', () => {
       agentCreateSchema.safeParse({
         ...base,
         instructionsPrompt: {
+          source: 'other',
+          groupId: validGroupId,
+          selection: { type: 'production' },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('accepts a Langfuse production selection', () => {
+    const instructionsPrompt = {
+      source: 'langfuse' as const,
+      groupId: validGroupId,
+      selection: { type: 'production' as const },
+    };
+    expect(agentCreateSchema.parse({ ...base, instructionsPrompt }).instructionsPrompt).toEqual(
+      instructionsPrompt,
+    );
+    expect(agentUpdateSchema.parse({ instructionsPrompt }).instructionsPrompt).toEqual(
+      instructionsPrompt,
+    );
+  });
+
+  it('accepts a Langfuse exact-version selection', () => {
+    const instructionsPrompt = {
+      source: 'langfuse' as const,
+      groupId: validGroupId,
+      selection: { type: 'exact' as const, version: 3 },
+    };
+    expect(agentCreateSchema.parse({ ...base, instructionsPrompt }).instructionsPrompt).toEqual(
+      instructionsPrompt,
+    );
+  });
+
+  it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '3'])(
+    'rejects an invalid Langfuse version: %j',
+    (version) => {
+      expect(
+        agentCreateSchema.safeParse({
+          ...base,
+          instructionsPrompt: {
+            source: 'langfuse',
+            groupId: validGroupId,
+            selection: { type: 'exact', version },
+          },
+        }).success,
+      ).toBe(false);
+    },
+  );
+
+  it('rejects a Langfuse link using the retired "version" selection type', () => {
+    expect(
+      agentCreateSchema.safeParse({
+        ...base,
+        instructionsPrompt: {
+          source: 'langfuse',
+          groupId: validGroupId,
+          selection: { type: 'version', version: 3 },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a Langfuse exact selection carrying a promptId', () => {
+    expect(
+      agentCreateSchema.safeParse({
+        ...base,
+        instructionsPrompt: {
+          source: 'langfuse',
+          groupId: validGroupId,
+          selection: { type: 'exact', promptId: validPromptId },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects extra keys on a Langfuse link and on its selection', () => {
+    expect(
+      agentCreateSchema.safeParse({
+        ...base,
+        instructionsPrompt: {
           source: 'langfuse',
           groupId: validGroupId,
           selection: { type: 'production' },
+          extra: true,
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      agentCreateSchema.safeParse({
+        ...base,
+        instructionsPrompt: {
+          source: 'langfuse',
+          groupId: validGroupId,
+          selection: { type: 'exact', version: 3, extra: true },
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('rejects a native link with an exact selection carrying a version instead of a promptId', () => {
+    expect(
+      agentCreateSchema.safeParse({
+        ...base,
+        instructionsPrompt: {
+          source: 'native',
+          groupId: validGroupId,
+          selection: { type: 'exact', version: 3 },
         },
       }).success,
     ).toBe(false);
@@ -600,5 +738,42 @@ describe('validateAgentModel', () => {
     expect(result.isValid).toBe(false);
     expect(result.error?.message).toContain('illegal_model_request');
     expect(logViolation).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('agent tool-option safety limits', () => {
+  const base = { provider: 'openAI', model: 'gpt-4o-mini', tools: [] };
+  const options = (names: string[]) =>
+    Object.fromEntries(names.map((name) => [name, { approval_mode: 'ask' as const }]));
+
+  test.each([
+    ['delimiter-rich key', options(['q' + '_mcp_z'.repeat(4000)])],
+    [
+      'too many entries',
+      options(Array.from({ length: MAX_TOOL_OPTION_ENTRIES + 1 }, (_, i) => `${i}`)),
+    ],
+    ['aggregate bytes', options(Array.from({ length: 129 }, (_, i) => `${i}`.padEnd(256, 'é')))],
+  ])('rejects %s on both create and update', (_label, tool_options) => {
+    for (const result of [
+      agentCreateSchema.safeParse({ ...base, tool_options }),
+      agentUpdateSchema.safeParse({ tool_options }),
+    ]) {
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error.issues[0].path).toEqual(['tool_options']);
+    }
+  });
+
+  test('accepts the inclusive key, entry and aggregate-byte boundaries', () => {
+    for (const tool_options of [
+      options(['x'.repeat(MAX_TOOL_OPTION_KEY_LENGTH)]),
+      options(
+        Array.from({ length: MAX_TOOL_OPTION_ENTRIES }, (_, i) =>
+          `${i}`.padStart(MAX_TOOL_OPTION_KEY_BYTES / MAX_TOOL_OPTION_ENTRIES, 'x'),
+        ),
+      ),
+    ]) {
+      expect(agentCreateSchema.parse({ ...base, tool_options }).tool_options).toEqual(tool_options);
+      expect(agentUpdateSchema.parse({ tool_options }).tool_options).toEqual(tool_options);
+    }
   });
 });

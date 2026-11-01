@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo } from 'react';
 import { useSetAtom } from 'jotai';
 import { useSetRecoilState, useRecoilValue } from 'recoil';
+import { showSkillsPopoverFamily } from '@librechat/chat/react';
 import { PermissionTypes, Permissions, isAssistantsEndpoint } from 'librechat-data-provider';
-import { showSkillsPopoverFamily } from '~/components/Chat/Input/skillsState';
 import { useGetLatestMessage } from '~/hooks/Messages/useLatestMessage';
 import useAgentCapabilities from '~/hooks/Agents/useAgentCapabilities';
 import useGetAgentsConfig from '~/hooks/Agents/useGetAgentsConfig';

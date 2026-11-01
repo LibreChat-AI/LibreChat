@@ -208,7 +208,10 @@ function SharedView() {
           langfuseSessionUrl={data.langfuseSessionUrl}
           onContinue={handleContinue}
           isContinuing={forkShare.isLoading}
-          analyticsConfigured={hasAnalyticsGtmId(config?.analyticsGtmId)}
+          analyticsConfigured={
+            hasAnalyticsGtmId(config?.analyticsGtmId) &&
+            config?.interface?.analyticsConsent !== false
+          }
         />
         <ShareMessagesProvider messages={data.messages}>
           <MessagesView messagesTree={messagesTree} conversationId={SHARED_CONVO_KEY} />
@@ -240,7 +243,10 @@ function SharedView() {
       <div className="text-text-primary relative flex h-full min-h-0 flex-col" role="presentation">
         {content}
         {footer}
-        <AnalyticsConsent gtmId={config?.analyticsGtmId} />
+        <AnalyticsConsent
+          gtmId={config?.analyticsGtmId}
+          consentRequired={config?.interface?.analyticsConsent !== false}
+        />
       </div>
     </div>
   );
@@ -416,7 +422,7 @@ export function ShareHeader({
                   className={cn(
                     'border-border-medium transition-colors',
                     isMobile
-                      ? 'absolute right-4 bottom-4 justify-center p-0 shadow-lg'
+                      ? 'absolute inset-e-4 bottom-4 justify-center p-0 shadow-lg'
                       : 'gap-2 self-start px-4 py-2',
                   )}
                 >
@@ -431,7 +437,7 @@ export function ShareHeader({
                 onPointerDownOutside={handleDialogOutside}
                 onInteractOutside={handleDialogOutside}
               >
-                <OGDialogHeader className="text-left">
+                <OGDialogHeader className="text-start">
                   <OGDialogTitle>{settingsLabel}</OGDialogTitle>
                 </OGDialogHeader>
                 <div className="flex max-h-[70vh] flex-col gap-4 overflow-y-auto pt-2 text-sm">

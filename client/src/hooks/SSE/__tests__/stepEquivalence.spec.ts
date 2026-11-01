@@ -1,7 +1,8 @@
 import React from 'react';
 import { createHash } from 'crypto';
+import { RecoilRoot } from 'recoil';
 import { createStore, Provider } from 'jotai';
-import { RecoilRoot, useRecoilCallback } from 'recoil';
+import { useStepHandler } from '@librechat/chat/react';
 import { renderHook, act } from '@testing-library/react';
 import {
   Constants,
@@ -10,6 +11,12 @@ import {
   ContentTypes,
   ToolCallTypes,
 } from 'librechat-data-provider';
+import {
+  subagentProgressKey,
+  subagentProgressByToolCallId,
+  takeRegisteredSubagentProgressKeys,
+  subagentParentStreamOpenByToolCallId,
+} from '@librechat/chat/react';
 import type {
   Agents,
   TMessage,
@@ -19,15 +26,8 @@ import type {
   TMessageContentParts,
 } from 'librechat-data-provider';
 import type { StepEvent } from '@librechat/chat';
-import {
-  subagentProgressKey,
-  subagentProgressByToolCallId,
-  takeRegisteredSubagentProgressKeys,
-  subagentParentStreamOpenByToolCallId,
-} from '~/components/Chat/Subagents/state';
-import { ptcTraceByToolCallId, ptcTraceKey } from '~/store/ptc';
-import { sandboxStartingByToolCallId } from '~/store/sandbox';
-import useStepHandler from '~/hooks/SSE/useStepHandler';
+import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
+import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 
 /**
  * Equivalence table for the step reducer. Each row is an event sequence shaped like a recorded
@@ -478,12 +478,7 @@ function run(hook: typeof useStepHandler, row: Row) {
         onSkillAuthoringComplete: () => log.callbacks.push('skill'),
         onSubagentIndexChange: (id) => log.callbacks.push(`subagent-index:${id}`),
       }),
-      readPtc: useRecoilCallback(
-        ({ snapshot }) =>
-          (key: string) =>
-            snapshot.getLoadable(ptcTraceByToolCallId(key)).getValue(),
-        [],
-      ),
+      readPtc: (key: string) => store.get(ptcTraceByToolCallId(key)),
     }),
     { wrapper },
   );

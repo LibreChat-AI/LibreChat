@@ -859,6 +859,28 @@ describe('getLLMConfig', () => {
           // The specific behavior (thinking, topP/topK inclusion) depends on model pattern
         });
       });
+
+      it('refuses a Vertex deployment name that would leave its request path segment', () => {
+        const vertexCredentials = {
+          [AuthKeys.GOOGLE_SERVICE_KEY]: {
+            project_id: 'test-project',
+            client_email: 'test@test-project.iam.gserviceaccount.com',
+            private_key: 'test-private-key',
+          },
+        };
+        const vertexConfig = {
+          region: 'global',
+          models: { 'team-model': { deploymentName: '../../endpoints/5678:rawPredict#' } },
+        };
+        const configFor = (model: string) => () =>
+          getLLMConfig(vertexCredentials, { modelOptions: { model }, vertexConfig });
+
+        expect(configFor('team-model')).toThrow('not a valid model ID');
+        expect(configFor('../../endpoints/5678:rawPredict#')).toThrow('not a valid model ID');
+        expect(configFor('claude-sonnet-4-6@20250929')().llmConfig.model).toBe(
+          'claude-sonnet-4-6@20250929',
+        );
+      });
     });
   });
 

@@ -19,7 +19,7 @@ const {
   getAgentListAccess,
   getAgentListAvatarRefreshKey,
   mergeAgentOcrConversion,
-  sanitizeModelParameters,
+  applyAgentInferenceInput,
   collectToolResourceFileIds,
   convertOcrToContextInPlace,
   normalizeToolResourceFiles,
@@ -755,12 +755,7 @@ const createAgentHandler = async (req, res) => {
       return;
     }
 
-    if (agentData.model_parameters && typeof agentData.model_parameters === 'object') {
-      agentData.model_parameters = removeNullishValues(
-        sanitizeModelParameters(agentData.model_parameters),
-        true,
-      );
-    }
+    applyAgentInferenceInput(agentData, undefined, req.config);
     const { id: userId, role: userRole } = req.user;
     agentData.id = `agent_${nanoid()}`;
     agentData.edges = replaceEdgeSourceId(agentData.edges, '', agentData.id);
@@ -839,6 +834,7 @@ const createAgentHandler = async (req, res) => {
       previous: undefined,
       next: agentData.instructionsPrompt,
       filters: req.config?.filters,
+      linkedInstructions: req.config?.endpoints?.agents?.linkedInstructions,
       logger,
       req,
     });
@@ -906,8 +902,8 @@ const createAgentHandler = async (req, res) => {
     res.status(201).json(agent);
   } catch (error) {
     if (error instanceof z.ZodError) {
-      logger.error('[/Agents] Validation error', error.errors);
-      return res.status(400).json({ error: 'Invalid request data', details: error.errors });
+      logger.error('[/Agents] Validation error', error.issues);
+      return res.status(400).json({ error: 'Invalid request data', details: error.issues });
     }
     logger.error('[/Agents] Error creating agent', error);
     if (error?.statusCode === 409) {
@@ -1179,12 +1175,6 @@ const updateAgentHandler = async (req, res) => {
       }
     }
 
-    if (updateData.model_parameters && typeof updateData.model_parameters === 'object') {
-      updateData.model_parameters = removeNullishValues(
-        sanitizeModelParameters(updateData.model_parameters),
-        true,
-      );
-    }
     if (avatarField === null) {
       updateData.avatar = avatarField;
     }
@@ -1237,6 +1227,8 @@ const updateAgentHandler = async (req, res) => {
       return res.status(404).json({ error: 'Agent not found' });
     }
 
+    applyAgentInferenceInput(updateData, existingAgent, req.config);
+
     const instructionsPromptError = await checkInstructionsPromptWrite({
       access: instructionsPromptAccess,
       operation: 'update',
@@ -1244,6 +1236,7 @@ const updateAgentHandler = async (req, res) => {
       previous: existingAgent.instructionsPrompt,
       next: instructionsPromptField,
       filters: req.config?.filters,
+      linkedInstructions: req.config?.endpoints?.agents?.linkedInstructions,
       logger,
       req,
     });
@@ -1412,8 +1405,8 @@ const updateAgentHandler = async (req, res) => {
     return res.json(presentedAgent);
   } catch (error) {
     if (error instanceof z.ZodError) {
-      logger.error('[/Agents/:id] Validation error', error.errors);
-      return res.status(400).json({ error: 'Invalid request data', details: error.errors });
+      logger.error('[/Agents/:id] Validation error', error.issues);
+      return res.status(400).json({ error: 'Invalid request data', details: error.issues });
     }
 
     logger.error('[/Agents/:id] Error updating Agent', error);

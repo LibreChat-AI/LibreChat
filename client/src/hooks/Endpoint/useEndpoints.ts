@@ -30,9 +30,11 @@ const artSize = 20;
 const artClassName = 'text-text-primary shrink-0 icon-md';
 const providerArtClassName = 'icon-md shrink-0';
 
-const createEndpointIcon = (
+/** With a model, provider art shows the model's maker when the endpoint only hosts it. */
+export const createEndpointIcon = (
   endpoint: string,
   { provider, imageURL }: ProviderIconResolution,
+  model?: string,
 ): React.ReactNode => {
   if (endpoint === EModelEndpoint.agents) {
     return React.createElement(Feather, { size: artSize, className: artClassName });
@@ -52,6 +54,7 @@ const createEndpointIcon = (
 
   return React.createElement(ProviderIcon, {
     provider,
+    model,
     size: artSize,
     className: providerArtClassName,
   });

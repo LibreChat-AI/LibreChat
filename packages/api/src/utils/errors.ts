@@ -1,3 +1,5 @@
+import { getOutboundTimeout } from './timeouts';
+
 export interface SafeErrorMetadata {
   readonly type: string;
   readonly status?: number;
@@ -126,6 +128,11 @@ export function isAbortError(error: unknown): boolean {
 
   while (current != null && typeof current === 'object' && !visited.has(current)) {
     visited.add(current);
+
+    /** A request cancelled by its own `timeouts` deadline failed; nobody stopped it. */
+    if (getOutboundTimeout(current)) {
+      return false;
+    }
 
     const name = readProperty(current, 'name');
     const code = readProperty(current, 'code');

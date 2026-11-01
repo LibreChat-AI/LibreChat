@@ -25,6 +25,7 @@ const { Constants, ContentTypes, EModelEndpoint, ErrorTypes } = require('librech
 const {
   GenerationJobManager,
   createStreamServices,
+  createToolExecuteHandler,
   registerToolApprovalHook,
   clearToolApprovalHooks,
   getPluginHookSource,
@@ -1083,6 +1084,46 @@ describe('AgentClient - interrupt discovery persistence', () => {
   });
 
   it('makes the run discovery snapshot durable when the run pauses', async () => {
+    const skillId = new (require('mongoose').Types.ObjectId)();
+    const authoredSkill = { _id: skillId, name: 'new-skill', body: '# Authored', version: 1 };
+    const authorReq = {
+      user: { id: 'user-123', _id: new (require('mongoose').Types.ObjectId)() },
+      config: {},
+    };
+    const toolHandler = createToolExecuteHandler({
+      loadTools: async () => ({
+        loadedTools: [],
+        configurable: {
+          req: authorReq,
+          accessibleSkillIds: [],
+          skillAuthoringAvailable: true,
+          fileAuthoringToolNames: new Set(['create_file', 'edit_file']),
+        },
+      }),
+      getSkillByName: async () => null,
+      canCreateSkill: async () => true,
+      createSkill: async () => ({ skill: authoredSkill, warnings: [] }),
+      grantSkillOwner: async () => undefined,
+    });
+    const [created] = await new Promise((resolve, reject) =>
+      toolHandler.handle('on_tool_execute', {
+        agentId: 'agent-123',
+        configurable: { req: authorReq },
+        toolCalls: [
+          {
+            id: 'create-skill',
+            name: 'create_file',
+            args: {
+              path: 'skills/new-skill/SKILL.md',
+              content: '---\nname: new-skill\ndescription: Resume\n---\n# Authored\n',
+            },
+          },
+        ],
+        resolve,
+        reject,
+      }),
+    );
+    expect(created.status).toBe('success');
     const streamId = 'conversation-discovered-pause';
     const job = await GenerationJobManager.createJob(streamId, 'user-123', streamId);
     const client = new AgentClient({
@@ -1103,6 +1144,7 @@ describe('AgentClient - interrupt discovery persistence', () => {
       artifactPromises: [],
     });
     client.conversationId = streamId;
+    client.options.eventHandlers = { on_tool_execute: toolHandler };
     client.responseMessageId = 'response-discovered-pause';
     client.jobCreatedAt = job.createdAt;
     client.compactionSemanticIndexSnapshot = {
@@ -1138,6 +1180,14 @@ describe('AgentClient - interrupt discovery persistence', () => {
     const paused = await GenerationJobManager.getJob(streamId);
     expect(paused?.status).toBe('requires_action');
     expect(paused?.metadata.discoveredTools).toEqual(['save_issue_mcp_linear']);
+    expect(paused?.metadata.authoredSkills).toEqual([
+      {
+        agentId: 'agent-123',
+        name: 'new-skill',
+        id: skillId.toString(),
+        primed: true,
+      },
+    ]);
     expect(paused?.metadata.compactionSemanticIndex).toEqual({
       version: 1,
       entries: client.compactionSemanticIndexSnapshot.entries,
@@ -2300,6 +2350,55 @@ describe('AgentClient - startup telemetry', () => {
     mockIsHITLEnabled.mockReturnValue(false);
     jest.restoreAllMocks();
   });
+
+  it.each([false, true])(
+    'bounds ordinary-chat admission before provider startup (legacy=%s)',
+    async (legacy) => {
+      const createRunBefore = mockCreateRun.mock.calls.length;
+      const name = 'q' + '_mcp_z'.repeat(legacy ? 4000 : 80);
+      const tool_options = Object.fromEntries(
+        Array.from({ length: legacy ? 1 : 100 }, (_, i) => [
+          `${i}_${name}`,
+          { approval_mode: 'ask' },
+        ]),
+      );
+      const client = new AgentClient({
+        req: {
+          user: { id: 'user-123' },
+          body: {},
+          config: {
+            endpoints: {
+              [EModelEndpoint.agents]: { toolApproval: { enabled: true, mode: 'bypass' } },
+            },
+          },
+        },
+        res: {},
+        agent: {
+          id: 'agent-123',
+          endpoint: EModelEndpoint.openAI,
+          provider: EModelEndpoint.openAI,
+          model_parameters: { model: 'gpt-4' },
+          tools: [],
+          lazySubagentConfigs: [{ id: 'child', tools: ['other_mcp_unknown'], tool_options }],
+        },
+        endpointTokenConfig: {},
+        eventHandlers: {},
+        contentParts: [],
+        collectedUsage: [],
+        artifactPromises: [],
+      });
+      client.conversationId = 'bounded-approval-admission';
+      client.responseMessageId = 'bounded-response';
+      client.parentMessageId = 'bounded-parent';
+
+      await client.chatCompletion({ payload: [] });
+
+      expect(mockCreateRun).toHaveBeenCalledTimes(createRunBefore);
+      expect(client.contentParts).toEqual(
+        expect.arrayContaining([expect.objectContaining({ type: ContentTypes.ERROR })]),
+      );
+    },
+  );
 
   it('refuses scheduled pause-capable runs before provider startup without Redis', async () => {
     mockIsHITLEnabled.mockReturnValue(false);
@@ -4819,6 +4918,96 @@ describe('AgentClient - titleConvo', () => {
       expect(generateTitleCall.clientOptions.model).toBe('gpt-4o-mini');
     });
 
+    it('keeps endpoint title settings when the all block sets only unrelated keys', async () => {
+      mockReq.config = {
+        endpoints: {
+          all: { streamRate: 1, headers: { 'x-gateway': 'title' } },
+          [EModelEndpoint.openAI]: {
+            titleModel: 'gpt-3.5-turbo',
+            titlePrompt: 'Endpoint title prompt',
+            titleMethod: 'structured',
+          },
+        },
+      };
+
+      await client.titleConvo({ text: 'Test', abortController: new AbortController() });
+
+      const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
+      expect(generateTitleCall.clientOptions.model).toBe('gpt-3.5-turbo');
+      expect(generateTitleCall).toEqual(
+        expect.objectContaining({
+          titleMethod: 'structured',
+          titlePrompt: 'Endpoint title prompt',
+        }),
+      );
+    });
+
+    it('resolves each title field on its own across the all and endpoint blocks', async () => {
+      mockReq.config = {
+        endpoints: {
+          all: { titlePrompt: 'All config title prompt' },
+          [EModelEndpoint.openAI]: {
+            titleModel: 'gpt-3.5-turbo',
+            titlePrompt: 'Endpoint title prompt',
+            titleMethod: 'structured',
+          },
+        },
+      };
+
+      await client.titleConvo({ text: 'Test', abortController: new AbortController() });
+
+      const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
+      expect(generateTitleCall.clientOptions.model).toBe('gpt-3.5-turbo');
+      expect(generateTitleCall).toEqual(
+        expect.objectContaining({
+          titleMethod: 'structured',
+          titlePrompt: 'All config title prompt',
+        }),
+      );
+    });
+
+    it('skips titles when the endpoint disables them beside an unrelated all block', async () => {
+      mockReq.config = {
+        endpoints: {
+          all: { streamRate: 1 },
+          [EModelEndpoint.openAI]: { titleConvo: false, titleModel: 'gpt-3.5-turbo' },
+        },
+      };
+
+      const result = await client.titleConvo({
+        text: 'Test',
+        abortController: new AbortController(),
+      });
+
+      expect(result).toBeUndefined();
+      expect(mockRun.generateTitle).not.toHaveBeenCalled();
+    });
+
+    it('does not run the endpoint titleModel on a titleEndpoint the all block names', async () => {
+      const originalApiKey = process.env.ANTHROPIC_API_KEY;
+      process.env.ANTHROPIC_API_KEY = 'test-anthropic-key';
+      mockReq.config = {
+        endpoints: {
+          all: { titleEndpoint: EModelEndpoint.anthropic },
+          [EModelEndpoint.openAI]: { titleModel: 'gpt-3.5-turbo' },
+        },
+      };
+
+      try {
+        await client.titleConvo({ text: 'Test', abortController: new AbortController() });
+      } finally {
+        if (originalApiKey) {
+          process.env.ANTHROPIC_API_KEY = originalApiKey;
+        } else {
+          delete process.env.ANTHROPIC_API_KEY;
+        }
+      }
+
+      const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
+      expect(generateTitleCall.provider).toBe(Providers.ANTHROPIC);
+      expect(generateTitleCall.clientOptions.model).not.toBe('gpt-3.5-turbo');
+    });
+
     it('should use all config with titleEndpoint and verify provider switch', async () => {
       // Mock the API key for the titleEndpoint provider
       const originalApiKey = process.env.ANTHROPIC_API_KEY;
@@ -5672,7 +5861,7 @@ describe('AgentClient - titleConvo', () => {
       });
 
       // Verify formatInstructionsForContext was called with correct server names
-      expect(mockFormatInstructions).toHaveBeenCalledWith(['server1', 'server2'], {});
+      expect(mockFormatInstructions).toHaveBeenCalledWith(['server1', 'server2'], {}, mockReq.user);
 
       // Verify the instructions do NOT contain [object Promise]
       expect(client.options.agent.instructions).not.toContain('[object Promise]');
@@ -5754,6 +5943,7 @@ describe('AgentClient - titleConvo', () => {
       expect(mockFormatInstructions).toHaveBeenCalledWith(
         ['ephemeral-server1', 'ephemeral-server2'],
         {},
+        mockReq.user,
       );
 
       // Verify no [object Promise] in instructions
@@ -6295,7 +6485,87 @@ describe('AgentClient - titleConvo', () => {
       expect(client.publishRunContextMeta).toHaveBeenCalledTimes(expectSeed ? 1 : 0);
     });
 
-    it('gives every resent document a unique name before formatting', async () => {
+    it.each([Providers.OPENAI, Providers.ANTHROPIC, Providers.GOOGLE])(
+      'continues a large existing %s chat with a new short message',
+      async (provider) => {
+        client.options.agent.provider = provider;
+        client.agentConfigs = new Map([
+          ['secondary-agent', { ...mockAgent, id: 'secondary-agent', provider: Providers.GOOGLE }],
+        ]);
+        const resolve = jest.fn();
+        client.options.agent.lazySubagentConfigs = [
+          { id: 'lazy-agent', provider: Providers.ANTHROPIC, configId: 'lazy-config', resolve },
+        ];
+        const history = Array.from({ length: 80 }, (_, index) => ({
+          messageId: `history-${index}`,
+          parentMessageId: index === 0 ? null : `history-${index - 1}`,
+          sender: index % 2 === 0 ? 'User' : 'Assistant',
+          isCreatedByUser: index % 2 === 0,
+          content: Array.from({ length: 51 }, () => ({ type: ContentTypes.TEXT, text: 'ok' })),
+        }));
+        const latest = {
+          messageId: 'next-message',
+          parentMessageId: 'history-79',
+          sender: 'User',
+          isCreatedByUser: true,
+          text: 'x',
+        };
+        const messages = [...history, latest];
+        const original = structuredClone(messages);
+        client.setModelBoundStoredMessages(messages);
+
+        const result = await client.buildMessages(messages, latest.messageId, {}, {});
+
+        expect(result.prompt).toHaveLength(messages.length);
+        expect(result.prompt.at(-1).content).toBe('x');
+        expect(messages).toMatchObject(original);
+        expect(resolve).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([
+      'primary',
+      'secondary',
+      'nested subagent',
+      'nested graph member',
+      'lazy subagent',
+      'nested lazy subagent',
+      'lazy graph member',
+    ])('gives every resent document a unique name for a Bedrock %s', async (recipient) => {
+      const bedrockAgent = {
+        ...mockAgent,
+        id: 'bedrock-recipient',
+        provider: Providers.BEDROCK,
+      };
+      const resolve = jest.fn().mockResolvedValue(bedrockAgent);
+      const lazyAgent = { ...bedrockAgent, configId: 'bedrock-config', resolve };
+      if (recipient === 'primary') {
+        client.options.agent.provider = Providers.BEDROCK;
+      } else if (recipient === 'secondary') {
+        client.agentConfigs = new Map([[bedrockAgent.id, bedrockAgent]]);
+      } else if (recipient === 'nested subagent') {
+        client.options.agent.subagentAgentConfigs = [
+          { ...mockAgent, id: 'middle-agent', subagentAgentConfigs: [bedrockAgent] },
+        ];
+      } else if (recipient === 'nested graph member') {
+        client.options.agent.subagentGraphConfigs = [{ memberConfigs: [bedrockAgent] }];
+      } else if (recipient === 'lazy subagent') {
+        client.options.agent.lazySubagentConfigs = [lazyAgent];
+      } else if (recipient === 'nested lazy subagent') {
+        client.options.agent.subagentAgentConfigs = [
+          { ...mockAgent, id: 'middle-agent', lazySubagentConfigs: [lazyAgent] },
+        ];
+      } else {
+        client.options.agent.lazySubagentConfigs = [
+          {
+            id: 'lazy-team',
+            provider: Providers.OPENAI,
+            configId: 'team-config',
+            resolve,
+            subagentGraphMemberMetadata: [bedrockAgent],
+          },
+        ];
+      }
       const bedrockDocument = (name) => ({
         type: 'document',
         document: { name, format: 'pdf', source: { bytes: Buffer.from(name) } },
@@ -6336,6 +6606,9 @@ describe('AgentClient - titleConvo', () => {
           : [],
       );
       expect(names).toEqual(['Stripe fees', 'Stripe fees (2)']);
+      expect(firstQuestion.documents[0].document.name).toBe('Stripe fees');
+      expect(secondQuestion.documents[0].document.name).toBe('Stripe fees');
+      expect(resolve).not.toHaveBeenCalled();
     });
 
     it('preserves persisted source identity through both agent formatting passes', async () => {
@@ -8640,9 +8913,56 @@ describe('AgentClient - titleConvo', () => {
       expect(parallelAgent2.additional_instructions ?? '').not.toContain(memoryContent);
     });
 
-    it('tells the primary read-only agent about persistent memory when the store is empty', async () => {
+    it('keeps empty-store memory guidance out of an agent that cannot use memory', async () => {
       const { memoryInstructions } = require('@librechat/api');
       client.useMemory = jest.fn().mockResolvedValue({ withKeys: '', withoutKeys: '' });
+      client.agentConfigs = new Map();
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'Translate this',
+            isCreatedByUser: true,
+          },
+        ],
+        null,
+        { instructions: 'Base instructions', additional_instructions: null },
+      );
+
+      expect(client.options.agent.additional_instructions ?? '').not.toContain(memoryInstructions);
+    });
+
+    it('tells a primary agent with memory tools about persistent memory when the store is empty', async () => {
+      const { memoryInstructions } = require('@librechat/api');
+      client.useMemory = jest.fn().mockResolvedValue({ withKeys: '', withoutKeys: '' });
+      client.options.agent.memoryToolsRegistered = true;
+      client.agentConfigs = new Map();
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'msg-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'Remember that I like tea',
+            isCreatedByUser: true,
+          },
+        ],
+        null,
+        { instructions: 'Base instructions', additional_instructions: null },
+      );
+
+      expect(client.options.agent.additional_instructions).toContain(memoryInstructions);
+      expect(client.options.agent.additional_instructions).not.toContain('# Existing memory');
+    });
+
+    it('tells the primary read-only agent about persistent memory when the store is empty and automatic extraction is on', async () => {
+      const { memoryInstructions } = require('@librechat/api');
+      client.useMemory = jest.fn().mockResolvedValue({ withKeys: '', withoutKeys: '' });
+      mockReq.config.memory.agent = { enabled: true, id: 'memory-agent' };
       const parallelAgent = {
         id: 'parallel-agent-1',
         instructions: 'Parallel instructions',
@@ -8667,7 +8987,6 @@ describe('AgentClient - titleConvo', () => {
       expect(client.options.agent.additional_instructions).toContain(memoryInstructions);
       expect(client.options.agent.additional_instructions).not.toContain('# Existing memory');
       expect(client.options.agent.additional_instructions).not.toContain('set_memory');
-      expect(parallelAgent.additional_instructions ?? '').not.toContain(memoryInstructions);
     });
 
     it('keeps memory guidance out of agents when memory was unavailable', async () => {
@@ -9522,6 +9841,61 @@ describe('AgentClient - finalizeSubagentContent', () => {
     /** Buffer drained so a second call (e.g. resumable retry) doesn't
      *  double-append. */
     expect(buffer.size).toBe(0);
+  });
+
+  it('persists before/steer/after without a private child journal or duplicate offset', async () => {
+    const part = {
+      type: 'steer',
+      steer: 'Use the revised sources',
+      steerId: 'steer-1',
+      clientSteerId: 'client-steer-1',
+      createdAt: 1234,
+      quotes: ['quoted guidance'],
+      files: [{ file_id: 'public-file' }],
+    };
+    const applied = event('steer_applied', {
+      index: 1,
+      steerId: part.steerId,
+      clientSteerId: part.clientSteerId,
+      part,
+    });
+    const buffer = await runSubagentEvents([
+      event('run_step', {
+        id: 'before-step',
+        index: 0,
+        stepDetails: { type: 'message_creation' },
+      }),
+      event('message_delta', {
+        id: 'before-step',
+        delta: { content: [{ type: 'text', text: 'before' }] },
+      }),
+      applied,
+      event('run_step', {
+        id: 'after-step',
+        index: 2,
+        stepDetails: { type: 'message_creation' },
+      }),
+      event('message_delta', {
+        id: 'after-step',
+        delta: { content: [{ type: 'text', text: 'after' }] },
+      }),
+      applied,
+    ]);
+    const client = makeClient(buffer);
+    client.options.req.config.subagentActivity = { enabled: false };
+    client.contentParts = [
+      { type: 'tool_call', tool_call: { id: 'call_sub', name: Constants.SUBAGENT } },
+    ];
+    client.finalizeSubagentContent();
+    const attached = client.contentParts[0].tool_call.subagent_content;
+    expect(attached).toEqual([
+      { type: 'text', text: 'before' },
+      part,
+      { type: 'text', text: 'after' },
+    ]);
+    expect(buffer.size).toBe(0);
+    client.finalizeSubagentContent();
+    expect(client.contentParts[0].tool_call.subagent_content).toEqual(attached);
   });
 
   it('stamps durable MCP server identity onto nested persisted tool calls', () => {

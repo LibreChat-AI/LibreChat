@@ -15,3 +15,158 @@ export type {
   PartRenderProps,
   ToolRenderProps,
 } from './components/Part';
+
+/** Composer: the chat input, its controls and the steering queue. */
+export { default as StopButton } from './components/composer/StopButton';
+export { default as MentionItem } from './components/composer/MentionItem';
+export { default as MentionPopover } from './components/composer/popover/Mention';
+export { default as PromptsPopover } from './components/composer/popover/Prompts';
+export { default as SkillsPopover } from './components/composer/popover/Skills';
+export { default as CommandPopover } from './components/composer/popover/Command';
+export { default as CollapseChat } from './components/composer/CollapseChat';
+export { default as ComposerChip } from './components/composer/bar/Chip';
+export { default as composerClearance } from './components/composer/clearance';
+export { default as SteerReceipt } from './components/composer/steering/Receipt';
+export { default as ComposerQueue } from './components/composer/steering/Queue';
+export type { QueueProps as ComposerQueueProps } from './components/composer/steering/Queue';
+export { submitFromComposer } from './components/composer/submit';
+export { STEER_DOT, STEER_ICON, QUEUE_ICON } from './components/composer/steering/identity';
+export {
+  useQueuedTurnPortal,
+  QueuedTurnPortalProvider,
+} from './components/composer/steering/QueuedTurnPortal';
+export type { ComposerSubmitRoute } from './components/composer/submit';
+export type { MentionItemProps } from './components/composer/MentionItem';
+export type { MentionPopoverProps } from './components/composer/popover/Mention';
+export type { PromptsPopoverProps } from './components/composer/popover/Prompts';
+export type {
+  SkillsPopoverProps,
+  SkillsPopoverNotices,
+} from './components/composer/popover/Skills';
+export type {
+  CommandOption,
+  CommandPopoverProps,
+  CommandDismissReason,
+} from './components/composer/popover/Command';
+export type { ChipProps as ComposerChipProps } from './components/composer/bar/Chip';
+export type { SteerReceiptState } from './components/composer/steering/Receipt';
+export { default as FileUpload } from './components/composer/files/FileUpload';
+export { default as RemoveFile } from './components/composer/files/RemoveFile';
+export { default as SourceIcon } from './components/composer/files/SourceIcon';
+export { default as FilePreview } from './components/composer/files/FilePreview';
+export { default as ProgressCircle } from './components/composer/files/ProgressCircle';
+export { default as FileContainer } from './components/composer/files/FileContainer';
+export { default as DragDropOverlay } from './components/composer/files/DragDropOverlay';
+export { default as PastedTextDialog } from './components/composer/files/PastedTextDialog';
+export { getFileType } from './components/composer/files/kinds';
+export type { FileKind } from './components/composer/files/kinds';
+export type { SubtitleAction } from './components/composer/files/FileContainer';
+export type { PastedTextEdit } from './components/composer/files/PastedTextDialog';
+
+/** Message list building blocks: rows, headers, sibling navigation and the streaming timer. */
+export { default as SubRow } from './components/messages/SubRow';
+export { default as SiblingSwitch } from './components/messages/SiblingSwitch';
+export { default as SystemEventHeader } from './components/messages/SystemEvent';
+export { SystemEventIcon, systemEventHeaderClasses } from './components/messages/SystemEvent';
+export { default as Elapsed, ElapsedTimer, shouldShowElapsed } from './components/messages/Elapsed';
+export {
+  default as HeaderLabel,
+  isDocumentId,
+  getHeaderModelName,
+  getHeaderHoverLabel,
+} from './components/messages/HeaderLabel';
+export {
+  hoverButtonClasses,
+  messageFooterClasses,
+  revealOnRowHoverClasses,
+} from './components/messages/styles';
+export { getRunStepDurationLabels, getElapsedDurationLabels } from './components/messages/duration';
+export type { RunStepDurationLabels } from './components/messages/duration';
+export { default as MessageRow } from './components/messages/MessageRow';
+export { default as MessageTimestamp } from './components/messages/MessageTimestamp';
+export { getMessageRowWidthClass } from './components/messages/width';
+export { isValidTimestamp, getMessageTimestamp } from './components/messages/time';
+export type { MessageTimestamp as MessageTimestampParts } from './components/messages/time';
+export { default as Fork } from './components/messages/Fork';
+export { default as Feedback } from './components/messages/Feedback';
+export { default as MinimalHoverButtons } from './components/messages/MinimalHoverButtons';
+
+/** Parts: the leaf components and row classes tool cards share. */
+export { default as Stdout } from './components/parts/Stdout';
+export { default as BareStatus } from './components/parts/BareStatus';
+export { default as AuthorHeader } from './components/parts/AuthorHeader';
+export { default as CancelledIcon } from './components/parts/CancelledIcon';
+export { default as InProgressCall } from './components/parts/InProgressCall';
+export {
+  ROW_GLYPH_SLOT,
+  PANE_COPY_REVEAL,
+  FOLD_GLYPH_CLASS,
+  TOOL_ROW_CLASSES,
+  FOLD_RAIL_CLASSES,
+  FOLD_GLYPH_SELECTOR,
+  ARTIFACT_ROW_NAV_SPACING,
+} from './components/parts/rows';
+export { default as AskOptions } from './components/parts/AskOptions';
+export { default as AskPopover } from './components/composer/ask/Popover';
+export type { LiveAsk, AskAnswerView, AskPopoverProps } from './components/composer/ask/Popover';
+export type { AskOption } from './components/parts/AskOptions';
+export { default as SkillPills } from './components/parts/SkillPills';
+export type { SkillPillsSource } from './components/parts/SkillPills';
+export { default as MessageQuotes } from './components/parts/MessageQuotes';
+export { default as SteerPart } from './components/parts/SteerPart';
+export type { SteerPartProps } from './components/parts/SteerPart';
+export {
+  default as DiffView,
+  diffPreviewText,
+  parseUnifiedDiff,
+  buildEditPreviewDiff,
+} from './components/parts/DiffView';
+export type { DiffLine, ParsedDiff, TextEditPreview } from './components/parts/DiffView';
+export { default as AttachmentImage } from './components/composer/files/Image';
+export { default as ImagePreview } from './components/composer/files/ImagePreview';
+export { default as SendButton } from './components/composer/SendButton';
+export { default as QuoteButton } from './components/composer/QuoteButton';
+export { default as ComposerHints } from './components/composer/bar/Hints';
+export { default as ComposerWaveform } from './components/composer/bar/Waveform';
+export {
+  default as ComposerEffort,
+  leanFor,
+  effortRank,
+  resolveEffortLabel,
+} from './components/composer/bar/Effort';
+export { default as EscalateNowButton } from './components/composer/EscalateNowButton';
+export { default as DuringRunSendButton } from './components/composer/DuringRunSendButton';
+export { composerHintId } from './components/composer/bar/Hints';
+export type {
+  ComposerHint,
+  ComposerHintKind,
+  ComposerHintState,
+} from './components/composer/bar/hint';
+
+/** Chat pane: the layout that seats the header, message column and composer band. */
+export { default as ChatPane } from './components/pane/ChatPane';
+export { getChatPaneView } from './components/pane/view';
+export type { ChatPaneProps } from './components/pane/ChatPane';
+export type { ChatPaneView, ChatPaneColumn } from './components/pane/view';
+export { default as ChatScreen } from './components/pane/Screen';
+export { getChatPaneChrome } from './components/pane/chrome';
+export type { ChatScreenProps, ChatScreenComposerProps } from './components/pane/Screen';
+export type { ChatPaneChrome } from './components/pane/chrome';
+
+/** Message list root: the scroll container, mount window and pending tail around the thread. */
+export { default as MessagesView } from './components/messages/MessagesView';
+export type {
+  MessagesViewProps,
+  MessagesThreadProps,
+  MessagesScrollButtonProps,
+} from './components/messages/MessagesView';
+
+export { EventSubagentActivityGroup } from './components/subagents/activity';
+export { default as ScrollToBottom } from './components/messages/ScrollToBottom';
+export {
+  SubagentStatus,
+  SubagentActivity,
+  getActivityContent,
+  SubagentActivityContent,
+  SubagentActivityScrollSurface,
+} from './components/subagents/transcript';

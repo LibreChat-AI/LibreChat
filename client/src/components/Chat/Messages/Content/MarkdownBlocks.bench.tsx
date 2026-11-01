@@ -1,8 +1,8 @@
 import React, { Profiler } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { render } from '@testing-library/react';
+import { splitMarkdownIntoBlocks, splitMarkdownIntoBlocksUncached } from '@librechat/chat';
 import { getRemarkPlugins, getRehypePlugins, getMarkdownComponents } from './markdownConfig';
-import { splitMarkdownIntoBlocks, splitMarkdownIntoBlocksUncached } from './splitMarkdown';
 import { ArtifactProvider, CodeBlockProvider, MessageContext } from '~/Providers';
 import CodeBlock from '~/components/Messages/Content/CodeBlock';
 import MarkdownBlocks from './MarkdownBlocks';

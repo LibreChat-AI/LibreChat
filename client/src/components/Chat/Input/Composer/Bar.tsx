@@ -1,5 +1,7 @@
 import React, { memo, useMemo, useState, useCallback } from 'react';
 import * as Ariakit from '@ariakit/react';
+import { useElementSize } from '@librechat/chat/react';
+import { ComposerChip as Chip } from '@librechat/chat/components';
 import { Mic, Plus, Check, Square, ChevronDown } from 'lucide-react';
 import { IconButton, TooltipAnchor, SendIcon } from '@librechat/client';
 import type { TConversation, EModelEndpoint, EndpointFileConfig } from 'librechat-data-provider';
@@ -9,7 +11,6 @@ import type { ExtendedFile, FileSetter } from '~/common';
 import usePaletteEntries from '~/hooks/Input/usePaletteEntries';
 import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
 import useToolFavorites from '~/hooks/Input/useToolFavorites';
-import useElementSize from '~/hooks/Generic/useElementSize';
 import useChipPacking from '~/hooks/Input/useChipPacking';
 import { useBadgeRowContext } from '~/Providers';
 import TokenUsage from '../TokenUsage';
@@ -17,7 +18,6 @@ import { useLocalize } from '~/hooks';
 import Thinking from './Thinking';
 import Palette from './Palette';
 import { cn } from '~/utils';
-import Chip from './Chip';
 
 /** Stable identity so the memo below is not defeated when tools are hidden. */
 const EMPTY_ENTRIES: PaletteEntry[] = [];
@@ -180,7 +180,6 @@ export function ChipModes({ modes }: ChipModesProps) {
 
 interface BarProps {
   index: number;
-  isRTL: boolean;
   disabled: boolean;
   agentId?: string | null;
   endpoint?: string | null;
@@ -217,7 +216,6 @@ interface BarProps {
  */
 function Bar({
   index,
-  isRTL,
   disabled,
   agentId,
   endpoint,
@@ -316,10 +314,7 @@ function Bar({
   const above = chipsInline ? EMPTY_ENTRIES : packedEntries;
   const inline = chipsInline ? packedEntries : EMPTY_ENTRIES;
 
-  const rowClass = cn(
-    'flex flex-wrap items-center gap-1.5',
-    isRTL ? 'flex-row-reverse' : 'flex-row',
-  );
+  const rowClass = 'flex flex-wrap items-center gap-1.5';
   const barClass = 'flex flex-col gap-1.5 px-2 pb-2';
 
   const renderChip = (entry: PaletteEntry) => {
@@ -450,10 +445,7 @@ function Bar({
             each takes over the job next to it (stop, and stop-and-send) rather
             than being replaced by a control that slides in somewhere else. Only
             what has no job during a recording actually moves. */}
-        <div
-          ref={controlsRef}
-          className={cn('flex shrink-0 items-center gap-1.5', isRTL ? 'mr-auto' : 'ml-auto')}
-        >
+        <div ref={controlsRef} className="ms-auto flex shrink-0 items-center gap-1.5">
           {/* One cell holding both: the settled controls drop out of it as the
               elapsed time rises into their place, and the row keeps one width
               throughout so nothing beside it shifts. */}

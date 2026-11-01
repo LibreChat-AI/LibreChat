@@ -124,6 +124,7 @@ const { grantPermission } = require('~/server/services/PermissionService');
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { resizeAvatar } = require('~/server/services/Files/images/avatar');
+const { promptService } = require('~/server/services/Prompts');
 const db = require('~/models');
 
 /**
@@ -218,6 +219,121 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       status: jest.fn().mockReturnThis(),
       json: jest.fn().mockReturnThis(),
     };
+  });
+
+  describe('tool_options HTTP validation', () => {
+    test.each([
+      ['key length', { ['q' + '_mcp_z'.repeat(4000)]: { approval_mode: 'ask' } }],
+      [
+        'entry count',
+        Object.fromEntries(
+          Array.from({ length: 1025 }, (_, i) => [`${i}`, { approval_mode: 'ask' }]),
+        ),
+      ],
+      [
+        'key bytes',
+        Object.fromEntries(
+          Array.from({ length: 129 }, (_, i) => [
+            `${i}`.padEnd(256, 'é'),
+            { approval_mode: 'ask' },
+          ]),
+        ),
+      ],
+    ])(
+      'rejects excess %s over POST and PATCH without changing persisted data',
+      async (_label, tool_options) => {
+        const existing = await Agent.create({
+          id: `agent_${uuidv4()}`,
+          name: 'Unchanged',
+          provider: 'openai',
+          model: 'gpt-4',
+          author: mockReq.user.id,
+          tool_options: { web_search: { approval_mode: 'ask' } },
+        });
+        const before = await Agent.findById(existing._id).lean();
+        const app = express();
+        app.use(express.json({ limit: '3mb' }));
+        app.use((req, _res, next) => {
+          req.user = mockReq.user;
+          req.config = {};
+          next();
+        });
+        app.post('/api/agents', createAgentHandler);
+        app.patch('/api/agents/:id', updateAgentHandler);
+
+        for (const response of [
+          await request(app).post('/api/agents').send({
+            name: 'Rejected',
+            provider: 'openai',
+            model: 'gpt-4',
+            tools: [],
+            tool_options,
+          }),
+          await request(app)
+            .patch(`/api/agents/${existing.id}`)
+            .send({ name: 'Rejected', tool_options }),
+        ]) {
+          expect(response.status).toBe(400);
+          expect(response.body).toMatchObject({
+            error: 'Invalid request data',
+            details: [expect.objectContaining({ path: ['tool_options'] })],
+          });
+        }
+        expect(await Agent.countDocuments()).toBe(1);
+        expect(await Agent.findById(existing._id).lean()).toEqual(before);
+      },
+    );
+  });
+
+  describe('inference input boundary', () => {
+    test.each(['modelKwargs', 'configuration', 'fallbacks', 'apiKey', 'callbacks'])(
+      'rejects %s on creation without persisting or disclosing its value',
+      async (key) => {
+        mockReq.body = {
+          name: 'Rejected settings',
+          provider: 'openAI',
+          model: 'gpt-4o-mini',
+          model_parameters: { temperature: 0.2, [key]: { value: 'submitted-secret' } },
+        };
+        await createAgentHandler(mockReq, mockRes);
+        expect(mockRes.status).toHaveBeenCalledWith(400);
+        expect(await Agent.countDocuments()).toBe(0);
+        expect(JSON.stringify(mockRes.json.mock.calls)).not.toContain('submitted-secret');
+      },
+    );
+
+    test('preserves configured Bedrock region and reasoning controls on creation', async () => {
+      mockReq.config = { endpoints: { bedrock: { availableRegions: ['us-west-2'] } } };
+      mockReq.body = {
+        name: 'Bedrock inference',
+        provider: 'bedrock',
+        model: 'moonshot.kimi',
+        model_parameters: { region: 'us-west-2', reasoning_effort: 'low' },
+      };
+      await createAgentHandler(mockReq, mockRes);
+      expect(mockRes.status).toHaveBeenCalledWith(201);
+      const stored = await Agent.findOne({ name: 'Bedrock inference' }).lean();
+      expect(stored.model_parameters).toEqual({ region: 'us-west-2', reasoning_effort: 'low' });
+    });
+
+    test('rejects an unsafe partial update using the existing provider and retains stored settings', async () => {
+      const existing = await Agent.create({
+        id: 'agent_inference_boundary',
+        name: 'Existing',
+        author: mockReq.user.id,
+        provider: 'openAI',
+        model: 'gpt-4o-mini',
+        model_parameters: { temperature: 0.2 },
+      });
+      mockReq.params.id = existing.id;
+      mockReq.body = {
+        model_parameters: { configuration: { baseURL: 'https://unchecked.invalid' } },
+      };
+      await updateAgentHandler(mockReq, mockRes);
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      const after = await Agent.findOne({ id: existing.id }).lean();
+      expect(after.model_parameters).toEqual({ temperature: 0.2 });
+    });
   });
 
   describe('agent machine allowlist authorization', () => {
@@ -1294,7 +1410,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       expect(createdAgent.model_parameters).toBeDefined();
       // Valid numbers should be preserved
       expect(createdAgent.model_parameters.temperature).toBe(0.7);
-      expect(createdAgent.model_parameters.topP).toBe(0);
+      expect(createdAgent.model_parameters.top_p).toBe(0);
       // Empty strings should be removed
       expect(createdAgent.model_parameters.max_tokens).toBeUndefined();
       expect(createdAgent.model_parameters.maxContextTokens).toBeUndefined();
@@ -1303,12 +1419,12 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       // Verify in database
       const agentInDb = await Agent.findOne({ id: createdAgent.id });
       expect(agentInDb.model_parameters.temperature).toBe(0.7);
-      expect(agentInDb.model_parameters.topP).toBe(0);
+      expect(agentInDb.model_parameters.top_p).toBe(0);
       expect(agentInDb.model_parameters.max_tokens).toBeUndefined();
       expect(agentInDb.model_parameters.maxContextTokens).toBeUndefined();
     });
 
-    test('should drop non-numeric strings and coerce numeric strings in model_parameters', async () => {
+    test('should reject corrupt numeric model_parameters without persisting them', async () => {
       // Regression test for #12920: a stray placeholder string ("System") persisted
       // into max_tokens was forwarded to the provider, causing a 400
       const dataWithCorruptModelParams = {
@@ -1327,17 +1443,11 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       await createAgentHandler(mockReq, mockRes);
 
-      expect(mockRes.status).toHaveBeenCalledWith(201);
-
-      const createdAgent = mockRes.json.mock.calls[0][0];
-      expect(createdAgent.model_parameters.max_tokens).toBeUndefined();
-      expect(createdAgent.model_parameters.maxContextTokens).toBe(256000);
-      expect(createdAgent.model_parameters.fileTokenLimit).toBe(256000);
-      expect(createdAgent.model_parameters.useResponsesApi).toBe(true);
-
-      const agentInDb = await Agent.findOne({ id: createdAgent.id });
-      expect(agentInDb.model_parameters.max_tokens).toBeUndefined();
-      expect(agentInDb.model_parameters.maxContextTokens).toBe(256000);
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(await Agent.countDocuments()).toBe(0);
+      expect(mockRes.json).toHaveBeenCalledWith(
+        expect.objectContaining({ error: 'Invalid request data' }),
+      );
     });
 
     test('should handle invalid avatar format', async () => {
@@ -1990,7 +2100,7 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
       );
     });
 
-    test('should sanitize corrupt numeric model_parameters on update', async () => {
+    test('should reject corrupt numeric updates and preserve the existing agent', async () => {
       mockReq.user.id = existingAgentAuthorId.toString();
       mockReq.params.id = existingAgentId;
       mockReq.body = {
@@ -2004,16 +2114,10 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
 
       await updateAgentHandler(mockReq, mockRes);
 
-      expect(mockRes.json).toHaveBeenCalled();
-
-      const updatedAgent = mockRes.json.mock.calls[0][0];
-      expect(updatedAgent.model_parameters.max_tokens).toBeUndefined();
-      expect(updatedAgent.model_parameters.maxContextTokens).toBe(256000);
-      expect(updatedAgent.model_parameters.temperature).toBe(0.7);
-
+      expect(mockRes.status).toHaveBeenCalledWith(400);
       const agentInDb = await Agent.findOne({ id: existingAgentId });
-      expect(agentInDb.model_parameters.max_tokens).toBeUndefined();
-      expect(agentInDb.model_parameters.maxContextTokens).toBe(256000);
+      expect(agentInDb.name).not.toBe('Healed Agent');
+      expect(agentInDb.model_parameters?.maxContextTokens).not.toBe(256000);
     });
 
     test('should reject update with unauthorized fields (mass assignment protection)', async () => {
@@ -7500,6 +7604,301 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         expect(await Agent.countDocuments({})).toBe(2);
 
         getRoleByNameSpy.mockRestore();
+      });
+    });
+
+    describe('Langfuse links', () => {
+      /** Restored individually so sibling describe blocks' spies survive `afterEach`. */
+      let activeSpies = [];
+
+      /** Stubs the Langfuse resolve result; the real adapter dispatch is out of scope here. */
+      const stubLangfuseResolve = (overrides = {}) => {
+        const spy = jest.spyOn(promptService, 'resolvePrompt').mockResolvedValue({
+          ok: true,
+          value: {
+            source: 'langfuse',
+            prompt: 'You are a Langfuse-linked assistant.',
+            type: 'text',
+            version: 1,
+            labels: ['production'],
+            ...overrides,
+          },
+        });
+        activeSpies.push(spy);
+        return spy;
+      };
+
+      /** Spies on global `fetch` only to assert the Langfuse adapter never calls it. */
+      const spyOnLangfuseFetch = () => {
+        const spy = jest.spyOn(global, 'fetch');
+        activeSpies.push(spy);
+        return spy;
+      };
+
+      const switchOn = () => {
+        mockReq.config = {
+          endpoints: { agents: { linkedInstructions: { langfuse: { enabled: true } } } },
+        };
+      };
+
+      afterEach(() => {
+        activeSpies.forEach((spy) => spy.mockRestore());
+        activeSpies = [];
+      });
+
+      test('returns 400 instructions_prompt_unavailable for a new Langfuse link while the switch is off', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        mockGroupVisibility(new Set([groupId]));
+        mockReq.body = {
+          name: 'Switch Off Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          instructionsPrompt: { source: 'langfuse', groupId, selection: { type: 'production' } },
+        };
+
+        await createAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(400);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: expect.any(String),
+          code: InstructionsPromptErrorCode.UNAVAILABLE,
+        });
+        expect(await Agent.countDocuments()).toBe(0);
+      });
+
+      test('allows re-saving the unchanged Langfuse link, and switching it to inline, while the switch is off', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        mockGroupVisibility(new Set([groupId]));
+        const link = { source: 'langfuse', groupId, selection: { type: 'production' } };
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Previously Linked Langfuse Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: link,
+        });
+
+        mockReq.params = { id: agentId };
+        mockReq.body = { instructionsPrompt: link };
+        await updateAgentHandler(mockReq, mockRes);
+        // `updateAgentHandler` only calls `res.status` on error, so no call means success.
+        expect(mockRes.status).not.toHaveBeenCalled();
+        const resaved = mockRes.json.mock.calls[0][0];
+        expect(resaved.instructionsPrompt).toEqual(link);
+        let persisted = await Agent.findOne({ id: agentId }).lean();
+        expect(persisted.instructionsPrompt).toEqual(link);
+
+        mockRes.json.mockClear();
+        mockRes.status.mockClear();
+        mockReq.body = { instructionsPrompt: null, instructions: 'Inline now.' };
+        await updateAgentHandler(mockReq, mockRes);
+        expect(mockRes.status).not.toHaveBeenCalled();
+        const updated = mockRes.json.mock.calls[0][0];
+        expect(updated.instructionsPrompt).toBeUndefined();
+        persisted = await Agent.findOne({ id: agentId }).lean();
+        expect(persisted.instructionsPrompt).toBeUndefined();
+        expect(persisted.instructions).toBe('Inline now.');
+      });
+
+      test('persists a new Langfuse link once the switch is on, using the stubbed resolve', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        const link = { source: 'langfuse', groupId, selection: { type: 'exact', version: 4 } };
+        const resolveSpy = stubLangfuseResolve({ groupId, version: 4 });
+        switchOn();
+        mockGroupVisibility(new Set([groupId]));
+        mockReq.body = {
+          name: 'Langfuse Version Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          instructionsPrompt: link,
+        };
+
+        await createAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(201);
+        const created = mockRes.json.mock.calls[0][0];
+        expect(created.instructionsPrompt).toEqual(link);
+        const persisted = await Agent.findOne({ id: created.id }).lean();
+        expect(persisted.instructionsPrompt).toEqual(link);
+        expect(resolveSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ groupId, source: 'langfuse' }),
+        );
+      });
+
+      test('returns 400 instructions_prompt_unavailable for a native link to a real Langfuse group, with no Langfuse network call', async () => {
+        // Real group and resolver: rejected on the group's recorded source before any Langfuse call.
+        const { _id: groupId } = await db.createLangfusePromptGroup({
+          name: 'Mismatched Source Group',
+          author: mockReq.user.id,
+          authorName: 'Fixture Author',
+          sourceDestination: 'env',
+          sourceProjectId: 'mismatch-project',
+          sourcePromptName: 'mismatch-prompt',
+        });
+        const fetchSpy = spyOnLangfuseFetch();
+        mockGroupVisibility(new Set([groupId]));
+        mockReq.body = {
+          name: 'Mismatched Source Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+        };
+
+        await createAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(400);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: expect.any(String),
+          code: InstructionsPromptErrorCode.UNAVAILABLE,
+        });
+        expect(fetchSpy).not.toHaveBeenCalled();
+        expect(await Agent.countDocuments()).toBe(0);
+      });
+
+      test('returns 400 instructions_prompt_unavailable for a Langfuse link to a real native group while the switch is on, with no Langfuse network call', async () => {
+        const { groupId } = await createPromptGroupFixture('Native Group For Langfuse Mismatch');
+        const fetchSpy = spyOnLangfuseFetch();
+        switchOn();
+        mockGroupVisibility(new Set([groupId]));
+        mockReq.body = {
+          name: 'Langfuse Link To Native Group',
+          provider: 'openai',
+          model: 'gpt-4',
+          instructionsPrompt: { source: 'langfuse', groupId, selection: { type: 'production' } },
+        };
+
+        await createAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(400);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: expect.any(String),
+          code: InstructionsPromptErrorCode.UNAVAILABLE,
+        });
+        expect(fetchSpy).not.toHaveBeenCalled();
+        expect(await Agent.countDocuments()).toBe(0);
+      });
+
+      test('duplicateAgentHandler copies a Langfuse link verbatim and presents it with its own source when restricted', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        const link = { source: 'langfuse', groupId, selection: { type: 'production' } };
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Langfuse Source Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: link,
+        });
+        // No VIEW grant for `groupId`.
+
+        mockReq.params = { id: agent.id };
+
+        await duplicateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(201);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.agent.instructionsPrompt).toEqual({ source: 'langfuse', restricted: true });
+        const persisted = await Agent.findOne({ id: response.agent.id }).lean();
+        expect(persisted.instructionsPrompt).toEqual(link);
+      });
+
+      test('revertAgentVersionHandler restores a Langfuse link verbatim and presents it with its own source when restricted', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        const link = { source: 'langfuse', groupId, selection: { type: 'exact', version: 2 } };
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Current Unlinked Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          versions: [
+            {
+              name: 'Langfuse-Linked Snapshot',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructionsPrompt: link,
+            },
+          ],
+        });
+        // No VIEW grant for `groupId`.
+
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.name).toBe('Langfuse-Linked Snapshot');
+        expect(response.instructionsPrompt).toEqual({ source: 'langfuse', restricted: true });
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        expect(persisted.instructionsPrompt).toEqual(link);
+      });
+
+      test('getAgentHandler EDIT branch presents a restricted stub for a Langfuse link the editor cannot VIEW', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        const link = { source: 'langfuse', groupId, selection: { type: 'production' } };
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Restricted Langfuse Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: link,
+        });
+        // No VIEW grant for `groupId`.
+
+        mockReq.params = { id: agent.id };
+
+        await getAgentHandler(mockReq, mockRes, true);
+
+        expect(mockRes.status).toHaveBeenCalledWith(200);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.instructionsPrompt).toEqual({ source: 'langfuse', restricted: true });
+      });
+
+      test('getAgentVersionsHandler redacts an inaccessible Langfuse link in a version snapshot', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        const link = { source: 'langfuse', groupId, selection: { type: 'production' } };
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Langfuse Version History Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          versions: [
+            {
+              name: 'Old Linked Name',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructionsPrompt: link,
+            },
+          ],
+        });
+        // No VIEW grant for `groupId`.
+
+        mockReq.params = { id: agent.id };
+
+        await getAgentVersionsHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(200);
+        const versions = mockRes.json.mock.calls[0][0];
+        expect(versions[0].instructionsPrompt).toEqual({
+          source: 'langfuse',
+          restricted: true,
+          matchesCurrent: false,
+        });
       });
     });
   });

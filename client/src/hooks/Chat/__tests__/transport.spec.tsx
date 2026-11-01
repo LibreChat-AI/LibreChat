@@ -2,7 +2,10 @@ import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { useAtomValue, getDefaultStore } from 'jotai';
 import { RecoilRoot, useSetRecoilState } from 'recoil';
+import { useResumeOnLoad } from '@librechat/chat/react';
 import { act, renderHook, waitFor } from '@testing-library/react';
+import { useChat, resumeRequestsAtom } from '@librechat/chat/react';
+import { useChatHelpers, useResumableSSE } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { Tools, QueryKeys, ContentTypes, EModelEndpoint, request } from 'librechat-data-provider';
 import {
@@ -30,15 +33,14 @@ import type { MutableSnapshot } from 'recoil';
 import type { StreamStatusResponse } from '~/data-provider';
 import type { ChatContract } from '~/hooks/Chat/contract';
 import type { Transport } from '~/hooks/Chat/contract';
+import { ChatSettingsContext, defaultChatSettings } from '~/Providers/ChatSettingsContext';
+import { usePaneConversation, usePaneConversationState } from '~/routes/ChatSettings';
 import { ChatTransportContext } from '~/Providers/ChatTransportContext';
 import { ChatContext, useChatContext } from '~/Providers/ChatContext';
 import { startupConfigKey } from '~/data-provider/Endpoints/queries';
-import useResumableSSE from '~/hooks/SSE/useResumableSSE';
-import useResumeOnLoad from '~/hooks/SSE/useResumeOnLoad';
-import useChatHelpers from '~/hooks/Chat/useChatHelpers';
-import { resumeRequestsAtom } from '~/hooks/Chat/resume';
+import { StreamHostTestProvider } from 'test/streamHost';
 import { SteerHostTestProvider } from 'test/steerHost';
-import { useChat } from '~/hooks/Chat/facade';
+import { ChatHostTestProvider } from 'test/chatHost';
 import useSSE from '~/hooks/SSE/useSSE';
 import store from '~/store';
 
@@ -89,6 +91,13 @@ function createFakeTransport(overrides: Partial<Transport> = {}) {
   return { transport, streams, sends };
 }
 
+const chatSettings = {
+  ...defaultChatSettings,
+  usePaneConversation,
+  usePaneConversationState,
+  auth: { token: 'test-token', isAuthenticated: true },
+};
+
 function createWrapper(
   transport: Transport,
   seed?: (state: MutableSnapshot) => void,
@@ -111,9 +120,15 @@ function createWrapper(
             }}
           >
             <SteerHostTestProvider>
-              <ChatTransportContext.Provider value={transport}>
-                {children}
-              </ChatTransportContext.Provider>
+              <ChatHostTestProvider>
+                <StreamHostTestProvider>
+                  <ChatSettingsContext.Provider value={chatSettings}>
+                    <ChatTransportContext.Provider value={transport}>
+                      {children}
+                    </ChatTransportContext.Provider>
+                  </ChatSettingsContext.Provider>
+                </StreamHostTestProvider>
+              </ChatHostTestProvider>
             </SteerHostTestProvider>
           </RecoilRoot>
         </QueryClientProvider>

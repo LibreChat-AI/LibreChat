@@ -15,6 +15,7 @@ const { AIMessageChunk } = require('@langchain/core/messages');
 const { tryBindReplay } = require('./model-replay');
 const { runFileDeliveryResponses } = require('./run-files-model');
 const { createRunFileLifecycleResponses } = require('./run-files-lifecycle-model');
+const subagentHistory = require('../fixtures/subagent-history.cjs');
 
 const runFileLifecycle = createRunFileLifecycleResponses({
   findLastToolMessage,
@@ -124,6 +125,7 @@ const TOOL_APPROVAL_BATCH_MARKER = 'E2E_TOOL_APPROVAL_BATCH:';
 const TOOL_APPROVAL_RESTRICTED_MARKER = 'E2E_TOOL_APPROVAL_RESTRICTED:';
 const TOOL_APPROVAL_REWRITE_MARKER = 'E2E_TOOL_APPROVAL_REWRITE:';
 const DEFERRED_HITL_MARKER = 'E2E_DEFERRED_HITL:';
+const DEFERRED_OAUTH_MARKER = 'E2E_DEFERRED_OAUTH:';
 const HANDOFF_MARKER = 'E2E_HANDOFF:';
 const SUBAGENT_RESULT_MARKER = 'E2E_SUBAGENT_RESULT:';
 const SUBAGENT_CHILD_MARKER = 'E2E_SUBAGENT_CHILD:';
@@ -186,6 +188,7 @@ const BACKGROUND_TOOL_NAME = 'slow_echo_mcp_e2e-memory';
 const DEFERRED_HITL_TOOL_NAME = BACKGROUND_TOOL_NAME;
 const DEFERRED_HITL_CONTROL_TOOL_NAME = 'recall_fact_mcp_e2e-memory';
 const TOOL_SEARCH_NAME = 'tool_search';
+const DEFERRED_OAUTH_TOOL_NAME = 'echo_mcp_e2e-oauth-deferred';
 const ASK_USER_QUESTION_NAME = 'ask_user_question';
 const CHECK_BACKGROUND_TASK_TOOL_NAME = 'check_background_task';
 const APPROVAL_TOOL_NAME = 'approval_probe_mcp_e2e-memory';
@@ -3083,6 +3086,59 @@ function deferredHitlInvocationResponse({ graph, messages, options, runManager }
   };
 }
 
+/**
+ * An `oauthPrompt: on_use` server must not hold the turn for sign-in: the model runs first,
+ * discovers the server's deferred tool, and only its call asks the user to sign in.
+ */
+function deferredOAuthInvocationResponse(messages) {
+  const label = getMarkerValue(getLatestUserText(messages), DEFERRED_OAUTH_MARKER);
+  if (!label) {
+    return null;
+  }
+
+  const searchCallId = `call_e2e_deferred_oauth_search_${label}`;
+  const echoCallId = `call_e2e_deferred_oauth_echo_${label}`;
+  const echoResult = findToolMessage(messages, echoCallId);
+  if (echoResult) {
+    return {
+      response: `E2E deferred OAuth tool returned ${label}: ${getContentText(echoResult.content)}`,
+    };
+  }
+
+  const searchResult = findToolMessage(messages, searchCallId);
+  if (searchResult) {
+    const searchOutput = getContentText(searchResult.content);
+    if (!searchOutput.includes(DEFERRED_OAUTH_TOOL_NAME)) {
+      return {
+        response: `E2E deferred OAuth failed ${label}: ${TOOL_SEARCH_NAME} did not find ${DEFERRED_OAUTH_TOOL_NAME}`,
+      };
+    }
+    return {
+      response: '',
+      toolCalls: [
+        {
+          id: echoCallId,
+          name: DEFERRED_OAUTH_TOOL_NAME,
+          args: { text: label },
+          type: 'tool_call',
+        },
+      ],
+    };
+  }
+
+  return {
+    response: '',
+    toolCalls: [
+      {
+        id: searchCallId,
+        name: TOOL_SEARCH_NAME,
+        args: { query: DEFERRED_OAUTH_TOOL_NAME, max_results: 1 },
+        type: 'tool_call',
+      },
+    ],
+  };
+}
+
 function validateHandoffTool(route, tool, toolName) {
   const failures = [];
   const expectedDescription = route.description ?? `Transfer control to agent '${route.to}'`;
@@ -3475,6 +3531,13 @@ function codeExecResponses({ filename, toolCallId, finalText, code }, toolNames)
 }
 
 function resolveResponses({ graph, messages, text, toolNames }) {
+  const history = subagentHistory.responsesForText(text, {
+    getLatestUserText,
+    messageType,
+    getContentText,
+  });
+  if (history) return history;
+
   const lifecycle = runFileLifecycle.responsesForText(text);
   if (lifecycle) return lifecycle;
 
@@ -3834,6 +3897,7 @@ module.exports = function fakeModelHook(run, context) {
         options: streamOptions,
         runManager,
       }) ??
+      deferredOAuthInvocationResponse(streamMessages) ??
       resolveInvocation?.(streamMessages, streamOptions, runManager) ??
       null,
     resolveOnStream: (streamMessages, streamOptions, runManager) =>

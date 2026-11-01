@@ -13,10 +13,12 @@ const {
   normalizeOpenIdIssuer,
   buildAuthUserDocCacheKey,
   getAuthUserDocCacheMode,
-  getCachedAuthUserDoc,
+  getCurrentCachedAuthUserDoc,
+  isAuthUserAdmissible,
   getValidOpenIdReuseUserId,
   invalidateCachedAuthUserDoc,
   setCachedAuthUserDoc,
+  timeAuthUserLookup,
   getHttpsProxyAgent,
   isAccessTokenJwt,
   math,
@@ -179,23 +181,25 @@ const openIdJwtLogin = (openIdConfig) => {
           authUserCacheMode !== 'off' && authUserCacheKey ? getAuthUserDocCacheStore() : undefined;
         const cachedUser =
           authUserCacheMode !== 'off' && authUserCacheStore && authUserCacheKey
-            ? await getCachedAuthUserDoc(authUserCacheStore, authUserCacheKey)
+            ? await getCurrentCachedAuthUserDoc(authUserCacheStore, authUserCacheKey, { findUser })
             : undefined;
 
         const servedCachedUser =
           authUserCacheMode === 'on' &&
           cachedUser &&
           isUserInAuthCacheScope(cachedUser, authUserCacheScope);
-        const lookupResult = servedCachedUser
-          ? { user: cachedUser, error: null, migration: false }
-          : await findOpenIDUser({
-              findUser,
-              email: payload ? getOpenIdEmail(payload) : undefined,
-              openidId: payload?.sub,
-              openidIssuer,
-              idOnTheSource: payload?.oid,
-              strategyName: 'openIdJwtLogin',
-            });
+        const { result: lookupResult, lookupStartedAt } = servedCachedUser
+          ? { result: { user: cachedUser, error: null, migration: false } }
+          : await timeAuthUserLookup(() =>
+              findOpenIDUser({
+                findUser,
+                email: payload ? getOpenIdEmail(payload) : undefined,
+                openidId: payload?.sub,
+                openidIssuer,
+                idOnTheSource: payload?.oid,
+                strategyName: 'openIdJwtLogin',
+              }),
+            );
         const { user, error, migration } = lookupResult;
 
         if (error) {
@@ -213,7 +217,11 @@ const openIdJwtLogin = (openIdConfig) => {
             (message) => logger.warn(message),
             async () => {
               user.id = user._id.toString();
-              if (!(await runAsSystem(() => isAgentTriggerPrincipalActive(user.id)))) {
+              const admissible = await isAuthUserAdmissible(user.id, {
+                fenceChecked: Boolean(servedCachedUser),
+                isPrincipalActive: (id) => runAsSystem(() => isAgentTriggerPrincipalActive(id)),
+              });
+              if (!admissible) {
                 done(null, false, {
                   message: 'Account deletion is in progress',
                   code: 'ACCOUNT_DELETION_IN_PROGRESS',
@@ -247,7 +255,12 @@ const openIdJwtLogin = (openIdConfig) => {
                     cacheKey: authUserCacheKey,
                   });
                 } else if (!servedCachedUser && isUserInAuthCacheScope(user, authUserCacheScope)) {
-                  await setCachedAuthUserDoc(authUserCacheStore, authUserCacheKey, user);
+                  await setCachedAuthUserDoc(
+                    authUserCacheStore,
+                    authUserCacheKey,
+                    user,
+                    lookupStartedAt,
+                  );
                 }
               }
 

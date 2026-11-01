@@ -48,7 +48,7 @@ export interface IAgent extends Omit<Document, 'model'> {
   code_workspace_id?: string;
   repositoryInstructions?: 'prefer' | 'defer' | 'off';
   git_identity?: AgentGitIdentity | null;
-  /** Links these instructions to a native prompt group revision instead of inline text. */
+  /** Replaces inline instructions with a linked prompt group revision. */
   instructionsPrompt?: AgentInstructionsPrompt | null;
   /** @deprecated Use edges instead */
   agent_ids?: string[];

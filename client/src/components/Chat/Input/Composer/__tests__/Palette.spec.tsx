@@ -2,11 +2,11 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { getDefaultStore } from 'jotai';
 import userEvent from '@testing-library/user-event';
+import { composerLiftFamily } from '@librechat/chat/react';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
 import type { PaletteEntry } from '~/hooks/Input/usePaletteEntries';
 import type { AttachEntry } from '~/hooks/Input/useAttachItems';
-import { composerLiftFamily } from '../state';
 import Palette from '../Palette';
 
 /**
@@ -26,9 +26,9 @@ jest.mock('react-virtualized', () => {
   };
 });
 
-jest.mock('~/hooks/Generic/useElementSize', () => ({
-  __esModule: true,
-  default: () => ({ ref: { current: null }, height: mockPopupHeight, width: 0 }),
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useElementSize: () => ({ ref: { current: null }, height: mockPopupHeight, width: 0 }),
 }));
 
 jest.mock('~/components/SharePoint', () => ({ SharePointPickerDialog: () => null }));

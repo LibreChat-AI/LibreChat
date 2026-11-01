@@ -4,11 +4,8 @@ import { EModelEndpoint } from 'librechat-data-provider';
 import { act, render, screen } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
 import { revealedQueuedTurnFamily } from '@librechat/chat/react';
+import { QueuedTurnPortalProvider, useQueuedTurnPortal } from '@librechat/chat/components';
 import type { TConversation } from 'librechat-data-provider';
-import {
-  QueuedTurnPortalProvider,
-  useQueuedTurnPortal,
-} from '~/components/Chat/Steering/QueuedTurnPortal';
 import PendingTurn from '~/components/Chat/Messages/PendingTurn';
 import { ChatContext } from '~/Providers';
 

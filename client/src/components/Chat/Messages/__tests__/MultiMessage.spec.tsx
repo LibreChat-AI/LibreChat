@@ -33,9 +33,9 @@ jest.mock('~/components/Messages/MessageContent', () => ({
 }));
 jest.mock('../MessageParts', () => ({ __esModule: true, default: createRowStub() }));
 jest.mock('../Message', () => ({ __esModule: true, default: createRowStub() }));
-jest.mock('~/components/Chat/Subagents/EventSubagentActivityGroup', () => ({
-  __esModule: true,
-  default: ({
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  EventSubagentActivityGroup: ({
     parentMessageIds,
     hasParallelContent,
   }: {
@@ -386,7 +386,7 @@ describe('MultiMessage sibling selection', () => {
 
 describe('MultiMessage row mount window', () => {
   const { RowMountProvider } =
-    jest.requireActual<typeof import('~/hooks/Messages')>('~/hooks/Messages');
+    jest.requireActual<typeof import('@librechat/chat/react')>('@librechat/chat/react');
 
   const chain = (): TMessage => {
     const leaf = { ...msg('m2'), parentMessageId: 'm1', depth: 2 } as TMessage;

@@ -8,6 +8,7 @@ import {
   runWithRedisRequestTelemetry,
 } from '~/cache/redisTelemetry';
 import { getErrorType, getSafeSpanException } from './safeException';
+import { CONFIG_DIGEST_ATTRIBUTE, getConfigDigest } from './digest';
 import { getTelemetryRequestSpan } from './sdk';
 import { DEFAULT_HEALTH_PATH } from './config';
 
@@ -115,9 +116,12 @@ export function telemetryMiddleware(req: ServerRequest, res: Response, next: Nex
     return;
   }
 
-  span.setAttributes({
-    'http.request.method': req.method,
-  });
+  const attributes: Attributes = { 'http.request.method': req.method };
+  const configDigest = getConfigDigest();
+  if (configDigest) {
+    attributes[CONFIG_DIGEST_ATTRIBUTE] = configDigest;
+  }
+  span.setAttributes(attributes);
   const redisTelemetry = createRedisRequestTelemetry(span);
 
   let completed = false;

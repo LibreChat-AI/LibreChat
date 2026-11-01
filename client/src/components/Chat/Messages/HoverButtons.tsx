@@ -2,7 +2,9 @@ import React, { useState, useMemo, useCallback, memo } from 'react';
 import { Copy, Check } from 'lucide';
 import { useAtomValue } from 'jotai';
 import { useRecoilState } from 'recoil';
-import { revealedQueuedTurnFamily } from '@librechat/chat/react';
+import { hasEditablePart } from '@librechat/chat';
+import { hoverButtonClasses, Fork, Feedback } from '@librechat/chat/components';
+import { useGenerationsByLatest, revealedQueuedTurnFamily } from '@librechat/chat/react';
 import { getSpeechText, findMessageById, isUserInitiatedCompaction } from 'librechat-data-provider';
 import {
   Button,
@@ -14,12 +16,8 @@ import {
 } from '@librechat/client';
 import type { TConversation, TMessage, TFeedback } from 'librechat-data-provider';
 import { useMessagesIsSubmitting, useOptionalMessagesOperations } from '~/Providers';
-import { useGenerationsByLatest, useLocalize } from '~/hooks';
-import { hasEditablePart } from './Content/editableParts';
-import { Fork } from '~/components/Conversations';
-import { hoverButtonClasses } from './styles';
 import MessageAudio from './MessageAudio';
-import Feedback from './Feedback';
+import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 import store from '~/store';
 
@@ -229,7 +227,7 @@ const HoverButtons = ({
           isLast={isLast}
           disabled={!canCopy}
           className={cn(
-            'ml-0 flex items-center gap-1.5 text-xs',
+            'ms-0 flex items-center gap-1.5 text-xs',
             isSubmitting && isCreatedByUser ? 'no-touch:opacity-0 group-hover:opacity-100' : '',
           )}
           dataTestId={!isCreatedByUser ? 'copy-response-button' : undefined}

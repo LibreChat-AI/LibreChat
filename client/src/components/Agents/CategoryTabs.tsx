@@ -19,6 +19,8 @@ interface CategoryTabsProps {
   onChange: (value: string) => void;
 }
 
+const ARROW_SWAP: Record<string, string> = { ArrowLeft: 'ArrowRight', ArrowRight: 'ArrowLeft' };
+
 /** Keyboard-accessible category filters with immediate selection feedback. */
 const CategoryTabs: React.FC<CategoryTabsProps> = ({
   categories,
@@ -56,11 +58,14 @@ const CategoryTabs: React.FC<CategoryTabsProps> = ({
   );
 
   // Handle keyboard navigation between tabs
-  const handleKeyDown = (e: React.KeyboardEvent, currentCategory: string) => {
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLElement>, currentCategory: string) => {
     const currentIndex = categories.findIndex((cat) => cat.value === currentCategory);
     let newIndex = currentIndex;
 
-    switch (e.key) {
+    const isRtl = getComputedStyle(e.currentTarget).direction === 'rtl';
+    const key = isRtl ? (ARROW_SWAP[e.key] ?? e.key) : e.key;
+
+    switch (key) {
       case 'ArrowLeft':
         e.preventDefault();
         newIndex = currentIndex > 0 ? currentIndex - 1 : categories.length - 1;

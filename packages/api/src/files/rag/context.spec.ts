@@ -1,6 +1,8 @@
 import { createRagContextHandlers } from './context';
 
-const req = { user: { id: 'user-1' } };
+const req: { user: { id: string }; config?: { timeouts?: { ragMs?: number } } } = {
+  user: { id: 'user-1' },
+};
 const files = ['a.pdf', 'b.pdf', 'c.pdf'].map((filename, index) => ({
   file_id: `file-${index}`,
   filename,
@@ -8,7 +10,12 @@ const files = ['a.pdf', 'b.pdf', 'c.pdf'].map((filename, index) => ({
   embedded: true,
 }));
 
-function setup(userMessageContent?: string, fullContextSetting?: string, ragApiUrl = 'http://rag') {
+function setup(
+  userMessageContent?: string,
+  fullContextSetting?: string,
+  ragApiUrl = 'http://rag',
+  request = req,
+) {
   const httpClient = {
     get: jest.fn().mockResolvedValue({ data: 'whole document' }),
     post: jest.fn().mockResolvedValue({ data: [[{ page_content: 'Relevant excerpt' }, 0.1]] }),
@@ -17,7 +24,7 @@ function setup(userMessageContent?: string, fullContextSetting?: string, ragApiU
   const isEnabled = jest.fn((setting?: string | boolean | null) => setting === 'true');
   const logAxiosError = jest.fn(() => 'logged');
   const handlers = createRagContextHandlers({
-    req,
+    req: request,
     userMessageContent,
     ragApiUrl,
     fullContextSetting,
@@ -52,8 +59,23 @@ describe('legacy RAG context', () => {
     expect(httpClient.post).toHaveBeenCalledWith(
       'http://rag/query',
       { file_id: 'file-0', query: '  what is the deadline?  ', k: 4 },
-      { headers: { Authorization: 'Bearer signed-token', 'Content-Type': 'application/json' } },
+      {
+        headers: { Authorization: 'Bearer signed-token', 'Content-Type': 'application/json' },
+        timeout: 30_000,
+        signal: expect.any(AbortSignal),
+        timeoutErrorMessage: expect.any(String),
+      },
     );
+  });
+
+  it('bounds RAG queries by the configured timeout', async () => {
+    const { handlers, httpClient } = setup('deadline?', undefined, 'http://rag', {
+      ...req,
+      config: { timeouts: { ragMs: 5_000 } },
+    });
+    await handlers?.processFile(files[0]);
+    await handlers?.createContext();
+    expect(httpClient.post.mock.calls[0][2]).toMatchObject({ timeout: 5_000 });
   });
 
   it('continues to fetch the full document for a blank message in full-context mode', async () => {
@@ -63,6 +85,9 @@ describe('legacy RAG context', () => {
     expect(httpClient.post).not.toHaveBeenCalled();
     expect(httpClient.get).toHaveBeenCalledWith('http://rag/documents/file-0/context', {
       headers: { Authorization: 'Bearer signed-token' },
+      timeout: 30_000,
+      signal: expect.any(AbortSignal),
+      timeoutErrorMessage: expect.any(String),
     });
   });
 

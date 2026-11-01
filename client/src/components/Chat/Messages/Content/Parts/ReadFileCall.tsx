@@ -1,16 +1,14 @@
 import { useMemo } from 'react';
 import { FileText } from 'lucide-react';
+import { parseJsonField } from '@librechat/chat';
+import { TOOL_ROW_CLASSES, BareStatus } from '@librechat/chat/components';
+import { toolPanelSpacingClassName, useToolCallIntent } from '@librechat/chat/react';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
-import { toolPanelSpacingClassName } from '../disclosure';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
 import CodeWindowHeader from './CodeWindowHeader';
 import { AttachmentGroup } from './Attachment';
-import parseJsonField from './parseJsonField';
-import { useToolCallIntent } from './intent';
-import { TOOL_ROW_CLASSES } from '../rows';
-import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -158,7 +156,10 @@ export default function ReadFileCall({
               )}
             >
               <CodeWindowHeader language={fileName} code={output} />
-              <pre className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs">
+              <pre
+                dir="ltr"
+                className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs"
+              >
                 <code className={`hljs language-${lang} !whitespace-pre`}>
                   {highlighted ?? output}
                 </code>

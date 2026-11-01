@@ -21,6 +21,7 @@ export * from './morph';
 export * from './forms';
 export * from './roles';
 export * from './errors';
+export * from './promptErrors';
 export * from './agents';
 export * from './drafts';
 export * from './convos';
@@ -70,7 +71,7 @@ export {
   collectQuotelessAppliedSteerIds,
 } from '@librechat/chat';
 export type { SteerCarriedContext } from '@librechat/chat';
-export * from './pane';
+export { getChatPane, getFocusedChatPane, isFocusedChatPane } from '@librechat/chat';
 export * from './activityLabels';
 export * from './agentModelSelection';
 export * from './runStepDuration';

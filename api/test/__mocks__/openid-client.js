@@ -19,7 +19,7 @@ module.exports = {
       })),
     }),
   },
-  Strategy: jest.fn().mockImplementation((options, verify) => {
+  Strategy: jest.fn().mockImplementation(() => {
     // Store verify to call it if needed, or just mock the strategy behavior
     return { name: 'openid-mock-strategy' };
   }),

@@ -11,6 +11,7 @@ import type { Agents, TConversation, TMessage } from 'librechat-data-provider';
 import type { PendingSteer } from '@librechat/chat';
 import { siblingIdxFamily, siblingKey } from '~/components/Chat/Messages/Thread/state';
 import { applyPendingAction } from '~/utils/approval';
+import { setAppPartRenderers } from '../slots';
 import PendingSteers from '../PendingSteers';
 import store from '~/store';
 
@@ -23,16 +24,12 @@ const mockShowToast = jest.fn();
 
 jest.mock('@librechat/client', () => ({
   ...jest.requireActual('@librechat/client'),
+  useLocalize: () => (key: string) => key,
   useToastContext: () => ({ showToast: mockShowToast }),
 }));
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
-}));
-
-jest.mock('~/hooks/Chat/useSteerRecovery', () => ({
-  __esModule: true,
-  default: () => ({ retry: mockRetry, sendAsNew: mockSendAsNew }),
 }));
 
 jest.mock('@librechat/chat/react', () => ({
@@ -41,6 +38,7 @@ jest.mock('@librechat/chat/react', () => ({
   useSteerCancel: () => jest.fn(),
   useSteerMoveToQueue: () => mockMoveToQueue,
   useSteerRehome: () => mockRehome,
+  useSteerRecovery: () => ({ retry: mockRetry, sendAsNew: mockSendAsNew }),
 }));
 
 jest.mock('~/Providers', () => ({
@@ -48,10 +46,13 @@ jest.mock('~/Providers', () => ({
   useFileMapContext: () => ({}),
 }));
 
-jest.mock('~/components/Chat/Messages/Content/MarkdownLite', () => ({
-  __esModule: true,
-  default: ({ content }: { content: string }) => <span>{content}</span>,
-}));
+/** The parts barrel registers the app's renderers; this spec loads PendingSteers alone. */
+setAppPartRenderers({
+  renderMarkdown: ({ content }) => <span>{content}</span>,
+  renderAgentIcon: () => null,
+  renderImage: () => null,
+  renderFilePreview: () => null,
+});
 
 const CONVO_ID = 'convo-1';
 
@@ -176,7 +177,7 @@ describe('PendingSteers', () => {
     const cancel = screen.getByRole('button', { name: 'com_ui_cancel' });
     expect(cancel).toBeEnabled();
     expect(cancel.parentElement).toHaveClass('flex-wrap', 'justify-end');
-    expect(cancel.parentElement).not.toHaveClass('pl-9');
+    expect(cancel.parentElement).not.toHaveClass('ps-9');
   });
 
   it('aligns failed-steer recovery actions with the bubble and allows wrapping', () => {
@@ -184,7 +185,7 @@ describe('PendingSteers', () => {
 
     const retry = screen.getByRole('button', { name: 'com_ui_retry' });
     expect(retry.parentElement).toHaveClass('flex-wrap', 'justify-end');
-    expect(retry.parentElement).not.toHaveClass('pl-9');
+    expect(retry.parentElement).not.toHaveClass('ps-9');
   });
 
   it.each(['sending', 'pending', 'failed'] as const)(

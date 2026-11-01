@@ -13,7 +13,7 @@ import {
 import type { ToolExecuteBatchRequest } from '@librechat/agents';
 import type { Agents } from 'librechat-data-provider';
 import type { ToolApprovalHook } from './hooks';
-import { buildApprovalPreview } from '../../../../../client/src/components/Chat/approval/preview';
+import { buildApprovalPreview } from '../../../../chat/src/core/parts/approval';
 import { collectNativeEditFileAgentIds } from './byom';
 import { buildHITLRunWiring } from './runtime';
 import { normalizeEditArgs } from '../edits';

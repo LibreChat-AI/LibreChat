@@ -109,7 +109,7 @@ function ConvoOptions({
         icon: isPinLoading ? (
           <Spinner className="size-4" />
         ) : (
-          <Pin className="icon-sm text-text-primary mr-2" aria-hidden="true" />
+          <Pin className="icon-sm text-text-primary me-2" aria-hidden="true" />
         ),
       },
       {
@@ -118,24 +118,24 @@ function ConvoOptions({
         /* The conversation on screen is definitionally read: its own seen triggers would
            clear the flag the moment it is set. */
         show: !isActiveConvo && !isUnseen,
-        icon: <Mail className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
+        icon: <Mail className="icon-sm text-text-primary me-2" aria-hidden="true" />,
       },
       {
         label: localize('com_ui_rename'),
         onClick: renameHandler,
         disabled: !canRename,
-        icon: <Pen className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
+        icon: <Pen className="icon-sm text-text-primary me-2" aria-hidden="true" />,
       },
       {
         label: localize(isArchived ? 'com_ui_unarchive' : 'com_ui_archive'),
         onClick: handleArchiveClick,
         hideOnClick: false,
-        icon: renderArchiveIcon(isArchiveLoading, isArchived, 'icon-sm mr-2 text-text-primary'),
+        icon: renderArchiveIcon(isArchiveLoading, isArchived, 'icon-sm me-2 text-text-primary'),
       },
       {
         label: localize('com_ui_delete'),
         onClick: deleteHandler,
-        icon: <Trash className="icon-sm text-text-primary mr-2" aria-hidden="true" />,
+        icon: <Trash className="icon-sm text-text-primary me-2" aria-hidden="true" />,
         ariaHasPopup: 'dialog' as const,
         ariaControls: 'delete-conversation-dialog',
         /** NOTE: THE FOLLOWING PROPS ARE REQUIRED FOR MENU ITEMS THAT OPEN DIALOGS */

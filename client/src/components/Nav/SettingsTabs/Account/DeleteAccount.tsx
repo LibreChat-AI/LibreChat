@@ -192,12 +192,12 @@ const renderDeleteButton = (
         {isLocked ? (
           <>
             <LockIcon className="size-5" aria-hidden="true" />
-            <span className="ml-2">{localize('com_ui_locked')}</span>
+            <span className="ms-2">{localize('com_ui_locked')}</span>
           </>
         ) : (
           <>
             <Trash className="size-5" aria-hidden="true" />
-            <span className="ml-2">{localize('com_nav_delete_account_button')}</span>
+            <span className="ms-2">{localize('com_nav_delete_account_button')}</span>
           </>
         )}
       </>

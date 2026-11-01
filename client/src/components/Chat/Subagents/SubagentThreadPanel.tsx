@@ -3,7 +3,9 @@ import { v4 } from 'uuid';
 import { useNavigate } from 'react-router-dom';
 import { dataService, ForkOptions } from 'librechat-data-provider';
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
+import { isMacPlatform, resolveComposerKeyDown } from '@librechat/chat';
 import { ArrowUpRight, Clock, OctagonPause, X, Zap } from 'lucide-react';
+import { SubagentActivity, SubagentActivityScrollSurface } from '@librechat/chat/components';
 import {
   Alert,
   Button,
@@ -12,6 +14,32 @@ import {
   useMediaQuery,
   useToastContext,
 } from '@librechat/client';
+import {
+  activeSubagentPanel,
+  subagentPanelFocusRequest,
+  subagentControlStateByTask,
+  subagentControlStateKey,
+  subagentProgressKey,
+  useSubagentProgress,
+  useSubagentActivityStream,
+  adaptDurableThreadActivity,
+  adaptDurableThreadConversation,
+  adaptLivePersistedActivity,
+  mergeChildConversationTurns,
+  retainBoundedMovingWindowTurns,
+  eventSubagentSelection,
+  resolveSubagentAgentId,
+  isLiveSubagentStatus,
+  getSubagentPrompt,
+  useParentSubagents,
+  agentAuthor,
+  resolveSubagentAuthor,
+  isSelfSpawn as isSelfSpawnType,
+  resolveChildAgent,
+  readableSubagentType,
+  useParentAuthor,
+  useChatSurface,
+} from '@librechat/chat/react';
 import type {
   ParentSubagentTaskSummary,
   SubagentControlAction,
@@ -19,9 +47,9 @@ import type {
   SubagentControlRequest,
 } from 'librechat-data-provider';
 import type { ComposerKeyVerdict, ComposerStopProps, SendAction } from '@librechat/client';
+import type { ActiveSubagentPanel, SubagentControlUiState } from '@librechat/chat/react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
-import type { ActiveSubagentPanel, SubagentControlUiState } from './state';
-import type { ComposerKeyAction } from '~/utils/shortcuts';
+import type { ComposerKeyAction } from '@librechat/chat';
 import type { OptionWithIcon } from '~/common';
 import {
   ACTIVE_THREAD_REFRESH_MS,
@@ -31,46 +59,15 @@ import {
   useSubagentControlMutation,
   useSubagentThreadQuery,
 } from '~/data-provider';
-import {
-  adaptDurableThreadActivity,
-  adaptDurableThreadConversation,
-  adaptLivePersistedActivity,
-  mergeChildConversationTurns,
-  retainBoundedMovingWindowTurns,
-} from './adapters';
-import {
-  activeSubagentPanel,
-  subagentPanelFocusRequest,
-  subagentControlStateByTask,
-  subagentControlStateKey,
-  subagentProgressKey,
-  useSubagentProgress,
-} from './state';
-import {
-  agentAuthor,
-  resolveSubagentAuthor,
-  isSelfSpawn as isSelfSpawnType,
-  resolveChildAgent,
-  readableSubagentType,
-  useParentAuthor,
-} from './author';
-import useSubagentActivityStream from '~/data-provider/Subagents/useSubagentActivityStream';
-import SubagentActivity, { SubagentActivityScrollSurface } from './SubagentActivity';
 import ApprovalProvider from '~/components/Chat/Messages/Content/ApprovalContext';
-import { isMacPlatform, resolveComposerKeyDown } from '~/utils/shortcuts';
+import { TaskContentScopeContext } from '~/data-provider/Subagents/content';
 import { useFocusTrap, useLocalize, useNavigateToConvo } from '~/hooks';
 import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import { useConfiguredFooter } from '~/components/Chat/Footer';
-import { useParentSubagents } from './ParentSubagentsProvider';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import SubagentConversation from './SubagentConversation';
-import { eventSubagentSelection } from './eventSelection';
-import { resolveSubagentAgentId } from './identity';
 import { useAgentsMapContext } from '~/Providers';
-import { isLiveSubagentStatus } from './status';
 import { cn, renderAgentAvatar } from '~/utils';
-import { getSubagentPrompt } from './prompt';
-import { useChatSurface } from './surface';
 
 const EVENT_TASK_PAGE_SIZE = 3;
 const TERMINAL_CONTROL_REASONS = new Set([
@@ -176,6 +173,13 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
   );
   const threadId = selection.durable?.threadId ?? '';
   const taskId = selection.durable?.taskId ?? '';
+  const receiptScope = useMemo(
+    () =>
+      selection.host === 'conversation' && threadId !== '' && taskId !== ''
+        ? { parentConversationId: selection.parentConversationId, threadId, taskId }
+        : null,
+    [selection.host, selection.parentConversationId, threadId, taskId],
+  );
   const controlIdentity = subagentControlStateKey(selection.parentConversationId, threadId, taskId);
   const [controlState, setControlState] = useAtom(subagentControlStateByTask(controlIdentity));
   const setControlStateForIdentity = useCallback(
@@ -284,7 +288,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       taskView?.status === 'interrupted' ||
       taskView?.status === 'cancelled');
   const priorTerminalRef = useRef(false);
-  useSubagentActivityStream(selection, !durableTerminal || eventTaskRunning);
+  const contentStream = useSubagentActivityStream(selection, !durableTerminal || eventTaskRunning);
 
   useEffect(() => {
     if (selection.event == null) return;
@@ -874,6 +878,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
         prompt,
         progress,
         persistedContent,
+        attachments: selection.attachments,
         isDetached: selection.durable != null,
         legacyOutput,
         // A detached parent tool step closes as soon as dispatch succeeds;
@@ -904,13 +909,15 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     const durable = adaptDurableThreadActivity(taskView, selection.durable.taskId);
     const useLiveItems =
       (durable.status === 'running' || durable.status === 'dispatched') &&
-      liveActivity.items.length > 0;
+      (liveActivity.content?.length ?? liveActivity.items.length) > 0;
     const mergedItems =
       !useLiveItems && durable.items.length > 0 ? durable.items : liveActivity.items;
     const merged = {
       ...durable,
       prompt: durable.prompt ?? liveActivity.prompt,
       items: mergedItems,
+      attachments: durable.attachments ?? liveActivity.attachments,
+      content: !useLiveItems && durable.items.length > 0 ? durable.content : liveActivity.content,
     };
     if (
       transientControl == null ||
@@ -1027,6 +1034,13 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     };
   }, [historyRebaseActive, latestConversationTurns, latestHistoryGeneration, threadId, threadView]);
   const retainedTurnsValid = retainedTurnsGenerationRef.current === selectionGenerationRef.current;
+  const selectedOutcome = useMemo(
+    () =>
+      taskView?.messages.find(
+        (message) => message.messageId === `${taskId}:assistant` && message.role === 'assistant',
+      ),
+    [taskView, taskId],
+  );
   const conversationTurns = useMemo(() => {
     const durableTurns = retainedTurnsValid
       ? mergeChildConversationTurns(
@@ -1041,7 +1055,10 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       const selectedTurnIndex = durableTurns.findIndex((turn) => turn.taskId === taskId);
       if (selectedTurnIndex >= 0) {
         return durableTurns.map((turn, index) => {
-          const selected = index === selectedTurnIndex ? { ...turn, activity } : turn;
+          const selected =
+            index === selectedTurnIndex
+              ? { ...turn, activity, outcome: selectedOutcome ?? turn.outcome }
+              : turn;
           const override = turnDetailOverrides.get(turn.taskId);
           return override == null ? selected : { ...selected, activity: override };
         });
@@ -1057,6 +1074,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       )?.createdAt;
       const synthesizedTurn = {
         taskId: taskId || `${selection.parentMessageId}:${selection.toolCallId}`,
+        ...(selectedOutcome == null ? {} : { outcome: selectedOutcome }),
         trigger: {
           kind:
             selection.event == null
@@ -1086,6 +1104,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     return [
       {
         taskId: taskId || `${selection.parentMessageId}:${selection.toolCallId}`,
+        ...(selectedOutcome == null ? {} : { outcome: selectedOutcome }),
         trigger: {
           kind:
             selection.event == null ? ('parent_dispatch' as const) : ('external_event' as const),
@@ -1106,6 +1125,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     retainedTurnsValid,
     threadId,
     selection,
+    selectedOutcome,
     taskId,
     turnDetailOverrides,
   ]);
@@ -1375,11 +1395,15 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
     panelState = storedPart.isError ? 'error' : 'loading';
   } else if (
     selection.durable != null &&
-    liveActivity.items.length === 0 &&
+    (liveActivity.content?.length ?? liveActivity.items.length) === 0 &&
     (isLoading || isReadinessPending)
   ) {
     panelState = 'loading';
-  } else if (selection.durable != null && liveActivity.items.length === 0 && isError) {
+  } else if (
+    selection.durable != null &&
+    (liveActivity.content?.length ?? liveActivity.items.length) === 0 &&
+    isError
+  ) {
     panelState = 'error';
   }
   const renderEventTask = (task: ParentSubagentTaskSummary) => {
@@ -1492,7 +1516,7 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
             >
               {historyState === 'loading'
                 ? localize('com_ui_loading')
-                : localize('com_ui_subagent_load_earlier_activity')}
+                : localize('com_ui_load_more')}
             </Button>
           </div>
         )}
@@ -1513,6 +1537,17 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
           author={childAuthor}
           parentAuthor={isSelfSpawn && selection.event == null ? childAuthor : parentAuthor}
           conversationId={threadId || selection.parentConversationId}
+          interactive={selection.host === 'conversation' && selection.durable == null}
+          recovery={
+            selection.durable == null
+              ? undefined
+              : {
+                  parentConversationId: selection.parentConversationId,
+                  threadId,
+                  selectedTaskId: taskId,
+                  ready: contentStream?.isReady === true,
+                }
+          }
           stateByTask={conversationStateByTask}
           controllableTaskId={
             controlAvailable && !controlPending ? selection.durable?.taskId : undefined
@@ -1649,7 +1684,9 @@ export default function SubagentThreadPanel({ selection }: { selection: ActiveSu
       <ApprovalProvider
         key={`${selection.parentMessageId}\u0000${selection.toolCallId}\u0000${selection.partIndex}`}
       >
-        {activityPanel}
+        <TaskContentScopeContext.Provider value={receiptScope}>
+          {activityPanel}
+        </TaskContentScopeContext.Provider>
       </ApprovalProvider>
       {(showControlFooter || composerMode != null) && (
         /* The main chat form's own bottom rhythm, read from the same answer it
@@ -1739,6 +1776,13 @@ function HistoricalEventTaskActivity({
   title: string;
 }) {
   const threadId = selection.durable?.threadId ?? '';
+  const receiptScope = useMemo(
+    () =>
+      selection.host === 'conversation' && threadId !== ''
+        ? { parentConversationId: selection.parentConversationId, threadId, taskId: task.taskId }
+        : null,
+    [selection.host, selection.parentConversationId, threadId, task.taskId],
+  );
   const { data, isLoading, isError, isReadinessPending } = useSubagentThreadQuery(
     selection.parentConversationId,
     threadId,
@@ -1759,12 +1803,14 @@ function HistoricalEventTaskActivity({
   }
 
   return (
-    <SubagentActivity
-      activityId={`${selection.parentMessageId}\u0000${selection.toolCallId}\u0000${task.taskId}`}
-      activity={activity}
-      state={state}
-      showPrompt={false}
-      embedded
-    />
+    <TaskContentScopeContext.Provider value={receiptScope}>
+      <SubagentActivity
+        activityId={`${selection.parentMessageId}\u0000${selection.toolCallId}\u0000${task.taskId}`}
+        activity={activity}
+        state={state}
+        showPrompt={false}
+        embedded
+      />
+    </TaskContentScopeContext.Provider>
   );
 }

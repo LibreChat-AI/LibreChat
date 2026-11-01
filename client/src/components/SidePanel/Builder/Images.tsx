@@ -1,4 +1,4 @@
-import ProgressCircle from '~/components/Chat/Input/Files/ProgressCircle';
+import { ProgressCircle } from '@librechat/chat/components';
 
 export function NoImage() {
   return (

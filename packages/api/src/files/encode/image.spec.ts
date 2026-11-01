@@ -1,3 +1,4 @@
+import sharp from 'sharp';
 import { Readable } from 'node:stream';
 import { FileSources, VisionModes } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types';
@@ -63,6 +64,63 @@ describe('encodeAndFormatImages', () => {
   it('uses the legacy filepath when no canonical key was stored', async () => {
     await encodeAndFormatImages(makeReq(), [{ ...file, storageKey: undefined }], {}, deps);
     expect(getDownloadStream).toHaveBeenCalledWith(expect.anything(), file.filepath);
+  });
+
+  it('overlaps storage reads while keeping attachment order and the first error in order', async () => {
+    let active = 0;
+    let peak = 0;
+    getDownloadStream.mockImplementation(async (_req, key: string) => {
+      active++;
+      peak = Math.max(peak, active);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      active--;
+      if (key === 'b') {
+        throw new Error('second failed');
+      }
+      return Readable.from(imageBytes);
+    });
+    const files = ['a', 'c', 'd'].map((key) => ({ ...file, file_id: key, storageKey: key }));
+
+    const result = await encodeAndFormatImages(makeReq(), files, {}, deps);
+    expect(result.files.map((f) => f.file_id)).toEqual(['a', 'c', 'd']);
+    expect(peak).toBeGreaterThan(1);
+
+    await expect(
+      encodeAndFormatImages(
+        makeReq(),
+        [files[0], { ...file, file_id: 'b', storageKey: 'b' }, files[1]],
+        {},
+        deps,
+      ),
+    ).rejects.toBeInstanceOf(AttachmentStorageError);
+  });
+
+  it('surfaces an early storage failure without waiting for a stalled later read', async () => {
+    getDownloadStream.mockImplementation(async (_req, key: string) => {
+      if (key === 'stalled') {
+        return new Promise(() => undefined);
+      }
+      throw new Error('first failed');
+    });
+    const files = ['early', 'stalled'].map((key) => ({ ...file, file_id: key, storageKey: key }));
+
+    await expect(encodeAndFormatImages(makeReq(), files, {}, deps)).rejects.toBeInstanceOf(
+      AttachmentStorageError,
+    );
+  });
+
+  it('surfaces a later failure without waiting for an earlier pending read', async () => {
+    getDownloadStream.mockImplementation(async (_req, key: string) => {
+      if (key === 'slow') {
+        return new Promise(() => undefined);
+      }
+      throw new Error('later failed');
+    });
+    const files = ['slow', 'fails'].map((key) => ({ ...file, file_id: key, storageKey: key }));
+
+    await expect(encodeAndFormatImages(makeReq(), files, {}, deps)).rejects.toBeInstanceOf(
+      AttachmentStorageError,
+    );
   });
 
   it('returns an empty result without acquiring a strategy for absent files', async () => {
@@ -169,7 +227,12 @@ describe('encodeAndFormatImages', () => {
     expect(result.image_urls).toEqual([
       { type: 'image', source: { type: 'base64', media_type: file.type, data: content } },
     ]);
-    expect(httpClient.get).toHaveBeenCalledWith(file.filepath, { responseType: 'arraybuffer' });
+    expect(httpClient.get).toHaveBeenCalledWith(file.filepath, {
+      responseType: 'arraybuffer',
+      timeout: 30_000,
+      signal: expect.any(AbortSignal),
+      timeoutErrorMessage: expect.any(String),
+    });
     expect(memoryGuard.runGuardedEncode).toHaveBeenCalledWith(file.bytes, expect.any(Function));
   });
 
@@ -200,6 +263,110 @@ describe('encodeAndFormatImages', () => {
   ])('preserves the %s payload in mode %s', async (provider, mode, expected) => {
     const result = await encodeAndFormatImages(makeReq(), [file], { provider }, deps, mode);
     expect(result.image_urls).toEqual([expected]);
+  });
+
+  describe('a record whose type does not describe its bytes', () => {
+    let jpegBytes: Buffer;
+    let jpegContent: string;
+    const mislabeled = () => ({ ...file, bytes: jpegBytes.length, type: 'image/png' });
+
+    beforeAll(async () => {
+      jpegBytes = await sharp({
+        create: { width: 8, height: 8, channels: 3, background: { r: 1, g: 2, b: 3 } },
+      })
+        .jpeg()
+        .toBuffer();
+      jpegContent = jpegBytes.toString('base64');
+    });
+
+    beforeEach(() => {
+      getDownloadStream.mockImplementation(async () => Readable.from(jpegBytes));
+    });
+
+    it('declares the bytes to Anthropic, not the stored type', async () => {
+      const result = await encodeAndFormatImages(
+        makeReq(),
+        [mislabeled()],
+        { endpoint: 'anthropic' },
+        deps,
+      );
+
+      expect(result.image_urls).toEqual([
+        { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: jpegContent } },
+      ]);
+    });
+
+    it('uses the real type for Claude conversations in agents mode', async () => {
+      const result = await encodeAndFormatImages(
+        makeReq(),
+        [mislabeled()],
+        { provider: 'anthropic' },
+        deps,
+        VisionModes.agents,
+      );
+
+      expect(result.image_urls).toEqual([
+        {
+          type: 'image_url',
+          image_url: { url: `data:image/jpeg;base64,${jpegContent}`, detail: 'auto' },
+        },
+      ]);
+    });
+
+    it('declares the bytes to Google', async () => {
+      const result = await encodeAndFormatImages(
+        makeReq(),
+        [mislabeled()],
+        { provider: 'google' },
+        deps,
+        VisionModes.generative,
+      );
+
+      expect(result.image_urls).toEqual([
+        { type: 'image_url', inlineData: { mimeType: 'image/jpeg', data: jpegContent } },
+      ]);
+    });
+
+    it('declares the bytes in the data URL', async () => {
+      const result = await encodeAndFormatImages(makeReq(), [mislabeled()], {}, deps);
+
+      expect(result.image_urls).toEqual([
+        {
+          type: 'image_url',
+          image_url: { url: `data:image/jpeg;base64,${jpegContent}`, detail: 'auto' },
+        },
+      ]);
+    });
+
+    it('keeps the stored type when the bytes name no format of their own', async () => {
+      getDownloadStream.mockImplementation(async () => Readable.from(imageBytes));
+
+      const result = await encodeAndFormatImages(
+        makeReq(),
+        [{ ...file, type: 'image/png' }],
+        { endpoint: 'anthropic' },
+        deps,
+      );
+
+      expect(result.image_urls).toEqual([
+        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: content } },
+      ]);
+    });
+
+    it('leaves an external URL alone, having no bytes to read', async () => {
+      prepareImagePayload.mockImplementation(async (_req, image) => [image, file.filepath]);
+
+      const result = await encodeAndFormatImages(
+        makeReq(),
+        [{ ...mislabeled(), source: FileSources.openai }],
+        { endpoint: 'openai' },
+        deps,
+      );
+
+      expect(result.image_urls).toEqual([
+        { type: 'image_url', image_url: { url: file.filepath, detail: 'auto' } },
+      ]);
+    });
   });
 
   it.each([

@@ -129,7 +129,7 @@ export default function ShareButton({
           }
         }}
       >
-        <OGDialogHeader className="shrink-0 px-6 pt-6 pr-14 pb-0 text-left">
+        <OGDialogHeader className="shrink-0 px-6 pe-14 pt-6 pb-0 text-start">
           <div className="flex items-center gap-2">
             <OGDialogTitle className="text-xl font-semibold tracking-tight">
               {localize('com_ui_share_link_to_chat')}

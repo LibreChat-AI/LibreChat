@@ -35,10 +35,12 @@ export default function ResultSwitcher({
         aria-label={localize('com_ui_prev_result')}
         className="text-text-tertiary hover:bg-surface-hover hover:text-text-primary focus:outline-focus-subtle rounded p-0.5 transition-colors focus:outline focus:outline-2 disabled:pointer-events-none disabled:opacity-30"
       >
-        <ChevronLeft className="size-3.5" aria-hidden="true" />
+        <ChevronLeft className="size-3.5 rtl:-scale-x-100" aria-hidden="true" />
       </button>
       <span className="text-text-secondary min-w-[3ch] text-center tabular-nums select-none">
-        {currentIndex + 1}/{totalCount}
+        <bdi>
+          {currentIndex + 1}/{totalCount}
+        </bdi>
       </span>
       <button
         type="button"
@@ -47,7 +49,7 @@ export default function ResultSwitcher({
         aria-label={localize('com_ui_next_result')}
         className="text-text-tertiary hover:bg-surface-hover hover:text-text-primary focus:outline-focus-subtle rounded p-0.5 transition-colors focus:outline focus:outline-2 disabled:pointer-events-none disabled:opacity-30"
       >
-        <ChevronRight className="size-3.5" aria-hidden="true" />
+        <ChevronRight className="size-3.5 rtl:-scale-x-100" aria-hidden="true" />
       </button>
     </nav>
   );

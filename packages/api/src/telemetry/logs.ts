@@ -2,10 +2,23 @@ import winston from 'winston';
 import { OpenTelemetryTransportV3 } from '@opentelemetry/winston-transport';
 import { logger, baseLogFormat, jsonTruncateFormat } from '@librechat/data-schemas';
 import type { TelemetryConfig } from './config';
+import { CONFIG_DIGEST_ATTRIBUTE, getConfigDigest } from './digest';
 import { emitTelemetryWarning } from './warnings';
 import { DEFAULT_LOGS_LEVEL } from './config';
 
 let activeTransport: OpenTelemetryTransportV3 | undefined;
+
+/**
+ * Names the loaded librechat.yaml on exported records. Winston hands each transport its own copy
+ * of the record, so file and console output keep their shape.
+ */
+const configDigestFormat = winston.format((info) => {
+  const digest = getConfigDigest();
+  if (digest) {
+    info[CONFIG_DIGEST_ATTRIBUTE] = digest;
+  }
+  return info;
+});
 
 /**
  * An unknown level name would resolve to `undefined` inside winston and silently
@@ -37,7 +50,7 @@ export function attachLogsTransport(config: TelemetryConfig): void {
 
   const transport = new OpenTelemetryTransportV3({
     level: resolveLogsLevel(config.logsLevel),
-    format: winston.format.combine(baseLogFormat, jsonTruncateFormat()),
+    format: winston.format.combine(baseLogFormat, jsonTruncateFormat(), configDigestFormat()),
   });
   logger.add(transport);
   activeTransport = transport;

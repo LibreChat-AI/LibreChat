@@ -4,10 +4,12 @@ import { useForm } from 'react-hook-form';
 import { render, screen, fireEvent } from '@testing-library/react';
 import type { SteeringControls } from '@librechat/chat/react';
 import type { ShortcutOverride } from '~/store/misc';
-import DuringRunSendButton from '../DuringRunSendButton';
+import { ComposerHostTestProvider } from 'test/composerHost';
+import { WatchedDuringRunSendButton } from '../watched';
 import store from '~/store';
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string) => key,
 }));
 
@@ -68,15 +70,17 @@ function Harness({
 }) {
   const methods = useForm<{ text: string }>({ defaultValues: { text: TEXT } });
   return (
-    <DuringRunSendButton
-      control={methods.control}
-      steering={steering}
-      isNewConversation={isNewConversation}
-      getText={() => TEXT}
-      onConsumed={mockOnConsumed}
-      enterToSend={enterToSend}
-      disabled={disabled}
-    />
+    <ComposerHostTestProvider>
+      <WatchedDuringRunSendButton
+        control={methods.control}
+        steering={steering}
+        isNewConversation={isNewConversation}
+        getText={() => TEXT}
+        onConsumed={mockOnConsumed}
+        enterToSend={enterToSend}
+        disabled={disabled}
+      />
+    </ComposerHostTestProvider>
   );
 }
 

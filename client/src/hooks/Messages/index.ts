@@ -11,13 +11,6 @@ export type { ContentMetadataResult } from './useContentMetadata';
 export { default as useExpandCollapse } from './useExpandCollapse';
 export { default as useLazyCollapseBody } from './useLazyCollapseBody';
 export { default as useThrottledValue } from './useThrottledValue';
-export {
-  RowMountProvider,
-  useRowMountWindow,
-  useProgressiveRowMount,
-  completeProgressiveRowMounts,
-} from './useProgressiveRowMount';
-export type { RowMountWindow } from './useProgressiveRowMount';
 export { default as useMessageActions } from './useMessageActions';
 export { default as useMessagesRetention } from './useMessagesRetention';
 export { useLatestMessage, useLatestMessageId } from './useLatestMessage';
@@ -32,5 +25,4 @@ export {
 } from './useCopyToClipboard';
 export { default as useContentMetadata } from './useContentMetadata';
 export { default as useMessageScrolling } from './useMessageScrolling';
-export { default as useScrollbarGutter, useScrollbarGutterSeed } from './useScrollbarGutter';
 export { default as useSmoothStreaming } from './useSmoothStreaming';

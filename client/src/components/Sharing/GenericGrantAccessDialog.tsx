@@ -316,7 +316,7 @@ export default function GenericGrantAccessDialog({
     <OGDialog open={isModalOpen} onOpenChange={handleModalOpenChange} modal>
       <OGDialogTrigger asChild>{TriggerComponent}</OGDialogTrigger>
       <OGDialogContent className="flex max-h-[90dvh] w-11/12 max-w-5xl flex-col gap-0 overflow-hidden p-0">
-        <OGDialogHeader className="shrink-0 px-5 py-5 pr-14 text-left sm:px-6">
+        <OGDialogHeader className="shrink-0 px-5 py-5 pe-14 text-start sm:px-6">
           <div className="flex items-start gap-3">
             <div className="border-border-light bg-surface-secondary text-text-secondary flex size-10 shrink-0 items-center justify-center rounded-xl border">
               <Users className="size-5" aria-hidden="true" />

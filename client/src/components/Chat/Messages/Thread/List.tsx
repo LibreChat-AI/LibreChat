@@ -1,7 +1,7 @@
 import { memo } from 'react';
-import type { ThreadRow } from '~/utils/thread';
+import { useRowMountWindow } from '@librechat/chat/react';
+import type { ThreadRow } from '@librechat/chat';
 import type { TMessageProps } from '~/common';
-import { useRowMountWindow } from '~/hooks/Messages';
 import Row from './Row';
 
 type ListProps = {

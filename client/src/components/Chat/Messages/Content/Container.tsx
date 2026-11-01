@@ -1,18 +1,7 @@
-import { TMessage } from 'librechat-data-provider';
-import MessageQuotes from './MessageQuotes';
-import SkillPills from './SkillPills';
-import Files from './Files';
+import { MessageQuotes, SkillPills } from '@librechat/chat/components';
+import type { TMessage } from 'librechat-data-provider';
 
-const Container = ({
-  children,
-  message,
-  hideFiles = false,
-}: {
-  children: React.ReactNode;
-  message?: TMessage;
-  /** The message editor renders the files itself, as chips that can be removed. */
-  hideFiles?: boolean;
-}) => (
+const Container = ({ children, message }: { children: React.ReactNode; message?: TMessage }) => (
   <div
     data-message-text
     className="flex min-h-[1.25rem] flex-col items-start gap-3 overflow-visible [[data-message-text]+&]:mt-5"
@@ -21,7 +10,6 @@ const Container = ({
     {message?.isCreatedByUser === true && (
       <>
         <MessageQuotes quotes={message.quotes} />
-        {!hideFiles && <Files message={message} />}
         <SkillPills skills={message.alwaysAppliedSkills} source="always-apply" />
         <SkillPills skills={message.manualSkills} source="manual" />
       </>

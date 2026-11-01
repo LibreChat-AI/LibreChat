@@ -8,8 +8,9 @@
  * here; these cover the page before and without a theme definition.
  *
  * The roles are written against the primitive scales under `:root`, so a host that redefines a
- * step after this import retints every role that reads it. `themes/default.ts`, `themes/dark.ts`
- * and `registry.ts` carry the same values for the runtime, and `defaults.spec.ts` holds them equal.
+ * step after this import retints every role that reads it. `default.ts`, `dark.ts` and
+ * `registry.ts` under `packages/data-provider/src/themes` carry the same values for the runtime,
+ * and `defaults.spec.ts` holds them equal.
  */
 :root {
   --white: 255 255 255;
@@ -146,6 +147,8 @@ html {
   --surface-overlay: var(--gray-500);
   --surface-media-overlay: 0 0 0;
   --text-on-media: var(--white);
+  --surface-media-chip: var(--white);
+  --surface-media-chip-alpha: 0.75;
   --surface-submit: var(--green-700);
   --surface-submit-hover: var(--green-800);
   --surface-destructive: var(--red-700);
@@ -457,6 +460,8 @@ html {
   --surface-overlay: 0 0 0;
   --surface-media-overlay: 0 0 0;
   --text-on-media: var(--white);
+  --surface-media-chip: 0 0 0;
+  --surface-media-chip-alpha: 0.65;
   --surface-submit: var(--green-700);
   --surface-submit-hover: var(--green-800);
   --surface-destructive: var(--red-800);

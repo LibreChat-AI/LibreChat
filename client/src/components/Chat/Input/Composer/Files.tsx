@@ -1,6 +1,8 @@
 import { memo, useRef, useMemo, useState, useEffect } from 'react';
 import { Eye, Search } from 'lucide-react';
+import { getPreviewKind } from '@librechat/chat';
 import { apiBaseUrl } from 'librechat-data-provider';
+import { FilePreview, getFileType } from '@librechat/chat/components';
 import { Button, IconButton, Spinner, useToastContext } from '@librechat/client';
 import type { TFile } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
@@ -8,11 +10,9 @@ import FilePreviewDialog, {
   formatBytes,
   getDisplayType,
 } from '~/components/Chat/Messages/Content/FilePreviewDialog';
-import { getPreviewKind } from '~/components/Chat/Messages/Content/preview';
-import { getFileType, toAbsoluteFilePath, triggerDownload } from '~/utils';
 import DialogImage from '~/components/Chat/Messages/Content/DialogImage';
-import FilePreview from '~/components/Chat/Input/Files/FilePreview';
 import { useGetFiles, useFilePreviewBlob } from '~/data-provider';
+import { toAbsoluteFilePath, triggerDownload } from '~/utils';
 import { useLocalize, useAuthContext } from '~/hooks';
 
 export type FileView = 'all' | 'images' | 'documents';
@@ -108,7 +108,7 @@ const FileCard = memo(function FileCard({ file, onAttach, onPreview, disabled }:
         type="button"
         onClick={() => onAttach(file)}
         disabled={disabled}
-        className="focus-visible:ring-ring-primary flex h-full w-full cursor-pointer flex-col gap-2 rounded-2xl p-4 text-left focus:outline-hidden focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50"
+        className="focus-visible:ring-ring-primary flex h-full w-full cursor-pointer flex-col gap-2 rounded-2xl p-4 text-start focus:outline-hidden focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-50"
       >
         <span className="flex w-full min-w-0 items-start gap-3">
           <Thumbnail file={file} />
@@ -120,7 +120,7 @@ const FileCard = memo(function FileCard({ file, onAttach, onPreview, disabled }:
         <span className="text-text-secondary mt-auto text-xs">{formatDate(file)}</span>
       </button>
       {canPreview && (
-        <span className="absolute right-2 bottom-2">
+        <span className="absolute inset-e-2 bottom-2">
           <IconButton
             size="xs"
             shape="square"

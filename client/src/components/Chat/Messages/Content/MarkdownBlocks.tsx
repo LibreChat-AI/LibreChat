@@ -1,10 +1,10 @@
 import React, { memo, useMemo, useState, useLayoutEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
+import { createMarkdownSplitter } from '@librechat/chat';
+import type { MarkdownSplitter } from '@librechat/chat';
 import type { PluggableList } from 'unified';
 import type { ElementType } from 'react';
-import type { MarkdownSplitter } from './splitMarkdown';
 import { ArtifactProvider, CodeBlockProvider } from '~/Providers';
-import { createMarkdownSplitter } from './splitMarkdown';
 import { createFadePlugin } from './animate';
 
 type SharedProps = {

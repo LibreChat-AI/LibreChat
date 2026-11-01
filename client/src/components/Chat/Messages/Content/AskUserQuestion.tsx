@@ -1,27 +1,21 @@
 import { useContext, useMemo, useState } from 'react';
+import { AskOptions } from '@librechat/chat/components';
+import { useOptionalChatSurface } from '@librechat/chat/react';
 import { Button, TextareaAutosize, TooltipAnchor } from '@librechat/client';
 import { ChevronDown, MessageCircleQuestion, TriangleAlert } from 'lucide-react';
+import { isCancelKey, isReboundSubmitChord, resolveComposerKeyDown } from '@librechat/chat';
 import type { Agents } from 'librechat-data-provider';
 import type { KeyboardEvent } from 'react';
-import type { ComposerBindings } from '~/hooks/Input/useComposerBindings';
-import { isCancelKey, isReboundSubmitChord, resolveComposerKeyDown } from '~/utils/shortcuts';
 import { useApprovalContext, useAskSubmitStatus, useResumeSubmit } from './ApprovalContext';
 import { splitOtherOption, ASK_USER_DECLINED_ANSWER } from '~/utils/approval';
-import { useOptionalChatSurface } from '~/components/Chat/Subagents/surface';
+import { NO_HOST_BINDINGS } from '~/hooks/Input/useComposerBindings';
 import { cn, forceResize, insertTextAtCursor } from '~/utils';
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
-import AskOptions from '~/components/Chat/ask/options';
 import { ChatContext } from '~/Providers/ChatContext';
 import AskUserQuestions from './AskUserQuestions';
 import { useLocalize } from '~/hooks';
 
 /** Stock preferences for a card rendered outside a chat surface. */
-const NO_HOST_BINDINGS: ComposerBindings = {
-  shortcutsEnabled: true,
-  submitOverride: undefined,
-  yieldedChords: new Set(),
-};
-
 /**
  * Renders an `ask_user_question` pause: the prompt, optional description, any
  * curated option buttons, and a free-form text answer. Single-select options
@@ -368,14 +362,14 @@ function AskUserQuestionSingle({
         </Button>
         {(status === 'expired' || status === 'error') && (
           <span className="text-text-warning flex min-w-0 items-center text-xs">
-            <TriangleAlert className="mr-1.5 size-4 shrink-0" aria-hidden="true" />
+            <TriangleAlert className="me-1.5 size-4 shrink-0" aria-hidden="true" />
             {localize(status === 'expired' ? 'com_ui_approval_expired' : 'com_ui_approval_error')}
           </span>
         )}
         <Button
           size="sm"
           variant="submit"
-          className="ml-auto"
+          className="ms-auto"
           disabled={!canSubmit || locked}
           onClick={submitCombined}
         >

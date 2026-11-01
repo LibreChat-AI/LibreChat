@@ -1,21 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAtom } from 'jotai';
+import { SubagentActivityScrollSurface } from '@librechat/chat/components';
 import { OGDialog, OGDialogContent, OGDialogHeader, OGDialogTitle } from '@librechat/client';
-import type { TMessage } from 'librechat-data-provider';
 import {
+  activeSubagentPanel,
+  adaptLivePersistedActivity,
+  resolveSubagentAgentId,
   isSelfSpawn as isSelfSpawnType,
   messageAuthor,
   findAgentLaneId,
   resolveSubagentAuthor,
   findAgentAuthorMessage,
-} from './author';
+} from '@librechat/chat/react';
+import type { TMessage } from 'librechat-data-provider';
 import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
-import { SubagentActivityScrollSurface } from './SubagentActivity';
 import SubagentConversation from './SubagentConversation';
-import { adaptLivePersistedActivity } from './adapters';
-import { resolveSubagentAgentId } from './identity';
 import { useAgentsMapContext } from '~/Providers';
-import { activeSubagentPanel } from './state';
 import { useLocalize } from '~/hooks';
 
 /** Public-share fallback for subagent activity already embedded in the shared message payload. */
@@ -82,6 +82,7 @@ export default function SharedSubagentActivityDialog({
         prompt: selection?.prompt,
         progress: null,
         persistedContent: selection?.persistedContent,
+        attachments: selection?.attachments,
         legacyOutput: selection?.legacyOutput,
         initialProgress: selection?.initialProgress ?? 1,
         isSubmitting: false,
@@ -119,7 +120,7 @@ export default function SharedSubagentActivityDialog({
         className="flex h-[min(90vh,48rem)] w-11/12 max-w-3xl flex-col gap-0 overflow-hidden p-0"
         onCloseAutoFocus={restoreTriggerFocus}
       >
-        <OGDialogHeader className="border-border-light shrink-0 border-b px-5 py-4 pr-14">
+        <OGDialogHeader className="border-border-light shrink-0 border-b px-5 py-4 pe-14">
           <div className="flex min-w-0 items-center gap-2">
             <span
               aria-hidden="true"
@@ -127,7 +128,7 @@ export default function SharedSubagentActivityDialog({
             >
               {childAuthor.icon}
             </span>
-            <OGDialogTitle className="truncate text-left text-base" title={title}>
+            <OGDialogTitle className="truncate text-start text-base" title={title}>
               {title}
             </OGDialogTitle>
           </div>

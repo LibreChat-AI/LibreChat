@@ -155,6 +155,7 @@ export class InMemoryJobStore implements IJobStoreV2 {
   private jobs = new Map<string, SerializableJobData>();
   private contentState = new Map<string, ContentState>();
   private cleanupInterval: NodeJS.Timeout | null = null;
+  private cleanupRunning = false;
   private staleGenerationHandler?: (streamId: string, createdAt: number) => void;
 
   setStaleGenerationHandler(handler?: (streamId: string, createdAt: number) => void): void {
@@ -241,7 +242,17 @@ export class InMemoryJobStore implements IJobStoreV2 {
     }
 
     this.cleanupInterval = setInterval(() => {
-      this.cleanup();
+      if (this.cleanupRunning) {
+        return;
+      }
+      this.cleanupRunning = true;
+      this.cleanup()
+        .catch((err) => {
+          logger.error('[InMemoryJobStore] Cleanup error:', err);
+        })
+        .finally(() => {
+          this.cleanupRunning = false;
+        });
     }, 60000);
 
     if (this.cleanupInterval.unref) {

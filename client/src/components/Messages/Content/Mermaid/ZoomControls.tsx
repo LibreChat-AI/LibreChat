@@ -52,7 +52,7 @@ const ZoomControls: React.FC<ZoomControlsProps> = memo(
     return (
       <div
         className={cn(
-          'flex items-center gap-1 rounded-lg border border-border-light bg-surface-secondary p-1 shadow-md',
+          'border-border-light bg-surface-secondary flex items-center gap-1 rounded-lg border p-1 shadow-md',
           className,
         )}
       >
@@ -65,7 +65,7 @@ const ZoomControls: React.FC<ZoomControlsProps> = memo(
         >
           <ZoomOut className="h-4 w-4" />
         </button>
-        <span className="min-w-[3rem] text-center text-xs text-text-secondary">
+        <span className="text-text-secondary min-w-[3rem] text-center text-xs">
           {Math.round(zoom * 100)}%
         </span>
         <button
@@ -77,7 +77,7 @@ const ZoomControls: React.FC<ZoomControlsProps> = memo(
         >
           <ZoomIn className="h-4 w-4" />
         </button>
-        <div className="mx-1 h-4 w-px bg-border-medium" />
+        <div className="bg-border-medium mx-1 h-4 w-px" />
         <button
           type="button"
           onClick={stop(onReset)}
@@ -87,12 +87,12 @@ const ZoomControls: React.FC<ZoomControlsProps> = memo(
         >
           <RotateCcw className="h-4 w-4" />
         </button>
-        <div className="mx-1 h-4 w-px bg-border-medium" />
+        <div className="bg-border-medium mx-1 h-4 w-px" />
         <button
           ref={copyRef}
           type="button"
           onClick={stop(handleCopy)}
-          className="rounded p-1.5 text-text-secondary hover:bg-surface-hover"
+          className="text-text-secondary hover:bg-surface-hover rounded p-1.5"
           title={localize('com_ui_copy_code')}
         >
           <MorphIcon icon={isCopied ? Check : Copy} className="h-4 w-4" />

@@ -588,7 +588,7 @@ describe('Tool Handlers', () => {
         tools: [normalizedKey],
         options: {
           req: {
-            user: { id: fakeUser._id.toString(), role: 'USER' },
+            user: { id: fakeUser._id.toString(), role: 'USER', idOnTheSource: null },
             body: {},
             config: {
               mcpSettings: { apps: true },
@@ -605,8 +605,10 @@ describe('Tool Handlers', () => {
       expect(result.loadedTools).toEqual([{ name: normalizedKey }]);
       expect(mockGetServerConfig).toHaveBeenCalledWith(
         rawServerName,
+        fakeUser._id.toString(),
         expect.anything(),
-        expect.anything(),
+        'USER',
+        { idOnTheSource: null },
       );
       expect(mockCreateMCPTool).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -845,6 +847,8 @@ describe('Tool Handlers', () => {
         rawServerName,
         expect.anything(),
         expect.anything(),
+        expect.anything(),
+        expect.anything(),
       );
       expect(mockCreateMCPTool).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -888,6 +892,8 @@ describe('Tool Handlers', () => {
       expect(result.loadedTools).toEqual([{ name: 'loaded-mcp-tool' }]);
       expect(mockGetServerConfig).toHaveBeenCalledWith(
         serverName,
+        expect.anything(),
+        expect.anything(),
         expect.anything(),
         expect.anything(),
       );

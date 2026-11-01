@@ -2003,6 +2003,7 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
           // Replay deferred tools discovered before the pause (captured at pause). The rebuilt
           // graph passes `messages: []`, so without these the model would lose their schemas.
           discoveredToolNames: job.metadata?.discoveredTools,
+          authoredSkills: job.metadata?.authoredSkills,
           activityPhaseSnapshot: job.metadata?.activityPhaseSnapshot,
           compactionSemanticIndex: job.metadata?.compactionSemanticIndex,
         });

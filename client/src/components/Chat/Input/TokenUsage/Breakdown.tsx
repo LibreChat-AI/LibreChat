@@ -67,7 +67,7 @@ function Row({
       <span className="text-text-primary shrink-0 font-medium whitespace-nowrap">
         {formatTokens(safeValue)}
         {percent != null && (
-          <span className="text-text-secondary ml-1 text-xs" aria-hidden="true">
+          <span className="text-text-secondary ms-1 text-xs" aria-hidden="true">
             ({Math.round(percent)}%)
           </span>
         )}
@@ -75,7 +75,7 @@ function Row({
     </>
   );
   const className = cn(
-    'flex w-full items-center justify-between gap-4 text-left text-sm',
+    'flex w-full items-center justify-between gap-4 text-start text-sm',
     onClick != null &&
       'rounded-sm focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-text-primary',
   );
@@ -359,7 +359,7 @@ export default function Breakdown({
           className="group focus-visible:ring-text-primary flex w-full flex-wrap items-center justify-between gap-2 rounded-sm focus-visible:ring-2"
           data-testid="context-breakdown-toggle"
         >
-          <span className="text-text-primary min-w-0 text-left text-sm font-medium">
+          <span className="text-text-primary min-w-0 text-start text-sm font-medium">
             {localize('com_ui_context_window')}
           </span>
           <span className="text-text-secondary flex min-w-0 items-center gap-1 text-xs font-medium">
@@ -490,7 +490,7 @@ export default function Breakdown({
                             />
                           )}
                           {id === 'tool-calls' && toolsExpanded && hasToolCounts && (
-                            <div id={toolBreakdownId} className="space-y-1 pl-6">
+                            <div id={toolBreakdownId} className="space-y-1 ps-6">
                               <p className="text-text-tertiary text-xs font-medium">
                                 {localize('com_ui_context_tool_breakdown')}
                               </p>
@@ -500,7 +500,7 @@ export default function Breakdown({
                             </div>
                           )}
                           {id === 'system' && dynamicInstructionTokens > 0 && (
-                            <div className="pl-6">
+                            <div className="ps-6">
                               <Row
                                 label={localize('com_ui_context_dynamic_instructions')}
                                 value={dynamicInstructionTokens}
@@ -517,7 +517,7 @@ export default function Breakdown({
                      *  tokens twice and the visible rows would sum past the meter. */}
                     {(normalizeTokenCount(view.cacheRead) > 0 ||
                       normalizeTokenCount(view.cacheWrite) > 0) && (
-                      <div className="space-y-1.5 pl-6">
+                      <div className="space-y-1.5 ps-6">
                         <p className="text-text-tertiary text-xs font-medium">
                           {localize('com_ui_context_cache_last_call')}
                         </p>
@@ -588,7 +588,7 @@ export default function Breakdown({
                      *  rows are provider counts and this share is a char estimate, so
                      *  subtracting it would corrupt them. */}
                     {normalizeTokenCount(view.toolCallTokens) > 0 && (
-                      <div className="pl-6">
+                      <div className="ps-6">
                         <Row
                           label={localize('com_ui_context_tool_calls')}
                           value={normalizeTokenCount(view.toolCallTokens)}

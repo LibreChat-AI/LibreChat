@@ -6,8 +6,6 @@ import { useIsSubmitting } from '@librechat/chat/react';
 import { useMatch, useNavigate } from 'react-router-dom';
 import { useRecoilState, useRecoilValue, useSetRecoilState } from 'recoil';
 import { PermissionTypes, Permissions, isForcedTemporaryRetention } from 'librechat-data-provider';
-import type { ShortcutBinding } from '~/utils/shortcuts';
-import type { ShortcutOverride } from '~/store/misc';
 import {
   bindingDisplayString,
   bindingFromEvent,
@@ -15,14 +13,16 @@ import {
   bindingToString,
   isMacPlatform,
   parseBinding,
-} from '~/utils/shortcuts';
+  getFocusedChatPane,
+} from '@librechat/chat';
+import type { ShortcutBinding } from '@librechat/chat';
+import type { ShortcutOverride } from '~/store/misc';
 import { useArchiveConvoMutation, useGetStartupConfig } from '~/data-provider';
 import { mainTextareaId, NotificationSeverity } from '~/common';
 import useSidebarToggle from '~/hooks/Nav/useSidebarToggle';
 import { showFilesDialogAtom } from '~/store/filesDialog';
 import useNewChat from '~/hooks/Conversations/useNewChat';
 import { useHasAccess, useLocalize } from '~/hooks';
-import { getFocusedChatPane } from '~/utils/pane';
 import store from '~/store';
 
 const isMac = isMacPlatform;

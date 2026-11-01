@@ -71,6 +71,11 @@ export function isCodeSessionToolName(
   );
 }
 
+/** Host-only tool batches do not need live workspace capability discovery. */
+export function requiresCodeWorkspaceCapabilities(toolNames: readonly string[]): boolean {
+  return toolNames.some((name) => isCodeFileToolName(name) || isCodeSessionToolName(name));
+}
+
 /** Tools that consume shared code, search, or image resources need current file records. */
 export function isFileResourceToolName(name: string): boolean {
   return (

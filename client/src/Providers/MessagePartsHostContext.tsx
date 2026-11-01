@@ -24,6 +24,7 @@ import type {
 import type { MessagesEditing } from './MessagesViewContext';
 import type { Artifact } from '~/common';
 import {
+  useShareContext,
   useMessageContext,
   useFileMapContext,
   useAgentsMapContext,
@@ -31,11 +32,18 @@ import {
   useMessagesConversation,
   useOptionalMessagesOperations,
 } from '~/Providers';
-import store, { ptcTraceByToolCallId, ptcTraceKey, sandboxStartingByToolCallId } from '~/store';
-import { getAppPartRenderers } from '~/components/Chat/Messages/Content/Parts/slots';
+import {
+  getAppContentParts,
+  getAppPartRenderers,
+} from '~/components/Chat/Messages/Content/Parts/slots';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
+import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
+import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
+import { chatDirectionAtom } from '~/store/chatDirection';
 import { showThinkingAtom } from '~/store/showThinking';
 import { fontSizeAtom } from '~/store/fontSize';
+import { renderAgentAvatar } from '~/utils';
+import store from '~/store';
 
 function useAppMessage(): MessagePartMessage {
   const { messageId, isSubmitting, isLatestMessage, nextType, conversationId, partIndex } =
@@ -123,15 +131,18 @@ function useAppLiveAppliedSteer(steerId: string): [boolean, (steerId: string) =>
 export const appMessagePartsHost: MessagePartsHost = {
   useMessage: useAppMessage,
   renderMarkdown: (props) => getAppPartRenderers().renderMarkdown(props),
+  renderImage: (props) => getAppPartRenderers().renderImage(props),
+  renderFilePreview: (props) => getAppPartRenderers().renderFilePreview(props),
   useSmoothStreaming,
   useAgent: useAppAgent,
   renderAgentIcon: (agent) => getAppPartRenderers().renderAgentIcon(agent),
+  renderContentParts: (props) => getAppContentParts()(props),
+  renderAgentAvatar: (agent) => renderAgentAvatar(agent, { size: 'icon', showBorder: false }),
   useFontSize: () => useAtomValue(fontSizeAtom),
   useShowThinking: () => useAtomValue(showThinkingAtom),
   useAutoExpandTools: () => useRecoilValue<boolean>(store.autoExpandTools),
   useLaTeXParsing: () => useRecoilValue<boolean>(store.LaTeXParsing),
-  useChatDirection: () =>
-    useRecoilValue<string>(store.chatDirection).toLowerCase() === 'rtl' ? 'rtl' : 'ltr',
+  useChatDirection: () => useAtomValue(chatDirectionAtom),
   useUserTextPreferences: useAppUserTextPreferences,
   /* The atom rather than the auth context: AuthContextProvider mirrors the user into it, and the
    * public share route mounts outside that provider. */
@@ -140,7 +151,7 @@ export const appMessagePartsHost: MessagePartsHost = {
   useToast: () => useToastContext().showToast,
   useSandboxStarting: (toolCallId) => useAtomValue(sandboxStartingByToolCallId(toolCallId)),
   usePtcTrace: (messageId, toolCallId) =>
-    useRecoilValue(
+    useAtomValue(
       ptcTraceByToolCallId(toolCallId && messageId ? ptcTraceKey(messageId, toolCallId) : ''),
     ),
   useToolArtifactClaim: (artifactId) => useRecoilState(store.toolArtifactClaim(artifactId)),
@@ -151,6 +162,10 @@ export const appMessagePartsHost: MessagePartsHost = {
   useLiveAppliedSteer: useAppLiveAppliedSteer,
   useMessagesEditing: useAppMessagesEditing,
   useMessagesAsk: () => useOptionalMessagesOperations().ask,
+  useShare: () => {
+    const { isSharedConvo, shareId } = useShareContext();
+    return useMemo(() => ({ isSharedConvo, shareId }), [isSharedConvo, shareId]);
+  },
 };
 
 setDefaultMessagePartsHost(appMessagePartsHost);

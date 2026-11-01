@@ -178,7 +178,7 @@ export function CatalogContent({
             controls ride inside it as a sticky header, so they share the cards'
             exact width whether the scrollbar takes space or overlays; the small
             left inset keeps the search field's focus ring from being clipped. */}
-        <div className="-mr-5 -ml-1 min-h-0 flex-1 overflow-y-auto pr-5 pl-1">
+        <div className="-ms-1 -me-5 min-h-0 flex-1 overflow-y-auto ps-1 pe-5">
           <div className="bg-surface-dialog sticky top-0 z-10 flex flex-wrap items-center gap-2 pt-1 pb-3">
             <div className="min-w-0 flex-1">
               <Input

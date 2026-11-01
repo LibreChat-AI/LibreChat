@@ -267,4 +267,251 @@ test.describe('the built @librechat/chat package', () => {
       expect(Object.values(exports)).toEqual(Array(7).fill('function'));
     }
   });
+
+  test('a host runs a turn through the built chat core @scenario:a-host-runs-a-turn-through-the-built-chat-core', () => {
+    test.setTimeout(120_000);
+    const dist = resolve(repoRoot, 'packages/chat/dist');
+    expect(existsSync(dist), 'packages/chat/dist is missing: run npm run build').toBe(true);
+
+    /** The core `Chat` drives a turn over a substitute transport with every UI module blocked;
+     *  the `/react` entry then backs a second chat with the React Query message cache. */
+    const probe = `
+      const Module = require('node:module');
+      const blocked = new Set(${JSON.stringify(UI_MODULES)});
+      const resolveFilename = Module._resolveFilename;
+      Module._resolveFilename = function (request, ...rest) {
+        if (blocked.has(request)) throw new Error('the core reached ' + request);
+        return resolveFilename.call(this, request, ...rest);
+      };
+      const { Chat } = require('@librechat/chat');
+      const events = [
+        { type: 'created', data: { created: true } },
+        { type: 'final', data: { final: true, responseMessage: { messageId: 'r1', text: 'Hello' } } },
+      ];
+      const stream = {
+        close() {},
+        async *[Symbol.asyncIterator]() { yield* events; },
+      };
+      let messages = [];
+      const statuses = [];
+      const state = {
+        error: undefined,
+        connection: 'idle',
+        get status() { return statuses[statuses.length - 1] || 'ready'; },
+        set status(value) { statuses.push(value); },
+        get messages() { return messages; },
+        replaceMessages(next) { messages = next; },
+      };
+      const chat = new Chat({
+        id: 'convo-1',
+        state,
+        transport: {
+          sendMessages: async () => ({ status: 'stream', stream }),
+          reconnectToStream: async () => null,
+          abort: async () => ({ success: true }),
+        },
+        prepareRequest: () => ({
+          payload: { endpoint: 'agents' },
+          messages: [{ messageId: 'r1', text: '' }],
+        }),
+      });
+      chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] }).then(() => {
+        Module._resolveFilename = resolveFilename;
+        const { QueryClient } = require('@tanstack/react-query');
+        const { ReactQueryChatState } = require('@librechat/chat/react');
+        const queryClient = new QueryClient();
+        const cached = new ReactQueryChatState({ queryClient, key: 'convo-1' });
+        cached.replaceMessages(messages);
+        process.stdout.write(JSON.stringify({
+          statuses,
+          text: messages[0].text,
+          cached: queryClient.getQueryData(['messages', 'convo-1']).length,
+        }));
+      });
+    `;
+    const loaded = run(process.execPath, ['-e', probe], { cwd: resolve(repoRoot, 'client') });
+    expect(loaded.status, loaded.output).toBe(0);
+    expect(JSON.parse(loaded.stdout)).toEqual({
+      statuses: ['submitted', 'streaming', 'ready'],
+      text: 'Hello',
+      cached: 1,
+    });
+  });
+
+  test('a host sees a start it stopped before the answer as possibly still running @scenario:a-host-sees-a-stopped-start-as-possibly-still-running', () => {
+    test.setTimeout(120_000);
+    const dist = resolve(repoRoot, 'packages/chat/dist');
+    expect(existsSync(dist), 'packages/chat/dist is missing: run npm run build').toBe(true);
+
+    /** The start reaches the transport and never answers; the stop cannot name the generation,
+     *  so the turn finishes as a disconnect and every later stop stays the host's to make. */
+    const probe = `
+      const { Chat } = require('@librechat/chat');
+      let messages = [];
+      const statuses = [];
+      const finishes = [];
+      const chat = new Chat({
+        id: 'convo-1',
+        state: {
+          error: undefined,
+          connection: 'idle',
+          get status() { return statuses[statuses.length - 1] || 'ready'; },
+          set status(value) { statuses.push(value); },
+          get messages() { return messages; },
+          replaceMessages(next) { messages = next; },
+        },
+        transport: {
+          sendMessages: () => new Promise(() => {}),
+          reconnectToStream: async () => null,
+          abort: async () => { throw new Error('no stop should be sent'); },
+        },
+        prepareRequest: () => ({
+          payload: { endpoint: 'agents' },
+          messages: [{ messageId: 'r1', text: '' }],
+        }),
+        onFinish: ({ isAbort, isDisconnect }) => finishes.push({ isAbort, isDisconnect }),
+      });
+      const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+      setTimeout(async () => {
+        const first = await chat.stop();
+        await sent;
+        const second = await chat.stop();
+        process.stdout.write(JSON.stringify({ first, second, finishes, status: chat.status }));
+      }, 0);
+    `;
+    const loaded = run(process.execPath, ['-e', probe], { cwd: resolve(repoRoot, 'client') });
+    expect(loaded.status, loaded.output).toBe(0);
+    expect(JSON.parse(loaded.stdout)).toEqual({
+      first: { status: 'unaddressable' },
+      second: { status: 'unaddressable' },
+      finishes: [{ isAbort: false, isDisconnect: true }],
+      status: 'error',
+    });
+  });
+
+  test('a host sees a pause retired when its expiry passes with no later frame @scenario:a-host-sees-an-expired-pause-retired-without-a-frame', () => {
+    test.setTimeout(120_000);
+    const dist = resolve(repoRoot, 'packages/chat/dist');
+    expect(existsSync(dist), 'packages/chat/dist is missing: run npm run build').toBe(true);
+
+    /** A reload restores a pause that expires shortly; nothing else arrives before it does. */
+    const probe = `
+      const { Chat } = require('@librechat/chat');
+      let messages = [];
+      const sends = [];
+      const chat = new Chat({
+        id: 'convo-1',
+        state: { error: undefined, connection: 'idle', status: 'ready',
+          get messages() { return messages; },
+          replaceMessages(next) { messages = next; } },
+        transport: {
+          sendMessages: (request) => { sends.push(request.trigger); return new Promise(() => {}); },
+          reconnectToStream: async () => null,
+          abort: async () => ({ success: true }),
+        },
+        prepareRequest: () => ({ payload: { endpoint: 'agents' } }),
+      });
+      let notified = 0;
+      chat.subscribe(() => { notified += 1; });
+      chat.restorePendingAction({
+        actionId: 'action-1', streamId: 'convo-1', conversationId: 'convo-1', createdAt: 1,
+        expiresAt: Date.now() + 50,
+        payload: { type: 'ask_user_question', question: { question: 'Which?' }, tool_call_id: 'ask-1' },
+      }, 500);
+      const held = chat.pendingAction != null;
+      const before = notified;
+      setTimeout(async () => {
+        const retired = chat.pendingAction === undefined && notified > before;
+        chat.sendMessage({ parts: [{ type: 'text', text: 'Next' }] });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        process.stdout.write(JSON.stringify({ held, retired, sends }));
+        chat.dispose();
+        process.exit(0);
+      }, 150);
+    `;
+    const loaded = run(process.execPath, ['-e', probe], { cwd: resolve(repoRoot, 'client') });
+    expect(loaded.status, loaded.output).toBe(0);
+    expect(JSON.parse(loaded.stdout)).toEqual({
+      held: true,
+      retired: true,
+      sends: ['submit-message'],
+    });
+  });
+
+  test('a host answers a pause on a stream that names no generation @scenario:a-host-answers-a-pause-on-a-stream-without-a-generation', () => {
+    test.setTimeout(120_000);
+    const dist = resolve(repoRoot, 'packages/chat/dist');
+    expect(existsSync(dist), 'packages/chat/dist is missing: run npm run build').toBe(true);
+
+    /** An older server streams the pause without dating its generation; the action id fences the answer. */
+    const probe = `
+      const { Chat } = require('@librechat/chat');
+      let messages = [];
+      const events = [];
+      let push;
+      const stream = {
+        streamId: 'convo-1',
+        close() {},
+        async *[Symbol.asyncIterator]() {
+          while (true) {
+            const event = events.shift() ?? (await new Promise((resolve) => { push = resolve; }));
+            yield event;
+            if (event.type === 'final') return;
+          }
+        },
+      };
+      const emit = (event) => { if (push) { const p = push; push = undefined; p(event); } else events.push(event); };
+      const answers = [];
+      const chat = new Chat({
+        id: 'convo-1',
+        state: { error: undefined, connection: 'idle', status: 'ready',
+          get messages() { return messages; },
+          replaceMessages(next) { messages = next; } },
+        transport: {
+          sendMessages: async () => ({ status: 'stream', stream }),
+          reconnectToStream: async () => null,
+          abort: async () => ({ success: true }),
+          resume: async (request) => {
+            answers.push(request);
+            return { status: 'resuming', streamId: 'convo-1', conversationId: 'convo-1' };
+          },
+        },
+        prepareRequest: () => ({ payload: { endpoint: 'agents' } }),
+        resumeSelection: () => ({ endpoint: 'agents' }),
+      });
+      const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+      (async () => {
+        const sent = chat.sendMessage({ parts: [{ type: 'text', text: 'Hi' }] });
+        await tick();
+        emit({ type: 'pending_action', data: {
+          actionId: 'action-1', streamId: 'convo-1', conversationId: 'convo-1', createdAt: 1,
+          payload: { type: 'ask_user_question', question: { question: 'Which?' }, tool_call_id: 'ask-1' },
+        } });
+        await tick();
+        await chat.addToolOutput({ toolCallId: 'ask-1', output: 'yes' });
+        const cleared = chat.pendingAction === undefined;
+        emit({ type: 'final', data: { final: true, responseMessage: { messageId: 'r1', text: 'Done' } } });
+        await sent;
+        const [answer] = answers;
+        process.stdout.write(JSON.stringify({
+          answered: answers.length,
+          actionId: answer.actionId,
+          answer: answer.answer,
+          dated: 'generationCreatedAt' in answer,
+          cleared,
+          status: chat.status,
+        }));
+      })();
+    `;
+    const loaded = run(process.execPath, ['-e', probe], { cwd: resolve(repoRoot, 'client') });
+    expect(loaded.status, loaded.output).toBe(0);
+    expect(JSON.parse(loaded.stdout)).toEqual({
+      answered: 1,
+      actionId: 'action-1',
+      answer: 'yes',
+      dated: false,
+      cleared: true,
+      status: 'ready',
+    });
+  });
 });

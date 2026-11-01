@@ -151,6 +151,7 @@ const FILTERS = {
     'packages/**',
     'package.json',
     'package-lock.json',
+    '.bun-version',
     'config/circular-deps.mjs',
     '.github/workflows/backend-review.yml',
     '!**.md',
@@ -161,6 +162,7 @@ const FILTERS = {
     'client/**',
     'packages/**',
     'scripts/typecheck.mts',
+    '.bun-version',
     'package.json',
     'package-lock.json',
     '.github/workflows/backend-review.yml',
@@ -1856,6 +1858,7 @@ const ROOT_MANIFESTS = ['package.json', 'package-lock.json'];
 
 /** The checker every project runs through, so a change to it rechecks them all. */
 const TYPECHECK_SCRIPT = 'scripts/typecheck.mts';
+const BUN_VERSION_FILE = '.bun-version';
 
 /** Each imported gate reruns in CI when its owning workflow changes. */
 const BACKEND_REVIEW = '.github/workflows/backend-review.yml';
@@ -1868,6 +1871,7 @@ const TYPECHECK_PROJECTS = [
       'packages/data-provider/**',
       ...ROOT_MANIFESTS,
       TYPECHECK_SCRIPT,
+      BUN_VERSION_FILE,
       BACKEND_REVIEW,
       '!**.md',
     ],
@@ -1880,6 +1884,7 @@ const TYPECHECK_PROJECTS = [
       'packages/data-schemas/**',
       ...ROOT_MANIFESTS,
       TYPECHECK_SCRIPT,
+      BUN_VERSION_FILE,
       BACKEND_REVIEW,
       '!**.md',
     ],
@@ -1893,6 +1898,7 @@ const TYPECHECK_PROJECTS = [
       'packages/api/**',
       ...ROOT_MANIFESTS,
       TYPECHECK_SCRIPT,
+      BUN_VERSION_FILE,
       BACKEND_REVIEW,
       '!**.md',
     ],
@@ -1905,6 +1911,7 @@ const TYPECHECK_PROJECTS = [
       'packages/client/**',
       ...ROOT_MANIFESTS,
       TYPECHECK_SCRIPT,
+      BUN_VERSION_FILE,
       BACKEND_REVIEW,
       '!**.md',
     ],
@@ -1918,6 +1925,7 @@ const TYPECHECK_PROJECTS = [
       'packages/chat/**',
       ...ROOT_MANIFESTS,
       TYPECHECK_SCRIPT,
+      BUN_VERSION_FILE,
       FRONTEND_REVIEW,
       '!**.md',
     ],
@@ -1932,6 +1940,7 @@ const TYPECHECK_PROJECTS = [
       'packages/chat/**',
       ...ROOT_MANIFESTS,
       TYPECHECK_SCRIPT,
+      BUN_VERSION_FILE,
       FRONTEND_REVIEW,
       '!**.md',
     ],

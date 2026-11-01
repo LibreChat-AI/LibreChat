@@ -6,6 +6,7 @@ import type {
   AgentToolOptions,
   ToolApprovalGrantBinding,
 } from './tools';
+import type { TPromptGroupSource, NativePromptSelection, LangfusePromptSelection } from '../types';
 import type { TAttachment, TPlugin, AgentProvider, MemoryScope, SkillsScope } from 'src/schemas';
 import type { TTokenUsageEvent, TContextUsageEvent, TPendingSteer } from './runs';
 import type { StatefulCodeEnvironment } from '../stateful-code';
@@ -1038,7 +1039,7 @@ export type AgentGitIdentity = {
 
 // GitHub App bot noreply addresses contain `[bot]`, which Zod's email validator rejects.
 const githubAppBotEmail =
-  /^\d+\+[a-z0-9]+(?:[a-z0-9-]*[a-z0-9])?\[bot\]@users\.noreply\.github\.com$/i;
+  /^\d+\+[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\[bot\]@users\.noreply\.github\.com$/i;
 const standardGitEmail = z.string().email();
 
 export const agentGitIdentitySchema: z.ZodType<AgentGitIdentity | undefined> = z
@@ -1055,30 +1056,38 @@ export const agentGitIdentitySchema: z.ZodType<AgentGitIdentity | undefined> = z
       .max(254)
       .refine(
         (value) =>
+          // Zod still runs refinements after .max() fails.
+          value.length <= 254 &&
           !/[\0\r\n]/.test(value) &&
           (standardGitEmail.safeParse(value).success || githubAppBotEmail.test(value)),
       ),
   })
   .optional();
 
-/** Selects which revision of a linked prompt group an agent's instructions follow. */
-export type AgentInstructionsPromptSelection =
-  | { type: 'production' }
-  | { type: 'exact'; promptId: string };
+export type AgentInstructionsPromptSelection = NativePromptSelection;
 
 /** A link from an agent to a native LibreChat prompt group used as its instructions. */
-export type AgentInstructionsPrompt = {
+export type NativeAgentInstructionsPrompt = {
   source: 'native';
   groupId: string;
   selection: AgentInstructionsPromptSelection;
 };
 
-/** Returned to an editor who lacks VIEW on the linked group. Hides the group identity.
- *  `matchesCurrent` is set only on a version snapshot's stub (never on the current
- *  agent's own stub): whether that version's raw link equals the agent's current raw
- *  link (same `groupId` and selection), without revealing which group either is. */
+export type LangfuseAgentInstructionsPromptSelection = LangfusePromptSelection;
+
+export type LangfuseAgentInstructionsPrompt = {
+  source: 'langfuse';
+  groupId: string;
+  selection: LangfuseAgentInstructionsPromptSelection;
+};
+
+export type AgentInstructionsPrompt =
+  | NativeAgentInstructionsPrompt
+  | LangfuseAgentInstructionsPrompt;
+
+/** Returned to an editor who lacks VIEW on the linked group; hides its identity. */
 export type RestrictedAgentInstructionsPrompt = {
-  source: 'native';
+  source: TPromptGroupSource;
   restricted: true;
   matchesCurrent?: boolean;
 };

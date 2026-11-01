@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useStore } from 'jotai';
-import type { TFile, TMessage } from 'librechat-data-provider';
-import type { ThreadIndex, ThreadRow } from '~/utils/thread';
 import {
   ROOT_KEY,
   buildThreadIndex,
   changedParentKeys,
   reconcileSiblingIdx,
   resolveThreadRows,
-} from '~/utils/thread';
+} from '@librechat/chat';
+import type { TFile, TMessage } from 'librechat-data-provider';
+import type { ThreadIndex, ThreadRow } from '@librechat/chat';
 import {
   siblingIdxFamily,
   siblingKey,
@@ -47,18 +47,20 @@ export default function useThreadRows(
   );
   const siblingIndexes = useSiblingIndexes(branchKeys);
 
-  const previousRowsRef = useRef<ThreadRow[] | null>(null);
+  const previousRowsRef = useRef<{ rootKey: string; rows: ThreadRow[] } | null>(null);
   const rows = useMemo(() => {
     if (!index) {
+      previousRowsRef.current = null;
       return null;
     }
+    const previous = previousRowsRef.current;
     const next = resolveThreadRows(
       index,
       rootSiblingKey,
       (key) => siblingIndexes[key] ?? 0,
-      previousRowsRef.current,
+      previous?.rootKey === rootSiblingKey ? previous.rows : null,
     );
-    previousRowsRef.current = next;
+    previousRowsRef.current = { rootKey: rootSiblingKey, rows: next };
     return next;
   }, [index, rootSiblingKey, siblingIndexes]);
 

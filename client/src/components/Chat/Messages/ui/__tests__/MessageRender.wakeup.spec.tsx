@@ -7,6 +7,8 @@ import type { TMessageChatContext } from '~/common';
 import { ShareMessagesProvider } from '~/components/Share/ShareMessagesProvider';
 import { ShareContext } from '~/Providers/ShareContext';
 import MessageRender from '../MessageRender';
+import '~/Providers/MessagePartsHostContext';
+import '~/Providers/MessagesHostContext';
 
 const mockAgentsMap = {
   agent_reviewer: { id: 'agent_reviewer', name: 'Code Reviewer' },
@@ -14,7 +16,8 @@ const mockAgentsMap = {
 };
 
 let mockChildren = new Map<string, ParentSubagentSummary>();
-jest.mock('~/components/Chat/Subagents/ParentSubagentsProvider', () => ({
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useParentSubagents: () => ({ byThreadId: mockChildren }),
 }));
 
@@ -63,15 +66,11 @@ jest.mock('~/components/Chat/Messages/HoverButtons', () => ({
   __esModule: true,
   default: () => null,
 }));
-jest.mock('~/components/Chat/Messages/SiblingSwitch', () => ({
-  __esModule: true,
-  default: ({ className }: { className?: string }) => (
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  SiblingSwitch: ({ className }: { className?: string }) => (
     <span data-testid="sibling-footer" className={className} />
   ),
-}));
-jest.mock('~/components/Chat/Messages/ui/MessageTimestamp', () => ({
-  __esModule: true,
-  default: () => null,
 }));
 
 const chatContext = { latestMessageId: 'wake' } as unknown as TMessageChatContext;

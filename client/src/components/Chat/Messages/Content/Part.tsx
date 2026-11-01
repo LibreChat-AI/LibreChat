@@ -1,4 +1,5 @@
 import { memo } from 'react';
+import { isBashProgrammaticToolCall } from '@librechat/chat';
 import { Part as ChatPart } from '@librechat/chat/components';
 import {
   Tools,
@@ -45,7 +46,6 @@ import {
 import BackgroundTaskCall from './Parts/BackgroundTaskCall';
 import { getAskUserQuestionPart } from '~/utils/approval';
 import AskUserQuestionCall from './AskUserQuestionCall';
-import { isBashProgrammaticToolCall } from './routing';
 import { isError } from './ToolOutput/OutputRenderer';
 import { ToolPreparation } from './preparation';
 import { ErrorMessage } from './MessageContent';
@@ -681,7 +681,7 @@ const renderers: PartRenderers = {
       const failed = part.status === 'failed' || part.status === 'partial';
       return (
         <div
-          className={`my-1 pl-1 text-sm break-words italic ${failed ? 'text-text-warning' : 'text-text-secondary'}`}
+          className={`my-1 ps-1 text-sm break-words italic ${failed ? 'text-text-warning' : 'text-text-secondary'}`}
         >
           {display}
         </div>

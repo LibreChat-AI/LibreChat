@@ -1,7 +1,12 @@
 import { Providers } from '@librechat/agents';
 import { EModelEndpoint } from 'librechat-data-provider';
 import type { AppConfig } from '@librechat/data-schemas';
-import { getProviderConfig, providerConfigMap, resolveTitleTiming } from './providers';
+import {
+  getProviderConfig,
+  providerConfigMap,
+  resolveTitleConfig,
+  resolveTitleTiming,
+} from './providers';
 
 const buildAppConfig = (
   customEndpoints: Array<{ name: string; baseURL?: string; apiKey?: string; provider?: string }>,
@@ -231,5 +236,138 @@ describe('resolveTitleTiming', () => {
       ],
     });
     expect(resolveTitleTiming({ appConfig, endpoint: 'openrouter' })).toBe('final');
+  });
+});
+
+describe('resolveTitleConfig', () => {
+  const withEndpoints = (endpoints: Record<string, unknown>): AppConfig =>
+    ({ endpoints }) as unknown as AppConfig;
+
+  const openAITitles = {
+    titleConvo: true,
+    titleModel: 'gpt-4o-mini',
+    titleMethod: 'structured',
+    titlePrompt: 'OpenAI prompt',
+    titlePromptTemplate: 'OpenAI template: {convo}',
+  } as const;
+
+  it('returns no settings when nothing is configured', () => {
+    expect(resolveTitleConfig({ endpoint: EModelEndpoint.openAI })).toEqual({});
+    expect(
+      resolveTitleConfig({ appConfig: {} as AppConfig, endpoint: EModelEndpoint.openAI }),
+    ).toEqual({});
+  });
+
+  it('keeps the endpoint title settings when `all` sets only other keys', () => {
+    const appConfig = withEndpoints({
+      all: { streamRate: 1, headers: { 'x-gateway': 'a' }, activityLabel: true },
+      [EModelEndpoint.openAI]: openAITitles,
+    });
+
+    expect(resolveTitleConfig({ appConfig, endpoint: EModelEndpoint.openAI })).toEqual(
+      openAITitles,
+    );
+  });
+
+  it('lets each `all` field win on its own, keeping the endpoint value for the rest', () => {
+    const appConfig = withEndpoints({
+      all: { titlePrompt: 'Global prompt', titleMethod: 'completion' },
+      [EModelEndpoint.openAI]: openAITitles,
+    });
+
+    expect(resolveTitleConfig({ appConfig, endpoint: EModelEndpoint.openAI })).toEqual({
+      ...openAITitles,
+      titlePrompt: 'Global prompt',
+      titleMethod: 'completion',
+    });
+  });
+
+  it('takes titleEndpoint and titleModel together from the first layer that sets either', () => {
+    const allSetsEndpoint = withEndpoints({
+      all: { titleEndpoint: EModelEndpoint.anthropic },
+      [EModelEndpoint.openAI]: openAITitles,
+    });
+    const allSetsModel = withEndpoints({
+      all: { titleModel: 'claude-haiku' },
+      [EModelEndpoint.openAI]: { titleEndpoint: EModelEndpoint.anthropic, titleModel: 'gpt-4o' },
+    });
+
+    expect(
+      resolveTitleConfig({ appConfig: allSetsEndpoint, endpoint: EModelEndpoint.openAI }),
+    ).toMatchObject({ titleEndpoint: EModelEndpoint.anthropic, titleModel: undefined });
+    expect(
+      resolveTitleConfig({ appConfig: allSetsModel, endpoint: EModelEndpoint.openAI }),
+    ).toMatchObject({ titleEndpoint: undefined, titleModel: 'claude-haiku' });
+  });
+
+  it('treats an explicit current_model in `all` as setting the model choice', () => {
+    const appConfig = withEndpoints({
+      all: { titleModel: 'current_model' },
+      [EModelEndpoint.openAI]: { titleEndpoint: EModelEndpoint.anthropic, titleModel: 'x' },
+    });
+
+    expect(resolveTitleConfig({ appConfig, endpoint: EModelEndpoint.openAI })).toMatchObject({
+      titleEndpoint: undefined,
+      titleModel: 'current_model',
+    });
+  });
+
+  it('disables titles everywhere through `all.titleConvo: false`', () => {
+    const appConfig = withEndpoints({
+      all: { titleConvo: false },
+      [EModelEndpoint.openAI]: openAITitles,
+    });
+
+    expect(resolveTitleConfig({ appConfig, endpoint: EModelEndpoint.openAI }).titleConvo).toBe(
+      false,
+    );
+  });
+
+  it('honors an endpoint `titleConvo: false` next to an unrelated `all` block', () => {
+    const appConfig = withEndpoints({
+      all: { streamRate: 1 },
+      [EModelEndpoint.openAI]: { titleConvo: false },
+    });
+
+    expect(resolveTitleConfig({ appConfig, endpoint: EModelEndpoint.openAI }).titleConvo).toBe(
+      false,
+    );
+  });
+
+  it('falls back to the custom endpoint config, still behind `all`', () => {
+    const appConfig = withEndpoints({
+      all: { titlePrompt: 'Global prompt' },
+      [EModelEndpoint.custom]: [
+        {
+          name: 'Gateway',
+          baseURL: 'https://gateway.example/v1',
+          apiKey: 'gateway-key',
+          titleModel: 'gateway-small',
+          titleMethod: 'completion',
+          titlePrompt: 'Gateway prompt',
+        },
+      ],
+    });
+    const { customEndpointConfig } = getProviderConfig({ provider: 'Gateway', appConfig });
+
+    expect(resolveTitleConfig({ appConfig, endpoint: 'Gateway', customEndpointConfig })).toEqual({
+      titleModel: 'gateway-small',
+      titleMethod: 'completion',
+      titlePrompt: 'Global prompt',
+    });
+  });
+
+  it('prefers the named endpoint block over the custom config field by field', () => {
+    const appConfig = withEndpoints({
+      [EModelEndpoint.openAI]: { titlePrompt: 'Named prompt' },
+    });
+
+    expect(
+      resolveTitleConfig({
+        appConfig,
+        endpoint: EModelEndpoint.openAI,
+        customEndpointConfig: { titlePrompt: 'Custom prompt', titleMethod: 'functions' },
+      }),
+    ).toEqual({ titlePrompt: 'Named prompt', titleMethod: 'functions' });
   });
 });

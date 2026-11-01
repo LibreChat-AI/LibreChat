@@ -1,7 +1,7 @@
 import { randomUUID } from 'crypto';
 import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
-import type { IThemeRGB } from '../../../../packages/client/src/theme/types';
+import type { IThemeRGB } from '../../../../packages/data-provider/src/themes/types';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
 import { deleteConversations, seedConversations, seedMessages } from '../db';
 import { probeStyle } from './style.helpers';

@@ -36,7 +36,7 @@ const Switch: React.ForwardRefExoticComponent<
     >
       <SwitchPrimitives.Thumb
         className={cn(
-          'bg-switch-thumb size-theme-switch-thumb data-[state=checked]:translate-x-theme-switch-travel pointer-events-none block rounded-full shadow-lg ring-0 transition-transform data-[state=unchecked]:translate-x-0',
+          'bg-switch-thumb size-theme-switch-thumb data-[state=checked]:translate-x-theme-switch-travel dir-rtl:data-[state=checked]:-translate-x-theme-switch-travel pointer-events-none block rounded-full shadow-lg ring-0 transition-transform data-[state=unchecked]:translate-x-0',
         )}
       />
     </SwitchPrimitives.Root>

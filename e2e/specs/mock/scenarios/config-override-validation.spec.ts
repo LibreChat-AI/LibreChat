@@ -12,7 +12,7 @@ import { withMongo } from '../db';
  */
 
 type Session = { headers: Record<string, string>; userId: string };
-type InterfaceConfig = { contextCost?: unknown; customWelcome?: string };
+type InterfaceConfig = { contextCost?: unknown; currency?: unknown; customWelcome?: string };
 
 async function login(
   request: APIRequestContext,
@@ -122,10 +122,22 @@ test.describe('Principal config override validation', () => {
       expect(res.status()).toBe(400);
       const body = (await res.json()) as {
         code: string;
-        issues: Array<{ path: string; code: string }>;
+        issues: Array<{
+          path: string;
+          segments: string[];
+          code: string;
+          params?: Record<string, unknown>;
+        }>;
       };
       expect(body.code).toBe('CONFIG_OVERRIDE_INVALID');
-      expect(body.issues).toEqual([{ path: 'interface.contextCost', code: 'invalid_type' }]);
+      expect(body.issues).toEqual([
+        {
+          path: 'interface.contextCost',
+          segments: ['interface', 'contextCost'],
+          code: 'invalid_type',
+          params: { expected: 'boolean', received: 'string' },
+        },
+      ]);
 
       expect(await storedOverrides(request, admin, target.userId)).toBeNull();
       const iface = await readInterface(request, target);
@@ -244,28 +256,24 @@ test.describe('Principal config override validation', () => {
     const rolePath = '/api/admin/config/role/USER';
     await clearOverrides(request, admin, target.userId);
     try {
-      /** The role layer leaves out the required `siteKey`, which the user layer supplies. */
+      /** The role layer leaves out the required currency `code`, which the user layer supplies. */
       const role = await request.put(rolePath, {
         headers: admin.headers,
-        data: { priority: 10, overrides: { turnstile: { options: { size: 'compact' } } } },
+        data: { priority: 10, overrides: { interface: { currency: { rate: 0.92 } } } },
       });
       expect(role.ok()).toBeTruthy();
       const user = await request.put(configPath(target.userId), {
         headers: admin.headers,
-        data: { priority: 20, overrides: { turnstile: { siteKey: 'layered-site-key' } } },
+        data: { priority: 20, overrides: { interface: { currency: { code: 'EUR' } } } },
       });
       expect(user.ok()).toBeTruthy();
 
       await expect
-        .poll(
-          async () => {
-            const res = await request.get('/api/config', { headers: target.headers });
-            expect(res.ok()).toBeTruthy();
-            return ((await res.json()) as { turnstile?: unknown }).turnstile;
-          },
-          { timeout: 30000, intervals: [500, 1000, 2000] },
-        )
-        .toEqual({ siteKey: 'layered-site-key', options: { size: 'compact' } });
+        .poll(async () => (await readInterface(request, target)).currency, {
+          timeout: 30000,
+          intervals: [500, 1000, 2000],
+        })
+        .toEqual({ code: 'EUR', rate: 0.92 });
     } finally {
       await request.delete(rolePath, { headers: admin.headers });
       await clearOverrides(request, admin, target.userId);

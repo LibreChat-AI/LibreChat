@@ -1,7 +1,14 @@
 import fs from 'fs';
 import path from 'path';
+import { Keyv } from 'keyv';
 import { ObjectId } from 'mongodb';
+import KeyvRedis from '@keyv/redis';
 import { expect, test } from '@playwright/test';
+import {
+  CacheKeys,
+  AUTH_USER_DOC_BY_ID_PREFIX,
+  AUTH_USER_DOC_EVICTED_PREFIX,
+} from 'librechat-data-provider';
 import { spawn } from 'node:child_process';
 import { randomInt, randomUUID } from 'node:crypto';
 import type { APIRequestContext } from '@playwright/test';
@@ -138,11 +145,13 @@ const KEPT = {
 function runDeleteCli(
   email: string,
   deleteTransactions: boolean,
+  extraEnv: NodeJS.ProcessEnv = {},
 ): Promise<{ code: number | null; stdout: string; stderr: string }> {
   const child = spawn(process.execPath, [path.join(REPO_ROOT, 'config/delete-user.js'), email], {
     cwd: REPO_ROOT,
     env: {
       ...process.env,
+      ...extraEnv,
       MONGO_URI: getMongoUri(),
       /** The harness server already built the indexes; skip the module-scope rebuild. */
       NODE_OPTIONS: process.env.NODE_OPTIONS
@@ -221,6 +230,85 @@ test.describe('account erasure', () => {
       }
     });
   }
+
+  test('deleting a user evicts the cached auth state of everyone who favorited their agents @scenario:cli-delete-user-evicts-favorite-holders', async ({
+    playwright,
+    baseURL,
+  }) => {
+    test.skip(process.env.E2E_STREAM_STORE !== 'redis', 'Runs in the Redis integration lane');
+    test.setTimeout(150_000);
+    const request = await playwright.request.newContext({ baseURL });
+    const redisUri = process.env.REDIS_URI ?? 'redis://127.0.0.1:6379';
+    const prefix = `cli-favorites-${randomUUID()}`;
+    const adapter = new KeyvRedis(redisUri, { throwOnErrors: true, connectionTimeout: 5000 });
+    // Match standardCache's namespace layering without initializing app singletons in this worker.
+    const cache = new Keyv(adapter, { namespace: CacheKeys.AUTH_USER_DOC });
+    adapter.namespace = prefix;
+    adapter.keyPrefixSeparator = '::';
+    const keys: string[] = [];
+    try {
+      const ownerEmail = await register(request, 'cli-agent-owner');
+      const holderEmail = await register(request, 'cli-agent-holder');
+      const bystanderEmail = await register(request, 'cli-agent-bystander');
+      const agentId = `agent_${randomUUID()}`;
+      const [holderId, bystanderId] = await withMongo(async (db) => {
+        const users = db.collection('users');
+        const owner = await users.findOne({ email: ownerEmail });
+        await db.collection('agents').insertOne({
+          id: agentId,
+          name: 'Favorited agent',
+          provider: 'openAI',
+          model: 'gpt-4o-mini',
+          author: owner!._id,
+        });
+        await users.updateOne({ email: holderEmail }, { $set: { favorites: [{ agentId }] } });
+        const holder = await users.findOne({ email: holderEmail });
+        const bystander = await users.findOne({ email: bystanderEmail });
+        return [holder!._id.toString(), bystander!._id.toString()];
+      });
+      /** Each user has a cached auth document named by their reverse index. */
+      for (const userId of [holderId, bystanderId]) {
+        const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
+        const docKey = `auth-user-doc:${userId}`;
+        keys.push(indexKey, docKey, `${AUTH_USER_DOC_EVICTED_PREFIX}:${userId}`);
+        await cache.set(indexKey, [docKey], 120_000);
+        await cache.set(
+          docKey,
+          { version: 2, cachedAt: Date.now(), user: { _id: userId, favorites: [{ agentId }] } },
+          120_000,
+        );
+      }
+
+      const result = await runDeleteCli(ownerEmail, true, {
+        USE_REDIS: 'true',
+        USE_REDIS_CLUSTER: 'false',
+        REDIS_URI: redisUri,
+        REDIS_KEY_PREFIX: prefix,
+        REDIS_KEY_PREFIX_VAR: '',
+        AUTH_USER_CACHE_MODE: 'on',
+        FORCED_IN_MEMORY_CACHE_NAMESPACES: '',
+      });
+      expect(result.code, result.stderr.slice(-800)).toBe(0);
+      expect(result.stdout).toContain('Successfully deleted user');
+
+      await withMongo(async (db) => {
+        expect(await db.collection('agents').countDocuments({ id: agentId })).toBe(0);
+        const holder = await db.collection('users').findOne({ email: holderEmail });
+        expect(holder?.favorites).toEqual([]);
+      });
+      expect(await cache.get(`auth-user-doc:${holderId}`)).toBeUndefined();
+      expect(await cache.get(`${AUTH_USER_DOC_EVICTED_PREFIX}:${holderId}`)).toBeDefined();
+      expect(await cache.get(`auth-user-doc:${bystanderId}`)).toBeDefined();
+      expect(await cache.get(`${AUTH_USER_DOC_EVICTED_PREFIX}:${bystanderId}`)).toBeUndefined();
+    } finally {
+      try {
+        await Promise.all(keys.map((key) => cache.delete(key)));
+      } finally {
+        await cache.disconnect();
+        await request.dispose();
+      }
+    }
+  });
 
   test('self-service deletion erases the same stores as the CLI @scenario:self-delete-erases-owned-data', async ({
     playwright,

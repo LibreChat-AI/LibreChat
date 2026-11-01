@@ -1,8 +1,8 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { render, screen } from '@testing-library/react';
+import { SoleToolContext } from '@librechat/chat/react';
 import FileAuthoringCall from '../FileAuthoringCall';
-import { SoleToolContext } from '../../disclosure';
 import ReadFileCall from '../ReadFileCall';
 import MemoryCall from '../MemoryCall';
 import SkillCall from '../SkillCall';

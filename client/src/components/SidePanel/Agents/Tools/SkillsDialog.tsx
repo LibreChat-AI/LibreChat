@@ -208,7 +208,7 @@ export default function SkillsDialog({ open, onOpenChange, agentId }: SkillsDial
       size="sm"
       onClick={() => setCreateOpen(true)}
       aria-label={localize('com_ui_create_skill')}
-      className={cn('h-[2.625rem] w-[2.625rem] shrink-0 p-0', !isDesktop && 'ml-auto')}
+      className={cn('h-[2.625rem] w-[2.625rem] shrink-0 p-0', !isDesktop && 'ms-auto')}
     >
       <Plus className="size-4" aria-hidden="true" />
     </Button>
@@ -243,7 +243,7 @@ export default function SkillsDialog({ open, onOpenChange, agentId }: SkillsDial
         </OGDialogDescription>
         <div className="flex h-[80dvh] max-h-[47.5rem] flex-col">
           <div className="border-border-light flex flex-col gap-3 border-b px-4 pt-4 pb-3 md:px-6 md:pt-5 md:pb-4">
-            <div className="flex items-center gap-2 pr-10">
+            <div className="flex items-center gap-2 pe-10">
               <OGDialogTitle className="text-base font-semibold">
                 {localize('com_ui_skills')}
               </OGDialogTitle>

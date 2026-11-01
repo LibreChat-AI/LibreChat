@@ -130,10 +130,10 @@ export function CompositeCitation(props: CompositeCitationProps) {
         {isFileType ? (
           <>
             <div className="flex items-center gap-2">
-              <FileText className="size-4 shrink-0 text-text-secondary" aria-hidden="true" />
+              <FileText className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
               <button
                 onClick={handleFileClick}
-                className="min-w-0 truncate text-sm font-medium text-text-primary hover:underline"
+                className="text-text-primary min-w-0 truncate text-sm font-medium hover:underline"
               >
                 {fileName || currentSource.title || localize('com_file_source')}
               </button>
@@ -141,24 +141,24 @@ export function CompositeCitation(props: CompositeCitationProps) {
             {(fileRelevance != null || (filePages && filePages.length > 0)) && (
               <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1">
                 {fileRelevance != null && fileRelevance > 0 && (
-                  <span className="text-xs text-text-secondary">
+                  <span className="text-text-secondary text-xs">
                     {localize('com_ui_relevance')}: {Math.round(fileRelevance * 100)}%
                   </span>
                 )}
                 {filePages && filePages.length > 0 && (
-                  <span className="text-xs text-text-secondary">
+                  <span className="text-text-secondary text-xs">
                     {localize('com_file_pages', { pages: filePages.join(', ') })}
                   </span>
                 )}
               </div>
             )}
             {currentSource.snippet && (
-              <p className="mt-1.5 line-clamp-3 break-words text-xs leading-relaxed text-text-secondary">
+              <p className="text-text-secondary mt-1.5 line-clamp-3 text-xs leading-relaxed break-words">
                 {currentSource.snippet}
               </p>
             )}
             {totalPages > 1 && (
-              <div className="mt-2 flex items-center gap-1 border-t border-border-light pt-2">
+              <div className="border-border-light mt-2 flex items-center gap-1 border-t pt-2">
                 <Button
                   size="icon"
                   variant="ghost"
@@ -167,7 +167,7 @@ export function CompositeCitation(props: CompositeCitationProps) {
                   className="size-7"
                   aria-label="Previous source"
                 >
-                  <ChevronLeft className="size-3.5" aria-hidden="true" />
+                  <ChevronLeft className="size-3.5 rtl:-scale-x-100" aria-hidden="true" />
                 </Button>
                 {sources.map((source, i) => (
                   <button
@@ -180,7 +180,7 @@ export function CompositeCitation(props: CompositeCitationProps) {
                     }}
                     className={`flex size-6 items-center justify-center rounded text-xs transition-colors ${
                       i === currentPage
-                        ? 'bg-surface-hover font-medium text-text-primary'
+                        ? 'bg-surface-hover text-text-primary font-medium'
                         : 'text-text-secondary hover:bg-surface-hover'
                     }`}
                     aria-label={`Source ${i + 1}`}
@@ -197,7 +197,7 @@ export function CompositeCitation(props: CompositeCitationProps) {
                   className="size-7"
                   aria-label="Next source"
                 >
-                  <ChevronRight className="size-3.5" aria-hidden="true" />
+                  <ChevronRight className="size-3.5 rtl:-scale-x-100" aria-hidden="true" />
                 </Button>
               </div>
             )}
@@ -207,27 +207,27 @@ export function CompositeCitation(props: CompositeCitationProps) {
             <div className="mb-1.5 overflow-hidden text-sm">
               <FaviconImage
                 domain={getCleanDomain(currentSource.link || '')}
-                className="float-left mr-2 mt-0.5"
+                className="float-start me-2 mt-0.5"
               />
-              <span className="float-right ml-2 max-w-[40%] truncate text-xs text-text-secondary">
+              <span className="text-text-secondary float-end ms-2 max-w-[40%] truncate text-xs">
                 {getCleanDomain(currentSource.link || '')}
               </span>
               <a
                 href={currentSource.link}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="font-medium text-text-primary hover:underline"
+                className="text-text-primary font-medium hover:underline"
               >
                 {currentSource.title}
               </a>
             </div>
             {currentSource.snippet && (
-              <p className="line-clamp-4 break-words text-xs text-text-secondary md:text-sm">
+              <p className="text-text-secondary line-clamp-4 text-xs break-words md:text-sm">
                 {currentSource.snippet}
               </p>
             )}
             {totalPages > 1 && (
-              <div className="flex items-center gap-1 border-t border-border-light pt-2">
+              <div className="border-border-light flex items-center gap-1 border-t pt-2">
                 <Button
                   size="icon"
                   variant="ghost"
@@ -236,7 +236,7 @@ export function CompositeCitation(props: CompositeCitationProps) {
                   className="size-7"
                   aria-label="Previous source"
                 >
-                  <ChevronLeft className="size-3.5" aria-hidden="true" />
+                  <ChevronLeft className="size-3.5 rtl:-scale-x-100" aria-hidden="true" />
                 </Button>
                 {sources.map((source, i) => (
                   <button
@@ -249,7 +249,7 @@ export function CompositeCitation(props: CompositeCitationProps) {
                     }}
                     className={`flex size-6 items-center justify-center rounded text-xs transition-colors ${
                       i === currentPage
-                        ? 'bg-surface-hover font-medium text-text-primary'
+                        ? 'bg-surface-hover text-text-primary font-medium'
                         : 'text-text-secondary hover:bg-surface-hover'
                     }`}
                     aria-label={`Source ${i + 1}`}
@@ -266,7 +266,7 @@ export function CompositeCitation(props: CompositeCitationProps) {
                   className="size-7"
                   aria-label="Next source"
                 >
-                  <ChevronRight className="size-3.5" aria-hidden="true" />
+                  <ChevronRight className="size-3.5 rtl:-scale-x-100" aria-hidden="true" />
                 </Button>
               </div>
             )}

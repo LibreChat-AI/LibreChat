@@ -1,7 +1,8 @@
 import React from 'react';
-import { useStore, useAtomValue } from 'jotai';
-import { RecoilRoot, useRecoilCallback } from 'recoil';
+import { RecoilRoot } from 'recoil';
+import { useStepHandler } from '@librechat/chat/react';
 import { renderHook, act } from '@testing-library/react';
+import { useStore, useAtomValue, createStore, Provider as JotaiProvider } from 'jotai';
 import {
   Constants,
   StepTypes,
@@ -9,6 +10,15 @@ import {
   ContentTypes,
   ToolCallTypes,
 } from 'librechat-data-provider';
+import {
+  activeSubagentPanel,
+  listRegisteredSubagentProgressKeys,
+  reduceSubagentProgress,
+  registerSubagentProgressKey,
+  subagentParentStreamOpenByToolCallId,
+  subagentProgressByToolCallId,
+  subagentProgressKey,
+} from '@librechat/chat/react';
 import type {
   TMessageContentParts,
   SummaryContentPart,
@@ -20,21 +30,11 @@ import type {
   PtcToolCallEvent,
   Agents,
 } from 'librechat-data-provider';
-import type { ActiveSubagentPanel } from '~/components/Chat/Subagents/state';
+import type { ActiveSubagentPanel } from '@librechat/chat/react';
 import type { PtcTrace, PtcTraceEntry } from '~/common';
-import {
-  activeSubagentPanel,
-  listRegisteredSubagentProgressKeys,
-  reduceSubagentProgress,
-  registerSubagentProgressKey,
-  subagentParentStreamOpenByToolCallId,
-  subagentProgressByToolCallId,
-  subagentProgressKey,
-} from '~/components/Chat/Subagents/state';
-import { ptcTraceByToolCallId, ptcTraceKey, PTC_TRACE_MAX_ENTRIES } from '~/store/ptc';
+import { ptcTraceByToolCallId, ptcTraceKey, PTC_TRACE_MAX_ENTRIES } from '~/hooks/SSE/ptc';
+import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import { resolveAskUserQuestionPart } from '~/utils/approval';
-import { sandboxStartingByToolCallId } from '~/store/sandbox';
-import useStepHandler from '~/hooks/SSE/useStepHandler';
 import { IsolatedAtomStore } from 'test/harness';
 
 /** `Constants` is a heterogeneous enum (`string | number`); annotate as
@@ -4667,20 +4667,22 @@ describe('useStepHandler', () => {
 
   describe('PTC inner tool-call trace', () => {
     const renderWithTraceReader = () => {
+      const traceStore = createStore();
       const hookResult = renderHook(
         () => {
           const stepHandler = useStepHandler(createHookParams());
-          const read = useRecoilCallback(
-            ({ snapshot }) =>
-              (messageId: string, toolCallId: string): PtcTrace =>
-                snapshot
-                  .getLoadable(ptcTraceByToolCallId(ptcTraceKey(messageId, toolCallId)))
-                  .valueOrThrow(),
-            [],
-          );
+          const read = (messageId: string, toolCallId: string): PtcTrace =>
+            traceStore.get(ptcTraceByToolCallId(ptcTraceKey(messageId, toolCallId)));
           return { ...stepHandler, read };
         },
-        { wrapper: RecoilRoot },
+        {
+          wrapper: ({ children }: { children: React.ReactNode }) =>
+            React.createElement(
+              RecoilRoot,
+              null,
+              React.createElement(JotaiProvider, { store: traceStore }, children),
+            ),
+        },
       );
       return {
         result: hookResult.result,
@@ -4967,12 +4969,15 @@ describe('useStepHandler', () => {
         );
       });
       expect(getEntries('call_ptc')).toHaveLength(1);
+      const removeSpy = jest.spyOn(ptcTraceByToolCallId, 'remove');
 
       act(() => {
         (result.current as unknown as { resetPtcAtoms: () => void }).resetPtcAtoms();
       });
 
       expect(getEntries('call_ptc')).toEqual([]);
+      expect(removeSpy).toHaveBeenCalledWith(ptcTraceKey('response-msg-1', 'call_ptc'));
+      removeSpy.mockRestore();
     });
   });
 });

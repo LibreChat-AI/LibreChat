@@ -9,9 +9,12 @@ import type {
 } from 'librechat-data-provider';
 import type { LCToolRegistry, LCTool, InjectedMessage } from '@librechat/agents';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
+import type { AppConfig } from '@librechat/data-schemas';
 import type { Types } from 'mongoose';
 import { getSkillToolDefinition, isSkillToolAvailable, registerCodeExecutionTools } from './tools';
 import { createSkillContentDigest } from './compatibility';
+import { getLookupConcurrency } from '~/utils/concurrency';
+import { mapWithConcurrency } from '~/utils/promise';
 import { logAxiosError } from '~/utils';
 
 /**
@@ -250,6 +253,8 @@ export interface ResolveModelSpecSkillIdsParams {
   accessibleSkillIds: Types.ObjectId[];
   /** DB lookup: name → skill doc constrained to the user's accessible IDs. */
   getSkillByName?: TGetSkillByName;
+  /** Source of the `concurrency` bounds; defaults apply when absent. */
+  appConfig?: Pick<AppConfig, 'concurrency'>;
 }
 
 /**
@@ -262,6 +267,7 @@ export async function resolveModelSpecSkillIds({
   names,
   accessibleSkillIds,
   getSkillByName,
+  appConfig,
 }: ResolveModelSpecSkillIdsParams): Promise<Types.ObjectId[]> {
   if (!names.length || accessibleSkillIds.length === 0 || !getSkillByName) {
     return [];
@@ -289,23 +295,25 @@ export async function resolveModelSpecSkillIds({
     boundedNames = uniqueNames.slice(0, MAX_MODEL_SPEC_SKILLS);
   }
 
-  const resolved: Array<Types.ObjectId | null> = [];
-  for (const name of boundedNames) {
-    try {
-      const skill = await getSkillByName(name, accessibleSkillIds, {
-        preferModelInvocable: true,
-      });
-      if (!skill) {
-        logger.warn('[resolveModelSpecSkillIds] Requested skill not found or not accessible');
-        resolved.push(null);
-        continue;
+  const resolved = await mapWithConcurrency(
+    boundedNames,
+    getLookupConcurrency(appConfig, 'skillNameLookups'),
+    async (name): Promise<Types.ObjectId | null> => {
+      try {
+        const skill = await getSkillByName(name, accessibleSkillIds, {
+          preferModelInvocable: true,
+        });
+        if (!skill) {
+          logger.warn('[resolveModelSpecSkillIds] Requested skill not found or not accessible');
+          return null;
+        }
+        return skill._id;
+      } catch {
+        logger.warn('[resolveModelSpecSkillIds] Failed to resolve a requested skill');
+        return null;
       }
-      resolved.push(skill._id);
-    } catch {
-      logger.warn('[resolveModelSpecSkillIds] Failed to resolve a requested skill');
-      resolved.push(null);
-    }
-  }
+    },
+  );
 
   const seenIds = new Set<string>();
   return resolved.filter((id): id is Types.ObjectId => {

@@ -2,15 +2,10 @@ import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react'
 import debounce from 'lodash/debounce';
 import { useRecoilValue } from 'recoil';
 import { useParams } from 'react-router-dom';
-import { Menu, Rocket, X } from 'lucide-react';
+import { Menu, Rocket, Info, X } from 'lucide-react';
 import { useForm, FormProvider } from 'react-hook-form';
 import { Button, Skeleton, useToastContext } from '@librechat/client';
-import {
-  Permissions,
-  ResourceType,
-  PermissionBits,
-  PermissionTypes,
-} from 'librechat-data-provider';
+import { Permissions, PermissionTypes, replaceSpecialVars } from 'librechat-data-provider';
 import type { TCreatePrompt, TPrompt, TPromptGroup } from 'librechat-data-provider';
 import {
   useGetPrompts,
@@ -19,7 +14,17 @@ import {
   useUpdatePromptGroup,
   useMakePromptProduction,
 } from '~/data-provider';
-import { useResourcePermissions, useHasAccess, useLocalize, useFocusTrap } from '~/hooks';
+import {
+  useHasAccess,
+  useLocalize,
+  useFocusTrap,
+  useAuthContext,
+  usePromptContent,
+  usePromptGroupPermissions,
+} from '~/hooks';
+import { cn, findPromptGroup, getPromptMutationErrorKey } from '~/utils';
+import LangfusePromptMeta from '../display/LangfusePromptMeta';
+import PromptResolvedBody from '../display/PromptResolvedBody';
 import OpenSidebar from '~/components/Chat/Menus/OpenSidebar';
 import useDrawerViewport from '~/hooks/Nav/useDrawerViewport';
 import CategorySelector from '../fields/CategorySelector';
@@ -34,7 +39,6 @@ import SkeletonForm from '../utils/SkeletonForm';
 import SharePrompt from '../dialogs/SharePrompt';
 import Description from '../fields/Description';
 import PromptName from '../fields/PromptName';
-import { cn, findPromptGroup } from '~/utils';
 import { PromptsEditorMode } from '~/common';
 import Command from '../fields/Command';
 import store from '~/store';
@@ -60,7 +64,15 @@ const VersionsPanel = React.memo(
     setSelectionIndex,
   }: VersionsPanelProps) => {
     const localize = useLocalize();
-    const makeProductionMutation = useMakePromptProduction();
+    const { showToast } = useToastContext();
+    const makeProductionMutation = useMakePromptProduction({
+      onError: (error) => {
+        showToast({
+          status: 'error',
+          message: localize(getPromptMutationErrorKey(error, 'com_ui_prompt_update_error')),
+        });
+      },
+    });
 
     const groupId = group?._id || '';
     const isLoadingGroup = !group;
@@ -180,6 +192,82 @@ const HeaderActions = React.memo(
 
 HeaderActions.displayName = 'HeaderActions';
 
+interface ExternalPromptGroupViewProps {
+  group: TPromptGroup;
+  isSmallScreen: boolean;
+}
+
+/**
+ * Read-only view for an externally managed (e.g. Langfuse) prompt group.
+ * Name, category, description and command are shown but not editable;
+ * sharing stays available, since Langfuse owns the content but not who
+ * inside LibreChat may view or share it. No editor, versions panel, deploy
+ * button or delete action: those stay native-only.
+ */
+const ExternalPromptGroupView = React.memo(
+  ({ group, isSmallScreen }: ExternalPromptGroupViewProps) => {
+    const localize = useLocalize();
+    const { user } = useAuthContext();
+    const { text, resolved, isLoading, error, refetch } = usePromptContent(group);
+    const hasError = Boolean(error);
+
+    const mainText = useMemo(() => replaceSpecialVars({ text, user }), [text, user]);
+
+    return (
+      <div className="flex h-full w-full flex-col">
+        {isSmallScreen && (
+          <div className="flex shrink-0 items-center px-4 pt-3">
+            <OpenSidebar />
+          </div>
+        )}
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4">
+          <h1 className="sr-only">{localize('com_ui_prompt_details', { name: group.name })}</h1>
+          <div className="mt-2 mb-3 flex shrink-0 items-center justify-between gap-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <PromptName name={group.name} disabled onSave={() => {}} />
+            </div>
+            <div className="flex shrink-0 items-center gap-2">
+              <CategorySelector className="h-10" currentCategory={group.category || ''} disabled />
+              <SharePrompt group={group} disabled={false} />
+            </div>
+          </div>
+
+          <div className="mb-2 flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+            <div
+              role="note"
+              className="border-status-warning-border bg-status-warning-subtle text-status-warning flex items-start gap-2 rounded-md border p-3 text-sm"
+            >
+              <Info className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+              <span>
+                {localize('com_ui_prompt_langfuse_read_only', {
+                  0: group.sourcePromptName ?? '',
+                })}
+              </span>
+            </div>
+            <Description initialValue={group.oneliner ?? ''} disabled />
+            <Command initialValue={group.command ?? ''} disabled />
+
+            <div className="min-h-0 flex-1">
+              <PromptResolvedBody
+                mainText={mainText}
+                isLoading={isLoading}
+                error={error}
+                onRetry={refetch}
+              />
+            </div>
+
+            {!isLoading && !hasError && <PromptVariables promptText={mainText} />}
+
+            {resolved?.source === 'langfuse' && <LangfusePromptMeta resolved={resolved} />}
+          </div>
+        </div>
+      </div>
+    );
+  },
+);
+
+ExternalPromptGroupView.displayName = 'ExternalPromptGroupView';
+
 const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
   const params = useParams();
   const localize = useLocalize();
@@ -213,14 +301,13 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
     { enabled: hasAccess && !!promptId },
   );
 
-  const { hasPermission, isLoading: permissionsLoading } = useResourcePermissions(
-    ResourceType.PROMPTGROUP,
-    group?._id || '',
-  );
-
-  const canEdit = hasPermission(PermissionBits.EDIT);
-  const canDelete = hasPermission(PermissionBits.DELETE);
-  const canView = hasPermission(PermissionBits.VIEW);
+  const {
+    isLoading: permissionsLoading,
+    isExternal,
+    canView,
+    canEdit,
+    canDelete,
+  } = usePromptGroupPermissions(group);
 
   const methods = useForm({
     defaultValues: {
@@ -240,15 +327,22 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
   const selectedPromptId = useMemo(() => selectedPrompt?._id, [selectedPrompt?._id]);
 
   const updateGroupMutation = useUpdatePromptGroup({
-    onError: () => {
+    onError: (error) => {
       showToast({
         status: 'error',
-        message: localize('com_ui_prompt_update_error'),
+        message: localize(getPromptMutationErrorKey(error, 'com_ui_prompt_update_error')),
       });
     },
   });
 
-  const makeProductionMutation = useMakePromptProduction();
+  const makeProductionMutation = useMakePromptProduction({
+    onError: (error) => {
+      showToast({
+        status: 'error',
+        message: localize(getPromptMutationErrorKey(error, 'com_ui_prompt_update_error')),
+      });
+    },
+  });
   const addPromptToGroupMutation = useAddPromptToGroup({
     onMutate: (variables) => {
       reset(
@@ -258,6 +352,12 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
         },
         { keepDirtyValues: true },
       );
+    },
+    onError: (error) => {
+      showToast({
+        status: 'error',
+        message: localize(getPromptMutationErrorKey(error, 'com_ui_prompt_update_error')),
+      });
     },
     onSuccess(data) {
       if (alwaysMakeProd && data.prompt._id != null && data.prompt._id && data.prompt.groupId) {
@@ -432,6 +532,13 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
     return <SkeletonForm />;
   }
 
+  // Externally managed groups (e.g. Langfuse) are always read-only locally,
+  // regardless of ACL bits, and need their own notice instead of the
+  // generic read-only view below (which hides Share and strips prompt text).
+  if (isExternal && group) {
+    return <ExternalPromptGroupView group={group} isSmallScreen={isSmallScreen} />;
+  }
+
   // Show read-only view if user doesn't have edit permission
   if (!canEdit && !permissionsLoading && groupsQuery?.data) {
     const fetchedPrompt = findPromptGroup(groupsQuery?.data, (group) => group._id === promptId);
@@ -517,7 +624,7 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
                             onClick={() => setShowSidePanel(true)}
                             aria-label={localize('com_ui_versions')}
                           >
-                            <Menu className="size-4 sm:mr-1.5" aria-hidden="true" />
+                            <Menu className="size-4 sm:me-1.5" aria-hidden="true" />
                             <span className="hidden sm:inline">{localize('com_ui_versions')}</span>
                           </Button>
                         )}
@@ -564,7 +671,7 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
 
               {/* Versions Sidebar - Advanced Mode Only */}
               {editorMode === PromptsEditorMode.ADVANCED && (
-                <div className="border-border-medium hidden w-72 shrink-0 border-l lg:block xl:w-80">
+                <div className="border-border-medium hidden w-72 shrink-0 border-s lg:block xl:w-80">
                   <VersionsPanel
                     group={group}
                     prompts={prompts}
@@ -601,8 +708,8 @@ const PromptForm = ({ promptId: promptIdProp }: { promptId?: string }) => {
           <div
             ref={sidePanelRef}
             className={cn(
-              'border-border-medium bg-surface-primary-alt fixed top-0 right-0 z-[110] flex h-full flex-col border-l shadow-xl lg:hidden',
-              showSidePanel ? 'translate-x-0' : 'translate-x-full',
+              'border-border-medium bg-surface-primary-alt fixed inset-e-0 top-0 z-[110] flex h-full flex-col border-s shadow-xl lg:hidden',
+              showSidePanel ? 'translate-x-0' : 'translate-x-full rtl:-translate-x-full',
             )}
             style={{
               width: 'min(85vw, 380px)',

@@ -1,4 +1,6 @@
 import { useState, useRef, useMemo, useEffect, useContext, useCallback } from 'react';
+import { LoneGroupContext, SoleToolContext } from '@librechat/chat/react';
+import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import { Tools, Constants, ContentTypes, isOpaqueReasoning } from 'librechat-data-provider';
 import { ChevronDown, ListChecks, MessageCircleQuestion, TriangleAlert, Users } from 'lucide-react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
@@ -31,11 +33,9 @@ import { useLocalize, useExpandCollapse, scheduleMessageContentLayoutReconcile }
 import { ASK_USER_QUESTION, getSubmittedAskAnswer } from '~/utils/approval';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { ToolAuthWarning, ToolAuthWarningContext } from './auth';
-import { LoneGroupContext, SoleToolContext } from './disclosure';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { AttachmentGroup, ReasoningCompact } from './Parts';
 import { getOutcomeStatus, summarizeSpan } from './outcome';
-import { FOLD_RAIL_CLASSES, ROW_GLYPH_SLOT } from './rows';
 import { MCPAppViews } from '~/components/MCPUIResource';
 import { parseToolName } from '~/utils/toolLabels';
 import { StackedToolIcons } from './ToolOutput';

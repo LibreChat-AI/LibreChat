@@ -1,8 +1,8 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
 import copy from 'copy-to-clipboard';
+import { useToolContentPending } from '@librechat/chat/react';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import LangIcon from '~/components/Messages/Content/LangIcon';
-import { useToolContentPending } from '../disclosure';
 import { useLocalize } from '~/hooks';
 
 interface CodeWindowHeaderProps {
@@ -31,7 +31,7 @@ export default function CodeWindowHeader({ language, code, diffStats }: CodeWind
 
   return (
     <div className="text-text-secondary flex items-center justify-between px-1.5 py-1.5 font-sans text-xs">
-      <span className="flex items-center gap-1.5 pl-1.5 text-xs font-medium">
+      <span className="flex items-center gap-1.5 ps-1.5 text-xs font-medium">
         <LangIcon lang={language} className="size-3.5 shrink-0" />
         {language}
         {diffStats && (

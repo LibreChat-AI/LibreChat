@@ -230,7 +230,14 @@ const loadTools = async ({
     uploadImageBuffer: options.uploadImageBuffer,
   };
 
+  const timeoutOptions = { timeouts: options.req?.config?.timeouts };
+
   const toolOptions = {
+    google: timeoutOptions,
+    wolfram: timeoutOptions,
+    open_weather: timeoutOptions,
+    traversaal_search: timeoutOptions,
+    tavily_search_results_json: timeoutOptions,
     flux: imageGenOptions,
     'stable-diffusion': imageGenOptions,
     gemini_image_gen: imageGenOptions,
@@ -458,9 +465,17 @@ const loadTools = async ({
        *  (a user-DB server may be named exactly like an operator server's
        *  normalized form); only when nothing resolves is the parsed name
        *  treated as a normalized spelling of a raw config name. */
+      const requestUser = options.req?.user;
+      const lookup = { idOnTheSource: requestUser?.idOnTheSource };
       let serverName = parsedServerName;
       let serverConfig = serverName
-        ? await getMCPServersRegistry().getServerConfig(serverName, user, configServers)
+        ? await getMCPServersRegistry().getServerConfig(
+            serverName,
+            user,
+            configServers,
+            requestUser?.role,
+            lookup,
+          )
         : null;
       if (!serverConfig && serverName != null) {
         const aliasedName = serverNameAliases.get(serverName);
@@ -469,6 +484,8 @@ const loadTools = async ({
             aliasedName,
             user,
             configServers,
+            requestUser?.role,
+            lookup,
           );
           if (serverConfig) {
             serverName = aliasedName;

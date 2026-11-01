@@ -150,10 +150,10 @@ jobs:
               - '.github/workflows/static-checks.yml'
               - '!**.md'
 
-      - name: Set up Node.js 24.16.0
+      - name: Set up Node.js 24.22.1
         uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.1'
           cache: npm
 
       - name: Install dependencies
@@ -813,11 +813,11 @@ jobs:
               - 'scripts/eslint/**'
               - '.github/workflows/static-checks.yml'
 
-      - name: Set up Node.js 24.16.0
+      - name: Set up Node.js 24.22.1
         if: steps.paths.outputs.eslint_config == 'true'
         uses: actions/setup-node@v5
         with:
-          node-version: '24.16.0'
+          node-version: '24.22.1'
           cache: npm
 
       - name: Install dependencies

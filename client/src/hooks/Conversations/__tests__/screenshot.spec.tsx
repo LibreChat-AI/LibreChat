@@ -3,11 +3,11 @@ import download from 'downloadjs';
 import { toCanvas } from 'html-to-image';
 import { QueryKeys } from 'librechat-data-provider';
 import { act, renderHook } from '@testing-library/react';
+import { completeProgressiveRowMounts } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 import type { TMessage, TConversation } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import { completeProgressiveRowMounts } from '~/hooks/Messages/useProgressiveRowMount';
 import { ScreenshotProvider, useScreenshot } from '~/hooks/ScreenshotContext';
 import useExportConversation from '../useExportConversation';
 
@@ -19,7 +19,8 @@ jest.mock('@librechat/client', () => ({
 jest.mock('~/hooks', () => ({ useLocalize: () => (key: string) => key }));
 jest.mock('downloadjs', () => jest.fn());
 jest.mock('html-to-image', () => ({ toCanvas: jest.fn() }));
-jest.mock('~/hooks/Messages/useProgressiveRowMount', () => ({
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   completeProgressiveRowMounts: jest.fn(),
 }));
 

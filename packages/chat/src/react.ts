@@ -1,4 +1,10 @@
 /** React bindings for the core `Chat`: providers and `useChat`. Populated as the hooks move in. */
+export * from './react/chat';
+export * from './react/stream';
+export * from './react/subagents';
+export * from './react/usage';
+export * from './react/thread';
+export * from './react/approval';
 export { MessageContext, MessagePartIndex, useMessageContext } from './react/message';
 export {
   useMessagePartsHost,
@@ -9,8 +15,12 @@ export type {
   MessagePartsHost,
   MessagePartsUser,
   MessagePartsToast,
+  MessagePartsShare,
+  ContentPartsSlotProps,
   MessagePartMessage,
   MessagePartsMarkdownProps,
+  MessagePartsImageProps,
+  MessagePartsFilePreviewProps,
   MessagePartsUserTextPreferences,
 } from './react/host';
 export {
@@ -69,7 +79,10 @@ export {
 export { SteerHostProvider, useSteerHost } from './react/steer/host';
 export type {
   SteerHost,
+  SteerPane,
   SteerSettings,
+  QueuedTurnCache,
+  QueuedTurnSnapshot,
   SteerMessageKey,
   SteerNotification,
   SteerRequestCallbacks,
@@ -95,3 +108,105 @@ export type { ConvertibleSteer, SteerConvertOptions } from './react/steering/use
 export { default as useSteerEscalate } from './react/steering/useSteerEscalate';
 export type { EscalateTarget } from './react/steering/useSteerEscalate';
 export { resolveAcknowledgedSteer } from './react/steering/chips';
+export { default as useQueueDrain } from './react/steering/useQueueDrain';
+export { default as useSteerRecovery } from './react/steering/useSteerRecovery';
+export type { SteerRecoveryActions } from './react/steering/useSteerRecovery';
+export {
+  default as useQueuedTurnReveal,
+  hasRevealSuccessor,
+  shouldRollbackReveal,
+  buildRevealedMessage,
+} from './react/steering/useQueuedTurnReveal';
+export { useCoreChat } from './react/core';
+export { useSnapshot } from './react/snapshot';
+export { ReactQueryChatState } from './react/state';
+export type { Subscribe, SnapshotOptions } from './react/snapshot';
+export type { UseCoreChatOptions, CoreChatHelpers } from './react/core';
+export type { ReactQueryChatStateOptions } from './react/state';
+export { composerLiftFamily } from './react/lift';
+export { showSkillsPopoverFamily } from './react/skills';
+export { useComposerOverlay, composerOverlayCountFamily } from './react/overlay';
+export { default as useTimeTick } from './react/tick';
+export { default as useGenerationsByLatest } from './react/messages/generations';
+export type { Generations, TUseGenerations } from './react/messages/generations';
+export {
+  useMessagesHost,
+  MessagesHostProvider,
+  setDefaultMessagesHost,
+  MessageIconSlot,
+} from './react/messages/host';
+export type {
+  ForkEvents,
+  MessageCopy,
+  MessagesHost,
+  MarkdownVariant,
+  MessageCopyInput,
+  ForkPreferences,
+  ForkConversation,
+  MessagesScrolling,
+  ReportNearBottom,
+  MessageIconData,
+  MessageIconProps,
+} from './react/messages/host';
+export {
+  SoleToolContext,
+  LoneGroupContext,
+  useToolExpansion,
+  useToolAutoExpand,
+  useToolDisclosure,
+  reasoningDisclosure,
+  ToolDisclosureContext,
+  useToolContentPending,
+  useToolContentRequest,
+  useReasoningDisclosure,
+  ToolContentQueryContext,
+  ToolDisclosureKeyContext,
+  ToolContentPendingContext,
+  ToolContentRequestContext,
+  toolPanelSpacingClassName,
+  ReasoningDisclosureContext,
+} from './react/parts/disclosure';
+export type {
+  ToolDisclosures,
+  ToolContentQuery,
+  ReasoningDisclosures,
+} from './react/parts/disclosure';
+export { boundIntentLabel, getToolCallIntent, useToolCallIntent } from './react/parts/intent';
+export { default as useFollowScroll } from './react/parts/useFollowScroll';
+export { default as useRowHandoff } from './react/parts/handoff';
+export {
+  askAnswerTextAtom,
+  useAskAnswerHost,
+  askSubmitStatusAtom,
+  askAnswerCheckedAtom,
+  AskAnswerHostProvider,
+  askAnswerSelectionAtom,
+  collapsedAskActionsAtom,
+  releasedComposerTextAtom,
+} from './react/parts/ask';
+export type { AskAnswerStatus, ReleasedComposerStash } from './react/parts/ask';
+export { useFilesHost, FilesHostProvider } from './react/files';
+export type { FilesHost } from './react/files';
+export { default as useReducedMotion } from './react/motion';
+export { default as useElementSize } from './react/size';
+export { default as useAudioLevels, frameLevel } from './react/levels';
+export { default as useInitPopoverInput } from './react/popover';
+export { useComposerHost, ComposerHostProvider } from './react/input';
+export type {
+  ComposerHost,
+  CommandListRow,
+  CommandListProps,
+  ComposerShortcutAction,
+} from './react/input';
+export {
+  RowMountProvider,
+  useRowMountWindow,
+  useProgressiveRowMount,
+  completeProgressiveRowMounts,
+} from './react/messages/useProgressiveRowMount';
+export type { RowMountWindow } from './react/messages/useProgressiveRowMount';
+export {
+  default as useScrollbarGutter,
+  useScrollbarGutterSeed,
+  SCROLLBAR_GUTTER_PROPERTY,
+} from './react/messages/useScrollbarGutter';

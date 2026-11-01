@@ -2,10 +2,12 @@ import { memo, useEffect, useRef, useState } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { Button, IconButton, TooltipAnchor } from '@librechat/client';
 import { ListTodo, Maximize2, Minimize2, Square, X } from 'lucide-react';
+import {
+  useOpenSubagentPanel,
+  durableSubagentSelection,
+  useParentSubagents,
+} from '@librechat/chat/react';
 import type { TaskRow } from './rows';
-import { useParentSubagents } from '~/components/Chat/Subagents/ParentSubagentsProvider';
-import { durableSubagentSelection } from '~/components/Chat/Subagents/eventSelection';
-import { useOpenSubagentPanel } from '~/components/Chat/Subagents/surface';
 import { RECENT_SUBAGENT_WINDOW_MS } from './rows';
 import useBackgroundTasks from './useTasks';
 import { useLocalize } from '~/hooks';

@@ -1,7 +1,7 @@
 import React from 'react';
 import copy from 'copy-to-clipboard';
+import { ToolContentPendingContext } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
-import { ToolContentPendingContext } from '../../disclosure';
 import OutputRenderer, { isError } from '../OutputRenderer';
 
 jest.mock('copy-to-clipboard', () => jest.fn());
@@ -40,10 +40,10 @@ describe('OutputRenderer', () => {
     render(<OutputRenderer text={'First line\nSecond line'} />);
 
     const copyButton = screen.getByTestId('copy-output');
-    expect(copyButton).toHaveClass('absolute', 'right-0', 'bottom-0');
+    expect(copyButton).toHaveClass('absolute', 'inset-e-0', 'bottom-0');
     expect(copyButton).toHaveClass('no-touch:group-hover/copy:opacity-100');
     expect(copyButton.parentElement).toHaveClass('group/copy', 'relative');
-    expect(copyButton.parentElement).not.toHaveClass('pr-10');
+    expect(copyButton.parentElement).not.toHaveClass('pe-10');
   });
 
   it('copies original bytes when a code result has been formatted for display', () => {

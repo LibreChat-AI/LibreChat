@@ -1,7 +1,7 @@
 {
   "source": "https://github.com/ClickHouse/click-ui",
-  "tag": "v0.14.0",
-  "commit": "c161141f4efc9fd8e8c951cd15a367d333902999",
+  "tag": "v0.15.0",
+  "commit": "00d99f9f10a070c5f6c79a3081fdd2a8de077f68",
   "files": {
     "light": "src/theme/tokens/variables.light.ts",
     "dark": "src/theme/tokens/variables.dark.ts"

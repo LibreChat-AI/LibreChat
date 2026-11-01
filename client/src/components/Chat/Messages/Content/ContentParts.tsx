@@ -1,6 +1,19 @@
 import { memo, useRef, useMemo, useEffect, useCallback, useContext, Fragment } from 'react';
 import { useStore } from 'jotai';
+import { hasParallelLanes, parallelLaneGroups } from '@librechat/chat';
 import { Constants, ContentTypes, Tools } from 'librechat-data-provider';
+import {
+  ReasoningDisclosureContext,
+  reasoningDisclosure,
+  ToolDisclosureContext,
+  ToolDisclosureKeyContext,
+  SoleToolContext,
+  assignNestedAttachments,
+  useLiveSubagentToolCalls,
+  SubagentAttachmentsContext,
+  selectExactlyNestedAttachments,
+  selectUnclaimedAttachments,
+} from '@librechat/chat/react';
 import type {
   SubagentAttachmentFile,
   TMessageContentParts,
@@ -8,20 +21,11 @@ import type {
   TAttachment,
   Agents,
 } from 'librechat-data-provider';
+import type { ReasoningDisclosures, ToolDisclosures, NestedCall } from '@librechat/chat/react';
 import type { ReactNode, ReactElement } from 'react';
-import type { ReasoningDisclosures, ToolDisclosures } from './disclosure';
-import type { NestedCall } from '~/components/Chat/Subagents/attachments';
 import type { ToolCallGroupExpansionState } from './ToolCallGroup';
 import type { ActivityPhaseSegment } from '~/utils/activityLabels';
 import type { MCPAppResourceOccurrence } from '~/utils/mcpApps';
-import {
-  assignNestedAttachments,
-  useLiveSubagentToolCalls,
-  SubagentAttachmentsContext,
-  useStoredSubagentHints,
-  selectExactlyNestedAttachments,
-  selectUnclaimedAttachments,
-} from '~/components/Chat/Subagents/attachments';
 import {
   mapAttachments,
   getPartKeyIndex,
@@ -31,24 +35,17 @@ import {
   groupSequentialToolCalls,
 } from '~/utils';
 import {
-  ReasoningDisclosureContext,
-  reasoningDisclosure,
-  ToolDisclosureContext,
-  ToolDisclosureKeyContext,
-  SoleToolContext,
-} from './disclosure';
-import {
   groupActivityPhases,
   lastCursorContentIdx,
   getActivityLabelText,
 } from '~/utils/activityLabels';
 import WorkspaceChanges, { partitionWorkspaceChanges } from './Parts/WorkspaceChanges';
 import { MCPAppSuppressionContext, MCPAppViews } from '~/components/MCPUIResource';
+import { useStoredSubagentHints } from '~/components/Chat/Subagents/attachments';
 import { ParallelContentRenderer, type PartWithIndex } from './ParallelContent';
 import { isPreviewedToolCallPart, PreviewedToolCallPart } from './hydration';
 import { MediaContext, MessageContext, SearchContext } from '~/Providers';
 import MemoryArtifacts, { hasMemoryArtifacts } from './MemoryArtifacts';
-import { hasParallelLanes, parallelLaneGroups } from '~/utils/lanes';
 import { useMCPAppsPolicy } from '~/Providers/MCPAppsPolicyContext';
 import { selectToolCallUIResources } from '~/utils/mcpApps';
 import PendingSkillCall from './Parts/PendingSkillCall';

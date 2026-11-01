@@ -1,8 +1,8 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { ChatSurfaceProvider } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { Agents } from 'librechat-data-provider';
-import { ChatSurfaceProvider } from '~/components/Chat/Subagents/surface';
 import { ASK_USER_DECLINED_ANSWER } from '~/utils/approval';
 import AskUserQuestions from '../AskUserQuestions';
 

@@ -152,6 +152,16 @@ const messageSchema: Schema<IMessage> = new Schema(
       type: String,
     },
     metadata: { type: mongoose.Schema.Types.Mixed },
+    subagentContent: {
+      type: {
+        version: { type: Number, enum: [1], required: true },
+        throughSequence: Number,
+        deleted: { type: Boolean, default: undefined },
+      },
+      _id: false,
+      select: false,
+      default: undefined,
+    },
     subagentTranscript: {
       type: {
         taskId: { type: String, required: true },
@@ -165,7 +175,7 @@ const messageSchema: Schema<IMessage> = new Schema(
     subagentActivityProjection: {
       type: {
         taskId: { type: String, required: true },
-        version: { type: Number, enum: [1], required: true },
+        version: { type: Number, enum: [1, 2], required: true },
         activityJson: { type: String, required: true },
         truncated: { type: Boolean, required: true },
       },
@@ -354,6 +364,12 @@ messageSchema.index({
  * the sort back into memory for them.
  */
 messageSchema.index({ conversationId: 1, user: 1, createdAt: 1, _id: 1 });
+
+/**
+ * Serves the cursor-paginated message read when sorted by `updatedAt`, the
+ * default of `GET /api/messages`; the `createdAt` sort uses the index above.
+ */
+messageSchema.index({ conversationId: 1, user: 1, updatedAt: 1, _id: 1 });
 
 /**
  * Serves the batched newest-task read for child threads. `user` is an equality

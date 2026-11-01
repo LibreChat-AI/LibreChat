@@ -1,6 +1,6 @@
 import { memo } from 'react';
+import { AuthorHeader } from '@librechat/chat/components';
 import { useAuthorContext } from '~/Providers';
-import AuthorHeader from './AuthorHeader';
 
 /**
  * Restates the message author where content resumes after a steer, reading the

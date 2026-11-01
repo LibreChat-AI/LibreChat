@@ -1,3 +1,4 @@
+import type { AbortResult } from '../stream/interfaces/IJobStore';
 import type { GenerationJob } from '../types/stream';
 import { waitForGenerationPersistence } from '../stream/persistence';
 import { isStopConfirmed } from '../stream/interfaces/IJobStore';
@@ -52,4 +53,40 @@ export async function stopUserGenerations(
       waitForGenerationPersistence(streamId, job!.createdAt, (id) => control.getCleanupJob(id)),
     ),
   );
+}
+
+/** The slice of the generation job manager needed to stop one caller-owned run. */
+export interface OwnedGenerationControl {
+  getJob: (streamId: string) => Promise<CleanupJob | undefined>;
+  abortJob: (streamId: string, options: { expectedCreatedAt: number }) => Promise<AbortResult>;
+}
+
+/**
+ * Stops `streamId` only when `user` owns it. A run owned by another user or tenant reads as
+ * `job_not_found`, so a caller cannot tell it apart from one that does not exist. The epoch
+ * fence keeps a replacement started between the read and the stop from being aborted.
+ */
+export async function abortOwnedGeneration(
+  streamId: string,
+  user: { id: string; tenantId?: string },
+  control: OwnedGenerationControl,
+): Promise<AbortResult> {
+  const job = await control.getJob(streamId);
+  const tenantId = job?.metadata?.tenantId;
+  if (
+    !job ||
+    job.metadata?.userId !== user.id ||
+    (tenantId != null && tenantId !== user.tenantId)
+  ) {
+    return {
+      success: false,
+      failureReason: 'job_not_found',
+      jobData: null,
+      content: [],
+      finalEvent: null,
+      text: '',
+      collectedUsage: [],
+    };
+  }
+  return control.abortJob(streamId, { expectedCreatedAt: job.createdAt });
 }

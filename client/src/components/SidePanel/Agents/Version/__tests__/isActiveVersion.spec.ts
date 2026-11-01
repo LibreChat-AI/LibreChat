@@ -375,6 +375,48 @@ describe('isActiveVersion', () => {
       expect(isActiveVersion(version, currentAgent, versions)).toBe(false);
     });
 
+    test('a Langfuse link with a pinned version matches an identical Langfuse link', () => {
+      const langfuseLink = {
+        source: 'langfuse',
+        groupId: 'group-a',
+        selection: { type: 'exact', version: 3 },
+      };
+      const version = createVersion({ instructionsPrompt: { ...langfuseLink } });
+      const currentAgent = createAgentState({ instructionsPrompt: { ...langfuseLink } });
+      const versions = [version];
+
+      expect(isActiveVersion(version, currentAgent, versions)).toBe(true);
+    });
+
+    test('a Langfuse link does not match a native link with the same groupId and selection shape', () => {
+      const version = createVersion({
+        instructionsPrompt: {
+          source: 'langfuse',
+          groupId: 'group-a',
+          selection: { type: 'production' },
+        },
+      });
+      const currentAgent = createAgentState({
+        instructionsPrompt: { ...visibleLink },
+      });
+      const versions = [version];
+
+      expect(isActiveVersion(version, currentAgent, versions)).toBe(false);
+    });
+
+    test('a restricted stub carrying source "langfuse" matches an equally restricted current link', () => {
+      const restrictedLangfuseStub = { source: 'langfuse', restricted: true };
+      const version = createVersion({
+        instructionsPrompt: { ...restrictedLangfuseStub, matchesCurrent: true },
+      });
+      const currentAgent = createAgentState({
+        instructionsPrompt: { ...restrictedLangfuseStub },
+      });
+      const versions = [version];
+
+      expect(isActiveVersion(version, currentAgent, versions)).toBe(true);
+    });
+
     test('with currentAgent null, restricted stubs never match each other, even index 0 against itself', () => {
       // There is no currentAgent here to resolve `matchesCurrent` against, so comparing
       // one version's restricted stub to another's must not trust either side's flag —

@@ -225,3 +225,24 @@ export function reconcileServerQueuedTurns(
   });
   return [...retained, ...projected].sort(compareQueuedMessages);
 }
+
+/**
+ * Whether the backend owes this conversation a run it will start itself.
+ *
+ * Wider than the receipt poll's own predicate in exactly one way: `admitted`. The receipt poll
+ * stops there because there is nothing left to wait for, but for a pane that is not attached,
+ * `admitted` is the strongest evidence it will get that a run exists, and the receipt is dropped
+ * from the projection almost immediately after (the chip goes, so its id leaves the known set).
+ * Anyone deciding whether to keep listening for that run must count it.
+ */
+export function isQueuedTurnSuccessorOwed(receipts: unknown): boolean {
+  return (
+    Array.isArray(receipts) &&
+    receipts.some(
+      (item: AgentQueuedTurnReceipt) =>
+        item.status === 'queued' ||
+        item.status === 'admitted' ||
+        (item.status === 'claimed' && item.failure?.code !== 'ADMISSION_INDETERMINATE'),
+    )
+  );
+}

@@ -89,6 +89,31 @@ test.describe('composer queue rail', () => {
     await expect(messageTurns(page).nth(5).locator('.agent-turn')).toBeVisible();
   });
 
+  test('Interrupt now on a queued row preempts the run and sends that message @scenario:interrupt-now-on-a-queued-row-sends-it-into-the-run', async ({
+    page,
+  }) => {
+    test.setTimeout(120000);
+    const label = uniqueLabel('queue-interrupt');
+    const queueText = `Interrupt with this ${label}`;
+
+    await page.goto(NEW_CHAT_PATH, { timeout: 10000 });
+    await selectMockEndpoint(page, MOCK_ENDPOINTS[0]);
+    await establishConversation(page, `queue-interrupt-setup-${label}`);
+
+    await startSlowRun(page, label);
+    await typeDuringRun(page, queueText);
+    await messageInput(page).press('Enter');
+
+    const row = queuedRows(page).filter({ hasText: queueText });
+    await expect(row).toBeVisible({ timeout: 10000 });
+    const interruptNow = row.getByRole('button', { name: `Interrupt now: ${queueText}` });
+    await expect(interruptNow).toBeEnabled({ timeout: 10000 });
+    await interruptNow.click();
+
+    await expect(row).toHaveCount(0, { timeout: 30000 });
+    await expect(messagesView(page).getByText(queueText)).toBeVisible({ timeout: 30000 });
+  });
+
   test('Queued rows reorder with the keyboard @scenario:queued-rows-reorder-with-the-keyboard', async ({
     page,
   }) => {

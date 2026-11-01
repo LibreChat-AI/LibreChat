@@ -2,7 +2,13 @@ import { expect, test } from '@playwright/test';
 import type { Locator, Page } from '@playwright/test';
 import type { GraphEdge } from 'librechat-data-provider';
 import type { AgentDetail } from './agents.helpers';
-import { cleanupAgent, openAgentBuilder, selectMockModel, uniqueAgentName } from './agents.helpers';
+import {
+  cleanupAgent,
+  openAgentBuilder,
+  selectMockModel,
+  uniqueAgentName,
+  closeMobileDrawer,
+} from './agents.helpers';
 import {
   MOCK_ENDPOINTS,
   fetchJson,
@@ -167,6 +173,8 @@ async function selectAgentForChat(page: Page, agentName: string): Promise<void> 
   await page.getByRole('option', { name: agentName }).click();
   await expect(form.getByLabel('Agent name')).toHaveValue(agentName);
   await form.getByRole('button', { name: 'Select Agent' }).click();
+  /** On narrow viewports the builder drawer stays open over the composer. */
+  await closeMobileDrawer(page);
   await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible();
 }
 
@@ -278,6 +286,7 @@ test.describe('agent handoffs', () => {
 
       await closeOrchestration(page);
       await reopenedForm.getByRole('button', { name: 'Select Agent' }).click();
+      await closeMobileDrawer(page);
       await expect(page.getByRole('textbox', { name: 'Message input' })).toBeVisible();
 
       const label = `scratch-bare-${Date.now()}`;
@@ -991,7 +1000,9 @@ test.describe('agent handoffs', () => {
     }
   });
 
-  test('executes a transitive router-to-specialist-to-reviewer handoff', async ({ page }) => {
+  test('executes a transitive router-to-specialist-to-reviewer handoff @scenario:connected-agents-transitive', async ({
+    page,
+  }) => {
     test.setTimeout(180000);
 
     await page.goto('/c/new', { timeout: 10000 });
@@ -1073,7 +1084,9 @@ test.describe('agent handoffs', () => {
     }
   });
 
-  test('executes simultaneous handoffs and renders both transfer branches', async ({ page }) => {
+  test('executes simultaneous handoffs and renders both transfer branches @scenario:connected-agents-simultaneous', async ({
+    page,
+  }) => {
     test.setTimeout(180000);
 
     await page.goto('/c/new', { timeout: 10000 });

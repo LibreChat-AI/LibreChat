@@ -26,6 +26,7 @@ import {
   ToolExecuteOptions,
 } from './handlers';
 import { markSandboxReady } from './prewarm';
+import { captureAuthoredSkills, restoreAuthoredSkills } from './authored';
 import { ContentFilterError } from '../middleware/contentFilter';
 import { WorkspaceToolHttpError } from '../code/workspace';
 import { createAttachedWorkspaceBashTool, stampCommandExecutor } from '../code/command';
@@ -3289,6 +3290,180 @@ describe('createToolExecuteHandler', () => {
         ...params,
       });
     }
+
+    it.each([
+      'allowed',
+      'revoked',
+      'replaced',
+      'missing',
+      'hidden',
+      'disabled',
+      'unprimed',
+      'unprimed-hidden',
+      'deleted-later',
+    ])('restores authored identity into a fresh handler after approval: %s', async (scenario) => {
+      const skill = {
+        _id: SKILL_ID,
+        name: 'resumed-skill',
+        body: '---\nname: resumed-skill\ndescription: Resume regression\n---\n# Authored body\n',
+        description: 'Resume regression',
+        version: 1,
+        fileCount: 0,
+      };
+      let stored = false;
+      const twinId = new Types.ObjectId();
+      const getSkillByName = jest.fn(async (name: string, ids: Array<{ toString(): string }>) => {
+        if (ids.some((id) => id.toString() === twinId.toString())) {
+          return { ...skill, _id: twinId, body: '# Same-name twin' };
+        }
+        return stored &&
+          name === skill.name &&
+          ids.some((id) => id.toString() === SKILL_ID.toString())
+          ? { ...skill, disableModelInvocation: scenario.endsWith('hidden') }
+          : null;
+      });
+      const saveSkillFileContent = jest.fn(async () => ({
+        bytes: 9,
+        relativePath: 'references/a.md',
+      }));
+      const getAuthorSkillByName = jest.fn(async () =>
+        scenario === 'missing'
+          ? null
+          : {
+              ...skill,
+              disableModelInvocation: scenario.endsWith('hidden'),
+              _id: scenario === 'replaced' ? new Types.ObjectId() : SKILL_ID,
+            },
+      );
+      const dependencies = {
+        getSkillByName,
+        createSkill: jest.fn(async () => {
+          stored = true;
+          return { skill, warnings: [] };
+        }),
+        getAuthorSkillByName,
+        getSkillFileByPath: jest.fn(async () => null),
+        saveSkillFileContent,
+      };
+      const original = makeAuthoringHandler(dependencies, { accessibleSkillIds: [] });
+      const [created] = await invokeHandlerWithConfig(
+        original,
+        [
+          {
+            id: 'create-main',
+            name: 'create_file',
+            args: { path: 'skills/resumed-skill/SKILL.md', content: skill.body },
+          },
+        ],
+        { req, accessibleSkillIds: [] },
+      );
+      expect(created.status).toBe('success');
+      // JSON round-trip and a new handler/configurable model a different resume replica.
+      const bindings = JSON.parse(JSON.stringify(captureAuthoredSkills(original)));
+      expect(bindings).toEqual([
+        {
+          agentId: '',
+          name: skill.name,
+          id: SKILL_ID.toString(),
+          primed: true,
+        },
+      ]);
+      if (scenario.startsWith('unprimed')) bindings[0].primed = false;
+      const resumed = makeAuthoringHandler(
+        {
+          ...dependencies,
+          canEditSkill: jest.fn(async () => scenario !== 'revoked'),
+        },
+        {
+          accessibleSkillIds: [twinId],
+          skillAuthoringAvailable: scenario !== 'disabled',
+          skillPrimedIdsByName: { [skill.name]: twinId.toString() },
+        },
+      );
+      restoreAuthoredSkills(resumed, bindings);
+      const fresh = { req, accessibleSkillIds: [], activeSkillNames: new Set(['unrelated']) };
+      const [bundled] = await invokeHandlerWithConfig(
+        resumed,
+        [
+          {
+            id: 'create-reference',
+            name: 'create_file',
+            args: { path: 'skills/resumed-skill/references/a.md', content: 'reference' },
+          },
+        ],
+        fresh,
+      );
+      const allowed = ['allowed', 'hidden', 'unprimed', 'deleted-later'].includes(scenario);
+      expect(bundled.status).toBe(allowed ? 'success' : 'error');
+      expect(saveSkillFileContent).toHaveBeenCalledTimes(allowed ? 1 : 0);
+      if (scenario === 'deleted-later') {
+        stored = false;
+        getAuthorSkillByName.mockResolvedValue({
+          ...skill,
+          _id: twinId,
+          disableModelInvocation: false,
+        });
+      }
+      const stillAllowed = allowed && scenario !== 'deleted-later';
+      const [laterWrite] = await invokeHandlerWithConfig(
+        resumed,
+        [
+          {
+            id: 'later-reference',
+            name: 'create_file',
+            args: { path: 'skills/resumed-skill/references/b.md', content: 'later' },
+          },
+        ],
+        fresh,
+      );
+      expect(laterWrite.status).toBe(stillAllowed ? 'success' : 'error');
+      if (stillAllowed) {
+        expect(saveSkillFileContent.mock.calls).toHaveLength(2);
+        expect(saveSkillFileContent).toHaveBeenLastCalledWith(
+          expect.objectContaining({ skillId: SKILL_ID }),
+        );
+      }
+      const [read] = await invokeHandlerWithConfig(
+        resumed,
+        [
+          {
+            id: 'read-authored',
+            name: Constants.READ_FILE,
+            args: { path: 'skills/resumed-skill/SKILL.md' },
+          },
+        ],
+        fresh,
+      );
+      expect(read.status).toBe(stillAllowed ? 'success' : 'error');
+      if (stillAllowed) {
+        expect(String(read.content)).toContain('# Authored body');
+        expect(String(read.content)).not.toContain('# Same-name twin');
+      }
+
+      const [invoked] = await invokeHandlerWithConfig(
+        resumed,
+        [
+          {
+            id: 'invoke-authored',
+            name: Constants.SKILL_TOOL,
+            args: { skillName: skill.name },
+          },
+        ],
+        fresh,
+      );
+      expect(invoked.status).toBe(['allowed', 'unprimed'].includes(scenario) ? 'success' : 'error');
+      if (scenario.endsWith('hidden')) expect(invoked.errorMessage).toContain('cannot be invoked');
+      if (scenario === 'disabled') expect(getAuthorSkillByName).not.toHaveBeenCalled();
+      if (scenario === 'deleted-later') {
+        expect(saveSkillFileContent).toHaveBeenCalledTimes(1);
+        expect(captureAuthoredSkills(resumed)).toEqual(bindings);
+      }
+      if (scenario === 'allowed') {
+        expect(JSON.stringify(invoked.injectedMessages)).toContain('# Authored body');
+        // A second pause before another tool call retains the exact binding.
+        expect(captureAuthoredSkills(resumed)).toEqual(bindings);
+      }
+    });
 
     it('creates a new SKILL.md through create_file', async () => {
       const createSkill = jest.fn(async () => ({

@@ -26,9 +26,14 @@ const UIResourceCarousel: React.FC<UIResourceCarouselProps> = React.memo(({ uiRe
   const handleScroll = React.useCallback(() => {
     if (!scrollContainerRef.current) return;
 
-    const { scrollLeft, scrollWidth, clientWidth } = scrollContainerRef.current;
-    setShowLeftArrow(scrollLeft > 0);
-    setShowRightArrow(scrollLeft < scrollWidth - clientWidth - 10);
+    const container = scrollContainerRef.current;
+    const { scrollLeft, scrollWidth, clientWidth } = container;
+    /** In RTL `scrollLeft` is 0 at the right edge and negative toward the left; normalize to the offset from the left edge. */
+    const maxScroll = scrollWidth - clientWidth;
+    const fromLeft =
+      getComputedStyle(container).direction === 'rtl' ? maxScroll + scrollLeft : scrollLeft;
+    setShowLeftArrow(fromLeft > 0);
+    setShowRightArrow(fromLeft < maxScroll - 10);
   }, []);
 
   const scroll = React.useCallback((direction: 'left' | 'right') => {

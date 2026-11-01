@@ -13,6 +13,7 @@ import type {
   SaveURLResult,
   UploadResult,
 } from '~/storage/types';
+import type { FileStorageDeletionObserver } from '~/files/dispatch';
 import type { ServerRequest } from '~/types';
 import {
   parseS3Key,
@@ -245,10 +246,16 @@ export async function uploadFileToCloudFront(
 }
 
 /** Delete file from S3 and optionally invalidate CloudFront cache. */
-export async function deleteFileFromCloudFront(req: ServerRequest, file: TFile): Promise<void> {
+export async function deleteFileFromCloudFront(
+  req: ServerRequest,
+  file: TFile,
+  client?: unknown,
+  onDelete?: FileStorageDeletionObserver,
+): Promise<void> {
   const config = getCloudFrontConfig();
 
-  await deleteFileFromS3(req, file);
+  if (onDelete) await deleteFileFromS3(req, file, client, onDelete);
+  else await deleteFileFromS3(req, file);
 
   if (config?.invalidateOnDelete && config.distributionId) {
     try {

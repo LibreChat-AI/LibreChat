@@ -56,7 +56,7 @@ export default function ExportAndShareMenu({
                 />
                 {hasSharedLink && (
                   <span
-                    className="bg-status-info ring-presentation absolute -top-0.5 -right-0.5 size-2 rounded-full ring-2"
+                    className="bg-status-info ring-presentation absolute -inset-e-0.5 -top-0.5 size-2 rounded-full ring-2"
                     data-testid="header-shared-link-indicator"
                     aria-hidden="true"
                   />
@@ -66,7 +66,7 @@ export default function ExportAndShareMenu({
           />
         }
         items={items}
-        className={isSmallScreen ? '' : 'absolute top-0 right-0 mt-2'}
+        className={isSmallScreen ? '' : 'absolute inset-e-0 top-0 mt-2'}
       />
       {dialogs}
     </>

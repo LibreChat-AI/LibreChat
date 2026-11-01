@@ -2,16 +2,24 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Provider as JotaiProvider, createStore } from 'jotai';
 import { fireEvent, render, screen } from '@testing-library/react';
+import { composerOverlayCountFamily, pendingApprovalActionFamily } from '@librechat/chat/react';
 import type { Agents } from 'librechat-data-provider';
 import { PendingToolApprovalButton, PendingToolApprovalPanel } from '../Review';
-import { composerOverlayCountFamily } from '~/components/Chat/Input/overlay';
 import ApprovalProvider from '../../Messages/Content/ApprovalContext';
-import { pendingApprovalActionFamily } from '../state';
 
 jest.mock('@librechat/client', () => ({
-  Button: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>) => (
-    <button {...props}>{children}</button>
-  ),
+  Button: jest
+    .requireActual('react')
+    .forwardRef(
+      (
+        { children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement>,
+        ref: React.Ref<HTMLButtonElement>,
+      ) => (
+        <button ref={ref} {...props}>
+          {children}
+        </button>
+      ),
+    ),
   TextareaAutosize: (props: React.TextareaHTMLAttributes<HTMLTextAreaElement>) => (
     <textarea {...props} />
   ),
@@ -123,5 +131,61 @@ describe('PendingToolApproval', () => {
       'aria-expanded',
       'false',
     );
+  });
+
+  describe('collapsing from the keyboard', () => {
+    function Harness() {
+      const triggerRef = React.useRef<HTMLButtonElement>(null);
+      return (
+        <>
+          <PendingToolApprovalPanel conversationId="conversation-1" triggerRef={triggerRef} />
+          <PendingToolApprovalButton conversationId="conversation-1" triggerRef={triggerRef} />
+        </>
+      );
+    }
+
+    const renderPanel = () => {
+      const jotaiStore = createStore();
+      jotaiStore.set(pendingApprovalActionFamily('conversation-1'), pendingAction);
+      render(
+        <RecoilRoot>
+          <JotaiProvider store={jotaiStore}>
+            <ApprovalProvider pendingAction={pendingAction}>
+              <Harness />
+            </ApprovalProvider>
+          </JotaiProvider>
+        </RecoilRoot>,
+      );
+      return jotaiStore;
+    };
+
+    test('Escape collapses the panel, keeps decisions and returns focus to the toggle', async () => {
+      renderPanel();
+      await screen.findByRole('region', { name: 'Review 2 actions' });
+      const approve = screen.getAllByRole('button', { name: 'Approve' })[0];
+      fireEvent.click(approve);
+      approve.focus();
+
+      fireEvent.keyDown(approve, { key: 'Escape', isComposing: true });
+      fireEvent.keyDown(approve, { key: 'Escape', keyCode: 229 });
+      fireEvent.keyDown(approve, { key: 'Escape', shiftKey: true });
+      expect(screen.getByRole('region', { name: 'Review 2 actions' })).toBeInTheDocument();
+
+      fireEvent.keyDown(approve, { key: 'Escape' });
+      expect(screen.queryByRole('region', { name: 'Review 2 actions' })).not.toBeInTheDocument();
+      const toggle = screen.getByTestId('pending-tool-approval-button');
+      expect(toggle).toHaveFocus();
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+      fireEvent.click(toggle);
+      expect(screen.getByText('1 of 2 decisions selected')).toBeInTheDocument();
+    });
+
+    test('the Collapse button also returns focus to the toggle', async () => {
+      renderPanel();
+      await screen.findByRole('region', { name: 'Review 2 actions' });
+      fireEvent.click(screen.getByRole('button', { name: 'Collapse' }));
+      expect(screen.getByTestId('pending-tool-approval-button')).toHaveFocus();
+    });
   });
 });

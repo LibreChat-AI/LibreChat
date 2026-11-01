@@ -404,3 +404,28 @@ describe('ControlCombobox portal placement', () => {
     expect(screen.queryByRole('option', { name: 'Option A' })).not.toBeInTheDocument();
   });
 });
+
+describe('ControlCombobox search actions', () => {
+  it('renders an actionable filter beside search without selecting an option', () => {
+    const onFilter = jest.fn();
+    const onSelect = jest.fn();
+    render(
+      <ControlCombobox
+        selectedValue="a"
+        items={items}
+        setValue={onSelect}
+        ariaLabel="Test combobox"
+        isCollapsed={false}
+        searchActions={<button onClick={onFilter}>My agents</button>}
+      />,
+    );
+    openPopover();
+    fireEvent.click(screen.getByRole('button', { name: 'My agents' }));
+    expect(onFilter).toHaveBeenCalledTimes(1);
+    expect(onSelect).not.toHaveBeenCalled();
+    expect(screen.getByRole('combobox', { name: 'Test combobox' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+  });
+});
