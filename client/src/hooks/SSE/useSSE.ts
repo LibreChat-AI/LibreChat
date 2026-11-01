@@ -2,8 +2,13 @@ import { useEffect, useState } from 'react';
 import { v4 } from 'uuid';
 import { useStore, useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
-import { startedAsNewConversation, buildCreatedInitialResponse } from '@librechat/chat';
 import { StepEvents, createPayload, removeNullishValues } from 'librechat-data-provider';
+import {
+  startedAsNewConversation,
+  buildCreatedInitialResponse,
+  applyPendingAction,
+  findPendingActionMessageIndex,
+} from '@librechat/chat';
 import {
   useUsageHandler,
   useEventHandlers,
@@ -24,11 +29,11 @@ import type {
 } from 'librechat-data-provider';
 import type { EventHandlerParams } from '@librechat/chat/react';
 import type { TResData, TFinalResData } from '~/common';
-import { clearComposerDrafts, applyPendingAction, findPendingActionMessageIndex } from '~/utils';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { reopenTermsOnRefusal } from '~/utils/terms';
 import { useGetUserBalance } from '~/data-provider';
+import { clearComposerDrafts } from '~/utils';
 import useLocalize from '~/hooks/useLocalize';
 import { activeRunFamily } from './atoms';
 

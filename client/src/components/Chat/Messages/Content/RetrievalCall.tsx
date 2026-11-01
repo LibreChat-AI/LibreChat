@@ -1,6 +1,7 @@
 import { useMemo, useState, useCallback } from 'react';
 import { Tools } from 'librechat-data-provider';
 import { TooltipAnchor } from '@librechat/client';
+import { resolveToolCallPhase } from '@librechat/chat';
 import { FileText, FileSpreadsheet, FileCode, FileImage, File } from 'lucide-react';
 import {
   toolPanelSpacingClassName,
@@ -10,7 +11,6 @@ import {
 import type { TAttachment, TFile, PartMetadata } from 'librechat-data-provider';
 import { useLocalize, useProgress, useExpandCollapse } from '~/hooks';
 import { ToolIcon, OutputRenderer, isError } from './ToolOutput';
-import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import FilePreviewDialog from './FilePreviewDialog';
 import { sortPagesByRelevance, cn } from '~/utils';
 import { useToolPreparation } from './preparation';

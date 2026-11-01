@@ -1,26 +1,12 @@
 import { ContentTypes } from 'librechat-data-provider';
+import type { Agents, TMessage, TMessageContentParts } from 'librechat-data-provider';
+import type { AskUserQuestionPart } from '../ask';
 import {
   ASK_USER_QUESTION,
   isAskUserQuestionPart,
-  findLiveAskUserQuestion,
   markAskUserQuestionAnswered,
   isAnsweredAskUserQuestionPart,
-} from '@librechat/chat';
-import type { Agents, TMessage, TMessageContentParts } from 'librechat-data-provider';
-import type { AskUserQuestionPart } from '@librechat/chat';
-
-export {
-  ASK_USER_QUESTION,
-  isAskUserQuestionPart,
-  findLiveAskUserQuestion,
-  isAnsweredAskUserQuestionPart,
-};
-export {
-  applyPendingAction,
-  countTaggedApprovalParts,
-  findPendingActionMessageIndex,
-} from '@librechat/chat';
-export type { AskUserQuestionPart } from '@librechat/chat';
+} from '../ask';
 
 /**
  * Answer sent when the user explicitly skips a question: the run must resume

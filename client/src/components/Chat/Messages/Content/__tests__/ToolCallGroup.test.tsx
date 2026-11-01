@@ -142,7 +142,8 @@ jest.mock('lucide-react', () => ({
 
 const mockSubmittedAskAnswers = new Map<string, string>();
 
-jest.mock('~/utils/approval', () => ({
+jest.mock('@librechat/chat', () => ({
+  ...jest.requireActual('@librechat/chat'),
   ASK_USER_QUESTION: 'ask_user_question',
   getSubmittedAskAnswer: (toolCallId?: string) =>
     toolCallId != null ? mockSubmittedAskAnswers.get(toolCallId) : undefined,

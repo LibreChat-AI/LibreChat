@@ -1,4 +1,5 @@
 import { useCallback, useContext } from 'react';
+import { resolveToolCallPhase } from '@librechat/chat';
 import {
   SoleToolContext,
   LoneGroupContext,
@@ -7,9 +8,8 @@ import {
   useRowHandoff,
 } from '@librechat/chat/react';
 import type { PartMetadata } from 'librechat-data-provider';
-import type { ToolCallPhase } from '~/utils/toolCallPhase';
+import type { ToolCallPhase } from '@librechat/chat';
 import { isError } from '~/components/Chat/Messages/Content/ToolOutput';
-import { resolveToolCallPhase } from '~/utils/toolCallPhase';
 import { useProgress, useExpandCollapse } from '~/hooks';
 
 interface ToolCallState {

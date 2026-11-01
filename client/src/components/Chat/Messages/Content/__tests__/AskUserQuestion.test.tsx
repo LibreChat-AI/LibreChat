@@ -1,10 +1,10 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { ASK_USER_DECLINED_ANSWER } from '@librechat/chat';
 import { ChatSurfaceProvider } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type { ShortcutBinding } from '@librechat/chat';
 import type { Agents } from 'librechat-data-provider';
-import { ASK_USER_DECLINED_ANSWER } from '~/utils/approval';
 import ApprovalProvider from '../ApprovalContext';
 import AskUserQuestion from '../AskUserQuestion';
 

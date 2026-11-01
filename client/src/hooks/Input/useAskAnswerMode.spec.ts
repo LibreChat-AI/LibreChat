@@ -45,8 +45,8 @@ jest.mock('~/utils', () => ({
 }));
 
 import { useGetMessagesByConvoId } from '~/data-provider';
-import { findLiveAskUserQuestion } from '~/utils/approval';
 import useAskAnswerMode from './useAskAnswerMode';
+import { findLiveAskUserQuestion } from '@librechat/chat';
 
 const mockUseGetMessages = useGetMessagesByConvoId as jest.Mock;
 

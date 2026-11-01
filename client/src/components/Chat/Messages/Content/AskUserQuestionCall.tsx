@@ -2,12 +2,12 @@ import { useCallback } from 'react';
 import { useToolExpansion } from '@librechat/chat/react';
 import { MessageCircleQuestion, TriangleAlert } from 'lucide-react';
 import { EmptyText, TOOL_ROW_CLASSES } from '@librechat/chat/components';
-import type { Agents, PartMetadata } from 'librechat-data-provider';
 import {
   getSubmittedAskAnswer,
   parseAskUserQuestionArgs,
   parseAskUserQuestionsArgs,
-} from '~/utils/approval';
+} from '@librechat/chat';
+import type { Agents, PartMetadata } from 'librechat-data-provider';
 import AskUserQuestionProgress from './AskUserQuestionProgress';
 import { useLocalize, useExpandCollapse } from '~/hooks';
 import ProgressText from './ProgressText';
