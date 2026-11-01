@@ -1,32 +1,41 @@
 /**
  * @jest-environment jsdom
  */
-import { render, screen } from '@testing-library/react';
+import { Provider, createStore } from 'jotai';
+import { render, screen, act } from '@testing-library/react';
 import type { MessageFooterProps } from '../MessageFooter';
+import { submissionStartFamily } from '../../../react/generation';
 import { initEnglish } from '../../../__fixtures__/i18n';
 import MessageFooter from '../MessageFooter';
 
-jest.mock('../Elapsed', () => ({
-  __esModule: true,
-  ...jest.requireActual('../Elapsed'),
-  default: () => <span data-testid="elapsed" />,
-}));
-
 beforeAll(initEnglish);
 
-function renderFooter(props: Partial<MessageFooterProps> = {}) {
+beforeEach(() => {
+  jest.useFakeTimers();
+});
+
+afterEach(() => {
+  jest.useRealTimers();
+});
+
+function renderFooter(
+  props: Partial<MessageFooterProps> = {},
+  jotaiStore: ReturnType<typeof createStore> = createStore(),
+) {
   render(
-    <MessageFooter
-      index={0}
-      isSubmitting={false}
-      isLatestMessage={false}
-      isUserSide={false}
-      siblingIdx={0}
-      siblingCount={2}
-      setSiblingIdx={() => undefined}
-      toolbar={<button type="button">Copy to clipboard</button>}
-      {...props}
-    />,
+    <Provider store={jotaiStore}>
+      <MessageFooter
+        index={0}
+        isSubmitting={false}
+        isLatestMessage={false}
+        isUserSide={false}
+        siblingIdx={0}
+        siblingCount={2}
+        setSiblingIdx={() => undefined}
+        toolbar={<button type="button">Copy to clipboard</button>}
+        {...props}
+      />
+    </Provider>,
   );
   return screen.queryByRole('navigation', { name: 'Sibling message navigation' }) as HTMLElement;
 }
@@ -54,14 +63,27 @@ describe('MessageFooter', () => {
     expect(siblings).not.toHaveClass('order-last');
   });
 
-  it('shows elapsed time only on the latest reply while it streams', () => {
-    renderFooter({ isSubmitting: true, isLatestMessage: true, siblingCount: 1 });
-    expect(screen.getByTestId('elapsed')).toBeInTheDocument();
+  it('shows elapsed time from its own pane while the latest reply streams', () => {
+    const jotaiStore = createStore();
+    jotaiStore.set(submissionStartFamily(0), Date.now() - 40_000);
+    jotaiStore.set(submissionStartFamily(1), Date.now() - 5_000);
+    renderFooter(
+      { index: 1, isSubmitting: true, isLatestMessage: true, siblingCount: 1 },
+      jotaiStore,
+    );
+
+    expect(screen.getByTestId('stream-elapsed')).toHaveTextContent(/^5s$/);
+    act(() => {
+      jest.advanceTimersByTime(2_000);
+    });
+    expect(screen.getByTestId('stream-elapsed')).toHaveTextContent(/^7s$/);
   });
 
   it('shows no elapsed time once the row settles', () => {
-    renderFooter({ isLatestMessage: true, siblingCount: 1 });
-    expect(screen.queryByTestId('elapsed')).not.toBeInTheDocument();
+    const jotaiStore = createStore();
+    jotaiStore.set(submissionStartFamily(0), Date.now() - 5_000);
+    renderFooter({ isLatestMessage: true, siblingCount: 1 }, jotaiStore);
+    expect(screen.queryByTestId('stream-elapsed')).not.toBeInTheDocument();
   });
 
   it('keeps the sibling controls visible on a settled row', () => {
