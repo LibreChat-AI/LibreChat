@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilState, useRecoilValue } from 'recoil';
+import { EventSubagentActivityGroup } from '@librechat/chat/components';
 import { setDefaultMessagesHost, revealedQueuedTurnFamily } from '@librechat/chat/react';
 import type {
   ForkEvents,
@@ -22,8 +23,10 @@ import {
 import useConversationSeen from '~/hooks/Conversations/useConversationSeen';
 import useMessageScrolling from '~/hooks/Messages/useMessageScrolling';
 import { useOptionalMessagesOperations } from './MessagesViewContext';
+import ThreadMessage from '~/components/Chat/Messages/Thread/Message';
 import MessageAudio from '~/components/Chat/Messages/MessageAudio';
 import MessageIcon from '~/components/Chat/Messages/MessageIcon';
+import { useFileMapContext } from '~/Providers/FileMapContext';
 import Files from '~/components/Chat/Messages/Content/Files';
 import { useScreenshot } from '~/hooks/ScreenshotContext';
 import { useForkConvoMutation } from '~/data-provider';
@@ -107,9 +110,10 @@ function AppMessageAudio(props: MessageAudioProps) {
 }
 
 /** What the message list reads from the app: the viewer's clock format and fork defaults, the
- *  fork request, the rich-text copy, its scrolling, screenshot and seen reporting, and the row
- *  pieces that still live here. Registered as the default when this module loads, so rows read it
- *  on every route, the shared view included. */
+ *  fork request, the rich-text copy, its scrolling, screenshot and seen reporting, the thread's
+ *  file map, and the row pieces that still live here: the message body and the subagent activity
+ *  group. Registered as the default when this module loads, so rows read it on every route, the
+ *  shared view included. */
 export const appMessagesHost: MessagesHost = {
   useHour12: useClockFormat,
   renderFiles: (message) => <Files message={message} />,
@@ -124,6 +128,9 @@ export const appMessagesHost: MessagesHost = {
   useAutoScroll: () => useAtomValue(autoScrollAtom),
   useConversationSeen,
   renderMessageIcon: (props) => <MessageIcon {...props} />,
+  renderMessageRow: (props) => <ThreadMessage {...props} />,
+  renderActivity: (props) => <EventSubagentActivityGroup {...props} />,
+  useFileMap: useFileMapContext,
 };
 
 setDefaultMessagesHost(appMessagesHost);

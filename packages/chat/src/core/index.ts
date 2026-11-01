@@ -28,3 +28,4 @@ export * from './pane';
 export * from './documents';
 export * from './thread';
 export * from './lanes';
+export * from './activity';

@@ -1,6 +1,7 @@
 import { useRef, createContext, useContext } from 'react';
 import type {
   Agent,
+  TFile,
   TMessage,
   Assistant,
   TConversation,
@@ -25,6 +26,26 @@ export type MessagesScrolling = {
   debouncedHandleScroll: () => void;
   /** Reports whether the end marker is in view. */
   handleNearBottomChange: (isNearBottom: boolean) => void;
+};
+
+/** What the message slot renders one visible row of the thread from. */
+export type MessageRowSlotProps = {
+  message: TMessage;
+  /** Position of the message among its siblings, oldest first. */
+  siblingIdx: number;
+  siblingCount: number;
+  /** Shows the sibling at the given position, oldest first. */
+  setSiblingIdx: (value: number) => void;
+  currentEditId: string | number | null;
+  setCurrentEditId: Dispatch<SetStateAction<string | number | null>>;
+};
+
+/** What the activity slot renders the background activity of a row from. */
+export type ActivitySlotProps = {
+  conversationId: string;
+  /** The messages whose activity the group shows, in order. */
+  parentMessageIds: string[];
+  hasParallelContent: boolean;
 };
 
 /** Reports, from the end marker's visibility, that the reader has seen the conversation. */
@@ -154,6 +175,12 @@ export interface MessagesHost {
 
   /** Renders a message author's icon with the app's endpoint and avatar icons. */
   renderMessageIcon: (props: MessageIconProps) => ReactNode;
+  /** Renders one message of the thread: its header, body and controls. */
+  renderMessageRow: (props: MessageRowSlotProps) => ReactNode;
+  /** Renders the background activity (subagent runs) launched from a row. */
+  renderActivity: (props: ActivitySlotProps) => ReactNode;
+  /** The conversation's files by id, which hydrate the files of a thread row. */
+  useFileMap: () => Record<string, TFile> | undefined;
 }
 
 const noop = (): void => undefined;
@@ -204,6 +231,9 @@ const fallbackHost: MessagesHost = {
   useAutoScroll: () => false,
   useConversationSeen: () => ignoreNearBottom,
   renderMessageIcon: () => null,
+  renderMessageRow: () => null,
+  renderActivity: () => null,
+  useFileMap: () => undefined,
 };
 
 const MessagesHostContext = createContext<MessagesHost | null>(null);

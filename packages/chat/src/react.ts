@@ -143,12 +143,14 @@ export type {
   MessageCopyInput,
   ForkPreferences,
   ForkConversation,
+  ActivitySlotProps,
   MessagesScrolling,
   ReportNearBottom,
   MessageIconData,
   MessageIconProps,
   MessageAudioProps,
   MessageAudioButtonProps,
+  MessageRowSlotProps,
 } from './react/messages/host';
 export {
   SoleToolContext,

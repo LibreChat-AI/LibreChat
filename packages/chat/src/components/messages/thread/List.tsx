@@ -1,13 +1,12 @@
 import { memo } from 'react';
-import { useRowMountWindow } from '@librechat/chat/react';
-import type { ThreadRow } from '@librechat/chat';
-import type { TMessageProps } from '~/common';
+import type { NamedExoticComponent, ReactElement } from 'react';
+import type { MessageRowSlotProps } from '../../../react/messages/host';
+import type { ThreadRow } from '../../../core/thread';
+import { useRowMountWindow } from '../../../react/messages/useProgressiveRowMount';
 import Row from './Row';
 
-type ListProps = {
+type ListProps = Pick<MessageRowSlotProps, 'currentEditId' | 'setCurrentEditId'> & {
   rows: ThreadRow[];
-  currentEditId: TMessageProps['currentEditId'];
-  setCurrentEditId: TMessageProps['setCurrentEditId'];
 };
 
 /**
@@ -16,7 +15,7 @@ type ListProps = {
  * lifecycle, while a row's position does not, so the streaming row keeps its
  * component instance and a sibling switch reuses the instances below it.
  */
-function List({ rows, currentEditId, setCurrentEditId }: ListProps) {
+function List({ rows, currentEditId, setCurrentEditId }: ListProps): ReactElement {
   const mountWindow = useRowMountWindow();
   return (
     <>
@@ -34,4 +33,6 @@ function List({ rows, currentEditId, setCurrentEditId }: ListProps) {
   );
 }
 
-export default memo(List);
+const MemoizedList: NamedExoticComponent<ListProps> = memo(List);
+
+export default MemoizedList;

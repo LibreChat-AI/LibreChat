@@ -1,16 +1,19 @@
 import { memo, useEffect, useRef, useCallback } from 'react';
 import { useAtom } from 'jotai';
-import { hasParallelLanes } from '@librechat/chat';
-import { useRowMountWindow } from '@librechat/chat/react';
-import { isAssistantsEndpoint } from 'librechat-data-provider';
-import { EventSubagentActivityGroup } from '@librechat/chat/components';
+import type { NamedExoticComponent, ReactElement, ReactNode } from 'react';
 import type { TMessage } from 'librechat-data-provider';
-import type { ReactElement } from 'react';
-import type { TMessageProps } from '~/common';
-import MessageContent from '~/components/Messages/MessageContent';
-import { siblingIdxFamily, siblingKey } from './Thread/state';
-import MessageParts from './MessageParts';
-import Message from './Message';
+import type { MessageRowSlotProps } from '../../../react/messages/host';
+import { useRowMountWindow } from '../../../react/messages/useProgressiveRowMount';
+import { siblingIdxFamily, siblingKey } from '../../../react/thread';
+import { activityParentMessageIds } from '../../../core/activity';
+import { useMessagesHost } from '../../../react/messages/host';
+import { hasParallelLanes } from '../../../core/lanes';
+
+type MultiMessageProps = Pick<MessageRowSlotProps, 'currentEditId' | 'setCurrentEditId'> & {
+  /** The parent whose children this level picks one of; the conversation id at the root. */
+  messageId?: string | null;
+  messagesTree?: TMessage[];
+};
 
 /** First-run sentinel for `parentRef`: `messageId` itself may legitimately be
  *  null/undefined at the root level, so those can't mark "not yet bound". */
@@ -22,7 +25,8 @@ function MultiMessage({
   messagesTree,
   currentEditId,
   setCurrentEditId,
-}: TMessageProps) {
+}: MultiMessageProps): ReactElement | null {
+  const { renderMessageRow, renderActivity } = useMessagesHost();
   const [siblingIdx, setSiblingIdx] = useAtom(siblingIdxFamily(siblingKey(messageId)));
   const mountWindow = useRowMountWindow();
 
@@ -47,15 +51,15 @@ function MultiMessage({
    * by identity instead of blanket-resetting:
    *
    * - An APPENDED newest child means a submission landed here (send,
-   *   regenerate, edit-resubmit all append) — follow it, the long-standing
+   *   regenerate, edit-resubmit all append): follow it, the long-standing
    *   behavior. An append is a newest-id change where the prior newest still
    *   exists; when it vanished instead, the same row was RE-KEYED (streaming
-   *   ids hydrate to durable ids at finalize — the legacy regenerate path
+   *   ids hydrate to durable ids at finalize; the legacy regenerate path
    *   mints a new UUID for `_`-suffixed ids), and following it would yank a
    *   user who paged away mid-stream.
    * - Otherwise the change is background churn (an abandoned preempt sibling
    *   restored at finalize, a refetch merge dropping an optimistic row, id
-   *   hydration) — keep the message the user was viewing, recomputing its
+   *   hydration): keep the message the user was viewing, recomputing its
    *   reversed index from its new position. Only when it no longer exists
    *   does the selection fall back to the newest.
    *
@@ -107,7 +111,7 @@ function MultiMessage({
      *  previous array) while the prior newest survived. A changed last id
      *  alone can also be a same-membership REORDER (sibling `createdAt` ties
      *  have no sort tie-breaker) or a RE-KEY (a streaming id hydrating to its
-     *  durable id at finalize) — neither is a new branch to follow. */
+     *  durable id at finalize); neither is a new branch to follow. */
     const appendedNewest =
       previous.newestId == null ||
       (newestId !== previous.newestId &&
@@ -147,7 +151,7 @@ function MultiMessage({
   }
 
   /**
-   * No explicit key — React uses positional reconciliation since MultiMessage
+   * No explicit key: React uses positional reconciliation since MultiMessage
    * always renders exactly one row at this position.
    *
    * Both messageId and parentMessageId change during the SSE lifecycle
@@ -176,30 +180,12 @@ function MultiMessage({
     mountWindow == null ||
     ((message.depth ?? 0) >= mountWindow.start && (message.depth ?? 0) <= mountWindow.end);
 
-  let row: ReactElement | null = null;
-  if (!rowMounted) {
-    row = null;
-  } else if (isAssistantsEndpoint(message.endpoint) && message.content) {
-    row = <MessageParts {...sharedProps} />;
-  } else if (message.content) {
-    row = <MessageContent {...sharedProps} />;
-  } else {
-    row = <Message {...sharedProps} />;
-  }
-  /** Event children may be persisted against the user request that launched
-   * the Director. Once its assistant response exists, present that activity
-   * after the response instead of interrupting the turn between user and
-   * assistant rows. Exact assistant-owned children remain in the same group. */
-  let activityParentMessageIds: string[] = [];
-  if (message.isCreatedByUser) {
-    if (!message.children?.length) activityParentMessageIds = [message.messageId];
-  } else {
-    activityParentMessageIds = [message.messageId, message.parentMessageId].filter(
-      (id): id is string => typeof id === 'string' && id.length > 0,
-    );
-  }
-  const isEditingActivityAnchor =
-    typeof currentEditId === 'string' && activityParentMessageIds.includes(currentEditId);
+  const row: ReactNode = rowMounted ? renderMessageRow(sharedProps) : null;
+  const activityIds = activityParentMessageIds(
+    message,
+    (message.children?.length ?? 0) > 0,
+    currentEditId,
+  );
   const hasParallelContent = !message.isCreatedByUser && hasParallelLanes(message.content);
 
   /**
@@ -212,13 +198,13 @@ function MultiMessage({
   return (
     <>
       {row}
-      {rowMounted && !isEditingActivityAnchor && activityParentMessageIds.length > 0 ? (
+      {rowMounted && activityIds.length > 0 ? (
         <div className="w-full border-0 bg-transparent">
-          <EventSubagentActivityGroup
-            conversationId={message.conversationId ?? ''}
-            parentMessageIds={activityParentMessageIds}
-            hasParallelContent={hasParallelContent}
-          />
+          {renderActivity({
+            conversationId: message.conversationId ?? '',
+            parentMessageIds: activityIds,
+            hasParallelContent,
+          })}
         </div>
       ) : null}
       <MemoizedMultiMessage
@@ -231,6 +217,6 @@ function MultiMessage({
   );
 }
 
-const MemoizedMultiMessage = memo(MultiMessage);
+const MemoizedMultiMessage: NamedExoticComponent<MultiMessageProps> = memo(MultiMessage);
 
 export default MemoizedMultiMessage;
