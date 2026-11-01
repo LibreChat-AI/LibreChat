@@ -704,6 +704,128 @@ describe('useMCPToolOptions', () => {
     });
   });
 
+  describe('server-level deferLoading (three-state)', () => {
+    it('isToolDeferred inherits the server default when there is no explicit option', () => {
+      (useWatch as jest.Mock).mockReturnValue({});
+
+      const { result } = renderHook(() => useMCPToolOptions());
+
+      expect(result.current.isToolDeferred('tool1', true)).toBe(true);
+      expect(result.current.isToolDeferred('tool1', false)).toBe(false);
+    });
+
+    it('isToolDeferred lets an explicit false override an inherited true', () => {
+      (useWatch as jest.Mock).mockReturnValue({
+        tool1: { defer_loading: false },
+      });
+
+      const { result } = renderHook(() => useMCPToolOptions());
+
+      expect(result.current.isToolDeferred('tool1', true)).toBe(false);
+    });
+
+    it('isToolDeferred lets an explicit true override an inherited false', () => {
+      (useWatch as jest.Mock).mockReturnValue({
+        tool1: { defer_loading: true },
+      });
+
+      const { result } = renderHook(() => useMCPToolOptions());
+
+      expect(result.current.isToolDeferred('tool1', false)).toBe(true);
+    });
+
+    it('toggleToolDefer writes an explicit false when turning off an inherited-true tool', () => {
+      mockGetValues.mockReturnValue({});
+
+      const { result } = renderHook(() => useMCPToolOptions());
+
+      act(() => {
+        result.current.toggleToolDefer('tool1', true);
+      });
+
+      expect(mockSetValue).toHaveBeenCalledWith(
+        'tool_options',
+        { tool1: { defer_loading: false } },
+        { shouldDirty: true },
+      );
+    });
+
+    it('toggleToolDefer deletes the explicit key when toggling back to match the server default', () => {
+      mockGetValues.mockReturnValue({
+        tool1: { defer_loading: false },
+      });
+
+      const { result } = renderHook(() => useMCPToolOptions());
+
+      act(() => {
+        result.current.toggleToolDefer('tool1', true);
+      });
+
+      expect(mockSetValue).toHaveBeenCalledWith('tool_options', {}, { shouldDirty: true });
+    });
+
+    it('areAllToolsDeferred honors inheritance from the server default', () => {
+      (useWatch as jest.Mock).mockReturnValue({
+        tool1: { defer_loading: false },
+      });
+
+      const { result } = renderHook(() => useMCPToolOptions());
+      const tools = [createMockTool('tool1'), createMockTool('tool2')];
+
+      expect(result.current.areAllToolsDeferred(tools, true)).toBe(false);
+    });
+
+    it('areAllToolsDeferred returns true when every tool inherits a true server default', () => {
+      (useWatch as jest.Mock).mockReturnValue({});
+
+      const { result } = renderHook(() => useMCPToolOptions());
+      const tools = [createMockTool('tool1'), createMockTool('tool2')];
+
+      expect(result.current.areAllToolsDeferred(tools, true)).toBe(true);
+    });
+
+    it('toggleDeferAll collapses to explicit false then back to the server default', () => {
+      (useWatch as jest.Mock).mockReturnValue({});
+      mockGetValues.mockReturnValue({});
+
+      const { result } = renderHook(() => useMCPToolOptions());
+      const tools = [createMockTool('tool1'), createMockTool('tool2')];
+
+      act(() => {
+        result.current.toggleDeferAll(tools, true);
+      });
+
+      expect(mockSetValue).toHaveBeenCalledWith(
+        'tool_options',
+        {
+          tool1: { defer_loading: false },
+          tool2: { defer_loading: false },
+        },
+        { shouldDirty: true },
+      );
+    });
+
+    it('toggleDeferAll deletes explicit keys when bringing tools back to a true server default', () => {
+      (useWatch as jest.Mock).mockReturnValue({
+        tool1: { defer_loading: false },
+        tool2: { defer_loading: false },
+      });
+      mockGetValues.mockReturnValue({
+        tool1: { defer_loading: false },
+        tool2: { defer_loading: false },
+      });
+
+      const { result } = renderHook(() => useMCPToolOptions());
+      const tools = [createMockTool('tool1'), createMockTool('tool2')];
+
+      act(() => {
+        result.current.toggleDeferAll(tools, true);
+      });
+
+      expect(mockSetValue).toHaveBeenCalledWith('tool_options', {}, { shouldDirty: true });
+    });
+  });
+
   describe('formToolOptions', () => {
     it('should return undefined when useWatch returns undefined', () => {
       (useWatch as jest.Mock).mockReturnValue(undefined);
