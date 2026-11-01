@@ -1,0 +1,31 @@
+{
+  "_comment": "TSPI scope catalogue v2 (M02 task 7). The SAME file is vendored in TspiChat at packages/api/src/auth/tspiScopes.json; tests in both repos fail if their copy differs from their code. Change both together. Scopes are a coarse gate only: the Brain's policy makes the real decision.",
+  "version": 2,
+  "scopes": [
+    "tspi:patient:read",
+    "tspi:patient:write",
+    "tspi:record:write",
+    "tspi:document:upload",
+    "tspi:analysis:run",
+    "tspi:plan:read",
+    "tspi:plan:write",
+    "tspi:plan:approve",
+    "tspi:knowledge:read",
+    "tspi:knowledge:review",
+    "tspi:audit:read"
+  ],
+  "role_scopes": {
+    "patient": ["tspi:analysis:run", "tspi:plan:read", "tspi:knowledge:read", "tspi:patient:read"],
+    "clinic_staff": ["tspi:patient:read", "tspi:patient:write", "tspi:document:upload", "tspi:analysis:run", "tspi:plan:read", "tspi:knowledge:read"],
+    "clinician": ["tspi:patient:read", "tspi:patient:write", "tspi:record:write", "tspi:document:upload", "tspi:analysis:run", "tspi:plan:read", "tspi:plan:write", "tspi:plan:approve", "tspi:knowledge:read"],
+    "reviewer": ["tspi:patient:read", "tspi:patient:write", "tspi:record:write", "tspi:document:upload", "tspi:analysis:run", "tspi:plan:read", "tspi:plan:write", "tspi:plan:approve", "tspi:knowledge:read", "tspi:knowledge:review"],
+    "auditor": ["tspi:patient:read", "tspi:plan:read", "tspi:knowledge:read", "tspi:audit:read"]
+  },
+  "legacy_scopes": {
+    "tspi:case:analyze": "tspi:analysis:run",
+    "tspi:plan:read": "tspi:plan:read",
+    "tspi:plan:write": "tspi:plan:write",
+    "tspi:plan:approve": "tspi:plan:approve",
+    "tspi:knowledge:read": "tspi:knowledge:read"
+  }
+}

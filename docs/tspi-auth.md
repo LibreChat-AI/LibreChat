@@ -51,8 +51,16 @@ Deployment steps for the chat and the AI platform, with smoke tests:
   `tspiRole` (`--role=none`) or ban them in the chat.
 - **Change a role:** `npm run tspi-user -- set <email> --role=…`. Takes effect on the user's next tool
   call (tokens are re-minted from the current account record).
-- **Rotate the key:** new key pair, set the new public key + new `kid` on the MCP and the new private
-  key + `kid` on the chat, redeploy both together.
+- **Rotate the key (no downtime, since M02):** make a new key pair with a new `kid`. First add the
+  new public key next to the old one on the TSPI Brain (`TSPI_CHAT_JWT_PUBLIC_KEYS=old-kid:<b64>,new-kid:<b64>`)
+  and on the MCP, and deploy. Then switch the chat to the new private key + `kid`. Remove the old
+  public key once no token signed with it can still be valid (5 minutes later).
+- **TSPI Brain users (M02):** the Brain decides access from its own records. `npm run tspi-user -- set`
+  and `import` also update the Brain when `TSPI_BRAIN_URL` and `TSPI_BRAIN_PROVISIONING_KEY` are set
+  on the `api` container. `--approver` lets a clinician approve plans; `--platform-admin` makes
+  someone a Brain admin. `sync-brain` pushes every account (used once at the M02 cutover).
+- **Token claims (M02):** tokens carry `sub`, `scope`, `role` and `tspi_uid` only; clinic, email and
+  name now come from the Brain. `TSPI_MCP_TOKEN_LEGACY_CLAIMS=true` adds them back for a rollback.
 - **Rollback:** restore the old env (OPENID_* on the chat, WorkOS-only on the MCP) and the previous
   images.
 

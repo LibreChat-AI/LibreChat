@@ -6,6 +6,7 @@ import {
   TSPI_ROLE_SCOPES,
 } from './tspiMcpToken';
 import { processMCPEnv } from '~/utils/env';
+import scopesFile from './tspiScopes.json';
 
 const { privateKey, publicKey } = generateKeyPairSync('ed25519');
 const PEM = privateKey.export({ type: 'pkcs8', format: 'pem' }).toString();
@@ -48,12 +49,38 @@ describe('tspiMcpToken', () => {
       aud: 'tspi-mcp',
       sub: clinician.id,
       role: 'clinician',
-      clinic_id: 'clinic-001',
       tspi_uid: clinician.id,
       scope: TSPI_ROLE_SCOPES.clinician.join(' '),
     });
     expect(payload.exp - payload.iat).toBe(300);
     expect(payload.jti).toMatch(/^[0-9a-f-]{36}$/);
+  });
+
+  it('carries no clinic, email or name since M02 (the Brain has them)', () => {
+    const { payload } = decode(mintTspiMcpToken(clinician));
+    expect(payload.clinic_id).toBeUndefined();
+    expect(payload.email).toBeUndefined();
+    expect(payload.name).toBeUndefined();
+  });
+
+  it('adds them back only with TSPI_MCP_TOKEN_LEGACY_CLAIMS=true (rollback)', () => {
+    process.env.TSPI_MCP_TOKEN_LEGACY_CLAIMS = 'true';
+    try {
+      const { payload } = decode(mintTspiMcpToken({ ...clinician, id: 'other-user-id' }));
+      expect(payload).toMatchObject({ clinic_id: 'clinic-001', email: 'dr@example.com' });
+    } finally {
+      delete process.env.TSPI_MCP_TOKEN_LEGACY_CLAIMS;
+    }
+  });
+
+  it('uses the v2 scope catalogue shared with the MCP', () => {
+    expect(scopesFile.version).toBe(2);
+    expect(TSPI_ROLE_SCOPES).toEqual(scopesFile.role_scopes);
+    for (const scopes of Object.values(TSPI_ROLE_SCOPES)) {
+      for (const s of scopes) expect(scopesFile.scopes).toContain(s);
+    }
+    expect(TSPI_ROLE_SCOPES.patient).not.toContain('tspi:plan:approve');
+    expect(TSPI_ROLE_SCOPES.auditor).toContain('tspi:audit:read');
   });
 
   it('keeps the WorkOS id as the engine owner id for migrated accounts', () => {

@@ -13,9 +13,10 @@
  * - `sub` is the LibreChat user id. `scope` is derived from the user's TSPI role, which
  *   lives on the user record (`tspiRole`, set by an admin), never from anything the browser
  *   or the model sends.
- * - Transitional claims `role`, `clinic_id`, `email`, `name`: the engine still takes role
- *   and clinic from the MCP, and reports name who created/approved a plan. They go away when
- *   the engine reads them from its own records (v2).
+ * - Since M02 the TSPI Brain takes role, clinic, email and name from its own records, so the
+ *   token carries only `role` and `tspi_uid` beyond the standard claims. Set
+ *   TSPI_MCP_TOKEN_LEGACY_CLAIMS=true to add `clinic_id`, `email` and `name` back (rollback to a
+ *   pre-M02 MCP only).
  * - `tspi_uid`: the id the engine stores as the case/report owner. For an account first created
  *   by WorkOS sign-in it is that WorkOS user id (`openidId`), so existing plans stay with their
  *   owner and the same person reaching the MCP through Claude.ai (WorkOS) is the same engine
@@ -26,6 +27,7 @@
  */
 import { createHash, createPrivateKey, randomUUID, sign as cryptoSign } from 'crypto';
 import type { KeyObject } from 'crypto';
+import tspiScopes from './tspiScopes.json';
 
 export const TSPI_MCP_TOKEN_PLACEHOLDER = '{{TSPI_MCP_TOKEN}}';
 
@@ -33,28 +35,11 @@ export const TSPI_ROLES = ['patient', 'clinic_staff', 'clinician', 'reviewer', '
 export type TspiRole = (typeof TSPI_ROLES)[number];
 
 /**
- * Scope catalogue. Must match `SCOPE_BY_ROLE` / `TOOL_SCOPES` in the MCP
- * (apps/tspi-mcp/tspi_mcp/scopes.py). The engine still enforces its own RBAC on every call.
+ * Scope catalogue v2 (M02). `tspiScopes.json` is a byte-for-byte copy of the MCP's
+ * `apps/tspi-mcp/tspi_mcp/data/scopes.json`; change both together. Scopes are a coarse gate at
+ * the MCP; the TSPI Brain decides every request from its own user records.
  */
-export const TSPI_ROLE_SCOPES: Record<TspiRole, readonly string[]> = {
-  patient: ['tspi:case:analyze', 'tspi:plan:read', 'tspi:knowledge:read'],
-  clinic_staff: ['tspi:case:analyze', 'tspi:plan:read', 'tspi:knowledge:read'],
-  clinician: [
-    'tspi:case:analyze',
-    'tspi:plan:read',
-    'tspi:plan:write',
-    'tspi:plan:approve',
-    'tspi:knowledge:read',
-  ],
-  reviewer: [
-    'tspi:case:analyze',
-    'tspi:plan:read',
-    'tspi:plan:write',
-    'tspi:plan:approve',
-    'tspi:knowledge:read',
-  ],
-  auditor: ['tspi:plan:read', 'tspi:knowledge:read'],
-};
+export const TSPI_ROLE_SCOPES: Record<TspiRole, readonly string[]> = tspiScopes.role_scopes;
 
 const DEFAULT_ISSUER = 'tspi-chat';
 const DEFAULT_AUDIENCE = 'tspi-mcp';
@@ -205,12 +190,16 @@ function identityClaims(user: TspiTokenUser) {
     role,
     tspi_uid: nonEmpty(user.openidId) ?? sub,
   };
-  const clinic = nonEmpty(user.tspiClinicId);
-  const email = nonEmpty(user.email);
-  const name = nonEmpty(user.name);
-  if (clinic) out.clinic_id = clinic;
-  if (email) out.email = email;
-  if (name) out.name = name;
+  // `role` stays: the MCP's verifier checks it is a known TSPI role. Everything else about the
+  // user comes from the Brain (M02 task 13).
+  if (process.env.TSPI_MCP_TOKEN_LEGACY_CLAIMS === 'true') {
+    const clinic = nonEmpty(user.tspiClinicId);
+    const email = nonEmpty(user.email);
+    const name = nonEmpty(user.name);
+    if (clinic) out.clinic_id = clinic;
+    if (email) out.email = email;
+    if (name) out.name = name;
+  }
   return out;
 }
 
