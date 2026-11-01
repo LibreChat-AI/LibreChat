@@ -103,7 +103,7 @@ export default function ComposerFrame({
         {quote}
         <div className="relative flex w-full flex-col">
           {queue}
-          {contextRail != null && (
+          {contextRail != null && typeof contextRail !== 'boolean' && (
             <div
               data-testid="composer-context-rail"
               className="border-border-light bg-surface-secondary mx-4 -mb-3 flex min-w-0 flex-wrap items-center gap-1.5 rounded-t-2xl border px-2 pt-2 pb-5"

@@ -53,8 +53,8 @@ describe('ComposerFrame', () => {
     expect(screen.getByTestId('composer-context-rail')).toHaveTextContent('rail');
   });
 
-  it('renders no rail without context', () => {
-    renderFrame({ contextRail: undefined });
+  it.each([undefined, null, false, true])('renders no rail for a %p slot', (contextRail) => {
+    renderFrame({ contextRail });
     expect(screen.queryByTestId('composer-context-rail')).toBeNull();
   });
 
