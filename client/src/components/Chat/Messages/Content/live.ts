@@ -1,16 +1,18 @@
 import { boundIntentLabel, getToolCallIntent } from '@librechat/chat/react';
 import {
-  hasPendingApprovalInPart,
-  ASK_USER_QUESTION,
-  getSubmittedAskAnswer,
-} from '@librechat/chat';
-import {
   Constants,
   ContentTypes,
   isOpaqueReasoning,
   readableReasoning,
   stripToolCallErrorPrefix,
 } from 'librechat-data-provider';
+import {
+  hasPendingApprovalInPart,
+  ASK_USER_QUESTION,
+  getSubmittedAskAnswer,
+  getToolDisplayLabel,
+  parseToolName,
+} from '@librechat/chat';
 import type {
   Agents,
   TAttachment,
@@ -21,7 +23,6 @@ import type { TOptions } from 'i18next';
 import type { SpanOutcome, SpanSummary } from './outcome';
 import type { TranslationKeys } from '~/hooks';
 import { getBatchActivityLabelPart, getActivityLabelText } from '~/utils/activityLabels';
-import { getToolDisplayLabel, parseToolName } from '~/utils/toolLabels';
 import { getToolIconName, getToolMeta, summarizeSpan } from './outcome';
 import { hasPendingAuthInPart } from '~/utils/groupToolCalls';
 import { isError } from './ToolOutput';

@@ -1,9 +1,13 @@
 import { buildDigestTree, localizeDigestSummary } from '../SubagentProgress';
 
-jest.mock('~/utils', () => ({
-  cn: (...classes: string[]) => classes.filter(Boolean).join(' '),
+jest.mock('@librechat/chat', () => ({
+  ...jest.requireActual('@librechat/chat'),
   getToolDisplayLabel: (name: string, _localize: unknown, serverNames?: readonly string[]) =>
     name === 'bash_tool' ? 'Code' : (serverNames?.find((server) => name.endsWith(server)) ?? name),
+}));
+
+jest.mock('~/utils', () => ({
+  cn: (...classes: string[]) => classes.filter(Boolean).join(' '),
   getRunStepDurationLabels: jest.fn(),
 }));
 

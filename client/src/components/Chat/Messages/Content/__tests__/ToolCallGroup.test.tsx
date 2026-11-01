@@ -147,11 +147,6 @@ jest.mock('@librechat/chat', () => ({
   ASK_USER_QUESTION: 'ask_user_question',
   getSubmittedAskAnswer: (toolCallId?: string) =>
     toolCallId != null ? mockSubmittedAskAnswers.get(toolCallId) : undefined,
-}));
-
-jest.mock('~/utils', () => ({
-  getPartKeyIndex: jest.requireActual('~/utils').getPartKeyIndex,
-  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
   getToolDisplayLabel: (name: string, _localize: unknown, knownServerNames?: readonly string[]) => {
     const configuredServer = knownServerNames?.find((server) => name.endsWith(`_mcp_${server}`));
     if (configuredServer) {
@@ -176,6 +171,11 @@ jest.mock('~/utils', () => ({
     };
     return friendlyNames[name] ?? name;
   },
+}));
+
+jest.mock('~/utils', () => ({
+  getPartKeyIndex: jest.requireActual('~/utils').getPartKeyIndex,
+  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
   /** Real implementations: the group header resolves its text through these,
    *  so stubbing them out would hide the header logic under test. */
   getBatchActivityLabelPart: jest.requireActual('~/utils/activityLabels').getBatchActivityLabelPart,

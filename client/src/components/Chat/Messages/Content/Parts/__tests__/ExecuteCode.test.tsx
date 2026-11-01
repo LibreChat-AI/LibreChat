@@ -59,7 +59,6 @@ jest.mock('../useLazyHighlight', () => {
 });
 
 jest.mock('~/utils', () => ({
-  ...jest.requireActual<typeof import('~/utils/toolLabels')>('~/utils/toolLabels'),
   ...jest.requireActual<typeof import('~/utils/runStepDuration')>('~/utils/runStepDuration'),
   cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
 }));

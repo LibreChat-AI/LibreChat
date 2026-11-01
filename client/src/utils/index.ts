@@ -49,7 +49,6 @@ export * from './localStorage';
 export * from './promptGroups';
 export * from './previewCache';
 export * from './groupToolCalls';
-export * from './toolLabels';
 export * from './favoritesError';
 export {
   getSteerPart,
