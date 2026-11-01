@@ -33,7 +33,7 @@ const SkillDetailHeader = ({ skill, showActions = true }: SkillDetailHeaderProps
     <div className="flex flex-col gap-3 py-2 sm:flex-row sm:items-center sm:gap-4">
       <div className="min-w-0 flex-1 overflow-hidden">
         <div className="flex min-w-0 items-center gap-2">
-          <h2 className="truncate text-xl font-bold text-text-primary" title={skill.name}>
+          <h2 className="text-text-primary truncate text-xl font-bold" title={skill.name}>
             {skill.name}
           </h2>
           {isPublic && (
@@ -42,7 +42,7 @@ const SkillDetailHeader = ({ skill, showActions = true }: SkillDetailHeaderProps
               side="top"
               render={
                 <EarthIcon
-                  className="h-5 w-5 shrink-0 text-accent-primary"
+                  className="text-accent-primary h-5 w-5 shrink-0"
                   aria-label={localize('com_ui_sr_public_skill')}
                 />
               }
@@ -54,7 +54,7 @@ const SkillDetailHeader = ({ skill, showActions = true }: SkillDetailHeaderProps
               side="top"
               render={
                 <Pin
-                  className="h-5 w-5 shrink-0 text-status-info"
+                  className="text-status-info h-5 w-5 shrink-0"
                   aria-label={localize('com_ui_skills_always_apply_pin_title')}
                 />
               }
@@ -62,12 +62,12 @@ const SkillDetailHeader = ({ skill, showActions = true }: SkillDetailHeaderProps
           )}
         </div>
         {skill.description && (
-          <p className="text-sm text-text-secondary sm:truncate">{skill.description}</p>
+          <p className="text-text-secondary text-sm sm:truncate">{skill.description}</p>
         )}
-        <div className="mt-1 flex flex-wrap items-center gap-3 text-xs text-text-secondary">
+        <div className="text-text-secondary mt-1 flex flex-wrap items-center gap-3 text-xs">
           {isShared && (
             <span className="flex items-center gap-1">
-              <User className="h-3 w-3 text-text-secondary" aria-hidden="true" />
+              <User className="text-text-secondary h-3 w-3" aria-hidden="true" />
               {localize('com_ui_by_author', { 0: skill.authorName })}
             </span>
           )}

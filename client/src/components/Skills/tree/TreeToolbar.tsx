@@ -19,7 +19,7 @@ function TreeToolbar({ onNewFile, onNewFolder, onUpload }: TreeToolbarProps) {
     >
       <button
         type="button"
-        className="rounded-md bg-transparent p-1 text-text-tertiary transition-colors duration-100 hover:bg-surface-hover hover:text-text-secondary"
+        className="text-text-tertiary hover:bg-surface-hover hover:text-text-secondary rounded-md bg-transparent p-1 transition-colors duration-100"
         onClick={onNewFile}
         aria-label={localize('com_ui_skill_new_file')}
         title={localize('com_ui_skill_new_file')}
@@ -28,7 +28,7 @@ function TreeToolbar({ onNewFile, onNewFolder, onUpload }: TreeToolbarProps) {
       </button>
       <button
         type="button"
-        className="rounded-md bg-transparent p-1 text-text-tertiary transition-colors duration-100 hover:bg-surface-hover hover:text-text-secondary"
+        className="text-text-tertiary hover:bg-surface-hover hover:text-text-secondary rounded-md bg-transparent p-1 transition-colors duration-100"
         onClick={onNewFolder}
         aria-label={localize('com_ui_skill_new_folder')}
         title={localize('com_ui_skill_new_folder')}
@@ -37,7 +37,7 @@ function TreeToolbar({ onNewFile, onNewFolder, onUpload }: TreeToolbarProps) {
       </button>
       <button
         type="button"
-        className="rounded-md bg-transparent p-1 text-text-tertiary transition-colors duration-100 hover:bg-surface-hover hover:text-text-secondary"
+        className="text-text-tertiary hover:bg-surface-hover hover:text-text-secondary rounded-md bg-transparent p-1 transition-colors duration-100"
         onClick={onUpload}
         aria-label={localize('com_ui_skill_upload_file')}
         title={localize('com_ui_skill_upload_file')}
