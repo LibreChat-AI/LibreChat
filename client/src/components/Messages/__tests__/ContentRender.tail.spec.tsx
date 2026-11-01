@@ -4,6 +4,8 @@ import { act, render } from '@testing-library/react';
 import type { TConversation, TMessage } from 'librechat-data-provider';
 import { ChatContext, MessagesViewProvider, useChatContext } from '~/Providers';
 import MessageContent from '../MessageContent';
+import '~/components/Chat/Messages/Content/register';
+import '~/Providers/MessagesHostContext';
 
 const mockRowRenders = new Map<string, number>();
 
@@ -20,25 +22,11 @@ jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
 jest.mock('@librechat/chat/components', () => ({
   ...jest.requireActual('@librechat/chat/components'),
   HoverButtons: () => null,
-  MessageRow: ({
-    id,
-    children,
-    footer,
-  }: {
-    id?: string;
-    children: React.ReactNode;
-    footer: React.ReactNode;
-  }) => {
-    mockRowRenders.set(id ?? '', (mockRowRenders.get(id ?? '') ?? 0) + 1);
-    return (
-      <div data-testid={`row-${id}`}>
-        {children}
-        {footer}
-      </div>
-    );
+  ContentRow: ({ message }: { message: { messageId: string } }) => {
+    const id = message.messageId;
+    mockRowRenders.set(id, (mockRowRenders.get(id) ?? 0) + 1);
+    return <div data-testid={`row-${id}`} />;
   },
-  Elapsed: () => null,
-  shouldShowElapsed: () => false,
 }));
 
 jest.mock('~/hooks', () => ({

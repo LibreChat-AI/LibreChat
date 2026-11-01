@@ -13,7 +13,7 @@ import {
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { BranchSiblingIndex } from '@librechat/chat';
 import type { QueryClient } from '@tanstack/react-query';
-import type { LocalizeFunction, TMessageProps } from '~/common';
+import type { TMessageProps } from '~/common';
 
 export {
   getPartKeyIndex,
@@ -224,37 +224,12 @@ export const clearArchivedConversationMessagesCache = (
   queryClient.setQueryData<TMessage[]>([QueryKeys.messages, Constants.NEW_CONVO], []);
 };
 
-/** Returns a 1-based message number, or null if depth is absent or invalid. */
-const getMessageNumber = (message: TMessage): number | null => {
-  if (message.depth == null || message.depth < 0) {
-    return null;
-  }
-  return message.depth + 1;
-};
-
-export const getMessageAriaLabel = (message: TMessage, localize: LocalizeFunction): string => {
-  const number = getMessageNumber(message);
-  return number != null
-    ? localize('com_endpoint_message_new', { 0: number })
-    : localize('com_endpoint_message');
-};
-
-/**
- * Provides a screen-reader-only heading prefix distinguishing prompts from responses,
- * with an optional 1-based turn number derived from message depth.
- */
-export const getHeaderPrefixForScreenReader = (
-  message: TMessage,
-  localize: LocalizeFunction,
-): string => {
-  const number = getMessageNumber(message);
-  const suffix = number != null ? ` ${number}` : '';
-  return message.isCreatedByUser
-    ? `${localize('com_ui_prompt')}${suffix}: `
-    : `${localize('com_ui_response')}${suffix}: `;
-};
-
-export { isValidTimestamp, getMessageTimestamp } from '@librechat/chat/components';
+export {
+  isValidTimestamp,
+  getMessageTimestamp,
+  getMessageAriaLabel,
+  getHeaderPrefixForScreenReader,
+} from '@librechat/chat/components';
 export type { MessageTimestamp } from '@librechat/chat/components';
 
 export function areMessageFilesEqual(prevFiles?: TMessage['files'], nextFiles?: TMessage['files']) {
