@@ -79,6 +79,8 @@ export function formatMatterLabel(m: BklMatter): string {
 export interface BklDoc {
   doc_id: string;
   file_name?: string | null;
+  /** 표시용 파일명 (서버 계산) */
+  display_name?: string | null;
   imanage_doc_id?: string | null;
 }
 

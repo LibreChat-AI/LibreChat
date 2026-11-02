@@ -46,6 +46,8 @@ export interface ProjectDocument {
   doc_id: string;
   collection: string | null;
   file_name: string | null;
+  /** 표시용 파일명 (서버 계산, 구버전 응답엔 없음) */
+  display_name?: string | null;
   matter_uid: string | null;
   origin: ProjectDocumentOrigin | null;
   added_at: string;

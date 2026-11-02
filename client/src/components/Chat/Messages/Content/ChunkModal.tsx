@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { ExternalLink, X } from 'lucide-react';
 import { notifyBklSourcesChanged } from '~/utils/bklSourcesEvent';
-import { stripDisplayExtension } from '~/utils/fileTypeIcon';
+import { displayNameFromMeta } from '~/utils/displayName';
 
 export type BklSource = {
   source?: {
@@ -236,8 +236,8 @@ export default function ChunkModal({
 
   const activeSource = useMemo(() => resolvedSource ?? source, [resolvedSource, source]);
   const meta = activeSource?.metadata?.[0];
-  // OCR 파생 `.md` 는 표시에서 제거 (계약서.pdf.md → 계약서.pdf)
-  const fileName = stripDisplayExtension(meta?.name ?? meta?.file_name ?? '출처 문서');
+  // 표시명: `_{document_number}`·OCR `.md` 제거 (FILENAME_DISPLAY_FIX_SPEC)
+  const fileName = displayNameFromMeta(meta, '출처 문서');
   const pageInfo = meta?.page_info;
   const relevanceRaw = meta?.relevance;
   const chunkText = activeSource?.document?.[0] ?? '';

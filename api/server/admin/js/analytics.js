@@ -97,7 +97,7 @@
       if (!j.data?.length) { tbody.innerHTML = '<tr class="empty-row"><td colspan="4">데이터 없음</td></tr>'; return; }
       tbody.innerHTML = j.data.map((d, i) => `<tr>
         <td>${i + 1}</td>
-        <td class="text-clip" title="${A.escHtml(d.file_name || d.name || d.doc_id)}">${A.escHtml((d.file_name || d.name || d.doc_id || '').slice(0, 80))}</td>
+        <td class="text-clip" title="${A.escHtml(d.file_name || d.name || d.doc_id)}">${A.escHtml((A.displayFileName(d) || d.name || d.doc_id || '').slice(0, 80))}</td>
         <td>${A.fmtNum(d.queries)}</td>
         <td>${A.fmtNum(d.citations)}</td>
       </tr>`).join('');
@@ -225,7 +225,7 @@
     if (data.topDocs?.length) {
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([
         ['순위', '문서', '질의 수', '인용 수'],
-        ...data.topDocs.map((d, i) => [i + 1, d.file_name || d.name || d.doc_id, d.queries, d.citations]),
+        ...data.topDocs.map((d, i) => [i + 1, A.displayFileName(d) || d.name || d.doc_id, d.queries, d.citations]),
       ]), 'Top문서');
     }
     if (data.byUser?.length) {

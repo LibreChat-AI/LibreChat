@@ -56,6 +56,49 @@ describe('applyBklAnswerHyperlinks', () => {
   });
 });
 
+describe('표시명 정제 (FILENAME_DISPLAY_FIX_SPEC)', () => {
+  const RAW = 'RE_ SPC 담보_4733289.msg.md';
+
+  it('rewrites 『원본명』 to the server display name while resolving the URL by the raw name', () => {
+    const maps = parseHyperlinksResponse({
+      mapping: {
+        [`『${RAW}』`]: `[『${RAW}』](${URL_A})`,
+        __display_names__: { [RAW]: 'RE_ SPC 담보.msg' },
+      },
+    });
+    const resolver = resolverFromMaps(maps!.byName, maps!.byDocId, null, maps!.displayNames);
+    expect(applyBklAnswerHyperlinks(`근거: 『${RAW}』`, resolver)).toBe(
+      `근거: [『RE_ SPC 담보.msg』](<${URL_A}>)`,
+    );
+  });
+
+  it('fixes the link text of an already-linked mention without touching its URL', () => {
+    const maps = parseHyperlinksResponse({
+      mapping: { __display_names__: { [RAW]: 'RE_ SPC 담보.msg' } },
+    });
+    const resolver = resolverFromMaps(null, null, null, maps!.displayNames);
+    expect(applyBklAnswerHyperlinks(`[『${RAW}』](${URL_B})`, resolver)).toBe(
+      `[『RE_ SPC 담보.msg』](${URL_B})`,
+    );
+  });
+
+  it('derives display names from source metadata when the server map lacks them', () => {
+    const idx = sourceIndexFromSources([
+      {
+        document: ['a'],
+        metadata: [{ name: `『${RAW}』- [1]`, doc_id: 'd1', imanage_document_number: '4733289' }],
+      },
+    ]);
+    const resolver = resolverFromMaps(null, null, idx);
+    expect(applyBklAnswerHyperlinks(`『${RAW}』`, resolver)).toBe('『RE_ SPC 담보.msg』');
+  });
+
+  it('strips only the OCR .md when nothing else is known', () => {
+    const resolver = resolverFromMaps(new Map([[normalizeFileKey('기타.pdf'), URL_B]]));
+    expect(applyBklAnswerHyperlinks('『메모_12.docx.md』', resolver)).toBe('『메모_12.docx』');
+  });
+});
+
 describe('hyperlinkMapFromSources', () => {
   it('builds file → iManage URL from the citation cache, preferring the first hit', () => {
     const map = hyperlinkMapFromSources([

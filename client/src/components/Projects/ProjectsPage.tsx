@@ -38,7 +38,7 @@ import {
 } from '~/data-provider/Projects';
 import type { ProjectDocument } from '~/data-provider/Projects';
 import { clearMessagesCache, cn } from '~/utils';
-import { stripDisplayExtension } from '~/utils/fileTypeIcon';
+import { displayNameOf } from '~/utils/displayName';
 import HarveySyncPanel from './HarveySyncPanel';
 
 /** 프로젝트(Vault류) 페이지 — 좌측 프로젝트 목록 + 우측 문서 테이블. */
@@ -354,7 +354,7 @@ const ProjectDetailPanel: React.FC<{
     if (!q) {
       return docs;
     }
-    return docs.filter((d) => (d.file_name ?? d.doc_id).toLowerCase().includes(q));
+    return docs.filter((d) => (displayNameOf(d) || d.file_name || d.doc_id).toLowerCase().includes(q));
   }, [project?.documents, filter]);
 
   const toggleDoc = (docId: string) => {
@@ -628,7 +628,7 @@ const ProjectDocRow: React.FC<{
     <li className={cn('flex items-center gap-3 px-4 py-2.5', checked && 'bg-surface-active-alt')}>
       <input
         type="checkbox"
-        aria-label={`${stripDisplayExtension(doc.file_name) || doc.doc_id} 선택`}
+        aria-label={`${displayNameOf(doc) || doc.doc_id} 선택`}
         checked={checked}
         onChange={onToggle}
         className="h-3.5 w-3.5 cursor-pointer accent-text-primary"
@@ -636,9 +636,9 @@ const ProjectDocRow: React.FC<{
       <div className="min-w-0 flex-1">
         <p
           className="truncate text-sm text-text-primary"
-          title={stripDisplayExtension(doc.file_name) || doc.doc_id}
+          title={displayNameOf(doc) || doc.doc_id}
         >
-          {stripDisplayExtension(doc.file_name) || doc.doc_id}
+          {displayNameOf(doc) || doc.doc_id}
         </p>
         {doc.matter_uid && <p className="truncate text-xs text-text-tertiary">{doc.matter_uid}</p>}
         {/* Harvey 전송에서 빠진 문서는 여기서 알려준다 — 상단 패널은 건수만 보여주므로

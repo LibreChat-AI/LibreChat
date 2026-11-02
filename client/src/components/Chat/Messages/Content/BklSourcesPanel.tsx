@@ -5,6 +5,7 @@ import { Button } from '@librechat/client';
 import store from '~/store';
 import { cn, FileTypeIcon } from '~/utils';
 import { stripDisplayExtension } from '~/utils/fileTypeIcon';
+import { displayNameFromMeta } from '~/utils/displayName';
 import AddToProjectPopover from '~/components/Projects/AddToProjectPopover';
 import { SourceExternalLink, SourceDisabledLink, SourcePopupLink } from './SourceLinkButtons';
 import MarkdownLite from './MarkdownLite';
@@ -669,8 +670,7 @@ function PanelTitle({ source }: { source: BklSource | null }) {
   if (!source)
     return <h2 className="mt-0.5 truncate text-sm font-semibold text-text-primary">—</h2>;
   const meta = source.metadata?.[0];
-  const rawName = meta?.name ?? meta?.file_name ?? '출처 문서';
-  const fileName = extractFileName(rawName);
+  const fileName = displayNameFromMeta(meta, '출처 문서');
   return (
     <>
       <h2 className="mt-0.5 truncate text-sm font-semibold text-text-primary" title={fileName}>

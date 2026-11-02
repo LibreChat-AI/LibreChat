@@ -15,7 +15,7 @@ import type {
 import { DEFAULT_PERIOD_FILTER } from '~/store/filters';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
-import { stripDisplayExtension } from '~/utils/fileTypeIcon';
+import { displayNameOf } from '~/utils/displayName';
 import store from '~/store';
 import type { BklDocSelection, BklMatterSelection } from '~/store/bkl';
 import {
@@ -337,7 +337,7 @@ const FilterDropdown = ({ disabled }: FilterDropdownProps) => {
       const item: BklDocSelection = {
         doc_id: doc.doc_id,
         // 표시용 라벨 — OCR 파생 .md 제거 (doc_id 는 원본 유지)
-        label: stripDisplayExtension(doc.file_name) || doc.imanage_doc_id || doc.doc_id,
+        label: displayNameOf(doc) || doc.imanage_doc_id || doc.doc_id,
       };
       setFilterDocs((prev) =>
         prev.some((p) => p.doc_id === item.doc_id) || prev.length >= 5 ? prev : [...prev, item],
@@ -653,7 +653,7 @@ const FilterDropdown = ({ disabled }: FilterDropdownProps) => {
                       className="block w-full px-2 py-1.5 text-left text-xs hover:bg-surface-hover"
                     >
                       <div className="truncate font-medium">
-                        {stripDisplayExtension(doc.file_name) || doc.doc_id}
+                        {displayNameOf(doc) || doc.doc_id}
                       </div>
                       <div className="truncate text-text-tertiary">
                         {doc.imanage_doc_id || doc.doc_id}

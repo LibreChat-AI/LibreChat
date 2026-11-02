@@ -11,7 +11,7 @@
  * 결과물은 벡터 텍스트(선택·검색 가능)라 용량이 수백 KB 수준으로 떨어진다.
  */
 import { createElement } from 'react';
-import { stripDisplayExtension } from './fileTypeIcon';
+import { displayNameFromMeta } from './displayName';
 import type { BklSource } from '~/components/Chat/Messages/Content/ChunkModal';
 
 // useConversationCitations 와 동일 포맷 (스트리밍 변환 링크 + 원문 낱개/묶음).
@@ -23,11 +23,7 @@ const CITE_PLAIN_RE = /\[(\d+(?:\s*,\s*\d+)*)\](?!\()/g;
 
 /** 출처 메타에서 표시용 파일명 추출 — 『파일명』 프리픽스·OCR .md 제거. */
 export function citationFileName(source: BklSource | undefined | null): string {
-  const meta = source?.metadata?.[0];
-  const raw = String(meta?.name ?? meta?.file_name ?? '').normalize('NFC');
-  if (!raw) return '';
-  const m = raw.match(/^『(.+?)』/);
-  return stripDisplayExtension(m ? m[1] : raw);
+  return displayNameFromMeta(source?.metadata?.[0]);
 }
 
 /**

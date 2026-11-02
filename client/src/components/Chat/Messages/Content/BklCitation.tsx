@@ -3,6 +3,7 @@ import { useMessageContext } from '~/Providers';
 import { useOpenBklSource } from '~/components/Chat/BklPanel/useActiveBklSource';
 import { FileTypeIcon } from '~/utils';
 import { getFileExtension, stripDisplayExtension } from '~/utils/fileTypeIcon';
+import { displayNameFromMeta } from '~/utils/displayName';
 import { BKL_SOURCES_EVENT, notifyBklSourcesChanged } from '~/utils/bklSourcesEvent';
 import { type BklSource } from './ChunkModal';
 
@@ -287,9 +288,11 @@ function getSourceLabel(messageId: string, n: number): string | null {
   if (!Array.isArray(sources) || !sources[n - 1]) return null;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const src = sources[n - 1] as any;
-  const name: string = src.metadata?.[0]?.name || src.source?.name || '';
-  if (!name) return null;
-  const fileName = extractFileName(name);
+  // 표시명: 서버 display_name → document_number 규칙 → 헤더 파싱 순 (FILENAME_DISPLAY_FIX_SPEC)
+  const fileName =
+    displayNameFromMeta(src.metadata?.[0]) ||
+    (src.source?.name ? extractFileName(String(src.source.name)) : '');
+  if (!fileName) return null;
   return truncateMiddle(fileName);
 }
 

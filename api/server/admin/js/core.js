@@ -163,6 +163,30 @@
     closeList();
     return out.join('');
   }
+  /* ── 표시용 파일명 (FILENAME_DISPLAY_FIX_SPEC) ─────────────── */
+  /**
+   * `_{document_number}` 서픽스(수집기가 동명 충돌 시 붙임)와 OCR `.md` 를 표시에서만
+   * 걷어낸다. document_number 와 정확히 일치하는 끝 숫자만 지운다.
+   * 객체를 넘기면 `display_name` → `file_name`+`imanage_document_number` 순으로 본다.
+   */
+  function displayFileName(fileNameOrDoc, documentNumber) {
+    let name = fileNameOrDoc;
+    if (fileNameOrDoc && typeof fileNameOrDoc === 'object') {
+      if (fileNameOrDoc.display_name) return String(fileNameOrDoc.display_name);
+      name = fileNameOrDoc.file_name;
+      documentNumber = fileNameOrDoc.imanage_document_number;
+    }
+    if (!name) return '';
+    name = String(name);
+    if (documentNumber != null && String(documentNumber).trim() !== '') {
+      const num = String(documentNumber).trim();
+      if (/^\d+$/.test(num)) {
+        name = name.replace(new RegExp('_' + num + '(?=(?:\\.[^.\\s]+)*$)'), '');
+      }
+    }
+    return name.replace(/\.(?:md|markdown)$/i, '');
+  }
+
   /* ── 기간 필터 컴포넌트 ───────────────────────────────────── */
   const PRESET_DAYS = { today: 1, '7d': 7, '30d': 30, '365d': 365 };
   const PRESET_LABELS = { today: '오늘', '7d': '최근 7일', '30d': '최근 30일', '365d': '최근 1년' };
@@ -371,6 +395,7 @@
     escHtml,
     groupLabel,
     renderMarkdown,
+    displayFileName,
     createRangeFilter,
     makeChart,
     reloadAll,

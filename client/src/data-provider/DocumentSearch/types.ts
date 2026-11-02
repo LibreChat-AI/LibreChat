@@ -39,6 +39,8 @@ export interface ChunkPreview {
 export interface DocumentHit {
   doc_id: string;
   file_name: string;
+  /** 표시용 파일명 — `_{document_number}`·`.md` 제거. 없으면 클라이언트가 file_name 으로 계산. */
+  display_name?: string | null;
   imanage_create_date: string | null;
   document_date: string | null;
   matter_uid: string | null;

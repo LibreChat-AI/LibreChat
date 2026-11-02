@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { TMessage } from 'librechat-data-provider';
 import { BKL_SOURCES_EVENT } from '~/utils/bklSourcesEvent';
 import { stripDisplayExtension } from '~/utils/fileTypeIcon';
+import { HYPERLINK_DISPLAY_KEY, displayFileName, displayNameFromMeta } from '~/utils/displayName';
 import { extractBklRidFromMessage } from '~/utils/bklFilter';
 import type { BklSource } from './ChunkModal';
 
@@ -26,6 +27,11 @@ type HyperlinkMap = ReadonlyMap<string, string>;
  *  1. 『파일명』 바로 뒤의 인용번호 `[N]` → 이 답변의 출처 N → doc_id → URL
  *  2. 이 답변의 출처 중 같은 파일명을 가진 doc_id → URL (상위 랭크 우선)
  *  3. 파일명 → URL (서버 지도; 동명 문서가 있으면 상위 랭크 문서)
+ *
+ * 링크와 별개로 『파일명』의 **표시 텍스트**도 바꾼다 (FILENAME_DISPLAY_FIX_SPEC):
+ * 서버 지도의 `__display_names__`(원본 → 표시명) 와 출처 메타의 `display_name`
+ * 으로 `_{document_number}`·`.md` 를 걷어낸 이름을 보여준다. URL 해석 키는
+ * 여전히 원본 파일명이다.
  */
 export type BklHyperlinkResolver = {
   byName: HyperlinkMap;
@@ -34,6 +40,8 @@ export type BklHyperlinkResolver = {
   citationDocIds: ReadonlyMap<number, string>;
   /** 정규화 파일명 → 이 답변 출처의 doc_id 들 (출처 순서) */
   nameDocIds: ReadonlyMap<string, readonly string[]>;
+  /** 정규화 원본 파일명 → 표시명 (원본과 다를 때만) */
+  displayNames: ReadonlyMap<string, string>;
 };
 
 /** 서버 hyperlink_map 안의 doc_id → URL 부속 지도 키 (generate.py HYPERLINK_BY_DOC_KEY). */
@@ -57,7 +65,11 @@ const FETCH_RETRY_DELAYS_MS = [0, 1500, 4000];
 /** 『파일명』 뒤에 붙는 인용번호: `- [32]`, `[32]`, `-[32]` (공백·대시 허용). */
 const TRAILING_CITATION_RE = /^\s*[-–—]?\s*\[(\d{1,3})\]/;
 
-type RidMaps = { byName: HyperlinkMap; byDocId: HyperlinkMap };
+type RidMaps = {
+  byName: HyperlinkMap;
+  byDocId: HyperlinkMap;
+  displayNames: ReadonlyMap<string, string>;
+};
 
 const ridMapCache = new Map<string, RidMaps | null>();
 const ridMapInflight = new Map<string, Promise<RidMaps | null>>();
@@ -88,6 +100,7 @@ export function parseHyperlinksResponse(json: HyperlinksResponse | null): RidMap
   if (!mapping || typeof mapping !== 'object') return null;
   const byName = new Map<string, string>();
   const byDocId = new Map<string, string>();
+  const displayNames = new Map<string, string>();
   for (const [key, value] of Object.entries(mapping)) {
     if (key === BY_DOC_KEY) {
       if (value && typeof value === 'object') {
@@ -97,11 +110,21 @@ export function parseHyperlinksResponse(json: HyperlinksResponse | null): RidMap
       }
       continue;
     }
+    if (key === HYPERLINK_DISPLAY_KEY) {
+      if (value && typeof value === 'object') {
+        for (const [raw, disp] of Object.entries(value as Record<string, unknown>)) {
+          if (typeof disp === 'string' && disp) displayNames.set(normalizeFileKey(raw), disp);
+        }
+      }
+      continue;
+    }
     const url = urlFromMappingValue(value);
     if (!url) continue;
     byName.set(normalizeFileKey(stripBrackets(key)), url);
   }
-  return byName.size > 0 || byDocId.size > 0 ? { byName, byDocId } : null;
+  return byName.size > 0 || byDocId.size > 0 || displayNames.size > 0
+    ? { byName, byDocId, displayNames }
+    : null;
 }
 
 const sleep = (ms: number) => new Promise<void>((r) => window.setTimeout(r, ms));
@@ -178,6 +201,8 @@ type SourceIndex = {
   byDocId: Map<string, string>;
   citationDocIds: Map<number, string>;
   nameDocIds: Map<string, string[]>;
+  /** 정규화 원본 파일명 → 표시명 (출처 메타 display_name / document_number 규칙) */
+  displayNames: Map<string, string>;
 };
 
 /**
@@ -187,21 +212,31 @@ type SourceIndex = {
  */
 export function sourceIndexFromSources(sources: BklSource[] | undefined): SourceIndex | null {
   if (!Array.isArray(sources) || sources.length === 0) return null;
-  const idx: SourceIndex = { byDocId: new Map(), citationDocIds: new Map(), nameDocIds: new Map() };
+  const idx: SourceIndex = {
+    byDocId: new Map(),
+    citationDocIds: new Map(),
+    nameDocIds: new Map(),
+    displayNames: new Map(),
+  };
   sources.forEach((source, i) => {
+    const name = sourceFileName(source);
+    if (name) {
+      const key = normalizeFileKey(name);
+      const disp = displayNameFromMeta(source.metadata?.[0]);
+      if (disp && disp !== name && !idx.displayNames.has(key)) idx.displayNames.set(key, disp);
+    }
     const docId = sourceDocId(source);
     if (!docId) return;
     idx.citationDocIds.set(i + 1, docId);
     const url = sourceImanageUrl(source);
     if (url && !idx.byDocId.has(docId)) idx.byDocId.set(docId, url);
-    const name = sourceFileName(source);
     if (name) {
       const key = normalizeFileKey(name);
       const list = idx.nameDocIds.get(key) ?? [];
       if (!list.includes(docId)) idx.nameDocIds.set(key, [...list, docId]);
     }
   });
-  return idx.citationDocIds.size > 0 ? idx : null;
+  return idx.citationDocIds.size > 0 || idx.displayNames.size > 0 ? idx : null;
 }
 
 function resolveRid(messageId: string, text: string, message?: TMessage): string | null {
@@ -229,16 +264,21 @@ export function resolverFromMaps(
   byName: HyperlinkMap | null,
   byDocId: HyperlinkMap | null = null,
   sourceIndex: SourceIndex | null = null,
+  displayNames: ReadonlyMap<string, string> | null = null,
 ): BklHyperlinkResolver | null {
   const name: HyperlinkMap = byName ?? new Map<string, string>();
   const doc: HyperlinkMap =
     mergeMaps(byDocId, sourceIndex?.byDocId ?? null) ?? new Map<string, string>();
-  if (name.size === 0 && doc.size === 0) return null;
+  // 서버 지도가 권위, 출처 메타는 보완
+  const disp: ReadonlyMap<string, string> =
+    mergeMaps(displayNames, sourceIndex?.displayNames ?? null) ?? new Map<string, string>();
+  if (name.size === 0 && doc.size === 0 && disp.size === 0) return null;
   return {
     byName: name,
     byDocId: doc,
     citationDocIds: sourceIndex?.citationDocIds ?? new Map<number, string>(),
     nameDocIds: sourceIndex?.nameDocIds ?? new Map<string, string[]>(),
+    displayNames: disp,
   };
 }
 
@@ -260,10 +300,18 @@ function resolveUrl(r: BklHyperlinkResolver, name: string, trailing: string): st
   return r.byName.get(key) ?? null;
 }
 
+/** 『파일명』의 표시 텍스트 — 표시명이 있으면 그걸로, 없으면 원본 그대로. */
+function displayMention(r: BklHyperlinkResolver, name: string): string {
+  const disp = r.displayNames.get(normalizeFileKey(name));
+  // 지도에 없으면 최소한 OCR `.md` 만 걷어낸다 (document_number 는 모르므로 보존).
+  return `『${disp ?? displayFileName(name, null)}』`;
+}
+
 /**
  * 본문의 『파일명』을 `[『파일명』](<url>)` 마크다운 링크로 바꾼다.
  *
- * 이미 링크 텍스트인 자리(딥씽킹 경로는 서버가 미리 링크를 박는다)는 건너뛴다.
+ * 이미 링크 텍스트인 자리(딥씽킹 경로는 서버가 미리 링크를 박는다)는 URL 을
+ * 건드리지 않고 표시 텍스트만 정제한다.
  * URL 은 `<…>` 로 감싸 공백·괄호가 있어도 링크가 깨지지 않게 한다.
  * `lookup` 에는 해석기 또는 (하위 호환) 파일명 → URL 맵을 넘길 수 있다.
  */
@@ -279,9 +327,10 @@ export function applyBklAnswerHyperlinks(
     const before = text[offset - 1];
     const end = offset + full.length;
     const after = text.slice(end, end + 2);
-    if (before === '[' && after === '](') return full;
+    const shown = displayMention(resolver, name);
+    if (before === '[' && after === '](') return shown;
     const url = resolveUrl(resolver, name, text.slice(end, end + 12));
-    return url ? `[${full}](<${url}>)` : full;
+    return url ? `[${shown}](<${url}>)` : shown;
   });
 }
 
@@ -349,6 +398,7 @@ export function useBklAnswerHyperlinks(
         mergeMaps(ridMap?.byName ?? null, sources.byName),
         ridMap?.byDocId ?? null,
         sources.index,
+        ridMap?.displayNames ?? null,
       ),
     [ridMap, sources],
   );

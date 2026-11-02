@@ -52,7 +52,7 @@
         thead.innerHTML = '<tr><th>doc_id</th><th>파일명</th><th>매터</th><th>유형</th><th>날짜</th><th>작업</th></tr>';
         tbody.innerHTML = j.results.map((r) => `<tr>
           <td style="white-space:nowrap">${A.escHtml(r.doc_id)}</td>
-          <td class="text-clip" title="${A.escHtml(r.file_name || '')}">${A.escHtml(r.file_name || '—')}</td>
+          <td class="text-clip" title="${A.escHtml(r.file_name || '')}">${A.escHtml(A.displayFileName(r) || '—')}</td>
           <td class="text-clip" title="${A.escHtml(r.bims_case_name || '')}">${A.escHtml(r.matter_uid || '—')}</td>
           <td>${A.escHtml(r.doc_type || '—')}</td>
           <td style="white-space:nowrap">${A.escHtml(r.document_date || '—')}</td>
@@ -91,7 +91,7 @@
       }
       tbody.innerHTML = j.files.map((f) => `<tr>
         <td style="white-space:nowrap">${A.escHtml(f.doc_id)}</td>
-        <td class="text-clip" title="${A.escHtml(f.file_name || '')}">${A.escHtml(f.file_name || '—')}</td>
+        <td class="text-clip" title="${A.escHtml(f.file_name || '')}">${A.escHtml(A.displayFileName(f) || '—')}</td>
         <td style="white-space:nowrap">${A.escHtml(f.doc_type || '—')}</td>
         <td>${A.fmtNum(f.chunk_count)}</td>
         <td><button class="btn-refresh btn-danger" data-kind="doc" data-id="${A.escHtml(f.doc_id)}">삭제</button></td>
