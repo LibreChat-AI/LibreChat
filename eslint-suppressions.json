@@ -165,9 +165,6 @@
   "client/src/components/Chat/Messages/Content/AgentHandoff.tsx": {
     "shadcn/no-inline-styles": {
       "count": 1
-    },
-    "shadcn/no-restyle": {
-      "count": 8
     }
   },
   "client/src/components/Chat/Messages/Content/AskUserQuestion.tsx": {
