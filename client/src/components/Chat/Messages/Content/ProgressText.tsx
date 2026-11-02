@@ -153,23 +153,26 @@ export default function ProgressText({
     toolExecutionDurationMs != null &&
     Number.isFinite(toolExecutionDurationMs) &&
     toolExecutionDurationMs >= 50;
+  /** Read as part of the label: "Called get_weather in 2.4s (prepared in 0.3s)". */
   const durationParts =
     phase !== 'completed'
       ? []
       : [
-          ...(isReportableRunStepDuration(toolPreparationDurationMs)
-            ? [
-                {
-                  label: localize('com_ui_tool_preparation_time'),
-                  duration: getRunStepDurationLabels(toolPreparationDurationMs, i18n.language),
-                },
-              ]
-            : []),
           ...(showToolCallTime
             ? [
                 {
                   label: localize('com_ui_tool_call_time'),
+                  phrase: 'com_ui_duration_in' as const,
                   duration: getRunStepDurationLabels(toolExecutionDurationMs, i18n.language),
+                },
+              ]
+            : []),
+          ...(isReportableRunStepDuration(toolPreparationDurationMs)
+            ? [
+                {
+                  label: localize('com_ui_tool_preparation_time'),
+                  phrase: 'com_ui_duration_prepared_in' as const,
+                  duration: getRunStepDurationLabels(toolPreparationDurationMs, i18n.language),
                 },
               ]
             : []),
@@ -177,6 +180,7 @@ export default function ProgressText({
             ? [
                 {
                   label: '',
+                  phrase: 'com_ui_duration_in' as const,
                   duration: getRunStepDurationLabels(durationMs, i18n.language),
                 },
               ]
@@ -234,11 +238,10 @@ export default function ProgressText({
         {timer == null && isRunning && phaseStartAt != null && localPhaseStart != null && (
           <ElapsedTimer start={localPhaseStart} />
         )}
-        {durationParts.map(({ label, duration }) => (
+        {durationParts.map(({ label, phrase, duration }) => (
           <span key={label} className="text-text-secondary shrink-0 font-normal">
             <span aria-hidden="true">
-              · {label && `${label} `}
-              {localize(duration.key, duration.values)}
+              {localize(phrase, { 0: localize(duration.key, duration.values) })}
             </span>
             <span className="sr-only">
               {label && `${label} `}
