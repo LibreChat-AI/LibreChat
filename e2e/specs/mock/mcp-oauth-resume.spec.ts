@@ -91,7 +91,7 @@ test.describe('MCP OAuth stream resume', () => {
       expect(status.active).toBe(true);
       expect(status.resumeState?.pendingOAuthPrompts).toEqual([
         expect.objectContaining({
-          stepId: `step_oauth_login_${MCP_SERVER_NAME}`,
+          stepId: expect.stringMatching(/^step_oauth_login_e2e-oauth:oauth:/),
           toolName: `oauth_mcp_${MCP_SERVER_NAME}`,
           authURL: expect.stringContaining('/authorize'),
         }),
@@ -148,6 +148,7 @@ test.describe('MCP OAuth stream resume', () => {
       if (await stop.isVisible({ timeout: 1000 }).catch(() => false)) {
         await stop.click();
         await expect(stop).toBeHidden({ timeout: 10000 });
+        await expect(page.getByRole('button', { name: SIGN_IN_BUTTON })).toHaveCount(0);
       }
       if (agentId) {
         await requestJson<{ message?: string }>(page, {
