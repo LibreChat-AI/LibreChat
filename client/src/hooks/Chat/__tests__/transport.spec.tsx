@@ -4,6 +4,7 @@ import { useAtomValue, getDefaultStore } from 'jotai';
 import { RecoilRoot, useSetRecoilState } from 'recoil';
 import { useResumeOnLoad } from '@librechat/chat/react';
 import { act, renderHook, waitFor } from '@testing-library/react';
+import { useLegacyStream as useSSE } from '@librechat/chat/react';
 import { useChat, resumeRequestsAtom } from '@librechat/chat/react';
 import { useChatHelpers, useResumableSSE } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -41,7 +42,6 @@ import { startupConfigKey } from '~/data-provider/Endpoints/queries';
 import { StreamHostTestProvider } from 'test/streamHost';
 import { SteerHostTestProvider } from 'test/steerHost';
 import { ChatHostTestProvider } from 'test/chatHost';
-import useSSE from '~/hooks/SSE/useSSE';
 import store from '~/store';
 
 jest.mock('~/hooks/AuthContext', () => {
