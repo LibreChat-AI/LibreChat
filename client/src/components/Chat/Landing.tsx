@@ -166,7 +166,7 @@ export default function Landing({ centerFormOnLanding }: { centerFormOnLanding: 
             </div>
             {startupConfig?.showBirthdayIcon && (
               <TooltipAnchor
-                className="absolute right-2 bottom-[1.6875rem]"
+                className="absolute inset-e-2 bottom-[1.6875rem]"
                 description={localize('com_ui_happy_birthday')}
                 aria-label={localize('com_ui_happy_birthday')}
               >

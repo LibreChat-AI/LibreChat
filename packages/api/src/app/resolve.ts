@@ -1,20 +1,43 @@
 import { tenantStorage } from '@librechat/data-schemas';
 import type { AppConfig } from '@librechat/data-schemas';
+import type { GetAppConfigOptions } from './service';
 
 interface UserForConfigResolution {
   tenantId?: string;
   role?: string;
 }
 
-type GetAppConfig = (opts: {
-  role?: string;
-  tenantId?: string;
-  baseOnly?: boolean;
-}) => Promise<AppConfig>;
+type GetAppConfig = (opts: GetAppConfigOptions) => Promise<AppConfig>;
 
 /**
- * Resolves AppConfig scoped to the given user's tenant when available,
- * falling back to YAML-only base config for new users or non-tenant deployments.
+ * Config for a sign-in decision made before the user is known, such as the
+ * `registration.allowedDomains` check: librechat.yaml plus the `__base__` override of the
+ * request's tenant, or of the deployment outside a tenant (tenant from ALS). No principal is
+ * resolved, so nothing role-, group- or user-scoped is read.
+ *
+ * Fails closed: librechat.yaml alone can be broader than the policy an admin stored, so an
+ * override read failure must not decide sign-in on the YAML.
+ */
+export function resolvePreAuthAppConfig(getAppConfig: GetAppConfig): Promise<AppConfig> {
+  return getAppConfig({ skipRuntimeAugmentation: true, failClosed: true });
+}
+
+/**
+ * Config for the signed-out startup payload (`GET /api/config` without a session): the
+ * pre-auth config, falling back to librechat.yaml when overrides cannot be read, since it only
+ * renders the sign-in pages. Turnstile comes from librechat.yaml here as everywhere, because
+ * `turnstile` is a base-only section that no config document overrides.
+ */
+export function resolvePreLoginAppConfig(getAppConfig: GetAppConfig): Promise<AppConfig> {
+  return getAppConfig({ skipRuntimeAugmentation: true });
+}
+
+/**
+ * Resolves the config a sign-in continues under once the user is known: the pre-auth config
+ * plus the user's role overrides, in the user's tenant when it has one. An account about to be
+ * created is passed as its role alone and resolves in the request's tenant (ALS), the tenant it
+ * will be created in. Without a user it is the pre-auth config. Fails closed like
+ * `resolvePreAuthAppConfig`.
  *
  * Auth flows only apply role-level overrides (userId is not passed) because
  * user/group principal resolution requires heavier DB work that is deferred
@@ -30,10 +53,17 @@ export async function resolveAppConfigForUser(
   getAppConfig: GetAppConfig,
   user: UserForConfigResolution | null | undefined,
 ): Promise<AppConfig> {
-  if (user?.tenantId) {
-    return tenantStorage.run({ tenantId: user.tenantId }, async () =>
-      getAppConfig({ role: user.role, tenantId: user.tenantId }),
-    );
+  if (!user) {
+    return resolvePreAuthAppConfig(getAppConfig);
   }
-  return getAppConfig({ baseOnly: true });
+  const options: GetAppConfigOptions = {
+    role: user.role,
+    skipRuntimeAugmentation: true,
+    failClosed: true,
+  };
+  const { tenantId } = user;
+  if (tenantId) {
+    return tenantStorage.run({ tenantId }, async () => getAppConfig({ ...options, tenantId }));
+  }
+  return getAppConfig(options);
 }

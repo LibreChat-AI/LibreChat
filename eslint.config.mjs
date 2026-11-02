@@ -58,6 +58,7 @@ const chatLiteralAttributes = {
 export default [
   {
     ignores: [
+      'vendor/code/**/*',
       'client/dist/**/*',
       'client/public/**/*',
       'client/coverage/**/*',
@@ -351,10 +352,20 @@ export default [
             // that stylesheet, so its lint has no Tailwind entry that declares them.
             'markdown',
             'prose',
+            'prose-sm',
             'message-content',
             'submitting',
             'result-streaming',
             'result-thinking',
+            'shimmer',
+            'tool-status-text',
+            'message-render',
+            'message-timestamp',
+            'popover-animate',
+            // The thinking-level slider's spring curves, which have no theme token.
+            'composer-effort-glide',
+            'composer-effort-thumb',
+            'composer-effort-fill',
           ],
         },
       ],

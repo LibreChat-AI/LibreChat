@@ -47,6 +47,24 @@
           document.documentElement.style.setProperty('--ui-scale', String(uiScale));
         }
 
+        /* Direction before first paint, from the same sources `detectInitialLanguage` reads,
+         * so a right-to-left interface does not render one frame left-to-right. The list is
+         * the right-to-left locales the app ships; i18n.ts reapplies `dir` once it loads. */
+        const cookie = document.cookie.match(/(?:^|;\s*)lang=([^;]*)/);
+        let lang = cookie ? cookie[1] : '';
+        if (!lang) {
+          try {
+            lang = localStorage.getItem('lang') || '';
+            lang = JSON.parse(lang);
+          } catch (e) {
+            /* Stored unquoted, or Web Storage denied: the raw value or the browser language. */
+          }
+        }
+        lang = String(lang || navigator.language || '').toLowerCase();
+        if (['ar', 'he', 'fa', 'ug'].indexOf(lang.split(/[-_]/)[0]) !== -1) {
+          document.documentElement.dir = 'rtl';
+        }
+
         let theme = null;
         try {
           theme = localStorage.getItem('color-theme');

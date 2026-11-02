@@ -114,6 +114,7 @@ const vertexMultiRegionEndpointHosts = new Set(vertexMultiRegionEndpoints.values
 
 const blockedModelOptionParams = [
   'apiKey',
+  'apiVersion',
   'baseUrl',
   'baseURL',
   'endpoint',

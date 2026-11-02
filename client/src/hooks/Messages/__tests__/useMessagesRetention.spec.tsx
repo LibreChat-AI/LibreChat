@@ -100,7 +100,7 @@ describe('useMessagesRetention', () => {
     jest.useFakeTimers();
     getMessagesByConvoId.mockImplementation(async (id: string) => history(id));
     getStartupConfig.mockResolvedValue({
-      interface: { historyCacheTtlMs: TTL, historyCacheRecent: 1 },
+      interface: { historyCacheTtlMs: TTL, historyCacheRecent: 1, historyCacheMaxBytes: 4096 },
     } as TStartupConfig);
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     render(
@@ -149,6 +149,50 @@ describe('useMessagesRetention', () => {
     await open('idle');
     expect(fetchesOf('idle')).toBe(2);
     await waitFor(() => expect(isCached(queryClient, 'idle')).toBe(true));
+  });
+
+  it('releases a very large chat after switching to an existing small chat and refetches on return', async () => {
+    expect(await screen.findByText('transcript of idle')).toBeInTheDocument();
+    const largeHistory = history('large');
+    largeHistory.push({
+      ...largeHistory[0],
+      messageId: 'large-2',
+      text: 'x'.repeat(10_000),
+    });
+    let finishRefresh: (() => void) | undefined;
+    const smallRefresh = new Promise<TMessage[]>((resolve) => {
+      finishRefresh = () => resolve(history('small'));
+    });
+    let smallFetches = 0;
+    getMessagesByConvoId.mockImplementation(async (id: string) => {
+      if (id === 'small' && ++smallFetches === 2) {
+        return smallRefresh;
+      }
+      return id === 'large' ? largeHistory : history(id);
+    });
+    await open('small');
+    await open('large');
+    expect(isCached(queryClient, 'large')).toBe(true);
+    const partsKey = [QueryKeys.toolCallPart, 'large', 'large-2', 'call'];
+    queryClient.setQueryData(partsKey, { tool_call: { output: 'full output' } });
+
+    act(() => {
+      navigate('/c/small');
+    });
+    expect(screen.getByText('transcript of small')).toBeInTheDocument();
+    await waitFor(() => expect(fetchesOf('small')).toBe(2));
+    elapse(RELEASE_SETTLE_MS);
+
+    expect(screen.getByText('transcript of small')).toBeInTheDocument();
+    expect(isCached(queryClient, 'large')).toBe(false);
+    expect(isCached(queryClient, 'small')).toBe(true);
+    expect(queryClient.getQueryData(partsKey)).toBeUndefined();
+    await act(async () => {
+      finishRefresh?.();
+      await smallRefresh;
+    });
+    await open('large');
+    expect(fetchesOf('large')).toBe(2);
   });
 
   it('keeps the routed conversation while its view has not subscribed yet', async () => {

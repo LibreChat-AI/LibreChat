@@ -31,9 +31,11 @@ export async function findLdapUser({
 /**
  * Resolves the account an LDAP login continues as, carrying the directory's values: LDAP manages
  * these users' identity, so provider, `ldapId`, email, username and name are overwritten on every
- * login. Without an account, the user is created through `createUserOnce` (the deployment's first
- * user as ADMIN), and an account a concurrent first login created is admitted like a found account
- * and refreshed the same way. Returns the account with the config the login continues under.
+ * login. A found account continues under `appConfig`, its own config. Without an account, the
+ * user is created through `createUserOnce` (the deployment's first user as ADMIN), which admits
+ * it under that role's config, and an account a concurrent first login created is admitted like a
+ * found account and refreshed the same way. Returns the account with the config the login
+ * continues under.
  */
 export async function provisionLdapUser({
   user,
@@ -69,7 +71,6 @@ export async function provisionLdapUser({
     const result = await createUserOnce({
       newUser: { provider: 'ldap', ldapId, username, email, emailVerified: true, name, role },
       email,
-      appConfig,
       getAppConfig,
       getBalanceConfig,
       strategyName: 'ldapStrategy',

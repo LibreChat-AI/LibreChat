@@ -1,20 +1,31 @@
-import { PrincipalType, SystemRoles } from 'librechat-data-provider';
-import { logger, isValidObjectIdString, RoleConflictError } from '@librechat/data-schemas';
+import { PrincipalType, SystemRoles, partialWithoutDefaults } from 'librechat-data-provider';
+import {
+  logger,
+  RoleConflictError,
+  isConfigMoveRefused,
+  isValidObjectIdString,
+  BASE_CONFIG_PRINCIPAL_ID,
+} from '@librechat/data-schemas';
 import type {
   IRole,
   IUser,
-  IConfig,
+  ConfigRecord,
   AdminMember,
   ISystemGrant,
   AuditSeverity,
+  SystemGrantMove,
+  ConfigMoveOptions,
 } from '@librechat/data-schemas';
 import type { FilterQuery, Types } from 'mongoose';
 import type { Response } from 'express';
+import type { z } from 'zod';
 import type { ServerRequest } from '~/types/http';
 import type { RecordAuditEntry } from './audit';
-import { createAdminAuditEmitter, diffRolePermissions } from './audit';
+import type { CascadeStep } from './cascade';
+import { createAdminAuditEmitter, diffRolePermissions, configTarget } from './audit';
+import { cascadeStep, runCascade, invalidatingConfigStore } from './cascade';
 import { getSafeErrorMetadata } from '~/utils/errors';
-import { cascadeStep, runCascade } from './cascade';
+import { getActivePartition } from './partition';
 import { parsePagination } from './pagination';
 
 const systemRoleValues = new Set<string>(Object.values(SystemRoles));
@@ -35,6 +46,16 @@ const CONTROL_CHAR_RE = /\p{Cc}/u;
  */
 const RESERVED_ROLE_NAMES = new Set(['members', 'permissions']);
 
+/**
+ * Whether a role name keys its own config profile. The tenant-wide Base document is keyed
+ * `role` / `__base__`, so a role by that name (reserved now, but one may predate that) must
+ * never move or delete it: that would let `manage:roles` rewrite what every user gets, which
+ * otherwise needs broad `manage:configs`.
+ */
+function hasOwnConfigProfile(roleName: string): boolean {
+  return roleName !== BASE_CONFIG_PRINCIPAL_ID;
+}
+
 function validateNameParam(name: string): string | null {
   if (!name || typeof name !== 'string') {
     return 'name parameter is required';
@@ -48,22 +69,31 @@ function validateNameParam(name: string): string | null {
   return null;
 }
 
-function validateRoleName(name: unknown, required: boolean): string | null {
+/** A rejected role name as the 400 body; a reserved name carries a code the client can map. */
+interface RoleNameError {
+  error: string;
+  code?: 'ROLE_NAME_RESERVED';
+}
+
+function validateRoleName(name: unknown, required: boolean): RoleNameError | null {
   if (name === undefined) {
-    return required ? 'name is required' : null;
+    return required ? { error: 'name is required' } : null;
   }
   if (typeof name !== 'string' || !name.trim()) {
-    return required ? 'name is required' : 'name must be a non-empty string';
+    return { error: required ? 'name is required' : 'name must be a non-empty string' };
   }
   const trimmed = name.trim();
   if (trimmed.length > MAX_NAME_LENGTH) {
-    return `name must not exceed ${MAX_NAME_LENGTH} characters`;
+    return { error: `name must not exceed ${MAX_NAME_LENGTH} characters` };
   }
   if (CONTROL_CHAR_RE.test(trimmed)) {
-    return 'name contains invalid characters';
+    return { error: 'name contains invalid characters' };
   }
   if (RESERVED_ROLE_NAMES.has(trimmed)) {
-    return 'name is a reserved path segment';
+    return { error: 'name is a reserved path segment', code: 'ROLE_NAME_RESERVED' };
+  }
+  if (!hasOwnConfigProfile(trimmed)) {
+    return { error: 'name is reserved for the base config', code: 'ROLE_NAME_RESERVED' };
   }
   return null;
 }
@@ -91,19 +121,37 @@ interface RoleMemberParams extends RoleNameParams {
 
 export type RoleListItem = { _id: Types.ObjectId | string; name: string; description?: string };
 
+/**
+ * Role ids are names every tenant reuses, so every role operation here addresses the role of the
+ * caller's tenant partition and what it holds there (members, profile, grants and ACL entries):
+ * the active tenant's, or for an admin without a tenant only the platform-level ones, never each
+ * tenant's own role of the same name. The routes wire the data-schemas methods that keep to that
+ * partition, and a member added or removed by id must be a user of it too.
+ */
 export interface AdminRolesDeps {
+  /** The roles of the caller's tenant partition (`listRoles`). */
   listRoles: (options?: { limit?: number; offset?: number }) => Promise<RoleListItem[]>;
   countRoles: () => Promise<number>;
+  /**
+   * The role of exactly this name in the caller's tenant partition, read as stored
+   * (`getPartitionRole`); a missing system role is created there.
+   */
   getRoleByName: (name: string, fields?: string | string[] | null) => Promise<IRole | null>;
   createRoleByName: (roleData: Partial<IRole>) => Promise<IRole>;
-  updateRoleByName: (name: string, updates: Partial<IRole>) => Promise<IRole | null>;
+  /** With `options.id`, updates only the role document with that `_id`. */
+  updateRoleByName: (
+    name: string,
+    updates: Partial<IRole>,
+    options?: { id?: string },
+  ) => Promise<IRole | null>;
   updateAccessPermissions: (
     name: string,
     perms: Record<string, Record<string, boolean>>,
     roleData?: IRole,
   ) => Promise<void>;
   /** With `options.id`, deletes only the role that still has that `_id`, so a role recreated
-   * under the same name is never removed by a request that targeted the original. */
+   * under the same name is never removed by a request that targeted the original. Reassigns the
+   * role's members in the caller's partition to USER. */
   deleteRoleByName: (name: string, options?: { id?: string }) => Promise<IRole | null>;
   findUser: (
     criteria: FilterQuery<IUser>,
@@ -115,9 +163,16 @@ export interface AdminRolesDeps {
     data: Partial<IUser>,
     expectedState?: Record<string, unknown>,
   ) => Promise<IUser | null>;
+  /** Moves the role's members in the caller's partition to `newRole` (a rename's migration). */
   updateUsersByRole: (oldRole: string, newRole: string) => Promise<void>;
+  /** The ids of the role's members in the caller's partition. */
   findUserIdsByRole: (roleName: string) => Promise<string[]>;
-  updateUsersRoleByIds: (userIds: string[], newRole: string) => Promise<void>;
+  /** With `fromRole`, only users whose role is still that one change. */
+  updateUsersRoleByIds: (
+    userIds: string[],
+    newRole: string,
+    options?: { fromRole?: string },
+  ) => Promise<void>;
   listUsersByRole: (
     roleName: string,
     options?: { limit?: number; offset?: number },
@@ -127,16 +182,17 @@ export interface AdminRolesDeps {
   deleteConfig: (
     principalType: PrincipalType,
     principalId: string | Types.ObjectId,
-  ) => Promise<IConfig | null>;
-  /** Removes all ACL entries scoped to this principal. */
+  ) => Promise<ConfigRecord | null>;
+  /** Removes the role's ACL entries in the caller's partition (`deletePrincipalAclEntries`). */
   deleteAclEntries: (filter: {
     principalType: PrincipalType;
     principalId: string | Types.ObjectId;
   }) => Promise<void>;
   /** Drops cached prompt group access IDs; role deletion can remove PROMPTGROUP grants. */
   invalidatePromptGroupAccessContext?: () => Promise<void>;
-  /** Removes all system capability grants held by this principal and returns
-   * the removed grants so each can be audited. */
+  /** Removes the system capability grants this principal holds in one scope (exactly
+   * `tenantId`, or platform-level ones without it) and returns the removed grants so each can be
+   * audited. */
   deleteGrantsForPrincipal: (
     principalType: PrincipalType,
     principalId: string | Types.ObjectId,
@@ -152,14 +208,59 @@ export interface AdminRolesDeps {
     principalId: string,
     options?: { tenantId?: string },
   ) => Promise<ISystemGrant[]>;
+  /** A role's profile in the caller's tenant partition (platform-level without a tenant), the
+   * partition `renameConfigPrincipal` moves in. */
   findConfigByPrincipal?: (
     principalType: PrincipalType,
     principalId: string,
     options?: { includeInactive?: boolean },
-  ) => Promise<IConfig | null>;
+  ) => Promise<ConfigRecord | null>;
   /** Re-creates a deleted config document in full, only if none exists. Resolves
    * to whether it inserted. */
-  restoreConfig?: (snapshot: Record<string, unknown>) => Promise<boolean>;
+  restoreConfig?: (snapshot: ConfigRecord) => Promise<boolean>;
+  /**
+   * Role rename moves what is keyed by the role's name (this config profile, and the grants
+   * and ACL entries below), so it follows the role instead of applying to nobody, and to any
+   * later role that reuses the old name. Each move is undone if the rename cannot complete; a
+   * dependent without its mover stays where it is.
+   *
+   * Moves the config profile within the caller's tenant partition (platform-level without a
+   * tenant, never a tenant's role of the same name); `null` when there is none. Throws
+   * `ConfigMoveRefusedError`, changing nothing, when the new name already has one in that
+   * partition (`CONFIG_PRINCIPAL_EXISTS`) or either name is the Base principal id. With
+   * `identity`, moves only that document, and resolves to `null` when the source holds another.
+   */
+  renameConfigPrincipal?: (
+    principalType: PrincipalType,
+    fromPrincipalId: string,
+    toPrincipalId: string,
+    options?: ConfigMoveOptions,
+  ) => Promise<ConfigRecord | null>;
+  /** Moves the system grants of exactly `tenantId`, or platform-level ones without it; returns what it changed. */
+  moveGrantsToPrincipal?: (
+    principalType: PrincipalType,
+    fromPrincipalId: string,
+    toPrincipalId: string,
+    options?: { tenantId?: string },
+  ) => Promise<SystemGrantMove>;
+  /** Undoes exactly what `moveGrantsToPrincipal` returned it changed; a grant revoked since stays revoked. */
+  restoreMovedGrants?: (
+    principalType: PrincipalType,
+    fromPrincipalId: string,
+    toPrincipalId: string,
+    move: SystemGrantMove,
+  ) => Promise<void>;
+  /** Moves the ACL entries of the request's tenant (platform-level ones without a tenant) and
+   * returns their ids; with `ids`, moves only those (the undo). */
+  moveAclEntriesToPrincipal?: (
+    principalType: PrincipalType,
+    fromPrincipalId: string,
+    toPrincipalId: string,
+    options?: { ids?: readonly string[] },
+  ) => Promise<string[]>;
+  /** Clears the merged-config caches (on every instance, with Redis) once a rename moved a
+   * profile, or a deletion removed or restored one, before the response, as config writes do. */
+  invalidateConfigCaches?: (tenantId?: string) => Promise<void>;
   /** Optional audit emission for role mutations and the grants removed by the
    * role-deletion cascade. Failure is logged unless `auditFailClosed` is set. */
   recordAuditEntry?: RecordAuditEntry;
@@ -178,6 +279,53 @@ function memberChangeSeverity(...roles: Array<string | undefined>): AuditSeverit
 
 function roleTarget(name: string) {
   return { type: 'role', id: name, name };
+}
+
+/**
+ * Whether a user belongs to the caller's tenant partition, the one a role name addresses. Outside
+ * a tenant a user is found by id in any tenant, but a tenant user's `role` names that tenant's own
+ * role, so the platform role's member routes never change it.
+ */
+function isPartitionUser(user: Pick<IUser, 'tenantId'>): boolean {
+  return (user.tenantId || undefined) === getActivePartition();
+}
+
+/** The document a role was read as, so a write changes that role and no other of its name. */
+function roleIdentity(role: Pick<IRole, '_id'>): { id: string } | undefined {
+  return role._id != null ? { id: String(role._id) } : undefined;
+}
+
+/** What a role rename moved to the new name along with the role. */
+interface RoleDependentsMoved {
+  /** The profile as the new name now holds it; `null` when the role had none. */
+  config: ConfigRecord | null;
+  /** The grants that now apply under the new name: re-keyed, or already held there. */
+  grants: ISystemGrant[];
+  aclEntries: number;
+}
+
+type RoleRenameResult =
+  | { ok: true; role: IRole; moved: RoleDependentsMoved }
+  | { ok: false; code: 'ROLE_NOT_FOUND' | 'ROLE_CONFIG_CONFLICT' | 'ROLE_RENAME_FAILED' };
+
+function renameFailureResponse(
+  res: Response,
+  code: Extract<RoleRenameResult, { ok: false }>['code'],
+  newName: string,
+): Response {
+  if (code === 'ROLE_NOT_FOUND') {
+    return res.status(404).json({ error: 'Role not found' });
+  }
+  if (code === 'ROLE_CONFIG_CONFLICT') {
+    return res.status(409).json({
+      error: `A config profile already exists for role "${newName}"`,
+      code,
+    });
+  }
+  return res.status(500).json({
+    error: 'Failed to move the role profile, grants or permissions; the role was not renamed',
+    code,
+  });
 }
 
 export function createAdminRolesHandlers(deps: AdminRolesDeps): {
@@ -212,6 +360,11 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
     restoreConfig,
     findConfigByPrincipal,
     findGrantsForPrincipal,
+    renameConfigPrincipal,
+    moveGrantsToPrincipal,
+    restoreMovedGrants,
+    moveAclEntriesToPrincipal,
+    invalidateConfigCaches,
     recordAuditEntry,
     auditFailClosed,
     invalidatePromptGroupAccessContext,
@@ -242,9 +395,8 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
         severity: 'warning',
         target: { type: PrincipalType.ROLE, id: roleName, name: roleName },
         metadata: { capability: grant.capability },
-        /** Scope each entry to the removed grant's own tenant: a platform
-         * admin's role deletion can remove tenant-scoped grants, and those
-         * removals must land in the affected tenant's chain, not the caller's. */
+        /** Scope each entry to the removed grant's own tenant, so a removal
+         * always lands in the chain of the tenant whose grant it was. */
         tenantId: grant.tenantId,
       });
     }
@@ -288,7 +440,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       };
       const nameError = validateRoleName(name, true);
       if (nameError) {
-        return res.status(400).json({ error: nameError });
+        return res.status(400).json(nameError);
       }
       const descError = validateDescription(description);
       if (descError) {
@@ -333,7 +485,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       return;
     }
     try {
-      await updateUsersRoleByIds(migratedIds, currentName);
+      await updateUsersRoleByIds(migratedIds, currentName, { fromRole: newName });
     } catch (rollbackError) {
       logger.error(
         `[adminRoles] CRITICAL: rename rollback failed — ${migratedIds.length} users have dangling role "${newName}": [${migratedIds.join(', ')}]`,
@@ -343,7 +495,178 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
   }
 
   /**
-   * Renames a role by migrating users to the new name and updating the role document.
+   * Puts the role document back under its old name (and description) after a failed rename.
+   * The description goes back only while it is still the one this rename set, so an edit made
+   * meanwhile is kept. A role stored without a description gets the schema default (`''`)
+   * back: the update only sets fields, and an undefined one would be dropped, keeping the new
+   * description.
+   */
+  async function revertRoleUpdate(
+    existing: IRole,
+    currentName: string,
+    newName: string,
+    extraUpdates?: Partial<IRole>,
+  ): Promise<void> {
+    const revert: Partial<IRole> = { name: currentName };
+    if (extraUpdates?.description !== undefined) {
+      const renamed = await getRoleByName(newName).catch(() => null);
+      if (renamed?.description === extraUpdates.description) {
+        revert.description = existing.description ?? '';
+      }
+    }
+    try {
+      await updateRoleByName(newName, revert, roleIdentity(existing));
+    } catch (revertError) {
+      logger.error(
+        `[adminRoles] CRITICAL: rename rollback failed — role "${currentName}" is still named "${newName}"`,
+        getSafeErrorMetadata(revertError),
+      );
+    }
+  }
+
+  /**
+   * Moves what is keyed by the role's name, concurrently, and undoes every completed move when
+   * any fails. `configConflict` reports that the new name already had a profile; any other
+   * failure of the profile move (it kept changing, or a copy could not be withdrawn) is a
+   * failed rename, not a conflict at the new name.
+   */
+  async function moveRoleDependents(
+    currentName: string,
+    newName: string,
+    tenantId: string | undefined,
+  ): Promise<
+    | { ok: true; moved: RoleDependentsMoved }
+    | { ok: false; code: 'ROLE_CONFIG_CONFLICT' | 'ROLE_RENAME_FAILED' }
+  > {
+    let configConflict = false;
+    const steps: CascadeStep[] = [];
+    if (renameConfigPrincipal && hasOwnConfigProfile(currentName)) {
+      steps.push(
+        cascadeStep(
+          'config',
+          async () => {
+            try {
+              return await renameConfigPrincipal(PrincipalType.ROLE, currentName, newName);
+            } catch (error) {
+              configConflict = isConfigMoveRefused(error, 'CONFIG_PRINCIPAL_EXISTS');
+              throw error;
+            }
+          },
+          async (moved: ConfigRecord | null) => {
+            if (!moved) {
+              return;
+            }
+            /** Only the profile this rename moved goes back, with any edit made to it since. */
+            const restored = await renameConfigPrincipal(PrincipalType.ROLE, newName, currentName, {
+              identity: moved._id,
+            });
+            if (!restored) {
+              logger.warn(
+                `[adminRoles] rename rollback left role "${newName}"'s profile in place: it is no longer the one the rename moved`,
+              );
+            }
+          },
+        ),
+      );
+    }
+    if (moveGrantsToPrincipal) {
+      steps.push(
+        cascadeStep(
+          'grants',
+          () => moveGrantsToPrincipal(PrincipalType.ROLE, currentName, newName, { tenantId }),
+          restoreMovedGrants
+            ? (move: SystemGrantMove) =>
+                restoreMovedGrants(PrincipalType.ROLE, currentName, newName, move)
+            : undefined,
+        ),
+      );
+    }
+    if (moveAclEntriesToPrincipal) {
+      steps.push(
+        cascadeStep(
+          'acl',
+          () => moveAclEntriesToPrincipal(PrincipalType.ROLE, currentName, newName),
+          async (ids: string[]) => {
+            await moveAclEntriesToPrincipal(PrincipalType.ROLE, newName, currentName, { ids });
+          },
+        ),
+      );
+    }
+    if (steps.length === 0) {
+      return { ok: true, moved: { config: null, grants: [], aclEntries: 0 } };
+    }
+    const cascade = await runCascade(steps, '[adminRoles] rename');
+    if (cascade.failed.length > 0) {
+      await cascade.compensate();
+      return { ok: false, code: configConflict ? 'ROLE_CONFIG_CONFLICT' : 'ROLE_RENAME_FAILED' };
+    }
+    const { config, grants, acl } = cascade.removed as {
+      config?: ConfigRecord | null;
+      grants?: SystemGrantMove;
+      acl?: string[];
+    };
+    return {
+      ok: true,
+      moved: {
+        config: config ?? null,
+        grants: grants ? [...grants.moved, ...grants.superseded] : [],
+        aclEntries: acl?.length ?? 0,
+      },
+    };
+  }
+
+  /**
+   * Records a profile a rename moved in the config trail of both principals, so neither
+   * chain starts or ends without a cause: deleted from the old name, created at the new one.
+   */
+  async function emitProfileMove(
+    req: ServerRequest,
+    previousName: string,
+    newName: string,
+    profile: ConfigRecord | null,
+  ): Promise<void> {
+    if (!profile) {
+      return;
+    }
+    const from = configTarget(PrincipalType.ROLE, previousName);
+    const to = configTarget(PrincipalType.ROLE, newName);
+    await emitAudit(req, {
+      action: 'config.deleted',
+      target: from,
+      metadata: { cause: 'role_renamed', movedTo: to.id },
+    });
+    await emitAudit(req, {
+      action: 'config.created',
+      target: to,
+      metadata: {
+        operation: 'move',
+        cause: 'role_renamed',
+        movedFrom: from.id,
+        priority: profile.priority,
+      },
+    });
+  }
+
+  /** Clears what a rename's moves (or their undo) leave stale; failures are logged, not thrown. */
+  async function invalidateRenamedRole(tenantId: string | undefined): Promise<void> {
+    const results = await Promise.allSettled([
+      invalidateConfigCaches?.(tenantId),
+      invalidatePromptGroupAccessContext?.(),
+    ]);
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        logger.error(
+          '[adminRoles] cache invalidation after rename failed:',
+          getSafeErrorMetadata(result.reason),
+        );
+      }
+    }
+  }
+
+  /**
+   * Renames a role: migrates its users, renames the role document, then moves the config
+   * profile, grants and ACL entries keyed by the old name. A failure at any step undoes the
+   * earlier ones, so the role is either fully renamed or left as it was.
    *
    * The ID snapshot from `findUserIdsByRole` is a point-in-time read. Users assigned
    * to `currentName` between the snapshot and the bulk `updateUsersByRole` write will
@@ -351,23 +674,33 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
    * and only relevant under concurrent admin operations during a rename.
    */
   async function renameRole(
+    existing: IRole,
     currentName: string,
     newName: string,
+    tenantId: string | undefined,
     extraUpdates?: Partial<IRole>,
-  ): Promise<IRole | null> {
+  ): Promise<RoleRenameResult> {
     const migratedIds = await findUserIdsByRole(currentName);
     await updateUsersByRole(currentName, newName);
+    let role: IRole | null;
     try {
       const updates: Partial<IRole> = { name: newName, ...extraUpdates };
-      const role = await updateRoleByName(currentName, updates);
-      if (!role) {
-        await rollbackMigratedUsers(migratedIds, currentName, newName);
-      }
-      return role;
+      role = await updateRoleByName(currentName, updates, roleIdentity(existing));
     } catch (error) {
       await rollbackMigratedUsers(migratedIds, currentName, newName);
       throw error;
     }
+    if (!role) {
+      await rollbackMigratedUsers(migratedIds, currentName, newName);
+      return { ok: false, code: 'ROLE_NOT_FOUND' };
+    }
+    const dependents = await moveRoleDependents(currentName, newName, tenantId);
+    if (!dependents.ok) {
+      await revertRoleUpdate(existing, currentName, newName, extraUpdates);
+      await rollbackMigratedUsers(migratedIds, currentName, newName);
+    }
+    await invalidateRenamedRole(tenantId);
+    return dependents.ok ? { ok: true, role, moved: dependents.moved } : dependents;
   }
 
   async function updateRoleHandler(req: ServerRequest, res: Response) {
@@ -380,7 +713,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       const body = req.body as { name?: string; description?: string };
       const nameError = validateRoleName(body.name, false);
       if (nameError) {
-        return res.status(400).json({ error: nameError });
+        return res.status(400).json(nameError);
       }
       const descError = validateDescription(body.description);
       if (descError) {
@@ -403,9 +736,20 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       }
 
       if (isRename) {
-        const duplicate = await getRoleByName(trimmedName);
+        const [duplicate, targetProfile] = await Promise.all([
+          getRoleByName(trimmedName),
+          renameConfigPrincipal && findConfigByPrincipal
+            ? findConfigByPrincipal(PrincipalType.ROLE, trimmedName, { includeInactive: true })
+            : null,
+        ]);
         if (duplicate) {
           return res.status(409).json({ error: `Role "${trimmedName}" already exists` });
+        }
+        if (targetProfile) {
+          return res.status(409).json({
+            error: `A config profile already exists for role "${trimmedName}"`,
+            code: 'ROLE_CONFIG_CONFLICT',
+          });
         }
       }
 
@@ -425,19 +769,34 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       if (isRename) {
         const descUpdate =
           updates.description !== undefined ? { description: updates.description } : undefined;
-        const role = await renameRole(name, trimmedName, descUpdate);
-        if (!role) {
-          return res.status(404).json({ error: 'Role not found' });
+        const renamed = await renameRole(
+          existing,
+          name,
+          trimmedName,
+          req.user?.tenantId,
+          descUpdate,
+        );
+        if (!renamed.ok) {
+          return renameFailureResponse(res, renamed.code, trimmedName);
         }
+        const { role, moved } = renamed;
         await emitAudit(req, {
           action: 'role.updated',
           target: roleTarget(trimmedName),
-          metadata: { previousName: name, descriptionChanged: descUpdate !== undefined },
+          metadata: {
+            previousName: name,
+            descriptionChanged: descUpdate !== undefined,
+            configMoved: moved.config != null,
+            grantsMoved: moved.grants.length,
+            grantCapabilities: moved.grants.map((grant) => grant.capability).join(',') || null,
+            aclEntriesMoved: moved.aclEntries,
+          },
         });
+        await emitProfileMove(req, name, trimmedName, moved.config);
         return res.status(200).json({ role });
       }
 
-      const role = await updateRoleByName(name, updates);
+      const role = await updateRoleByName(name, updates, roleIdentity(existing));
       if (!role) {
         return res.status(404).json({ error: 'Role not found' });
       }
@@ -457,10 +816,8 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
   }
 
   /**
-   * The re-fetch via `getRoleByName` after `updateAccessPermissions` depends on the
-   * callee having written the updated document to the role cache. If the cache layer
-   * is refactored to stop writing from within `updateAccessPermissions`, this handler
-   * must be updated to perform an explicit uncached DB read.
+   * The re-fetch via `getRoleByName` after `updateAccessPermissions` reads the role as
+   * stored (`getPartitionRole` reads no cache), so it returns what the update wrote.
    */
   async function updateRolePermissionsHandler(req: ServerRequest, res: Response) {
     try {
@@ -565,28 +922,33 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       const grantSnapshot = findGrantsForPrincipal
         ? await findGrantsForPrincipal(PrincipalType.ROLE, name, { tenantId })
         : null;
+      const { deleteConfig: removeProfile, restoreConfig: restoreProfile } =
+        invalidatingConfigStore(
+          { deleteConfig, restoreConfig },
+          { invalidateConfigCaches, tenantId, logPrefix: '[adminRoles]' },
+        );
+      const configStep = cascadeStep(
+        'config',
+        () => removeProfile(PrincipalType.ROLE, name),
+        restoreProfile
+          ? async (config) => {
+              if (!config) {
+                return;
+              }
+              /** Insert-only: an override written after the snapshot is kept. */
+              const restored = await restoreProfile(config);
+              if (!restored) {
+                logger.warn('[adminRoles] config restore skipped, override exists:', name);
+              }
+            }
+          : undefined,
+        findConfigByPrincipal
+          ? () => findConfigByPrincipal(PrincipalType.ROLE, name, { includeInactive: true })
+          : undefined,
+      );
       const cascade = await runCascade(
         [
-          cascadeStep(
-            'config',
-            () => deleteConfig(PrincipalType.ROLE, name),
-            restoreConfig
-              ? async (config) => {
-                  if (!config) {
-                    return;
-                  }
-                  /** Insert-only: an override written after the snapshot is kept. */
-                  const plain = (config as { toObject?: () => unknown }).toObject?.() ?? config;
-                  const restored = await restoreConfig(plain as Record<string, unknown>);
-                  if (!restored) {
-                    logger.warn('[adminRoles] config restore skipped, override exists:', name);
-                  }
-                }
-              : undefined,
-            findConfigByPrincipal
-              ? () => findConfigByPrincipal(PrincipalType.ROLE, name, { includeInactive: true })
-              : undefined,
-          ),
+          ...(hasOwnConfigProfile(name) ? [configStep] : []),
           cascadeStep('acl', async () => {
             await deleteAclEntries({ principalType: PrincipalType.ROLE, principalId: name });
           }),
@@ -785,7 +1147,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       }
 
       const user = await findUser({ _id: userId });
-      if (!user) {
+      if (!user || !isPartitionUser(user)) {
         return res.status(404).json({ error: 'User not found' });
       }
 
@@ -872,7 +1234,7 @@ export function createAdminRolesHandlers(deps: AdminRolesDeps): {
       }
 
       const user = await findUser({ _id: userId });
-      if (!user) {
+      if (!user || !isPartitionUser(user)) {
         return res.status(404).json({ error: 'User not found' });
       }
 
@@ -950,8 +1312,8 @@ export interface RolePermissionsUpdateDeps {
 }
 
 export interface RolePermissionsUpdateConfig {
-  /** Zod object schema for one permission type; parsed as a partial update. */
-  schema: { partial: () => { parse: (value: unknown) => Record<string, boolean | undefined> } };
+  /** Zod object schema for one permission type; parsed as a partial update without its defaults. */
+  schema: z.ZodObject<Record<string, z.ZodType<boolean, boolean | undefined>>>;
   permissionType: string;
   errorMessage: string;
 }
@@ -974,14 +1336,11 @@ export function createRolePermissionsUpdateHandler(
 
   return async function updateRolePermissions(req, res) {
     const { roleName } = req.params as { roleName: string };
-    let parsedUpdates: Record<string, boolean | undefined>;
-    try {
-      parsedUpdates = config.schema.partial().parse(req.body);
-    } catch (error) {
-      return res
-        .status(400)
-        .send({ message: config.errorMessage, error: (error as { errors?: unknown }).errors });
+    const parsed = partialWithoutDefaults(config.schema).safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).send({ message: config.errorMessage, error: parsed.error.issues });
     }
+    const parsedUpdates: Record<string, boolean | undefined> = parsed.data;
 
     try {
       const role = await getRoleByName(roleName);

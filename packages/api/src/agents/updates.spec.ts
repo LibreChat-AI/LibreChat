@@ -78,6 +78,26 @@ function makeDeps(overrides: Partial<AgentManagementUpdateDeps> = {}): AgentMana
 }
 
 describe('Agent Management update handler', () => {
+  it('returns success for an unrelated update without truncating legacy oversized options', async () => {
+    const tool_options = { ['q' + '_mcp_z'.repeat(4000)]: { approval_mode: 'ask' as const } };
+    const stored = { ...existingAgent, tool_options };
+    const deps = makeDeps({
+      getAgentWithVersionCount: jest.fn().mockResolvedValue(stored),
+      updateAgent: jest.fn(async (req: Request, res: Response) => {
+        stored.name = req.body.name;
+        return res.json(stored);
+      }),
+    });
+    const response = makeResponse();
+    await createAgentManagementUpdateHandler(deps)(makeRequest(), response);
+    expect(stored.name).toBe(updatedAgent.name);
+    expect(response.status).toHaveBeenCalledWith(200);
+    expect(response.json).toHaveBeenCalledWith(
+      expect.objectContaining({ name: updatedAgent.name, tool_options }),
+    );
+    expect(stored.tool_options).toEqual(tool_options);
+  });
+
   it('delegates a partial update and returns the management projection', async () => {
     const deps = makeDeps();
     const request = makeRequest();

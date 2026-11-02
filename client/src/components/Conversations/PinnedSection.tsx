@@ -74,7 +74,7 @@ type PinnedRowDragItem = ConversationDragItem & { key: string };
 /** Mirrors a favorite row (h-9, icon, title) so the loading swap keeps height. */
 const FavoriteRowSkeleton = () => (
   <div className="flex w-full items-center rounded-lg p-2" aria-hidden="true">
-    <Skeleton className="mr-2 h-5 w-5 rounded-full" />
+    <Skeleton className="me-2 h-5 w-5 rounded-full" />
     <Skeleton className="h-4 w-24" />
   </div>
 );
@@ -715,7 +715,7 @@ const PinnedSection = ({
     >
       <div
         className={cn(
-          'flex h-8 w-full items-center pr-1',
+          'flex h-8 w-full items-center pe-1',
           isPinOver && canPin && 'bg-surface-nav-selected rounded-lg',
         )}
       >

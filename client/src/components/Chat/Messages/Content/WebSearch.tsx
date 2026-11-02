@@ -1,6 +1,14 @@
 import { useMemo, useState } from 'react';
 import { Tools } from 'librechat-data-provider';
+import { parseJsonField } from '@librechat/chat';
 import { Globe, ChevronDown, Info } from 'lucide-react';
+import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
+import {
+  useToolExpansion,
+  useToolContentRequest,
+  toolPanelSpacingClassName,
+  useToolCallIntent,
+} from '@librechat/chat/react';
 import {
   Button,
   HoverCard,
@@ -16,18 +24,14 @@ import type {
   PartMetadata,
   AnswerBoxResult,
 } from 'librechat-data-provider';
-import { useToolExpansion, useToolContentRequest, toolPanelSpacingClassName } from './disclosure';
 import { FaviconImage, getCleanDomain } from '~/components/Web/SourceHovercard';
 import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { collectSources, getUniqueDomainSources } from './sources';
 import { StackedFavicons } from '~/components/Web/Sources';
 import { isError } from './ToolOutput/OutputRenderer';
-import parseJsonField from './Parts/parseJsonField';
-import { useToolCallIntent } from './Parts/intent';
 import { useToolPreparation } from './preparation';
 import { useSearchContext } from '~/Providers';
 import SearchVerticals from './verticals';
-import { ROW_GLYPH_SLOT } from './rows';
 import ToolCall from './ToolCall';
 import cn from '~/utils/cn';
 
@@ -49,7 +53,7 @@ function SourceFaviconStack({ sources }: { sources: ValidSource[] }) {
           className={cn(
             'border-border-medium bg-surface-secondary relative flex items-center justify-center rounded-full border',
             'h-[1.375rem] w-[1.375rem]',
-            i > 0 && '-ml-2.5',
+            i > 0 && '-ms-2.5',
           )}
           style={{ zIndex: MAX_VISIBLE_FAVICONS - i }}
         >
@@ -295,7 +299,7 @@ export default function WebSearch({
                   variant="quiet"
                   size="icon"
                   className={cn(
-                    'ml-auto size-auto cursor-help rounded-md p-1 opacity-0',
+                    'ms-auto size-auto cursor-help rounded-md p-1 opacity-0',
                     'group-focus-within/websearch:opacity-100 group-hover/websearch:opacity-100',
                     'focus-visible:opacity-100',
                   )}
@@ -384,7 +388,7 @@ export default function WebSearch({
                             </span>
                           )}
                         </span>
-                        <span className="shrink-0 text-right">
+                        <span className="shrink-0 text-end">
                           <span className="text-text-secondary text-2xs block">{domain}</span>
                           {source.date && (
                             <span className="text-text-secondary text-3xs block">

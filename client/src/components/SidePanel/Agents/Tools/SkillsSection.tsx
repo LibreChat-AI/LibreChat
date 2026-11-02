@@ -331,13 +331,13 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
               aria-controls="skills-all-list"
               className={cn(
                 ROW,
-                'hover:bg-surface-secondary focus-visible:ring-ring-primary w-full text-left transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
+                'hover:bg-surface-secondary focus-visible:ring-ring-primary w-full text-start transition-colors focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
               )}
             >
               <ChevronRight
                 className={cn(
-                  'text-text-secondary size-4 shrink-0 transition-transform',
-                  allExpanded && 'rotate-90',
+                  'text-text-secondary size-4 shrink-0 transition-transform rtl:-scale-x-100',
+                  allExpanded && 'rotate-90 rtl:-rotate-90',
                 )}
                 aria-hidden="true"
               />
@@ -359,7 +359,7 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
                         ROW,
                         // `transition-none` beats the global `all` transition, so
                         // the highlight lands on the frame the pointer enters.
-                        'hover:bg-surface-secondary focus-visible:ring-ring-primary w-full text-left transition-none focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
+                        'hover:bg-surface-secondary focus-visible:ring-ring-primary w-full text-start transition-none focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
                       )}
                     >
                       <SkillIcon item={item} />
@@ -388,7 +388,7 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
                       onClick={() => onInfo(item)}
                       className={cn(
                         ROW,
-                        'focus-visible:ring-ring-primary min-w-0 flex-1 text-left focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
+                        'focus-visible:ring-ring-primary min-w-0 flex-1 text-start focus:outline-hidden focus-visible:ring-2 focus-visible:ring-inset',
                       )}
                     >
                       <SkillIcon item={item} />
@@ -399,7 +399,7 @@ export default function SkillsSection({ items, onInfo, onRemove, onAdd }: Props)
                       data-skill-remove=""
                       onClick={() => onRemove(item)}
                       aria-label={localize('com_ui_skills_remove', { name: item.name })}
-                      className="text-text-secondary hover:bg-surface-tertiary hover:text-text-primary focus-visible:ring-ring-primary mr-2 flex size-6 shrink-0 items-center justify-center rounded-md transition-colors focus:outline-hidden focus-visible:ring-2"
+                      className="text-text-secondary hover:bg-surface-tertiary hover:text-text-primary focus-visible:ring-ring-primary me-2 flex size-6 shrink-0 items-center justify-center rounded-md transition-colors focus:outline-hidden focus-visible:ring-2"
                     >
                       <X className="size-3.5" aria-hidden="true" />
                     </button>

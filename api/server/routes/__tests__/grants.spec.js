@@ -65,7 +65,7 @@ function createApp(user) {
     hasCapabilityForPrincipals: db.hasCapabilityForPrincipals,
     getHeldCapabilities: db.getHeldCapabilities,
     getCachedPrincipals,
-    checkRoleExists: async (name) => (await db.getRoleByName(name)) != null,
+    checkRoleExists: async (name) => (await db.getPartitionRole(name)) != null,
   });
 
   const app = express();
@@ -166,6 +166,29 @@ describe('Admin Grants Routes — Integration', () => {
       .expect(400);
 
     expect(res.body.error).toBe('Role not found');
+  });
+
+  it('POST / returns 400 for a role only a tenant holds, as the roles API addresses it', async () => {
+    const { tenantStorage } = require('@librechat/data-schemas');
+    await tenantStorage.run({ tenantId: 'tenant-a' }, () =>
+      db.createRoleByName({ name: 'tenant-only-role' }),
+    );
+    const app = createApp(adminUser);
+
+    const res = await request(app)
+      .post('/api/admin/grants')
+      .send({
+        principalType: PrincipalType.ROLE,
+        principalId: 'tenant-only-role',
+        capability: 'read:users',
+      })
+      .expect(400);
+
+    expect(res.body.error).toBe('Role not found');
+    expect(
+      await mongoose.models.SystemGrant.countDocuments({ principalId: 'tenant-only-role' }),
+    ).toBe(0);
+    await mongoose.models.Role.deleteMany({ name: 'tenant-only-role' });
   });
 
   it('POST / returns 401 without authenticated user', async () => {

@@ -1,11 +1,12 @@
 import { useRef, useState, useMemo, useCallback, useLayoutEffect } from 'react';
 import copy from 'copy-to-clipboard';
+import { isError } from '@librechat/chat';
 import { Button } from '@librechat/client';
-import { hasToolCallErrorPrefix, stripToolCallErrorPrefix } from 'librechat-data-provider';
+import { useToolContentPending } from '@librechat/chat/react';
+import { PANE_COPY_REVEAL } from '@librechat/chat/components';
+import { stripToolCallErrorPrefix } from 'librechat-data-provider';
 import type { UIEvent } from 'react';
 import CopyButton from '~/components/Messages/Content/CopyButton';
-import { useToolContentPending } from '../disclosure';
-import { PANE_COPY_REVEAL } from '../rows';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -23,21 +24,6 @@ function cleanError(text: string): string {
     cleaned = cleaned.slice(0, -'Please fix your mistakes.'.length).trim();
   }
   return cleaned;
-}
-
-/** The feedback a call gets when its input fails schema validation: the SDK
- *  returns it to the model as a plain `Error:` block closed by this sentence,
- *  with the run step still `completed`. Mirrors the server's own verdict in
- *  `completedToolExecutionStatus`, so a card, a group header and a phase
- *  agree with the label the server wrote for the same call. */
-const VALIDATION_FEEDBACK = /^Error:[\s\S]*\n Please fix your mistakes\.$/i;
-
-export function isError(text: string): boolean {
-  return (
-    hasToolCallErrorPrefix(text) ||
-    text.startsWith('Error processing tool') ||
-    VALIDATION_FEEDBACK.test(text)
-  );
 }
 
 function isStructuredText(text: string): boolean {
@@ -179,13 +165,14 @@ export default function OutputRenderer({
     <div>
       <div className="group/copy relative">
         {isJson ? (
-          <pre className="max-h-[18.75rem] overflow-auto rounded text-xs">
+          <pre dir="ltr" className="max-h-[18.75rem] overflow-auto rounded text-xs">
             <code className="hljs language-json !break-words !whitespace-pre-wrap">
               {displayText}
             </code>
           </pre>
         ) : (
           <pre
+            dir="ltr"
             ref={outputRef}
             onScroll={terminal ? handleOutputScroll : undefined}
             className={cn(
@@ -213,7 +200,7 @@ export default function OutputRenderer({
           disabled={contentPending}
           iconOnly
           label={localize('com_ui_copy')}
-          className={cn('bg-presentation absolute right-0 bottom-0 z-[1]', PANE_COPY_REVEAL)}
+          className={cn('bg-presentation absolute inset-e-0 bottom-0 z-[1]', PANE_COPY_REVEAL)}
         />
       </div>
       {error && rawError && rawError !== displayText && (
@@ -227,10 +214,15 @@ export default function OutputRenderer({
         </Button>
       )}
       {showErrorDetails && rawError && (
-        <pre className="text-status-error mt-2 max-h-[12.5rem] overflow-auto font-mono text-xs break-words whitespace-pre-wrap">
+        <pre
+          dir="ltr"
+          className="text-status-error mt-2 max-h-[12.5rem] overflow-auto font-mono text-xs break-words whitespace-pre-wrap"
+        >
           {rawError}
         </pre>
       )}
     </div>
   );
 }
+
+export { isError };

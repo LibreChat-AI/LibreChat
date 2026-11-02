@@ -1,4 +1,6 @@
 export { createAdminConfigHandlers } from './config';
+export { createAdminConfigReadHandlers } from './resolved';
+export { createAdminConfigCatalogHandlers, BUILT_IN_ENDPOINT_ENV } from './catalog';
 export { createAdminLangfuseHandlers } from './langfuse';
 export { createAdminGrantsHandlers } from './grants';
 export { createAdminGroupsHandlers } from './groups';
@@ -17,7 +19,9 @@ export {
 } from './audit';
 export { resolveConfigSecret, redactConfigSecretMaps } from './secrets';
 export type { AdminConfigDeps } from './config';
-export type { AdminLangfuseDeps } from './langfuse';
+export type { AdminConfigReadDeps } from './resolved';
+export type { AdminConfigCatalogDeps, CatalogScopeRequest, CatalogScopeUser } from './catalog';
+export type { AdminLangfuseDeps, LangfuseAdminConfig } from './langfuse';
 export type { AdminGrantsDeps, GrantPrincipalType } from './grants';
 export type { AdminGroupsDeps } from './groups';
 export type {

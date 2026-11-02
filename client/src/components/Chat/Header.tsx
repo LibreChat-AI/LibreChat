@@ -103,7 +103,7 @@ function Header({
       <div
         className={cn(
           'flex min-w-0 flex-1 items-center gap-2',
-          !isSmallScreen && 'pl-3 transition-all duration-200 ease-in-out',
+          !isSmallScreen && 'ps-3 transition-all duration-200 ease-in-out',
           hiddenBehindNav,
         )}
       >

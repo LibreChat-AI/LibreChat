@@ -213,7 +213,7 @@ const DeleteButton = memo(
         ) : (
           <>
             <TrashIcon className="text-text-destructive size-3.5 sm:size-4" />
-            {!isSmallScreen && <span className="ml-2">Delete</span>}
+            {!isSmallScreen && <span className="ms-2">Delete</span>}
           </>
         )}
       </Button>
@@ -469,7 +469,7 @@ export default function DataTable<TData, TValue>({
                 {headerGroup.headers.map((header) => (
                   <TableHead
                     key={header.id}
-                    className="bg-surface-secondary text-table-header-text px-2 text-left text-sm font-medium whitespace-nowrap sm:px-4"
+                    className="bg-surface-secondary text-table-header-text px-2 text-start text-sm font-medium whitespace-nowrap sm:px-4"
                     style={getColumnStyle(
                       header.column.columnDef as TableColumn<TData, TValue>,
                       isSmallScreen,

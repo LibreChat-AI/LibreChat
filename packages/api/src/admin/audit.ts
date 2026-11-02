@@ -19,6 +19,16 @@ export type AdminAuditEvent = Omit<RecordAuditEntryInput, 'actor' | 'context'>;
 
 export type AdminAuditEmitter = (req: ServerRequest, event: AdminAuditEvent) => Promise<void>;
 
+/** Audit target for a principal's override document. Records field paths and
+ * sections only: override values can carry secrets. */
+export function configTarget(
+  principalType: string,
+  principalId: string,
+): { type: 'config'; id: string; name: string } {
+  const key = `${principalType}:${principalId}`;
+  return { type: 'config', id: key, name: key };
+}
+
 /**
  * Whether resource permission updates fail closed. Their audit entry is written
  * before the ACL changes, so a failed write rejects the request with nothing

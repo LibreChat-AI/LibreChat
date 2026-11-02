@@ -25,7 +25,6 @@ const normalizeSavedSpeechEngine = (
 
 // Static atoms without localStorage
 const staticAtoms = {
-  abortScroll: atom<boolean>({ key: 'abortScroll', default: false }),
   optionSettings: atom<TOptionSettings>({ key: 'optionSettings', default: {} }),
   currentSettingsView: atom<SettingsViews>({
     key: 'currentSettingsView',
@@ -57,9 +56,8 @@ const localStorageAtoms = {
   chatTitleInTab: atomWithLocalStorage(CHAT_TITLE_IN_TAB_KEY, true),
 
   // Chat settings
-  enterToSend: atomWithLocalStorage('enterToSend', false),
+  enterToSend: atomWithLocalStorage('enterToSend', true),
   maximizeChatSpace: atomWithLocalStorage('maximizeChatSpace', false),
-  chatDirection: atomWithLocalStorage('chatDirection', 'LTR'),
   autoExpandTools: atomWithLocalStorage(LocalStorageKeys.AUTO_EXPAND_TOOLS, false),
   saveDrafts: atomWithLocalStorage('saveDrafts', true),
   /**

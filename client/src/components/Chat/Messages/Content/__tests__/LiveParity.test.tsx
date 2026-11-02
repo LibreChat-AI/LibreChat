@@ -2,6 +2,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Provider, useSetAtom } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
+import { resolveAskUserQuestionPart } from '@librechat/chat';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { ContentTypes, Tools, Constants, ToolCallTypes } from 'librechat-data-provider';
@@ -11,8 +12,7 @@ import type {
   TMessageContentParts,
   SearchResultData,
 } from 'librechat-data-provider';
-import { resolveAskUserQuestionPart } from '~/utils/approval';
-import { sandboxStartingByToolCallId } from '~/store';
+import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
 import ContentParts from '../ContentParts';
 import { getLiveActivity } from '../live';
 import * as mcpHooks from '~/hooks/MCP';

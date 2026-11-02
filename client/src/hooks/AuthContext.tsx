@@ -7,7 +7,7 @@ import {
   useCallback,
   createContext,
 } from 'react';
-import { debounce } from 'lodash';
+import debounce from 'lodash/debounce';
 import { getDefaultStore } from 'jotai';
 import { useNavigate } from 'react-router-dom';
 import { useRecoilState, useSetRecoilState } from 'recoil';
@@ -41,6 +41,7 @@ import {
   useGetUserQuery,
   endPullRequestSession,
   useLoginUserMutation,
+  clearTitleGenerationState,
   setPullRequestSessionOwner,
   useLogoutUserMutation,
   useRefreshTokenMutation,
@@ -69,6 +70,7 @@ const endSessionClientState = (): void => {
   clearRetainedFileDeletions();
   clearComposerDraftStorage();
   endPullRequestSession();
+  clearTitleGenerationState();
   void clearTTSCache();
 };
 /** `document.prerendering` is not yet part of TypeScript's DOM types. */
@@ -179,11 +181,13 @@ const AuthContextProvider = ({
        * setup route finish the previous user's enrollment and take the tab as them.
        */
       clearTwoFactorSetupToken();
-      if (twoFASetupRequired) {
+      if (twoFASetupRequired || twoFAPending) {
         const redirectTo = new URLSearchParams(window.location.search).get('redirect_to');
         if (redirectTo) {
           persistRedirectToSession(redirectTo);
         }
+      }
+      if (twoFASetupRequired) {
         persistTwoFactorSetupToken(tempToken ?? '');
         navigate('/login/2fa/setup', { replace: true });
         return;

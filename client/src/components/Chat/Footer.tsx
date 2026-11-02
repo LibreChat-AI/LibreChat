@@ -160,7 +160,7 @@ function Footer({ className, startupConfig, configuredOnly = false }: FooterProp
             <React.Fragment key={`footer-element-${index}`}>
               {contentRender}
               {!isLastElement && (
-                <div key={`separator-${index}`} className="border-border-medium h-2 border-r" />
+                <div key={`separator-${index}`} className="border-border-medium h-2 border-e" />
               )}
             </React.Fragment>
           );

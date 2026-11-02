@@ -1,6 +1,7 @@
 import type { BedrockDocumentFormat } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { Readable } from 'stream';
+import type { FileStorageDeletionObserver } from '~/files/dispatch';
 import type { DownloadURLParams } from '~/storage/types';
 import type { ServerRequest } from './http';
 export interface STTService {
@@ -192,5 +193,7 @@ export interface StrategyFunctions {
       user?: string;
       tenantId?: string | null;
     },
+    client?: unknown,
+    onDelete?: FileStorageDeletionObserver,
   ) => Promise<void>;
 }

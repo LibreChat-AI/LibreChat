@@ -2,8 +2,13 @@ import mongoose from 'mongoose';
 import { logger } from '@librechat/data-schemas';
 import type { TCheckpointerConfig, MCPOptions } from 'librechat-data-provider';
 import type { AllMethods, IMongoFile } from '@librechat/data-schemas';
+import type {
+  OAuthAclSubject,
+  MCPOAuthRetainedFence,
+  MCPOAuthTeardownOptions,
+} from '../mcp/oauth/cleanup';
 import type { CheckpointDeletion } from '~/agents/checkpoints/deletion';
-import type { OAuthAclSubject } from '../mcp/oauth/cleanup';
+import type { FileDeletionOutcome } from '../files/deletion';
 import {
   cleanupDeletedMCPServerOAuthUsers,
   prepareMCPServerOAuthDeletion,
@@ -34,6 +39,7 @@ type ErasureMethods = Pick<
   | 'deleteMCPServersWithAcl'
   | 'findMCPServerOAuthTokenUserIds'
   | 'findMCPServerViewerEntries'
+  | 'findMCPServerViewerUserIds'
   | 'deleteActions'
   | 'deleteTokens'
   | 'removeUserFromAllGroups'
@@ -54,7 +60,7 @@ export interface UserErasureDeps extends ErasureMethods {
   ) => Promise<CheckpointDeletion>;
   deleteSharedLinks: (userId: string) => Promise<unknown>;
   /** Removes stored file objects (local disk, S3, Firebase, vector store) before their metadata. */
-  deleteStoredFiles: (files: IMongoFile[]) => Promise<unknown>;
+  deleteStoredFiles: (files: IMongoFile[]) => Promise<Required<FileDeletionOutcome>>;
   /** Runtime cleanup for a removed MCP server; each hook is best effort. */
   invalidateMCPServerTools?: (serverName: string) => Promise<unknown>;
   disconnectMCPServer?: (serverName: string) => Promise<unknown>;
@@ -85,6 +91,7 @@ export interface MCPOAuthErasureHooks {
       mcpSettings?: { allowedDomains?: string[] | null; allowedAddresses?: string[] | null };
     },
     serverConfig?: MCPOptions,
+    teardown?: MCPOAuthTeardownOptions,
   ) => Promise<void>;
 }
 
@@ -104,6 +111,7 @@ export type MCPServerCleanupDeps = Pick<
   | 'disconnectMCPServer'
   | 'findMCPServerOAuthTokenUserIds'
   | 'findMCPServerViewerEntries'
+  | 'findMCPServerViewerUserIds'
   | 'mcpOAuth'
 >;
 
@@ -153,11 +161,15 @@ export async function deleteUserMCPServers(
           snapshot: await prepareMCPServerOAuthDeletion({
             getTokenUserIds: () => deps.findMCPServerOAuthTokenUserIds(serverName, tenantId),
             getAclEntries: () => deps.findMCPServerViewerEntries(id),
+            getViewerUserIds: deps.findMCPServerViewerUserIds,
           }),
         })),
       )
     : [];
 
+  /** Each user's OAuth fence stays held until the delete commits, so no authorization or refresh
+   * can persist credentials between the cleanup and the removal of the retry anchor. */
+  const fences: MCPOAuthRetainedFence[] = [];
   const cleanupSharedUsers = async (removed: typeof prepared): Promise<number> => {
     if (!oauth) {
       return 0;
@@ -177,21 +189,60 @@ export async function deleteUserMCPServers(
             await oauth.disconnectUser?.(candidateId, serverName);
           },
           uninstallOAuthMCP: oauth.uninstallOAuthMCP,
+          strictRevocation: true,
+          retainFence: (fence) => fences.push(fence),
         }),
       ),
     );
-    const failures = results.filter((result) => result.status === 'rejected');
-    for (const failure of failures) {
-      logger.error(`[eraseUserData] MCP OAuth cleanup failed for user ${userId}`, failure.reason);
-    }
-    return failures.length;
+    let failures = 0;
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        failures++;
+        logger.error(`[eraseUserData] MCP OAuth cleanup failed for user ${userId}`, result.reason);
+        return;
+      }
+      /** Local state is gone; the operator needs to know which provider grants may remain. */
+      for (const refusal of result.value) {
+        logger.error(
+          `[eraseUserData] OAuth provider for MCP server ${removed[index].serverName} did not revoke the ${refusal.tokenTypes.join(' and ')} token of user ${refusal.userId}; the external grant may remain valid`,
+        );
+      }
+    });
+    return failures;
   };
 
-  /** The server and its ACLs are the retry anchors, so they outlive a failed teardown. */
-  if ((await cleanupSharedUsers(prepared)) > 0) {
-    throw new Error('MCP OAuth cleanup failed for users of a server being removed');
+  try {
+    /** The server and its ACLs are the retry anchors, so they outlive a failed teardown. */
+    if ((await cleanupSharedUsers(prepared)) > 0) {
+      throw new Error('MCP OAuth cleanup failed for users of a server being removed');
+    }
+    /** A large teardown can outlive a lease; one that lapsed may have let a writer through. */
+    const renewed = await Promise.all(fences.map((fence) => fence.renew()));
+    if (renewed.includes(false)) {
+      throw new Error('An MCP OAuth teardown fence lapsed before the server was removed');
+    }
+    await deps.deleteMCPServersWithAcl(servers.map((s) => s.id));
+  } finally {
+    const releases = await Promise.allSettled(fences.map((fence) => fence.release()));
+    for (const result of releases) {
+      if (result.status === 'rejected') {
+        logger.warn('[eraseUserData] Failed to release an MCP OAuth teardown fence', result.reason);
+      }
+    }
   }
-  await deps.deleteMCPServersWithAcl(servers.map((s) => s.id));
+}
+
+/**
+ * Waits for independent deletes to settle, then rethrows the first failure in declaration
+ * order, so a failed step aborts the erasure with the same error as when they ran one by one.
+ */
+async function settleInOrder(steps: Array<Promise<unknown> | undefined>): Promise<void> {
+  const results = await Promise.allSettled(steps);
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      throw result.reason;
+    }
+  }
 }
 
 /**
@@ -230,12 +281,15 @@ export async function eraseUserData(
   await deps.deleteAllAgentQueuedTurnsForUser({ user: userObjectId });
   /** Before user keys: provider-stored files need the user's own assistants credentials. */
   const files = await deps.getFiles({ user: userId });
-  try {
-    await deps.deleteStoredFiles(files ?? []);
-  } catch (error) {
-    logger.error(`[eraseUserData] Failed to delete stored files for user ${userId}`, error);
+  const outcome = await deps.deleteStoredFiles(files ?? []);
+  const deleted = new Set(outcome.deletedFileIds);
+  if (outcome.failedFileIds.length > 0 || files?.some((file) => !deleted.has(file.file_id))) {
+    throw new Error('Stored file deletion incomplete');
   }
-  await deps.deleteFiles([], userId);
+  await deps.deleteFiles([...deleted], undefined, { files: files ?? [], userId });
+  if ((await deps.getFiles({ user: userId }, undefined, { _id: 1 }, 1))?.length) {
+    throw new Error('Stored file deletion incomplete');
+  }
   await deps.deleteAllUserSessions({ userId });
   deps.onSessionsDeleted?.();
   await deps.deleteRefreshTokenBridges({ userId, tenantId });
@@ -244,21 +298,22 @@ export async function eraseUserData(
     await deps.deleteRefreshTokenBridges({ userId });
   }
   await deps.deletePasskeysByUser(userId);
-  if (!keepTransactions) {
-    await deps.deleteTransactions({ user: userId });
-  }
   await deps.deleteUserKey({ userId, all: true });
-  await deps.deleteBalances({ user: userObjectId });
-  await deps.deletePresets(userId);
-  await deps.deleteAllUserPluginAuths(userId);
+  /** Leaf collections nothing later in the erasure reads, so they are removed together. */
+  await settleInOrder([
+    keepTransactions ? undefined : deps.deleteTransactions({ user: userId }),
+    deps.deleteBalances({ user: userObjectId }),
+    deps.deletePresets(userId),
+    deps.deleteAllUserPluginAuths(userId),
+    deps.deleteToolCalls(userId),
+    deps.deleteConversationTags({ user: userId }),
+    deps.deleteUserToolFavorites(userId),
+    deps.deleteAllUserMemories(userId),
+  ]);
   await deps.deleteSharedLinks(userId);
-  await deps.deleteToolCalls(userId);
   await deps.deleteUserAgents(userId);
   await deps.deleteAllAgentApiKeys(userObjectId);
   await deps.deleteAssistants({ user: userId });
-  await deps.deleteConversationTags({ user: userId });
-  await deps.deleteUserToolFavorites(userId);
-  await deps.deleteAllUserMemories(userId);
   await deps.deleteUserPrompts(userId);
   await deps.deleteUserSkills(userId);
   await deleteUserMCPServers(userId, deps, tenantId);

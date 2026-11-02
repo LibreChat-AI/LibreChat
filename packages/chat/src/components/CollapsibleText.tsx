@@ -5,6 +5,8 @@ import type { ReactNode, NamedExoticComponent } from 'react';
 
 type CollapsibleTextProps = {
   enabled: boolean;
+  hasMore?: boolean;
+  onExpand?: () => void;
   children: ReactNode;
 };
 
@@ -26,6 +28,8 @@ const OVERFLOW_TOLERANCE = 8;
  */
 const CollapsibleText: NamedExoticComponent<CollapsibleTextProps> = memo(function CollapsibleText({
   enabled,
+  hasMore = false,
+  onExpand,
   children,
 }: CollapsibleTextProps) {
   const localize = useLocalize();
@@ -88,6 +92,7 @@ const CollapsibleText: NamedExoticComponent<CollapsibleTextProps> = memo(functio
     const boundary = event.currentTarget.getBoundingClientRect().top + collapsedMaxHeight;
     if (target.getBoundingClientRect().bottom > boundary) {
       setExpanded(true);
+      onExpand?.();
     }
   };
 
@@ -109,12 +114,15 @@ const CollapsibleText: NamedExoticComponent<CollapsibleTextProps> = memo(functio
           />
         )}
       </div>
-      {overflowing && (
+      {(overflowing || hasMore) && (
         <Button
           type="button"
           variant="link"
           size="bare"
-          onClick={() => setExpanded((prev) => !prev)}
+          onClick={() => {
+            if (!expanded) onExpand?.();
+            setExpanded((prev) => !prev);
+          }}
           aria-expanded={expanded}
           aria-controls={contentId}
           className="mt-1 gap-1 text-xs"

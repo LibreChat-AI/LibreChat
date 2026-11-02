@@ -1,10 +1,11 @@
 import { memo, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { getToolDisplayLabel } from '@librechat/chat';
 import { ArrowUpRight, ChevronDown, Square } from 'lucide-react';
 import { IconButton, Spinner, TooltipAnchor } from '@librechat/client';
 import type { TaskRow, TaskRowDelivery, TaskRowStatus } from './rows';
 import type { TranslationKeys } from '~/hooks/useLocalize';
-import { getRunStepDurationLabels, getToolDisplayLabel, cn } from '~/utils';
+import { getRunStepDurationLabels, cn } from '~/utils';
 import { Collapse } from '~/components/ui';
 import { useLocalize } from '~/hooks';
 
@@ -85,7 +86,7 @@ function TaskCard({
                 setVisited(true);
                 setOpen((value) => !value);
               }}
-              className="text-text-primary focus-visible:ring-focus-control flex max-w-full items-start gap-1 rounded text-left text-sm focus-visible:ring-2 focus-visible:outline-none"
+              className="text-text-primary focus-visible:ring-focus-control flex max-w-full items-start gap-1 rounded text-start text-sm focus-visible:ring-2 focus-visible:outline-none"
             >
               <span className="line-clamp-2 break-words">
                 <span className={cn(active && 'shimmer')}>{title}</span>

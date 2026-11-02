@@ -791,6 +791,7 @@ async function assertResumeAgentContentAllowed({
     subagentsEnabled,
     getAgent: async (filter) => (await dependencies.getAgent(filter)) ?? null,
     canAccessAgent: (agent) => dependencies.canAccessAgent(agent, user),
+    appConfig,
   });
   const memoryAgentDefinition = hasResumeAgentDefinitionProtection(appConfig)
     ? await getResumeMemoryAgentDefinition(appConfig, primaryAgent, dependencies)

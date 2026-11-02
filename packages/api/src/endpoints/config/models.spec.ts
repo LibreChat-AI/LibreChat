@@ -1,4 +1,6 @@
-import { AuthType, EModelEndpoint } from 'librechat-data-provider';
+import { AppService } from '@librechat/data-schemas';
+import { AuthType, PrincipalType, EModelEndpoint } from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
 import type { ServerRequest } from '~/types';
 
 const mockValidateEndpointURL = jest.fn().mockResolvedValue(undefined);
@@ -17,6 +19,8 @@ jest.mock('~/utils', () => {
 
 import { SCOPED_TOKEN_CONFIG_KEY_PREFIX } from '../keys';
 import { createLoadConfigModels, configuredModelList } from './models';
+import { createEnvReferencePolicy } from '~/app/allowlist';
+import { mergeOverrideLayers } from '~/app/overrides';
 
 describe('createLoadConfigModels – user-provided baseURL header guard', () => {
   const fetchModels = jest.fn().mockResolvedValue([]);
@@ -351,5 +355,78 @@ describe('configuredModelList', () => {
     expect(configuredModelList(appConfig, EModelEndpoint.openAI)).toEqual(['a', 'b']);
     expect(configuredModelList(appConfig, EModelEndpoint.google)).toBeUndefined();
     expect(configuredModelList(undefined, EModelEndpoint.anthropic)).toBeUndefined();
+  });
+});
+
+describe('createLoadConfigModels – Azure and Vertex models a profile merges', () => {
+  const east = {
+    group: 'east',
+    apiKey: 'east-key',
+    instanceName: 'east',
+    version: '2024-10-21',
+    deploymentName: 'gpt-4o',
+    assistants: true,
+    models: { 'gpt-4o': true },
+  };
+  const load = (config: AppConfig) =>
+    createLoadConfigModels({
+      getAppConfig: jest.fn(),
+      getUserKeyValues: jest.fn(),
+      fetchModels: jest.fn(),
+    })({ user: { id: 'user-1' }, config } as unknown as ServerRequest);
+
+  it("serves librechat.yaml's Azure models with those a profile's group adds, with re-derivation on", async () => {
+    const yaml = { endpoints: { azureOpenAI: { assistants: true, groups: [east] } } };
+    const base = await AppService({ config: structuredClone(yaml) });
+    const merge = (rederiveEndpoints: boolean) =>
+      mergeOverrideLayers(
+        base,
+        [
+          {
+            principalType: PrincipalType.ROLE,
+            principalId: 'USER',
+            priority: 10,
+            overrides: {
+              endpoints: {
+                azureOpenAI: {
+                  groups: [
+                    { group: 'east', models: { 'gpt-4o-mini': { deploymentName: 'mini' } } },
+                  ],
+                },
+              },
+            },
+          },
+        ],
+        { envPolicy: createEnvReferencePolicy({ config: yaml }), rederiveEndpoints },
+      );
+
+    const models = await load(merge(true));
+    const inert = await load(merge(false));
+    expect(models[EModelEndpoint.azureOpenAI]).toEqual(['gpt-4o', 'gpt-4o-mini']);
+    expect(models[EModelEndpoint.azureAssistants]).toEqual(['gpt-4o', 'gpt-4o-mini']);
+    expect(inert[EModelEndpoint.azureOpenAI]).toEqual(['gpt-4o']);
+    expect(inert[EModelEndpoint.azureAssistants]).toEqual(['gpt-4o']);
+  });
+
+  it('serves the Vertex AI models a profile writes, with re-derivation on', async () => {
+    const yaml = {
+      endpoints: { anthropic: { vertex: { region: 'global', models: ['claude-sonnet-4-6'] } } },
+    };
+    const base = await AppService({ config: structuredClone(yaml) });
+    const merged = mergeOverrideLayers(
+      base,
+      [
+        {
+          principalType: PrincipalType.ROLE,
+          principalId: 'USER',
+          priority: 10,
+          overrides: { endpoints: { anthropic: { vertex: { models: ['claude-opus-4-8'] } } } },
+        },
+      ],
+      { envPolicy: createEnvReferencePolicy({ config: yaml }), rederiveEndpoints: true },
+    );
+
+    expect((await load(base))[EModelEndpoint.anthropic]).toEqual(['claude-sonnet-4-6']);
+    expect((await load(merged))[EModelEndpoint.anthropic]).toEqual(['claude-opus-4-8']);
   });
 });

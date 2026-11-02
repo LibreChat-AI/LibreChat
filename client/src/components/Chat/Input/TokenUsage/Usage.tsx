@@ -80,7 +80,7 @@ export default function Usage({
         <h3 aria-labelledby={headingId}>
           <CollapsibleTrigger
             disabled={usage == null}
-            className="group flex w-full items-start justify-between text-left"
+            className="group flex w-full items-start justify-between text-start"
           >
             <span className="min-w-0">
               <span
@@ -93,7 +93,7 @@ export default function Usage({
                 <span className="text-text-secondary block text-xs">{subtitle}</span>
               )}
             </span>
-            <span className="ml-3 flex shrink-0 items-center gap-2">
+            <span className="ms-3 flex shrink-0 items-center gap-2">
               {cost != null && Number.isFinite(cost) && (
                 <span
                   className="text-text-primary text-sm font-medium tabular-nums"

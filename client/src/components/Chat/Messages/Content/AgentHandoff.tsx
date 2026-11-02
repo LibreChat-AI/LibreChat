@@ -2,16 +2,16 @@ import React, { useEffect, useId, useMemo, useRef, useState, useCallback } from 
 import copy from 'copy-to-clipboard';
 import { ChevronDown } from 'lucide-react';
 import { Button } from '@librechat/client';
+import { unescapeJsonString } from '@librechat/chat';
 import { EModelEndpoint, Constants } from 'librechat-data-provider';
-import type { TMessage } from 'librechat-data-provider';
-import type { TranslationKeys } from '~/hooks';
 import {
   useToolContentRequest,
   useToolContentPending,
   toolPanelSpacingClassName,
-} from './disclosure';
+} from '@librechat/chat/react';
+import type { TMessage } from 'librechat-data-provider';
+import type { TranslationKeys } from '~/hooks';
 import CopyButton from '~/components/Messages/Content/CopyButton';
-import { unescapeJsonString } from './Parts/parseJsonField';
 import MessageIcon from '~/components/Share/MessageIcon';
 import { useLocalize, useExpandCollapse } from '~/hooks';
 import { useAgentsMapContext } from '~/Providers';
@@ -206,7 +206,7 @@ const AgentHandoff: React.FC<AgentHandoffProps> = ({ name, args: _args = '' }) =
               aria-labelledby={headingId}
               className={cn(
                 toolPanelSpacingClassName,
-                'group/handoff border-border-medium ml-8 max-w-3xl border-l-2 py-1 pr-1 pl-4',
+                'group/handoff border-border-medium ms-8 max-w-3xl border-s-2 py-1 ps-4 pe-1',
               )}
             >
               <div className="mb-1.5 flex min-h-5 items-center justify-between gap-2">

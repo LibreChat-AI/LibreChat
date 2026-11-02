@@ -35,6 +35,7 @@ import { useAuthContext, useAgentsMap, useDefaultConvo, useSubmitMessage } from 
 import { startupConfigKey, useGetAgentByIdQuery } from '~/data-provider';
 import { useChatContext, useChatFormContext } from '~/Providers';
 import { isHistoryRevalidating } from '~/hooks/Chat/ask/guards';
+import { consumeComposerQuery } from '~/utils/drafts';
 import store from '~/store';
 
 const PROJECT_ID_SEARCH_PARAM = 'projectId';
@@ -127,7 +128,7 @@ export default function useQueryParams({
   submitMessageRef.current = submitMessage;
 
   const queryClient = useQueryClient();
-  const { conversation, newConversation } = useChatContext();
+  const { conversation, newConversation, index = 0 } = useChatContext();
 
   const urlAgentId = searchParams.get('agent_id') || '';
   const { data: urlAgent } = useGetAgentByIdQuery(urlAgentId);
@@ -143,6 +144,18 @@ export default function useQueryParams({
 
   const conversationRef = useRef(conversation);
   conversationRef.current = conversation;
+
+  const clearConsumedSearchParams = useCallback(() => {
+    const params = getPreservedSearchParams();
+    consumeComposerQuery(
+      index,
+      conversationRef.current?.conversationId ?? Constants.NEW_CONVO,
+      routeRef.current.pathname,
+      routeRef.current.search,
+      params.toString(),
+    );
+    setSearchParamsRef.current(params, { replace: true });
+  }, [index, getPreservedSearchParams]);
 
   const ownsComposer = useCallback(() => {
     const currentId = conversationRef.current?.conversationId;
@@ -473,7 +486,7 @@ export default function useQueryParams({
       }
       validatingRef.current = false;
       if (ownsRequest(requestId)) {
-        setSearchParamsRef.current(getPreservedSearchParams(), { replace: true });
+        clearConsumedSearchParams();
       }
     };
     methods.handleSubmit(
@@ -508,7 +521,7 @@ export default function useQueryParams({
     ownsRequest,
     isHistoryPending,
     areSettingsApplied,
-    getPreservedSearchParams,
+    clearConsumedSearchParams,
     restoreUrlPrompt,
     settlePrompt,
   ]);
@@ -616,7 +629,7 @@ export default function useQueryParams({
         // Defer URL cleanup until after submission completes (processSubmission handles it)
         if ((!willAutoSubmit || !decodedPrompt.trim()) && ownsRequest()) {
           settlePrompt();
-          setSearchParamsRef.current(getPreservedSearchParams(), { replace: true });
+          clearConsumedSearchParams();
         }
       };
 
@@ -648,7 +661,7 @@ export default function useQueryParams({
               setSubmissionStatus('failed');
               logger.log('conversation', 'Settings application timeout, retaining prompt');
               settlePrompt();
-              setSearchParamsRef.current(getPreservedSearchParams(), { replace: true });
+              clearConsumedSearchParams();
             }
           }, MAX_SETTINGS_WAIT_MS);
         }
@@ -673,7 +686,7 @@ export default function useQueryParams({
     newQueryConvo,
     newConversation,
     submitMessage,
-    getPreservedSearchParams,
+    clearConsumedSearchParams,
     queryClient,
     processSubmission,
     areSettingsApplied,

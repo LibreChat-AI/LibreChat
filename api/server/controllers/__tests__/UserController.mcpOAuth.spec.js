@@ -20,7 +20,11 @@ jest.mock('@librechat/data-schemas', () => ({
 jest.mock('librechat-data-provider', () => ({
   ...jest.requireActual('librechat-data-provider'),
   Tools: {},
-  Constants: { mcp_delimiter: '_mcp_', mcp_prefix: 'mcp_' },
+  Constants: {
+    ...jest.requireActual('librechat-data-provider').Constants,
+    mcp_delimiter: '_mcp_',
+    mcp_prefix: 'mcp_',
+  },
   FileSources: {},
 }));
 

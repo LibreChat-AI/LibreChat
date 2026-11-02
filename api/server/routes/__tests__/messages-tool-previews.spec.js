@@ -129,11 +129,12 @@ describe('tool-call previews on the message routes', () => {
 
     const messagesRouter = require('../messages');
     app = express();
-    app.use(express.json({ limit: '10mb' }));
+    app.use(express.json({ limit: '3mb' }));
     app.use((req, _res, next) => {
       req.user = { id: req.headers['x-user'] ?? OWNER };
       next();
     });
+    app.get('/health', (_req, res) => res.sendStatus(200));
     app.use('/api/messages', messagesRouter);
   });
 
@@ -200,6 +201,83 @@ describe('tool-call previews on the message routes', () => {
     });
     expect(message.content[2].tool_call).not.toHaveProperty('subagent_content');
     expect(message.content[0]).toEqual({ type: 'text', text: 'Building now', agentId: 'agent_a' });
+  });
+
+  it('previews a persisted large client-authored transcript with repeated attachment scopes', async () => {
+    const messageId = 'repeated-attachments';
+    const payload = {
+      messageId,
+      parentMessageId: 'user-1',
+      isCreatedByUser: false,
+      text: '',
+      content: [
+        {
+          type: 'tool_call',
+          tool_call: {
+            id: 'parent',
+            name: 'subagent',
+            output: 'done',
+            subagent_content: Array.from({ length: 10_000 }, () => ({
+              type: 'tool_call',
+              tool_call: { id: 'x' },
+            })),
+          },
+        },
+      ],
+      attachments: Array.from({ length: 30_000 }, () => ({ toolCallId: 'x' })),
+    };
+    expect(Buffer.byteLength(JSON.stringify(payload))).toBeLessThan(3 * 1024 * 1024);
+    const saved = await request(app).post(`/api/messages/${conversationId}`).send(payload);
+    expect(saved.status).toBe(201);
+
+    const started = performance.now();
+    const [response, health] = await Promise.all([
+      request(app).get(`/api/messages/${conversationId}?toolPreviews=1`),
+      new Promise((resolve) => setTimeout(resolve, 25)).then(() => request(app).get('/health')),
+    ]);
+    expect(health.status).toBe(200);
+    expect(response.status).toBe(200);
+    const preview = response.body.find((message) => message.messageId === messageId);
+    expect(preview.content[0].tool_call).toMatchObject({
+      subagentContentOmitted: true,
+      subagentAttachmentCalls: [{ id: 'x' }],
+    });
+    expect(preview.content[0].tool_call).not.toHaveProperty('subagent_content');
+    expect(performance.now() - started).toBeLessThan(3_000);
+    const [stored] = await mockDb.methods.getMessages({ messageId, user: OWNER });
+    expect(stored.content[0].tool_call.subagent_content).toHaveLength(10_000);
+  });
+
+  it('previews a stored long decimal without changing its numeric text or stored output', async () => {
+    const output = `{"n":1.${'0'.repeat(80_000)}1}`;
+    const messageId = 'long-decimal';
+    const content = [
+      {
+        type: 'tool_call',
+        tool_call: { id: 'call_decimal', type: 'tool_call', name: 'bash_tool', output },
+      },
+    ];
+    const saved = await request(app)
+      .post(`/api/messages/${conversationId}`)
+      .send({ messageId, endpoint: 'agents', content });
+    expect(saved.status).toBe(201);
+    expect(saved.body.content).toEqual(content);
+
+    const response = await request(app).get(`/api/messages/${conversationId}?toolPreviews=1`);
+    expect(response.status).toBe(200);
+    const preview = response.body.find((message) => message.messageId === messageId);
+    const call = preview.content[0].tool_call;
+    expect(call).toMatchObject({ outputTruncated: true, outputLength: output.length });
+    expect(call.output).toHaveLength(512);
+    const [head, tail] = call.output.split('\n…\n');
+    expect(head).toBe(output.slice(0, head.length));
+    expect(tail).toBe(output.slice(-tail.length));
+
+    const full = await request(app).get(`/api/messages/${conversationId}`);
+    expect(full.status).toBe(200);
+    expect(full.body.find((message) => message.messageId === messageId).content).toEqual(content);
+    const [stored] = await mockDb.methods.getMessages({ messageId, user: OWNER });
+    expect(stored.content).toEqual(content);
   });
 
   it('sends the full payload to an older client that does not ask', async () => {

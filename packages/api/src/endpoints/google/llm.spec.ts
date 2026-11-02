@@ -575,6 +575,21 @@ describe('getGoogleConfig', () => {
       });
     });
 
+    /** The SDK builds the request URL from `apiVersion`; only server config may choose it. */
+    it('should ignore a model option apiVersion override', () => {
+      const credentials = { [AuthKeys.GOOGLE_API_KEY]: 'server-api-key' };
+
+      const result = getGoogleConfig(credentials, {
+        modelOptions: {
+          model: 'gemini-2.5-flash',
+          apiVersion: 'v1alpha',
+        } as t.GoogleParameters,
+      });
+
+      expect(result.llmConfig).not.toHaveProperty('apiVersion');
+      expect(result.llmConfig).toHaveProperty('model', 'gemini-2.5-flash');
+    });
+
     it('should ignore non-Google Vertex AI endpoint overrides from additional params', () => {
       process.env.GOOGLE_LOC = 'us';
 

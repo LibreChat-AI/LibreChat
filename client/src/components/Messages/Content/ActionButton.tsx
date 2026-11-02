@@ -48,7 +48,7 @@ const ActionButton = React.forwardRef<HTMLButtonElement, ActionButtonProps>(
           'hover:bg-surface-hover hover:text-text-primary',
           'disabled:pointer-events-none disabled:opacity-50',
           'focus-visible:outline-focus-subtle focus-visible:outline focus-visible:outline-2',
-          iconOnly ? 'rounded-lg p-1.5' : 'ml-auto gap-2 rounded-md px-2 py-1',
+          iconOnly ? 'rounded-lg p-1.5' : 'ms-auto gap-2 rounded-md px-2 py-1',
           className,
         )}
       >

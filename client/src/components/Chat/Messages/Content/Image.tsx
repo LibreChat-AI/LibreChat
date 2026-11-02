@@ -96,7 +96,7 @@ const Image = ({
   const showSkeleton = hasDimensions && !paintedUrls.has(absoluteImageUrl);
 
   return (
-    <div className={alignRight ? 'ml-auto' : undefined}>
+    <div className={alignRight ? 'ms-auto' : undefined}>
       <button
         ref={triggerRef}
         type="button"

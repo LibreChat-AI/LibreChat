@@ -13,9 +13,12 @@ import type {
   Model,
 } from 'mongoose';
 import type { IAclEntry } from '~/types';
+import { tenantPartitionFilter } from '~/models/plugins/tenantIsolation';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { MAX_PERM_BITS } from '~/common/permissions';
+import { getSafeErrorFields } from '~/utils/errors';
 import { RoleBits } from '~/common/enum';
+import logger from '~/config/winston';
 
 /**
  * Empty frozen array shared by every rejection path. Returning a single
@@ -188,6 +191,16 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     filter: Record<string, unknown>,
     options?: { session?: ClientSession },
   ) => Promise<DeleteResult>;
+  deletePrincipalAclEntries: (principal: {
+    principalType: PrincipalType;
+    principalId: string | Types.ObjectId;
+  }) => Promise<void>;
+  moveAclEntriesToPrincipal: (
+    principalType: PrincipalType,
+    fromPrincipalId: string,
+    toPrincipalId: string,
+    options?: { ids?: readonly string[] },
+  ) => Promise<string[]>;
   replaceRoleBits: (
     writes: RoleBitsWrite[],
     options?: { session?: ClientSession; maxAttempts?: number },
@@ -543,6 +556,80 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     return AclEntry.deleteMany(filter, options || {});
   }
 
+  /**
+   * Removes every ACL entry a principal holds, as the principal's deletion does. A role is keyed
+   * by a name every tenant reuses, so only its entries in the caller's tenant partition
+   * (`tenantPartitionFilter`) go: that tenant's, or without a tenant only platform-level ones,
+   * never those of each tenant's own role that shares the name (as `moveAclEntriesToPrincipal`
+   * moves them on a rename). A group or user is addressed by id, passed as stored (an ObjectId).
+   */
+  async function deletePrincipalAclEntries(principal: {
+    principalType: PrincipalType;
+    principalId: string | Types.ObjectId;
+  }): Promise<void> {
+    const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
+    const { principalType, principalId } = principal;
+    await AclEntry.deleteMany({
+      principalType,
+      principalId,
+      ...(principalType === PrincipalType.ROLE &&
+        tenantPartitionFilter('deletePrincipalAclEntries')),
+    });
+  }
+
+  /**
+   * Re-keys a role principal's entries to another name (a role rename) and returns the ids it
+   * moved; with `ids`, moves only those (how a caller undoes a move). Entries keep their
+   * identity and bits. A move that fails part-way is undone before it rethrows; an undo that
+   * fails too is logged with the entry ids, so an operator can finish it.
+   *
+   * Only the caller's tenant partition moves (`tenantPartitionFilter`): that tenant's entries,
+   * or without a tenant only platform-level ones. A rename re-keys one role, and must not re-key
+   * the entries of each tenant's own role that happens to share the name.
+   */
+  async function moveAclEntriesToPrincipal(
+    principalType: PrincipalType,
+    fromPrincipalId: string,
+    toPrincipalId: string,
+    options?: { ids?: readonly string[] },
+  ): Promise<string[]> {
+    const AclEntry = mongoose.models.AclEntry as Model<IAclEntry>;
+    const source = {
+      principalType,
+      principalId: fromPrincipalId,
+      ...tenantPartitionFilter('moveAclEntriesToPrincipal'),
+    };
+    const ids: Types.ObjectId[] = options?.ids
+      ? options.ids.map((id) => new Types.ObjectId(id))
+      : (await AclEntry.find(source).select('_id').lean<Array<{ _id: Types.ObjectId }>>()).map(
+          ({ _id }) => _id,
+        );
+    if (ids.length === 0) {
+      return [];
+    }
+    try {
+      await AclEntry.updateMany(
+        { ...source, _id: { $in: ids } },
+        { $set: { principalId: toPrincipalId } },
+      );
+    } catch (error) {
+      await AclEntry.updateMany(
+        { principalType, principalId: toPrincipalId, _id: { $in: ids } },
+        { $set: { principalId: fromPrincipalId } },
+      ).catch((undoError: unknown) =>
+        logger.error('[moveAclEntriesToPrincipal] undo after a failed move failed', {
+          principalType,
+          fromPrincipalId,
+          toPrincipalId,
+          entryIds: ids.map((id) => id.toString()).join(','),
+          ...getSafeErrorFields(undoError),
+        }),
+      );
+      throw error;
+    }
+    return ids.map((id) => id.toString());
+  }
+
   /** Reject values JavaScript bit operations would truncate. Missing legacy fields mean zero. */
   function permissionMask(value: unknown): number {
     if (value === undefined) return 0;
@@ -830,12 +917,14 @@ export function createAclEntryMethods(mongoose: typeof import('mongoose')): {
     modifyPermissionBits,
     findAccessibleResources,
     deleteAclEntries,
+    deletePrincipalAclEntries,
     replaceRoleBits,
     bulkWriteAclEntries,
     findPublicResourceIds,
     aggregateAclEntries,
     getFirstOwnerIdsByResource,
     getSoleOwnedResourceIds,
+    moveAclEntriesToPrincipal,
   };
 }
 

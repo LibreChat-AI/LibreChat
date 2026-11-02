@@ -2,6 +2,8 @@ import type { TCheckpointerConfig } from 'librechat-data-provider';
 import type { IMongoFile } from '@librechat/data-schemas';
 import type { AdminErasureContext, AdminErasureTarget } from '~/admin/users';
 import type { UserErasureDeps, MCPOAuthErasureHooks } from './erasure';
+import type { FileDeletionOutcome } from '../files/deletion';
+import type { MCPServerLookupOptions } from '~/mcp/types';
 
 type ErasureBaseDeps = Omit<
   UserErasureDeps,
@@ -28,6 +30,9 @@ export interface ErasureResolverDeps {
       getServerConfig: (
         serverName: string,
         userId: string,
+        configServers: undefined,
+        role: undefined,
+        options: MCPServerLookupOptions,
       ) => ReturnType<NonNullable<MCPOAuthErasureHooks['getServerConfig']>>;
       resolveAllowlists: (options: {
         userId: string;
@@ -50,7 +55,7 @@ export interface ErasureResolverDeps {
   processDeleteRequest: (params: {
     req: Record<string, unknown>;
     files: ErasureFile[];
-  }) => Promise<unknown>;
+  }) => Promise<Required<FileDeletionOutcome>>;
   invalidateCachedTools: (params: { userId: string; serverName: string }) => Promise<unknown>;
   getMCPManager: () =>
     | { disconnectUserConnection: (userId: string, serverName: string) => Promise<unknown> }
@@ -106,6 +111,8 @@ export function createErasureResolver(deps: ErasureResolverDeps) {
           inTargetTenant(async () => deps.db.findMCPServerOAuthTokenUserIds(serverName)),
         findMCPServerViewerEntries: (serverId) =>
           inTargetTenant(async () => deps.db.findMCPServerViewerEntries(serverId)),
+        findMCPServerViewerUserIds: (entries) =>
+          inTargetTenant(async () => deps.db.findMCPServerViewerUserIds(entries)),
         deleteStoredFiles: (files) =>
           inTargetTenant(async () => deps.processDeleteRequest({ req: fileRequest, files })),
         invalidateMCPServerTools: (serverName) =>
@@ -115,16 +122,26 @@ export function createErasureResolver(deps: ErasureResolverDeps) {
         },
         mcpOAuth: oauth && {
           getServerConfig: (serverName) =>
-            inTargetTenant(async () => oauth.getRegistry().getServerConfig(serverName, id)),
+            inTargetTenant(async () =>
+              oauth
+                .getRegistry()
+                .getServerConfig(serverName, id, undefined, undefined, { includeHidden: true }),
+            ),
           getUserPrincipals: (candidateId) =>
             inTargetTenant(async () => oauth.getUserPrincipals({ userId: candidateId })),
           resolveAllowlists: (candidateId) =>
             inTargetTenant(async () =>
               oauth.getRegistry().resolveAllowlists({ userId: candidateId }),
             ),
-          uninstallOAuthMCP: (candidateId, pluginKey, cleanupConfig, serverConfig) =>
+          uninstallOAuthMCP: (candidateId, pluginKey, cleanupConfig, serverConfig, teardown) =>
             inTargetTenant(async () =>
-              oauth.uninstallOAuthMCP(candidateId, pluginKey, cleanupConfig, serverConfig),
+              oauth.uninstallOAuthMCP(
+                candidateId,
+                pluginKey,
+                cleanupConfig,
+                serverConfig,
+                teardown,
+              ),
             ),
           invalidateUserTools: (candidateId, serverName) =>
             inTargetTenant(async () =>

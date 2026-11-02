@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 import { clickHouseTheme } from '../../../../packages/client/src/theme/themes/clickhouse';
-import { darkTheme } from '../../../../packages/client/src/theme/themes/dark';
+import { darkTheme } from '../../../../packages/data-provider/src/themes/dark';
 import { MOCK_ENDPOINTS, NEW_CHAT_PATH, selectMockEndpoint, sendMessage } from '../helpers';
 import { openAgentBuilder } from '../agents.helpers';
 import { themeValue } from './style.helpers';

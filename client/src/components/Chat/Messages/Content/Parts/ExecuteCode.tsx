@@ -1,21 +1,21 @@
 import { useMemo } from 'react';
 import { SquareTerminal } from 'lucide-react';
+import { TOOL_ROW_CLASSES, BareStatus, Stdout } from '@librechat/chat/components';
+import { parseBackgroundHandle, splitBackgroundAttachments } from '@librechat/chat';
+import {
+  toolPanelSpacingClassName,
+  useFollowScroll,
+  useToolCallIntent,
+} from '@librechat/chat/react';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
-import { parseBackgroundHandle, splitBackgroundAttachments } from './handle';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
-import { toolPanelSpacingClassName } from '../disclosure';
 import useLazyHighlight from './useLazyHighlight';
 import useToolCallState from './useToolCallState';
 import CodeWindowHeader from './CodeWindowHeader';
-import useFollowScroll from './useFollowScroll';
 import { AttachmentGroup } from './Attachment';
-import { useToolCallIntent } from './intent';
-import { TOOL_ROW_CLASSES } from '../rows';
 import PtcToolTrace from './PtcToolTrace';
-import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';
-import Stdout from './Stdout';
 import { cn } from '~/utils';
 
 interface ParsedArgs {
@@ -197,6 +197,7 @@ export default function ExecuteCode({
             {code && <CodeWindowHeader language={lang} code={code} />}
             {code && (
               <pre
+                dir="ltr"
                 ref={codePaneRef}
                 onScroll={onCodePaneScroll}
                 className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs"

@@ -1,5 +1,9 @@
 const express = require('express');
-const { createMessageFilterPii, reportLocatorTraversalFailure } = require('@librechat/api');
+const {
+  createMessageFilterPii,
+  reportLocatorTraversalFailure,
+  validateAssistantId,
+} = require('@librechat/api');
 
 const router = express.Router();
 const { handleAbort, validateModel, buildEndpointOption } = require('~/server/middleware');
@@ -29,6 +33,7 @@ const filterMessageContent = createMessageFilterPii({
 router.post(
   '/',
   filterMessageContent,
+  validateAssistantId,
   validateModel,
   buildEndpointOption,
   validateAssistant,

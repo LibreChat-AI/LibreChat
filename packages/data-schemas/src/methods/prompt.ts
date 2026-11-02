@@ -4,6 +4,7 @@ import {
   PermissionBits,
   ResourceType,
   SystemCategories,
+  PromptGroupSources,
   Time,
 } from 'librechat-data-provider';
 import type { Model, Types } from 'mongoose';
@@ -164,6 +165,19 @@ export interface PromptMethods {
   ): Promise<IPromptGroup>;
   makePromptProduction(promptId: string): Promise<{ message: string }>;
   updatePromptLabels(_id: string, labels: unknown): Promise<{ message: string }>;
+  findLangfusePromptGroup(identity: {
+    sourceDestination: string;
+    sourceProjectId: string;
+    sourcePromptName: string;
+  }): Promise<{ _id: string } | null>;
+  createLangfusePromptGroup(input: {
+    name: string;
+    author: string;
+    authorName: string;
+    sourceDestination: string;
+    sourceProjectId: string;
+    sourcePromptName: string;
+  }): Promise<{ _id: string }>;
 }
 
 export function createPromptMethods(
@@ -234,7 +248,7 @@ export function createPromptMethods(
       const groups = await PromptGroup.find(query)
         .sort({ numberOfGenerations: -1, updatedAt: -1, _id: 1 })
         .select(
-          'name numberOfGenerations oneliner category author authorName createdAt updatedAt command productionId',
+          'name numberOfGenerations oneliner category author authorName createdAt updatedAt command productionId source sourcePromptName sourceProjectId sourceDestination',
         )
         .lean();
       return await attachProductionPrompts(groups as unknown as Array<Record<string, unknown>>);
@@ -303,7 +317,7 @@ export function createPromptMethods(
           .skip(skip)
           .limit(limit)
           .select(
-            'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt command',
+            'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt command source sourcePromptName sourceProjectId sourceDestination',
           )
           .lean(),
         PromptGroup.countDocuments(query),
@@ -443,7 +457,7 @@ export function createPromptMethods(
     const findQuery = PromptGroup.find(matchQuery)
       .sort({ numberOfGenerations: -1, updatedAt: -1, _id: 1 })
       .select(
-        'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt command',
+        'name numberOfGenerations oneliner category productionId author authorName createdAt updatedAt command source sourcePromptName sourceProjectId sourceDestination',
       );
 
     if (isPaginated && normalizedLimit) {
@@ -526,7 +540,17 @@ export function createPromptMethods(
       const { prompt, group, author, authorName } = saveData;
 
       let newPromptGroup = await PromptGroup.findOneAndUpdate(
-        { ...group, author, authorName, productionId: null },
+        /**
+         * Only reuse native groups, including legacy groups with no source. Mirrored
+         * groups can also lack a productionId, but must not receive a native prompt.
+         */
+        {
+          ...group,
+          author,
+          authorName,
+          productionId: null,
+          source: { $in: [PromptGroupSources.native, null] },
+        },
         { $setOnInsert: { ...group, author, authorName, productionId: null } },
         { new: true, upsert: true },
       )
@@ -565,6 +589,67 @@ export function createPromptMethods(
       logger.error('Error saving prompt group', error);
       throw new Error('Error saving prompt group');
     }
+  }
+
+  /**
+   * Finds the pointer-only PromptGroup mirrored from a Langfuse prompt, if one
+   * already exists for this identity. `null` means no prior sync found it, not
+   * a query failure — the caller lets a database error propagate.
+   */
+  async function findLangfusePromptGroup({
+    sourceDestination,
+    sourceProjectId,
+    sourcePromptName,
+  }: {
+    sourceDestination: string;
+    sourceProjectId: string;
+    sourcePromptName: string;
+  }): Promise<{ _id: string } | null> {
+    const PromptGroup = mongoose.models.PromptGroup as Model<IPromptGroupDocument>;
+    const doc = await PromptGroup.findOne(
+      { source: 'langfuse', sourceDestination, sourceProjectId, sourcePromptName },
+      { _id: 1 },
+    ).lean<{ _id: Types.ObjectId }>();
+    return doc ? { _id: String(doc._id) } : null;
+  }
+
+  /**
+   * Creates a pointer-only PromptGroup mirrored from a Langfuse prompt: name and
+   * source identity only, never content. No `productionId` — a synced group has
+   * no production prompt. No `tenantId` here; the tenant-isolation plugin stamps
+   * it from the active request context. Throws on failure, including a
+   * duplicate-key error from the partial unique source-identity index, which the
+   * caller maps to `unchanged`.
+   */
+  async function createLangfusePromptGroup({
+    name,
+    author,
+    authorName,
+    sourceDestination,
+    sourceProjectId,
+    sourcePromptName,
+  }: {
+    name: string;
+    author: string;
+    authorName: string;
+    sourceDestination: string;
+    sourceProjectId: string;
+    sourcePromptName: string;
+  }): Promise<{ _id: string }> {
+    const PromptGroup = mongoose.models.PromptGroup as Model<IPromptGroupDocument>;
+    const doc = await PromptGroup.create({
+      source: 'langfuse',
+      sourceDestination,
+      sourceProjectId,
+      sourcePromptName,
+      name,
+      author: new ObjectId(author),
+      authorName,
+      category: '',
+      oneliner: '',
+      numberOfGenerations: 0,
+    });
+    return { _id: String(doc._id) };
   }
 
   /**
@@ -1067,6 +1152,8 @@ export function createPromptMethods(
     getListPromptGroupsByAccess,
     incrementPromptGroupUsage,
     createPromptGroup,
+    findLangfusePromptGroup,
+    createLangfusePromptGroup,
     savePrompt,
     getPrompts,
     getPrompt,

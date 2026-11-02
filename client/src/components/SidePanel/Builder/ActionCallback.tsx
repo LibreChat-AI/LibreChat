@@ -22,12 +22,11 @@ export default function ActionCallback({ action_id }: { action_id?: string }) {
       <Label htmlFor="oauth-callback-url" className="text-sm font-medium">
         {localize('com_ui_callback_url')}
       </Label>
-      <div className="relative">
+      <div className="relative" dir="ltr">
         <Input
           id="oauth-callback-url"
           type="text"
           readOnly
-          dir="ltr"
           value={callbackURL}
           aria-label={localize('com_ui_callback_url')}
           onFocus={(event) => event.currentTarget.select()}
@@ -38,7 +37,7 @@ export default function ActionCallback({ action_id }: { action_id?: string }) {
           isCopied={isCopied}
           onClick={() => copyCallbackURL(setIsCopied)}
           label={localize('com_ui_copy_link')}
-          className="absolute top-1/2 right-1 -translate-y-1/2"
+          className="absolute inset-e-1 top-1/2 -translate-y-1/2"
         />
       </div>
     </div>

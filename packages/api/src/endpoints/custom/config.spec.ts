@@ -1,6 +1,10 @@
 import { AuthType, EModelEndpoint, ReasoningParameterFormat } from 'librechat-data-provider';
 import type { TCustomEndpoints } from 'librechat-data-provider';
-import { loadCustomEndpointsConfig, usesOpenRouterCatalog } from './config';
+import {
+  usesOpenRouterCatalog,
+  loadCustomEndpointsConfig,
+  resolveServedCustomEndpoints,
+} from './config';
 
 const baseEndpoint = {
   apiKey: 'sk-test',
@@ -67,7 +71,10 @@ describe('loadCustomEndpointsConfig: host-implied reasoning support', () => {
   it.each([['reasoning_effort'], ['reasoning']])(
     'does not advertise reasoning that dropParams %j removes',
     (...dropParams) => {
-      expect(load({ baseURL: 'https://openrouter.ai/api/v1', dropParams })).toBeUndefined();
+      expect(load({ baseURL: 'https://openrouter.ai/api/v1', dropParams })).toEqual({
+        defaultParamsEndpoint: 'openrouter',
+        reasoningFormat: ReasoningParameterFormat.disabled,
+      });
     },
   );
 
@@ -123,13 +130,13 @@ describe('loadCustomEndpointsConfig: host-implied reasoning support', () => {
       },
     );
 
-    it('leaves an endpoint that disables reasoning unmarked', () => {
+    it('keeps the OpenRouter cache profile when reasoning is disabled', () => {
       const params = load({
         baseURL: 'https://openrouter.ai/api/v1',
         customParams: { reasoningFormat: ReasoningParameterFormat.disabled },
       });
 
-      expect(params?.defaultParamsEndpoint).toBeUndefined();
+      expect(params?.defaultParamsEndpoint).toBe('openrouter');
       expect(params?.reasoningFormat).toBe(ReasoningParameterFormat.disabled);
     });
 
@@ -143,10 +150,13 @@ describe('loadCustomEndpointsConfig: host-implied reasoning support', () => {
       expect(load({ baseURL: 'user_provided' })).toBeUndefined();
     });
 
-    it('does not mark an endpoint that drops the effort', () => {
+    it('keeps the cache profile while dropping the effort', () => {
       expect(
         load({ baseURL: 'https://openrouter.ai/api/v1', dropParams: ['reasoning_effort'] }),
-      ).toBeUndefined();
+      ).toEqual({
+        defaultParamsEndpoint: 'openrouter',
+        reasoningFormat: ReasoningParameterFormat.disabled,
+      });
     });
 
     it('keeps an administrator-defined reasoning_effort authoritative', () => {
@@ -272,6 +282,32 @@ describe('loadCustomEndpointsConfig – user credential prompts', () => {
   });
 });
 
+describe('resolveServedCustomEndpoints', () => {
+  const endpoints = [
+    { ...baseEndpoint, name: 'Ollama', iconURL: 'first.png' },
+    { ...baseEndpoint, name: 'Gateway', iconURL: 'gateway.png' },
+    { ...baseEndpoint, name: 'ollama', iconURL: 'last.png' },
+    { name: 'Gateway', apiKey: 'sk-unserved', iconURL: 'unserved.png' },
+    { name: 'Unserved', apiKey: 'sk-test' },
+  ];
+
+  it('resolves each served name to its last served definition, in first-served order', () => {
+    const served = resolveServedCustomEndpoints(endpoints);
+    expect([...served.keys()]).toEqual(['ollama', 'Gateway']);
+    expect(served.get('ollama')?.iconURL).toBe('last.png');
+    expect(served.get('Gateway')?.iconURL).toBe('gateway.png');
+  });
+
+  it('is the definition the endpoint config serves under each name', () => {
+    const config = loadCustomEndpointsConfig(endpoints as TCustomEndpoints);
+    const served = resolveServedCustomEndpoints(endpoints);
+    expect(Object.keys(config ?? {})).toEqual([...served.keys()]);
+    for (const [name, endpoint] of served) {
+      expect(config?.[name]?.iconURL).toBe(endpoint.iconURL);
+    }
+  });
+});
+
 describe('usesOpenRouterCatalog', () => {
   const OR = 'https://openrouter.ai/api/v1';
   const uses = (endpoint: Record<string, unknown>, baseURL: string = OR) =>
@@ -307,6 +343,13 @@ describe('usesOpenRouterCatalog', () => {
       false,
     );
   });
+
+  it.each([['reasoning'], ['reasoning_effort']])(
+    'does not read the catalogue when reasoning is dropped: %j',
+    (...dropParams) => {
+      expect(uses({ dropParams })).toBe(false);
+    },
+  );
 
   it('is false for a native provider endpoint', () => {
     expect(uses({ provider: EModelEndpoint.anthropic })).toBe(false);

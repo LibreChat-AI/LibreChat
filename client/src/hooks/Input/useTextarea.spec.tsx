@@ -126,7 +126,8 @@ jest.mock('~/Providers', () => ({
   useUploadModalContext: jest.fn(() => ({ openModal: mockOpenModal })),
 }));
 
-jest.mock('~/utils/shortcuts', () => ({
+jest.mock('@librechat/chat', () => ({
+  ...jest.requireActual('@librechat/chat'),
   resolveComposerKeyDown: jest.fn(),
 }));
 

@@ -150,4 +150,22 @@ describe('remote Agent API key authentication', () => {
     await authentication;
     expect(next).toHaveBeenCalledWith();
   });
+
+  it('answers a failed key lookup with a server error, not an invalid key', async () => {
+    const middleware = createRequireApiKeyAuth({
+      validateAgentApiKey: jest.fn().mockRejectedValue(new Error('connection reset')),
+      findUser: jest.fn(),
+      isPrincipalActive: jest.fn(),
+    });
+    const { res, status, json } = createResponse();
+    const next = jest.fn() as NextFunction;
+
+    await middleware(createRequest(), res, next);
+
+    expect(status).toHaveBeenCalledWith(500);
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({ error: expect.objectContaining({ code: 'internal_error' }) }),
+    );
+    expect(next).not.toHaveBeenCalled();
+  });
 });

@@ -2,6 +2,22 @@
 
 The mock e2e profile is the safest default for generated tests. It starts LibreChat with `e2e/config/librechat.e2e.yaml`, injects an in-process fake LLM (via `LIBRECHAT_TEST_RUN_HOOK`), creates an authenticated e2e user, and avoids real provider credentials.
 
+## RUM privacy export regressions
+
+Run the real HyperDX/OpenTelemetry SDK export checks without a running LibreChat,
+database, collector, or model provider:
+
+```sh
+npx playwright test --config=e2e/playwright.config.rum.ts
+```
+
+The fixture bundles the production RUM adapter, records a synthetic DOM in Chromium,
+and inspects the actual OTLP requests (including gzip/protobuf replay batches). It
+checks proxy and direct-token modes, metadata/DOM URL redaction, and fresh and
+already-recording transitions to a two-factor URL containing a fake login token.
+Playwright traces are disabled so authentication-shaped test data is not retained in
+HAR/trace artifacts.
+
 ## Automatic title regressions
 
 The standard mock profile disables automatic titles. CI runs the title-enabled cases once on the first memory shard. To run them locally after building the app:

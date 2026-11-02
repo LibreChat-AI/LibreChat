@@ -5,6 +5,7 @@ import type { IUser } from '@librechat/data-schemas';
 import type { RequestBody } from '~/types';
 import {
   OPENID_TOKEN_FIELDS,
+  OPENID_CREDENTIAL_PLACEHOLDER_PATTERN,
   isOpenIDTokenValid,
   extractOpenIDTokenInfo,
   processOpenIDPlaceholders,
@@ -169,17 +170,6 @@ const RESOLVABLE_PLACEHOLDER_PATTERN = new RegExp(
     .join('|'),
   'g',
 );
-
-/**
- * The subset of OpenID placeholders that cannot resolve without a usable token
- * set. Identity metadata (`USER_ID`, `USER_EMAIL`, `USER_NAME`) comes from the
- * user document and `EXPIRES_AT` is only ever a hint, so those must keep their
- * pre-existing literal-then-strip behaviour when the token set is invalid
- * rather than raising re-auth. Non-global so `exec` stays stateless, and
- * unknown names are excluded so a typo stays literal and diagnosable.
- */
-const OPENID_CREDENTIAL_PLACEHOLDER_PATTERN =
-  /\{\{LIBRECHAT_OPENID_(?:ACCESS_TOKEN|ID_TOKEN|TOKEN)\}\}/;
 
 /**
  * The credential placeholders that specifically need a usable *access* token, which is all

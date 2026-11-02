@@ -34,6 +34,8 @@ const {
   createToolCallPartHandler,
   createSubagentAttachmentCallsHandler,
   rejectToolCallPreviewWrites,
+  resolveMessagesPageSize,
+  awaitPageSize,
   withMessageToolCallPreviews,
 } = require('@librechat/api');
 const subagentThreadTaskStore = require('~/server/services/Endpoints/agents/subagentThreadStore');
@@ -132,8 +134,8 @@ router.get('/', async (req, res) => {
       messageId,
       search,
     } = req.query;
-    const parsedPageSize = parseInt(pageSizeRaw, 10);
-    const pageSize = Number.isFinite(parsedPageSize) && parsedPageSize > 0 ? parsedPageSize : 25;
+    /** Starts beside the ownership read; it never rejects and falls back to the default ceiling. */
+    const pageSizeRead = resolveMessagesPageSize(req.user, pageSizeRaw, toolCallPreviewDeps);
 
     let response;
     const sortField = ['endpoint', 'createdAt', 'updatedAt'].includes(sortBy)
@@ -145,6 +147,7 @@ router.get('/', async (req, res) => {
     const previewToolCalls = prepareToolCallPreviews(req, toolCallPreviewDeps);
     if (typeof conversationId === 'string') {
       const ownershipRead = db.getConvoOwnership(user, conversationId);
+      const pageSize = await awaitPageSize(pageSizeRead, ownershipRead);
       /** Client-facing reads never expose server-private fields such as `contextMeta`. */
       const messageRead = messageId
         ? db.getMessages({ conversationId, messageId, user }, CLIENT_MESSAGE_SELECT)
@@ -189,6 +192,7 @@ router.get('/', async (req, res) => {
         messages: await previewToolCalls(messageResult.value.messages),
       };
     } else if (search) {
+      const pageSize = await pageSizeRead;
       const searchResults = await db.searchMessages(
         search,
         {

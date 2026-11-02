@@ -2,8 +2,8 @@ import React, { useContext } from 'react';
 import { RecoilRoot } from 'recoil';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Tools, Constants, ContentTypes, ToolCallTypes } from 'librechat-data-provider';
+import { LoneGroupContext, SoleToolContext, useToolAutoExpand } from '@librechat/chat/react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
-import { LoneGroupContext, SoleToolContext, useToolAutoExpand } from '../disclosure';
 import { FailedRevealContext, useFailedReveal } from '../reveal';
 import { scheduleMessageContentLayoutReconcile } from '~/hooks';
 import ToolCallGroup from '../ToolCallGroup';
@@ -142,15 +142,11 @@ jest.mock('lucide-react', () => ({
 
 const mockSubmittedAskAnswers = new Map<string, string>();
 
-jest.mock('~/utils/approval', () => ({
+jest.mock('@librechat/chat', () => ({
+  ...jest.requireActual('@librechat/chat'),
   ASK_USER_QUESTION: 'ask_user_question',
   getSubmittedAskAnswer: (toolCallId?: string) =>
     toolCallId != null ? mockSubmittedAskAnswers.get(toolCallId) : undefined,
-}));
-
-jest.mock('~/utils', () => ({
-  getPartKeyIndex: jest.requireActual('~/utils').getPartKeyIndex,
-  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
   getToolDisplayLabel: (name: string, _localize: unknown, knownServerNames?: readonly string[]) => {
     const configuredServer = knownServerNames?.find((server) => name.endsWith(`_mcp_${server}`));
     if (configuredServer) {
@@ -175,6 +171,11 @@ jest.mock('~/utils', () => ({
     };
     return friendlyNames[name] ?? name;
   },
+}));
+
+jest.mock('~/utils', () => ({
+  getPartKeyIndex: jest.requireActual('~/utils').getPartKeyIndex,
+  cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
   /** Real implementations: the group header resolves its text through these,
    *  so stubbing them out would hide the header logic under test. */
   getBatchActivityLabelPart: jest.requireActual('~/utils/activityLabels').getBatchActivityLabelPart,
@@ -1916,7 +1917,7 @@ describe('ToolCallGroup failure fast path', () => {
     expect(header).not.toHaveClass('text-text-primary');
     fireEvent.click(header);
     expect(header).toHaveClass('text-text-primary');
-    expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('pl-6');
+    expect(screen.getByTestId('tool-call-group-panel').firstElementChild).toHaveClass('ps-6');
   });
 
   it('collapses from its rail, showing the knob on its header while the rail is hovered', () => {

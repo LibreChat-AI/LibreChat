@@ -69,6 +69,8 @@ const {
   waitForKeyvRedisClient,
   warnOnUnreachableDeliveryPaths,
   createCodeApiUploadRegistry,
+  createRequestSanitizer,
+  reportEndpointOverrides,
 } = require('@librechat/api');
 const { connectDb, indexSync } = require('~/db');
 const {
@@ -76,6 +78,7 @@ const {
   sweepOrphanedPreviews,
   getRoleByName,
   seedDatabase,
+  listAllConfigs,
   recordAuditEntry,
 } = require('~/models');
 const initializeOAuthReconnectManager = require('./services/initializeOAuthReconnectManager');
@@ -94,7 +97,7 @@ const initializeMCPs = require('./services/initializeMCPs');
 const { configureSubagentTaskRouting } = require('./services/Endpoints/agents/subagentThreadStore');
 const configureSocialLogins = require('./socialLogins');
 const createSpaFallback = require('./utils/fallback');
-const { getAppConfig } = require('./services/Config');
+const { getAppConfig, rederiveEndpoints } = require('./services/Config');
 const staticCache = require('./utils/staticCache');
 const noIndex = require('./middleware/noIndex');
 const agentEventMethods = require('~/models');
@@ -385,7 +388,7 @@ const startServer = async () => {
     next();
   });
 
-  app.use(mongoSanitize());
+  app.use(createRequestSanitizer(mongoSanitize));
   app.use(cors());
   app.use(cookieParser());
 
@@ -528,6 +531,14 @@ const startServer = async () => {
       await runAsSystem(async () => {
         await initializeMCPs();
         await initializeOAuthReconnectManager();
+      });
+      /** Logs only, so readiness never waits on reading every config document. */
+      reportEndpointOverrides({
+        listConfigs: () => runAsSystem(() => listAllConfigs()),
+        baseYaml: appConfig?.config ?? {},
+        rederiveEndpoints,
+      }).catch((err) => {
+        logger.error('[config] Failed to report endpoint overrides:', err);
       });
       await checkMigrations();
 

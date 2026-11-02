@@ -24,6 +24,7 @@ const {
   createSafeUser,
   initializeAgent,
   loadSkillStates,
+  loadSkillAccess,
   getBalanceConfig,
   injectSkillPrimes,
   extractManualSkills,
@@ -855,27 +856,14 @@ const executeResponse = async (envelope, { req, res }) => {
       const resolveLinkedInstructions = getLinkedInstructionsResolver();
       const skillsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.skills);
       const ephemeralSkillsToggle = request.ephemeralAgent?.skills === true;
-      const accessibleSkillIds = skillsCapabilityEnabled
-        ? withDeploymentSkillIds(
-            await findAccessibleResources({
-              userId: principal.userId,
-              role: principal.role,
-              resourceType: ResourceType.SKILL,
-              requiredPermissions: PermissionBits.VIEW,
-            }),
-          )
-        : [];
-      const editableSkillIds = skillsCapabilityEnabled
-        ? await findAccessibleResources({
-            userId: principal.userId,
-            role: principal.role,
-            resourceType: ResourceType.SKILL,
-            requiredPermissions: PermissionBits.EDIT,
-          })
-        : [];
-      const skillCreateAllowed = skillsCapabilityEnabled
-        ? await getSkillToolDeps().canCreateSkill({ req })
-        : false;
+      const { accessibleSkillIds, editableSkillIds, skillCreateAllowed } = await loadSkillAccess(
+        { enabled: skillsCapabilityEnabled, userId: principal.userId, role: principal.role },
+        {
+          findAccessibleResources,
+          withDeploymentSkillIds,
+          canCreateSkill: () => getSkillToolDeps().canCreateSkill({ req }),
+        },
+      );
 
       const { skillStates, defaultActiveOnShare } = await loadSkillStates({
         userId: principal.userId,
@@ -1121,6 +1109,7 @@ const executeResponse = async (envelope, { req, res }) => {
             logger,
             mcpManager,
             configServers,
+            user: req.user,
             sharedRunContext: [memoryContext, agentScopedContext.get(runAgent.id)]
               .filter(Boolean)
               .join('\n\n'),
@@ -1795,7 +1784,7 @@ const listModels = async (req, res) => {
     // Get the accessible agents
     let agents = [];
     if (accessibleAgentIds.length > 0) {
-      agents = await db.getAgents({ _id: { $in: accessibleAgentIds } });
+      agents = await db.getAgentModelSummaries(accessibleAgentIds);
     }
 
     // Convert to models format

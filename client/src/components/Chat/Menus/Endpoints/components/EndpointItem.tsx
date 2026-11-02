@@ -76,7 +76,7 @@ const SettingsButton = ({
           'group-focus-visible/button:grid-cols-[1fr] group-focus-visible/button:opacity-100',
         )}
       >
-        <span className="min-w-0 truncate pr-0.5">{text}</span>
+        <span className="min-w-0 truncate pe-0.5">{text}</span>
       </span>
     </button>
   );
@@ -279,7 +279,7 @@ export function EndpointItem({ endpoint, endpointIndex }: EndpointItemProps) {
           {endpoint.icon}
         </div>
       )}
-      <span className="truncate text-left">{endpoint.label}</span>
+      <span className="truncate text-start">{endpoint.label}</span>
     </div>
   );
 

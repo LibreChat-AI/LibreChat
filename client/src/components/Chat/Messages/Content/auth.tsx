@@ -14,8 +14,8 @@ export function ToolAuthWarning({ className }: { className?: string }) {
   }
 
   return (
-    <p className={cn('flex items-center text-xs text-text-warning', className)}>
-      <TriangleAlert className="mr-1.5 inline-block h-4 w-4" aria-hidden="true" />
+    <p className={cn('text-text-warning flex items-center text-xs', className)}>
+      <TriangleAlert className="me-1.5 inline-block h-4 w-4" aria-hidden="true" />
       {localize('com_assistants_allow_sites_you_trust')}
     </p>
   );

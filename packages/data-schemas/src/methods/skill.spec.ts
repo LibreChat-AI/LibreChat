@@ -746,6 +746,46 @@ describe('Skill CRUD methods', () => {
     await expect(methods.createSkill(makeSkillInput())).rejects.toBeDefined();
   });
 
+  it.each(['abcdef0123456789abcdef01', 'ABCDEF0123456789ABCDEF01'])(
+    'accepts hex string author %s and stores it as an ObjectId',
+    async (hexAuthor) => {
+      const { skill } = await methods.createSkill(
+        makeSkillInput({ name: 'hex-author-skill', author: hexAuthor }),
+      );
+      expect(skill.author).toBeInstanceOf(mongoose.Types.ObjectId);
+      expect(skill.author.toHexString()).toBe(hexAuthor.toLowerCase());
+    },
+  );
+
+  it.each(['', 'not-an-id', 'a'.repeat(23), 'a'.repeat(25), 'g'.repeat(24)])(
+    'rejects malformed string author %p with a validation error before querying',
+    async (author) => {
+      const findOne = jest.spyOn(Skill, 'findOne');
+
+      await expect(methods.createSkill(makeSkillInput({ author }))).rejects.toMatchObject({
+        message: 'Skill validation failed',
+        code: 'SKILL_VALIDATION_FAILED',
+        issues: [{ field: 'author', code: 'INVALID_FORMAT' }],
+      });
+      expect(findOne).not.toHaveBeenCalled();
+    },
+  );
+
+  it('enforces name uniqueness per author across ObjectId and string forms', async () => {
+    const hexAuthor = new mongoose.Types.ObjectId().toHexString();
+    await methods.createSkill(
+      makeSkillInput({ name: 'mixed-author-form-skill', author: hexAuthor }),
+    );
+    await expect(
+      methods.createSkill(
+        makeSkillInput({
+          name: 'mixed-author-form-skill',
+          author: new mongoose.Types.ObjectId(hexAuthor),
+        }),
+      ),
+    ).rejects.toBeDefined();
+  });
+
   it('throws with validation issues on bad input', async () => {
     await expect(methods.createSkill(makeSkillInput({ name: 'BAD NAME' }))).rejects.toMatchObject({
       code: 'SKILL_VALIDATION_FAILED',

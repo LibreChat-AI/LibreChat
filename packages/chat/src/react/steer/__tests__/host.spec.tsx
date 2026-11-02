@@ -8,6 +8,12 @@ import { SteerHostProvider, useSteerHost } from '../host';
 
 const createHost = (label: string): SteerHost => ({
   useSteerMessage: () => () => undefined,
+  useSteerMessageAsync: () => async () => ({
+    status: 'queued',
+    steerId: 'steer-1',
+    position: 0,
+    conversationId: 'convo-1',
+  }),
   useCancelSteer: () => async () => ({ removed: true }),
   useArmSteer: () => async () => ({ armed: true }),
   useMarkFilesUsage: () => () => undefined,
@@ -16,6 +22,7 @@ const createHost = (label: string): SteerHost => ({
     throw new Error('not queued');
   },
   useQueuedTurns: () => undefined,
+  useQueuedTurnCache: () => ({ read: () => ({}), subscribe: () => () => undefined }),
   useFetchStreamStatus: () => async () => ({ active: false }),
   useLatestMessage: () => null,
   useCodeApprovalMode: () => undefined,
@@ -23,7 +30,11 @@ const createHost = (label: string): SteerHost => ({
   useNotify: () => () => undefined,
   useFileMap: () => undefined,
   useClearFilesToDelete: () => () => undefined,
-  useSettings: () => ({ duringRunDefaultAction: 'steer', setDuringRunDefaultAction: () => {} }),
+  useSettings: () => ({
+    duringRunDefaultAction: 'steer',
+    setDuringRunDefaultAction: () => {},
+    getPaneConversations: () => [],
+  }),
 });
 
 const translate = (host: SteerHost) => host.useLocalize()('com_ui_steer_cancel_failed');

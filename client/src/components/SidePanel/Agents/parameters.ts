@@ -1,11 +1,13 @@
 import keyBy from 'lodash/keyBy';
 import {
   agentParamSettings,
+  tConversationSchema,
   applyModelAwareDefaults,
   getEndpointField,
   getSettingsKeys,
   normalizeEndpointName,
   resolveDropParamsUIKeys,
+  ReasoningParameterFormat,
 } from 'librechat-data-provider';
 import type {
   AgentModelParameters,
@@ -34,6 +36,13 @@ export type ResolvedAgentParameterSettings = {
 };
 
 const NON_CONTROL_PARAMETER_KEYS = new Set<keyof AgentModelParameters>(['model']);
+const REASONING_PARAMETER_KEYS = new Set([
+  'include_reasoning',
+  'reasoning_effort',
+  'reasoning_summary',
+  'reasoning_mode',
+  'reasoning_context',
+]);
 
 export function resolveAgentParameterSettings({
   endpointsConfig,
@@ -73,7 +82,14 @@ export function resolveAgentParameterSettings({
   const overriddenParamsMap = keyBy(overriddenParams ?? [], 'key');
   /** Keep endpoint-recognized keys independent of model visibility. Only explicit
    * administrator drops remove keys from the schema used by both save paths. */
-  const endpointParams = (defaultParams ?? []).filter(
+  const declaredExtras = (overriddenParams ?? []).filter(
+    (param): param is SettingDefinition =>
+      param.key != null &&
+      param.type != null &&
+      param.component != null &&
+      !Object.prototype.hasOwnProperty.call(tConversationSchema.shape, param.key),
+  );
+  const endpointParams = [...(defaultParams ?? []), ...declaredExtras].filter(
     (param) => param != null && !dropParamsSet.has(param.key),
   );
   const applyOverride = (param: SettingDefinition) =>
@@ -87,7 +103,12 @@ export function resolveAgentParameterSettings({
     modelReasoning,
   )
     .map(applyOverride)
-    .filter((param) => param.key !== 'web_search' || webSearchAllowed);
+    .filter((param) => param.key !== 'web_search' || webSearchAllowed)
+    .filter(
+      (param) =>
+        customParams?.reasoningFormat !== ReasoningParameterFormat.disabled ||
+        !REASONING_PARAMETER_KEYS.has(param.key),
+    );
 
   return {
     schemaResolved: defaultParams != null || overriddenParams != null,

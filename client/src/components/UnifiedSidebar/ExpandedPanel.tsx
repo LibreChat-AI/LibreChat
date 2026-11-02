@@ -7,6 +7,7 @@ import { useShortcutAriaKey, useShortcutHint } from '~/hooks/useKeyboardShortcut
 import { useActivePanel, resolveActivePanel, DEFAULT_PANEL } from '~/Providers';
 import AgentMarketplaceButton from '~/components/Nav/AgentMarketplaceButton';
 import { CLOSE_SIDEBAR_ID } from '~/components/Chat/Menus/OpenSidebar';
+import useDirection, { inlineSide } from '~/hooks/Nav/useDirection';
 import useNewChat from '~/hooks/Conversations/useNewChat';
 import { lazyWithRecovery } from '~/lib/assets/lazy';
 import { useLocalize } from '~/hooks';
@@ -21,6 +22,7 @@ const NewChatButton = memo(function NewChatButton({
   switchToHistory: boolean;
 }) {
   const localize = useLocalize();
+  const tooltipSide = inlineSide(useDirection(), 'end');
   const tooltipDescription = useShortcutHint('newChat', localize('com_ui_new_chat'));
   const ariaKey = useShortcutAriaKey('newChat');
 
@@ -34,7 +36,7 @@ const NewChatButton = memo(function NewChatButton({
 
   return (
     <TooltipAnchor
-      side="right"
+      side={tooltipSide}
       description={tooltipDescription}
       render={
         <a
@@ -72,6 +74,7 @@ const NavIconButton = memo(function NavIconButton({
   onLeaveInsights?: () => void;
 }) {
   const localize = useLocalize();
+  const tooltipSide = inlineSide(useDirection(), 'end');
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -99,7 +102,7 @@ const NavIconButton = memo(function NavIconButton({
   return (
     <TooltipAnchor
       description={localize(link.title)}
-      side="right"
+      side={tooltipSide}
       render={
         <Button
           size="icon"
@@ -136,6 +139,7 @@ function ExpandedPanel({
   switchToHistory: boolean;
 }) {
   const localize = useLocalize();
+  const tooltipSide = inlineSide(useDirection(), 'end');
   const location = useLocation();
   const { active, setActive } = useActivePanel();
   const effectiveActive = resolveActivePanel(active, links);
@@ -147,9 +151,9 @@ function ExpandedPanel({
   const toggleSidebarAriaKey = useShortcutAriaKey('toggleSidebar');
 
   return (
-    <div className="border-border-inset bg-surface-sidebar flex h-full shrink-0 flex-col gap-2 border-r px-2 py-2">
+    <div className="border-border-inset bg-surface-sidebar flex h-full shrink-0 flex-col gap-2 border-e px-2 py-2">
       <TooltipAnchor
-        side="right"
+        side={tooltipSide}
         description={toggleSidebarHint}
         render={
           <Button
@@ -163,7 +167,7 @@ function ExpandedPanel({
             className="h-9 w-9"
             onClick={toggleClick}
           >
-            <Sidebar aria-hidden="true" className="text-text-primary h-5 w-5" />
+            <Sidebar aria-hidden="true" className="text-text-primary h-5 w-5 rtl:-scale-x-100" />
           </Button>
         }
       />

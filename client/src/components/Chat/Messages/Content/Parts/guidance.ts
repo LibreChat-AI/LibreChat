@@ -1,4 +1,4 @@
-import type { BackgroundTaskDisplay } from './background';
+import type { BackgroundTaskDisplay } from '@librechat/chat';
 import type { TranslationKeys } from '~/hooks';
 
 const RAW_DETAILS_KEY: TranslationKeys = 'com_ui_background_tasks_more_in_raw_details';

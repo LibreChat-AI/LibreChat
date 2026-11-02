@@ -1,5 +1,5 @@
 import React, { useState, useRef, useLayoutEffect, useCallback, memo } from 'react';
-import { disabledInkClasses } from '~/utils';
+import { disabledInkClasses, resolveArrowKey } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 /** Matches the `inset-y-1` the single-row indicator uses. */
@@ -75,7 +75,7 @@ const Radio: React.NamedExoticComponent<RadioProps> = memo(function Radio({
       Home: 0,
       End: options.length - 1,
     };
-    const target = moves[event.key];
+    const target = moves[resolveArrowKey(event.key, event.currentTarget)];
     if (target == null) {
       return;
     }

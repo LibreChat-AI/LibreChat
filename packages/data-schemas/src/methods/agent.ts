@@ -11,7 +11,8 @@ import {
 } from 'librechat-data-provider';
 import type { FilterQuery, Model, PipelineStage, ProjectionType, Types } from 'mongoose';
 import type { AgentSortOption, AgentToolResources } from 'librechat-data-provider';
-import type { IAgent, IAclEntry, IUser, ActionQuery } from '~/types';
+import type { IAgent, IAclEntry, IUser, ActionQuery, CacheStore } from '~/types';
+import { evictAuthUserDocsForUsers, isAuthUserDocCacheEnabled } from '~/utils/eviction';
 import { withCodeEnvironmentReferences } from './codeEnvironment';
 import { OWNER_ACL_PERMISSION_BIT_SUPERSETS } from './aclEntry';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
@@ -669,9 +670,17 @@ export interface AgentDeps {
   ) => Promise<Types.ObjectId[]>;
   /** Recognizes skill IDs supplied by an external, non-database registry. */
   isExternalSkillId?: (id: string) => boolean;
+  /** Returns a cache store for the given key, so favorite cleanup can evict cached auth users. */
+  getCache?: (key: string) => CacheStore | undefined;
 }
 
 /** Plain projection used to discover runnable agent graphs without exposing Mongoose. */
+/** The agent fields a models list reads. */
+export type AgentModelSummary = Pick<
+  IAgent,
+  '_id' | 'id' | 'name' | 'description' | 'provider' | 'author'
+> & { createdAt?: Date };
+
 export interface AgentGraphNode {
   id: string;
   provider: string;
@@ -1068,6 +1077,9 @@ export function createAgentMethods(
   createAgent: (agentData: Record<string, unknown>) => Promise<IAgent>;
   getAgentIdsByMCPServerName: (serverName: string) => Promise<Types.ObjectId[]>;
   getAgentsWithMCPServerNames: () => Promise<Array<Pick<IAgent, '_id' | 'mcpServerNames'>>>;
+  getAgentModelSummaries: (
+    agentIds: Array<Types.ObjectId | string>,
+  ) => Promise<AgentModelSummary[]>;
   updateAgent: (
     searchParameter: FilterQuery<IAgent>,
     updateData: Record<string, unknown>,
@@ -1413,6 +1425,17 @@ export function createAgentMethods(
       Array<Pick<IAgent, '_id'>>
     >();
     return agents.map((agent) => agent._id);
+  }
+
+  /** Loads only the fields a models list shows, never the unbounded `versions` history. */
+  async function getAgentModelSummaries(
+    agentIds: Array<Types.ObjectId | string>,
+  ): Promise<AgentModelSummary[]> {
+    const Agent = mongoose.models.Agent as Model<IAgent>;
+    return await Agent.find(
+      { _id: { $in: agentIds } },
+      { id: 1, name: 1, description: 1, provider: 1, author: 1, createdAt: 1 },
+    ).lean<AgentModelSummary[]>();
   }
 
   /** Returns every agent with a non-empty `mcpServerNames`, so access
@@ -1865,6 +1888,15 @@ export function createAgentMethods(
     return [...shared];
   }
 
+  /** Users whose favorites match, read only when their cached auth documents need evicting. */
+  async function findFavoriteHolders(filter: FilterQuery<unknown>): Promise<string[]> {
+    if (!isAuthUserDocCacheEnabled()) {
+      return [];
+    }
+    const ids = await (mongoose.models.User as Model<unknown>).distinct('_id', filter);
+    return ids.map(String);
+  }
+
   /**
    * Deletes an agent based on the provided search parameter.
    */
@@ -1890,13 +1922,15 @@ export function createAgentMethods(
         logger.error('[deleteAgent] Error removing agent from handoff edges', error);
       }
       try {
-        await User.updateMany(
-          {
-            ...(deletedAgent.tenantId !== undefined ? { tenantId: deletedAgent.tenantId } : {}),
-            'favorites.agentId': deletedAgent.id,
-          },
-          { $pull: { favorites: { agentId: deletedAgent.id } } },
-        );
+        const favoritesFilter = {
+          ...(deletedAgent.tenantId !== undefined ? { tenantId: deletedAgent.tenantId } : {}),
+          'favorites.agentId': deletedAgent.id,
+        };
+        const holders = await findFavoriteHolders(favoritesFilter);
+        await User.updateMany(favoritesFilter, {
+          $pull: { favorites: { agentId: deletedAgent.id } },
+        });
+        await evictAuthUserDocsForUsers(deps.getCache, holders);
       } catch (error) {
         logger.error('[deleteAgent] Error removing agent from user favorites', error);
       }
@@ -1970,10 +2004,12 @@ export function createAgentMethods(
       /** Reference cleanup precedes the irreversible delete, so a failure keeps the agent discoverable for retry. */
       for (const [tenant, tenantAgentIds] of idsByTenant) {
         await removeAgentIdsFromEdges(Agent, tenantAgentIds, tenant);
-        await User.updateMany(
-          { tenantId: tenant, 'favorites.agentId': { $in: tenantAgentIds } },
-          { $pull: { favorites: { agentId: { $in: tenantAgentIds } } } },
-        );
+        const favoritesFilter = { tenantId: tenant, 'favorites.agentId': { $in: tenantAgentIds } };
+        const holders = await findFavoriteHolders(favoritesFilter);
+        await User.updateMany(favoritesFilter, {
+          $pull: { favorites: { agentId: { $in: tenantAgentIds } } },
+        });
+        await evictAuthUserDocsForUsers(deps.getCache, holders);
       }
 
       await Agent.deleteMany({ _id: { $in: agentObjectIds } });
@@ -2739,6 +2775,7 @@ export function createAgentMethods(
       },
       { $pull: { favorites: { agentId: agent.id } } },
     );
+    await evictAuthUserDocsForUsers(deps.getCache, userIds);
   }
 
   return {
@@ -2752,6 +2789,7 @@ export function createAgentMethods(
     createAgent,
     getAgentIdsByMCPServerName,
     getAgentsWithMCPServerNames,
+    getAgentModelSummaries,
     updateAgent,
     updateAgentAvatar,
     deleteAgent,

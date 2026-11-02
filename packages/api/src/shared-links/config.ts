@@ -4,6 +4,7 @@ import type { TSharedLinkStartupConfig } from 'librechat-data-provider';
 import type { Request, Response, NextFunction } from 'express';
 import type { AppConfig } from '@librechat/data-schemas';
 import type { GetAppConfigOptions } from '../app/service';
+import { withSafePolicyLinks } from '~/app/interface';
 import { isEnabled } from '~/utils';
 
 type SharedLinkStartupEnv = NodeJS.ProcessEnv;
@@ -103,8 +104,13 @@ export function buildSharedLinkStartupPayload(
     payload.customFooter = env.CUSTOM_FOOTER;
   }
 
-  const { privacyPolicy, termsOfService, codeHighlightThrottleMs, artifactUndocking } =
-    appConfig?.interfaceConfig ?? {};
+  const {
+    privacyPolicy,
+    termsOfService,
+    codeHighlightThrottleMs,
+    artifactUndocking,
+    analyticsConsent,
+  } = withSafePolicyLinks(appConfig?.interfaceConfig) ?? {};
   const parsedTheme = deploymentThemeSchema.safeParse(appConfig?.interfaceConfig?.theme);
   const theme = parsedTheme.success ? parsedTheme.data : undefined;
   /* A shared conversation shows the same artifacts pane, so it needs the same
@@ -114,7 +120,8 @@ export function buildSharedLinkStartupPayload(
     termsOfService ||
     codeHighlightThrottleMs != null ||
     theme ||
-    artifactUndocking === false
+    artifactUndocking === false ||
+    analyticsConsent === false
   ) {
     payload.interface = {
       ...(codeHighlightThrottleMs != null ? { codeHighlightThrottleMs } : {}),
@@ -122,6 +129,7 @@ export function buildSharedLinkStartupPayload(
       ...(termsOfService ? { termsOfService } : {}),
       ...(theme ? { theme } : {}),
       ...(artifactUndocking === false ? { artifactUndocking } : {}),
+      ...(analyticsConsent === false ? { analyticsConsent } : {}),
     };
   }
 

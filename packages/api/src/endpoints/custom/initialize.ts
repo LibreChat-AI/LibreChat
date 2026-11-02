@@ -21,6 +21,7 @@ import { isUserProvided, checkUserKeyExpiry } from '~/utils';
 import { withSupportedEffort } from '~/endpoints/reasoning';
 import { getOpenAIConfig } from '~/endpoints/openai/config';
 import { getScopedTokenConfigKey } from '~/endpoints/keys';
+import { resolveCustomEndpointParameters } from './config';
 import { getCustomEndpointConfig } from '~/app/config';
 import { resolveEndpointRuntime } from '~/types';
 import { fetchModels } from '~/endpoints/models';
@@ -140,6 +141,7 @@ function buildAnthropicCustomConfig({
   apiKey,
   baseURL,
   modelOptions,
+  inferenceParameters,
   endpointConfig,
   userProvidesURL,
   allowedAddresses,
@@ -147,12 +149,14 @@ function buildAnthropicCustomConfig({
   apiKey: string;
   baseURL: string;
   modelOptions: AnthropicModelOptions;
+  inferenceParameters?: Record<string, unknown>;
   endpointConfig: Partial<TEndpoint>;
   userProvidesURL: boolean;
   allowedAddresses?: string[] | null;
 }): InitializeResultBase {
   const result = getAnthropicLLMConfig(apiKey, {
     modelOptions,
+    inferenceParameters,
     proxy: PROXY ?? undefined,
     reverseProxyUrl: baseURL,
     baseURLIsUserProvided: userProvidesURL,
@@ -183,21 +187,21 @@ function buildAnthropicCustomConfig({
 export async function initializeCustom(
   params: ProviderInitializeParams,
 ): Promise<InitializeResultBase> {
-  const { endpoint, model_parameters, db } = params;
+  const { endpoint, model_parameters, inferenceParameters, db } = params;
   const { appConfig, user, requestBody } = resolveEndpointRuntime(params);
   const { key: expiresAt } = requestBody;
 
-  const endpointConfig = getCustomEndpointConfig({
+  const configuredEndpoint = getCustomEndpointConfig({
     endpoint,
     appConfig,
   });
 
-  if (!endpointConfig) {
+  if (!configuredEndpoint) {
     throw new Error(`Config not found for the ${endpoint} custom endpoint.`);
   }
 
-  const CUSTOM_API_KEY = extractEnvVariable(endpointConfig.apiKey ?? '');
-  const CUSTOM_BASE_URL = extractEnvVariable(endpointConfig.baseURL ?? '');
+  const CUSTOM_API_KEY = extractEnvVariable(configuredEndpoint.apiKey ?? '');
+  const CUSTOM_BASE_URL = extractEnvVariable(configuredEndpoint.baseURL ?? '');
 
   if (CUSTOM_API_KEY.match(envVarRegex)) {
     throw new Error(`Missing API Key for ${endpoint}.`);
@@ -207,6 +211,10 @@ export async function initializeCustom(
     throw new Error(`Missing Base URL for ${endpoint}.`);
   }
 
+  const endpointConfig = {
+    ...configuredEndpoint,
+    customParams: resolveCustomEndpointParameters(configuredEndpoint, CUSTOM_BASE_URL),
+  };
   const userProvidesKey = isUserProvided(CUSTOM_API_KEY);
   const userProvidesURL = isUserProvided(CUSTOM_BASE_URL);
 
@@ -347,6 +355,7 @@ export async function initializeCustom(
       apiKey,
       baseURL,
       modelOptions: modelOptions as AnthropicModelOptions,
+      inferenceParameters,
       endpointConfig,
       userProvidesURL,
       allowedAddresses: appConfig?.endpoints?.allowedAddresses,
@@ -354,8 +363,9 @@ export async function initializeCustom(
     options.endpointTokenConfig = endpointTokenConfig;
   } else {
     const finalClientOptions = {
-      modelOptions,
       ...clientOptions,
+      modelOptions,
+      inferenceParameters,
     };
     options = getOpenAIConfig(apiKey, finalClientOptions, endpoint);
     if (options != null) {

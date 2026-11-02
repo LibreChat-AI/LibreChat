@@ -17,7 +17,7 @@ const emptyEndpointsConfig = {} as TEndpointsConfig;
 export default function EndpointIcon({
   conversation,
   endpointsConfig = emptyEndpointsConfig,
-  className = 'mr-0',
+  className = 'me-0',
   assistantMap,
   agentsMap,
   context,

@@ -120,7 +120,7 @@ const ProjectChatsInline = memo(function ProjectChatsInline({
   if (isError && conversations.length === 0) {
     return (
       <div
-        className="text-text-secondary flex items-center gap-1 py-1.5 pl-2 text-xs"
+        className="text-text-secondary flex items-center gap-1 py-1.5 ps-2 text-xs"
         data-testid={`project-chats-error-${projectId}`}
         role="alert"
       >
@@ -134,7 +134,7 @@ const ProjectChatsInline = memo(function ProjectChatsInline({
 
   if (conversations.length === 0) {
     return (
-      <div className="text-text-secondary py-1.5 pl-2 text-xs">
+      <div className="text-text-secondary py-1.5 ps-2 text-xs">
         {localize('com_ui_no_project_chats')}
       </div>
     );
@@ -158,7 +158,7 @@ const ProjectChatsInline = memo(function ProjectChatsInline({
           variant="quiet"
           size="sm"
           onClick={onShowAll}
-          className="mt-0.5 ml-1 h-auto rounded-md px-2 py-1 text-xs font-medium"
+          className="ms-1 mt-0.5 h-auto rounded-md px-2 py-1 text-xs font-medium"
         >
           {localize('com_ui_show_all')}
         </Button>
@@ -317,12 +317,12 @@ const ProjectItem = memo(
             onClick={() => setExpanded((prev) => !prev)}
             aria-expanded={expanded}
             aria-label={project.name}
-            className="focus-visible:ring-text-primary flex w-full max-w-full min-w-0 flex-1 items-center gap-2 rounded-lg py-1.5 pr-16 pl-1.5 text-left outline-hidden focus-visible:ring-2 focus-visible:ring-inset"
+            className="focus-visible:ring-text-primary flex w-full max-w-full min-w-0 flex-1 items-center gap-2 rounded-lg py-1.5 ps-1.5 pe-16 text-start outline-hidden focus-visible:ring-2 focus-visible:ring-inset"
           >
             <ChevronRight
               className={cn(
-                'text-text-tertiary h-3.5 w-3.5 shrink-0 transition-transform duration-200',
-                expanded && 'rotate-90',
+                'text-text-tertiary h-3.5 w-3.5 shrink-0 transition-transform duration-200 rtl:-scale-x-100',
+                expanded && 'rotate-90 rtl:-rotate-90',
               )}
               aria-hidden="true"
             />
@@ -333,7 +333,7 @@ const ProjectItem = memo(
             /* The 4px between the two controls, and from the row's trailing edge,
                that a pinned chat keeps between its unpin badge and its overflow
                menu. Each control reveals itself. */
-            className="absolute top-1/2 right-1 flex -translate-y-1/2 items-center gap-1"
+            className="absolute inset-e-1 top-1/2 flex -translate-y-1/2 items-center gap-1"
           >
             <TooltipAnchor
               description={localize('com_ui_new_chat_in_project', { name: project.name })}
@@ -357,7 +357,7 @@ const ProjectItem = memo(
               setIsOpen={setIsMenuOpen}
               className="z-[125]"
               minWidth="11rem"
-              iconClassName="mr-2 text-text-secondary"
+              iconClassName="me-2 text-text-secondary"
               trigger={
                 <Ariakit.MenuButton
                   aria-label={localize('com_ui_more_options')}
@@ -370,8 +370,8 @@ const ProjectItem = memo(
             />
           </div>
         </div>
-        <Collapse open={expanded} className="pl-2">
-          <div className="pt-1">
+        <Collapse open={expanded}>
+          <div className="ps-2 pt-1">
             <ProjectChatsInline
               projectId={project._id}
               expanded={expanded}
@@ -454,7 +454,7 @@ const ProjectsSection = ({ toggleNav, isAuthenticated }: ProjectsSectionProps) =
   const renderProjectsBody = () => {
     if (isLoading && projects.length === 0) {
       return (
-        <div className="flex justify-start py-2 pl-2">
+        <div className="flex justify-start py-2 ps-2">
           <Spinner tone="secondary" className="h-4 w-4" />
         </div>
       );
@@ -512,7 +512,7 @@ const ProjectsSection = ({ toggleNav, isAuthenticated }: ProjectsSectionProps) =
 
   return (
     <div className="flex flex-col px-3 pt-3 text-sm">
-      <div className="flex h-8 w-full items-center pr-1">
+      <div className="flex h-8 w-full items-center pe-1">
         <button
           type="button"
           onClick={() => {

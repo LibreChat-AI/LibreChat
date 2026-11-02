@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Button, TextareaAutosize } from '@librechat/client';
 import { useUpdateMessageContentMutation } from 'librechat-data-provider/react-query';
+import { findRerunParent, getPartText, isEditablePart, withPartText } from '@librechat/chat';
 import {
   ContentTypes,
   findMessageById,
@@ -8,10 +9,8 @@ import {
 } from 'librechat-data-provider';
 import type { TMessageContentParts } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
-import { getPartText, isEditablePart, withPartText } from './editableParts';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import useGetAddedConvo from '~/hooks/Conversations/useGetAddedConvo';
-import { findRerunParent } from './rerunParent';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
@@ -47,7 +46,7 @@ export default function EditContentParts({
 }: EditContentPartsProps) {
   const localize = useLocalize();
   const { useChatDirection, useMessagesEditing } = useMessagePartsHost();
-  const isRTL = useChatDirection() === 'rtl';
+  const chatDirection = useChatDirection();
   const { conversation, ask, getMessages, setMessages } = useMessagesEditing();
   const getAddedConvo = useGetAddedConvo();
   const firstEditorRef = useRef<HTMLTextAreaElement | null>(null);
@@ -395,7 +394,7 @@ export default function EditContentParts({
           return (
             <label
               key={`editor-${messageId}-${absoluteIndex}`}
-              dir={isRTL ? 'rtl' : 'ltr'}
+              dir={chatDirection === 'auto' ? undefined : chatDirection}
               className="text-text-secondary flex min-w-0 flex-col gap-1.5 text-xs font-medium"
             >
               {label}
@@ -418,12 +417,11 @@ export default function EditContentParts({
                 }
                 disabled={isBusy}
                 minRows={3}
-                dir={isRTL ? 'rtl' : 'ltr'}
+                dir={chatDirection}
                 className={cn(
                   'message-editor-text max-h-[65vh] min-h-24 w-full resize-y rounded-lg',
                   'border-border-medium bg-surface-tertiary-alt border px-3 py-2',
-                  'text-text-primary font-normal',
-                  isRTL ? 'text-right' : 'text-left',
+                  'text-text-primary text-start font-normal',
                   'disabled:opacity-50 md:max-h-[75vh]',
                 )}
               />

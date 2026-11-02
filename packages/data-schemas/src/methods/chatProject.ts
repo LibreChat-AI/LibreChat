@@ -567,9 +567,11 @@ export function createChatProjectMethods(mongoose: typeof import('mongoose')): C
       file_id: fileId,
       user,
       tenantId: project.tenantId ?? null,
-      embedded: true,
       context: FileContext.message_attachment,
-      $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }],
+      $and: [
+        { $or: [{ embedded: true }, { 'metadata.searchDestination': true }] },
+        { $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }] },
+      ],
     })
       .select('_id file_id expiresAt temp_file_id')
       .lean();

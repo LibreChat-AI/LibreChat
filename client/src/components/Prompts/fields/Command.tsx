@@ -53,9 +53,10 @@ const Command = ({
       <label htmlFor={commandId} className="text-text-secondary block px-4 pt-2 text-sm md:hidden">
         {localize('com_ui_command_placeholder')}
       </label>
-      <div className="text-text-secondary relative flex h-10 items-center gap-1 pr-2 pl-4 text-sm">
+      <div className="text-text-secondary relative flex h-10 items-center gap-1 ps-4 pe-2 text-sm">
         <SquareSlash className="icon-sm shrink-0" aria-hidden="true" />
-        <div className="relative min-w-0 flex-1">
+        {/* The wrapper reserves the counter's side so it follows the inline end; <Input> owns its own padding. */}
+        <div className="relative min-w-0 flex-1 pe-11">
           <Input
             type="text"
             id={commandId}
@@ -64,13 +65,13 @@ const Command = ({
             placeholder=" "
             value={command}
             onChange={handleInputChange}
-            className="peer w-full border-none pr-14"
+            className="peer w-full border-none"
             aria-label={localize('com_ui_command_placeholder')}
           />
           <label
             htmlFor={commandId}
             className={cn(
-              'text-text-secondary peer-focus:text-text-primary pointer-events-none absolute top-0.5 left-0 hidden max-w-[calc(100%-3.5rem)] origin-[0] translate-y-2 scale-100 rounded px-1 text-sm transition-transform duration-200 peer-placeholder-shown:translate-y-2 peer-placeholder-shown:scale-100 peer-focus:-translate-y-3 peer-focus:scale-75 peer-[:not(:placeholder-shown)]:-translate-y-3 peer-[:not(:placeholder-shown)]:scale-75 md:block',
+              'text-text-secondary peer-focus:text-text-primary pointer-events-none absolute inset-s-0 top-0.5 hidden max-w-[calc(100%-3.5rem)] origin-[0] translate-y-2 scale-100 rounded px-1 text-sm transition-transform duration-200 peer-placeholder-shown:translate-y-2 peer-placeholder-shown:scale-100 peer-focus:-translate-y-3 peer-focus:scale-75 peer-[:not(:placeholder-shown)]:-translate-y-3 peer-[:not(:placeholder-shown)]:scale-75 md:block rtl:origin-right',
               labelBgClassName,
             )}
           >
@@ -78,7 +79,7 @@ const Command = ({
           </label>
         </div>
         {disabled !== true && (
-          <span className="text-text-secondary absolute right-2 shrink-0 text-xs md:text-sm">{`${charCount}/${Constants.COMMANDS_MAX_LENGTH}`}</span>
+          <span className="text-text-secondary absolute inset-e-2 shrink-0 text-xs md:text-sm">{`${charCount}/${Constants.COMMANDS_MAX_LENGTH}`}</span>
         )}
       </div>
     </div>

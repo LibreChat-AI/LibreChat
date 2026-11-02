@@ -23,6 +23,7 @@
 import { RecoilRoot } from 'recoil';
 import { Tools } from 'librechat-data-provider';
 import { render } from '@testing-library/react';
+import { Provider as JotaiProvider } from 'jotai';
 import type {
   TFile,
   TAttachment,
@@ -103,7 +104,9 @@ describe('useAttachmentPreviewSync — #13916 infinite-loop regression', () => {
     expect(() =>
       render(
         <RecoilRoot>
-          <Consumer />
+          <JotaiProvider>
+            <Consumer />
+          </JotaiProvider>
         </RecoilRoot>,
       ),
     ).not.toThrow();
@@ -134,7 +137,9 @@ describe('useAttachmentPreviewSync — #13916 infinite-loop regression', () => {
 
     render(
       <RecoilRoot>
-        <MapProbe />
+        <JotaiProvider>
+          <MapProbe />
+        </JotaiProvider>
       </RecoilRoot>,
     );
 
@@ -157,7 +162,9 @@ describe('useAttachmentPreviewSync — #13916 infinite-loop regression', () => {
     expect(() =>
       render(
         <RecoilRoot>
-          <Consumer />
+          <JotaiProvider>
+            <Consumer />
+          </JotaiProvider>
         </RecoilRoot>,
       ),
     ).not.toThrow();

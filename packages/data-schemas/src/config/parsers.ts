@@ -50,8 +50,8 @@ const sensitiveKeys: RegExp[] = [
   /\b(api-key:? )[^\s"']+/gi, // Header: API key pattern
   /\b(api_key=)[^\s"'&]+/gi, // URL query param: API key pattern
   /\b(key=)[^\s"'&]+/g, // URL query param: sensitive key pattern
-  /(\b(?:access_token|assertion|client_assertion|client_secret|code|code_verifier|credential|id_token|refresh_token|sig|signature|x-amz-security-token|x-amz-signature|x-goog-signature)\b"?\s*:\s*")(?:\\.|[^"\\])*/gi,
-  /\b((?:access_token|assertion|client_assertion|client_secret|code|code_verifier|credential|id_token|refresh_token|sig|signature|x-amz-security-token|x-amz-signature|x-goog-signature)=)[^\s"'&]+/gi,
+  /(\b(?:access_token|appid|assertion|client_assertion|client_secret|code|code_verifier|credential|id_token|refresh_token|sig|signature|x-amz-security-token|x-amz-signature|x-goog-signature)\b"?\s*:\s*")(?:\\.|[^"\\])*/gi,
+  /\b((?:access_token|appid|assertion|client_assertion|client_secret|code|code_verifier|credential|id_token|refresh_token|sig|signature|x-amz-security-token|x-amz-signature|x-goog-signature)=)[^\s"'&]+/gi,
   /(\b)eyJ[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]{5,}\.[a-zA-Z0-9_-]+/g,
   /\b((?:Proxy-)?Authorization:\s*)[^\r\n]+/gi,
   /\b((?:Cookie|Set-Cookie):\s*)[^\r\n]+/gi,
@@ -61,9 +61,11 @@ const sensitiveKeys: RegExp[] = [
 /**
  * Matches a whole delimiter-bounded token that holds an address. The lookbehind lets the scan start
  * only at a token boundary, so long non-email text is scanned once instead of once per character.
+ * An `@` between path separators (`node_modules/@scope/pkg/...`) names a scoped package in a file
+ * path or stack frame, not an address, so frame locations survive.
  */
 const EMAIL_PATTERN =
-  /(?:(?<!\\)\\"(?:[^"\\\r\n]|\\{3}"|\\{4}|\\{2}(?!\\)|\\[bfnrt/]|\\u[0-9a-fA-F]{4})*\\"|(?<!\\)"(?:[^"\\\r\n]|\\.)*"|(?<![^\s<>[\],;"])[^\s<>[\],;"]+)@(?:\[[^\]\s@]+\]|[^\s<>[\],;"@]+\.[^\s<>[\],;"@]+)/gu;
+  /(?:(?<!\\)\\"(?:[^"\\\r\n]|\\{3}"|\\{4}|\\{2}(?!\\)|\\[bfnrt/]|\\u[0-9a-fA-F]{4})*\\"|(?<!\\)"(?:[^"\\\r\n]|\\.)*"|(?<![^\s<>[\],;"])[^\s<>[\],;"]+)(?!(?<=[/\\])@[^\s<>[\],;"@/\\]+[/\\])@(?:\[[^\]\s@]+\]|[^\s<>[\],;"@]+\.[^\s<>[\],;"@]+)/gu;
 /** Set while redacting splat arguments at levels whose later format strips heavy error fields. */
 let skipHeavyErrorFields = false;
 /** URL-encoded addresses (`user%40host.tld`), anchored at a token start so scans stay linear. */
@@ -73,7 +75,7 @@ const REDACTION_WINDOW_SLACK = 1024;
 const REDACTED_EMAIL_VALUE = '[REDACTED_EMAIL]';
 
 const sensitiveMetadataKey =
-  /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|password|assertion|client[-_]?assertion|client[-_]?secret|code[-_]?verifier|credential|signature|connection[-_]?string)$/i;
+  /^(authorization|proxy-authorization|cookie|set-cookie|x-api-key|api[-_]?key|appid|access[-_]?token|refresh[-_]?token|id[-_]?token|token|secret|password|assertion|client[-_]?assertion|client[-_]?secret|code[-_]?verifier|credential|signature|connection[-_]?string)$/i;
 const errorStringProperties = new Set(['name', 'message', 'stack']);
 
 /**
@@ -1044,16 +1046,25 @@ const jsonTruncateFormat: winston.Logform.FormatWrap = winston.format(
         return obj.map((item) => truncateObject(item));
       }
 
-      // We know this is an object at this point
-      const objectRecord = obj as Record<string, unknown>;
-      const newObj: Record<string, unknown> = {};
-      Object.entries(objectRecord).forEach(([key, value]) => {
+      const objectRecord = obj as Record<string | symbol, unknown>;
+      const newObj: Record<string | symbol, unknown> = {};
+      // Only the log record carries transport symbols; nested values stay JSON-shaped.
+      const keys = obj === info ? Reflect.ownKeys(objectRecord) : Object.keys(objectRecord);
+      for (const key of keys) {
+        if (typeof key === 'symbol') {
+          newObj[key] = objectRecord[key];
+          continue;
+        }
+        if (!Object.prototype.propertyIsEnumerable.call(objectRecord, key)) {
+          continue;
+        }
+        const value = objectRecord[key];
         if (typeof value === 'string') {
           newObj[key] = truncateLongStrings(value, CONSOLE_JSON_STRING_LENGTH);
         } else {
           newObj[key] = truncateObject(value);
         }
-      });
+      }
       return newObj;
     };
 

@@ -38,6 +38,12 @@ describe.each([
     expect(deleteRagFile).toHaveBeenCalledWith({ userId: 'author-1', file });
   });
 
+  it('retains the blob when vector cleanup returns false', async () => {
+    deleteRagFile.mockResolvedValueOnce(false);
+    await expect(remove(req, { filepath })).rejects.toThrow('Vector deletion was not confirmed');
+    expect(deleteBlob).not.toHaveBeenCalled();
+  });
+
   it('rejects an owner mismatch before deleting either blob or RAG data', async () => {
     await expect(
       remove({ user: { id: 'author-2' } }, { filepath, user: 'author-1' }),
@@ -61,12 +67,12 @@ describe.each([
     expect(deleteRagFile).not.toHaveBeenCalled();
   });
 
-  it('does not clean up RAG data when remote deletion fails', async () => {
+  it('attempts vector cleanup before deleting remote storage', async () => {
     deleteBlob.mockRejectedValueOnce(new Error('storage unavailable'));
     await expect(remove(req, { filepath, user: 'author-1' })).rejects.toThrow(
       'storage unavailable',
     );
-    expect(deleteRagFile).not.toHaveBeenCalled();
+    expect(deleteRagFile).toHaveBeenCalled();
   });
 
   it('treats an already missing blob as deleted and still cleans up RAG data', async () => {

@@ -69,7 +69,7 @@ test.describe('unified file upload', () => {
     expect(persisted?.llmDeliveryPath).toBe('none');
   });
 
-  test('single attach button still delivers a provider-routed upload and shows it in chat', async ({
+  test('single attach button still delivers a provider-routed upload and shows it in chat @scenario:provider-upload-delivered', async ({
     page,
   }) => {
     test.setTimeout(120000);

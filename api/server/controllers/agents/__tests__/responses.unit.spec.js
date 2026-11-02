@@ -198,8 +198,11 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  createFileProvisionRecovery: () =>
+    jest.requireActual('@librechat/api').createFileProvisionRecovery(),
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
+  loadSkillAccess: (...args) => jest.requireActual('@librechat/api').loadSkillAccess(...args),
   getConversationWriteContext: (...args) =>
     jest.requireActual('@librechat/api').getConversationWriteContext(...args),
   isTemporaryTurn: (...args) => jest.requireActual('@librechat/api').isTemporaryTurn(...args),

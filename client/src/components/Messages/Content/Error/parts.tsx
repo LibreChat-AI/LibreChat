@@ -283,7 +283,7 @@ export function ErrorDetails({ label, children }: { label: string; children: Rea
         <ChevronRight
           className={cn(
             'size-3.5 transition-transform duration-300 [transition-timing-function:cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none',
-            open && 'rotate-90',
+            open ? 'rotate-90' : 'rtl:-scale-x-100',
           )}
           aria-hidden="true"
         />

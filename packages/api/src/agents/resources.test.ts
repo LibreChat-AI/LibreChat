@@ -10,6 +10,8 @@ import type { TAgentsEndpoint, TFile } from 'librechat-data-provider';
 import type { IUser, AppConfig } from '@librechat/data-schemas';
 import type { Request as ServerRequest } from 'express';
 import type { TGetFiles, TFilterFilesByAgentAccess } from './resources';
+import { createDeleteFileWithSecondaryStorage } from '../files/storage';
+import { createFileProvisionRecovery } from '../files/operations';
 import { primeResources } from './resources';
 
 // Mock logger
@@ -139,10 +141,180 @@ describe('primeResources', () => {
       ]);
     });
 
+    it.each(['primary', 'code'])('re-provisions saved files on %s failure', async (failure) => {
+      const file = sharedContextFile(['agent-a']);
+      file.metadata = {
+        ...file.metadata,
+        codeEnvRef: {
+          kind: 'agent',
+          id: 'agent-a',
+          storage_session_id: 'session',
+          file_id: 'code-copy',
+        },
+      };
+      const providerError = new Error('provider unavailable');
+      const primary = jest.fn().mockResolvedValue(undefined);
+      const code = jest.fn().mockResolvedValue({ deleted: true });
+      (failure === 'primary' ? primary : code).mockRejectedValue(providerError);
+      const clearFileEmbeddings = jest.fn().mockResolvedValue(true);
+      const remove = createDeleteFileWithSecondaryStorage({
+        source: FileSources.local,
+        deleteFile: primary,
+        getDeleteFile: (source) =>
+          source === FileSources.vectordb ? async () => ({ deleted: true }) : code,
+        clearFileEmbeddings,
+        isFileStorageClean: jest.fn().mockResolvedValue(true),
+        fileStorage: {
+          recovery: createFileProvisionRecovery(),
+          acquireFileProvision: jest.fn().mockResolvedValue(true),
+          releaseFileProvision: jest.fn().mockResolvedValue(true),
+          commitFileProvision: jest.fn().mockResolvedValue(true),
+          acquireFileDeletion: jest.fn().mockResolvedValue({ resumed: false }),
+          releaseFileDeletion: jest.fn().mockResolvedValue(true),
+        },
+        logger: { warn: jest.fn() },
+      });
+      await expect(
+        remove(
+          { user: { id: 'user1' }, config: { fileConfig: { retainedFileCleanup: true } } },
+          file,
+        ),
+      ).rejects.toBe(providerError);
+      expect(file.embedded).toBe(false);
+      expect(file.metadata?.embeddedEntities).toBeUndefined();
+      expect(file.metadata?.codeEnvRef?.file_id).toBe('code-copy');
+      mockGetFiles.mockResolvedValue([file]);
+      const result = await primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        requestFileSet,
+        attachments: undefined,
+        tool_resources: { [EToolResources.file_search]: { file_ids: [file.file_id] } },
+        agentId: 'agent-a',
+        enabledToolResources: new Set([EToolResources.file_search]),
+      });
+      expect(result.provisionState?.vectorDBFiles.map((candidate) => candidate.file_id)).toContain(
+        file.file_id,
+      );
+      expect(result.tool_resources?.file_search?.file_ids).toContain(file.file_id);
+    });
+
     it('does not re-embed for the agent that already provisioned it', async () => {
       const result = await primeFor('agent-a', sharedContextFile(['agent-a']));
 
       expect(result.provisionState).toBeUndefined();
+    });
+  });
+
+  describe('search destination after confirmed vector cleanup', () => {
+    const chatFile = (destinationChosen?: boolean): TFile => ({
+      user: 'user1',
+      file_id: 'chat-search',
+      filename: 'notes.pdf',
+      filepath: '/uploads/notes.pdf',
+      object: 'file',
+      type: 'application/pdf',
+      bytes: 1024,
+      usage: 0,
+      source: FileSources.local,
+      context: FileContext.message_attachment,
+      llmDeliveryPath: 'none',
+      embedded: true,
+      metadata: {
+        ...(destinationChosen !== undefined ? { destinationChosen } : {}),
+        embeddedEntities: ['user1'],
+      },
+    });
+
+    const primeChat = (file: TFile, enabledToolResources: Set<EToolResources>) =>
+      primeResources({
+        req: mockReq,
+        appConfig: mockAppConfig,
+        getFiles: mockGetFiles,
+        filterFiles: mockFilterFiles,
+        requestFileSet,
+        attachments: Promise.resolve([file]),
+        tool_resources: {},
+        agentId: 'agent-a',
+        enabledToolResources,
+      });
+
+    it.each([true, undefined, false])(
+      'requeues search after primary failure with chooser marker %s',
+      async (destinationChosen) => {
+        const file = chatFile(destinationChosen);
+        const failure = new Error('primary unavailable');
+        const remove = createDeleteFileWithSecondaryStorage({
+          source: FileSources.local,
+          deleteFile: async () => {
+            throw failure;
+          },
+          getDeleteFile: () => async () => ({ deleted: true }),
+          clearFileEmbeddings: jest.fn().mockResolvedValue(true),
+          isFileStorageClean: jest.fn().mockResolvedValue(true),
+          fileStorage: {
+            recovery: createFileProvisionRecovery(),
+            acquireFileProvision: jest.fn().mockResolvedValue(true),
+            releaseFileProvision: jest.fn().mockResolvedValue(true),
+            commitFileProvision: jest.fn().mockResolvedValue(true),
+            acquireFileDeletion: jest.fn().mockResolvedValue({ resumed: false }),
+            releaseFileDeletion: jest.fn().mockResolvedValue(true),
+          },
+          logger: { warn: jest.fn() },
+        });
+        await expect(
+          remove(
+            { user: { id: 'user1' }, config: { fileConfig: { retainedFileCleanup: true } } },
+            file,
+          ),
+        ).rejects.toBe(failure);
+        expect(file.embedded).toBe(false);
+        expect(file.metadata?.embeddedEntities).toBeUndefined();
+        expect(file.metadata?.searchDestination).toBe(true);
+        expect(file.llmDeliveryPath).toBe('none');
+        const enabled = new Set([EToolResources.file_search, EToolResources.execute_code]);
+        const result = await primeChat(file, enabled);
+        expect(result.provisionState?.vectorDBFiles.map((candidate) => candidate.file_id)).toEqual([
+          file.file_id,
+        ]);
+        expect(result.provisionState?.agentScopedFileIds.has(file.file_id)).toBe(false);
+        expect(file.embedded).toBe(false);
+        if (destinationChosen !== false) {
+          expect(result.provisionState?.codeEnvFiles).toEqual([]);
+        }
+        expect(mockGetFiles).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([true, undefined])(
+      'does not provision a declined search destination (%s)',
+      async (choice) => {
+        const file = chatFile(choice);
+        file.embedded = false;
+        file.metadata = {
+          destinationChosen: choice,
+          codeEnvRef: {
+            kind: 'user',
+            id: 'user1',
+            storage_session_id: 'session',
+            file_id: 'code-copy',
+          },
+        };
+        const result = await primeChat(file, new Set([EToolResources.file_search]));
+        expect(result.provisionState?.vectorDBFiles ?? []).toEqual([]);
+        expect(file.metadata.searchDestination).toBeUndefined();
+      },
+    );
+
+    it('does not enable a tool or provision search when File Search is disabled', async () => {
+      const file = chatFile(true);
+      file.embedded = false;
+      file.metadata = { destinationChosen: true, searchDestination: true };
+      const result = await primeChat(file, new Set([EToolResources.execute_code]));
+      expect(result.provisionState).toBeUndefined();
+      expect(result.tool_resources?.file_search).toBeUndefined();
     });
   });
 

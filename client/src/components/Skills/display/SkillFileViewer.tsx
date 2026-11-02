@@ -85,7 +85,7 @@ function SkillFileViewer({ skillId, relativePath, skill }: SkillFileViewerProps)
           className="text-text-secondary hover:bg-surface-hover hover:text-text-primary rounded-md p-1 transition-colors"
           aria-label={localize('com_ui_back')}
         >
-          <ArrowLeft className="size-4" />
+          <ArrowLeft className="size-4 rtl:-scale-x-100" />
         </button>
         <FileText className="text-text-secondary size-4 shrink-0" aria-hidden="true" />
         <span className="text-text-primary min-w-0 flex-1 truncate text-sm font-medium">

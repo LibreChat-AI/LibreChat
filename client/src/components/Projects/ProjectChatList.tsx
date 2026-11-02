@@ -117,7 +117,7 @@ const ConversationRow = memo(
           ) : null}
         </Button>
         {conversationId ? (
-          <div className="pr-2">
+          <div className="pe-2">
             <ProjectChatOptions
               conversation={conversation}
               isMenuOpen={isMenuOpen}

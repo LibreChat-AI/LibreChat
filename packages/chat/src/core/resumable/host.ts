@@ -6,6 +6,7 @@ import type {
   TPendingSteer,
   TAttachment,
   ChatTransport,
+  ChatTransportRequest,
   ChatTitleFrame,
   ChatFinalFrame,
   EventSubmission,
@@ -21,6 +22,7 @@ import type {
 import type { GenerationProtocolVersion } from '../protocol';
 import type { RunEnd } from '../steer/types';
 import type { StepEvent } from '../reducer';
+import type { ResumableRun } from './run';
 
 /** Where a resumable run reports what it is doing. The app passes its own logger. */
 export interface ResumableLogger {
@@ -127,6 +129,12 @@ export interface ResumableSteers {
   markLiveApplied: (steerId: string) => void;
   /** Patches the chips the server re-labelled (preempt capability); never removes one. */
   update: (event: TSteerUpdatedEvent) => void;
+  /** Whether the user has already dealt with the parked steer a recovery start replays. */
+  isRecoveryHeld: (conversationId: string, recoverySteerId: string) => boolean;
+  /** Refuses further recovery of a parked steer the server rejected. */
+  blockRecovery: (conversationId: string, recoverySteerId: string) => void;
+  /** Puts a queued turn whose start was refused back in its queue position. */
+  restoreQueued: (submission: TSubmission, expectedPredecessorCreatedAt?: number) => void;
   /** Re-seeds the chips from the server's still-queued steers. */
   seed: (
     conversationId: string,
@@ -159,7 +167,7 @@ export interface ResumableSteers {
 export interface ResumableCache {
   /** Marks the conversation's messages stale; `all` refetches them now, `none` leaves that to
    *  the next read. */
-  invalidateMessages: (conversationId: string, refetch: 'all' | 'none') => Promise<void>;
+  invalidateMessages: (conversationId: string, refetch: 'all' | 'active' | 'none') => Promise<void>;
   /** Fetches the conversation's messages through its query. `fallback` reads them directly
    *  when no query for the conversation is mounted yet. */
   fetchMessages: (conversationId: string, fallback?: boolean) => Promise<unknown>;
@@ -180,6 +188,33 @@ export interface ResumableCache {
   upsertConversation: (conversation: TConversation) => void;
   /** Drops the conversation from every conversation list. */
   removeConversation: (conversationId: string) => void;
+  getConversation: (conversationId: string) => TConversation | undefined;
+  /** Drops the conversation's own record and messages from the cache. */
+  removeConversationQueries: (conversationId: string) => void;
+  /** Polls for the title the server generates for a new conversation. */
+  queueTitleGeneration: (conversationId: string) => void;
+  /**
+   * Gives a new chat its conversation record and messages under the id the server assigned,
+   * before any stream event names it; returns the submission rewritten onto that id.
+   */
+  addOptimisticConversation: (conversationId: string, submission: TSubmission) => TSubmission;
+}
+
+/** The run markers the queue drain reads for a conversation this pane may leave mid-run. */
+export interface ResumableQueue {
+  /** Clears the stop and detached-run markers an earlier generation left, keeping the ones
+   *  `isSameGeneration` says belong to the generation being resumed. */
+  clearSupersededMarkers: (
+    conversationId: string,
+    isSameGeneration: (generationCreatedAt?: number) => boolean,
+  ) => void;
+  /** Whether the user stopped this generation. */
+  isStopped: (conversationId: string, generationCreatedAt: number) => boolean;
+  /** Records a run the pane left while it was still generating. */
+  rememberDetachedRun: (
+    conversationId: string,
+    run: { userMessageId: string; responseMessageId?: string; generationCreatedAt: number },
+  ) => void;
 }
 
 /** The pane's controls and run bookkeeping a resumable run drives. */
@@ -216,6 +251,12 @@ export interface ResumablePane {
     earlyAbort: boolean;
     startedAsNewConvo: boolean;
   }) => { conversationId: string; startedAsNewConvo: boolean };
+  /** Sets the pane's conversation, whatever response the pane adds. */
+  setConversation?: (update: (current: TConversation | null) => TConversation | null) => void;
+  /** Resets the pane to a fresh new chat. */
+  startNewConversation?: () => void;
+  /** Moves the address bar off `/c/new` onto the conversation the server assigned. */
+  replaceNewConversationUrl: (conversationId: string) => void;
   /** Updates the pane's conversation; absent for a pane that only adds a comparison response. */
   updateConversation?: (update: (current: TConversation | null) => TConversation | null) => void;
   /**
@@ -247,6 +288,13 @@ export interface ResumableEvents {
   flushPendingDeltas: () => void;
   /** Discards the live usage estimate for a run that stopped streaming. */
   resetLive: (submission: TSubmission) => void;
+  /** Writes the error card for a start that failed, from the response body it failed with, or
+   *  for a recovery start the user already dealt with. */
+  showStartFailure: (
+    submission: TSubmission,
+    errorData?: unknown,
+    reason?: 'recovery_held',
+  ) => void;
   /** Writes the failed turn's error card from the text (or raw error value) the server sent. */
   showError: (text: string | boolean | { message?: string }, submission: TSubmission) => void;
 }
@@ -300,6 +348,7 @@ export interface ResumableParts {
 /** Everything a resumable run needs from the app it runs in. */
 export interface ResumableHost extends SubscriptionHost {
   cache: ResumableCache;
+  queue: ResumableQueue;
   pane: ResumablePane;
   steers: ResumableSteers;
   events: ResumableEvents;
@@ -308,6 +357,19 @@ export interface ResumableHost extends SubscriptionHost {
   usage: ResumableUsage;
   /** The stream side of the app's transport, bound to the signed-in user. */
   stream: ChatTransport;
+  /** POSTs a turn to the resumable generation route; resolves to the start response. */
+  start: (request: ChatTransportRequest, options?: { signal?: AbortSignal }) => Promise<unknown>;
   /** Receives the dev-only controls that simulate a dropped or a clean close. */
   exposeDebugControls?: (controls: { killNetwork: () => void; closeClean: () => void }) => void;
+}
+
+/** One submission the pane serves, from its start (or resume) until it is replaced. */
+export interface MountContext {
+  run: ResumableRun;
+  host: ResumableHost;
+  submission: TSubmission;
+  /** Aborted once the pane moves to another submission or unmounts. */
+  signal: AbortSignal;
+  /** Whether this submission is still the one the pane serves. */
+  isCurrent: () => boolean;
 }
