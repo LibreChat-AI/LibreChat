@@ -122,7 +122,6 @@ afterEach(() => {
   delete process.env.LANGFUSE_SAMPLE_RATE;
   delete process.env.TENANT_ISOLATION_STRICT;
   delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
-  delete process.env.RESET_MAX_CONTEXT_TOKENS_ON_MODEL_SWITCH;
 });
 
 describe('GET /api/config', () => {
@@ -1503,32 +1502,35 @@ describe('chat list endpoint filter limit', () => {
   });
 });
 
-describe('max context tokens reset flag', () => {
-  beforeEach(() => {
-    mockGetAppConfig.mockResolvedValue(baseAppConfig);
-  });
+describe('max context tokens reset on model switch', () => {
+  const loadAppConfig = async (config) => {
+    const { AppService } = require('@librechat/data-schemas');
+    mockGetAppConfig.mockResolvedValue(await AppService({ config }));
+  };
 
-  it('publishes the flag as true when RESET_MAX_CONTEXT_TOKENS_ON_MODEL_SWITCH is enabled', async () => {
-    process.env.RESET_MAX_CONTEXT_TOKENS_ON_MODEL_SWITCH = 'true';
+  it('publishes the librechat.yaml value in the authenticated interface config', async () => {
+    await loadAppConfig({ interface: { resetMaxContextTokensOnModelSwitch: true } });
 
     const response = await request(createApp(mockUser)).get('/api/config');
 
     expect(response.status).toBe(200);
-    expect(response.body.resetMaxContextTokensOnModelSwitch).toBe(true);
+    expect(response.body.interface.resetMaxContextTokensOnModelSwitch).toBe(true);
   });
 
-  it('publishes the flag as false when the env var is unset', async () => {
+  it('publishes the schema default of false when librechat.yaml does not set it', async () => {
+    await loadAppConfig({});
+
     const response = await request(createApp(mockUser)).get('/api/config');
 
-    expect(response.body.resetMaxContextTokensOnModelSwitch).toBe(false);
+    expect(response.body.interface.resetMaxContextTokensOnModelSwitch).toBe(false);
   });
 
-  it('keeps the flag out of the pre-login payload', async () => {
-    process.env.RESET_MAX_CONTEXT_TOKENS_ON_MODEL_SWITCH = 'true';
+  it('keeps the setting out of the pre-login interface config', async () => {
+    await loadAppConfig({ interface: { resetMaxContextTokensOnModelSwitch: true } });
 
     const response = await request(createApp()).get('/api/config');
 
     expect(response.status).toBe(200);
-    expect(response.body).not.toHaveProperty('resetMaxContextTokensOnModelSwitch');
+    expect(response.body.interface ?? {}).not.toHaveProperty('resetMaxContextTokensOnModelSwitch');
   });
 });

@@ -2,7 +2,7 @@ import React from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { RecoilRoot, useRecoilValue } from 'recoil';
 import { act, renderHook } from '@testing-library/react';
-import { EModelEndpoint } from 'librechat-data-provider';
+import { EModelEndpoint, LocalStorageKeys } from 'librechat-data-provider';
 import type {
   TPreset,
   TModelSpec,
@@ -112,6 +112,19 @@ const gpt54PresetWithBudget = {
   maxContextTokens: 200000,
 } as TPreset;
 
+/** Names only the endpoint; buildDefaultConvo picks the last-selected or first available model. */
+const endpointOnlyPreset = {
+  presetId: 'preset-azure-default',
+  title: 'Azure default',
+  endpoint: EModelEndpoint.azureOpenAI,
+} as TPreset;
+
+const setLastSelectedModel = (model: string) =>
+  localStorage.setItem(
+    LocalStorageKeys.LAST_MODEL,
+    JSON.stringify({ [EModelEndpoint.azureOpenAI]: model }),
+  );
+
 const wrapper = ({ children }: { children: React.ReactNode }) => (
   <RecoilRoot>
     <MemoryRouter>{children}</MemoryRouter>
@@ -123,13 +136,13 @@ const renderSelection = (
   resetMaxContextTokensOnModelSwitch?: boolean,
 ) => {
   (useGetStartupConfig as jest.Mock).mockReturnValue({
-    data: { resetMaxContextTokensOnModelSwitch },
+    data: { interface: { resetMaxContextTokensOnModelSwitch } },
   });
   const { result } = renderHook(
     () => {
       const { newConversation } = useNewConvo();
       const options = {
-        presets: [gpt54Preset, gpt54PresetWithBudget],
+        presets: [gpt54Preset, gpt54PresetWithBudget, endpointOnlyPreset],
         modelSpecs: [gpt54Spec, lunaSpec],
         endpointsConfig,
         getConversation: () => conversation,
@@ -221,6 +234,29 @@ describe('the conversation after a model switch drops the previous Max Context T
       const { select } = renderSelection(azureConversation, true);
       const convo = await select(choosePreset(gpt54PresetWithBudget));
       expect(convo.maxContextTokens).toBe(200000);
+    });
+
+    it('keeps the budget when a preset without a model resolves to the current model', async () => {
+      setLastSelectedModel('gpt-6-luna-dz');
+      const { select } = renderSelection(azureConversation, true);
+      const convo = await select(choosePreset(endpointOnlyPreset));
+      expect(convo.model).toBe('gpt-6-luna-dz');
+      expect(convo.maxContextTokens).toBe(SAVED_BUDGET);
+    });
+
+    it('keeps the budget when a preset without a model falls back to the current model', async () => {
+      const { select } = renderSelection(azureConversation, true);
+      const convo = await select(choosePreset(endpointOnlyPreset));
+      expect(convo.model).toBe('gpt-6-luna-dz');
+      expect(convo.maxContextTokens).toBe(SAVED_BUDGET);
+    });
+
+    it('clears the budget when a preset without a model resolves to another model', async () => {
+      setLastSelectedModel('gpt-5.4-dz');
+      const { select } = renderSelection(azureConversation, true);
+      const convo = await select(choosePreset(endpointOnlyPreset));
+      expect(convo.model).toBe('gpt-5.4-dz');
+      expect(convo.maxContextTokens).toBeUndefined();
     });
 
     it('keeps the budget when the same model is picked again', async () => {

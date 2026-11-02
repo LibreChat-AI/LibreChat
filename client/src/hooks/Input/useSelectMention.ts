@@ -43,7 +43,8 @@ export default function useSelectMention({
   const modularChat = useRecoilValue(store.modularChat);
   const availableTools = useRecoilValue(store.availableTools);
   const { data: startupConfig } = useGetStartupConfig();
-  const resetMaxContextTokensOnModelSwitch = startupConfig?.resetMaxContextTokensOnModelSwitch;
+  const resetMaxContextTokensOnModelSwitch =
+    startupConfig?.interface?.resetMaxContextTokensOnModelSwitch;
   const [searchParams] = useSearchParams();
   /**
    * Project scope is read from React Router's search params (the same source the
@@ -305,15 +306,18 @@ export default function useSelectMention({
           preset: template,
           cleanInput: true,
         });
-        if (
-          newPreset.maxContextTokens == null &&
-          shouldResetMaxContextTokens({
-            enabled: resetMaxContextTokensOnModelSwitch,
-            conversation,
-            target: newPreset,
-          })
-        ) {
-          currentConvo.maxContextTokens = undefined;
+        if (resetMaxContextTokensOnModelSwitch === true && newPreset.maxContextTokens == null) {
+          /* A preset may omit its model; compare against the model it resolves to, not the raw preset */
+          const target = getDefaultConversation({ conversation: currentConvo, preset: newPreset });
+          if (
+            shouldResetMaxContextTokens({
+              enabled: resetMaxContextTokensOnModelSwitch,
+              conversation,
+              target,
+            })
+          ) {
+            currentConvo.maxContextTokens = undefined;
+          }
         }
 
         /* We don't reset the latest message, only when changing settings mid-converstion */
