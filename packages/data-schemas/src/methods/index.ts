@@ -1,3 +1,4 @@
+import type { ChannelStorageConfig } from 'librechat-data-provider';
 import { createSubagentContentMethods, type SubagentContentMethods } from './subagentContent';
 export type {
   SubagentContentScope,
@@ -61,6 +62,20 @@ import { createAgentCategoryMethods, type AgentCategoryMethods } from './agentCa
 /* Agent API Keys */
 import { createAgentApiKeyMethods, type AgentApiKeyMethods } from './agentApiKey';
 
+export { createChannelRunStorage, ChannelRunConflict } from './channelRun';
+export { createChannelSummaryStorage, CHANNEL_SUMMARY_MAX_PRIOR_ROWS } from './channelSummary';
+export type {
+  ChannelSummaryStorage,
+  ChannelSummaryScope,
+  ChannelSummaryRow,
+} from './channelSummary';
+export type {
+  ChannelRunStorage,
+  ChannelRunEnrollment,
+  ChannelLaneScope,
+  ChannelRunRecord,
+  ChannelLaneRecord,
+} from './channelRun';
 /* MCP Servers */
 import { createMCPServerMethods, type MCPServerMethods } from './mcpServer';
 import { createCodeEnvironmentMethods, type CodeEnvironmentMethods } from './codeEnvironment';
@@ -331,6 +346,7 @@ export type AllMethods = SubagentContentMethods &
 
 /** Dependencies injected from the api layer into createMethods */
 export interface CreateMethodsDeps {
+  getChannelStorageConfig?: () => Promise<Partial<ChannelStorageConfig>>;
   /** Matches a model name to a canonical key. From @librechat/api. */
   matchModelName?: (model: string, endpoint?: string) => string | undefined;
   /** Finds the first key in values whose key is a substring of model. From @librechat/api. */
@@ -519,7 +535,10 @@ export function createMethods(
   };
   const agentMethods = createAgentMethods(mongoose, agentDeps);
   return {
-    ...createUserMethods(mongoose, { getCache: deps.getCache }),
+    ...createUserMethods(mongoose, {
+      getCache: deps.getCache,
+      getChannelStorageConfig: deps.getChannelStorageConfig,
+    }),
     ...createToolApprovalGrantMethods(mongoose),
     ...createSessionMethods(mongoose),
     ...createTokenMethods(mongoose),

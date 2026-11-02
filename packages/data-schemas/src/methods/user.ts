@@ -1,6 +1,7 @@
 import mongoose, { FilterQuery } from 'mongoose';
 import { AUTH_USER_DOC_MAX_AGE_MS } from 'librechat-data-provider';
 import type {
+  ChannelStorageConfig,
   BalanceRefillMode,
   RefillIntervalUnit,
   StatefulCodeEnvironment,
@@ -16,6 +17,10 @@ import type {
 } from '~/types';
 import type { TwoFactorEnrollmentGuard, TwoFactorEnrollmentUpdate } from '~/types';
 import type { CacheStore } from '~/types';
+import {
+  eraseChannelPersistenceForUser,
+  resolveChannelErasureConfig,
+} from '~/methods/channelErasure';
 import { closeResponseScopes, eraseResponseRecords } from './responseScope';
 import { scoreSearchMatch, buildUserSearchFilter } from '~/utils/search';
 import { evictAuthUserDocsForUsers } from '~/utils/eviction';
@@ -35,6 +40,7 @@ const TWO_FACTOR_ENROLLMENT_PROJECTION =
   '+totpSecret +backupCodes +pendingTotpSecret +pendingBackupCodes +twoFactorAcknowledgementNonceHash +twoFactorFinalizationNonceHash';
 
 interface UserMethodDeps {
+  getChannelStorageConfig?: () => Promise<Partial<ChannelStorageConfig>>;
   getCache?: (key: string) => CacheStore | undefined;
   /** Resolves after the given milliseconds; tests pass one that need not wait out the cache TTL. */
   delay?: (ms: number) => Promise<void>;
@@ -632,8 +638,18 @@ export function createUserMethods(
       const User = mongoose.models.User;
       const owner = await User.findById(userId).select('tenantId').lean<Pick<IUser, 'tenantId'>>();
       if (owner) {
+        const channelConfig = resolveChannelErasureConfig(
+          (await deps.getChannelStorageConfig?.()) ?? {},
+        );
         await closeResponseScopes(mongoose, { userId, tenantId: owner.tenantId });
         await eraseResponseRecords(mongoose, { userId, tenantId: owner.tenantId });
+        // Admission writes the same owner anchor in its insertion transaction.
+        // Closing it therefore precedes both this sweep and every delayed retry.
+        await eraseChannelPersistenceForUser(
+          mongoose,
+          { userId, tenantId: owner.tenantId },
+          channelConfig,
+        );
       }
       await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
       const result = await User.deleteOne({ _id: userId });
