@@ -243,6 +243,7 @@ export const AppService = async (params?: {
     imageOutputType,
     interfaceConfig,
     turnstileConfig,
+    embed: config.embed,
     mcpConfig: mcpServersConfig,
     fileStrategies: config.fileStrategies,
     cloudfront: config.cloudfront as AppConfig['cloudfront'],

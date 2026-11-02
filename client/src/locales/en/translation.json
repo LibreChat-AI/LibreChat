@@ -488,6 +488,8 @@
   "com_citation_source": "Source",
   "com_click_to_download": "(click here to download)",
   "com_download_expired": "(download expired)",
+  "com_embed_unavailable_description": "This chat could not be opened here. Refresh the page or sign in again on the site you came from.",
+  "com_embed_unavailable_title": "Chat unavailable",
   "com_endpoint": "Endpoint",
   "com_endpoint_agent": "Agent",
   "com_endpoint_agent_placeholder": "Please select an Agent",

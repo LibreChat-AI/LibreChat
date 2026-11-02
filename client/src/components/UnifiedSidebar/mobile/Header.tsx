@@ -4,6 +4,7 @@ import type { NavLink } from '~/common';
 import { CLOSE_SIDEBAR_ID } from '~/components/Chat/Menus/OpenSidebar';
 import { useShortcutAriaKey } from '~/hooks/useKeyboardShortcuts';
 import { lazyWithRecovery } from '~/lib/assets/lazy';
+import { useEmbedded } from '~/embed/context';
 import { useLocalize } from '~/hooks';
 import Switcher from './Switcher';
 import NewChat from './NewChat';
@@ -36,6 +37,7 @@ function Header({
   routeActiveId?: string;
 }) {
   const localize = useLocalize();
+  const embedded = useEmbedded();
   const toggleSidebarAriaKey = useShortcutAriaKey('toggleSidebar');
   const closeRef = useRef<HTMLButtonElement>(null);
 
@@ -81,9 +83,11 @@ function Header({
         routeActiveId={routeActiveId}
       />
       <NewChat onNewChat={onNewChat} switchToHistory={switchToHistory} />
-      <Suspense fallback={<Skeleton className="size-9 rounded-lg" />}>
-        <AccountSettings collapsed />
-      </Suspense>
+      {!embedded && (
+        <Suspense fallback={<Skeleton className="size-9 rounded-lg" />}>
+          <AccountSettings collapsed />
+        </Suspense>
+      )}
     </div>
   );
 }

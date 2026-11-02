@@ -1,6 +1,7 @@
 /**
  * @jest-environment jsdom
  */
+import axios from 'axios';
 import { readTwoFactorSetupToken, clearTwoFactorSetupToken } from './twoFactor';
 import { getTokenHeader, setTokenHeader } from './headers-helpers';
 import { TWO_FACTOR_ENROLLMENT_REQUIRED_CODE } from './config';
@@ -143,5 +144,22 @@ describe('two-factor enrollment responses outside the interceptors', () => {
     expect(readTwoFactorSetupToken()).toBe('setup-token');
     expect(getTokenHeader()).toBeUndefined();
     expect(redirectEvents).toHaveLength(1);
+  });
+});
+
+describe('setRefreshTokenHandler', () => {
+  afterEach(() => {
+    request.setRefreshTokenHandler(null);
+    jest.restoreAllMocks();
+  });
+
+  it('obtains the session from the installed handler instead of the refresh cookie', async () => {
+    const postSpy = jest.spyOn(axios, 'post');
+    const handler = jest.fn().mockResolvedValue({ token: 'embedded-token' });
+    request.setRefreshTokenHandler(handler);
+
+    await expect(request.refreshToken()).resolves.toEqual({ token: 'embedded-token' });
+    expect(handler).toHaveBeenCalledTimes(1);
+    expect(postSpy).not.toHaveBeenCalled();
   });
 });

@@ -358,6 +358,12 @@ export const login = (payload: t.TLoginUser): Promise<t.TLoginResponse> => {
   return request.post(endpoints.login(), payload);
 };
 
+export const createEmbedSession = (
+  payload: t.TEmbedSessionRequest,
+): Promise<t.TEmbedSessionResponse> => {
+  return request.post(endpoints.embedSession(), payload);
+};
+
 export const logout = (): Promise<m.TLogoutResponse> => {
   return request.post(endpoints.logout());
 };

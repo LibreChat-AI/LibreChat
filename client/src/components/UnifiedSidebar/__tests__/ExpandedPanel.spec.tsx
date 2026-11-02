@@ -8,6 +8,7 @@ import { render, fireEvent, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { NavLink } from '~/common';
 import { ActivePanelProvider, DEFAULT_PANEL, activePanelAtom } from '~/Providers';
+import { EmbedProvider } from '~/embed/context';
 
 const mockNewConversation = jest.fn();
 const mockClearMessagesCache = jest.fn();
@@ -106,6 +107,7 @@ function renderPanel({
   onNavigate,
   initialPanel = DEFAULT_PANEL,
   switchToHistory = true,
+  embedded = false,
 }: {
   expanded?: boolean;
   links?: NavLink[];
@@ -114,6 +116,7 @@ function renderPanel({
   onNavigate?: jest.Mock;
   initialPanel?: string;
   switchToHistory?: boolean;
+  embedded?: boolean;
 } = {}) {
   getDefaultStore().set(activePanelAtom, initialPanel);
 
@@ -121,16 +124,18 @@ function renderPanel({
     <MemoryRouter>
       <QueryClientProvider client={createQueryClient()}>
         <RecoilRoot>
-          <ActivePanelProvider>
-            <ExpandedPanel
-              links={links}
-              expanded={expanded}
-              onCollapse={onCollapse}
-              onExpand={onExpand}
-              onNavigate={onNavigate}
-              switchToHistory={switchToHistory}
-            />
-          </ActivePanelProvider>
+          <EmbedProvider embedded={embedded}>
+            <ActivePanelProvider>
+              <ExpandedPanel
+                links={links}
+                expanded={expanded}
+                onCollapse={onCollapse}
+                onExpand={onExpand}
+                onNavigate={onNavigate}
+                switchToHistory={switchToHistory}
+              />
+            </ActivePanelProvider>
+          </EmbedProvider>
         </RecoilRoot>
       </QueryClientProvider>
     </MemoryRouter>,
@@ -248,6 +253,19 @@ describe('ExpandedPanel', () => {
 
       expect(mockNewConversation).toHaveBeenCalledTimes(1);
       expect(getDefaultStore().get(activePanelAtom)).toBe('prompts');
+    });
+  });
+
+  describe('embedded in a host page', () => {
+    it('shows the account menu outside embed mode', async () => {
+      renderPanel();
+      expect(await screen.findByTestId('account-settings')).toBeInTheDocument();
+    });
+
+    it('leaves the account menu out when embedded', async () => {
+      renderPanel({ embedded: true });
+      expect(await screen.findByTestId('nav-panel-' + DEFAULT_PANEL)).toBeInTheDocument();
+      expect(screen.queryByTestId('account-settings')).not.toBeInTheDocument();
     });
   });
 });

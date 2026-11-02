@@ -282,6 +282,8 @@ export const register = () => `${BASE_URL}/api/auth/register`;
 export const refreshToken = (retry?: boolean) =>
   `${BASE_URL}/api/auth/refresh${retry === true ? '?retry=true' : ''}`;
 
+export const embedSession = () => `${BASE_URL}/api/embed/session`;
+
 export const requestPasswordReset = () => `${BASE_URL}/api/auth/requestPasswordReset`;
 
 export const resetPassword = () => `${BASE_URL}/api/auth/resetPassword`;

@@ -86,9 +86,25 @@ type AuthRecoveryWindow = Window & {
   __librechatAuthRecovery?: AuthRecoveryState;
 };
 
+/** Obtains a fresh session in place of the refresh-cookie exchange. */
+export type RefreshTokenHandler = () => Promise<t.TRefreshTokenResponse | undefined>;
+
+let refreshTokenHandler: RefreshTokenHandler | null = null;
+
+/**
+ * Replaces the refresh-cookie exchange for this page. An embedded client has no first-party
+ * cookie to refresh with, so it installs a handler that asks its host page for a new token.
+ * Every refresh path (silent refresh, 401 recovery, refresh ahead of expiry) goes through it.
+ */
+export const setRefreshTokenHandler = (handler: RefreshTokenHandler | null) => {
+  refreshTokenHandler = handler;
+};
+
 /** A hung refresh gates every API call through the deduped recovery promise, so it must reject. */
 const refreshToken = (retry?: boolean): Promise<t.TRefreshTokenResponse | undefined> =>
-  _post(endpoints.refreshToken(retry), undefined, { timeout: getClientLimit('refreshMs') });
+  refreshTokenHandler
+    ? refreshTokenHandler()
+    : _post(endpoints.refreshToken(retry), undefined, { timeout: getClientLimit('refreshMs') });
 
 const SHARE_PAGE_PATH_REGEX = /^\/share\/[^/]+\/?$/;
 const SHARED_MESSAGES_PATH_REGEX = /^\/api\/share\/[^/]+$/;
@@ -287,10 +303,12 @@ const setRequestAuthorizationHeader = (config: AxiosRequestConfig, token: string
   config.headers = headers;
 };
 
+/** The embed session exchange is the embedded client's refresh, so it must never wait on one. */
 const isAuthRecoveryEndpoint = (url?: string) =>
   url?.includes('/api/auth/2fa') === true ||
   url?.includes('/api/auth/logout') === true ||
-  url?.includes('/api/auth/refresh') === true;
+  url?.includes('/api/auth/refresh') === true ||
+  url?.includes('/api/embed/session') === true;
 
 const startAuthRecovery = (retryRefresh?: boolean) => {
   const state = getAuthRecoveryState();
@@ -569,6 +587,7 @@ export default {
   patch: _patch,
   authenticatedFetch: _authenticatedFetch,
   refreshToken,
+  setRefreshTokenHandler,
   dispatchTokenUpdatedEvent,
   redirectIfTwoFactorSetupPayload,
 };

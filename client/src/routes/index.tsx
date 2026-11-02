@@ -10,6 +10,7 @@ import {
 } from '~/components/Auth';
 import { OAuthSuccess, OAuthError } from '~/components/OAuth';
 import { AuthContextProvider } from '~/hooks/AuthContext';
+import { EmbedUnavailable, isEmbedded } from '~/embed';
 import { importWithRecovery } from '~/lib/assets/lazy';
 import RouteErrorBoundary from './RouteErrorBoundary';
 import StartupLayout from './Layouts/Startup';
@@ -117,7 +118,8 @@ export const router = createBrowserRouter(
               children: [
                 {
                   path: 'login',
-                  element: <Login />,
+                  /** A framed session is signed in by its host page; it never shows a login form. */
+                  element: isEmbedded() ? <EmbedUnavailable /> : <Login />,
                 },
                 {
                   path: 'login/2fa',

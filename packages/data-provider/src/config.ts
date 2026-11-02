@@ -118,8 +118,15 @@ export const DEFAULT_OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 
 /** Sections only librechat.yaml sets: no config document, Base included, can change or remove
  * them. `turnstile` stays here until the server verifies Turnstile tokens: until then a stored
- * site key adds no protection, and a wrong one locks users out of sign-in and registration. */
-export const BASE_ONLY_CONFIG_SECTIONS = ['filters', 'mcpAppSandbox', 'turnstile'] as const;
+ * site key adds no protection, and a wrong one locks users out of sign-in and registration.
+ * `embed` names the signing secrets and the origins allowed to frame the app, which only the
+ * operator may decide. */
+export const BASE_ONLY_CONFIG_SECTIONS = [
+  'filters',
+  'mcpAppSandbox',
+  'turnstile',
+  'embed',
+] as const;
 /** Sections that may be stored in the tenant's base config document but must
  * not be overridden or tombstoned by role, group, or user config documents. */
 export const BASE_PRINCIPAL_CONFIG_SECTIONS = ['langfuse'] as const;
@@ -3517,6 +3524,40 @@ export const turnstileSchema = z.object({
 
 export type TTurnstileConfig = z.infer<typeof turnstileSchema>;
 
+/** An embed app id: a lowercase slug, used in embed user identities and the loader's `data-app`. */
+export const EMBED_APP_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/;
+
+/** An origin as the browser reports it: scheme, host and optional port, without a path. */
+const embedOriginSchema = z
+  .string()
+  .regex(/^https?:\/\/[^/?#\s]+$/, 'must be an origin such as https://app.example.com');
+
+export const embedAppSchema = z.object({
+  /** Stable identifier the host passes to the loader and signs into the token's `aud`. */
+  id: z.string().regex(EMBED_APP_ID_PATTERN),
+  /** Pages allowed to frame the chat for this app, e.g. `https://app.example.com`. */
+  allowedOrigins: z.array(embedOriginSchema).min(1),
+  /**
+   * HS256 secret shared with the host backend, at least 32 characters. Reference an environment
+   * variable (`${EMBED_SECRET_MY_APP}`) rather than writing the secret into librechat.yaml.
+   */
+  secret: z.string().min(1),
+  /** Role new embed users are created with; an existing user's role is never changed. */
+  role: z.string().min(1).optional(),
+  /** Longest lifetime, in seconds, a host-signed token may declare (`exp - iat`). */
+  maxTokenAgeSeconds: z.number().int().min(30).max(3600).default(300),
+  /** Lifetime, in seconds, of the LibreChat access token an embed session receives. */
+  sessionSeconds: z.number().int().min(60).max(86400).default(900),
+});
+
+export const embedSchema = z.object({
+  enabled: z.boolean().default(false),
+  apps: z.array(embedAppSchema).default([]),
+});
+
+export type TEmbedAppConfig = z.infer<typeof embedAppSchema>;
+export type TEmbedConfig = z.infer<typeof embedSchema>;
+
 /** Distinguishes collector acceptance from the proxy's silent 204 authentication drop. */
 export const RUM_COLLECTOR_ACK_HEADER = 'x-librechat-rum-accepted';
 
@@ -4653,6 +4694,8 @@ export const configSchema = z.object({
     .optional(),
   interface: interfaceSchema,
   turnstile: turnstileSchema.optional(),
+  /** Lets allow-listed host pages frame LibreChat and sign their users in with a host-signed token. */
+  embed: embedSchema.optional(),
   /** Maximum rows an explicitly limited GET /files request may return. */
   fileListLimit: z.number().int().positive().default(100),
   fileStrategy: fileStorageSchema.default(FileSources.local),

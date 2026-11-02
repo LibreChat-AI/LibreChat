@@ -117,6 +117,8 @@ export interface AppConfig {
   interfaceConfig?: TCustomConfig['interface'];
   /** Turnstile configuration */
   turnstileConfig?: Partial<TCustomConfig['turnstile']>;
+  /** Host pages allowed to frame LibreChat and sign their users in */
+  embed?: TCustomConfig['embed'];
   /** Balance configuration */
   balance?: Partial<TCustomConfig['balance']>;
   /** Transactions configuration */
