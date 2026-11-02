@@ -749,7 +749,7 @@ export default function ToolCallGroup({
                   <LoneGroupContext.Provider value={count === 1 && !hasReasoning}>
                     <SoleToolContext.Provider value={!hasReasoning && (phaseSole ?? count === 1)}>
                       <div className="flex flex-col py-0.5">
-                        {parts.map(({ part, idx }, partIndex) => {
+                        {parts.map(({ part, idx }) => {
                           if (part.type === ContentTypes.THINK) {
                             const think = part.think;
                             const reasoning =
@@ -773,9 +773,6 @@ export default function ToolCallGroup({
                               );
                             }
                             const streaming = isSubmitting && idx === lastContentIdx;
-                            const isAfterTool =
-                              partIndex > 0 &&
-                              parts[partIndex - 1]?.part.type === ContentTypes.TOOL_CALL;
                             /** Mirrors the standalone `Reasoning` path: the authored
                              *  label wins, generic text is only a fallback. */
                             const generatedLabel = part.reasoning_label?.trim();
@@ -791,7 +788,6 @@ export default function ToolCallGroup({
                                 reasoning={reasoning}
                                 label={label}
                                 showThinking={showThinking}
-                                isAfterTool={isAfterTool}
                                 isStreaming={streaming}
                               />
                             );

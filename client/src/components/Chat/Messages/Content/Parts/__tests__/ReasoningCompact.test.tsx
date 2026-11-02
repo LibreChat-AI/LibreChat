@@ -41,10 +41,6 @@ describe('ReasoningCompact', () => {
 
     const button = screen.getByRole('button', { name: 'Thoughts' });
     const chevron = screen.getByTestId('thoughts-chevron');
-    const row = button.closest('.group\\/reasoning-compact');
-
-    expect(row).toHaveClass('mb-1', 'mt-1');
-    expect(button.parentElement).not.toHaveClass('my-1.5');
     expect(button).toHaveClass('group/disclosure');
     expect(chevron).toHaveClass(
       'opacity-0',
@@ -71,22 +67,11 @@ describe('ReasoningCompact', () => {
     expect(screen.getByRole('button', { name: 'Thoughts' })).toHaveClass('gap-2');
   });
 
-  it('removes the extra top margin when Thoughts follows a tool', () => {
-    render(
-      <ReasoningCompact
-        reasoning="A useful thought"
-        label="Thoughts"
-        isAfterTool
-        showThinking={false}
-      />,
-    );
+  it('spaces its header like a tool row', () => {
+    render(<ReasoningCompact reasoning="A useful thought" label="Thoughts" showThinking={false} />);
 
-    const row = screen
-      .getByRole('button', { name: 'Thoughts' })
-      .closest('.group\\/reasoning-compact');
-
-    expect(row).toHaveClass('mb-1', 'mt-0');
-    expect(row).not.toHaveClass('mt-1');
+    const header = screen.getByRole('button', { name: 'Thoughts' }).parentElement;
+    expect(header).toHaveClass('my-1.5', 'h-5');
   });
 
   it('leaves the full reasoning text unmounted while collapsed', () => {

@@ -183,9 +183,7 @@ jest.mock('../Parts', () => ({
   AttachmentGroup: ({ attachments }: { attachments?: TAttachment[] }) => (
     <div data-testid="attachment-group" data-count={attachments?.length ?? 0} />
   ),
-  ReasoningCompact: ({ isAfterTool }: { isAfterTool?: boolean }) => (
-    <div data-testid="compact-reasoning" data-after-tool={String(isAfterTool)} />
-  ),
+  ReasoningCompact: () => <div data-testid="compact-reasoning" />,
 }));
 
 const makePart = (
@@ -567,25 +565,6 @@ describe('ToolCallGroup image hoisting', () => {
 
     expect(screen.getByTestId('inner-0')).toBeInTheDocument();
     expect(screen.getByTestId('inner-1')).toBeInTheDocument();
-  });
-
-  it('removes the extra Thoughts top margin after a tool row', () => {
-    const reasoningPart = {
-      type: ContentTypes.THINK,
-      [ContentTypes.THINK]: 'A useful thought',
-    } as TMessageContentParts;
-
-    renderGroup({
-      ...baseProps,
-      parts: [
-        { part: makePart('t1'), idx: 0 },
-        { part: reasoningPart, idx: 1 },
-      ],
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: /^Fetch_image/ }));
-
-    expect(screen.getByTestId('compact-reasoning')).toHaveAttribute('data-after-tool', 'true');
   });
 
   it('delegates an unavailable-reasoning part to the standalone renderer', () => {
