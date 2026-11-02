@@ -2,7 +2,19 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { useAtomValue, useStore } from 'jotai';
 import { MemoryRouter } from 'react-router-dom';
+import { FOLD_GLYPH_SELECTOR } from '@librechat/chat/components';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import {
+  activeSubagentPanel,
+  subagentProgressByToolCallId,
+  subagentProgressKey,
+} from '@librechat/chat/react';
+import {
+  foldSubagentEvent,
+  foldSubagentEventIntoTicker,
+  initSubagentAggregatorState,
+  initSubagentTickerState,
+} from '@librechat/chat';
 import type {
   PartMetadata,
   TAttachment,
@@ -14,24 +26,12 @@ import type {
   SubagentAggregatorState,
   SubagentContentPart,
   SubagentTickerState,
-} from '~/utils/subagentContent';
-import type { ActiveSubagentPanel, SubagentProgress } from '~/components/Chat/Subagents/state';
-import {
-  foldSubagentEvent,
-  foldSubagentEventIntoTicker,
-  initSubagentAggregatorState,
-  initSubagentTickerState,
-} from '~/utils/subagentContent';
-import {
-  activeSubagentPanel,
-  subagentProgressByToolCallId,
-  subagentProgressKey,
-} from '~/components/Chat/Subagents/state';
+} from '@librechat/chat';
+import type { ActiveSubagentPanel, SubagentProgress } from '@librechat/chat/react';
 import SubagentCall, { SUBAGENT_TICKER_THROTTLE_MS } from '../SubagentCall';
 import { MessageContext } from '~/Providers/MessageContext';
 import { FailedRevealContext } from '../../reveal';
 import { ChatSurfaceHarness } from 'test/harness';
-import { FOLD_GLYPH_SELECTOR } from '../../rows';
 import { litFoldPath } from '../../rail';
 
 const mockMCPServerNames: string[] = [];
@@ -87,7 +87,8 @@ jest.mock('~/Providers', () => ({
     },
   }),
 }));
-jest.mock('~/components/Chat/Subagents/ParentSubagentsProvider', () => ({
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useParentSubagents: () => ({ byThreadId: mockIndexedChildren }),
 }));
 jest.mock('~/components/Share/MessageIcon', () => ({
@@ -98,7 +99,6 @@ jest.mock('~/components/Share/MessageIcon', () => ({
 }));
 jest.mock('~/hooks/MCP', () => ({ useMCPServerNames: () => mockMCPServerNames }));
 jest.mock('~/utils', () => ({
-  ...jest.requireActual('~/utils/toolLabels'),
   cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
   logger: { log: jest.fn() },
 }));

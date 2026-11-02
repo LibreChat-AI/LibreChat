@@ -231,8 +231,8 @@ interface InitializeAgentParams {
    */
   resolveWebSearchGrant?: () => Promise<boolean>;
   /**
-   * Resolves this agent's `instructionsPrompt` link (a linked native prompt
-   * group). `initializeAgent` calls it only when the agent carries a
+   * Resolves this agent's `instructionsPrompt` link (a linked native or Langfuse
+   * prompt group). `initializeAgent` calls it only when the agent carries a
    * resolvable link; absent, a linked agent falls back to empty instructions
    * with a warning, since there is no default resolution path.
    */

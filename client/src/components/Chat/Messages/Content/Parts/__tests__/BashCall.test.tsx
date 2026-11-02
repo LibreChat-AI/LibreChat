@@ -2,7 +2,11 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import copy from 'copy-to-clipboard';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { LoneGroupContext, SoleToolContext, ToolContentRequestContext } from '../../disclosure';
+import {
+  LoneGroupContext,
+  SoleToolContext,
+  ToolContentRequestContext,
+} from '@librechat/chat/react';
 import BashCall from '../BashCall';
 import store from '~/store';
 

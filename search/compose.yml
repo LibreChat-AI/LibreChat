@@ -9,13 +9,12 @@
 #                         search - see PLAN.md decision 3 / finding R1/R2)
 #   - clickhouse         the additive historical-search tier
 #
-# Image tags verified against their registries on 2026-08-07 (see
-# search/README.md "Image tags verified" for the curl evidence):
+# Pinned images (see search/README.md "Image tags verified" for the
+# original registry checks):
 #   ghcr.io/ferretdb/postgres-documentdb:17-0.107.0-ferretdb-2.7.0
 #   ghcr.io/ferretdb/ferretdb:2.7.0
 #   pgvector/pgvector:0.8.6-pg17-trixie
-#   clickhouse/clickhouse-server:26.3.17.110 (26.3 is the current ClickHouse
-#     LTS line per endoflife.date; 26.3.17.110 is its latest published patch)
+#   clickhouse/clickhouse-server:26.3.62.3 (26.3 LTS)
 #
 # Host ports are chosen to avoid every port used by docker-compose.yml,
 # deploy-compose.yml, rag.yml, utils/docker/test-compose.yml,
@@ -114,7 +113,7 @@ services:
       start_period: 10s
 
   clickhouse:
-    image: clickhouse/clickhouse-server:26.3.17.110
+    image: clickhouse/clickhouse-server:26.3.62.3
     container_name: search-clickhouse
     restart: on-failure
     environment:

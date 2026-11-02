@@ -3164,6 +3164,7 @@ class GenerationJobManagerClass {
         // Surface deferred tools discovered before the pause so the resume route can
         // replay them into createRun (the rebuilt graph passes `messages: []`).
         discoveredTools: jobData.discoveredTools,
+        authoredSkills: jobData.authoredSkills,
         activityPhaseSnapshot: jobData.activityPhaseSnapshot,
         compactionSemanticIndex: jobData.compactionSemanticIndex,
         contextMeta: jobData.contextMeta,
@@ -4578,7 +4579,12 @@ class GenerationJobManagerClass {
     streamId: string,
     error?: string,
     expectedCreatedAt?: number,
-    options: { beforeErrorPublication?: () => Promise<void> } = {},
+    options: {
+      beforeErrorPublication?: () => Promise<void>;
+      /** Runs once the final event is stored and before the job's content and
+       *  resume state are released; it must not throw. */
+      beforeTerminalCleanup?: () => Promise<void>;
+    } = {},
   ): Promise<boolean> {
     const beforeErrorPublication = error ? options.beforeErrorPublication : undefined;
     const claim = await this.claimTerminalJob(
@@ -4627,6 +4633,7 @@ class GenerationJobManagerClass {
       }
     }
 
+    await options.beforeTerminalCleanup?.();
     await this.finishTerminalJob(claim);
     return true;
   }

@@ -6,11 +6,11 @@ import { useNavigate } from 'react-router-dom';
 import { useDirection } from '@radix-ui/react-direction';
 import { useSteering, showStopButtonByIndex, useComposerRestoreHost } from '@librechat/chat/react';
 import {
-  composerSurfaceClasses,
-  composerSurfaceShadow,
-  TextareaAutosize,
-  useRemScale,
-} from '@librechat/client';
+  PastedTextDialog,
+  QuoteButton,
+  composerHintId,
+  ComposerHints as Hints,
+} from '@librechat/chat/components';
 import {
   Constants,
   Permissions,
@@ -18,21 +18,17 @@ import {
   isAgentsEndpoint,
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
+import {
+  submitFromComposer,
+  composerClearance,
+  ComposerField,
+  ComposerFrame,
+  ComposerActions,
+} from '@librechat/chat/components';
 import type { TChatProject, TMessage, TConversation } from 'librechat-data-provider';
 import type { QueuedMessageContext } from '@librechat/chat';
 import type { SetterOrUpdater } from 'recoil';
 import type { ExtendedFile, FileSetter, ConvoGenerator, TAskFunction } from '~/common';
-import {
-  cn,
-  getModelSpec,
-  hasIncompleteFiles,
-  removeFocusRings,
-  getComposerDraftId,
-  getPendingDraftId,
-  clearAllDrafts,
-  getFilesDraftCached,
-  isPastedTextFileMarked,
-} from '~/utils';
 import {
   useTextarea,
   useAutoSave,
@@ -44,6 +40,16 @@ import {
   useFocusChatEffect,
   useCodeWorkspace,
 } from '~/hooks';
+import {
+  cn,
+  getModelSpec,
+  hasIncompleteFiles,
+  getComposerDraftId,
+  getPendingDraftId,
+  clearAllDrafts,
+  getFilesDraftCached,
+  isPastedTextFileMarked,
+} from '~/utils';
 import {
   useChatContext,
   useChatFormContext,
@@ -63,9 +69,6 @@ import AskUserQuestionPopover from './AskUserQuestionPopover';
 import useComposerItems from '~/hooks/Input/useComposerItems';
 import useAttachTarget from '~/hooks/Input/useAttachTarget';
 import { chatDirectionAtom } from '~/store/chatDirection';
-import Hints, { composerHintId } from './Composer/Hints';
-import PastedTextDialog from './Files/PastedTextDialog';
-import DuringRunSendButton from './DuringRunSendButton';
 import ProjectLandingChip from '../ProjectLandingChip';
 import useHasAccess from '~/hooks/Roles/useHasAccess';
 import useDictation from '~/hooks/Input/useDictation';
@@ -74,17 +77,10 @@ import CodeWorkspaceMenu from './CodeWorkspaceMenu';
 import CodeApprovalMenu from './CodeApprovalMenu';
 import TextareaHeader from './TextareaHeader';
 import PromptsCommand from './PromptsCommand';
-import { submitFromComposer } from './submit';
 import SkillsCommand from './SkillsCommand';
 import AutoPlayAudio from './AutoPlayAudio';
-import composerClearance from './clearance';
-import Waveform from './Composer/Waveform';
 import { mainTextareaId } from '~/common';
-import CollapseChat from './CollapseChat';
-import QuoteButton from './QuoteButton';
 import ToolDialogs from './ToolDialogs';
-import StopButton from './StopButton';
-import SendButton from './SendButton';
 import Queue from './Composer/Queue';
 import Tray from './Composer/Tray';
 import Bar from './Composer/Bar';
@@ -129,25 +125,6 @@ interface ChatFormProps {
   stopGenerating: () => void;
 }
 
-/** Targets that own focus themselves: form fields and links, popup disclosures
- * (Ariakit and Radix both emit `aria-haspopup`), and popup content, which React
- * bubbles through portals. */
-const focusOwningTargetSelector = [
-  'a',
-  'input',
-  'select',
-  'textarea',
-  'label',
-  '[aria-haspopup]:not([aria-haspopup="false"])',
-  '[role="combobox"]',
-  '[role="menu"]',
-  '[role="listbox"]',
-  '[role="dialog"]',
-  '[role="alertdialog"]',
-].join(', ');
-/** Matches the composer's one-line height; scaled so it tracks its rem padding. */
-const INITIAL_TEXTAREA_HEIGHT = 44;
-
 const ChatForm = memo(function ChatForm({
   index,
   placeholder,
@@ -177,15 +154,9 @@ const ChatForm = memo(function ChatForm({
   const composerBoxRef = useRef<HTMLDivElement>(null);
   useFocusChatEffect(textAreaRef);
   const localize = useLocalize();
-  const remScale = useRemScale();
 
-  const [isCollapsed, setIsCollapsed] = useState(false);
   const [, setIsScrollable] = useState(false);
-  const [visualRowCount, setVisualRowCount] = useState(1);
   const [isTextAreaFocused, setIsTextAreaFocused] = useState(false);
-  /** Last measured row count, so an unchanged measurement never schedules a
-   *  render at all rather than relying on a state-equality bailout. */
-  const measuredRowCountRef = useRef(1);
 
   const SpeechToText = useRecoilValue(store.speechToText);
   const TextToSpeech = useRecoilValue(store.textToSpeech);
@@ -260,23 +231,6 @@ const ChatForm = memo(function ChatForm({
     textAreaRef.current?.focus();
   }, []);
 
-  /** The surface returns focus to the textarea after any click (send, stop, badge
-   * toggles), except when the target owns focus itself or opens a popup. Ariakit
-   * records `document.activeElement` at open time as a menu's disclosure, so
-   * refocusing the textarea behind a menu button made the textarea the disclosure
-   * and the menu could never close on textarea interaction (#15624). */
-  const handleContainerClick = useCallback(
-    (event: React.MouseEvent<HTMLDivElement>) => {
-      const owner =
-        event.target instanceof Element ? event.target.closest(focusOwningTargetSelector) : null;
-      if (owner && !owner.contains(event.currentTarget)) {
-        return;
-      }
-      focusTextArea();
-    },
-    [focusTextArea],
-  );
-
   /** Actions that consume the composer from inside a popup (the during-run
    * hovercard) sit in exempted popup content, so they restore focus themselves. */
   const consumeComposer = useCallback(() => {
@@ -284,16 +238,9 @@ const ChatForm = memo(function ChatForm({
     focusTextArea();
   }, [methods, focusTextArea]);
 
-  const handleFocusOrClick = useCallback(() => {
-    if (isCollapsed) {
-      setIsCollapsed(false);
-    }
-  }, [isCollapsed]);
-
   const handleTextareaFocus = useCallback(() => {
-    handleFocusOrClick();
     setIsTextAreaFocused(true);
-  }, [handleFocusOrClick]);
+  }, []);
 
   const handleTextareaBlur = useCallback(() => {
     setIsTextAreaFocused(false);
@@ -307,9 +254,6 @@ const ChatForm = memo(function ChatForm({
    *  answer box, or is locked behind the batch card that owns the answer. A
    *  collapsed batch is neither, it hands the composer back to the thread. */
   const composerReserved = answerMode.composerAnswers || answerMode.composerLocked;
-  /** A batch card stacks above the composer with its own height cap, so a
-   *  locked composer keeps the draft to one line to leave the card on screen. */
-  const compactComposer = isCollapsed || answerMode.composerLocked;
 
   const { consumeDraft, preserveText, settleText } = useAutoSave({
     index,
@@ -500,29 +444,6 @@ const ChatForm = memo(function ChatForm({
   const autoDirection = textValue ? 'auto' : interfaceDirection;
   const textDirection = chatDirection === 'auto' ? autoDirection : chatDirection;
 
-  /** The composer commits once per keystroke for the row count and the send
-   *  button; a second commit for a row count that did not move (or that no
-   *  layout engine can measure, where `lineHeight` is not a number) doubles the
-   *  cost of the app's busiest surface for nothing. */
-  useEffect(() => {
-    const textarea = textAreaRef.current;
-    if (!textarea) {
-      return;
-    }
-    const lineHeight = parseFloat(window.getComputedStyle(textarea).lineHeight);
-    if (!(lineHeight > 0)) {
-      return;
-    }
-    const nextRowCount = Math.floor(textarea.scrollHeight / lineHeight);
-    if (nextRowCount === measuredRowCountRef.current) {
-      return;
-    }
-    measuredRowCountRef.current = nextRowCount;
-    setVisualRowCount(nextRowCount);
-  }, [textValue, remScale]);
-
-  const isMoreThanThreeRows = visualRowCount > 3;
-
   const composerItems = useComposerItems(conversationId, quotesEnabled);
   const attachTarget = useAttachTarget(conversation, disableInputs);
   const hasPromptsAccess = useHasAccess({
@@ -593,109 +514,60 @@ const ChatForm = memo(function ChatForm({
      epoch; assistants abort through their own path and need no epoch. */
   const canStop = steering.canControlGeneration || isAssistantsEndpoint(endpoint);
 
-  /** One button slot while a run is generating: with composer text the send
-   *  button takes over (Enter steers/queues; hover reveals all actions);
-   *  clearing the text restores Stop. */
   /* Memoized for `memo(Bar)`: an inline element is a new identity every render,
      and this component re-renders on every keystroke. */
-  const duringRunSlot = useMemo(() => {
-    const sendOwnsSlot = steering.duringRunActive && (textValue?.trim() ?? '') !== '';
-    /* Stays mounted (hidden) behind the during-run send button: the stop
-       shortcut resolves against the focused form, so a half-typed steer would
-       otherwise leave it reaching into another pane or doing nothing. */
-    const stopButton = showStopButton ? (
-      <StopButton
-        stop={handleStopGenerating}
-        setShowStopButton={setShowStopButton}
-        canStop={canStop}
-        hidden={sendOwnsSlot && !isPreparingFromUrl}
-      />
-    ) : null;
-    if (sendOwnsSlot) {
-      return (
-        <>
-          <DuringRunSendButton
-            ref={submitButtonRef}
-            control={methods.control}
-            steering={steering}
-            isNewConversation={isNewConversation}
-            getText={() => methods.getValues('text')}
-            onConsumed={consumeComposer}
-            disabled={filesLoading || isPreparingFromUrl}
-            enterToSend={enterToSend}
-          />
-          {stopButton}
-        </>
-      );
-    }
-    return stopButton;
-  }, [
-    consumeComposer,
-    isNewConversation,
-    isPreparingFromUrl,
-    steering,
-    textValue,
-    methods,
-    submitButtonRef,
-    filesLoading,
-    showStopButton,
-    setShowStopButton,
-    handleStopGenerating,
-    canStop,
-    enterToSend,
-  ]);
-
-  /* Memoized for `memo(Bar)`: an inline element is a new identity every render,
-     and this component re-renders on every keystroke. */
-  /* Gated on the slot having something to show rather than on `showStopButton`:
-     that flag only flips once the start POST installs the generation epoch, and
-     until then Enter already queues while this slot still offered the ordinary
-     send button, disabled. The slot decides for itself between the during-run
-     control, Stop, and nothing, so an empty one falls through to send. */
   const actionSlot = useMemo(
-    () =>
-      isSubmitting && !answerMode.composerAnswers && duringRunSlot != null
-        ? duringRunSlot
-        : endpoint && (
-            <SendButton
-              ref={submitButtonRef}
-              control={methods.control}
-              fileCount={submittableFileCount}
-              disabled={
-                filesLoading ||
-                isPreparingFromUrl ||
-                disableInputs ||
-                !codeWorkspace.canSubmit ||
-                isNotAppendable ||
-                answerMode.composerLocked ||
-                (isSubmitting && !answerMode.composerAnswers)
-              }
-            />
-          ),
+    () => (
+      <ComposerActions
+        text={textValue ?? ''}
+        submitButtonRef={submitButtonRef}
+        isSubmitting={isSubmitting}
+        answersAsk={answerMode.composerAnswers}
+        hasEndpoint={!!endpoint}
+        steering={steering}
+        isNewConversation={isNewConversation}
+        getText={() => methods.getValues('text')}
+        onConsumed={consumeComposer}
+        enterToSend={enterToSend}
+        fileCount={submittableFileCount}
+        sendDisabled={
+          filesLoading ||
+          isPreparingFromUrl ||
+          disableInputs ||
+          !codeWorkspace.canSubmit ||
+          isNotAppendable ||
+          answerMode.composerLocked
+        }
+        duringRunDisabled={filesLoading || isPreparingFromUrl}
+        showStopButton={showStopButton}
+        setShowStopButton={setShowStopButton}
+        stop={handleStopGenerating}
+        canStop={canStop}
+        isPreparingFromUrl={isPreparingFromUrl}
+      />
+    ),
     [
-      codeWorkspace.canSubmit,
-      isPreparingFromUrl,
-      endpoint,
-      duringRunSlot,
-      filesLoading,
-      disableInputs,
-      isNotAppendable,
+      textValue,
       isSubmitting,
       answerMode.composerAnswers,
       answerMode.composerLocked,
+      endpoint,
+      steering,
+      isNewConversation,
+      methods,
+      consumeComposer,
+      enterToSend,
       submittableFileCount,
-      methods.control,
+      filesLoading,
+      isPreparingFromUrl,
+      disableInputs,
+      codeWorkspace.canSubmit,
+      isNotAppendable,
+      showStopButton,
+      setShowStopButton,
+      handleStopGenerating,
+      canStop,
     ],
-  );
-
-  const baseClasses = useMemo(
-    () =>
-      cn(
-        'composer-text md:py-3.5 m-0 w-full resize-none py-3.25 placeholder:text-text-tertiary bg-transparent [&:has(textarea:focus)]:shadow-[0_2px_6px_rgba(0,0,0,.05)]',
-        compactComposer ? 'max-h-[3.25rem]' : 'max-h-[45vh] md:max-h-[55vh]',
-        'px-5',
-      ),
-    [compactComposer],
   );
 
   const bottomClearance = composerClearance({
@@ -728,328 +600,232 @@ const ChatForm = memo(function ChatForm({
   );
 
   return (
-    <form
-      /* A forced direction mirrors the whole composer, chrome included; `auto`
-         leaves the layout to the page and lets the text field follow its text. */
-      dir={chatDirection === 'auto' ? undefined : chatDirection}
+    <ComposerFrame
       onSubmit={methods.handleSubmit((data) => {
         if (!isPreparingFromUrl && submitComposerText(data) !== false) {
           clearSettingsError();
         }
       })}
-      className={cn(
-        /* `margin-bottom` is animated as well as `max-width`: it is what carries
-           the composer between the landing clearance and the conversation one,
-           and the landing page keeps the same form node when a conversation
-           opens, so the band travels instead of jumping. The centred landing
-           composer overrides both with its own `transition-all`, and a reader who
-           asked for less motion gets the new position outright — this one is a
-           slide across the page rather than decoration. */
-        'mx-auto flex w-full flex-row gap-3 transition-[max-width,margin-bottom] duration-300 motion-reduce:transition-none sm:px-2',
-        maximizeChatSpace ? 'max-w-full' : 'md:max-w-3xl xl:max-w-4xl',
-        bottomClearance,
-      )}
-    >
-      {/* `min-w-0`: a flex item's automatic minimum size is its content's
-          min-content width, and one long unbroken word in a queued message
-          propagates all the way up here: the composer stretched past the
-          thread and its chips ran off the side. Zeroing it lets the width come
-          from the form, so the chips inside truncate instead. */}
-      <div className="relative flex h-full min-w-0 flex-1 items-stretch md:flex-col">
-        {/* Primary composer owns the selection popup so split-view doesn't double it. */}
-        {index === 0 && quotesEnabled && <QuoteButton conversationId={conversationId} />}
-        <div className="relative flex w-full flex-col">
-          {steering.enabled && (
-            <Queue
-              steering={steering}
-              conversationId={conversationId}
-              onRestoreToComposer={restoreReclaimedSteer}
-              canRestoreToComposer={canRestoreToComposer}
-              onStartNewChat={startQueuedInNewChat}
-            />
-          )}
-          {(project || codeWorkspace.visible) && (
-            <div
-              data-testid="composer-context-rail"
-              className={cn(
-                'mx-4 -mb-3 flex min-w-0 flex-wrap items-center gap-1.5 rounded-t-2xl',
-                'border-border-light bg-surface-secondary border px-2 pt-2 pb-5',
-              )}
-            >
-              {project ? <ProjectLandingChip project={project} /> : null}
-              {codeWorkspace.visible ? (
-                <div className="min-w-0">
-                  <CodeWorkspaceMenu
-                    setConversation={setConversation}
-                    workspace={codeWorkspace}
-                    disabled={disableInputs || isSubmitting}
-                  />
-                </div>
-              ) : null}
-            </div>
-          )}
-          <div className="flex w-full items-center">
-            <Mention
-              index={index}
-              popoverAtom={plusPopoverAtom}
-              newConversation={generateConversation}
-              textAreaRef={textAreaRef}
-              commandChar="+"
-              placeholder="com_ui_add_model_preset"
-              includeAssistants={false}
-            />
-            <Mention
-              index={index}
-              popoverAtom={mentionPopoverAtom}
-              newConversation={newConversation}
-              textAreaRef={textAreaRef}
-            />
-            <PromptsCommand index={index} textAreaRef={textAreaRef} submitPrompt={submitPrompt} />
-            {index === 0 && (
-              <AskUserQuestionPopover conversationId={conversationId} textAreaRef={textAreaRef} />
-            )}
-            {index === 0 && conversationId != null && (
-              <PendingToolApprovalPanel
-                conversationId={conversationId}
-                triggerRef={approvalTriggerRef}
-              />
-            )}
-            <SkillsCommand
-              index={index}
-              textAreaRef={textAreaRef}
-              conversationId={conversationId}
-              agentId={conversation?.agent_id}
-            />
-            <div
-              ref={composerBoxRef}
-              data-testid="composer-surface"
-              onClick={handleContainerClick}
-              className={cn(
-                /* The surface runs to the viewport floor below `sm`, where it is
-                   squared off at the bottom (`rounded-t-theme-surface-lg`) and no disclaimer
-                   follows it — so the action row is the last thing in it, with no
-                   band of padding under the buttons. */
-                'rounded-t-theme-surface-lg sm:rounded-theme-surface-lg relative flex w-full grow flex-col overflow-hidden',
-                composerSurfaceClasses(),
-                isTextAreaFocused ? composerSurfaceShadow.focused : composerSurfaceShadow.blurred,
-                /* Temporary-chat accent is a ChatForm-only override, not part of
-                   the shared composer-surface decision. Semantic `series-6`, the
-                   same categorical slot the purple tool badge uses, so the accent
-                   follows the theme instead of the raw `violet-800/60` edge that
-                   composited to 1.48:1 on the high contrast dark canvas.
-                   Held at half alpha in the standard palettes, where series-6 is
-                   a saturated purple in both modes and a full-strength edge reads as
-                   a warning rather than a quiet mode hint. The contrast modes take
-                   it opaque, because that is the only way it clears the 3:1
-                   non-text floor there. */
-                /** The tint layers over the opaque chat surface instead of replacing it, so the
-                 *  context rail tucked under the composer never shows through. */
-                isTemporary &&
-                  'border-series-6/50 from-series-6/10 to-series-6/10 high-contrast:border-series-6 bg-linear-to-b',
-              )}
-            >
-              <TextareaHeader addedConvo={addedConvo} setAddedConvo={setAddedConvo} />
-              <Tray
-                items={composerItems}
-                focusComposer={focusTextArea}
-                conversation={conversation}
-                files={files}
-                setFiles={setFiles}
-                setFilesLoading={setFilesLoading}
-                index={index}
-                isPastedTextFile={isPastedTextFile}
-                isPasteActionPending={isPasteActionPending}
-                onEditPastedText={pastedTextEdit.openEditor}
-                onMovePastedTextInline={pastedTextEdit.moveInline}
-              />
-              <PastedTextDialog
-                edit={pastedTextEdit.editing}
-                onClose={pastedTextEdit.closeEditor}
-                onSave={pastedTextEdit.saveEdit}
-              />
-              {endpoint && (
-                <div className="flex">
-                  <div
-                    className={cn(
-                      'relative flex-1',
-                      listening &&
-                        '[&_textarea]:caret-transparent [&_textarea]:placeholder:text-transparent',
-                      /* Locked behind a question: the placeholder is a notice, not text. */
-                      answerMode.composerLocked && '[&_textarea]:select-none',
-                    )}
-                    style={
-                      compactComposer
-                        ? {
-                            WebkitMaskImage:
-                              'linear-gradient(to bottom, black 60%, transparent 90%)',
-                            maskImage: 'linear-gradient(to bottom, black 60%, transparent 90%)',
-                          }
-                        : undefined
-                    }
-                  >
-                    <TextareaAutosize
-                      {...registerProps}
-                      dir={textDirection}
-                      ref={(e) => {
-                        ref(e);
-                        (
-                          textAreaRef as React.MutableRefObject<HTMLTextAreaElement | null>
-                        ).current = e;
-                      }}
-                      disabled={
-                        disableInputs ||
-                        isNotAppendable ||
-                        answerMode.composerLocked ||
-                        isPreparingFromUrl
-                      }
-                      onPaste={handlePaste}
-                      onKeyDown={(e) => {
-                        // Answer mode consumes option-navigation keys from the
-                        // empty composer; everything else follows the normal path.
-                        if (answerMode.handleComposerKeyDown(e)) {
-                          return;
-                        }
-                        handleKeyDown(e);
-                      }}
-                      onKeyUp={handleKeyUp}
-                      onCompositionStart={handleCompositionStart}
-                      onCompositionEnd={handleCompositionEnd}
-                      id={mainTextareaId}
-                      tabIndex={0}
-                      data-testid="text-input"
-                      rows={1}
-                      onFocus={handleTextareaFocus}
-                      onBlur={handleTextareaBlur}
-                      aria-label={localize('com_ui_message_input')}
-                      aria-describedby={cn(
-                        composerHintId(index),
-                        (codeWorkspace.state === 'choose' || codeWorkspace.state === 'missing') &&
-                          `code-workspace-hint-${index}`,
-                      )}
-                      onClick={handleFocusOrClick}
-                      style={{ height: INITIAL_TEXTAREA_HEIGHT * remScale, overflowY: 'auto' }}
-                      className={cn(
-                        baseClasses,
-                        removeFocusRings,
-                        'scrollbar-hover transition-[max-height] duration-200 disabled:cursor-not-allowed',
-                      )}
-                    />
-                    {listening && (
-                      /* Stands in for the placeholder: same inset, same line, so
-                         it reads as the input listening rather than as a widget
-                         bolted on. Once words arrive the transcript takes over. */
-                      <Waveform
-                        active={dictation.active}
-                        className={cn('pointer-events-none absolute inset-x-5 inset-y-2')}
-                      />
-                    )}
-                    {/* Sits over the fade scrim in the corner of the input
-                        rather than in its own column beside it, so a long draft
-                        does not push an orphaned control off to the side. */}
-                    <div className="absolute inset-e-2 bottom-1 z-10">
-                      <CollapseChat
-                        isCollapsed={isCollapsed}
-                        isScrollable={isMoreThanThreeRows && !answerMode.composerLocked}
-                        setIsCollapsed={setIsCollapsed}
-                      />
-                    </div>
-                  </div>
-                </div>
-              )}
-              {(isPreparingFromUrl || urlSettingsError) && (
-                <p role="status" className="text-text-secondary px-5 pb-2 text-sm">
-                  {localize(urlSettingsError ? 'com_ui_url_settings_failed' : 'com_ui_sending')}
-                </p>
-              )}
-              {(codeWorkspace.state === 'choose' || codeWorkspace.state === 'missing') && (
-                <p
-                  id={`code-workspace-hint-${index}`}
-                  role="status"
-                  className="text-text-secondary px-5 pb-2 text-sm"
-                >
-                  {localize('com_error_code_workspace_required')}
-                </p>
-              )}
-              {/* The composer is what keeps MCP connection and authorization state
-                  current wherever its ephemeral tools apply; the Agent Builder's
-                  tool library reads the same cache, so without this a server it
-                  lists reads as unknown and offers to connect instead of toggling. */}
-              <BadgeRowProvider
-                conversationId={conversationId}
-                specName={conversation?.spec}
-                isSubmitting={isSubmitting}
-                observeToolAuthorization={showTools}
-              >
-                <Bar
-                  index={index}
-                  disabled={disableInputs}
-                  agentId={conversation?.agent_id}
-                  /* The RAW endpoint, not the effective type above: the attach
-                     destinations resolve the provider from its name, so a
-                     custom endpoint reduced to `custom` loses the uploads its
-                     provider actually takes (OpenRouter's video and audio).
-                     `endpointType` beside it carries the resolved type. */
-                  endpoint={conversation?.endpoint}
-                  endpointType={attachTarget.endpointType}
-                  endpointFileConfig={attachTarget.endpointFileConfig}
-                  useResponsesApi={attachTarget.useResponsesApi}
-                  conversationId={conversationId}
-                  conversation={conversation}
-                  files={files}
-                  setFiles={setFiles}
-                  setFilesLoading={setFilesLoading}
-                  canAttach={attachTarget.canAttach}
-                  anchorRef={composerBoxRef}
-                  showTools={showTools}
-                  isSubmitting={isSubmitting}
-                  showSpeech={SpeechToText}
-                  speechDisabled={speechDisabled}
-                  dictation={dictation}
-                  approvalSlot={
-                    <div className="flex items-center gap-1.5">
-                      <CodeApprovalMenu
-                        conversation={conversation}
-                        addedConversation={addedConvo}
-                        codeEnvironmentMode={codeWorkspace.mode}
-                        setConversation={setConversation}
-                        disabled={disableInputs}
-                      />
-                      {index === 0 && conversationId != null && (
-                        <PendingToolApprovalButton
-                          conversationId={conversationId}
-                          triggerRef={approvalTriggerRef}
-                        />
-                      )}
-                    </div>
-                  }
-                  actionSlot={actionSlot}
-                  hasAddedConversation={addedConvo != null}
-                />
-                <ToolDialogs />
-              </BadgeRowProvider>
-              {TextToSpeech && automaticPlayback && <AutoPlayAudio index={index} />}
-            </div>
-          </div>
-          {/* Sibling of the composer row, not a child: inside that flex-row it
-              would lay out as a narrow column beside the box. */}
-          <Hints
-            index={index}
-            enterToSend={enterToSend}
-            hasText={(textValue?.trim() ?? '') !== ''}
-            isSubmitting={isSubmitting}
-            duringRunActive={steering.duringRunActive}
-            canControlGeneration={steering.canControlGeneration}
-            duringRunAction={steering.effectiveAction}
-            /* A staged reasoning choice forces the message to queue, and the
-               send-now chord then queues too; do not advertise it. */
-            canSteer={steering.canSteer && steering.pendingReasoningOverride == null}
-            answerModeActive={answerMode.active}
-            uploadingCount={uploadingCount}
-            idleActions={idleActions}
+      direction={chatDirection}
+      maximizeChatSpace={maximizeChatSpace}
+      clearanceClassName={bottomClearance}
+      focused={isTextAreaFocused}
+      isTemporary={isTemporary}
+      surfaceRef={composerBoxRef}
+      onFocusDraft={focusTextArea}
+      /* Primary composer owns the selection popup so split-view doesn't double it. */
+      quote={index === 0 && quotesEnabled && <QuoteButton conversationId={conversationId} />}
+      queue={
+        steering.enabled && (
+          <Queue
+            steering={steering}
+            conversationId={conversationId}
+            onRestoreToComposer={restoreReclaimedSteer}
+            canRestoreToComposer={canRestoreToComposer}
+            onStartNewChat={startQueuedInNewChat}
           />
-        </div>
-      </div>
-    </form>
+        )
+      }
+      contextRail={
+        project || codeWorkspace.visible ? (
+          <>
+            {project ? <ProjectLandingChip project={project} /> : null}
+            {codeWorkspace.visible ? (
+              <div className="min-w-0">
+                <CodeWorkspaceMenu
+                  setConversation={setConversation}
+                  workspace={codeWorkspace}
+                  disabled={disableInputs || isSubmitting}
+                />
+              </div>
+            ) : null}
+          </>
+        ) : undefined
+      }
+      popovers={
+        <>
+          <Mention
+            index={index}
+            popoverAtom={plusPopoverAtom}
+            newConversation={generateConversation}
+            textAreaRef={textAreaRef}
+            commandChar="+"
+            placeholder="com_ui_add_model_preset"
+            includeAssistants={false}
+          />
+          <Mention
+            index={index}
+            popoverAtom={mentionPopoverAtom}
+            newConversation={newConversation}
+            textAreaRef={textAreaRef}
+          />
+          <PromptsCommand index={index} textAreaRef={textAreaRef} submitPrompt={submitPrompt} />
+          {index === 0 && (
+            <AskUserQuestionPopover conversationId={conversationId} textAreaRef={textAreaRef} />
+          )}
+          {index === 0 && conversationId != null && (
+            <PendingToolApprovalPanel
+              conversationId={conversationId}
+              triggerRef={approvalTriggerRef}
+            />
+          )}
+          <SkillsCommand
+            index={index}
+            textAreaRef={textAreaRef}
+            conversationId={conversationId}
+            agentId={conversation?.agent_id}
+          />
+        </>
+      }
+      hints={
+        <Hints
+          index={index}
+          enterToSend={enterToSend}
+          hasText={(textValue?.trim() ?? '') !== ''}
+          isSubmitting={isSubmitting}
+          duringRunActive={steering.duringRunActive}
+          canControlGeneration={steering.canControlGeneration}
+          duringRunAction={steering.effectiveAction}
+          /* A staged reasoning choice forces the message to queue, and the
+           send-now chord then queues too; do not advertise it. */
+          canSteer={steering.canSteer && steering.pendingReasoningOverride == null}
+          answerModeActive={answerMode.active}
+          uploadingCount={uploadingCount}
+          idleActions={idleActions}
+        />
+      }
+    >
+      <TextareaHeader addedConvo={addedConvo} setAddedConvo={setAddedConvo} />
+      <Tray
+        items={composerItems}
+        focusComposer={focusTextArea}
+        conversation={conversation}
+        files={files}
+        setFiles={setFiles}
+        setFilesLoading={setFilesLoading}
+        index={index}
+        isPastedTextFile={isPastedTextFile}
+        isPasteActionPending={isPasteActionPending}
+        onEditPastedText={pastedTextEdit.openEditor}
+        onMovePastedTextInline={pastedTextEdit.moveInline}
+      />
+      <PastedTextDialog
+        edit={pastedTextEdit.editing}
+        onClose={pastedTextEdit.closeEditor}
+        onSave={pastedTextEdit.saveEdit}
+      />
+      {endpoint && (
+        <ComposerField
+          textAreaRef={textAreaRef as React.MutableRefObject<HTMLTextAreaElement | null>}
+          inputRef={ref}
+          value={textValue ?? ''}
+          listening={listening}
+          dictationActive={dictation.active}
+          locked={answerMode.composerLocked}
+          ariaLabel={localize('com_ui_message_input')}
+          textareaProps={{
+            ...registerProps,
+            dir: textDirection,
+            disabled:
+              disableInputs || isNotAppendable || answerMode.composerLocked || isPreparingFromUrl,
+            onPaste: handlePaste,
+            onKeyDown: (e) => {
+              // Answer mode consumes option-navigation keys from the
+              // empty composer; everything else follows the normal path.
+              if (answerMode.handleComposerKeyDown(e)) {
+                return;
+              }
+              handleKeyDown(e);
+            },
+            onKeyUp: handleKeyUp,
+            onCompositionStart: handleCompositionStart,
+            onCompositionEnd: handleCompositionEnd,
+            id: mainTextareaId,
+            tabIndex: 0,
+            'data-testid': 'text-input',
+            onFocus: handleTextareaFocus,
+            onBlur: handleTextareaBlur,
+            'aria-describedby': cn(
+              composerHintId(index),
+              (codeWorkspace.state === 'choose' || codeWorkspace.state === 'missing') &&
+                `code-workspace-hint-${index}`,
+            ),
+          }}
+        />
+      )}
+      {(isPreparingFromUrl || urlSettingsError) && (
+        <p role="status" className="text-text-secondary px-5 pb-2 text-sm">
+          {localize(urlSettingsError ? 'com_ui_url_settings_failed' : 'com_ui_sending')}
+        </p>
+      )}
+      {(codeWorkspace.state === 'choose' || codeWorkspace.state === 'missing') && (
+        <p
+          id={`code-workspace-hint-${index}`}
+          role="status"
+          className="text-text-secondary px-5 pb-2 text-sm"
+        >
+          {localize('com_error_code_workspace_required')}
+        </p>
+      )}
+      {/* The composer is what keeps MCP connection and authorization state
+          current wherever its ephemeral tools apply; the Agent Builder's
+          tool library reads the same cache, so without this a server it
+          lists reads as unknown and offers to connect instead of toggling. */}
+      <BadgeRowProvider
+        conversationId={conversationId}
+        specName={conversation?.spec}
+        isSubmitting={isSubmitting}
+        observeToolAuthorization={showTools}
+      >
+        <Bar
+          index={index}
+          disabled={disableInputs}
+          agentId={conversation?.agent_id}
+          /* The RAW endpoint, not the effective type above: the attach
+             destinations resolve the provider from its name, so a
+             custom endpoint reduced to `custom` loses the uploads its
+             provider actually takes (OpenRouter's video and audio).
+             `endpointType` beside it carries the resolved type. */
+          endpoint={conversation?.endpoint}
+          endpointType={attachTarget.endpointType}
+          endpointFileConfig={attachTarget.endpointFileConfig}
+          useResponsesApi={attachTarget.useResponsesApi}
+          conversationId={conversationId}
+          conversation={conversation}
+          files={files}
+          setFiles={setFiles}
+          setFilesLoading={setFilesLoading}
+          canAttach={attachTarget.canAttach}
+          anchorRef={composerBoxRef}
+          showTools={showTools}
+          isSubmitting={isSubmitting}
+          showSpeech={SpeechToText}
+          speechDisabled={speechDisabled}
+          dictation={dictation}
+          approvalSlot={
+            <div className="flex items-center gap-1.5">
+              <CodeApprovalMenu
+                conversation={conversation}
+                addedConversation={addedConvo}
+                codeEnvironmentMode={codeWorkspace.mode}
+                setConversation={setConversation}
+                disabled={disableInputs}
+              />
+              {index === 0 && conversationId != null && (
+                <PendingToolApprovalButton
+                  conversationId={conversationId}
+                  triggerRef={approvalTriggerRef}
+                />
+              )}
+            </div>
+          }
+          actionSlot={actionSlot}
+          hasAddedConversation={addedConvo != null}
+        />
+        <ToolDialogs />
+      </BadgeRowProvider>
+      {TextToSpeech && automaticPlayback && <AutoPlayAudio index={index} />}
+    </ComposerFrame>
   );
 });
 ChatForm.displayName = 'ChatForm';
