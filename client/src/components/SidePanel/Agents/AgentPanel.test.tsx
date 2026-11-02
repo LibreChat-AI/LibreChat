@@ -5,8 +5,8 @@ import * as React from 'react';
 import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, fireEvent } from '@testing-library/react';
+import type { Agent, TAgentsEndpoint } from 'librechat-data-provider';
 import type { UseFormReturn } from 'react-hook-form';
-import type { Agent } from 'librechat-data-provider';
 import type { useModelCatalog } from '~/data-provider/Endpoints/models';
 import type { AgentForm, AgentModelPanelProps } from '~/common';
 import type { InstructionsPromptStatus } from './Instructions';
@@ -52,12 +52,15 @@ let mockPermissionBits: number | undefined;
 let mockRolePermissions: Record<string, boolean> = {};
 let mockChannelsProps: unknown;
 let mockPersonalApprovalModesEnabled = true;
+type AgentConfigFixture = Pick<TAgentsEndpoint, 'allowedProviders'> & {
+  channels?: Pick<NonNullable<TAgentsEndpoint['channels']>, 'enabled'>;
+};
 let mockAgentPanelContext = {
   activePanel: 'builder',
   agentsConfig: {
-    allowedProviders: [] as string[],
-    channels: undefined as { enabled: boolean } | undefined,
-  },
+    allowedProviders: [],
+    channels: undefined,
+  } as AgentConfigFixture,
   setActivePanel: jest.fn(),
   endpointsConfig: {},
   setCurrentAgentId: jest.fn(),
@@ -1578,7 +1581,7 @@ describe('AgentPanel - Select Agent', () => {
     mockModelsQuery = createModelsQuery({ openai: ['gpt-4'] });
     mockAgentPanelContext = {
       activePanel: 'builder',
-      agentsConfig: { allowedProviders: [] },
+      agentsConfig: { allowedProviders: [], channels: undefined },
       setActivePanel: jest.fn(),
       endpointsConfig: { openai: {} },
       setCurrentAgentId: jest.fn(),
