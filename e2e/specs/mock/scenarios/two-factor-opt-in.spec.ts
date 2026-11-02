@@ -200,7 +200,7 @@ test.describe('opt-in two-factor enrollment', () => {
     }
   });
 
-  test('settings keeps 2FA on and warns when other sessions could not all be signed out @scenario:optin-2fa-incomplete-retirement-warns', async ({
+  test('settings keeps 2FA on, hands over the backup codes and signs in again when other sessions could not all be signed out @scenario:optin-2fa-incomplete-retirement-warns', async ({
     page,
   }) => {
     test.setTimeout(60000);
@@ -210,6 +210,10 @@ test.describe('opt-in two-factor enrollment', () => {
         contentType: 'application/json',
         body: JSON.stringify({ code: 'CREDENTIAL_RETIREMENT_INCOMPLETE' }),
       }),
+    );
+    /** The harness session is shared across specs; keep it alive while the client signs out. */
+    await page.route('**/api/auth/logout', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }),
     );
     await page.goto(NEW_CHAT_PATH);
     await page.getByTestId('nav-user').click();
@@ -238,9 +242,13 @@ test.describe('opt-in two-factor enrollment', () => {
         })
         .first(),
     ).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Download Backup Codes' })).toBeVisible();
     await expect(
       page.getByText('Invalid two-factor authentication code', { exact: true }),
     ).toHaveCount(0);
+    const download = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Download Backup Codes' }).click();
+    await download;
+    await page.getByRole('button', { name: 'Complete Setup' }).click();
+    await expect(page).toHaveURL(/\/login/);
   });
 });

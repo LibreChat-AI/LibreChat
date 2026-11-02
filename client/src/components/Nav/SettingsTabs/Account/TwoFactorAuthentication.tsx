@@ -39,7 +39,7 @@ const phaseVariants: Variants = {
 
 const TwoFactorAuthentication: React.FC = () => {
   const localize = useLocalize();
-  const { user } = useAuthContext();
+  const { user, logout } = useAuthContext();
   const { data: startupConfig } = useGetStartupConfig();
   const setUser = useSetRecoilState(store.user);
   const { showToast } = useToastContext();
@@ -53,6 +53,7 @@ const TwoFactorAuthentication: React.FC = () => {
   const [_disableToken, setDisableToken] = useState<string>('');
   const [isDialogOpen, setDialogOpen] = useState<boolean>(false);
   const [verificationToken, setVerificationToken] = useState<string>('');
+  const [signInRequired, setSignInRequired] = useState<boolean>(false);
   const [phase, setPhase] = useState<Phase>(user?.twoFactorEnabled ? 'disable' : 'setup');
 
   const { mutate: confirm2FAMutate } = useConfirmTwoFactorMutation();
@@ -121,12 +122,13 @@ const TwoFactorAuthentication: React.FC = () => {
             {
               onSuccess: () => setPhase('backup'),
               onError: (error) => {
-                /** 2FA is on even though other sessions could not all be signed out. */
+                /** 2FA is on, but no session replaced this tab's retired one: save codes, sign in. */
                 if (isCredentialRetirementIncomplete(error)) {
                   showToast({
                     message: localize('com_ui_2fa_sessions_incomplete'),
                     status: 'warning',
                   });
+                  setSignInRequired(true);
                   setPhase('backup');
                   return;
                 }
@@ -156,6 +158,10 @@ const TwoFactorAuthentication: React.FC = () => {
 
   const handleConfirm = useCallback(() => {
     setDialogOpen(false);
+    if (signInRequired) {
+      logout('/login');
+      return;
+    }
     setPhase('disable');
     showToast({ message: localize('com_ui_2fa_enabled') });
     setUser(
@@ -171,7 +177,7 @@ const TwoFactorAuthentication: React.FC = () => {
           twoFactorEnabled: true,
         }) as TUser,
     );
-  }, [setUser, localize, showToast, backupCodes]);
+  }, [setUser, localize, showToast, backupCodes, signInRequired, logout]);
 
   const handleDisableVerify = useCallback(
     (token: string, useBackup: boolean) => {
@@ -219,6 +225,10 @@ const TwoFactorAuthentication: React.FC = () => {
       open={isDialogOpen}
       onOpenChange={(open) => {
         setDialogOpen(open);
+        if (!open && signInRequired) {
+          logout('/login');
+          return;
+        }
         if (!open) {
           resetState();
         }
