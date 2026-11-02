@@ -6981,6 +6981,33 @@ describe('AgentClient - titleConvo', () => {
           ]
         `);
       });
+
+      it('keeps an image that a tool refreshes in its own message', async () => {
+        const image = makeUploadedFile('shot', 'shot.png', 'image/png');
+        require('~/models').getFiles.mockResolvedValue([image]);
+        client.addImageURLs = jest.fn(async (message, files) => {
+          message.image_urls = files.map(({ file_id }) => ({
+            type: 'image_url',
+            image_url: { url: `data:image/png;base64,${file_id}` },
+          }));
+          return files;
+        });
+        client.options.resendFiles = true;
+        client.message_file_map = {};
+        mockReq.body.files = [];
+        client.options.attachments = [image];
+        const history = makeHistory();
+        history[0].files = [{ file_id: 'shot' }];
+
+        const messages = await client.addPreviousAttachments(history);
+        const { prompt } = await client.buildMessages(messages, 'm3', {});
+
+        const carriers = prompt.flatMap((message, index) =>
+          JSON.stringify(message.content).includes('base64,shot') ? [index] : [],
+        );
+        expect(carriers).toEqual([0]);
+        expect(client.addImageURLs).toHaveBeenCalledTimes(1);
+      });
     });
 
     it('counts resubmitted historical files during steering without mutating rejected state', () => {

@@ -2487,7 +2487,12 @@ class AgentClient extends BaseClient {
       this.getModelBoundAttachmentsForEndpoint(requestAttachments);
     /* A tool file the turn refreshes keeps its text and media in the message it was
      * attached to; the latest message only takes files no earlier message carries. */
-    const replayedFileIds = collectFileIds(Object.values(this.message_file_map ?? {}).flat());
+    const latestMessageId = orderedMessages[orderedMessages.length - 1]?.messageId;
+    const replayedFileIds = collectFileIds(
+      Object.entries(this.message_file_map ?? {})
+        .filter(([messageId]) => messageId !== latestMessageId)
+        .flatMap(([, files]) => files),
+    );
     const isNotReplayed = (file) => !replayedFileIds.has(file?.file_id);
     const turnAttachments = requestAttachments.filter(isNotReplayed);
     const turnModelBoundAttachments = modelBoundRequestAttachments.filter(isNotReplayed);
@@ -2591,11 +2596,13 @@ class AgentClient extends BaseClient {
       /** Agent-scoped extraction only depends on the shared attachment IDs. */
       agentScopedContextPromise = startAgentScopedContext();
 
-      this.message_file_map ??= {};
-      this.message_file_map[latestMessage.messageId] = [
-        ...(this.message_file_map[latestMessage.messageId] ?? []),
-        ...attachments,
-      ];
+      if (this.message_file_map) {
+        this.message_file_map[latestMessage.messageId] = attachments;
+      } else {
+        this.message_file_map = {
+          [latestMessage.messageId]: attachments,
+        };
+      }
 
       const [, files] = await Promise.all([
         this.addFileContextToMessage(latestMessage, turnModelBoundAttachments),
