@@ -4,7 +4,7 @@ services:
     #   context: .
     #   dockerfile: Dockerfile.multi
     #   target: api-build
-    image: ghcr.io/nexus-echo/tspichat-api:dded05f69c893a52aa1a09cb80d0ab51e46af6ba
+    image: ghcr.io/nexus-echo/tspichat-api:latest
     healthcheck:
       test: ["CMD-SHELL", "node -e 'fetch(\"http://127.0.0.1:3080/health\").then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))'"]
       interval: 30s

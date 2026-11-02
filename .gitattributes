@@ -1,3 +1,46 @@
+# Line endings: LF in the repository and in every checkout, on every OS (Windows included).
+# Git decides what is text; everything it treats as text is stored and checked out with LF.
+* text=auto eol=lf
+
 # Force LF line endings for shell scripts and git hooks (required for cross-platform compatibility)
-.husky/* text eol=lf
-*.sh text eol=lf
+.husky/*      text eol=lf
+*.sh          text eol=lf
+Dockerfile*   text eol=lf
+*.yml         text eol=lf
+*.yaml        text eol=lf
+
+# Windows-only scripts keep CRLF.
+*.bat         text eol=crlf
+*.cmd         text eol=crlf
+*.ps1         text eol=crlf
+
+# Binary: never converted, never diffed as text.
+*.png         binary
+*.jpg         binary
+*.jpeg        binary
+*.gif         binary
+*.webp        binary
+*.ico         binary
+*.pdf         binary
+*.xlsx        binary
+*.docx        binary
+*.odt         binary
+*.zip         binary
+*.gz          binary
+*.woff        binary
+*.woff2       binary
+*.ttf         binary
+*.otf         binary
+*.mp3         binary
+*.mp4         binary
+*.wasm        binary
+
+# Lockfiles: no text diffs in reviews, marked generated on GitHub.
+package-lock.json  -diff linguist-generated
+bun.lock           -diff linguist-generated
+*.lock             -diff linguist-generated
+
+# Better diffs.
+*.md          diff=markdown
+*.py          diff=python
+*.go          diff=golang
