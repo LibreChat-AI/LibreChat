@@ -211,7 +211,7 @@ test.describe('composer controls on the shared Button', () => {
 
     /** The popover is modal, so Radix hides its trigger from the accessibility tree while open. */
     const reasoning = page.getByRole('button', {
-      name: /Reasoning for next message/i,
+      name: /^Thinking /i,
       includeHidden: true,
     });
     await expect(reasoning).toBeVisible();

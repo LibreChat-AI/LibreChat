@@ -20,37 +20,39 @@ jest.mock('react-hook-form', () => ({
 
 jest.mock('@librechat/client', () => ({
   Spinner: () => <div data-testid="spinner" />,
+  cn: (...values: Array<string | false | null | undefined>) => values.filter(Boolean).join(' '),
+  useLocalize: () => (key: string) => key,
 }));
 
 jest.mock('librechat-data-provider', () => ({
+  ...jest.requireActual('librechat-data-provider'),
   Constants: { NEW_CONVO: 'new', SEARCH: 'search' },
   buildTree: ({ messages }: { messages: unknown[] }) => messages,
 }));
 
-jest.mock('@librechat/chat/react', () => ({
-  ...jest.requireActual('@librechat/chat/react'),
-  useChatHelpers: () => ({
-    conversation: mockConversation,
-    getMessages: jest.fn(),
-    ask: jest.fn(),
-  }),
-  useQueueDrain: jest.fn(),
-  useQueuedTurnReveal: jest.fn(),
-}));
+jest.mock('@librechat/chat/react', () => {
+  const actual = jest.requireActual('@librechat/chat/react');
+  return {
+    ...actual,
+    ChatSessionProvider: ({
+      children,
+    }: {
+      children: (session: { messages: unknown[]; isLoading: boolean }) => React.ReactNode;
+    }) => (
+      <actual.ChatContext.Provider value={{ conversation: mockConversation }}>
+        {children({ messages: [{ messageId: 'message-1' }], isLoading: false })}
+      </actual.ChatContext.Provider>
+    ),
+  };
+});
 
 jest.mock('~/hooks', () => ({
   useAddedResponse: () => ({}),
-  useScrollbarGutterSeed: jest.fn(),
   useLocalize: () => (key: string) => key,
 }));
 
 jest.mock('~/hooks/Chat/outcomes', () => ({
   getMappingOptions: () => ({}),
-}));
-
-jest.mock('~/hooks/SSE', () => ({
-  useAdaptiveSSE: jest.fn(),
-  useResumeOnLoad: jest.fn(),
 }));
 
 jest.mock('~/Providers', () => {
@@ -67,11 +69,6 @@ jest.mock('~/Providers', () => {
 
 jest.mock('~/data-provider', () => ({
   useProjectQuery: () => ({ data: undefined }),
-  useGetMessagesByConvoId: () => ({
-    data: [{ messageId: 'message-1' }],
-    isLoading: false,
-    isFetching: false,
-  }),
 }));
 
 jest.mock('../Input/ConversationStarters', () => () => null);

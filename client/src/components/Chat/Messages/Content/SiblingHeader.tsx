@@ -1,8 +1,8 @@
 import { useMemo } from 'react';
 import { GitBranchPlus } from 'lucide-react';
+import { MessageTimestamp } from '@librechat/chat/components';
 import { EModelEndpoint, parseEphemeralAgentId, stripAgentIdSuffix } from 'librechat-data-provider';
 import type { TMessage, Agent } from 'librechat-data-provider';
-import MessageTimestamp from '~/components/Chat/Messages/ui/MessageTimestamp';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import { useBranchMessageMutation } from '~/data-provider/Messages';
 import MessageIcon from '~/components/Share/MessageIcon';

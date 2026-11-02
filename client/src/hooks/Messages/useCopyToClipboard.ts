@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import copy from 'copy-to-clipboard';
 import { useRecoilValue } from 'recoil';
+import { parseWakeupMessage } from '@librechat/chat';
 import { ContentTypes, SearchResultData } from 'librechat-data-provider';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
 import type { MarkdownVariant, RichTextMode } from '~/utils/richtext';
@@ -11,7 +12,6 @@ import {
   STANDALONE_PATTERN,
   INVALID_CITATION_REGEX,
 } from '~/utils/citations';
-import { parseWakeupMessage } from '~/components/Chat/Messages/Content/Parts/wakeup';
 import { markdownToHtml } from '~/utils/richtext';
 import store from '~/store';
 

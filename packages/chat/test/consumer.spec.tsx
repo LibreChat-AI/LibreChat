@@ -1,0 +1,706 @@
+/**
+ * @jest-environment jsdom
+ */
+import { useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { Chat } from '@librechat/chat';
+import { createInstance } from 'i18next';
+import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import {
+  Part,
+  Text,
+  MessageRow,
+  MentionPopover,
+  ChatScreen,
+  HoverButtons,
+  MessagesView,
+  SiblingSwitch,
+  ComposerField,
+  ComposerFrame,
+  ComposerActions,
+  getHeaderHoverLabel,
+  EventSubagentActivityGroup,
+} from '@librechat/chat/components';
+import { initReactI18next, I18nextProvider } from 'react-i18next';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { Button, Textarea, ThemeProvider, clickHouseTheme } from '@librechat/client';
+import {
+  ChatContext,
+  MessageContext,
+  MessagePartIndex,
+  StreamHostProvider,
+  ChatSurfaceProvider,
+  MessagesHostProvider,
+  MessagePartsHostProvider,
+  ParentSubagentsProvider,
+} from '@librechat/chat/react';
+import type {
+  ChatEvent,
+  TMessage,
+  ParentSubagentIndex,
+  TConversation,
+  TMessageContentParts,
+} from 'librechat-data-provider';
+import type { ChatState, ChatStream, ChatTransport } from '@librechat/chat';
+import type { PartRenderers } from '@librechat/chat/components';
+import type {
+  StreamHost,
+  ChatSurface,
+  ChatContract,
+  MessagesHost,
+  SteeringControls,
+  MessagePartsHost,
+} from '@librechat/chat/react';
+import type { ReactElement } from 'react';
+
+/**
+ * An outside consumer of the package: it reaches LibreChat's chat only through the published
+ * entries (`@librechat/chat`, `/react`, `/components`) and the `@librechat/client` theme, with an
+ * in-memory transport in place of a server. Rows come from the package's `MessageRow`; the list
+ * around them and the composer stay consumer-built until those move into the package.
+ */
+
+/** A stream the test feeds frame by frame. */
+function createStream(): ChatStream & { push(event: ChatEvent): void } {
+  const queued: ChatEvent[] = [];
+  let wake: (() => void) | undefined;
+  let closed = false;
+  return {
+    push(event) {
+      queued.push(event);
+      wake?.();
+    },
+    close() {
+      closed = true;
+      wake?.();
+    },
+    async *[Symbol.asyncIterator]() {
+      while (true) {
+        while (queued.length > 0) {
+          yield queued.shift() as ChatEvent;
+        }
+        if (closed) {
+          return;
+        }
+        await new Promise<void>((resolve) => {
+          wake = resolve;
+        });
+      }
+    },
+  };
+}
+
+/** Serves each turn from a stream the test drives. */
+function createMemoryTransport(): ChatTransport & { stream?: ReturnType<typeof createStream> } {
+  const transport: ChatTransport & { stream?: ReturnType<typeof createStream> } = {
+    async sendMessages() {
+      transport.stream = createStream();
+      return { status: 'stream', stream: transport.stream };
+    },
+    async reconnectToStream() {
+      return null;
+    },
+    async abort() {
+      return { success: true };
+    },
+  };
+  return transport;
+}
+
+function createState(): ChatState {
+  let messages: TMessage[] = [];
+  return {
+    status: 'ready',
+    error: undefined,
+    connection: 'idle',
+    get messages() {
+      return messages;
+    },
+    replaceMessages(next) {
+      messages = next;
+    },
+  };
+}
+
+let ids = 0;
+
+/** The consumer's own turn building: the request plus its optimistic user message and reply. */
+function createChat(transport: ChatTransport): Chat {
+  return new Chat({
+    id: 'convo',
+    state: createState(),
+    transport,
+    prepareRequest({ input, messages }) {
+      const text = input?.parts.map((part) => part.text).join('') ?? '';
+      const parentMessageId = messages[messages.length - 1]?.messageId ?? null;
+      const messageId = `user-${++ids}`;
+      const responseMessageId = `reply-${ids}`;
+      const base = { conversationId: 'convo', createdAt: new Date().toISOString() };
+      const user: TMessage = { ...base, messageId, parentMessageId, isCreatedByUser: true, text };
+      const reply: TMessage = {
+        ...base,
+        messageId: responseMessageId,
+        parentMessageId: messageId,
+        isCreatedByUser: false,
+        sender: 'Assistant',
+        model: 'memory-model',
+        text: '',
+      };
+      return {
+        payload: {
+          ...base,
+          text,
+          messageId,
+          parentMessageId,
+          isContinued: false,
+          isTemporary: true,
+        },
+        messages: (current) => [...current, user, reply],
+        responseMessageId,
+      };
+    },
+    /** Cumulative `text` frames fill the reply as it streams; the `final` frame settles it. */
+    applyEvent(event, context) {
+      if (event.type === 'text') {
+        const text = event.data.text ?? event.data.response ?? '';
+        context.write(
+          context.messages.map((message) =>
+            message.messageId === event.data.messageId ? { ...message, text } : message,
+          ),
+        );
+      }
+      const response = event.type === 'final' ? event.data.responseMessage : undefined;
+      if (response) {
+        context.write(
+          context.messages.map((message) =>
+            message.messageId === response.messageId ? { ...message, ...response } : message,
+          ),
+        );
+      }
+    },
+  });
+}
+
+const host: MessagePartsHost = {
+  useMessage: () => ({ messageId: '' }),
+  renderMarkdown: ({ content }) => <p>{content}</p>,
+  useSmoothStreaming: () => false,
+  useAgent: () => undefined,
+  renderAgentIcon: () => null,
+  renderAgentAvatar: () => null,
+  renderContentParts: () => null,
+  renderImage: () => null,
+  renderFilePreview: () => null,
+  useFontSize: () => 'text-base',
+  useShowThinking: () => false,
+  useAutoExpandTools: () => false,
+  useLaTeXParsing: () => false,
+  useChatDirection: () => 'auto',
+  useUserTextPreferences: () => ({
+    enableUserMsgMarkdown: false,
+    collapseLongUserMessages: false,
+    usernameDisplay: false,
+  }),
+  useUser: () => undefined,
+  useFileMap: () => undefined,
+  useToast: () => () => undefined,
+  useSandboxStarting: () => false,
+  useToolArtifactClaim: () => [null, () => undefined],
+  useSteerEscalating: () => false,
+  usePaneConversationId: () => null,
+  useLiveAppliedSteer: () => [false, () => undefined],
+  useShare: () => ({}),
+};
+
+const messagesHost: MessagesHost = {
+  useHour12: () => false,
+  renderFiles: () => null,
+  useForkPreferences: () => ({
+    option: '',
+    setOption: () => undefined,
+    splitAtTarget: false,
+    setSplitAtTarget: () => undefined,
+    rememberOption: false,
+    setRememberOption: () => undefined,
+  }),
+  useForkConversation: () => null,
+  useMessageCopy: () => ({ copyToClipboard: () => undefined, canCopy: false }),
+  useGetMessages: () => () => undefined,
+  useHasPendingTurn: () => false,
+  renderMessageAudio: () => null,
+  useScrolling: () => ({
+    contentRef: { current: null },
+    scrollableRef: { current: null },
+    messagesEndRef: { current: null },
+    handleSmoothToRef: () => undefined,
+    debouncedHandleScroll: () => undefined,
+    handleNearBottomChange: () => undefined,
+  }),
+  useScreenshotTarget: () => undefined,
+  useAutoScroll: () => false,
+  useConversationSeen: () => () => undefined,
+  renderMessageIcon: () => null,
+  renderMessageRow: () => null,
+  renderActivity: () => null,
+  useFileMap: () => undefined,
+};
+
+const renderers: PartRenderers = {
+  parts: {
+    [ContentTypes.TEXT]: ({ part, showCursor, isCreatedByUser }) => (
+      <Text
+        text={typeof part.text === 'string' ? part.text : (part.text?.value ?? '')}
+        showCursor={showCursor}
+        isCreatedByUser={isCreatedByUser}
+      />
+    ),
+  },
+  tools: {},
+  defaultTool: () => null,
+};
+
+const partsOf = (message: TMessage): TMessageContentParts[] =>
+  message.content?.length
+    ? message.content
+    : [{ type: ContentTypes.TEXT, text: message.text ?? '' }];
+
+const conversation = { conversationId: 'convo', endpoint: EModelEndpoint.agents } as TConversation;
+const noop = (): void => undefined;
+
+function ChatView({ chat }: { chat: Chat }): ReactElement {
+  const subscribe = useMemo(() => chat.subscribe.bind(chat), [chat]);
+  const messages = useSyncExternalStore(subscribe, () => chat.messages);
+  const status = useSyncExternalStore(subscribe, () => chat.status);
+  const [text, setText] = useState('');
+  const send = () => {
+    setText('');
+    void chat.sendMessage({ parts: [{ type: 'text', text }] });
+  };
+  return (
+    <MessagesHostProvider host={messagesHost}>
+      <MessagePartsHostProvider host={host}>
+        <ol aria-label="Messages">
+          {messages.map((message) => {
+            const label = message.isCreatedByUser ? 'You' : (message.sender ?? 'Assistant');
+            return (
+              <li key={message.messageId}>
+                <MessageRow
+                  message={message}
+                  label={label}
+                  ariaLabel={label}
+                  hoverLabel={getHeaderHoverLabel(false, message.model)}
+                  icon={null}
+                  footer={
+                    <HoverButtons
+                      index={0}
+                      isLast={false}
+                      isEditing={false}
+                      message={message}
+                      conversation={conversation}
+                      enterEdit={noop}
+                      regenerate={noop}
+                      handleContinue={noop}
+                      copyToClipboard={noop}
+                      getCanCopy={() => status === 'ready'}
+                    />
+                  }
+                  timestamp={message.createdAt}
+                  isCreatedByUser={message.isCreatedByUser}
+                >
+                  <MessageContext.Provider
+                    value={{ messageId: message.messageId, isExpanded: false }}
+                  >
+                    {partsOf(message).map((part, index) => (
+                      <MessagePartIndex key={index} index={index}>
+                        <Part
+                          part={part}
+                          renderers={renderers}
+                          isSubmitting={status !== 'ready'}
+                          showCursor={false}
+                          isCreatedByUser={message.isCreatedByUser}
+                        />
+                      </MessagePartIndex>
+                    ))}
+                  </MessageContext.Provider>
+                </MessageRow>
+              </li>
+            );
+          })}
+        </ol>
+        <p role="status">{status}</p>
+        <label htmlFor="composer">Message</label>
+        <Textarea id="composer" value={text} onChange={(event) => setText(event.target.value)} />
+        <Button type="button" onClick={send}>
+          Send
+        </Button>
+      </MessagePartsHostProvider>
+    </MessagesHostProvider>
+  );
+}
+
+function Consumer({ transport }: { transport: ChatTransport }): ReactElement | null {
+  const [chat, setChat] = useState<Chat | null>(null);
+  useEffect(() => {
+    const next = createChat(transport);
+    setChat(next);
+    return () => next.dispose();
+  }, [transport]);
+  return chat ? <ChatView chat={chat} /> : null;
+}
+
+const i18n = createInstance();
+void i18n.use(initReactI18next).init({ lng: 'en', resources: { en: { translation: {} } } });
+
+const renderConsumer = (transport: ChatTransport) =>
+  render(
+    <I18nextProvider i18n={i18n}>
+      <ThemeProvider themeDefinition={clickHouseTheme} persistThemeDefinition={false}>
+        <Consumer transport={transport} />
+      </ThemeProvider>
+    </I18nextProvider>,
+  );
+
+describe('a consumer built on the public entries', () => {
+  it('sends a turn and streams the reply into the message list', async () => {
+    const transport = createMemoryTransport();
+    renderConsumer(transport);
+
+    fireEvent.change(await screen.findByLabelText('Message'), { target: { value: 'Hi' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    const list = await screen.findByRole('list', { name: 'Messages' });
+    const sent = await within(list).findByRole('group', { name: 'You' });
+    expect(within(sent).getByTestId('message-body')).toHaveTextContent('Hi');
+    expect(within(sent).getByRole('heading', { level: 2 })).toHaveTextContent('You');
+
+    await act(async () => {
+      transport.stream?.push({ type: 'open' });
+      transport.stream?.push({
+        type: 'text',
+        data: { message: true, text: 'Hel', messageId: 'reply-1' },
+      });
+    });
+    const reply = within(list).getByRole('group', { name: 'Assistant' });
+    expect(within(reply).getByTestId('message-body')).toHaveTextContent('Hel');
+    const header = within(reply).getByRole('heading', { level: 2 });
+    expect(header).toHaveTextContent('Assistant');
+    expect(header).toHaveTextContent('memory-model');
+    const time = header.querySelector('time');
+    expect(time).not.toBeNull();
+    expect(Number.isNaN(Date.parse(time?.getAttribute('dateTime') ?? ''))).toBe(false);
+    expect(screen.getByRole('status')).toHaveTextContent('streaming');
+
+    await act(async () => {
+      transport.stream?.push({
+        type: 'text',
+        data: { message: true, text: 'Hello there', messageId: 'reply-1' },
+      });
+    });
+    expect(reply).toHaveTextContent('Hello there');
+
+    await act(async () => {
+      transport.stream?.push({
+        type: 'final',
+        data: {
+          final: true,
+          responseMessage: {
+            messageId: 'reply-1',
+            parentMessageId: 'user-1',
+            conversationId: 'convo',
+            isCreatedByUser: false,
+            text: 'Hello there.',
+          },
+        },
+      });
+      transport.stream?.close();
+    });
+    expect(await within(list).findByText('Hello there.')).toBeInTheDocument();
+    expect(within(list).getAllByRole('listitem')).toHaveLength(2);
+    expect(await screen.findByText('ready')).toBeInTheDocument();
+    const settled = within(list).getByRole('group', { name: 'Assistant' });
+    expect(within(settled).getByRole('button', { name: 'com_ui_copy_to_clipboard' })).toBeEnabled();
+    expect(document.documentElement.style.getPropertyValue('--theme-mono-font-family')).toContain(
+      'Inconsolata',
+    );
+  });
+
+  it('picks a mention from the composer popover with the keyboard alone', () => {
+    /** jsdom lays nothing out, so it has no `scrollIntoView` for the active option to call. */
+    Element.prototype.scrollIntoView = jest.fn();
+    const textarea = document.createElement('textarea');
+    textarea.value = '@';
+    document.body.appendChild(textarea);
+    const onSelectMention = jest.fn();
+    render(
+      <ThemeProvider themeDefinition={clickHouseTheme} persistThemeDefinition={false}>
+        <MentionPopover
+          textAreaRef={{ current: textarea }}
+          placeholder="Mention"
+          options={[
+            { type: 'preset', value: 'draft', label: 'Draft' },
+            { type: 'preset', value: 'review', label: 'Review' },
+          ]}
+          isLoading={false}
+          assistantListMap={{}}
+          onSelectMention={onSelectMention}
+          onClose={jest.fn()}
+        />
+      </ThemeProvider>,
+    );
+
+    const combobox = screen.getByRole('combobox');
+    fireEvent.keyDown(combobox, { key: 'ArrowDown' });
+    const active = combobox.getAttribute('aria-activedescendant') ?? '';
+    expect(document.getElementById(active)).toHaveTextContent('Review');
+    fireEvent.keyDown(combobox, { key: 'Enter' });
+    expect(onSelectMention).toHaveBeenCalledWith(expect.objectContaining({ value: 'review' }));
+    textarea.remove();
+  });
+
+  it('lays out a chat screen from a session, with the app surfaces as slots', () => {
+    const root = '00000000-0000-0000-0000-000000000000';
+    const base = { conversationId: 'convo', createdAt: new Date().toISOString() };
+    const messages: TMessage[] = [
+      { ...base, messageId: 'u1', parentMessageId: root, isCreatedByUser: true, text: 'Question' },
+      { ...base, messageId: 'a1', parentMessageId: 'u1', isCreatedByUser: false, text: 'Answer' },
+    ];
+    const screenFor = (session: { conversationId?: string; messages: TMessage[] | null }) => (
+      <I18nextProvider i18n={i18n}>
+        <ChatContext.Provider
+          value={{ conversation: { conversationId: 'convo', title: 'Plans' } } as ChatContract}
+        >
+          <ChatScreen
+            {...session}
+            isLoading={false}
+            landingFooter={false}
+            configuredFooter={false}
+            landing={<p>Welcome</p>}
+            renderMessages={({ messagesTree }) => (
+              <ol aria-label="Messages">
+                {messagesTree?.map((message) => (
+                  <li key={message.messageId}>{message.text}</li>
+                ))}
+              </ol>
+            )}
+            renderComposer={() => <Textarea aria-label="Message" />}
+          />
+        </ChatContext.Provider>
+      </I18nextProvider>
+    );
+
+    const view = render(screenFor({ messages: null }));
+    expect(screen.getByText('Welcome')).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'Message' })).toBeInTheDocument();
+
+    view.rerender(screenFor({ conversationId: 'convo', messages }));
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Plans');
+    expect(
+      within(screen.getByRole('list', { name: 'Messages' })).getByText('Question'),
+    ).toBeInTheDocument();
+  });
+
+  it('drafts in the composer frame and offers send once there is text', () => {
+    const textAreaRef = { current: null as HTMLTextAreaElement | null };
+    function Composer(): ReactElement {
+      const [text, setText] = useState('');
+      return (
+        <ThemeProvider themeDefinition={clickHouseTheme} persistThemeDefinition={false}>
+          <ComposerFrame
+            onSubmit={(event) => event.preventDefault()}
+            direction="auto"
+            maximizeChatSpace={false}
+            focused={false}
+            isTemporary={false}
+            onFocusDraft={() => textAreaRef.current?.focus()}
+          >
+            <ComposerField
+              textAreaRef={textAreaRef}
+              ariaLabel="Message"
+              textareaProps={{ value: text, onChange: (event) => setText(event.target.value) }}
+              value={text}
+              listening={false}
+              dictationActive={false}
+              locked={false}
+            />
+            <ComposerActions
+              text={text}
+              submitButtonRef={{ current: null }}
+              isSubmitting={false}
+              answersAsk={false}
+              hasEndpoint
+              steering={{ duringRunActive: false } as SteeringControls}
+              isNewConversation
+              getText={() => text}
+              onConsumed={() => undefined}
+              enterToSend
+              fileCount={0}
+              sendDisabled={false}
+              duringRunDisabled={false}
+              showStopButton={false}
+              setShowStopButton={() => undefined}
+              stop={() => undefined}
+              canStop
+              isPreparingFromUrl={false}
+            />
+          </ComposerFrame>
+        </ThemeProvider>
+      );
+    }
+    render(<Composer />);
+
+    const field = screen.getByRole('textbox', { name: 'Message' });
+    expect(textAreaRef.current).toBe(field);
+    expect(screen.getByTestId('send-button')).toBeDisabled();
+    fireEvent.change(field, { target: { value: 'Hello' } });
+    expect(screen.getByTestId('send-button')).toBeEnabled();
+    fireEvent.click(screen.getByTestId('composer-surface'));
+    expect(document.activeElement).toBe(field);
+  });
+});
+
+describe('a consumer rendering subagent activity', () => {
+  const index: ParentSubagentIndex = {
+    parentConversationId: 'convo',
+    childrenTruncated: false,
+    children: [
+      {
+        threadId: 'thread-1',
+        parentMessageId: 'reply-1',
+        subagentType: 'researcher',
+        subagentKind: 'agent',
+        title: 'Researcher',
+        origin: 'event',
+        actorId: 'researcher-a',
+        status: 'running',
+        latestTaskId: 'task-1',
+        tasks: [{ taskId: 'task-1', status: 'running' }],
+        tasksTruncated: false,
+      },
+    ],
+  };
+  const unused = () => {
+    throw new Error('not part of the activity consumer');
+  };
+  const streamHost: StreamHost = {
+    useResumableServices: unused,
+    useLegacyStream: unused,
+    useTransport: () => null,
+    useQueuedTurnReceipts: unused,
+    useActiveJobs: unused,
+    extendActiveJobsGrace: unused,
+    useStreamStatus: unused,
+    useResumeSettings: unused,
+    useEventServices: unused,
+    useParentSubagentIndex: () => ({
+      data: index,
+      isError: false,
+      refetch: async () => ({ data: index }),
+    }),
+  };
+
+  it('lists the children under their reply and opens one through the surface it supplies', () => {
+    const claimForeground = jest.fn();
+    const surface: ChatSurface = {
+      enterToSend: true,
+      maximizeChatSpace: false,
+      showScrollButton: false,
+      composerBindings: {
+        shortcutsEnabled: true,
+        submitOverride: undefined,
+        yieldedChords: new Set<string>(),
+      },
+      claimForeground,
+      handOffComposerText: () => undefined,
+    };
+    render(
+      <I18nextProvider i18n={i18n}>
+        <QueryClientProvider client={new QueryClient()}>
+          <StreamHostProvider host={streamHost}>
+            <MessagePartsHostProvider host={host}>
+              <ChatSurfaceProvider value={surface}>
+                <ParentSubagentsProvider conversationId="convo" enabled>
+                  <EventSubagentActivityGroup
+                    conversationId="convo"
+                    parentMessageIds={['reply-1']}
+                  />
+                </ParentSubagentsProvider>
+              </ChatSurfaceProvider>
+            </MessagePartsHostProvider>
+          </StreamHostProvider>
+        </QueryClientProvider>
+      </I18nextProvider>,
+    );
+
+    const group = screen.getByRole('region');
+    fireEvent.click(within(group).getAllByRole('button')[0]);
+    const child = group.querySelector('[data-subagent-thread="thread-1"]');
+    expect(child).toHaveTextContent('researcher-a');
+    fireEvent.click(child as HTMLElement);
+    expect(claimForeground).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders a branched conversation through the package message list and its default thread', () => {
+    const root = '00000000-0000-0000-0000-000000000000';
+    const base = { conversationId: 'convo', createdAt: new Date().toISOString() };
+    const messages: TMessage[] = [
+      { ...base, messageId: 'u1', parentMessageId: root, isCreatedByUser: true, text: 'Question' },
+      { ...base, messageId: 'a1', parentMessageId: 'u1', isCreatedByUser: false, text: 'First' },
+      { ...base, messageId: 'a2', parentMessageId: 'u1', isCreatedByUser: false, text: 'Second' },
+    ];
+    const threadHost: MessagesHost = {
+      ...messagesHost,
+      renderMessageRow: ({ message, siblingIdx, siblingCount, setSiblingIdx }) => {
+        const label = message.isCreatedByUser ? 'You' : 'Assistant';
+        return (
+          <MessageRow
+            message={message}
+            label={label}
+            ariaLabel={label}
+            icon={null}
+            footer={
+              <SiblingSwitch
+                siblingIdx={siblingIdx}
+                siblingCount={siblingCount}
+                setSiblingIdx={setSiblingIdx}
+              />
+            }
+            isCreatedByUser={message.isCreatedByUser}
+          >
+            <p>{message.text}</p>
+          </MessageRow>
+        );
+      },
+    };
+    const contract = {
+      index: 0,
+      isSubmitting: false,
+      latestMessageDepth: 0,
+      messagesKey: 'convo',
+    } as ChatContract;
+    render(
+      <I18nextProvider i18n={i18n}>
+        <ChatContext.Provider value={contract}>
+          <MessagesHostProvider host={threadHost}>
+            <MessagePartsHostProvider host={host}>
+              <MessagesView
+                messages={messages}
+                messagesTree={messages}
+                showScrollButton={false}
+                maximizeChatSpace={false}
+              />
+            </MessagePartsHostProvider>
+          </MessagesHostProvider>
+        </ChatContext.Provider>
+      </I18nextProvider>,
+    );
+
+    const reply = screen.getByRole('group', { name: 'Assistant' });
+    expect(screen.getByRole('group', { name: 'You' })).toHaveTextContent('Question');
+    expect(reply).toHaveTextContent('Second');
+    expect(within(reply).getByRole('status')).toHaveTextContent('2 / 2');
+
+    fireEvent.click(within(reply).getByRole('button', { name: 'com_ui_previous_sibling' }));
+    const older = screen.getByRole('group', { name: 'Assistant' });
+    expect(older).toHaveTextContent('First');
+    expect(within(older).getByRole('status')).toHaveTextContent('1 / 2');
+  });
+});

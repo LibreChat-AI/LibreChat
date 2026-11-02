@@ -1,8 +1,17 @@
 import { memo, useRef, useMemo, useState, useLayoutEffect } from 'react';
+import { useAtomValue } from 'jotai';
 import * as Ariakit from '@ariakit/react';
 import { ChevronDown } from 'lucide-react';
+import { Constants } from 'librechat-data-provider';
+import { getAppendParentMessageId } from '@librechat/chat';
+import { queuedMessagesByConvoId } from '@librechat/chat/react';
 import { Button, TooltipAnchor, useMediaQuery } from '@librechat/client';
-import type { SettingDefinition, TConversation, TReasoningOverride } from 'librechat-data-provider';
+import type {
+  TMessage,
+  TConversation,
+  SettingDefinition,
+  TReasoningOverride,
+} from 'librechat-data-provider';
 import { ReasoningControl, useComposerReasoning } from '../Reasoning';
 import Effort, { effortRank, resolveEffortLabel } from './Effort';
 import { useGetStartupConfig } from '~/data-provider';
@@ -243,6 +252,30 @@ function ThinkingControl({
  *
  * Split in two so the control's hooks are never behind that early return.
  */
+/**
+ * The level a branch runs at, by the server's rule: the override on the nearest user message at or
+ * above `fromMessageId` that carries one.
+ */
+function getBranchReasoning(
+  messages: TMessage[],
+  fromMessageId: string,
+): TMessage['reasoningOverride'] {
+  const byId = new Map<string, TMessage>();
+  for (const message of messages) {
+    byId.set(message.messageId, message);
+  }
+  const visited = new Set<string>();
+  let current = byId.get(fromMessageId);
+  while (current != null && !visited.has(current.messageId)) {
+    visited.add(current.messageId);
+    if (current.isCreatedByUser === true && current.reasoningOverride != null) {
+      return current.reasoningOverride;
+    }
+    current = current.parentMessageId != null ? byId.get(current.parentMessageId) : undefined;
+  }
+  return undefined;
+}
+
 interface ThinkingProps {
   index: number;
   disabled: boolean;
@@ -250,7 +283,7 @@ interface ThinkingProps {
 }
 
 function Thinking({ index, disabled, hasAddedConversation }: ThinkingProps) {
-  const { conversation } = useChatContext();
+  const { conversation, latestMessageId, getMessages } = useChatContext();
   const { data: startupConfig } = useGetStartupConfig();
   const parametersEnabled = startupConfig?.interface?.parameters;
   const modelSpec = getModelSpec({ specName: conversation?.spec, startupConfig });
@@ -260,12 +293,45 @@ function Thinking({ index, disabled, hasAddedConversation }: ThinkingProps) {
     }
     return new Set(Object.keys(modelSpec.preset));
   }, [modelSpec?.preset, startupConfig?.modelSpecs?.enforce]);
+  const queueKey =
+    conversation?.conversationId != null && conversation.conversationId !== ''
+      ? conversation.conversationId
+      : Constants.NEW_CONVO;
+  const queued = useAtomValue(queuedMessagesByConvoId(queueKey));
+  /* The server runs a turn without its own pick at the level its branch last ran at, so the
+     button names that level: the latest pick still waiting in the queue, otherwise the one the
+     branch the composer extends carries. */
+  const queuedReasoning = useMemo(() => {
+    for (let i = queued.length - 1; i >= 0; i--) {
+      const row = queued[i];
+      /* A held row waits for an explicit send, so it is not the turn that runs next. */
+      if (row.heldByUser === true || row.needsExplicitSend === true) {
+        continue;
+      }
+      if (row.reasoningOverride != null) {
+        return row.reasoningOverride;
+      }
+    }
+    return undefined;
+  }, [queued]);
+  const branchReasoning = useMemo(() => {
+    if (queuedReasoning != null) {
+      return queuedReasoning;
+    }
+    const messages = getMessages(conversation?.conversationId) ?? [];
+    const latestMessage = messages.find((message) => message.messageId === latestMessageId);
+    return getBranchReasoning(
+      messages,
+      getAppendParentMessageId({ latestMessage: latestMessage ?? null, currentMessages: messages }),
+    );
+  }, [conversation?.conversationId, getMessages, latestMessageId, queuedReasoning]);
   const reasoning = useComposerReasoning({
     conversation: conversation ?? null,
     index,
     hasAddedConversation,
     enabled: parametersEnabled,
     blockedReasoningKeys,
+    branchReasoning,
   });
 
   if (parametersEnabled !== true || reasoning == null) {

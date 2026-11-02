@@ -13,6 +13,7 @@ import {
 import type { TConversation, TMessage, GroupedConversations } from 'librechat-data-provider';
 import type { InvalidateQueryFilters } from '@tanstack/react-query';
 import type { InfiniteData, Query } from '@tanstack/react-query';
+import type { ConvoTitleState } from '@librechat/chat';
 import { isTemporaryConversation } from './conversation';
 import { getSessionPrincipal } from './session';
 
@@ -1466,7 +1467,7 @@ export function findConvoInAllQueries(
   )?.convo;
 }
 
-export type ConvoTitleState = Pick<TConversation, 'title' | 'titleSetByUser' | 'titleRevision'>;
+export type { ConvoTitleState };
 
 /** Manual revisions are monotonic even when reply snapshots or request order disagree. */
 export function findManualConvoTitleInAllQueries(
