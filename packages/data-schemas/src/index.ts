@@ -10,6 +10,7 @@ export type {
   ResponseOwner,
   ResponseStorage,
   ResponseTerminalGuard,
+  ResponseExecutionGuard,
   ResponseCleanupIdentity,
   ResponseReservation,
   ResponseReservationResult,
