@@ -1,4 +1,4 @@
-import { resolveEmbedState } from '../state';
+import { frameStorage, resolveEmbedState } from '../state';
 
 const ENTRY_SEARCH = '?app=portal&origin=https%3A%2F%2Fportal.example.com';
 
@@ -107,5 +107,41 @@ describe('resolveEmbedState', () => {
     expect(resolve('?app=portal&origin=https%3A%2F%2Fportal.example.com%2Fpath')).toBeNull();
     expect(resolve('?app=Bad%20App&origin=https%3A%2F%2Fportal.example.com')).toBeNull();
     expect(resolve('?app=portal&origin=javascript%3Aalert(1)')).toBeNull();
+  });
+});
+
+describe('frameStorage', () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+    window.sessionStorage.clear();
+    window.name = '';
+  });
+
+  it('keeps the state in the window name when session storage is blocked', () => {
+    jest.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    jest.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('blocked');
+    });
+    const entry = resolveEmbedState({
+      framed: true,
+      basePath: '',
+      pathname: '/embed',
+      search: ENTRY_SEARCH,
+      storage: frameStorage(),
+    });
+    expect(entry.state).not.toBeNull();
+
+    /** A reload of a chat route reads it back through a fresh storage handle. */
+    expect(
+      resolveEmbedState({
+        framed: true,
+        basePath: '',
+        pathname: '/c/abc',
+        search: '',
+        storage: frameStorage(),
+      }).state,
+    ).toEqual({ app: 'portal', origin: 'https://portal.example.com' });
   });
 });

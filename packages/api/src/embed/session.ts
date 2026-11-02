@@ -69,21 +69,20 @@ interface EmbedSessionBody {
 }
 
 /**
- * The account an embed identity maps to: one per app and host user id. The email is derived
- * from both and uses the reserved `.invalid` domain, so the unique email index makes the account
- * one per identity and it can never collide with, or be merged into, a real user's account.
+ * The account an embed identity maps to: one per app and host user id, found by
+ * `{ provider: 'embed', idOnTheSource }`. Accounts need an email, so new ones get a placeholder
+ * on the reserved `.invalid` domain, keyed with the app secret: nobody without the secret can
+ * predict it and register it first to lock the host user out, and the unique email index still
+ * keeps concurrent first sessions to one account.
  */
 export function getEmbedAccountKeys(
-  appId: string,
+  app: Pick<EmbedApp, 'id' | 'secret'>,
   subject: string,
 ): { identity: string; email: string } {
-  const identity = `${appId}:${subject}`;
-  const digest = crypto.createHash('sha256').update(identity).digest('hex').slice(0, 32);
-  return { identity, email: `${digest}@${appId}.embed.invalid` };
+  const identity = `${app.id}:${subject}`;
+  const digest = crypto.createHmac('sha256', app.secret).update(identity).digest('hex');
+  return { identity, email: `${digest.slice(0, 32)}@${app.id}.embed.invalid` };
 }
-
-const isEmbedAccount = (user: UserRecord, identity: string) =>
-  user.provider === EMBED_PROVIDER && user.idOnTheSource === identity;
 
 const appsByConfig = new WeakMap<object, Map<string, EmbedApp>>();
 
@@ -112,12 +111,11 @@ async function findOrCreateEmbedAccount(
   subject: string,
   name: string | undefined,
 ): Promise<AccountResult> {
-  const { identity, email } = getEmbedAccountKeys(app.id, subject);
-  const existing = await deps.findUser({ email });
+  const { identity, email } = getEmbedAccountKeys(app, subject);
+  const lookup = { provider: EMBED_PROVIDER, idOnTheSource: identity };
+  const existing = await deps.findUser(lookup);
   if (existing) {
-    return isEmbedAccount(existing, identity)
-      ? { ok: true, value: existing }
-      : { ok: false, error: { code: 'identity_conflict' } };
+    return { ok: true, value: existing };
   }
 
   const created = await deps.createUserIfAbsent(
@@ -137,8 +135,8 @@ async function findOrCreateEmbedAccount(
   }
 
   /** A concurrent first session for the same identity won the insert. */
-  const winner = await deps.findUser({ email });
-  if (winner && isEmbedAccount(winner, identity)) {
+  const winner = await deps.findUser(lookup);
+  if (winner) {
     return { ok: true, value: winner };
   }
   return { ok: false, error: { code: 'identity_conflict' } };

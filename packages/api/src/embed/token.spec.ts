@@ -7,6 +7,7 @@ const app: EmbedApp = {
   allowedOrigins: ['https://portal.example.com'],
   secret: 'a'.repeat(48),
   maxTokenAgeSeconds: 300,
+  clockToleranceSeconds: 30,
   sessionSeconds: 900,
 };
 

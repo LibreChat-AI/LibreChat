@@ -28,6 +28,8 @@ beforeAll(async () => {
   await mongoose.connect(mongoServer.getUri());
   createModels(mongoose);
   methods = createMethods(mongoose);
+  /** The unique email index is what keeps concurrent first sessions to one account. */
+  await mongoose.models.User.init();
 });
 
 afterAll(async () => {
@@ -100,7 +102,7 @@ describe('createEmbedSessionHandler', () => {
       idOnTheSource: 'portal:host-user-1',
       name: 'Ada',
       role: 'USER',
-      email: getEmbedAccountKeys('portal', 'host-user-1').email,
+      email: getEmbedAccountKeys({ id: 'portal', secret: SECRET }, 'host-user-1').email,
     });
     expect(first.body?.user).not.toHaveProperty('password');
   });
@@ -168,8 +170,27 @@ describe('createEmbedSessionHandler', () => {
     });
   });
 
+  it('finds the account by its embed identity, not by email', async () => {
+    const deps = createDeps();
+    const first = await post(deps, { app: 'portal', origin: ORIGIN, token: hostToken() });
+    await mongoose.models.User.updateOne({}, { email: 'renamed@example.com' });
+    const again = await post(deps, { app: 'portal', origin: ORIGIN, token: hostToken() });
+    const idOf = (token: unknown) =>
+      (jwt.verify(token as string, process.env.JWT_SECRET as string) as { id: string }).id;
+    expect(idOf(again.body?.token)).toBe(idOf(first.body?.token));
+    expect(await mongoose.models.User.countDocuments({})).toBe(1);
+  });
+
+  it('cannot be locked out by an account registered with an unkeyed placeholder email', async () => {
+    const unkeyed = 'host-user-1';
+    await methods.createUser({ email: `${unkeyed}@portal.embed.invalid`, provider: 'local' });
+    expect(
+      (await post(createDeps(), { app: 'portal', origin: ORIGIN, token: hostToken() })).status,
+    ).toBe(200);
+  });
+
   it('never signs in to an account that is not the embed identity', async () => {
-    const { email } = getEmbedAccountKeys('portal', 'host-user-1');
+    const { email } = getEmbedAccountKeys({ id: 'portal', secret: SECRET }, 'host-user-1');
     await methods.createUser({ email, provider: 'local', name: 'Squatter' });
     expect(await post(createDeps(), { app: 'portal', origin: ORIGIN, token: hostToken() })).toEqual(
       {

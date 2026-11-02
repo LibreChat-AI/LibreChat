@@ -19,7 +19,7 @@ LibreChatEmbed.mount({ app, target, getToken })
   │                                                  │
   └─ postMessage: token ───────────────────────────► POST /api/embed/session
                                                        verifies signature, audience,
-                                                       origin, lifetime, single use;
+                                                       lifetime, single use;
                                                        finds or creates the embed user;
                                                        returns a LibreChat access token
                                                        (kept in memory, never a cookie)
@@ -62,7 +62,8 @@ embed:
         - 'http://localhost:3001' # local development
       role: USER # role for new embed users (create a restricted role, see below)
       maxTokenAgeSeconds: 300 # longest lifetime a host token may declare
-      sessionSeconds: 900 # lifetime of the LibreChat token each exchange returns
+      clockToleranceSeconds: 30 # allowed clock drift between host and LibreChat
+      sessionSeconds: 900 # LibreChat token lifetime per exchange (300–3600)
 ```
 
 Restart LibreChat. An app whose secret is missing or shorter than 32 characters is disabled
@@ -203,13 +204,27 @@ Body `{ app, token, origin }`. Success returns `{ token, user, expiresAt }`. Fai
 | 404    | `embed_disabled`          | embedding is off                                        |
 | 409    | `identity_conflict`       | the embed identity's address belongs to another account |
 
-## Notes
+## Security notes
 
-- Enabling embed replaces `X-Frame-Options` with `frame-ancestors 'self' <allowed origins>` on
-  every response. With `CSP_ENABLED`, the origins are added to `CSP_FRAME_ANCESTORS`.
-- `embed.js` is served with `Cross-Origin-Resource-Policy: cross-origin` so host pages can
-  load it.
-- Replay protection uses the shared cache: with Redis, a token is refused on every instance;
-  without it, per process.
+- **Framing.** Enabling embed replaces `X-Frame-Options` with
+  `frame-ancestors 'self' <allowed origins>` on every response (an `X_FRAME_OPTIONS` you set is
+  ignored, with a warning). Allowed origins can frame any LibreChat page, not only the embed
+  entry; list only sites you trust. With `CSP_ENABLED`, the origins are added to
+  `CSP_FRAME_ANCESTORS`.
+- **What proves identity.** Only the token's HS256 signature and `aud` bind a session to a host
+  app. The `origin` in the session request must be one of the app's `allowedOrigins`, but it is
+  supplied by the client, so treat it as a consistency check; `frame-ancestors` is what stops
+  other sites from framing the chat.
+- **Sign-out.** Embed access tokens cannot be revoked early. When a user signs out of the host,
+  their open chat keeps working until its token expires (`sessionSeconds`, 15 minutes by default,
+  at most one hour) and then fails to refresh because the host stops signing tokens.
+- **Replay.** Each `jti` is accepted once. Consumed ids are kept in the shared cache: with Redis
+  this holds across instances; without it, only within one process. Two requests racing with
+  the same token can both pass, so keep token lifetimes short.
+- **Accounts.** Embed accounts are found by app id and host user id. Their placeholder email
+  (`<hmac>@<app>.embed.invalid`) is keyed with the app secret, so it cannot be registered ahead of
+  time to block a host user.
+- `embed.js` is served with `Cross-Origin-Resource-Policy: cross-origin` so host pages can load
+  it.
 - The `embed` section is only read from `librechat.yaml`; admin config overrides cannot change
   it.

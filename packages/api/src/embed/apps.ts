@@ -18,6 +18,7 @@ export interface EmbedApp {
   secret: string;
   role?: string;
   maxTokenAgeSeconds: number;
+  clockToleranceSeconds: number;
   sessionSeconds: number;
 }
 
@@ -55,6 +56,7 @@ export function resolveEmbedApps(embed: EmbedConfigInput | undefined): Map<strin
       secret,
       role: app.role,
       maxTokenAgeSeconds: app.maxTokenAgeSeconds ?? 300,
+      clockToleranceSeconds: app.clockToleranceSeconds ?? 30,
       sessionSeconds: app.sessionSeconds ?? 900,
     });
   }

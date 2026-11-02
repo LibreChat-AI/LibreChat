@@ -41,7 +41,7 @@ const parseState = (app: string | null, origin: string | null): EmbedState | nul
 };
 
 /** The `sessionStorage` subset embed mode needs; access can throw in a third-party frame. */
-type EmbedStorage = Pick<Storage, 'getItem' | 'setItem'>;
+export type EmbedStorage = Pick<Storage, 'getItem' | 'setItem'>;
 
 const readStored = (storage: EmbedStorage): EmbedState | null => {
   try {
@@ -103,15 +103,53 @@ export function resolveEmbedState({
   return { state: readStored(storage) };
 }
 
-const noStorage: EmbedStorage = { getItem: () => null, setItem: () => undefined };
+const WINDOW_NAME_PREFIX = `${STORAGE_KEY}=`;
 
-/** Reading `window.sessionStorage` itself throws where a browser blocks third-party storage. */
-const sessionStorageOrNone = (): EmbedStorage => {
+/**
+ * Keeps the state in `window.name`, which survives reloads and in-frame navigation of this frame
+ * but no other window. It is the fallback where a browser blocks storage in third-party frames,
+ * so a reload (a failed session recovery, the retry button) cannot drop the frame out of embed
+ * mode onto the login form. The value is the app id and host origin, nothing secret.
+ */
+const windowNameStorage: EmbedStorage = {
+  getItem: () =>
+    window.name.startsWith(WINDOW_NAME_PREFIX)
+      ? window.name.slice(WINDOW_NAME_PREFIX.length)
+      : null,
+  setItem: (_key, value) => {
+    window.name = `${WINDOW_NAME_PREFIX}${value}`;
+  },
+};
+
+/** Reads session storage first and writes both, ignoring whichever the browser blocks. */
+export const frameStorage = (): EmbedStorage => {
+  let session: Storage | null = null;
   try {
-    return window.sessionStorage;
+    session = window.sessionStorage;
   } catch {
-    return noStorage;
+    session = null;
   }
+  return {
+    getItem: (key) => {
+      try {
+        const value = session?.getItem(key);
+        if (value) {
+          return value;
+        }
+      } catch {
+        /** Blocked; fall through to the window name. */
+      }
+      return windowNameStorage.getItem(key);
+    },
+    setItem: (key, value) => {
+      try {
+        session?.setItem(key, value);
+      } catch {
+        /** Blocked; the window name still carries the state. */
+      }
+      windowNameStorage.setItem(key, value);
+    },
+  };
 };
 
 let resolved: EmbedState | null | undefined;
@@ -126,7 +164,7 @@ export function getEmbedState(): EmbedState | null {
     basePath: apiBaseUrl(),
     pathname: window.location.pathname,
     search: window.location.search,
-    storage: sessionStorageOrNone(),
+    storage: frameStorage(),
   });
   if (replaceWith) {
     window.history.replaceState(null, '', replaceWith);

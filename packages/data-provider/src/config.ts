@@ -3546,8 +3546,14 @@ export const embedAppSchema = z.object({
   role: z.string().min(1).optional(),
   /** Longest lifetime, in seconds, a host-signed token may declare (`exp - iat`). */
   maxTokenAgeSeconds: z.number().int().min(30).max(3600).default(300),
-  /** Lifetime, in seconds, of the LibreChat access token an embed session receives. */
-  sessionSeconds: z.number().int().min(60).max(86400).default(900),
+  /** Allowed drift, in seconds, between the host's clock and this server's for `iat`/`exp`. */
+  clockToleranceSeconds: z.number().int().min(0).max(300).default(30),
+  /**
+   * Lifetime, in seconds, of the LibreChat access token an embed session receives. It cannot be
+   * revoked early, so a host sign-out takes effect within this window. The floor stays above the
+   * client's two-minute refresh-ahead window, below which every request would re-exchange.
+   */
+  sessionSeconds: z.number().int().min(300).max(3600).default(900),
 });
 
 export const embedSchema = z.object({

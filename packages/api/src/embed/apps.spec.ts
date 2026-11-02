@@ -33,6 +33,7 @@ describe('resolveEmbedApps', () => {
       allowedOrigins: ['https://portal.example.com'],
       role: undefined,
       maxTokenAgeSeconds: 300,
+      clockToleranceSeconds: 30,
       sessionSeconds: 900,
     });
   });

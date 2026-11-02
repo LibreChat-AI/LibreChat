@@ -1,11 +1,29 @@
-import { Button } from '@librechat/client';
+import { Button, Spinner } from '@librechat/client';
 import { apiBaseUrl } from 'librechat-data-provider';
-import { useLocalize } from '~/hooks';
+import { useAuthContext, useLocalize } from '~/hooks';
 
-/** Shown in place of the login page when the host page could not sign the embedded user in. */
+/**
+ * Shown in place of the login page inside a host page. Chat routes send an unauthenticated
+ * visitor here after a short delay, which the host's token round trip can outlast, so this waits
+ * for the sign-in to settle (the auth provider navigates back on success) and only reports a
+ * failure once it has failed.
+ */
 export default function EmbedUnavailable() {
   const localize = useLocalize();
+  const { isAuthReady, isAuthenticated } = useAuthContext();
   const retry = () => window.location.replace(`${apiBaseUrl()}/c/new`);
+
+  if (!isAuthReady || isAuthenticated) {
+    return (
+      <main
+        className="bg-surface-primary flex h-screen items-center justify-center"
+        aria-busy="true"
+        aria-label={localize('com_ui_loading')}
+      >
+        <Spinner />
+      </main>
+    );
+  }
 
   return (
     <main className="bg-surface-primary text-text-primary flex h-screen flex-col items-center justify-center gap-4 p-6 text-center">

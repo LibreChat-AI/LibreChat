@@ -1,8 +1,6 @@
 import jwt from 'jsonwebtoken';
 import type { EmbedApp } from './apps';
 
-/** Allowed drift between the host's clock and this server's when checking `iat` and `exp`. */
-const CLOCK_TOLERANCE_SECONDS = 30;
 const MAX_SUBJECT_LENGTH = 256;
 const MAX_JTI_LENGTH = 128;
 const MAX_NAME_LENGTH = 128;
@@ -48,7 +46,7 @@ export function verifyEmbedToken(token: string, app: EmbedApp): EmbedTokenResult
     claims = jwt.verify(token, app.secret, {
       algorithms: ['HS256'],
       audience: app.id,
-      clockTolerance: CLOCK_TOLERANCE_SECONDS,
+      clockTolerance: app.clockToleranceSeconds,
     }) as EmbedTokenClaims;
   } catch {
     return { ok: false, error: { code: 'invalid_token' } };
@@ -69,7 +67,7 @@ export function verifyEmbedToken(token: string, app: EmbedApp): EmbedTokenResult
   const nowSeconds = Date.now() / 1000;
   if (
     exp - iat > app.maxTokenAgeSeconds ||
-    exp - nowSeconds > app.maxTokenAgeSeconds + CLOCK_TOLERANCE_SECONDS
+    exp - nowSeconds > app.maxTokenAgeSeconds + app.clockToleranceSeconds
   ) {
     return { ok: false, error: { code: 'token_lifetime_too_long' } };
   }

@@ -1,3 +1,4 @@
+import { logger } from '@librechat/data-schemas';
 import type { RequestHandler } from 'express';
 
 /** Path of the loader script host pages include with a cross-origin `<script src>`. */
@@ -24,16 +25,27 @@ export function withEmbedFrameAncestors(
  * Lets the embed apps' origins frame LibreChat, and lets any page load the loader script.
  *
  * `X-Frame-Options` cannot name another origin, so it is replaced by a `frame-ancestors`
- * directive listing this origin and the embed origins; every other page stays unframeable. A
+ * directive listing this origin and the embed origins; every other origin is refused. A
  * full CSP, when enabled, is set later on the shell and carries the same list (see
  * {@link withEmbedFrameAncestors}). The loader is served with `Cross-Origin-Resource-Policy:
  * cross-origin` because the default `same-origin` policy would stop host pages from loading it.
  *
+ * The allowed origins can frame every page, not only the embed entry: the shell is one document
+ * for all routes. An `X_FRAME_OPTIONS` the operator set is overridden, which is logged.
+ *
  * Returns `null` when no embed origin is configured, so the default headers stay untouched.
  */
-export function createEmbedFramingMiddleware(frameAncestors: string[]): RequestHandler | null {
+export function createEmbedFramingMiddleware(
+  frameAncestors: string[],
+  env: NodeJS.ProcessEnv = process.env,
+): RequestHandler | null {
   if (frameAncestors.length === 0) {
     return null;
+  }
+  if (env.X_FRAME_OPTIONS?.trim()) {
+    logger.warn(
+      `[embed] X_FRAME_OPTIONS="${env.X_FRAME_OPTIONS}" is ignored: embed apps are enabled, so framing is limited by frame-ancestors to their allowed origins instead.`,
+    );
   }
   const directive = `frame-ancestors 'self' ${frameAncestors.join(' ')}`;
 

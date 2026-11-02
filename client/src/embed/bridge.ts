@@ -9,6 +9,7 @@ export const EmbedMessage = {
   authFailed: 'librechat:embed:auth-failed',
 } as const;
 
+/** Fixed rather than configured: the first token request runs before the startup config loads. */
 const TOKEN_REQUEST_TIMEOUT_MS = 15_000;
 
 interface HostMessage {
