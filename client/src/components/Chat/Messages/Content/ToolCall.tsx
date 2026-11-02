@@ -1,7 +1,12 @@
 import React, { useMemo, useState, useEffect, useContext, useCallback } from 'react';
 import { Button } from '@librechat/client';
 import { TOOL_ROW_CLASSES } from '@librechat/chat/components';
-import { hasToolParams, resolveToolCallPhase, getToolDisplayLabel } from '@librechat/chat';
+import {
+  hasToolParams,
+  resolveToolCallPhase,
+  getToolDisplayLabel,
+  isToolCallPreparing,
+} from '@librechat/chat';
 import {
   Constants,
   dataService,
@@ -21,9 +26,9 @@ import {
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import { useLocalize, useProgress, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { ToolIcon, getToolIconType, isError, hasRenderableOutput } from './ToolOutput';
-import { isToolCallPreparing, useToolPreparation } from './preparation';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { MCPAppViews } from '~/components/MCPUIResource';
+import { useToolPreparation } from './preparation';
 import { cn, logger, openInNewTab } from '~/utils';
 import { AttachmentGroup } from './Parts';
 import ToolCallInfo from './ToolCallInfo';
