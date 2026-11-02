@@ -152,7 +152,7 @@ export default function ReadFileCall({
                 'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
               )}
             >
-              <CodeWindowHeader language={fileName} code={output} />
+              <CodeWindowHeader language={fileName} label={filePath || undefined} code={output} />
               <pre
                 dir="ltr"
                 className="bg-surface-code-body max-h-[18.75rem] overflow-auto p-4 font-mono text-xs"
