@@ -46,6 +46,7 @@ it('retains the original question and immutable host context without inventing t
   };
   const action = captureRunPendingAction({
     run: {},
+    resumeAgentIds: ['agent'],
     payload: question,
     agents,
     aliases: [],
@@ -62,6 +63,7 @@ it('retains the original question and immutable host context without inventing t
 it('captures the existing opaque native-code target binding without exposing its credentials', () => {
   const action = captureRunPendingAction({
     run: {},
+    resumeAgentIds: ['agent'],
     payload: payload(Constants.BASH_TOOL),
     agents,
     aliases: [],
@@ -76,6 +78,7 @@ it('captures the existing opaque native-code target binding without exposing its
 it('does not bind unrelated tool reviews to a code environment merely present in the graph', () => {
   const action = captureRunPendingAction({
     run: {},
+    resumeAgentIds: ['agent'],
     payload: payload('lookup'),
     agents,
     aliases: [],
@@ -93,6 +96,7 @@ it('retains only aliases for tools actually offered conversation-wide approval',
   ];
   const action = captureRunPendingAction({
     run: {},
+    resumeAgentIds: ['agent'],
     payload: approval,
     agents: [],
     aliases,
@@ -100,4 +104,19 @@ it('retains only aliases for tools actually offered conversation-wide approval',
   });
   expect(action.toolApprovalAliases).toEqual([aliases[0]]);
   expect(toClientPendingAction(action)).not.toHaveProperty('toolApprovalAliases');
+});
+
+it('copies canonical participant identities and removes them from every client projection', () => {
+  const ids = ['child', 'agent', 'child'];
+  const action = captureRunPendingAction({
+    run: {},
+    payload: { type: 'ask_user_question', question: { question: 'Continue?' } },
+    agents,
+    resumeAgentIds: ids,
+    aliases: [],
+    context,
+  });
+  ids.push('replacement');
+  expect(action.resumeAgentIds).toEqual(['agent', 'child']);
+  expect(toClientPendingAction(action)).not.toHaveProperty('resumeAgentIds');
 });
