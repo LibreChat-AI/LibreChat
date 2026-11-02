@@ -43,7 +43,7 @@ import { createPasskeyMethods, type PasskeyMethods } from './passkey';
 import { createUserMethods, DEFAULT_SESSION_EXPIRY, type UserMethods } from './user';
 import { createTokenMethods, type TokenMethods } from './token';
 import { createTokenListMethods, type TokenListMethods } from './tokenList';
-import { createRoleMethods, RoleConflictError } from './role';
+import { createRoleMethods, RoleConflictError, RoleDeletionError } from './role';
 import { createKeyMethods, type KeyMethods } from './key';
 import { createFileStorageMethods } from './fileStorage';
 import { createFileMethods } from './file';
@@ -230,6 +230,7 @@ import { createInsightsMethods, type InsightsMethods } from './insights';
 export {
   runAfterTransaction,
   RoleConflictError,
+  RoleDeletionError,
   MCPAuthorityProofError,
   MAX_MCP_AUTHORITY_TARGETS,
   DEFAULT_REFRESH_TOKEN_EXPIRY,
@@ -260,6 +261,7 @@ export { AUDIT_SCHEMA_VERSION, MAX_AUDIT_EXPORT_ROWS, MAX_AUDIT_LOG_LIMIT, MAX_A
 export { MAX_TOOL_FAVORITES };
 export { AgentTriggerDeliveryConflictError };
 export type { PromptGroupListParams };
+export type { RoleDeletion, RoleDeletionFailure } from './role';
 export { AGENT_OWNER_CONTACT_RESOLVED_FIELD, AgentSortCursorError } from './agent';
 export { createSkillDeletionPersistenceAdapter } from './skillDeletionAdapter';
 export type {
