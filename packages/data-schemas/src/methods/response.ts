@@ -346,7 +346,9 @@ export function createResponseStorage(
     if (!current) return conflict;
     const keys = responseScopeKeys(owner, current.conversationId);
     await initializeResponseScopes(mongoose, keys);
-    const session = await mongoose.startSession();
+    const session = await mongoose.startSession({
+      defaultTransactionOptions: { readPreference: 'primary' },
+    });
     try {
       let result = conflict;
       await session.withTransaction(async () => {
@@ -757,7 +759,9 @@ export function createResponseStorage(
       const prior = await model.findOne(filter).select('conversationId').lean();
       const keys = responseScopeKeys(input, prior?.conversationId ?? input.conversationId);
       await initializeResponseScopes(mongoose, keys);
-      const session = await mongoose.startSession();
+      const session = await mongoose.startSession({
+        defaultTransactionOptions: { readPreference: 'primary' },
+      });
       try {
         let result: ResponseReservationResult | undefined;
         await session.withTransaction(async () => {
