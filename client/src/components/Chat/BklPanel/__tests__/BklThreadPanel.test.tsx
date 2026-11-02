@@ -41,7 +41,7 @@ jest.mock('~/components/Projects/AddToProjectPopover', () => ({
 
 const CONVO_ID = 'conv-1';
 
-function makeSource(fileName: string, docId?: string, matterUid?: string) {
+function makeSource(fileName: string, docId?: string, matterUid?: string, imanageUrl?: string) {
   return {
     document: [`${fileName} 청크 본문`],
     metadata: [
@@ -49,10 +49,13 @@ function makeSource(fileName: string, docId?: string, matterUid?: string) {
         name: `『${fileName}』- [n]`,
         ...(docId ? { doc_id: docId } : {}),
         ...(matterUid ? { matter_uid: matterUid } : {}),
+        ...(imanageUrl ? { imanage_url: imanageUrl } : {}),
       },
     ],
   };
 }
+
+const IMANAGE_A = 'https://imanage.example/doc-a';
 
 function renderPanel() {
   const messages: TMessage[] = [
@@ -60,15 +63,17 @@ function renderPanel() {
       messageId: 'm-1',
       conversationId: CONVO_ID,
       isCreatedByUser: false,
-      text: '근거는 [1], [2], [3] 입니다',
+      text: '근거는 [1], [2], [3], [4] 입니다',
     } as TMessage,
   ];
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   (window as any).__bklSources = {
     'm-1': [
-      makeSource('계약서.pdf', 'doc-a', 'M-1'),
+      makeSource('계약서.pdf', 'doc-a', 'M-1', IMANAGE_A),
       makeSource('의견서.docx', 'doc-b'),
       makeSource('업로드.pdf'),
+      // 같은 문서의 두 번째 청크 — 링크 없이 저장된 경우 (파일 링크로 채워져야 함)
+      makeSource('계약서.pdf', 'doc-a', 'M-1'),
     ],
   };
   const client = new QueryClient({
@@ -159,5 +164,23 @@ describe('BklThreadPanel multi-select', () => {
 
     fireEvent.click(screen.getByText('전체 해제'));
     expect(screen.queryByText('프로젝트에 담기')).toBeNull();
+  });
+});
+
+describe('BklThreadPanel chunk iManage link', () => {
+  it('shows a link button per cited chunk, filled from the file when the chunk lacks one', () => {
+    const openSpy = jest.spyOn(window, 'open').mockImplementation(() => null);
+    renderPanel();
+
+    // 계약서.pdf: 청크 [1] 은 자체 링크, 청크 [4] 는 파일 링크 폴백 → 둘 다 버튼
+    const links = screen.getAllByLabelText('계약서.pdf iManage 원문 열기');
+    expect(links).toHaveLength(2);
+    // 링크가 전혀 없는 문서는 버튼 없음
+    expect(screen.queryByLabelText('의견서.docx iManage 원문 열기')).toBeNull();
+    expect(screen.queryByLabelText('업로드.pdf iManage 원문 열기')).toBeNull();
+
+    fireEvent.click(links[1]);
+    expect(openSpy).toHaveBeenCalledWith(IMANAGE_A, '_blank', 'noopener');
+    openSpy.mockRestore();
   });
 });

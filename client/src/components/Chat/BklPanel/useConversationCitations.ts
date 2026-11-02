@@ -103,6 +103,11 @@ export type CitedChunk = {
   n: number;
   source: BklSource;
   fileName: string;
+  /**
+   * iManage 원문 링크. 청크 자체 메타에 없으면 같은 파일의 다른 청크에서
+   * 받아온 값으로 채운다 (언급된 파일 행과 같은 링크를 가리키도록).
+   */
+  imanageUrl: string | null;
 };
 
 export type CitedTurn = {
@@ -215,6 +220,8 @@ export function useConversationCitations(conversationId: string | null | undefin
 
     const turns: CitedTurn[] = [];
     const fileMap = new Map<string, MentionedFile>();
+    // 청크 → 파일 키 (turns 평탄화 순서와 동일). 링크 없는 청크를 파일 링크로 채울 때 쓴다.
+    const chunkFileKeys: string[] = [];
 
     for (const msg of (messages ?? []) as TMessage[]) {
       if (msg.isCreatedByUser || !msg.messageId) continue;
@@ -228,10 +235,16 @@ export function useConversationCitations(conversationId: string | null | undefin
         const source = sources[n - 1];
         if (!source) continue;
         const fileName = extractFileName(source);
-        chunks.push({ messageId: msg.messageId, n, source, fileName });
-
         const docId = sourceDocId(source);
         const key = docId ?? fileName;
+        chunks.push({
+          messageId: msg.messageId,
+          n,
+          source,
+          fileName,
+          imanageUrl: sourceImanageUrl(source),
+        });
+        chunkFileKeys.push(key);
         const existing = fileMap.get(key);
         if (existing) {
           existing.count += 1;
@@ -251,6 +264,18 @@ export function useConversationCitations(conversationId: string | null | undefin
       }
       if (chunks.length > 0) {
         turns.push({ messageId: msg.messageId, index: turns.length + 1, chunks });
+      }
+    }
+
+    // 파일 단위로 모은 링크를 링크 없는 청크에 되돌려 채운다 — 같은 문서의
+    // 청크 중 일부만 imanage_url 을 갖고 저장된 경우가 있다.
+    let i = 0;
+    for (const turn of turns) {
+      for (const chunk of turn.chunks) {
+        if (!chunk.imanageUrl) {
+          chunk.imanageUrl = fileMap.get(chunkFileKeys[i])?.imanageUrl ?? null;
+        }
+        i += 1;
       }
     }
 

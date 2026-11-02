@@ -331,21 +331,42 @@ function TurnGroup({
       {turn.chunks.map((chunk) => {
         const pageInfo = chunk.source.metadata?.[0]?.page_info;
         return (
-          <button
+          <div
             key={`${chunk.messageId}-${chunk.n}`}
-            type="button"
-            onClick={() => onOpenChunk(chunk.messageId, chunk.n)}
-            title={chunk.fileName}
-            className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-sm hover:bg-surface-hover"
+            className="group/chunk flex w-full items-center pl-3 pr-1 text-sm hover:bg-surface-hover"
           >
-            <span className="shrink-0 rounded bg-surface-secondary px-1.5 py-0.5 text-[11px] font-semibold text-text-secondary">
-              {chunk.n}
-            </span>
-            <span className="min-w-0 flex-1 truncate text-text-primary">{chunk.fileName}</span>
-            {pageInfo ? (
-              <span className="shrink-0 text-[11px] text-text-tertiary">{String(pageInfo)}</span>
-            ) : null}
-          </button>
+            <button
+              type="button"
+              onClick={() => onOpenChunk(chunk.messageId, chunk.n)}
+              title={chunk.fileName}
+              className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left"
+            >
+              <span className="shrink-0 rounded bg-surface-secondary px-1.5 py-0.5 text-[11px] font-semibold text-text-secondary">
+                {chunk.n}
+              </span>
+              <span className="min-w-0 flex-1 truncate text-text-primary">{chunk.fileName}</span>
+              {pageInfo ? (
+                <span className="shrink-0 text-[11px] text-text-tertiary">{String(pageInfo)}</span>
+              ) : null}
+            </button>
+            {/* 파일 행과 같은 iManage 원문 열기 — 행 클릭(청크 뷰)과 분리된 별도 버튼 */}
+            {chunk.imanageUrl ? (
+              <button
+                type="button"
+                aria-label={`${chunk.fileName} iManage 원문 열기`}
+                title="iManage 원문 열기"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  window.open(chunk.imanageUrl as string, '_blank', 'noopener');
+                }}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-text-tertiary hover:bg-surface-tertiary hover:text-text-primary"
+              >
+                <ExternalLink size={13} aria-hidden="true" />
+              </button>
+            ) : (
+              <span className="h-7 w-7 shrink-0" aria-hidden="true" />
+            )}
+          </div>
         );
       })}
     </div>
