@@ -275,7 +275,7 @@ export default function BashCall({
                 >
                   <pre
                     dir="ltr"
-                    className="px-3 py-2.5 font-mono text-xs break-words whitespace-pre-wrap"
+                    className="py-2.5 ps-3 pe-10 font-mono text-xs break-words whitespace-pre-wrap"
                   >
                     <span className="text-text-tertiary select-none" aria-hidden="true">
                       {'$ '}
