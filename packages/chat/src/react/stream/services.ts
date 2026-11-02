@@ -1,5 +1,7 @@
 import type {
   ImageFile,
+  ChatTransport,
+  ChatErrorData,
   TSubmission,
   TAttachment,
   PartMetadata,
@@ -133,6 +135,25 @@ export type FileServices = {
 export type EventTransportServices = {
   /** Stops an Assistants run, which has no resumable generation to address. */
   abortRun: (request: AbortRunRequest) => Promise<Response>;
+};
+
+/**
+ * What the Assistants stream needs beyond the event services: it posts its own turn, so it owns
+ * the signed-in transport, the balance refresh after a turn and the terms check on a refusal.
+ */
+export type LegacyStreamServices = {
+  /** The signed-in user's stream transport. */
+  transport: ChatTransport;
+  /** Refetches the user's balance when the deployment tracks one. */
+  refreshBalance: () => void;
+  /** Reopens the terms dialog when an error is a terms refusal, returning the text to show. */
+  reopenTermsOnRefusal: (data: ChatErrorData | null | undefined) => string | null;
+  /** Clears the composer drafts a finished send leaves behind. */
+  clearComposerDrafts: (
+    runIndex: number,
+    conversationId?: string | null,
+    options?: { includeNewChatDraft?: boolean },
+  ) => void;
 };
 
 /** The pane a set of event services writes for. */

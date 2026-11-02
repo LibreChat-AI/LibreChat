@@ -40,6 +40,7 @@ export type {
   DraftServices,
   EventServices,
   FileServices,
+  LegacyStreamServices,
   TitleServices,
   FocusServices,
   AbortRunRequest,
@@ -55,3 +56,4 @@ export { useEventHandlers } from './events/handlers';
 export type { EventHandlers } from './events/handlers';
 export type { EventHandlerParams } from './events/context';
 export type { TSyncData, TTitleEvent } from './events/opening';
+export { useLegacyStream } from './legacy';

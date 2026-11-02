@@ -1,21 +1,7 @@
 import { useEffect, useState } from 'react';
 import { v4 } from 'uuid';
 import { useStore, useSetAtom } from 'jotai';
-import { useQueryClient } from '@tanstack/react-query';
 import { StepEvents, createPayload, removeNullishValues } from 'librechat-data-provider';
-import {
-  startedAsNewConversation,
-  buildCreatedInitialResponse,
-  applyPendingAction,
-  findPendingActionMessageIndex,
-} from '@librechat/chat';
-import {
-  useUsageHandler,
-  useEventHandlers,
-  abortScrollFamily,
-  showStopButtonByIndex,
-  pendingApprovalActionFamily,
-} from '@librechat/chat/react';
 import type {
   Agents,
   TMessage,
@@ -27,39 +13,42 @@ import type {
   ChatFinalFrame,
   EventSubmission,
 } from 'librechat-data-provider';
-import type { EventHandlerParams } from '@librechat/chat/react';
-import type { TResData, TFinalResData } from '~/common';
-import { useChatTransport } from '~/Providers/ChatTransportContext';
-import { useChatSettings } from '~/Providers/ChatSettingsContext';
-import { reopenTermsOnRefusal } from '~/utils/terms';
-import { useGetUserBalance } from '~/data-provider';
-import { clearComposerDrafts } from '~/utils';
-import useLocalize from '~/hooks/useLocalize';
+import type { TResData, TFinalResData } from '../../core';
+import type { EventHandlers } from './events/handlers';
+import type { StreamChat } from './host';
+import {
+  applyPendingAction,
+  startedAsNewConversation,
+  buildCreatedInitialResponse,
+  findPendingActionMessageIndex,
+} from '../../core';
+import { abortScrollFamily, showStopButtonByIndex } from '../generation';
+import { pendingApprovalActionFamily } from '../approval';
+import { useEventHandlers } from './events/handlers';
 import { activeRunFamily } from './atoms';
+import { useUsageHandler } from './usage';
+import { useStreamHost } from './host';
 
-type ChatHelpers = Pick<
-  EventHandlerParams,
-  'setMessages' | 'getMessages' | 'setConversation' | 'setIsSubmitting' | 'newConversation'
->;
-
-type EventHandlers = ReturnType<typeof useEventHandlers>;
 type TSyncData = Parameters<EventHandlers['syncHandler']>[0];
 /** The handlers predate the wire types and accept a narrower payload; these
  * frames reached them unchanged before the transport existed. */
 type TStepEvent = Parameters<EventHandlers['stepHandler']>[0];
 
-export default function useSSE(
+/**
+ * Streams a turn that carries its own response (Assistants) for `submission`, or nothing when it
+ * is `null`. The host supplies the signed-in transport, the balance refresh and the terms check.
+ */
+export function useLegacyStream(
   submission: TSubmission | null,
-  chatHelpers: ChatHelpers,
+  chatHelpers: StreamChat,
   isAddedRequest = false,
   runIndex = 0,
-) {
+): void {
   const jotaiStore = useStore();
   const setActiveRunId = useSetAtom(activeRunFamily(runIndex));
 
-  const { auth, config } = useChatSettings();
-  const { token, isAuthenticated = false } = auth;
-  const transport = useChatTransport();
+  const { transport, refreshBalance, reopenTermsOnRefusal, clearComposerDrafts } =
+    useStreamHost().useLegacyServices();
   const [completed, setCompleted] = useState(new Set());
   const setAbortScroll = useSetAtom(abortScrollFamily(runIndex));
   const setShowStopButton = useSetAtom(showStopButtonByIndex(runIndex));
@@ -93,10 +82,6 @@ export default function useSSE(
     setShowStopButton,
   });
 
-  const queryClient = useQueryClient();
-  const localize = useLocalize();
-  const { balanceEnabled = false } = config;
-  const balanceQuery = useGetUserBalance({ enabled: isAuthenticated && balanceEnabled });
   const {
     bindResponse,
     contextHandler,
@@ -151,7 +136,7 @@ export default function useSSE(
         setIsSubmitting(false);
         setShowStopButton(false);
       }
-      balanceEnabled && balanceQuery.refetch();
+      refreshBalance();
       console.log('final', data);
     };
 
@@ -218,8 +203,8 @@ export default function useSSE(
 
     const handleError = (data: ChatErrorData | null | undefined) => {
       console.log('error in server stream.');
-      const termsRefused = reopenTermsOnRefusal(queryClient, data);
-      balanceEnabled && balanceQuery.refetch();
+      const termsRefusal = reopenTermsOnRefusal(data);
+      refreshBalance();
       resetLive(currentSubmission);
       if (data === undefined) {
         setIsSubmitting(false);
@@ -229,9 +214,10 @@ export default function useSSE(
        * the last queued tokens must land before it is synthesized. */
       flushPendingDeltas();
       errorHandler({
-        data: termsRefused
-          ? ({ text: localize('com_error_terms_not_accepted') } as unknown as TResData)
-          : (data as TResData | undefined),
+        data:
+          termsRefusal != null
+            ? ({ text: termsRefusal } as unknown as TResData)
+            : (data as TResData | undefined),
         submission: currentSubmission,
       });
     };
@@ -324,9 +310,7 @@ export default function useSSE(
 
     const controller = new AbortController();
     setIsSubmitting(true);
-    transport
-      .stream({ token })
-      .send({ server: payloadData.server, payload }, { signal: controller.signal, onEvent });
+    transport.send({ server: payloadData.server, payload }, { signal: controller.signal, onEvent });
 
     return () => controller.abort();
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -164,6 +164,22 @@ function assistantReply(thread) {
   return marker ? `E2E assistant reply ${marker}` : DEFAULT_REPLY;
 }
 
+/** The latest user text in a thread, where the e2e prompt markers live. */
+function latestUserText(thread) {
+  const latestUserMessage = [...thread.messages]
+    .reverse()
+    .find((message) => message.role === 'user');
+  return (
+    latestUserMessage?.content
+      ?.filter((part) => part?.type === 'text')
+      .map((part) => part.text?.value ?? '')
+      .join('\n') ?? ''
+  );
+}
+
+/** Open slow runs by id, so a cancel request can end the stream it belongs to. */
+const slowRuns = new Map();
+
 function runObject({ id, threadId, assistant, status, usage = null }) {
   const timestamp = now();
   return {
@@ -300,6 +316,77 @@ function sendAssistantStream(res, { assistant, thread }) {
   sendEvent('thread.run.completed', completedRun);
   res.write('data: [DONE]\n\n');
   res.end();
+}
+
+/**
+ * `E2E_ASSISTANT_SLOW` streams one delta every 250ms for about thirty seconds, so a test can stop
+ * the run mid-stream. The run stays `in_progress` until it finishes or is cancelled.
+ */
+function sendSlowAssistantStream(res, { assistant, thread }) {
+  const runId = createId('run');
+  const stepId = createId('step');
+  const message = createMessage({
+    threadId: thread.id,
+    role: 'assistant',
+    content: '',
+    assistantId: assistant.id,
+    runId,
+  });
+  const run = runObject({ id: runId, threadId: thread.id, assistant, status: 'in_progress' });
+  runs.set(runId, run);
+  thread.messages.push(message);
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+  const sendEvent = (event, data) => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+  sendEvent('thread.run.created', run);
+  sendEvent(
+    'thread.run.step.created',
+    runStep({
+      id: stepId,
+      runId,
+      threadId: thread.id,
+      assistantId: assistant.id,
+      messageId: message.id,
+      status: 'in_progress',
+    }),
+  );
+  sendEvent('thread.message.created', { ...message, status: 'in_progress', completed_at: null });
+  let index = 0;
+  const finish = (status) => {
+    clearInterval(timer);
+    slowRuns.delete(runId);
+    const settled = { ...run, status, cancelled_at: status === 'cancelled' ? now() : null };
+    runs.set(runId, settled);
+    sendEvent(status === 'cancelled' ? 'thread.run.cancelled' : 'thread.run.completed', settled);
+    res.write('data: [DONE]\n\n');
+    res.end();
+  };
+  const timer = setInterval(() => {
+    index += 1;
+    const value = `achunk-${String(index).padStart(3, '0')} `;
+    message.content[0].text.value += value;
+    sendEvent('thread.message.delta', {
+      id: message.id,
+      object: 'thread.message.delta',
+      delta: { content: [{ index: 0, type: 'text', text: { value, annotations: [] } }] },
+    });
+    if (index >= 120) {
+      finish('completed');
+    }
+  }, 250);
+  slowRuns.set(runId, { finish });
+  res.on('close', () => {
+    if (slowRuns.has(runId)) {
+      clearInterval(timer);
+      slowRuns.delete(runId);
+    }
+  });
 }
 
 function recordRequest(req, url, body) {
@@ -488,7 +575,34 @@ const server = http.createServer(async (req, res) => {
         sendError(res, 400, 'Only streamed runs are supported by the e2e fixture');
         return;
       }
+      const prompt = latestUserText(thread);
+      if (prompt.includes('E2E_ASSISTANT_SLOW')) {
+        sendSlowAssistantStream(res, { assistant, thread });
+        return;
+      }
       sendAssistantStream(res, { assistant, thread });
+      return;
+    }
+
+    const cancelRunPath = pathMatch(
+      url.pathname,
+      /^\/v1\/threads\/([^/]+)\/runs\/([^/]+)\/cancel$/,
+    );
+    if (cancelRunPath && req.method === 'POST') {
+      const [threadId, runId] = cancelRunPath;
+      const run = runs.get(runId);
+      if (!run || run.thread_id !== threadId) {
+        sendError(res, 404, `No run found with id '${runId}'`);
+        return;
+      }
+      const slow = slowRuns.get(runId);
+      const cancelled = { ...run, status: 'cancelled', cancelled_at: now() };
+      if (slow) {
+        slow.finish('cancelled');
+      } else {
+        runs.set(runId, cancelled);
+      }
+      sendJson(res, 200, runs.get(runId) ?? cancelled);
       return;
     }
 

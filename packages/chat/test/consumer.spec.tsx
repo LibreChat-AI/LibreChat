@@ -582,7 +582,7 @@ describe('a consumer rendering subagent activity', () => {
   };
   const streamHost: StreamHost = {
     useResumableServices: unused,
-    useLegacyStream: unused,
+    useLegacyServices: unused,
     useTransport: () => null,
     useQueuedTurnReceipts: unused,
     useActiveJobs: unused,
