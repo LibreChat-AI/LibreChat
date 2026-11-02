@@ -523,7 +523,7 @@ describe('WebSearch', () => {
       expect(screen.getByText('(812)')).toBeInTheDocument();
     });
 
-    it('uses standard tool-row spacing and reveals its chevron on hover or focus', () => {
+    it('uses standard tool-row spacing and always shows its chevron', () => {
       const searchResults = makeSearchResults({
         0: { organic: [makeSource('https://example.com', 'Example')] },
       });
@@ -536,11 +536,7 @@ describe('WebSearch', () => {
       expect(button).not.toHaveClass('py-1');
       expect(button).not.toHaveClass('transition-colors');
       const chevron = screen.getByTestId('chevron-icon');
-      expect(chevron).toHaveClass(
-        'opacity-0',
-        'group-hover/disclosure:opacity-100',
-        'group-focus-within/disclosure:opacity-100',
-      );
+      expect(chevron).not.toHaveClass('opacity-0');
       expect(chevron).toHaveClass('transition-transform');
       expect(chevron.className).not.toContain('transition-opacity');
     });

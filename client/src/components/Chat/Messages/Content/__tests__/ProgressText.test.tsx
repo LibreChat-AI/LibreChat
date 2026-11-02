@@ -156,7 +156,7 @@ describe('ProgressText duration', () => {
 });
 
 describe('ProgressText disclosure', () => {
-  it('shows an expandable chevron only on hover or focus', () => {
+  it('shows an expandable chevron at all times', () => {
     const onClick = jest.fn();
     renderProgressText({ hasInput: true, onClick });
 
@@ -164,11 +164,7 @@ describe('ProgressText disclosure', () => {
     const chevron = button.querySelector('svg');
 
     expect(button).toHaveClass('group/disclosure');
-    expect(chevron).toHaveClass(
-      'opacity-0',
-      'group-hover/disclosure:opacity-100',
-      'group-focus-within/disclosure:opacity-100',
-    );
+    expect(chevron).not.toHaveClass('opacity-0');
     expect(chevron).toHaveClass('transition-transform');
     expect(chevron?.getAttribute('class')).not.toContain('transition-opacity');
 

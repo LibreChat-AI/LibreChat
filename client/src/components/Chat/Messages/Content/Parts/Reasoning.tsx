@@ -425,8 +425,10 @@ export const ReasoningCompact = memo(
               onClick={handleCopy}
               label={localize('com_ui_copy_thoughts_to_clipboard')}
               copiedLabel={localize('com_ui_copied_to_clipboard')}
+              /** Laid over the row's end, inside the chevron, so the chevron
+               *  lines up with every tool row's instead of moving left of it. */
               className={cn(
-                'shrink-0 opacity-0 transition-opacity',
+                'absolute end-6 shrink-0 opacity-0 transition-opacity',
                 'group-focus-within/reasoning-compact:opacity-100 group-hover/reasoning-compact:opacity-100',
                 'focus-visible:opacity-100',
               )}

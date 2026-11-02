@@ -36,17 +36,13 @@ jest.mock('lucide-react', () => ({
 }));
 
 describe('ReasoningCompact', () => {
-  it('reveals its own Thoughts chevron instantly on row hover or focus', () => {
+  it('always shows its own Thoughts chevron', () => {
     render(<ReasoningCompact reasoning="A useful thought" label="Thoughts" showThinking={false} />);
 
     const button = screen.getByRole('button', { name: 'Thoughts' });
     const chevron = screen.getByTestId('thoughts-chevron');
     expect(button).toHaveClass('group/disclosure');
-    expect(chevron).toHaveClass(
-      'opacity-0',
-      'group-hover/disclosure:opacity-100',
-      'group-focus-within/disclosure:opacity-100',
-    );
+    expect(chevron).not.toHaveClass('opacity-0');
     expect(chevron).toHaveClass('transition-transform');
     expect(chevron.className).not.toContain('transition-opacity');
   });
