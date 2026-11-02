@@ -40,13 +40,13 @@ describe('OpenAI image toolkit size schema', () => {
 describe('getImageGenClientOptions', () => {
   const originalEnv = process.env;
   const transport = (ms: number) => ({ headersTimeout: ms, bodyTimeout: ms });
-  const defaultMs = DEFAULT_OUTBOUND_TIMEOUTS_MS.imageGenMs;
+  const defaultMs = DEFAULT_OUTBOUND_TIMEOUTS_MS.imageGenerationMs;
 
   afterEach(() => {
     process.env = originalEnv;
   });
 
-  it('defaults to the imageGenMs budget, with matching undici timeouts on the dispatcher', () => {
+  it('defaults to the imageGenerationMs budget, with matching undici timeouts on the dispatcher', () => {
     process.env = {};
     const options = getImageGenClientOptions();
     expect(options.timeout).toBe(defaultMs);
@@ -54,9 +54,9 @@ describe('getImageGenClientOptions', () => {
     expect(options.fetchOptions.dispatcher).toBe(getDirectDispatcher(transport(defaultMs)));
   });
 
-  it('uses timeouts.imageGenMs and IMAGE_GEN_OAI_MAX_RETRIES when set', () => {
+  it('uses timeouts.imageGenerationMs and IMAGE_GEN_OAI_MAX_RETRIES when set', () => {
     process.env = { IMAGE_GEN_OAI_MAX_RETRIES: '0' };
-    const options = getImageGenClientOptions({ timeouts: { imageGenMs: 1800000 } });
+    const options = getImageGenClientOptions({ timeouts: { imageGenerationMs: 1800000 } });
     expect(options).toMatchObject({ timeout: 1800000, maxRetries: 0 });
     expect(options.fetchOptions.dispatcher).toBe(getDirectDispatcher(transport(1800000)));
   });

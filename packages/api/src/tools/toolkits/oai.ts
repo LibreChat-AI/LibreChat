@@ -172,11 +172,11 @@ type ImageGenClientOptions = {
   fetchOptions: { dispatcher: Dispatcher };
 };
 
-/** OpenAI client options for `image_gen_oai`, bounded by `timeouts.imageGenMs`. */
+/** OpenAI client options for `image_gen_oai`, bounded by `timeouts.imageGenerationMs`. */
 export function getImageGenClientOptions(
   appConfig?: Pick<AppConfig, 'timeouts'> | null,
 ): ImageGenClientOptions {
-  const timeout = getOutboundTimeoutMs(appConfig, 'imageGenMs');
+  const timeout = getOutboundTimeoutMs(appConfig, 'imageGenerationMs');
   /** undici's default 300 s headers/body timeouts would otherwise end a longer request first */
   const transport = { headersTimeout: timeout, bodyTimeout: timeout };
   const options: ImageGenClientOptions = {
