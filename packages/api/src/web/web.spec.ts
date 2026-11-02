@@ -3481,7 +3481,10 @@ describe('web.ts', () => {
         [SearchCategories.SCRAPERS, AuthType.SYSTEM_DEFINED],
         [SearchCategories.RERANKERS, AuthType.SYSTEM_DEFINED],
       ]);
-      expect(loadAuthValues).not.toHaveBeenCalled();
+      // The optional Cohere URL defaults to the `COHERE_API_URL` environment
+      // placeholder. Its optional lookup is expected; literal credential values
+      // above must not be fetched from the user's saved auth store.
+      expect(requestedFields(loadAuthValues)).toEqual(['COHERE_API_URL']);
     });
 
     it('keeps an environment-resolved value on its own key beside a literal sibling', async () => {
