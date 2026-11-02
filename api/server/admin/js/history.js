@@ -146,7 +146,10 @@
       return;
     }
     try {
-      const j = await A.getJSON('/sessions/messages?conversation_id=' + encodeURIComponent(row.conversation_id));
+      const [j, sources] = await Promise.all([
+        A.getJSON('/sessions/messages?conversation_id=' + encodeURIComponent(row.conversation_id)),
+        A.fetchConversationSources(row.conversation_id),
+      ]);
       const msgs = j.data || [];
       let idx = msgs.findIndex((m) => m.messageId && m.messageId === row.message_id);
       if (idx < 0 && row.created_at) {
@@ -161,7 +164,7 @@
       }
       box.innerHTML = `
         <div class="history-answer-label">AI 답변</div>
-        <div class="msg-bubble assistant">${A.escHtml(answer.text || '(내용 없음)')}</div>
+        <div class="msg-bubble assistant">${A.renderAnswer(answer.text || '(내용 없음)', sources.lookup(answer))}</div>
         <div class="msg-meta">${A.fmtKST(answer.createdAt)}${answer.model ? ' · ' + A.escHtml(answer.model) : ''}</div>`;
     } catch (e) {
       if (box.isConnected) box.innerHTML = '<div class="err-text">답변 로드 실패: ' + A.escHtml(e.message) + '</div>';

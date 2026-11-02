@@ -59,6 +59,36 @@ router.use('/analytics', async (req, res) => {
 });
 
 /**
+ * 대화 출처 프록시: /admin-api/sources/:conversationId → ai-api /v1/sources/by-conversation/:id
+ *
+ * 사용자 탭·질의 이력에서 답변의 [N] 인용을 청크 본문으로 펼쳐 보기 위한 것.
+ * 채팅 우측 패널과 같은 데이터(bkl_chat_sources). 어드민은 모든 사건을 봐야
+ * 하므로 X-LC-User-Role: ADMIN 으로 BIMS 사건 ACL 을 bypass 한다 — 이 라우터는
+ * requireAdminToken 뒤에 있어 어드민 토큰 소지자만 도달한다.
+ */
+router.get('/sources/:conversationId', async (req, res) => {
+  const baseUrl = process.env.BKL_API_BASE_URL || 'http://bkl-api:8000';
+  const targetUrl = `${baseUrl}/v1/sources/by-conversation/${encodeURIComponent(req.params.conversationId)}`;
+  const headers = { Accept: 'application/json', 'X-LC-User-Role': 'ADMIN' };
+  if (process.env.IRE_API_TOKEN) {
+    headers.Authorization = `Bearer ${process.env.IRE_API_TOKEN}`;
+  }
+  try {
+    const response = await axios({
+      method: 'GET',
+      url: targetUrl,
+      headers,
+      timeout: 60_000,
+      validateStatus: () => true,
+    });
+    res.status(response.status).json(response.data);
+  } catch (err) {
+    logger.error('[bklAdmin/sources] upstream error', err?.message || err);
+    res.status(502).json({ error: 'sources upstream error', detail: String(err?.message || err) });
+  }
+});
+
+/**
  * FastAPI 데이터 삭제 프록시: /admin-api/data/* → ai-api /admin/data/*
  * (매터/문서 preview·삭제·검색·감사 로그 — ADMIN_DATA_DELETE_SPEC).
  * OpenSearch _delete_by_query 가 느릴 수 있어 timeout 을 넉넉히 잡는다.

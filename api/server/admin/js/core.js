@@ -139,8 +139,32 @@
         .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
         .replace(/(^|[^*])\*([^*\s][^*]*)\*/g, '$1<em>$2</em>')
         .replace(/`([^`]+)`/g, '<code>$1</code>');
+    // 표: `|`로 시작하는 연속 줄. 두 번째 줄이 `|---|` 구분선이면 첫 줄을 헤더로.
+    const flushTable = (rows) => {
+      if (!rows.length) return;
+      const cells = (r) => r.replace(/^\s*\|/, '').replace(/\|\s*$/, '').split('|').map((c) => inline(c.trim()));
+      const isSep = (r) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(r);
+      let head = null;
+      let body = rows;
+      if (rows.length >= 2 && isSep(rows[1])) {
+        head = cells(rows[0]);
+        body = rows.slice(2);
+      }
+      const html = ['<table class="md-table">'];
+      if (head) html.push('<thead><tr>' + head.map((c) => `<th>${c}</th>`).join('') + '</tr></thead>');
+      html.push('<tbody>' + body.filter((r) => !isSep(r)).map((r) => '<tr>' + cells(r).map((c) => `<td>${c}</td>`).join('') + '</tr>').join('') + '</tbody>');
+      html.push('</table>');
+      out.push(html.join(''));
+    };
+    let tableRows = [];
     for (const raw of lines) {
       const line = raw.trimEnd();
+      if (/^\s*\|.*\|\s*$/.test(line)) {
+        closeList();
+        tableRows.push(line);
+        continue;
+      }
+      if (tableRows.length) { flushTable(tableRows); tableRows = []; }
       const h = line.match(/^(#{1,4})\s+(.*)$/);
       const li = line.match(/^\s*[-*•]\s+(.*)$/);
       if (h) {
@@ -160,8 +184,180 @@
         out.push(`<p>${inline(line)}</p>`);
       }
     }
+    if (tableRows.length) flushTable(tableRows);
     closeList();
     return out.join('');
+  }
+
+  /* ── 답변 렌더링: 인용 칩 + 『파일명』 링크 + 출처 모달 ───────── */
+  /**
+   * 채팅 우측 패널과 같은 출처 데이터(bkl_chat_sources.sources, 인용번호 순)를
+   * 받아 답변 본문을 그린다.
+   *  - `[N]` / `[[N]](url)` / `[1, 2]` → 번호 칩. 클릭하면 청크 모달.
+   *  - 『파일명』 → 표시명(`_숫자`·`.md` 제거) + 출처에 iManage URL 이 있으면 링크.
+   * 출처가 없는 답변(옛 로그·삭제된 대화)은 칩을 비활성으로 그린다.
+   * 출처 배열은 answerSources 레지스트리에 키로 보관하고 칩은 data-key 로 가리킨다.
+   */
+  const answerSources = new Map(); // key -> sources[]
+  let answerSeq = 0;
+
+  function sourceMeta(src) {
+    const m = src && Array.isArray(src.metadata) ? src.metadata[0] : null;
+    return m && typeof m === 'object' ? m : {};
+  }
+  function sourceDisplayName(src) {
+    const meta = sourceMeta(src);
+    if (meta.display_name) return String(meta.display_name);
+    const raw = String(meta.name ?? meta.file_name ?? src?.source?.name ?? '').normalize('NFC');
+    const m = raw.match(/^『(.+?)』/);
+    return displayFileName(m ? m[1] : raw, meta.imanage_document_number);
+  }
+  function sourceRawName(src) {
+    const meta = sourceMeta(src);
+    const raw = String(meta.name ?? meta.file_name ?? src?.source?.name ?? '').normalize('NFC');
+    const m = raw.match(/^『(.+?)』/);
+    return (m ? m[1] : raw).trim();
+  }
+  function sourceImanageUrl(src) {
+    const meta = sourceMeta(src);
+    const c = [src?.source?.imanage_url, src?.source?.imanage_preview_url, meta.imanage_url, meta.imanage_preview_url];
+    return c.find((u) => typeof u === 'string' && /^https?:\/\//i.test(u)) || null;
+  }
+  const nameKey = (s) => String(s || '').normalize('NFC').trim().replace(/\.(?:md|markdown)$/i, '').toLowerCase();
+
+  function renderAnswer(text, sources) {
+    const list = Array.isArray(sources) ? sources : [];
+    const key = 'a' + (++answerSeq);
+    if (list.length) answerSources.set(key, list);
+
+    // 파일명 → (표시명, URL) 색인 — 같은 이름이면 상위 랭크(먼저 나온) 출처
+    const byName = new Map();
+    for (const src of list) {
+      const raw = sourceRawName(src);
+      if (!raw) continue;
+      const k = nameKey(raw);
+      const cur = byName.get(k);
+      if (!cur) byName.set(k, { display: sourceDisplayName(src), url: sourceImanageUrl(src) });
+      else if (!cur.url) cur.url = sourceImanageUrl(src); // 같은 파일의 다른 청크에만 링크가 있을 때
+    }
+
+    const chip = (n) => {
+      const src = list[n - 1];
+      if (!src) return `<span class="cite-chip disabled" title="출처 없음">${n}</span>`;
+      const title = escHtml(sourceDisplayName(src));
+      return `<button type="button" class="cite-chip" data-key="${key}" data-n="${n}" title="${title}">${n}</button>`;
+    };
+
+    let html = renderMarkdown(text);
+    // [[N]](url) — 저장된 스트리밍 변환 포맷 (escHtml 은 괄호·대괄호를 건드리지 않는다)
+    html = html.replace(/\[\[(\d+)\]\]\([^)]*\)/g, (_, n) => chip(Number(n)));
+    // [1, 2, 3] 묶음 → 칩 나열
+    html = html.replace(/\[(\d+(?:\s*,\s*\d+)+)\]/g, (_, g) => g.split(',').map((s) => chip(Number(s.trim()))).join(''));
+    // 낱개 [N] (뒤에 '(' 가 오는 일반 링크는 제외)
+    html = html.replace(/\[(\d{1,3})\](?!\()/g, (_, n) => chip(Number(n)));
+    // 『파일명』 → 표시명 (+iManage 링크). 이미 escHtml 된 문자열이므로 내용은 그대로 다시 넣는다.
+    const unesc = (s) => s.replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+    html = html.replace(/『([^『』\n<]+)』/g, (full, name) => {
+      const plain = unesc(name);
+      const hit = byName.get(nameKey(plain));
+      const shown = hit ? escHtml(hit.display) : escHtml(displayFileName(plain));
+      if (hit && hit.url) {
+        return `<a class="file-link" href="${escHtml(hit.url)}" target="_blank" rel="noopener" title="iManage 원문 열기">『${shown}』</a>`;
+      }
+      return `『${shown}』`;
+    });
+    return `<div class="answer-body">${html}</div>`;
+  }
+
+  /** 청크 모달 — 채팅 우측 패널의 청크 뷰를 어드민용 모달로 옮긴 것. */
+  function openSourceModal(src, n) {
+    closeSourceModal();
+    const meta = sourceMeta(src);
+    const display = sourceDisplayName(src);
+    const url = sourceImanageUrl(src);
+    const text = Array.isArray(src.document) ? String(src.document[0] ?? '') : '';
+    const metaLine = [
+      meta.page_info ? String(meta.page_info) : null,
+      meta.section ? String(meta.section) : null,
+      typeof meta.relevance === 'number' ? '관련도 ' + Math.round(meta.relevance) : null,
+      meta.matter_uid ? '사건 ' + String(meta.matter_uid) : null,
+    ].filter(Boolean).join(' · ');
+    const overlay = document.createElement('div');
+    overlay.className = 'src-modal-overlay';
+    overlay.innerHTML = `
+      <div class="src-modal" role="dialog" aria-modal="true" aria-label="출처 ${n}">
+        <div class="src-modal-head">
+          <span class="cite-chip static">${n}</span>
+          <div class="src-modal-title-wrap">
+            <div class="src-modal-title" title="${escHtml(display)}">${escHtml(display)}</div>
+            ${metaLine ? `<div class="src-modal-meta">${escHtml(metaLine)}</div>` : ''}
+          </div>
+          <button type="button" class="src-modal-close" aria-label="닫기">×</button>
+        </div>
+        <pre class="src-modal-text">${escHtml(text || '(본문 없음)')}</pre>
+        <div class="src-modal-foot">
+          ${url ? `<a class="btn-refresh" href="${escHtml(url)}" target="_blank" rel="noopener">iManage 원문 열기</a>` : '<span class="msg-loading">iManage 링크 없음</span>'}
+          <button type="button" class="btn-refresh src-modal-close">닫기</button>
+        </div>
+      </div>`;
+    overlay.addEventListener('click', (e) => {
+      if (e.target === overlay || e.target.closest('.src-modal-close')) closeSourceModal();
+    });
+    document.body.appendChild(overlay);
+    document.addEventListener('keydown', onModalKey);
+  }
+  function onModalKey(e) { if (e.key === 'Escape') closeSourceModal(); }
+  function closeSourceModal() {
+    document.querySelectorAll('.src-modal-overlay').forEach((el) => el.remove());
+    document.removeEventListener('keydown', onModalKey);
+  }
+  document.addEventListener('click', (e) => {
+    const chip = e.target.closest('.cite-chip[data-key]');
+    if (!chip) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const list = answerSources.get(chip.dataset.key);
+    const n = Number(chip.dataset.n);
+    if (list && list[n - 1]) openSourceModal(list[n - 1], n);
+  });
+
+  /**
+   * 대화 출처 조회 → `lookup(message)` 를 가진 객체. assistant 메시지의 messageId 로
+   * 찾고(bkl_chat_sources.message_id), 없으면 생성 시각이 5분 이내로 가장 가까운
+   * 미사용 행으로 폴백한다. 출처가 없거나 실패하면 항상 [] (칩 비활성).
+   * 대화 단위로 짧게 캐시한다.
+   */
+  const sourcesCache = new Map();
+  const EMPTY_SOURCES = { lookup: () => [] };
+  async function fetchConversationSources(conversationId) {
+    if (!conversationId) return EMPTY_SOURCES;
+    if (sourcesCache.has(conversationId)) return sourcesCache.get(conversationId);
+    const p = getJSON('/sources/' + encodeURIComponent(conversationId))
+      .then((j) => {
+        const rows = (j?.messages || []).filter((m) => Array.isArray(m.sources) && m.sources.length);
+        if (!rows.length) return EMPTY_SOURCES;
+        const byId = new Map(rows.filter((m) => m.message_id).map((m) => [m.message_id, m.sources]));
+        return {
+          lookup(msg) {
+            if (!msg || msg.role === 'user') return [];
+            const id = msg.messageId || msg.message_id;
+            if (id && byId.has(id)) return byId.get(id);
+            const t = new Date(msg.createdAt || msg.created_at || 0).getTime();
+            if (!t) return [];
+            let best = null;
+            for (const r of rows) {
+              if (!r.created_at) continue;
+              const d = Math.abs(new Date(r.created_at).getTime() - t);
+              if (d < 300_000 && (!best || d < best.d)) best = { d, r };
+            }
+            return best ? best.r.sources : [];
+          },
+        };
+      })
+      .catch(() => EMPTY_SOURCES);
+    sourcesCache.set(conversationId, p);
+    setTimeout(() => sourcesCache.delete(conversationId), 60_000);
+    return p;
   }
   /* ── 표시용 파일명 (FILENAME_DISPLAY_FIX_SPEC) ─────────────── */
   /**
@@ -396,6 +592,9 @@
     groupLabel,
     renderMarkdown,
     displayFileName,
+    renderAnswer,
+    fetchConversationSources,
+    openSourceModal,
     createRangeFilter,
     makeChart,
     reloadAll,

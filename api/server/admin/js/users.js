@@ -203,10 +203,16 @@
       inner.innerHTML = '<div class="msg-loading">메시지 로딩 중...</div>';
       wrap.style.maxHeight = '80px';
       try {
-        const j = await A.getJSON('/sessions/messages?conversation_id=' + encodeURIComponent(conversationId));
+        // 메시지와 출처(인용 청크)를 같이 받아 assistant 답변의 [N]을 칩으로, 『파일명』을 링크로 그린다
+        const [j, sources] = await Promise.all([
+          A.getJSON('/sessions/messages?conversation_id=' + encodeURIComponent(conversationId)),
+          A.fetchConversationSources(conversationId),
+        ]);
         inner.innerHTML = j.data.map((m) => `
           <div style="display:flex; flex-direction:column; align-items:${m.role === 'user' ? 'flex-end' : 'flex-start'};">
-            <div class="msg-bubble ${m.role}">${A.escHtml(m.text || '(내용 없음)')}</div>
+            <div class="msg-bubble ${m.role}">${
+              m.role === 'assistant' ? A.renderAnswer(m.text || '(내용 없음)', sources.lookup(m)) : A.escHtml(m.text || '(내용 없음)')
+            }</div>
             <div class="msg-meta">${A.fmtKST(m.createdAt)}${m.model ? ' · ' + A.escHtml(m.model) : ''}</div>
           </div>`).join('') || '<div class="msg-loading">메시지 없음</div>';
         inner.dataset.loaded = '1';

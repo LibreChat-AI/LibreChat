@@ -368,4 +368,54 @@ tbody td { padding: 10px 14px; font-size: 13px; color: #374151; }
 .msg-bubble.user { background: #eff6ff; color: #1e40af; align-self: flex-end; }
 .msg-bubble.assistant { background: #f9fafb; border: 1px solid #e5e7eb; color: #374151; align-self: flex-start; }
 .msg-meta { font-size: 11px; color: #9ca3af; margin-top: 2px; }
+
+/* ── 답변 본문 (마크다운 + 인용 칩 + 파일 링크) ───────────────── */
+.answer-body { white-space: normal; }
+.answer-body p { margin: 4px 0; }
+.answer-body p:first-child, .answer-body h3:first-child, .answer-body h4:first-child { margin-top: 0; }
+.answer-body p:last-child, .answer-body ul:last-child, .answer-body table:last-child { margin-bottom: 0; }
+.answer-body h3, .answer-body h4, .answer-body h5 { margin: 10px 0 4px; font-size: 13.5px; font-weight: 700; color: #111827; }
+.answer-body ul { margin: 4px 0; padding-left: 18px; }
+.answer-body li { margin: 2px 0; }
+.answer-body hr { border: 0; border-top: 1px solid #e5e7eb; margin: 8px 0; }
+.answer-body code { background: #f3f4f6; border-radius: 4px; padding: 0 4px; font-size: 12px; }
+.answer-body .md-table { border-collapse: collapse; margin: 6px 0; font-size: 12.5px; }
+.answer-body .md-table th, .answer-body .md-table td { border: 1px solid #e5e7eb; padding: 4px 8px; text-align: left; vertical-align: top; }
+.answer-body .md-table th { background: #f3f4f6; font-weight: 600; }
+.cite-chip {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 18px; height: 18px; padding: 0 5px; margin: 0 1px; vertical-align: text-bottom;
+  border: 1px solid #c7d2fe; border-radius: 9px; background: #eef2ff; color: #3730a3;
+  font-size: 11px; font-weight: 600; line-height: 1; cursor: pointer; font-family: inherit;
+  transition: background .12s;
+}
+button.cite-chip:hover { background: #c7d2fe; }
+.cite-chip.disabled { border-color: #e5e7eb; background: #f3f4f6; color: #9ca3af; cursor: default; }
+.cite-chip.static { cursor: default; min-width: 22px; height: 22px; font-size: 12px; flex-shrink: 0; }
+.answer-body a.file-link { color: #1d4ed8; text-decoration: none; border-bottom: 1px dashed #93c5fd; }
+.answer-body a.file-link:hover { background: #eff6ff; }
+
+/* 출처 청크 모달 (채팅 우측 패널의 청크 뷰) */
+.src-modal-overlay {
+  position: fixed; inset: 0; z-index: 1100; background: rgba(17,24,39,.45);
+  display: flex; align-items: center; justify-content: center; padding: 24px;
+}
+.src-modal {
+  background: #fff; border-radius: 12px; width: min(760px, 100%); max-height: calc(100vh - 48px);
+  display: flex; flex-direction: column; box-shadow: 0 20px 50px rgba(0,0,0,.25); overflow: hidden;
+}
+.src-modal-head { display: flex; align-items: flex-start; gap: 10px; padding: 14px 16px; border-bottom: 1px solid #e5e7eb; }
+.src-modal-title-wrap { flex: 1; min-width: 0; }
+.src-modal-title { font-size: 14px; font-weight: 600; color: #111827; word-break: break-all; }
+.src-modal-meta { font-size: 12px; color: #6b7280; margin-top: 2px; }
+.src-modal-close { border: none; background: transparent; font-size: 20px; line-height: 1; color: #6b7280; cursor: pointer; padding: 0 2px; }
+button.src-modal-close.btn-refresh { font-size: 13px; color: #374151; }
+.src-modal-close:hover { color: #111827; }
+.src-modal-text {
+  margin: 0; padding: 14px 16px; overflow: auto; flex: 1; min-height: 80px;
+  font-size: 13px; line-height: 1.6; font-family: inherit; white-space: pre-wrap; word-break: break-word; color: #374151; background: #f9fafb;
+}
+.src-modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 10px 16px; border-top: 1px solid #e5e7eb; align-items: center; }
+.src-modal-foot a.btn-refresh { text-decoration: none; background: #111827; color: #fff; border-color: #111827; }
+.src-modal-foot a.btn-refresh:hover { background: #1f2937; }
 .msg-loading { color: #9ca3af; font-size: 12px; padding: 8px 0; }
