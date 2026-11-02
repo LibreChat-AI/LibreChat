@@ -24,6 +24,10 @@ export { default as PromptsPopover } from './components/composer/popover/Prompts
 export { default as SkillsPopover } from './components/composer/popover/Skills';
 export { default as ComposerField } from './components/composer/input/Field';
 export { default as ComposerActions } from './components/composer/input/Actions';
+export {
+  default as ComposerFrame,
+  COMPOSER_FOCUS_OWNER_ATTRIBUTE,
+} from './components/composer/Frame';
 export { default as CommandPopover } from './components/composer/popover/Command';
 export { default as CollapseChat } from './components/composer/CollapseChat';
 export { default as ComposerChip } from './components/composer/bar/Chip';
@@ -43,6 +47,7 @@ export type { MentionPopoverProps } from './components/composer/popover/Mention'
 export type { PromptsPopoverProps } from './components/composer/popover/Prompts';
 export type { ComposerFieldProps } from './components/composer/input/Field';
 export type { ComposerActionsProps } from './components/composer/input/Actions';
+export type { ComposerFrameProps } from './components/composer/Frame';
 export type {
   SkillsPopoverProps,
   SkillsPopoverNotices,

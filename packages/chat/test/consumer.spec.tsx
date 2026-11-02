@@ -16,6 +16,7 @@ import {
   MessagesView,
   SiblingSwitch,
   ComposerField,
+  ComposerFrame,
   ComposerActions,
   getHeaderHoverLabel,
   EventSubagentActivityGroup,
@@ -497,41 +498,50 @@ describe('a consumer built on the public entries', () => {
     ).toBeInTheDocument();
   });
 
-  it('drafts in the composer field and offers send once there is text', () => {
+  it('drafts in the composer frame and offers send once there is text', () => {
     const textAreaRef = { current: null as HTMLTextAreaElement | null };
     function Composer(): ReactElement {
       const [text, setText] = useState('');
       return (
         <ThemeProvider themeDefinition={clickHouseTheme} persistThemeDefinition={false}>
-          <ComposerField
-            textAreaRef={textAreaRef}
-            ariaLabel="Message"
-            textareaProps={{ value: text, onChange: (event) => setText(event.target.value) }}
-            value={text}
-            listening={false}
-            dictationActive={false}
-            locked={false}
-          />
-          <ComposerActions
-            text={text}
-            submitButtonRef={{ current: null }}
-            isSubmitting={false}
-            answersAsk={false}
-            hasEndpoint
-            steering={{ duringRunActive: false } as SteeringControls}
-            isNewConversation
-            getText={() => text}
-            onConsumed={() => undefined}
-            enterToSend
-            fileCount={0}
-            sendDisabled={false}
-            duringRunDisabled={false}
-            showStopButton={false}
-            setShowStopButton={() => undefined}
-            stop={() => undefined}
-            canStop
-            isPreparingFromUrl={false}
-          />
+          <ComposerFrame
+            onSubmit={(event) => event.preventDefault()}
+            direction="auto"
+            maximizeChatSpace={false}
+            focused={false}
+            isTemporary={false}
+            onFocusDraft={() => textAreaRef.current?.focus()}
+          >
+            <ComposerField
+              textAreaRef={textAreaRef}
+              ariaLabel="Message"
+              textareaProps={{ value: text, onChange: (event) => setText(event.target.value) }}
+              value={text}
+              listening={false}
+              dictationActive={false}
+              locked={false}
+            />
+            <ComposerActions
+              text={text}
+              submitButtonRef={{ current: null }}
+              isSubmitting={false}
+              answersAsk={false}
+              hasEndpoint
+              steering={{ duringRunActive: false } as SteeringControls}
+              isNewConversation
+              getText={() => text}
+              onConsumed={() => undefined}
+              enterToSend
+              fileCount={0}
+              sendDisabled={false}
+              duringRunDisabled={false}
+              showStopButton={false}
+              setShowStopButton={() => undefined}
+              stop={() => undefined}
+              canStop
+              isPreparingFromUrl={false}
+            />
+          </ComposerFrame>
         </ThemeProvider>
       );
     }
@@ -542,6 +552,8 @@ describe('a consumer built on the public entries', () => {
     expect(screen.getByTestId('send-button')).toBeDisabled();
     fireEvent.change(field, { target: { value: 'Hello' } });
     expect(screen.getByTestId('send-button')).toBeEnabled();
+    fireEvent.click(screen.getByTestId('composer-surface'));
+    expect(document.activeElement).toBe(field);
   });
 });
 

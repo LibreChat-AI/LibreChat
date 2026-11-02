@@ -60,11 +60,6 @@
       "count": 1
     }
   },
-  "client/src/components/Chat/Input/ChatForm.tsx": {
-    "shadcn/no-arbitrary-values": {
-      "count": 1
-    }
-  },
   "client/src/components/Chat/Input/CodeApprovalMenu.tsx": {
     "design/disabled-recipe": {
       "count": 1
