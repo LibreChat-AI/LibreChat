@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Chip } from '@librechat/client';
 import { CircleCheck } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { announceOAuthSettled } from '~/data-provider';
@@ -35,10 +36,10 @@ export default function OAuthSuccess() {
   return (
     <Shell icon={CircleCheck} tone="success" title={localize('com_ui_oauth_success_title')}>
       {serverName && (
-        <p className="border-border-light bg-surface-primary text-text-secondary mb-3 rounded-full border px-3 py-1 text-xs">
+        <Chip tone="surface" className="mb-3">
           {localize('com_ui_oauth_connected_to')}{' '}
-          <span className="text-text-primary font-medium">{serverName}</span>
-        </p>
+          <span className="text-text-primary">{serverName}</span>
+        </Chip>
       )}
       <p className="text-text-secondary text-sm">
         {localize('com_ui_oauth_success_description')}{' '}
