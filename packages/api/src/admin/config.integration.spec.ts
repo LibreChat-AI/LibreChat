@@ -92,21 +92,28 @@ async function readStored(principalId: string): Promise<StoredConfig | null> {
   return doc as StoredConfig | null;
 }
 
+const LIFECYCLE_TIMEOUT_MS = 180_000;
+
 beforeAll(async () => {
-  jest.resetModules();
-  const dataSchemas = await import('@librechat/data-schemas');
+  const [dataSchemas, handlersModule, capabilitiesModule, server] = await Promise.all([
+    import('@librechat/data-schemas'),
+    import('./config'),
+    import('~/middleware/capabilities'),
+    MongoMemoryServer.create(),
+  ]);
+  mongoServer = server;
   jest.spyOn(dataSchemas.logger, 'error').mockReturnValue(dataSchemas.logger);
   jest.spyOn(dataSchemas.logger, 'warn').mockReturnValue(dataSchemas.logger);
   jest.spyOn(dataSchemas.logger, 'info').mockReturnValue(dataSchemas.logger);
   ({ mergeConfigOverrides } = dataSchemas);
-  ({ createAdminConfigHandlers } = await import('./config'));
-  ({ generateCapabilityCheck } = await import('~/middleware/capabilities'));
+  ({ createAdminConfigHandlers } = handlersModule);
+  ({ generateCapabilityCheck } = capabilitiesModule);
 
-  mongoServer = await MongoMemoryServer.create();
   await mongoose.connect(mongoServer.getUri());
   dataSchemas.createModels(mongoose);
+  await mongoose.models.Config.init();
   methods = dataSchemas.createMethods(mongoose);
-});
+}, LIFECYCLE_TIMEOUT_MS);
 
 afterEach(async () => {
   await Promise.all([
@@ -117,8 +124,8 @@ afterEach(async () => {
 
 afterAll(async () => {
   await mongoose.disconnect();
-  await mongoServer.stop();
-});
+  await mongoServer?.stop();
+}, LIFECYCLE_TIMEOUT_MS);
 
 describe('admin config writes against a real Config collection', () => {
   describe('top-level sections outside configSchema', () => {
