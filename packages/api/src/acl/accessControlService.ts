@@ -607,8 +607,8 @@ export class AccessControlService {
           /** An invalid id is reported per principal below. */
         }
       }
-      const [roles, currentEntries] = await Promise.all([
-        this._dbMethods.findRolesByResourceType(resourceType),
+      const loadRoles = () => this._dbMethods.findRolesByResourceType(resourceType, localSession);
+      const loadEntries = () =>
         affectedPrincipals.length > 0
           ? this._dbMethods.findEntriesByPrincipalsAndResource(
               affectedPrincipals,
@@ -617,8 +617,11 @@ export class AccessControlService {
               localSession,
               true,
             )
-          : Promise.resolve([]),
-      ]);
+          : Promise.resolve([]);
+      // A transaction cannot run parallel operations on its session.
+      const [roles, currentEntries] = localSession?.inTransaction()
+        ? ([await loadRoles(), await loadEntries()] as const)
+        : await Promise.all([loadRoles(), loadEntries()]);
       const rolesMap = new Map(roles.map((role) => [role.accessRoleId, role]));
       const results: BulkPermissionUpdateResult = {
         granted: [],
