@@ -1,6 +1,14 @@
 import { useMemo, useState } from 'react';
 import { Tools } from 'librechat-data-provider';
+import { parseJsonField } from '@librechat/chat';
 import { Globe, ChevronDown, Info } from 'lucide-react';
+import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
+import {
+  useToolExpansion,
+  useToolContentRequest,
+  toolPanelSpacingClassName,
+  useToolCallIntent,
+} from '@librechat/chat/react';
 import {
   Button,
   HoverCard,
@@ -16,18 +24,14 @@ import type {
   PartMetadata,
   AnswerBoxResult,
 } from 'librechat-data-provider';
-import { useToolExpansion, useToolContentRequest, toolPanelSpacingClassName } from './disclosure';
 import { FaviconImage, getCleanDomain } from '~/components/Web/SourceHovercard';
 import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { collectSources, getUniqueDomainSources } from './sources';
 import { StackedFavicons } from '~/components/Web/Sources';
 import { isError } from './ToolOutput/OutputRenderer';
-import parseJsonField from './Parts/parseJsonField';
-import { useToolCallIntent } from './Parts/intent';
 import { useToolPreparation } from './preparation';
 import { useSearchContext } from '~/Providers';
 import SearchVerticals from './verticals';
-import { ROW_GLYPH_SLOT } from './rows';
 import ToolCall from './ToolCall';
 import cn from '~/utils/cn';
 

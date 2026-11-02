@@ -30,7 +30,6 @@ jest.mock('~/hooks', () => ({
 jest.mock('react-i18next', () => ({ useTranslation: () => ({ i18n: { language: 'en' } }) }));
 jest.mock('~/hooks/MCP', () => ({ useMCPServerNames: () => ['github'] }));
 jest.mock('~/utils', () => ({
-  ...jest.requireActual('~/utils/toolLabels'),
   ...jest.requireActual('~/utils/runStepDuration'),
   cn: (...classes: unknown[]) => classes.filter(Boolean).join(' '),
 }));

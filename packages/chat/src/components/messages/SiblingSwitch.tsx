@@ -1,0 +1,79 @@
+import { ChevronLeft, ChevronRight } from 'lucide-react';
+import { cn, Button, useLocalize } from '@librechat/client';
+import type { ReactElement } from 'react';
+
+type TSiblingSwitchProps = {
+  siblingIdx?: number;
+  siblingCount?: number;
+  setSiblingIdx?: ((value: number) => void) | null;
+  className?: string;
+};
+
+export default function SiblingSwitch({
+  siblingIdx,
+  siblingCount,
+  setSiblingIdx,
+  className,
+}: TSiblingSwitchProps): ReactElement | null {
+  const localize = useLocalize();
+
+  if (siblingIdx === undefined) {
+    return null;
+  } else if (siblingCount === undefined) {
+    return null;
+  }
+
+  const previous = () => {
+    setSiblingIdx?.(siblingIdx - 1);
+  };
+
+  const next = () => {
+    setSiblingIdx?.(siblingIdx + 1);
+  };
+
+  const buttonStyle = cn(
+    'hover-button',
+    'group-hover:visible group-focus-visible:visible group-has-[:focus-visible:not(:is(input,textarea,[contenteditable]))]:visible group-[.final-completion]:visible',
+  );
+
+  return siblingCount > 1 ? (
+    <nav
+      className={cn(
+        'visible flex items-center justify-center gap-2 self-center pt-0 text-xs',
+        className,
+      )}
+      aria-label={localize('com_ui_sibling_navigation')}
+    >
+      <Button
+        variant="message-action"
+        className={buttonStyle}
+        onClick={previous}
+        disabled={siblingIdx == 0}
+        aria-label={localize('com_ui_previous_sibling')}
+        aria-disabled={siblingIdx == 0}
+      >
+        <ChevronLeft size="19" className="rtl:-scale-x-100" aria-hidden="true" />
+      </Button>
+      <span
+        className="shrink-0 grow tabular-nums"
+        aria-live="polite"
+        aria-atomic="true"
+        role="status"
+      >
+        <bdi>
+          {siblingIdx + 1} / {siblingCount}
+        </bdi>
+      </span>
+      <Button
+        variant="message-action"
+        className={buttonStyle}
+        onClick={next}
+        disabled={siblingIdx == siblingCount - 1}
+        aria-label={localize('com_ui_next_sibling')}
+        aria-disabled={siblingIdx == siblingCount - 1}
+      >
+        <ChevronRight size="19" className="rtl:-scale-x-100" aria-hidden="true" />
+      </Button>
+    </nav>
+  ) : null;
+}

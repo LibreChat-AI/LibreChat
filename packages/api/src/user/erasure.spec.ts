@@ -470,6 +470,28 @@ describe('eraseUserData', () => {
     expect(await count('AclEntry', { principalId: userId })).toBeGreaterThan(0);
   });
 
+  it('surfaces a failed leaf delete and stops before the steps after it', async () => {
+    const userId = new mongoose.Types.ObjectId();
+    await seedUser(userId);
+    const { deps } = createDeps();
+    const presetsError = new Error('presets down');
+    const failingDeps: UserErasureDeps = {
+      ...deps,
+      deletePresets: jest.fn().mockRejectedValue(presetsError),
+      deleteAllUserMemories: jest.fn().mockRejectedValue(new Error('memories down')),
+      deleteSharedLinks: jest.fn(async () => undefined),
+    };
+    const deleteToolCalls = jest.spyOn(failingDeps, 'deleteToolCalls');
+
+    await expect(eraseUserData({ userId: userId.toString() }, failingDeps)).rejects.toBe(
+      presetsError,
+    );
+
+    expect(deleteToolCalls).toHaveBeenCalledTimes(1);
+    expect(failingDeps.deleteSharedLinks).not.toHaveBeenCalled();
+    expect(await count('MCPServer', { author: userId })).toBe(2);
+  });
+
   it('removes stored files while the user keys their provider clients need still exist', async () => {
     const userId = new mongoose.Types.ObjectId();
     await seedUser(userId);

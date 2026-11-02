@@ -7,7 +7,7 @@ import type {
   ChatTransport,
   ChatTransportRequest,
 } from 'librechat-data-provider';
-import type { NewConversationParams } from '@librechat/chat/react';
+import type { AbortRunRequest, NewConversationParams } from '@librechat/chat/react';
 import type { SetStateAction, Dispatch } from 'react';
 import type { PendingSteer } from '@librechat/chat';
 import type {
@@ -131,14 +131,6 @@ export type PaneConversation = {
   conversationId: string | null;
 };
 
-/** The assistants abort route and the run it stops. */
-export type AbortRunRequest = {
-  /** The assistants endpoint whose `/abort` route owns the run. */
-  endpoint: string;
-  /** `conversationId:responseMessageId` of the run to stop. */
-  abortKey: string;
-};
-
 /**
  * The wire the chat runs over, supplied by the host: starting a turn, streaming it, stopping
  * it, and steering or queueing behind it. A host that substitutes its own (a test, another
@@ -187,7 +179,9 @@ export type {
   MessagePartsUser,
   MessagePartsToast,
   MessagePartMessage,
+  MessagePartsImageProps,
   MessagePartsMarkdownProps,
+  MessagePartsFilePreviewProps,
   MessagePartsUserTextPreferences,
 } from '@librechat/chat/react';
 

@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import { Part as ChatPart } from '@librechat/chat/components';
+import { isBashProgrammaticToolCall, getAskUserQuestionPart } from '@librechat/chat';
 import {
   Tools,
   Constants,
@@ -43,9 +44,7 @@ import {
   getPartKeyIndex,
 } from '~/utils';
 import BackgroundTaskCall from './Parts/BackgroundTaskCall';
-import { getAskUserQuestionPart } from '~/utils/approval';
 import AskUserQuestionCall from './AskUserQuestionCall';
-import { isBashProgrammaticToolCall } from './routing';
 import { isError } from './ToolOutput/OutputRenderer';
 import { ToolPreparation } from './preparation';
 import { ErrorMessage } from './MessageContent';

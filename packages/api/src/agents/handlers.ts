@@ -62,6 +62,7 @@ import type { SandboxTextReader } from '~/files/code/text';
 import type { WorkspaceEditMatching } from '~/code/edits';
 import type { CodeExecutionContext } from './execution';
 import type { TextContentFragment } from '~/protection';
+import type { AuthoredSkillBinding } from './authored';
 import type { RunFileSession } from './files/session';
 import type { ServerRequest } from '~/types';
 import type { TextEdit } from './edits';
@@ -162,6 +163,7 @@ import { deleteSkillWithRetry } from '~/skills/cleanup';
 import { resolveDownloadPath } from '~/storage/path';
 import { parseFrontmatter } from '../skills/import';
 import { HostEditError } from './files/matching';
+import { AuthoredSkillState } from './authored';
 import { cleanCodeToolOutput } from './cleanup';
 import { primeSkillFiles } from './skillFiles';
 import { instrumentPtcToolMap } from './ptc';
@@ -287,6 +289,8 @@ export function createOwnedToolEndHandler(
 }
 
 export interface ToolExecuteOptions {
+  /** Host observer, called only after authoring has bound an authorized identity. */
+  onSkillAuthored?: (binding: Pick<AuthoredSkillBinding, 'name' | 'id' | 'primed'>) => void;
   /** Host-captured authority ceiling, never runnable/model metadata. */
   scheduledMCPExecution?: Pick<ScheduleMCPExecution, 'enrolled' | 'identity'>;
   /**
@@ -2970,9 +2974,10 @@ async function resolveSkillForAuthoring(
 
   const skillPrimedIdsByName =
     (mergedConfigurable?.skillPrimedIdsByName as Record<string, string> | undefined) ?? {};
-  const primedIdString = skillPrimedIdsByName[skillName];
-  if (primedIdString) {
-    return await getSkillByName(skillName, [new Types.ObjectId(primedIdString)], {});
+  const pinnedIdString =
+    getAuthoredSkillId(skillName, mergedConfigurable) ?? skillPrimedIdsByName[skillName];
+  if (pinnedIdString) {
+    return await getSkillByName(skillName, [new Types.ObjectId(pinnedIdString)], {});
   }
 
   const accessibleIds = (mergedConfigurable?.accessibleSkillIds as Types.ObjectId[]) ?? [];
@@ -3003,10 +3008,12 @@ async function resolveAuthorSkillForCurrentUser({
     return null;
   }
   const skill = await options.getAuthorSkillByName({ req, name: skillName });
-  if (!skill) {
+  const authoredId = getAuthoredSkillId(skillName, mergedConfigurable);
+  if (!skill || (authoredId != null && skill._id.toString() !== authoredId)) {
     return null;
   }
   rememberAuthoredSkill([mergedConfigurable, sourceConfigurable], skill, { prime: false });
+  options.onSkillAuthored?.({ name: skill.name, id: skill._id.toString(), primed: false });
   return skill;
 }
 
@@ -3066,7 +3073,9 @@ function isSkillPrimedForAuthoring(
 ): boolean {
   const skillPrimedIdsByName =
     (mergedConfigurable.skillPrimedIdsByName as Record<string, string> | undefined) ?? {};
-  return typeof skillPrimedIdsByName[skillName] === 'string';
+  const primedId = skillPrimedIdsByName[skillName];
+  const authoredId = getAuthoredSkillId(skillName, mergedConfigurable);
+  return typeof primedId === 'string' && (authoredId == null || authoredId === primedId);
 }
 
 function isSkillKnownToCurrentRun(
@@ -3659,6 +3668,11 @@ async function writeSkillMd({
       throw error;
     }
     rememberAuthoredSkill([mergedConfigurable, sourceConfigurable], result.skill);
+    options.onSkillAuthored?.({
+      name: result.skill.name,
+      id: result.skill._id.toString(),
+      primed: true,
+    });
     const surfacedWarnings = surfaceSkillAuthoringWarnings(result.warnings);
     const invocationHint = authoredSkillInvocationHint(structured.frontmatter);
     return successResult(
@@ -4769,13 +4783,13 @@ async function handleReadFileCall(
   let skillPrimedIdsByName =
     (mergedConfigurable?.skillPrimedIdsByName as Record<string, string> | undefined) ?? {};
   let primedIdString = skillPrimedIdsByName[skillName];
-  let isPrimedThisTurn = primedIdString != null;
+  let isPrimedThisTurn = isSkillPrimedForAuthoring(skillName, mergedConfigurable);
   const refreshSkillReadScope = () => {
     accessibleIds = (mergedConfigurable?.accessibleSkillIds as Types.ObjectId[]) ?? [];
     skillPrimedIdsByName =
       (mergedConfigurable?.skillPrimedIdsByName as Record<string, string> | undefined) ?? {};
     primedIdString = skillPrimedIdsByName[skillName];
-    isPrimedThisTurn = primedIdString != null;
+    isPrimedThisTurn = isSkillPrimedForAuthoring(skillName, mergedConfigurable);
   };
   let recoveredAuthorSkill: AuthoringSkill | null | undefined;
   const recoverAuthorSkill = async () => {
@@ -4902,9 +4916,10 @@ async function handleReadFileCall(
      (rather than relying on mongoose's string auto-cast in `$in` queries)
      keeps the value correct for any future consumer that compares with
      `.equals()` or `===`. */
-  const lookupAccessibleIds = primedIdString ? [new Types.ObjectId(primedIdString)] : accessibleIds;
+  const pinnedIdString = getAuthoredSkillId(skillName, mergedConfigurable) ?? primedIdString;
+  const lookupAccessibleIds = pinnedIdString ? [new Types.ObjectId(pinnedIdString)] : accessibleIds;
   const lookupOptions: { preferUserInvocable?: boolean; preferModelInvocable?: boolean } =
-    primedIdString ? {} : { preferModelInvocable: true };
+    pinnedIdString ? {} : { preferModelInvocable: true };
   let skill = await getSkillByName(skillName, lookupAccessibleIds, lookupOptions);
   if (!skill) {
     skill = await recoverAuthorSkill();
@@ -5646,7 +5661,9 @@ function getToolFailureFeedback(content: ToolExecuteResult['content']): string {
   return messages.join('\n') || 'Tool execution failed.';
 }
 
-export function createToolExecuteHandler(options: ToolExecuteOptions): EventHandler {
+export function createToolExecuteHandler(handlerOptions: ToolExecuteOptions): EventHandler {
+  const authoredSkills = new AuthoredSkillState();
+  const resumedSkillConfigurables = new Map<string, Record<string, unknown>>();
   const {
     scheduledMCPExecution,
     runSignal: hostRunSignal,
@@ -5664,9 +5681,9 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
     ordinaryToolCancellation = false,
     backgroundCompletionResultMaxChars = AGENT_BACKGROUND_COMPLETION_RESULT_MAX_CHARS_DEFAULT,
     provisionFiles,
-  } = options;
+  } = handlerOptions;
 
-  return {
+  const handler: EventHandler = {
     handle: async (_event: string, data: ToolExecuteBatchRequest) => {
       const {
         toolCalls,
@@ -5681,6 +5698,11 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
       const executionContext = (
         data as ToolExecuteBatchRequest & { executionContext?: SubagentExecutionContext }
       ).executionContext;
+      const authoredScope = authoredSkills.scope(agentId, executionContext);
+      const options: ToolExecuteOptions = {
+        ...handlerOptions,
+        onSkillAuthored: (binding) => authoredSkills.record(authoredScope, binding),
+      };
       // Only the SDK-owned batch field may establish a child execution. Runtime
       // configurable and callback metadata can otherwise carry inherited values.
       /**
@@ -5801,10 +5823,73 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
             );
             const toolMap = new Map(loadedTools.map((t) => [t.name, t]));
             const loadedConfigurable = toolConfigurable as Record<string, unknown> | undefined;
-            const mergedConfigurable = mergeToolConfigurables(
-              sourceConfigurable,
-              loadedConfigurable,
-            );
+            const authoredScopeKey = JSON.stringify(authoredScope);
+            let resumedSkillConfigurable = resumedSkillConfigurables.get(authoredScopeKey);
+            const baseConfigurable = mergeToolConfigurables(sourceConfigurable, loadedConfigurable);
+            // Restored identity wins; current capability and request fields still come from loadTools.
+            const mergedConfigurable = resumedSkillConfigurable
+              ? mergeToolConfigurables(resumedSkillConfigurable, baseConfigurable)
+              : baseConfigurable;
+            if (authoredSkills.hasPending) {
+              const requestedSkills = new Map<string, ToolCallRequest[]>();
+              for (const tc of allowedToolCalls) {
+                const args = tc.args as { path?: unknown; skillName?: unknown };
+                let skillName: string | undefined;
+                if (tc.name === Constants.SKILL_TOOL && typeof args.skillName === 'string') {
+                  skillName = args.skillName;
+                } else if (
+                  typeof args.path === 'string' &&
+                  (args.path.startsWith(SKILL_FILE_PREFIX) ||
+                    (tc.name === Constants.READ_FILE && !args.path.startsWith('workspace/'))) &&
+                  (tc.name === Constants.READ_FILE ||
+                    isHostFileAuthoringToolCall(tc.name, mergedConfigurable))
+                ) {
+                  const path = args.path.startsWith(SKILL_FILE_PREFIX)
+                    ? args.path.slice(SKILL_FILE_PREFIX.length)
+                    : args.path;
+                  skillName = path.split('/')[0];
+                }
+                if (skillName)
+                  requestedSkills.set(skillName, [...(requestedSkills.get(skillName) ?? []), tc]);
+              }
+              const restored = authoredSkills.take(authoredScope, new Set(requestedSkills.keys()));
+              if (restored.length > 0) {
+                const req = mergedConfigurable.req as ServerRequest | undefined;
+                await Promise.all(
+                  restored.map(async (binding) => {
+                    const skill =
+                      isSkillAuthoringAvailable(mergedConfigurable) &&
+                      req &&
+                      options.getAuthorSkillByName
+                        ? await options.getAuthorSkillByName({ req, name: binding.name })
+                        : null;
+                    const allowed =
+                      skill &&
+                      skill._id.toString() === binding.id &&
+                      req &&
+                      options.canEditSkill &&
+                      (await options.canEditSkill({ req, skillId: skill._id }));
+                    if (!allowed || !skill) {
+                      for (const tc of requestedSkills.get(binding.name) ?? []) {
+                        preloadedNameBlocks.set(
+                          tc,
+                          errorResult(tc, `Skill "${binding.name}" not found or not accessible.`),
+                        );
+                      }
+                      return;
+                    }
+                    if (!resumedSkillConfigurable) {
+                      resumedSkillConfigurable = {};
+                      resumedSkillConfigurables.set(authoredScopeKey, resumedSkillConfigurable);
+                    }
+                    rememberAuthoredSkill([mergedConfigurable, resumedSkillConfigurable], skill, {
+                      prime: binding.primed,
+                    });
+                    authoredSkills.confirm(authoredScope, binding.name);
+                  }),
+                );
+              }
+            }
             if (mergedConfigurable != null) mergedConfigurable.executionContext = executionContext;
             /* The graph populated each call's code-session context from the sessions that
              * existed at run start, before this batch provisioned anything, and nothing
@@ -7862,4 +7947,6 @@ export function createToolExecuteHandler(options: ToolExecuteOptions): EventHand
       }
     },
   };
+  authoredSkills.bind(handler);
+  return handler;
 }

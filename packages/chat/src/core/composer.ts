@@ -51,3 +51,6 @@ export function isComposerFileTaken(id: string): boolean {
 export function releaseComposerFile(id: string): void {
   takenFileIds.delete(id);
 }
+
+/** The DOM id of a pane's main composer textarea; selection and quote features locate it by id. */
+export const mainTextareaId = 'prompt-textarea';

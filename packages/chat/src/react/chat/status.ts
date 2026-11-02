@@ -1,28 +1,9 @@
 import { ContentTypes } from 'librechat-data-provider';
-import type { Agents, TMessage, TMessageContentParts } from 'librechat-data-provider';
+import type { TMessage } from 'librechat-data-provider';
 import type { ChatStatus } from './types';
+import { isEmptyContentPart } from '../../core';
 
-const getPartTextValue = (value?: string | { value?: string }): string =>
-  (typeof value === 'string' ? value : value?.value) ?? '';
-
-/** Slots the persistence compaction leaves nothing behind for: the
- * dual-message `type: ''` placeholders, text/think parts that never received a
- * delta, and tool calls missing their `tool_call` payload. */
-export const isEmptyContentPart = (part: TMessageContentParts): boolean => {
-  if (!part.type) {
-    return true;
-  }
-  if (part.type === ContentTypes.TEXT) {
-    return getPartTextValue(part.text).length === 0;
-  }
-  if (part.type === ContentTypes.THINK) {
-    return getPartTextValue(part.think).length === 0;
-  }
-  if (part.type === ContentTypes.TOOL_CALL) {
-    return (part[ContentTypes.TOOL_CALL] as Agents.ToolCall | undefined) == null;
-  }
-  return false;
-};
+export { isEmptyContentPart };
 
 /**
  * Placeholder slots (empty text or think, lane placeholders) are not streamed output. A rerun edit

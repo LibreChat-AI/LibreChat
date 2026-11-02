@@ -1,7 +1,7 @@
 import { Tools, ContentTypes } from 'librechat-data-provider';
 import type { TMessageContentParts } from 'librechat-data-provider';
 import { getStandardToolCall } from '../live';
-import { getToolMeta } from '../outcome';
+import { getToolMeta } from '@librechat/chat';
 
 const dispatcherPart = (toolCall: Record<string, unknown>) =>
   ({

@@ -464,6 +464,8 @@ export const getPromptGroup = (_id: string) => `${prompts()}/groups/${_id}`;
 export const resolvePromptGroup = (_id: string, version?: number) =>
   `${getPromptGroup(_id)}/resolve${buildQuery({ version })}`;
 
+export const getPromptGroupRevisions = (_id: string) => `${getPromptGroup(_id)}/revisions`;
+
 export const getPromptGroupsWithFilters = (filter: object) => {
   let url = `${prompts()}/groups`;
   // Filter out undefined/null values

@@ -40,23 +40,6 @@ export const forceResize = (element: HTMLTextAreaElement | null) => {
 };
 
 /**
- * Remove the specified character from the end of the textarea's text if it's present.
- * This function ensures that the specified character is only removed if it's the last character.
- *
- * @param {HTMLTextAreaElement} textarea - The textarea element where text manipulation will occur.
- * @param {string} charToRemove - The character to remove if it's the last character in the textarea's value.
- */
-export function removeCharIfLast(textarea: HTMLTextAreaElement, charToRemove: string) {
-  if (textarea.value.endsWith(charToRemove)) {
-    textarea.value = textarea.value.slice(0, -1);
-    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
-    textarea.dispatchEvent(new Event('input', { bubbles: true }));
-  }
-
-  textarea.focus();
-}
-
-/**
  * Check if the textarea is scrollable.
  * @param element
  * @returns

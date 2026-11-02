@@ -132,10 +132,15 @@ describe('createPinnedOrderHandlers', () => {
 
     it('invalidates cached auth user state after persisting a new order', async () => {
       const store = makeAuthUserDocCacheStore();
-      await setCachedAuthUserDoc(store, 'auth-user-doc-key', {
-        id: 'user-1',
-        pinnedOrder: ['convo:stale'],
-      });
+      await setCachedAuthUserDoc(
+        store,
+        'auth-user-doc-key',
+        {
+          id: 'user-1',
+          pinnedOrder: ['convo:stale'],
+        },
+        Date.now(),
+      );
       expect(await getCachedAuthUserDoc(store, 'auth-user-doc-key')).toEqual(
         expect.objectContaining({ pinnedOrder: ['convo:stale'] }),
       );
