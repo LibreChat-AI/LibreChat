@@ -5,7 +5,7 @@ export * from './crypto';
 export * from './schema';
 export * from './utils';
 export { createModels } from './models';
-export { createResponseStorage } from './methods/response';
+export { createResponseStorage, sameResponseTerminalReceipt } from './methods/response';
 export type {
   ResponseOwner,
   ResponseStorage,

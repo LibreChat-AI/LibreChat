@@ -4,9 +4,13 @@ import { createResponseStorage, tenantStorage, runAsSystem } from '@librechat/da
 import type { ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
 import type { Agents } from 'librechat-data-provider';
 import type { ResponseDecisionDependencies } from './decision';
+import {
+  createResponseCompletion,
+  createResponseExecutionRelease,
+  createResponseExecutionConfirmation,
+} from './completion';
 import { createBackgroundResponseService, buildPendingBackgroundResponse } from './background';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
-import { createResponseCompletion, createResponseExecutionRelease } from './completion';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { createResponseDecisionSubmission } from './decision';
 import { enrollAgentExecution } from '../remote/lifecycle';
@@ -370,6 +374,7 @@ it('keeps a submitted decision recoverable through owner review and preserves pa
     const completion = createResponseCompletion({
       storage,
       cleanupCheckpoint: cleanupResponseCheckpoint,
+      confirmExecution: createResponseExecutionConfirmation(jobs),
       releaseExecution: createResponseExecutionRelease(jobs),
     });
     const service = createBackgroundResponseService({
