@@ -23,6 +23,7 @@ import {
   mergeFileConfig,
   inferMimeType,
   textMimeTypes,
+  defaultTextMimeTypes,
 } from './file-config';
 import { resolveDefaultLLMDeliveryPath } from './resolve-llm-delivery-path';
 import { EModelEndpoint } from './schemas';
@@ -64,6 +65,32 @@ describe('inferMimeType', () => {
     expect(inferMimeType('archive.zip', '')).toBe('application/zip');
     expect(inferMimeType('photo.heic', '')).toBe('image/heic');
     expect(inferMimeType('Main.java', '')).toBe('text/x-java');
+  });
+
+  it.each([
+    'script.ahk',
+    'macro.vbs',
+    'Module1.vb',
+    'legacy.bas',
+    'project.dpr',
+    'form.dfm',
+    'app.csproj',
+  ])('should infer text/plain from %s when the browser reports no type', (fileName) => {
+    expect(inferMimeType(fileName, '')).toBe('text/plain');
+  });
+
+  it.each([
+    'script.ahk',
+    'macro.vbs',
+    'Module1.vb',
+    'legacy.bas',
+    'project.dpr',
+    'form.dfm',
+    'app.csproj',
+  ])('should accept the inferred type of %s for provider and text uploads alike', (fileName) => {
+    const inferred = inferMimeType(fileName, '');
+    expect(baseFileConfig.checkType(inferred)).toBe(true);
+    expect(defaultTextMimeTypes.some((regex) => regex.test(inferred))).toBe(true);
   });
 
   it('should return empty string for unknown extension with no browser type', () => {
