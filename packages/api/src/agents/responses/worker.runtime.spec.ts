@@ -42,6 +42,12 @@ import { executeAgentRun } from '../remote/host';
 import { GenerationJobManager } from '~/stream';
 import { createResponseTurn } from './turn';
 
+// Load the compiled entry as a suite dependency, outside the settlement test's deadline.
+const compiled = jest.requireActual<{
+  createStoredForegroundResponseReader: typeof import('./stored').createStoredForegroundResponseReader;
+  createBackgroundResponsesHost: typeof import('./host').createBackgroundResponsesHost;
+}>('@librechat/api');
+
 let mongo: MongoMemoryReplSet;
 let storage: ResponseStorage;
 const secret = 'isolated-response-worker-test-secret';
@@ -1349,10 +1355,6 @@ describe('background Responses execution handoff', () => {
         tenantStorage.run(owner, next);
       });
       // Exercise the compiled host and its actual foreground fallback over committed history.
-      const compiled = jest.requireActual<{
-        createStoredForegroundResponseReader: typeof import('./stored').createStoredForegroundResponseReader;
-        createBackgroundResponsesHost: typeof import('./host').createBackgroundResponsesHost;
-      }>('@librechat/api');
       const readHost = compiled.createBackgroundResponsesHost({
         storage,
         jobs: GenerationJobManager,
