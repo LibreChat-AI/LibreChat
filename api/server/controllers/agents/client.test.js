@@ -6881,6 +6881,108 @@ describe('AgentClient - titleConvo', () => {
       );
     });
 
+    describe('file context placement across turns', () => {
+      const FILE_TEXT = 'services:\n  web: {}';
+      const makeHistory = () => [
+        {
+          messageId: 'm1',
+          parentMessageId: null,
+          sender: 'User',
+          text: 'How many services?',
+          isCreatedByUser: true,
+          files: [{ file_id: 'doc' }],
+        },
+        {
+          messageId: 'm2',
+          parentMessageId: 'm1',
+          sender: 'Assistant',
+          text: 'One.',
+          isCreatedByUser: false,
+        },
+        {
+          messageId: 'm3',
+          parentMessageId: 'm2',
+          sender: 'User',
+          text: 'Thanks.',
+          isCreatedByUser: true,
+        },
+      ];
+      const buildPrompt = async ({ attached, requestFiles = [], resendFiles = true }) => {
+        const file = makeTextFile('doc', 'compose.yaml', FILE_TEXT);
+        require('~/models').getFiles.mockResolvedValue([file]);
+        client.options.resendFiles = resendFiles;
+        client.message_file_map = {};
+        mockReq.body.files = requestFiles;
+        client.options.attachments = attached ? [file] : [];
+        const messages = await client.addPreviousAttachments(makeHistory());
+        const { prompt } = await client.buildMessages(messages, 'm3', {});
+        return prompt.map((message) => message.content);
+      };
+      const countOccurrences = (prompt) => JSON.stringify(prompt).split('web: {}').length - 1;
+
+      it('keeps the file in its own message when it also arrives as a tool attachment', async () => {
+        const limits = jest.spyOn(client, 'assertTurnAttachmentLimits');
+        const beforeToolRound = await buildPrompt({ attached: false });
+        limits.mockClear();
+        const afterToolRound = await buildPrompt({ attached: true });
+
+        expect(afterToolRound).toEqual(beforeToolRound);
+        expect(limits).toHaveBeenCalled();
+        for (const [shared] of limits.mock.calls) {
+          expect(shared.filter(({ file_id }) => file_id === 'doc')).toHaveLength(1);
+        }
+        expect(countOccurrences(afterToolRound)).toBe(1);
+        expect(afterToolRound[0]).toContain('web: {}');
+        expect(afterToolRound[2]).not.toContain('web: {}');
+        expect(client.options.attachments.map(({ file_id }) => file_id)).toEqual(['doc']);
+      });
+
+      it('places a file submitted again with this request on the latest message only', async () => {
+        const prompt = await buildPrompt({ attached: true, requestFiles: [{ file_id: 'doc' }] });
+
+        expect(countOccurrences(prompt)).toBe(1);
+        expect(prompt[0]).not.toContain('web: {}');
+        expect(prompt[2]).toContain('web: {}');
+        expect(prompt).toMatchInlineSnapshot(`
+          [
+            "How many services?",
+            "One.",
+            "Attached document(s):
+          \`\`\`md# "compose.yaml"
+          services:
+            web: {}
+
+          \`\`\`
+          Thanks.",
+          ]
+        `);
+      });
+
+      it('places the request file on the latest message when files are not resent', async () => {
+        const prompt = await buildPrompt({
+          attached: true,
+          requestFiles: [{ file_id: 'doc' }],
+          resendFiles: false,
+        });
+
+        expect(countOccurrences(prompt)).toBe(1);
+        expect(prompt[2]).toContain('web: {}');
+        expect(prompt).toMatchInlineSnapshot(`
+          [
+            "How many services?",
+            "One.",
+            "Attached document(s):
+          \`\`\`md# "compose.yaml"
+          services:
+            web: {}
+
+          \`\`\`
+          Thanks.",
+          ]
+        `);
+      });
+    });
+
     it('counts resubmitted historical files during steering without mutating rejected state', () => {
       const historical = Array.from({ length: 11 }, (_, index) =>
         makeTextFile(`history-${index}`, `history-${index}.txt`, 'context'),
