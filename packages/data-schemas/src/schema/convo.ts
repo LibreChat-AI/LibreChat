@@ -34,7 +34,6 @@ const convoSchema: Schema<IConversation> = new Schema(
     titleRevision: { type: Number },
     user: {
       type: String,
-      index: true,
       meiliIndex: true,
     },
     messages: [{ type: Schema.Types.ObjectId, ref: 'Message' }],
@@ -402,7 +401,6 @@ const convoSchema: Schema<IConversation> = new Schema(
     },
     tenantId: {
       type: String,
-      index: true,
     },
     pinned: {
       type: Boolean,
