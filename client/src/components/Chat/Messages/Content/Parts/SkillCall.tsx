@@ -1,8 +1,8 @@
 import { useMemo } from 'react';
-import { ScrollText } from 'lucide-react';
-import { Button } from '@librechat/client';
 import { useNavigate } from 'react-router-dom';
 import { parseJsonField } from '@librechat/chat';
+import { ArrowUpRight, ScrollText } from 'lucide-react';
+import { Button, TooltipAnchor } from '@librechat/client';
 import { PermissionTypes, Permissions } from 'librechat-data-provider';
 import { TOOL_ROW_CLASSES, BareStatus, Stdout } from '@librechat/chat/components';
 import { toolPanelSpacingClassName, useToolCallIntent } from '@librechat/chat/react';
@@ -124,15 +124,21 @@ export default function SkillCall({
                     {localize(instructions ? 'com_ui_skill_instructions' : 'com_ui_output')}
                   </span>
                   {skill && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="xs"
-                      className="-my-1 shrink-0"
-                      onClick={() => navigate(`/skills/${skill._id}`)}
-                    >
-                      {localize('com_ui_open_skill')}
-                    </Button>
+                    <TooltipAnchor
+                      description={localize('com_ui_open_skill')}
+                      render={
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon-xs"
+                          className="-my-1 shrink-0"
+                          aria-label={localize('com_ui_open_skill')}
+                          onClick={() => navigate(`/skills/${skill._id}`)}
+                        >
+                          <ArrowUpRight className="size-3.5" aria-hidden="true" />
+                        </Button>
+                      }
+                    />
                   )}
                 </div>
                 {instructions ? (
