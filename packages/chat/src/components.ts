@@ -102,6 +102,8 @@ export { default as MinimalHoverButtons } from './components/messages/MinimalHov
 export { default as HoverButtons } from './components/messages/HoverButtons';
 export { default as ContentRow } from './components/messages/ContentRow';
 export type { ContentRowProps } from './components/messages/ContentRow';
+export { default as MessageFooter } from './components/messages/MessageFooter';
+export type { MessageFooterProps } from './components/messages/MessageFooter';
 export { getMessageAriaLabel, getHeaderPrefixForScreenReader } from './components/messages/labels';
 
 /** Parts: the leaf components and row classes tool cards share. */
