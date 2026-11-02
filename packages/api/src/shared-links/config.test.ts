@@ -242,6 +242,19 @@ describe('buildSharedLinkStartupPayload', () => {
     expect(buildSharedLinkStartupPayload(config, {}).interface).toEqual({ theme: 'clickhouse' });
   });
 
+  it('passes a consent-free analytics setting to the share view', () => {
+    const payload = buildSharedLinkStartupPayload(
+      appConfig({ interfaceConfig: { analyticsConsent: false } }),
+      { ANALYTICS_GTM_ID: 'GTM-XYZ' },
+    );
+
+    expect(payload).toEqual({
+      appTitle: 'LibreChat',
+      analyticsGtmId: 'GTM-XYZ',
+      interface: { analyticsConsent: false },
+    });
+  });
+
   it('defaults the app title and omits unrelated interface config', () => {
     const payload = buildSharedLinkStartupPayload(
       appConfig({ interfaceConfig: { modelSelect: true } }),

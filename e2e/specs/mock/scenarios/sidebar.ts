@@ -54,6 +54,30 @@ export async function openSidebar(page: Page) {
   await expect.poll(isOpen, { timeout: 5_000 }).toBe(true);
 }
 
+/** At or below the app's own \`(max-width: 768px)\` the sidebar is a drawer whose panels sit
+ *  behind a switcher menu; above it they are buttons on the rail. */
+const NARROW_MAX_WIDTH = 768;
+
+/**
+ * Shows the conversation list on either layout: the rail's Chat History panel on desktop, and
+ * on mobile the opened drawer switched to Chat History, which a previous panel (the agent
+ * builder, say) may have replaced.
+ */
+export async function openChatHistory(page: Page) {
+  const narrow = (page.viewportSize()?.width ?? Infinity) <= NARROW_MAX_WIDTH;
+  if (!narrow) {
+    await page.getByRole('button', { name: 'Chat History' }).click();
+    return;
+  }
+  await openSidebar(page);
+  const switcher = page.getByTestId('panel-switcher-button');
+  if (!(await switcher.textContent())?.includes('Chat History')) {
+    await switcher.click();
+    await page.getByRole('menuitemcheckbox', { name: 'Chat History' }).click();
+  }
+  await expect(switcher).toContainText('Chat History');
+}
+
 /** The row mounts its real menu on the first mouse enter (`Convo.tsx`). Hovering is what a
  * pointer device does, but the mobile drawer cannot always offer a hoverable row, and a real
  * `hover()` then waits out the whole budget. The fallback dispatches `mouseover`, which is the

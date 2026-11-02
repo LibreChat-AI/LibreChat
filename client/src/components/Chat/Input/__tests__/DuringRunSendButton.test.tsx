@@ -1,13 +1,14 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { useForm } from 'react-hook-form';
+import { ComposerActions } from '@librechat/chat/components';
 import { render, screen, fireEvent } from '@testing-library/react';
 import type { SteeringControls } from '@librechat/chat/react';
 import type { ShortcutOverride } from '~/store/misc';
-import DuringRunSendButton from '../DuringRunSendButton';
+import { ComposerHostTestProvider } from 'test/composerHost';
 import store from '~/store';
 
-jest.mock('~/hooks', () => ({
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
   useLocalize: () => (key: string) => key,
 }));
 
@@ -48,6 +49,7 @@ const steeringStub = ({
     canSteer,
     canControlGeneration,
     pausedOnApproval,
+    duringRunActive: true,
     interruptSteer: mockInterruptSteer,
     steerFromComposer: mockSteerFromComposer,
     queueFromComposer: mockQueueFromComposer,
@@ -66,17 +68,29 @@ function Harness({
   enterToSend: boolean;
   disabled?: boolean;
 }) {
-  const methods = useForm<{ text: string }>({ defaultValues: { text: TEXT } });
   return (
-    <DuringRunSendButton
-      control={methods.control}
-      steering={steering}
-      isNewConversation={isNewConversation}
-      getText={() => TEXT}
-      onConsumed={mockOnConsumed}
-      enterToSend={enterToSend}
-      disabled={disabled}
-    />
+    <ComposerHostTestProvider>
+      <ComposerActions
+        text={TEXT}
+        submitButtonRef={React.createRef<HTMLButtonElement>()}
+        isSubmitting
+        answersAsk={false}
+        hasEndpoint
+        steering={steering}
+        isNewConversation={isNewConversation}
+        getText={() => TEXT}
+        onConsumed={mockOnConsumed}
+        enterToSend={enterToSend}
+        fileCount={0}
+        sendDisabled={false}
+        duringRunDisabled={disabled}
+        showStopButton={false}
+        setShowStopButton={jest.fn()}
+        stop={jest.fn()}
+        canStop
+        isPreparingFromUrl={false}
+      />
+    </ComposerHostTestProvider>
   );
 }
 

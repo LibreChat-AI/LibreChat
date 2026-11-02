@@ -1,5 +1,6 @@
 import { useId, useContext, useEffect, useMemo } from 'react';
 import { Button, TextareaAutosize } from '@librechat/client';
+import { useComposerPresentsApproval, useOptionalChatSurface } from '@librechat/chat/react';
 import {
   X,
   Check,
@@ -9,19 +10,17 @@ import {
   ShieldQuestion,
   TriangleAlert,
 } from 'lucide-react';
-import type { Agents } from 'librechat-data-provider';
-import type { KeyboardEvent } from 'react';
-import type { TranslationKeys } from '~/hooks';
 import {
   isReboundSubmitChord,
   resolveComposerKeyDown,
   bindingFromEvent,
   bindingsMatch,
   bindingHash,
-} from '~/utils/shortcuts';
-import { useComposerPresentsApproval } from '~/components/Chat/approval/state';
-import { useOptionalChatSurface } from '~/components/Chat/Subagents/surface';
-import { boundApprovalLabel } from '~/components/Chat/approval/preview';
+  boundApprovalLabel,
+} from '@librechat/chat';
+import type { Agents } from 'librechat-data-provider';
+import type { KeyboardEvent } from 'react';
+import type { TranslationKeys } from '~/hooks';
 import { useApprovalContext, useResumeSubmit } from './ApprovalContext';
 import { cn, forceResize, insertTextAtCursor, logger } from '~/utils';
 import { NO_HOST_BINDINGS } from '~/hooks/Input/useComposerBindings';

@@ -15,10 +15,10 @@ jest.mock('~/hooks', () => ({
 
 const initialize = TagManager.initialize as jest.Mock;
 
-const renderConsent = (gtmId?: string | null) =>
+const renderConsent = (gtmId?: string | null, consentRequired?: boolean) =>
   render(
     <Provider>
-      <AnalyticsConsent gtmId={gtmId} />
+      <AnalyticsConsent gtmId={gtmId} consentRequired={consentRequired} />
     </Provider>,
   );
 
@@ -186,5 +186,19 @@ describe('AnalyticsConsent', () => {
     );
     expect(startEvents).toHaveLength(1);
     document.querySelector('script[src*="gtm.js"]')?.remove();
+  });
+
+  it('loads GTM without a banner when the deployment does not require consent', () => {
+    localStorage.setItem('analyticsConsent', JSON.stringify('denied'));
+    renderConsent('GTM-TEST', false);
+    expect(getBanner()).not.toBeInTheDocument();
+    expect(initialize).toHaveBeenCalledTimes(1);
+    expect(initialize).toHaveBeenCalledWith({ gtmId: 'GTM-TEST' });
+  });
+
+  it('still never loads GTM without a container when consent is not required', () => {
+    renderConsent(undefined, false);
+    expect(getBanner()).not.toBeInTheDocument();
+    expect(initialize).not.toHaveBeenCalled();
   });
 });

@@ -1,7 +1,7 @@
 import { createElement } from 'react';
 import { getDefaultStore } from 'jotai';
 import { QueryClient } from '@tanstack/react-query';
-import { renderHook, act, waitFor } from '@testing-library/react';
+import { renderHook as renderBareHook, act, waitFor } from '@testing-library/react';
 import {
   Constants,
   ContentTypes,
@@ -11,6 +11,7 @@ import {
   StepTypes,
   request,
 } from 'librechat-data-provider';
+import type { RenderHookOptions, RenderHookResult } from '@testing-library/react';
 import type { TMessage, TSubmission } from 'librechat-data-provider';
 import type { Query, QueryKey } from '@tanstack/react-query';
 import type { ReactNode } from 'react';
@@ -22,7 +23,6 @@ import {
   removeUsageAtoms,
 } from '~/components/Chat/Input/TokenUsage/store';
 import { registerComposerDraft, captureComposerDraft, bindComposerLaunch } from '~/utils/drafts';
-import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 
 type SSEEventListener = (e: Partial<MessageEvent> & { responseCode?: number }) => void;
 
@@ -229,6 +229,26 @@ jest.mock('~/data-provider', () => ({
 jest.mock('@librechat/chat/react', () => ({
   ...jest.requireActual('@librechat/chat/react'),
   useSteerConvert: () => mockConvertSteersToQueued,
+  useEventHandlers: jest.fn(() => ({
+    errorHandler: mockErrorHandler,
+    finalHandler: mockFinalHandler,
+    createdHandler: mockCreatedHandler,
+    attachmentHandler: jest.fn(),
+    stepHandler: mockStepHandler,
+    titleHandler: mockTitleHandler,
+    contentHandler: mockContentHandler,
+    syncHandler: mockSyncHandler,
+    resetContentHandler: jest.fn(),
+    syncStepMessage: jest.fn(),
+    prunePtcTraces: jest.fn(),
+    clearStepMaps: mockClearStepMaps,
+    flushPendingDeltas: jest.fn(),
+    cancelPendingDeltaFlush: jest.fn(),
+    abortConversation: jest.fn(),
+    messageHandler: jest.fn(),
+    setIsSubmitting: mockSetIsSubmitting,
+    setShowStopButton: jest.fn(),
+  })),
 }));
 
 /** The steer-chip/queue writers are swapped for stable named spies, so these tests
@@ -257,34 +277,6 @@ const mockSyncHandler = jest.fn();
 const mockSetIsSubmitting = jest.fn();
 const mockClearStepMaps = jest.fn();
 
-jest.mock('~/hooks/SSE/useEventHandlers', () => {
-  const actual = jest.requireActual('~/hooks/SSE/useEventHandlers');
-  return {
-    __esModule: true,
-    ...actual,
-    default: jest.fn(() => ({
-      errorHandler: mockErrorHandler,
-      finalHandler: mockFinalHandler,
-      createdHandler: mockCreatedHandler,
-      attachmentHandler: jest.fn(),
-      stepHandler: mockStepHandler,
-      titleHandler: mockTitleHandler,
-      contentHandler: mockContentHandler,
-      syncHandler: mockSyncHandler,
-      resetContentHandler: jest.fn(),
-      syncStepMessage: jest.fn(),
-      prunePtcTraces: jest.fn(),
-      clearStepMaps: mockClearStepMaps,
-      flushPendingDeltas: jest.fn(),
-      cancelPendingDeltaFlush: jest.fn(),
-      abortConversation: jest.fn(),
-      messageHandler: jest.fn(),
-      setIsSubmitting: mockSetIsSubmitting,
-      setShowStopButton: jest.fn(),
-    })),
-  };
-});
-
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
   return {
@@ -312,21 +304,37 @@ jest.mock('librechat-data-provider', () => {
   };
 });
 
-import useResumableSSE, {
-  selectLocalSteersForQueue,
-  ABORT_SWEEP_STATUSES,
-} from '~/hooks/SSE/useResumableSSE';
+import { selectLocalSteersForQueue, ABORT_SWEEP_STATUSES } from '~/hooks/SSE/resumable';
+import { appStreamHost } from '~/Providers/StreamHostContext';
 import useSSE from '~/hooks/SSE/useSSE';
 import type { PendingSteer } from '@librechat/chat';
 import type { Transport } from '~/hooks/Chat/contract';
 import { ChatTransportContext, defaultChatTransport } from '~/Providers/ChatTransportContext';
 import {
+  useResumableSSE,
+  StreamHostProvider,
   recoveryDispositionsFamily,
   queuedMessagesByConvoId,
   stopRequestedByConvoId,
   detachedRunByConvoId,
   resetQueueFamilies,
+  pendingApprovalActionFamily,
 } from '@librechat/chat/react';
+
+/** Every hook here renders under the app's stream host, as `Root` mounts it. */
+function renderHook<Result, Props>(
+  callback: (props: Props) => Result,
+  options?: RenderHookOptions<Props>,
+): RenderHookResult<Result, Props> {
+  const Inner = options?.wrapper;
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(
+      StreamHostProvider,
+      { host: appStreamHost },
+      Inner ? createElement(Inner, null, children) : children,
+    );
+  return renderBareHook(callback, { ...options, wrapper });
+}
 
 const CONV_ID = 'conv-abc-123';
 

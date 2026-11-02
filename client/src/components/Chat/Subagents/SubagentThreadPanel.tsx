@@ -3,7 +3,9 @@ import { v4 } from 'uuid';
 import { useNavigate } from 'react-router-dom';
 import { dataService, ForkOptions } from 'librechat-data-provider';
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
+import { isMacPlatform, resolveComposerKeyDown } from '@librechat/chat';
 import { ArrowUpRight, Clock, OctagonPause, X, Zap } from 'lucide-react';
+import { SubagentActivity, SubagentActivityScrollSurface } from '@librechat/chat/components';
 import {
   Alert,
   Button,
@@ -12,6 +14,32 @@ import {
   useMediaQuery,
   useToastContext,
 } from '@librechat/client';
+import {
+  activeSubagentPanel,
+  subagentPanelFocusRequest,
+  subagentControlStateByTask,
+  subagentControlStateKey,
+  subagentProgressKey,
+  useSubagentProgress,
+  useSubagentActivityStream,
+  adaptDurableThreadActivity,
+  adaptDurableThreadConversation,
+  adaptLivePersistedActivity,
+  mergeChildConversationTurns,
+  retainBoundedMovingWindowTurns,
+  eventSubagentSelection,
+  resolveSubagentAgentId,
+  isLiveSubagentStatus,
+  getSubagentPrompt,
+  useParentSubagents,
+  agentAuthor,
+  resolveSubagentAuthor,
+  isSelfSpawn as isSelfSpawnType,
+  resolveChildAgent,
+  readableSubagentType,
+  useParentAuthor,
+  useChatSurface,
+} from '@librechat/chat/react';
 import type {
   ParentSubagentTaskSummary,
   SubagentControlAction,
@@ -19,9 +47,9 @@ import type {
   SubagentControlRequest,
 } from 'librechat-data-provider';
 import type { ComposerKeyVerdict, ComposerStopProps, SendAction } from '@librechat/client';
+import type { ActiveSubagentPanel, SubagentControlUiState } from '@librechat/chat/react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
-import type { ActiveSubagentPanel, SubagentControlUiState } from './state';
-import type { ComposerKeyAction } from '~/utils/shortcuts';
+import type { ComposerKeyAction } from '@librechat/chat';
 import type { OptionWithIcon } from '~/common';
 import {
   ACTIVE_THREAD_REFRESH_MS,
@@ -31,47 +59,15 @@ import {
   useSubagentControlMutation,
   useSubagentThreadQuery,
 } from '~/data-provider';
-import {
-  adaptDurableThreadActivity,
-  adaptDurableThreadConversation,
-  adaptLivePersistedActivity,
-  mergeChildConversationTurns,
-  retainBoundedMovingWindowTurns,
-} from './adapters';
-import {
-  activeSubagentPanel,
-  subagentPanelFocusRequest,
-  subagentControlStateByTask,
-  subagentControlStateKey,
-  subagentProgressKey,
-  useSubagentProgress,
-} from './state';
-import {
-  agentAuthor,
-  resolveSubagentAuthor,
-  isSelfSpawn as isSelfSpawnType,
-  resolveChildAgent,
-  readableSubagentType,
-  useParentAuthor,
-} from './author';
-import useSubagentActivityStream from '~/data-provider/Subagents/useSubagentActivityStream';
-import SubagentActivity, { SubagentActivityScrollSurface } from './SubagentActivity';
 import ApprovalProvider from '~/components/Chat/Messages/Content/ApprovalContext';
 import { TaskContentScopeContext } from '~/data-provider/Subagents/content';
-import { isMacPlatform, resolveComposerKeyDown } from '~/utils/shortcuts';
 import { useFocusTrap, useLocalize, useNavigateToConvo } from '~/hooks';
 import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
 import { useConfiguredFooter } from '~/components/Chat/Footer';
-import { useParentSubagents } from './ParentSubagentsProvider';
 import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import SubagentConversation from './SubagentConversation';
-import { eventSubagentSelection } from './eventSelection';
-import { resolveSubagentAgentId } from './identity';
 import { useAgentsMapContext } from '~/Providers';
-import { isLiveSubagentStatus } from './status';
 import { cn, renderAgentAvatar } from '~/utils';
-import { getSubagentPrompt } from './prompt';
-import { useChatSurface } from './surface';
 
 const EVENT_TASK_PAGE_SIZE = 3;
 const TERMINAL_CONTROL_REASONS = new Set([

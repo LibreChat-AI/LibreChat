@@ -1,4 +1,5 @@
 import { useMutation } from '@tanstack/react-query';
+import { getClientLimit } from 'librechat-data-provider';
 import type { UseMutationResult } from '@tanstack/react-query';
 
 export interface SharePointFile {
@@ -48,17 +49,26 @@ export const useSharePointBatchDownload = (): UseMutationResult<
               file.downloadUrl ||
               `https://graph.microsoft.com/v1.0/drives/${file.driveId}/items/${file.itemId}/content`;
 
-            const response = await fetch(downloadUrl, {
-              headers: {
-                Authorization: `Bearer ${accessToken}`,
-              },
-            });
+            const controller = new AbortController();
+            const abortTimer = setTimeout(() => controller.abort(), getClientLimit('sharepointMs'));
+            let response: Response;
+            let blob: Blob;
+            try {
+              response = await fetch(downloadUrl, {
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                },
+                signal: controller.signal,
+              });
 
-            if (!response.ok) {
-              throw new Error(`${response.status} ${response.statusText}`);
+              if (!response.ok) {
+                throw new Error(`${response.status} ${response.statusText}`);
+              }
+
+              blob = await response.blob();
+            } finally {
+              clearTimeout(abortTimer);
             }
-
-            const blob = await response.blob();
             const contentType =
               response.headers.get('content-type') || getMimeTypeFromFileName(file.name);
 

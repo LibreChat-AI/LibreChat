@@ -263,6 +263,32 @@ test.describe('popovers inside a modal dialog', () => {
      *  screen is what shows the dialog stayed open. */
     await expect(page.getByTestId('default-stateful-workspace')).toBeVisible();
   });
+
+  /** The stateful workspace Dropdown asks for an 18rem list through `minWidth`, the same prop
+   *  `DropdownPopup` takes, and gets it wherever the viewport leaves that much room. */
+  test('the Settings workspace list takes its minimum width @scenario:dropdown-min-width', async ({
+    page,
+  }) => {
+    await offerStatefulSessions(page);
+    await useTheme(page);
+    await openWorkspaceDropdown(page);
+
+    const listbox = page.getByRole('listbox');
+    /** The list zooms in from 0.95, so its box is only its real size once it settles. */
+    await expect(listbox).toHaveAttribute('data-enter');
+    await expect
+      .poll(() => listbox.evaluate((element) => getComputedStyle(element).scale))
+      .toMatch(/^(1|none)$/);
+    const { width, viewport } = await listbox.evaluate((element) => ({
+      width: element.getBoundingClientRect().width,
+      viewport: window.innerWidth,
+    }));
+    const rem = await page.evaluate(() =>
+      parseFloat(getComputedStyle(document.documentElement).fontSize),
+    );
+    expect(width).toBeGreaterThanOrEqual(Math.min(18 * rem, viewport - rem) - 0.5);
+    expect(width).toBeLessThanOrEqual(viewport);
+  });
 });
 
 /** Sets both list roles apart from their defaults, so a list still drawing a fixed size shows. */

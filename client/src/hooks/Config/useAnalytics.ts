@@ -78,11 +78,14 @@ function initializeContainer(gtmId: string) {
 /**
  * The only place Google Tag Manager is initialized. It loads when the
  * deployment set `ANALYTICS_GTM_ID` and the viewer granted consent, never before.
+ * With `consentRequired` false (`interface.analyticsConsent: false`) the
+ * deployment has granted it for every viewer and the stored answer is ignored.
  * Mount it once per page shell (the signed-in layout and the shared-link view).
  */
-export default function useAnalytics(gtmId: string | null | undefined) {
-  const [consent, setConsent] = useAtom(analyticsConsentAtom);
+export default function useAnalytics(gtmId: string | null | undefined, consentRequired = true) {
+  const [storedConsent, setConsent] = useAtom(analyticsConsentAtom);
   const enabled = hasAnalyticsGtmId(gtmId);
+  const consent = consentRequired ? storedConsent : 'granted';
 
   useEffect(() => {
     if (!enabled || consent !== 'granted') {

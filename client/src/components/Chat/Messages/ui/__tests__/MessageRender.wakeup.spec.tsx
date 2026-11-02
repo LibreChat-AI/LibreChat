@@ -7,6 +7,8 @@ import type { TMessageChatContext } from '~/common';
 import { ShareMessagesProvider } from '~/components/Share/ShareMessagesProvider';
 import { ShareContext } from '~/Providers/ShareContext';
 import MessageRender from '../MessageRender';
+import '~/Providers/MessagePartsHostContext';
+import '~/Providers/MessagesHostContext';
 
 const mockAgentsMap = {
   agent_reviewer: { id: 'agent_reviewer', name: 'Code Reviewer' },
@@ -14,7 +16,8 @@ const mockAgentsMap = {
 };
 
 let mockChildren = new Map<string, ParentSubagentSummary>();
-jest.mock('~/components/Chat/Subagents/ParentSubagentsProvider', () => ({
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useParentSubagents: () => ({ byThreadId: mockChildren }),
 }));
 
@@ -59,19 +62,9 @@ jest.mock('~/components/Chat/Messages/Content/MessageContent', () => ({
   __esModule: true,
   default: () => <div data-testid="message-content" />,
 }));
-jest.mock('~/components/Chat/Messages/HoverButtons', () => ({
-  __esModule: true,
-  default: () => null,
-}));
-jest.mock('~/components/Chat/Messages/SiblingSwitch', () => ({
-  __esModule: true,
-  default: ({ className }: { className?: string }) => (
-    <span data-testid="sibling-footer" className={className} />
-  ),
-}));
-jest.mock('~/components/Chat/Messages/ui/MessageTimestamp', () => ({
-  __esModule: true,
-  default: () => null,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  HoverButtons: () => null,
 }));
 
 const chatContext = { latestMessageId: 'wake' } as unknown as TMessageChatContext;
@@ -107,6 +100,7 @@ function renderMessage(
   shared = false,
   submitted = false,
   dispatch?: TMessage,
+  siblings: { siblingIdx?: number; siblingCount?: number } = {},
 ) {
   const queryClient = new QueryClient();
   queryClient.setQueryData(
@@ -130,7 +124,15 @@ function renderMessage(
     isUserSubmitted: submitted,
     text,
   } as unknown as TMessage;
-  const row = <MessageRender message={message} chatContext={chatContext} currentEditId={null} />;
+  const row = (
+    <MessageRender
+      message={message}
+      chatContext={chatContext}
+      currentEditId={null}
+      setSiblingIdx={() => undefined}
+      {...siblings}
+    />
+  );
   const sharedReply: TMessage = {
     messageId: 'shared-reply',
     parentMessageId: 'wake',
@@ -367,10 +369,24 @@ it('uses the validated spawning lane for a private self wake-up', () => {
 });
 
 it('aligns a System event footer with its transcript body', () => {
-  renderMessage(backgroundWakeup);
-  expect(screen.getByTestId('sibling-footer').parentElement).not.toHaveClass('justify-end');
+  renderMessage(backgroundWakeup, undefined, false, false, undefined, {
+    siblingIdx: 0,
+    siblingCount: 2,
+  });
+  expect(screen.getByRole('navigation').parentElement).not.toHaveClass('justify-end');
 });
 it('does not reorder System sibling controls to the user edge', () => {
-  renderMessage(backgroundWakeup);
-  expect(screen.getByTestId('sibling-footer')).not.toHaveClass('order-last');
+  renderMessage(backgroundWakeup, undefined, false, false, undefined, {
+    siblingIdx: 0,
+    siblingCount: 2,
+  });
+  expect(screen.getByRole('navigation')).not.toHaveClass('order-last');
+});
+it('keeps a user prompt footer at the user edge with its sibling controls last', () => {
+  renderMessage('Plain question', undefined, false, true, undefined, {
+    siblingIdx: 0,
+    siblingCount: 2,
+  });
+  expect(screen.getByRole('navigation').parentElement).toHaveClass('justify-end');
+  expect(screen.getByRole('navigation')).toHaveClass('order-last');
 });

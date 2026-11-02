@@ -2,6 +2,8 @@ import path from 'path';
 import crypto from 'node:crypto';
 import { EModelEndpoint } from 'librechat-data-provider';
 import { mkdir, copyFile, rename, unlink, writeFile } from 'fs/promises';
+import type { TFileConfig } from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
 import { stripCacheBust } from './path';
 
 export interface LocalStoragePaths {
@@ -17,11 +19,16 @@ interface LocalFile {
 
 interface LocalDeleteRequest {
   user: { id: string };
-  config: { paths: LocalStoragePaths };
+  config: { paths: LocalStoragePaths; fileConfig?: TFileConfig; timeouts?: AppConfig['timeouts'] };
 }
 
 interface LocalFileDeleteDependencies {
-  deleteRagFile: (args: { userId: string; file: LocalFile }) => Promise<unknown>;
+  deleteRagFile: (args: {
+    userId: string;
+    file: LocalFile;
+    fileConfig?: TFileConfig;
+    timeouts?: AppConfig['timeouts'];
+  }) => Promise<unknown>;
   logger: { warn: (...args: unknown[]) => void; error: (...args: unknown[]) => void };
 }
 
@@ -43,6 +50,12 @@ export function createLocalFileDeleter({ deleteRagFile, logger }: LocalFileDelet
   return async (req: LocalDeleteRequest, file: LocalFile): Promise<void> => {
     const { publicPath, uploads } = req.config.paths;
     const ownerId = req.user.id;
+    const ragParams = {
+      userId: ownerId,
+      file,
+      ...(req.config.fileConfig ? { fileConfig: req.config.fileConfig } : {}),
+      ...(req.config.timeouts ? { timeouts: req.config.timeouts } : {}),
+    };
     if (!ownerId) throw new Error('Invalid file owner');
     const cleanFilepath = stripCacheBust(file.filepath);
     const uploadPrefix = `/uploads/${ownerId}/`;
@@ -53,7 +66,9 @@ export function createLocalFileDeleter({ deleteRagFile, logger }: LocalFileDelet
       if (!isStrictlyWithin(userUploadDir, filePath)) {
         throw new Error(`Invalid file path: ${cleanFilepath}`);
       }
-      await deleteRagFile({ userId: ownerId, file });
+      if ((await deleteRagFile(ragParams)) === false) {
+        throw new Error('Vector deletion was not confirmed');
+      }
       await unlinkStoredFile(filePath);
       return;
     }
@@ -61,7 +76,9 @@ export function createLocalFileDeleter({ deleteRagFile, logger }: LocalFileDelet
     const parts = cleanFilepath.split(path.sep);
     const subfolder = parts[1];
     if (!subfolder && parts[0] === EModelEndpoint.agents) {
-      await deleteRagFile({ userId: ownerId, file });
+      if ((await deleteRagFile(ragParams)) === false) {
+        throw new Error('Vector deletion was not confirmed');
+      }
       logger.warn(`Agent File ${file.file_id} is missing filepath, may have been deleted already`);
       return;
     }
@@ -69,7 +86,9 @@ export function createLocalFileDeleter({ deleteRagFile, logger }: LocalFileDelet
     if (!subfolder || !isStrictlyWithin(path.join(publicPath, subfolder, ownerId), filePath)) {
       throw new Error('Invalid file path');
     }
-    await deleteRagFile({ userId: ownerId, file });
+    if ((await deleteRagFile(ragParams)) === false) {
+      throw new Error('Vector deletion was not confirmed');
+    }
     await unlinkStoredFile(filePath);
   };
 }

@@ -1,6 +1,17 @@
+import { logger } from '@librechat/data-schemas';
 import { AuthType, EToolResources } from 'librechat-data-provider';
 import type { TPlugin } from 'librechat-data-provider';
-import { filterUniquePlugins, checkPluginAuth, getToolkitKey, formatToolError } from './format';
+import {
+  ToolInputError,
+  getToolkitKey,
+  checkPluginAuth,
+  formatToolError,
+  getToolErrorText,
+  filterUniquePlugins,
+  formatToolHttpError,
+  TOOL_ERROR_FALLBACK,
+  WOLFRAM_STATUS_TEXT,
+} from './format';
 
 describe('format.ts helper functions', () => {
   describe('filterUniquePlugins', () => {
@@ -349,20 +360,91 @@ describe('format.ts helper functions', () => {
   });
 
   describe('formatToolError', () => {
-    it('redacts a key carried in the failed request URL', () => {
+    it('returns the fallback instead of a raw exception message', () => {
       const error = new Error(
         'request to https://api.example.test/data?lat=1&appid=secret-key failed, reason: ENOTFOUND',
       );
-      expect(formatToolError(error)).toBe(
-        'Error: request to https://api.example.test/data?lat=1&appid=[REDACTED] failed, reason: ENOTFOUND',
+      expect(formatToolError(error, 'Example')).toBe(`Error: ${TOOL_ERROR_FALLBACK}`);
+      expect(formatToolError('timeout')).toBe(`Error: ${TOOL_ERROR_FALLBACK}`);
+    });
+
+    it('keeps the message of a tool input error', () => {
+      expect(formatToolError(new ToolInputError('Could not find coordinates for city: Rome'))).toBe(
+        'Error: Could not find coordinates for city: Rome',
       );
     });
 
-    it('keeps a plain message and stringifies non-errors', () => {
-      expect(formatToolError(new Error('Could not find coordinates for city: Rome'))).toBe(
-        'Error: Could not find coordinates for city: Rome',
+    it('redacts credentials and emails a tool input error echoes from its arguments', () => {
+      const text = formatToolError(
+        new ToolInputError(
+          'Could not find coordinates for city: sk-proj-PRIVATEKEY123 private.user@example.com',
+        ),
       );
-      expect(formatToolError('timeout')).toBe('Error: timeout');
+      expect(text).toContain('Could not find coordinates for city:');
+      expect(text).not.toContain('PRIVATEKEY123');
+      expect(text).not.toContain('private.user@example.com');
+      expect(getToolErrorText(new ToolInputError('key=PRIVATEQUERY123 rejected'))).not.toContain(
+        'PRIVATEQUERY123',
+      );
+    });
+
+    it('logs only safe metadata for an unapproved failure', () => {
+      const warn = jest.spyOn(logger, 'warn').mockImplementation(() => logger);
+      const error = Object.assign(new Error('upstream said PRIVATE-DETAIL'), {
+        code: 'ECONNRESET',
+      });
+
+      formatToolError(error, 'Example');
+
+      expect(warn).toHaveBeenCalledWith('[Example] Tool request failed', { type: 'Error' });
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('PRIVATE-DETAIL');
+      warn.mockRestore();
+    });
+
+    it('words an HTTP failure from its status, never its response body', () => {
+      const httpError = (status: number) =>
+        Object.assign(new Error('Request failed'), {
+          response: { status, data: 'PRIVATE-PROVIDER-BODY' },
+        });
+
+      expect(formatToolError(httpError(503), 'Wolfram|Alpha', WOLFRAM_STATUS_TEXT)).toBe(
+        'Error: Wolfram|Alpha is unavailable; try again later (status 503).',
+      );
+      expect(formatToolError(httpError(501), 'Wolfram|Alpha', WOLFRAM_STATUS_TEXT)).toBe(
+        `Error: ${WOLFRAM_STATUS_TEXT[501]}`,
+      );
+      expect(formatToolError(httpError(404), 'Example')).not.toContain('PRIVATE-PROVIDER-BODY');
+    });
+  });
+
+  describe('getToolErrorText', () => {
+    it('approves only tool input errors', () => {
+      expect(getToolErrorText(new ToolInputError('Invalid date format.'))).toBe(
+        'Invalid date format.',
+      );
+      expect(getToolErrorText(new Error('socket hang up'))).toBe(TOOL_ERROR_FALLBACK);
+      expect(getToolErrorText({ message: 'not an error' })).toBe(TOOL_ERROR_FALLBACK);
+    });
+  });
+
+  describe('formatToolHttpError', () => {
+    it.each([
+      [401, 'Error: Service rejected the configured credentials (status 401).'],
+      [404, 'Error: Service found no result for this request (status 404).'],
+      [429, 'Error: Service is rate limiting requests; try again later (status 429).'],
+      [
+        400,
+        'Error: Service rejected the request parameters; check them and try again (status 400).',
+      ],
+      [503, 'Error: Service is unavailable; try again later (status 503).'],
+    ])('words status %i without provider text', (status, expected) => {
+      expect(formatToolHttpError('Service', status)).toBe(expected);
+    });
+
+    it('prefers a tool-specific wording for a documented status', () => {
+      expect(formatToolHttpError('Service', 501, { 501: 'Rephrase the input.' })).toBe(
+        'Error: Rephrase the input.',
+      );
     });
   });
 });

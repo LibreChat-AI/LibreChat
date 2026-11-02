@@ -1,5 +1,7 @@
 jest.mock('axios');
-jest.mock('@librechat/data-schemas', () => ({ logger: { warn: jest.fn(), error: jest.fn() } }));
+jest.mock('@librechat/data-schemas', () => ({
+  logger: { warn: jest.fn(), error: jest.fn(), debug: jest.fn() },
+}));
 jest.mock('@librechat/api', () => ({
   genAzureEndpoint: jest.fn(),
   logAxiosError: jest.fn(),
@@ -8,6 +10,8 @@ jest.mock('@librechat/api', () => ({
   capSpeechInput: jest.requireActual('@librechat/api').capSpeechInput,
   pipeSegment: jest.fn(),
   pipeToResponse: jest.fn(),
+  abortOnClose: jest.requireActual('@librechat/api').abortOnClose,
+  createSpeechBudget: jest.requireActual('@librechat/api').createSpeechBudget,
 }));
 jest.mock('librechat-data-provider', () => ({
   /** Real constants: `validateTTSInput` comes from the built `@librechat/api`, which reads them. */
@@ -116,7 +120,12 @@ describe('TTSService input cap', () => {
     const service = new TTSService();
     jest.spyOn(service, 'getVoice').mockResolvedValue('alloy');
     const ttsRequest = jest.spyOn(service, 'ttsRequest').mockResolvedValue({ data: {} });
-    const res = { status: jest.fn().mockReturnThis(), send: jest.fn(), setHeader: jest.fn() };
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      send: jest.fn(),
+      setHeader: jest.fn(),
+      once: jest.fn(),
+    };
 
     await service.processTextToSpeech(
       {
@@ -136,7 +145,12 @@ describe('TTSService input cap', () => {
   it('refuses a non-text body before calling any provider', async () => {
     const service = new TTSService();
     const ttsRequest = jest.spyOn(service, 'ttsRequest');
-    const res = { status: jest.fn().mockReturnThis(), send: jest.fn(), setHeader: jest.fn() };
+    const res = {
+      status: jest.fn().mockReturnThis(),
+      send: jest.fn(),
+      setHeader: jest.fn(),
+      once: jest.fn(),
+    };
 
     await service.processTextToSpeech(
       {
@@ -149,5 +163,45 @@ describe('TTSService input cap', () => {
     expect(res.status).toHaveBeenCalledWith(400);
     expect(res.send).toHaveBeenCalledWith('Missing text in request body');
     expect(ttsRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe('TTSService chunked speech deadlines', () => {
+  it('gives each chunk its own deadline and destroys a started response when a later chunk fails', async () => {
+    const { pipeSegment } = require('@librechat/api');
+    const { splitTextIntoChunks } = require('./streamAudio');
+    const service = new TTSService();
+    jest.spyOn(service, 'getVoice').mockResolvedValue('alloy');
+    splitTextIntoChunks.mockReturnValue([
+      { text: 'first', isFinished: false },
+      { text: 'second', isFinished: true },
+    ]);
+    const ttsRequest = jest
+      .spyOn(service, 'ttsRequest')
+      .mockResolvedValueOnce({ data: {} })
+      .mockRejectedValueOnce(new Error('Exceeded timeouts.speechMs'));
+    pipeSegment.mockResolvedValue(undefined);
+    const res = {
+      headersSent: true,
+      status: jest.fn().mockReturnThis(),
+      send: jest.fn(),
+      setHeader: jest.fn(),
+      once: jest.fn(),
+      destroy: jest.fn(),
+    };
+
+    await service.processTextToSpeech(
+      {
+        body: { input: 'a'.repeat(5000) },
+        config: {
+          speech: { tts: { maxInputChars: 6000, openai: { apiKey: 'sk', model: 'tts-1' } } },
+        },
+      },
+      res,
+    );
+
+    expect(ttsRequest).toHaveBeenCalledTimes(2);
+    expect(ttsRequest.mock.calls[0][4].signal).not.toBe(ttsRequest.mock.calls[1][4].signal);
+    expect(res.destroy).toHaveBeenCalledTimes(1);
   });
 });

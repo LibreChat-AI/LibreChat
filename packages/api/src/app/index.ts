@@ -17,6 +17,8 @@ export * from './server';
 export * from './readiness';
 export * from './origin';
 export * from './agents';
+export { applyLoadedConfig, recordLoadedConfig } from './runtime';
 export { resolveBuildInfo } from './build';
 export type { BuildInfo } from './build';
 export { buildPreLoginInterface, withSafePolicyLinks } from './interface';
+export * from './migrations';

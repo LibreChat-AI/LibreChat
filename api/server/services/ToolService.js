@@ -1,4 +1,4 @@
-const { logger, redactMessage, getTenantId } = require('@librechat/data-schemas');
+const { logger, getTenantId } = require('@librechat/data-schemas');
 const { tool: toolFn, DynamicStructuredTool } = require('@librechat/agents/langchain/tools');
 const {
   sleep,
@@ -26,6 +26,7 @@ const {
   buildWebSearchDynamicContext,
   getCodeApiAuthHeaders,
   getReplayablePendingMCPOAuthStart,
+  getReplayablePendingMCPOAuthStarts,
   getMCPServerNamesFromTools,
   createMCPOAuthDeferral,
   buildMCPAuthToolCall,
@@ -64,6 +65,7 @@ const {
   withRequestCodeInputs,
   resolveAgentCodeExecution,
   resolveCodeExecutionWorkspaceContext,
+  requiresCodeWorkspaceCapabilities,
   resolveRunFileCodeExecutionContext,
   resolveCallerCapabilityProjectionSnapshot,
   CREATE_FILE_TOOL_NAME,
@@ -77,6 +79,7 @@ const {
   appendAssistantMCPAppArtifact,
   resolveMCPClientCapabilityProfile,
   getOutboundTimeoutMs,
+  getToolErrorText,
 } = require('@librechat/api');
 const {
   Time,
@@ -732,7 +735,7 @@ async function processRequiredActions(client, requiredActions) {
       const output = getSafeRequiredActionOutput(
         client,
         currentAction,
-        `Error processing tool ${currentAction.tool}: ${redactMessage(error.message, 256)}`,
+        `Error processing tool ${currentAction.tool}: ${getToolErrorText(error)}`,
       );
       return {
         tool_call_id: currentAction.toolCallId,
@@ -1421,20 +1424,15 @@ async function loadToolDefinitionsWrapper({
 
   /** OAuth discovery must not reconnect (or prompt for) a server whose
    *  definitions the collision filter deliberately rejected. */
-  for (const serverName of getMCPServerNamesFromTools(defsFilteredTools, mcpServerNames)) {
-    if (oauthDeferral.hasSignInDecision(serverName)) {
-      continue;
-    }
-
-    const pendingOAuthStart = await getReplayablePendingMCPOAuthStart({
-      flowManager,
-      userId: req.user.id,
-      serverName,
-    });
-    if (pendingOAuthStart) {
-      pendingOAuthServers.add(serverName);
-      pendingOAuthStarts.set(serverName, pendingOAuthStart);
-    }
+  const discoveredOAuthStarts = await getReplayablePendingMCPOAuthStarts({
+    flowManager,
+    userId: req.user.id,
+    serverNames: getMCPServerNamesFromTools(defsFilteredTools, mcpServerNames),
+    skip: (serverName) => oauthDeferral.hasSignInDecision(serverName),
+  });
+  for (const [serverName, pendingOAuthStart] of discoveredOAuthStarts) {
+    pendingOAuthServers.add(serverName);
+    pendingOAuthStarts.set(serverName, pendingOAuthStart);
   }
 
   if (pendingOAuthServers.size > 0 && (res || streamId)) {
@@ -2283,6 +2281,7 @@ async function loadToolsForExecution({
     );
   const codeExecutionContext = await resolveCodeExecutionWorkspaceContext({
     context: baseCodeExecutionContext,
+    requiresLiveCapabilities: requiresCodeWorkspaceCapabilities(toolNames),
     requestedSelections: runtimeRequestBody?.codeWorkspaces,
     persistedSelections: req.resolvedConversation?.codeWorkspaces,
     environments: req.config?.endpoints?.agents?.statefulCodeSessions?.environments,

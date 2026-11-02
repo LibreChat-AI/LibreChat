@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useId, useMemo, useRef } from 'react';
 import { TriangleAlert } from 'lucide-react';
 import { Input, Button } from '@librechat/client';
+import { AskOptions } from '@librechat/chat/components';
+import { useOptionalChatSurface } from '@librechat/chat/react';
+import { isCancelKey, isReboundSubmitChord, splitOtherOption } from '@librechat/chat';
 import type { Agents } from 'librechat-data-provider';
 import type { KeyboardEvent, ReactNode } from 'react';
-import { useOptionalChatSurface } from '~/components/Chat/Subagents/surface';
-import { isCancelKey, isReboundSubmitChord } from '~/utils/shortcuts';
 import useAskQuestionsForm from '~/hooks/Input/useAskQuestionsForm';
-import AskOptions from '~/components/Chat/ask/options';
-import { splitOtherOption } from '~/utils/approval';
 import { AutoHeight } from '~/components/ui';
 import { mainTextareaId } from '~/common';
 import { useLocalize } from '~/hooks';

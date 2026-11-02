@@ -4,36 +4,12 @@ import { act, render } from '@testing-library/react';
 import type { TConversation, TMessage } from 'librechat-data-provider';
 import { ChatContext, MessagesViewProvider, useChatContext } from '~/Providers';
 import MessageContent from '../MessageContent';
+import '~/components/Chat/Messages/Content/register';
+import '~/Providers/MessagesHostContext';
 
 const mockRowRenders = new Map<string, number>();
 
-jest.mock('~/components/Chat/Messages/ui/MessageRow', () => ({
-  __esModule: true,
-  default: ({
-    id,
-    children,
-    footer,
-  }: {
-    id?: string;
-    children: React.ReactNode;
-    footer: React.ReactNode;
-  }) => {
-    mockRowRenders.set(id ?? '', (mockRowRenders.get(id ?? '') ?? 0) + 1);
-    return (
-      <div data-testid={`row-${id}`}>
-        {children}
-        {footer}
-      </div>
-    );
-  },
-}));
-
 jest.mock('~/components/Chat/Messages/Content/ContentParts', () => ({
-  __esModule: true,
-  default: () => null,
-}));
-
-jest.mock('~/components/Chat/Messages/HoverButtons', () => ({
   __esModule: true,
   default: () => null,
 }));
@@ -43,10 +19,14 @@ jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
   default: () => null,
 }));
 
-jest.mock('~/components/Chat/Messages/Elapsed', () => ({
-  __esModule: true,
-  default: () => null,
-  shouldShowElapsed: () => false,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  HoverButtons: () => null,
+  ContentRow: ({ message }: { message: { messageId: string } }) => {
+    const id = message.messageId;
+    mockRowRenders.set(id, (mockRowRenders.get(id) ?? 0) + 1);
+    return <div data-testid={`row-${id}`} />;
+  },
 }));
 
 jest.mock('~/hooks', () => ({

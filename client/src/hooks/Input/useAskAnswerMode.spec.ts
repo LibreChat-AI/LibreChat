@@ -8,7 +8,7 @@ import {
   askAnswerCheckedAtom,
   askAnswerTextAtom,
   releasedComposerTextAtom,
-} from '~/components/Chat/ask/state';
+} from '@librechat/chat/react';
 
 const mockSubmitAskAnswer = jest.fn();
 const mockResetComposer = jest.fn();
@@ -45,8 +45,8 @@ jest.mock('~/utils', () => ({
 }));
 
 import { useGetMessagesByConvoId } from '~/data-provider';
-import { findLiveAskUserQuestion } from '~/utils/approval';
 import useAskAnswerMode from './useAskAnswerMode';
+import { findLiveAskUserQuestion } from '@librechat/chat';
 
 const mockUseGetMessages = useGetMessagesByConvoId as jest.Mock;
 

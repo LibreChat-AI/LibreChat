@@ -1,5 +1,6 @@
 import { memo, useCallback, useId, useMemo, useState } from 'react';
 import { Plus, X } from 'lucide-react';
+import { bindingDisplayKeys } from '@librechat/chat';
 import { useRecoilState, useRecoilValue } from 'recoil';
 import {
   Label,
@@ -9,12 +10,11 @@ import {
   OGDialogTitle,
   OGDialogContent,
 } from '@librechat/client';
+import type { ShortcutBinding } from '@librechat/chat';
 import type { ShortcutActionId, ShortcutBindingInfo } from '~/hooks/useKeyboardShortcuts';
 import type { TranslationKeys } from '~/hooks/useLocalize';
-import type { ShortcutBinding } from '~/utils/shortcuts';
 import { RecorderInfo, RecorderPill, useShortcutRecorder } from './ShortcutRecorder';
 import { isMac, useShortcutBindings } from '~/hooks/useKeyboardShortcuts';
-import { bindingDisplayKeys } from '~/utils/shortcuts';
 import ShortcutKeyCombo from './ShortcutKeyCombo';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';

@@ -834,6 +834,7 @@ const createAgentHandler = async (req, res) => {
       previous: undefined,
       next: agentData.instructionsPrompt,
       filters: req.config?.filters,
+      linkedInstructions: req.config?.endpoints?.agents?.linkedInstructions,
       logger,
       req,
     });
@@ -901,8 +902,8 @@ const createAgentHandler = async (req, res) => {
     res.status(201).json(agent);
   } catch (error) {
     if (error instanceof z.ZodError) {
-      logger.error('[/Agents] Validation error', error.errors);
-      return res.status(400).json({ error: 'Invalid request data', details: error.errors });
+      logger.error('[/Agents] Validation error', error.issues);
+      return res.status(400).json({ error: 'Invalid request data', details: error.issues });
     }
     logger.error('[/Agents] Error creating agent', error);
     if (error?.statusCode === 409) {
@@ -1235,6 +1236,7 @@ const updateAgentHandler = async (req, res) => {
       previous: existingAgent.instructionsPrompt,
       next: instructionsPromptField,
       filters: req.config?.filters,
+      linkedInstructions: req.config?.endpoints?.agents?.linkedInstructions,
       logger,
       req,
     });
@@ -1403,8 +1405,8 @@ const updateAgentHandler = async (req, res) => {
     return res.json(presentedAgent);
   } catch (error) {
     if (error instanceof z.ZodError) {
-      logger.error('[/Agents/:id] Validation error', error.errors);
-      return res.status(400).json({ error: 'Invalid request data', details: error.errors });
+      logger.error('[/Agents/:id] Validation error', error.issues);
+      return res.status(400).json({ error: 'Invalid request data', details: error.issues });
     }
 
     logger.error('[/Agents/:id] Error updating Agent', error);

@@ -60,6 +60,9 @@ export type EndpointFileConfig = {
 export type FileConfig = {
   /** Enable after all replicas and rollback targets support retained file destinations. */
   retainedFileCleanup?: boolean;
+  deletionRetryLimit?: number;
+  vectorOwnershipTrackingStart?: string;
+  vectorDeletionConcurrency?: number;
   endpoints: {
     [key: string]: EndpointFileConfig;
   };
@@ -105,6 +108,9 @@ export type FileConfig = {
 export type FileConfigInput = {
   /** Fail closed on embedded-file deletion until marker-aware readers are deployed. */
   retainedFileCleanup?: boolean;
+  deletionRetryLimit?: number;
+  vectorOwnershipTrackingStart?: string;
+  vectorDeletionConcurrency?: number;
   endpoints?: {
     [key: string]: EndpointFileConfig;
   };
@@ -168,6 +174,10 @@ export type TFile = {
   temp_file_id?: string;
   bytes: number;
   embedded: boolean;
+  /** Every vector namespace has been tracked since this record was inserted. */
+  embeddingOwnersComplete?: boolean;
+  /** Insert-time proof, trusted only after the deployment rollout cutoff. */
+  embeddingOwnersTrackedAt?: string | Date;
   filename: string;
   filepath: string;
   object: 'file';

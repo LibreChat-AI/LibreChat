@@ -92,31 +92,6 @@ jest.mock('~/hooks', () => ({
   usePromptContentResolver: () => mockResolve,
 }));
 
-/* react-virtualized renders nothing in jsdom without a measured size; replace
-   AutoSizer + List with a flat ul so every row's MentionItem button renders. */
-jest.mock('react-virtualized', () => ({
-  ...jest.requireActual('react-virtualized'),
-  AutoSizer: ({ children }: { children: (size: { width: number }) => React.ReactNode }) =>
-    children({ width: 320 }),
-  List: ({
-    rowCount,
-    rowRenderer,
-  }: {
-    rowCount: number;
-    rowRenderer: (args: {
-      index: number;
-      key: string;
-      style: React.CSSProperties;
-    }) => React.ReactNode;
-  }) => {
-    const rows: React.ReactNode[] = [];
-    for (let i = 0; i < rowCount; i++) {
-      rows.push(rowRenderer({ index: i, key: `row-${i}`, style: {} }));
-    }
-    return <ul data-testid="prompts-list">{rows}</ul>;
-  },
-}));
-
 import PromptsCommand from '../PromptsCommand';
 
 const makeTextarea = (initial = '/') => {
@@ -236,14 +211,14 @@ describe('PromptsCommand keyboard navigation', () => {
     const input = getInput();
 
     fireEvent.change(input, { target: { value: 'zzz' } });
-    expect(screen.queryByRole('button')).toBeNull();
+    expect(screen.queryByRole('option')).toBeNull();
 
     /* Arrow keys on an empty list must be no-ops, not `% 0` -> NaN. */
     fireEvent.keyDown(input, { key: 'ArrowDown' });
     fireEvent.keyDown(input, { key: 'ArrowUp' });
 
     fireEvent.change(input, { target: { value: '' } });
-    expect(screen.getAllByRole('button')).toHaveLength(2);
+    expect(screen.getAllByRole('option')).toHaveLength(2);
 
     /* Without the guard the active index would still be NaN here and no
        item would highlight; with it, navigation resumes from a valid index. */

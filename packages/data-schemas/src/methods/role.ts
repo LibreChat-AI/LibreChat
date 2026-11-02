@@ -1,5 +1,4 @@
 import {
-  AUTH_USER_DOC_BY_ID_PREFIX,
   CacheKeys,
   SystemRoles,
   roleDefaults,
@@ -10,6 +9,7 @@ import type { FilterQuery, Model } from 'mongoose';
 import type { CacheStore, IRole, IUser } from '~/types';
 import { scopedCacheKey, getTenantId, runAsSystem, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { tenantPartitionFilter } from '~/models/plugins/tenantIsolation';
+import { evictAuthUserDocsForUsers } from '~/utils/eviction';
 import { escapeRegExp } from '~/utils/string';
 import logger from '~/config/winston';
 
@@ -18,10 +18,6 @@ const systemRoleValues = new Set<string>(Object.values(SystemRoles));
 /** Case-insensitive check — the legacy roles route uppercases params. */
 function isSystemRoleName(name: string): boolean {
   return systemRoleValues.has(name.toUpperCase());
-}
-
-function isAuthUserDocCacheEnabled(): boolean {
-  return process.env.AUTH_USER_CACHE_MODE === 'on';
 }
 
 export class RoleConflictError extends Error {
@@ -670,30 +666,7 @@ export function createRoleMethods(
   }
 
   async function invalidateAuthUserDocCache(userIds: string[]): Promise<void> {
-    if (!isAuthUserDocCacheEnabled() || userIds.length === 0) {
-      return;
-    }
-    const cache = deps.getCache?.(CacheKeys.AUTH_USER_DOC);
-    if (!cache?.get || !cache?.delete) {
-      return;
-    }
-    try {
-      const uniqueUserIds = [...new Set(userIds.map((userId) => userId.toString()))];
-      await Promise.all(
-        uniqueUserIds.map(async (userId) => {
-          const indexKey = `${AUTH_USER_DOC_BY_ID_PREFIX}:${userId}`;
-          const cachedKeys = await cache.get(indexKey);
-          if (Array.isArray(cachedKeys)) {
-            await Promise.all(
-              cachedKeys.map((key) => (typeof key === 'string' ? cache.delete?.(key) : undefined)),
-            );
-          }
-          await cache.delete?.(indexKey);
-        }),
-      );
-    } catch (cacheError) {
-      logger.error('[roleMethods] auth user doc cache invalidation failed:', cacheError);
-    }
+    await evictAuthUserDocsForUsers(deps.getCache, userIds);
   }
 
   /** The users holding `roleName` in the caller's tenant partition, a page at a time. */

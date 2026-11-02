@@ -83,8 +83,9 @@ html[data-input-modality='pointer'] .lc-field.webkit-dark-styles:focus-visible {
 /* iOS zooms into a focused field under 16px and the installed PWA never zooms back out. On touch
    devices every text entry control keeps at least 16px, wherever a caller sizes it. Sizes at
    text-base or above keep their own value, floored the same way for a small UI scale. This sits in
-   the package stylesheet so standalone consumers get it too; the composer and message editor in
-   the app size themselves from the chat font setting and are excluded here. */
+   the package stylesheet so standalone consumers get it too. The composer draft sizes itself from
+   the chat font setting, floored here so a consumer without the app stylesheet keeps it too; the
+   app's message editor does the same in the app stylesheet. */
 @media (any-pointer: coarse) {
   :is(
     input:not([type]),
@@ -135,6 +136,10 @@ html[data-input-modality='pointer'] .lc-field.webkit-dark-styles:focus-visible {
 
     &.text-3xl {
       font-size: max(16px, var(--text-3xl, 1.875rem));
+    }
+
+    &.composer-text {
+      font-size: max(16px, var(--markdown-font-size, var(--font-size-base, 1rem)));
     }
   }
 }

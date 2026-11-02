@@ -1,13 +1,14 @@
 import { memo, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
+import { getToolDisplayLabel } from '@librechat/chat';
 import type {
   SubagentDigest,
   SubagentDigestNode,
   SubagentDigestStatus,
 } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
-import { cn, getToolDisplayLabel, getRunStepDurationLabels } from '~/utils';
 import { ToolIcon, getToolIconType } from './ToolOutput';
+import { cn, getRunStepDurationLabels } from '~/utils';
 import { useLocalize } from '~/hooks';
 
 export type DigestTreeNode = { node: SubagentDigestNode; children: DigestTreeNode[] };

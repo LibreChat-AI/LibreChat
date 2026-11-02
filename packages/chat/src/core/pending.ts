@@ -251,3 +251,26 @@ export function findPendingActionMessageIndex(
   }
   return -1;
 }
+
+/**
+ * True when the part carries an unresolved tool approval, directly or nested
+ * in subagent content. Collapsed disclosure bodies retain instead of
+ * unmounting while this holds, because `ToolApproval` owns unsent local
+ * edit/respond/reason state that an unmount would discard.
+ */
+export function hasPendingApprovalInPart(part: TMessageContentParts): boolean {
+  if (part.type !== ContentTypes.TOOL_CALL) {
+    return false;
+  }
+  const toolCall = part[ContentTypes.TOOL_CALL] as ToolCallWithApproval | undefined;
+  if (!toolCall) {
+    return false;
+  }
+  if (toolCall.approval != null && (toolCall.output?.length ?? 0) === 0) {
+    return true;
+  }
+  return (
+    Array.isArray(toolCall.subagent_content) &&
+    toolCall.subagent_content.some(hasPendingApprovalInPart)
+  );
+}

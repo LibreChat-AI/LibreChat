@@ -1,7 +1,7 @@
 import { useState, memo, useRef, useCallback, useId, useMemo } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Ellipsis, Eye, SquarePen, Trash, EarthIcon, Cloud, User } from 'lucide-react';
+import { Ellipsis, Eye, SquarePen, Trash, EarthIcon, User } from 'lucide-react';
 import {
   Label,
   Button,
@@ -26,6 +26,7 @@ import { useLocalize, useAuthContext, useSubmitMessage, usePromptContentResolver
 import { useRecordPromptUsage, useDeletePromptGroup } from '~/data-provider';
 import useChatScopedRequest from '~/hooks/Prompts/useChatScopedRequest';
 import { useLiveAnnouncer, useChatContext } from '~/Providers';
+import PromptSourceBadge from '../display/PromptSourceBadge';
 import VariableDialog from '../dialogs/VariableDialog';
 import PreviewPrompt from '../dialogs/PreviewPrompt';
 import CategoryIcon from '../utils/CategoryIcon';
@@ -274,22 +275,7 @@ function ChatGroupItem({
                   }
                 />
               )}
-              {isExternal && (
-                <TooltipAnchor
-                  description={localize('com_ui_prompt_source_langfuse')}
-                  side="top"
-                  render={
-                    <span
-                      tabIndex={0}
-                      role="img"
-                      aria-label={localize('com_ui_prompt_source_langfuse')}
-                      className="flex shrink-0 items-center"
-                    >
-                      <Cloud className="text-text-secondary size-3.5" aria-hidden="true" />
-                    </span>
-                  }
-                />
-              )}
+              <PromptSourceBadge source={group.source} />
               {/* The menu shares the title's line, so only the title gives way to it.
                   The snippet below keeps the full width of the row either way. */}
               <div

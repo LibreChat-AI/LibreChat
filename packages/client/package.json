@@ -1,6 +1,6 @@
 {
   "name": "@librechat/client",
-  "version": "0.4.84",
+  "version": "0.4.85",
   "description": "React components for LibreChat",
   "repository": {
     "type": "git",
@@ -37,6 +37,7 @@
     "build:dev": "npm run clean && NODE_ENV=development tsdown",
     "b:build": "bun run b:clean && bun run tsdown",
     "build:watch": "tsdown --watch",
+    "typecheck": "node ../../scripts/typecheck.mts",
     "dev": "tsdown --watch",
     "test": "jest",
     "test:ci": "jest --ci"

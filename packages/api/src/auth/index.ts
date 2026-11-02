@@ -19,6 +19,7 @@ export * from './invite';
 export * from './codeapi';
 export * from './openidRoleSync';
 export * from './userDocCache';
+export * from './jwt';
 export * from './email';
 export * from './emailChangeStore';
 export * from './passwordReset';

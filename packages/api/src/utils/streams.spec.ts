@@ -1,6 +1,6 @@
 import { logger } from '@librechat/data-schemas';
 import { PassThrough, Readable } from 'node:stream';
-import { pipeSegment, pipeToResponse, isClientDisconnect } from './streams';
+import { pipeSegment, abortOnClose, pipeToResponse, isClientDisconnect } from './streams';
 import { isAbortError } from './errors';
 import { logAxiosError } from './axios';
 
@@ -163,5 +163,22 @@ describe('pipeSegment', () => {
 
     await expect(pipeSegment(failingSource(), res, { end: false })).rejects.toThrow('socket reset');
     expect(res.destroyed).toBe(false);
+  });
+});
+
+describe('abortOnClose', () => {
+  it('aborts with a client disconnect once the response closes', () => {
+    const res = new PassThrough();
+    const signal = abortOnClose(res);
+    expect(signal.aborted).toBe(false);
+
+    res.destroy();
+    return new Promise<void>((resolve) =>
+      res.once('close', () => {
+        expect(signal.aborted).toBe(true);
+        expect(isClientDisconnect(signal.reason)).toBe(true);
+        resolve();
+      }),
+    );
   });
 });

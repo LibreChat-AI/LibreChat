@@ -1,28 +1,17 @@
 import { useMemo } from 'react';
 import { Brain } from 'lucide-react';
 import { Tools } from 'librechat-data-provider';
+import { BareStatus } from '@librechat/chat/components';
+import { toolPanelSpacingClassName } from '@librechat/chat/react';
+import { parseJsonField, isMemoryFailureOutput } from '@librechat/chat';
 import type { PartMetadata, TAttachment, MemoryArtifact } from 'librechat-data-provider';
+import type { MemoryToolName } from '@librechat/chat';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
-import { toolPanelSpacingClassName } from '../disclosure';
 import useToolCallState from './useToolCallState';
 import { AttachmentGroup } from './Attachment';
-import parseJsonField from './parseJsonField';
 import MemoryInfo from '../MemoryInfo';
-import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
-
-type MemoryToolName = 'set_memory' | 'delete_memory';
-
-export function isMemoryFailureOutput(toolName: MemoryToolName, output: string): boolean {
-  const trimmed = output.trim();
-  if (!trimmed) {
-    return false;
-  }
-  return toolName === 'set_memory'
-    ? !/^(?:Memory set for key|Memory saved\b)/i.test(trimmed)
-    : !/^Memory deleted(?: for key|\.)/i.test(trimmed);
-}
 
 export default function MemoryCall({
   toolName,

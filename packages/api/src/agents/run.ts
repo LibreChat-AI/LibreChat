@@ -137,6 +137,7 @@ import { createStepBudgetHook } from '~/agents/stepBudget';
 import { buildHITLRunWiring } from '~/agents/hitl/runtime';
 import { buildLangfuseConfig } from '~/langfuse/config';
 import { applyTestRunHook } from '~/agents/testHook';
+import { frameDynamicInstructions } from './tail';
 import { isUserProvided } from '~/utils/common';
 import { createSafeUser } from '~/utils/env';
 
@@ -1876,15 +1877,6 @@ function buildIsolatedAgentInputs(
   toInput: (agent: RunAgent, opts?: { isSubagent?: boolean }) => AgentInputs,
 ): AgentInputs {
   const childInputs = toInput(child, { isSubagent: true });
-  const alwaysApplySkillPrimes = child.alwaysApplySkillPrimes;
-  if (alwaysApplySkillPrimes && alwaysApplySkillPrimes.length > 0) {
-    const skillInstructions = alwaysApplySkillPrimes
-      .map((prime) => `# Always-apply skill: ${prime.name}\n${prime.body}`)
-      .join('\n\n');
-    childInputs.additional_instructions = [childInputs.additional_instructions, skillInstructions]
-      .filter((value): value is string => typeof value === 'string' && value.length > 0)
-      .join('\n\n');
-  }
   if ((child.backgroundToolNames?.length ?? 0) > 0) {
     childInputs.toolDefinitions = stripBackgroundFromToolDefinitions(
       childInputs.toolDefinitions,
@@ -2498,9 +2490,17 @@ export async function createRun({
 
     const systemContent = [toolInstructions, agent.instructions ?? ''].join('\n').trim();
 
-    const additionalInstructions = [dynamicToolInstructions, agent.additional_instructions ?? '']
+    let additionalInstructions = [dynamicToolInstructions, agent.additional_instructions ?? '']
       .join('\n')
       .trim();
+    if (isSubagent && agent.alwaysApplySkillPrimes?.length) {
+      const skillInstructions = agent.alwaysApplySkillPrimes
+        .map((prime) => `# Always-apply skill: ${prime.name}\n${prime.body}`)
+        .join('\n\n');
+      additionalInstructions = [additionalInstructions, skillInstructions]
+        .filter(Boolean)
+        .join('\n\n');
+    }
 
     /** Resolves issues with new OpenAI usage field */
     if (
@@ -2632,7 +2632,12 @@ export async function createRun({
       tools,
       clientOptions: llmConfig,
       instructions: systemContent,
-      additional_instructions: additionalInstructions || undefined,
+      additional_instructions:
+        frameDynamicInstructions({
+          instructions: additionalInstructions,
+          provider,
+          promptCache: 'promptCache' in llmConfig && llmConfig.promptCache === true,
+        }) || undefined,
       name: agent.name ?? undefined,
       toolRegistry,
       maxContextTokens: effectiveMaxContextTokens,

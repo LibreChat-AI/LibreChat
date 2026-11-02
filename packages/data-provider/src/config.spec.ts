@@ -57,6 +57,17 @@ describe('independent browser replay opt-in', () => {
     expect(telemetrySchema.safeParse(telemetry).success).toBe(false);
   });
 });
+
+describe('telemetry.stackTraceLimit', () => {
+  it('stays absent unless configured, so the process default applies', () => {
+    expect(telemetrySchema.parse({})).toEqual({});
+    expect(telemetrySchema.parse({ stackTraceLimit: 50 })).toEqual({ stackTraceLimit: 50 });
+  });
+
+  it.each([0, -1, 2.5, 1001, '50'])('rejects %p', (stackTraceLimit) => {
+    expect(telemetrySchema.safeParse({ stackTraceLimit }).success).toBe(false);
+  });
+});
 import { EModelEndpoint, isDocumentSupportedProvider } from './schemas';
 import { getEndpointFileConfig, mergeFileConfig } from './file-config';
 import { DEFAULT_MCP_APP_CSP_LIMITS } from './mcp/csp';
@@ -342,12 +353,21 @@ describe('linked instructions configuration', () => {
     expect(agentsEndpointSchema.parse({ linkedInstructions: {} }).linkedInstructions).toEqual({
       timeoutMs: 2000,
       native: { cacheTtlMs: 300_000, cacheClearTimeoutMs: 1000 },
+      langfuse: { enabled: false },
     });
     expect(
       agentsEndpointSchema.parse({
         linkedInstructions: { timeoutMs: 5000, native: { cacheTtlMs: 0 } },
       }).linkedInstructions,
-    ).toEqual({ timeoutMs: 5000, native: { cacheTtlMs: 0, cacheClearTimeoutMs: 1000 } });
+    ).toEqual({
+      timeoutMs: 5000,
+      native: { cacheTtlMs: 0, cacheClearTimeoutMs: 1000 },
+      langfuse: { enabled: false },
+    });
+    expect(
+      agentsEndpointSchema.parse({ linkedInstructions: { langfuse: { enabled: true } } })
+        .linkedInstructions?.langfuse,
+    ).toEqual({ enabled: true });
     for (const timeoutMs of [0, 99, 30_001, 1.5]) {
       expect(agentsEndpointSchema.safeParse({ linkedInstructions: { timeoutMs } }).success).toBe(
         false,
@@ -3277,6 +3297,10 @@ describe('DEPLOYMENT_ONLY_CONFIG_PATHS', () => {
       'endpoints.agents.toolApproval.hooks': 'operator',
       cache: 'unused',
     });
+  });
+
+  it('keeps the process-wide stack limit deployment-only', () => {
+    expect(DEPLOYMENT_ONLY_CONFIG_PATHS['telemetry.stackTraceLimit']).toBe('operator');
   });
 
   it('overlaps neither the base-only sections nor the base-only paths', () => {

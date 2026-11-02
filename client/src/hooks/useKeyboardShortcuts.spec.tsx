@@ -1,5 +1,6 @@
 import { MemoryRouter } from 'react-router-dom';
 import { RecoilRoot, useRecoilValue } from 'recoil';
+import { bindingDisplayString, bindingToString } from '@librechat/chat';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, act, cleanup, renderHook, fireEvent, screen } from '@testing-library/react';
 import type { SettingDefinition, TConversation } from 'librechat-data-provider';
@@ -17,7 +18,6 @@ import useKeyboardShortcuts, {
   useShortcutDisplay,
   useShortcutAriaKey,
 } from './useKeyboardShortcuts';
-import { bindingDisplayString, bindingToString } from '~/utils/shortcuts';
 import { ReasoningControl } from '~/components/Chat/Input/Reasoning';
 import Thinking from '~/components/Chat/Input/Composer/Thinking';
 import store from '~/store';
@@ -49,12 +49,14 @@ jest.mock('~/data-provider/Endpoints/queries', () => ({
 jest.mock('~/Providers', () => ({
   useChatContext: () => ({
     conversation: { conversationId: 'test-convo', endpoint: 'openAI', model: 'gpt-4o' },
+    latestMessageId: undefined,
+    getMessages: () => [],
   }),
 }));
 
-jest.mock('~/hooks/Generic/useReducedMotion', () => ({
-  __esModule: true,
-  default: () => true,
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
+  useReducedMotion: () => true,
 }));
 
 jest.mock('copy-to-clipboard', () => ({
@@ -729,7 +731,7 @@ describe('stop generating shortcut', () => {
     const second = appendComposerForm();
     first.form.dataset.chatPane = '0';
     second.form.dataset.chatPane = '1';
-    fireEvent.click(screen.getByRole('button', { name: /Reasoning for next message/ }));
+    fireEvent.click(screen.getByRole('button', { name: /^Thinking / }));
 
     for (const role of ['spinbutton', 'slider']) {
       const control = screen.getByRole(role);

@@ -124,6 +124,7 @@ const { grantPermission } = require('~/server/services/PermissionService');
 const { hasCapability } = require('~/server/middleware/roles/capabilities');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
 const { resizeAvatar } = require('~/server/services/Files/images/avatar');
+const { promptService } = require('~/server/services/Prompts');
 const db = require('~/models');
 
 /**
@@ -7603,6 +7604,301 @@ describe('Agent Controllers - Mass Assignment Protection', () => {
         expect(await Agent.countDocuments({})).toBe(2);
 
         getRoleByNameSpy.mockRestore();
+      });
+    });
+
+    describe('Langfuse links', () => {
+      /** Restored individually so sibling describe blocks' spies survive `afterEach`. */
+      let activeSpies = [];
+
+      /** Stubs the Langfuse resolve result; the real adapter dispatch is out of scope here. */
+      const stubLangfuseResolve = (overrides = {}) => {
+        const spy = jest.spyOn(promptService, 'resolvePrompt').mockResolvedValue({
+          ok: true,
+          value: {
+            source: 'langfuse',
+            prompt: 'You are a Langfuse-linked assistant.',
+            type: 'text',
+            version: 1,
+            labels: ['production'],
+            ...overrides,
+          },
+        });
+        activeSpies.push(spy);
+        return spy;
+      };
+
+      /** Spies on global `fetch` only to assert the Langfuse adapter never calls it. */
+      const spyOnLangfuseFetch = () => {
+        const spy = jest.spyOn(global, 'fetch');
+        activeSpies.push(spy);
+        return spy;
+      };
+
+      const switchOn = () => {
+        mockReq.config = {
+          endpoints: { agents: { linkedInstructions: { langfuse: { enabled: true } } } },
+        };
+      };
+
+      afterEach(() => {
+        activeSpies.forEach((spy) => spy.mockRestore());
+        activeSpies = [];
+      });
+
+      test('returns 400 instructions_prompt_unavailable for a new Langfuse link while the switch is off', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        mockGroupVisibility(new Set([groupId]));
+        mockReq.body = {
+          name: 'Switch Off Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          instructionsPrompt: { source: 'langfuse', groupId, selection: { type: 'production' } },
+        };
+
+        await createAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(400);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: expect.any(String),
+          code: InstructionsPromptErrorCode.UNAVAILABLE,
+        });
+        expect(await Agent.countDocuments()).toBe(0);
+      });
+
+      test('allows re-saving the unchanged Langfuse link, and switching it to inline, while the switch is off', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        mockGroupVisibility(new Set([groupId]));
+        const link = { source: 'langfuse', groupId, selection: { type: 'production' } };
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Previously Linked Langfuse Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: link,
+        });
+
+        mockReq.params = { id: agentId };
+        mockReq.body = { instructionsPrompt: link };
+        await updateAgentHandler(mockReq, mockRes);
+        // `updateAgentHandler` only calls `res.status` on error, so no call means success.
+        expect(mockRes.status).not.toHaveBeenCalled();
+        const resaved = mockRes.json.mock.calls[0][0];
+        expect(resaved.instructionsPrompt).toEqual(link);
+        let persisted = await Agent.findOne({ id: agentId }).lean();
+        expect(persisted.instructionsPrompt).toEqual(link);
+
+        mockRes.json.mockClear();
+        mockRes.status.mockClear();
+        mockReq.body = { instructionsPrompt: null, instructions: 'Inline now.' };
+        await updateAgentHandler(mockReq, mockRes);
+        expect(mockRes.status).not.toHaveBeenCalled();
+        const updated = mockRes.json.mock.calls[0][0];
+        expect(updated.instructionsPrompt).toBeUndefined();
+        persisted = await Agent.findOne({ id: agentId }).lean();
+        expect(persisted.instructionsPrompt).toBeUndefined();
+        expect(persisted.instructions).toBe('Inline now.');
+      });
+
+      test('persists a new Langfuse link once the switch is on, using the stubbed resolve', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        const link = { source: 'langfuse', groupId, selection: { type: 'exact', version: 4 } };
+        const resolveSpy = stubLangfuseResolve({ groupId, version: 4 });
+        switchOn();
+        mockGroupVisibility(new Set([groupId]));
+        mockReq.body = {
+          name: 'Langfuse Version Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          instructionsPrompt: link,
+        };
+
+        await createAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(201);
+        const created = mockRes.json.mock.calls[0][0];
+        expect(created.instructionsPrompt).toEqual(link);
+        const persisted = await Agent.findOne({ id: created.id }).lean();
+        expect(persisted.instructionsPrompt).toEqual(link);
+        expect(resolveSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ groupId, source: 'langfuse' }),
+        );
+      });
+
+      test('returns 400 instructions_prompt_unavailable for a native link to a real Langfuse group, with no Langfuse network call', async () => {
+        // Real group and resolver: rejected on the group's recorded source before any Langfuse call.
+        const { _id: groupId } = await db.createLangfusePromptGroup({
+          name: 'Mismatched Source Group',
+          author: mockReq.user.id,
+          authorName: 'Fixture Author',
+          sourceDestination: 'env',
+          sourceProjectId: 'mismatch-project',
+          sourcePromptName: 'mismatch-prompt',
+        });
+        const fetchSpy = spyOnLangfuseFetch();
+        mockGroupVisibility(new Set([groupId]));
+        mockReq.body = {
+          name: 'Mismatched Source Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          instructionsPrompt: { source: 'native', groupId, selection: { type: 'production' } },
+        };
+
+        await createAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(400);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: expect.any(String),
+          code: InstructionsPromptErrorCode.UNAVAILABLE,
+        });
+        expect(fetchSpy).not.toHaveBeenCalled();
+        expect(await Agent.countDocuments()).toBe(0);
+      });
+
+      test('returns 400 instructions_prompt_unavailable for a Langfuse link to a real native group while the switch is on, with no Langfuse network call', async () => {
+        const { groupId } = await createPromptGroupFixture('Native Group For Langfuse Mismatch');
+        const fetchSpy = spyOnLangfuseFetch();
+        switchOn();
+        mockGroupVisibility(new Set([groupId]));
+        mockReq.body = {
+          name: 'Langfuse Link To Native Group',
+          provider: 'openai',
+          model: 'gpt-4',
+          instructionsPrompt: { source: 'langfuse', groupId, selection: { type: 'production' } },
+        };
+
+        await createAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(400);
+        expect(mockRes.json).toHaveBeenCalledWith({
+          error: expect.any(String),
+          code: InstructionsPromptErrorCode.UNAVAILABLE,
+        });
+        expect(fetchSpy).not.toHaveBeenCalled();
+        expect(await Agent.countDocuments()).toBe(0);
+      });
+
+      test('duplicateAgentHandler copies a Langfuse link verbatim and presents it with its own source when restricted', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        const link = { source: 'langfuse', groupId, selection: { type: 'production' } };
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Langfuse Source Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: link,
+        });
+        // No VIEW grant for `groupId`.
+
+        mockReq.params = { id: agent.id };
+
+        await duplicateAgentHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(201);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.agent.instructionsPrompt).toEqual({ source: 'langfuse', restricted: true });
+        const persisted = await Agent.findOne({ id: response.agent.id }).lean();
+        expect(persisted.instructionsPrompt).toEqual(link);
+      });
+
+      test('revertAgentVersionHandler restores a Langfuse link verbatim and presents it with its own source when restricted', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        const link = { source: 'langfuse', groupId, selection: { type: 'exact', version: 2 } };
+        const agentId = `agent_${nanoid()}`;
+        await Agent.create({
+          id: agentId,
+          author: mockReq.user.id,
+          name: 'Current Unlinked Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          versions: [
+            {
+              name: 'Langfuse-Linked Snapshot',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructionsPrompt: link,
+            },
+          ],
+        });
+        // No VIEW grant for `groupId`.
+
+        mockReq.params = { id: agentId };
+        mockReq.body = { version_index: 0 };
+
+        await revertAgentVersionHandler(mockReq, mockRes);
+
+        expect(mockRes.status).not.toHaveBeenCalledWith(403);
+        expect(mockRes.status).not.toHaveBeenCalledWith(400);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.name).toBe('Langfuse-Linked Snapshot');
+        expect(response.instructionsPrompt).toEqual({ source: 'langfuse', restricted: true });
+        const persisted = await Agent.findOne({ id: agentId }).lean();
+        expect(persisted.instructionsPrompt).toEqual(link);
+      });
+
+      test('getAgentHandler EDIT branch presents a restricted stub for a Langfuse link the editor cannot VIEW', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        const link = { source: 'langfuse', groupId, selection: { type: 'production' } };
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Restricted Langfuse Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          instructionsPrompt: link,
+        });
+        // No VIEW grant for `groupId`.
+
+        mockReq.params = { id: agent.id };
+
+        await getAgentHandler(mockReq, mockRes, true);
+
+        expect(mockRes.status).toHaveBeenCalledWith(200);
+        const response = mockRes.json.mock.calls[0][0];
+        expect(response.instructionsPrompt).toEqual({ source: 'langfuse', restricted: true });
+      });
+
+      test('getAgentVersionsHandler redacts an inaccessible Langfuse link in a version snapshot', async () => {
+        const groupId = new mongoose.Types.ObjectId().toString();
+        const link = { source: 'langfuse', groupId, selection: { type: 'production' } };
+        const agent = await Agent.create({
+          id: `agent_${nanoid()}`,
+          author: mockReq.user.id,
+          name: 'Langfuse Version History Agent',
+          provider: 'openai',
+          model: 'gpt-4',
+          tools: [],
+          versions: [
+            {
+              name: 'Old Linked Name',
+              provider: 'openai',
+              model: 'gpt-4',
+              tools: [],
+              instructionsPrompt: link,
+            },
+          ],
+        });
+        // No VIEW grant for `groupId`.
+
+        mockReq.params = { id: agent.id };
+
+        await getAgentVersionsHandler(mockReq, mockRes);
+
+        expect(mockRes.status).toHaveBeenCalledWith(200);
+        const versions = mockRes.json.mock.calls[0][0];
+        expect(versions[0].instructionsPrompt).toEqual({
+          source: 'langfuse',
+          restricted: true,
+          matchesCurrent: false,
+        });
       });
     });
   });

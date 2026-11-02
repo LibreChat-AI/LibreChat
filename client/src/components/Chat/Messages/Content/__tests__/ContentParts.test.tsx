@@ -2,17 +2,17 @@ import React from 'react';
 import { getDefaultStore } from 'jotai';
 import { ContentTypes, Tools } from 'librechat-data-provider';
 import { act, fireEvent, render, screen } from '@testing-library/react';
+import {
+  subagentProgressKey,
+  reduceSubagentProgress,
+  subagentProgressByToolCallId,
+} from '@librechat/chat/react';
 import type {
   TMessageContentParts,
   SubagentUpdateEvent,
   TAttachment,
 } from 'librechat-data-provider';
-import type { SubagentProgress } from '~/components/Chat/Subagents/state';
-import {
-  subagentProgressKey,
-  reduceSubagentProgress,
-  subagentProgressByToolCallId,
-} from '~/components/Chat/Subagents/state';
+import type { SubagentProgress } from '@librechat/chat/react';
 import { preserveStreamedContentIdentity } from '~/utils/messages';
 import { mapAttachments, groupSequentialToolCalls } from '~/utils';
 
@@ -142,7 +142,8 @@ jest.mock('../Part', () => {
   const { useMessageContext } = jest.requireActual<typeof import('~/Providers/MessageContext')>(
     '~/Providers/MessageContext',
   );
-  const { SoleToolContext } = jest.requireActual<typeof import('../disclosure')>('../disclosure');
+  const { SoleToolContext } =
+    jest.requireActual<typeof import('@librechat/chat/react')>('@librechat/chat/react');
   const { useContext } = jest.requireActual<typeof import('react')>('react');
   return {
     __esModule: true,

@@ -1,5 +1,7 @@
 import React, { memo, useMemo, useState, useCallback } from 'react';
 import * as Ariakit from '@ariakit/react';
+import { useElementSize } from '@librechat/chat/react';
+import { ComposerChip as Chip } from '@librechat/chat/components';
 import { Mic, Plus, Check, Square, ChevronDown } from 'lucide-react';
 import { IconButton, TooltipAnchor, SendIcon } from '@librechat/client';
 import type { TConversation, EModelEndpoint, EndpointFileConfig } from 'librechat-data-provider';
@@ -9,7 +11,6 @@ import type { ExtendedFile, FileSetter } from '~/common';
 import usePaletteEntries from '~/hooks/Input/usePaletteEntries';
 import MCPConfigDialog from '~/components/MCP/MCPConfigDialog';
 import useToolFavorites from '~/hooks/Input/useToolFavorites';
-import useElementSize from '~/hooks/Generic/useElementSize';
 import useChipPacking from '~/hooks/Input/useChipPacking';
 import { useBadgeRowContext } from '~/Providers';
 import TokenUsage from '../TokenUsage';
@@ -17,7 +18,6 @@ import { useLocalize } from '~/hooks';
 import Thinking from './Thinking';
 import Palette from './Palette';
 import { cn } from '~/utils';
-import Chip from './Chip';
 
 /** Stable identity so the memo below is not defeated when tools are hidden. */
 const EMPTY_ENTRIES: PaletteEntry[] = [];

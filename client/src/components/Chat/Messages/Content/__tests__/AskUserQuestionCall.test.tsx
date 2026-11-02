@@ -1,6 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { fireEvent, render, screen } from '@testing-library/react';
+import '~/Providers/MessagePartsHostContext';
 import AskUserQuestionCall from '../AskUserQuestionCall';
 import { FailedRevealContext } from '../reveal';
 import store from '~/store';
@@ -28,7 +29,8 @@ jest.mock('~/hooks', () => ({
   useExpandCollapse: jest.requireActual('~/hooks/Messages/useExpandCollapse').default,
 }));
 
-jest.mock('~/utils/approval', () => ({
+jest.mock('@librechat/chat', () => ({
+  ...jest.requireActual('@librechat/chat'),
   getSubmittedAskAnswer: () => undefined,
   parseAskUserQuestionArgs: (args: string | Record<string, unknown> | undefined) => {
     if (typeof args === 'string') {

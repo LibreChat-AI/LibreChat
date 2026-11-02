@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react';
+import { FileContainer, AttachmentImage as Image } from '@librechat/chat/components';
 import type { TFile } from 'librechat-data-provider';
-import FileContainer from '~/components/Chat/Input/Files/FileContainer';
-import Image from '~/components/Chat/Input/Files/Image';
 import { getCachedPreview } from '~/utils';
 import { useLocalize } from '~/hooks';
 

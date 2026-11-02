@@ -26,6 +26,10 @@ function createHost(enableUserMsgMarkdown = false): MessagePartsHost {
     useSmoothStreaming: () => false,
     useAgent: (agentId) => (agentId === agent.id ? agent : undefined),
     renderAgentIcon: (current) => <span data-testid="agent-icon">{current?.id ?? 'unknown'}</span>,
+    renderAgentAvatar: () => null,
+    renderContentParts: () => null,
+    renderImage: () => null,
+    renderFilePreview: () => null,
     useFontSize: () => 'text-base',
     useShowThinking: () => false,
     useAutoExpandTools: () => false,
@@ -44,6 +48,7 @@ function createHost(enableUserMsgMarkdown = false): MessagePartsHost {
     useSteerEscalating: () => false,
     usePaneConversationId: () => null,
     useLiveAppliedSteer: () => [false, jest.fn()],
+    useShare: () => ({}),
   };
 }
 

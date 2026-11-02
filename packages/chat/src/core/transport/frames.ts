@@ -24,6 +24,7 @@ type FrameKeys = {
   sync?: unknown;
   type?: unknown;
   message?: unknown;
+  ready?: unknown;
 };
 
 function normalizeEventFrame(frame: ChatEventFrame): ChatEvent {
@@ -57,8 +58,8 @@ function normalizeEventFrame(frame: ChatEventFrame): ChatEvent {
  * Tags one `message` frame by the keys the server wrote, checked in the order
  * the stream hooks have always checked them: a frame carrying both `final`
  * and `event` is final. An `event` the client does not name is a step event,
- * so the step handler keeps seeing new graph events as it did before. A frame
- * with none of the keys returns `undefined`.
+ * so the step handler keeps seeing new graph events as it did before. A replay
+ * feed's `{ ready: true }` is `ready`; a frame with none of the keys returns `undefined`.
  */
 export function normalizeFrame(frame: ChatFrame): ChatEvent | undefined {
   const keys: FrameKeys = frame;
@@ -79,6 +80,9 @@ export function normalizeFrame(frame: ChatFrame): ChatEvent | undefined {
   }
   if (keys.message != null) {
     return { type: 'text', data: frame as ChatTextFrame };
+  }
+  if (keys.ready === true) {
+    return { type: 'ready' };
   }
   return undefined;
 }

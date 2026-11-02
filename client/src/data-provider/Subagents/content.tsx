@@ -1,22 +1,20 @@
-import { createContext, useContext } from 'react';
+import { useContext } from 'react';
 import { atom, createStore } from 'jotai';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { QueryKeys, dataService, hasToolCallPreview } from 'librechat-data-provider';
+import {
+  recoverTaskContent,
+  recoveredToolPart,
+  isLiveSubagentStatus,
+  TaskContentScopeContext,
+} from '@librechat/chat/react';
+import type { RecoveredContent, TaskContentScope, ToolContentQuery } from '@librechat/chat/react';
 import type { SubagentTaskContentSnapshot, ToolCallPartResponse } from 'librechat-data-provider';
 import type { QueryClient, UseQueryOptions } from '@tanstack/react-query';
-import type { ToolContentQuery } from '~/components/Chat/Messages/Content/disclosure';
-import type { RecoveredContent } from '~/components/Chat/Subagents/recovery';
-import { recoverTaskContent, recoveredToolPart } from '~/components/Chat/Subagents/recovery';
-import { isLiveSubagentStatus } from '~/components/Chat/Subagents/status';
 import { ACTIVE_THREAD_REFRESH_MS } from './queries';
 
-export type TaskContentScope = {
-  parentConversationId: string;
-  threadId: string;
-  taskId: string;
-};
-
-export const TaskContentScopeContext = createContext<TaskContentScope | null>(null);
+export { TaskContentScopeContext };
+export type { TaskContentScope };
 export const subagentTaskContentKey = (scope: TaskContentScope) =>
   [
     QueryKeys.subagentTaskContent,

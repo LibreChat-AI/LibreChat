@@ -10,19 +10,19 @@ export default function SkillSection({ item }: Props) {
   return (
     <div className="flex flex-col gap-5">
       {item.description ? (
-        <p className="max-h-40 overflow-y-auto whitespace-pre-wrap text-sm leading-relaxed text-text-secondary">
+        <p className="text-text-secondary max-h-40 overflow-y-auto text-sm leading-relaxed whitespace-pre-wrap">
           {item.description}
         </p>
       ) : (
-        <p className="text-sm italic text-text-tertiary">
+        <p className="text-text-tertiary text-sm italic">
           {localize('com_ui_tools_no_description')}
         </p>
       )}
-      <div className="rounded-xl border border-border-light bg-surface-secondary px-4 py-3 text-xs text-text-secondary">
-        <span className="block font-medium uppercase tracking-wide text-text-tertiary">
+      <div className="border-border-light bg-surface-secondary text-text-secondary rounded-xl border px-4 py-3 text-xs">
+        <span className="text-text-tertiary block font-medium tracking-wide uppercase">
           {localize('com_ui_tools_info_identifier')}
         </span>
-        <span className="block truncate font-mono text-text-primary">{item.id}</span>
+        <span className="text-text-primary block truncate font-mono">{item.id}</span>
       </div>
     </div>
   );

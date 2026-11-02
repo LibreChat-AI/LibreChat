@@ -1,6 +1,7 @@
 /* eslint-disable react-hooks/rules-of-hooks */
 import { FileSources, FileContext } from 'librechat-data-provider';
 import { ArrowUpDown, ArrowUp, ArrowDown, Database } from 'lucide-react';
+import { ImagePreview, FilePreview, getFileType } from '@librechat/chat/components';
 import {
   Button,
   Checkbox,
@@ -11,11 +12,9 @@ import {
 } from '@librechat/client';
 import type { ColumnDef } from '@tanstack/react-table';
 import type { TFile } from 'librechat-data-provider';
-import ImagePreview from '~/components/Chat/Input/Files/ImagePreview';
-import FilePreview from '~/components/Chat/Input/Files/FilePreview';
 import { TranslationKeys, useLocalize } from '~/hooks';
 import { SortFilterHeader } from './SortFilterHeader';
-import { formatDate, getFileType } from '~/utils';
+import { formatDate } from '~/utils';
 
 const contextMap: Record<any, TranslationKeys> = {
   [FileContext.avatar]: 'com_ui_avatar',

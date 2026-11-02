@@ -38,9 +38,9 @@ jest.mock('../Attachment', () => ({
   AttachmentGroup: () => <div data-testid="attachment-group" />,
 }));
 
-jest.mock('../Stdout', () => ({
-  __esModule: true,
-  default: () => <div data-testid="stdout" />,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  Stdout: () => <div data-testid="stdout" />,
 }));
 
 jest.mock('../useLazyHighlight', () => {
@@ -59,7 +59,6 @@ jest.mock('../useLazyHighlight', () => {
 });
 
 jest.mock('~/utils', () => ({
-  ...jest.requireActual<typeof import('~/utils/toolLabels')>('~/utils/toolLabels'),
   ...jest.requireActual<typeof import('~/utils/runStepDuration')>('~/utils/runStepDuration'),
   cn: (...classes: Array<string | false | null | undefined>) => classes.filter(Boolean).join(' '),
 }));

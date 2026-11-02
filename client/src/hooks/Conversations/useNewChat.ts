@@ -10,6 +10,8 @@ import type { ExtendedFile } from '~/common';
 import type { FilesDraft } from '~/utils';
 import {
   beginRetainedDeletionPass,
+  claimFileDeletionRetries,
+  settleFileDeletionRetries,
   clearAllDrafts,
   clearFilesDraft,
   clearMessagesCache,
@@ -33,7 +35,7 @@ import {
   subscribeRetainedFileDeletions,
   takeRetainedFileDeletions,
 } from '~/utils';
-import { useGetFiles, useDeleteFilesMutation } from '~/data-provider';
+import { useGetFiles, useGetFileConfig, useDeleteFilesMutation } from '~/data-provider';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import useNewConvo from '~/hooks/useNewConvo';
 import store from '~/store';
@@ -124,6 +126,8 @@ export default function useNewChat({
   const files = useAtomValue(filesFamily(index));
   const { saveDrafts } = useChatSettings();
   const { data: fileList } = useGetFiles<TFile[]>();
+  const { data: fileConfig, isSuccess: hasFileConfig } = useGetFileConfig();
+  const retryLimit = fileConfig?.deletionRetryLimit;
   const { mutateAsync } = useDeleteFilesMutation();
   /** The cleanup pass runs on a timer nobody asked for, so it reports nothing: a storage failure
    * that keeps failing would otherwise toast on every retry, and success would arrive minutes
@@ -175,16 +179,19 @@ export default function useNewChat({
 
   useEffect(() => {
     const retained = takeRetainedFileDeletions();
-    if ((pendingDiscardIds.length === 0 && retained.length === 0) || fileList == null) {
+    if (
+      (pendingDiscardIds.length === 0 && retained.length === 0) ||
+      fileList == null ||
+      !hasFileConfig
+    ) {
       return;
     }
     /** Another mounted instance is already running this pass. Ask for a later one rather than
      * dropping the work: whatever it does not resolve has to be revisited by someone. */
     if (!beginRetainedDeletionPass()) {
-      scheduleRetainedFileDeletionRetry();
+      scheduleRetainedFileDeletionRetry(pendingDiscardIds.length > 0);
       return;
     }
-    let cancelled = false;
     const attempt = async () => {
       removeTabAttachmentPresence(
         [...pendingDiscardIds, ...retained.map((record) => record.file_id)],
@@ -253,42 +260,27 @@ export default function useNewChat({
           clearRetainedFileDeletion(record.file_id);
         }
       }
-      const batch = [...deletable, ...retainedToRetry];
-      if (batch.length > 0) {
-        try {
-          const result = await mutateAsyncSilently({ files: batch });
-          const failed = new Set(failedFileIdsFrom(result));
-          for (const record of retainedToRetry) {
-            if (!failed.has(record.file_id)) {
-              clearRetainedFileDeletion(record.file_id);
-            }
-          }
-          for (const record of deletable) {
-            if (failed.has(record.file_id)) {
-              stillPending.push(record.file_id);
-            }
-          }
-          /** A reported failure leaves both stores exactly as they were, so this effect has no
-           * dependency left to move it: the next attempt has to be asked for, same as a rejection. */
-          if (failed.size > 0) {
-            scheduleRetainedFileDeletionRetry();
-          }
-        } catch {
-          /** The draft is already gone, so these ids are the only record of what to clean:
-           * keep them for the next files-cache update rather than orphaning the uploads. Nothing
-           * here moves an effect dependency, so the next attempt has to be asked for. */
-          scheduleRetainedFileDeletionRetry();
-          return;
-        }
-      }
-      if (!cancelled && stillPending.length !== pendingDiscardIds.length) {
+      const batch = claimFileDeletionRetries([...deletable, ...retainedToRetry], retryLimit);
+      // Once resolved, the retained queue owns the payload and its retry budget.
+      if (stillPending.length !== pendingDiscardIds.length) {
         setPendingDiscardIds(stillPending);
       }
+      if (batch.length === 0) {
+        return;
+      }
+      try {
+        const result = await mutateAsyncSilently({ files: batch });
+        settleFileDeletionRetries(batch, new Set(failedFileIdsFrom(result)), retryLimit);
+      } catch {
+        settleFileDeletionRetries(
+          batch,
+          new Set(batch.map((record) => record.file_id)),
+          retryLimit,
+        );
+      }
+      scheduleRetainedFileDeletionRetry();
     };
     void attempt().finally(endRetainedDeletionPass);
-    return () => {
-      cancelled = true;
-    };
   }, [
     pendingDiscardIds,
     conversationId,
@@ -297,6 +289,8 @@ export default function useNewChat({
     index,
     mutateAsyncSilently,
     retainedGeneration,
+    hasFileConfig,
+    retryLimit,
     setPendingDiscardIds,
   ]);
 

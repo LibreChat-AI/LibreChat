@@ -191,6 +191,22 @@ queuedTurnSchema.index(
   },
   { name: 'agent_queued_turn_active' },
 );
+/** Delivery retirement looks turns up by `deliveryKey` alone; most turns never carry one. */
+queuedTurnSchema.index(
+  { deliveryKey: 1 },
+  {
+    name: 'agent_queued_turn_delivery_key',
+    partialFilterExpression: { deliveryKey: { $exists: true } },
+  },
+);
+/** Re-fetches the rows a reconciliation sweep just claimed. */
+queuedTurnSchema.index(
+  { reconciliationClaimId: 1 },
+  {
+    name: 'agent_queued_turn_reconciliation_claim',
+    partialFilterExpression: { reconciliationClaimId: { $exists: true } },
+  },
+);
 queuedTurnSchema.index({ tenantId: 1, user: 1, status: 1, claimUntil: 1 });
 queuedTurnSchema.index({ status: 1, createdAt: 1, _id: 1 });
 queuedTurnSchema.index({

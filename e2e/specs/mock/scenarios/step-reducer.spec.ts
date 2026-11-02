@@ -9,6 +9,7 @@ import {
   thinkPrompt,
   replyText,
 } from '../helpers';
+import { sendCompactionHistory } from '../compaction.helpers';
 
 /**
  * Streamed content parts are folded into the response by the step reducers in
@@ -64,6 +65,7 @@ test.describe('step reducer', () => {
     test.setTimeout(120_000);
     const label = uniqueLabel('compact');
     await page.goto(NEW_CHAT_PATH, { timeout: 10_000 });
+    await sendCompactionHistory(page, label);
     await sendMessageAndWaitForCompletion(page, `tell me about ${label}`);
 
     await page.getByTestId('token-usage').click();

@@ -4,6 +4,8 @@ import { render, screen, within } from '@testing-library/react';
 import type { Agent, TConversation, TMessage } from 'librechat-data-provider';
 import type { TMessageChatContext } from '~/common';
 import ContentRender from '../ContentRender';
+import '~/components/Chat/Messages/Content/register';
+import '~/Providers/MessagesHostContext';
 
 const mockRenders = { parts: 0 };
 
@@ -29,14 +31,9 @@ jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
   ),
 }));
 
-jest.mock('~/components/Chat/Messages/HoverButtons', () => ({
-  __esModule: true,
-  default: () => null,
-}));
-
-jest.mock('~/components/Chat/Messages/ui/MessageTimestamp', () => ({
-  __esModule: true,
-  default: () => null,
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  HoverButtons: () => null,
 }));
 
 /**

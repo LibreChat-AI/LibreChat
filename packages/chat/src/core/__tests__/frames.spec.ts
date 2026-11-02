@@ -79,6 +79,13 @@ describe('normalizeFrame', () => {
     expect(normalizeFrame(text)).toEqual({ type: 'text', data: text });
   });
 
+  it('marks the live boundary of a replaying feed as ready', () => {
+    expect(normalizeFrame(frame({ ready: true, contentRecovery: true }))).toEqual({
+      type: 'ready',
+    });
+    expect(normalizeFrame(frame({ ready: false }))).toBeUndefined();
+  });
+
   it('returns undefined for a frame with none of the keys', () => {
     expect(normalizeFrame(frame({}))).toBeUndefined();
     expect(normalizeFrame(frame({ final: null, created: null }))).toBeUndefined();

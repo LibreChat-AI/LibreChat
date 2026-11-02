@@ -2,9 +2,20 @@ import { useEffect, useState } from 'react';
 import { v4 } from 'uuid';
 import { useStore, useSetAtom } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
-import { abortScrollFamily, showStopButtonByIndex } from '@librechat/chat/react';
-import { startedAsNewConversation, buildCreatedInitialResponse } from '@librechat/chat';
 import { StepEvents, createPayload, removeNullishValues } from 'librechat-data-provider';
+import {
+  startedAsNewConversation,
+  buildCreatedInitialResponse,
+  applyPendingAction,
+  findPendingActionMessageIndex,
+} from '@librechat/chat';
+import {
+  useUsageHandler,
+  useEventHandlers,
+  abortScrollFamily,
+  showStopButtonByIndex,
+  pendingApprovalActionFamily,
+} from '@librechat/chat/react';
 import type {
   Agents,
   TMessage,
@@ -16,16 +27,13 @@ import type {
   ChatFinalFrame,
   EventSubmission,
 } from 'librechat-data-provider';
-import type { EventHandlerParams } from './useEventHandlers';
+import type { EventHandlerParams } from '@librechat/chat/react';
 import type { TResData, TFinalResData } from '~/common';
-import { clearComposerDrafts, applyPendingAction, findPendingActionMessageIndex } from '~/utils';
-import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { useChatTransport } from '~/Providers/ChatTransportContext';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import { reopenTermsOnRefusal } from '~/utils/terms';
 import { useGetUserBalance } from '~/data-provider';
-import useEventHandlers from './useEventHandlers';
-import useUsageHandler from './useUsageHandler';
+import { clearComposerDrafts } from '~/utils';
 import useLocalize from '~/hooks/useLocalize';
 import { activeRunFamily } from './atoms';
 

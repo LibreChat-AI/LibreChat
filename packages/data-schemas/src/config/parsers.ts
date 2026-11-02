@@ -61,9 +61,11 @@ const sensitiveKeys: RegExp[] = [
 /**
  * Matches a whole delimiter-bounded token that holds an address. The lookbehind lets the scan start
  * only at a token boundary, so long non-email text is scanned once instead of once per character.
+ * An `@` between path separators (`node_modules/@scope/pkg/...`) names a scoped package in a file
+ * path or stack frame, not an address, so frame locations survive.
  */
 const EMAIL_PATTERN =
-  /(?:(?<!\\)\\"(?:[^"\\\r\n]|\\{3}"|\\{4}|\\{2}(?!\\)|\\[bfnrt/]|\\u[0-9a-fA-F]{4})*\\"|(?<!\\)"(?:[^"\\\r\n]|\\.)*"|(?<![^\s<>[\],;"])[^\s<>[\],;"]+)@(?:\[[^\]\s@]+\]|[^\s<>[\],;"@]+\.[^\s<>[\],;"@]+)/gu;
+  /(?:(?<!\\)\\"(?:[^"\\\r\n]|\\{3}"|\\{4}|\\{2}(?!\\)|\\[bfnrt/]|\\u[0-9a-fA-F]{4})*\\"|(?<!\\)"(?:[^"\\\r\n]|\\.)*"|(?<![^\s<>[\],;"])[^\s<>[\],;"]+)(?!(?<=[/\\])@[^\s<>[\],;"@/\\]+[/\\])@(?:\[[^\]\s@]+\]|[^\s<>[\],;"@]+\.[^\s<>[\],;"@]+)/gu;
 /** Set while redacting splat arguments at levels whose later format strips heavy error fields. */
 let skipHeavyErrorFields = false;
 /** URL-encoded addresses (`user%40host.tld`), anchored at a token start so scans stay linear. */

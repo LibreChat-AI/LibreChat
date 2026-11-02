@@ -22,7 +22,7 @@ export function createPrivateTextCipher(hexKey: string): PrivateTextCipher {
     },
     seal(text, binding) {
       const nonce = randomBytes(12);
-      const cipher = createCipheriv('aes-256-gcm', key, nonce);
+      const cipher = createCipheriv('aes-256-gcm', key, nonce, { authTagLength: 16 });
       cipher.setAAD(aad(binding));
       const ciphertext = Buffer.concat([cipher.update(text, 'utf8'), cipher.final()]);
       return [
@@ -38,7 +38,9 @@ export function createPrivateTextCipher(hexKey: string): PrivateTextCipher {
         if (version !== 'v1' || extra != null || !nonce || !tag || ciphertext == null) {
           throw new Error();
         }
-        const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(nonce, 'base64'));
+        const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(nonce, 'base64'), {
+          authTagLength: 16,
+        });
         decipher.setAAD(aad(binding));
         decipher.setAuthTag(Buffer.from(tag, 'base64'));
         return Buffer.concat([
