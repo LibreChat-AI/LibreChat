@@ -68,7 +68,6 @@ export default function ReadFileCall({
   stepId,
   isSubmitting,
   runStepStatus,
-  runStepDurationMs,
   initialProgress = 0.1,
   args,
   output = '',
@@ -81,7 +80,6 @@ export default function ReadFileCall({
   initialProgress: number;
   isSubmitting: boolean;
   runStepStatus?: PartMetadata['runStepStatus'];
-  runStepDurationMs?: PartMetadata['runStepDurationMs'];
   args?: string | Record<string, unknown>;
   output?: string;
   attachments?: TAttachment[];
@@ -131,7 +129,6 @@ export default function ReadFileCall({
             onClick={toggleCode}
             inProgressText={intent ?? localize('com_ui_reading_file', { 0: fileName })}
             finishedText={finishedText}
-            durationMs={runStepDurationMs}
             icon={
               <FileText
                 className={cn(
