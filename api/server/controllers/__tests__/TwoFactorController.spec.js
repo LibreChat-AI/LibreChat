@@ -6,11 +6,19 @@ const mockGenerateBackupCodes = jest.fn();
 const mockEncryptV3 = jest.fn();
 const mockGetTOTPSecret = jest.fn();
 const mockVerifyTOTP = jest.fn();
+const mockDeleteAllUserSessions = jest.fn();
+const mockSetAuthTokens = jest.fn();
+const mockFindSession = jest.fn();
+const CALLER_SESSION = { _id: 'session-1', expiration: new Date(Date.now() + 3_600_000) };
 
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
   encryptV3: (...args) => mockEncryptV3(...args),
-  logger: { error: jest.fn() },
+  logger: { error: jest.fn(), warn: jest.fn() },
+}));
+
+jest.mock('~/server/services/AuthService', () => ({
+  setAuthTokens: (...args) => mockSetAuthTokens(...args),
 }));
 
 jest.mock('~/server/services/twoFactorService', () => ({
@@ -25,6 +33,8 @@ jest.mock('~/server/services/twoFactorService', () => ({
 jest.mock('~/models', () => ({
   getUserById: (...args) => mockGetUserById(...args),
   updateUser: (...args) => mockUpdateUser(...args),
+  deleteAllUserSessions: (...args) => mockDeleteAllUserSessions(...args),
+  findSession: (...args) => mockFindSession(...args),
 }));
 
 const {
@@ -38,6 +48,7 @@ function createRes() {
   const res = {};
   res.status = jest.fn().mockReturnValue(res);
   res.json = jest.fn().mockReturnValue(res);
+  res.clearCookie = jest.fn();
   return res;
 }
 
@@ -55,6 +66,16 @@ beforeEach(() => {
   mockEncryptV3.mockReturnValue('encrypted-secret');
   mockGetTOTPSecret.mockResolvedValue('plain-secret');
   mockVerifyTOTP.mockResolvedValue(true);
+  mockDeleteAllUserSessions.mockResolvedValue({ deletedCount: 2 });
+  mockSetAuthTokens.mockResolvedValue('rotated-token');
+  mockFindSession.mockResolvedValue(CALLER_SESSION);
+});
+
+const confirmRequest = (cookies = { refreshToken: 'caller-refresh' }) => ({
+  user: { id: 'user1' },
+  body: { token: '123456' },
+  headers: {},
+  cookies,
 });
 
 /** Any write that moves the pending or live credentials strands an in-flight required enrollment. */
@@ -80,10 +101,10 @@ describe('required-enrollment nonce cleanup', () => {
       pendingTotpSecret: 'encrypted-secret',
       pendingBackupCodes: CODE_OBJECTS,
     });
-    mockUpdateUser.mockResolvedValue({});
+    mockUpdateUser.mockResolvedValue({ _id: 'user1' });
     const res = createRes();
 
-    await confirm2FA({ user: { id: 'user1' }, body: { token: '123456' } }, res);
+    await confirm2FA(confirmRequest(), res);
 
     expect(res.status).toHaveBeenCalledWith(200);
     expect(mockUpdateUser.mock.calls[0][1]).toMatchObject({
@@ -92,6 +113,46 @@ describe('required-enrollment nonce cleanup', () => {
       pendingBackupCodes: [],
       ...CLEARED_NONCES,
     });
+  });
+
+  it('retires pre-enrollment sessions and hands back a rotated one', async () => {
+    mockGetUserById.mockResolvedValue({
+      _id: 'user1',
+      twoFactorEnabled: false,
+      pendingTotpSecret: 'encrypted-secret',
+      pendingBackupCodes: CODE_OBJECTS,
+    });
+    mockUpdateUser.mockResolvedValue({ _id: 'user1' });
+    const res = createRes();
+
+    await confirm2FA(confirmRequest(), res);
+
+    const [, promotion, guard] = mockUpdateUser.mock.calls[0];
+    expect(promotion.twoFactorEnrolledAt).toBeInstanceOf(Date);
+    expect(guard).toEqual({ pendingTotpSecret: 'encrypted-secret' });
+    expect(mockFindSession).toHaveBeenCalledWith(
+      { userId: 'user1', refreshToken: 'caller-refresh' },
+      { lean: false },
+    );
+    expect(mockDeleteAllUserSessions).toHaveBeenCalledWith(
+      { userId: 'user1' },
+      { excludeCurrentSession: true, currentSessionId: 'session-1' },
+    );
+    expect(mockSetAuthTokens).toHaveBeenCalledWith(
+      'user1',
+      res,
+      CALLER_SESSION,
+      expect.any(Object),
+    );
+    expect(mockDeleteAllUserSessions.mock.invocationCallOrder[0]).toBeLessThan(
+      mockSetAuthTokens.mock.invocationCallOrder[0],
+    );
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        token: 'rotated-token',
+        user: expect.objectContaining({ id: 'user1' }),
+      }),
+    );
   });
 
   it('clears stale nonce state when 2FA is disabled', async () => {
@@ -112,6 +173,28 @@ describe('required-enrollment nonce cleanup', () => {
       totpSecret: null,
       ...CLEARED_NONCES,
     });
+  });
+});
+
+describe('confirm2FA session binding', () => {
+  it.each([
+    ['no refresh cookie', {}, null],
+    ['a refresh cookie without a stored session', { refreshToken: 'stolen' }, null],
+  ])('refuses an access token with %s', async (_label, cookies, session) => {
+    mockGetUserById.mockResolvedValue({
+      _id: 'user1',
+      twoFactorEnabled: false,
+      pendingTotpSecret: 'encrypted-secret',
+    });
+    mockFindSession.mockResolvedValue(session);
+    const res = createRes();
+
+    await confirm2FA(confirmRequest(cookies), res);
+
+    expect(res.status).toHaveBeenCalledWith(401);
+    expect(mockUpdateUser).not.toHaveBeenCalled();
+    expect(mockDeleteAllUserSessions).not.toHaveBeenCalled();
+    expect(mockSetAuthTokens).not.toHaveBeenCalled();
   });
 });
 

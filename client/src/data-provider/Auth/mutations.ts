@@ -181,7 +181,7 @@ export const useVerifyTwoFactorMutation = (): UseMutationResult<
 };
 
 export const useConfirmTwoFactorMutation = (): UseMutationResult<
-  t.TVerify2FAResponse,
+  t.TConfirm2FAResponse,
   unknown,
   t.TVerify2FARequest,
   unknown
@@ -190,6 +190,10 @@ export const useConfirmTwoFactorMutation = (): UseMutationResult<
   return useMutation((payload: t.TVerify2FARequest) => dataService.confirmTwoFactor(payload), {
     onSuccess: (data) => {
       queryClient.setQueryData([QueryKeys.user, '2fa'], data);
+      /** Enrollment retired the bearer this tab held; adopt the session minted in its place. */
+      if (data?.token) {
+        request.dispatchTokenUpdatedEvent(data.token);
+      }
     },
   });
 };

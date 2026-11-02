@@ -3,9 +3,25 @@ import type { LogArgument } from './types';
 export const OPENID_REFRESH_OWNERSHIP_LOST = 'OPENID_REFRESH_OWNERSHIP_LOST';
 export const OPENID_REFRESH_CANCELLED_BEFORE_GRANT = 'OPENID_REFRESH_CANCELLED_BEFORE_GRANT';
 
-/** Express-session uses this exact error when reload cannot find the persisted session. */
+export const OPENID_SESSION_RETIRED = 'OPENID_SESSION_RETIRED';
+
+/**
+ * Express-session uses `failed to load session` when reload cannot find the persisted session. A
+ * session established before a password reset or an enrollment is just as gone: the refresh has to
+ * end it and send the browser back to its identity provider.
+ */
 export function isOpenIDSessionMissingError(error: unknown): boolean {
-  return error instanceof Error && error.message === 'failed to load session';
+  return (
+    error instanceof Error &&
+    (error.message === 'failed to load session' ||
+      (error as Error & { code?: string }).code === OPENID_SESSION_RETIRED)
+  );
+}
+
+export function createOpenIDSessionRetiredError(): Error {
+  return Object.assign(new Error('OpenID session predates enrollment or password reset'), {
+    code: OPENID_SESSION_RETIRED,
+  });
 }
 
 /**

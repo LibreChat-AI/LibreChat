@@ -221,6 +221,8 @@ const resetPasswordController = createResetPasswordController({
   deleteAllUserSessions,
   deletePasskeysByUser,
   awaitAuthUserDocEviction,
+  getUserById,
+  updateUser,
 });
 
 const refreshLocalSession = createLocalRefreshHandler({
