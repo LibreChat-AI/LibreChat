@@ -1,0 +1,34 @@
+# Editor settings shared by everyone (VS Code: install the "EditorConfig for VS Code" extension;
+# JetBrains editors read this file natively). Matches .prettierrc (2 spaces, width 100).
+# https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+max_line_length = 100
+
+[*.py]
+indent_size = 4
+
+# Go uses tabs (gofmt).
+[*.go]
+indent_style = tab
+
+[Makefile]
+indent_style = tab
+
+# Markdown: two trailing spaces are a hard line break, so they are kept.
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{bat,cmd,ps1}]
+end_of_line = crlf
+
+[{package-lock.json,bun.lock}]
+insert_final_newline = unset
+trim_trailing_whitespace = unset
