@@ -115,12 +115,12 @@ export default function MemoryCall({
               ) : (
                 <>
                   {memoryKey && (
-                    <div className="text-text-secondary mb-1 text-xs font-bold tracking-wide uppercase">
+                    <div className="text-text-secondary text-3xs mb-1.5 font-medium tracking-wide break-all uppercase">
                       {memoryKey}
                     </div>
                   )}
                   {isSave && memoryValue && (
-                    <div className="text-text-primary text-sm whitespace-pre-wrap">
+                    <div className="text-text-primary text-sm leading-6 break-words whitespace-pre-wrap">
                       {memoryValue}
                     </div>
                   )}
@@ -130,7 +130,7 @@ export default function MemoryCall({
                       claimed the memory was gone while the header said
                       Cancelled. The key above already shows what was tried. */}
                   {!isSave && phase === 'completed' && (
-                    <div className="text-text-secondary text-sm italic">
+                    <div className="text-text-secondary text-sm leading-6">
                       {localize('com_ui_memory_deleted')}
                     </div>
                   )}

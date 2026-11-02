@@ -95,7 +95,7 @@ describe('MemoryCall', () => {
     );
 
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Saved memory preferences');
-    expect(screen.getByText('preferences')).toHaveClass('font-bold', 'uppercase');
+    expect(screen.getByText('preferences')).toHaveClass('uppercase');
     expect(screen.getByText('Prefers dark mode.')).toBeInTheDocument();
     expect(screen.queryByText(/Memory set for key/)).not.toBeInTheDocument();
   });
@@ -127,7 +127,7 @@ describe('MemoryCall', () => {
     );
 
     expect(screen.getByTestId('progress-text')).toHaveTextContent('Deleted memory outdated_note');
-    expect(screen.getByText('outdated_note')).toHaveClass('font-bold', 'uppercase');
+    expect(screen.getByText('outdated_note')).toHaveClass('uppercase');
     expect(screen.getByText('Memory deleted')).toBeInTheDocument();
   });
 
