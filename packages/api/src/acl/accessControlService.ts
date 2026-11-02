@@ -573,7 +573,7 @@ export class AccessControlService {
       }
       if (!localSession && supportsTransactions) {
         localSession = await this._mongoose.startSession();
-        localSession.startTransaction();
+        localSession.startTransaction({ readPreference: 'primary' });
         shouldEndSession = true;
       }
       const sessionOptions = localSession ? { session: localSession } : {};
