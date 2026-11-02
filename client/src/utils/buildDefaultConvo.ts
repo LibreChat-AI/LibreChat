@@ -38,7 +38,9 @@ const buildDefaultConvo = ({
 
   let possibleModels: string[];
 
-  if (availableModels.includes(model)) {
+  // The MiniMax example's current catalog must not replace an explicit saved model.
+  const preserveMiniMaxModel = endpoint.toLowerCase() === 'minimax' && model.length > 0;
+  if (availableModels.includes(model) || preserveMiniMaxModel) {
     possibleModels = [model, ...availableModels];
   } else {
     possibleModels = [...availableModels];

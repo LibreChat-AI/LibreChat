@@ -23,7 +23,7 @@ export type InitializeFn = (params: ProviderInitializeParams) => Promise<Initial
  * @returns True if the provider is a known custom provider, false otherwise
  */
 export function isKnownCustomProvider(provider?: string): boolean {
-  return [Providers.XAI, Providers.DEEPSEEK, Providers.OPENROUTER, Providers.MOONSHOT].includes(
+  return [Providers.XAI, Providers.DEEPSEEK, Providers.OPENROUTER, Providers.MOONSHOT, 'minimax'].includes(
     (provider?.toLowerCase() ?? '') as Providers,
   );
 }
@@ -53,6 +53,7 @@ export const providerConfigMap: Record<string, InitializeFn> = {
   [Providers.DEEPSEEK]: initializeCustomWithReasoning,
   [Providers.MOONSHOT]: initializeCustomWithReasoning,
   [Providers.OPENROUTER]: initializeCustomWithReasoning,
+  minimax: initializeCustomWithReasoning,
   [Providers.VERTEXAI]: initializeGoogle,
   [EModelEndpoint.openAI]: initializeOpenAI,
   [EModelEndpoint.google]: initializeGoogle,
