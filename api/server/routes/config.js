@@ -172,6 +172,9 @@ function buildPostLoginPayload(appConfig) {
       isEnabled(process.env.ALLOW_ACCOUNT_DELETION),
     allowEmailChange: resolveEmailChangeSettings(appConfig?.emailChange).enabled,
     maxPasskeysPerUser: resolveMaxPasskeysPerUser(appConfig?.passkeys),
+    resetMaxContextTokensOnModelSwitch: isEnabled(
+      process.env.RESET_MAX_CONTEXT_TOKENS_ON_MODEL_SWITCH,
+    ),
   };
 
   return payload;

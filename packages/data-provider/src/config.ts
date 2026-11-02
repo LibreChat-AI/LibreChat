@@ -3809,6 +3809,8 @@ export type TStartupConfig = {
     buildDate?: string | null;
   };
   fileUploadSseEnabled?: boolean;
+  /** Clears a saved Max Context Tokens value when the user switches to another model. */
+  resetMaxContextTokensOnModelSwitch?: boolean;
   endpointsDropParamsMap?: EndpointsDropParamsMap;
 };
 

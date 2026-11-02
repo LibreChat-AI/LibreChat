@@ -122,6 +122,7 @@ afterEach(() => {
   delete process.env.LANGFUSE_SAMPLE_RATE;
   delete process.env.TENANT_ISOLATION_STRICT;
   delete process.env.CODE_ENVIRONMENT_DECISION_VERSION;
+  delete process.env.RESET_MAX_CONTEXT_TOKENS_ON_MODEL_SWITCH;
 });
 
 describe('GET /api/config', () => {
@@ -1499,5 +1500,35 @@ describe('chat list endpoint filter limit', () => {
       maxEndpointFilters: 50,
       maxEndpointNameLength: 128,
     });
+  });
+});
+
+describe('max context tokens reset flag', () => {
+  beforeEach(() => {
+    mockGetAppConfig.mockResolvedValue(baseAppConfig);
+  });
+
+  it('publishes the flag as true when RESET_MAX_CONTEXT_TOKENS_ON_MODEL_SWITCH is enabled', async () => {
+    process.env.RESET_MAX_CONTEXT_TOKENS_ON_MODEL_SWITCH = 'true';
+
+    const response = await request(createApp(mockUser)).get('/api/config');
+
+    expect(response.status).toBe(200);
+    expect(response.body.resetMaxContextTokensOnModelSwitch).toBe(true);
+  });
+
+  it('publishes the flag as false when the env var is unset', async () => {
+    const response = await request(createApp(mockUser)).get('/api/config');
+
+    expect(response.body.resetMaxContextTokensOnModelSwitch).toBe(false);
+  });
+
+  it('keeps the flag out of the pre-login payload', async () => {
+    process.env.RESET_MAX_CONTEXT_TOKENS_ON_MODEL_SWITCH = 'true';
+
+    const response = await request(createApp()).get('/api/config');
+
+    expect(response.status).toBe(200);
+    expect(response.body).not.toHaveProperty('resetMaxContextTokensOnModelSwitch');
   });
 });
