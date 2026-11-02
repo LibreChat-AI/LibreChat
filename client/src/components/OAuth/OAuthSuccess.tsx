@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
+import { CircleCheck } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 import { announceOAuthSettled } from '~/data-provider';
 import { useLocalize } from '~/hooks';
+import Shell from './Shell';
 
 export default function OAuthSuccess() {
   const localize = useLocalize();
@@ -31,24 +33,18 @@ export default function OAuthSuccess() {
   }, []);
 
   return (
-    <div className="bg-surface-secondary flex min-h-screen items-center justify-center p-8">
-      <div className="bg-surface-primary w-full max-w-md rounded-xl p-8 text-center shadow-lg">
-        <h1 className="text-text-primary mb-4 text-3xl font-bold">
-          {localize('com_ui_oauth_success_title') || 'Authentication Successful'}
-        </h1>
-        <p className="text-text-secondary mb-2 text-sm">
-          {localize('com_ui_oauth_success_description') ||
-            'Your authentication was successful. This window will close in'}{' '}
-          <span className="text-accent-primary font-medium">{secondsLeft}</span>{' '}
-          {localize('com_ui_seconds') || 'seconds'}.
+    <Shell icon={CircleCheck} tone="success" title={localize('com_ui_oauth_success_title')}>
+      {serverName && (
+        <p className="border-border-light bg-surface-primary text-text-secondary mb-3 rounded-full border px-3 py-1 text-xs">
+          {localize('com_ui_oauth_connected_to')}{' '}
+          <span className="text-text-primary font-medium">{serverName}</span>
         </p>
-        {serverName && (
-          <p className="text-text-tertiary mt-4 text-xs">
-            {localize('com_ui_oauth_connected_to') || 'Connected to'}:{' '}
-            <span className="font-medium">{serverName}</span>
-          </p>
-        )}
-      </div>
-    </div>
+      )}
+      <p className="text-text-secondary text-sm">
+        {localize('com_ui_oauth_success_description')}{' '}
+        <span className="text-text-primary font-medium tabular-nums">{secondsLeft}</span>{' '}
+        {localize('com_ui_seconds')}.
+      </p>
+    </Shell>
   );
 }
