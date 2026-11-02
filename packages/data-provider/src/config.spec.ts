@@ -225,6 +225,27 @@ describe('tenant-scoped custom endpoints', () => {
       }).success,
     ).toBe(false);
   });
+
+  describe('custom endpoint model fetch timeout', () => {
+    it.each([
+      { models: { default: ['test-model'], fetch: true, fetchTimeoutMs: 15000 } },
+      { models: { default: ['test-model'], fetch: true, timeoutMs: 20000 } },
+      { models: { default: ['test-model'], fetch: true, timeout: 30000 } },
+      { fetchTimeoutMs: 10000 },
+      { timeoutMs: 12000 },
+    ])('accepts valid custom endpoint model fetch timeouts: %j', (override) => {
+      expect(endpointSchema.safeParse({ ...endpoint, ...override }).success).toBe(true);
+    });
+
+    it.each([
+      { models: { default: ['test-model'], fetch: true, fetchTimeoutMs: -1 } },
+      { models: { default: ['test-model'], fetch: true, fetchTimeoutMs: 0 } },
+      { models: { default: ['test-model'], fetch: true, timeoutMs: 1.5 } },
+      { fetchTimeoutMs: -100 },
+    ])('rejects non-positive or non-integer fetch timeouts: %j', (override) => {
+      expect(endpointSchema.safeParse({ ...endpoint, ...override }).success).toBe(false);
+    });
+  });
 });
 
 describe('agent model response timeouts', () => {

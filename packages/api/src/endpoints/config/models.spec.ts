@@ -212,6 +212,75 @@ describe('createLoadConfigModels – user-provided baseURL header guard', () => 
     expect(tokenKey).not.toContain('tenant-a');
     expect(tokenKey).not.toContain('TestProxy');
   });
+
+  it('forwards models.fetchTimeoutMs to fetchModels', async () => {
+    const loadConfigModels = createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue({
+        endpoints: {
+          [EModelEndpoint.custom]: [
+            {
+              name: 'CustomLlama',
+              baseURL: 'https://llama.example.com/v1',
+              apiKey: 'sk-llama',
+              models: { fetch: true, fetchTimeoutMs: 15000 },
+            },
+          ],
+        },
+      }),
+      getUserKeyValues: jest.fn(),
+      fetchModels,
+    });
+
+    const req = {
+      user: { id: 'user-1' },
+      config: undefined,
+    } as unknown as ServerRequest;
+
+    await loadConfigModels(req);
+
+    expect(fetchModels).toHaveBeenCalledTimes(1);
+    expect(fetchModels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'CustomLlama',
+        timeout: 15000,
+      }),
+    );
+  });
+
+  it('forwards top-level fetchTimeoutMs on endpoint to fetchModels', async () => {
+    const loadConfigModels = createLoadConfigModels({
+      getAppConfig: jest.fn().mockResolvedValue({
+        endpoints: {
+          [EModelEndpoint.custom]: [
+            {
+              name: 'CustomOllama',
+              baseURL: 'https://ollama.example.com/v1',
+              apiKey: 'sk-ollama',
+              fetchTimeoutMs: 25000,
+              models: { fetch: true },
+            },
+          ],
+        },
+      }),
+      getUserKeyValues: jest.fn(),
+      fetchModels,
+    });
+
+    const req = {
+      user: { id: 'user-1' },
+      config: undefined,
+    } as unknown as ServerRequest;
+
+    await loadConfigModels(req);
+
+    expect(fetchModels).toHaveBeenCalledTimes(1);
+    expect(fetchModels).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'CustomOllama',
+        timeout: 25000,
+      }),
+    );
+  });
 });
 
 describe('createLoadConfigModels – in-request fetch coalescing', () => {
