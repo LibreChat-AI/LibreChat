@@ -221,6 +221,14 @@ test.describe('opt-in two-factor enrollment', () => {
           }),
         );
         await page.goto(NEW_CHAT_PATH);
+        /** On a phone the account menu lives in the sidebar drawer, which starts closed. */
+        if ((page.viewportSize()?.width ?? 1280) <= 768) {
+          await page
+            .getByRole('main')
+            .getByRole('button', { name: 'Open sidebar', exact: true })
+            .click();
+          await expect(page.locator('#mobile-drawer')).not.toHaveAttribute('inert', /.*/);
+        }
         await page.getByTestId('nav-user').click();
         await page.getByRole('menuitem', { name: 'Settings' }).click();
         await page.getByRole('tab', { name: 'Account' }).click();
