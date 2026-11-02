@@ -1438,7 +1438,7 @@ describe('AgentPanel - Select Agent', () => {
     };
     mockAgentPanelContext = {
       activePanel: 'builder',
-      agentsConfig: { allowedProviders: [] },
+      agentsConfig: { allowedProviders: [], channels: undefined },
       setActivePanel: jest.fn(),
       endpointsConfig: { openai: {} },
       setCurrentAgentId: jest.fn(),
