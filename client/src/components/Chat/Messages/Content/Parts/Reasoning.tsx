@@ -94,7 +94,7 @@ export const StreamingThoughtPeek = memo(({ text }: { text: string }) => {
   return (
     <div
       aria-hidden="true"
-      className="border-border-light mt-1 overflow-hidden rounded-2xl border px-4 py-3"
+      className="border-border-light mt-1 overflow-hidden rounded-lg border px-4 py-3"
       data-testid="streaming-thought-peek"
     >
       <div
@@ -446,7 +446,7 @@ export const ReasoningCompact = memo(
         >
           <div className="overflow-hidden" ref={expandRef}>
             {shouldRenderBody && (
-              <div className="border-border-light bg-surface-secondary text-text-secondary relative my-2 rounded-2xl border p-4">
+              <div className="border-border-light bg-surface-secondary text-text-secondary relative my-2 rounded-lg border p-4">
                 <p className={cn('leading-6.5 whitespace-pre-wrap', fontSize)}>{reasoningText}</p>
                 <FloatingThinkingBar
                   isVisible={isBarVisible && isExpanded && !headerInViewport}
