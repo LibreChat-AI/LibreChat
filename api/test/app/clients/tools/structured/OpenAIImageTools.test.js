@@ -267,7 +267,7 @@ describe('OpenAIImageTools - IMAGE_GEN_OAI_MODEL environment variable', () => {
   });
 });
 
-describe('OpenAIImageTools - client timeout and retries', () => {
+describe('OpenAIImageTools - client timeout', () => {
   let originalEnv;
 
   beforeEach(() => {
@@ -275,7 +275,6 @@ describe('OpenAIImageTools - client timeout and retries', () => {
     originalEnv = { ...process.env };
 
     process.env.IMAGE_GEN_OAI_API_KEY = 'test-api-key';
-    delete process.env.IMAGE_GEN_OAI_MAX_RETRIES;
 
     OpenAI.mockImplementation(() => ({
       images: {
@@ -300,22 +299,18 @@ describe('OpenAIImageTools - client timeout and retries', () => {
     return OpenAI.mock.calls[0][0];
   };
 
-  it('should pass timeouts.imageGenerationMs and IMAGE_GEN_OAI_MAX_RETRIES to the OpenAI client', async () => {
-    process.env.IMAGE_GEN_OAI_MAX_RETRIES = '0';
-
+  it('should pass timeouts.imageGenerationMs to the OpenAI client', async () => {
     const clientConfig = await generate({ timeouts: { imageGenerationMs: 1800000 } });
 
     expect(clientConfig).toMatchObject({
       timeout: 1800000,
-      maxRetries: 0,
       fetchOptions: { dispatcher: expect.anything() },
     });
   });
 
-  it('should use the default budget and client retries when unset', async () => {
+  it('should use the default budget when unset', async () => {
     const clientConfig = await generate(undefined);
 
     expect(clientConfig.timeout).toBe(300000);
-    expect(clientConfig).not.toHaveProperty('maxRetries');
   });
 });

@@ -168,7 +168,6 @@ export const oaiToolkit: {
 
 type ImageGenClientOptions = {
   timeout: number;
-  maxRetries?: number;
   fetchOptions: { dispatcher: Dispatcher };
 };
 
@@ -179,16 +178,10 @@ export function getImageGenClientOptions(
   const timeout = getOutboundTimeoutMs(appConfig, 'imageGenerationMs');
   /** undici's default 300 s headers/body timeouts would otherwise end a longer request first */
   const transport = { headersTimeout: timeout, bodyTimeout: timeout };
-  const options: ImageGenClientOptions = {
+  return {
     timeout,
     fetchOptions: {
       dispatcher: getProxyDispatcher(undefined, transport) ?? getDirectDispatcher(transport),
     },
   };
-  const retries = process.env.IMAGE_GEN_OAI_MAX_RETRIES?.trim();
-  const maxRetries = retries ? Number(retries) : Number.NaN;
-  if (Number.isSafeInteger(maxRetries) && maxRetries >= 0) {
-    options.maxRetries = maxRetries;
-  }
-  return options;
 }

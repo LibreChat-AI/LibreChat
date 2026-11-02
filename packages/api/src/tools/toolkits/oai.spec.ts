@@ -42,22 +42,23 @@ describe('getImageGenClientOptions', () => {
   const transport = (ms: number) => ({ headersTimeout: ms, bodyTimeout: ms });
   const defaultMs = DEFAULT_OUTBOUND_TIMEOUTS_MS.imageGenerationMs;
 
+  beforeEach(() => {
+    process.env = {};
+  });
+
   afterEach(() => {
     process.env = originalEnv;
   });
 
   it('defaults to the imageGenerationMs budget, with matching undici timeouts on the dispatcher', () => {
-    process.env = {};
     const options = getImageGenClientOptions();
     expect(options.timeout).toBe(defaultMs);
-    expect(options).not.toHaveProperty('maxRetries');
     expect(options.fetchOptions.dispatcher).toBe(getDirectDispatcher(transport(defaultMs)));
   });
 
-  it('uses timeouts.imageGenerationMs and IMAGE_GEN_OAI_MAX_RETRIES when set', () => {
-    process.env = { IMAGE_GEN_OAI_MAX_RETRIES: '0' };
+  it('uses timeouts.imageGenerationMs when set', () => {
     const options = getImageGenClientOptions({ timeouts: { imageGenerationMs: 1800000 } });
-    expect(options).toMatchObject({ timeout: 1800000, maxRetries: 0 });
+    expect(options.timeout).toBe(1800000);
     expect(options.fetchOptions.dispatcher).toBe(getDirectDispatcher(transport(1800000)));
   });
 
@@ -66,10 +67,5 @@ describe('getImageGenClientOptions', () => {
     expect(getImageGenClientOptions().fetchOptions.dispatcher).toBe(
       getProxyDispatcher(undefined, transport(defaultMs)),
     );
-  });
-
-  it.each(['', ' ', '-1', '1.5', 'two'])('ignores IMAGE_GEN_OAI_MAX_RETRIES=%j', (value) => {
-    process.env = { IMAGE_GEN_OAI_MAX_RETRIES: value };
-    expect(getImageGenClientOptions()).not.toHaveProperty('maxRetries');
   });
 });
