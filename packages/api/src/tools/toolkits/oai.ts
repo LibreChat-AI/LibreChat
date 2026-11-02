@@ -1,4 +1,8 @@
+import type { AppConfig } from '@librechat/data-schemas';
+import type { Dispatcher } from 'undici';
 import type { ExtendedJsonSchema } from '../registry/schema';
+import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
+import { getOutboundTimeoutMs } from '~/utils/timeouts';
 
 /** Default descriptions for image generation tool  */
 const DEFAULT_IMAGE_GEN_DESCRIPTION =
@@ -161,3 +165,23 @@ export const oaiToolkit: {
     responseFormat: 'content_and_artifact' as const,
   },
 } as const;
+
+type ImageGenClientOptions = {
+  timeout: number;
+  fetchOptions: { dispatcher: Dispatcher };
+};
+
+/** OpenAI client options for `image_gen_oai`, bounded by `timeouts.imageGenerationMs`. */
+export function getImageGenClientOptions(
+  appConfig?: Pick<AppConfig, 'timeouts'> | null,
+): ImageGenClientOptions {
+  const timeout = getOutboundTimeoutMs(appConfig, 'imageGenerationMs');
+  /** undici's default 300 s headers/body timeouts would otherwise end a longer request first */
+  const transport = { headersTimeout: timeout, bodyTimeout: timeout };
+  return {
+    timeout,
+    fetchOptions: {
+      dispatcher: getProxyDispatcher(undefined, transport) ?? getDirectDispatcher(transport),
+    },
+  };
+}

@@ -1,4 +1,6 @@
-import { oaiToolkit, IMAGE_SIZE_PATTERN } from './oai';
+import { oaiToolkit, IMAGE_SIZE_PATTERN, getImageGenClientOptions } from './oai';
+import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
+import { DEFAULT_OUTBOUND_TIMEOUTS_MS } from '~/utils/timeouts';
 
 const sizeSchemas = [
   ['image_gen_oai', oaiToolkit.image_gen_oai.schema.properties?.size],
@@ -33,4 +35,37 @@ describe('OpenAI image toolkit size schema', () => {
       expect(pattern.test(value)).toBe(false);
     },
   );
+});
+
+describe('getImageGenClientOptions', () => {
+  const originalEnv = process.env;
+  const transport = (ms: number) => ({ headersTimeout: ms, bodyTimeout: ms });
+  const defaultMs = DEFAULT_OUTBOUND_TIMEOUTS_MS.imageGenerationMs;
+
+  beforeEach(() => {
+    process.env = {};
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  it('defaults to the imageGenerationMs budget, with matching undici timeouts on the dispatcher', () => {
+    const options = getImageGenClientOptions();
+    expect(options.timeout).toBe(defaultMs);
+    expect(options.fetchOptions.dispatcher).toBe(getDirectDispatcher(transport(defaultMs)));
+  });
+
+  it('uses timeouts.imageGenerationMs when set', () => {
+    const options = getImageGenClientOptions({ timeouts: { imageGenerationMs: 1800000 } });
+    expect(options.timeout).toBe(1800000);
+    expect(options.fetchOptions.dispatcher).toBe(getDirectDispatcher(transport(1800000)));
+  });
+
+  it('routes through the proxy dispatcher with the same timeouts', () => {
+    process.env = { PROXY: 'http://proxy.test:8080' };
+    expect(getImageGenClientOptions().fetchOptions.dispatcher).toBe(
+      getProxyDispatcher(undefined, transport(defaultMs)),
+    );
+  });
 });

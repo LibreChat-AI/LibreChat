@@ -32,6 +32,7 @@ jest.mock('@librechat/api', () => ({
   extractBaseURL: jest.fn((url) => url),
   getProxyDispatcher: jest.fn(() => undefined),
   applyAxiosProxyConfig: jest.fn(),
+  getImageGenClientOptions: jest.requireActual('@librechat/api').getImageGenClientOptions,
 }));
 
 jest.mock('~/server/services/Files/strategies', () => ({
@@ -263,5 +264,53 @@ describe('OpenAIImageTools - IMAGE_GEN_OAI_MODEL environment variable', () => {
         headers: expect.objectContaining({ 'api-key': 'test-api-key' }),
       }),
     );
+  });
+});
+
+describe('OpenAIImageTools - client timeout', () => {
+  let originalEnv;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    originalEnv = { ...process.env };
+
+    process.env.IMAGE_GEN_OAI_API_KEY = 'test-api-key';
+
+    OpenAI.mockImplementation(() => ({
+      images: {
+        generate: jest.fn().mockResolvedValue({
+          data: [{ b64_json: 'base64-encoded-image-data' }],
+        }),
+      },
+    }));
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+  });
+
+  const generate = async (config) => {
+    const [imageGenTool] = createOpenAIImageTools({
+      isAgent: true,
+      override: false,
+      req: { user: { id: 'test-user' }, config },
+    });
+    await imageGenTool.func({ prompt: 'test prompt' });
+    return OpenAI.mock.calls[0][0];
+  };
+
+  it('should pass timeouts.imageGenerationMs to the OpenAI client', async () => {
+    const clientConfig = await generate({ timeouts: { imageGenerationMs: 1800000 } });
+
+    expect(clientConfig).toMatchObject({
+      timeout: 1800000,
+      fetchOptions: { dispatcher: expect.anything() },
+    });
+  });
+
+  it('should use the default budget when unset', async () => {
+    const clientConfig = await generate(undefined);
+
+    expect(clientConfig.timeout).toBe(300000);
   });
 });
