@@ -101,6 +101,7 @@ import {
   EDIT_FILE_TOOL_NAME,
   HOST_FILE_AUTHORING_ARTIFACT_KEY,
   LIST_WORKSPACE_FILES_TOOL_NAME,
+  MODEL_ONLY_ARTIFACT_KEY,
   SEARCH_WORKSPACE_TOOL_NAME,
   isCodeFileToolName,
   isCodeSessionToolName,
@@ -2044,8 +2045,9 @@ function isCompleteImage(buffer: Buffer, mime: string): boolean {
  * Builds the `read_file` success result for an image: a short text line the
  * model reads plus the `image_url` block in `artifact.content`. The SDK
  * folds `artifact.content` into what the model sees (Anthropic tool_result
- * or a trailing Human message for OpenAI/Google), and the host tool-end
- * callback saves the same data URL as a viewable attachment. Shared by the
+ * or a trailing Human message for OpenAI/Google). The model-only marker keeps
+ * the host tool-end callback from attaching every read to the chat: a read
+ * loop over one file would otherwise show it once per call. Shared by the
  * skill-file and sandbox read paths so both surface images identically.
  */
 function buildImageArtifactResult(
@@ -2060,6 +2062,7 @@ function buildImageArtifactResult(
     status: 'success',
     content: `Image: ${displayPath} (${bytes} bytes, ${mimeType})`,
     artifact: {
+      [MODEL_ONLY_ARTIFACT_KEY]: true,
       content: [{ type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } }],
     },
   };
