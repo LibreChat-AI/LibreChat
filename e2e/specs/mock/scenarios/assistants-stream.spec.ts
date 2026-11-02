@@ -51,7 +51,7 @@ async function sendToAssistant(page: Page, assistantId: string, text: string) {
 }
 
 /** Assistants turns carry their own response and stream through the legacy (non-resumable)
- *  path; these follow a send and a stop on the running app. */
+ *  path; these follow a send, a stop and a failed run on the running app. */
 test.describe('assistants stream', () => {
   test('an assistant reply streams in and the chat moves to its saved route @scenario:assistants-send-streams-reply', async ({
     page,
@@ -93,6 +93,31 @@ test.describe('assistants stream', () => {
       await expect(messagesView(page).getByText(/achunk-005/)).toBeVisible();
       await expect(messagesView(page).getByText(/achunk-120/)).toHaveCount(0);
       await expect(page.getByRole('textbox', { name: 'Message input' })).toBeEnabled();
+    } finally {
+      await deleteAssistant(page, assistant.id);
+    }
+  });
+
+  test('a failed assistant run shows an error and settles the composer @scenario:assistants-error-shows-error', async ({
+    page,
+  }) => {
+    test.setTimeout(60_000);
+    const label = uniqueLabel('assistant-error');
+    const assistant = await createAssistant(page, `E2E error ${label}`);
+    try {
+      await sendToAssistant(page, assistant.id, `E2E_ASSISTANT_ERROR:${label}`);
+      /** The Assistants error handler answers a failed run with its own settled message. */
+      await expect(
+        messagesView(page).getByText(/The Assistant run failed to initialize/),
+      ).toBeVisible({ timeout: 30_000 });
+      await expect(messagesView(page).getByText(`E2E_ASSISTANT_ERROR:${label}`)).toBeVisible();
+      await expect(page.getByRole('button', { name: 'Stop generating' })).toHaveCount(0);
+      await expect(page.getByRole('textbox', { name: 'Message input' })).toBeEnabled();
+      /** The error stays: nothing rebuilds the pane into a conversation that never saved it. */
+      await page.waitForTimeout(3000);
+      await expect(
+        messagesView(page).getByText(/The Assistant run failed to initialize/),
+      ).toBeVisible();
     } finally {
       await deleteAssistant(page, assistant.id);
     }
