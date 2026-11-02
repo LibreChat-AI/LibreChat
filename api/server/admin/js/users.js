@@ -22,6 +22,8 @@
     searchText: '',
     group: 'all',
     orgSyncing: false,
+    // 테이블 헤더 필터 행 — 열별 조건 (사용자: 부분 문자열, 숫자 열: 최소값)
+    colFilters: { user: '', active_days: null, queries: null },
   };
 
   /* ── 사용자 목록 ──────────────────────────────────────────── */
@@ -85,6 +87,15 @@
       const q = ui.searchText.toLowerCase();
       list = list.filter((u) => (u.name || '').toLowerCase().includes(q) || (u.email || '').toLowerCase().includes(q));
     }
+    const cf = ui.colFilters;
+    if (cf.user) {
+      const q = cf.user;
+      list = list.filter((u) =>
+        [u.name, u.email, u.group_name, u.div_name, u.hq_name].some((v) => String(v || '').toLowerCase().includes(q)),
+      );
+    }
+    if (cf.active_days != null) list = list.filter((u) => u.active_days >= cf.active_days);
+    if (cf.queries != null) list = list.filter((u) => u.queries >= cf.queries);
     const dir = ui.sortDir === 'asc' ? 1 : -1;
     const col = ui.sortCol;
     return [...list].sort((a, b) => {
@@ -391,7 +402,39 @@
   }
 
   /* ── 로드 (항목 1: 상태 보존 리로드) ───────────────────────── */
-  async function load() {
+  /**
+   * @param {{ userId?: string, conversationId?: string, expandRange?: boolean }} [opts]
+   *   다른 탭(질의 이력)에서 특정 사용자를 가리키며 넘어올 때. 해당 사용자를
+   *   선택하고, conversationId 가 있으면 그 세션을 펼쳐 스크롤한다.
+   *   expandRange: 기본 30일에 그 대화가 안 들어 "기간 내 대화 없음"이 되는
+   *   것을 막기 위해 프리셋을 1년으로 넓힌다 (직접 지정 기간은 건드리지 않음).
+   */
+  async function load(opts = {}) {
+    if (opts.userId) {
+      if (opts.expandRange && range.preset() && range.preset() !== '365d') range.setPreset('365d');
+      await loadUsers();
+      if (!ui.users.some((u) => u.user_id === opts.userId)) {
+        alert('사용자 목록에서 찾을 수 없습니다 (삭제된 계정일 수 있음).');
+        return;
+      }
+      ui.searchText = '';
+      document.getElementById('user-search').value = '';
+      ui.group = 'all';
+      document.getElementById('group-filter').value = 'all';
+      renderUsersTable();
+      await selectUser(opts.userId);
+      const userRow = document.querySelector(`#users-tbody tr[data-uid="${CSS.escape(opts.userId)}"]`);
+      if (userRow) userRow.scrollIntoView({ block: 'center' });
+      if (opts.conversationId) {
+        const row = document.querySelector(`.session-row[data-cid="${CSS.escape(opts.conversationId)}"]`);
+        if (row) {
+          await toggleSession(row, opts.conversationId, { forceOpen: true });
+          row.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }
+      return;
+    }
+
     const prevSelected = ui.selectedUserId;
     const prevOpen = new Set(ui.openConvoIds);
     const scrollEl = document.getElementById('session-list');
@@ -403,6 +446,43 @@
       if (scrollEl) scrollEl.scrollTop = prevScroll;
     }
   }
+
+  /* ── 테이블 헤더 필터 행 ──────────────────────────────────── */
+  /**
+   * 정렬 헤더 바로 아래에 열별 필터 입력을 둔다. 목록은 이미 전부 클라이언트에
+   * 있으므로 서버 호출 없이 renderUsersTable 만 다시 돈다.
+   * 사용자 열은 이름·이메일·소속(그룹/본부/전문가그룹) 부분 일치, 숫자 열은 최소값.
+   */
+  function renderHeaderFilters() {
+    const thead = document.querySelector('#users-table thead');
+    if (!thead || thead.querySelector('.filter-row')) return;
+    const tr = document.createElement('tr');
+    tr.className = 'filter-row';
+    tr.innerHTML = `
+      <th><input type="text" class="col-filter" data-col="user" placeholder="이름 · 이메일 · 소속" aria-label="사용자 필터"></th>
+      <th><input type="number" min="0" class="col-filter col-filter-num" data-col="active_days" placeholder="≥" aria-label="활동일 최소"></th>
+      <th><input type="number" min="0" class="col-filter col-filter-num" data-col="queries" placeholder="≥" aria-label="질의 최소"></th>`;
+    thead.appendChild(tr);
+
+    tr.querySelectorAll('.col-filter').forEach((inp) => {
+      let timer = null; // 입력마다 따로 — 한 타이머를 공유하면 빠르게 옮겨 칠 때 앞 입력이 반영되지 않는다
+      inp.addEventListener('input', () => {
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          const raw = inp.value.trim();
+          if (inp.dataset.col === 'user') {
+            ui.colFilters.user = raw.toLowerCase();
+          } else {
+            ui.colFilters[inp.dataset.col] = raw === '' ? null : Math.max(0, Number(raw) || 0);
+          }
+          renderUsersTable();
+        }, 200);
+      });
+      // 헤더 정렬 클릭과 겹치지 않게
+      inp.addEventListener('click', (e) => e.stopPropagation());
+    });
+  }
+  renderHeaderFilters();
 
   /* ── 이벤트 ───────────────────────────────────────────────── */
   document.getElementById('group-filter').addEventListener('change', (e) => {

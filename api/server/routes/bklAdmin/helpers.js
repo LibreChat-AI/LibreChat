@@ -69,7 +69,15 @@ async function loadConversationMessages(db, conversationId) {
     .find(
       { conversationId },
       {
-        projection: { isCreatedByUser: 1, text: 1, content: 1, createdAt: 1, model: 1, sender: 1 },
+        projection: {
+          messageId: 1,
+          isCreatedByUser: 1,
+          text: 1,
+          content: 1,
+          createdAt: 1,
+          model: 1,
+          sender: 1,
+        },
       },
     )
     .sort({ createdAt: 1 })
@@ -85,6 +93,8 @@ async function loadConversationMessages(db, conversationId) {
         .trim();
     }
     return {
+      // 질의 이력(bkl_query_logs.messageId)과 짝을 맞춰 "이 질의의 답변"을 찾는 데 쓴다.
+      messageId: msg.messageId || null,
       role: msg.isCreatedByUser ? 'user' : 'assistant',
       text,
       createdAt: msg.createdAt,

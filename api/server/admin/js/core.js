@@ -172,7 +172,7 @@
    * 기간 상태는 인스턴스 안에만 있으므로 탭 간에 공유되지 않는다.
    * @param {string} mountId  드롭다운을 그릴 요소 id
    * @param {() => void} onChange  기간 변경 시 호출 (보통 A.reloadAll)
-   * @returns {{ params: (extra?: string) => string, label: () => string }}
+   * @returns {{ params: (extra?: string) => string, label: () => string, preset: () => string|null, setPreset: (preset: string) => void }}
    */
   function createRangeFilter(mountId, onChange) {
     const rf = { preset: '30d', from: null, to: null };
@@ -211,16 +211,21 @@
     });
     document.addEventListener('click', (e) => { if (!mount.contains(e.target)) closeDD(); });
 
+    /** 프리셋 적용 (UI 동기화 포함). onChange 는 호출자가 결정한다. */
+    function applyPreset(preset) {
+      if (!PRESET_DAYS[preset]) return;
+      panel.querySelectorAll('.range-option').forEach((b) => b.classList.toggle('active', b.dataset.preset === preset));
+      rf.preset = preset;
+      rf.from = null;
+      rf.to = null;
+      fromInput.value = '';
+      toInput.value = '';
+      label.textContent = PRESET_LABELS[preset];
+    }
+
     panel.querySelectorAll('.range-option').forEach((btn) => {
       btn.addEventListener('click', () => {
-        panel.querySelectorAll('.range-option').forEach((b) => b.classList.remove('active'));
-        btn.classList.add('active');
-        rf.preset = btn.dataset.preset;
-        rf.from = null;
-        rf.to = null;
-        fromInput.value = '';
-        toInput.value = '';
-        label.textContent = PRESET_LABELS[rf.preset];
+        applyPreset(btn.dataset.preset);
         closeDD();
         if (onChange) onChange();
       });
@@ -239,6 +244,13 @@
     });
 
     return {
+      /** 현재 프리셋 키 (직접 지정 기간이면 null). */
+      preset() { return rf.from ? null : rf.preset; },
+      /**
+       * 프리셋을 코드에서 바꾼다 — onChange 를 부르지 않으므로 호출자가 직접
+       * 다시 로드해야 한다 (탭 진입 시 기간을 넓히고 한 번만 로드하기 위함).
+       */
+      setPreset(preset) { applyPreset(preset); },
       params(extra) {
         let q;
         if (rf.from) {
@@ -277,14 +289,19 @@
   }
 
   /* ── 탭 전환 ──────────────────────────────────────────────── */
-  function switchTab(tab) {
-    if (tab === state.currentTab) return;
+  /**
+   * 탭 전환. `opts` 는 대상 탭의 load(opts) 로 그대로 넘어간다 — 다른 탭에서
+   * 특정 항목을 가리키며 넘어올 때(질의 이력 → 사용자 탭 자동 선택) 쓴다.
+   * 이미 그 탭이면 기본적으로 아무것도 안 하지만 `opts.force` 로 다시 load 한다.
+   */
+  function switchTab(tab, opts = {}) {
+    if (tab === state.currentTab && !opts.force) return;
     state.currentTab = tab;
     document.querySelectorAll('.tab-btn').forEach((b) => b.classList.toggle('active', b.dataset.tab === tab));
     document.querySelectorAll('.tab-panel').forEach((p) => p.classList.remove('active'));
     document.getElementById('panel-' + tab).classList.add('active');
     const mod = tabs[tab];
-    if (mod && mod.load) mod.load().catch(console.error);
+    if (mod && mod.load) mod.load(opts).catch(console.error);
   }
 
   /* ── 리로드 ───────────────────────────────────────────────── */
@@ -357,6 +374,7 @@
     createRangeFilter,
     makeChart,
     reloadAll,
+    switchTab,
     registerTab: (name, mod) => { tabs[name] = mod; },
     boot,
   };

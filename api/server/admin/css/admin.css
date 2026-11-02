@@ -171,6 +171,13 @@ html, body {
   white-space: pre-wrap; font-size: 13px; color: #374151;
   line-height: 1.7; padding: 8px 4px; word-break: break-word;
 }
+/* 질의 행 아래 붙는 AI 답변 (사용자 탭의 메시지 말풍선 스타일 재사용) */
+.history-answer { margin: 6px 4px 8px; display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.history-answer .msg-bubble { max-width: 100%; }
+.history-answer-label { font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; letter-spacing: .04em; }
+/* 사용자명 링크 — 사용자 탭으로 이동 */
+a.user-link { color: #1d4ed8; text-decoration: none; }
+a.user-link:hover { text-decoration: underline; }
 /* 삭제된 채팅 탭 — [보기] 로 펼친 대화 내용 (읽기 전용) */
 .deleted-detail-row td { background: #f8faff; }
 
@@ -276,6 +283,17 @@ tbody td { padding: 10px 14px; font-size: 13px; color: #374151; }
 .users-list-scroll { overflow-y: auto; max-height: calc(100vh - 200px); }
 #users-table thead th:not(:first-child) { text-align: center; }
 #users-table tbody td:not(:first-child) { text-align: center; font-variant-numeric: tabular-nums; }
+/* 헤더 필터 행 — 정렬 헤더 바로 아래, 열별 조건 입력 */
+#users-table thead .filter-row th { padding: 4px 8px 8px; text-transform: none; letter-spacing: 0; }
+#users-table .col-filter {
+  width: 100%; box-sizing: border-box; padding: 4px 8px; font-size: 12px; color: #374151;
+  border: 1px solid #e5e7eb; border-radius: 5px; background: #fff; outline: none;
+}
+#users-table .col-filter:focus { border-color: #9ca3af; }
+#users-table .col-filter::placeholder { color: #d1d5db; }
+#users-table .col-filter-num { width: 56px; text-align: center; -moz-appearance: textfield; }
+#users-table .col-filter-num::-webkit-outer-spin-button,
+#users-table .col-filter-num::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
 #users-table tbody tr { cursor: pointer; }
 #users-table tbody tr.selected { background: #eff6ff; }
 #users-table tbody tr.selected:hover { background: #dbeafe; }
