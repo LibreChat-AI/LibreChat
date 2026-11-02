@@ -57,6 +57,7 @@ const {
   getMCPRequestContext,
   createSubagentCodeRouting,
   hasEntityEmbeddings,
+  isStableContextEnabled,
 } = require('@librechat/api');
 const {
   ResourceType,
@@ -608,6 +609,7 @@ const initializeClientWithProvider = async ({
       codeApiMaxRetryWaitMs: appConfig?.endpoints?.agents?.codeApiMaxRetryWaitMs,
       timeoutMs: appConfig?.endpoints?.agents?.workspaceAttachments?.timeoutMs,
       concurrency: appConfig?.endpoints?.agents?.workspaceAttachments?.concurrency,
+      uploadOrder: isStableContextEnabled(appConfig),
     },
   });
 

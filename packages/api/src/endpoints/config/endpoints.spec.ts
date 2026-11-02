@@ -177,6 +177,26 @@ describe('createEndpointsConfigService', () => {
       expect(result?.[EModelEndpoint.agents]?.maxSubagents).toBe(20);
     });
 
+    it('tells the client the server resolves prompt variables only with stableContext', async () => {
+      const getConfig = async (promptCache?: { stableContext: boolean }) => {
+        const deps = createMockDeps({
+          loadDefaultEndpointsConfig: jest.fn().mockResolvedValue({
+            [EModelEndpoint.agents]: { userProvide: false, order: 0 },
+          }),
+          getAppConfig: jest
+            .fn()
+            .mockResolvedValue(
+              appConfig({ endpoints: { [EModelEndpoint.agents]: { promptCache } } }),
+            ),
+        });
+        const result = await createEndpointsConfigService(deps).getEndpointsConfig(fakeReq());
+        return result?.[EModelEndpoint.agents];
+      };
+
+      expect((await getConfig({ stableContext: true }))?.stableContext).toBe(true);
+      expect(await getConfig({ stableContext: false })).not.toHaveProperty('stableContext');
+    });
+
     it.each([true, false])(
       'exposes file sharing policy to the agent builder when enabled=%s',
       async (enabled) => {
