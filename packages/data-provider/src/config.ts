@@ -1218,6 +1218,59 @@ export const channelStorageConfigSchema = z.object({
 
 export type ChannelStorageConfig = z.infer<typeof channelStorageConfigSchema>;
 
+/** Runtime policy for explicitly constructed channel hosts. */
+export const channelConfigSchema = channelStorageConfigSchema.extend({
+  enabled: z.boolean().default(false),
+  transport: z.enum(['socket_mode', 'webhook']).default('socket_mode'),
+  gatewayUrl: z.string().url().optional(),
+  ticketLifetimeMs: z
+    .number()
+    .int()
+    .min(60_000)
+    .max(60 * 60_000)
+    .default(10 * 60_000),
+  linkLifetimeMs: z
+    .number()
+    .int()
+    .min(60_000)
+    .max(90 * 24 * 60 * 60_000)
+    .default(30 * 24 * 60 * 60_000),
+  leaseMs: z.number().int().min(10_000).max(300_000).default(60_000),
+  responseCredentialLifetimeMs: z
+    .number()
+    .int()
+    .min(60_000)
+    .max(7 * 24 * 60 * 60_000)
+    .default(24 * 60 * 60_000),
+  artifactMaxBytes: z
+    .number()
+    .int()
+    .min(1)
+    .max(50 * 1024 * 1024)
+    .default(10 * 1024 * 1024),
+  artifactMaxFiles: z.number().int().min(1).max(20).default(5),
+  artifactReadTimeoutMs: z.number().int().min(1000).max(60_000).default(30_000),
+  cleanup: z
+    .object({
+      batchSize: z.number().int().min(1).max(100).default(25),
+      intervalMs: z.number().int().min(1000).max(60_000).default(1000),
+      maxIdleIntervalMs: z.number().int().min(1000).max(300_000).default(30_000),
+    })
+    .prefault({}),
+  feedback: z
+    .object({
+      maxConflictRetries: z.number().int().min(1).max(20).default(5),
+      exportTimeoutMs: z.number().int().min(1000).max(60_000).default(10_000),
+      exportLeaseMs: z.number().int().min(60_000).max(300_000).default(60_000),
+      exportRetryMs: z.number().int().min(1000).max(300_000).default(5000),
+      batchSize: z.number().int().min(1).max(100).default(25),
+      intervalMs: z.number().int().min(1000).max(60_000).default(1000),
+      maxIdleIntervalMs: z.number().int().min(1000).max(300_000).default(30_000),
+    })
+    .prefault({}),
+});
+export type ChannelConfig = z.infer<typeof channelConfigSchema>;
+
 const managementApiSchema = z.object({ auth: managementApiAuthSchema.optional() }).strict();
 
 /**

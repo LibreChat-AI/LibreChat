@@ -2422,7 +2422,7 @@ describe('private response cleanup before account deletion', () => {
     });
   });
 
-  it('preserves the account on cleanup failure and allows a retry', async () => {
+  it('keeps deletion intent private across cleanup failure, account updates, and retry', async () => {
     const { userId, model } = await createResponses();
     jest
       .spyOn(model.collection, 'deleteMany')
@@ -2431,10 +2431,38 @@ describe('private response cleanup before account deletion', () => {
     await expect(methods.deleteUserById(userId)).rejects.toThrow('response-store down');
     expect(deletion).not.toHaveBeenCalled();
     expect(await User.exists({ _id: userId })).not.toBeNull();
-    expect(await createResponseStorage(mongoose).read({ userId }, 'response-0')).not.toBeNull();
+    const storage = createResponseStorage(mongoose);
+    await runAsSystem(async () => {
+      expect(await model.findOne({ userId, responseId: 'response-0' }).lean()).toMatchObject({
+        requestJSON: '{"input":"private request"}',
+        responseJSON: '{"output":"private reply"}',
+      });
+    });
+    expect(await storage.read({ userId }, 'response-0')).toBeNull();
+    const identity = await storage.readCleanupIdentity({ userId }, 'response-0');
+    expect(identity).toMatchObject({ retirement: 'owner_deleted' });
+    for (const field of [
+      'requestJSON',
+      'responseJSON',
+      'review',
+      'resume',
+      'turnJSON',
+      'preparedTerminal',
+      'pendingTerminal',
+    ]) {
+      expect(identity).not.toHaveProperty(field);
+    }
+    expect(JSON.stringify(identity)).not.toContain('private');
     await methods.updateUser(userId, { name: 'Still usable' });
     expect((await User.findById(userId).lean())?.name).toBe('Still usable');
+    expect(await storage.read({ userId }, 'response-0')).toBeNull();
     await expect(methods.deleteUserById(userId)).resolves.toMatchObject({ deletedCount: 1 });
+    expect(await User.exists({ _id: userId })).toBeNull();
+    await runAsSystem(async () => {
+      expect(await model.countDocuments({ userId, tenantId: { $in: [null, ''] } })).toBe(0);
+      expect(await model.countDocuments({ userId, tenantId: 'another-tenant' })).toBe(1);
+      expect(await model.countDocuments({ userId: 'another-owner' })).toBe(1);
+    });
   });
 
   it('uses the account tenant when deletion runs under system authority', async () => {
