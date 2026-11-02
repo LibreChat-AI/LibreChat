@@ -1,40 +1,13 @@
 import { useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
+import { bindingHash } from '@librechat/chat';
+import type { ComposerBindings } from '@librechat/chat';
 import type { ShortcutActionId } from '~/hooks/useKeyboardShortcuts';
-import type { ShortcutBinding } from '~/utils/shortcuts';
 import { EDITING_ALLOWED_SHORTCUTS, resolveShortcutBindings } from '~/hooks/useKeyboardShortcuts';
-import { bindingHash } from '~/utils/shortcuts';
 import store from '~/store';
 
-export type ComposerBindings = {
-  /** Whether user-configurable keyboard shortcuts are globally enabled. */
-  shortcutsEnabled: boolean;
-  /**
-   * Effective `submitMessage` override: `undefined` when unset (default Ctrl/Cmd+Enter applies),
-   * `null` when explicitly unbound, otherwise the rebound chord.
-   */
-  submitOverride: ShortcutBinding | null | undefined;
-  /**
-   * Chords the user has bound to global shortcuts that still run while typing
-   * (`EDITING_ALLOWED_SHORTCUTS`). The window-level handler in
-   * `useKeyboardShortcuts` runs AFTER the composer's and yields any keypress
-   * a closer handler claimed via `preventDefault`, so the composer must leave
-   * these chords entirely untouched — acting on them would claim the event
-   * and silently swallow the global action. `submitMessage` is excluded: its
-   * rebinding is resolved through `submitOverride` instead. No default binding
-   * uses an Enter chord besides submit, so this only ever yields to a
-   * deliberate rebinding.
-   */
-  yieldedChords: ReadonlySet<string>;
-};
-
-/** Default bindings for a card rendered without a chat surface host
- * (Share, search), where the user's custom shortcuts are not in scope. */
-export const NO_HOST_BINDINGS: ComposerBindings = {
-  shortcutsEnabled: true,
-  submitOverride: undefined,
-  yieldedChords: new Set(),
-};
+export { NO_HOST_BINDINGS } from '@librechat/chat';
+export type { ComposerBindings } from '@librechat/chat';
 
 /** The user's effective composer-relevant shortcut bindings, shared by the
  * composer keydown handler and the during-run hovercard hints. */

@@ -1,6 +1,6 @@
 import { useMemo } from 'react';
+import { hasParallelLanes } from '@librechat/chat';
 import type { TMessage } from 'librechat-data-provider';
-import { hasParallelLanes } from '~/utils/lanes';
 
 export type ContentMetadataResult = {
   /** Whether the message renders agent columns side by side */

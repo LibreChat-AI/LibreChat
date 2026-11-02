@@ -56,6 +56,7 @@ export const themeColorTokens = Object.freeze([
   'rgb-surface-overlay',
   'rgb-surface-media-overlay',
   'rgb-text-on-media',
+  'rgb-surface-media-chip',
   'rgb-surface-submit',
   'rgb-surface-submit-hover',
   'rgb-surface-destructive',

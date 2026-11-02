@@ -1,0 +1,77 @@
+name: Favorites Contract Quality
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [dev, canary]
+    paths:
+      - 'packages/data-schemas/src/contracts/favorite.ts'
+      - 'packages/data-schemas/src/methods/favorite*.ts'
+      - 'packages/data-schemas/src/methods/index.ts'
+      - 'packages/data-schemas/src/models/favorite.ts'
+      - 'packages/data-schemas/src/schema/favorite.ts'
+      - 'packages/data-schemas/src/types/favorite.ts'
+      - 'packages/data-schemas/src/models/plugins/tenantIsolation.ts'
+      - 'packages/data-schemas/src/tenant/policy.ts'
+      - 'packages/data-schemas/src/config/tenantContext.ts'
+      - 'packages/data-schemas/src/index.ts'
+      - 'packages/data-schemas/package.json'
+      - 'packages/data-schemas/*config*'
+      - 'packages/data-schemas/jest.globalSetup.mjs'
+      - 'config/jest.*'
+      - 'scripts/crap*.mts'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/favorites-quality.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  favorites:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24.22.1'
+          cache: npm
+      - uses: actions/cache@v5
+        with:
+          path: |
+            node_modules
+            api/node_modules
+            packages/api/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+          key: node-modules-backend-${{ runner.os }}-24.22.1-${{ hashFiles('package-lock.json') }}
+        id: dependencies
+      - name: Install dependencies
+        if: steps.dependencies.outputs.cache-hit != 'true'
+        run: npm ci
+      - name: Build shared types
+        run: npm run build:data-provider
+      - name: Typecheck the advisory reporter
+        run: >-
+          npx --no-install tsc --noEmit --target ES2023 --module NodeNext
+          --moduleResolution NodeNext --allowImportingTsExtensions --skipLibCheck
+          --strict --types node scripts/crap.mts scripts/crap.test.mts
+      - name: Verify the advisory reporter
+        run: node --test scripts/crap.test.mts
+      - name: Favorites contracts, compatibility, and CRAP report
+        run: npm run test:quality:favorites --workspace packages/data-schemas
+      - name: Mutate the real favorites implementation
+        run: npm run test:mutations:favorites --workspace packages/data-schemas
+      - name: Upload advisory reports
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: favorites-quality-${{ github.sha }}
+          path: packages/data-schemas/coverage/favorites/
+          if-no-files-found: warn
+          retention-days: 14

@@ -23,7 +23,6 @@ import {
   removeUsageAtoms,
 } from '~/components/Chat/Input/TokenUsage/store';
 import { registerComposerDraft, captureComposerDraft, bindComposerLaunch } from '~/utils/drafts';
-import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 
 type SSEEventListener = (e: Partial<MessageEvent> & { responseCode?: number }) => void;
 
@@ -230,6 +229,26 @@ jest.mock('~/data-provider', () => ({
 jest.mock('@librechat/chat/react', () => ({
   ...jest.requireActual('@librechat/chat/react'),
   useSteerConvert: () => mockConvertSteersToQueued,
+  useEventHandlers: jest.fn(() => ({
+    errorHandler: mockErrorHandler,
+    finalHandler: mockFinalHandler,
+    createdHandler: mockCreatedHandler,
+    attachmentHandler: jest.fn(),
+    stepHandler: mockStepHandler,
+    titleHandler: mockTitleHandler,
+    contentHandler: mockContentHandler,
+    syncHandler: mockSyncHandler,
+    resetContentHandler: jest.fn(),
+    syncStepMessage: jest.fn(),
+    prunePtcTraces: jest.fn(),
+    clearStepMaps: mockClearStepMaps,
+    flushPendingDeltas: jest.fn(),
+    cancelPendingDeltaFlush: jest.fn(),
+    abortConversation: jest.fn(),
+    messageHandler: jest.fn(),
+    setIsSubmitting: mockSetIsSubmitting,
+    setShowStopButton: jest.fn(),
+  })),
 }));
 
 /** The steer-chip/queue writers are swapped for stable named spies, so these tests
@@ -257,34 +276,6 @@ const mockContentHandler = jest.fn();
 const mockSyncHandler = jest.fn();
 const mockSetIsSubmitting = jest.fn();
 const mockClearStepMaps = jest.fn();
-
-jest.mock('~/hooks/SSE/useEventHandlers', () => {
-  const actual = jest.requireActual('~/hooks/SSE/useEventHandlers');
-  return {
-    __esModule: true,
-    ...actual,
-    default: jest.fn(() => ({
-      errorHandler: mockErrorHandler,
-      finalHandler: mockFinalHandler,
-      createdHandler: mockCreatedHandler,
-      attachmentHandler: jest.fn(),
-      stepHandler: mockStepHandler,
-      titleHandler: mockTitleHandler,
-      contentHandler: mockContentHandler,
-      syncHandler: mockSyncHandler,
-      resetContentHandler: jest.fn(),
-      syncStepMessage: jest.fn(),
-      prunePtcTraces: jest.fn(),
-      clearStepMaps: mockClearStepMaps,
-      flushPendingDeltas: jest.fn(),
-      cancelPendingDeltaFlush: jest.fn(),
-      abortConversation: jest.fn(),
-      messageHandler: jest.fn(),
-      setIsSubmitting: mockSetIsSubmitting,
-      setShowStopButton: jest.fn(),
-    })),
-  };
-});
 
 jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
@@ -327,6 +318,7 @@ import {
   stopRequestedByConvoId,
   detachedRunByConvoId,
   resetQueueFamilies,
+  pendingApprovalActionFamily,
 } from '@librechat/chat/react';
 
 /** Every hook here renders under the app's stream host, as `Root` mounts it. */

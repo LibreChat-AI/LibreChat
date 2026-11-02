@@ -60,6 +60,7 @@ export type EndpointFileConfig = {
 export type FileConfig = {
   /** Enable after all replicas and rollback targets support retained file destinations. */
   retainedFileCleanup?: boolean;
+  deletionRetryLimit?: number;
   vectorOwnershipTrackingStart?: string;
   vectorDeletionConcurrency?: number;
   endpoints: {
@@ -107,6 +108,7 @@ export type FileConfig = {
 export type FileConfigInput = {
   /** Fail closed on embedded-file deletion until marker-aware readers are deployed. */
   retainedFileCleanup?: boolean;
+  deletionRetryLimit?: number;
   vectorOwnershipTrackingStart?: string;
   vectorDeletionConcurrency?: number;
   endpoints?: {

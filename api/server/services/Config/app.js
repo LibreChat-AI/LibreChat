@@ -5,6 +5,7 @@ const {
   isEnabled,
   expandCustomEndpoint,
   createAppConfigService,
+  applyLoadedConfig,
   clearMcpConfigCache,
   createCodeEnvironmentRegistry,
   createConfigCacheInvalidation,
@@ -52,6 +53,7 @@ const loadBaseConfig = async (mode) => {
 
 const appConfigService = createAppConfigService({
   loadBaseConfig,
+  onBaseConfigPublished: applyLoadedConfig,
   setCachedTools,
   getCache: getLogStores,
   cacheKeys: CacheKeys,

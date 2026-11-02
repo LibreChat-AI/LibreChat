@@ -90,6 +90,7 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
         statefulCodeSessions,
         maxSubagents,
         fileSharing,
+        linkedInstructions,
         promptCache,
       } = appConfig.endpoints[EModelEndpoint.agents];
       const toolApproval = appConfig.endpoints[EModelEndpoint.agents].toolApproval;
@@ -142,6 +143,10 @@ export function createEndpointsConfigService(deps: EndpointsConfigDeps): {
         statefulCodeSessions: clientStatefulCodeSessions,
         maxSubagents,
         fileSharing,
+        /** Only the switch reaches the client; the budget/cache fields stay server-side. */
+        linkedInstructions: {
+          langfuse: { enabled: linkedInstructions?.langfuse?.enabled === true },
+        },
         ...(promptCache?.stableContext === true && { stableContext: true }),
         toolApproval: {
           enabled: toolApproval?.enabled === true,

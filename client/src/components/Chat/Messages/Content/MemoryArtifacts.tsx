@@ -1,9 +1,9 @@
 import { useId, useMemo, useState } from 'react';
 import { ChevronDown } from 'lucide-react';
 import { Tools } from 'librechat-data-provider';
+import { toolPanelSpacingClassName } from '@librechat/chat/react';
 import { Button, disclosureChevronVariants } from '@librechat/client';
 import type { MemoryArtifact, TAttachment } from 'librechat-data-provider';
-import { toolPanelSpacingClassName } from './disclosure';
 import { useExpandCollapse, useLocalize } from '~/hooks';
 import MemoryInfo from './MemoryInfo';
 import { cn } from '~/utils';

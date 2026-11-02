@@ -468,6 +468,7 @@ export default function AgentPanel() {
   const { showToast } = useToastContext();
   const {
     activePanel,
+    revealChat,
     agentsConfig,
     startupConfig,
     setActivePanel,
@@ -960,11 +961,13 @@ export default function AgentPanel() {
     ],
   );
 
+  /** Selecting an agent starts a chat with it, so the host first reveals the chat (on the
+   *  narrow layout, by closing the drawer this builder sits in). */
   const handleSelectAgent = useCallback(() => {
     if (agent_id) {
-      onSelectAgent(agent_id);
+      revealChat(() => onSelectAgent(agent_id));
     }
-  }, [agent_id, onSelectAgent]);
+  }, [agent_id, onSelectAgent, revealChat]);
 
   const canEditAgent = useMemo(() => {
     if (!agentQuery.data?.id) {

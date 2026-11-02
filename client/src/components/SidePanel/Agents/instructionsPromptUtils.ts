@@ -1,10 +1,12 @@
 import axios from 'axios';
 import { InstructionsPromptErrorCode } from 'librechat-data-provider';
 import type {
-  TPrompt,
+  PromptSelection,
+  TPromptGroupSource,
   AgentInstructionsPrompt,
+  LangfusePromptSelection,
   RestrictedAgentInstructionsPrompt,
-  AgentInstructionsPromptSelection,
+  TPromptRevisionChoicesResponse,
 } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
 
@@ -19,41 +21,81 @@ export const isRestrictedInstructionsPrompt = (
 export type PromptVersionOption = {
   value: string;
   label: string;
-  selection: AgentInstructionsPromptSelection;
+  selection: PromptSelection;
 };
 
-/**
- * Builds the Version dropdown options for a prompt group's revisions.
- * "Production" is always first, labelled with the current production revision's
- * display number when it can be matched by `_id` against `productionId`. The
- * revisions that follow are labelled "Version N", newest to oldest, matching the
- * display ordinal used in `client/src/components/Prompts/display/PromptVersions.tsx`.
- */
+/** Narrows a selection to the Langfuse shape by the absence of `promptId`, the native-only field. */
+export function isLangfuseSelection(
+  selection: PromptSelection | undefined,
+): selection is LangfusePromptSelection | undefined {
+  return selection == null || !('promptId' in selection);
+}
+
+export function selectionValue(
+  source: TPromptGroupSource | undefined,
+  selection: PromptSelection | undefined,
+): string {
+  if (selection == null || selection.type !== 'exact') {
+    return 'production';
+  }
+  if (source === 'native' && 'promptId' in selection) {
+    return selection.promptId;
+  }
+  if (source === 'langfuse' && 'version' in selection) {
+    return `v${selection.version}`;
+  }
+  return 'production';
+}
+
+/** Appends the saved selection as "no longer available" if it matches no listed revision. */
 export function buildPromptVersionOptions(
-  prompts: TPrompt[],
-  productionId: string | null | undefined,
+  data: TPromptRevisionChoicesResponse,
+  selection: PromptSelection | undefined,
   localize: (key: TranslationKeys, vars?: Record<string, unknown>) => string,
 ): PromptVersionOption[] {
-  const total = prompts.length;
-  const productionIndex =
-    productionId != null ? prompts.findIndex((prompt) => prompt._id === productionId) : -1;
-  const productionLabel =
-    productionIndex >= 0
-      ? localize('com_agents_instructions_prompt_production_version', {
-          0: String(total - productionIndex),
-        })
-      : localize('com_ui_production');
+  let productionLabel = localize('com_ui_production');
+  const versionOptions: PromptVersionOption[] = [];
 
-  const versionOptions: PromptVersionOption[] = prompts.map((prompt, index) => ({
-    value: prompt._id ?? '',
-    label: localize('com_ui_version_var', { 0: String(total - index) }),
-    selection: { type: 'exact', promptId: prompt._id ?? '' },
-  }));
+  for (const revision of data.revisions) {
+    if (revision.source === 'native') {
+      if (revision.isProduction) {
+        productionLabel = localize('com_agents_instructions_prompt_production_version', {
+          0: String(revision.version),
+        });
+      }
+      versionOptions.push({
+        value: revision.promptId,
+        label: localize('com_ui_version_var', { 0: String(revision.version) }),
+        selection: { type: 'exact', promptId: revision.promptId },
+      });
+    } else {
+      versionOptions.push({
+        value: `v${revision.version}`,
+        label: localize('com_ui_version_var', { 0: String(revision.version) }),
+        selection: { type: 'exact', version: revision.version },
+      });
+    }
+  }
 
-  return [
+  const options: PromptVersionOption[] = [
     { value: 'production', label: productionLabel, selection: { type: 'production' } },
     ...versionOptions,
   ];
+
+  if (selection != null && selection.type !== 'production') {
+    const selectedValue = selectionValue(data.source, selection);
+    if (!options.some((option) => option.value === selectedValue)) {
+      const label =
+        'version' in selection
+          ? localize('com_agents_instructions_prompt_langfuse_version_missing', {
+              0: String(selection.version),
+            })
+          : localize('com_agents_instructions_prompt_version_missing');
+      options.push({ value: selectedValue, label, selection });
+    }
+  }
+
+  return options;
 }
 
 /** Stable, machine-readable codes mapped to a localized copy key each. */
@@ -80,4 +122,22 @@ export function getInstructionsPromptErrorCode(
 /** Returns the HTTP response status of an error, or `undefined` for a non-HTTP failure. */
 export function getHttpStatus(error: unknown): number | undefined {
   return axios.isAxiosError(error) ? error.response?.status : undefined;
+}
+
+export function getRevisionsLoadErrorKey(error: unknown): TranslationKeys {
+  const status = getHttpStatus(error);
+  if (status === 403) {
+    return 'com_agents_instructions_prompt_forbidden';
+  }
+  const code = axios.isAxiosError<{ code?: unknown }>(error)
+    ? error.response?.data?.code
+    : undefined;
+  const isSourceUnavailable =
+    (status === 404 && code === 'not_available') ||
+    (status === 409 && (code === 'not_configured' || code === 'source_changed')) ||
+    (status === 422 && code === 'unsupported_type');
+  if (isSourceUnavailable) {
+    return 'com_agents_instructions_prompt_source_unavailable';
+  }
+  return 'com_agents_instructions_prompt_load_error';
 }

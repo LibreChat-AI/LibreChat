@@ -22,7 +22,7 @@ const azureAssistants = require('~/server/services/Endpoints/azureAssistants');
 const assistants = require('~/server/services/Endpoints/assistants');
 const { getEndpointsConfig } = require('~/server/services/Config');
 const agents = require('~/server/services/Endpoints/agents');
-const { updateFilesUsage } = require('~/models');
+const { updateFilesUsage, getBranchReasoningOverride } = require('~/models');
 
 const buildFunction = {
   [EModelEndpoint.agents]: agents.buildOptions,
@@ -198,6 +198,7 @@ async function buildEndpointOption(req, res, next) {
       enforcedModelSpecFields,
       loadReasoningCapabilities: (endpointName) =>
         getReasoningCapabilities(appConfig, endpointName),
+      getBranchReasoningOverride,
     });
     if (!reasoningApplied) {
       return handleError(res, { text: 'Invalid reasoning override' });

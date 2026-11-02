@@ -1,11 +1,13 @@
 /**
  * @jest-environment jsdom
  */
-import type { TPrompt } from 'librechat-data-provider';
+import type { TPromptRevisionChoicesResponse } from 'librechat-data-provider';
 import {
   isRestrictedInstructionsPrompt,
   buildPromptVersionOptions,
   getInstructionsPromptErrorCode,
+  getRevisionsLoadErrorKey,
+  selectionValue,
   getHttpStatus,
 } from '../instructionsPromptUtils';
 
@@ -38,70 +40,170 @@ describe('isRestrictedInstructionsPrompt', () => {
   });
 });
 
+describe('selectionValue', () => {
+  it('returns "production" for an undefined selection', () => {
+    expect(selectionValue(undefined, undefined)).toBe('production');
+  });
+
+  it('returns "production" for a production selection', () => {
+    expect(selectionValue('native', { type: 'production' })).toBe('production');
+  });
+
+  it('returns the prompt id for a native exact selection', () => {
+    expect(selectionValue('native', { type: 'exact', promptId: 'p1' })).toBe('p1');
+  });
+
+  it('returns "v<version>" for a Langfuse exact selection', () => {
+    expect(selectionValue('langfuse', { type: 'exact', version: 3 })).toBe('v3');
+  });
+});
+
 describe('buildPromptVersionOptions', () => {
-  const prompts: TPrompt[] = [
-    {
-      _id: 'p3',
-      groupId: 'g1',
-      author: 'a',
-      prompt: 'newest',
-      type: 'text',
-      createdAt: '',
-      updatedAt: '',
-    },
-    {
-      _id: 'p2',
-      groupId: 'g1',
-      author: 'a',
-      prompt: 'middle',
-      type: 'text',
-      createdAt: '',
-      updatedAt: '',
-    },
-    {
-      _id: 'p1',
-      groupId: 'g1',
-      author: 'a',
-      prompt: 'oldest',
-      type: 'text',
-      createdAt: '',
-      updatedAt: '',
-    },
-  ];
+  const nativeData = (
+    revisions: TPromptRevisionChoicesResponse['revisions'],
+  ): TPromptRevisionChoicesResponse => ({
+    source: 'native',
+    groupId: 'g1',
+    revisions,
+  });
 
-  it('lists Production first, then versions newest to oldest', () => {
-    const options = buildPromptVersionOptions(prompts, undefined, localize);
+  const langfuseData = (
+    revisions: TPromptRevisionChoicesResponse['revisions'],
+  ): TPromptRevisionChoicesResponse => ({
+    source: 'langfuse',
+    groupId: 'g1',
+    revisions,
+  });
 
-    expect(options.map((option) => option.value)).toEqual(['production', 'p3', 'p2', 'p1']);
-    expect(options[0].selection).toEqual({ type: 'production' });
-    expect(options[1]).toEqual({
-      value: 'p3',
-      label: 'com_ui_version_var:{"0":"3"}',
-      selection: { type: 'exact', promptId: 'p3' },
+  describe('native', () => {
+    const revisions: TPromptRevisionChoicesResponse['revisions'] = [
+      { source: 'native', promptId: 'p3', version: 3, isProduction: false },
+      { source: 'native', promptId: 'p2', version: 2, isProduction: true },
+      { source: 'native', promptId: 'p1', version: 1, isProduction: false },
+    ];
+
+    it('lists Production first, then versions newest to oldest', () => {
+      const options = buildPromptVersionOptions(nativeData(revisions), undefined, localize);
+
+      expect(options.map((option) => option.value)).toEqual(['production', 'p3', 'p2', 'p1']);
+      expect(options[0].selection).toEqual({ type: 'production' });
+      expect(options[1]).toEqual({
+        value: 'p3',
+        label: 'com_ui_version_var:{"0":"3"}',
+        selection: { type: 'exact', promptId: 'p3' },
+      });
+      expect(options[3]).toEqual({
+        value: 'p1',
+        label: 'com_ui_version_var:{"0":"1"}',
+        selection: { type: 'exact', promptId: 'p1' },
+      });
     });
-    expect(options[3]).toEqual({
-      value: 'p1',
-      label: 'com_ui_version_var:{"0":"1"}',
-      selection: { type: 'exact', promptId: 'p1' },
+
+    it('labels Production with the revision marked `isProduction`', () => {
+      const options = buildPromptVersionOptions(nativeData(revisions), undefined, localize);
+
+      expect(options[0].label).toBe('com_agents_instructions_prompt_production_version:{"0":"2"}');
+    });
+
+    it('falls back to a plain Production label when no revision is marked `isProduction`', () => {
+      const noProduction = revisions.map((revision) => ({ ...revision, isProduction: false }));
+      const options = buildPromptVersionOptions(nativeData(noProduction), undefined, localize);
+
+      expect(options[0].label).toBe('com_ui_production');
+    });
+
+    it('appends the saved exact selection, labelled as missing, when it matches no revision', () => {
+      const options = buildPromptVersionOptions(
+        nativeData(revisions),
+        {
+          type: 'exact',
+          promptId: 'deleted',
+        },
+        localize,
+      );
+
+      expect(options[options.length - 1]).toEqual({
+        value: 'deleted',
+        label: 'com_agents_instructions_prompt_version_missing',
+        selection: { type: 'exact', promptId: 'deleted' },
+      });
+    });
+
+    it('does not append anything extra when the saved selection matches a listed revision', () => {
+      const options = buildPromptVersionOptions(
+        nativeData(revisions),
+        {
+          type: 'exact',
+          promptId: 'p1',
+        },
+        localize,
+      );
+
+      expect(options).toHaveLength(4);
+    });
+
+    it('does not append anything extra for a saved production selection', () => {
+      const options = buildPromptVersionOptions(
+        nativeData(revisions),
+        {
+          type: 'production',
+        },
+        localize,
+      );
+
+      expect(options).toHaveLength(4);
     });
   });
 
-  it('labels Production with its display number when the revision is known', () => {
-    const options = buildPromptVersionOptions(prompts, 'p2', localize);
+  describe('langfuse', () => {
+    const revisions: TPromptRevisionChoicesResponse['revisions'] = [
+      { source: 'langfuse', version: 3 },
+      { source: 'langfuse', version: 2 },
+      { source: 'langfuse', version: 1 },
+    ];
 
-    expect(options[0].label).toBe('com_agents_instructions_prompt_production_version:{"0":"2"}');
-  });
+    it('lists Production first with the plain label, then versions newest to oldest', () => {
+      const options = buildPromptVersionOptions(langfuseData(revisions), undefined, localize);
 
-  it('falls back to a plain Production label when the revision is unknown', () => {
-    const options = buildPromptVersionOptions(prompts, 'not-in-group', localize);
+      expect(options.map((option) => option.value)).toEqual(['production', 'v3', 'v2', 'v1']);
+      expect(options[0].label).toBe('com_ui_production');
+      expect(options[0].selection).toEqual({ type: 'production' });
+      expect(options[1]).toEqual({
+        value: 'v3',
+        label: 'com_ui_version_var:{"0":"3"}',
+        selection: { type: 'exact', version: 3 },
+      });
+    });
 
-    expect(options[0].label).toBe('com_ui_production');
-  });
+    it('appends the saved pinned version, labelled as missing with the version number, when it matches no revision', () => {
+      const options = buildPromptVersionOptions(
+        langfuseData(revisions),
+        {
+          type: 'exact',
+          version: 9,
+        },
+        localize,
+      );
 
-  it('falls back to a plain Production label when no production id is given', () => {
-    const options = buildPromptVersionOptions(prompts, null, localize);
+      expect(options[options.length - 1]).toEqual({
+        value: 'v9',
+        label: 'com_agents_instructions_prompt_langfuse_version_missing:{"0":"9"}',
+        selection: { type: 'exact', version: 9 },
+      });
+    });
 
-    expect(options[0].label).toBe('com_ui_production');
+    it('does not append anything extra when the saved version matches a listed revision', () => {
+      const options = buildPromptVersionOptions(
+        langfuseData(revisions),
+        {
+          type: 'exact',
+          version: 2,
+        },
+        localize,
+      );
+
+      expect(options).toHaveLength(4);
+    });
   });
 });
 
@@ -134,5 +236,52 @@ describe('getInstructionsPromptErrorCode', () => {
 
   it('returns undefined for a non-HTTP error', () => {
     expect(getInstructionsPromptErrorCode(new Error('offline'))).toBeUndefined();
+  });
+});
+
+describe('getRevisionsLoadErrorKey', () => {
+  it('maps a 403 to the forbidden copy', () => {
+    expect(getRevisionsLoadErrorKey(axiosError(403))).toBe(
+      'com_agents_instructions_prompt_forbidden',
+    );
+  });
+
+  it('maps a 404 "not_available" to the source-unavailable copy', () => {
+    expect(getRevisionsLoadErrorKey(axiosError(404, 'not_available'))).toBe(
+      'com_agents_instructions_prompt_source_unavailable',
+    );
+  });
+
+  it('maps a plain 404 "not_found" (missing group) to the generic load-error copy', () => {
+    expect(getRevisionsLoadErrorKey(axiosError(404, 'not_found'))).toBe(
+      'com_agents_instructions_prompt_load_error',
+    );
+  });
+
+  it('maps a 409 "not_configured" to the source-unavailable copy', () => {
+    expect(getRevisionsLoadErrorKey(axiosError(409, 'not_configured'))).toBe(
+      'com_agents_instructions_prompt_source_unavailable',
+    );
+  });
+
+  it('maps a 409 "source_changed" to the source-unavailable copy', () => {
+    expect(getRevisionsLoadErrorKey(axiosError(409, 'source_changed'))).toBe(
+      'com_agents_instructions_prompt_source_unavailable',
+    );
+  });
+
+  it('maps a 422 "unsupported_type" to the source-unavailable copy', () => {
+    expect(getRevisionsLoadErrorKey(axiosError(422, 'unsupported_type'))).toBe(
+      'com_agents_instructions_prompt_source_unavailable',
+    );
+  });
+
+  it('falls back to the generic load-error copy for anything else', () => {
+    expect(getRevisionsLoadErrorKey(axiosError(500))).toBe(
+      'com_agents_instructions_prompt_load_error',
+    );
+    expect(getRevisionsLoadErrorKey(new Error('network down'))).toBe(
+      'com_agents_instructions_prompt_load_error',
+    );
   });
 });

@@ -25,6 +25,7 @@
     "clean": "rimraf dist",
     "build": "npm run clean && tsdown && tsc -p tsconfig.build.json",
     "build:watch": "tsdown --watch",
+    "typecheck": "node ../../scripts/typecheck.mts",
     "test": "jest --coverage --watch",
     "test:ci": "jest --coverage --ci --logHeapUsage",
     "verify": "npm run test:ci",
@@ -46,7 +47,7 @@
     "croner": "^10.0.1",
     "dayjs": "^1.11.13",
     "js-yaml": "^4.3.2",
-    "re2js": "^2.8.6",
+    "re2js": "^2.9.1",
     "zod": "^4.6.7"
   },
   "devDependencies": {

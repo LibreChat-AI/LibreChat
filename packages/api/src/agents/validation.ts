@@ -389,20 +389,43 @@ const agentGitIdentityUpdateSchema: z.ZodType<AgentGitIdentity | null | undefine
 /** A 24-character hexadecimal Mongo ObjectId string. */
 const objectIdStringSchema = z.string().refine(isValidObjectIdString);
 
-/** Selects which revision of a linked prompt group an agent's instructions follow. */
-const instructionsPromptSelectionSchema = z.discriminatedUnion('type', [
+const nativeInstructionsPromptSelectionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('production') }).strict(),
   z.object({ type: z.literal('exact'), promptId: objectIdStringSchema }).strict(),
 ]);
 
+const langfuseInstructionsPromptSelectionSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('production') }).strict(),
+  z
+    .object({
+      type: z.literal('exact'),
+      version: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    })
+    .strict(),
+]);
+
 /** Links an agent's instructions to a native LibreChat prompt group revision. */
-export const agentInstructionsPromptSchema: z.ZodType<AgentInstructionsPrompt> = z
+const nativeAgentInstructionsPromptSchema = z
   .object({
     source: z.literal('native'),
     groupId: objectIdStringSchema,
-    selection: instructionsPromptSelectionSchema,
+    selection: nativeInstructionsPromptSelectionSchema,
   })
   .strict();
+
+const langfuseAgentInstructionsPromptSchema = z
+  .object({
+    source: z.literal('langfuse'),
+    groupId: objectIdStringSchema,
+    selection: langfuseInstructionsPromptSelectionSchema,
+  })
+  .strict();
+
+export const agentInstructionsPromptSchema: z.ZodType<AgentInstructionsPrompt> =
+  z.discriminatedUnion('source', [
+    nativeAgentInstructionsPromptSchema,
+    langfuseAgentInstructionsPromptSchema,
+  ]);
 
 /** Shared field schema: `.nullable().optional()` per contract, `null` removes the link. */
 const agentInstructionsPromptFieldSchema: z.ZodOptional<

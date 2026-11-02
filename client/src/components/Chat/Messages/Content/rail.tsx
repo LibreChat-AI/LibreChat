@@ -7,8 +7,8 @@ import {
   useSyncExternalStore,
 } from 'react';
 import { CircleMinus } from 'lucide-react';
+import { ROW_GLYPH_SLOT, FOLD_GLYPH_SELECTOR } from '@librechat/chat/components';
 import type { ReactNode, RefObject } from 'react';
-import { ROW_GLYPH_SLOT, FOLD_GLYPH_SELECTOR } from './rows';
 import { cn } from '~/utils';
 
 /**

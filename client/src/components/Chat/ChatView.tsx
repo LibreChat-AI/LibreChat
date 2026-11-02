@@ -1,45 +1,36 @@
-import { memo, useMemo, useRef } from 'react';
+import { memo } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { useForm } from 'react-hook-form';
-import { Spinner } from '@librechat/client';
 import { useParams } from 'react-router-dom';
-import { Constants, buildTree } from 'librechat-data-provider';
-import { submissionByIndex, ComposerRestoreProvider } from '@librechat/chat/react';
+import { Constants } from 'librechat-data-provider';
+import { ChatScreen, QueuedTurnPortalProvider } from '@librechat/chat/components';
+import {
+  submissionByIndex,
+  ChatSessionProvider,
+  useScrollbarGutterSeed,
+  AskAnswerHostProvider,
+  ComposerRestoreProvider,
+  pendingApprovalActionFamily,
+} from '@librechat/chat/react';
 import type { TChatProject, TMessage } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
 import { AddedChatContext, ChatFormProvider, useChatContext, useFileMapContext } from '~/Providers';
-import { useScrollbarGutterSeed, useAddedResponse, useLocalize } from '~/hooks';
 import Footer, { useLandingFooter, useConfiguredFooter } from './Footer';
-import { QueuedTurnPortalProvider } from './Steering/QueuedTurnPortal';
 import { useChatSettings } from '~/Providers/ChatSettingsContext';
 import ApprovalProvider from './Messages/Content/ApprovalContext';
 import ConversationStarters from './Input/ConversationStarters';
-import { pendingApprovalActionFamily } from './approval/state';
 import ProjectBadge from '~/components/Projects/ProjectBadge';
-import { composerLiftFamily } from './Input/Composer/state';
-import { ChatSessionProvider } from '~/hooks/Chat/provider';
 import { OwnerTextProvider } from './Messages/PrivateText';
-import { AskAnswerHostProvider } from './ask/state';
 import MessagesView from './Messages/MessagesView';
+import { useAddedResponse } from '~/hooks';
 import Presentation from './Presentation';
 import ChatForm from './Input/ChatForm';
 import { TraceSurface } from './Trace';
 import Lia from '~/components/Lia';
 import Landing from './Landing';
 import Header from './Header';
-import { cn } from '~/utils';
 import store from '~/store';
-
-function LoadingSpinner() {
-  return (
-    <div className="relative flex-1 overflow-hidden overflow-y-auto">
-      <div className="relative flex h-full items-center justify-center">
-        <Spinner className="text-text-primary" />
-      </div>
-    </div>
-  );
-}
 
 type ChatViewProps = {
   index?: number;
@@ -48,7 +39,7 @@ type ChatViewProps = {
   routePending?: boolean;
 };
 
-function ChatPane({
+function ChatViewPane({
   index = 0,
   project,
   routePending = false,
@@ -60,7 +51,6 @@ function ChatPane({
   messages: TMessage[] | null;
   isLoading: boolean;
 }) {
-  const localize = useLocalize();
   const rootSubmission = useAtomValue(submissionByIndex(index));
   const { saveDrafts } = useChatSettings();
   const enterToSend = useRecoilValue(store.enterToSend);
@@ -72,77 +62,22 @@ function ChatPane({
   );
 
   /** The welcome screen reserves the message column's scrollbar band before any
-   *  column exists to measure it (see the column's class list below). */
+   *  column exists to measure it (see the column classes in `ChatPane`). */
   useScrollbarGutterSeed();
 
   /** A conversation carries a footer only for configured content, and the
-   *  composer's clearance has to account for the bar when it does — including
+   *  composer's clearance has to account for the bar when it does, including
    *  before the config answers, so a cold load does not jump. */
   const configuredFooter = useConfiguredFooter();
   const landingFooter = useLandingFooter();
-
-  /** Room an open composer popover needs below the composer; see the atom. */
-  const composerLift = useAtomValue(composerLiftFamily(index));
-
-  /** Lia, the welcome screen mascot, stands on the composer band's top edge. */
-  const composerBandRef = useRef<HTMLDivElement>(null);
 
   const methods = useForm<ChatFormValues>({
     defaultValues: { text: '' },
   });
 
   const fileMap = useFileMapContext();
-
-  const messagesTree = useMemo(() => {
-    const dataTree = buildTree({ messages, fileMap });
-    return dataTree?.length === 0 ? null : (dataTree ?? null);
-  }, [messages, fileMap]);
-
   const chat = useChatContext();
   const addedChatHelpers = useAddedResponse();
-
-  const activeConversation =
-    chat.conversation?.conversationId === conversationId ? chat.conversation : undefined;
-  const activeSubagentThread = activeConversation?.subagentThread;
-  const chatProjectId = activeConversation?.chatProjectId || undefined;
-
-  let content: JSX.Element | null | undefined;
-  const isLandingPage =
-    (!messagesTree || messagesTree.length === 0) &&
-    (conversationId === Constants.NEW_CONVO || !conversationId);
-
-  /** The welcome screen carries the full footer unless the deployment turned it
-   *  off; otherwise a footer bar renders only for configured content. */
-  const fullFooter = isLandingPage && landingFooter;
-  const footerBelow = fullFooter || configuredFooter;
-  const isNavigating = (!messagesTree || messagesTree.length === 0) && conversationId != null;
-  const isProjectLandingPage = isLandingPage && project != null;
-
-  if (isLoading && conversationId !== Constants.NEW_CONVO) {
-    content = <LoadingSpinner />;
-  } else if ((isLoading || isNavigating) && !isLandingPage) {
-    content = <LoadingSpinner />;
-  } else if (!isLandingPage) {
-    content = <MessagesView messagesTree={messagesTree} messages={messages} />;
-  } else {
-    content = <Landing centerFormOnLanding={centerFormOnLanding} />;
-  }
-
-  const chatFormPlaceholder =
-    isProjectLandingPage && project
-      ? localize('com_ui_new_chat_in_project', { name: project.name })
-      : undefined;
-
-  // Recoil conversation can lag the route during navigation; only announce a
-  // title that belongs to the conversation currently in the URL.
-  const conversationTitle = activeConversation?.title?.trim();
-  const pageHeading =
-    isLandingPage || !conversationTitle ? localize('com_ui_new_chat') : conversationTitle;
-  const parentConversationId = activeSubagentThread?.parentConversationId;
-  /** Durable child threads are an execution record owned by their parent agent.
-   * Human continuation is a separate future fork/promotion flow, never an
-   * in-place mutation of this canonical child transcript. */
-  const isSubagentThreadReadOnly = activeSubagentThread != null;
 
   return (
     <AskAnswerHostProvider saveDrafts={saveDrafts}>
@@ -153,98 +88,55 @@ function ChatPane({
               <ApprovalProvider pendingAction={pendingAction}>
                 <Presentation routePending={routePending}>
                   <TraceSurface conversationId={conversationId}>
-                    <h1 className="sr-only">{pageHeading}</h1>
-                    {/* Marks the header's controls as this pane's, so a pane-scoped
-                        shortcut pressed from them acts here, not on the first pane. */}
-                    <div data-chat-pane-portal={index} className="contents">
-                      <Header
-                        parentConversationId={parentConversationId}
-                        readOnly={isSubagentThreadReadOnly}
-                      />
-                    </div>
-                    {!isLandingPage && chatProjectId && <ProjectBadge projectId={chatProjectId} />}
-                    <>
-                      <div
-                        data-chat-pane={index}
-                        style={
-                          isLandingPage && composerLift > 0
-                            ? { transform: `translateY(-${composerLift}px)` }
-                            : undefined
-                        }
-                        className={cn(
-                          'flex flex-col',
-                          isLandingPage && 'relative',
-                          isLandingPage
-                            ? /* The gutter is reserved once per state, wherever the
-                               centring happens. A conversation centres the composer
-                               inside the band below, against a message column that
-                               holds the scrollbar band back; the landing page centres
-                               this whole column instead, greeting and composer
-                               together, so it holds the same band back here. Without
-                               it the composer lands 4px right of where a conversation
-                               puts it and slides sideways on the way in. */
-                              'scrollbar-gutter-spacer flex-1 items-center justify-end sm:justify-center'
-                            : 'h-full overflow-y-auto',
-                          !isLandingPage && chatProjectId && 'pt-9',
-                        )}
-                      >
+                    <ChatScreen
+                      index={index}
+                      conversationId={conversationId}
+                      messages={messages}
+                      fileMap={fileMap}
+                      isLoading={isLoading}
+                      project={project}
+                      landingFooter={landingFooter}
+                      configuredFooter={configuredFooter}
+                      renderHeader={({ parentConversationId, readOnly }) => (
+                        <Header parentConversationId={parentConversationId} readOnly={readOnly} />
+                      )}
+                      renderBadge={(projectId) => <ProjectBadge projectId={projectId} />}
+                      renderMessages={(thread) => <MessagesView {...thread} />}
+                      landing={<Landing centerFormOnLanding={centerFormOnLanding} />}
+                      renderColumn={(column) => (
                         <OwnerTextProvider
                           messages={messages}
                           conversationId={conversationId}
                           isSubmitting={chat.isSubmitting}
                         >
-                          {content}
+                          {column}
                         </OwnerTextProvider>
-                        {/* Named + opaque so a view transition (the ask_user_question
-                        popover ⇄ chat-card morph) paints the whole composer band
-                        over the travelling card instead of letting it show
-                        through below the composer. The background matches the
-                        page, so normal rendering is unchanged. The named surface
-                        is a stacking context; keep it above positioned tool glyphs
-                        so they cannot paint through the approval preview. */}
-                        <div
-                          ref={composerBandRef}
-                          className={cn(
-                            'bg-surface-canvas relative z-10 w-full [view-transition-name:chat-form]',
-                            !isLandingPage && 'scrollbar-gutter-spacer',
-                            isLandingPage && 'max-w-3xl transition-all duration-200 xl:max-w-4xl',
-                          )}
-                        >
-                          {isLandingPage && <ConversationStarters />}
-                          {isSubagentThreadReadOnly ? (
-                            <div
-                              className="text-text-secondary mx-auto w-full max-w-3xl px-4 py-3 text-center text-sm xl:max-w-4xl"
-                              role="note"
-                            >
-                              {localize('com_ui_subagent_thread_read_only')}
-                            </div>
-                          ) : (
-                            <ChatForm
-                              index={index}
-                              routePending={routePending}
-                              placeholder={chatFormPlaceholder}
-                              project={isProjectLandingPage ? project : undefined}
-                              isLandingPage={isLandingPage}
-                              enterToSend={enterToSend}
-                              autoSendText={autoSendText}
-                              speechSettingsInitialized={speechSettingsInitialized}
-                              footerBelow={footerBelow}
-                              centerFormOnLanding={centerFormOnLanding}
-                            />
-                          )}
-                          {/* The generic disclaimer and the policy links are the
-                              welcome screen's; a deployment's own footer stays
-                              with the conversation that always showed it. */}
-                          {!fullFooter && configuredFooter && <Footer configuredOnly />}
-                        </div>
-                        <Lia
-                          bandRef={composerBandRef}
-                          landing={isLandingPage}
-                          submission={rootSubmission}
+                      )}
+                      starters={<ConversationStarters />}
+                      renderComposer={({ isLanding, footerBelow, project, placeholder }) => (
+                        <ChatForm
+                          index={index}
+                          routePending={routePending}
+                          placeholder={placeholder}
+                          project={project}
+                          isLandingPage={isLanding}
+                          enterToSend={enterToSend}
+                          autoSendText={autoSendText}
+                          speechSettingsInitialized={speechSettingsInitialized}
+                          footerBelow={footerBelow}
+                          centerFormOnLanding={centerFormOnLanding}
                         />
-                      </div>
-                      {fullFooter && <Footer />}
-                    </>
+                      )}
+                      /* The generic disclaimer and the policy links are the welcome
+                         screen's; a deployment's own footer stays with the
+                         conversation that always showed it. */
+                      renderFooter={(placement) =>
+                        placement === 'band' ? <Footer configuredOnly /> : <Footer />
+                      }
+                      renderMascot={(bandRef, landing) => (
+                        <Lia bandRef={bandRef} landing={landing} submission={rootSubmission} />
+                      )}
+                    />
                   </TraceSurface>
                 </Presentation>
               </ApprovalProvider>
@@ -263,7 +155,7 @@ function ChatView(props: ChatViewProps) {
   return (
     <ChatSessionProvider index={index} conversationId={conversationId}>
       {({ messages, isLoading }) => (
-        <ChatPane
+        <ChatViewPane
           {...props}
           conversationId={conversationId}
           messages={messages}

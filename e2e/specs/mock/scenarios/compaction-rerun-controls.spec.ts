@@ -1,7 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import type { APIRequestContext, Page } from '@playwright/test';
-import { randomUUID } from 'node:crypto';
-import { getE2EUser } from '../../../setup/user';
+import type { SeedMessage } from '../db';
 import {
   deleteConversations,
   deleteMessagesByConversation,
@@ -9,8 +9,9 @@ import {
   seedMessages,
   withMongo,
 } from '../db';
-import type { SeedMessage } from '../db';
 import { messagesView, sendMessageAndWaitForCompletion } from '../helpers';
+import { sendCompactionHistory } from '../compaction.helpers';
+import { getE2EUser } from '../../../setup/user';
 
 const userEmail = getE2EUser().email;
 const ROOT_PARENT = '00000000-0000-0000-0000-000000000000';
@@ -92,6 +93,7 @@ const LABEL_SERVER = `http://127.0.0.1:${process.env.E2E_LABEL_PORT || '8889'}`;
  */
 async function compactWithEmptySummarizer(page: Page, request: APIRequestContext, label: string) {
   await page.goto('/c/new');
+  await sendCompactionHistory(page, label);
   await sendMessageAndWaitForCompletion(page, `tell me about ${label}`);
   const conversationId = new URL(page.url()).pathname.replace('/c/', '');
   expect(conversationId).not.toBe('new');
@@ -130,6 +132,7 @@ async function compactWithEmptySummarizer(page: Page, request: APIRequestContext
  */
 async function cancelCompactionOnUserLeaf(page: Page, request: APIRequestContext, label: string) {
   await page.goto('/c/new');
+  await sendCompactionHistory(page, label, 1);
   await sendMessageAndWaitForCompletion(page, `tell me about ${label}`);
   const conversationId = new URL(page.url()).pathname.replace('/c/', '');
   expect(conversationId).not.toBe('new');

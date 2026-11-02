@@ -214,12 +214,18 @@ describe('ApprovalLifecycle via GenerationJobManager.approvals (in-memory)', () 
       expect(
         await manager.approvals.pause(streamId, action, {
           discoveredTools: ['save_issue_mcp_linear'],
+          authoredSkills: [
+            { agentId: 'a', name: 'new-skill', id: '507f1f77bcf86cd799439011', primed: true },
+          ],
         }),
       ).toBe(true);
 
       const paused = await manager.getJob(streamId);
       expect(paused?.status).toBe('requires_action');
       expect(paused?.metadata.discoveredTools).toEqual(['save_issue_mcp_linear']);
+      expect(paused?.metadata.authoredSkills).toEqual([
+        { agentId: 'a', name: 'new-skill', id: '507f1f77bcf86cd799439011', primed: true },
+      ]);
     });
 
     test('persists activity phase state in the same transition as the pause', async () => {

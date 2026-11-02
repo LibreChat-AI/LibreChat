@@ -1,21 +1,21 @@
 import { useCallback, useEffect, useMemo, useRef } from 'react';
 import { useAtom } from 'jotai';
+import { SubagentActivityScrollSurface } from '@librechat/chat/components';
 import { OGDialog, OGDialogContent, OGDialogHeader, OGDialogTitle } from '@librechat/client';
-import type { TMessage } from 'librechat-data-provider';
 import {
+  activeSubagentPanel,
+  adaptLivePersistedActivity,
+  resolveSubagentAgentId,
   isSelfSpawn as isSelfSpawnType,
   messageAuthor,
   findAgentLaneId,
   resolveSubagentAuthor,
   findAgentAuthorMessage,
-} from './author';
+} from '@librechat/chat/react';
+import type { TMessage } from 'librechat-data-provider';
 import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
-import { SubagentActivityScrollSurface } from './SubagentActivity';
 import SubagentConversation from './SubagentConversation';
-import { adaptLivePersistedActivity } from './adapters';
-import { resolveSubagentAgentId } from './identity';
 import { useAgentsMapContext } from '~/Providers';
-import { activeSubagentPanel } from './state';
 import { useLocalize } from '~/hooks';
 
 /** Public-share fallback for subagent activity already embedded in the shared message payload. */
