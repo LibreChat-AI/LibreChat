@@ -513,6 +513,29 @@ describe('opt-in two-factor confirmation', () => {
     },
   );
 
+  it('reports the committed enrollment and withdraws the session when rotating it fails', async () => {
+    const userId = await createUser({ pendingTotpSecret: PENDING_SECRET });
+    const { deps } = createDeps({
+      setAuthTokens: async () => {
+        throw new Error('down');
+      },
+    });
+    const res = createRes();
+
+    await createOptInTwoFactorConfirmation(deps)(
+      await createReq(userId),
+      res as unknown as Response,
+    );
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ code: CREDENTIAL_RETIREMENT_INCOMPLETE }),
+    );
+    expect(res.clearCookie).toHaveBeenCalledWith('refreshToken');
+    const stored = await mongoose.models.User.findById(userId).lean<IUser>();
+    expect(stored?.twoFactorEnabled).toBe(true);
+  });
+
   it('refuses a bearer an older server minted without issuedAtMs once enrollment lands', async () => {
     const userId = await createUser({ pendingTotpSecret: PENDING_SECRET });
     const legacyBearer = { issuedAt: Math.floor(Date.now() / 1000) - 5 };

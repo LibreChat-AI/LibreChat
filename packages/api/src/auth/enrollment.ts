@@ -384,6 +384,8 @@ export function createOptInTwoFactorConfirmation(deps: OptInConfirmationDependen
   };
 
   return async (req: OptInRequest, res: Response): Promise<Response> => {
+    /** Set once 2FA is on: a later failure has to say so, and withdraw what it may have minted. */
+    let withdrawAfterCommit: (() => Promise<void>) | undefined;
     try {
       const userId = req.user?.id;
       if (!userId) {
@@ -435,6 +437,8 @@ export function createOptInTwoFactorConfirmation(deps: OptInConfirmationDependen
       if (!promoted) {
         return res.status(400).json({ message: '2FA not initiated' });
       }
+      const withdraw = () => withdrawMintedSession(res, user, userId, deps);
+      withdrawAfterCommit = withdraw;
 
       const retired = await retireForEnrollment(
         userId,
@@ -451,7 +455,6 @@ export function createOptInTwoFactorConfirmation(deps: OptInConfirmationDependen
         return res.status(500).json(RETIREMENT_INCOMPLETE_BODY);
       }
       const authToken = await deps.setAuthTokens(user._id, res, session, req);
-      const withdraw = () => withdrawMintedSession(res, user, userId, deps);
       const current = await recheckMintedCredential(
         () => deps.getUserById(userId, TOKEN_RETIREMENT_FIELDS),
         withdraw,
@@ -467,7 +470,13 @@ export function createOptInTwoFactorConfirmation(deps: OptInConfirmationDependen
       return res.status(200).json({ token: authToken, user: sanitizeUser(promoted) });
     } catch (err) {
       logger.error('[confirm2FA]', err);
-      return res.status(500).json({ message: 'Something went wrong' });
+      if (!withdrawAfterCommit) {
+        return res.status(500).json({ message: 'Something went wrong' });
+      }
+      await withdrawAfterCommit().catch((cause: unknown) =>
+        logger.error('[confirm2FA] Failed to withdraw the session after enrollment', cause),
+      );
+      return res.status(500).json(RETIREMENT_INCOMPLETE_BODY);
     }
   };
 }
