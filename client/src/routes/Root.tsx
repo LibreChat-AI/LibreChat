@@ -33,6 +33,7 @@ import {
   CodeHighlightThrottleContext,
   normalizeCodeHighlightThrottleMs,
 } from '~/components/Chat/Messages/Content/Parts/useLazyHighlight';
+import { ComposerHostProvider, appComposerHost } from '~/Providers/ComposerHostContext';
 import { StreamHostProvider, appStreamHost } from '~/Providers/StreamHostContext';
 import KeyboardShortcutsDialog from '~/components/Nav/KeyboardShortcutsDialog';
 import { SteerHostProvider, appSteerHost } from '~/Providers/SteerHostContext';
@@ -276,7 +277,9 @@ export default function Root() {
       <SteerHostProvider host={appSteerHost}>
         <ChatHostProvider host={appChatHost}>
           <StreamHostProvider host={appStreamHost}>
-            <RootLayout />
+            <ComposerHostProvider host={appComposerHost}>
+              <RootLayout />
+            </ComposerHostProvider>
           </StreamHostProvider>
         </ChatHostProvider>
       </SteerHostProvider>

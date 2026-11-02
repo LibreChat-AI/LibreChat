@@ -1,16 +1,16 @@
 import { useMemo } from 'react';
+import { findSubagentDispatch } from '@librechat/chat';
 import { MessageRow } from '@librechat/chat/components';
-import type { ComponentProps } from 'react';
-import type { WakeupTask } from '../Content/Parts/wakeup';
 import {
+  useParentSubagents,
   messageAuthor,
   resolveSubagentAuthor,
   findAgentAuthorMessage,
   useParentAuthor,
-} from '~/components/Chat/Subagents/author';
-import { useParentSubagents } from '~/components/Chat/Subagents/ParentSubagentsProvider';
+} from '@librechat/chat/react';
+import type { WakeupTask } from '@librechat/chat';
+import type { ComponentProps } from 'react';
 import { useOptionalMessagesOperations } from '~/Providers/MessagesViewContext';
-import { findSubagentDispatch } from '~/components/Chat/Subagents/dispatch';
 import { useShareContext } from '~/Providers/ShareContext';
 import { useAgentsMapContext } from '~/Providers';
 import { useLocalize } from '~/hooks';

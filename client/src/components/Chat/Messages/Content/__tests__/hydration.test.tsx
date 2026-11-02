@@ -3,8 +3,6 @@ import { RecoilRoot } from 'recoil';
 import { ContentTypes, dataService } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { TMessageContentParts, ToolCallPartResponse } from 'librechat-data-provider';
-import type { ToolContentQuery, ToolDisclosures } from '../disclosure';
 import {
   SoleToolContext,
   ToolContentQueryContext,
@@ -12,7 +10,9 @@ import {
   useToolContentPending,
   ToolDisclosureContext,
   ToolDisclosureKeyContext,
-} from '../disclosure';
+} from '@librechat/chat/react';
+import type { TMessageContentParts, ToolCallPartResponse } from 'librechat-data-provider';
+import type { ToolContentQuery, ToolDisclosures } from '@librechat/chat/react';
 import { isPreviewedToolCallPart, PreviewedToolCallPart, withFullToolCall } from '../hydration';
 import { MessageContext } from '~/Providers';
 

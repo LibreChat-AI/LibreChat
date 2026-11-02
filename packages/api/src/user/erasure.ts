@@ -233,6 +233,19 @@ export async function deleteUserMCPServers(
 }
 
 /**
+ * Waits for independent deletes to settle, then rethrows the first failure in declaration
+ * order, so a failed step aborts the erasure with the same error as when they ran one by one.
+ */
+async function settleInOrder(steps: Array<Promise<unknown> | undefined>): Promise<void> {
+  const results = await Promise.allSettled(steps);
+  for (const result of results) {
+    if (result.status === 'rejected') {
+      throw result.reason;
+    }
+  }
+}
+
+/**
  * The user-owned data cascade shared by account self-deletion and the operator CLI.
  *
  * Callers own everything around it: deletion fences, schedule suspension, generation aborts,
@@ -285,21 +298,22 @@ export async function eraseUserData(
     await deps.deleteRefreshTokenBridges({ userId });
   }
   await deps.deletePasskeysByUser(userId);
-  if (!keepTransactions) {
-    await deps.deleteTransactions({ user: userId });
-  }
   await deps.deleteUserKey({ userId, all: true });
-  await deps.deleteBalances({ user: userObjectId });
-  await deps.deletePresets(userId);
-  await deps.deleteAllUserPluginAuths(userId);
+  /** Leaf collections nothing later in the erasure reads, so they are removed together. */
+  await settleInOrder([
+    keepTransactions ? undefined : deps.deleteTransactions({ user: userId }),
+    deps.deleteBalances({ user: userObjectId }),
+    deps.deletePresets(userId),
+    deps.deleteAllUserPluginAuths(userId),
+    deps.deleteToolCalls(userId),
+    deps.deleteConversationTags({ user: userId }),
+    deps.deleteUserToolFavorites(userId),
+    deps.deleteAllUserMemories(userId),
+  ]);
   await deps.deleteSharedLinks(userId);
-  await deps.deleteToolCalls(userId);
   await deps.deleteUserAgents(userId);
   await deps.deleteAllAgentApiKeys(userObjectId);
   await deps.deleteAssistants({ user: userId });
-  await deps.deleteConversationTags({ user: userId });
-  await deps.deleteUserToolFavorites(userId);
-  await deps.deleteAllUserMemories(userId);
   await deps.deleteUserPrompts(userId);
   await deps.deleteUserSkills(userId);
   await deleteUserMCPServers(userId, deps, tenantId);

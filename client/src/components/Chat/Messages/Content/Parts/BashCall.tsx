@@ -1,25 +1,31 @@
 import { useMemo, useRef, useState, useCallback, useEffect } from 'react';
 import copy from 'copy-to-clipboard';
 import { Button } from '@librechat/client';
+import { PANE_COPY_REVEAL, TOOL_ROW_CLASSES, BareStatus } from '@librechat/chat/components';
+import {
+  toolPanelSpacingClassName,
+  useToolContentPending,
+  useFollowScroll,
+  useToolCallIntent,
+} from '@librechat/chat/react';
+import {
+  parseBackgroundHandle,
+  splitBackgroundAttachments,
+  parseJsonField,
+  areToolCallArgsComplete,
+  parseCommandOutput,
+} from '@librechat/chat';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
-import { toolPanelSpacingClassName, useToolContentPending } from '../disclosure';
-import { parseBackgroundHandle, splitBackgroundAttachments } from './handle';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
-import parseJsonField, { areToolCallArgsComplete } from './parseJsonField';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import CopyButton from '~/components/Messages/Content/CopyButton';
 import LangIcon from '~/components/Messages/Content/LangIcon';
-import { PANE_COPY_REVEAL, TOOL_ROW_CLASSES } from '../rows';
 import useToolCallState from './useToolCallState';
 import useLazyHighlight from './useLazyHighlight';
-import useFollowScroll from './useFollowScroll';
 import { OutputRenderer } from '../ToolOutput';
 import { ERROR_PATTERNS } from './ExecuteCode';
 import { AttachmentGroup } from './Attachment';
-import { parseCommandOutput } from './command';
-import { useToolCallIntent } from './intent';
 import PtcToolTrace from './PtcToolTrace';
-import BareStatus from './BareStatus';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 

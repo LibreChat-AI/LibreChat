@@ -85,3 +85,26 @@ export type TRegenerateFunction = (
   target: RegenerateTarget,
   options?: { addedConvo?: TConversation | null },
 ) => void;
+
+/** The body a stream handler receives with a turn's messages. */
+export type TBaseResData = {
+  final?: boolean;
+  initial?: boolean;
+  previousMessages?: TMessage[];
+  conversation: TConversation;
+  conversationId?: string;
+  runMessages?: TMessage[];
+};
+
+/** A frame that carries the turn's request and response messages. */
+export type TResData = TBaseResData & {
+  requestMessage: TMessage;
+  responseMessage: TMessage;
+};
+
+/** The final frame, whose conversation may arrive partial. */
+export type TFinalResData = Omit<TBaseResData, 'conversation'> & {
+  conversation: Partial<TConversation> & Pick<TConversation, 'conversationId'>;
+  requestMessage?: TMessage;
+  responseMessage?: TMessage;
+};

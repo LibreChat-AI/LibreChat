@@ -34,7 +34,6 @@ jest.mock('../../steering/useSteerConvert', () => ({
 }));
 
 const noop = () => undefined;
-const noLiveAttachments = {};
 const turnServices = createTurnServices();
 const cache: ChatMessageCache = {
   read: () => undefined,
@@ -44,6 +43,10 @@ const cache: ChatMessageCache = {
   refetchMessages: jest.fn(),
   refetchActiveJobs: jest.fn(),
   refetchStreamStatus: jest.fn(),
+  invalidateMessages: jest.fn(),
+  messagesUpdatedAt: () => undefined,
+  reloadMessages: () => Promise.resolve(),
+  readQueuedTurns: () => undefined,
 };
 
 /** A host with no app behind it: one fixed pane conversation and the abort under test. */
@@ -56,9 +59,9 @@ const createHost = (conversation: TConversation | null): ChatHost => ({
   useSetSiblingIdx: () => noop,
   useAbortStream: () => mockAbortStream,
   useMessageCache: () => cache,
-  useLiveAttachments: () => noLiveAttachments,
   useFeedbackEnabled: () => false,
   getMappingOptions: () => ({}),
+  useMessages: () => ({ messages: null, isLoading: false, isFetching: false }),
 });
 
 const INDEX = 0;

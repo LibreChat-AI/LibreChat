@@ -1,6 +1,5 @@
+import { MessageQuotes, SkillPills } from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
-import MessageQuotes from './MessageQuotes';
-import SkillPills from './SkillPills';
 
 const Container = ({ children, message }: { children: React.ReactNode; message?: TMessage }) => (
   <div

@@ -29,16 +29,12 @@ jest.mock('../LogLink', () => ({
   useAttachmentLink: () => ({ handleDownload: jest.fn() }),
 }));
 
-jest.mock('~/components/Chat/Input/Files/FileContainer', () => ({
-  __esModule: true,
-  default: ({ file, displayName }: { file: { filename?: string }; displayName?: string }) => (
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  FileContainer: ({ file, displayName }: { file: { filename?: string }; displayName?: string }) => (
     <div data-testid="file-container">{displayName ?? file.filename ?? ''}</div>
   ),
-}));
-
-jest.mock('~/components/Chat/Input/Files/FilePreview', () => ({
-  __esModule: true,
-  default: () => <div data-testid="file-preview" />,
+  FilePreview: () => <div data-testid="file-preview" />,
 }));
 
 jest.mock('~/components/Chat/Messages/Content/Image', () => ({

@@ -1,6 +1,8 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Tools } from 'librechat-data-provider';
+import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
+import { ToolContentRequestContext } from '@librechat/chat/react';
 import { fireEvent, render, screen } from '@testing-library/react';
 import type {
   TAttachment,
@@ -8,10 +10,8 @@ import type {
   ValidSource,
   PartMetadata,
 } from 'librechat-data-provider';
-import { ToolContentRequestContext } from '../disclosure';
 import { FailedRevealContext } from '../reveal';
 import { SearchContext } from '~/Providers';
-import { ROW_GLYPH_SLOT } from '../rows';
 import WebSearch from '../WebSearch';
 
 jest.mock('~/hooks', () => ({

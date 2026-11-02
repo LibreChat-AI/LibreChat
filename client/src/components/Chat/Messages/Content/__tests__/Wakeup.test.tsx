@@ -1,9 +1,9 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { useAtomValue } from 'jotai';
+import { activeSubagentPanel } from '@librechat/chat/react';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import type { ParentSubagentSummary } from 'librechat-data-provider';
-import { activeSubagentPanel } from '~/components/Chat/Subagents/state';
 import { ChatSurfaceHarness } from 'test/harness';
 import Wakeup from '../Wakeup';
 
@@ -69,7 +69,8 @@ const child: ParentSubagentSummary = {
   title: 'Subagent: self',
 } as ParentSubagentSummary;
 
-jest.mock('~/components/Chat/Subagents/ParentSubagentsProvider', () => ({
+jest.mock('@librechat/chat/react', () => ({
+  ...jest.requireActual('@librechat/chat/react'),
   useParentSubagents: () => ({
     byThreadId: new Map([['thread-1', child]]),
     byMessageId: new Map(),

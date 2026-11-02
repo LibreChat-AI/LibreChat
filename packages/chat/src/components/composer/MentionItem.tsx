@@ -11,6 +11,8 @@ export interface MentionItemProps {
   isActive?: boolean;
   description?: string;
   style?: React.CSSProperties;
+  /** `option` makes the row a listbox option the popover's input points at, out of the tab order. */
+  role?: 'option';
 }
 
 export default function MentionItem({
@@ -21,13 +23,16 @@ export default function MentionItem({
   isActive,
   description,
   style,
+  role,
   type = 'mention',
 }: MentionItemProps): React.JSX.Element {
   return (
     <button
       type="button"
       style={style}
-      tabIndex={index}
+      role={role}
+      aria-selected={role === 'option' ? isActive === true : undefined}
+      tabIndex={role === 'option' ? -1 : index}
       onClick={onClick}
       id={`${type}-item-${index}`}
       className="w-full touch-manipulation"

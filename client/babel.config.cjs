@@ -5,7 +5,7 @@ babel is used for frontend unit testing
 */
 module.exports = {
   presets: [
-    ['@babel/preset-env', { 'targets': { 'node': 'current' } }], //compiling ES2015+ syntax
+    ['@babel/preset-env', { targets: { node: 'current' } }], //compiling ES2015+ syntax
     ['@babel/preset-react', { runtime: 'automatic' }],
     '@babel/preset-typescript',
   ],
@@ -21,8 +21,8 @@ module.exports = {
     [
       'babel-plugin-root-import',
       {
-        'rootPathPrefix': '~/',
-        'rootPathSuffix': './src',
+        rootPathPrefix: '~/',
+        rootPathSuffix: './src',
       },
     ],
   ],

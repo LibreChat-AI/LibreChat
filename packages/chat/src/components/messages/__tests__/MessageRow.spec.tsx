@@ -3,7 +3,7 @@
  */
 import { render, screen } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
-import type { MessagesHost } from '../../../react/messages/host';
+import { createMessagesHost } from '../../../__fixtures__/messagesHost';
 import { MessagesHostProvider } from '../../../react/messages/host';
 import { initEnglish } from '../../../__fixtures__/i18n';
 import MessageRow from '../MessageRow';
@@ -17,10 +17,7 @@ jest.mock('../MessageTimestamp', () => ({
 
 beforeAll(initEnglish);
 
-const host: MessagesHost = {
-  useHour12: () => undefined,
-  renderFiles: () => <button data-testid="attached-file" />,
-};
+const host = createMessagesHost({ renderFiles: () => <button data-testid="attached-file" /> });
 
 const MESSAGE_BODY = 'Message body';
 const attachedMessage = (overrides: Partial<TMessage> = {}) =>

@@ -10,7 +10,10 @@ cache: true
 # Browser telemetry and session recording are independent opt-ins. Collector URL,
 # authentication and service settings remain in .env. YAML flags override .env;
 # omitting them preserves the corresponding environment settings.
+# stackTraceLimit (1 to 1000) sets how many frames each error stack records; unset keeps
+# Node's default of 10, or --stack-trace-limit from NODE_OPTIONS.
 # telemetry:
+#   stackTraceLimit: 50
 #   rum:
 #     enabled: true
 #     sessionReplay:
@@ -569,6 +572,9 @@ registration:
 #   actionsMs: 300000 # each action (OpenAPI tool) HTTP call
 #   moderationMs: 10000 # the OpenAI moderation check before a chat turn
 #   imageFetchMs: 30000 # fetching a stored image to encode it for a provider
+#   toolsMs: 60000 # each call a built-in tool makes to its API (weather, Wolfram, web search)
+#   speechMs: 300000 # each text-to-speech or speech-to-text provider request
+#   imageGenerationMs: 300000 # each Stable Diffusion image generation request
 
 # Newest violations kept per user in the general violation log.
 # violationLog:

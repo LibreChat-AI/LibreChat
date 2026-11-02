@@ -247,7 +247,7 @@
   "com_endpoint_config_google_gemini_api": "(API Gemini)",
   "com_endpoint_config_google_service_key": "Clau de Compte de Servei de Google",
   "com_endpoint_config_key": "Defineix la clau API",
-  "com_endpoint_config_key_encryption": "La teva clau serà xifrada i esborrada a",
+  "com_endpoint_config_key_encryption": "La clau actual està xifrada i s'eliminarà el {{0}}",
   "com_endpoint_config_key_for": "Defineix clau API per a",
   "com_endpoint_config_key_google_need_to": "Cal que",
   "com_endpoint_config_key_google_service_account": "Creïs un Compte de Servei",
@@ -369,7 +369,7 @@
   "com_error_google_tool_conflict": "L'ús d'eines integrades de Google no és compatible amb eines externes. Desactiva les eines integrades o bé les externes.",
   "com_error_heic_conversion": "Error en convertir la imatge HEIC a JPEG. Prova de convertir la imatge manualment o utilitza un format diferent.",
   "com_error_illegal_model_request": "El model \"{{0}}\" no està disponible per a {{1}}. Selecciona un model diferent.",
-  "com_error_input_length": "La darrera resposta conté massa tokens, supera el límit, o els paràmetres de límit de tokens estan mal configurats i afecten la finestra de context. Més informació: {{0}}. Escurça el missatge, ajusta el màxim de context o divideix la conversa per continuar.",
+  "com_error_input_length": "El teu missatge necessita {{0}} tokens, però aquesta conversa en permet {{1}}.",
   "com_error_invalid_agent_provider": "El proveïdor \"{{0}}\" no està disponible per a agents. Ves a la configuració de l'agent i selecciona un proveïdor disponible.",
   "com_error_invalid_base_url": "L'URL base que has proporcionat apunta a una adreça restringida. Utilitza un URL extern vàlid i torna-ho a provar.",
   "com_error_invalid_user_key": "Clau proporcionada no vàlida. Proporciona una clau vàlida i torna-ho a provar.",
@@ -377,8 +377,8 @@
   "com_error_models_not_loaded": "No s'ha pogut carregar la configuració dels models. Recarrega la pàgina i torna-ho a provar.",
   "com_error_moderation": "Sembla que el contingut enviat ha estat marcat pel nostre sistema de moderació per no complir les directrius de la comunitat. No podem continuar amb aquest tema concret. Si tens altres preguntes o temes, edita el missatge o crea una conversa nova.",
   "com_error_no_base_url": "No s'ha trobat cap URL base. Proporciona'n una i torna-ho a provar.",
-  "com_error_no_user_key": "No s'ha trobat cap clau. Proporciona'n una i torna-ho a provar.",
-  "com_error_refusal": "Resposta rebutjada pels filtres de seguretat. Reescriu el missatge i torna-ho a provar. Si t'hi trobes sovint mentre utilitzes Claude Sonnet 4.5 o Opus 4.1, pots provar amb Sonnet 4, que té restriccions d'ús diferents.",
+  "com_error_no_user_key": "Afegeix la teva pròpia clau d'API de {{0}} per enviar missatges.",
+  "com_error_refusal": "{{0}} ha rebutjat respondre aquesta sol·licitud. Reescriu el missatge i torna-ho a provar.",
   "com_error_stream_expired": "El flux de la resposta ha caducat o ja s'ha completat. Torna-ho a provar.",
   "com_file_pages": "Pàgines: {{pages}}",
   "com_file_source": "Arxiu",
@@ -1754,5 +1754,6 @@
   "com_ui_zoom_in": "Augmenta el zoom",
   "com_ui_zoom_level": "Nivell de zoom",
   "com_ui_zoom_out": "Redueix el zoom",
-  "com_user_message": "Tu"
+  "com_user_message": "Tu",
+  "com_ui_feedback_tag_other_issue": "Un altre problema"
 }

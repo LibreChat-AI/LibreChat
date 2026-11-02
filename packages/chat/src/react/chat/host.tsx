@@ -10,6 +10,7 @@ import type {
   TEndpointOption,
   TEphemeralAgent,
   TEndpointsConfig,
+  TAgentQueuedTurnReceipt,
   UIMappingOptions,
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, SetStateAction } from 'react';
@@ -138,6 +139,23 @@ export type ChatMessageCache = {
   refetchActiveJobs: () => void;
   /** Marks a conversation's stream status stale. */
   refetchStreamStatus: (conversationId: string) => void;
+  /** Marks a conversation's messages stale; only mounted readers refetch. */
+  invalidateMessages: (conversationId: string) => void;
+  /** When a conversation's messages were last fetched, if they ever were. */
+  messagesUpdatedAt: (conversationId: string) => number | undefined;
+  /** Refetches a conversation's messages; rejects when the fetch fails. */
+  reloadMessages: (conversationId: string) => Promise<void>;
+  /** The server's queued-turn receipts last read for a conversation. */
+  readQueuedTurns: (conversationId: string) => TAgentQueuedTurnReceipt[] | undefined;
+};
+
+/** A conversation's messages as the app's data layer loads them. */
+export type ChatMessagesQuery = {
+  messages: TMessage[] | null;
+  /** No data yet for this conversation. */
+  isLoading: boolean;
+  /** A load or background revalidation is in flight. */
+  isFetching: boolean;
 };
 
 /**
@@ -161,12 +179,16 @@ export interface ChatHost {
   /** Stops a resumable generation. */
   useAbortStream(): (params: AbortStreamParams) => Promise<AbortStreamResponse>;
   useMessageCache(): ChatMessageCache;
-  /** Attachments delivered by message id ahead of the message cache. Stable across renders. */
-  useLiveAttachments(): Record<string, TAttachment[] | undefined>;
   /** Whether message feedback controls are on. */
   useFeedbackEnabled(): boolean;
   /** The app's tool outcome rules for viewing one message; see {@link ChatContract}. */
   getMappingOptions(live: TAttachment[] | undefined): UIMappingOptions;
+  /** Loads a conversation's messages; `isStreaming` lets the query hold off refetching under a
+   *  live stream. An absent id loads nothing. */
+  useMessages(
+    conversationId: string | undefined,
+    options: { isStreaming: boolean },
+  ): ChatMessagesQuery;
 }
 
 const ChatHostContext = createContext<ChatHost | null>(null);

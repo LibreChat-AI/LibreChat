@@ -1,15 +1,15 @@
 import React from 'react';
 import { useSetAtom } from 'jotai';
 import { RecoilRoot, useSetRecoilState } from 'recoil';
-import { isSubmittingFamily } from '@librechat/chat/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { activeSubagentPanel, isSubmittingFamily } from '@librechat/chat/react';
 import type { TConversation } from 'librechat-data-provider';
 import type { JotaiStore } from 'test/harness';
 import type { Artifact } from '~/common';
 import { prepareUndockedDocument } from '~/components/Artifacts/undockedWindow';
-import { activeSubagentPanel } from '~/components/Chat/Subagents/state';
 import { undockedArtifacts } from '~/components/Artifacts/state';
+import { SubagentIndexHostProvider } from 'test/streamHost';
 import { ChatSurfaceHarness } from 'test/harness';
 import Presentation from './Presentation';
 import store from '~/store';
@@ -18,7 +18,9 @@ const renderPresentation = (element: React.ReactElement) => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(element, {
     wrapper: ({ children }) => (
-      <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      <QueryClientProvider client={client}>
+        <SubagentIndexHostProvider>{children}</SubagentIndexHostProvider>
+      </QueryClientProvider>
     ),
   });
 };
@@ -50,9 +52,8 @@ jest.mock('~/components/Artifacts/Artifacts', () => {
 });
 
 jest.mock('~/components/Chat/Subagents/SubagentThreadPanel', () => {
-  const { useParentSubagents } = jest.requireActual<
-    typeof import('~/components/Chat/Subagents/ParentSubagentsProvider')
-  >('~/components/Chat/Subagents/ParentSubagentsProvider');
+  const { useParentSubagents } =
+    jest.requireActual<typeof import('@librechat/chat/react')>('@librechat/chat/react');
   return {
     __esModule: true,
     default: function MockSubagentThreadPanel() {
