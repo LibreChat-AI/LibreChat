@@ -1,4 +1,5 @@
 import type { TFileConfig } from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
 
 interface StoredBlobFile {
   filepath: string;
@@ -13,6 +14,7 @@ interface OwnedBlobDeleteDependencies {
     userId: string;
     file: StoredBlobFile;
     fileConfig?: TFileConfig;
+    timeouts?: AppConfig['timeouts'];
   }) => Promise<unknown>;
 }
 
@@ -24,7 +26,10 @@ export function createOwnedBlobFileDeleter({
   deleteRagFile,
 }: OwnedBlobDeleteDependencies) {
   return async (
-    req: { user: { id: string }; config?: { fileConfig?: TFileConfig } },
+    req: {
+      user: { id: string };
+      config?: { fileConfig?: TFileConfig; timeouts?: AppConfig['timeouts'] };
+    },
     file: StoredBlobFile,
   ): Promise<void> => {
     const ownerId = req.user.id;
@@ -46,6 +51,7 @@ export function createOwnedBlobFileDeleter({
         userId: ownerId,
         file,
         ...(req.config?.fileConfig ? { fileConfig: req.config.fileConfig } : {}),
+        ...(req.config?.timeouts ? { timeouts: req.config.timeouts } : {}),
       })) === false
     ) {
       throw new Error('Vector deletion was not confirmed');

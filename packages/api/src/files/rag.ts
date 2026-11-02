@@ -1,7 +1,9 @@
 import axios from 'axios';
 import { logger } from '@librechat/data-schemas';
 import type { TFileConfig } from 'librechat-data-provider';
+import type { AppConfig } from '@librechat/data-schemas';
 import type { AxiosInstance } from 'axios';
+import { outboundRequestBudget, getOutboundTimeoutMs } from '~/utils/timeouts';
 import { createConcurrencyLimiter } from '~/utils/promise';
 import { generateShortLivedToken } from '~/crypto/jwt';
 import { getSafeErrorMetadata } from '~/utils/errors';
@@ -9,6 +11,8 @@ import { getSafeErrorMetadata } from '~/utils/errors';
 interface DeleteRagFileParams {
   /** The user ID. Required for authentication. If not provided, the function returns false and logs an error. */
   userId: string;
+  /** The `timeouts` block of the app config; the default RAG budget applies when absent. */
+  timeouts?: AppConfig['timeouts'];
   fileConfig?: Pick<TFileConfig, 'vectorOwnershipTrackingStart' | 'vectorDeletionConcurrency'>;
   /** The file object. Must have `embedded` and `file_id` properties. */
   file: {
@@ -30,6 +34,7 @@ interface DeleteRagFileParams {
  *
  * @param params - The parameters object.
  * @param params.userId - The user ID for authentication.
+ * @param params.timeouts - Configured outbound budgets; defaults apply when omitted.
  * @param params.file - The file object. Must have `embedded` and `file_id` properties.
  * @returns Returns true if deletion was successful or skipped, false if there was an error.
  */
@@ -37,6 +42,7 @@ export async function deleteRagFile({
   userId,
   file,
   fileConfig,
+  timeouts,
 }: DeleteRagFileParams): Promise<boolean> {
   if (!file.embedded) return true;
   if (!userId) {
@@ -50,7 +56,7 @@ export async function deleteRagFile({
       generateToken: generateShortLivedToken,
       ownershipTrackingStart: fileConfig?.vectorOwnershipTrackingStart,
       namespaceConcurrency: fileConfig?.vectorDeletionConcurrency,
-    })({ user: { id: userId } }, file);
+    })({ user: { id: userId }, config: { timeouts } }, file);
     return deleted?.deleted === true;
   } catch (error) {
     logger.error('[deleteRagFile] Vector deletion was not confirmed', getSafeErrorMetadata(error));
@@ -122,7 +128,7 @@ export function createVectorFileDeleter({
   namespaceConcurrency?: number;
   ownershipTrackingStart?: string;
 }): (
-  req: { user: { id: string } },
+  req: { user: { id: string }; config?: Pick<AppConfig, 'timeouts'> },
   file: DeleteRagFileParams['file'],
 ) => Promise<{ deleted: true } | undefined> {
   const limit = createConcurrencyLimiter(namespaceConcurrency);
@@ -173,6 +179,7 @@ export function createVectorFileDeleter({
               ...config,
               headers: headers(),
               data: [file.file_id],
+              ...outboundRequestBudget(getOutboundTimeoutMs(req.config, 'ragMs'), 'ragMs'),
             });
           } catch (error) {
             // A 404 can mean a wrong scope. Only a successful inventory can establish absence,
@@ -181,6 +188,7 @@ export function createVectorFileDeleter({
             const { data } = await httpClient.get<string[]>(`${baseUrl}/ids`, {
               ...config,
               headers: headers(),
+              ...outboundRequestBudget(getOutboundTimeoutMs(req.config, 'ragMs'), 'ragMs'),
             });
             if (
               !Array.isArray(data) ||

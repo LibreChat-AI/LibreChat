@@ -19,6 +19,7 @@ import {
 } from '~/hooks';
 import { isMCPServerReadyForAgent } from '~/components/MCP/mcpServerUtils';
 import { useMCPRefresh } from '~/hooks/MCP/useMCPRefresh';
+import useRevealChat from '~/hooks/Nav/useRevealChat';
 import { Panel } from '~/common';
 import store from '~/store';
 
@@ -42,6 +43,7 @@ export function AgentPanelProvider({
 }) {
   const localize = useLocalize();
   const location = useLocation();
+  const revealChat = useRevealChat();
   /** The panel stays mounted while the sidebar is hidden (collapsed, mobile
    * drawer, or the insights route collapsing it), so only a visible form
    * releases the MCP catalogs ahead of the background warmup schedule */
@@ -187,6 +189,7 @@ export function AgentPanelProvider({
   }, [mcpData, localize, mcpServerNames, connectionStatus, availableMCPServersMap]);
 
   const value: AgentPanelContextType = {
+    revealChat,
     mcp,
     mcps,
     action,

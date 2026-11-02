@@ -10,7 +10,10 @@ cache: true
 # Browser telemetry and session recording are independent opt-ins. Collector URL,
 # authentication and service settings remain in .env. YAML flags override .env;
 # omitting them preserves the corresponding environment settings.
+# stackTraceLimit (1 to 1000) sets how many frames each error stack records; unset keeps
+# Node's default of 10, or --stack-trace-limit from NODE_OPTIONS.
 # telemetry:
+#   stackTraceLimit: 50
 #   rum:
 #     enabled: true
 #     sessionReplay:
@@ -301,6 +304,9 @@ interface:
   # Allow the artifacts pane to be moved into its own browser window
   # (desktop only; the mobile sheet is unaffected). Default: true.
   artifactUndocking: true
+  # Ask each viewer before loading Google Tag Manager (ANALYTICS_GTM_ID).
+  # Set false when the deployment settles consent itself, e.g. internal use. Default: true.
+  # analyticsConsent: true
   agents:
     use: true
     create: true
@@ -566,6 +572,9 @@ registration:
 #   actionsMs: 300000 # each action (OpenAPI tool) HTTP call
 #   moderationMs: 10000 # the OpenAI moderation check before a chat turn
 #   imageFetchMs: 30000 # fetching a stored image to encode it for a provider
+#   toolsMs: 60000 # each call a built-in tool makes to its API (weather, Wolfram, web search)
+#   speechMs: 300000 # each text-to-speech or speech-to-text provider request
+#   imageGenerationMs: 300000 # each Stable Diffusion image generation request
 
 # Newest violations kept per user in the general violation log.
 # violationLog:
@@ -574,6 +583,14 @@ registration:
 # Largest pageSize accepted when reading a conversation's messages.
 # messages:
 #   maxPageSize: 1000 # default: 1000
+
+# Upper bounds on independent lookups a request runs at once (1 to 32). Each omitted key keeps the default shown.
+# concurrency:
+#   connectedAgentLoads: 4 # connected agents initialized together per level of a handoff graph
+#   mcpCatalogLookups: 4 # MCP tool catalog reads when assembling an ephemeral or added agent
+#   skillNameLookups: 8 # model spec skill name resolutions
+#   skillFileInspections: 4 # bundled skill file inspections before a skill is primed
+#   resumeAgentLoads: 4 # agent reads while building the resume snapshot of a paused run
 
 # rateLimits:
 #   # Per-user MCP App browser-route limits. Each limit uses a fixed one-minute window.

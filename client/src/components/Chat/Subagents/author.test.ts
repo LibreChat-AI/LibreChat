@@ -1,5 +1,4 @@
 import { ContentTypes, EModelEndpoint } from 'librechat-data-provider';
-import type { TMessage } from 'librechat-data-provider';
 import {
   isSelfSpawn,
   messageAuthor,
@@ -10,7 +9,8 @@ import {
   readableSubagentType,
   readableSubagentTitle,
   findAgentAuthorMessage,
-} from './author';
+} from '@librechat/chat/react';
+import type { TMessage } from 'librechat-data-provider';
 
 function message(
   messageId: string,

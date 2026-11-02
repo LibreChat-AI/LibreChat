@@ -16,13 +16,16 @@ const getActiveBranch = (byId: Map<string, TMessage>, tailId: string | undefined
  * The stored messages `next` writes back over `current`, keeping the stored fields the UI view
  * omits. A message with no stored counterpart joins the chat under the message before it, or
  * under the active branch's tail when the message before it is on another branch, unless its
- * metadata names a parent. A message keeps the conversation it is stored under.
+ * metadata names a parent. A message keeps the conversation it is stored under. A view that is
+ * the one `viewOf` gives its stored message keeps that message as is, so rows a write left
+ * untouched stay the same objects.
  */
 export const toStoredMessages = (
   next: UIMessage[],
   current: TMessage[],
   latestMessageId: string | undefined,
   chatId: string | undefined,
+  viewOf?: (message: TMessage) => UIMessage,
 ): TMessage[] => {
   const byId = new Map(current.map((message) => [message.messageId, message]));
   const branch = getActiveBranch(byId, latestMessageId);
@@ -30,6 +33,10 @@ export const toStoredMessages = (
   let previous: { id: string; joined: boolean } | null = null;
   return next.map((view) => {
     const base = byId.get(view.id);
+    if (base && viewOf?.(base) === view) {
+      previous = { id: base.messageId, joined: branch.has(base.messageId) };
+      return base;
+    }
     const message = fromUIMessage(view, base);
     message.conversationId = base ? base.conversationId : conversationId;
     if (!base && view.metadata?.parentMessageId === undefined) {

@@ -5,7 +5,7 @@ import {
   getPreliminaryRegenerateResponseMessageId,
   getRegenerateTargetResponseMessage,
 } from '../useChatFunctions';
-import { resolvePayloadPromptPrefix } from '../ask/turn';
+import { resolvePayloadPromptPrefix } from '@librechat/chat';
 
 const userMessage = (messageId: string, parentMessageId = '00000000-0000-0000-0000-000000000000') =>
   ({

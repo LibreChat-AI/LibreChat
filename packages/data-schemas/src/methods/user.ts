@@ -1,5 +1,5 @@
 import mongoose, { FilterQuery } from 'mongoose';
-import { AUTH_USER_DOC_CACHE_TTL_MS, CacheKeys } from 'librechat-data-provider';
+import { AUTH_USER_DOC_MAX_AGE_MS } from 'librechat-data-provider';
 import type {
   BalanceRefillMode,
   RefillIntervalUnit,
@@ -17,7 +17,7 @@ import type {
 import type { TwoFactorEnrollmentGuard, TwoFactorEnrollmentUpdate } from '~/types';
 import type { CacheStore } from '~/types';
 import { scoreSearchMatch, buildUserSearchFilter } from '~/utils/search';
-import { evictAuthUserDocs } from '~/utils/eviction';
+import { evictAuthUserDocsForUsers } from '~/utils/eviction';
 import { signPayload } from '~/crypto';
 import logger from '~/config/winston';
 
@@ -41,15 +41,11 @@ interface UserMethodDeps {
 
 const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** Timers can fire a millisecond early, so the wait outlasts the cache TTL by this much. */
+/** Timers can fire a millisecond early, so the wait outlasts a cached document by this much. */
 const AUTH_USER_DOC_EXPIRY_MARGIN_MS = 100;
 
 /** Cached auth documents evicted at once when a reset touches every user. */
 const TERMS_RESET_EVICTION_BATCH = 100;
-
-function isAuthUserDocCacheEnabled(): boolean {
-  return process.env.AUTH_USER_CACHE_MODE === 'on';
-}
 
 /** Factory function that takes mongoose instance and returns the methods */
 export function createUserMethods(
@@ -443,7 +439,8 @@ export function createUserMethods(
    * The barrier a credential change passes before it is confirmed. A cached document without
    * the new credentialsChangedAt keeps pre-change access tokens verifying until it expires, so
    * eviction is retried and, when it still cannot remove every document, this resolves only
-   * after the cache TTL. Callers revoke sessions and passkeys first: during the wait those
+   * after the longest a cached document can live, which a lookup that began just before the
+   * change may stretch to two cache TTLs. Callers revoke sessions and passkeys first: during the wait those
    * could otherwise mint access tokens issued after the stamp.
    */
   async function awaitAuthUserDocEviction(userId: string): Promise<void> {
@@ -452,9 +449,9 @@ export function createUserMethods(
     }
     logger.warn(
       '[awaitAuthUserDocEviction] Cached auth documents were not evicted after a credential change; waiting for them to expire',
-      { userId, waitMs: AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS },
+      { userId, waitMs: AUTH_USER_DOC_MAX_AGE_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS },
     );
-    await (deps.delay ?? wait)(AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
+    await (deps.delay ?? wait)(AUTH_USER_DOC_MAX_AGE_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
   }
 
   /** Only the request that atomically consumes an unused recovery code may authenticate. */
@@ -527,18 +524,7 @@ export function createUserMethods(
 
   /** Resolves false only when a cached document for the user may still be served. */
   async function invalidateAuthUserDocCache(userId: string): Promise<boolean> {
-    if (!isAuthUserDocCacheEnabled()) {
-      return true;
-    }
-    const cache = deps.getCache?.(CacheKeys.AUTH_USER_DOC);
-    if (!cache?.get) {
-      return true;
-    }
-    const remove = cache.delete?.bind(cache);
-    if (!remove) {
-      return false;
-    }
-    return evictAuthUserDocs({ get: (key) => cache.get(key), delete: remove }, { userId });
+    return evictAuthUserDocsForUsers(deps.getCache, [userId]);
   }
 
   /**
@@ -566,24 +552,25 @@ export function createUserMethods(
     );
     /** Every user, not only those read as accepted beforehand: an acceptance racing the update may be cached. */
     const cursor = User.find({}).select('_id').lean().cursor();
+    let evicted = true;
     let batch: string[] = [];
     for await (const user of cursor) {
       batch.push(String(user._id));
       if (batch.length === TERMS_RESET_EVICTION_BATCH) {
-        await Promise.all(batch.map(invalidateAuthUserDocCache));
+        evicted = (await evictAuthUserDocsForUsers(deps.getCache, batch)) && evicted;
         batch = [];
       }
     }
-    await Promise.all(batch.map(invalidateAuthUserDocCache));
-    if (isAuthUserDocCacheEnabled()) {
-      /**
-       * A request that read the old document before the update can still fill the cache after
-       * the eviction above, so no eviction result proves the reset took effect. Only expiry does.
-       */
-      logger.info('[resetTermsAcceptance] Waiting for cached auth documents to expire', {
-        waitMs: AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS,
-      });
-      await (deps.delay ?? wait)(AUTH_USER_DOC_CACHE_TTL_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
+    evicted = (await evictAuthUserDocsForUsers(deps.getCache, batch)) && evicted;
+    if (!evicted) {
+      /** The eviction fence keeps requests that read the old document from caching it, so only a failed eviction needs to outlast the TTL. */
+      logger.warn(
+        '[resetTermsAcceptance] Cached auth documents were not evicted; waiting for them to expire',
+        {
+          waitMs: AUTH_USER_DOC_MAX_AGE_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS,
+        },
+      );
+      await (deps.delay ?? wait)(AUTH_USER_DOC_MAX_AGE_MS + AUTH_USER_DOC_EXPIRY_MARGIN_MS);
     }
     return { modifiedCount: result.modifiedCount };
   }
