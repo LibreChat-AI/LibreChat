@@ -13,7 +13,13 @@ const {
   verifyTOTP,
 } = require('~/server/services/twoFactorService');
 const { setAuthTokens } = require('~/server/services/AuthService');
-const { getUserById, updateUser, findSession, deleteAllUserSessions } = require('~/models');
+const {
+  getUserById,
+  updateUser,
+  findSession,
+  deleteAllUserSessions,
+  awaitAuthUserDocEviction,
+} = require('~/models');
 
 const safeAppTitle = (process.env.APP_TITLE || 'LibreChat').replace(/\s+/g, '');
 
@@ -110,6 +116,7 @@ const confirm2FA = createOptInTwoFactorConfirmation({
   updateUser,
   findSession,
   deleteAllUserSessions,
+  awaitAuthUserDocEviction,
   clearCloudFrontCookies,
   setAuthTokens,
 });

@@ -35,6 +35,7 @@ jest.mock('~/models', () => ({
   updateUser: (...args) => mockUpdateUser(...args),
   deleteAllUserSessions: (...args) => mockDeleteAllUserSessions(...args),
   findSession: (...args) => mockFindSession(...args),
+  awaitAuthUserDocEviction: jest.fn(async () => undefined),
 }));
 
 const {

@@ -11,6 +11,7 @@ const {
   updateUser,
   updateTwoFactorEnrollment,
   deleteAllUserSessions,
+  awaitAuthUserDocEviction,
 } = require('~/models');
 
 module.exports = createEnrollmentControllers({
@@ -22,6 +23,7 @@ module.exports = createEnrollmentControllers({
   updateTwoFactorEnrollment,
   updateUser,
   deleteAllUserSessions,
+  awaitAuthUserDocEviction,
   setAuthTokens,
   clearCloudFrontCookies,
 });

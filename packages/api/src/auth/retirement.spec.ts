@@ -242,6 +242,7 @@ describe('opt-in two-factor confirmation', () => {
   function createDeps(overrides: Partial<OptInConfirmationDependencies> = {}) {
     const minted: number[] = [];
     const rotated: string[] = [];
+    const evicted: number[] = [];
     const deps: OptInConfirmationDependencies = {
       getUserById: (id, projection) =>
         methods.getUserById(id, projection) as Promise<StoredTwoFactorAccount | null>,
@@ -251,6 +252,9 @@ describe('opt-in two-factor confirmation', () => {
         writeUser(id, update, expectedState) as Promise<StoredTwoFactorAccount | null>,
       findSession: (query, options) => methods.findSession(query, options),
       deleteAllUserSessions: (query, options) => methods.deleteAllUserSessions(query, options),
+      awaitAuthUserDocEviction: async () => {
+        evicted.push(Date.now());
+      },
       clearCloudFrontCookies: jest.fn(),
       setAuthTokens: async (_id, _res, session) => {
         minted.push(Date.now());
@@ -259,7 +263,7 @@ describe('opt-in two-factor confirmation', () => {
       },
       ...overrides,
     };
-    return { deps, minted, rotated };
+    return { deps, minted, rotated, evicted };
   }
 
   type OptInReq = Request<Record<string, string>, object, { token?: string }> & {
@@ -444,6 +448,82 @@ describe('opt-in two-factor confirmation', () => {
     expect(res.status).toHaveBeenCalledWith(400);
     expect(minted).toHaveLength(0);
     expect((await readCutoffs(userId))?.twoFactorEnrolledAt).toBeFalsy();
+  });
+
+  it('settles the auth cache before handing back the rotated session', async () => {
+    const userId = await createUser({ pendingTotpSecret: PENDING_SECRET });
+    const { deps, minted, evicted } = createDeps();
+
+    await createOptInTwoFactorConfirmation(deps)(
+      await createReq(userId),
+      createRes() as unknown as Response,
+    );
+
+    expect(evicted).toHaveLength(1);
+    expect(evicted[0]).toBeLessThanOrEqual(minted[0]);
+  });
+
+  it.each(['sessions', 'restamp', 'eviction'] as const)(
+    'reports incomplete retirement and mints nothing when the %s step fails after promotion',
+    async (step) => {
+      const userId = await createUser({ pendingTotpSecret: PENDING_SECRET });
+      await methods.createSession(userId);
+      const { deps, minted } = createDeps();
+      let writes = 0;
+      const overrides: Record<typeof step, Partial<OptInConfirmationDependencies>> = {
+        sessions: {
+          deleteAllUserSessions: async () => {
+            throw new Error('down');
+          },
+        },
+        restamp: {
+          updateUser: async (
+            id: string,
+            update: Parameters<OptInConfirmationDependencies['updateUser']>[1],
+            expected: Parameters<OptInConfirmationDependencies['updateUser']>[2],
+          ) => {
+            writes += 1;
+            if (writes > 1) {
+              throw new Error('down');
+            }
+            return writeUser(id, update, expected) as Promise<StoredTwoFactorAccount | null>;
+          },
+        },
+        eviction: {
+          awaitAuthUserDocEviction: async () => {
+            throw new Error('down');
+          },
+        },
+      };
+      Object.assign(deps, overrides[step]);
+      const res = createRes();
+
+      await createOptInTwoFactorConfirmation(deps)(
+        await createReq(userId),
+        res as unknown as Response,
+      );
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ code: CREDENTIAL_RETIREMENT_INCOMPLETE }),
+      );
+      expect(minted).toHaveLength(0);
+      const stored = await mongoose.models.User.findById(userId).lean<IUser>();
+      expect(stored?.twoFactorEnabled).toBe(true);
+    },
+  );
+
+  it('refuses a bearer an older server minted without issuedAtMs once enrollment lands', async () => {
+    const userId = await createUser({ pendingTotpSecret: PENDING_SECRET });
+    const legacyBearer = { issuedAt: Math.floor(Date.now() / 1000) - 5 };
+    const { deps } = createDeps();
+
+    await createOptInTwoFactorConfirmation(deps)(
+      await createReq(userId),
+      createRes() as unknown as Response,
+    );
+
+    expect(isTokenRetired(legacyBearer, await readCutoffs(userId))).toBe(true);
   });
 
   it('refuses an access token that comes without its refresh session', async () => {

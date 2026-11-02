@@ -18,6 +18,7 @@ import {
   SetupPhase,
   VerifyPhase,
 } from '~/components/Nav/SettingsTabs/Account/TwoFactorPhases';
+import { isCredentialRetirementIncomplete } from '~/components/Nav/SettingsTabs/Account/errors';
 import { useAuthContext, useLocalize } from '~/hooks';
 import { ErrorMessage } from './ErrorMessage';
 import { isSafeRedirect } from '~/utils';
@@ -195,6 +196,11 @@ const TwoFactorSetupScreen: React.FC = React.memo(() => {
         {
           onSuccess: ({ token: authToken, user }) => completeAuthentication(authToken, user),
           onError: (mutationError) => {
+            /** Enrollment committed but handed back no session: sign in with the new factor. */
+            if (isCredentialRetirementIncomplete(mutationError)) {
+              restartLogin();
+              return;
+            }
             if (!restartLoginWhenSpent(mutationError)) {
               setError(localize('com_auth_two_factor_setup_finalize_error'));
             }
@@ -202,7 +208,7 @@ const TwoFactorSetupScreen: React.FC = React.memo(() => {
         },
       );
     },
-    [completeAuthentication, finalizeSetup, localize, restartLoginWhenSpent],
+    [completeAuthentication, finalizeSetup, localize, restartLogin, restartLoginWhenSpent],
   );
 
   const handleComplete = useCallback(() => {

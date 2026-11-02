@@ -24,9 +24,9 @@ import {
   useVerifyTwoFactorMutation,
 } from '~/data-provider';
 import { SetupPhase, QRPhase, VerifyPhase, BackupPhase, DisablePhase } from './TwoFactorPhases';
+import { isCredentialRetirementIncomplete, useTwoFactorError } from './errors';
 import { DisableTwoFactorToggle } from './DisableTwoFactorToggle';
 import { useAuthContext, useLocalize } from '~/hooks';
-import { useTwoFactorError } from './errors';
 import store from '~/store';
 
 export type Phase = 'setup' | 'qr' | 'verify' | 'backup' | 'disable';
@@ -120,7 +120,18 @@ const TwoFactorAuthentication: React.FC = () => {
             { token: verificationToken },
             {
               onSuccess: () => setPhase('backup'),
-              onError: (error) => showError(error, 'com_ui_2fa_invalid'),
+              onError: (error) => {
+                /** 2FA is on even though other sessions could not all be signed out. */
+                if (isCredentialRetirementIncomplete(error)) {
+                  showToast({
+                    message: localize('com_ui_2fa_sessions_incomplete'),
+                    status: 'warning',
+                  });
+                  setPhase('backup');
+                  return;
+                }
+                showError(error, 'com_ui_2fa_invalid');
+              },
             },
           );
         },

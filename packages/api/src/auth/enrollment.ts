@@ -1,5 +1,8 @@
 import { logger } from '@librechat/data-schemas';
-import { TWO_FACTOR_FEDERATED_LOGIN_BLOCKED_CODE } from 'librechat-data-provider';
+import {
+  CREDENTIAL_RETIREMENT_INCOMPLETE_CODE,
+  TWO_FACTOR_FEDERATED_LOGIN_BLOCKED_CODE,
+} from 'librechat-data-provider';
 import type { TwoFactorEnrollmentUpdate } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { TwoFactorEnrollmentDependencies, StoredTwoFactorAccount } from './twoFactor';
@@ -59,6 +62,8 @@ export type EnrollmentUserWrite = (
 export interface EnrollmentControllerDependencies
   extends Omit<TwoFactorEnrollmentDependencies, 'getUserById' | 'getTOTPSecret' | 'verifyTOTP'> {
   updateUser: EnrollmentUserWrite;
+  /** Resolves once no cached auth document from before the enrollment can be served. */
+  awaitAuthUserDocEviction: (userId: string) => Promise<void>;
   getUserById: (userId: string, projection: string) => Promise<StoredTwoFactorAccount | null>;
   getTOTPSecret: (storedSecret: string | null | undefined) => Promise<string | null>;
   verifyTOTP: (secret: string | null, token: string) => Promise<boolean>;
@@ -87,6 +92,46 @@ interface EnrollmentControllers {
   acknowledge2FASetup: (req: SetupRequest, res: Response) => Promise<Response>;
   finalize2FASetup: (req: SetupRequest, res: Response) => Promise<Response>;
 }
+
+/**
+ * Retires every credential an enrollment supersedes: the stored sessions, the in-flight window of
+ * the cutoff, and any cached auth document still missing it. Every step runs even when an earlier
+ * one fails, and the caller mints nothing unless all of them succeeded.
+ */
+async function retireForEnrollment(
+  userId: string,
+  enrolledAt: Date | undefined,
+  deleteSessions: () => Promise<unknown>,
+  deps: Pick<EnrollmentControllerDependencies, 'updateUser' | 'awaitAuthUserDocEviction'>,
+): Promise<boolean> {
+  const restamp = async () => {
+    if (!enrolledAt) {
+      return;
+    }
+    await restampRetirementCutoff('twoFactorEnrolledAt', userId, enrolledAt, (cutoff, expected) =>
+      deps.updateUser(userId, cutoff, expected),
+    );
+  };
+  let complete = true;
+  for (const [label, step] of [
+    ['revoke sessions', deleteSessions],
+    ['re-date the enrollment cutoff', restamp],
+    ['settle the auth cache', () => deps.awaitAuthUserDocEviction(userId)],
+  ] as const) {
+    try {
+      await step();
+    } catch (error) {
+      complete = false;
+      logger.error(`[enrollment] Failed to ${label} for user ${userId}`, error);
+    }
+  }
+  return complete;
+}
+
+const RETIREMENT_INCOMPLETE_BODY = {
+  code: CREDENTIAL_RETIREMENT_INCOMPLETE_CODE,
+  message: 'Two-factor authentication is on, but other sessions may stay signed in. Sign in again.',
+};
 
 export function createEnrollmentControllers(
   deps: EnrollmentControllerDependencies,
@@ -235,14 +280,14 @@ export function createEnrollmentControllers(
       }
 
       const userData = sanitizeUser(result.user);
-      await deps.deleteAllUserSessions({ userId: result.user._id.toString() });
-      if (result.user.twoFactorEnrolledAt) {
-        await restampRetirementCutoff(
-          'twoFactorEnrolledAt',
-          userId,
-          new Date(result.user.twoFactorEnrolledAt),
-          (cutoff, expectedState) => deps.updateUser(userId, cutoff, expectedState),
-        );
+      const retired = await retireForEnrollment(
+        userId,
+        result.user.twoFactorEnrolledAt ? new Date(result.user.twoFactorEnrolledAt) : undefined,
+        () => deps.deleteAllUserSessions({ userId: result.user._id.toString() }),
+        deps,
+      );
+      if (!retired) {
+        return res.status(500).json(RETIREMENT_INCOMPLETE_BODY);
       }
       const authToken = await deps.setAuthTokens(result.user._id, res, null, req);
       const retirement = await recheckMintedCredential(
@@ -285,7 +330,12 @@ export interface RotatableSession {
 export interface OptInConfirmationDependencies
   extends Pick<
     EnrollmentControllerDependencies,
-    'getUserById' | 'getTOTPSecret' | 'verifyTOTP' | 'updateUser' | 'clearCloudFrontCookies'
+    | 'getUserById'
+    | 'getTOTPSecret'
+    | 'verifyTOTP'
+    | 'updateUser'
+    | 'clearCloudFrontCookies'
+    | 'awaitAuthUserDocEviction'
   > {
   findSession: (
     query: { userId: string; refreshToken: string },
@@ -386,13 +436,20 @@ export function createOptInTwoFactorConfirmation(deps: OptInConfirmationDependen
         return res.status(400).json({ message: '2FA not initiated' });
       }
 
-      await deps.deleteAllUserSessions(
-        { userId },
-        { excludeCurrentSession: true, currentSessionId: session._id.toString() },
+      const retired = await retireForEnrollment(
+        userId,
+        enrolledAt,
+        () =>
+          deps.deleteAllUserSessions(
+            { userId },
+            { excludeCurrentSession: true, currentSessionId: session._id.toString() },
+          ),
+        deps,
       );
-      await restampRetirementCutoff('twoFactorEnrolledAt', userId, enrolledAt, (cutoff, expected) =>
-        deps.updateUser(userId, cutoff, expected),
-      );
+      if (!retired) {
+        /** The caller's session predates the cutoff too, so it is not rotated into a survivor. */
+        return res.status(500).json(RETIREMENT_INCOMPLETE_BODY);
+      }
       const authToken = await deps.setAuthTokens(user._id, res, session, req);
       const withdraw = () => withdrawMintedSession(res, user, userId, deps);
       const current = await recheckMintedCredential(
