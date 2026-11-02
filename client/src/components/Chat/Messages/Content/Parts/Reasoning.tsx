@@ -3,6 +3,7 @@ import { useAtom } from 'jotai';
 import type { MouseEvent, FocusEvent } from 'react';
 import { ContentTypes } from 'librechat-data-provider';
 import { ThinkingContent, ThinkingButton, FloatingThinkingBar } from './Thinking';
+import BklStageProgress, { parseBklStages } from '../BklStageProgress';
 import { showThinkingAtom } from '~/store/showThinking';
 import { useMessageContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
@@ -85,8 +86,21 @@ const Reasoning = memo(({ reasoning, isLast }: ReasoningProps) => {
     [effectiveIsSubmitting, localize, isLast],
   );
 
+  // BKL: bkl-api 의 진행 단계("라벨 — 상세" 줄)는 생각 블록 대신 체크리스트로
+  const bklStages = useMemo(() => parseBklStages(reasoningText), [reasoningText]);
+
   if (!reasoningText) {
     return null;
+  }
+
+  if (bklStages) {
+    return (
+      <BklStageProgress
+        stages={bklStages}
+        isStreaming={effectiveIsSubmitting === true}
+        isLast={isLast}
+      />
+    );
   }
 
   return (
