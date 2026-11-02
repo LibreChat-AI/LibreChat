@@ -69,7 +69,11 @@ const MAX_REASSIGN_PASSES = 5;
 /** How many members of a role deletion one write reassigns; bounds one `$in` list, not behavior. */
 const REASSIGN_BATCH_SIZE = 1000;
 
-/** The off-schema path a role deletion's write tags the accounts it changed with, briefly. */
+/**
+ * The off-schema array a role deletion's write adds its nonce to on the accounts it changed,
+ * briefly. An array, so an overlapping deletion that moves an account again adds its own nonce
+ * instead of erasing the earlier one before that deletion reads it back.
+ */
 const REASSIGN_NONCE_PATH = '_roleReassignment';
 
 export interface RoleDeps {
@@ -705,7 +709,7 @@ export function createRoleMethods(
     try {
       ({ modifiedCount } = await User.updateMany(
         { ...members, _id: { $in: batch } },
-        { $set: { role: SystemRoles.USER, [REASSIGN_NONCE_PATH]: nonce } },
+        { $set: { role: SystemRoles.USER }, $push: { [REASSIGN_NONCE_PATH]: nonce } },
         { strict: false },
       ));
       if (modifiedCount === 0) {
@@ -731,10 +735,12 @@ export function createRoleMethods(
     } finally {
       if (!keepTag) {
         try {
+          const untag = { strict: false, strictQuery: false, timestamps: false };
+          await User.updateMany(tagged, { $pull: { [REASSIGN_NONCE_PATH]: nonce } }, untag);
           await User.updateMany(
-            tagged,
+            { _id: { $in: batch }, [REASSIGN_NONCE_PATH]: { $size: 0 } },
             { $unset: { [REASSIGN_NONCE_PATH]: '' } },
-            { strict: false, strictQuery: false, timestamps: false },
+            untag,
           );
         } catch (cleanupError) {
           /** The reassignment committed; a leftover tag is inert, so its removal does not fail it. */

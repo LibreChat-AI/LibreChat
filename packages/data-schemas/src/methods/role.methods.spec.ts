@@ -943,6 +943,53 @@ describe('deleteRoleByName', () => {
     expect(await User.collection.countDocuments({ _roleReassignment: { $exists: true } })).toBe(0);
   });
 
+  it('keeps the members it moved when an overlapping deletion moves them again before the read-back', async () => {
+    const strictQuery = mongoose.get('strictQuery');
+    mongoose.set('strictQuery', true);
+    await createRoleByName({ name: 'editor' });
+    const [alice, bob] = await User.create([
+      { name: 'Alice', email: 'alice@test.com', role: 'editor', username: 'alice' },
+      { name: 'Bob', email: 'bob@test.com', role: 'editor', username: 'bob' },
+    ]);
+    let first = true;
+    let overlapping: Awaited<ReturnType<typeof deleteRoleByName>> = null;
+    const realUpdateMany = User.updateMany.bind(User);
+    const spy = jest.spyOn(User, 'updateMany').mockImplementation(((
+      filter: mongoose.FilterQuery<IUser>,
+      update: mongoose.UpdateQuery<IUser>,
+      options: mongoose.mongo.UpdateOptions & mongoose.MongooseUpdateQueryOptions<IUser>,
+    ) =>
+      (async () => {
+        if (!first) {
+          return realUpdateMany(filter, update, options);
+        }
+        first = false;
+        /** Bob leaves before the write, so this batch must read its tag back. */
+        await User.updateOne({ _id: bob._id }, { $set: { role: SystemRoles.USER } });
+        const result = await realUpdateMany(filter, update, options);
+        /** Before the read-back: Alice is added back and an overlapping deletion moves her. */
+        await User.updateOne({ _id: alice._id }, { $set: { role: 'editor' } });
+        overlapping = await deleteRoleByName('editor');
+        return result;
+      })()) as unknown as typeof User.updateMany);
+
+    let caught: unknown;
+    try {
+      await deleteRoleByName('editor');
+    } catch (error) {
+      caught = error;
+    } finally {
+      spy.mockRestore();
+      mongoose.set('strictQuery', strictQuery);
+    }
+
+    expect(caught).toBeInstanceOf(RoleDeletionError);
+    expect((caught as RoleDeletionError).reason).toBe('deleted_elsewhere');
+    expect((caught as RoleDeletionError).reassignedUserIds).toEqual([alice._id.toString()]);
+    expect(overlapping!.reassignedUserIds).toEqual([alice._id.toString()]);
+    expect(await User.collection.countDocuments({ _roleReassignment: { $exists: true } })).toBe(0);
+  });
+
   it('reports an account re-added to the role between passes once', async () => {
     await createRoleByName({ name: 'editor' });
     const alice = await User.create({
