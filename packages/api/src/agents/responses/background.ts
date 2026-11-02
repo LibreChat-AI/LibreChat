@@ -8,6 +8,7 @@ import {
   createResponseAggregator,
   buildAggregatedResponse,
 } from './service';
+import { publishResponseDispatch } from './outbox';
 
 export type BackgroundResponseResult =
   | { ok: true; response: Response }
@@ -27,9 +28,11 @@ export interface BackgroundResponseDependencies {
     expiredAt?: Date;
     isTemporary?: boolean;
   }>;
-  /** Idempotent queue publication under record.deliveryKey; MUST NOT execute inline or mint a new identity on retry. */
+  /** Idempotent publication of the committed source outbox; failures remain pending for recovery. MUST NOT execute inline or mint a new identity on retry. */
   enqueue: (record: StoredResponseRecord) => Promise<void>;
   deliveryKey?: (record: StoredResponseRecord) => string;
+  /** The durable intent remains accepted when publication must be retried. */
+  onDispatchError?: (error: unknown) => void;
   /** Progress-only projection. A terminal observation is a hint to reread the journal;
    * generationCreatedAt is a consistency witness, never enrollment authority. */
   observe: (record: StoredResponseRecord) => Promise<{
@@ -194,21 +197,25 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
         requestKey: idempotencyKey ?? randomUUID(),
         fingerprint: createHash('sha256').update(requestJSON).digest('hex'),
         requestJSON,
+        dispatch: true,
       });
       if (!result.ok) return { ok: false, status: 409, code: result.code };
       let record = result.record;
       if (result.replayed && !(await deps.authorize(owner, record.agentId, record.sourceKeyId)))
         return { ok: false, status: 403, code: 'permission_denied' };
       if (hasTerminalWork(record)) return responseResult(record);
-      const attached = await deps.storage.attachDelivery(
-        owner,
-        record.responseId,
-        deps.deliveryKey?.(record) ?? `response_${record.responseId}`,
-      );
-      if (attached.ok) {
-        record = attached.record;
-        if (!hasTerminalWork(record)) await deps.enqueue(record);
-      }
+      record = (
+        await publishResponseDispatch(
+          {
+            storage: deps.storage,
+            enqueue: deps.enqueue,
+            deliveryKey: deps.deliveryKey ?? ((value) => `response_${value.responseId}`),
+            onError: deps.onDispatchError,
+          },
+          record,
+          'create',
+        )
+      ).record;
       return hasTerminalWork(record)
         ? responseResult(record)
         : { ok: true, response: view(record) };

@@ -99,13 +99,13 @@ beforeEach(async () => {
     isCredentialCurrent: async () => true,
     channels: db,
     now: () => clock,
-    getConfig: async () =>
+    getWorkerSettings: async () =>
       channelConfigSchema.parse({
         enabled,
         cleanup: { intervalMs: 60_000, maxIdleIntervalMs: 60_000, batchSize: 2 },
       }),
     resolvePrincipal: async () =>
-      allowed
+      allowed && enabled
         ? { userId: 'user-a', channelRevision: 'v1', linkId: 'link', linkRevision: 'link-v1' }
         : null,
     retireForAuthorityLoss: async (run) => {
@@ -401,7 +401,7 @@ it('keeps tenantless work authorized and deletes its closed parent in the applic
 it('caps maintenance pages by the storage policy and never turns a credential lookup outage into retirement', async () => {
   await admit('one');
   await admit('two');
-  deps.getConfig = async () =>
+  deps.getWorkerSettings = async () =>
     channelConfigSchema.parse({
       enabled: true,
       maxMetadataPageSize: 1,
@@ -462,7 +462,7 @@ it.each(['read', 'parse'] as const)(
   async (failure) => {
     await admit();
     allowed = false;
-    const original = deps.getConfig;
+    const original = deps.getWorkerSettings;
     let fail = true;
     const read = jest.fn(async () => {
       if (fail) {
@@ -473,7 +473,7 @@ it.each(['read', 'parse'] as const)(
       }
       return original();
     });
-    deps.getConfig = read;
+    deps.getWorkerSettings = read;
     const first = runtime.initialize();
     expect(runtime.initialize()).toBe(first);
     await expect(first).rejects.toThrow();
@@ -492,7 +492,7 @@ it('keeps stop permanent after an initialization failure', async () => {
   const read = jest.fn(async () => {
     throw new Error('configuration unavailable');
   });
-  deps.getConfig = read;
+  deps.getWorkerSettings = read;
   await expect(runtime.initialize()).rejects.toThrow('configuration unavailable');
   await runtime.stop();
   await runtime.initialize();
@@ -532,11 +532,11 @@ it('disposes a partially started worker before retrying initialization', async (
 
 it('does not reopen when a pending initialization rejects during shutdown', async () => {
   let reject!: (error: Error) => void;
-  const gate = new Promise<Awaited<ReturnType<typeof deps.getConfig>>>((_resolve, fail) => {
+  const gate = new Promise<Awaited<ReturnType<typeof deps.getWorkerSettings>>>((_resolve, fail) => {
     reject = fail;
   });
   const read = jest.fn(() => gate);
-  deps.getConfig = read;
+  deps.getWorkerSettings = read;
   const initializing = runtime.initialize();
   const stopping = runtime.stop();
   reject(new Error('startup unavailable'));
@@ -627,3 +627,23 @@ it.each([false, true])(
     expect(jobs.abortJob).not.toHaveBeenCalled();
   },
 );
+
+it('uses scoped principal authority when deployment worker defaults are disabled', async () => {
+  const { run } = await admit();
+  const resolve = deps.resolvePrincipal;
+  deps.getWorkerSettings = async () =>
+    channelConfigSchema.parse({
+      enabled: false,
+      cleanup: { intervalMs: 60000, maxIdleIntervalMs: 60000 },
+    });
+  deps.resolvePrincipal = async (...args) => {
+    expect(tenantStorage.getStore()?.tenantId).toBe(tenantId);
+    return resolve(...args);
+  };
+  await runtime.initialize();
+  expect(retired).toEqual([]);
+  expect(await scope(() => storage.read(tenantId, 'channel', run.runId))).toMatchObject({
+    state: 'queued',
+    leaseEpoch: 0,
+  });
+});

@@ -69,15 +69,16 @@ export type AgentTriggerCompletionExpedite =
   | { user: string; conversationId: string; taskIds?: string[] }
   | { deliveryKeys: string[] };
 
+export interface AgentTriggerSourceDispatcher {
+  workerCapability: string;
+  dispatch: AgentTriggerExecutionHost['dispatch'];
+  /** Bounded source publication recovery. The canonical queue owns scheduling. */
+  recoverPending?: (limit: number, activity: { found: boolean }) => Promise<number>;
+}
+
 export interface AgentTriggerServiceDeps {
   /** Protocol-owned execution handlers reuse this queue without going through chat ingress. */
-  sourceDispatchers?: ReadonlyMap<
-    string,
-    {
-      workerCapability: string;
-      dispatch: AgentTriggerExecutionHost['dispatch'];
-    }
-  >;
+  sourceDispatchers?: ReadonlyMap<string, AgentTriggerSourceDispatcher>;
   /** Source-owned live authority recheck immediately before queued dispatch. */
   authorizeSource?: (envelope: AgentTriggerEnvelope) => Promise<void>;
   fetch?: AgentTriggerExecutionHostDeps['fetch'];
@@ -120,6 +121,27 @@ export class AgentTriggerServiceUnavailableError extends AgentTriggerDeliveryDef
     super(message);
     this.name = 'AgentTriggerServiceUnavailableError';
   }
+}
+
+/** Acyclic composition seam: install the canonical producer before listening.
+ * Readiness remains owned by that producer; binding never caches a ready flag. */
+export function createAgentTriggerProducerBinding() {
+  let producer: Pick<AgentTriggerService, 'enqueue' | 'isReady'> | undefined;
+  return {
+    bind(value: Pick<AgentTriggerService, 'enqueue' | 'isReady'>): void {
+      if (producer && (producer.enqueue !== value.enqueue || producer.isReady !== value.isReady))
+        throw new Error('Agent trigger producer is already bound');
+      producer = { enqueue: value.enqueue, isReady: value.isReady };
+    },
+    isReady: (): boolean => producer?.isReady() === true,
+    enqueue: async (
+      ...args: Parameters<AgentTriggerService['enqueue']>
+    ): ReturnType<AgentTriggerService['enqueue']> => {
+      if (!producer)
+        throw new AgentTriggerServiceUnavailableError('Agent trigger producer is not bound');
+      return producer.enqueue(...args);
+    },
+  };
 }
 
 export interface AgentTriggerStoredHistoryEntry {
@@ -206,6 +228,8 @@ export interface AgentTriggerDeliveryPersistence {
 }
 
 export interface AgentTriggerService {
+  /** Canonical producer admission capability, including shutdown and durable queue readiness. */
+  isReady: () => boolean;
   initialize: (options?: AgentTriggerServiceOptions) => Promise<void>;
   stop: () => Promise<void>;
   dispatch: (
@@ -402,13 +426,17 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
     ...(deps.timeoutMs != null && { timeoutMs: deps.timeoutMs }),
   });
 
+  const readyMethods = (): AgentTriggerDeliveryPersistence | undefined =>
+    deliveryReady && !isShutdownInProgress() ? deps.methods : undefined;
+
   const requireMethods = (): AgentTriggerDeliveryPersistence => {
-    if (deps.methods == null || !deliveryReady || isShutdownInProgress()) {
+    const methods = readyMethods();
+    if (methods == null) {
       throw new AgentTriggerServiceUnavailableError(
         'Durable agent trigger delivery is not ready on this server',
       );
     }
-    return deps.methods;
+    return methods;
   };
 
   const requireCleanupMethods = (): AgentTriggerDeliveryPersistence => {
@@ -506,6 +534,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         batchRecovery,
         expiredLegacyActorReceipts,
         retiredCheckpointDeletions,
+        recoveredSourceOutboxes,
       ] = await Promise.all([
         isolated('user purges', () =>
           methods.recoverAgentTriggerUserPurges(purgeRecoveryLimit, activity),
@@ -538,6 +567,14 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
           () =>
             deps.reclaimCheckpointDeletions?.(purgeRecoveryLimit, activity) ?? Promise.resolve(0),
         ),
+        Promise.all(
+          [...(deps.sourceDispatchers?.entries() ?? [])].map(([name, source]) =>
+            isolated(
+              `source outbox ${name}`,
+              () => source.recoverPending?.(purgeRecoveryLimit, activity) ?? Promise.resolve(0),
+            ),
+          ),
+        ).then((counts) => counts.reduce((sum, count) => sum + count, 0)),
       ]);
       const recoveredBatches = batchRecovery.count;
       const reclaimedLanes = batchRecovery.succeeded
@@ -554,7 +591,8 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         recoveredBatches > 0 ||
         reclaimedLanes > 0 ||
         expiredLegacyActorReceipts > 0 ||
-        retiredCheckpointDeletions > 0
+        retiredCheckpointDeletions > 0 ||
+        recoveredSourceOutboxes > 0
       ) {
         logger.info('[agent-triggers] recovered durable delivery maintenance', {
           purgedUsers,
@@ -563,6 +601,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
           reclaimedLanes,
           expiredLegacyActorReceipts,
           retiredCheckpointDeletions,
+          recoveredSourceOutboxes,
         });
       }
       return (
@@ -573,7 +612,8 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
         recoveredBatches === 0 &&
         reclaimedLanes === 0 &&
         expiredLegacyActorReceipts === 0 &&
-        retiredCheckpointDeletions === 0
+        retiredCheckpointDeletions === 0 &&
+        recoveredSourceOutboxes === 0
       );
     })
       .catch((error) => {
@@ -646,6 +686,7 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
   }
 
   return {
+    isReady: () => readyMethods() != null,
     initialize: (options = {}) => {
       backgroundCompletionResultBatchSize = options.completionResultBatchSize ?? 8;
       backgroundCompletionReceiptBatching =

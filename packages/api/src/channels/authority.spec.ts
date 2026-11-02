@@ -30,8 +30,10 @@ import type {
 import type { IUser, ChannelRunRecord } from '@librechat/data-schemas';
 import type { ChannelResponseCredentialDependencies } from './credentials';
 import type { BackgroundResponsesHost } from '~/agents/responses/host';
+import type { ApiKeyAuthRequest } from '~/apiKeys/middleware';
 import { createChannelAuthority, channelExternalIdentity } from './authority';
 import { createChannelResponseCredentials } from './credentials';
+import { createRequireApiKeyAuth } from '~/apiKeys/middleware';
 import { createChannelArtifactService } from './artifacts';
 import { ChannelExecutionError } from './execution';
 import { createChannelHandlers } from './service';
@@ -1546,5 +1548,115 @@ it(
       ),
     ).rejects.toThrow('key store unavailable');
     expect((await storage.read(tenantId, 'channel', run.runId))?.cancellationRequested).toBe(false);
+  }),
+);
+
+it(
+  'enforces run, input, endpoint and live actor-link authority for bound API keys',
+  scoped(async () => {
+    const linked = await link('U1', users[0]);
+    await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const run = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+    const credentials = responseCredentials();
+    const key = await credentials.provision(run);
+    const saved = (await storage.read(tenantId, 'channel', run.runId))!;
+    const authenticate = createRequireApiKeyAuth({
+      validateAgentApiKey: db.validateAgentApiKey,
+      validateBoundAgentApiKey: db.validateBoundAgentApiKey,
+      findUser: db.findUser,
+      isPrincipalActive: db.isAgentTriggerPrincipalActive,
+      authorizeBinding: credentials.authorizeRequest,
+      enrollmentRequired: () => false,
+    });
+    const api = express();
+    api.use(express.json());
+    api.use((_req, _res, next) => {
+      tenantStorage.run({ tenantId }, next);
+    });
+    api.use(async (req, res, next) => {
+      await authenticate(req as ApiKeyAuthRequest, res, next);
+    });
+    api.post(/.*/, (_req, res) => {
+      res.sendStatus(204);
+    });
+    const body = {
+      model: 'agent',
+      input: event().input,
+      background: true,
+      store: true,
+      stream: false,
+    };
+    const call = (path = '/api/agents/v1/responses', bearer = key) =>
+      request(api)
+        .post(path)
+        .auth(bearer, { type: 'bearer' })
+        .set('Idempotency-Key', `channel:${run.runId}`);
+    await call().send(body).expect(204);
+    await call()
+      .send({ ...body, model: 'other-agent' })
+      .expect(403);
+    await call()
+      .send({ ...body, input: 'Not the admitted Slack message' })
+      .expect(403);
+    await call('/api/agents/v1/chat/completions').send(body).expect(403);
+    const orphan = await db.createAgentApiKey({
+      userId: users[0].id,
+      name: 'Unpublished candidate',
+      binding: { kind: 'channel_run', id: `channel/${run.runId}` },
+    });
+    await call('/api/agents/v1/responses', orphan.key).send(body).expect(403);
+    const ordinary = await db.createAgentApiKey({ userId: users[0].id, name: 'Ordinary key' });
+    await call('/api/agents/v1/chat/completions', ordinary.key).send(body).expect(204);
+    await storage.requestCancel(
+      {
+        tenantId,
+        channelId: 'channel',
+        agentId: run.agentId,
+        principal: run.principal,
+        admission: run.admission,
+      },
+      run.runId,
+    );
+    await call().send(body).expect(403);
+    const response = await createResponseStorage(mongoose).reserve({
+      tenantId,
+      userId: users[0].id,
+      responseId: `resp_${run.runId}`,
+      requestKey: `channel:${run.runId}`,
+      sourceKeyId: saved.execution!.apiKeyId,
+      agentId: 'agent',
+      fingerprint: 'cancelled-request',
+      requestJSON: JSON.stringify(body),
+      conversationId: 'canonical-cancelled',
+      parentMessageId: '00000000-0000-0000-0000-000000000000',
+    });
+    if (!response.ok) throw new Error('Reservation failed');
+    const recovered = await storage.recoverResponse(tenantId, claimed.body.fence, Date.now());
+    expect(await credentials.provision(recovered!)).toBe(key);
+    await call().send(body).expect(403);
+    await call(`/api/agents/v1/responses/${response.record.responseId}/cancel`)
+      .send({})
+      .expect(204);
+    await call('/api/agents/v1/responses/resp_unrelated/cancel').send({}).expect(403);
+    value(
+      await authority.identity.revoke(
+        { tenantId, userId: users[0].id, accountLabel: 'A' },
+        linked.linkId,
+        linked.revision,
+      ),
+    );
+    await call().send(body).expect(403);
+    await call(`/api/agents/v1/responses/${response.record.responseId}/cancel`)
+      .send({})
+      .expect(403);
+    expect(
+      await credentials.authorizeSource(
+        { kind: 'channel_run', id: `channel/${run.runId}` },
+        saved.execution!.apiKeyId!,
+        { userId: users[0].id, tenantId },
+        'agent',
+      ),
+    ).toBe(false);
   }),
 );

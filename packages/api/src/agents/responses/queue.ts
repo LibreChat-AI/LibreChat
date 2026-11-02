@@ -3,9 +3,9 @@ import {
   AGENT_TRIGGER_WORKER_CAPABILITY_RESPONSES_RESUME_V1,
 } from '@librechat/data-schemas';
 import type { ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
+import type { AgentTriggerService, AgentTriggerSourceDispatcher } from '../triggers/service';
 import type { AgentTriggerExecutionHost } from '../triggers/host';
 import type { AgentTriggerEnvelope } from '../triggers/envelope';
-import type { AgentTriggerService } from '../triggers/service';
 import {
   createAgentTriggerEnvelope,
   getAgentTriggerIdempotencyKey,
@@ -160,13 +160,7 @@ export interface BackgroundResponseQueueDependencies {
 
 export interface BackgroundResponseQueue {
   deliveryKey: (record: StoredResponseRecord) => string;
-  sourceDispatchers: ReadonlyMap<
-    string,
-    {
-      workerCapability: string;
-      dispatch: AgentTriggerExecutionHost['dispatch'];
-    }
-  >;
+  sourceDispatchers: ReadonlyMap<string, AgentTriggerSourceDispatcher>;
   enqueue: (record: StoredResponseRecord) => Promise<void>;
 }
 

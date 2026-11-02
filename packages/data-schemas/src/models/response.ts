@@ -64,7 +64,15 @@ export interface ResponseTerminalReceipt {
 }
 
 /** Durable identity and dispatch/result journal for a background Responses request. */
+export interface ResponseDispatchOutbox {
+  kind: 'create' | 'resume';
+  id: string;
+  state: 'pending' | 'settled';
+}
+
 export interface StoredResponseRecord {
+  /** Atomic source outbox; settlement never authorizes execution. */
+  dispatchOutbox?: ResponseDispatchOutbox;
   expiredAt?: Date;
   isTemporary?: boolean;
   tenantId?: string;
@@ -141,6 +149,17 @@ export function createStoredResponseModel(
         ],
       },
       revision: { type: Number, required: true, default: 0 },
+      dispatchOutbox: {
+        type: new Schema<ResponseDispatchOutbox>(
+          {
+            kind: { type: String, required: true, enum: ['create', 'resume'] },
+            id: { type: String, required: true, maxlength: 256 },
+            state: { type: String, required: true, enum: ['pending', 'settled'] },
+          },
+          { _id: false },
+        ),
+        required: false,
+      },
       deliveryKey: String,
       generationCreatedAt: Number,
       responseJSON: String,
@@ -198,6 +217,9 @@ export function createStoredResponseModel(
   );
   schema.index({ tenantId: 1, userId: 1, responseId: 1 }, { unique: true });
   schema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
+  schema.index({ 'dispatchOutbox.state': 1, _id: 1 });
+  schema.index({ status: 1, _id: 1 });
+  schema.index({ 'resume.state': 1, status: 1, _id: 1 });
   schema.index({ tenantId: 1, userId: 1, requestKey: 1 }, { unique: true });
   schema.index({ tenantId: 1, userId: 1, conversationId: 1, createdAt: 1 });
   schema.index({ userId: 1, conversationId: 1, tenantId: 1 });

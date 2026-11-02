@@ -21,7 +21,8 @@ export interface ChannelIdentityDependencies {
   /** Current principal existence, tenant membership, agent USE permission and deployment eligibility.
    * Shared owner-only mode additionally requires userId === channel.createdBy. */
   canUse: (identity: ChannelExternalIdentity, userId: string) => Promise<boolean>;
-  publicBaseUrl: string;
+  /** Absence disables new browser tickets without affecting existing identity authority. */
+  publicBaseUrl?: string;
   ticketLifetimeMs: number;
   linkLifetimeMs: number;
   getLifetimes?: () => Promise<{ ticketLifetimeMs: number; linkLifetimeMs: number }>;
@@ -60,17 +61,6 @@ function view(record: ChannelIdentityRecord, now: number): ChannelLinkView {
 /** A link is identity consent, never an OAuth refresh credential or a transferable API key. */
 export function createChannelIdentityService(deps: ChannelIdentityDependencies) {
   const now = deps.now ?? Date.now;
-  const base = new URL(deps.publicBaseUrl);
-  if (
-    !['https:', 'http:'].includes(base.protocol) ||
-    base.username ||
-    base.password ||
-    base.hash ||
-    base.search ||
-    (base.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(base.hostname))
-  ) {
-    throw new Error('Channel link origin must be HTTPS or loopback HTTP');
-  }
   if (
     ![deps.ticketLifetimeMs, deps.linkLifetimeMs].every(
       (value) => Number.isSafeInteger(value) && value > 0,
@@ -111,6 +101,7 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
     async issue(
       identity: ChannelExternalIdentity,
     ): Promise<ChannelIdentityResult<ChannelLinkTicket>> {
+      if (!deps.publicBaseUrl) return failure('unavailable');
       if (!(await deps.channelIsCurrent(identity))) return failure('changed');
       const existing = await deps.storage.readChannelIdentity(identity);
       if (
@@ -122,6 +113,18 @@ export function createChannelIdentityService(deps: ChannelIdentityDependencies) 
         (await permitted(existing, existing.userId))
       )
         return failure('already_linked');
+      // Validate only when issuing a link, before any ticket is persisted.
+      const base = new URL(deps.publicBaseUrl);
+      if (
+        !['https:', 'http:'].includes(base.protocol) ||
+        base.username ||
+        base.password ||
+        base.hash ||
+        base.search ||
+        (base.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(base.hostname))
+      ) {
+        throw new Error('Channel link origin must be HTTPS or loopback HTTP');
+      }
       const secret = nonce();
       const expiry = now() + (await lifetime('ticketLifetimeMs'));
       const record: ChannelIdentityRecord = {
