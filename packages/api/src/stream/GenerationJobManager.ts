@@ -715,6 +715,7 @@ export interface TerminalJobClaim {
   /** The winner must durably publish either its normal FINAL or a
    * reconciliation payload before cleanup may remove the job. */
   readonly persistencePending?: true;
+  readonly terminalPersistenceOwner?: 'external';
   /** Exact queued + claimed steers atomically parked by the winning CAS. */
   readonly drainedSteers: readonly SteerQueueItem[];
 }
@@ -1412,6 +1413,9 @@ class GenerationJobManagerClass {
     ) {
       return jobData;
     }
+    /** A persisted external journal owner must publish its canonical result. Generic
+     * reconciliation cannot substitute for that write or release its provider proof. */
+    if (jobData.terminalPersistenceOwner === 'external') return jobData;
     const startedAt =
       jobData.terminalPersistenceStartedAt ?? jobData.completedAt ?? jobData.createdAt;
     if (Date.now() - startedAt < TERMINAL_PERSISTENCE_TIMEOUT_MS) {
@@ -3176,11 +3180,13 @@ class GenerationJobManagerClass {
         steerQuotesExecutionId: jobData.steerQuotesExecutionId,
         providerExecutionId: jobData.providerExecutionId,
         providerExecutionStartedId: jobData.providerExecutionStartedId,
+        providerExecutionOwnerId: jobData.providerExecutionOwnerId,
         providerDrained: jobData.providerDrained,
         steersClosed: jobData.steersClosed,
         idempotencyClientRequestId: jobData.idempotencyClientRequestId,
         agentEventLegacyTurnToken: jobData.agentEventLegacyTurnToken,
         terminalPersistencePending: jobData.terminalPersistencePending,
+        terminalPersistenceOwner: jobData.terminalPersistenceOwner,
         terminalHostActionPending: jobData.terminalHostActionPending,
         terminalPersistenceStartedAt: jobData.terminalPersistenceStartedAt,
         // Surface the pending review so status/resume routes built on the
@@ -4051,8 +4057,14 @@ class GenerationJobManagerClass {
     options: {
       persistencePending?: boolean;
       failedPauseActionId?: string;
+      expectedProviderExecutionId?: string;
     } = {},
   ): Promise<TerminalJobClaim | null> {
+    if (
+      options.expectedProviderExecutionId != null &&
+      this.jobStore.providerGuardedStatusTransitions !== true
+    )
+      throw new Error('Provider-guarded terminal transitions are unavailable');
     if (
       options.failedPauseActionId != null &&
       (status !== 'error' || options.persistencePending === true)
@@ -4071,7 +4083,14 @@ class GenerationJobManagerClass {
       );
       return null;
     }
+    const externalPersistence = jobData.terminalPersistenceOwner === 'external';
+    const persistencePending = options.persistencePending === true || externalPersistence;
     const failedPauseActionId = options.failedPauseActionId;
+    if (
+      options.expectedProviderExecutionId != null &&
+      jobData.providerExecutionId !== options.expectedProviderExecutionId
+    )
+      return null;
     const failedPauseBarrierId =
       failedPauseActionId != null ? pausePersistenceActionId(failedPauseActionId) : undefined;
     if (failedPauseBarrierId != null) {
@@ -4117,6 +4136,9 @@ class GenerationJobManagerClass {
       from: sourceStatus,
       to: status,
       expectCreatedAt: createdAt,
+      ...(options.expectedProviderExecutionId != null && {
+        expectProviderExecutionId: options.expectedProviderExecutionId,
+      }),
       ...(sourceStatus === 'requires_action' && {
         ...(failedPauseBarrierId != null
           ? { expectActionId: failedPauseBarrierId }
@@ -4131,7 +4153,7 @@ class GenerationJobManagerClass {
           this.terminalHostActionHandler != null && {
             terminalHostActionPending: true,
           }),
-        ...(options.persistencePending === true && {
+        ...(persistencePending && {
           terminalPersistencePending: true,
           terminalPersistenceStartedAt: completedAt,
         }),
@@ -4160,9 +4182,10 @@ class GenerationJobManagerClass {
       ...(jobData.userId != null && { userId: jobData.userId }),
       status,
       ...(terminalError != null && { error: terminalError }),
-      ...(options.persistencePending === true && {
+      ...(persistencePending && {
         persistencePending: true as const,
       }),
+      ...(externalPersistence && { terminalPersistenceOwner: 'external' as const }),
       drainedSteers: Object.freeze([...drainedSteers]),
     });
     this.terminalClaimRuntimes.set(claim, runtime ?? null);
@@ -4206,6 +4229,8 @@ class GenerationJobManagerClass {
     if (!this.terminalClaimRuntimes.has(claim) || claim.persistencePending !== true) {
       throw new Error('Terminal persistence claim was not issued by this manager');
     }
+    if (claim.terminalPersistenceOwner === 'external')
+      throw new Error('External terminal journal owns publication');
 
     const { streamId, createdAt } = claim;
     const claimedRuntime = this.terminalClaimRuntimes.get(claim) ?? undefined;
@@ -4584,6 +4609,8 @@ class GenerationJobManagerClass {
       /** Runs once the final event is stored and before the job's content and
        *  resume state are released; it must not throw. */
       beforeTerminalCleanup?: () => Promise<void>;
+      expectedProviderExecutionId?: string;
+      persistencePending?: true;
     } = {},
   ): Promise<boolean> {
     const beforeErrorPublication = error ? options.beforeErrorPublication : undefined;
@@ -4592,7 +4619,18 @@ class GenerationJobManagerClass {
       error ? 'error' : 'complete',
       error,
       expectedCreatedAt,
-      beforeErrorPublication ? { persistencePending: true } : undefined,
+      beforeErrorPublication ||
+        options.expectedProviderExecutionId != null ||
+        options.persistencePending
+        ? {
+            ...(beforeErrorPublication || options.persistencePending
+              ? { persistencePending: true }
+              : {}),
+            ...(options.expectedProviderExecutionId != null && {
+              expectedProviderExecutionId: options.expectedProviderExecutionId,
+            }),
+          }
+        : undefined,
     );
     if (!claim) {
       return false;
@@ -4602,24 +4640,27 @@ class GenerationJobManagerClass {
       let persistenceFinalized = false;
       try {
         await beforeErrorPublication();
-        persistenceFinalized = await this.jobStore.finalizeTerminalPersistence(
-          streamId,
-          claim.createdAt,
-          JSON.stringify(
-            buildTerminalPersistenceReconcile({
-              createdAt: claim.createdAt,
-              conversationId: claim.conversationId,
-              status: claim.status,
-            }),
-          ),
-        );
+        persistenceFinalized =
+          claim.terminalPersistenceOwner === 'external' ||
+          (await this.jobStore.finalizeTerminalPersistence(
+            streamId,
+            claim.createdAt,
+            JSON.stringify(
+              buildTerminalPersistenceReconcile({
+                createdAt: claim.createdAt,
+                conversationId: claim.conversationId,
+                status: claim.status,
+              }),
+            ),
+          ));
       } catch (persistenceError) {
         logger.error(
           `[GenerationJobManager] Failed required error persistence for ${streamId}:`,
           persistenceError,
         );
         try {
-          await this.publishTerminalClaim(claim, null);
+          if (claim.terminalPersistenceOwner !== 'external')
+            await this.publishTerminalClaim(claim, null);
         } catch (publishError) {
           logger.error(
             `[GenerationJobManager] Failed to publish error persistence reconciliation for ${streamId}:`,
@@ -4649,12 +4690,14 @@ class GenerationJobManagerClass {
     actionId: string,
     error: string,
     expectedCreatedAt?: number,
+    expectedProviderExecutionId?: string,
   ): Promise<boolean> {
     if (actionId.length === 0) {
       return false;
     }
     const claim = await this.claimTerminalJob(streamId, 'error', error, expectedCreatedAt, {
       failedPauseActionId: actionId,
+      ...(expectedProviderExecutionId != null && { expectedProviderExecutionId }),
     });
     if (!claim) {
       return false;
@@ -4689,6 +4732,8 @@ class GenerationJobManagerClass {
        * FINAL lets the client submit against that history. Throwing emits a
        * conservative reconciliation frame instead of the normal payload. */
       beforePublish?: (result: AbortResult) => void | Promise<void>;
+      /** The external protocol owns terminal publication and releases this exact drained proof. */
+      retainTerminalPersistence?: true;
       /** Epoch observed by the authenticated route. Without this fence, a
        * same-stream replacement between authorization and the manager read
        * could be stopped by a stale request intended for its predecessor. */
@@ -4698,6 +4743,9 @@ class GenerationJobManagerClass {
       awaitProviderDrain?: boolean;
     },
   ): Promise<AbortResult> {
+    if (options?.retainTerminalPersistence && this.jobStore.providerTerminalPersistence !== true) {
+      throw new Error('Agent terminal persistence barrier is unavailable');
+    }
     const observedRuntime = this.runtimeState.get(streamId);
     let jobData = await this.jobStore.getJob(streamId);
 
@@ -4825,6 +4873,9 @@ class GenerationJobManagerClass {
      * resolution wins `requires_action -> running`. The returned batch is the
      * exact queued/claimed set parked by the winning abort, so the final event
      * can restore it without a second read or a recovery race. */
+    const externalPersistence =
+      options?.retainTerminalPersistence === true ||
+      jobData.terminalPersistenceOwner === 'external';
     const terminalPersistenceStartedAt = Date.now();
     let transitionFrom = abortableStatus;
     let drainedSteers: SteerQueueItem[] | null = null;
@@ -4844,6 +4895,7 @@ class GenerationJobManagerClass {
           completedAt: terminalPersistenceStartedAt,
           terminalPersistencePending: true,
           terminalPersistenceStartedAt,
+          ...(externalPersistence && { terminalPersistenceOwner: 'external' as const }),
           ...(jobData.agentEventDeliveryKey != null &&
             this.terminalHostActionHandler != null && {
               terminalHostActionPending: true,
@@ -4917,6 +4969,7 @@ class GenerationJobManagerClass {
       ...(jobData.userId != null && { userId: jobData.userId }),
       status: 'aborted',
       persistencePending: true,
+      ...(externalPersistence && { terminalPersistenceOwner: 'external' as const }),
       drainedSteers: Object.freeze([...drainedSteers]),
     });
     this.terminalClaimRuntimes.set(terminalClaim, runtime ?? null);
@@ -5080,6 +5133,13 @@ class GenerationJobManagerClass {
           persistenceError,
         );
       }
+
+      if (externalPersistence)
+        return {
+          ...abortResult,
+          finalEvent: null,
+          ...(requiredPersistenceFailed && { persistenceFailed: true }),
+        };
 
       const publication = await this.publishTerminalClaim(
         terminalClaim,
@@ -5746,7 +5806,11 @@ class GenerationJobManagerClass {
             // Poll modestly so a successfully persisted payload whose pub/sub
             // frame was lost is delivered promptly, while the hard deadline
             // still recovers a crashed owner.
-            scheduleTerminalPersistenceCheck(Math.min(1000, remaining));
+            scheduleTerminalPersistenceCheck(
+              terminalJob.terminalPersistenceOwner === 'external'
+                ? 1000
+                : Math.min(1000, remaining),
+            );
             return;
           }
         }
@@ -8300,12 +8364,14 @@ class GenerationJobManagerClass {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    terminalPersistencePending?: true,
   ): Promise<boolean> {
     try {
       return await this.recordProviderExecutionDrain(
         streamId,
         expectedCreatedAt,
         providerExecutionId,
+        terminalPersistencePending,
       );
     } finally {
       /** Settles the shutdown wait whether or not the record succeeded: a drain that failed
@@ -8319,10 +8385,13 @@ class GenerationJobManagerClass {
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    terminalPersistencePending?: true,
   ): Promise<boolean> {
     if (providerExecutionId.length === 0 || providerExecutionId.length > 128) {
       return false;
     }
+    if (terminalPersistencePending && this.jobStore.providerTerminalPersistence !== true)
+      throw new Error('Provider terminal persistence barrier is unavailable');
 
     const observedJob = await this.jobStore.getJob(streamId);
     if (
@@ -8340,6 +8409,7 @@ class GenerationJobManagerClass {
         streamId,
         expectedCreatedAt,
         providerExecutionId,
+        terminalPersistencePending,
       ) ?? Promise.resolve(false),
       this.eventTransport.recordProviderDrain?.(streamId, expectedCreatedAt, providerExecutionId) ??
         Promise.resolve(false),
@@ -8375,16 +8445,57 @@ class GenerationJobManagerClass {
     return marked;
   }
 
+  /** Release exact provider proof after its canonical external terminal journal committed. */
+  async finishProviderTerminalPersistence(
+    streamId: string,
+    expectedCreatedAt: number,
+    providerExecutionId: string,
+    ownerId?: string,
+  ): Promise<boolean> {
+    const job = await this.jobStore.getJob(streamId);
+    if (!job) return true;
+    if (
+      job.createdAt !== expectedCreatedAt ||
+      job.providerExecutionId !== providerExecutionId ||
+      job.providerDrained !== true ||
+      !['complete', 'error', 'aborted'].includes(job.status) ||
+      (ownerId != null && job.providerExecutionOwnerId !== ownerId)
+    )
+      return false;
+    if (job.terminalPersistencePending === true) {
+      await this.jobStore.finalizeTerminalPersistence(
+        streamId,
+        expectedCreatedAt,
+        job.finalEvent ?? JSON.stringify(buildTerminalPersistenceReconcile(job)),
+      );
+      const finalized = await this.jobStore.getJob(streamId);
+      if (
+        finalized?.createdAt === expectedCreatedAt &&
+        finalized.terminalPersistencePending === true
+      )
+        return false;
+    }
+    return this.recordProviderExecutionDrain(streamId, expectedCreatedAt, providerExecutionId);
+  }
+
   /** Starts the initial provider owner only if account deletion, abort, or a
    * replacement has not already changed the exact running generation. */
   async beginProviderExecution(
     streamId: string,
     expectedCreatedAt: number,
     providerExecutionId: string,
+    ownerId?: string,
   ): Promise<boolean> {
     if (providerExecutionId.length === 0 || providerExecutionId.length > 128) {
       return false;
     }
+    if (
+      ownerId != null &&
+      (ownerId.length === 0 ||
+        ownerId.length > 128 ||
+        this.jobStore.providerStartOwnership !== true)
+    )
+      return false;
     /** A provider that has not started by the time shutdown begins must not start. The
      *  settlement wait only covers executions begun before it returned; one begun after it
      *  would commit `providerDrained: false` against a store that is about to close and
@@ -8393,18 +8504,43 @@ class GenerationJobManagerClass {
     if (this.shuttingDown) {
       return false;
     }
-    /** Opened before the CAS and closed only on a definitive `false`. A rejected reply is
-     *  ambiguous — the store may already have committed `providerDrained: false` — and every
-     *  caller treats it that way, running or cleaning up and recording the drain either way.
-     *  Leaving the tracker open makes shutdown wait for that record instead of tearing the
-     *  transport down underneath it; the deadline still bounds the wait if it never comes. */
-    this.openProviderExecution(streamId, expectedCreatedAt, providerExecutionId);
-    const started =
-      (await this.jobStore.beginProviderExecution?.(
-        streamId,
-        expectedCreatedAt,
-        providerExecutionId,
-      )) ?? false;
+    /** Legacy ambiguous starts retain their shutdown tracker until settlement. A resumed
+     * attempt instead owns provider work only after its exact durable start receipt is
+     * confirmed; otherwise it releases its local tracker without recording a drain. */
+    // A duplicate local attempt must not close the winner's shared shutdown tracker.
+    if (!this.openProviderExecution(streamId, expectedCreatedAt, providerExecutionId)) return false;
+    let started: boolean;
+    try {
+      started =
+        ownerId == null
+          ? ((await this.jobStore.beginProviderExecution?.(
+              streamId,
+              expectedCreatedAt,
+              providerExecutionId,
+            )) ?? false)
+          : await this.jobStore.beginProviderExecution(
+              streamId,
+              expectedCreatedAt,
+              providerExecutionId,
+              ownerId,
+            );
+    } catch (error) {
+      if (ownerId == null) throw error;
+      let confirmed = false;
+      try {
+        const current = await this.jobStore.getJob(streamId);
+        confirmed =
+          current?.createdAt === expectedCreatedAt &&
+          current.providerExecutionId === providerExecutionId &&
+          current.providerExecutionStartedId === providerExecutionId &&
+          current.providerExecutionOwnerId === ownerId;
+        if (confirmed) return true;
+        throw error;
+      } finally {
+        if (!confirmed)
+          this.closeProviderExecution(streamId, expectedCreatedAt, providerExecutionId);
+      }
+    }
     if (!started) {
       this.closeProviderExecution(streamId, expectedCreatedAt, providerExecutionId);
     }
@@ -8423,16 +8559,17 @@ class GenerationJobManagerClass {
     streamId: string,
     createdAt: number,
     providerExecutionId: string,
-  ): void {
+  ): boolean {
     const key = this.providerExecutionKey(streamId, createdAt, providerExecutionId);
     if (this.openProviderExecutions.has(key)) {
-      return;
+      return false;
     }
     let settle: () => void = () => undefined;
     const promise = new Promise<void>((resolve) => {
       settle = resolve;
     });
     this.openProviderExecutions.set(key, { promise, settle });
+    return true;
   }
 
   private closeProviderExecution(
