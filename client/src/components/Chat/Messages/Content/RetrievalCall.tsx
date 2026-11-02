@@ -320,7 +320,7 @@ function FileHeader({
           className="flex cursor-help items-center"
         >
           <span
-            className="bg-surface-tertiary text-text-secondary text-2xs shrink-0 cursor-help rounded px-1.5 py-0.5 leading-none tabular-nums"
+            className="bg-surface-tertiary text-text-secondary text-2xs shrink-0 cursor-help rounded p-1 leading-none tabular-nums"
             aria-label={`${localize('com_ui_relevance')}: ${Math.round(relevance * 100)}%`}
           >
             {Math.round(relevance * 100)}%
