@@ -200,55 +200,69 @@ test.describe('opt-in two-factor enrollment', () => {
     }
   });
 
-  test('settings keeps 2FA on, hands over the backup codes and signs in again when other sessions could not all be signed out @scenario:optin-2fa-incomplete-retirement-warns', async ({
-    page,
-  }) => {
-    test.setTimeout(60000);
-    await page.route('**/api/auth/2fa/confirm', (route) =>
-      route.fulfill({
-        status: 500,
-        contentType: 'application/json',
-        body: JSON.stringify({ code: 'CREDENTIAL_RETIREMENT_INCOMPLETE' }),
-      }),
-    );
-    /** The harness session is shared across specs; keep it alive while the client signs out. */
-    await page.route('**/api/auth/logout', (route) =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }),
-    );
-    await page.goto(NEW_CHAT_PATH);
-    await page.getByTestId('nav-user').click();
-    await page.getByRole('menuitem', { name: 'Settings' }).click();
-    await page.getByRole('tab', { name: 'Account' }).click();
-    await page.getByRole('button', { name: 'Enable 2FA' }).click();
+  test.describe('with its own signed-in account', () => {
+    test.use({ storageState: { cookies: [], origins: [] } });
 
-    const enabling = page.waitForResponse((response) =>
-      response.url().endsWith('/api/auth/2fa/enable'),
-    );
-    await page.getByRole('button', { name: 'Generate QR Code' }).click();
-    const enabled = await enabling;
-    expect(enabled.status()).toBe(200);
-    const { otpauthUrl } = (await enabled.json()) as { otpauthUrl: string };
-    const secret = new URL(otpauthUrl).searchParams.get('secret') ?? '';
-    expect(secret).toBeTruthy();
-    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+    test('settings keeps 2FA on, hands over the backup codes and signs in again when other sessions could not all be signed out @scenario:optin-2fa-incomplete-retirement-warns', async ({
+      page,
+    }) => {
+      test.setTimeout(60000);
+      await page.context().setExtraHTTPHeaders({
+        'X-Forwarded-For': `127.${randomInt(1, 255)}.${randomInt(1, 255)}.${randomInt(1, 255)}`,
+      });
+      const email = await registerUser(page.request);
+      try {
+        await signIn(page.request, email);
+        await page.route('**/api/auth/2fa/confirm', (route) =>
+          route.fulfill({
+            status: 500,
+            contentType: 'application/json',
+            body: JSON.stringify({ code: 'CREDENTIAL_RETIREMENT_INCOMPLETE' }),
+          }),
+        );
+        await page.goto(NEW_CHAT_PATH);
+        await page.getByTestId('nav-user').click();
+        await page.getByRole('menuitem', { name: 'Settings' }).click();
+        await page.getByRole('tab', { name: 'Account' }).click();
+        await page.getByRole('button', { name: 'Enable 2FA' }).click();
 
-    await page.getByRole('textbox').last().fill(totp(secret));
-    await page.getByRole('button', { name: 'Verify', exact: true }).click();
+        const enabling = page.waitForResponse((response) =>
+          response.url().endsWith('/api/auth/2fa/enable'),
+        );
+        await page.getByRole('button', { name: 'Generate QR Code' }).click();
+        const enabled = await enabling;
+        expect(enabled.status()).toBe(200);
+        const { otpauthUrl } = (await enabled.json()) as { otpauthUrl: string };
+        const secret = new URL(otpauthUrl).searchParams.get('secret') ?? '';
+        expect(secret).toBeTruthy();
+        await page.getByRole('button', { name: 'Continue', exact: true }).click();
 
-    await expect(
-      page
-        .getByText('Two-factor authentication is on, but some other sessions may stay signed in', {
-          exact: false,
-        })
-        .first(),
-    ).toBeVisible();
-    await expect(
-      page.getByText('Invalid two-factor authentication code', { exact: true }),
-    ).toHaveCount(0);
-    const download = page.waitForEvent('download');
-    await page.getByRole('button', { name: 'Download Backup Codes' }).click();
-    await download;
-    await page.getByRole('button', { name: 'Complete Setup' }).click();
-    await expect(page).toHaveURL(/\/login/);
+        await page.getByRole('textbox').last().fill(totp(secret));
+        const confirming = page.waitForResponse((response) =>
+          response.url().endsWith('/api/auth/2fa/confirm'),
+        );
+        await page.getByRole('button', { name: 'Verify', exact: true }).click();
+        expect((await confirming).status()).toBe(500);
+
+        await expect(
+          page
+            .getByText(
+              'Two-factor authentication is on, but some other sessions may stay signed in',
+              { exact: false },
+            )
+            .first(),
+        ).toBeVisible();
+        await expect(
+          page.getByText('Invalid two-factor authentication code', { exact: true }),
+        ).toHaveCount(0);
+        const download = page.waitForEvent('download');
+        await page.getByRole('button', { name: 'Download Backup Codes' }).click();
+        await download;
+        await page.getByRole('button', { name: 'Complete Setup' }).click();
+        await expect(page).toHaveURL(/\/login/);
+      } finally {
+        await deleteUserByEmail(email);
+      }
+    });
   });
 });

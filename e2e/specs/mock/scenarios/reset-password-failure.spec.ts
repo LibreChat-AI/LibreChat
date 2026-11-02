@@ -1,6 +1,9 @@
 import { expect, test } from '@playwright/test';
 
 test.describe('password reset failure', () => {
+  /** A reset link is followed signed out; a live harness session would bounce /login to chat. */
+  test.use({ storageState: { cookies: [], origins: [] } });
+
   /* A user id that is not an ObjectId makes the token lookup throw a cast error; its text
      names the schema path and value, so the anonymous caller must only see a fixed message. */
   test('a reset that fails unexpectedly returns a fixed message @scenario:reset-failure-hides-internal-error', async ({
