@@ -18,6 +18,35 @@ async function openPopup(page: Page, path: string) {
   return popup;
 }
 
+/**
+ * Activates a control that closes its own window. The window can be gone before the input call
+ * settles, so that call's rejection counts only while the window is still open.
+ */
+async function closeWith(popup: Page, activate: () => Promise<void>) {
+  const closed = popup.waitForEvent('close');
+  await activate().catch((error) => {
+    if (!popup.isClosed()) {
+      throw error;
+    }
+  });
+  await closed;
+}
+
+/**
+ * A full navigation to /oauth/error is answered by the server's social-login failure route
+ * (api/server/routes/oauth.js), which redirects to /login before the app loads. These tests
+ * cover the page the app renders for that path, so its document is served the app shell.
+ */
+async function serveErrorPageShell(page: Page) {
+  await page.context().route(/\/oauth\/error(\?|$)/, async (route) => {
+    if (route.request().resourceType() !== 'document') {
+      return route.fallback();
+    }
+    const shell = await route.fetch({ url: new URL('/', route.request().url()).toString() });
+    await route.fulfill({ response: shell });
+  });
+}
+
 test('the success page names the server and its Close button closes the popup @scenario:oauth-success-close', async ({
   page,
   context,
@@ -36,7 +65,7 @@ test('the success page names the server and its Close button closes the popup @s
   const close = popup.getByRole('button', { name: 'Close Window' });
   await close.focus();
   await expect(close).toBeFocused();
-  await Promise.all([popup.waitForEvent('close'), popup.keyboard.press('Enter')]);
+  await closeWith(popup, () => close.press('Enter'));
 });
 
 test('the success page shows no server badge when the redirect names none @scenario:oauth-success-no-server', async ({
@@ -70,6 +99,7 @@ test('a long server name stays inside the page @scenario:oauth-success-long-name
 test('the error page explains a known code and falls back for an unknown one @scenario:oauth-error-message', async ({
   page,
 }) => {
+  await serveErrorPageShell(page);
   const known = await openPopup(page, '/oauth/error?error=invalid_state&flow=flow-a');
   await expect(known.getByRole('heading', { name: 'Authentication Failed' })).toBeVisible();
   await expect(known.getByText('Invalid state parameter. Please try again.')).toBeVisible();
@@ -78,8 +108,5 @@ test('the error page explains a known code and falls back for an unknown one @sc
   const unknown = await openPopup(page, '/oauth/error?error=access_denied');
   await expect(unknown.getByText('Authentication failed. Please try again.')).toBeVisible();
   await expect(unknown.getByText('access_denied')).toHaveCount(0);
-  await Promise.all([
-    unknown.waitForEvent('close'),
-    unknown.getByRole('button', { name: 'Close Window' }).click(),
-  ]);
+  await closeWith(unknown, () => unknown.getByRole('button', { name: 'Close Window' }).click());
 });
