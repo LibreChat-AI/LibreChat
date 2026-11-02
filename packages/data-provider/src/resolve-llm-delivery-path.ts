@@ -490,6 +490,27 @@ export function isAutomaticLLMDelivery(
   );
 }
 
+/** Whether automatic reading sends this attachment to Run Code because it is a spreadsheet:
+ *  an inferred route, not the agent's own file, no admin override for the type, on a turn that
+ *  runs Run Code. Such a file is Run Code's alone, so File Search neither queues nor lists it. */
+export function isRunCodeSpreadsheet(
+  routing: Partial<TurnDeliveryRouting> | undefined,
+  file: TurnDeliveryFile,
+  consumers?: TurnFileConsumers,
+): boolean {
+  if (routing == null || !hasInferredLLMDeliveryPath(file)) {
+    return false;
+  }
+  const mimeType = file.metadata?.routingMimeType ?? file.type ?? '';
+  return (
+    isAutomaticLLMDelivery(routing.endpointConfig) &&
+    consumers?.executeCode === true &&
+    file.context !== FileContext.agents &&
+    isSpreadsheetMimeType(mimeType) &&
+    !hasLLMDeliveryOverride(mimeType, routing)
+  );
+}
+
 /**
  * Delivery path for one attachment on one agent's turn.
  *
@@ -532,7 +553,7 @@ export function resolveTurnLLMDeliveryPath(
     file.context !== FileContext.agents &&
     !isMediaMimeType(mimeType) &&
     !hasLLMDeliveryOverride(mimeType, routing) &&
-    ((consumers.executeCode && isSpreadsheetMimeType(mimeType)) ||
+    (isRunCodeSpreadsheet(routing, file, consumers) ||
       (file.file_id != null &&
         routing.overBudgetFileIds?.has(file.file_id) === true &&
         hasTurnFileConsumer(mimeType, consumers)))

@@ -8,6 +8,7 @@ import {
   EToolResources,
   canToolResourceConsume,
   isAutomaticLLMDelivery,
+  isRunCodeSpreadsheet,
   resolveTurnLLMDeliveryPath,
   hasInferredLLMDeliveryPath,
   paramEndpoints,
@@ -2254,6 +2255,22 @@ export async function initializeAgent(
   );
   runtimeToolResources = projectResources.resources;
   const provisionState = projectResources.provisionState;
+  /* A spreadsheet automatic reading sends to Run Code is Run Code's alone: queued for File
+   * Search too, a programmatic tool call would embed every row before the code could run. */
+  let runCodeSpreadsheets: TFile[] = [];
+  if (automaticDelivery && provisionState != null) {
+    runCodeSpreadsheets = provisionState.vectorDBFiles.filter(
+      (file) =>
+        !provisionState.agentScopedFileIds.has(file.file_id) &&
+        isRunCodeSpreadsheet(deliveryRouting, file, fileConsumers),
+    );
+    if (runCodeSpreadsheets.length > 0) {
+      const removed = new Set(runCodeSpreadsheets.map((file) => file.file_id));
+      provisionState.vectorDBFiles = provisionState.vectorDBFiles.filter(
+        (file) => !removed.has(file.file_id),
+      );
+    }
+  }
   /* Automatic reading moves files the model would otherwise see; classic keeps the note as
    * it was, including under the legacy chooser. */
   if (automaticDelivery) {
@@ -2868,6 +2885,14 @@ export async function initializeAgent(
     fileConsumers.executeCode !== finalFileConsumers.executeCode ||
     fileConsumers.fileSearch !== finalFileConsumers.fileSearch;
   Object.assign(fileConsumers, finalFileConsumers);
+  /* Run Code did not load after all: a File Search route can still serve the spreadsheets.
+   * Known ceiling: they are not added to the File Search note, since tools are already loaded. */
+  if (runCodeSpreadsheets.length > 0 && !fileConsumers.executeCode && provisionState != null) {
+    const queued = new Set(provisionState.vectorDBFiles.map((file) => file.file_id));
+    provisionState.vectorDBFiles.push(
+      ...runCodeSpreadsheets.filter((file) => !queued.has(file.file_id)),
+    );
+  }
   if (consumersChanged && automaticDelivery && contextWindowKnown) {
     deliveryRouting.overBudgetFileIds = planInlineAttachmentBudget(budgetCandidates, budgetParams);
   }

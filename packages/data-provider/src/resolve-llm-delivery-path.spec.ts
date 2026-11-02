@@ -16,6 +16,7 @@ import {
   getCustomEndpointProvider,
   resolveTurnLLMDeliveryPath as resolveStoredTurnPath,
   hasInferredLLMDeliveryPath,
+  isRunCodeSpreadsheet,
   resolveDefaultLLMDeliveryPath,
   resolveUploadLLMDeliveryPath,
   SYSTEM_LLM_DELIVERY_DEFAULTS,
@@ -1291,6 +1292,69 @@ describe('resolveTurnLLMDeliveryPath with llmDeliveryPolicy automatic', () => {
       }),
     ).toBe('text');
   });
+});
+
+describe('isRunCodeSpreadsheet', () => {
+  const both: TurnFileConsumers = { executeCode: true, fileSearch: true };
+  const routing: Partial<TurnDeliveryRouting> = {
+    endpoint: 'anthropic',
+    endpointConfig: { llmDeliveryPolicy: 'automatic' },
+  };
+  const file = (type: string, extra: Partial<TurnDeliveryFile> = {}): TurnDeliveryFile => ({
+    type,
+    llmDeliveryPath: 'text',
+    metadata: { destinationChosen: false },
+    ...extra,
+  });
+
+  it.each(['text/csv', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'])(
+    'is true for an inferred %s',
+    (type) => {
+      expect(isRunCodeSpreadsheet(routing, file(type), both)).toBe(true);
+    },
+  );
+
+  it.each([
+    ['classic', { endpoint: 'anthropic' }, file('text/csv'), both],
+    ['no Run Code', routing, file('text/csv'), { executeCode: false, fileSearch: true }],
+    ['unknown consumers', routing, file('text/csv'), undefined],
+    [
+      'a chosen destination',
+      routing,
+      file('text/csv', { metadata: { destinationChosen: true } }),
+      both,
+    ],
+    ['an agent file', routing, file('text/csv', { context: 'agents' }), both],
+    [
+      'an admin override',
+      {
+        ...routing,
+        fileConfig: mergeFileConfig({
+          defaultLLMDeliveryPath: { overrides: { 'text/csv': 'text' } },
+        }),
+      },
+      file('text/csv'),
+      both,
+    ],
+    [
+      'a document',
+      routing,
+      file('application/vnd.openxmlformats-officedocument.wordprocessingml.document'),
+      both,
+    ],
+    ['an image', routing, file('image/png'), both],
+    [
+      'the legacy chooser',
+      { ...routing, endpointConfig: { llmDeliveryPolicy: 'automatic', legacyFileUploadUX: true } },
+      file('text/csv'),
+      both,
+    ],
+  ] as Array<[string, Partial<TurnDeliveryRouting>, TurnDeliveryFile, TurnFileConsumers?]>)(
+    'is false for %s',
+    (_name, r, f, c) => {
+      expect(isRunCodeSpreadsheet(r, f, c)).toBe(false);
+    },
+  );
 });
 
 describe('retained code destination', () => {

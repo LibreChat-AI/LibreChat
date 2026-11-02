@@ -6406,6 +6406,7 @@ describe('initializeAgent tool-routed text fallback', () => {
     csvOverride = true,
     endpointFileSizeLimit,
     queuedForSearch = false,
+    codeQueued,
     extraQueued,
     agentScoped = false,
     loadedToolDefinitions,
@@ -6429,6 +6430,8 @@ describe('initializeAgent tool-routed text fallback', () => {
     csvOverride?: boolean;
     endpointFileSizeLimit?: number;
     queuedForSearch?: boolean;
+    /** Files provisioning also queued for the code sandbox. */
+    codeQueued?: IMongoFile[];
     extraQueued?: IMongoFile[];
     agentScoped?: boolean;
     loadedToolDefinitions?: Array<{ name: string }>;
@@ -6466,9 +6469,9 @@ describe('initializeAgent tool-routed text fallback', () => {
         requestAttachments: files,
         agentContextAttachments: [],
         tool_resources: {},
-        ...(queuedForSearch && {
+        ...((queuedForSearch || codeQueued != null) && {
           provisionState: {
-            codeEnvFiles: [],
+            codeEnvFiles: codeQueued ?? [],
             vectorDBFiles: [...files, ...(extraQueued ?? [])],
             aliveFileIds: new Set<string>(),
             agentScopedFileIds: new Set(agentScoped ? files.map((f: IMongoFile) => f.file_id) : []),
@@ -6770,6 +6773,77 @@ describe('initializeAgent tool-routed text fallback', () => {
       expect(ids(result.tool_resources?.file_search?.files)).toEqual(firstTen);
     });
 
+    describe('Run Code spreadsheets and the File Search queue', () => {
+      const bigCsv = { ...sheet, file_id: 'csv', text: 'x'.repeat(9_452_368) } as IMongoFile;
+      const smallCsv = { ...sheet, file_id: 'csv' } as IMongoFile;
+      const loaded = [{ name: EToolResources.file_search }, { name: EToolResources.execute_code }];
+      const run = (over: Record<string, unknown> = {}) =>
+        initializeWith({
+          ...base,
+          tools: bothTools,
+          csv: bigCsv,
+          csvOverride: false,
+          llmDeliveryPolicy: 'automatic',
+          queuedForSearch: true,
+          codeQueued: [bigCsv],
+          loadedToolDefinitions: loaded,
+          ...over,
+        });
+
+      it('keeps a Run Code spreadsheet off the File Search queue', async () => {
+        const { result } = await run();
+        expect(ids(result.provisionState?.codeEnvFiles)).toEqual(['csv']);
+        expect(ids(result.provisionState?.vectorDBFiles)).toEqual([]);
+        expect(ids(result.tool_resources?.file_search?.files) ?? []).not.toContain('csv');
+      });
+
+      it('still queues a document for File Search', async () => {
+        const files = pdfs();
+        const { result } = await run({
+          csv: files[0],
+          requestFiles: [...files, bigCsv],
+          codeQueued: [bigCsv],
+          model: 'claude-sonnet-5-5',
+        });
+        const queued = ids(result.provisionState?.vectorDBFiles) ?? [];
+        expect(queued).toEqual(expect.arrayContaining(firstTen));
+        expect(queued).not.toContain('csv');
+      });
+
+      it('leaves the queue alone when classic', async () => {
+        const { result } = await run({
+          llmDeliveryPolicy: 'classic',
+          csv: smallCsv,
+          codeQueued: [smallCsv],
+        });
+        expect(ids(result.provisionState?.vectorDBFiles)).toEqual(['csv']);
+      });
+
+      it('keeps an agent-scoped spreadsheet on the queue', async () => {
+        const { result } = await run({ agentScoped: true });
+        expect(ids(result.provisionState?.vectorDBFiles)).toEqual(['csv']);
+      });
+
+      it('puts the spreadsheet back when Run Code does not load', async () => {
+        /* Run Code is requested, but its tools never register. */
+        jest
+          .spyOn(
+            jest.requireActual<typeof import('../tools')>('../tools'),
+            'registerCodeExecutionTools',
+          )
+          .mockImplementationOnce(
+            ({ toolDefinitions }) => ({ toolDefinitions, toolNames: [] }) as never,
+          );
+        const { result } = await run({
+          csv: smallCsv,
+          codeQueued: [smallCsv],
+          loadedToolDefinitions: [{ name: EToolResources.file_search }],
+        });
+        expect(result.fileConsumers?.executeCode).toBe(false);
+        expect(ids(result.provisionState?.vectorDBFiles)).toEqual(['csv']);
+      });
+    });
+
     it('sends a large CSV to Run Code without the text-limit error', async () => {
       const csv = {
         ...sheet,
@@ -6962,12 +7036,25 @@ describe('initializeAgent tool-routed text fallback', () => {
       expect(result.tool_resources?.file_search?.files).toBeUndefined();
     });
 
-    it('lists a queued history spreadsheet', async () => {
+    it('does not list a queued history spreadsheet that Run Code reads', async () => {
       const { result } = await initializeWith({
         ...base,
         tools: bothTools,
         llmDeliveryPolicy: 'automatic',
         csvOverride: false,
+        queuedForSearch: true,
+        requestFiles: [],
+        extraQueued: [{ ...sheet, file_id: 'old-sheet' } as IMongoFile],
+      });
+      expect(result.tool_resources?.file_search?.files).toBeUndefined();
+    });
+
+    it('lists a queued history spreadsheet the admin routed to tools', async () => {
+      const { result } = await initializeWith({
+        ...base,
+        tools: bothTools,
+        llmDeliveryPolicy: 'automatic',
+        csvOverride: true,
         queuedForSearch: true,
         requestFiles: [],
         extraQueued: [{ ...sheet, file_id: 'old-sheet' } as IMongoFile],
