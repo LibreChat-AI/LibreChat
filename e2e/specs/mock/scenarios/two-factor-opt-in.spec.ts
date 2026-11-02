@@ -2,6 +2,7 @@ import { expect, test } from '@playwright/test';
 import { createHmac, randomInt, randomUUID } from 'node:crypto';
 import type { APIRequestContext, PlaywrightWorkerArgs } from '@playwright/test';
 import { deleteUserByEmail, withMongo } from '../db';
+import { NEW_CHAT_PATH } from '../helpers';
 
 const PASSWORD = 'test1234!';
 const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
@@ -197,5 +198,49 @@ test.describe('opt-in two-factor enrollment', () => {
       await owner.dispose();
       await bearerOnly.dispose();
     }
+  });
+
+  test('settings keeps 2FA on and warns when other sessions could not all be signed out @scenario:optin-2fa-incomplete-retirement-warns', async ({
+    page,
+  }) => {
+    test.setTimeout(60000);
+    await page.route('**/api/auth/2fa/confirm', (route) =>
+      route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ code: 'CREDENTIAL_RETIREMENT_INCOMPLETE' }),
+      }),
+    );
+    await page.goto(NEW_CHAT_PATH);
+    await page.getByTestId('nav-user').click();
+    await page.getByRole('menuitem', { name: 'Settings' }).click();
+    await page.getByRole('tab', { name: 'Account' }).click();
+    await page.getByRole('button', { name: 'Enable 2FA' }).click();
+
+    const enabling = page.waitForResponse((response) =>
+      response.url().endsWith('/api/auth/2fa/enable'),
+    );
+    await page.getByRole('button', { name: 'Generate QR Code' }).click();
+    const enabled = await enabling;
+    expect(enabled.status()).toBe(200);
+    const { otpauthUrl } = (await enabled.json()) as { otpauthUrl: string };
+    const secret = new URL(otpauthUrl).searchParams.get('secret') ?? '';
+    expect(secret).toBeTruthy();
+    await page.getByRole('button', { name: 'Continue', exact: true }).click();
+
+    await page.getByRole('textbox').last().fill(totp(secret));
+    await page.getByRole('button', { name: 'Verify', exact: true }).click();
+
+    await expect(
+      page
+        .getByText('Two-factor authentication is on, but some other sessions may stay signed in', {
+          exact: false,
+        })
+        .first(),
+    ).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Download Backup Codes' })).toBeVisible();
+    await expect(
+      page.getByText('Invalid two-factor authentication code', { exact: true }),
+    ).toHaveCount(0);
   });
 });
