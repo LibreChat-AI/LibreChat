@@ -2,6 +2,8 @@ import { memo, useMemo, useState, useEffect, useCallback, useRef, useId } from '
 import { useAtom } from 'jotai';
 import copy from 'copy-to-clipboard';
 import { Lightbulb, ChevronDown } from 'lucide-react';
+import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
+import { useReasoningDisclosure } from '@librechat/chat/react';
 import { Button, disclosureChevronVariants } from '@librechat/client';
 import { ContentTypes, readableReasoning } from 'librechat-data-provider';
 import type { MouseEvent, FocusEvent } from 'react';
@@ -16,8 +18,6 @@ import { useLocalize, useExpandCollapse, useLazyCollapseBody } from '~/hooks';
 import { useMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import CopyButton from '~/components/Messages/Content/CopyButton';
-import { useReasoningDisclosure } from '../disclosure';
-import { ROW_GLYPH_SLOT } from '../rows';
 import { cn } from '~/utils';
 
 const stripThinkTags = (reasoning: string): string =>

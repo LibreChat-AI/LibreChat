@@ -2317,3 +2317,15 @@ describe('vector erasure rollout and concurrency settings', () => {
     },
   );
 });
+
+describe('file deletion retry limit', () => {
+  it('defaults to five automatic retries and accepts an override', () => {
+    expect(mergeFileConfig(undefined).deletionRetryLimit).toBe(5);
+    const config = fileConfigSchema.parse({ deletionRetryLimit: 3 });
+    expect(mergeFileConfig(config).deletionRetryLimit).toBe(3);
+  });
+
+  it.each([0, -1, 1.5, '5'])('rejects invalid retry limit %s', (deletionRetryLimit) => {
+    expect(fileConfigSchema.safeParse({ deletionRetryLimit }).success).toBe(false);
+  });
+});

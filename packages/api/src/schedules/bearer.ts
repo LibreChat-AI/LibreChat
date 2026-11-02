@@ -245,8 +245,11 @@ export function createScheduledMCPBearerHost(deps: {
               let pending = flights.get(key);
               if (!pending) {
                 pending = (async () => {
-                  for (const item of selections)
-                    await authorize(target, item, mintStage, ownerSignal, onFailure);
+                  await Promise.all(
+                    selections.map((item) =>
+                      authorize(target, item, mintStage, ownerSignal, onFailure),
+                    ),
+                  );
                   const result = await awaitOboOperation(
                     deps
                       .resolveBearer(

@@ -7,6 +7,7 @@ import {
   FileSources,
   isAssistantsEndpoint,
 } from 'librechat-data-provider';
+import type { PastedTextEdit } from '@librechat/chat/components';
 import type { TFile } from 'librechat-data-provider';
 import type { ExtendedFile, FileSetter } from '~/common';
 import {
@@ -32,16 +33,6 @@ import { getNewConversationDraftToken } from '~/utils';
 import { useAuthContext } from '~/hooks/AuthContext';
 import useFileDeletion from './useFileDeletion';
 import { useLocalize } from '~/hooks';
-
-/** The attachment being edited, with its text already resolved so the dialog stays controlled. */
-export type PastedTextEdit = {
-  file: ExtendedFile;
-  text: string;
-  /** The composer the dialog was opened in; an edit must never apply to a different one. */
-  conversationId: string | null;
-  /** Distinguishes two successive unsaved chats, which share the `new` conversation id. */
-  draftToken: symbol;
-};
 
 /**
  * Backs the paste editor: resolves an attached `pasted-text.txt` back to the text it holds, and

@@ -7,9 +7,9 @@ import { DndProvider } from 'react-dnd';
 import { useForm } from 'react-hook-form';
 import userEvent from '@testing-library/user-event';
 import { HTML5Backend } from 'react-dnd-html5-backend';
-import { render, screen } from '@testing-library/react';
 import { BrowserRouter as Router } from 'react-router-dom';
 import { QueryKeys, EModelEndpoint } from 'librechat-data-provider';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { TFile, TConversation } from 'librechat-data-provider';
 import type { ChatFormValues } from '~/common';
@@ -136,5 +136,58 @@ describe('ChatForm enterToSend prop', () => {
 
     const hint = document.getElementById('composer-hint-0') as HTMLElement;
     expect(hint).toHaveTextContent('Enter to send');
+  }, 20000);
+});
+
+describe('ChatForm textarea identity', () => {
+  /** jsdom lays nothing out; give the draft five rows so the collapse control appears. */
+  let scrollHeight: jest.SpyInstance;
+  let computedStyle: jest.SpyInstance;
+
+  beforeEach(() => {
+    localStorage.clear();
+    scrollHeight = jest
+      .spyOn(HTMLTextAreaElement.prototype, 'scrollHeight', 'get')
+      .mockReturnValue(100);
+    const real = window.getComputedStyle.bind(window);
+    computedStyle = jest.spyOn(window, 'getComputedStyle').mockImplementation((element) => {
+      const style = real(element);
+      if (!(element instanceof HTMLTextAreaElement)) {
+        return style;
+      }
+      return new Proxy(style, {
+        get: (target, key) => {
+          if (key === 'lineHeight') {
+            return '20px';
+          }
+          const value = Reflect.get(target, key, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+    });
+  });
+
+  afterEach(() => {
+    computedStyle.mockRestore();
+    scrollHeight.mockRestore();
+    getDefaultStore().set(isSubmittingFamily(0), false);
+  });
+
+  /** A remount would drop focus, IME composition and the form library's registration. */
+  test('keeps the same textarea node across a collapse toggle and a run start', async () => {
+    renderComposer({ enterToSend: true });
+
+    const textarea = await screen.findByTestId('text-input');
+    await userEvent.type(textarea, 'one{Shift>}{Enter}{/Shift}two');
+    expect(textarea).toHaveValue('one\ntwo');
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Collapse Chat' }));
+    expect(await screen.findByRole('button', { name: 'Expand Chat' })).toBeInTheDocument();
+    expect(screen.getByTestId('text-input')).toBe(textarea);
+
+    act(() => {
+      getDefaultStore().set(isSubmittingFamily(0), true);
+    });
+    expect(screen.getByTestId('text-input')).toBe(textarea);
   }, 20000);
 });

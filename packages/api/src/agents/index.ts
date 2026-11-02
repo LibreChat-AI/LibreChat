@@ -102,3 +102,4 @@ export * from './remote';
 export * from './queuedTurns';
 export * from './queuedTurnHttp';
 export * from './files/index';
+export { captureAuthoredSkills, restoreAuthoredSkills } from './authored';

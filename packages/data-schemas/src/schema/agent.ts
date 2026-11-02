@@ -100,13 +100,14 @@ const agentSchema: Schema<IAgent> = new Schema<IAgent>(
     instructionsPrompt: {
       type: new Schema(
         {
-          source: { type: String, enum: ['native'], required: true },
+          source: { type: String, enum: ['native', 'langfuse'], required: true },
           groupId: { type: String, required: true },
           selection: {
             type: new Schema(
               {
                 type: { type: String, enum: ['production', 'exact'], required: true },
                 promptId: { type: String },
+                version: { type: Number },
               },
               { _id: false },
             ),

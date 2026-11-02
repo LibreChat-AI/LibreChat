@@ -1,5 +1,5 @@
 import { ScrollText } from 'lucide-react';
-import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '../rows';
+import { ROW_GLYPH_SLOT, TOOL_ROW_CLASSES } from '@librechat/chat/components';
 import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 

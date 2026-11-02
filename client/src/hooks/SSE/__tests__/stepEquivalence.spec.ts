@@ -2,6 +2,7 @@ import React from 'react';
 import { createHash } from 'crypto';
 import { RecoilRoot } from 'recoil';
 import { createStore, Provider } from 'jotai';
+import { useStepHandler } from '@librechat/chat/react';
 import { renderHook, act } from '@testing-library/react';
 import {
   Constants,
@@ -10,6 +11,12 @@ import {
   ContentTypes,
   ToolCallTypes,
 } from 'librechat-data-provider';
+import {
+  subagentProgressKey,
+  subagentProgressByToolCallId,
+  takeRegisteredSubagentProgressKeys,
+  subagentParentStreamOpenByToolCallId,
+} from '@librechat/chat/react';
 import type {
   Agents,
   TMessage,
@@ -19,15 +26,8 @@ import type {
   TMessageContentParts,
 } from 'librechat-data-provider';
 import type { StepEvent } from '@librechat/chat';
-import {
-  subagentProgressKey,
-  subagentProgressByToolCallId,
-  takeRegisteredSubagentProgressKeys,
-  subagentParentStreamOpenByToolCallId,
-} from '~/components/Chat/Subagents/state';
 import { ptcTraceByToolCallId, ptcTraceKey } from '~/hooks/SSE/ptc';
 import { sandboxStartingByToolCallId } from '~/hooks/SSE/sandbox';
-import useStepHandler from '~/hooks/SSE/useStepHandler';
 
 /**
  * Equivalence table for the step reducer. Each row is an event sequence shaped like a recorded

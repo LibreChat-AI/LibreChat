@@ -1,7 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { SoleToolContext } from '@librechat/chat/react';
 import { act, render, screen } from '@testing-library/react';
-import { SoleToolContext } from '../../disclosure';
 import BashCall from '../BashCall';
 
 jest.mock('~/hooks', () => ({
