@@ -1,14 +1,40 @@
 import { useMemo } from 'react';
 import { ScrollText } from 'lucide-react';
+import { Button } from '@librechat/client';
+import { useNavigate } from 'react-router-dom';
 import { parseJsonField } from '@librechat/chat';
+import { PermissionTypes, Permissions } from 'librechat-data-provider';
 import { TOOL_ROW_CLASSES, BareStatus, Stdout } from '@librechat/chat/components';
 import { toolPanelSpacingClassName, useToolCallIntent } from '@librechat/chat/react';
 import type { TAttachment, PartMetadata } from 'librechat-data-provider';
 import ProgressText from '~/components/Chat/Messages/Content/ProgressText';
+import { useGetSkillQuery, useSkillsInfiniteQuery } from '~/data-provider';
+import { useHasAccess, useLocalize } from '~/hooks';
 import useToolCallState from './useToolCallState';
 import { AttachmentGroup } from './Attachment';
-import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
+
+/** The loaded skill's own record, when the user can open it. The tool output
+ *  only confirms the load, so the instructions come from the skill itself.
+ *  Deployment skills and skills the user cannot see resolve to nothing. */
+function useLoadedSkill(skillName: string, enabled: boolean) {
+  const canUseSkills = useHasAccess({
+    permissionType: PermissionTypes.SKILLS,
+    permission: Permissions.USE,
+  });
+  const active = enabled && canUseSkills && !!skillName;
+  const { data: pages } = useSkillsInfiniteQuery(
+    { search: skillName, limit: 10 },
+    { enabled: active },
+  );
+  const skillId = useMemo(
+    () =>
+      pages?.pages.flatMap((page) => page.skills).find((skill) => skill.name === skillName)?._id,
+    [pages, skillName],
+  );
+  const { data: skill } = useGetSkillQuery(skillId, { enabled: active });
+  return active ? skill : undefined;
+}
 
 export default function SkillCall({
   isSubmitting,
@@ -35,6 +61,7 @@ export default function SkillCall({
   const parsedSkillName = useMemo(() => parseJsonField(args, 'skillName'), [args]);
   const skillName = parsedSkillName || localize('com_ui_skill').toLowerCase();
   const intent = useToolCallIntent(args);
+  const navigate = useNavigate();
 
   const { showCode, toggleCode, expandStyle, expandRef, phase, hasOutput, bare, rowRef } =
     useToolCallState({
@@ -48,6 +75,9 @@ export default function SkillCall({
       onExpand,
       runStepStatus,
     });
+
+  const skill = useLoadedSkill(parsedSkillName, showCode && phase === 'completed');
+  const instructions = skill?.body.trim();
 
   const finishedText =
     phase === 'cancelled'
@@ -88,13 +118,32 @@ export default function SkillCall({
                 'border-border-light bg-surface-secondary overflow-hidden rounded-lg border',
               )}
             >
-              <div className="p-4 text-xs">
-                <div className="text-text-secondary text-3xs mb-1.5 font-medium tracking-wide uppercase">
-                  {localize('com_ui_output')}
+              <div className="p-3 text-xs">
+                <div className="mb-1.5 flex min-h-5 items-center justify-between gap-2">
+                  <span className="text-text-secondary text-3xs font-medium tracking-wide uppercase">
+                    {localize(instructions ? 'com_ui_skill_instructions' : 'com_ui_output')}
+                  </span>
+                  {skill && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="xs"
+                      className="-my-1 shrink-0"
+                      onClick={() => navigate(`/skills/${skill._id}`)}
+                    >
+                      {localize('com_ui_open_skill')}
+                    </Button>
+                  )}
                 </div>
-                <div className="text-text-primary max-h-[12.5rem] overflow-auto">
-                  <Stdout output={output} />
-                </div>
+                {instructions ? (
+                  <div className="text-text-primary max-h-[18.75rem] overflow-auto text-sm leading-6 break-words whitespace-pre-wrap">
+                    {instructions}
+                  </div>
+                ) : (
+                  <div className="text-text-primary max-h-[12.5rem] overflow-auto">
+                    <Stdout output={output} />
+                  </div>
+                )}
               </div>
             </div>
           )}

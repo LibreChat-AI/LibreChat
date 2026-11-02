@@ -2474,6 +2474,7 @@
   "com_ui_open_archived_chat_new_tab_title": "{{title}} (opens in new tab)",
   "com_ui_open_as_artifact": "Open as artifact",
   "com_ui_open_project": "Open project",
+  "com_ui_open_skill": "Open skill",
   "com_ui_open_source_chat_new_tab": "Open Source Chat in New Tab",
   "com_ui_open_source_chat_new_tab_title": "Open Source Chat in New Tab - {{title}}",
   "com_ui_open_var": "Open {{0}}",

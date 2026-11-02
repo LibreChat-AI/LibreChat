@@ -1,5 +1,6 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { MemoryRouter } from 'react-router-dom';
 import { render, screen } from '@testing-library/react';
 import { SoleToolContext } from '@librechat/chat/react';
 import { GeneratedToolLabelContext } from '@librechat/chat/react';
@@ -9,7 +10,14 @@ import MemoryCall from '../MemoryCall';
 import SkillCall from '../SkillCall';
 import BashCall from '../BashCall';
 
+/** No skills access, so `SkillCall` keeps the tool output it always showed. */
+jest.mock('~/data-provider', () => ({
+  useSkillsInfiniteQuery: () => ({ data: undefined }),
+  useGetSkillQuery: () => ({ data: undefined }),
+}));
+
 jest.mock('~/hooks', () => ({
+  useHasAccess: () => false,
   useLocalize: () => (key: string, values?: Record<string, string>) =>
     key === 'com_ui_duration_seconds' ? `${values?.[0]}s` : key,
   useProgress: (initialProgress: number) => initialProgress,
@@ -28,9 +36,11 @@ jest.mock('~/components/Chat/Messages/Content/ProgressText', () => ({
 
 const renderSole = (ui: React.ReactElement, sole = true) =>
   render(
-    <RecoilRoot>
-      <SoleToolContext.Provider value={sole}>{ui}</SoleToolContext.Provider>
-    </RecoilRoot>,
+    <MemoryRouter>
+      <RecoilRoot>
+        <SoleToolContext.Provider value={sole}>{ui}</SoleToolContext.Provider>
+      </RecoilRoot>
+    </MemoryRouter>,
   );
 
 describe('a sole call keeps its row when its panel would be empty', () => {
