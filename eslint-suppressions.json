@@ -62,16 +62,7 @@
   },
   "client/src/components/Chat/Input/ChatForm.tsx": {
     "shadcn/no-arbitrary-values": {
-      "count": 3
-    },
-    "shadcn/no-inline-styles": {
-      "count": 3
-    },
-    "shadcn/no-restyle": {
-      "count": 3
-    },
-    "shadcn/require-static-classes": {
-      "count": 2
+      "count": 1
     }
   },
   "client/src/components/Chat/Input/CodeApprovalMenu.tsx": {
