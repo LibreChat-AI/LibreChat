@@ -1696,7 +1696,6 @@
   "com_ui_duration_announced_seconds_one": "took {{value}} second",
   "com_ui_duration_minutes": "{{0}}m {{1}}s",
   "com_ui_duration_seconds": "{{0}}s",
-  "com_ui_duration_in": "in {{0}}",
   "com_ui_duration_prepared_in": "(prepared in {{0}})",
   "com_ui_tool_preparing": "Preparing {{0}}",
   "com_ui_tool_calling": "Calling {{0}}",

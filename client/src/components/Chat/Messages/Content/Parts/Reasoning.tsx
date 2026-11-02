@@ -413,7 +413,7 @@ export const ReasoningCompact = memo(
             <ChevronDown
               className={cn(
                 disclosureChevronVariants({ expanded: isExpanded }),
-                'size-4 translate-y-[1px]',
+                'ms-auto size-4 translate-y-[1px]',
               )}
               aria-hidden="true"
             />

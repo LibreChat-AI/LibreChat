@@ -294,7 +294,7 @@ export default function WebSearch({
                 <ChevronDown
                   className={cn(
                     disclosureChevronVariants({ expanded: showSourceList }),
-                    'size-3.5',
+                    'ms-auto size-3.5',
                   )}
                   aria-hidden="true"
                 />

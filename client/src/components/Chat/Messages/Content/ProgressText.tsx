@@ -153,7 +153,7 @@ export default function ProgressText({
     toolExecutionDurationMs != null &&
     Number.isFinite(toolExecutionDurationMs) &&
     toolExecutionDurationMs >= 50;
-  /** Read as part of the label: "Called get_weather in 2.4s (prepared in 0.3s)". */
+  /** Pinned beside the chevron: "2.4s (prepared in 0.3s)". */
   const durationParts =
     phase !== 'completed'
       ? []
@@ -162,7 +162,7 @@ export default function ProgressText({
             ? [
                 {
                   label: localize('com_ui_tool_call_time'),
-                  phrase: 'com_ui_duration_in' as const,
+                  phrase: undefined,
                   duration: getRunStepDurationLabels(toolExecutionDurationMs, i18n.language),
                 },
               ]
@@ -180,7 +180,7 @@ export default function ProgressText({
             ? [
                 {
                   label: '',
-                  phrase: 'com_ui_duration_in' as const,
+                  phrase: undefined,
                   duration: getRunStepDurationLabels(durationMs, i18n.language),
                 },
               ]
@@ -234,30 +234,38 @@ export default function ProgressText({
         {errorSuffix && (
           <span className="text-status-error shrink-0 font-normal">· {verdict || errorSuffix}</span>
         )}
-        {timer}
-        {timer == null && isRunning && phaseStartAt != null && localPhaseStart != null && (
-          <ElapsedTimer start={localPhaseStart} />
-        )}
-        {durationParts.map(({ label, phrase, duration }) => (
-          <span key={label} className="text-text-secondary shrink-0 font-normal">
-            <span aria-hidden="true">
-              {localize(phrase, { 0: localize(duration.key, duration.values) })}
+        {/* Pinned to the row's end so every row's time and chevron line up. */}
+        <span className="ms-auto flex shrink-0 items-center gap-2">
+          {timer}
+          {timer == null && isRunning && phaseStartAt != null && localPhaseStart != null && (
+            <ElapsedTimer start={localPhaseStart} />
+          )}
+          {durationParts.map(({ label, phrase, duration }) => (
+            <span
+              key={label}
+              className="text-text-secondary shrink-0 text-xs font-normal tabular-nums"
+            >
+              <span aria-hidden="true">
+                {phrase
+                  ? localize(phrase, { 0: localize(duration.key, duration.values) })
+                  : localize(duration.key, duration.values)}
+              </span>
+              <span className="sr-only">
+                {label && `${label} `}
+                {localize(duration.announcedKey, duration.announcedValues)}
+              </span>
             </span>
-            <span className="sr-only">
-              {label && `${label} `}
-              {localize(duration.announcedKey, duration.announcedValues)}
-            </span>
-          </span>
-        ))}
-        {hasInput && (
-          <ChevronDown
-            className={cn(
-              disclosureChevronVariants({ expanded: isExpanded }),
-              'size-4 shrink-0 translate-y-[0.0625rem]',
-            )}
-            aria-hidden="true"
-          />
-        )}
+          ))}
+          {hasInput && (
+            <ChevronDown
+              className={cn(
+                disclosureChevronVariants({ expanded: isExpanded }),
+                'size-4 shrink-0 translate-y-[0.0625rem]',
+              )}
+              aria-hidden="true"
+            />
+          )}
+        </span>
       </Button>
     </Wrapper>
   );
