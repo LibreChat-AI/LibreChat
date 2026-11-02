@@ -106,8 +106,8 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({
       beta
       info={
         <>
-          <p className="text-sm text-text-secondary">{localize('com_ui_agent_subagents_info')}</p>
-          <p className="text-sm text-text-secondary">{localize('com_ui_agent_subagents_info_2')}</p>
+          <p className="text-text-secondary text-sm">{localize('com_ui_agent_subagents_info')}</p>
+          <p className="text-text-secondary text-sm">{localize('com_ui_agent_subagents_info_2')}</p>
         </>
       }
       trailing={
@@ -126,7 +126,7 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({
             checked={allowSelf}
             onCheckedChange={setAllowSelf}
             info={
-              <p className="text-sm text-text-secondary">
+              <p className="text-text-secondary text-sm">
                 {localize('com_ui_agent_subagents_allow_self_info')}
               </p>
             }
@@ -139,7 +139,7 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({
               checked={value.shareFiles === true}
               onCheckedChange={setShareFiles}
               info={
-                <p className="text-sm text-text-secondary">
+                <p className="text-text-secondary text-sm">
                   {localize('com_ui_agent_subagents_share_files_info')}
                 </p>
               }
@@ -178,14 +178,14 @@ const AgentSubagents: React.FC<AgentSubagentsProps> = ({
             )}
 
             {agentIds.length >= maxSubagents && (
-              <p className="pt-1 text-center text-xs italic text-text-tertiary">
+              <p className="text-text-tertiary pt-1 text-center text-xs italic">
                 {localize('com_ui_agent_subagents_max', { 0: maxSubagents })}
               </p>
             )}
           </div>
 
           {nothingToSpawn && (
-            <p className="flex items-center gap-2 text-xs italic text-text-warning">
+            <p className="text-text-warning flex items-center gap-2 text-xs italic">
               <Users size={14} aria-hidden="true" />
               {localize('com_ui_agent_subagents_empty')}
             </p>

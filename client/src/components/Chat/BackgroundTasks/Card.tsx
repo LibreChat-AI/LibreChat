@@ -1,10 +1,11 @@
 import { memo, useId, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { getToolDisplayLabel } from '@librechat/chat';
 import { ArrowUpRight, ChevronDown, Square } from 'lucide-react';
 import { IconButton, Spinner, TooltipAnchor } from '@librechat/client';
 import type { TaskRow, TaskRowDelivery, TaskRowStatus } from './rows';
 import type { TranslationKeys } from '~/hooks/useLocalize';
-import { getRunStepDurationLabels, getToolDisplayLabel, cn } from '~/utils';
+import { getRunStepDurationLabels, cn } from '~/utils';
 import { Collapse } from '~/components/ui';
 import { useLocalize } from '~/hooks';
 

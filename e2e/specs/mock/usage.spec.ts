@@ -283,8 +283,8 @@ test.describe('context usage gauge', () => {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
       await expect
         .poll(() =>
-          details.evaluate((element) =>
-            getComputedStyle(element).gridTemplateColumns.split(' ').length,
+          details.evaluate(
+            (element) => getComputedStyle(element).gridTemplateColumns.split(' ').length,
           ),
         )
         .toBe(viewport.columns);
@@ -326,8 +326,8 @@ test.describe('context usage gauge', () => {
     await page.setViewportSize({ width: 375, height: 812 });
     await expect
       .poll(() =>
-        details.evaluate((element) =>
-          getComputedStyle(element).gridTemplateColumns.split(' ').length,
+        details.evaluate(
+          (element) => getComputedStyle(element).gridTemplateColumns.split(' ').length,
         ),
       )
       .toBe(1);

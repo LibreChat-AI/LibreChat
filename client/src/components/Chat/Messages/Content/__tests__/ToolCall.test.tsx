@@ -1,10 +1,10 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { Tools, Constants, dataService } from 'librechat-data-provider';
+import { LoneGroupContext, SoleToolContext } from '@librechat/chat/react';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import type { TStartupConfig } from 'librechat-data-provider';
 import { MCPAppsPolicyProvider } from '~/Providers/MCPAppsPolicyContext';
-import { LoneGroupContext, SoleToolContext } from '../disclosure';
 import { ToolAuthWarningContext } from '../auth';
 import ToolCall from '../ToolCall';
 import { logger } from '~/utils';

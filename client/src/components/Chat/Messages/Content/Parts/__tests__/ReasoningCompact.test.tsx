@@ -1,7 +1,7 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import { ROW_GLYPH_SLOT } from '@librechat/chat/components';
 import { ReasoningCompact } from '../Reasoning';
-import { ROW_GLYPH_SLOT } from '../../rows';
 
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,

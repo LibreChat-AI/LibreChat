@@ -25,8 +25,9 @@ jest.mock('~/utils', () => ({
   getCachedPreview: jest.fn(() => undefined),
 }));
 
-jest.mock('../Image', () => {
-  return function MockImage({ url, progress, source }: any) {
+jest.mock('@librechat/chat/components', () => ({
+  ...jest.requireActual('@librechat/chat/components'),
+  AttachmentImage: function MockImage({ url, progress, source }: any) {
     return (
       <div data-testid="mock-image">
         <span data-testid="image-url">{url}</span>
@@ -34,11 +35,8 @@ jest.mock('../Image', () => {
         <span data-testid="image-source">{source}</span>
       </div>
     );
-  };
-});
-
-jest.mock('../FileContainer', () => {
-  return function MockFileContainer({ file, onClick, ariaLabel, subtitleAction }: any) {
+  },
+  FileContainer: function MockFileContainer({ file, onClick, ariaLabel, subtitleAction }: any) {
     return (
       <div data-testid="mock-file-container">
         <span data-testid="file-name">{file.filename}</span>
@@ -54,8 +52,8 @@ jest.mock('../FileContainer', () => {
         )}
       </div>
     );
-  };
-});
+  },
+}));
 
 const mockUseLocalize = jest.requireMock('~/hooks').useLocalize;
 const mockUseDeleteFilesMutation = jest.requireMock('~/data-provider').useDeleteFilesMutation;

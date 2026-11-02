@@ -2,13 +2,16 @@ import { Keyv } from 'keyv';
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createMethods, createModels } from '@librechat/data-schemas';
-import { AUTH_USER_DOC_BY_ID_PREFIX, CacheKeys } from 'librechat-data-provider';
+import {
+  CacheKeys,
+  AUTH_USER_DOC_MAX_AGE_MS,
+  AUTH_USER_DOC_BY_ID_PREFIX,
+} from 'librechat-data-provider';
 import type { IUser } from '@librechat/data-schemas';
 import {
   getCachedAuthUserDoc,
   setCachedAuthUserDoc,
   buildAuthUserDocCacheKey,
-  AUTH_USER_DOC_CACHE_TTL_MS,
 } from './userDocCache';
 import { isTokenRetired } from './twoFactor';
 
@@ -63,7 +66,7 @@ describe('credential change with a failing auth cache', () => {
     if (!cacheKey) {
       throw new Error('expected a cache key');
     }
-    await setCachedAuthUserDoc(store, cacheKey, user);
+    await setCachedAuthUserDoc(store, cacheKey, user, Date.now());
     const oldToken = { issuedAt: Math.floor(Date.now() / 1000) - 60 };
     expect(isTokenRetired(oldToken, await getCachedAuthUserDoc(store, cacheKey))).toBe(false);
 
@@ -74,7 +77,7 @@ describe('credential change with a failing auth cache', () => {
     const startedAt = Date.now();
     await methods.awaitAuthUserDocEviction(userId);
 
-    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(AUTH_USER_DOC_CACHE_TTL_MS);
+    expect(Date.now() - startedAt).toBeGreaterThanOrEqual(AUTH_USER_DOC_MAX_AGE_MS);
     expect(updated?.credentialsChangedAt).toBeInstanceOf(Date);
     await expect(getCachedAuthUserDoc(store, cacheKey)).resolves.toBeUndefined();
     const current = await methods.findUser({ openidId: 'subject-1' });
