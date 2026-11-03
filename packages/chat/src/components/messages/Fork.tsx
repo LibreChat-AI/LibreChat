@@ -172,6 +172,7 @@ const CheckboxOption: React.FC<CheckboxOptionProps> = ({
                   }
                   onToggle(isChecked);
                 }}
+                variant="fade"
                 aria-label={localize(labelKey)}
               />
               <Label

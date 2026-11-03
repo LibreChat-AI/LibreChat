@@ -303,6 +303,7 @@ function Feedback({ isLast = false, handleFeedback, feedback: initialFeedback }:
             {localize('com_ui_feedback_more_information')}
           </OGDialogTitle>
           <Textarea
+            variant="note"
             value={feedback?.text || ''}
             onChange={handleTextChange}
             rows={4}

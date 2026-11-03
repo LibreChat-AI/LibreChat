@@ -253,10 +253,10 @@ const buttonVariantRecipe = cva(
          *  header: normal weight on an 18px line, its glyph slot spacing itself, and the default
          *  corner so its focus ring stays rounded. */
         /** The header row of a bordered panel that folds the panel's body open, such as a turn's
-         *  subagent activity: the quiet ink rising to primary with a hover fill, and a ring inset
-         *  in the row because it sits flush against the panel's edge. */
+         *  subagent activity: the quiet ink rising to primary with a hover fill, and the control
+         *  focus ring inset in the row because it sits flush against the panel's edge. */
         'disclosure-panel':
-          'w-full justify-start text-start text-text-secondary hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary focus-visible:ring-focus-subtle focus-visible:ring-inset focus-visible:ring-offset-0',
+          'w-full justify-start text-start text-text-secondary hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary focus-visible:ring-focus-control focus-visible:ring-inset focus-visible:ring-offset-0',
         'disclosure-line':
           'w-full justify-start gap-0 font-normal leading-4.5 focus-visible:ring-focus-subtle focus-visible:ring-offset-0 disabled:opacity-100',
         /**
