@@ -152,6 +152,8 @@ export {
 } from './components/composer/bar/Effort';
 export { default as ReasoningControl } from './components/composer/bar/Reasoning';
 export type { ReasoningControlProps } from './components/composer/bar/Reasoning';
+export { default as ThinkingControl } from './components/composer/bar/Thinking';
+export type { ThinkingControlProps } from './components/composer/bar/Thinking';
 export { default as EscalateNowButton } from './components/composer/EscalateNowButton';
 export { default as DuringRunSendButton } from './components/composer/DuringRunSendButton';
 export { composerHintId } from './components/composer/bar/Hints';
