@@ -682,21 +682,20 @@ describe.each(engines)('canonical channel registry on %s', (engine) => {
         ).toBe(0);
       }));
 
-    it('retains channel and link cleanup owners until their registered child is physically gone', () =>
+    it('retires a registered empty child before removing channel and link cleanup owners', () =>
       scoped(async () => {
         const f = await fixture();
         await registerChannelTarget(mongoose, f.channel, f.entry);
         await registerChannelTarget(mongoose, f.identity, f.entry);
         const methods = createAgentChannelMethods(mongoose);
         expect(await methods.deleteAgentChannel(f.channel.channelId, f.creator.userId)).toEqual({
-          status: 'pending_drain',
-        });
-        expect(await f.anchor()).toMatchObject({ status: 'deleting', pendingCount: 1 });
-        expect(await f.anchor(f.identity)).toMatchObject({ state: 'revoked', pendingCount: 1 });
-        await discardManagedAllocation(mongoose, f.target);
-        expect(await methods.deleteAgentChannel(f.channel.channelId, f.creator.userId)).toEqual({
           status: 'deleted',
         });
+        expect(
+          await mongoose
+            .model('ChannelRun')
+            .collection.findOne(managedTargetFilter(mongoose, f.target)),
+        ).toBeNull();
         expect(await f.anchor()).toBeNull();
         expect(await f.anchor(f.identity)).toBeNull();
         expect(

@@ -3,22 +3,26 @@ import type { ChannelStorageConfig } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
 import type { ManagedState, ManagedStorageTarget } from '~/types/managed';
 import type { ResponseOwner } from '~/models/response';
+import {
+  eraseChannelIdentitiesForOwner,
+  eraseChannelIdentitiesForChannel,
+} from './channelIdentityErasure';
 import { ResponseErasurePendingError, createResponseOwnerErasureMethods } from './responseErasure';
 import { reconcileErasedResponseTargets, settleRedactedChannelTarget } from './registration';
 import { createAgentChannelModel, CHANNEL_PRIVATE_FIELDS } from '~/models/channel';
 import { responseScopeKeys, assertResponseErasureOwner } from './responseScope';
 import { managedTargetPredicate, retireManagedAllocation } from './managed';
 import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
-import { eraseChannelIdentitiesForOwner } from './channelIdentityErasure';
 import { tenantStorage, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { retireAgentChannel, closeAgentChannel } from './channelScope';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { createResponseScopeModel } from '~/models/responseScope';
-import { createChannelRunModel } from '~/models/channelRun';
+import { reconcileClosedChannelTarget } from './channelRegistry';
 import { eraseOwnedChannelRuns } from './channelRunErasure';
 import { includeManagedAllocations } from '~/utils/managed';
 import { eraseChannelKeysForOwner } from './channelKey';
 import { createIndexesWithRetry } from '~/utils/retry';
+import { eraseChannelCopies } from './channelCopies';
 import { managedRegistryCount } from './registry';
 
 /** Validate operation configuration before the caller closes irreversible admission fences. */
@@ -61,7 +65,6 @@ async function eraseChannelPartition(
   managedRegistryCount(anchor);
   const tenantId = owner.tenantId || '_';
   if (!closeOnly) await eraseChannelKeysForOwner(mongoose, owner, anchor.pending ?? []);
-  const runs = createChannelRunModel(mongoose);
   const channels = createAgentChannelModel(mongoose);
   await createIndexesWithRetry(channels);
   const partition = owner.tenantId || { $in: [null, ''] };
@@ -117,27 +120,42 @@ async function eraseChannelPartition(
       incarnation: connection._managed.incarnation,
       ...(connection.tenantId && { tenantId: connection.tenantId }),
     });
+    const channelTarget = {
+      kind: 'channel' as const,
+      id: String(connection._id),
+      incarnation: connection._managed.incarnation,
+      ...(connection.tenantId && { tenantId: connection.tenantId }),
+    };
     if (
-      !(await runs
-        .exists({
-          channelId: connection.channelId,
-          tenantId,
-          state: { $in: ['queued', 'executing', 'requires_action', 'delivering', 'blocked'] },
-        })
-        .read('primary')) &&
-      !(await includeManagedAllocations(
+      !(await eraseChannelCopies(
+        mongoose,
+        { target: channelTarget, channelId: connection.channelId, createdBy: owner.userId },
+        batchSize,
+      ))
+    )
+      return;
+    await eraseChannelIdentitiesForChannel(
+      mongoose,
+      channelTarget,
+      connection.channelId,
+      batchSize,
+    );
+    if (
+      await includeManagedAllocations(
         createChannelIdentityModel(mongoose).exists({
           tenantId,
           'identity.channelId': connection.channelId,
         }),
-      ).read('primary'))
+      ).read('primary')
     )
-      await channels.deleteOne({
-        _id: connection._id,
-        status: 'deleting',
-        pendingCount: { $in: [null, 0] },
-        'pending.0': { $exists: false },
-      });
+      return;
+    await reconcileClosedChannelTarget(mongoose, channelTarget);
+    await channels.deleteOne({
+      ...managedTargetPredicate(mongoose, channelTarget),
+      status: 'deleting',
+      pendingCount: { $in: [null, 0] },
+      'pending.0': { $exists: false },
+    });
   }
   // Frozen registrations cover a publisher whose first indexed write lands behind the cursor.
   const entries = (anchor.pending ?? []).filter((entry) => entry.target.kind === 'channel');

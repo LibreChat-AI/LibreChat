@@ -254,3 +254,21 @@ export function deliveryDisposition(
   if (run.snapshot.status === 'cancelled') return 'cancelled';
   return 'failed';
 }
+
+/** Optional unknown effects retain the existing best-effort policy; in-flight effects are unresolved. */
+export function hasUncertainChannelDelivery(run: {
+  receipts?: ReadonlyArray<Pick<ChannelDeliveryReceipt, 'operationId' | 'outcome'>>;
+  progress?: { outcome?: string };
+  plan?: { parts: ReadonlyArray<{ operationId: string; required?: boolean }> };
+}): boolean {
+  return (
+    run.progress?.outcome === 'inflight' ||
+    (run.receipts ?? []).some(
+      (receipt) =>
+        receipt.outcome === 'inflight' ||
+        (receipt.outcome === 'unknown' &&
+          run.plan?.parts.find((part) => part.operationId === receipt.operationId)?.required !==
+            false),
+    )
+  );
+}

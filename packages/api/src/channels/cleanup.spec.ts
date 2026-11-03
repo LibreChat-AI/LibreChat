@@ -218,9 +218,13 @@ it('defers deletion while cleanup is unknown and completes after restart and exa
   stoppedResult = 'stopped';
   await restart();
   expect(await scope(() => db.getAgentChannelMetadata('channel'))).toBeNull();
-  expect(await scope(() => storage.read(tenantId, 'channel', run.runId))).toMatchObject({
-    state: 'cancelled',
-  });
+  expect(retired).toHaveLength(2);
+  expect(
+    await mongoose.models.ChannelRun.collection.findOne({ tenantId, runId: run.runId }),
+  ).toBeNull();
+  expect(
+    await mongoose.models.ChannelLane.collection.countDocuments({ tenantId, channelId: 'channel' }),
+  ).toBe(0);
 });
 
 it('recovers deleting parents with no remaining runs after a storage outage', async () => {

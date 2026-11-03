@@ -366,9 +366,15 @@ describe.each(engines)('actor control handoff on %s', (engine) => {
           expect(
             await mongoose.models.ChannelRun.collection.findOne({ runId: claimed.runId }),
           ).toBeNull();
-          expect(
-            await collection.findOne({ channelId: f.input.channelId, kind: 'control' }),
-          ).not.toHaveProperty('assignment');
+          const control = await collection.findOne({
+            channelId: f.input.channelId,
+            kind: 'control',
+          });
+          if (mode === 'shared') expect(control).toBeNull();
+          else {
+            expect(control).not.toBeNull();
+            expect(control).not.toHaveProperty('assignment');
+          }
         }),
     );
     it('fences private staging while its final publication command is paused', () =>

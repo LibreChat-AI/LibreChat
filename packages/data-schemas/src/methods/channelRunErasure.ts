@@ -9,8 +9,11 @@ import {
 } from './registration';
 import { ALLOCATION_PREFIX, includeManagedAllocations } from '~/utils/managed';
 import { managedTargetPredicate, retireManagedAllocation } from './managed';
+import { hasUncertainChannelDelivery } from './channelProtocol';
+import { ResponseErasurePendingError } from './responseErasure';
 import { redactCreatorControl } from './channelControlPrivacy';
 import { createChannelRunControl } from './channelRunControl';
+import { sealPublishedChannelRun } from './channelRunWrite';
 import { responseScopeKeys } from './responseScope';
 
 interface Metadata {
@@ -23,6 +26,9 @@ interface Metadata {
   __v?: number;
   runId?: string;
   laneId?: string;
+  receipts?: ReadonlyArray<Pick<ChannelRunRecord['receipts'][number], 'operationId' | 'outcome'>>;
+  progress?: { outcome?: string };
+  plan?: { parts: ReadonlyArray<{ operationId: string; required?: boolean }> };
 }
 
 /** The caller has completed canonical Response owner erasure, not merely requested cancellation.
@@ -44,7 +50,9 @@ export async function eraseOwnedChannelRuns(
       const exact = managedTargetPredicate(mongoose, target);
       for (;;) {
         const current = await includeManagedAllocations(model.findOne(exact))
-          .select('_id _managed principal publication userId kind __v runId laneId')
+          .select(
+            '_id _managed principal publication userId kind __v runId laneId receipts.operationId receipts.outcome progress.outcome plan.parts.operationId plan.parts.required',
+          )
           .read('primary')
           .lean<Metadata | null>();
         if (!current) return;
@@ -86,28 +94,14 @@ export async function eraseOwnedChannelRuns(
           return;
         }
         if (current.principal?.userId !== owner.userId) return;
+        if (hasUncertainChannelDelivery(current)) throw new ResponseErasurePendingError();
         if (!current.publication || current._managed.parentId !== target.id)
           throw new Error('Run cleanup publication unavailable');
-        if (current._managed.phase === 'published') {
-          if (
-            typeof current.__v !== 'number' ||
-            !Number.isSafeInteger(current.__v) ||
-            current.__v < 0 ||
-            current.__v >= Number.MAX_SAFE_INTEGER
-          )
-            throw new Error('Run cleanup version unavailable');
-          const sealed = await model.updateOne(
-            {
-              ...exact,
-              '_managed.phase': 'published',
-              'principal.userId': owner.userId,
-              __v: current.__v,
-            },
-            { $set: { '_managed.phase': 'retired' }, $inc: { __v: 1 } },
-            { upsert: false },
-          );
-          if (!sealed.matchedCount) continue;
-        }
+        if (
+          current._managed.phase === 'published' &&
+          !(await sealPublishedChannelRun(mongoose, { ...target, kind: 'channelRun' }, current.__v))
+        )
+          continue;
         // Retain the sealed Run until its exact control revision acknowledges retirement.
         // A crash here is recovered from the indexed retired root, never a missing-job guess.
         await control.fenceErasedRun({ ...target, kind: 'channelRun' });

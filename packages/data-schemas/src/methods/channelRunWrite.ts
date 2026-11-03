@@ -4,12 +4,17 @@ import type { Types, FilterQuery } from 'mongoose';
 import type { ManagedState, ManagedTarget } from '~/types/managed';
 import type { ChannelRunRecord } from '~/models/channelRun';
 import {
+  managedRegistration,
+  managedTargetFilter,
+  managedTargetPredicate,
+  assertManagedCleanupTenant,
+} from './managed';
+import {
   MAX_BSON_DOCUMENT_BYTES,
   BSON_WRITE_HEADROOM_BYTES,
   ManagedDocumentTooLargeError,
 } from '~/utils/bson';
 import { registerResponseTarget, settleResponseTarget } from './registration';
-import { managedRegistration, managedTargetFilter } from './managed';
 import { ChannelRunConflict, digest } from './channelProtocol';
 import { responseScopeKeys } from './responseScope';
 
@@ -225,4 +230,28 @@ export async function writeChannelRunPatch(
   if (result && firstConversation)
     await settleResponseTarget(mongoose, owner, conversationId, managedRegistration(target));
   return result;
+}
+
+/** The owning domain proves retirement before closing this exact private publication writer. */
+export async function sealPublishedChannelRun(
+  mongoose: typeof import('mongoose'),
+  target: ManagedTarget<'channelRun'>,
+  version: number | undefined,
+): Promise<boolean> {
+  assertManagedCleanupTenant(target.tenantId);
+  if (
+    typeof version !== 'number' ||
+    !Number.isSafeInteger(version) ||
+    version < 0 ||
+    version >= Number.MAX_SAFE_INTEGER
+  )
+    throw new Error('Run cleanup version unavailable');
+  const result = await mongoose
+    .model<ChannelRunRecord>('ChannelRun')
+    .updateOne(
+      { ...managedTargetPredicate(mongoose, target), '_managed.phase': 'published', __v: version },
+      { $set: { '_managed.phase': 'retired' }, $inc: { __v: 1 } },
+      { upsert: false },
+    );
+  return result.matchedCount === 1;
 }

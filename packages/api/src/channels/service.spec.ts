@@ -2,7 +2,13 @@ import express from 'express';
 import mongoose from 'mongoose';
 import request from 'supertest';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import { createModels, createMethods, tenantStorage, runAsSystem } from '@librechat/data-schemas';
+import {
+  createModels,
+  createMethods,
+  createChannelRunStorage,
+  tenantStorage,
+  runAsSystem,
+} from '@librechat/data-schemas';
 import type { ChannelDependencies } from './service';
 import { acceptsChannelServiceToken, createChannelHandlers, publicChannel } from './service';
 
@@ -222,22 +228,25 @@ it('leaves a failed deletion closed and retryable without allowing reactivation'
 
 it('returns a safe deleting state while a persisted run is still active', async () => {
   const id = await createChannel();
-  await activation(id).expect(200);
+  const active = await activation(id).expect(200);
   await tenantStorage.run({ tenantId }, () =>
-    mongoose.models.ChannelRun.create({
-      tenantId,
-      channelId: id,
-      agentId: 'agent-test',
-      runId: 'pending-run',
-      laneId: 'lane',
-      state: 'queued',
-      principal: { userId: owner, channelRevision: 'old' },
-      admission: {},
-      payloadHash: 'hash',
-      sequence: 1,
-      receivedAt: 1,
-      receipts: [],
-    }),
+    createChannelRunStorage(mongoose).admit(
+      {
+        tenantId,
+        channelId: id,
+        agentId: 'agent-test',
+        principal: { userId: owner, channelRevision: active.body.revision },
+        admission: {
+          eventId: 'pending-event',
+          externalChannelId: 'CTEST',
+          externalThreadKey: 'CTEST:1',
+          externalMessageKey: 'CTEST:2',
+          actor: { teamId: 'TTEST', appId: 'ATEST', externalUserId: 'UTEST' },
+          input: 'Pending request',
+        },
+      },
+      Date.now(),
+    ),
   );
   const response = await request(app).delete(`/ui/agent-test/channels/${id}`).expect(202);
   expect(response.body).toMatchObject({ channelId: id, status: 'deleting' });
@@ -251,10 +260,12 @@ it('returns a safe deleting state while a persisted run is still active', async 
   });
 });
 
-it('retains the deleting parent when dependent feedback cleanup fails', async () => {
+it('retains the deleting parent when dependent feedback discovery fails', async () => {
   const id = await createChannel();
-  const cleanup = jest.spyOn(mongoose.models.ChannelReply, 'deleteMany');
-  cleanup.mockRejectedValueOnce(new Error('temporary database failure'));
+  const cleanup = jest.spyOn(mongoose.models.ChannelReply, 'find');
+  cleanup.mockImplementationOnce(() => {
+    throw new Error('temporary database failure');
+  });
   try {
     await request(app).delete(`/ui/agent-test/channels/${id}`).expect(503);
     const stored = await tenantStorage.run({ tenantId }, () => db.getAgentChannel(id));

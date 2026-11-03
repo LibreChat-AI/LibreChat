@@ -3,13 +3,17 @@ import type { ChannelStorageConfig, DurableStorageConfig } from 'librechat-data-
 import type { Types } from 'mongoose';
 import type { AgentChannelRecord } from '~/models/channel';
 import type { ManagedState } from '~/types/managed';
+import { eraseChannelIdentitiesForChannel } from './channelIdentityErasure';
 import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
+import { reconcileClosedChannelTarget } from './channelRegistry';
 import { createManagedAgentChannel } from './channelCreation';
 import { includeManagedAllocations } from '~/utils/managed';
 import { updateManagedAgentChannel } from './channelUpdate';
 import { createChannelIndexGate } from './channelIndexes';
 import { CHANNEL_PRIVATE_FIELDS } from '~/models/channel';
+import { eraseChannelCopies } from './channelCopies';
 import { retireAgentChannel } from './channelScope';
+import { managedTargetPredicate } from './managed';
 
 export type { AgentChannelRecord } from '~/models/channel';
 export type AgentChannelMetadata = Pick<
@@ -88,6 +92,7 @@ export function createAgentChannelMethods(
       .read('primary')
       .lean<{ _id: Types.ObjectId; tenantId?: string; _managed: ManagedState }>();
     if (!parent) return null;
+    const config = channelStorageConfigSchema.parse(await getStorageConfig());
     const record = await retireAgentChannel(
       mongoose,
       {
@@ -98,11 +103,12 @@ export function createAgentChannelMethods(
         incarnation: parent._managed.incarnation,
       },
       false,
-      await getStorageConfig(),
+      config,
     );
     return record
       ? {
           record,
+          batchSize: config.erasureBatchSize,
           id: String(parent._id),
           target: {
             kind: 'channel' as const,
@@ -201,14 +207,15 @@ export function createAgentChannelMethods(
       const started = await beginDeletion(channelId, createdBy);
       if (!started) return { status: 'not_found' };
       const deleting = started.record;
-      if (
-        await mongoose.models.ChannelRun.exists({
-          channelId,
-          tenantId: deleting.tenantId || '_',
-          state: { $in: ['queued', 'executing', 'requires_action', 'delivering', 'blocked'] },
-        }).read('primary')
-      )
+      const frame = { target: started.target, channelId, createdBy };
+      if (!(await eraseChannelCopies(mongoose, frame, started.batchSize)))
         return { status: 'pending_drain' };
+      await eraseChannelIdentitiesForChannel(
+        mongoose,
+        started.target,
+        channelId,
+        started.batchSize,
+      );
       if (
         await includeManagedAllocations(
           mongoose.models.ChannelIdentity.exists({
@@ -220,8 +227,9 @@ export function createAgentChannelMethods(
         return { status: 'pending_drain' };
       // Keep the deleting parent available for a retry if dependent cleanup fails.
       await eraseChannelFeedbackForChannel(mongoose, started.target);
+      await reconcileClosedChannelTarget(mongoose, started.target);
       const result = await channel().deleteOne({
-        _id: started.id,
+        ...managedTargetPredicate(mongoose, started.target),
         channelId,
         createdBy,
         status: 'deleting',
@@ -229,7 +237,9 @@ export function createAgentChannelMethods(
         'pending.0': { $exists: false },
       });
       if (result.deletedCount > 0) return { status: 'deleted' };
-      return (await channel().exists({ _id: started.id, channelId, createdBy }).read('primary'))
+      return (await channel()
+        .exists({ ...managedTargetPredicate(mongoose, started.target), channelId, createdBy })
+        .read('primary'))
         ? { status: 'pending_drain' }
         : { status: 'not_found' };
     },
