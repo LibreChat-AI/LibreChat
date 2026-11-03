@@ -7,6 +7,7 @@ import type {
 } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
+import { applyManagedStorage } from './plugins/managed';
 
 export interface ChannelFeedbackRetention {
   expiredAt?: Date | null;
@@ -78,6 +79,8 @@ export function createChannelReplyModel(
   schema.index({ tenantId: 1, channelId: 1, teamId: 1, externalMessageKey: 1 }, { unique: true });
   schema.index({ tenantId: 1, principalId: 1, conversationId: 1 });
   schema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
+  schema.index({ externalMessageKey: 1 });
+  applyManagedStorage(schema);
   applyTenantIsolation(schema);
   return mongoose.models.ChannelReply ?? mongoose.model<ChannelReplyRecord>('ChannelReply', schema);
 }
@@ -125,6 +128,8 @@ export function createChannelFeedbackEventModel(
   schema.index({ tenantId: 1, ledgerKey: 1, 'event.eventTimestampUs': -1, 'event.eventId': -1 });
   schema.index({ tenantId: 1, 'mapping.principalId': 1, 'mapping.conversationId': 1 });
   schema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
+  schema.index({ eventId: 1 });
+  applyManagedStorage(schema);
   applyTenantIsolation(schema);
   return (
     mongoose.models.ChannelFeedbackEvent ??
@@ -171,6 +176,8 @@ export function createChannelFeedbackModel(
   schema.index({ tenantId: 1, 'mapping.principalId': 1, 'mapping.conversationId': 1 });
   schema.index({ tenantId: 1, 'mapping.channelId': 1 });
   schema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
+  schema.index({ key: 1 });
+  applyManagedStorage(schema);
   applyTenantIsolation(schema);
   return (
     mongoose.models.ChannelFeedback ??

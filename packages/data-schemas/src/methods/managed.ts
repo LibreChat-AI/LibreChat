@@ -21,12 +21,62 @@ export const managedTargetModels = {
   message: 'Message',
   conversation: 'Conversation',
   response: 'StoredResponse',
+  channel: 'AgentChannel',
+  channelIdentity: 'ChannelIdentity',
+  channelRun: 'ChannelRun',
+  channelLane: 'ChannelLane',
+  channelKey: 'AgentApiKey',
+  channelReply: 'ChannelReply',
+  channelFeedback: 'ChannelFeedback',
+  channelFeedbackEvent: 'ChannelFeedbackEvent',
 } as const;
 const identityFields = {
   message: 'messageId',
   conversation: 'conversationId',
   response: 'responseId',
-} as const;
+  channel: 'channelId',
+  channelIdentity: 'linkId',
+  channelRun: 'runId',
+  channelLane: 'laneId',
+  channelKey: 'keyHash',
+  channelReply: 'externalMessageKey',
+  channelFeedback: 'key',
+  channelFeedbackEvent: 'eventId',
+} as const satisfies Record<ManagedTargetKind, string>;
+
+/** Channel wire identities use '_'; ALS and canonical history never use that sentinel. */
+const channelPartitionKinds = new Set<ManagedTargetKind>([
+  'channelIdentity',
+  'channelRun',
+  'channelLane',
+  'channelReply',
+  'channelFeedback',
+  'channelFeedbackEvent',
+]);
+
+function storedTenant(kind: ManagedTargetKind, tenantId?: string) {
+  return channelPartitionKinds.has(kind) ? tenantId || '_' : tenantId || { $in: [null, ''] };
+}
+
+/** Fill every unique index with allocation-only metadata, never an external identity or payload. */
+function allocationFields(kind: ManagedTargetKind, placeholder: string): Record<string, unknown> {
+  if (kind === 'response') return { requestKey: placeholder };
+  if (kind === 'channelIdentity')
+    return {
+      ticketHash: placeholder,
+      identity: { channelId: placeholder, teamId: placeholder, externalUserId: placeholder },
+    };
+  if (kind === 'channelRun')
+    return {
+      channelId: placeholder,
+      laneId: placeholder,
+      sequence: 0,
+      admission: { eventId: placeholder, actor: { teamId: placeholder, appId: placeholder } },
+    };
+  if (kind === 'channelReply') return { channelId: placeholder, teamId: placeholder };
+  if (kind === 'channelFeedbackEvent') return { channelId: placeholder };
+  return {};
+}
 
 export class ManagedAllocationUnavailableError extends Error {
   readonly code = 'durable_storage_unavailable';
@@ -86,15 +136,17 @@ export async function allocateManagedTarget<Kind extends ManagedTargetKind>(
   const model = mongoose.model(managedTargetModels[kind]);
   const id = new mongoose.Types.ObjectId();
   const incarnation = randomUUID();
+  const placeholder = `${ALLOCATION_PREFIX}${id.toHexString()}`;
+  const partition = storedTenant(kind, tenantId);
   const command = {
     // eslint-disable-next-line no-restricted-syntax -- collection name only; the command is the one-shot metadata allocator.
     insert: model.collection.name,
     documents: [
       {
         _id: id,
-        [identityFields[kind]]: `${ALLOCATION_PREFIX}${id.toHexString()}`,
-        ...(kind === 'response' ? { requestKey: `${ALLOCATION_PREFIX}${id.toHexString()}` } : {}),
-        ...(tenantId ? { tenantId } : {}),
+        [identityFields[kind]]: placeholder,
+        ...allocationFields(kind, placeholder),
+        ...(typeof partition === 'string' ? { tenantId: partition } : {}),
         _managed: { incarnation, phase: 'empty' },
         createdAt: new Date(),
       },
@@ -146,7 +198,7 @@ export function managedTargetPredicate(
   return {
     _id: new mongoose.Types.ObjectId(target.id),
     '_managed.incarnation': target.incarnation,
-    tenantId: target.tenantId || { $in: [null, ''] },
+    tenantId: storedTenant(target.kind, target.tenantId),
   };
 }
 
@@ -206,7 +258,7 @@ export async function listManagedAllocations<Kind extends ManagedTargetKind>(
         $gt: `${ALLOCATION_PREFIX}${page.after?.toLowerCase() ?? ''}`,
         $lt: `${ALLOCATION_PREFIX}\uffff`,
       },
-      tenantId: page.tenantId || { $in: [null, ''] },
+      tenantId: storedTenant(kind, page.tenantId),
       user: { $exists: false },
       '_managed.phase': { $in: phases },
     }),

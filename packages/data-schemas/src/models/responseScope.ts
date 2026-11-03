@@ -1,6 +1,7 @@
 import { Schema } from 'mongoose';
 import type { Model } from 'mongoose';
 import type { ManagedRegistration } from '~/types/managed';
+import { MANAGED_TARGET_KINDS } from '~/types/managed';
 
 interface ResponseScope {
   _id: string;
@@ -29,7 +30,7 @@ export function createResponseScopeModel(
             _id: false,
             key: { type: String, required: true },
             target: {
-              kind: { type: String, enum: ['message', 'conversation', 'response'], required: true },
+              kind: { type: String, enum: MANAGED_TARGET_KINDS, required: true },
               id: { type: String, required: true },
               incarnation: { type: String, required: true },
               tenantId: String,

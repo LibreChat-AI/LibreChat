@@ -2,6 +2,7 @@ import { Schema } from 'mongoose';
 import type { AgentChannel } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
+import { applyManagedStorage } from './plugins/managed';
 
 export interface AgentChannelRecord extends AgentChannel {
   encryptedBotToken?: string;
@@ -35,6 +36,7 @@ export function createAgentChannelModel(
   schema.index({ tenantId: 1, agentId: 1 });
   schema.index({ tenantId: 1, createdBy: 1 });
   schema.index({ status: 1, _id: 1 });
+  applyManagedStorage(schema);
   applyTenantIsolation(schema);
   return mongoose.models.AgentChannel ?? mongoose.model<AgentChannelRecord>('AgentChannel', schema);
 }

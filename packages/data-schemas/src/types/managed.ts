@@ -1,4 +1,17 @@
-export type ManagedTargetKind = 'message' | 'conversation' | 'response';
+export const MANAGED_TARGET_KINDS = [
+  'message',
+  'conversation',
+  'response',
+  'channel',
+  'channelIdentity',
+  'channelRun',
+  'channelLane',
+  'channelKey',
+  'channelReply',
+  'channelFeedback',
+  'channelFeedbackEvent',
+] as const;
+export type ManagedTargetKind = (typeof MANAGED_TARGET_KINDS)[number];
 
 /** Internal physical identity. A missing target is retired, never re-created. */
 export interface ManagedTarget<Kind extends ManagedTargetKind = 'message' | 'conversation'> {
