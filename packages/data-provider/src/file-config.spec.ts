@@ -5,6 +5,7 @@ import {
   fileConfig as baseFileConfig,
   fileConfigSchema,
   resolveEffectiveUseResponsesApi,
+  resolveUseResponsesApi,
   prefersResponsesApiByModel,
   isAnthropicTextDocumentType,
   getConfiguredMimeAccept,
@@ -2327,5 +2328,23 @@ describe('file deletion retry limit', () => {
 
   it.each([0, -1, 1.5, '5'])('rejects invalid retry limit %s', (deletionRetryLimit) => {
     expect(fileConfigSchema.safeParse({ deletionRetryLimit }).success).toBe(false);
+  });
+});
+
+describe('resolveUseResponsesApi', () => {
+  it('returns agent value when defined', () => {
+    expect(resolveUseResponsesApi(true, false)).toBe(true);
+    expect(resolveUseResponsesApi(false, true)).toBe(false);
+  });
+
+  it('falls back to conversation value when agent value is unset', () => {
+    expect(resolveUseResponsesApi(undefined, true)).toBe(true);
+    expect(resolveUseResponsesApi(undefined, false)).toBe(false);
+    expect(resolveUseResponsesApi(null, true)).toBe(true);
+  });
+
+  it('returns undefined when neither is specified', () => {
+    expect(resolveUseResponsesApi(undefined, undefined)).toBeUndefined();
+    expect(resolveUseResponsesApi(null, null)).toBeUndefined();
   });
 });

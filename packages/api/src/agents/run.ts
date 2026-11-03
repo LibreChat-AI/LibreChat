@@ -13,6 +13,7 @@ import {
   normalizeEndpointName,
   mapModelToAzureConfig,
   resolveUseResponsesApi,
+  prefersResponsesApiByModel,
 } from 'librechat-data-provider';
 import type {
   SummarizationConfig as AgentSummarizationConfig,
@@ -2478,6 +2479,25 @@ export async function createRun({
       ) as t.RunLLMConfig,
       modelCallbacks,
     );
+
+    const isFirstParty =
+      llmConfig.firstPartyEndpoint === true ||
+      (llmConfig.firstPartyEndpoint == null &&
+        agent.deliveryRouting == null &&
+        (provider === Providers.OPENAI || provider === Providers.AZURE) &&
+        (!agent.endpoint || agent.endpoint === provider) &&
+        !process.env.OPENAI_REVERSE_PROXY &&
+        !process.env.AZURE_OPENAI_BASEURL &&
+        !llmConfig.baseURL &&
+        !(llmConfig.configuration as { baseURL?: string } | undefined)?.baseURL);
+    if (
+      isFirstParty &&
+      llmConfig.useResponsesApi == null &&
+      prefersResponsesApiByModel(selfModel)
+    ) {
+      llmConfig.useResponsesApi = true;
+      llmConfig.firstPartyEndpoint = true;
+    }
 
     const joinInstructionMap = (map?: Record<string, unknown>) =>
       Object.values(map ?? {})
