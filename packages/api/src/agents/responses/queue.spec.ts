@@ -8,6 +8,8 @@ import {
   createManagedMessageId,
   tenantStorage,
   runAsSystem,
+  getTenantId,
+  getUserId,
 } from '@librechat/data-schemas';
 import type { ResponseStorage, StoredResponseRecord, ResponseOwner } from '@librechat/data-schemas';
 import type { AgentTriggerService, AgentTriggerDeliveryPersistence } from '../triggers/service';
@@ -95,50 +97,63 @@ async function reserve(principal: ResponseOwner = owner): Promise<StoredResponse
   return result.record;
 }
 
-it('executes queued Responses through its registered runtime, never through chat HTTP', () =>
-  scope(async () => {
-    const executed: StoredResponseRecord[] = [];
-    const fetcher = jest.fn(async () => {
-      throw new Error('Chat transport must not run');
-    });
-    const queue = createBackgroundResponseQueue({
-      storage,
-      enqueue: (...args) => service!.enqueue(...args),
-      authorize: async (record) => record.sourceKeyId === 'original-api-key',
-      execute: async (record) => {
-        executed.push(record);
-        return { status: 'started', generationCreatedAt: 100 };
-      },
-    });
-    service = createAgentTriggerService({
-      methods: persistence(),
-      sourceDispatchers: queue.sourceDispatchers,
-      fetch: fetcher,
-      deliveryOptions: { tickMs: 10 },
-    });
-    await service.initialize({ address: { address: '127.0.0.1', family: 'IPv4', port: 3088 } });
-    const reserved = await reserve();
-    const attached = await storage.attachDelivery(
-      owner,
-      reserved.responseId,
-      queue.deliveryKey(reserved),
-    );
-    if (!attached.ok) throw new Error('Attach failed');
-    await queue.enqueue(attached.record);
-    for (let attempt = 0; attempt < 100 && executed.length === 0; attempt++) {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-    }
-    expect(executed).toHaveLength(1);
-    expect(JSON.parse(executed[0].requestJSON)).toMatchObject({
-      instructions: 'Preserve instructions',
-      input: 'Original input',
-    });
-    expect(fetcher).not.toHaveBeenCalled();
-    const delivery = await service.getDelivery(attached.record.deliveryKey!);
-    expect(delivery?.requiredWorkerCapability).toBe('responses_background_v1');
-    expect(JSON.stringify(delivery?.envelope)).not.toContain('original-api-key');
-    expect(JSON.stringify(delivery?.envelope)).not.toContain('Original input');
-  }));
+it.each<ResponseOwner>([owner, { userId: owner.userId }])(
+  'executes queued Responses in owner scope through its registered runtime: %j',
+  async (principal) =>
+    tenantStorage.run({ tenantId: principal.tenantId }, async () => {
+      const executed: StoredResponseRecord[] = [];
+      const executionScopes: Array<{ tenantId?: string; userId?: string }> = [];
+      const fetcher = jest.fn(async () => {
+        throw new Error('Chat transport must not run');
+      });
+      const queue = createBackgroundResponseQueue({
+        storage,
+        enqueue: (...args) => service!.enqueue(...args),
+        authorize: async (record) => record.sourceKeyId === 'original-api-key',
+        execute: async (record) => {
+          const enrolled = await storage.enrollExecution(
+            record,
+            { generationCreatedAt: 100, providerExecutionId: 'provider-one' },
+            '{}',
+          );
+          if (!enrolled.ok) throw new Error('Execution enrollment failed');
+          executionScopes.push({ tenantId: getTenantId(), userId: getUserId() });
+          executed.push(record);
+          return { status: 'started', generationCreatedAt: 100 };
+        },
+      });
+      service = createAgentTriggerService({
+        methods: persistence(),
+        sourceDispatchers: queue.sourceDispatchers,
+        fetch: fetcher,
+        deliveryOptions: { tickMs: 10 },
+      });
+      await service.initialize({ address: { address: '127.0.0.1', family: 'IPv4', port: 3088 } });
+      const reserved = await reserve(principal);
+      const attached = await storage.attachDelivery(
+        principal,
+        reserved.responseId,
+        queue.deliveryKey(reserved),
+      );
+      if (!attached.ok) throw new Error('Attach failed');
+      await queue.enqueue(attached.record);
+      for (let attempt = 0; attempt < 100 && executed.length === 0; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(executed).toHaveLength(1);
+      expect(executionScopes).toEqual([{ tenantId: principal.tenantId, userId: principal.userId }]);
+      expect(getTenantId()).toBe(principal.tenantId);
+      expect(JSON.parse(executed[0].requestJSON)).toMatchObject({
+        instructions: 'Preserve instructions',
+        input: 'Original input',
+      });
+      expect(fetcher).not.toHaveBeenCalled();
+      const delivery = await service.getDelivery(attached.record.deliveryKey!);
+      expect(delivery?.requiredWorkerCapability).toBe('responses_background_v1');
+      expect(JSON.stringify(delivery?.envelope)).not.toContain('original-api-key');
+      expect(JSON.stringify(delivery?.envelope)).not.toContain('Original input');
+    }),
+);
 
 it('does not let a queue worker without the Responses capability claim the response', () =>
   scope(async () => {
@@ -206,18 +221,18 @@ it('rejects a tampered source envelope and revoked original authority before exe
     expect(execute).not.toHaveBeenCalled();
   }));
 
-async function reserveDecision(): Promise<StoredResponseRecord> {
-  await reserve();
+async function reserveDecision(principal: ResponseOwner = owner): Promise<StoredResponseRecord> {
+  await reserve(principal);
   const running = await storage.enrollExecution(
-    (await storage.read(owner, responseId))!,
+    (await storage.read(principal, responseId))!,
     { generationCreatedAt: 100, providerExecutionId: 'provider-one' },
     '{}',
   );
   if (!running.ok) throw new Error('Fixture enrollment failed');
   const paused = await storage.publishReview(
-    owner,
+    principal,
     responseId,
-    { execution: (await storage.read(owner, responseId))! },
+    { execution: (await storage.read(principal, responseId))! },
     100,
     {
       actionId: 'action-one',
@@ -229,7 +244,7 @@ async function reserveDecision(): Promise<StoredResponseRecord> {
   );
   if (!paused.ok) throw new Error('Pause failed');
   const result = await storage.reserveResume(
-    owner,
+    principal,
     responseId,
     {
       generationCreatedAt: 100,
@@ -245,6 +260,52 @@ async function reserveDecision(): Promise<StoredResponseRecord> {
   if (!result.ok) throw new Error('Decision reservation failed');
   return result.record;
 }
+
+it.each<ResponseOwner>([owner, { userId: owner.userId }])(
+  'admits a saved decision through the durable queue in owner scope: %j',
+  async (principal) =>
+    tenantStorage.run({ tenantId: principal.tenantId }, async () => {
+      const resumed: StoredResponseRecord[] = [];
+      const executionScopes: Array<{ tenantId?: string; userId?: string }> = [];
+      const queue = createResponseResumeQueue({
+        storage,
+        enqueue: (...args) => service!.enqueue(...args),
+        authorize: async (record) => record.sourceKeyId === 'original-api-key',
+        resume: async (record) => {
+          const intent = record.resume!;
+          await storage.readExecutionProof(record);
+          const admitted = await storage.admitResume(
+            record,
+            record.responseId,
+            intent.intentId,
+            record.generationCreatedAt!,
+            intent.providerExecutionId,
+            '{}',
+            Date.now(),
+          );
+          if (!admitted.ok) throw new Error('Resume admission failed');
+          executionScopes.push({ tenantId: getTenantId(), userId: getUserId() });
+          resumed.push(admitted.record);
+          return { status: 'resumed', generationCreatedAt: record.generationCreatedAt };
+        },
+      });
+      service = createAgentTriggerService({
+        methods: persistence(),
+        sourceDispatchers: queue.sourceDispatchers,
+        deliveryOptions: { tickMs: 10 },
+      });
+      await service.initialize({ address: { address: '127.0.0.1', family: 'IPv4', port: 3088 } });
+      const record = await reserveDecision(principal);
+      await queue.enqueue(record);
+      for (let attempt = 0; attempt < 100 && resumed.length === 0; attempt++) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(resumed).toHaveLength(1);
+      expect(resumed[0]).toMatchObject({ status: 'in_progress', resume: { state: 'admitted' } });
+      expect(executionScopes).toEqual([{ tenantId: principal.tenantId, userId: principal.userId }]);
+      expect(getTenantId()).toBe(principal.tenantId);
+    }),
+);
 
 it('deduplicates saved decisions in the existing queue and excludes old Responses workers', () =>
   scope(async () => {
