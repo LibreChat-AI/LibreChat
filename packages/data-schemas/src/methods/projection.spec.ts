@@ -11,9 +11,13 @@ import {
   retireResponseTarget,
   sweepResponseTargetOrphans,
 } from './projection';
+import {
+  markManagedTargetRegistered,
+  managedTargetFilter,
+  sweepManagedAllocations,
+} from './managed';
 import { createManagedMessageId, createManagedConversationId } from '~/utils/managed';
 import { registerResponseTarget, settleResponseTarget } from './registration';
-import { markManagedTargetRegistered, managedTargetFilter } from './managed';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
 import { includeManagedAllocations } from '~/utils/managed';
@@ -146,6 +150,37 @@ describe('Response-owned canonical target selection', () => {
       const retry = required(await selectResponseTarget(db, intent));
       expect(retry.selection.target).toEqual(winner.selection.target);
       expect((await readTargets(intent))?.canonicalTargets).toHaveLength(1);
+    });
+
+    it('pins a returned selection against both orphan sweep paths', async () => {
+      const { intent } = await fixture();
+      const selected = required(await selectResponseTarget(db, intent));
+      expect(await sweepManagedAllocations(db, 'message', { limit: 100 })).toMatchObject({
+        deleted: 0,
+      });
+      expect(await sweepResponseTargetOrphans(db, 'message', { limit: 100 })).toMatchObject({
+        deleted: 0,
+      });
+      expect((await beginResponseTargetRegistration(db, intent, selected.selection)).ok).toBe(true);
+    });
+
+    it('returns conflict if cleanup wins before pinning, then recovers with a fresh selection', async () => {
+      const { intent } = await fixture();
+      const collection = createStoredResponseModel(db).collection;
+      const update = collection.findOneAndUpdate.bind(collection);
+      jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+        const result = await update(...args);
+        await sweepManagedAllocations(db, 'message', { limit: 100 });
+        return result;
+      });
+      expect(await selectResponseTarget(db, intent)).toEqual({
+        ok: false,
+        code: 'response_conflict',
+      });
+      const recovered = required(await selectResponseTarget(db, intent));
+      expect((await beginResponseTargetRegistration(db, intent, recovered.selection)).ok).toBe(
+        true,
+      );
     });
 
     it('freezes before authority admission and publishes through the actual canonical writer', async () => {
@@ -449,6 +484,37 @@ describe('Response-owned canonical target selection', () => {
       ).rejects.toThrow('Invalid Response target intent');
       expect((await readTargets(intent))?.canonicalTargets).toBeUndefined();
     });
+
+    it.each(['managed', 'ordinary'] as const)(
+      'requires immutable %s input IDs to obey the durable namespace contract',
+      async (kind) => {
+        const { intent, receipt } = await fixture();
+        const messageId = kind === 'managed' ? createManagedMessageId() : randomUUID();
+        const terminal = {
+          ...receipt,
+          turnJSON: JSON.stringify({ version: 1, inputs: [{ messageId }] }),
+        };
+        await createStoredResponseModel(db).updateOne(
+          { _id: intent.parentId },
+          { $set: { pendingTerminal: terminal } },
+        );
+        const input: ResponseTargetIntent = {
+          ...intent,
+          kind: 'message',
+          receipt: terminal,
+          logicalId: messageId,
+        };
+        if (kind === 'managed') expect((await selectResponseTarget(db, input)).ok).toBe(true);
+        else {
+          const allocator = jest.spyOn(db.connection.db!, 'command');
+          await expect(selectResponseTarget(db, input)).rejects.toThrow(
+            'Invalid Response target intent',
+          );
+          expect(allocator).not.toHaveBeenCalled();
+          expect((await readTargets(intent))?.canonicalTargets).toBeUndefined();
+        }
+      },
+    );
 
     it('reaps pinned orphan pages by parent identity and preserves live selections', async () => {
       const tenantId = randomUUID();

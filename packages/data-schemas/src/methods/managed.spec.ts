@@ -247,7 +247,14 @@ describe('managed target allocation on real storage', () => {
           { userId, isTemporary: false },
           { conversationId, title: 'Edited' },
           {
-            unsetFields: { expiredAt: 1, '_managed.phase': 1 },
+            unsetFields: {
+              expiredAt: 1,
+              '_managed.phase': 1,
+              conversationId: 1,
+              user: 1,
+              tenantId: 1,
+              'conversationId.nested': 1,
+            },
           },
         );
         await ordinary.bulkSaveConvos([
@@ -255,7 +262,12 @@ describe('managed target allocation on real storage', () => {
         ]);
         expect(
           await db.model('Conversation').collection.findOne(managedTargetFilter(db, target)),
-        ).toMatchObject({ expiredAt: deadline, _managed: { phase: 'published' } });
+        ).toMatchObject({
+          user: userId,
+          conversationId,
+          expiredAt: deadline,
+          _managed: { phase: 'published' },
+        });
         await db.model('Conversation').collection.deleteOne(managedTargetFilter(db, target));
         expect(await conversations.saveConvo({ userId }, params)).toBeNull();
         await ordinary.bulkSaveConvos([{ conversationId, user: userId, title: 'Recreate' }]);
@@ -411,6 +423,16 @@ describe('managed target allocation on real storage', () => {
         await expect(
           ordinary.updateMessage(userId, { messageId: params.messageId, user: 'other' }),
         ).rejects.toThrow('owner cannot be replaced');
+        for (const conversationId of [null, 42, {}]) {
+          await expect(
+            // @ts-expect-error Exercise invalid runtime input at the storage boundary.
+            ordinary.updateMessage(userId, { messageId: params.messageId, conversationId }),
+          ).rejects.toThrow('conversation ID must be a string');
+          await expect(
+            // @ts-expect-error Bulk inputs can arrive from untyped import data.
+            ordinary.bulkSaveMessages([{ ...params, user: userId, conversationId }]),
+          ).rejects.toThrow();
+        }
         expect(
           await ordinary.saveMessage(
             { userId },
@@ -451,6 +473,145 @@ describe('managed target allocation on real storage', () => {
       expect(await db.model('Conversation').findOne({ conversationId })).toMatchObject({
         title: 'Bulk edited',
       });
+    });
+
+    it.each(['fast', 'provenance', 'bulk'] as const)(
+      'starts a null Message deadline through the %s writer and never extends it',
+      async (path) => {
+        const userId = randomUUID();
+        const conversationId = createManagedConversationId();
+        const messageId = createManagedMessageId();
+        const collection = db.model('Message').collection;
+        await collection.insertOne({ user: userId, conversationId, messageId, expiredAt: null });
+        const methods = createMessageMethods(db);
+        const deadline = new Date(Date.now() + 120000);
+        const params = {
+          messageId,
+          conversationId,
+          text: 'Retained',
+          ...(path === 'provenance' && { userSubmittedPaths: ['/text'] }),
+        };
+        if (path === 'bulk')
+          await methods.bulkSaveMessages([{ ...params, user: userId, expiredAt: deadline }]);
+        else await methods.saveMessage({ userId, expiredAt: deadline }, params);
+        expect(await collection.findOne({ messageId })).toMatchObject({ expiredAt: deadline });
+        const shorter = new Date(Date.now() + 60000);
+        await collection.updateOne({ messageId }, { $set: { expiredAt: null } });
+        const update = collection.updateOne.bind(collection);
+        jest.spyOn(collection, 'updateOne').mockImplementationOnce(async (...args) => {
+          await update({ messageId }, { $set: { expiredAt: shorter } });
+          return update(...args);
+        });
+        await methods.saveMessage({ userId, expiredAt: deadline }, params);
+        expect(await collection.findOne({ messageId })).toMatchObject({ expiredAt: shorter });
+      },
+    );
+
+    it.each(['save', 'bulk', 'captured'] as const)(
+      'starts a null Conversation deadline through %s without changing its identity',
+      async (path) => {
+        const userId = randomUUID();
+        const conversationId = path === 'captured' ? randomUUID() : createManagedConversationId();
+        const collection = db.model('Conversation').collection;
+        const row = await collection.insertOne({
+          user: userId,
+          conversationId,
+          expiredAt: null,
+          endpoint: EModelEndpoint.agents,
+        });
+        const methods = createConversationMethods(db, {
+          ...createMessageMethods(db),
+          ...(path === 'captured' && {
+            conversationTarget: { id: String(row.insertedId), userId, conversationId },
+          }),
+        });
+        const deadline = new Date(Date.now() + 120000);
+        if (path === 'bulk')
+          await methods.bulkSaveConvos([{ user: userId, conversationId, expiredAt: deadline }]);
+        else
+          await methods.saveConvo(
+            { userId, expiredAt: deadline },
+            { conversationId },
+            {
+              appendMessageIds: [],
+              unsetFields: { user: 1, conversationId: 1, tenantId: 1 },
+            },
+          );
+        expect(await collection.findOne({ _id: row.insertedId })).toMatchObject({
+          user: userId,
+          conversationId,
+          expiredAt: deadline,
+        });
+        await methods.saveConvo(
+          { userId, expiredAt: new Date(Date.now() + 240000) },
+          { conversationId },
+          { appendMessageIds: [] },
+        );
+        expect(await collection.findOne({ _id: row.insertedId })).toMatchObject({
+          expiredAt: deadline,
+        });
+      },
+    );
+
+    it('cannot recreate a target deleted between deadline initialization and payload update', async () => {
+      const userId = randomUUID();
+      const conversationId = createManagedConversationId();
+      const messageId = createManagedMessageId();
+      const collection = db.model('Message').collection;
+      await collection.insertOne({ user: userId, conversationId, messageId, expiredAt: null });
+      const update = collection.updateOne.bind(collection);
+      jest.spyOn(collection, 'updateOne').mockImplementationOnce(async (...args) => {
+        const result = await update(...args);
+        await collection.deleteOne({ messageId });
+        return result;
+      });
+      expect(
+        await createMessageMethods(db).saveMessage(
+          { userId, expiredAt: new Date(Date.now() + 60000) },
+          { conversationId, messageId, text: 'Late payload' },
+        ),
+      ).toBeNull();
+      expect(await collection.findOne({ messageId })).toBeNull();
+    });
+
+    it('preserves a concurrent shorter deadline during forced conversion and batched message stamping', async () => {
+      const userId = randomUUID();
+      const conversationId = createManagedConversationId();
+      const messageId = createManagedMessageId();
+      const pendingId = createManagedMessageId();
+      const deadline = new Date(Date.now() + 120000);
+      const shorter = new Date(Date.now() + 60000);
+      const conversations = db.model('Conversation').collection;
+      const messages = db.model('Message').collection;
+      await conversations.insertOne({
+        user: userId,
+        conversationId,
+        expiredAt: deadline,
+        isTemporary: false,
+      });
+      await messages.insertMany([
+        { user: userId, conversationId, messageId, expiredAt: shorter },
+        { user: userId, conversationId, messageId: pendingId, expiredAt: null },
+      ]);
+      const update = conversations.updateOne.bind(conversations);
+      jest.spyOn(conversations, 'updateOne').mockImplementationOnce(async (...args) => {
+        await update({ conversationId, user: userId }, { $set: { expiredAt: shorter } });
+        return update(...args);
+      });
+      await createConversationMethods(db, createMessageMethods(db)).stampForcedRetention(
+        {
+          userId,
+          interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 1 },
+        },
+        { conversationId, messageIds: [messageId, pendingId] },
+      );
+      expect(await conversations.findOne({ conversationId })).toMatchObject({
+        expiredAt: shorter,
+        isTemporary: true,
+      });
+      expect(
+        (await messages.find({ conversationId }).toArray()).map((row) => row.expiredAt),
+      ).toEqual([shorter, shorter]);
     });
 
     it.each(['message', 'conversation'] as const)(

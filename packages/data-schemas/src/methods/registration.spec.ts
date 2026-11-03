@@ -6,7 +6,7 @@ import {
   registerResponseTarget,
   settleResponseTarget,
   settleAbsentResponseTarget,
-  reconcileAbsentResponseTargets,
+  reconcileResponseTargets,
 } from './registration';
 import { responseScopeKeys, createResponseRetention } from './responseScope';
 import { allocateManagedTarget, managedTargetFilter } from './managed';
@@ -389,11 +389,68 @@ describe('bounded Response target discovery on real storage', () => {
       const f = await fixture();
       await registerResponseTarget(db, f.owner, undefined, f.entry);
       expect(await settleAbsentResponseTarget(db, f.owner, undefined, f.entry)).toBe(false);
-      expect(await reconcileAbsentResponseTargets(db, f.owner)).toBe(0);
+      expect(await reconcileResponseTargets(db, f.owner)).toBe(0);
       await db.model('Message').collection.deleteOne(managedTargetFilter(db, f.target));
-      expect(await reconcileAbsentResponseTargets(db, f.owner)).toBe(1);
-      expect(await reconcileAbsentResponseTargets(db, f.owner)).toBe(0);
+      expect(await reconcileResponseTargets(db, f.owner)).toBe(1);
+      expect(await reconcileResponseTargets(db, f.owner)).toBe(0);
     });
+
+    it.each(['owner', 'conversation'] as const)(
+      'reclaims an interrupted published %s registration before reporting capacity',
+      async (role) => {
+        const f = await fixture();
+        const conversationId = role === 'conversation' ? f.conversationId : undefined;
+        await registerResponseTarget(db, f.owner, conversationId, f.entry);
+        await db.model('Message').collection.updateOne(managedTargetFilter(db, f.target), {
+          $set: {
+            user: f.owner.userId,
+            conversationId: f.conversationId,
+            '_managed.phase': 'published',
+            '_managed.ownerKey': f.keys[0],
+            '_managed.conversationKey': f.keys[1],
+          },
+        });
+        const next = await allocateManagedTarget(db, 'message');
+        const entry = {
+          key: createHash('sha256').update(randomUUID()).digest('hex'),
+          target: next,
+        };
+        expect(
+          await registerResponseTarget(db, f.owner, conversationId, entry, {
+            maxPendingTargetsPerScope: 1,
+          }),
+        ).toMatchObject({ status: 'registered' });
+        expect(
+          await createResponseScopeModel(db)
+            .findById(f.keys[role === 'owner' ? 0 : 1])
+            .lean(),
+        ).toMatchObject({ pendingCount: 1, pending: [{ ...entry, retentionEpoch: 0 }] });
+      },
+    );
+
+    it.each(['owner', 'conversation', 'deadline'] as const)(
+      'retains a published target without matching cleanup %s proof',
+      async (mismatch) => {
+        const f = await fixture();
+        const deadline = new Date(Date.now() + 60000);
+        await createResponseRetention(db)(f.owner, f.conversationId, deadline);
+        const intent = { key: f.entry.key, target: f.target };
+        await registerResponseTarget(db, f.owner, f.conversationId, intent);
+        await db.model('Message').collection.updateOne(managedTargetFilter(db, f.target), {
+          $set: {
+            user: mismatch === 'owner' ? 'other' : f.owner.userId,
+            conversationId: mismatch === 'conversation' ? randomUUID() : f.conversationId,
+            expiredAt: mismatch === 'deadline' ? new Date(deadline.getTime() + 1000) : deadline,
+            '_managed.phase': 'published',
+            '_managed.conversationKey': f.keys[1],
+          },
+        });
+        expect(await reconcileResponseTargets(db, f.owner, f.conversationId)).toBe(0);
+        expect(await createResponseScopeModel(db).findById(f.keys[1]).lean()).toMatchObject({
+          pendingCount: 1,
+        });
+      },
+    );
 
     it('reconciles a full registry with one anchor read and one batched target read', async () => {
       const f = await fixture();
@@ -413,7 +470,7 @@ describe('bounded Response target discovery on real storage', () => {
       const scopeReads = jest.spyOn(scopes.collection, 'findOne');
       const targetReads = jest.spyOn(db.model('Message').collection, 'find');
       const settlements = jest.spyOn(scopes.collection, 'bulkWrite');
-      expect(await reconcileAbsentResponseTargets(db, f.owner)).toBe(4);
+      expect(await reconcileResponseTargets(db, f.owner)).toBe(4);
       expect(scopeReads).toHaveBeenCalledTimes(1);
       expect(targetReads).toHaveBeenCalledTimes(1);
       expect(settlements).toHaveBeenCalledTimes(1);
@@ -427,7 +484,7 @@ describe('bounded Response target discovery on real storage', () => {
       const f = await fixture();
       const entry = { ...f.entry, target: { ...f.target, id: f.target.id.toUpperCase() } };
       await registerResponseTarget(db, f.owner, undefined, entry);
-      expect(await reconcileAbsentResponseTargets(db, f.owner)).toBe(0);
+      expect(await reconcileResponseTargets(db, f.owner)).toBe(0);
       expect(await createResponseScopeModel(db).findById(f.keys[0]).lean()).toMatchObject({
         pendingCount: 1,
         pending: [entry],
@@ -441,7 +498,7 @@ describe('bounded Response target discovery on real storage', () => {
       await db.model('Message').collection.deleteOne(managedTargetFilter(db, f.target));
       expect(await settleAbsentResponseTarget(db, f.owner, undefined, f.entry)).toBe(true);
       await registerResponseTarget(db, f.owner, undefined, entry);
-      expect(await reconcileAbsentResponseTargets(db, f.owner)).toBe(1);
+      expect(await reconcileResponseTargets(db, f.owner)).toBe(1);
       expect(await createResponseScopeModel(db).findById(f.keys[0]).lean()).toMatchObject({
         pendingCount: 0,
         pending: [],
@@ -512,7 +569,7 @@ describe('bounded Response target discovery on real storage', () => {
           );
           return bulkWrite(...args);
         });
-        expect(await reconcileAbsentResponseTargets(db, f.owner)).toBe(0);
+        expect(await reconcileResponseTargets(db, f.owner)).toBe(0);
         expect(await scopes.findById(f.keys[0]).lean()).toMatchObject({
           pendingCount: 1,
           pending: [f.entry],
@@ -526,9 +583,7 @@ describe('bounded Response target discovery on real storage', () => {
       jest.spyOn(db.model('Message').collection, 'find').mockImplementationOnce(() => {
         throw new Error('test storage outage');
       });
-      await expect(reconcileAbsentResponseTargets(db, f.owner)).rejects.toThrow(
-        'test storage outage',
-      );
+      await expect(reconcileResponseTargets(db, f.owner)).rejects.toThrow('test storage outage');
       expect(await createResponseScopeModel(db).findById(f.keys[0]).lean()).toMatchObject({
         pendingCount: 1,
       });

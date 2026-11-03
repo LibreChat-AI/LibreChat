@@ -6,6 +6,24 @@ export type RetentionFilterDocument = {
   expiredAt?: Date | null;
 };
 
+/** BSON null sorts before Date, so $min alone cannot start a legacy deadline. */
+export function initializeExpiration(
+  filter: Record<string, unknown>,
+  expiredAt: Date,
+): {
+  filter: Record<string, unknown>;
+  update: { $set: { expiredAt: Date } };
+  upsert: false;
+  timestamps: false;
+} {
+  return {
+    filter: { ...filter, expiredAt: null },
+    update: { $set: { expiredAt } },
+    upsert: false,
+    timestamps: false,
+  };
+}
+
 export const activeExpirationFilter = <
   T extends RetentionFilterDocument = RetentionFilterDocument,
 >(): FilterQuery<T> =>

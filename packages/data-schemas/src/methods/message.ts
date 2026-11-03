@@ -17,9 +17,14 @@ import {
   isManagedMessageId,
   isAllocationId,
   managedVisibilityFilter,
+  stripManagedIdentityFields,
 } from '~/utils/managed';
+import {
+  activeExpirationFilter,
+  createFallbackRetentionDate,
+  initializeExpiration,
+} from '~/utils/retention';
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
-import { activeExpirationFilter, createFallbackRetentionDate } from '~/utils/retention';
 import { fitBoundAppSnapshots, hasBoundAppSnapshots } from './appSnapshots';
 import { prepareSubagentContentDeletion } from './subagentContent';
 import { SERVER_AUTHORED_MESSAGE_FILTER } from '~/utils/authored';
@@ -317,7 +322,10 @@ function buildMessageSaveUpdate(
   },
 ): UpdateQuery<IMessage> {
   const fields = { ...update };
-  if (options.managed) delete fields.expiredAt;
+  if (options.managed) {
+    for (const key of Object.keys(fields))
+      if (key === 'expiredAt' || key.startsWith('expiredAt.')) delete fields[key];
+  }
   return {
     $set: { ...fields, ...(options.publication && { '_managed.phase': 'published' }) },
     ...(options.managed &&
@@ -1197,6 +1205,8 @@ export function createMessageMethods(
         throw new TypeError('Managed message owner cannot be replaced');
       if (input.messageId !== undefined && input.messageId !== identity.messageId)
         throw new TypeError('Managed message IDs cannot be replaced');
+      if (input.conversationId !== undefined && typeof input.conversationId !== 'string')
+        throw new TypeError('Managed message conversation ID must be a string');
       options = { ...options, upsert: false, managed: true };
       identity = {
         ...identity,
@@ -1205,6 +1215,15 @@ export function createMessageMethods(
       };
     }
     const update = sanitizeMessageUpdate(input);
+    if (options.managed && !options.publication) stripManagedIdentityFields(update);
+    if (options.managed && update.expiredAt instanceof Date) {
+      const initialization = initializeExpiration(identity, update.expiredAt);
+      await Message.updateOne(initialization.filter, initialization.update, {
+        session: deps.saveSession,
+        upsert: initialization.upsert,
+        timestamps: initialization.timestamps,
+      });
+    }
     const paths = normalizeUserSubmittedPaths(update.userSubmittedPaths);
     const fields = normalizeUserSubmittedMessageFieldPaths(update.userSubmittedMessageFieldPaths);
     delete update.userSubmittedPaths;
@@ -1583,6 +1602,12 @@ export function createMessageMethods(
       const bulkOps = messages.map((message) => {
         if (isAllocationId(message.messageId))
           throw new TypeError('Allocation IDs cannot be imported as messages');
+        if (
+          isManagedMessageId(message.messageId) &&
+          message.conversationId !== undefined &&
+          typeof message.conversationId !== 'string'
+        )
+          throw new TypeError('Managed message conversation ID must be a string');
         const normalizedMessage = sanitizeMessageUpdate(message);
         delete normalizedMessage.privateText;
         delete normalizedMessage.privacyRevision;

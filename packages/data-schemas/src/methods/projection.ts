@@ -42,7 +42,8 @@ export type ResponseTargetResult =
   | { ok: true; selection: ResponseCanonicalTarget; publication: ManagedPublication }
   | { ok: false; code: 'response_conflict' | 'target_retired' };
 
-/** The immutable turn already fixes the finite input IDs; output uses the response ID. */
+/** Portable producers must assign managed input IDs before freezing the immutable turn.
+ * Ordinary UUID inputs cannot use this path: legacy upserts could recreate them after erasure. */
 function declaredMessage(intent: ResponseTargetIntent): boolean {
   if (intent.kind !== 'message') return true;
   const turn: unknown = JSON.parse(intent.receipt.turnJSON!);
@@ -207,7 +208,11 @@ export async function selectResponseTarget(
   if (previous) {
     const current = result(intent, previous);
     if (!current.ok) return current;
-    if (await targetExists(mongoose, previous)) return current;
+    if (await targetExists(mongoose, previous))
+      return previous.phase !== 'selected' ||
+        (await pinManagedTarget(mongoose, previous.target, intent.parentId))
+        ? current
+        : { ok: false, code: 'response_conflict' };
     // Registration may have succeeded despite a lost acknowledgment. Never replace after this boundary.
     if (previous.phase !== 'selected' || !eligible(parent, intent))
       return retireResponseTarget(mongoose, intent, previous);
@@ -246,7 +251,10 @@ export async function selectResponseTarget(
       canonicalTargets: 1,
     })
     .lean();
-  if (updated) return result(intent, selection);
+  if (updated)
+    return (await pinManagedTarget(mongoose, target, intent.parentId))
+      ? result(intent, selection)
+      : { ok: false, code: 'response_conflict' };
   // A losing, unclaimed allocation may be removed; this CAS cannot delete a pinned winner.
   await discardManagedAllocation(mongoose, target);
   return { ok: false, code: 'response_conflict' };

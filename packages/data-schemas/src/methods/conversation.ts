@@ -51,16 +51,18 @@ import {
   responseScopeKeys,
 } from './responseScope';
 import {
-  activeExpirationFilter,
-  buildRetentionVisibilityFilter,
-  createFallbackRetentionDate,
-} from '~/utils/retention';
-import {
   isManagedConversationId,
   isAllocationId,
   stripManagedFields,
   managedVisibilityFilter,
+  stripManagedIdentityFields,
 } from '~/utils/managed';
+import {
+  activeExpirationFilter,
+  buildRetentionVisibilityFilter,
+  createFallbackRetentionDate,
+  initializeExpiration,
+} from '~/utils/retention';
 import {
   refreshChatProjectStatsForUser,
   updateChatProjectLastConversationForUser,
@@ -2373,6 +2375,7 @@ export function createConversationMethods(
 
     const Conversation = mongoose.models.Conversation as Model<IConversation>;
     const stored = await Conversation.findOne({ conversationId, user: userId })
+      .read('primary')
       .select({ _id: 1, isTemporary: 1, expiredAt: 1, tags: 1, tenantId: 1 })
       .lean<{
         _id: Types.ObjectId;
@@ -2396,7 +2399,11 @@ export function createConversationMethods(
     }
 
     await retainResponses({ userId, tenantId: stored.tenantId }, conversationId, expiredAt);
-    let stampedDeadline = stored.expiredAt != null;
+    const initialization = initializeExpiration({ _id: stored._id }, expiredAt);
+    await Conversation.updateOne(initialization.filter, initialization.update, {
+      upsert: initialization.upsert,
+      timestamps: initialization.timestamps,
+    });
     if (stored.isTemporary !== true) {
       /**
        * Conditional on the transition, so concurrent stamps release the bookmark counts once;
@@ -2404,36 +2411,34 @@ export function createConversationMethods(
        */
       const converted = await Conversation.updateOne(
         { _id: stored._id, isTemporary: { $ne: true } },
-        { $set: { isTemporary: true, expiredAt, tags: [] } },
+        { $set: { isTemporary: true, tags: [] }, $min: { expiredAt } },
         { timestamps: false },
       );
-      stampedDeadline ||= converted.modifiedCount > 0;
       if (converted.modifiedCount > 0 && stored.tags?.length) {
         await decrementTagCounts(mongoose, userId, stored.tags);
       }
-    } else if (stored.expiredAt == null) {
-      const stamped = await Conversation.updateOne(
-        { _id: stored._id, expiredAt: null },
-        { $set: { expiredAt } },
-        { timestamps: false },
-      );
-      stampedDeadline = stamped.modifiedCount > 0;
     }
 
     if (messageIds.length === 0) {
       return;
     }
-    if (!stampedDeadline) {
-      /** A concurrent stamp set the conversation's deadline first; its messages share that one. */
-      const current = await Conversation.findOne({ _id: stored._id })
-        .select({ expiredAt: 1 })
-        .lean<{ expiredAt?: Date | null } | null>();
-      expiredAt = current?.expiredAt ?? expiredAt;
-    }
+    /** A concurrent shortening may have won even when this call converted the chat type. */
+    const current = await Conversation.findOne({ _id: stored._id })
+      .read('primary')
+      .select({ expiredAt: 1 })
+      .lean<{ expiredAt?: Date | null } | null>();
+    if (!current) return;
+    expiredAt = current.expiredAt ?? expiredAt;
     const Message = mongoose.models.Message as Model<IMessage>;
+    const filter = { user: userId, conversationId, messageId: { $in: messageIds } };
+    const messageInitialization = initializeExpiration(filter, expiredAt);
+    await Message.updateMany(messageInitialization.filter, messageInitialization.update, {
+      upsert: false,
+      timestamps: false,
+    });
     await Message.updateMany(
-      { user: userId, conversationId, messageId: { $in: messageIds } },
-      { $set: { isTemporary: true, expiredAt } },
+      filter,
+      { $set: { isTemporary: true }, $min: { expiredAt } },
       { timestamps: false },
     );
   }
@@ -2568,6 +2573,12 @@ export function createConversationMethods(
       }
       const unsetFields: Record<string, number> = { ...(metadata?.unsetFields ?? {}) };
       stripManagedFields(unsetFields);
+      if (publication || target || isManagedConversationId(conversationId)) {
+        stripManagedIdentityFields(update);
+        update.user = userId;
+        stripManagedIdentityFields(unsetFields);
+        stripFields(unsetFields, ['expiredAt']);
+      }
       delete unsetFields.lastResponseIsManual;
       delete unsetFields.isMarkedUnread;
       delete unsetFields.lastResponseMessageId;
@@ -2790,7 +2801,7 @@ export function createConversationMethods(
         if (publication || target || isManagedConversationId(conversationId)) {
           const fields = operation.$set as Record<string, unknown>;
           const expiredAt = fields.expiredAt;
-          delete fields.expiredAt;
+          stripFields(fields, ['expiredAt']);
           if (expiredAt instanceof Date) operation.$min = { expiredAt };
           if (operation.$unset) delete (operation.$unset as Record<string, unknown>).expiredAt;
         }
@@ -2817,12 +2828,21 @@ export function createConversationMethods(
           title: { $in: [null, '', 'New Chat'] },
         }),
       };
-      const runUpdate = (
+      const runUpdate = async (
         filter: Record<string, unknown>,
         operation: Record<string, unknown>,
         upsert: boolean,
-      ) =>
-        Conversation.findOneAndUpdate(filter, operation, {
+      ) => {
+        const deadline = (operation.$min as { expiredAt?: Date } | undefined)?.expiredAt;
+        if (deadline) {
+          const initialization = initializeExpiration(filter, deadline);
+          await Conversation.updateOne(initialization.filter, initialization.update, {
+            session: deps?.saveSession,
+            upsert: initialization.upsert,
+            timestamps: initialization.timestamps,
+          });
+        }
+        return Conversation.findOneAndUpdate(filter, operation, {
           new: true,
           upsert,
           includeResultMetadata: true,
@@ -2830,6 +2850,7 @@ export function createConversationMethods(
           ...timestampOptions,
           ...(publication && { timestamps: false, overwriteImmutable: true }),
         }) as unknown as Promise<ConversationUpdateResult>;
+      };
 
       let conversationResult: ConversationUpdateResult;
       if (update.isArchived === true) {
@@ -3631,7 +3652,7 @@ export function createConversationMethods(
         const managed = isManagedConversationId(sanitized.conversationId);
         const deadline =
           managed && sanitized.expiredAt instanceof Date ? sanitized.expiredAt : undefined;
-        if (managed) delete sanitized.expiredAt;
+        if (managed) stripFields(sanitized, ['expiredAt']);
         /* Read state belongs to the reader who lived through the replies, so an import never
            carries one in: the rows arrive unseen-free and unread-free. */
         delete sanitized.lastResponseAt;
@@ -3668,13 +3689,15 @@ export function createConversationMethods(
             });
           }
         }
+        const filter = {
+          conversationId: sanitized.conversationId,
+          user: sanitized.user,
+          ...(managed && managedVisibilityFilter),
+        };
+        if (managed) stripManagedIdentityFields(sanitized);
         return {
           updateOne: {
-            filter: {
-              conversationId: sanitized.conversationId,
-              user: sanitized.user,
-              ...(managed && managedVisibilityFilter),
-            },
+            filter,
             update: {
               $set: sanitized,
               ...(deadline && { $min: { expiredAt: deadline } }),
@@ -3690,6 +3713,12 @@ export function createConversationMethods(
         };
       });
 
+      const initializations = bulkOps.flatMap(({ updateOne }) =>
+        updateOne.update.$min
+          ? [{ updateOne: initializeExpiration(updateOne.filter, updateOne.update.$min.expiredAt) }]
+          : [],
+      );
+      if (initializations.length) await tenantSafeBulkWrite(Conversation, initializations);
       const result = await tenantSafeBulkWrite(Conversation, bulkOps);
       await Promise.all(
         [...affectedProjectStats.values()].map(({ user, projectId }) =>

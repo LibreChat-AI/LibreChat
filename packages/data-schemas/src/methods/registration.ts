@@ -7,6 +7,39 @@ import { managedTargetFilter, assertManagedTenant } from './managed';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { includeManagedAllocations } from '~/utils/managed';
 
+interface SettlementTarget {
+  _id: Types.ObjectId;
+  user?: string;
+  conversationId?: string;
+  expiredAt?: Date | null;
+  _managed: {
+    incarnation: string;
+    phase?: string;
+    ownerKey?: string;
+    conversationKey?: string;
+  };
+}
+
+const settlementProjection =
+  '_id user conversationId expiredAt _managed.incarnation _managed.phase _managed.ownerKey _managed.conversationKey';
+
+function hasPublishedOwnership(
+  target: SettlementTarget,
+  owner: ResponseOwner,
+  conversationId: string | undefined,
+  key: string,
+  expiredAt?: Date,
+): boolean {
+  return (
+    target._managed.phase === 'published' &&
+    target.user === owner.userId &&
+    (conversationId === undefined
+      ? target._managed.ownerKey === key
+      : target._managed.conversationKey === key && target.conversationId === conversationId) &&
+    (!expiredAt || (target.expiredAt instanceof Date && target.expiredAt <= expiredAt))
+  );
+}
+
 export type ManagedRegistrationResult =
   | { status: 'registered'; retentionEpoch: number; expiredAt?: Date }
   | { status: 'closed' | 'capacity' | 'conflict' | 'retry' };
@@ -130,7 +163,7 @@ export async function registerResponseTarget(
     options,
   );
   if (admitted.status !== 'capacity') return admitted;
-  await reconcileAbsentResponseTargets(mongoose, owner, conversationId);
+  await reconcileResponseTargets(mongoose, owner, conversationId);
   // One bounded retry: concurrent registrars may consume the reclaimed space first.
   return registerResponseTargetOnce(mongoose, owner, conversationId, entry, options);
 }
@@ -155,8 +188,8 @@ export async function settleAbsentResponseTarget(
   return settleTarget(mongoose, owner, conversationId, entry, 'absent');
 }
 
-/** Recovery also discovers a registrar that resumed after its original parent was removed. */
-export async function reconcileAbsentResponseTargets(
+/** Recover interrupted publishers and late registrars without depending on their parent worker. */
+export async function reconcileResponseTargets(
   mongoose: typeof import('mongoose'),
   owner: ResponseOwner,
   conversationId?: string,
@@ -173,7 +206,7 @@ export async function reconcileAbsentResponseTargets(
   if (!anchor || anchor.closed || (anchor.expiredAt && anchor.expiredAt <= new Date())) return 0;
   const entries = anchor.pending ?? [];
   for (const entry of entries) registrationScope(mongoose, owner, conversationId, entry);
-  const absent: ManagedRegistration[] = [];
+  const settled: ManagedRegistration[] = [];
   for (const kind of ['message', 'conversation'] as const) {
     const candidates = entries.filter((entry) => entry.target.kind === kind);
     if (!candidates.length) continue;
@@ -183,21 +216,24 @@ export async function reconcileAbsentResponseTargets(
         $or: candidates.map((entry) => managedTargetFilter(mongoose, entry.target)),
       }),
     )
-      .select({ _id: 1, '_managed.incarnation': 1 })
+      .select(settlementProjection)
       .read('primary')
-      .lean<Array<{ _id: Types.ObjectId; _managed: { incarnation: string } }>>();
-    const identities = new Set(present.map((row) => `${row._id}:${row._managed.incarnation}`));
-    absent.push(
-      ...candidates.filter(
-        (entry) => !identities.has(`${entry.target.id.toLowerCase()}:${entry.target.incarnation}`),
-      ),
+      .lean<SettlementTarget[]>();
+    const targets = new Map(present.map((row) => [`${row._id}:${row._managed.incarnation}`, row]));
+    settled.push(
+      ...candidates.filter((entry) => {
+        const target = targets.get(`${entry.target.id.toLowerCase()}:${entry.target.incarnation}`);
+        return (
+          !target || hasPublishedOwnership(target, owner, conversationId, key, anchor.expiredAt)
+        );
+      }),
     );
   }
-  if (!absent.length) return 0;
+  if (!settled.length) return 0;
   // Each removal retains its own exact-entry/closure/retention CAS. Partial or lost replies are retryable.
   // eslint-disable-next-line no-restricted-syntax -- payload-free ResponseScope has no tenant field; each CAS uses the validated tenant/owner scope hash.
   const result = await scopes.bulkWrite(
-    absent.map((entry) => ({
+    settled.map((entry) => ({
       updateOne: {
         filter: settlementFilter(key, entry, anchor.retentionEpoch ?? 0),
         update: { $pull: { pending: { key: entry.key } }, $inc: { pendingCount: -1 } },
@@ -251,17 +287,14 @@ async function settleTarget(
     ).read('primary');
     if (present) return false;
   } else {
-    const target = await model
-      .exists({
-        ...managedTargetFilter(mongoose, entry.target),
-        '_managed.phase': 'published',
-        [conversationId === undefined ? '_managed.ownerKey' : '_managed.conversationKey']: key,
-        user: owner.userId,
-        ...(conversationId === undefined ? {} : { conversationId }),
-        ...(anchor.expiredAt ? { expiredAt: { $lte: anchor.expiredAt } } : {}),
-      })
-      .read('primary');
-    if (!target) return false;
+    const target = await includeManagedAllocations(
+      model.findOne(managedTargetFilter(mongoose, entry.target)),
+    )
+      .select(settlementProjection)
+      .read('primary')
+      .lean<SettlementTarget | null>();
+    if (!target || !hasPublishedOwnership(target, owner, conversationId, key, anchor.expiredAt))
+      return false;
   }
   const result = await scopes.updateOne(settlementFilter(key, existing, observedRetentionEpoch), {
     $pull: { pending: { key: entry.key } },

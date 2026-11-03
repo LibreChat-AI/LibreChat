@@ -1,12 +1,16 @@
 import mongoose from 'mongoose';
+import { RetentionMode } from 'librechat-data-provider';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createResponseRetention,
   createResponseConversationReplacement,
   closeResponseScopes,
+  responseScopeKeys,
 } from './responseScope';
+import { createConversationMethods } from './conversation';
 import { tenantStorage } from '~/config/tenantContext';
 import { createResponseStorage } from './response';
+import { createMessageMethods } from './message';
 import { createModels } from '~/models';
 
 describe('Response transaction owners with secondaryPreferred defaults', () => {
@@ -59,6 +63,8 @@ describe('Response transaction owners with secondaryPreferred defaults', () => {
         'ChannelReply',
         'ChannelFeedback',
         'ChannelFeedbackEvent',
+        'Conversation',
+        'Message',
       ].map((name) => db.model(name).createCollection()),
     );
     await db.model('StoredResponse').createIndexes();
@@ -79,6 +85,55 @@ describe('Response transaction owners with secondaryPreferred defaults', () => {
     await db.disconnect();
     await mongo?.stop();
   });
+
+  it('uses the primary parent deadline while a secondary retains an older date', async () =>
+    scoped(async () => {
+      const conversationId = '44444444-4444-8444-a444-444444444444';
+      const messageId = 'resp_d_' + '4'.repeat(32);
+      const deadline = new Date(Date.now() + 120000);
+      const shorter = new Date(Date.now() + 60000);
+      await db.model('Conversation').collection.insertOne({
+        user: owner.userId,
+        tenantId: owner.tenantId,
+        conversationId,
+        expiredAt: deadline,
+        isTemporary: false,
+      });
+      await db.model('Message').collection.insertOne({
+        user: owner.userId,
+        tenantId: owner.tenantId,
+        conversationId,
+        messageId,
+        expiredAt: null,
+      });
+      await withReplicationPaused(async () => {
+        await db
+          .model('Conversation')
+          .collection.updateOne({ conversationId }, { $set: { expiredAt: shorter } });
+        expect(
+          await secondary
+            .db(db.connection.name)
+            .collection(db.model('Conversation').collection.name)
+            .findOne({ conversationId }),
+        ).toMatchObject({ expiredAt: deadline });
+        await createConversationMethods(db, createMessageMethods(db)).stampForcedRetention(
+          {
+            userId: owner.userId,
+            interfaceConfig: { retentionMode: RetentionMode.EPHEMERAL, temporaryChatRetention: 1 },
+          },
+          { conversationId, messageIds: [messageId] },
+        );
+        expect(
+          await db.model('Message').findOne({ messageId }).read('primary').lean(),
+        ).toMatchObject({ expiredAt: shorter });
+        expect(
+          await db
+            .model('ResponseScope')
+            .findById(responseScopeKeys(owner, conversationId)[1])
+            .lean(),
+        ).toMatchObject({ expiredAt: shorter });
+      });
+    }));
 
   it('reserves, mutates and retains a response through its real owned transactions', async () =>
     scoped(() =>

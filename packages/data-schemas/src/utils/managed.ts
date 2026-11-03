@@ -49,6 +49,14 @@ export function stripManagedFields(record: Record<string, unknown>): void {
   }
 }
 
+/** Published cleanup identity is immutable through ordinary set and unset operations. */
+export function stripManagedIdentityFields(record: Record<string, unknown>): void {
+  for (const key of Object.keys(record)) {
+    if (['_id', 'tenantId', 'user', 'messageId', 'conversationId'].includes(key.split('.')[0]))
+      delete record[key];
+  }
+}
+
 /** Allocation placeholders are never canonical identities, even through import or rename. */
 export function isAllocationId(value: unknown): boolean {
   return typeof value === 'string' && value.startsWith(ALLOCATION_PREFIX);
