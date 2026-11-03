@@ -61,11 +61,11 @@ jest.mock('../ScrollButton', () => ({
   __esModule: true,
   default: () => null,
 }));
-jest.mock('../MessageNav', () => {
+jest.mock('@librechat/chat/components', () => {
   const { useEffect } = jest.requireActual('react');
   return {
-    __esModule: true,
-    default: function MessageNav({ conversationId }: { conversationId?: string | null }) {
+    ...jest.requireActual('@librechat/chat/components'),
+    MessageNav: function MessageNav({ conversationId }: { conversationId?: string | null }) {
       useEffect(() => {
         mockNavMount();
         return () => mockNavUnmount();
@@ -96,6 +96,7 @@ const host: MessagesHost = {
   renderMessageAudio: () => null,
   useScreenshotTarget: () => undefined,
   useAutoScroll: () => false,
+  useConversationMessages: () => undefined,
   useSeenSource: () => ({
     readReply: () => undefined,
     hasReplyProof: () => false,

@@ -1,5 +1,5 @@
 import { useChatSurface } from '@librechat/chat/react';
-import { MessagesView as MessagesList } from '@librechat/chat/components';
+import { MessageNav, MessagesView as MessagesList } from '@librechat/chat/components';
 import type { TMessage } from 'librechat-data-provider';
 import { MessagePartsHostProvider, appMessagePartsHost } from '~/Providers/MessagePartsHostContext';
 import PendingSteers from './Content/Parts/PendingSteers';
@@ -7,7 +7,6 @@ import { MessagesViewProvider } from '~/Providers';
 import ScrollButton from './ScrollButton';
 import PendingTurn from './PendingTurn';
 import { FLAT_THREAD } from './Thread';
-import MessageNav from './MessageNav';
 
 function MessagesViewContent({
   messagesTree,

@@ -40,6 +40,7 @@ function createHost(overrides: Partial<MessagesHost> = {}) {
   const host = createMessagesHost({
     useScreenshotTarget: () => useRef<HTMLDivElement>(null),
     useAutoScroll: () => false,
+    useConversationMessages: () => undefined,
     useSeenSource: () => source,
     ...overrides,
   });
