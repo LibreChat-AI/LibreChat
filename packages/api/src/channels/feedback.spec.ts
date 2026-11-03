@@ -195,20 +195,24 @@ it(
       model: actor.agentId,
       text: 'answer',
     });
+    deps.resolveReply = async (_actor, key) =>
+      key === 'C1:live'
+        ? { ...live, externalMessageKey: key }
+        : { ...mapping, externalMessageKey: key };
+    service = createChannelFeedbackService(deps);
     for (let index = 0; index < 3; index++) {
-      const source = index < 2 ? mapping : live;
-      await deps.storage.ensureChannelFeedback({
-        tenantId: actor.tenantId,
-        key: `export-${index}`,
-        mapping: source,
-        externalUserId: 'U1',
-        scoreId: `score-${index}`,
-        votes: [],
-        revision: 1,
-        rating: 'thumbsUp',
-        exportStatus: 'pending',
-        retryAtMs: 0,
-      });
+      const key = index < 2 ? mapping.externalMessageKey : 'C1:live';
+      expect(
+        (
+          await service.record(
+            actor,
+            event(`export-${index}`, index + 1, {
+              externalUserId: `U${index}`,
+              externalMessageKey: key,
+            }),
+          )
+        ).ok,
+      ).toBe(true);
     }
     await mongoose.models.Message.updateOne(
       { messageId: mapping.messageId },
@@ -344,6 +348,10 @@ it(
         centralTraceExportEnabled: false,
       }),
       expect.objectContaining({ runId: mapping.runId, principalId: mapping.principalId }),
+      expect.objectContaining({
+        messageTargetId: expect.any(String),
+        channelTarget: expect.objectContaining({ kind: 'channel' }),
+      }),
     );
   }),
 );

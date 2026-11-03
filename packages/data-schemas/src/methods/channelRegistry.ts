@@ -101,7 +101,10 @@ export function channelRegistryKey(
 /** Capture a current physical authority before registering any private channel child. */
 export async function readChannelAuthority(
   mongoose: typeof import('mongoose'),
-  identity: ChannelExternalIdentity,
+  identity: Pick<
+    ChannelExternalIdentity,
+    'tenantId' | 'channelId' | 'channelRevision' | 'teamId' | 'agentId'
+  >,
 ): Promise<(ChannelAuthority & Pick<AgentChannelRecord, 'credentialMode'>) | null> {
   const tenantId = identity.tenantId === '_' ? undefined : identity.tenantId;
   assertManagedTenant(tenantId);

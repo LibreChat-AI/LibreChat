@@ -80,12 +80,12 @@ export function createChannelFeedbackHost(
         centralTraceExportEnabled: source.centralTraceExportEnabled === true,
       };
     },
-    sendScore: async (input, mapping) => {
+    sendScore: async (input, mapping, sourceRef) => {
       input.assertActive();
       const policy = await authorizedPolicy(mapping);
       if (!policy) throw new Error('Channel feedback policy changed');
       input.assertActive();
-      const source = await deps.storage.readChannelReplyTrace(mapping);
+      const source = await deps.storage.readChannelReplyTrace(mapping, sourceRef);
       if (!source) throw new Error('Channel feedback authority changed');
       if (traceIdForMessage(source.langfuseRunId || mapping.messageId) !== input.traceId)
         throw new Error('Channel feedback trace identity changed');

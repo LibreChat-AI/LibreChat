@@ -242,7 +242,7 @@ test.each([false, true, undefined])(
           { messageId: 'message-a' },
           {
             $set: {
-              isTemporary: isTemporary === true,
+              ...(isTemporary !== undefined && { isTemporary }),
               langfuseDestinationIds: [
                 getLangfuseDestinationId('https://langfuse.invalid', 'recorded-project'),
               ],
@@ -250,6 +250,13 @@ test.each([false, true, undefined])(
           },
         ),
       );
+      if (isTemporary === undefined)
+        await scope(async () =>
+          mongoose.models.Message.collection.updateOne(
+            { messageId: 'message-a' },
+            { $unset: { isTemporary: '' } },
+          ),
+        );
       await post().expect(200);
       await scope(async () => {
         const reply = await mongoose.models.ChannelReply.findOne({ messageId: 'message-a' }).lean<{
@@ -261,16 +268,9 @@ test.each([false, true, undefined])(
         const receipt = await mongoose.models.ChannelFeedbackEvent.findOne({}).lean<{
           mapping: { isTemporary?: boolean };
         }>();
-        expect(reply?.isTemporary).toBe(isTemporary === true);
-        expect(ledger?.mapping.isTemporary).toBe(isTemporary === true);
-        expect(receipt?.mapping.isTemporary).toBe(isTemporary === true);
-        if (isTemporary === undefined) {
-          // Simulate an accepted legacy receipt, without inventing provenance from today's message.
-          await mongoose.models.ChannelReply.updateMany({}, { $unset: { isTemporary: '' } });
-          for (const name of ['ChannelFeedback', 'ChannelFeedbackEvent']) {
-            await mongoose.models[name].updateMany({}, { $unset: { 'mapping.isTemporary': '' } });
-          }
-        }
+        expect(reply?.isTemporary).toBe(isTemporary);
+        expect(ledger?.mapping.isTemporary).toBe(isTemporary);
+        expect(receipt?.mapping.isTemporary).toBe(isTemporary);
       });
       config.langfuse.trace!.temporaryChats = false;
       const restarted = createChannelFeedbackHost({ ...deps, sendScore: sendFeedbackScore });

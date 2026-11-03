@@ -100,7 +100,13 @@ async function eraseChannelPartition(
       true,
       { erasureBatchSize: batchSize },
     );
-    await eraseChannelFeedbackForChannel(mongoose, connection.tenantId, connection.channelId);
+    if (!connection._managed) throw new Error('Channel cleanup ownership unavailable');
+    await eraseChannelFeedbackForChannel(mongoose, {
+      kind: 'channel',
+      id: String(connection._id),
+      incarnation: connection._managed.incarnation,
+      ...(connection.tenantId && { tenantId: connection.tenantId }),
+    });
     if (
       !(await runs
         .exists({

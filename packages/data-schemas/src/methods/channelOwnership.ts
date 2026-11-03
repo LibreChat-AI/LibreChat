@@ -48,7 +48,6 @@ export async function readChannelRunOwnership(
     agentId: scope.agentId,
     channelRevision: scope.principal.channelRevision,
     teamId: scope.admission.actor.teamId,
-    externalUserId: scope.admission.actor.externalUserId,
   });
   if (
     !channel ||

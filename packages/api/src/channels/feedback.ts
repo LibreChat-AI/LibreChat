@@ -35,6 +35,7 @@ export interface ChannelFeedbackDependencies {
   sendScore: (
     input: SendFeedbackScoreParams & { assertActive: () => void },
     mapping: ChannelReplyMapping,
+    source: ChannelFeedbackLedger['source'],
   ) => Promise<void>;
   maxConflictRetries: number;
   exportTimeoutMs: number;
@@ -163,7 +164,7 @@ export function createChannelFeedbackService(deps: ChannelFeedbackDependencies) 
             revision: ledger.revision + 1,
             exportStatus: 'pending',
           };
-          if (await storage.saveChannelFeedback(updated, ledger.revision)) {
+          if (await storage.saveChannelFeedback(updated, ledger.revision, record)) {
             await storage.markChannelFeedbackEvent(record);
             return { ok: true, value: response(updated) };
           }
@@ -366,6 +367,7 @@ export function createChannelFeedbackService(deps: ChannelFeedbackDependencies) 
                 assertActive: assertDeadline,
               },
               record.mapping,
+              record.source,
             );
             assertDeadline();
             return true;

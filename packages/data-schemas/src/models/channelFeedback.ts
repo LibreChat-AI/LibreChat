@@ -6,10 +6,23 @@ import type {
   ChannelFeedbackVote,
 } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
+import type { ManagedTarget, ManagedState } from '~/types/managed';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
 import { applyChannelStorage } from './plugins/managed';
 
-export interface ChannelFeedbackRetention {
+export interface ChannelFeedbackSourceRef {
+  messageTargetId: string;
+  messageIncarnation?: string;
+  channelTarget: ManagedTarget<'channel'>;
+}
+
+export interface ChannelFeedbackStorageIdentity {
+  source?: ChannelFeedbackSourceRef;
+  _managed?: ManagedState;
+  __v?: number;
+}
+
+export interface ChannelFeedbackRetention extends ChannelFeedbackStorageIdentity {
   expiredAt?: Date | null;
 }
 
@@ -25,6 +38,7 @@ export interface ChannelFeedbackEventRecord extends ChannelFeedbackRetention {
   mapping: ChannelReplyMapping;
   rating: ChannelRating;
   processed: boolean;
+  ledgerTarget?: ManagedTarget<'channelFeedback'>;
   receiptExpiresAt?: Date;
   retryAtMs?: number;
 }
@@ -35,7 +49,6 @@ export interface ChannelFeedbackLedger extends ChannelFeedbackRetention {
   mapping: ChannelReplyMapping;
   externalUserId: string;
   scoreId: string;
-  receiptEpoch?: number;
   scoreTimestamp?: Date;
   createdAt?: Date;
   votes: ChannelFeedbackVote[];
@@ -45,6 +58,36 @@ export interface ChannelFeedbackLedger extends ChannelFeedbackRetention {
   retryAtMs: number;
   leaseId?: string;
   leaseUntilMs?: number;
+}
+
+function targetSchema(kind: 'channel' | 'channelFeedback') {
+  return new Schema(
+    {
+      kind: { type: String, enum: [kind], required: true },
+      id: { type: String, match: /^[a-f\d]{24}$/, required: true },
+      incarnation: { type: String, required: true },
+      tenantId: String,
+    },
+    { _id: false },
+  );
+}
+
+function applyFeedbackStorage(schema: Schema): void {
+  schema.add({
+    source: {
+      type: new Schema<ChannelFeedbackSourceRef>(
+        {
+          messageTargetId: { type: String, match: /^[a-f\d]{24}$/, required: true },
+          messageIncarnation: String,
+          channelTarget: { type: targetSchema('channel'), required: true },
+        },
+        { _id: false },
+      ),
+      default: undefined,
+      immutable: true,
+    },
+  });
+  applyChannelStorage(schema);
 }
 
 function mappingSchema(): Schema<ChannelReplyRecord> {
@@ -60,7 +103,7 @@ function mappingSchema(): Schema<ChannelReplyRecord> {
       responseId: { type: String, required: true },
       messageId: { type: String, required: true },
       conversationId: { type: String, required: true },
-      principalId: { type: String, required: true },
+      principalId: { type: String, required: true, immutable: true },
       traceId: { type: String, required: true },
       isTemporary: Boolean,
       sampled: Boolean,
@@ -80,7 +123,7 @@ export function createChannelReplyModel(
   schema.index({ tenantId: 1, principalId: 1, conversationId: 1 });
   schema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
   schema.index({ externalMessageKey: 1 });
-  applyChannelStorage(schema);
+  applyFeedbackStorage(schema);
   applyTenantIsolation(schema);
   return mongoose.models.ChannelReply ?? mongoose.model<ChannelReplyRecord>('ChannelReply', schema);
 }
@@ -90,10 +133,10 @@ export function createChannelFeedbackEventModel(
 ): Model<ChannelFeedbackEventRecord> {
   const event = new Schema<ChannelReactionEvent>(
     {
-      eventId: { type: String, required: true },
+      eventId: { type: String, required: true, immutable: true },
       eventTimestampUs: { type: Number, required: true },
       externalMessageKey: { type: String, required: true },
-      externalUserId: { type: String, required: true },
+      externalUserId: { type: String, required: true, immutable: true },
       reaction: { type: String, required: true },
       action: { type: String, enum: ['added', 'removed'], required: true },
     },
@@ -103,13 +146,14 @@ export function createChannelFeedbackEventModel(
     {
       tenantId: { type: String, required: true },
       channelId: { type: String, required: true },
-      eventId: { type: String, required: true },
-      digest: { type: String, required: true },
-      ledgerKey: { type: String, required: true },
-      event: { type: event, required: true },
-      mapping: { type: mappingSchema(), required: true },
-      rating: { type: String, enum: ['thumbsUp', 'thumbsDown'], required: true },
+      eventId: { type: String, required: true, immutable: true },
+      digest: { type: String, required: true, immutable: true },
+      ledgerKey: { type: String, required: true, immutable: true },
+      event: { type: event, required: true, immutable: true },
+      mapping: { type: mappingSchema(), required: true, immutable: true },
+      rating: { type: String, enum: ['thumbsUp', 'thumbsDown'], required: true, immutable: true },
       processed: { type: Boolean, required: true },
+      ledgerTarget: { type: targetSchema('channelFeedback'), default: undefined, immutable: true },
       receiptExpiresAt: Date,
       retryAtMs: { type: Number, default: 0 },
       expiredAt: Date,
@@ -129,7 +173,7 @@ export function createChannelFeedbackEventModel(
   schema.index({ tenantId: 1, 'mapping.principalId': 1, 'mapping.conversationId': 1 });
   schema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
   schema.index({ eventId: 1 });
-  applyChannelStorage(schema);
+  applyFeedbackStorage(schema);
   applyTenantIsolation(schema);
   return (
     mongoose.models.ChannelFeedbackEvent ??
@@ -154,11 +198,10 @@ export function createChannelFeedbackModel(
   const schema = new Schema<ChannelFeedbackLedger>(
     {
       tenantId: { type: String, required: true },
-      key: { type: String, required: true },
-      mapping: { type: mappingSchema(), required: true },
-      externalUserId: { type: String, required: true },
-      scoreId: { type: String, required: true },
-      receiptEpoch: Number,
+      key: { type: String, required: true, immutable: true },
+      mapping: { type: mappingSchema(), required: true, immutable: true },
+      externalUserId: { type: String, required: true, immutable: true },
+      scoreId: { type: String, required: true, immutable: true },
       scoreTimestamp: { type: Date, required: true, default: Date.now },
       expiredAt: Date,
       votes: { type: [vote], default: [] },
@@ -177,7 +220,7 @@ export function createChannelFeedbackModel(
   schema.index({ tenantId: 1, 'mapping.channelId': 1 });
   schema.index({ expiredAt: 1 }, { expireAfterSeconds: 0 });
   schema.index({ key: 1 });
-  applyChannelStorage(schema);
+  applyFeedbackStorage(schema);
   applyTenantIsolation(schema);
   return (
     mongoose.models.ChannelFeedback ??

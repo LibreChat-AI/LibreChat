@@ -113,7 +113,7 @@ const feedback = createChannelFeedbackRuntime({
   getWorkerSettings: policy.workerSettings,
   hostDeps: {
     channels: db,
-    storage: createChannelFeedbackStorage(mongoose),
+    storage: createChannelFeedbackStorage(mongoose, db.getDurableStorageConfig),
     getPolicy: policy.feedbackPolicy,
     sendScore: sendFeedbackScore,
   },

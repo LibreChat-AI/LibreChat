@@ -79,8 +79,9 @@ async function message(source = mapping) {
 }
 async function persist(source = mapping) {
   await storage.putChannelReply(source);
-  await storage.admitChannelFeedbackEvent(event(source));
+  const receipt = await storage.admitChannelFeedbackEvent(event(source));
   await storage.ensureChannelFeedback(ledger(source));
+  return receipt;
 }
 async function assertEmpty(source = mapping) {
   expect(
@@ -223,7 +224,7 @@ it('tightens existing feedback deadlines with canonical conversation retention',
 
 it('metadata backoff cannot modify a current export lease or recreate erased feedback', () =>
   scope(async () => {
-    await persist();
+    const receipt = await persist();
     const candidate = (await storage.getChannelFeedback(tenantId, mapping.runId))!;
     const now = Date.now();
     await storage.claimChannelFeedbackExport(candidate, 'live-lease', now, now + 60000);
@@ -235,7 +236,7 @@ it('metadata backoff cannot modify a current export lease or recreate erased fee
     await mongoose.models.ChannelFeedback.deleteMany({});
     await mongoose.models.ChannelFeedbackEvent.deleteMany({});
     await storage.deferChannelFeedbackExport(candidate, now, now + 1000);
-    await storage.deferChannelFeedbackEvent(event(), now + 1000);
+    await storage.deferChannelFeedbackEvent(receipt, now + 1000);
     expect(await mongoose.models.ChannelFeedback.countDocuments({})).toBe(0);
     expect(await mongoose.models.ChannelFeedbackEvent.countDocuments({})).toBe(0);
   }));
@@ -287,7 +288,7 @@ it('deletes channel feedback only after closing its canonical admission fence', 
     await assertRetired();
   }));
 
-it('serializes accepted projection against erasure and cannot recreate data on a delayed retry', () =>
+it('fences a suspended callback before erasure completes and cannot recreate data on retry', () =>
   scope(async () => {
     await storage.putChannelReply(mapping);
     let enter!: () => void;
@@ -298,43 +299,45 @@ it('serializes accepted projection against erasure and cannot recreate data on a
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    const write = storage.withAuthority(mapping, async (active) => {
+    const work = storage.withAuthority(mapping, async (active) => {
       await active.ensureChannelFeedback(ledger());
       enter();
       await gate;
       await active.admitChannelFeedbackEvent(event());
     });
-    await entered;
-    const erase = (async () => {
+    const outcome = work.then(
+      () => 'unexpected success',
+      () => 'rejected',
+    );
+    const timer = setTimeout(release, 5000);
+    try {
+      await entered;
       await closeResponseScopes(mongoose, { userId, tenantId }, [mapping.conversationId]);
       await eraseResponseRecords(mongoose, { userId, tenantId }, [mapping.conversationId]);
-    })();
-    release();
-    await write;
-    await erase;
+      release();
+      expect(await outcome).toBe('rejected');
+    } finally {
+      clearTimeout(timer);
+      release();
+    }
     expect(await storage.isAuthorityCurrent(mapping)).toBe(false);
     await assertRetired();
   }));
 
-it('rolls back a projection whose retained message expires before transaction completion', () =>
+it('withholds a callback result when canonical retention expires before completion', () =>
   scope(async () => {
-    const expiresAt = Date.now() + 60000;
-    await mongoose.models.Message.updateOne(
-      { messageId: mapping.messageId, user: userId },
-      { $set: { expiredAt: new Date(expiresAt) } },
-    );
-    let clock: jest.SpyInstance | undefined;
-    try {
-      await expect(
-        storage.withAuthority(mapping, async (active) => {
-          await active.ensureChannelFeedback(ledger());
-          clock = jest.spyOn(Date, 'now').mockReturnValue(expiresAt + 1);
-        }),
-      ).rejects.toBeInstanceOf(ChannelFeedbackAuthorityError);
-    } finally {
-      clock?.mockRestore();
-    }
+    await expect(
+      storage.withAuthority(mapping, async (active) => {
+        await active.ensureChannelFeedback(ledger());
+        await createResponseRetention(mongoose)(
+          { userId, tenantId },
+          mapping.conversationId,
+          new Date(0),
+        );
+      }),
+    ).rejects.toBeInstanceOf(ChannelFeedbackAuthorityError);
     expect(await storage.getChannelFeedback(tenantId, mapping.runId)).toBeNull();
+    expect(await storage.pendingChannelFeedbackExports(tenantId, Date.now(), 10)).toEqual([]);
   }));
 
 it('supports the default application tenant while keeping explicit private partitions', async () =>
@@ -491,13 +494,14 @@ it('rejects user-submitted assistant-shaped replies in source lookup and every f
       ChannelFeedbackAuthorityError,
     );
     await expect(
-      storage.saveChannelFeedback({ ...ledger(), revision: 1 }, 0),
+      storage.saveChannelFeedback({ ...ledger(), revision: 1 }, 0, event()),
     ).rejects.toBeInstanceOf(ChannelFeedbackAuthorityError);
     const now = Date.now();
     await expect(
       storage.claimChannelFeedbackExport(ledger(), 'lease', now, now + 1000),
     ).rejects.toBeInstanceOf(ChannelFeedbackAuthorityError);
-    expect(await storage.getChannelFeedback(tenantId, mapping.runId)).toMatchObject({
-      revision: 0,
-    });
+    expect(await storage.getChannelFeedback(tenantId, mapping.runId)).toBeNull();
+    expect(
+      await mongoose.models.ChannelFeedback.collection.findOne({ tenantId, key: mapping.runId }),
+    ).toMatchObject({ revision: 0 });
   }));

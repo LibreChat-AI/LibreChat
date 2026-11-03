@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import type { ClientSession } from 'mongoose';
 import type { ResponseOwner } from '~/models/response';
-import { retainChannelFeedbackForOwner } from './channelFeedbackErasure';
+import { retainChannelFeedbackForScope } from './channelFeedbackRetention';
 import { runAsSystem, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
@@ -126,11 +126,11 @@ export function createResponseRetention(
           parentSession,
         ),
       () =>
-        retainChannelFeedbackForOwner(
+        retainChannelFeedbackForScope(
           mongoose,
-          owner,
-          conversationId,
+          owner.tenantId,
           anchor.expiredAt!,
+          key,
           parentSession,
         ),
     ];

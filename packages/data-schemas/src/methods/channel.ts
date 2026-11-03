@@ -1,6 +1,8 @@
 import { channelStorageConfigSchema } from 'librechat-data-provider';
 import type { ChannelStorageConfig, DurableStorageConfig } from 'librechat-data-provider';
+import type { Types } from 'mongoose';
 import type { AgentChannelRecord } from '~/models/channel';
+import type { ManagedState } from '~/types/managed';
 import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
 import { createManagedAgentChannel } from './channelCreation';
 import { includeManagedAllocations } from '~/utils/managed';
@@ -82,9 +84,9 @@ export function createAgentChannelMethods(
   async function beginDeletion(channelId: string, createdBy: string) {
     const parent = await channel()
       .findOne({ channelId, createdBy })
-      .select('tenantId')
+      .select('tenantId +_managed')
       .read('primary')
-      .lean();
+      .lean<{ _id: Types.ObjectId; tenantId?: string; _managed: ManagedState }>();
     if (!parent) return null;
     const record = await retireAgentChannel(
       mongoose,
@@ -97,7 +99,18 @@ export function createAgentChannelMethods(
       false,
       await getStorageConfig(),
     );
-    return record ? { record, id: String(parent._id) } : null;
+    return record
+      ? {
+          record,
+          id: String(parent._id),
+          target: {
+            kind: 'channel' as const,
+            id: String(parent._id),
+            incarnation: parent._managed.incarnation,
+            ...(parent.tenantId && { tenantId: parent.tenantId }),
+          },
+        }
+      : null;
   }
 
   return {
@@ -205,7 +218,7 @@ export function createAgentChannelMethods(
       )
         return { status: 'pending_drain' };
       // Keep the deleting parent available for a retry if dependent cleanup fails.
-      await eraseChannelFeedbackForChannel(mongoose, deleting.tenantId, channelId);
+      await eraseChannelFeedbackForChannel(mongoose, started.target);
       const result = await channel().deleteOne({
         _id: started.id,
         channelId,
