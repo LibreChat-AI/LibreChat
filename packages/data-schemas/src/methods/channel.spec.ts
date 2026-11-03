@@ -171,35 +171,41 @@ it('erases a credential creation already admitted before account deletion', () =
       release = resolve;
     });
     const collection = mongoose.models.AgentChannel.collection;
-    const insert = collection.insertOne.bind(collection);
-    const paused = jest.spyOn(collection, 'insertOne').mockImplementation(async (...args) => {
-      entered();
-      await gate;
-      return insert(...args);
-    });
-    const creation = methods.createAgentChannel({
-      ...channel(),
-      createdBy: userId,
-      encryptedBotToken: 'private-bot-token',
-      encryptedSigningSecret: 'private-signing-secret',
-    });
-    await started;
-    let finished = false;
-    const deletion = createUserMethods(mongoose)
-      .deleteUserById(userId)
-      .then((result) => {
-        finished = true;
-        return result;
+    const insert = collection.findOneAndUpdate.bind(collection);
+    const paused = jest
+      .spyOn(collection, 'findOneAndUpdate')
+      .mockImplementationOnce(async (...args) => {
+        entered();
+        await gate;
+        return insert(...args);
       });
+    const creation = methods
+      .createAgentChannel({
+        ...channel(),
+        createdBy: userId,
+        encryptedBotToken: 'private-bot-token',
+        encryptedSigningSecret: 'private-signing-secret',
+      })
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+    await started;
+    const deletion = createUserMethods(mongoose).deleteUserById(userId);
+    let timedOut = false;
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      release();
+    }, 5000);
     try {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(finished).toBe(false);
+      expect(await deletion).toMatchObject({ deletedCount: 1 });
+      expect(timedOut).toBe(false);
     } finally {
+      clearTimeout(timeout);
       release();
       paused.mockRestore();
     }
-    await creation;
-    await deletion;
+    expect(await creation).toMatchObject({ message: 'Channel storage target unavailable' });
     expect(await methods.getAgentChannel('channel')).toBeNull();
     await expect(
       methods.createAgentChannel({
@@ -506,6 +512,81 @@ it('treats a revision as an exact CAS token rather than an absent guard', () =>
       ),
     ).toMatchObject({ status: 'disabled' });
   }));
+
+it('keeps managed ownership and registry controls immutable through metadata updates', () =>
+  scope(async () => {
+    await methods.createAgentChannel(channel());
+    const model = mongoose.models.AgentChannel;
+    const before = await model.collection.findOne({ channelId: 'channel' });
+    const patch = Object.assign(
+      { revision: 'safe-update' },
+      {
+        createdBy: 'intruder',
+        agentId: 'different-agent',
+        tenantId: 'foreign-tenant',
+        _managed: { phase: 'retired', scopeKeys: [] },
+        pending: [],
+        pendingCount: 0,
+      },
+    );
+    expect(await methods.updateAgentChannel('channel', 'owner', patch)).toMatchObject({
+      revision: 'safe-update',
+    });
+    const after = await model.collection.findOne({ _id: before!._id });
+    expect(after).toMatchObject({
+      createdBy: 'owner',
+      agentId: 'agent',
+      tenantId,
+      _managed: before!._managed,
+    });
+    expect(after).not.toHaveProperty('pending');
+    expect(after).not.toHaveProperty('pendingCount');
+  }));
+
+it('budgets concurrent credential changes against their combined persisted payload', () =>
+  scope(async () => {
+    await methods.createAgentChannel(channel());
+    const size = 7 * 1024 * 1024;
+    const results = await Promise.allSettled([
+      methods.updateAgentChannel('channel', 'owner', { encryptedBotToken: 'b'.repeat(size) }),
+      methods.updateAgentChannel('channel', 'owner', { encryptedSigningSecret: 's'.repeat(size) }),
+    ]);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+    const failures = results.filter(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    expect(failures).toHaveLength(1);
+    expect(failures[0].reason).toMatchObject({ code: 'document_limit' });
+    const stored = await mongoose.models.AgentChannel.collection.findOne({ channelId: 'channel' });
+    expect(
+      [stored!.encryptedBotToken, stored!.encryptedSigningSecret].filter(
+        (value) => value?.length === size,
+      ),
+    ).toHaveLength(1);
+  }));
+
+it.each(['privateExtension', 'slack.privateExtension'])(
+  'includes stored %s in the credential update budget',
+  (field) =>
+    scope(async () => {
+      await methods.createAgentChannel(channel());
+      await mongoose.models.AgentChannel.collection.updateOne(
+        { channelId: 'channel' },
+        {
+          $set: { [field]: 'p'.repeat(6 * 1024 * 1024) },
+        },
+      );
+      await expect(
+        methods.updateAgentChannel('channel', 'owner', {
+          encryptedBotToken: 'b'.repeat(8 * 1024 * 1024),
+        }),
+      ).rejects.toMatchObject({ code: 'document_limit' });
+      const stored = await mongoose.models.AgentChannel.collection.findOne({
+        channelId: 'channel',
+      });
+      expect(stored).not.toHaveProperty('encryptedBotToken');
+    }),
+);
 
 it.each(['listAgentChannelTenants', 'listDeletingAgentChannels'] as const)(
   'enforces live configured bounds through createMethods for %s',

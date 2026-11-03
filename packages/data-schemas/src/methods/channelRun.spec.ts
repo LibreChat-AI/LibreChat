@@ -66,17 +66,19 @@ beforeEach(async () => {
     await mongoose.models.ChannelIdentity.deleteMany({});
     await mongoose.models.ChannelScope.deleteMany({});
     await mongoose.models.ResponseScope.deleteMany({});
-    await createAgentChannelMethods(mongoose).createAgentChannel({
-      tenantId,
-      channelId: 'channel',
-      agentId: 'agent',
-      createdBy: 'channel-owner',
-      type: 'slack',
-      status: 'active',
-      credentialMode: 'shared',
-      revision: 'revision',
-      slack: { teamId: 'T1', appId: 'A1', botUserId: 'B1' },
-    });
+    await scope(() =>
+      createAgentChannelMethods(mongoose).createAgentChannel({
+        tenantId,
+        channelId: 'channel',
+        agentId: 'agent',
+        createdBy: 'channel-owner',
+        type: 'slack',
+        status: 'active',
+        credentialMode: 'shared',
+        revision: 'revision',
+        slack: { teamId: 'T1', appId: 'A1', botUserId: 'B1' },
+      }),
+    );
     await mongoose.models.ChannelRun.deleteMany({});
     await mongoose.models.ChannelLane.deleteMany({});
     await mongoose.models.StoredResponse.deleteMany({});

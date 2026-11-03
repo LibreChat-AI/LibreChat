@@ -18,6 +18,7 @@ const methods = createMethods(mongoose, {
   isExternalSkillId: isDeploymentSkillId,
   getCache: getLogStores,
   getChannelStorageConfig: storageConfig.getChannelConfig,
+  getDurableStorageConfig: storageConfig.getDurableConfig,
   getMCPAppMessageBudget: messageBudget.getBudget,
 });
 

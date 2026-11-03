@@ -12,6 +12,7 @@ export const MANAGED_TARGET_KINDS = [
   'channelFeedbackEvent',
 ] as const;
 export type ManagedTargetKind = (typeof MANAGED_TARGET_KINDS)[number];
+export const MANAGED_REGISTRATION_BYTES = 512;
 
 /** Internal physical identity. A missing target is retired, never re-created. */
 export interface ManagedTarget<Kind extends ManagedTargetKind = 'message' | 'conversation'> {

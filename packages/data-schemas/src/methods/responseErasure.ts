@@ -22,6 +22,7 @@ import { createResponseScopeModel } from '~/models/responseScope';
 import { reconcileErasedResponseTargets } from './registration';
 import { createStoredResponseModel } from '~/models/response';
 import { responseRootCleanupFilter } from './responseRoot';
+import { managedRegistryCount } from './registry';
 
 const ERASURE_BATCH_SIZE = 100;
 
@@ -242,6 +243,8 @@ export async function eraseResponseRecords(
 export interface ResponseOwnerErasureMethods {
   prepareUserResponseErasure(owner: ResponseOwner): Promise<void>;
   eraseUserResponses(owner: ResponseOwner): Promise<void>;
+  /** Final composed barrier, after every private storage domain has completed its own cleanup. */
+  assertUserStorageErased(owner: ResponseOwner): Promise<void>;
 }
 
 /** Account erasure fences all owned admission before its existing checkpoint cleanup phase. */
@@ -262,6 +265,18 @@ export function createResponseOwnerErasureMethods(
       assertResponseErasureOwner(owner);
       for (const partition of partitions(owner))
         await runAsSystem(async () => eraseResponseRecords(mongoose, partition));
+    },
+    async assertUserStorageErased(owner) {
+      assertResponseErasureOwner(owner);
+      for (const partition of partitions(owner))
+        await inResponseErasurePartition(partition, async () => {
+          const anchor = await createResponseScopeModel(mongoose)
+            .findById(responseScopeKeys(partition, '')[0])
+            .read('primary')
+            .lean();
+          if (!anchor?.closed) throw new Error('User erasure requires closed admission');
+          if (managedRegistryCount(anchor)) throw new ResponseErasurePendingError();
+        });
     },
   };
 }
@@ -579,13 +594,23 @@ async function eraseOwnedResponses(
   const completionScopes = conversationIds
     ? conversationIds.map((id) => responseScopeKeys(owner, id)[1])
     : [ownerKey];
-  if (
-    await scopes
-      .exists({
-        _id: { $in: completionScopes },
-        $or: [{ pendingCount: { $nin: [null, 0] } }, { 'pending.0': { $exists: true } }],
-      })
-      .read('primary')
-  )
-    throw new ResponseErasurePendingError();
+  const anchors = scopes
+    .find({ _id: { $in: completionScopes } })
+    .select('pending pendingCount')
+    .read('primary')
+    .lean()
+    .cursor({ batchSize: 1 });
+  for await (const anchor of anchors) {
+    const count = managedRegistryCount(anchor);
+    // Account cleanup composes other storage domains before the final all-kind barrier.
+    // Conversation deletion retains its stronger barrier until its channel driver runs.
+    if (
+      count &&
+      (conversationIds !== undefined ||
+        anchor.pending!.some((entry) =>
+          ['message', 'conversation', 'response'].includes(entry.target.kind),
+        ))
+    )
+      throw new ResponseErasurePendingError();
+  }
 }

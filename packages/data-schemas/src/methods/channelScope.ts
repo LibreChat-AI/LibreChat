@@ -2,11 +2,11 @@ import { createHash } from 'node:crypto';
 import type { ClientSession, Types } from 'mongoose';
 import type { AgentChannelRecord } from '~/models/channel';
 import { getTenantId, SYSTEM_TENANT_ID, tenantStorage } from '~/config/tenantContext';
+import { createAgentChannelModel, CHANNEL_PRIVATE_FIELDS } from '~/models/channel';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
 import { reconcileClosedChannelRegistries } from './channelRegistry';
 import { createChannelScopeModel } from '~/models/channelScope';
 import { touchChannelOwnerAdmission } from './channelOwner';
-import { createAgentChannelModel } from '~/models/channel';
 
 export function assertChannelTenant(tenantId: string | undefined): void {
   const current = getTenantId();
@@ -43,12 +43,12 @@ export async function initializeChannelScope(
   }
 }
 
-/** Must share the transaction that inserts or mutates channel-owned private data. */
+/** Transactional callers pass their session; portable publication uses canonical registration. */
 export async function touchChannelScope(
   mongoose: typeof import('mongoose'),
   tenantId: string | undefined,
   channelId: string,
-  session: ClientSession,
+  session?: ClientSession,
 ): Promise<boolean> {
   assertChannelTenant(tenantId);
   const result = await createChannelScopeModel(mongoose).updateOne(
@@ -215,16 +215,13 @@ export async function retireAgentChannel(
         $set: { status: 'deleting' },
         ...(redactCredentials
           ? {
-              $unset: {
-                encryptedBotToken: '',
-                encryptedSigningSecret: '',
-              },
+              $unset: Object.fromEntries(CHANNEL_PRIVATE_FIELDS.map((field) => [field, 1])),
             }
           : {}),
       },
       { new: true, upsert: false },
     )
-    .select('+encryptedBotToken +encryptedSigningSecret')
+    .select(CHANNEL_PRIVATE_FIELDS.map((field) => `+${field}`).join(' '))
     .lean();
   if (!deleting) return null;
   // Existing transactional writers still touch this fence. Closing it waits for

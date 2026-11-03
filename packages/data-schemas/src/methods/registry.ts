@@ -5,6 +5,7 @@ import type {
   ManagedRegistrationIntent,
 } from '~/types/managed';
 import { managedTargetFilter, managedTargetPredicate, assertManagedCleanupTenant } from './managed';
+import { MANAGED_REGISTRATION_BYTES } from '~/types/managed';
 
 /** Budget the stamped entry, including its array element and worst-case epoch encoding. */
 export function assertManagedRegistration(
@@ -20,7 +21,7 @@ export function assertManagedRegistration(
     !/^[a-f\d]{64}$/.test(entry.key) ||
     mongoose.mongo.BSON.calculateObjectSize({ ...entry, retentionEpoch: Number.MAX_SAFE_INTEGER }) +
       16 >
-      512
+      MANAGED_REGISTRATION_BYTES
   )
     throw new TypeError('Invalid managed registration');
 }

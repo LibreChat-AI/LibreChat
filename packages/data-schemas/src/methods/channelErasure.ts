@@ -1,13 +1,23 @@
 import { channelStorageConfigSchema } from 'librechat-data-provider';
 import type { ChannelStorageConfig } from 'librechat-data-provider';
+import type { Types } from 'mongoose';
+import type { ManagedState, ManagedStorageTarget } from '~/types/managed';
 import type { ResponseOwner } from '~/models/response';
+import { reconcileErasedResponseTargets, settleRedactedChannelTarget } from './registration';
 import { createChannelRunModel, createChannelLaneModel } from '~/models/channelRun';
+import { createAgentChannelModel, CHANNEL_PRIVATE_FIELDS } from '~/models/channel';
+import { responseScopeKeys, assertResponseErasureOwner } from './responseScope';
+import { managedTargetPredicate, retireManagedAllocation } from './managed';
 import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
+import { tenantStorage, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createChannelIdentityModel } from '~/models/channelIdentity';
+import { createResponseScopeModel } from '~/models/responseScope';
+import { ResponseErasurePendingError } from './responseErasure';
 import { createAgentApiKeyModel } from '~/models/agentApiKey';
-import { createAgentChannelModel } from '~/models/channel';
+import { includeManagedAllocations } from '~/utils/managed';
 import { createIndexesWithRetry } from '~/utils/retry';
 import { retireAgentChannel } from './channelScope';
+import { managedRegistryCount } from './registry';
 
 /** Validate operation configuration before the caller closes irreversible admission fences. */
 export function resolveChannelErasureConfig(
@@ -22,7 +32,23 @@ export async function eraseChannelPersistenceForUser(
   owner: ResponseOwner,
   options: Pick<Partial<ChannelStorageConfig>, 'erasureBatchSize'> = {},
 ): Promise<void> {
-  resolveChannelErasureConfig(options);
+  const config = resolveChannelErasureConfig(options);
+  assertResponseErasureOwner(owner);
+  for (const partition of owner.tenantId ? [owner, { userId: owner.userId }] : [owner])
+    await tenantStorage.run({ tenantId: partition.tenantId || SYSTEM_TENANT_ID }, () =>
+      eraseChannelPartition(mongoose, partition, config.erasureBatchSize),
+    );
+}
+
+async function eraseChannelPartition(
+  mongoose: typeof import('mongoose'),
+  owner: ResponseOwner,
+  batchSize: number,
+): Promise<void> {
+  const ownerKey = responseScopeKeys(owner, '')[0];
+  const anchor = await createResponseScopeModel(mongoose).findById(ownerKey).read('primary').lean();
+  if (!anchor?.closed) throw new Error('Channel erasure requires closed owner admission');
+  managedRegistryCount(anchor);
   const tenantId = owner.tenantId || '_';
   await createAgentApiKeyModel(mongoose).deleteMany({
     userId: owner.userId,
@@ -37,44 +63,117 @@ export async function eraseChannelPersistenceForUser(
   const channels = createAgentChannelModel(mongoose);
   await createIndexesWithRetry(channels);
   const partition = owner.tenantId || { $in: [null, ''] };
-  const connections = channels
-    .find({ createdBy: owner.userId, tenantId: partition })
-    .select('channelId tenantId')
-    .lean()
-    .cursor();
-  try {
-    for await (const connection of connections) {
-      // Keep redacted deletion metadata while other principals' runs drain. The
-      // deleted owner's credentials are erased immediately.
-      await retireAgentChannel(
-        mongoose,
-        { ...connection, id: String(connection._id), createdBy: owner.userId },
-        true,
-      );
-      await eraseChannelFeedbackForChannel(mongoose, connection.tenantId, connection.channelId);
-      if (
-        !(await runs
-          .exists({
-            channelId: connection.channelId,
-            tenantId,
-            state: { $in: ['queued', 'executing', 'requires_action', 'delivering', 'blocked'] },
-          })
-          .read('primary')) &&
-        !(await createChannelIdentityModel(mongoose)
-          .exists({
-            tenantId,
-            'identity.channelId': connection.channelId,
-          })
-          .read('primary'))
-      )
-        await channels.deleteOne({
-          _id: connection._id,
-          status: 'deleting',
-          pendingCount: { $in: [null, 0] },
-          'pending.0': { $exists: false },
-        });
-    }
-  } finally {
-    await connections.close();
+  interface ConnectionMetadata {
+    _id: Types.ObjectId;
+    channelId: string;
+    createdBy?: string;
+    tenantId?: string;
+    _managed?: ManagedState;
   }
+  const projection = '_id channelId createdBy tenantId _managed';
+  async function eraseConnection(connection: ConnectionMetadata): Promise<void> {
+    if (connection._managed && connection._managed.phase !== 'published') {
+      const target = {
+        kind: 'channel' as const,
+        id: String(connection._id),
+        incarnation: connection._managed.incarnation,
+        ...(owner.tenantId && { tenantId: owner.tenantId }),
+      };
+      if (await retireManagedAllocation(mongoose, target, target.id)) return;
+      // Publication may have won the phase CAS. Re-read that same physical target.
+      const current = await includeManagedAllocations(
+        channels.findOne(managedTargetPredicate(mongoose, target)),
+      )
+        .select(projection)
+        .read('primary')
+        .lean<ConnectionMetadata | null>();
+      if (!current) return;
+      connection = current;
+    }
+    if (
+      connection.createdBy !== owner.userId ||
+      (connection._managed && connection._managed.phase !== 'published')
+    )
+      throw new ResponseErasurePendingError();
+    // Keep redacted deletion metadata while other principals' runs drain. The
+    // deleted owner's credentials are erased immediately.
+    await retireAgentChannel(
+      mongoose,
+      { ...connection, id: String(connection._id), createdBy: owner.userId },
+      true,
+    );
+    await eraseChannelFeedbackForChannel(mongoose, connection.tenantId, connection.channelId);
+    if (
+      !(await runs
+        .exists({
+          channelId: connection.channelId,
+          tenantId,
+          state: { $in: ['queued', 'executing', 'requires_action', 'delivering', 'blocked'] },
+        })
+        .read('primary')) &&
+      !(await createChannelIdentityModel(mongoose)
+        .exists({
+          tenantId,
+          'identity.channelId': connection.channelId,
+        })
+        .read('primary'))
+    )
+      await channels.deleteOne({
+        _id: connection._id,
+        status: 'deleting',
+        pendingCount: { $in: [null, 0] },
+        'pending.0': { $exists: false },
+      });
+  }
+  // Frozen registrations cover a publisher whose first indexed write lands behind the cursor.
+  const entries = (anchor.pending ?? []).filter((entry) => entry.target.kind === 'channel');
+  for (const entry of entries) {
+    const target: ManagedStorageTarget = entry.target;
+    if ((target.tenantId || undefined) !== (owner.tenantId || undefined))
+      throw new Error('Channel cleanup target tenant changed');
+    const current = await includeManagedAllocations(
+      channels.findOne(managedTargetPredicate(mongoose, target)),
+    )
+      .select(projection)
+      .read('primary')
+      .lean<ConnectionMetadata | null>();
+    if (current) await eraseConnection(current);
+  }
+  const discovery = {
+    tenantId: partition,
+    $or: [{ createdBy: owner.userId }, { '_managed.scopeKeys': ownerKey }],
+  };
+  let after: Types.ObjectId | undefined;
+  for (;;) {
+    const page = await includeManagedAllocations(
+      channels.find({ ...discovery, ...(after && { _id: { $gt: after } }) }),
+    )
+      .select(projection)
+      .sort({ _id: 1 })
+      .limit(batchSize)
+      .read('primary')
+      .lean<ConnectionMetadata[]>();
+    if (!page.length) break;
+    for (const connection of page) await eraseConnection(connection);
+    after = page[page.length - 1]._id;
+  }
+  for (const entry of entries) await settleRedactedChannelTarget(mongoose, owner, entry);
+  await reconcileErasedResponseTargets(mongoose, owner, []);
+  if (
+    await includeManagedAllocations(
+      channels.exists({
+        ...discovery,
+        '_managed.phase': { $in: ['published', null] },
+        $and: [
+          {
+            $or: [
+              { status: { $ne: 'deleting' } },
+              ...CHANNEL_PRIVATE_FIELDS.map((field) => ({ [field]: { $exists: true } })),
+            ],
+          },
+        ],
+      }),
+    ).read('primary')
+  )
+    throw new ResponseErasurePendingError();
 }

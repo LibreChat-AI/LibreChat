@@ -17,7 +17,7 @@ jest.mock('~/config/winston', () => ({
   error: jest.fn(),
 }));
 
-describe('transactional channel writes fail before private persistence', () => {
+describe('unconverted channel writes fail before private persistence', () => {
   const standalone = new mongoose.Mongoose();
   const ferret = process.env.FERRETDB_URI ? new mongoose.Mongoose() : undefined;
   const engines: Array<readonly [string, typeof standalone]> = [
@@ -41,7 +41,7 @@ describe('transactional channel writes fail before private persistence', () => {
   });
 
   describe.each(engines)('%s', (_name, db) => {
-    it('rejects channel credentials, identity, run, bound-key and feedback writes before payload insertion', async () => {
+    it('publishes the portable channel root while guarding unconverted identity, run, key and feedback writes', async () => {
       const userId = new db.Types.ObjectId();
       const channelId = randomUUID();
       const channels = createAgentChannelMethods(db);
@@ -58,7 +58,7 @@ describe('transactional channel writes fail before private persistence', () => {
           encryptedSigningSecret: 'test-ciphertext',
           slack: { teamId: 'team', appId: 'app', botUserId: 'bot' },
         }),
-      ).rejects.toBeInstanceOf(TransactionUnavailableError);
+      ).resolves.toMatchObject({ channelId, encryptedBotToken: 'test-ciphertext' });
       await expect(
         createChannelIdentityStorage(db).saveChannelIdentity(
           {
@@ -131,7 +131,6 @@ describe('transactional channel writes fail before private persistence', () => {
       ).rejects.toBeInstanceOf(TransactionUnavailableError);
       expect(effect).not.toHaveBeenCalled();
       for (const model of [
-        'AgentChannel',
         'ChannelIdentity',
         'ChannelRun',
         'ChannelLane',
@@ -142,6 +141,7 @@ describe('transactional channel writes fail before private persistence', () => {
       ]) {
         expect(await db.model(model).countDocuments()).toBe(0);
       }
+      expect(await db.model('AgentChannel').countDocuments({ channelId })).toBe(1);
     });
 
     it('keeps ordinary personal API keys and missing-channel cleanup available', async () => {

@@ -1,13 +1,15 @@
 import { channelStorageConfigSchema } from 'librechat-data-provider';
-import type { ChannelStorageConfig } from 'librechat-data-provider';
-import type { ClientSession } from 'mongoose';
+import type { ChannelStorageConfig, DurableStorageConfig } from 'librechat-data-provider';
+import type { ClientSession, Types } from 'mongoose';
 import type { AgentChannelRecord } from '~/models/channel';
 import { retireAgentChannel, initializeChannelScope, touchChannelScope } from './channelScope';
 import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
 import { startRequiredTransactionSession } from '~/utils/transactions';
-import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { prepareChannelOwnerAdmission } from './channelOwner';
+import { createManagedAgentChannel } from './channelCreation';
 import { createChannelIndexGate } from './channelIndexes';
+import { CHANNEL_PRIVATE_FIELDS } from '~/models/channel';
+import { assertChannelBudget } from './channelBudget';
 
 export type { AgentChannelRecord } from '~/models/channel';
 export type AgentChannelMetadata = Pick<
@@ -62,10 +64,11 @@ export interface AgentChannelMethods {
 export function createAgentChannelMethods(
   mongoose: typeof import('mongoose'),
   getStorageConfig: () => Promise<Partial<ChannelStorageConfig>> = async () => ({}),
+  getDurableConfig: () => Promise<Partial<DurableStorageConfig>> = async () => ({}),
 ): AgentChannelMethods {
   const channel = () => mongoose.model<AgentChannelRecord>('AgentChannel');
   const ensureIndexes = createChannelIndexGate(() => [channel()]);
-  const secrets = '+encryptedBotToken +encryptedSigningSecret';
+  const secrets = CHANNEL_PRIVATE_FIELDS.map((field) => `+${field}`).join(' ');
 
   async function ownerWrite<T>(
     createdBy: string,
@@ -116,21 +119,9 @@ export function createAgentChannelMethods(
 
   return {
     async createAgentChannel(input: AgentChannelRecord): Promise<AgentChannelRecord> {
-      const currentTenant = getTenantId();
-      input = {
-        ...input,
-        tenantId:
-          input.tenantId ?? (currentTenant === SYSTEM_TENANT_ID ? undefined : currentTenant),
-      };
-      if (input.status === 'deleting') throw new TypeError('Channel deletion requires retirement');
+      const limits = await getDurableConfig();
       await ensureIndexes();
-      await initializeChannelScope(mongoose, input.tenantId, input.channelId);
-      return ownerWrite(input.createdBy, input.tenantId, async (session) => {
-        if (!(await touchChannelScope(mongoose, input.tenantId, input.channelId, session)))
-          throw new Error('Channel admission closed');
-        const [record] = await channel().create([input], { session });
-        return record.toObject();
-      });
+      return createManagedAgentChannel(mongoose, input, limits);
     },
     async listAgentChannels(agentId: string): Promise<AgentChannelRecord[]> {
       return channel().find({ agentId }).sort({ createdAt: 1 }).lean();
@@ -195,22 +186,59 @@ export function createAgentChannelMethods(
     ): Promise<AgentChannelRecord | null> {
       // Deleting is an irreversible lifecycle operation, never a generic metadata patch.
       if (expectedStatus === 'deleting' || update.status === 'deleting') return null;
-      const write = async (session: ClientSession): Promise<AgentChannelRecord | null> =>
-        channel()
+      const fields = {
+        ...(update.type !== undefined && { type: update.type }),
+        ...(update.status !== undefined && { status: update.status }),
+        ...(update.credentialMode !== undefined && { credentialMode: update.credentialMode }),
+        ...(update.revision !== undefined && { revision: update.revision }),
+        ...(update.slack !== undefined && {
+          slack: {
+            teamId: update.slack?.teamId,
+            appId: update.slack?.appId,
+            botUserId: update.slack?.botUserId,
+          },
+        }),
+        ...(update.encryptedBotToken !== undefined && {
+          encryptedBotToken: update.encryptedBotToken,
+        }),
+        ...(update.encryptedSigningSecret !== undefined && {
+          encryptedSigningSecret: update.encryptedSigningSecret,
+        }),
+      };
+      const parent = await channel()
+        .findOne({ channelId, createdBy })
+        .select('tenantId _managed.incarnation')
+        .read('primary')
+        .lean<AgentChannelRecord & { _id: Types.ObjectId; _managed?: { incarnation: string } }>();
+      if (!parent) return null;
+      const physical = {
+        _id: parent._id,
+        '_managed.incarnation': parent._managed?.incarnation ?? { $exists: false },
+      };
+      const write = async (session: ClientSession): Promise<AgentChannelRecord | null> => {
+        const current = await channel()
+          .findOne({ ...physical, channelId, createdBy })
+          .select(`${secrets} +_managed +pending +pendingCount +retentionEpoch`)
+          .session(session)
+          .read('primary')
+          .lean();
+        if (!current || current.status === 'deleting') return null;
+        assertChannelBudget(mongoose, current, fields);
+        return channel()
           .findOneAndUpdate(
             {
+              ...physical,
               channelId,
               createdBy,
               status: expectedStatus ?? { $ne: 'deleting' },
               ...(expectedRevision !== undefined ? { revision: expectedRevision } : {}),
             },
-            { $set: update },
+            { $set: fields },
             { new: true, session, runValidators: true },
           )
           .select(secrets)
           .lean();
-      const parent = await channel().findOne({ channelId, createdBy }).select('tenantId').lean();
-      if (!parent) return null;
+      };
       await initializeChannelScope(mongoose, parent.tenantId, channelId);
       return ownerWrite(createdBy, parent.tenantId, async (session) => {
         if (!(await touchChannelScope(mongoose, parent.tenantId, channelId, session))) return null;

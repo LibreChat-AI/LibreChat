@@ -23,6 +23,7 @@ import {
 } from './responseScope';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { includeManagedAllocations } from '~/utils/managed';
+import { CHANNEL_PRIVATE_FIELDS } from '~/models/channel';
 import { MANAGED_TARGET_KINDS } from '~/types/managed';
 
 interface SettlementTarget {
@@ -184,6 +185,16 @@ export async function settleAbsentResponseTarget(
   return settleTarget(mongoose, owner, conversationId, entry, 'absent');
 }
 
+/** A deleting channel may retain coordination metadata after its creator's secrets are gone. */
+export async function settleRedactedChannelTarget(
+  mongoose: typeof import('mongoose'),
+  owner: ResponseOwner,
+  entry: ManagedRegistrationIntent,
+): Promise<boolean> {
+  if (entry.target.kind !== 'channel') throw new TypeError('Invalid channel credential target');
+  return settleTarget(mongoose, owner, undefined, entry, 'redacted-channel');
+}
+
 /** Recover interrupted publishers and late registrars without depending on their parent worker. */
 export async function reconcileResponseTargets(
   mongoose: typeof import('mongoose'),
@@ -268,14 +279,14 @@ async function settleTarget(
   owner: ResponseOwner,
   conversationId: string | undefined,
   entry: ManagedRegistrationIntent,
-  proof: 'published' | 'absent',
+  proof: 'published' | 'absent' | 'redacted-channel',
 ): Promise<boolean> {
   const key = registrationScope(
     mongoose,
     owner,
     conversationId,
     entry,
-    proof === 'absent' ? 'cleanup' : 'publication',
+    proof === 'published' ? 'publication' : 'cleanup',
   );
   const scopes = createResponseScopeModel(mongoose);
   const anchor = await scopes.findById(key).lean();
@@ -285,6 +296,7 @@ async function settleTarget(
       (anchor.closed || (anchor.expiredAt && anchor.expiredAt <= new Date())))
   )
     return false;
+  if (proof === 'redacted-channel' && !anchor.closed) return false;
   const existing = anchor.pending?.find((candidate) => candidate.key === entry.key);
   if (!existing || !sameManagedRegistration(existing, entry)) return false;
   const observedRetentionEpoch = anchor.retentionEpoch ?? 0;
@@ -295,6 +307,20 @@ async function settleTarget(
       model.exists(managedTargetPredicate(mongoose, entry.target)),
     ).read('primary');
     if (present) return false;
+  } else if (proof === 'redacted-channel') {
+    if (
+      !(await includeManagedAllocations(
+        model.exists({
+          ...managedTargetPredicate(mongoose, entry.target),
+          createdBy: owner.userId,
+          status: 'deleting',
+          '_managed.phase': 'published',
+          '_managed.scopeKeys': key,
+          ...Object.fromEntries(CHANNEL_PRIVATE_FIELDS.map((field) => [field, { $exists: false }])),
+        }),
+      ).read('primary'))
+    )
+      return false;
   } else {
     const target = await includeManagedAllocations(
       model.findOne(managedTargetFilter(mongoose, entry.target)),
@@ -316,9 +342,9 @@ async function settleTarget(
       return false;
   }
   const filter =
-    proof === 'absent'
-      ? absenceSettlementFilter(key, existing, anchor)
-      : settlementFilter(key, existing, observedRetentionEpoch);
+    proof === 'published'
+      ? settlementFilter(key, existing, observedRetentionEpoch)
+      : absenceSettlementFilter(key, existing, anchor);
   const result = await scopes.updateOne(filter, {
     $pull: { pending: { key: entry.key } },
     $inc: { pendingCount: -1, revision: 1 },

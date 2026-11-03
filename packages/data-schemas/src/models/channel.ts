@@ -10,6 +10,24 @@ export interface AgentChannelRecord extends AgentChannel {
   encryptedSigningSecret?: string;
 }
 
+// New fields must explicitly choose private erasure or retained coordination metadata.
+const privateFields: Record<keyof AgentChannelRecord, boolean> = {
+  channelId: false,
+  tenantId: false,
+  agentId: false,
+  createdBy: false,
+  type: false,
+  status: false,
+  credentialMode: false,
+  revision: false,
+  slack: false,
+  encryptedBotToken: true,
+  encryptedSigningSecret: true,
+};
+export const CHANNEL_PRIVATE_FIELDS: readonly string[] = Object.entries(privateFields)
+  .filter(([, privateField]) => privateField)
+  .map(([field]) => field);
+
 export function createAgentChannelModel(
   mongoose: typeof import('mongoose'),
 ): Model<AgentChannelRecord> {
