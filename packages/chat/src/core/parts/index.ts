@@ -17,3 +17,4 @@ export * from './outcome';
 export * from './output';
 export * from './preparation';
 export * from './memory';
+export * from './activityLabels';

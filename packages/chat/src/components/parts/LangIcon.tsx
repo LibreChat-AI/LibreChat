@@ -91,7 +91,10 @@ export function hasLangIcon(lang: string): boolean {
   return LANG_ICON_PATHS[NAME_MAP[resolved] ?? resolved] != null;
 }
 
-const LangIcon = React.memo(function LangIcon({ lang, className }: LangIconProps) {
+const LangIcon: React.NamedExoticComponent<LangIconProps> = React.memo(function LangIcon({
+  lang,
+  className,
+}: LangIconProps) {
   const key = lang.toLowerCase();
   if (key === 'txt' || key === 'text') {
     return <FileText className={className} aria-hidden="true" />;
