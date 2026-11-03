@@ -40,6 +40,8 @@ type ButtonVariantOptions =
         | 'inline-edit'
         | 'card'
         | 'disclosure'
+        | 'disclosure-line'
+        | 'disclosure-panel'
         | 'option'
         | 'text-action'
         | 'hint'
@@ -68,6 +70,7 @@ type ButtonVariantOptions =
         | 'wide'
         | 'snug'
         | 'bare'
+        | 'bare-xs'
         | 'theme'
         | 'row'
         | 'tile'
@@ -246,6 +249,16 @@ const buttonVariantRecipe = cva(
          */
         disclosure:
           'w-full justify-start focus-visible:ring-focus-subtle focus-visible:ring-offset-0 disabled:opacity-100',
+        /** A disclosure that reads as one line of body text, such as a compacted summary's
+         *  header: normal weight on an 18px line, its glyph slot spacing itself, and the default
+         *  corner so its focus ring stays rounded. */
+        /** The header row of a bordered panel that folds the panel's body open, such as a turn's
+         *  subagent activity: the quiet ink rising to primary with a hover fill, and a ring inset
+         *  in the row because it sits flush against the panel's edge. */
+        'disclosure-panel':
+          'w-full justify-start text-start text-text-secondary hover:bg-surface-hover hover:active:bg-surface-pressed hover:text-text-primary focus-visible:ring-focus-subtle focus-visible:ring-inset focus-visible:ring-offset-0',
+        'disclosure-line':
+          'w-full justify-start gap-0 font-normal leading-4.5 focus-visible:ring-focus-subtle focus-visible:ring-offset-0 disabled:opacity-100',
         /**
          * A full-width answer row in an option list, such as the choices of an
          * `ask_user_question`. The fill follows the pointer instantly rather than
@@ -320,6 +333,9 @@ const buttonVariantRecipe = cva(
         snug: 'h-theme-button p-1',
         /** Sized by its own text with no pad, for an action set inside a sentence. */
         bare: 'h-auto p-0',
+        /** `bare` at the small text size with a tight gap, for an inline toggle beside its glyph
+         *  such as a clipped text's Show more. */
+        'bare-xs': 'h-auto gap-1 p-0 text-xs',
         icon: 'size-theme-button',
         'icon-sm': 'size-theme-icon-button-sm p-0',
         'icon-xs': 'size-theme-button-xs',
@@ -418,6 +434,8 @@ const buttonVariantRecipe = cva(
       { variant: 'composer-pill', size: 'default', class: 'h-theme-button-compact px-2.5 py-0' },
       { variant: 'composer-trigger', size: 'default', class: 'h-theme-button-compact px-2 py-0' },
       { variant: 'hit-area', size: 'default', class: 'h-auto p-0' },
+      { variant: 'disclosure-line', size: 'default', class: 'h-auto p-0' },
+      { variant: 'disclosure-panel', size: 'default', class: 'h-auto min-h-10 px-3' },
       { variant: 'field-import', size: 'default', class: 'h-10 px-2 py-2' },
     ],
     defaultVariants: {
