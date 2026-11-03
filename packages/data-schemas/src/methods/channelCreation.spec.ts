@@ -3,9 +3,12 @@ import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer, MongoMemoryReplSet } from 'mongodb-memory-server';
 import { allocateManagedTarget, managedRegistration } from './managed';
 import { createResponseScopeModel } from '~/models/responseScope';
+import { createChannelIdentityStorage } from './channelIdentity';
 import { registerResponseTarget } from './registration';
+import { createChannelRunStorage } from './channelRun';
 import { tenantStorage } from '~/config/tenantContext';
 import { MAX_BSON_DOCUMENT_BYTES } from '~/utils/bson';
+import { channelRunFence } from './channelRunWrite';
 import { responseScopeKeys } from './responseScope';
 import { createUserMethods } from './user';
 import { createModels } from '~/models';
@@ -152,7 +155,7 @@ describe.each(engines)('portable channel creation on %s', (engine) => {
     it('releases only redacted creator metadata while another principal still drains', () =>
       scoped(async () => {
         const f = await fixture();
-        await f.methods.createAgentChannel(f.input);
+        await f.methods.createAgentChannel({ ...f.input, credentialMode: 'per_user' });
         const channels = mongoose.model('AgentChannel');
         const root = await channels.collection.findOne({ channelId: f.input.channelId });
         const target = {
@@ -164,23 +167,65 @@ describe.each(engines)('portable channel creation on %s', (engine) => {
         // Recover an interrupted root settlement, then close the creator with that entry retained.
         await registerResponseTarget(mongoose, f.owner, undefined, managedRegistration(target));
         const other = new mongoose.Types.ObjectId().toHexString();
-        await mongoose.model('ChannelRun').create({
-          tenantId: tenantId || '_',
-          channelId: f.input.channelId,
-          agentId: 'agent',
-          laneId: randomUUID(),
-          runId: randomUUID(),
-          state: 'executing',
-          principal: { userId: other, channelRevision: f.input.revision },
-          payloadHash: 'synthetic-hash',
-          admission: {
-            eventId: randomUUID(),
-            actor: { teamId: 'T1', appId: 'A1' },
-            input: 'other user input',
+        const linkId = randomUUID();
+        expect(
+          await createChannelIdentityStorage(mongoose).saveChannelIdentity(
+            {
+              tenantId: tenantId || '_',
+              linkId,
+              revision: 'one',
+              state: 'active',
+              userId: other,
+              ticketHash: randomUUID(),
+              ticketExpiresAtMs: Date.now() + 60000,
+              expiresAtMs: Date.now() + 600000,
+              identity: {
+                tenantId: tenantId || '_',
+                channelId: f.input.channelId,
+                channelRevision: f.input.revision,
+                agentId: 'agent',
+                teamId: 'T1',
+                externalUserId: 'U2',
+              },
+            },
+            null,
+          ),
+        ).toBe(true);
+        const runs = createChannelRunStorage(mongoose);
+        await runs.admit(
+          {
+            tenantId: tenantId || '_',
+            channelId: f.input.channelId,
+            agentId: 'agent',
+            principal: {
+              userId: other,
+              channelRevision: f.input.revision,
+              linkId,
+              linkRevision: 'one',
+            },
+            admission: {
+              eventId: randomUUID(),
+              externalChannelId: 'C1',
+              externalThreadKey: 'C1:1',
+              externalMessageKey: 'C1:2',
+              actor: { teamId: 'T1', appId: 'A1', externalUserId: 'U2' },
+              input: 'other user input',
+            },
           },
-          sequence: 1,
-          receivedAt: Date.now(),
-        });
+          100,
+        );
+        const claimed = (await runs.claim(
+          tenantId || '_',
+          f.input.channelId,
+          'other-worker',
+          101,
+          1000,
+        ))!;
+        const prepared = await runs.prepareExecution(
+          tenantId || '_',
+          channelRunFence(claimed),
+          102,
+        );
         expect(await createUserMethods(mongoose).deleteUserById(f.owner.userId)).toMatchObject({
           deletedCount: 1,
         });
@@ -188,9 +233,11 @@ describe.each(engines)('portable channel creation on %s', (engine) => {
         expect(retained).toMatchObject({ status: 'deleting' });
         expect(retained).not.toHaveProperty('encryptedBotToken');
         expect(retained).not.toHaveProperty('encryptedSigningSecret');
-        expect(
-          await mongoose.model('ChannelRun').exists({ 'principal.userId': other }),
-        ).not.toBeNull();
+        expect(await runs.read(tenantId || '_', f.input.channelId, prepared.runId)).toMatchObject({
+          state: 'executing',
+          principal: { userId: other },
+          execution: prepared.execution,
+        });
         expect(await createResponseScopeModel(mongoose).findById(f.key).lean()).toMatchObject({
           closed: true,
           pendingCount: 0,

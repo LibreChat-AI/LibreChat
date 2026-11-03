@@ -37,6 +37,7 @@ const run: ChannelRunRecord = {
     input: 'hello',
   },
   execution: {
+    protocol: 'responses',
     requestId: 'request-a',
     conversationId: 'conversation-a',
     parentMessageId: 'parent-a',

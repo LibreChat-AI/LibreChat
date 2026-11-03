@@ -559,6 +559,7 @@ export function createChannelRunStorage(
         return {
           state: 'executing',
           execution: {
+            protocol: 'responses' as const,
             requestId: run.runId,
             conversationId:
               lane.conversationId ??
@@ -577,8 +578,6 @@ export function createChannelRunStorage(
           execution.apiKeyId ||
           execution.responseId ||
           execution.generationCreatedAt != null ||
-          execution.deliveryKey ||
-          execution.enqueueAttemptedAt ||
           run.plan
         )
           throw new ChannelRunConflict('invalid_transition');
@@ -598,8 +597,6 @@ export function createChannelRunStorage(
         if (
           !run.execution ||
           !['queued', 'executing', 'requires_action'].includes(run.state) ||
-          run.execution.deliveryKey ||
-          run.execution.enqueueAttemptedAt ||
           !credential.apiKeyId ||
           !credential.encryptedApiKey ||
           run.cancellationRequested
@@ -629,9 +626,7 @@ export function createChannelRunStorage(
         if (
           !run.cancellationRequested ||
           run.execution?.protocol !== 'responses' ||
-          !run.execution.apiKeyId ||
-          run.execution.deliveryKey != null ||
-          run.execution.enqueueAttemptedAt != null
+          !run.execution.apiKeyId
         )
           throw new ChannelRunConflict('invalid_transition');
         return run.execution.responseId

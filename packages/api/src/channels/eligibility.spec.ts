@@ -54,7 +54,6 @@ beforeEach(async () => {
         'ChannelIdentity',
         'ChannelRun',
         'ChannelLane',
-        'ChannelScope',
         'ResponseScope',
         'AgentTriggerUserPurge',
       ].map((name) => mongoose.models[name].deleteMany({})),

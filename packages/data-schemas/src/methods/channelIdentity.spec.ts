@@ -48,7 +48,6 @@ beforeAll(async () => {
 beforeEach(async () =>
   runAsSystem(async () => {
     await mongoose.models.AgentChannel.deleteMany({});
-    await mongoose.models.ChannelScope.deleteMany({});
     for (const [partition, channelId] of [
       [tenantId, 'channel'],
       [tenantId, 'other-channel'],
@@ -546,7 +545,9 @@ it('never recreates consent after erasure wins between its lookup and revocation
       release();
       expect(await revocation).toBe(false);
       expect(await mongoose.models.ChannelIdentity.countDocuments({ tenantId })).toBe(0);
-      expect(await mongoose.models.ChannelScope.countDocuments({ closed: true })).toBe(1);
+      expect(
+        await mongoose.models.AgentChannel.findOne({ channelId: 'channel' }).lean(),
+      ).toMatchObject({ status: 'deleting' });
     } finally {
       release();
       paused.mockRestore();

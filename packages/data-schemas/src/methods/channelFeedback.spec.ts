@@ -7,6 +7,8 @@ import { createChannelFeedbackStorage, ChannelFeedbackAuthorityError } from './c
 import { closeResponseScopes, createResponseRetention } from './responseScope';
 import { runAsSystem, tenantStorage } from '~/config/tenantContext';
 import { eraseResponseRecords } from './responseErasure';
+import { createChannelRunStorage } from './channelRun';
+import { channelRunFence } from './channelRunWrite';
 import { createModels } from '~/models';
 import { createMethods } from './index';
 
@@ -137,7 +139,6 @@ beforeEach(async () => {
         'StoredResponse',
         'ResponseScope',
         'AgentChannel',
-        'ChannelScope',
         'ChannelRun',
         'ChannelLane',
         'ChannelIdentity',
@@ -412,11 +413,12 @@ it('erases imported-conversation feedback while preserving another owner in that
 
 it('rejects user-submitted assistant-shaped replies in source lookup and every feedback writer', () =>
   scope(async () => {
+    const source = { ...mapping };
     const delivered: ChannelRunRecord = {
       tenantId,
-      channelId: mapping.channelId,
-      agentId: mapping.agentId,
-      runId: mapping.runId,
+      channelId: source.channelId,
+      agentId: source.agentId,
+      runId: source.runId,
       laneId: 'lane',
       state: 'delivered',
       sequence: 1,
@@ -427,28 +429,26 @@ it('rejects user-submitted assistant-shaped replies in source lookup and every f
       cancellationRequested: false,
       principal: {
         userId,
-        channelRevision: mapping.channelRevision,
-        linkId: 'link',
-        linkRevision: 'r1',
+        channelRevision: source.channelRevision,
       },
       admission: {
         eventId: 'event',
         externalChannelId: 'C1',
         externalThreadKey: 'C1:thread',
         externalMessageKey: 'C1:input',
-        actor: { teamId: mapping.teamId, appId: 'A1', externalUserId: 'U1' },
+        actor: { teamId: source.teamId, appId: 'A1', externalUserId: 'U1' },
         input: 'input',
       },
       execution: {
         protocol: 'responses',
         requestId: 'request',
-        responseId: mapping.responseId,
-        conversationId: mapping.conversationId,
+        responseId: source.responseId,
+        conversationId: source.conversationId,
         parentMessageId: 'parent',
       },
       snapshot: {
         status: 'completed',
-        responseId: mapping.responseId,
+        responseId: source.responseId,
         text: 'retained answer',
         elapsedMs: 1,
       },
@@ -457,36 +457,72 @@ it('rejects user-submitted assistant-shaped replies in source lookup and every f
           operationId: 'answer',
           outcome: 'confirmed',
           attempts: 1,
-          externalMessageKey: mapping.externalMessageKey,
+          externalMessageKey: source.externalMessageKey,
         },
       ],
     };
-    await mongoose.models.ChannelRun.create(delivered);
+    const runs = createChannelRunStorage(mongoose);
+    await runs.admit(
+      {
+        tenantId,
+        channelId: delivered.channelId,
+        agentId: delivered.agentId,
+        principal: delivered.principal,
+        admission: delivered.admission,
+      },
+      Date.now(),
+    );
+    const claimed = (await runs.claim(
+      tenantId,
+      delivered.channelId,
+      'feedback-source-fixture',
+      Date.now(),
+      60000,
+    ))!;
+    const prepared = await runs.prepareExecution(tenantId, channelRunFence(claimed), Date.now());
+    source.runId = claimed.runId;
+    source.conversationId = prepared.execution!.conversationId;
+    await mongoose.models.Message.collection.updateOne(
+      { messageId: source.messageId, user: userId },
+      { $set: { conversationId: source.conversationId } },
+    );
+    // Real published ownership, with external confirmed delivery metadata supplied to the reader.
+    await mongoose.models.ChannelRun.collection.updateOne(
+      { runId: claimed.runId, '_managed.incarnation': claimed._managed!.incarnation },
+      {
+        $set: {
+          state: delivered.state,
+          execution: { ...prepared.execution, responseId: source.responseId },
+          snapshot: delivered.snapshot,
+          receipts: delivered.receipts,
+        },
+      },
+    );
     const actor = {
       tenantId,
-      channelId: mapping.channelId,
-      channelRevision: mapping.channelRevision,
-      teamId: mapping.teamId,
-      agentId: mapping.agentId,
+      channelId: source.channelId,
+      channelRevision: source.channelRevision,
+      teamId: source.teamId,
+      agentId: source.agentId,
     };
-    expect(await storage.readReplySource(actor, mapping.externalMessageKey)).toMatchObject({
-      responseId: mapping.responseId,
-      messageId: mapping.messageId,
+    expect(await storage.readReplySource(actor, source.externalMessageKey)).toMatchObject({
+      responseId: source.responseId,
+      messageId: source.messageId,
     });
-    await persist();
+    await persist(source);
     await mongoose.models.Message.updateOne(
-      { messageId: mapping.messageId, user: userId },
+      { messageId: source.messageId, user: userId },
       { $set: { isUserSubmitted: true } },
     );
-    expect(await storage.readReplySource(actor, mapping.externalMessageKey)).toBeNull();
-    expect(await storage.isAuthorityCurrent(mapping)).toBe(false);
-    await expect(storage.putChannelReply(mapping)).rejects.toBeInstanceOf(
+    expect(await storage.readReplySource(actor, source.externalMessageKey)).toBeNull();
+    expect(await storage.isAuthorityCurrent(source)).toBe(false);
+    await expect(storage.putChannelReply(source)).rejects.toBeInstanceOf(
       ChannelFeedbackAuthorityError,
     );
-    await expect(storage.ensureChannelFeedback(ledger())).rejects.toBeInstanceOf(
+    await expect(storage.ensureChannelFeedback(ledger(source))).rejects.toBeInstanceOf(
       ChannelFeedbackAuthorityError,
     );
-    const late = event();
+    const late = event(source);
     late.eventId = 'late';
     late.digest = 'late';
     late.event = { ...late.event, eventId: 'late' };
@@ -494,14 +530,14 @@ it('rejects user-submitted assistant-shaped replies in source lookup and every f
       ChannelFeedbackAuthorityError,
     );
     await expect(
-      storage.saveChannelFeedback({ ...ledger(), revision: 1 }, 0, event()),
+      storage.saveChannelFeedback({ ...ledger(source), revision: 1 }, 0, event(source)),
     ).rejects.toBeInstanceOf(ChannelFeedbackAuthorityError);
     const now = Date.now();
     await expect(
-      storage.claimChannelFeedbackExport(ledger(), 'lease', now, now + 1000),
+      storage.claimChannelFeedbackExport(ledger(source), 'lease', now, now + 1000),
     ).rejects.toBeInstanceOf(ChannelFeedbackAuthorityError);
-    expect(await storage.getChannelFeedback(tenantId, mapping.runId)).toBeNull();
+    expect(await storage.getChannelFeedback(tenantId, source.runId)).toBeNull();
     expect(
-      await mongoose.models.ChannelFeedback.collection.findOne({ tenantId, key: mapping.runId }),
+      await mongoose.models.ChannelFeedback.collection.findOne({ tenantId, key: source.runId }),
     ).toMatchObject({ revision: 0 });
   }));

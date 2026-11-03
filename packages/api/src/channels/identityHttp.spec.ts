@@ -219,8 +219,8 @@ test.each(['', 'private@example.test'])(
   },
 );
 
-test('lets an owner withdraw existing consent after the channel is disabled', async () => {
-  const { accepted: link } = await accepted();
+test('lets an owner withdraw while disabled and requires fresh consent after reactivation', async () => {
+  const { ticket, accepted: link } = await accepted();
   const confirmed = await svc('/service/channel-a/identity/U1/confirm')
     .send({ linkId: link.linkId, revision: link.revision })
     .expect(200);
@@ -247,7 +247,7 @@ test('lets an owner withdraw existing consent after the channel is disabled', as
     await db.updateAgentChannel(
       'channel-a',
       'user-a',
-      { status: 'active', revision: 'rev-1' },
+      { status: 'active', revision: 'reactivated-revision' },
       'disabled',
       'disabled-revision',
     );
@@ -260,6 +260,30 @@ test('lets an owner withdraw existing consent after the channel is disabled', as
         teamId: 'T1',
         externalUserId: 'U1',
       }),
-    ).toMatchObject({ ok: false, error: { code: 'revoked' } });
+    ).toMatchObject({ ok: false, error: { code: 'changed' } });
+  });
+  expect((await request(app).get('/links').set('x-test-user', 'user-a').expect(200)).body).toEqual(
+    [],
+  );
+  expect((await browser('/links/preview').send({ ticket }).expect(200)).body).toMatchObject({
+    ok: false,
+    error: { code: 'invalid_ticket' },
+  });
+  const fresh = (await accepted()).accepted;
+  expect(fresh.linkId).not.toBe(active.linkId);
+  await svc('/service/channel-a/identity/U1/confirm')
+    .send({ linkId: fresh.linkId, revision: fresh.revision })
+    .expect(200);
+  await tenantStorage.run({ tenantId }, async () => {
+    expect(
+      await identity.resolve({
+        tenantId,
+        channelId: 'channel-a',
+        channelRevision: 'reactivated-revision',
+        agentId: 'agent-a',
+        teamId: 'T1',
+        externalUserId: 'U1',
+      }),
+    ).toMatchObject({ ok: true, value: { linkId: fresh.linkId, userId: 'user-a' } });
   });
 });

@@ -14,7 +14,6 @@ import {
   retireManagedAllocation,
 } from './managed';
 import { createAgentChannelModel, CHANNEL_PRIVATE_FIELDS } from '~/models/channel';
-import { initializeChannelScope, touchChannelScope } from './channelScope';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { includeManagedAllocations } from '~/utils/managed';
 import { assertChannelBudget } from './channelBudget';
@@ -70,9 +69,6 @@ export async function createManagedAgentChannel(
     'channel',
     candidate.toObject({ transform: false, minimize: false }),
   );
-  await initializeChannelScope(mongoose, record.tenantId, record.channelId);
-  if (!(await touchChannelScope(mongoose, record.tenantId, record.channelId)))
-    throw new Error('Channel admission closed');
   const target = await allocateManagedTarget(mongoose, 'channel', record.tenantId);
   const roles = {
     creator: { userId: record.createdBy, ...(record.tenantId && { tenantId: record.tenantId }) },

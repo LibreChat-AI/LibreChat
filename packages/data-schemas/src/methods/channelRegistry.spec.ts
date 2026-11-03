@@ -647,41 +647,6 @@ describe.each(engines)('canonical channel registry on %s', (engine) => {
         expect(sessions).not.toHaveBeenCalled();
       }));
 
-    it('keeps canonical retirement and redaction durable when shared fence closure fails', () =>
-      scoped(async () => {
-        const f = await fixture();
-        const model = mongoose.model('ChannelScope');
-        const update = model.updateOne.bind(model);
-        jest
-          .spyOn(model, 'updateOne')
-          .mockImplementationOnce((...args) => update(...args))
-          .mockImplementationOnce(() => {
-            throw new Error('synthetic fence closure failure');
-          });
-        await expect(
-          retireAgentChannel(
-            mongoose,
-            { channelId: f.channel.channelId, createdBy: f.creator.userId, tenantId },
-            true,
-          ),
-        ).rejects.toThrow('synthetic fence closure failure');
-        const parent = await f.anchor();
-        expect(parent).toMatchObject({ status: 'deleting' });
-        expect(parent).not.toHaveProperty('encryptedBotToken');
-        expect((await registerChannelTarget(mongoose, f.channel, f.entry)).status).toBe('closed');
-        expect(
-          await mongoose.model('ChannelIdentity').countDocuments({ linkId: f.identity.linkId }),
-        ).toBe(1);
-        await retireAgentChannel(
-          mongoose,
-          { channelId: f.channel.channelId, createdBy: f.creator.userId, tenantId },
-          true,
-        );
-        expect(
-          await mongoose.model('ChannelIdentity').countDocuments({ linkId: f.identity.linkId }),
-        ).toBe(0);
-      }));
-
     it('retires a registered empty child before removing channel and link cleanup owners', () =>
       scoped(async () => {
         const f = await fixture();

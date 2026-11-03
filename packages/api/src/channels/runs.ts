@@ -578,7 +578,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         run.cancellationRequested ||
         run.state !== 'requires_action' ||
         !run.execution ||
-        (run.execution.protocol === 'responses' && !run.execution.responseId) ||
+        !run.execution.responseId ||
         !run.snapshot?.pendingAction ||
         run.snapshot.pendingAction.expiresAt <= now()
       ) {
@@ -586,15 +586,11 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         return;
       }
       const url = new URL(
-        run.execution.protocol === 'responses'
-          ? `responses/${encodeURIComponent(run.execution.responseId!)}/review`
-          : `c/${encodeURIComponent(run.execution.conversationId)}`,
+        `responses/${encodeURIComponent(run.execution.responseId)}/review`,
         `${deps.publicBaseUrl.replace(/\/+$/, '')}/`,
       );
       const view =
-        run.execution.protocol === 'responses' &&
-        deps.interactive &&
-        req.body.externalChannelId === run.admission.externalChannelId
+        deps.interactive && req.body.externalChannelId === run.admission.externalChannelId
           ? await deps.interactive.readInteractiveReview(
               {
                 userId: run.principal.userId,
@@ -750,7 +746,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       const binding = await bound(req, res, channel, parsed.success ? parsed.data.fence : null);
       if (!binding) return;
       let run = await deps.storage.prepareExecution(channel.tenantId ?? '_', binding.fence, now());
-      if (!run.execution || run.execution.deliveryKey || run.execution.enqueueAttemptedAt) {
+      if (!run.execution || run.execution.protocol !== 'responses') {
         res.status(409).json({ error: 'execution_protocol_conflict' });
         return;
       }

@@ -21,6 +21,7 @@ export async function readChannelFeedbackReplySource(
         channelId: actor.channelId,
         agentId: actor.agentId,
         state: 'delivered',
+        '_managed.phase': 'published',
         'principal.channelRevision': actor.channelRevision,
         'admission.actor.teamId': actor.teamId,
         'execution.protocol': 'responses',

@@ -52,9 +52,7 @@ export async function bindChannelRunResponse(
   const execution = run.execution;
   if (
     !execution ||
-    (run.state !== 'executing' && execution.protocol !== 'responses') ||
-    execution.deliveryKey != null ||
-    execution.enqueueAttemptedAt != null ||
+    execution.protocol !== 'responses' ||
     (execution.responseId != null && execution.responseId !== responseId)
   )
     throw new ChannelRunConflict('invalid_transition');

@@ -1,10 +1,15 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import request from 'supertest';
+import { randomUUID } from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createModels,
   createMethods,
+  createChannelRunStorage,
+  createChannelIdentityStorage,
+  channelRunFence,
+  createManagedMessageId,
   createChannelFeedbackStorage,
   tenantStorage,
   runAsSystem,
@@ -26,6 +31,9 @@ import { createChannelHandlers } from './service';
 import * as configSecrets from '~/admin/secrets';
 
 const tenantId = 'tenant-a';
+const messageId = createManagedMessageId();
+let conversationId: string;
+let runId: string;
 const serviceToken = 'local-channel-feedback-test-token-32-characters';
 let mongo: MongoMemoryReplSet;
 let app: express.Express;
@@ -71,15 +79,18 @@ afterAll(async () => {
   await mongo?.stop();
 });
 beforeEach(async () => {
+  conversationId = randomUUID();
+  runId = randomUUID();
   await runAsSystem(async () => {
     for (const name of [
       'AgentChannel',
       'ChannelRun',
+      'ChannelLane',
+      'ChannelIdentity',
       'ChannelReply',
       'ChannelFeedback',
       'ChannelFeedbackEvent',
       'Message',
-      'ChannelScope',
       'ResponseScope',
     ])
       await mongoose.models[name].deleteMany({});
@@ -105,7 +116,7 @@ beforeEach(async () => {
       tenantId,
       channelId: 'channel-a',
       agentId: 'agent-a',
-      runId: 'run-a',
+      runId: runId,
       laneId: 'lane-a',
       state: 'delivered',
       sequence: 1,
@@ -129,12 +140,12 @@ beforeEach(async () => {
       },
       execution: {
         protocol: 'responses',
-        responseId: 'message-a',
+        responseId: messageId,
         requestId: 'request-a',
-        conversationId: 'conversation-a',
+        conversationId: conversationId,
         parentMessageId: 'parent-a',
       },
-      snapshot: { responseId: 'message-a', status: 'completed', text: 'answer', elapsedMs: 1 },
+      snapshot: { responseId: messageId, status: 'completed', text: 'answer', elapsedMs: 1 },
       receipts: [
         {
           operationId: 'part-a',
@@ -145,11 +156,65 @@ beforeEach(async () => {
       ],
       cancellationRequested: false,
     };
-    await mongoose.models.ChannelRun.create(run);
+    const linked = await createChannelIdentityStorage(mongoose).saveChannelIdentity(
+      {
+        tenantId,
+        linkId: 'link-a',
+        revision: 'link-rev',
+        state: 'active',
+        userId: 'user-a',
+        ticketHash: randomUUID(),
+        ticketExpiresAtMs: Date.now() + 60000,
+        expiresAtMs: Date.now() + 600000,
+        identity: {
+          tenantId,
+          channelId: run.channelId,
+          channelRevision: 'rev-1',
+          agentId: run.agentId,
+          teamId: 'T1',
+          externalUserId: 'U1',
+        },
+      },
+      null,
+    );
+    if (!linked) throw new Error('Could not create feedback actor fixture');
+    const runs = createChannelRunStorage(mongoose);
+    await runs.admit(
+      {
+        tenantId,
+        channelId: run.channelId,
+        agentId: run.agentId,
+        principal: run.principal,
+        admission: run.admission,
+      },
+      Date.now(),
+    );
+    const claimed = (await runs.claim(
+      tenantId,
+      run.channelId,
+      'feedback-fixture',
+      Date.now(),
+      60000,
+    ))!;
+    const prepared = await runs.prepareExecution(tenantId, channelRunFence(claimed), Date.now());
+    runId = prepared.runId;
+    conversationId = prepared.execution!.conversationId;
+    // Ownership is published by storage; execution and confirmed transport fields are reader fixtures.
+    await mongoose.models.ChannelRun.collection.updateOne(
+      { runId, tenantId, '_managed.incarnation': prepared._managed!.incarnation },
+      {
+        $set: {
+          state: run.state,
+          execution: { ...prepared.execution, responseId: messageId },
+          snapshot: run.snapshot,
+          receipts: run.receipts,
+        },
+      },
+    );
     await mongoose.models.Message.create({
       tenantId,
-      messageId: 'message-a',
-      conversationId: 'conversation-a',
+      messageId: messageId,
+      conversationId: conversationId,
       user: 'user-a',
       isCreatedByUser: false,
       text: 'answer',
@@ -197,8 +262,8 @@ beforeEach(async () => {
 test('resolves confirmed delivered receipt and actual message trace, keeping browser feedback untouched', async () => {
   const result = await post().expect(200);
   expect(result.body).toEqual({
-    messageId: 'message-a',
-    conversationId: 'conversation-a',
+    messageId: messageId,
+    conversationId: conversationId,
     feedback: { rating: 'thumbsUp' },
     ignored: false,
   });
@@ -213,7 +278,7 @@ test('resolves confirmed delivered receipt and actual message trace, keeping bro
         centralTraceExportEnabled: true,
       }),
     );
-    const message = await db.getMessage({ user: 'user-a', messageId: 'message-a' });
+    const message = await db.getMessage({ user: 'user-a', messageId: messageId });
     expect(message?.feedback).toMatchObject({ rating: 'thumbsDown' });
   });
 });
@@ -239,7 +304,7 @@ test.each([false, true, undefined])(
       config.langfuse = { trace: { temporaryChats: true } };
       await scope(async () =>
         mongoose.models.Message.updateOne(
-          { messageId: 'message-a' },
+          { messageId: messageId },
           {
             $set: {
               ...(isTemporary !== undefined && { isTemporary }),
@@ -253,13 +318,13 @@ test.each([false, true, undefined])(
       if (isTemporary === undefined)
         await scope(async () =>
           mongoose.models.Message.collection.updateOne(
-            { messageId: 'message-a' },
+            { messageId: messageId },
             { $unset: { isTemporary: '' } },
           ),
         );
       await post().expect(200);
       await scope(async () => {
-        const reply = await mongoose.models.ChannelReply.findOne({ messageId: 'message-a' }).lean<{
+        const reply = await mongoose.models.ChannelReply.findOne({ messageId: messageId }).lean<{
           isTemporary?: boolean;
         }>();
         const ledger = await mongoose.models.ChannelFeedback.findOne({}).lean<{
@@ -289,33 +354,52 @@ test('rejects unsigned ingress, forged provenance, unsafe timestamps and non-del
   await post({ ...event, eventTimestampUs: Number.MAX_SAFE_INTEGER + 1 }).expect(400);
   await post({ ...event, externalMessageKey: 'C1:missing' }).expect(404);
   await scope(async () =>
-    mongoose.models.ChannelRun.updateOne({ runId: 'run-a' }, { $set: { state: 'delivering' } }),
+    mongoose.models.ChannelRun.updateOne({ runId: runId }, { $set: { state: 'delivering' } }),
   );
   await post().expect(404);
   expect(deps.sendScore).not.toHaveBeenCalled();
 });
 
-test('rejects changed channel revision or a user-authored/cross-principal assistant record', async () => {
-  await scope(async () =>
-    mongoose.models.ChannelRun.updateOne(
-      { runId: 'run-a' },
-      { $set: { 'principal.channelRevision': 'old' } },
-    ),
-  );
-  await post().expect(404);
-  await scope(async () => {
-    await mongoose.models.ChannelRun.updateOne(
-      { runId: 'run-a' },
-      { $set: { 'principal.channelRevision': 'rev-1' } },
-    );
-    await mongoose.models.Message.updateOne(
-      { messageId: 'message-a' },
-      { $set: { isCreatedByUser: true } },
-    );
-  });
-  await post().expect(404);
-  expect(deps.sendScore).not.toHaveBeenCalled();
-});
+test.each(['unmanaged', 'unpublished'] as const)(
+  'does not accept a delivered-looking %s Run as source authority',
+  async (kind) => {
+    await scope(async () => {
+      const result = await mongoose.models.ChannelRun.collection.updateOne(
+        { runId },
+        kind === 'unmanaged'
+          ? { $unset: { _managed: 1 } }
+          : { $set: { '_managed.phase': 'registered' } },
+      );
+      expect(result.matchedCount).toBe(1);
+    });
+    await post().expect(404);
+    expect(deps.sendScore).not.toHaveBeenCalled();
+  },
+);
+
+test.each(['channel revision', 'user-authored', 'cross-principal'] as const)(
+  'rejects a %s source instead of exporting feedback',
+  async (kind) => {
+    await scope(async () => {
+      if (kind === 'channel revision')
+        expect(
+          await db.updateAgentChannel('channel-a', 'user-a', { revision: 'rotated' }),
+        ).not.toBeNull();
+      else {
+        const result = await mongoose.models.Message.collection.updateOne(
+          { messageId },
+          {
+            $set:
+              kind === 'user-authored' ? { isCreatedByUser: true } : { user: 'other-principal' },
+          },
+        );
+        expect(result.matchedCount).toBe(1);
+      }
+    });
+    await post().expect(404);
+    expect(deps.sendScore).not.toHaveBeenCalled();
+  },
+);
 
 test('honors feedback disable and rechecks central export policy without broadening captured destinations', async () => {
   config.interfaceConfig!.feedback = false;
@@ -343,7 +427,7 @@ it.each([
   async ({ sampled, ids, expected }) => {
     await scope(async () => {
       await mongoose.models.Message.updateOne(
-        { messageId: 'message-a' },
+        { messageId: messageId },
         {
           ...(sampled === undefined ? {} : { $set: { langfuseSampled: sampled } }),
           $unset: {
@@ -354,7 +438,7 @@ it.each([
       );
       if (ids)
         await mongoose.models.Message.updateOne(
-          { messageId: 'message-a' },
+          { messageId: messageId },
           { $set: { langfuseDestinationIds: ids } },
         );
     });
@@ -372,7 +456,7 @@ it.each([false, undefined])(
     await post().expect(200);
     await scope(async () => {
       await mongoose.models.Message.collection.updateOne(
-        { messageId: 'message-a' },
+        { messageId: messageId },
         original === undefined
           ? { $unset: { langfuseCentralTraceExportEnabled: '' } }
           : { $set: { langfuseCentralTraceExportEnabled: original } },
@@ -409,7 +493,7 @@ it('dispatches actual tenant feedback with unresolved optional project identity'
     };
     await scope(async () =>
       mongoose.models.Message.updateOne(
-        { messageId: 'message-a' },
+        { messageId: messageId },
         { $set: { isTemporary: false }, $unset: { langfuseDestinationIds: '' } },
       ),
     );
@@ -433,7 +517,7 @@ it('dispatches actual tenant feedback with unresolved optional project identity'
 test('missing trace provenance is explicit unavailable rather than guessed sampling or routing', async () => {
   await scope(async () =>
     mongoose.models.Message.updateOne(
-      { messageId: 'message-a' },
+      { messageId: messageId },
       { $unset: { langfuseSampled: '', langfuseDestinationIds: '' } },
     ),
   );
@@ -476,7 +560,7 @@ it('refuses to move a frozen feedback mapping to a changed source trace', async 
   await post().expect(200);
   await scope(async () =>
     mongoose.models.Message.updateOne(
-      { messageId: 'message-a' },
+      { messageId: messageId },
       { $set: { langfuseRunId: 'different-trace' } },
     ),
   );
@@ -505,7 +589,7 @@ it('resolves delivered source metadata once and reuses the mapping on redelivery
       event.externalMessageKey,
     ),
   );
-  expect(source).toMatchObject({ messageId: 'message-a', principalId: 'user-a' });
+  expect(source).toMatchObject({ messageId: messageId, principalId: 'user-a' });
   for (const field of ['text', 'admission', 'execution', 'encryptedApiKey', '_id'])
     expect(source).not.toHaveProperty(field);
 });
@@ -522,37 +606,37 @@ it.each([
   await scope(async () => {
     if (change === 'unbound')
       await mongoose.models.ChannelRun.updateOne(
-        { runId: 'run-a' },
+        { runId: runId },
         { $unset: { 'execution.responseId': '' } },
       );
     if (change === 'response_changed')
       await mongoose.models.ChannelRun.updateOne(
-        { runId: 'run-a' },
+        { runId: runId },
         { $set: { 'execution.responseId': 'another-response' } },
       );
     if (change === 'foreign_owner')
       await mongoose.models.Message.updateOne(
-        { messageId: 'message-a' },
+        { messageId: messageId },
         { $set: { user: 'another-owner' } },
       );
     if (change === 'foreign_conversation')
       await mongoose.models.Message.updateOne(
-        { messageId: 'message-a' },
+        { messageId: messageId },
         { $set: { conversationId: 'another-conversation' } },
       );
     if (change === 'expired')
       await mongoose.models.Message.updateOne(
-        { messageId: 'message-a' },
+        { messageId: messageId },
         { $set: { expiredAt: new Date(0) } },
       );
     if (change === 'user_message')
       await mongoose.models.Message.updateOne(
-        { messageId: 'message-a' },
+        { messageId: messageId },
         { $set: { isCreatedByUser: true } },
       );
     if (change === 'unconfirmed')
       await mongoose.models.ChannelRun.updateOne(
-        { runId: 'run-a' },
+        { runId: runId },
         { $set: { 'receipts.0.outcome': 'unknown' } },
       );
   });
@@ -626,7 +710,7 @@ it('rechecks source authority after delayed configuration before dispatching to 
     (error) => error,
   );
   await entered;
-  await scope(() => mongoose.models.Message.deleteOne({ messageId: 'message-a', user: 'user-a' }));
+  await scope(() => mongoose.models.Message.deleteOne({ messageId: messageId, user: 'user-a' }));
   release();
   expect(await exportResult).toMatchObject({ message: 'Channel feedback authority changed' });
   expect(deps.sendScore).not.toHaveBeenCalled();

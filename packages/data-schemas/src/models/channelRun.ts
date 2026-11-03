@@ -28,7 +28,7 @@ export interface ChannelRunRecord extends Omit<ChannelRunView, 'revision'> {
   claimCheckedAt?: number;
   /** Persisted before dispatch; every retry attaches to this exact identity. */
   execution?: {
-    protocol?: 'responses';
+    protocol: 'responses';
     responseId?: string;
     responseTarget?: ManagedTarget<'response'>;
     responseFingerprint?: string;
@@ -38,8 +38,6 @@ export interface ChannelRunRecord extends Omit<ChannelRunView, 'revision'> {
     conversationId: string;
     parentMessageId: string;
     generationCreatedAt?: number;
-    deliveryKey?: string;
-    enqueueAttemptedAt?: number;
   };
   errorCode?: string;
   deliveredAt?: number;

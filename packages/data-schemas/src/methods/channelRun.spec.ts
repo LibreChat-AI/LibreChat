@@ -1,25 +1,35 @@
 import mongoose from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { ChannelRunSummary } from 'librechat-data-provider';
 import type { ChannelRunRecord } from '~/models/channelRun';
+import type { ChannelRunEnrollment } from './channelRun';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
+import { channelResponseRequest } from './channelRunResponse';
+import { createManagedMessageId } from '~/utils/managed';
 import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
 import { channelRunFence } from './channelRunWrite';
+import { createResponseStorage } from './response';
+import { digest } from './channelProtocol';
 import { createUserMethods } from './user';
 import { createModels } from '~/models';
 
 let mongo: MongoMemoryReplSet;
 let storage: ReturnType<typeof createChannelRunStorage>;
 const tenantId = 'channel-storage-test';
+let currentRevision = 'revision';
+const responseOneId = createManagedMessageId();
+const boundResponseId = createManagedMessageId();
+const foreignResponseId = createManagedMessageId();
 const scope = <T>(work: () => Promise<T>) => tenantStorage.run({ tenantId }, work);
 const fence = channelRunFence;
-const event = (eventId = 'event', actorId = 'actor') => ({
+const event = (eventId = 'event', actorId = 'actor'): ChannelRunEnrollment => ({
   tenantId,
   channelId: 'channel',
   agentId: 'agent',
-  principal: { userId: 'actor', channelRevision: 'revision' },
+  principal: { userId: 'actor', channelRevision: currentRevision },
   admission: {
     eventId,
     externalChannelId: 'C1',
@@ -30,29 +40,55 @@ const event = (eventId = 'event', actorId = 'actor') => ({
   },
 });
 
-async function seedRunLink(input: ReturnType<typeof event>, linkId: string) {
-  await mongoose.models.ChannelIdentity.deleteMany({ tenantId, 'identity.channelId': 'channel' });
-  await createChannelIdentityStorage(mongoose).saveChannelIdentity(
-    {
-      tenantId,
-      linkId,
-      revision: '1',
-      state: 'active',
-      userId: input.principal.userId,
-      ticketHash: `ticket-${linkId}`,
-      ticketExpiresAtMs: 10000,
-      expiresAtMs: 10000,
-      identity: {
-        tenantId,
-        channelId: input.channelId,
-        channelRevision: input.principal.channelRevision,
-        teamId: input.admission.actor.teamId,
-        externalUserId: input.admission.actor.externalUserId,
-        agentId: input.agentId,
+async function seedRunLink(input: ChannelRunEnrollment, linkId: string) {
+  const channels = createAgentChannelMethods(mongoose);
+  let parent = (await channels.getAgentChannel(input.channelId))!;
+  if (parent.credentialMode !== 'per_user') {
+    parent = (await channels.updateAgentChannel(input.channelId, 'actor', {
+      credentialMode: 'per_user',
+    }))!;
+  }
+  currentRevision = parent.revision;
+  input.principal.channelRevision = parent.revision;
+  const identities = createChannelIdentityStorage(mongoose);
+  const identity = {
+    tenantId: input.tenantId,
+    channelId: input.channelId,
+    channelRevision: parent.revision,
+    agentId: input.agentId,
+    teamId: input.admission.actor.teamId,
+    externalUserId: input.admission.actor.externalUserId,
+  };
+  const previous = await identities.readChannelIdentity(identity);
+  if (
+    previous?.linkId === linkId &&
+    previous.userId === input.principal.userId &&
+    previous.state === 'active' &&
+    previous.identity.channelRevision === parent.revision
+  ) {
+    input.principal.linkId = linkId;
+    input.principal.linkRevision = previous.revision;
+    return;
+  }
+  const revision = previous ? randomUUID() : '1';
+  expect(
+    await identities.saveChannelIdentity(
+      {
+        tenantId: input.tenantId,
+        linkId,
+        revision,
+        state: 'active',
+        userId: input.principal.userId,
+        ticketHash: `ticket-${linkId}`,
+        ticketExpiresAtMs: Date.now() + 60000,
+        expiresAtMs: Date.now() + 600000,
+        identity,
       },
-    },
-    null,
-  );
+      previous?.revision ?? null,
+    ),
+  ).toBe(true);
+  input.principal.linkId = linkId;
+  input.principal.linkRevision = revision;
 }
 
 async function seedTenantlessChannel() {
@@ -76,10 +112,10 @@ beforeAll(async () => {
   storage = createChannelRunStorage(mongoose);
 });
 beforeEach(async () => {
+  currentRevision = 'revision';
   await runAsSystem(async () => {
     await mongoose.models.AgentChannel.deleteMany({});
     await mongoose.models.ChannelIdentity.deleteMany({});
-    await mongoose.models.ChannelScope.deleteMany({});
     await mongoose.models.ResponseScope.deleteMany({});
     await scope(() =>
       createAgentChannelMethods(mongoose).createAgentChannel({
@@ -167,7 +203,7 @@ it('holds the lane until every required delivery has been confirmed', () =>
     await storage.saveSnapshot(
       tenantId,
       fence(run),
-      { status: 'completed', text: 'answer', responseId: 'response', elapsedMs: 1 },
+      { status: 'completed', text: 'answer', responseId: responseOneId, elapsedMs: 1 },
       103,
     );
     await storage.savePlan(
@@ -184,33 +220,27 @@ it('holds the lane until every required delivery has been confirmed', () =>
       code: 'delivery_incomplete',
     });
     expect(
-      await mongoose.models.ChannelLane.findOne({ tenantId, kind: 'principal' }).lean(),
-    ).toMatchObject({
-      activeRunId: run.runId,
-    });
+      await mongoose.models.ChannelLane.findOne({ _id: run.publication!.control.id }).lean(),
+    ).toMatchObject({ assignment: { run: { runId: run.runId } } });
   }));
 
-it('isolates actor lanes across distinct personal links with the same revision', () =>
+it('isolates relinked personal histories while retaining the old actor assignment until retirement', () =>
   scope(async () => {
     const first = event('link-one');
-    const second = event('link-two');
     await seedRunLink(first, 'one');
-    const a = await storage.admit(
-      { ...first, principal: { ...first.principal, linkId: 'one', linkRevision: '1' } },
-      100,
-    );
+    await storage.admit(first, 100);
+    const a = (await storage.claim(tenantId, 'channel', 'worker-a', 101, 1000))!;
+    const preparedA = await storage.prepareExecution(tenantId, fence(a), 102);
+    const second = event('link-two');
     await seedRunLink(second, 'two');
-    const b = await storage.admit(
-      { ...second, principal: { ...second.principal, linkId: 'two', linkRevision: '1' } },
-      101,
-    );
-    expect(a.run.laneId).not.toBe(b.run.laneId);
-    const claimedA = (await storage.claim(tenantId, 'channel', 'worker-a', 102, 1000))!;
-    const claimedB = (await storage.claim(tenantId, 'channel', 'worker-b', 103, 1000))!;
-    const preparedA = await storage.prepareExecution(tenantId, fence(claimedA), 104);
-    const preparedB = await storage.prepareExecution(tenantId, fence(claimedB), 104);
+    const b = await storage.admit(second, 103);
+    expect(a.laneId).not.toBe(b.run.laneId);
+    expect(await storage.claim(tenantId, 'channel', 'worker-b', 104, 1000)).toBeNull();
+    const cleanup = (await storage.claimAuthorityLost(preparedA, 'cleanup-a', 105, 1000))!;
+    expect(await storage.finishAuthorityLost(tenantId, fence(cleanup), 106)).toBe('stopped');
+    const claimedB = (await storage.claim(tenantId, 'channel', 'worker-b', 107, 1000))!;
+    const preparedB = await storage.prepareExecution(tenantId, fence(claimedB), 108);
     expect(preparedA.execution?.conversationId).not.toBe(preparedB.execution?.conversationId);
-    expect(preparedA.execution?.parentMessageId).toBe('00000000-0000-0000-0000-000000000000');
     expect(preparedB.execution?.parentMessageId).toBe('00000000-0000-0000-0000-000000000000');
   }));
 
@@ -295,7 +325,7 @@ it('retains an empty Stop observation before lane creation and never targets a l
     });
   }));
 
-it('retains the first run target after it completes instead of cancelling the next actor turn', () =>
+it('retains the first Stop target after terminal cancellation instead of cancelling the next turn', () =>
   scope(async () => {
     const input = event();
     await storage.admit(input, 100);
@@ -303,94 +333,39 @@ it('retains the first run target after it completes instead of cancelling the ne
     expect(await storage.observeThreadStop(input, 120, 105)).toMatchObject({
       run: { runId: first.runId },
     });
-    // Model the atomic finish transition; the assertion concerns durable Stop replay, not execution.
-    await mongoose.models.ChannelRun.updateOne(
-      { runId: first.runId },
-      { $set: { state: 'delivered' } },
+    expect(await storage.requestCancel(input, first.runId)).toBe(true);
+    await storage.prepareExecution(tenantId, fence(first), 106);
+    await storage.finishUnstartedResponseCancellation(tenantId, fence(first), 107);
+    await storage.savePlan(
+      tenantId,
+      fence(first),
+      {
+        revision: 'cancelled',
+        rendererVersion: 'test',
+        parts: [{ operationId: 'cancelled', kind: 'message', required: true, text: 'Cancelled' }],
+      },
+      108,
     );
-    await mongoose.models.ChannelLane.updateOne(
-      { activeRunId: first.runId },
-      { $unset: { activeRunId: '' } },
+    await storage.beginDelivery(tenantId, fence(first), 'cancelled', 108);
+    await storage.settleDelivery(
+      tenantId,
+      fence(first),
+      {
+        operationId: 'cancelled',
+        attempts: 1,
+        outcome: 'confirmed',
+        externalMessageKey: 'C1:cancelled',
+      },
+      108,
     );
-    await storage.admit(event('next'), 106);
-    const next = (await storage.claim(tenantId, 'channel', 'second', 107, 1000))!;
+    expect((await storage.commitDelivery(tenantId, fence(first), 108)).state).toBe('cancelled');
+    await storage.admit(event('next'), 109);
+    const next = (await storage.claim(tenantId, 'channel', 'second', 110, 1000))!;
     expect(next.runId).not.toBe(first.runId);
     expect(await storage.observeThreadStop(input, 120, 115)).toBeNull();
     expect((await storage.read(tenantId, 'channel', next.runId))?.cancellationRequested).toBe(
       false,
     );
-  }));
-
-it('keeps one external Stop observation across changes to the linked execution principal', () =>
-  scope(async () => {
-    const first = event('first');
-    const second = { ...event('second'), principal: { ...first.principal, userId: 'new-account' } };
-    await storage.admit(first, 100);
-    const a = (await storage.claim(tenantId, 'channel', 'a', 101, 1000))!;
-    expect(await storage.observeThreadStop(first, 120, 105)).toMatchObject({
-      run: { runId: a.runId },
-    });
-    await storage.admit(second, 106);
-    const b = (await storage.claim(tenantId, 'channel', 'b', 107, 1000))!;
-    expect(await storage.observeThreadStop(second, 120, 110)).toBeNull();
-    expect(await storage.observeThreadStop(second, 119, 110)).toBeNull();
-    expect((await storage.read(tenantId, 'channel', b.runId))?.cancellationRequested).toBe(false);
-    expect(await storage.observeThreadStop(second, 121, 111)).toMatchObject({
-      run: { runId: b.runId },
-      before: 111,
-    });
-    expect(
-      await mongoose.models.ChannelLane.countDocuments({
-        tenantId,
-        stopObservation: { $exists: true },
-      }),
-    ).toBe(1);
-    expect(await storage.observeThreadStop(first, 120, 112)).toBeNull();
-  }));
-
-it('serializes duplicate Stop observations across principal lanes without rebinding either target', () =>
-  scope(async () => {
-    const first = event('first');
-    const second = { ...event('second'), principal: { ...first.principal, userId: 'new-account' } };
-    await storage.admit(first, 100);
-    await storage.claim(tenantId, 'channel', 'a', 101, 1000);
-    await storage.admit(second, 102);
-    await storage.claim(tenantId, 'channel', 'b', 103, 1000);
-    const replica = createChannelRunStorage(mongoose);
-    const observations = await Promise.all([
-      storage.observeThreadStop(first, 120, 105),
-      replica.observeThreadStop(second, 120, 106),
-    ]);
-    expect(observations.filter(Boolean)).toHaveLength(1);
-    expect(
-      await mongoose.models.ChannelLane.countDocuments({
-        tenantId,
-        stopObservation: { $exists: true },
-      }),
-    ).toBe(1);
-    const replay = await Promise.all([
-      storage.observeThreadStop(first, 120, 108),
-      replica.observeThreadStop(second, 120, 109),
-    ]);
-    expect(replay.filter(Boolean)).toHaveLength(1);
-    expect(replay.find(Boolean)?.run.runId).toBe(observations.find(Boolean)?.run.runId);
-    expect(replay.find(Boolean)?.before).toBe(observations.find(Boolean)?.before);
-  }));
-
-it('preserves an absent Stop target through a principal transition', () =>
-  scope(async () => {
-    const first = event();
-    expect(await storage.observeThreadStop(first, 120, 100)).toBeNull();
-    const second = { ...event('next'), principal: { ...first.principal, userId: 'new-account' } };
-    await storage.admit(second, 101);
-    const claimed = (await storage.claim(tenantId, 'channel', 'b', 102, 1000))!;
-    expect(await storage.observeThreadStop(second, 120, 110)).toBeNull();
-    expect((await storage.read(tenantId, 'channel', claimed.runId))?.cancellationRequested).toBe(
-      false,
-    );
-    expect(await storage.observeThreadStop(second, 121, 111)).toMatchObject({
-      run: { runId: claimed.runId },
-    });
   }));
 
 it('does not couple Stop occurrences for distinct external actors', () =>
@@ -416,6 +391,7 @@ it('owns empty Stop lanes for erasure and cannot recreate them after account del
       tenantId,
     });
     const input = { ...event(), principal: { ...event().principal, userId: String(user._id) } };
+    await seedRunLink(input, 'stop-owner-link');
     await storage.admit(input, 100);
     // A retained empty lane remains owned after its runs are cleaned up.
     await mongoose.models.ChannelRun.deleteMany({ tenantId });
@@ -474,7 +450,7 @@ async function plannedRun() {
   await storage.saveSnapshot(
     tenantId,
     fence(run),
-    { status: 'completed', text: 'answer', responseId: 'response', elapsedMs: 1 },
+    { status: 'completed', text: 'answer', responseId: responseOneId, elapsedMs: 1 },
     103,
   );
   await storage.savePlan(
@@ -599,43 +575,26 @@ it('retains prepared conversation and parent identity across binding replays', (
     await storage.admit(event(), 100);
     const run = (await storage.claim(tenantId, 'channel', 'worker', 101, 1000))!;
     const prepared = await storage.prepareExecution(tenantId, fence(run), 102);
-    await mongoose.models.StoredResponse.create({
-      tenantId,
-      userId: 'actor',
-      responseId: 'bound-response',
-      requestKey: `channel:${run.runId}`,
-      fingerprint: 'request',
-      agentId: 'agent',
-      requestJSON: JSON.stringify({
-        model: 'agent',
-        input: 'hello',
-        background: true,
-        store: true,
-      }),
-      conversationId: prepared.execution!.conversationId,
-      parentMessageId: prepared.execution!.parentMessageId,
-      status: 'queued',
-      revision: 0,
-    });
+    await reserveTestResponse(run, boundResponseId);
     for (const field of ['conversationId', 'parentMessageId'] as const) {
       await mongoose.models.StoredResponse.updateOne(
-        { responseId: 'bound-response' },
+        { responseId: boundResponseId },
         { $set: { [field]: 'another-conversation' } },
       );
       await expect(
-        storage.bindResponse(tenantId, fence(run), 'bound-response', 103),
+        storage.bindResponse(tenantId, fence(run), boundResponseId, 103),
       ).rejects.toMatchObject({ code: 'invalid_transition' });
       await mongoose.models.StoredResponse.updateOne(
-        { responseId: 'bound-response' },
+        { responseId: boundResponseId },
         { $set: { [field]: prepared.execution![field] } },
       );
     }
-    const first = await storage.bindResponse(tenantId, fence(run), 'bound-response', 103);
-    const replay = await storage.bindResponse(tenantId, fence(run), 'bound-response', 104);
+    const first = await storage.bindResponse(tenantId, fence(run), boundResponseId, 103);
+    const replay = await storage.bindResponse(tenantId, fence(run), boundResponseId, 104);
     expect(first.execution?.parentMessageId).toBe(prepared.execution!.parentMessageId);
     expect(replay.execution).toEqual(first.execution);
     await expect(
-      storage.bindResponse(tenantId, fence(run), 'different-response', 105),
+      storage.bindResponse(tenantId, fence(run), foreignResponseId, 105),
     ).rejects.toMatchObject({ code: 'invalid_transition' });
   }));
 
@@ -714,10 +673,7 @@ it('does not replay an admitted event through a different principal or linked ac
       { ...input.principal, channelRevision: 'new-revision' },
     ])
       await expect(storage.admit({ ...input, principal }, 101)).rejects.toMatchObject({
-        code:
-          principal.channelRevision !== input.principal.channelRevision || 'linkId' in principal
-            ? 'invalid_transition'
-            : 'event_conflict',
+        code: 'invalid_transition',
       });
     await expect(storage.admit({ ...input, agentId: 'another-agent' }, 101)).rejects.toMatchObject({
       code: 'invalid_transition',
@@ -733,8 +689,11 @@ it('erases channel request/output and owned lane identity before deleting its ac
     });
     const userId = String(user._id);
     const input = { ...event(), principal: { ...event().principal, userId } };
+    await seedRunLink(input, 'erased-owner-link');
     const own = await storage.admit(input, 100);
-    const other = await storage.admit(event('other', 'other-owner'), 100);
+    const otherInput = event('other', 'other-owner');
+    await seedRunLink(otherInput, 'retained-owner-link');
+    const other = await storage.admit(otherInput, 100);
     await createUserMethods(mongoose).deleteUserById(userId);
     expect(await storage.read(tenantId, 'channel', own.run.runId)).toBeNull();
     expect(await mongoose.models.ChannelLane.exists({ laneId: own.run.laneId })).toBeNull();
@@ -742,7 +701,7 @@ it('erases channel request/output and owned lane identity before deleting its ac
     await expect(storage.admit(input, 101)).rejects.toMatchObject({ code: 'invalid_transition' });
   }));
 
-it('serializes account erasure with an already inserting channel event', () =>
+it('fences a paused private publisher before account erasure completes', () =>
   scope(async () => {
     const user = await mongoose.models.User.create({
       email: 'channel-erasure-race@example.com',
@@ -750,65 +709,69 @@ it('serializes account erasure with an already inserting channel event', () =>
       tenantId,
     });
     const userId = String(user._id);
-    let entered!: () => void;
+    const input = event();
+    input.principal.userId = userId;
+    await seedRunLink(input, 'erasure-race-link');
+    let enter!: () => void;
     let release!: () => void;
-    const started = new Promise<void>((resolve) => {
-      entered = resolve;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
     });
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
     const collection = mongoose.models.ChannelRun.collection;
-    const insert = collection.insertOne.bind(collection);
-    const paused = jest.spyOn(collection, 'insertOne').mockImplementation(async (...args) => {
-      entered();
-      await gate;
-      return insert(...args);
+    const update = collection.updateOne.bind(collection);
+    let paused = false;
+    const spy = jest.spyOn(collection, 'updateOne').mockImplementation(async (...args) => {
+      if (!paused && !Array.isArray(args[1]) && args[1].$set?.['_managed.phase'] === 'published') {
+        paused = true;
+        enter();
+        await gate;
+      }
+      return update(...args);
     });
-    const pending = storage.admit({ ...event(), principal: { ...event().principal, userId } }, 100);
-    await started;
-    let erased = false;
-    const deletion = createUserMethods(mongoose)
-      .deleteUserById(userId)
-      .then((result) => {
-        erased = true;
-        return result;
-      });
+    const pending = storage.admit(input, 100);
+    void pending.catch(() => undefined);
+    const timeout = setTimeout(release, 10000);
     try {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(erased).toBe(false);
-    } finally {
+      await entered;
+      expect(await createUserMethods(mongoose).deleteUserById(userId)).toMatchObject({
+        deletedCount: 1,
+      });
       release();
-      paused.mockRestore();
+      await expect(pending).rejects.toMatchObject({ code: 'invalid_transition' });
+      expect(await collection.findOne({ 'principal.userId': userId })).toBeNull();
+      expect(await mongoose.models.ChannelLane.exists({ userId })).toBeNull();
+    } finally {
+      clearTimeout(timeout);
+      release();
+      spy.mockRestore();
+      await pending.catch(() => undefined);
     }
-    await pending;
-    await deletion;
-    expect(await mongoose.models.ChannelRun.exists({ 'principal.userId': userId })).toBeNull();
-    expect(await mongoose.models.ChannelLane.exists({ userId })).toBeNull();
   }));
 
-async function bindTestResponse(run: ChannelRunRecord, responseId = 'response') {
+async function reserveTestResponse(run: ChannelRunRecord, responseId = responseOneId) {
   const prepared = (await storage.read(run.tenantId, run.channelId, run.runId))!;
-  await mongoose.models.StoredResponse.create({
-    tenantId: run.tenantId === '_' ? undefined : run.tenantId,
+  const request = channelResponseRequest(prepared);
+  const result = await createResponseStorage(mongoose).reserve({
+    ...(run.tenantId !== '_' && { tenantId: run.tenantId }),
     sourceKeyId: prepared.execution?.apiKeyId,
     userId: run.principal.userId,
     responseId,
     requestKey: `channel:${run.runId}`,
-    fingerprint: 'request',
+    fingerprint: digest(request),
     agentId: run.agentId,
-    requestJSON: JSON.stringify({
-      model: run.agentId,
-      input: run.admission.input,
-      background: true,
-      store: true,
-    }),
+    requestJSON: JSON.stringify(request),
     conversationId: prepared.execution!.conversationId,
     parentMessageId: prepared.execution!.parentMessageId,
-    status: 'queued',
-    revision: 0,
   });
-  return storage.bindResponse(run.tenantId, fence(run), responseId, 102);
+  if (!result.ok) throw new Error('Expected canonical Response fixture');
+  return result.record;
+}
+async function bindTestResponse(run: ChannelRunRecord, responseId = responseOneId) {
+  const response = await reserveTestResponse(run, responseId);
+  return storage.bindResponse(run.tenantId, fence(run), response.responseId, 102);
 }
 
 it('renews the same fence idempotently without shortening a lease on reordered heartbeats', () =>
@@ -837,6 +800,8 @@ it.each(['teamId', 'appId', 'externalChannelId', 'externalThreadKey', 'agentId']
       else if (field === 'agentId') second.agentId = 'different';
       else second.admission[field] = 'different';
       const a = await storage.admit(first, 100);
+      const claimedA = (await storage.claim(tenantId, 'channel', 'a', 101, 1000))!;
+      const pa = await storage.prepareExecution(tenantId, fence(claimedA), 102);
       if (field === 'agentId') {
         await expect(storage.admit(second, 101)).rejects.toMatchObject({
           code: 'invalid_transition',
@@ -857,13 +822,20 @@ it.each(['teamId', 'appId', 'externalChannelId', 'externalThreadKey', 'agentId']
       }
       const b = await storage.admit(second, 101);
       expect(a.run.laneId).not.toBe(b.run.laneId);
-      const claimedA = (await storage.claim(tenantId, 'channel', 'a', 102, 1000))!;
       const claimedB = (await storage.claim(tenantId, 'channel', 'b', 103, 1000))!;
-      expect((await storage.readActiveThread(first, 104))?.runId).toBe(claimedA.runId);
+      const rotated = field === 'teamId' || field === 'appId';
+      if (rotated) expect(await storage.readActiveThread(first, 104)).toBeNull();
+      else expect((await storage.readActiveThread(first, 104))?.runId).toBe(claimedA.runId);
       expect((await storage.readActiveThread(second, 104))?.runId).toBe(claimedB.runId);
       expect(await storage.requestCancel(second, claimedA.runId)).toBe(false);
       expect(await storage.requestCancel(first, claimedA.runId)).toBe(true);
-      const pa = await storage.prepareExecution(tenantId, fence(claimedA), 104);
+      if (rotated)
+        await expect(
+          storage.admit(
+            { ...first, admission: { ...first.admission, eventId: 'stale-revision' } },
+            104,
+          ),
+        ).rejects.toMatchObject({ code: 'invalid_transition' });
       const pb = await storage.prepareExecution(tenantId, fence(claimedB), 104);
       expect(pa.execution?.conversationId).not.toBe(pb.execution?.conversationId);
     }),
@@ -878,7 +850,7 @@ it('rejects unbound and mismatched response projections and revalidates them bef
       status: 'completed' as const,
       text: 'answer',
       elapsedMs: 1,
-      responseId: 'response',
+      responseId: responseOneId,
     };
     await expect(storage.saveSnapshot(tenantId, fence(run), snapshot, 103)).rejects.toMatchObject({
       code: 'invalid_transition',
@@ -898,7 +870,7 @@ it('rejects unbound and mismatched response projections and revalidates them bef
         storage.saveSnapshot(
           tenantId,
           fence(run),
-          { ...snapshot, status, responseId: 'other' },
+          { ...snapshot, status, responseId: foreignResponseId },
           103,
         ),
       ).rejects.toMatchObject({ code: 'invalid_transition' });
@@ -1031,25 +1003,18 @@ it.each([undefined, null, ''])(
       const input = { ...event(), tenantId: '_' };
       await storage.admit(input, 100);
       const run = (await storage.claim('_', 'channel', 'worker', 101, 1000))!;
-      const prepared = await storage.prepareExecution('_', fence(run), 102);
-      await runAsSystem(async () =>
-        mongoose.models.StoredResponse.collection.insertOne({
-          ...(storedTenant === undefined ? {} : { tenantId: storedTenant }),
-          userId: 'actor',
-          agentId: 'agent',
-          responseId: 'response',
-          requestKey: `channel:${run.runId}`,
-          fingerprint: 'request',
-          requestJSON: JSON.stringify({ model: 'agent', input: 'hello', background: true }),
-          conversationId: prepared.execution!.conversationId,
-          parentMessageId: prepared.execution!.parentMessageId,
-          status: 'queued',
-          revision: 0,
-        }),
-      );
+      await storage.prepareExecution('_', fence(run), 102);
+      await reserveTestResponse(run);
+      if (storedTenant !== undefined)
+        await runAsSystem(() =>
+          mongoose.models.StoredResponse.collection.updateOne(
+            { responseId: responseOneId },
+            { $set: { tenantId: storedTenant } },
+          ),
+        );
       expect(
-        (await storage.bindResponse('_', fence(run), 'response', 103)).execution?.responseId,
-      ).toBe('response');
+        (await storage.bindResponse('_', fence(run), responseOneId, 103)).execution?.responseId,
+      ).toBe(responseOneId);
     }),
 );
 
@@ -1088,10 +1053,10 @@ it.each(['completed', 'failed', 'cancelled'] as const)(
         await storage.saveSnapshot(
           tenantId,
           fence(run),
-          { status: current, responseId: 'response', text: 'working', elapsedMs: 1 },
+          { status: current, responseId: responseOneId, text: 'working', elapsedMs: 1 },
           103,
         );
-      const terminal = { status, responseId: 'response', text: 'final', elapsedMs: 2 };
+      const terminal = { status, responseId: responseOneId, text: 'final', elapsedMs: 2 };
       await storage.saveSnapshot(tenantId, fence(run), terminal, 104);
       for (const stale of ['running', 'requires_action'] as const)
         await expect(
@@ -1134,7 +1099,7 @@ it('replaces partial summary metrics with supplied complete metrics and preserve
       fence(run),
       {
         status: 'running',
-        responseId: 'response',
+        responseId: responseOneId,
         text: 'working',
         elapsedMs: 1,
         summary: testSummary('partial'),
@@ -1143,7 +1108,7 @@ it('replaces partial summary metrics with supplied complete metrics and preserve
     );
     const terminal = {
       status: 'completed' as const,
-      responseId: 'response',
+      responseId: responseOneId,
       text: 'answer',
       elapsedMs: 2,
     };
@@ -1219,7 +1184,7 @@ it('finalizes permanent required failure after active sends settle, releases the
     await storage.saveSnapshot(
       tenantId,
       fence(run),
-      { status: 'completed', responseId: 'response', text: 'answer', elapsedMs: 1 },
+      { status: 'completed', responseId: responseOneId, text: 'answer', elapsedMs: 1 },
       103,
     );
     await storage.savePlan(
@@ -1263,8 +1228,10 @@ it('finalizes permanent required failure after active sends settle, releases the
       (await storage.prepareExecution(tenantId, fence(next), 112)).execution?.parentMessageId,
     ).toBe('00000000-0000-0000-0000-000000000000');
     await storage.commitDelivery(tenantId, fence(run), 113);
-    expect(await mongoose.models.ChannelLane.findOne({ laneId: run.laneId }).lean()).toMatchObject({
-      activeRunId: next.runId,
+    expect(
+      await mongoose.models.ChannelLane.findOne({ _id: next.publication!.control.id }).lean(),
+    ).toMatchObject({
+      assignment: { run: { runId: next.runId } },
     });
   }));
 
@@ -1290,7 +1257,7 @@ it.each(['completed', 'failed', 'cancelled'] as const)(
       await storage.saveSnapshot(
         tenantId,
         fence(run),
-        { status, responseId: 'response', text: 'answer', elapsedMs: 1 },
+        { status, responseId: responseOneId, text: 'answer', elapsedMs: 1 },
         103,
       );
       await storage.savePlan(
@@ -1315,9 +1282,13 @@ it.each(['completed', 'failed', 'cancelled'] as const)(
       expect((await storage.read(tenantId, 'channel', run.runId))?.execution).not.toHaveProperty(
         'encryptedApiKey',
       );
-      expect(await storage.findDeliveredReply(event(), 'C1:reply')).toEqual(
-        status === 'completed' ? result : null,
-      );
+      const reply = await storage.findDeliveredReply(event(), 'C1:reply');
+      if (status === 'completed') {
+        const publicResult = { ...result };
+        Reflect.deleteProperty(publicResult, '_managed');
+        expect(reply).toEqual(publicResult);
+        expect(reply).not.toHaveProperty('_managed');
+      } else expect(reply).toBeNull();
       const wrong = event();
       wrong.admission.actor.appId = 'other-app';
       expect(await storage.findDeliveredReply(wrong, 'C1:reply')).toBeNull();
@@ -1490,11 +1461,16 @@ it.each(['principal', 'agent'] as const)(
         status: 'rejected',
         reason: {
           name: 'ChannelRunConflict',
-          code: kind === 'agent' ? 'invalid_transition' : 'event_conflict',
+          code: 'invalid_transition',
         },
       });
       expect(await mongoose.models.ChannelRun.countDocuments({ tenantId })).toBe(1);
-      expect(await mongoose.models.ChannelLane.countDocuments({ tenantId })).toBe(1);
+      expect(
+        await mongoose.models.ChannelLane.countDocuments({ tenantId, kind: 'principal' }),
+      ).toBe(1);
+      expect(await mongoose.models.ChannelLane.countDocuments({ tenantId, kind: 'control' })).toBe(
+        1,
+      );
     }),
 );
 
@@ -1510,19 +1486,20 @@ it('injects account erasure work bounds before closing admission', () =>
       const input = event(`erase-${i}`);
       input.principal.userId = userId;
       input.admission.externalThreadKey = `thread-${i}`;
+      await seedRunLink(input, `configured-${userId}`);
       await storage.admit(input, 100 + i);
     }
     const getConfig = jest.fn(async () => ({ erasureBatchSize: 1 }));
-    const deleted = jest.spyOn(mongoose.models.ChannelLane, 'deleteMany');
+    const pages = jest.spyOn(mongoose.models.ChannelLane.collection, 'find');
     try {
       await createUserMethods(mongoose, { getChannelStorageConfig: getConfig }).deleteUserById(
         userId,
       );
-      expect(deleted).toHaveBeenCalledWith({ tenantId, userId });
+      expect(pages.mock.calls.some(([, options]) => options?.limit === 1)).toBe(true);
       expect(await mongoose.models.ChannelLane.countDocuments({ tenantId, userId })).toBe(0);
       expect(getConfig).toHaveBeenCalledTimes(1);
     } finally {
-      deleted.mockRestore();
+      pages.mockRestore();
     }
   }));
 
@@ -1541,6 +1518,7 @@ it('fails a bad erasure configuration before closing the account owner fence', (
     ).rejects.toThrow();
     const input = event();
     input.principal.userId = userId;
+    await seedRunLink(input, 'bad-config-owner-link');
     await expect(storage.admit(input, 100)).resolves.toMatchObject({ duplicate: false });
   }));
 

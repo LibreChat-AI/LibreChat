@@ -4,9 +4,14 @@ import type { ChannelIdentityRecord } from '~/models/channelIdentity';
 import type { AgentChannelRecord } from './channel';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
+import { channelResponseRequest } from './channelRunResponse';
+import { createManagedMessageId } from '~/utils/managed';
 import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
+import { channelRunFence } from './channelRunWrite';
+import { createResponseStorage } from './response';
 import { createUserMethods } from './user';
+import { digest } from './channelProtocol';
 import { createModels } from '~/models';
 import { createMethods } from './index';
 
@@ -41,6 +46,13 @@ const event = () => ({
   },
 });
 
+async function retireUnstarted(runId: string, partition = tenantId) {
+  const run = (await runs.read(partition, 'channel', runId))!;
+  const cleanup = (await runs.claimAuthorityLost(run, 'cleanup', 2000, 1000))!;
+  expect(cleanup).not.toBeNull();
+  expect(await runs.finishAuthorityLost(partition, channelRunFence(cleanup), 2001)).toBe('stopped');
+}
+
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(mongo.getUri(), { autoIndex: false });
@@ -50,13 +62,7 @@ beforeAll(async () => {
 });
 beforeEach(async () =>
   runAsSystem(async () => {
-    for (const name of [
-      'AgentChannel',
-      'ChannelIdentity',
-      'ChannelScope',
-      'ChannelRun',
-      'ChannelLane',
-    ])
+    for (const name of ['AgentChannel', 'ChannelIdentity', 'ChannelRun', 'ChannelLane'])
       await mongoose.models[name].deleteMany({});
   }),
 );
@@ -77,7 +83,7 @@ it('builds unique connection indexes before concurrent first writes', () =>
 it('keeps a deleting parent until admitted work drains and rejects delayed admissions', () =>
   scope(async () => {
     await methods.createAgentChannel(channel());
-    await runs.admit(event(), 100);
+    const admitted = await runs.admit(event(), 100);
     expect(await methods.deleteAgentChannel('channel', 'owner')).toEqual({
       status: 'pending_drain',
     });
@@ -89,54 +95,57 @@ it('keeps a deleting parent until admitted work drains and rejects delayed admis
     expect(
       await methods.updateAgentChannel('channel', 'owner', { status: 'active' }, 'deleting'),
     ).toBeNull();
-    await mongoose.models.ChannelRun.updateMany({}, { $set: { state: 'cancelled' } });
+    await retireUnstarted(admitted.run.runId);
     expect(await methods.deleteAgentChannel('channel', 'owner')).toEqual({ status: 'deleted' });
     await expect(runs.admit(event(), 102)).rejects.toMatchObject({ code: 'invalid_transition' });
   }));
 
-it('waits for an inserting admission before deciding whether deletion can finish', () =>
+it('fences a paused private admission before channel deletion completes', () =>
   scope(async () => {
     await methods.createAgentChannel(channel());
-    let entered!: () => void;
+    let enter!: () => void;
     let release!: () => void;
-    const started = new Promise<void>((resolve) => {
-      entered = resolve;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
     });
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
     const collection = mongoose.models.ChannelRun.collection;
-    const insert = collection.insertOne.bind(collection);
-    const paused = jest.spyOn(collection, 'insertOne').mockImplementation(async (...args) => {
-      entered();
-      await gate;
-      return insert(...args);
+    const update = collection.updateOne.bind(collection);
+    let paused = false;
+    const spy = jest.spyOn(collection, 'updateOne').mockImplementation(async (...args) => {
+      if (!paused && !Array.isArray(args[1]) && args[1].$set?.['_managed.phase'] === 'published') {
+        paused = true;
+        enter();
+        await gate;
+      }
+      return update(...args);
     });
     const admission = runs.admit(event(), 100);
-    await started;
-    let finished = false;
-    const deletion = methods.deleteAgentChannel('channel', 'owner').then((result) => {
-      finished = true;
-      return result;
-    });
+    void admission.catch(() => undefined);
+    const timeout = setTimeout(release, 10000);
     try {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(finished).toBe(false);
-    } finally {
+      await entered;
+      expect(await methods.deleteAgentChannel('channel', 'owner')).toEqual({ status: 'deleted' });
       release();
-      paused.mockRestore();
+      await expect(admission).rejects.toMatchObject({ code: 'invalid_transition' });
+      expect(await collection.findOne({ channelId: 'channel' })).toBeNull();
+      expect(await methods.getAgentChannel('channel')).toBeNull();
+    } finally {
+      clearTimeout(timeout);
+      release();
+      spy.mockRestore();
+      await admission.catch(() => undefined);
     }
-    expect(await admission).toMatchObject({ duplicate: false });
-    expect(await deletion).toEqual({ status: 'pending_drain' });
-    expect(await methods.getAgentChannel('channel')).toMatchObject({ status: 'deleting' });
   }));
 
 it('leaves deletion retryable after dependent erasure fails', () =>
   scope(async () => {
     await methods.createAgentChannel(channel());
-    jest
-      .spyOn(mongoose.models.ChannelReply.collection, 'deleteMany')
-      .mockRejectedValueOnce(new Error('feedback erasure failed'));
+    jest.spyOn(mongoose.models.ChannelReply.collection, 'find').mockImplementationOnce(() => {
+      throw new Error('feedback erasure failed');
+    });
     await expect(methods.deleteAgentChannel('channel', 'owner')).rejects.toThrow(
       'feedback erasure failed',
     );
@@ -264,10 +273,7 @@ it('redacts deleted-owner credentials while retaining a retry anchor for other p
     await expect(
       runs.admit({ ...event(), admission: { ...event().admission, eventId: 'late' } }, 101),
     ).rejects.toMatchObject({ code: 'invalid_transition' });
-    await mongoose.models.ChannelRun.updateOne(
-      { runId: other.run.runId },
-      { $set: { state: 'cancelled' } },
-    );
+    await retireUnstarted(other.run.runId, tenantId);
     expect(await methods.deleteAgentChannel('channel', userId)).toEqual({ status: 'deleted' });
   }));
 
@@ -284,9 +290,9 @@ it('keeps account erasure retryable after connection feedback cleanup fails', ()
       createdBy: userId,
       encryptedBotToken: 'private-token',
     });
-    jest
-      .spyOn(mongoose.models.ChannelReply.collection, 'deleteMany')
-      .mockRejectedValueOnce(new Error('feedback store unavailable'));
+    jest.spyOn(mongoose.models.ChannelReply.collection, 'find').mockImplementationOnce(() => {
+      throw new Error('feedback store unavailable');
+    });
     const users = createUserMethods(mongoose);
     await expect(users.deleteUserById(userId)).rejects.toThrow('feedback store unavailable');
     expect(await mongoose.models.User.findById(userId).lean()).not.toBeNull();
@@ -480,10 +486,7 @@ it.each([tenantId, undefined])(
         ).toBe(1);
       });
       expect(await runs.read(partition, 'channel', admitted.run.runId)).not.toBeNull();
-      await mongoose.models.ChannelRun.updateOne(
-        { runId: admitted.run.runId },
-        { $set: { state: 'cancelled' } },
-      );
+      await retireUnstarted(admitted.run.runId, partition);
       expect(await methods.deleteAgentChannel('channel', ownerId)).toEqual({ status: 'deleted' });
     }),
 );
@@ -686,10 +689,7 @@ it('distinguishes absent, draining, deleted and repeated deletion outcomes', () 
       status: 'pending_drain',
     });
     expect((await methods.getAgentChannel('channel'))?.status).toBe('deleting');
-    await mongoose.models.ChannelRun.updateOne(
-      { runId: admitted.run.runId },
-      { $set: { state: 'cancelled' } },
-    );
+    await retireUnstarted(admitted.run.runId);
     expect(await methods.deleteAgentChannel('channel', 'owner')).toEqual({ status: 'deleted' });
     expect(await methods.deleteAgentChannel('channel', 'owner')).toEqual({ status: 'not_found' });
   }));
@@ -723,15 +723,65 @@ it.each(['queued', 'executing', 'requires_action', 'delivering', 'blocked'] as c
 );
 
 it.each(['delivered', 'failed', 'cancelled'] as const)(
-  'completes deletion when retained runs are %s',
+  'completes deletion when retained runs are positively settled as %s',
   (state) =>
     scope(async () => {
       await methods.createAgentChannel(channel());
-      const admitted = await runs.admit(event(), 100);
-      await mongoose.models.ChannelRun.updateOne(
-        { runId: admitted.run.runId },
-        { $set: { state } },
+      await runs.admit(event(), 100);
+      const claimed = (await runs.claim(tenantId, 'channel', 'worker', 101, 1000))!;
+      const fence = channelRunFence(claimed);
+      const prepared = await runs.prepareExecution(tenantId, fence, 102);
+      const responseId = createManagedMessageId();
+      if (state === 'delivered') {
+        const request = channelResponseRequest(prepared);
+        const reserved = await createResponseStorage(mongoose).reserve({
+          tenantId,
+          userId: prepared.principal.userId,
+          responseId,
+          requestKey: `channel:${prepared.runId}`,
+          fingerprint: digest(request),
+          agentId: prepared.agentId,
+          requestJSON: JSON.stringify(request),
+          conversationId: prepared.execution!.conversationId,
+          parentMessageId: prepared.execution!.parentMessageId,
+        });
+        if (!reserved.ok) throw new Error('Could not reserve deletion fixture Response');
+        await runs.bindResponse(tenantId, fence, responseId, 102);
+      }
+      await runs.saveSnapshot(
+        tenantId,
+        fence,
+        {
+          status: state === 'delivered' ? 'completed' : state,
+          ...(state === 'delivered' && { responseId }),
+          text: '',
+          elapsedMs: 1,
+        },
+        103,
       );
+      await runs.savePlan(
+        tenantId,
+        fence,
+        {
+          revision: 'terminal',
+          rendererVersion: 'test',
+          parts: [{ operationId: 'terminal', kind: 'message', required: true, text: 'Done' }],
+        },
+        104,
+      );
+      await runs.beginDelivery(tenantId, fence, 'terminal', 105);
+      await runs.settleDelivery(
+        tenantId,
+        fence,
+        {
+          operationId: 'terminal',
+          attempts: 1,
+          outcome: 'confirmed',
+          externalMessageKey: 'C1:terminal',
+        },
+        105,
+      );
+      expect((await runs.commitDelivery(tenantId, fence, 105)).state).toBe(state);
       expect(await methods.deleteAgentChannel('channel', 'owner')).toEqual({ status: 'deleted' });
     }),
 );

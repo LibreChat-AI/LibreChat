@@ -82,7 +82,6 @@ beforeEach(async () => {
         'ChannelFeedback',
         'ChannelFeedbackEvent',
         'AgentChannel',
-        'ChannelScope',
         'ResponseScope',
         'Message',
       ].map((name) => mongoose.models[name].deleteMany({})),

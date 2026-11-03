@@ -6,11 +6,13 @@ import { createChannelIdentityStorage } from './channelIdentity';
 import { createChannelRunStorage } from './channelRun';
 import { closeResponseScopes } from './responseScope';
 import { createAgentChannelMethods } from './channel';
+import { channelRunFence } from './channelRunWrite';
 import { createUserMethods } from './user';
 import { createModels } from '~/models';
 
 let mongo: MongoMemoryReplSet;
 let creatorId: string;
+let currentRevision = 'one';
 const tenantId = 'channel-authority-test';
 const scope = <T>(work: () => Promise<T>) => tenantStorage.run({ tenantId }, work);
 const channels = () => createAgentChannelMethods(mongoose);
@@ -20,7 +22,7 @@ const event = () => ({
   tenantId,
   channelId: 'channel',
   agentId: 'agent',
-  principal: { userId: 'actor', channelRevision: 'one' },
+  principal: { userId: creatorId, channelRevision: currentRevision },
   admission: {
     eventId: 'event',
     externalChannelId: 'C1',
@@ -42,7 +44,7 @@ const link = (): ChannelIdentityRecord => ({
   identity: {
     tenantId,
     channelId: 'channel',
-    channelRevision: 'one',
+    channelRevision: currentRevision,
     teamId: 'T1',
     externalUserId: 'U1',
     agentId: 'agent',
@@ -50,8 +52,16 @@ const link = (): ChannelIdentityRecord => ({
 });
 const linkedEvent = () => ({
   ...event(),
-  principal: { ...event().principal, linkId: 'link', linkRevision: 'link-one' },
+  principal: { ...event().principal, userId: 'actor', linkId: 'link', linkRevision: 'link-one' },
 });
+async function personalMode() {
+  const current = await channels().updateAgentChannel('channel', creatorId, {
+    credentialMode: 'per_user',
+  });
+  if (!current) throw new Error('Expected personal channel fixture');
+  currentRevision = current.revision;
+}
+
 function gate() {
   let release!: () => void;
   const wait = new Promise<void>((resolve) => {
@@ -66,10 +76,10 @@ beforeAll(async () => {
   createModels(mongoose);
 });
 beforeEach(async () => {
+  currentRevision = 'one';
   await runAsSystem(async () => {
     for (const name of [
       'AgentChannel',
-      'ChannelScope',
       'ChannelIdentity',
       'ChannelRun',
       'ChannelLane',
@@ -156,51 +166,15 @@ it.each(['disabled', 'missing', 'team', 'app', 'agent'] as const)(
 
 it('blocks other principals as soon as channel-owner account admission closes', () =>
   scope(async () => {
+    await personalMode();
+    expect(await identities().saveChannelIdentity(link(), null)).toBe(true);
     await closeResponseScopes(mongoose, { userId: creatorId, tenantId });
     expect((await channels().getAgentChannel('channel'))?.status).toBe('active');
-    await expect(runs().admit(event(), Date.now())).rejects.toMatchObject({
+    await expect(runs().admit(linkedEvent(), Date.now())).rejects.toMatchObject({
       code: 'invalid_transition',
     });
     expect(await identities().saveChannelIdentity(link(), null)).toBe(false);
   }));
-
-it.each(['direct', 'account'] as const)(
-  'keeps canonical retirement durable when %s fence closure fails',
-  (mode) =>
-    scope(async () => {
-      const collection = mongoose.models.ChannelScope.collection;
-      const original = collection.updateOne.bind(collection);
-      const failure = jest
-        .spyOn(collection, 'updateOne')
-        .mockImplementation(async (filter, update, options) => {
-          if (!Array.isArray(update) && update.$set?.closed === true)
-            throw new Error('closure unavailable');
-          return original(filter, update, options);
-        });
-      try {
-        await expect(
-          mode === 'direct'
-            ? channels().beginAgentChannelDeletion('channel', creatorId)
-            : createUserMethods(mongoose).deleteUserById(creatorId),
-        ).rejects.toThrow('closure unavailable');
-      } finally {
-        failure.mockRestore();
-      }
-      const retired = await channels().getAgentChannel('channel');
-      expect(retired).toMatchObject({ status: 'deleting' });
-      if (mode === 'account') {
-        expect(retired).not.toHaveProperty('encryptedBotToken');
-        expect(await mongoose.models.User.findById(creatorId).lean()).not.toBeNull();
-      } else expect(retired).toHaveProperty('encryptedBotToken', 'private-token');
-      expect(await mongoose.models.ChannelScope.findOne({ closed: true }).lean()).toBeNull();
-      await expect(runs().admit(event(), Date.now())).rejects.toMatchObject({
-        code: 'invalid_transition',
-      });
-      await expect(
-        channels().beginAgentChannelDeletion('channel', creatorId),
-      ).resolves.toMatchObject({ status: 'deleting' });
-    }),
-);
 
 it('commits closure and credential redaction before retryable account identity erasure', () =>
   scope(async () => {
@@ -246,23 +220,15 @@ it('rejects an obsolete event after the revision CAS even while its reply is pau
     });
     const updating = channels().updateAgentChannel('channel', creatorId, { revision: 'two' });
     await entered.wait;
-    const admissionReached = gate();
-    const fences = mongoose.models.ChannelScope.collection;
-    const touch = fences.updateOne.bind(fences);
-    const observe = jest.spyOn(fences, 'updateOne').mockImplementation(async (...args) => {
-      if (!Array.isArray(args[1]) && args[1].$inc?.revision === 1) admissionReached.release();
-      return touch(...args);
-    });
-    const admission = runs().admit(event(), Date.now());
     try {
-      await admissionReached.wait;
+      await expect(runs().admit(event(), Date.now())).rejects.toMatchObject({
+        code: 'invalid_transition',
+      });
       release.release();
       await expect(updating).resolves.toMatchObject({ revision: 'two' });
-      await expect(admission).rejects.toMatchObject({ code: 'invalid_transition' });
     } finally {
       release.release();
       pause.mockRestore();
-      observe.mockRestore();
     }
     expect(await mongoose.models.ChannelRun.countDocuments({})).toBe(0);
   }));
@@ -271,16 +237,12 @@ it.each(['revoked', 'expired', 'revision', 'user', 'external-user'] as const)(
   'rejects a %s linked principal, including event replay',
   (kind) =>
     scope(async () => {
+      await personalMode();
       const record = link();
       expect(await identities().saveChannelIdentity(record, null)).toBe(true);
       await runs().admit(linkedEvent(), Date.now());
       if (kind === 'revoked')
         await identities().revokeChannelIdentities(tenantId, 'channel', 'revoked');
-      else if (kind === 'expired')
-        await identities().saveChannelIdentity(
-          { ...record, expiresAtMs: 1, revision: 'expired' },
-          record.revision,
-        );
       else if (kind === 'revision')
         await identities().saveChannelIdentity(
           { ...record, revision: 'new-link' },
@@ -289,7 +251,9 @@ it.each(['revoked', 'expired', 'revision', 'user', 'external-user'] as const)(
       const input = linkedEvent();
       if (kind === 'user') input.principal.userId = 'different';
       if (kind === 'external-user') input.admission.actor.externalUserId = 'different';
-      await expect(runs().admit(input, Date.now())).rejects.toMatchObject({
+      await expect(
+        runs().admit(input, kind === 'expired' ? record.expiresAtMs! + 1 : Date.now()),
+      ).rejects.toMatchObject({
         code: 'invalid_transition',
       });
       expect(await mongoose.models.ChannelRun.countDocuments({})).toBe(1);
@@ -315,7 +279,12 @@ it('requires persisted link authority for the current per-user channel generatio
       runs().admit(
         {
           ...input,
-          principal: { ...input.principal, linkId: linked.linkId, linkRevision: linked.revision },
+          principal: {
+            ...input.principal,
+            userId: linked.userId!,
+            linkId: linked.linkId,
+            linkRevision: linked.revision,
+          },
         },
         Date.now(),
       ),
@@ -366,89 +335,75 @@ it('inherits the authenticated tenant before creating its owner and channel fenc
     ).toMatchObject({ tenantId, revision: 'two' });
   }));
 
-it('lets an already admitted transaction finish before rotating authority', () =>
-  scope(async () => {
-    const entered = gate();
-    const release = gate();
-    const attempted = gate();
-    const collection = mongoose.models.ChannelRun.collection;
-    const insert = collection.insertOne.bind(collection);
-    const pause = jest.spyOn(collection, 'insertOne').mockImplementation(async (...args) => {
-      entered.release();
-      await release.wait;
-      return insert(...args);
-    });
-    const admission = runs().admit(event(), Date.now());
-    await entered.wait;
-    const parents = mongoose.models.AgentChannel.collection;
-    const touch = parents.findOneAndUpdate.bind(parents);
-    const observe = jest.spyOn(parents, 'findOneAndUpdate').mockImplementation(async (...args) => {
-      if (!Array.isArray(args[1]) && args[1].$set?.revision === 'two') attempted.release();
-      return touch(...args);
-    });
-    const updating = channels().updateAgentChannel('channel', creatorId, { revision: 'two' });
-    let timedOut = false;
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      release.release();
-      attempted.release();
-    }, 5000);
-    try {
-      await attempted.wait;
-      expect(timedOut).toBe(false);
-      release.release();
-      await expect(admission).resolves.toMatchObject({
-        run: { principal: { channelRevision: 'one' } },
+it.each(['channel', 'link'] as const)(
+  'retains an admitted publisher for cleanup after its %s authority changes',
+  (kind) =>
+    scope(async () => {
+      if (kind === 'link') {
+        await personalMode();
+        expect(await identities().saveChannelIdentity(link(), null)).toBe(true);
+      }
+      const input = kind === 'link' ? linkedEvent() : event();
+      const entered = gate();
+      const release = gate();
+      const collection = mongoose.models.ChannelRun.collection;
+      const update = collection.updateOne.bind(collection);
+      let paused = false;
+      const pause = jest.spyOn(collection, 'updateOne').mockImplementation(async (...args) => {
+        if (
+          !paused &&
+          !Array.isArray(args[1]) &&
+          args[1].$set?.['_managed.phase'] === 'published'
+        ) {
+          paused = true;
+          entered.release();
+          await release.wait;
+        }
+        return update(...args);
       });
-      await expect(updating).resolves.toMatchObject({ revision: 'two' });
-    } finally {
-      clearTimeout(timeout);
-      release.release();
-      pause.mockRestore();
-      observe.mockRestore();
-    }
-    await expect(runs().admit(event(), Date.now())).rejects.toMatchObject({
-      code: 'invalid_transition',
-    });
-  }));
-
-it('serializes linked admission with bulk revocation without creating another event', () =>
-  scope(async () => {
-    await identities().saveChannelIdentity(link(), null);
-    const entered = gate();
-    const release = gate();
-    const attempted = gate();
-    const collection = mongoose.models.ChannelIdentity.collection;
-    const update = collection.updateMany.bind(collection);
-    const pause = jest.spyOn(collection, 'updateMany').mockImplementation(async (...args) => {
-      entered.release();
-      await release.wait;
-      return update(...args);
-    });
-    const revoking = identities().revokeChannelIdentities(tenantId, 'channel', 'revoked');
-    await entered.wait;
-    const fences = mongoose.models.ChannelScope.collection;
-    const touch = fences.updateOne.bind(fences);
-    const observe = jest.spyOn(fences, 'updateOne').mockImplementation(async (...args) => {
-      if (!Array.isArray(args[1]) && args[1].$inc?.revision === 1) attempted.release();
-      return touch(...args);
-    });
-    const admission = runs().admit(linkedEvent(), Date.now());
-    try {
-      await attempted.wait;
-      release.release();
-      await revoking;
-      await expect(admission).rejects.toMatchObject({ code: 'invalid_transition' });
-    } finally {
-      release.release();
-      pause.mockRestore();
-      observe.mockRestore();
-    }
-    expect(await mongoose.models.ChannelRun.countDocuments({})).toBe(0);
-  }));
+      const admitting = runs().admit(input, Date.now());
+      void admitting.catch(() => undefined);
+      const timeout = setTimeout(release.release, 10000);
+      try {
+        await entered.wait;
+        if (kind === 'channel')
+          expect(
+            await channels().updateAgentChannel('channel', creatorId, { revision: 'two' }),
+          ).not.toBeNull();
+        else await identities().revokeChannelIdentities(tenantId, 'channel', 'revoked');
+        release.release();
+        const accepted = await admitting;
+        expect(accepted.run.principal).toEqual(input.principal);
+        expect(accepted.run.execution).toBeUndefined();
+        await expect(runs().admit(input, Date.now())).rejects.toMatchObject({
+          code: 'invalid_transition',
+        });
+        const cleanup = (await runs().claimAuthorityLost(
+          accepted.run,
+          'cleanup',
+          Date.now(),
+          60000,
+        ))!;
+        expect(cleanup).not.toBeNull();
+        expect(
+          await runs().finishAuthorityLost(tenantId, channelRunFence(cleanup), Date.now()),
+        ).toBe('stopped');
+        expect(await runs().read(tenantId, 'channel', accepted.run.runId)).toMatchObject({
+          state: 'cancelled',
+          cursorState: 'complete',
+        });
+      } finally {
+        clearTimeout(timeout);
+        release.release();
+        pause.mockRestore();
+        await admitting.catch(() => undefined);
+      }
+    }),
+);
 
 it('keeps configuration timestamps unchanged by admission serialization writes', () =>
   scope(async () => {
+    await personalMode();
     await identities().saveChannelIdentity(link(), null);
     const before = new Date(0);
     await mongoose.models.AgentChannel.collection.updateOne(
@@ -472,7 +427,7 @@ it.each(['opaque-revision'] as const)('preserves an explicit opaque revision %s'
   scope(async () => {
     await channels().createAgentChannel({
       tenantId,
-      channelId: 'legacy',
+      channelId: 'opaque-channel',
       agentId: 'agent',
       createdBy: creatorId,
       type: 'slack',
@@ -483,11 +438,11 @@ it.each(['opaque-revision'] as const)('preserves an explicit opaque revision %s'
     });
     const input = {
       ...event(),
-      channelId: 'legacy',
+      channelId: 'opaque-channel',
       principal: { ...event().principal, channelRevision: revision },
     };
     await expect(runs().admit(input, Date.now())).resolves.toMatchObject({ duplicate: false });
-    await channels().updateAgentChannel('legacy', creatorId, { revision: 'rotated' });
+    await channels().updateAgentChannel('opaque-channel', creatorId, { revision: 'rotated' });
     await expect(runs().admit(input, Date.now())).rejects.toMatchObject({
       code: 'invalid_transition',
     });

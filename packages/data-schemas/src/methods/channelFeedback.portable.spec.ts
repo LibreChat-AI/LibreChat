@@ -32,7 +32,6 @@ describe.each(engines)('portable feedback on %s', (engine) => {
           'ChannelFeedback',
           'ChannelFeedbackEvent',
           'AgentChannel',
-          'ChannelScope',
           'ResponseScope',
           'Message',
         ].map((name) => mongoose.models[name].deleteMany({})),

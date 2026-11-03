@@ -131,13 +131,7 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
     isCurrent: (run: ChannelRunRecord): Promise<boolean> => isCurrent(run),
     async provision(run: ChannelRunRecord): Promise<string> {
       if (run.execution?.apiKeyId) return reveal(run);
-      if (
-        !run.execution ||
-        run.execution.deliveryKey ||
-        run.execution.enqueueAttemptedAt ||
-        run.cancellationRequested ||
-        !run.leaseOwner
-      )
+      if (!run.execution || run.cancellationRequested || !run.leaseOwner)
         throw new Error('Response credential admission changed');
       const fence = channelRunFence(run);
       const lifetimeMs = await deps.lifetimeMs();

@@ -20,13 +20,7 @@ export function createChannelExecutionAdapter(deps: ChannelExecutionDependencies
       const execution = run.execution;
       // A credential permits Response admission even before its ID has been bound.
       // Only an unprovisioned run can be retired without consulting Responses.
-      if (
-        !execution.apiKeyId &&
-        !execution.responseId &&
-        execution.generationCreatedAt == null &&
-        execution.deliveryKey == null &&
-        execution.enqueueAttemptedAt == null
-      )
+      if (!execution.apiKeyId && !execution.responseId && execution.generationCreatedAt == null)
         return 'stopped';
       if (execution.protocol !== 'responses')
         throw new ChannelExecutionError('execution_identity_changed');

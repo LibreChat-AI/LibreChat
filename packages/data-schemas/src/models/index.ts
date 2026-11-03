@@ -23,7 +23,6 @@ import { createCodeEnvironmentModel } from './codeEnvironment';
 import { createSkillDeletionModel } from './skillDeletion';
 import { createAgentCategoryModel } from './agentCategory';
 import { createResponseScopeModel } from './responseScope';
-import { createChannelScopeModel } from './channelScope';
 import { createResourceLockModel } from './resourceLock';
 import { createStoredResponseModel } from './response';
 import { createChatProjectModel } from './chatProject';
@@ -84,7 +83,6 @@ export function createModels(mongoose: typeof import('mongoose')): {
   AgentApiKey: ReturnType<typeof createAgentApiKeyModel>;
   AgentChannel: ReturnType<typeof createAgentChannelModel>;
   ChannelIdentity: ReturnType<typeof createChannelIdentityModel>;
-  ChannelScope: ReturnType<typeof createChannelScopeModel>;
   ChannelRun: ReturnType<typeof createChannelRunModel>;
   ChannelLane: ReturnType<typeof createChannelLaneModel>;
   ChannelReply: ReturnType<typeof createChannelReplyModel>;
@@ -149,7 +147,6 @@ export function createModels(mongoose: typeof import('mongoose')): {
     AgentApiKey: createAgentApiKeyModel(mongoose),
     AgentChannel: createAgentChannelModel(mongoose),
     ChannelIdentity: createChannelIdentityModel(mongoose),
-    ChannelScope: createChannelScopeModel(mongoose),
     ChannelRun: createChannelRunModel(mongoose),
     ChannelLane: createChannelLaneModel(mongoose),
     ChannelReply: createChannelReplyModel(mongoose),
