@@ -182,6 +182,27 @@ export type { TMessageAuthor } from './react/messages/author';
 export { ErrorSourceProvider, useErrorSource } from './react/messages/error';
 export type { ErrorSource } from './react/messages/error';
 export { MessageSurfaceContext } from './react/messages/surface';
+export {
+  MessagesViewContext,
+  MessagesViewProvider,
+  useMessagesSubmission,
+  useMessagesOperations,
+  useMessagesViewContext,
+  useMessagesIsSubmitting,
+  useMessagesConversation,
+  MessagesOperationsContext,
+  MessagesSubmittingContext,
+  useIsMessagesViewReadOnly,
+  useOptionalMessagesOperations,
+  useOptionalMessagesConversation,
+} from './react/messages/view';
+export type {
+  MessagesEditing,
+  MessagesOperations,
+  MessagesSubmission,
+  MessagesConversation,
+  MessagesViewContextValue,
+} from './react/messages/view';
 export type { MessageSurface } from './react/messages/surface';
 export {
   GeneratedToolLabelContext,
