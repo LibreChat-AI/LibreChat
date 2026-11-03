@@ -13,6 +13,7 @@ import {
   normalizeEndpointName,
   mapModelToAzureConfig,
   resolveUseResponsesApi,
+  prefersResponsesApiByModel,
 } from 'librechat-data-provider';
 import type {
   SummarizationConfig as AgentSummarizationConfig,
@@ -2407,7 +2408,11 @@ export async function createRun({
               member.provider,
               member.endpoint ?? member.provider,
               member.model_parameters?.model ?? member.model,
-              resolveUseResponsesApi(member.model_parameters?.useResponsesApi) === true,
+              resolveUseResponsesApi(
+                member.model_parameters?.useResponsesApi,
+                undefined,
+                member.model_parameters?.model ?? member.model,
+              ) === true,
               // Unset detail inherits the request value, which may differ from explicit auto.
               member.imageDetail ?? null,
             ]),
@@ -2478,6 +2483,18 @@ export async function createRun({
       ) as t.RunLLMConfig,
       modelCallbacks,
     );
+
+    const isFirstParty =
+      (provider === Providers.OPENAI || provider === Providers.AZURE) &&
+      (!agent.endpoint || agent.endpoint === provider);
+    if (
+      isFirstParty &&
+      llmConfig.useResponsesApi == null &&
+      prefersResponsesApiByModel(selfModel)
+    ) {
+      llmConfig.useResponsesApi = true;
+      llmConfig.firstPartyEndpoint = true;
+    }
 
     const joinInstructionMap = (map?: Record<string, unknown>) =>
       Object.values(map ?? {})

@@ -25,7 +25,8 @@ export interface TurnDeliveryAgent {
    *  client; an agent loaded without one is routed by its provider. */
   endpoint?: string | null;
   /** The Responses API setting the turn runs on, once initialization has decided it. */
-  model_parameters?: { useResponsesApi?: boolean } | null;
+  model?: string | null;
+  model_parameters?: { useResponsesApi?: boolean; model?: string | null } | null;
 }
 
 /**
@@ -51,7 +52,11 @@ export function resolveTurnDeliveryRouting({
     endpointConfig: getEndpointFileConfig({ fileConfig, endpoint }),
     endpoint,
     endpointProvider: getCustomEndpointProvider(config?.endpoints?.custom, endpoint),
-    useResponsesApi: resolveUseResponsesApi(agent.model_parameters?.useResponsesApi),
+    useResponsesApi: resolveUseResponsesApi(
+      agent.model_parameters?.useResponsesApi,
+      undefined,
+      agent.model_parameters?.model ?? agent.model,
+    ),
     sttConfigured: isSpeechProviderConfigured(config?.speech?.stt),
   };
 }
