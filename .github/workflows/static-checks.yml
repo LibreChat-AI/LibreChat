@@ -147,6 +147,7 @@ jobs:
               - 'packages/data-schemas/package.json'
               - 'package.json'
               - 'package-lock.json'
+              - 'scripts/imports*.mts'
               - '.github/workflows/static-checks.yml'
               - '!**.md'
 
@@ -468,60 +469,16 @@ jobs:
         if: always() && steps.paths.outputs.unused_packages == 'true'
         id: extract-used-code
         continue-on-error: true
+        # Source files only, as git lists them: installed node_modules and build
+        # output are excluded, and one listing covers every nested directory.
         run: |
-          extract_deps_from_code() {
-            local folder=$1
-            local output_file=$2
-
-            # Initialize empty output file
-            > "$output_file"
-
-            if [[ -d "$folder" ]]; then
-              # Extract require() statements (use explicit includes for portability)
-              grep -rEho "require\\(['\"]([a-zA-Z0-9@/._-]+)['\"]\\)" "$folder" \
-                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
-                sed -E "s/require\\(['\"]([a-zA-Z0-9@/._-]+)['\"]\\)/\1/" >> "$output_file" || true
-
-              # Extract ES6 imports - import x from 'module'
-              grep -rEho "import .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
-                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
-                sed -E "s/import .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
-
-              # import 'module' (side-effect imports)
-              grep -rEho "import ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
-                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
-                sed -E "s/import ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
-
-              # export { x } from 'module' or export * from 'module'
-              grep -rEho "export .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
-                --include='*.js' --include='*.ts' --include='*.tsx' --include='*.jsx' --include='*.mjs' --include='*.cjs' 2>/dev/null | \
-                sed -E "s/export .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
-
-              # import type { x } from 'module' (TypeScript)
-              grep -rEho "import type .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]" "$folder" \
-                --include='*.ts' --include='*.tsx' 2>/dev/null | \
-                sed -E "s/import type .* from ['\"]([a-zA-Z0-9@/._-]+)['\"]/\1/" >> "$output_file" || true
-
-              # Remove subpath imports but keep the base package
-              # For scoped packages: '@scope/pkg/subpath' -> '@scope/pkg'
-              # For regular packages: 'pkg/subpath' -> 'pkg'
-              # Scoped packages (must keep @scope/package, strip anything after)
-              sed -i -E 's|^(@[a-zA-Z0-9_-]+/[a-zA-Z0-9_-]+)/.*|\1|' "$output_file" 2>/dev/null || true
-              # Non-scoped packages (keep package name, strip subpath)
-              sed -i -E 's|^([a-zA-Z0-9_-]+)/.*|\1|' "$output_file" 2>/dev/null || true
-
-              sort -u "$output_file" -o "$output_file"
-            fi
-          }
-
-          extract_deps_from_code "." root_used_code.txt
-          extract_deps_from_code "client" client_used_code.txt
-          extract_deps_from_code "api" api_used_code.txt
-
-          # Extract dependencies used by workspace packages
-          # These packages are used in the workspace but dependencies are provided by parent package.json
-          extract_deps_from_code "packages/client" packages_client_used_code.txt
-          extract_deps_from_code "packages/api" packages_api_used_code.txt
+          node --test scripts/imports.test.mts
+          node scripts/imports.mts \
+            .=root_used_code.txt \
+            client=client_used_code.txt \
+            api=api_used_code.txt \
+            packages/client=packages_client_used_code.txt \
+            packages/api=packages_api_used_code.txt
 
       - name: Get @librechat/client dependencies
         if: always() && steps.paths.outputs.unused_packages == 'true'
