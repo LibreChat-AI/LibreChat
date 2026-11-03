@@ -6,6 +6,8 @@ import {
 } from '@librechat/data-schemas';
 import type {
   ResponseStorage,
+  ResponseExecutionBinding,
+  ResponsePersistenceFailure,
   StoredResponseRecord,
   ResponseTerminalReceipt,
   ResponseMutationResult,
@@ -25,6 +27,12 @@ export interface ResponseCompletionRecord extends StoredResponseRecord {
 }
 
 export interface ResponseCompletion {
+  fail(
+    record: StoredResponseRecord,
+    binding: ResponseExecutionBinding,
+    code: ResponsePersistenceFailure['code'],
+    receipt?: ResponseTerminalReceipt,
+  ): Promise<ResponseCompletionRecord>;
   prepare(
     record: StoredResponseRecord,
     receipt: ResponseTerminalReceipt,
@@ -373,6 +381,32 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
       responseJSON: JSON.stringify(response),
     };
   }
+  async function fail(
+    record: StoredResponseRecord,
+    binding: ResponseExecutionBinding,
+    code: ResponsePersistenceFailure['code'],
+    proposal?: ResponseTerminalReceipt,
+  ): Promise<ResponseCompletionRecord> {
+    const receipt = record.pendingTerminal ?? record.preparedTerminal ?? proposal;
+    const failure = {
+      generationCreatedAt: binding.generationCreatedAt,
+      providerExecutionId: binding.providerExecutionId,
+      ...(binding.ownerId ? { ownerId: binding.ownerId } : {}),
+      code,
+      ...(receipt ? { receiptKey: responseReceiptKey(receipt) } : {}),
+    };
+    let current: StoredResponseRecord | null;
+    try {
+      const saved = await deps.storage.recordPersistenceFailure(record, failure);
+      current = saved.ok ? saved.record : await deps.storage.read(record, record.responseId);
+    } catch (error) {
+      current = await deps.storage.read(record, record.responseId);
+      if (!isDeepStrictEqual(current?.persistenceFailure, failure)) throw error;
+    }
+    if (!current || !isDeepStrictEqual(current.persistenceFailure, failure))
+      throw new Error('Response persistence failure publication conflicted');
+    return finish(current);
+  }
   async function finishFailure(record: StoredResponseRecord): Promise<ResponseCompletionRecord> {
     const receipt = failureReceipt(record);
     if (terminal(record)) {
@@ -471,20 +505,8 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
         receipt,
         projectCanonicalResponseTurn(record, receipt),
       );
-      if (!result.ok && result.code === 'target_retired') {
-        const failed = await deps.storage.recordPersistenceFailure(record, {
-          generationCreatedAt: receipt.generationCreatedAt,
-          providerExecutionId: receipt.providerExecutionId,
-          ...(receipt.ownerId ? { ownerId: receipt.ownerId } : {}),
-          code: 'target_retired',
-          receiptKey: responseReceiptKey(receipt),
-        });
-        const saved = failed.ok
-          ? failed.record
-          : await deps.storage.read(record, record.responseId);
-        if (!saved) throw new Error('Response persistence failure journal is unavailable');
-        return saved.persistenceFailure ? finish(saved) : saved;
-      }
+      if (!result.ok && (result.code === 'target_retired' || result.code === 'document_limit'))
+        return fail(record, receipt, result.code, receipt);
       current = result.ok ? result.record : await deps.storage.read(record, record.responseId);
     } catch (error) {
       current = await deps.storage.read(record, record.responseId);
@@ -543,6 +565,7 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
       return finish(current);
     }
     if (staged.ok) return finish(staged.record);
+    if (staged.code === 'document_limit') return fail(record, receipt, 'document_limit', receipt);
     const current = await deps.storage.read(record, record.responseId);
     if (!current) {
       const expired = await discardRetired(record, receipt);
@@ -554,6 +577,7 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
     throw new Error('Response terminal receipt publication conflicted');
   }
   return {
+    fail,
     finish,
     stageAndFinish,
     async prepare(record, receipt) {
@@ -567,6 +591,8 @@ export function createResponseCompletion(deps: ResponseCompletionDependencies): 
           receipt,
         );
         if (staged.ok) return staged.record;
+        if (staged.code === 'document_limit')
+          return fail(record, receipt, 'document_limit', receipt);
       } catch (error) {
         const saved = await deps.storage.read(record, record.responseId);
         if (

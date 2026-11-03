@@ -20,6 +20,11 @@ import {
   stripManagedIdentityFields,
 } from '~/utils/managed';
 import {
+  MAX_BSON_DOCUMENT_BYTES,
+  BSON_WRITE_HEADROOM_BYTES,
+  ManagedDocumentTooLargeError,
+} from '~/utils/bson';
+import {
   activeExpirationFilter,
   createFallbackRetentionDate,
   initializeExpiration,
@@ -1131,45 +1136,95 @@ export function createMessageMethods(
       .join(' ');
   }
 
+  function messageDocumentSize(
+    update: Record<string, unknown>,
+    current: Record<string, unknown> | null,
+    unsetContextMeta = false,
+    retentionOnInsert?: { expiredAt: Date; isTemporary: false },
+  ): number {
+    const Message = mongoose.models.Message as Model<IMessage>;
+    const publication = deps.managedPublication;
+    // A registered one-shot target contains only known allocation metadata. This
+    // admits the fast path without another read; the merge path uses its actual row.
+    const base =
+      current ??
+      (publication
+        ? {
+            _id: new mongoose.Types.ObjectId(publication.target.id),
+            tenantId: publication.target.tenantId,
+            expiredAt: new Date(),
+            _managed: {
+              incarnation: publication.target.incarnation,
+              phase: 'published',
+              parentId: publication.parentId,
+              receipt: publication.receipt,
+              logicalId: publication.logicalId,
+              ownerKey: publication.ownerKey,
+              conversationKey: publication.conversationKey,
+            },
+          }
+        : {});
+    const fields = {
+      ...base,
+      ...(current == null ? retentionOnInsert : {}),
+      ...update,
+      ...(unsetContextMeta ? { contextMeta: undefined } : {}),
+      createdAt: base.createdAt ?? update.createdAt ?? new Date(),
+      updatedAt: new Date(),
+      __v: publication ? Number.MAX_SAFE_INTEGER : (Number(current?.__v) || 0) + 1,
+    };
+    const next = new Message(fields).toObject({ depopulate: true, minimize: false });
+    const candidate = { ...base, ...next };
+    if (unsetContextMeta) delete candidate.contextMeta;
+    return mongoose.mongo.BSON.calculateObjectSize(candidate);
+  }
+  function admitPublicationSize(
+    update: Record<string, unknown>,
+    current: Record<string, unknown> | null,
+    unsetContextMeta = false,
+    retentionOnInsert?: { expiredAt: Date; isTemporary: false },
+  ): void {
+    if (
+      deps.managedPublication &&
+      messageDocumentSize(update, current, unsetContextMeta, retentionOnInsert) >
+        MAX_BSON_DOCUMENT_BYTES - BSON_WRITE_HEADROOM_BYTES
+    )
+      throw new ManagedDocumentTooLargeError();
+  }
+
   async function prepareAppUpdate(
     update: Record<string, unknown>,
     current: Record<string, unknown> | null,
     unsetContextMeta = false,
     retentionOnInsert?: { expiredAt: Date; isTemporary: false },
   ): Promise<Record<string, unknown>> {
-    const Message = mongoose.models.Message as Model<IMessage>;
     const safeUpdate = sanitizeMessageUpdate(update);
     // Omission retains the attachments of THIS fenced row; null/[] explicitly clears them.
     const attachments = Object.prototype.hasOwnProperty.call(safeUpdate, 'attachments')
       ? safeUpdate.attachments
       : current?.attachments;
-    if (!hasBoundAppSnapshots(attachments)) return safeUpdate;
+    if (!hasBoundAppSnapshots(attachments)) {
+      admitPublicationSize(safeUpdate, current, unsetContextMeta, retentionOnInsert);
+      return safeUpdate;
+    }
     const maxBytes = await deps.getMCPAppMessageBudget?.();
     const admitted = fitBoundAppSnapshots(
       attachments as unknown[],
-      (candidateAttachments) => {
-        const fields = {
-          ...current,
-          ...(current == null ? retentionOnInsert : {}),
-          ...safeUpdate,
-          attachments: candidateAttachments,
-          ...(unsetContextMeta ? { contextMeta: undefined } : {}),
-          createdAt: current?.createdAt ?? safeUpdate.createdAt ?? new Date(),
-          updatedAt: new Date(),
-          __v: (Number(current?.__v) || 0) + 1,
-        };
-        const next = new Message(fields).toObject({ depopulate: true, minimize: false });
-        // Keep unknown fields already stored by a newer producer, even if this schema drops them.
-        const candidate = { ...current, ...next };
-        if (unsetContextMeta) delete candidate.contextMeta;
-        return mongoose.mongo.BSON.calculateObjectSize(candidate);
-      },
+      (candidateAttachments) =>
+        messageDocumentSize(
+          { ...safeUpdate, attachments: candidateAttachments },
+          current,
+          unsetContextMeta,
+          retentionOnInsert,
+        ),
       maxBytes,
     );
     if (admitted !== attachments) {
       logger.warn('[saveMessage] Optional MCP App documents exceeded the message BSON budget');
     }
-    return admitted === attachments ? safeUpdate : { ...safeUpdate, attachments: admitted };
+    const result = admitted === attachments ? safeUpdate : { ...safeUpdate, attachments: admitted };
+    admitPublicationSize(result, current, unsetContextMeta, retentionOnInsert);
+    return result;
   }
 
   /** One admission owner for save, edit, record and import. No size heuristics or stale closures. */
@@ -1239,6 +1294,7 @@ export function createMessageMethods(
       paths.length === 0 &&
       fields.length === 0
     ) {
+      admitPublicationSize(update, null, options.unsetContextMeta, options.retentionOnInsert);
       try {
         // Preserve the single-write common path. If an App row is excluded, its existing
         // unique (messageId, user, tenantId) index rejects the upsert; budget that row below.

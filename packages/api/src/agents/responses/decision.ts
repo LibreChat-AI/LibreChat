@@ -70,7 +70,7 @@ export interface ResponseDecisionDependencies {
 
 export type ResponseDecisionResult =
   | { ok: true; receipt: ResponseReviewDecisionReceipt }
-  | { ok: false; status: 400 | 403 | 404 | 409 | 503; code: string };
+  | { ok: false; status: 400 | 403 | 404 | 409 | 413 | 503; code: string };
 
 export type ResponseDecisionSubmission = (
   owner: ResponseOwner,
@@ -238,7 +238,10 @@ export function createResponseDecisionSubmission(
           },
           now,
         );
-        if (!saved.ok) return unavailable;
+        if (!saved.ok)
+          return saved.code === 'document_limit'
+            ? { ok: false, status: 413, code: 'document_limit' }
+            : unavailable;
         record = saved.record;
       } catch (error) {
         const current = await deps.storage.read(owner, responseId);

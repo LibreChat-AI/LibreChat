@@ -7,3 +7,8 @@ export function checkpointOwnerNamespacePrefix(userId: string, tenantId?: string
     .digest('hex');
   return `lcg:v2:${owner}:`;
 }
+
+/** Match captured settings without duplicating a potentially large JSON string in commands. */
+export function checkpointConfigKey(configJSON: string): string {
+  return createHash('sha256').update(configJSON).digest('hex');
+}

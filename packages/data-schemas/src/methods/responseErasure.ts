@@ -80,6 +80,7 @@ export function retiredResponseUpdate(now: Date = new Date()): UpdateQuery<Store
       resume: 1,
       preparedTerminal: 1,
       pendingTerminal: 1,
+      terminalReceiptKey: 1,
     },
   };
 }

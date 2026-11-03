@@ -1173,7 +1173,9 @@ describe('managed target allocation on real storage', () => {
         code: 'response_conflict',
       });
       expect(await checkpointStorage.settle()).toBe(true);
-      const resumed = await f.storage.enrollExecution(current, next, '{}');
+      const settled = await f.storage.read(f.input, f.input.responseId);
+      if (!settled) throw new Error('Response missing after checkpoint settlement');
+      const resumed = await f.storage.enrollExecution(settled, next, '{}');
       if (!resumed.ok) throw new Error('Resume enrollment failed');
       const retry = { ...next, ownerId: randomUUID() };
       expect(await f.storage.enrollExecution(resumed.record, retry, '{}')).toMatchObject({
@@ -1193,15 +1195,15 @@ describe('managed target allocation on real storage', () => {
       const f = await checkpointFixture();
       const storage = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
       const collection = f.model.collection;
-      const original = collection.updateOne.bind(collection);
+      const original = collection.findOneAndUpdate.bind(collection);
       let late!: () => ReturnType<typeof original>;
-      jest.spyOn(collection, 'updateOne').mockImplementationOnce(async (...args) => {
+      jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
         late = () => original(...args);
         throw new Error('marker command outcome unknown');
       });
       await expect(storage.open()).rejects.toThrow('marker command outcome unknown');
       expect(await storage.settle()).toBe(true);
-      expect((await late()).matchedCount).toBe(0);
+      expect(await late()).toBeNull();
       expect(await storage.open()).toBe(false);
       expect(
         await f.model.findOne(responseRootFilter(db, f.reference)).select('+checkpoint').lean(),
@@ -1213,8 +1215,8 @@ describe('managed target allocation on real storage', () => {
       const f = await checkpointFixture();
       const storage = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
       const collection = f.model.collection;
-      const original = collection.updateOne.bind(collection);
-      jest.spyOn(collection, 'updateOne').mockImplementationOnce(async (...args) => {
+      const original = collection.findOneAndUpdate.bind(collection);
+      jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
         await original(...args);
         throw new Error('marker acknowledgment lost');
       });

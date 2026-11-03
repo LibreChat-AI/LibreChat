@@ -6,6 +6,7 @@ import type { ResponseTerminalReceipt } from '~/models/response';
 import type { ManagedPublication } from '~/types/managed';
 import {
   publishResponseTarget,
+  createResponseTurnPublisher,
   selectResponseTarget,
   beginResponseTargetRegistration,
   acknowledgeResponseTarget,
@@ -28,6 +29,7 @@ import { createConversationMethods } from './conversation';
 import { createConversationModel } from '~/models/convo';
 import { tenantStorage } from '~/config/tenantContext';
 import { createMessageModel } from '~/models/message';
+import { responseReceiptKey } from '~/utils/receipt';
 import { createResponseStorage } from './response';
 import { createMessageMethods } from './message';
 
@@ -134,7 +136,13 @@ describe('Response-owned canonical target selection', () => {
           {
             _id: reserved.record.storageTarget!.id,
           },
-          { $set: { status: 'materializing', pendingTerminal: receipt } },
+          {
+            $set: {
+              status: 'materializing',
+              pendingTerminal: receipt,
+              terminalReceiptKey: responseReceiptKey(receipt),
+            },
+          },
         );
       const root = await createStoredResponseModel(db)
         .findById(reserved.record.storageTarget!.id)
@@ -227,6 +235,51 @@ describe('Response-owned canonical target selection', () => {
         expect(anchors.every((anchor) => anchor.pendingCount === 0)).toBe(true);
       },
     );
+    it('keeps every per-Message Root query metadata-only and binds a publisher to its immutable receipt', async () => {
+      const { intent, receipt, root } = await fixture();
+      const publisher = createResponseTurnPublisher(db, root.toObject(), receipt);
+      const originalResponseJSON = receipt.responseJSON;
+      const originalTurnJSON = receipt.turnJSON!;
+      // Mutation of a caller's object cannot change the private capability's authority.
+      receipt.responseJSON = 'changed after publisher creation';
+      const commands: string[] = [];
+      const client = db.connection.getClient();
+      const monitor = (event: { command: Record<string, unknown> }) => {
+        if (
+          event.command.aggregate === 'storedresponses' ||
+          event.command.find === 'storedresponses' ||
+          event.command.findAndModify === 'storedresponses' ||
+          event.command.update === 'storedresponses'
+        )
+          commands.push(JSON.stringify(event.command));
+      };
+      client.on('commandStarted', monitor);
+      try {
+        const result = await publisher(intent.logicalId, (publication) =>
+          createMessageMethods(db, { managedPublication: publication }).saveMessage(
+            { userId: intent.userId },
+            {
+              messageId: intent.logicalId,
+              conversationId: intent.conversationId,
+              text: 'confirmed',
+            },
+          ),
+        );
+        expect(result.ok).toBe(true);
+        expect(commands.length).toBeGreaterThan(0);
+        expect(
+          commands.every(
+            (command) =>
+              !command.includes(JSON.stringify(originalResponseJSON)) &&
+              !command.includes(JSON.stringify(originalTurnJSON)),
+          ),
+        ).toBe(true);
+        expect(commands.every((command) => !command.includes('"pendingTerminal":1'))).toBe(true);
+        expect(commands.some((command) => command.includes('terminalReceiptKey'))).toBe(true);
+      } finally {
+        client.off('commandStarted', monitor);
+      }
+    });
     it('keeps discovery until a replay adopts retention shortened during canonical publication', async () => {
       const { intent } = await fixture();
       const deadline = new Date(Date.now() + 60_000);
@@ -348,8 +401,8 @@ describe('Response-owned canonical target selection', () => {
     it('returns conflict if cleanup wins before pinning, then recovers with a fresh selection', async () => {
       const { intent } = await fixture();
       const collection = createStoredResponseModel(db).collection;
-      const update = collection.findOneAndUpdate.bind(collection);
-      jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+      const update = collection.updateOne.bind(collection);
+      jest.spyOn(collection, 'updateOne').mockImplementationOnce(async (...args) => {
         const result = await update(...args);
         await sweepManagedAllocations(db, 'message', { limit: 100 });
         return result;
@@ -463,7 +516,7 @@ describe('Response-owned canonical target selection', () => {
       const replacement = barrier();
       const collection = createStoredResponseModel(db).collection;
       const update = collection.updateOne.bind(collection);
-      const findUpdate = collection.findOneAndUpdate.bind(collection);
+      const findUpdate = collection.updateOne.bind(collection);
       jest.spyOn(collection, 'updateOne').mockImplementationOnce(async (...args) => {
         freeze.enter();
         await freeze.resumed;
@@ -476,7 +529,7 @@ describe('Response-owned canonical target selection', () => {
         await db
           .model('Message')
           .collection.deleteOne(managedTargetFilter(db, first.selection.target));
-        jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+        jest.spyOn(collection, 'updateOne').mockImplementationOnce(async (...args) => {
           replacement.enter();
           await replacement.resumed;
           return findUpdate(...args);
@@ -502,8 +555,8 @@ describe('Response-owned canonical target selection', () => {
     it('recovers an acknowledged selection whose parent CAS reply was lost', async () => {
       const { intent } = await fixture();
       const collection = createStoredResponseModel(db).collection;
-      const update = collection.findOneAndUpdate.bind(collection);
-      jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+      const update = collection.updateOne.bind(collection);
+      jest.spyOn(collection, 'updateOne').mockImplementationOnce(async (...args) => {
         await update(...args);
         throw new db.mongo.MongoNetworkError('test selection reply lost');
       });
@@ -677,7 +730,7 @@ describe('Response-owned canonical target selection', () => {
         };
         await createStoredResponseModel(db).updateOne(
           { _id: intent.parentId },
-          { $set: { pendingTerminal: terminal } },
+          { $set: { pendingTerminal: terminal, terminalReceiptKey: responseReceiptKey(terminal) } },
         );
         const input: ResponseTargetIntent = {
           ...intent,

@@ -23,8 +23,8 @@ import {
 } from './managed';
 import {
   responseReceiptKey,
-  terminalFilter,
-  sameResponseTerminalReceipt,
+  terminalReceipt,
+  responseTurnMessageIds,
   responseProviderFilter,
 } from '~/utils/receipt';
 import { includeManagedAllocations, isManagedConversationId } from '~/utils/managed';
@@ -51,29 +51,19 @@ export type ResponseTargetResult =
   | { ok: true; selection: ResponseCanonicalTarget; publication: ManagedPublication }
   | { ok: false; code: 'response_conflict' | 'target_retired' };
 
-/** Portable producers must assign managed input IDs before freezing the immutable turn.
- * Ordinary UUID inputs cannot use this path: legacy upserts could recreate them after erasure. */
+// Only the turn publisher creates these immutable in-process capabilities. No cache
+// or caller-supplied digest can replace validation of the canonical receipt.
+const receiptAuthority = new WeakMap<
+  ResponseTargetIntent,
+  { key: string; ids: ReadonlySet<string> }
+>();
+
 function declaredMessage(intent: ResponseTargetIntent): boolean {
-  if (intent.kind !== 'message') return true;
-  const turn: unknown = JSON.parse(intent.receipt.turnJSON!);
-  if (
-    typeof turn !== 'object' ||
-    turn === null ||
-    !('version' in turn) ||
-    turn.version !== 1 ||
-    !('inputs' in turn) ||
-    !Array.isArray(turn.inputs)
-  )
-    return false;
   return (
-    intent.logicalId === intent.responseId ||
-    turn.inputs.some(
-      (input: unknown) =>
-        typeof input === 'object' &&
-        input !== null &&
-        'messageId' in input &&
-        input.messageId === intent.logicalId,
-    )
+    intent.kind !== 'message' ||
+    (
+      receiptAuthority.get(intent)?.ids ?? responseTurnMessageIds(intent.responseId, intent.receipt)
+    ).has(intent.logicalId)
   );
 }
 
@@ -108,7 +98,7 @@ function identity(
 
 function receiptKey(intent: ResponseTargetIntent): string {
   return intent.kind === 'message'
-    ? responseReceiptKey(intent.receipt)
+    ? (receiptAuthority.get(intent)?.key ?? responseReceiptKey(intent.receipt))
     : createHash('sha256')
         .update(
           JSON.stringify([
@@ -132,12 +122,62 @@ function admission(intent: ResponseTargetIntent): FilterQuery<StoredResponseReco
       ...available,
       status: 'materializing',
       generationCreatedAt: intent.receipt.generationCreatedAt,
-      ...terminalFilter('pendingTerminal', intent.receipt),
+      terminalReceiptKey: receiptKey(intent),
+      'pendingTerminal.generationCreatedAt': intent.receipt.generationCreatedAt,
     };
   return { ...available, status: 'in_progress', ...responseProviderFilter(intent.execution) };
 }
 
-function eligible(parent: StoredResponseRecord, intent: ResponseTargetIntent): boolean {
+type ResponseTargetParent = Pick<
+  StoredResponseRecord,
+  | 'status'
+  | 'revision'
+  | 'generationCreatedAt'
+  | 'terminalReceiptKey'
+  | 'canonicalTargets'
+  | 'providerExecution'
+  | 'retiredAt'
+  | 'expiredAt'
+  | 'cancellationRequestedAt'
+  | 'persistenceFailure'
+> & { pendingTerminal?: Pick<ResponseTerminalReceipt, 'generationCreatedAt'> };
+
+/** Filter the one requested entry in the database without loading the receipt or map. */
+async function readTargetParent(
+  mongoose: typeof import('mongoose'),
+  filter: FilterQuery<StoredResponseRecord>,
+  logicalId: string,
+): Promise<ResponseTargetParent | null> {
+  const records = await createStoredResponseModel(mongoose)
+    .aggregate<ResponseTargetParent>([
+      { $match: filter },
+      {
+        $project: {
+          status: 1,
+          revision: 1,
+          generationCreatedAt: 1,
+          terminalReceiptKey: 1,
+          'pendingTerminal.generationCreatedAt': 1,
+          canonicalTargets: {
+            $filter: {
+              input: { $ifNull: ['$canonicalTargets', []] },
+              as: 'target',
+              cond: { $eq: ['$$target.logicalId', logicalId] },
+            },
+          },
+          providerExecution: 1,
+          retiredAt: 1,
+          expiredAt: 1,
+          cancellationRequestedAt: 1,
+          persistenceFailure: 1,
+        },
+      },
+    ])
+    .read('primary');
+  return records[0] ?? null;
+}
+
+function eligible(parent: ResponseTargetParent, intent: ResponseTargetIntent): boolean {
   if (
     parent.persistenceFailure ||
     parent.retiredAt != null ||
@@ -148,8 +188,8 @@ function eligible(parent: StoredResponseRecord, intent: ResponseTargetIntent): b
     return (
       parent.status === 'materializing' &&
       parent.generationCreatedAt === intent.receipt.generationCreatedAt &&
-      parent.pendingTerminal != null &&
-      sameResponseTerminalReceipt(parent.pendingTerminal, intent.receipt)
+      parent.pendingTerminal?.generationCreatedAt === intent.receipt.generationCreatedAt &&
+      parent.terminalReceiptKey === receiptKey(intent)
     );
   return (
     parent.status === 'in_progress' &&
@@ -162,7 +202,7 @@ function eligible(parent: StoredResponseRecord, intent: ResponseTargetIntent): b
 }
 
 function selected(
-  parent: StoredResponseRecord,
+  parent: Pick<StoredResponseRecord, 'canonicalTargets'>,
   intent: ResponseTargetIntent,
 ): ResponseCanonicalTarget | undefined {
   return parent.canonicalTargets?.find((entry) => entry.logicalId === intent.logicalId);
@@ -223,21 +263,7 @@ export async function selectResponseTarget(
 ): Promise<ResponseTargetResult> {
   const filter = identity(mongoose, intent);
   const model = createStoredResponseModel(mongoose);
-  const parent = await model
-    .findOne(filter)
-    .select({
-      status: 1,
-      revision: 1,
-      generationCreatedAt: 1,
-      pendingTerminal: 1,
-      canonicalTargets: 1,
-      providerExecution: 1,
-      retiredAt: 1,
-      expiredAt: 1,
-      cancellationRequestedAt: 1,
-      persistenceFailure: 1,
-    })
-    .lean();
+  const parent = await readTargetParent(mongoose, filter, intent.logicalId);
   if (!parent || parent.persistenceFailure) return { ok: false, code: 'response_conflict' };
   const previous = selected(parent, intent);
   if (previous) {
@@ -260,38 +286,23 @@ export async function selectResponseTarget(
     phase: 'selected',
     target,
   };
-  const updated = await model
-    .findOneAndUpdate(
-      {
-        ...filter,
-        ...admission(intent),
-        revision: parent.revision,
-        ...(previous
-          ? { canonicalTargets: { $elemMatch: { ...exact(previous), phase: 'selected' } } }
-          : { 'canonicalTargets.logicalId': { $ne: intent.logicalId } }),
-      },
-      {
-        ...(previous
-          ? { $set: { 'canonicalTargets.$': selection } }
-          : { $push: { canonicalTargets: selection } }),
-        $inc: { revision: 1 },
-      },
-      { new: true },
-    )
-    .select({
-      status: 1,
-      revision: 1,
-      generationCreatedAt: 1,
-      pendingTerminal: 1,
-      canonicalTargets: 1,
-      providerExecution: 1,
-      retiredAt: 1,
-      expiredAt: 1,
-      cancellationRequestedAt: 1,
-      persistenceFailure: 1,
-    })
-    .lean();
-  if (updated)
+  const updated = await model.updateOne(
+    {
+      ...filter,
+      ...admission(intent),
+      revision: parent.revision,
+      ...(previous
+        ? { canonicalTargets: { $elemMatch: { ...exact(previous), phase: 'selected' } } }
+        : { 'canonicalTargets.logicalId': { $ne: intent.logicalId } }),
+    },
+    {
+      ...(previous
+        ? { $set: { 'canonicalTargets.$': selection } }
+        : { $push: { canonicalTargets: selection } }),
+      $inc: { revision: 1 },
+    },
+  );
+  if (updated.matchedCount === 1)
     return (await pinManagedTarget(mongoose, target, intent.parentId))
       ? result(intent, selection)
       : { ok: false, code: 'response_conflict' };
@@ -310,21 +321,7 @@ export async function beginResponseTargetRegistration(
   const requested = result(intent, selection);
   if (!requested.ok) return requested;
   const model = createStoredResponseModel(mongoose);
-  const parent = await model
-    .findOne(filter)
-    .select({
-      status: 1,
-      revision: 1,
-      generationCreatedAt: 1,
-      pendingTerminal: 1,
-      canonicalTargets: 1,
-      providerExecution: 1,
-      retiredAt: 1,
-      expiredAt: 1,
-      cancellationRequestedAt: 1,
-      persistenceFailure: 1,
-    })
-    .lean();
+  const parent = await readTargetParent(mongoose, filter, intent.logicalId);
   const current = parent && selected(parent, intent);
   if (
     !parent ||
@@ -453,21 +450,7 @@ export async function acknowledgeResponseTarget(
   const requested = result(intent, selection);
   if (!requested.ok) return requested;
   const model = createStoredResponseModel(mongoose);
-  const parent = await model
-    .findOne(filter)
-    .select({
-      status: 1,
-      revision: 1,
-      generationCreatedAt: 1,
-      pendingTerminal: 1,
-      canonicalTargets: 1,
-      providerExecution: 1,
-      retiredAt: 1,
-      expiredAt: 1,
-      cancellationRequestedAt: 1,
-      persistenceFailure: 1,
-    })
-    .lean();
+  const parent = await readTargetParent(mongoose, filter, intent.logicalId);
   const current = parent && selected(parent, intent);
   if (
     !parent ||
@@ -520,16 +503,17 @@ export function responseTargetRegistrationKey(publication: ManagedPublication): 
     .digest('hex');
 }
 
+export type ResponsePublicationResult<T> =
+  | { ok: true; value: T; publication: ManagedPublication }
+  | { ok: false; code: 'response_conflict' | 'target_retired' };
+
 /** One canonical publication protocol for managed Conversation seeds and confirmed Messages. */
 export async function publishResponseTarget<T>(
   mongoose: typeof import('mongoose'),
   intent: ResponseTargetIntent,
   write: (publication: ManagedPublication, expiredAt?: Date) => Promise<T | null | undefined>,
   options: { maxPendingTargetsPerScope?: number; expiredAt?: Date } = {},
-): Promise<
-  | { ok: true; value: T; publication: ManagedPublication }
-  | { ok: false; code: 'response_conflict' | 'target_retired' }
-> {
+): Promise<ResponsePublicationResult<T>> {
   const selected = await selectResponseTarget(mongoose, intent);
   if (!selected.ok) return selected;
   const started = await beginResponseTargetRegistration(mongoose, intent, selected.selection);
@@ -596,4 +580,44 @@ export async function publishResponseTarget<T>(
     if (!(await settleResponseTarget(mongoose, intent, conversationId, entry)))
       return { ok: false, code: 'response_conflict' };
   return { ok: true, value, publication };
+}
+
+/** Validate/hash a turn once; each Message carries only its bounded immutable authority. */
+export function createResponseTurnPublisher(
+  mongoose: typeof import('mongoose'),
+  record: StoredResponseRecord,
+  receipt: ResponseTerminalReceipt,
+): <T>(
+  logicalId: string,
+  write: (publication: ManagedPublication, expiredAt?: Date) => Promise<T | null | undefined>,
+  options?: { maxPendingTargetsPerScope?: number; expiredAt?: Date },
+) => Promise<ResponsePublicationResult<T>> {
+  if (!record.storageTarget) throw new TypeError('Response root identity is unavailable');
+  const accepted = Object.freeze(terminalReceipt(receipt));
+  const authority = {
+    key: responseReceiptKey(accepted),
+    ids: responseTurnMessageIds(record.responseId, accepted),
+  };
+  const owner = {
+    userId: record.userId,
+    tenantId: record.tenantId,
+    responseId: record.responseId,
+    fingerprint: record.fingerprint,
+    conversationId: record.conversationId,
+    parentId: record.storageTarget.id,
+  };
+  return <T>(
+    logicalId: string,
+    write: (publication: ManagedPublication, expiredAt?: Date) => Promise<T | null | undefined>,
+    options?: { maxPendingTargetsPerScope?: number; expiredAt?: Date },
+  ) => {
+    const intent: ResponseTargetIntent = Object.freeze({
+      ...owner,
+      kind: 'message',
+      receipt: accepted,
+      logicalId,
+    });
+    receiptAuthority.set(intent, authority);
+    return publishResponseTarget(mongoose, intent, write, options);
+  };
 }

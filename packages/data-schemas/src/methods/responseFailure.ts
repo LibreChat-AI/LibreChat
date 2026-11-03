@@ -12,6 +12,7 @@ import {
   retireManagedAllocation,
 } from './managed';
 import { assertResponseExecutionBinding, responseReceiptKey } from '~/utils/receipt';
+import { responseUpdateFits, RESPONSE_BUDGET_FIELDS } from './responseBudget';
 import { responseScopeKeys, isResponseScopeClosed } from './responseScope';
 import { responseRootFilter, responseReference } from './responseRoot';
 import { createStoredResponseModel } from '~/models/response';
@@ -30,7 +31,7 @@ export function createResponseFailureStorage(mongoose: typeof import('mongoose')
   const read = (record: StoredResponseRecord) =>
     roots
       .findOne({ ...responseRootFilter(mongoose, responseReference(record)), ...available })
-      .select('+canonicalTargets +providerExecution +checkpoint')
+      .select(RESPONSE_BUDGET_FIELDS)
       .lean();
 
   async function seal(
@@ -135,9 +136,7 @@ export function createResponseFailureStorage(mongoose: typeof import('mongoose')
         response.store !== true ||
         !('output' in response) ||
         !Array.isArray(response.output) ||
-        response.output.length !== 0 ||
-        // Control-only fallback fits inside the reserved BSON cleanup headroom.
-        Buffer.byteLength(responseJSON, 'utf8') > 64 * 1024
+        response.output.length !== 0
       )
         throw new TypeError('Invalid bounded Response persistence failure result');
       const current = await read(record);
@@ -189,6 +188,19 @@ export function createResponseFailureStorage(mongoose: typeof import('mongoose')
       const latest = await read(current);
       if (!latest || (await isResponseScopeClosed(mongoose, latest, latest.conversationId)))
         return { ok: false, code: 'response_conflict' };
+      const update = {
+        $set: { status: 'failed' as const, responseJSON, requestJSON: '{}' },
+        $unset: {
+          preparedTerminal: 1,
+          pendingTerminal: 1,
+          terminalReceiptKey: 1,
+          review: 1,
+          resume: 1,
+        },
+        $inc: { revision: 1 },
+      };
+      if (!responseUpdateFits(mongoose, latest, update, 'failure'))
+        return { ok: false, code: 'document_limit' };
       const saved = await roots
         .findOneAndUpdate(
           {
@@ -198,11 +210,7 @@ export function createResponseFailureStorage(mongoose: typeof import('mongoose')
             persistenceFailure: failure,
             status: 'materializing',
           },
-          {
-            $set: { status: 'failed', responseJSON },
-            $unset: { preparedTerminal: 1, pendingTerminal: 1, review: 1, resume: 1 },
-            $inc: { revision: 1 },
-          },
+          update,
           { new: true, upsert: false },
         )
         .lean();

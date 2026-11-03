@@ -44,22 +44,12 @@ export function terminalFilter(
   prefix: string,
   receipt: ResponseTerminalReceipt,
 ): Record<string, unknown> {
-  const fields: Record<
-    keyof ResponseTerminalReceipt,
-    ResponseTerminalReceipt[keyof ResponseTerminalReceipt]
-  > = {
-    generationCreatedAt: receipt.generationCreatedAt,
-    providerExecutionId: receipt.providerExecutionId,
-    ownerId: receipt.ownerId,
-    status: receipt.status,
-    responseJSON: receipt.responseJSON,
-    turnJSON: receipt.turnJSON,
-    checkpointNamespace: receipt.checkpointNamespace,
-    checkpointConfigJSON: receipt.checkpointConfigJSON,
+  return {
+    terminalReceiptKey: responseReceiptKey(receipt),
+    [`${prefix}.generationCreatedAt`]: receipt.generationCreatedAt,
+    [`${prefix}.providerExecutionId`]: receipt.providerExecutionId,
+    [`${prefix}.ownerId`]: receipt.ownerId ?? { $exists: false },
   };
-  return Object.fromEntries(
-    Object.entries(fields).map(([key, value]) => [`${prefix}.${key}`, value ?? { $exists: false }]),
-  );
 }
 
 export function responseReceiptKey(receipt: ResponseTerminalReceipt): string {
@@ -96,4 +86,35 @@ export function responseProviderFilter(
     persistenceFailure: { $exists: false },
     cancellationRequestedAt: { $exists: false },
   };
+}
+
+/** The immutable receipt declares the complete set; canonical inputs use the managed namespace. */
+export function responseTurnMessageIds(
+  responseId: string,
+  receipt: ResponseTerminalReceipt,
+): ReadonlySet<string> {
+  const turn: unknown = JSON.parse(receipt.turnJSON!);
+  if (
+    typeof turn !== 'object' ||
+    turn === null ||
+    !('version' in turn) ||
+    turn.version !== 1 ||
+    !('inputs' in turn) ||
+    !Array.isArray(turn.inputs) ||
+    !/^resp_d_[a-f\d]{32}$/.test(responseId)
+  )
+    throw new TypeError('Invalid Response target intent');
+  const ids = new Set([responseId]);
+  for (const input of turn.inputs) {
+    if (
+      typeof input !== 'object' ||
+      input === null ||
+      !('messageId' in input) ||
+      typeof input.messageId !== 'string' ||
+      !/^resp_d_[a-f\d]{32}$/.test(input.messageId)
+    )
+      throw new TypeError('Invalid Response target intent');
+    ids.add(input.messageId);
+  }
+  return ids;
 }

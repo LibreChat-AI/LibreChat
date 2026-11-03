@@ -15,6 +15,7 @@ export { responseReference } from './methods/responseRoot';
 export { createResponseCheckpointStorage } from './methods/responseCheckpoint';
 export type {
   ResponseReference,
+  ResponsePersistenceFailure,
   ResponseProviderExecution,
   ResponseCheckpointExecution,
 } from './models/response';

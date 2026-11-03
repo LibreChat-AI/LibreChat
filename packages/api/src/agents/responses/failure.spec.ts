@@ -76,7 +76,7 @@ describe.each(engines)('permanent Response publication failure on %s', (engine) 
       confirmExecution: createResponseExecutionConfirmation(storage, jobs),
       releaseExecution: createResponseExecutionRelease(jobs, storage),
     });
-  async function fixture(drained = true, withCheckpoint = false) {
+  async function fixture(drained = true, withCheckpoint = false, stage = true) {
     const reserved = await storage.reserve({
       ...owner,
       responseId: createManagedMessageId(),
@@ -197,15 +197,12 @@ describe.each(engines)('permanent Response publication failure on %s', (engine) 
         })
       : undefined;
     if (writer && !(await writer.open())) throw new Error('Checkpoint open failed');
-    const staged = await storage.stageTerminal(
-      record,
-      record.responseId,
-      { execution: record },
-      receipt,
-    );
-    if (!staged.ok) throw new Error('Stage failed');
+    const staged = stage
+      ? await storage.stageTerminal(record, record.responseId, { execution: record }, receipt)
+      : undefined;
+    if (staged && !staged.ok) throw new Error('Stage failed');
     if (drained) await drain();
-    return { record: staged.record, receipt, binding, drain, writer };
+    return { record: staged?.record ?? record, receipt, binding, drain, writer };
   }
   async function markFailure(f: Awaited<ReturnType<typeof fixture>>) {
     const saved = await storage.recordPersistenceFailure(f.record, {
@@ -234,6 +231,61 @@ describe.each(engines)('permanent Response publication failure on %s', (engine) 
       return original(...args);
     });
   }
+  it('rejects oversized background HTTP input before allocating a Root or queueing work', () =>
+    scope(async () => {
+      const enqueue = jest.fn(async () => {});
+      const onError = jest.fn();
+      const service = createBackgroundResponseService({
+        storage,
+        recoverTerminal: completion().finish,
+        authorize: async () => true,
+        enqueue,
+        resolveContinuation: async () => ({
+          conversationId: createManagedConversationId(),
+          parentMessageId: 'root',
+        }),
+        observe: async () => null,
+        cancel: async () => {},
+      });
+      const handlers = createBackgroundResponseHttpHandlers({
+        service: () => service,
+        ordinary: {
+          create: (_req, res) => {
+            res.sendStatus(418);
+          },
+          retrieve: (_req, res) => {
+            res.sendStatus(418);
+          },
+        },
+        onError,
+      });
+      const app = express();
+      app.use(express.json({ limit: '50mb' }));
+      app.use((req, _res, next) => {
+        Object.assign(req, {
+          user: { id: owner.userId, tenantId: owner.tenantId },
+          apiKeyId: 'key',
+        });
+        tenantStorage.run(owner, next);
+      });
+      app.post('/responses', handlers.create);
+      const rejected = await request(app)
+        .post('/responses')
+        .send({
+          model: 'agent',
+          input: 'é'.repeat(8 * 1024 * 1024),
+          background: true,
+          store: true,
+        });
+      expect(rejected.status).toBe(413);
+      expect(rejected.body).toMatchObject({
+        error: { code: 'document_limit', type: 'invalid_request' },
+      });
+      expect(JSON.stringify(rejected.body)).not.toContain('é');
+      expect(await mongoose.models.StoredResponse.collection.countDocuments({})).toBe(0);
+      expect(enqueue).not.toHaveBeenCalled();
+      expect(onError).not.toHaveBeenCalled();
+    }));
   it('finishes a missing registered target, preserves confirmed input, and reports failure through HTTP and Channels', () =>
     scope(async () => {
       const f = await fixture();
@@ -368,15 +420,13 @@ describe.each(engines)('permanent Response publication failure on %s', (engine) 
         await original(...args);
         throw new Error('Injected failure marker reply lost');
       });
-      await expect(completion().finish(f.record)).rejects.toThrow('failure marker reply lost');
+      expect((await completion().finish(f.record)).status).toBe('failed');
       const pending = (await storage.read(f.record, f.record.responseId))!;
       expect(pending).toMatchObject({
-        status: 'materializing',
+        status: 'failed',
         persistenceFailure: { code: 'target_retired' },
+        releaseAcknowledged: true,
       });
-      expect((await jobs.getJob(f.record.responseId))?.metadata.terminalPersistencePending).toBe(
-        true,
-      );
       storage = createResponseStorage(mongoose);
       const recovered = await createResponseRecovery({ storage, jobs, completion: completion() })(
         pending,
@@ -384,6 +434,82 @@ describe.each(engines)('permanent Response publication failure on %s', (engine) 
       expect(recovered?.status).toBe('failed');
       expect(await mongoose.models.Conversation.countDocuments({ user: owner.userId })).toBe(0);
       expect(await mongoose.models.Message.countDocuments({ user: owner.userId })).toBe(0);
+      expect(await jobs.getJob(f.record.responseId)).toBeUndefined();
+    }));
+  it('turns an oversized immutable terminal proposal into a bounded failure after positive drain', () =>
+    scope(async () => {
+      const f = await fixture(false, false, false);
+      const response = JSON.parse(f.receipt.responseJSON);
+      response.output[0].content[0].text = 'é'.repeat(8 * 1024 * 1024);
+      const oversized = { ...f.receipt, responseJSON: JSON.stringify(response) };
+      const prepared = await completion().prepare(f.record, oversized);
+      expect(prepared).toMatchObject({
+        status: 'materializing',
+        persistenceFailure: { code: 'document_limit' },
+      });
+      expect(prepared.preparedTerminal).toBeUndefined();
+      expect(prepared.pendingTerminal).toBeUndefined();
+      expect(await mongoose.models.Message.countDocuments({ user: owner.userId })).toBe(0);
+      await f.drain();
+      const finished = await completion().finish(
+        (await storage.read(f.record, f.record.responseId))!,
+      );
+      expect(finished.status).toBe('failed');
+      expect(Buffer.byteLength(finished.responseJSON!, 'utf8')).toBeLessThan(64 * 1024);
+      expect(JSON.parse(finished.responseJSON!)).toMatchObject({
+        output: [],
+        status: 'failed',
+        error: { code: 'response_persistence_failed' },
+      });
+      expect(await jobs.getJob(f.record.responseId)).toBeUndefined();
+    }));
+  it('publishes a large valid tool result without duplicating its receipt in write filters', () =>
+    scope(async () => {
+      const f = await fixture(true, false, false);
+      const response = JSON.parse(f.receipt.responseJSON);
+      response.output = [
+        {
+          type: 'function_call',
+          id: 'call',
+          call_id: 'large',
+          name: 'lookup',
+          arguments: '{}',
+          status: 'completed',
+        },
+        {
+          type: 'function_call_output',
+          id: 'result',
+          call_id: 'large',
+          output: 'x'.repeat(12 * 1024 * 1024),
+          status: 'completed',
+        },
+      ];
+      const receipt = { ...f.receipt, responseJSON: JSON.stringify(response) };
+      const prepared = await completion().prepare(f.record, receipt);
+      expect(prepared.preparedTerminal).toBeDefined();
+      const finished = await completion().finish(prepared);
+      expect(finished.status).toBe('completed');
+      expect(finished.pendingTerminal).toBeUndefined();
+      expect(await mongoose.models.Message.countDocuments({ user: owner.userId })).toBe(2);
+      expect(await jobs.getJob(f.record.responseId)).toBeUndefined();
+    }));
+  it('fails an oversized canonical Message instead of retrying its accepted immutable receipt forever', () =>
+    scope(async () => {
+      const f = await fixture(true, false, false);
+      const response = JSON.parse(f.receipt.responseJSON);
+      response.output[0].content[0].text = 'x'.repeat(8 * 1024 * 1024);
+      const receipt = { ...f.receipt, responseJSON: JSON.stringify(response) };
+      const prepared = await completion().prepare(f.record, receipt);
+      expect(prepared.preparedTerminal).toBeDefined();
+      const finished = await completion().finish(prepared);
+      expect(finished).toMatchObject({
+        status: 'failed',
+        persistenceFailure: { code: 'document_limit' },
+      });
+      expect(await mongoose.models.Message.countDocuments({ messageId: f.record.responseId })).toBe(
+        0,
+      );
+      expect(await mongoose.models.Message.countDocuments({ user: owner.userId })).toBe(1);
       expect(await jobs.getJob(f.record.responseId)).toBeUndefined();
     }));
   it('fences an already admitted delayed canonical writer before acknowledging failure', () =>

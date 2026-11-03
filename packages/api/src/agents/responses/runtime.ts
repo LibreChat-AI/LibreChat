@@ -55,6 +55,7 @@ import { normalizeResponseTurnIntent } from './turnProjection';
 import { getChatProjectContextKey } from '~/projects/context';
 import { buildPendingBackgroundResponse } from './background';
 import { resolveResponseContinuation } from './persistence';
+import { ResponseDocumentLimitError } from './persistence';
 import { captureRunPendingAction } from '../hitl/capture';
 import { cleanupResponseCheckpoint } from './checkpoint';
 import { createResponseRetirement } from './retirement';
@@ -773,68 +774,80 @@ export function createResponseExecutionRuntime(
         background: true,
         store: true,
       };
-      const paused = await pauseResponseForReview(
-        {
-          run: input.run,
-          execution: input.execution,
-          record: admission.record,
-          partial,
-          visibleOutputTokens: visibleOutputTokens(input.visibleOutputTokens),
-          checkpointer: config?.checkpointer,
-        },
-        {
-          storage: admission.storage,
-          jobs: continuation.jobs,
-          buildAction: async (interrupt) => {
-            const payload =
-              interrupt.payload.type === 'tool_approval'
-                ? markToolApprovalAllowAlways(
-                    markNativeCodeToolApprovalRequests(interrupt.payload, agents),
-                    {
-                      policy: config?.toolApproval,
-                      agents,
-                      aliases,
-                      storedTools: resolveRunToolApprovalAllows(
-                        config?.toolApproval,
-                        request.resolvedConversation,
-                        admission.record.conversationId,
-                      ),
-                      hookContext: {
-                        userId: admission.record.userId,
-                        tenantId: responseTenantId(admission.record.tenantId),
-                        conversationId: admission.record.conversationId,
-                        appConfig: request.config,
-                      },
-                      pluginHookSource: continuation.pluginHookSource,
-                    },
-                  )
-                : interrupt.payload;
-            return captureRunPendingAction({
-              run: input.run,
-              payload,
-              agents,
-              resumeAgentIds: responseParticipantIds(admission.record.agentId, agents),
-              aliases,
-              context: {
-                streamId: admission.record.responseId,
-                responseMessageId: admission.record.responseId,
-                conversationId: admission.record.conversationId,
-                threadId: admission.record.conversationId,
-                runId: interrupt.checkpointNs ?? admission.record.responseId,
-                interruptId: interrupt.interruptId,
-                ttlMs: getApprovalTtlMs(config?.checkpointer),
-                projectContextKey: getChatProjectContextKey(request.chatProjectContext),
-                requestFingerprint: computeLegacyAgentRequestFingerprint(request.body),
-                requestFingerprintV2: computeAgentRequestFingerprint(request.body),
-                resumeContext: {
-                  ...pickResumeContext(request.body, request.reasoningOverrideBase),
-                  discoveredToolNames: getRunDiscoveredTools(input.run),
-                },
-              },
-            });
+      let paused: boolean;
+      try {
+        paused = await pauseResponseForReview(
+          {
+            run: input.run,
+            execution: input.execution,
+            record: admission.record,
+            partial,
+            visibleOutputTokens: visibleOutputTokens(input.visibleOutputTokens),
+            checkpointer: config?.checkpointer,
           },
-        },
-      );
+          {
+            storage: admission.storage,
+            jobs: continuation.jobs,
+            buildAction: async (interrupt) => {
+              const payload =
+                interrupt.payload.type === 'tool_approval'
+                  ? markToolApprovalAllowAlways(
+                      markNativeCodeToolApprovalRequests(interrupt.payload, agents),
+                      {
+                        policy: config?.toolApproval,
+                        agents,
+                        aliases,
+                        storedTools: resolveRunToolApprovalAllows(
+                          config?.toolApproval,
+                          request.resolvedConversation,
+                          admission.record.conversationId,
+                        ),
+                        hookContext: {
+                          userId: admission.record.userId,
+                          tenantId: responseTenantId(admission.record.tenantId),
+                          conversationId: admission.record.conversationId,
+                          appConfig: request.config,
+                        },
+                        pluginHookSource: continuation.pluginHookSource,
+                      },
+                    )
+                  : interrupt.payload;
+              return captureRunPendingAction({
+                run: input.run,
+                payload,
+                agents,
+                resumeAgentIds: responseParticipantIds(admission.record.agentId, agents),
+                aliases,
+                context: {
+                  streamId: admission.record.responseId,
+                  responseMessageId: admission.record.responseId,
+                  conversationId: admission.record.conversationId,
+                  threadId: admission.record.conversationId,
+                  runId: interrupt.checkpointNs ?? admission.record.responseId,
+                  interruptId: interrupt.interruptId,
+                  ttlMs: getApprovalTtlMs(config?.checkpointer),
+                  projectContextKey: getChatProjectContextKey(request.chatProjectContext),
+                  requestFingerprint: computeLegacyAgentRequestFingerprint(request.body),
+                  requestFingerprintV2: computeAgentRequestFingerprint(request.body),
+                  resumeContext: {
+                    ...pickResumeContext(request.body, request.reasoningOverrideBase),
+                    discoveredToolNames: getRunDiscoveredTools(input.run),
+                  },
+                },
+              });
+            },
+          },
+        );
+      } catch (error) {
+        if (error instanceof ResponseDocumentLimitError && completion) {
+          admission.record = await completion.fail(
+            admission.record,
+            input.execution.getPersistenceIdentity(),
+            'document_limit',
+          );
+        }
+        throw error;
+      }
       if (!paused && !input.execution.signal.aborted)
         throw new Error('Response interrupt could not be retained');
       return undefined;

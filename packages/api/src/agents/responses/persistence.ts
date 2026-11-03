@@ -62,6 +62,15 @@ type ResponseReferenceDeps = {
   getMessage: (query: { user: string; messageId: string }) => Promise<StoredResponseMessage | null>;
 };
 
+/** An accepted provider result exceeds the physical durable-document budget. */
+export class ResponseDocumentLimitError extends Error {
+  readonly code = 'document_limit';
+  constructor() {
+    super('The Agent result could not be saved.');
+    this.name = 'ResponseDocumentLimitError';
+  }
+}
+
 export class ResponsePersistenceError extends Error {
   readonly status = 503;
   readonly code = 'response_storage_unavailable';

@@ -1,8 +1,8 @@
 import { checkpointerSchema } from 'librechat-data-provider';
 import type { ResponseReference, ResponseCheckpointExecution } from '~/models/response';
-import { checkpointOwnerNamespacePrefix } from '~/utils/checkpoint';
-import { createStoredResponseModel } from '~/models/response';
+import { checkpointOwnerNamespacePrefix, checkpointConfigKey } from '~/utils/checkpoint';
 import { activeExpirationFilter } from '~/utils/retention';
+import { updateResponseDocument } from './responseBudget';
 import { responseRootFilter } from './responseRoot';
 
 const uuidPattern = /^[a-f\d]{8}-[a-f\d]{4}-4[a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i;
@@ -12,7 +12,7 @@ const uuidPattern = /^[a-f\d]{8}-[a-f\d]{4}-4[a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]
 export function createResponseCheckpointStorage(
   mongoose: typeof import('mongoose'),
   reference: ResponseReference,
-  input: Omit<ResponseCheckpointExecution, 'state' | 'erased'>,
+  input: Omit<ResponseCheckpointExecution, 'state' | 'erased' | 'configKey'>,
 ): { open: () => Promise<boolean>; settle: () => Promise<boolean> } {
   const checkpoint = {
     generationCreatedAt: input.generationCreatedAt,
@@ -21,6 +21,7 @@ export function createResponseCheckpointStorage(
     writerId: input.writerId,
     namespace: input.namespace,
     configJSON: input.configJSON,
+    configKey: checkpointConfigKey(input.configJSON),
   };
   const physical = responseRootFilter(mongoose, reference);
   const prefix = checkpointOwnerNamespacePrefix(reference.userId, reference.tenantId);
@@ -54,7 +55,6 @@ export function createResponseCheckpointStorage(
     !config.data.checkpointWritesCollectionName
   )
     throw new TypeError('Invalid Response checkpoint storage settings');
-  const model = createStoredResponseModel(mongoose);
   const provider = {
     generationCreatedAt: checkpoint.generationCreatedAt,
     'providerExecution.id': checkpoint.providerExecutionId,
@@ -66,11 +66,12 @@ export function createResponseCheckpointStorage(
     'checkpoint.ownerId': checkpoint.ownerId ?? { $exists: false },
     'checkpoint.writerId': checkpoint.writerId,
     'checkpoint.namespace': checkpoint.namespace,
-    'checkpoint.configJSON': checkpoint.configJSON,
+    'checkpoint.configKey': checkpoint.configKey,
   };
   return {
     async open() {
-      const result = await model.updateOne(
+      const result = await updateResponseDocument(
+        mongoose,
         {
           ...physical,
           ...provider,
@@ -87,7 +88,7 @@ export function createResponseCheckpointStorage(
               'checkpoint.state': 'settled',
               'checkpoint.generationCreatedAt': checkpoint.generationCreatedAt,
               'checkpoint.namespace': checkpoint.namespace,
-              'checkpoint.configJSON': checkpoint.configJSON,
+              'checkpoint.configKey': checkpoint.configKey,
               'checkpoint.providerExecutionId': { $ne: checkpoint.providerExecutionId },
             },
             { ...exact, 'checkpoint.state': 'pending' },
@@ -96,14 +97,15 @@ export function createResponseCheckpointStorage(
         { $set: { checkpoint: { ...checkpoint, state: 'pending' } } },
         { upsert: false },
       );
-      return result.matchedCount === 1;
+      return result.ok;
     },
     async settle() {
       // Retirement/expiry must not prevent a live exact writer from recording positive
       // settlement. Its retained root remains the cleanup authority until this succeeds.
       // An absent marker can mean opening failed before any checkpoint command ran.
       // Installing the exact settled marker also fences a delayed opening command.
-      const result = await model.updateOne(
+      const result = await updateResponseDocument(
+        mongoose,
         {
           ...physical,
           ...provider,
@@ -121,8 +123,10 @@ export function createResponseCheckpointStorage(
           ),
         },
         { upsert: false },
+        undefined,
+        'settlement',
       );
-      return result.matchedCount === 1;
+      return result.ok;
     },
   };
 }

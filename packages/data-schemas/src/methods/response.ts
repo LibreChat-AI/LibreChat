@@ -35,10 +35,16 @@ import {
 } from './responseScope';
 import {
   sameResponseTerminalReceipt,
+  responseReceiptKey,
   terminalReceipt,
   terminalFilter,
   assertResponseExecutionBinding,
 } from '~/utils/receipt';
+import {
+  updateResponseDocument,
+  responseReservationFits,
+  RESPONSE_BUDGET_FIELDS,
+} from './responseBudget';
 import {
   readResponseConversationTarget,
   prepareResponseConversation,
@@ -53,6 +59,7 @@ import { reconcileErasedResponseTargets } from './registration';
 import { createStoredResponseModel } from '~/models/response';
 import { includeManagedAllocations } from '~/utils/managed';
 import { activeExpirationFilter } from '~/utils/retention';
+import { checkpointConfigKey } from '~/utils/checkpoint';
 import { materializeResponseTurn } from './responseTurn';
 
 export { sameResponseTerminalReceipt } from '~/utils/receipt';
@@ -70,7 +77,7 @@ export type {
 
 export type ResponseReservationResult =
   | { ok: true; record: StoredResponseRecord; replayed: boolean }
-  | { ok: false; code: 'idempotency_conflict' | 'response_unavailable' };
+  | { ok: false; code: 'idempotency_conflict' | 'response_unavailable' | 'document_limit' };
 
 export type { ResponseExecutionBinding } from '~/models/response';
 
@@ -103,7 +110,7 @@ export interface ResponseResumeReservation
 /** Replays are receipts, not permission to enqueue or execute terminal/cancelled runs. */
 export type ResponseResumeResult =
   | { ok: true; record: StoredResponseRecord; replayed: boolean }
-  | { ok: false; code: 'resume_conflict' };
+  | { ok: false; code: 'resume_conflict' | 'document_limit' };
 
 /** Canonical execution writes are independent of polling's projection revision. */
 export interface ResponseExecutionGuard {
@@ -246,7 +253,7 @@ export interface ResponseStorage {
   ): Promise<boolean>;
   createCheckpointWriter(
     reference: ResponseReference,
-    checkpoint: Omit<ResponseCheckpointExecution, 'state' | 'erased'>,
+    checkpoint: Omit<ResponseCheckpointExecution, 'state' | 'erased' | 'configKey'>,
   ): ReturnType<typeof createResponseCheckpointStorage>;
   enrollExecution(
     record: StoredResponseRecord,
@@ -433,7 +440,7 @@ export function createResponseStorage(
   ): Promise<T> {
     const current = await model
       .findOne({ ...scope(owner, mode), responseId })
-      .select('+providerExecution +checkpoint')
+      .select(RESPONSE_BUDGET_FIELDS)
       .lean();
     if (!current || (await isResponseScopeClosed(mongoose, current, current.conversationId)))
       return conflict;
@@ -554,7 +561,7 @@ export function createResponseStorage(
           'providerExecution.drained': true,
           'checkpoint.writerId': proof.checkpointWriterId,
           'checkpoint.namespace': proof.checkpointNamespace,
-          'checkpoint.configJSON': proof.checkpointConfigJSON,
+          'checkpoint.configKey': checkpointConfigKey(proof.checkpointConfigJSON),
           'checkpoint.state': 'settled',
         },
         { $set: { 'checkpoint.erased': true } },
@@ -570,35 +577,37 @@ export function createResponseStorage(
         record,
         record.responseId,
         async () => {
-          const saved = await model
-            .findOneAndUpdate(
-              {
-                ...scope(record),
-                revision: record.revision,
-                status: 'queued',
-                generationCreatedAt: { $exists: false },
-                providerExecution: { $exists: false },
-                cancellationRequestedAt: record.cancellationRequestedAt ?? { $exists: false },
-                pendingTerminal: { $exists: false },
-                preparedTerminal: { $exists: false },
-              },
-              {
-                $set: {
-                  generationCreatedAt: binding.generationCreatedAt,
-                  providerExecution: {
-                    id: binding.providerExecutionId,
-                    ...(binding.ownerId ? { ownerId: binding.ownerId } : {}),
-                    drained: true,
-                    outcome: binding.outcome,
-                  },
-                  status,
-                  responseJSON,
+          const admitted = await updateResponseDocument(
+            mongoose,
+            {
+              ...scope(record),
+              revision: record.revision,
+              status: 'queued',
+              generationCreatedAt: { $exists: false },
+              providerExecution: { $exists: false },
+              cancellationRequestedAt: record.cancellationRequestedAt ?? { $exists: false },
+              pendingTerminal: { $exists: false },
+              preparedTerminal: { $exists: false },
+            },
+            {
+              $set: {
+                generationCreatedAt: binding.generationCreatedAt,
+                providerExecution: {
+                  id: binding.providerExecutionId,
+                  ...(binding.ownerId ? { ownerId: binding.ownerId } : {}),
+                  drained: true,
+                  outcome: binding.outcome,
                 },
-                $inc: { revision: 1 },
+                status,
+                responseJSON,
               },
-              { new: true, upsert: false },
-            )
-            .lean();
+              $inc: { revision: 1 },
+            },
+            { new: true, upsert: false },
+          );
+          if (!admitted.ok && admitted.code === 'document_limit')
+            return { ok: false, code: 'document_limit' };
+          const saved = admitted.ok ? admitted.record : null;
           return saved ? { ok: true, record: saved } : { ok: false, code: 'response_conflict' };
         },
         { ok: false, code: 'response_conflict' },
@@ -704,50 +713,52 @@ export function createResponseStorage(
           .lean();
         if (enrolled) return { ok: true, record: enrolled };
       }
-      const record = await model
-        .findOneAndUpdate(
-          {
-            ...scope(current),
-            ...execution,
-            revision: current.revision,
-            cancellationRequestedAt: current.cancellationRequestedAt ?? { $exists: false },
-            pendingTerminal: { $exists: false },
-            preparedTerminal: { $exists: false },
-            ...(resumed
-              ? {
-                  status: 'in_progress',
-                  'providerExecution.id': resumed.previousProviderExecutionId,
-                  'providerExecution.drained': true,
-                  $and: [
-                    activeExpirationFilter(),
-                    {
-                      $or: [{ checkpoint: { $exists: false } }, { 'checkpoint.state': 'settled' }],
-                    },
-                  ],
-                }
-              : {
-                  status: 'queued',
-                  generationCreatedAt: { $exists: false },
-                  providerExecution: { $exists: false },
-                  resume: { $exists: false },
-                  review: { $exists: false },
-                }),
-          },
-          {
-            $set: {
-              status: resumed || current.cancellationRequestedAt == null ? 'in_progress' : 'queued',
-              responseJSON,
-              generationCreatedAt: binding.generationCreatedAt,
-              providerExecution: {
-                id: binding.providerExecutionId,
-                drained: false,
-              },
+      const admitted = await updateResponseDocument(
+        mongoose,
+        {
+          ...scope(current),
+          ...execution,
+          revision: current.revision,
+          cancellationRequestedAt: current.cancellationRequestedAt ?? { $exists: false },
+          pendingTerminal: { $exists: false },
+          preparedTerminal: { $exists: false },
+          ...(resumed
+            ? {
+                status: 'in_progress',
+                'providerExecution.id': resumed.previousProviderExecutionId,
+                'providerExecution.drained': true,
+                $and: [
+                  activeExpirationFilter(),
+                  {
+                    $or: [{ checkpoint: { $exists: false } }, { 'checkpoint.state': 'settled' }],
+                  },
+                ],
+              }
+            : {
+                status: 'queued',
+                generationCreatedAt: { $exists: false },
+                providerExecution: { $exists: false },
+                resume: { $exists: false },
+                review: { $exists: false },
+              }),
+        },
+        {
+          $set: {
+            status: resumed || current.cancellationRequestedAt == null ? 'in_progress' : 'queued',
+            responseJSON,
+            generationCreatedAt: binding.generationCreatedAt,
+            providerExecution: {
+              id: binding.providerExecutionId,
+              drained: false,
             },
-            $inc: { revision: 1 },
           },
-          { new: true, upsert: false },
-        )
-        .lean();
+          $inc: { revision: 1 },
+        },
+        { new: true, upsert: false },
+      );
+      if (!admitted.ok && admitted.code === 'document_limit')
+        return { ok: false, code: 'document_limit' };
+      const record = admitted.ok ? admitted.record : null;
       return record ? { ok: true, record } : { ok: false, code: 'response_conflict' };
     },
     async bindExecution(record, binding) {
@@ -824,28 +835,32 @@ export function createResponseStorage(
       return mutateInOpenScope<ResponseMutationResult>(
         owner,
         responseId,
-        async () => {
-          const record = await model
-            .findOneAndUpdate(
-              {
-                ...scope(owner),
-                responseId,
-                ...execution,
-                status: { $in: active },
-                preparedTerminal: { $exists: false },
-                pendingTerminal: { $exists: false },
-                ...terminalProviderFilter(receipt),
+        async (current) => {
+          const admitted = await updateResponseDocument(
+            mongoose,
+            {
+              ...scope(owner),
+              responseId,
+              ...execution,
+              status: { $in: active },
+              preparedTerminal: { $exists: false },
+              pendingTerminal: { $exists: false },
+              ...terminalProviderFilter(receipt),
+            },
+            {
+              $set: {
+                preparedTerminal,
+                terminalReceiptKey: responseReceiptKey(preparedTerminal),
+                ...(receipt.turnJSON != null ? { status: 'materializing' } : {}),
               },
-              {
-                $set: {
-                  preparedTerminal,
-                  ...(receipt.turnJSON != null ? { status: 'materializing' } : {}),
-                },
-                $inc: { revision: 1 },
-              },
-              { new: true, runValidators: true },
-            )
-            .lean();
+              $inc: { revision: 1 },
+            },
+            { new: true, runValidators: true },
+            current,
+          );
+          if (!admitted.ok && admitted.code === 'document_limit')
+            return { ok: false, code: 'document_limit' };
+          const record = admitted.ok ? admitted.record : null;
           if (record) return { ok: true, record };
           const existing = await model
             .findOne({ ...scope(owner), responseId, ...execution })
@@ -884,37 +899,41 @@ export function createResponseStorage(
       return mutateInOpenScope<ResponseMutationResult>(
         owner,
         responseId,
-        async () => {
-          const record = await model
-            .findOneAndUpdate(
-              {
-                ...scope(owner),
-                responseId,
-                ...execution,
-                generationCreatedAt: receipt.generationCreatedAt,
-                status: promotion && receipt.turnJSON != null ? 'materializing' : { $in: active },
-                pendingTerminal: { $exists: false },
-                ...(promotion
-                  ? {
-                      ...terminalFilter('preparedTerminal', promotion.receipt),
-                      cancellationRequestedAt: promotion.cancellationRequestedAt ?? {
-                        $exists: false,
-                      },
-                    }
-                  : { preparedTerminal: { $exists: false } }),
-                ...terminalProviderFilter(receipt),
+        async (current) => {
+          const admitted = await updateResponseDocument(
+            mongoose,
+            {
+              ...scope(owner),
+              responseId,
+              ...execution,
+              generationCreatedAt: receipt.generationCreatedAt,
+              status: promotion && receipt.turnJSON != null ? 'materializing' : { $in: active },
+              pendingTerminal: { $exists: false },
+              ...(promotion
+                ? {
+                    ...terminalFilter('preparedTerminal', promotion.receipt),
+                    cancellationRequestedAt: promotion.cancellationRequestedAt ?? {
+                      $exists: false,
+                    },
+                  }
+                : { preparedTerminal: { $exists: false } }),
+              ...terminalProviderFilter(receipt),
+            },
+            {
+              $set: {
+                pendingTerminal,
+                terminalReceiptKey: responseReceiptKey(pendingTerminal),
+                ...(receipt.turnJSON != null ? { status: 'materializing' } : {}),
               },
-              {
-                $set: {
-                  pendingTerminal,
-                  ...(receipt.turnJSON != null ? { status: 'materializing' } : {}),
-                },
-                $unset: { preparedTerminal: 1 },
-                $inc: { revision: 1 },
-              },
-              { new: true, runValidators: true },
-            )
-            .lean();
+              $unset: { preparedTerminal: 1 },
+              $inc: { revision: 1 },
+            },
+            { new: true, runValidators: true },
+            current,
+          );
+          if (!admitted.ok && admitted.code === 'document_limit')
+            return { ok: false, code: 'document_limit' };
+          const record = admitted.ok ? admitted.record : null;
           if (record) return { ok: true, record };
           const existing = await model
             .findOne({ ...scope(owner), responseId, ...execution })
@@ -995,34 +1014,38 @@ export function createResponseStorage(
           // immutable receipt after Conversation append, never rerun provider work.
           const latest = await model
             .findOne({ ...scope(current), ...terminalFilter('pendingTerminal', receipt) })
+            .select(RESPONSE_BUDGET_FIELDS)
             .lean();
           if (!latest || (await isResponseScopeClosed(mongoose, latest, latest.conversationId)))
             return { ok: false, code: 'response_conflict' };
-          const record = await model
-            .findOneAndUpdate(
-              {
-                ...scope(current),
-                revision: latest.revision,
-                generationCreatedAt: receipt.generationCreatedAt,
-                'providerExecution.id': receipt.providerExecutionId,
-                'providerExecution.ownerId': receipt.ownerId ?? { $exists: false },
-                'providerExecution.drained': true,
-                'providerExecution.outcome': { $in: ['complete', 'error', 'aborted'] },
-                $or: [
-                  { checkpoint: { $exists: false } },
-                  { 'checkpoint.state': 'settled', 'checkpoint.erased': true },
-                ],
-                status: writes ? 'materializing' : { $in: active },
-                ...terminalFilter('pendingTerminal', receipt),
-              },
-              {
-                $set: { status: receipt.status, responseJSON: receipt.responseJSON },
-                $unset: { pendingTerminal: 1, preparedTerminal: 1 },
-                $inc: { revision: 1 },
-              },
-              { new: true, upsert: false },
-            )
-            .lean();
+          const admitted = await updateResponseDocument(
+            mongoose,
+            {
+              ...scope(current),
+              revision: latest.revision,
+              generationCreatedAt: receipt.generationCreatedAt,
+              'providerExecution.id': receipt.providerExecutionId,
+              'providerExecution.ownerId': receipt.ownerId ?? { $exists: false },
+              'providerExecution.drained': true,
+              'providerExecution.outcome': { $in: ['complete', 'error', 'aborted'] },
+              $or: [
+                { checkpoint: { $exists: false } },
+                { 'checkpoint.state': 'settled', 'checkpoint.erased': true },
+              ],
+              status: writes ? 'materializing' : { $in: active },
+              ...terminalFilter('pendingTerminal', receipt),
+            },
+            {
+              $set: { status: receipt.status, responseJSON: receipt.responseJSON },
+              $unset: { pendingTerminal: 1, preparedTerminal: 1, terminalReceiptKey: 1 },
+              $inc: { revision: 1 },
+            },
+            { new: true, upsert: false },
+            latest,
+          );
+          if (!admitted.ok && admitted.code === 'document_limit')
+            return { ok: false, code: 'document_limit' };
+          const record = admitted.ok ? admitted.record : null;
           return record ? { ok: true, record } : { ok: false, code: 'response_conflict' };
         },
         { ok: false, code: 'response_conflict' },
@@ -1055,58 +1078,60 @@ export function createResponseStorage(
         const existing = await model.findOne(receiptFilter).lean();
         return existing ? { ok: true, record: existing } : { ok: false, code: 'response_conflict' };
       }
-      const record = await model
-        .findOneAndUpdate(
-          {
-            ...scope(owner),
-            responseId,
-            ...execution,
-            generationCreatedAt,
-            status: { $in: ['in_progress', 'requires_action'] },
-            pendingTerminal: { $exists: false },
-            preparedTerminal: { $exists: false },
-            cancellationRequestedAt: { $exists: false },
-            $or: [
-              { review: { $exists: false }, resume: { $exists: false } },
-              {
-                'review.actionId': review.actionId,
-                'review.providerExecutionId': review.providerExecutionId,
-                resume: { $exists: false },
-              },
-              {
-                'resume.state': 'admitted',
-                'resume.providerExecutionId': review.providerExecutionId,
-              },
-            ],
-          },
-          {
-            $set: {
-              status: 'requires_action',
-              review: {
-                actionId: review.actionId,
-                providerExecutionId: review.providerExecutionId,
-                expiresAt: review.expiresAt,
-                partialResponseJSON: review.partialResponseJSON,
-                ...(review.visibleOutputTokens == null
-                  ? {}
-                  : { visibleOutputTokens: review.visibleOutputTokens }),
-                ...(review.pendingActionJSON == null
-                  ? {}
-                  : { pendingActionJSON: review.pendingActionJSON }),
-                ...(review.checkpointConfigJSON == null
-                  ? {}
-                  : { checkpointConfigJSON: review.checkpointConfigJSON }),
-                ...(review.checkpointId == null ? {} : { checkpointId: review.checkpointId }),
-                ...(review.checkpointNs == null ? {} : { checkpointNs: review.checkpointNs }),
-              },
-              responseJSON,
+      const admitted = await updateResponseDocument(
+        mongoose,
+        {
+          ...scope(owner),
+          responseId,
+          ...execution,
+          generationCreatedAt,
+          status: { $in: ['in_progress', 'requires_action'] },
+          pendingTerminal: { $exists: false },
+          preparedTerminal: { $exists: false },
+          cancellationRequestedAt: { $exists: false },
+          $or: [
+            { review: { $exists: false }, resume: { $exists: false } },
+            {
+              'review.actionId': review.actionId,
+              'review.providerExecutionId': review.providerExecutionId,
+              resume: { $exists: false },
             },
-            $unset: { resume: 1 },
-            $inc: { revision: 1 },
+            {
+              'resume.state': 'admitted',
+              'resume.providerExecutionId': review.providerExecutionId,
+            },
+          ],
+        },
+        {
+          $set: {
+            status: 'requires_action',
+            review: {
+              actionId: review.actionId,
+              providerExecutionId: review.providerExecutionId,
+              expiresAt: review.expiresAt,
+              partialResponseJSON: review.partialResponseJSON,
+              ...(review.visibleOutputTokens == null
+                ? {}
+                : { visibleOutputTokens: review.visibleOutputTokens }),
+              ...(review.pendingActionJSON == null
+                ? {}
+                : { pendingActionJSON: review.pendingActionJSON }),
+              ...(review.checkpointConfigJSON == null
+                ? {}
+                : { checkpointConfigJSON: review.checkpointConfigJSON }),
+              ...(review.checkpointId == null ? {} : { checkpointId: review.checkpointId }),
+              ...(review.checkpointNs == null ? {} : { checkpointNs: review.checkpointNs }),
+            },
+            responseJSON,
           },
-          { new: true, runValidators: true },
-        )
-        .lean();
+          $unset: { resume: 1 },
+          $inc: { revision: 1 },
+        },
+        { new: true, runValidators: true },
+      );
+      if (!admitted.ok && admitted.code === 'document_limit')
+        return { ok: false, code: 'document_limit' };
+      const record = admitted.ok ? admitted.record : null;
       if (record) return { ok: true, record };
       if (!receiptFilter) return { ok: false, code: 'response_conflict' };
       const existing = await model.findOne(receiptFilter).lean();
@@ -1116,41 +1141,43 @@ export function createResponseStorage(
       if (!Number.isFinite(now) || now <= 0) throw new TypeError('Invalid resume reservation time');
       if (input.providerExecutionId === input.previousProviderExecutionId)
         throw new TypeError('Resume requires a new provider execution identity');
-      const record = await model
-        .findOneAndUpdate(
-          {
-            ...scope(owner),
-            responseId,
-            generationCreatedAt: input.generationCreatedAt,
-            status: 'requires_action',
-            pendingTerminal: { $exists: false },
-            preparedTerminal: { $exists: false },
-            cancellationRequestedAt: { $exists: false },
-            resume: { $exists: false },
-            'review.actionId': input.actionId,
-            'review.providerExecutionId': input.previousProviderExecutionId,
-            'review.expiresAt': { $gt: now },
-          },
-          {
-            $set: {
-              resume: {
-                intentId: input.intentId,
-                actionId: input.actionId,
-                previousProviderExecutionId: input.previousProviderExecutionId,
-                providerExecutionId: input.providerExecutionId,
-                fingerprint: input.fingerprint,
-                resolutionJSON: input.resolutionJSON,
-                ...(input.decisionJSON == null ? {} : { decisionJSON: input.decisionJSON }),
-                state: 'reserved',
-                reservedAt: now,
-              },
-              dispatchOutbox: { kind: 'resume', id: input.intentId, state: 'pending' },
+      const admitted = await updateResponseDocument(
+        mongoose,
+        {
+          ...scope(owner),
+          responseId,
+          generationCreatedAt: input.generationCreatedAt,
+          status: 'requires_action',
+          pendingTerminal: { $exists: false },
+          preparedTerminal: { $exists: false },
+          cancellationRequestedAt: { $exists: false },
+          resume: { $exists: false },
+          'review.actionId': input.actionId,
+          'review.providerExecutionId': input.previousProviderExecutionId,
+          'review.expiresAt': { $gt: now },
+        },
+        {
+          $set: {
+            resume: {
+              intentId: input.intentId,
+              actionId: input.actionId,
+              previousProviderExecutionId: input.previousProviderExecutionId,
+              providerExecutionId: input.providerExecutionId,
+              fingerprint: input.fingerprint,
+              resolutionJSON: input.resolutionJSON,
+              ...(input.decisionJSON == null ? {} : { decisionJSON: input.decisionJSON }),
+              state: 'reserved',
+              reservedAt: now,
             },
-            $inc: { revision: 1 },
+            dispatchOutbox: { kind: 'resume', id: input.intentId, state: 'pending' },
           },
-          { new: true, runValidators: true },
-        )
-        .lean();
+          $inc: { revision: 1 },
+        },
+        { new: true, runValidators: true },
+      );
+      if (!admitted.ok && admitted.code === 'document_limit')
+        return { ok: false, code: 'document_limit' };
+      const record = admitted.ok ? admitted.record : null;
       if (record) return { ok: true, record, replayed: false };
       const existing = await model.findOne({ ...scope(owner), responseId }).lean();
       const intent = existing?.resume;
@@ -1176,32 +1203,34 @@ export function createResponseStorage(
       now,
     ) {
       if (!Number.isFinite(now) || now <= 0) throw new TypeError('Invalid resume admission time');
-      const record = await model
-        .findOneAndUpdate(
-          {
-            ...scope(owner),
-            responseId,
-            generationCreatedAt,
-            status: 'requires_action',
-            pendingTerminal: { $exists: false },
-            preparedTerminal: { $exists: false },
-            cancellationRequestedAt: { $exists: false },
-            'resume.intentId': intentId,
-            'resume.providerExecutionId': providerExecutionId,
-            'resume.state': 'reserved',
+      const admitted = await updateResponseDocument(
+        mongoose,
+        {
+          ...scope(owner),
+          responseId,
+          generationCreatedAt,
+          status: 'requires_action',
+          pendingTerminal: { $exists: false },
+          preparedTerminal: { $exists: false },
+          cancellationRequestedAt: { $exists: false },
+          'resume.intentId': intentId,
+          'resume.providerExecutionId': providerExecutionId,
+          'resume.state': 'reserved',
+        },
+        {
+          $set: {
+            status: 'in_progress',
+            responseJSON,
+            'resume.state': 'admitted',
+            'resume.admittedAt': now,
           },
-          {
-            $set: {
-              status: 'in_progress',
-              responseJSON,
-              'resume.state': 'admitted',
-              'resume.admittedAt': now,
-            },
-            $inc: { revision: 1 },
-          },
-          { new: true },
-        )
-        .lean();
+          $inc: { revision: 1 },
+        },
+        { new: true },
+      );
+      if (!admitted.ok && admitted.code === 'document_limit')
+        return { ok: false, code: 'document_limit' };
+      const record = admitted.ok ? admitted.record : null;
       if (record) return { ok: true, record };
       const existing = await model.findOne({ ...scope(owner), responseId }).lean();
       if (
@@ -1239,6 +1268,7 @@ export function createResponseStorage(
         return { ok: true, record: current, replayed: true };
       };
       if (existing) return replay(existing);
+      if (!responseReservationFits(mongoose, input)) return { ok: false, code: 'document_limit' };
       const conversationId = input.conversationId;
       await initializeResponseScopes(mongoose, responseScopeKeys(input, conversationId));
       if (input.expiredAt)
@@ -1459,18 +1489,20 @@ export function createResponseStorage(
       };
     },
     async attachDelivery(owner, responseId, deliveryKey) {
-      const record = await model
-        .findOneAndUpdate(
-          {
-            ...scope(owner),
-            responseId,
-            status: { $in: active },
-            $or: [{ deliveryKey: { $exists: false } }, { deliveryKey }],
-          },
-          { $set: { deliveryKey } },
-          { new: true },
-        )
-        .lean();
+      const admitted = await updateResponseDocument(
+        mongoose,
+        {
+          ...scope(owner),
+          responseId,
+          status: { $in: active },
+          $or: [{ deliveryKey: { $exists: false } }, { deliveryKey }],
+        },
+        { $set: { deliveryKey } },
+        { new: true },
+      );
+      if (!admitted.ok && admitted.code === 'document_limit')
+        return { ok: false, code: 'document_limit' };
+      const record = admitted.ok ? admitted.record : null;
       return record ? { ok: true, record } : { ok: false, code: 'response_conflict' };
     },
     async publish(owner, responseId, revision, update) {
@@ -1484,44 +1516,46 @@ export function createResponseStorage(
       let predecessors = active;
       if (update.status === 'queued') predecessors = ['queued'];
       if (update.status === 'in_progress') predecessors = ['queued', 'in_progress'];
-      const record = await model
-        .findOneAndUpdate(
-          {
-            ...scope(owner),
-            responseId,
-            revision,
-            status: { $in: predecessors },
-            pendingTerminal: { $exists: false },
-            preparedTerminal: { $exists: false },
-            ...(update.status === 'in_progress'
-              ? {
-                  $and: [
-                    activeExpirationFilter<StoredResponseRecord>(),
-                    {
-                      $or: [
-                        { status: 'in_progress' },
-                        { cancellationRequestedAt: { $exists: false } },
-                      ],
-                    },
-                    ...(update.generationCreatedAt == null
-                      ? [{ generationCreatedAt: { $gt: 0 } }]
-                      : []),
-                  ],
-                }
-              : {}),
-            ...(update.generationCreatedAt == null
-              ? {}
-              : {
-                  $or: [
-                    { generationCreatedAt: { $exists: false } },
-                    { generationCreatedAt: update.generationCreatedAt },
-                  ],
-                }),
-          },
-          { $set: update, $inc: { revision: 1 } },
-          { new: true },
-        )
-        .lean();
+      const admitted = await updateResponseDocument(
+        mongoose,
+        {
+          ...scope(owner),
+          responseId,
+          revision,
+          status: { $in: predecessors },
+          pendingTerminal: { $exists: false },
+          preparedTerminal: { $exists: false },
+          ...(update.status === 'in_progress'
+            ? {
+                $and: [
+                  activeExpirationFilter<StoredResponseRecord>(),
+                  {
+                    $or: [
+                      { status: 'in_progress' },
+                      { cancellationRequestedAt: { $exists: false } },
+                    ],
+                  },
+                  ...(update.generationCreatedAt == null
+                    ? [{ generationCreatedAt: { $gt: 0 } }]
+                    : []),
+                ],
+              }
+            : {}),
+          ...(update.generationCreatedAt == null
+            ? {}
+            : {
+                $or: [
+                  { generationCreatedAt: { $exists: false } },
+                  { generationCreatedAt: update.generationCreatedAt },
+                ],
+              }),
+        },
+        { $set: update, $inc: { revision: 1 } },
+        { new: true },
+      );
+      if (!admitted.ok && admitted.code === 'document_limit')
+        return { ok: false, code: 'document_limit' };
+      const record = admitted.ok ? admitted.record : null;
       return record ? { ok: true, record } : { ok: false, code: 'response_conflict' };
     },
     async requestCancellation(owner, responseId, now) {

@@ -2045,7 +2045,7 @@ it.each(['prepared', 'pending'] as const)(
   (phase) =>
     scoped(async () => {
       const running = await runningForReview();
-      const receipt = { ...outcome, turnJSON: '{"version":1,"private":"history"}' };
+      const receipt = { ...outcome, turnJSON: '{"version":1,"inputs":[],"private":"history"}' };
       const result =
         phase === 'prepared'
           ? await storage.prepareTerminal(owner, oneId, { execution: running }, receipt)
@@ -2107,7 +2107,7 @@ it('only enters the private phase through receipt admission and cancels prepared
         responseJSON: '{}',
       }),
     ).toMatchObject({ ok: false });
-    const receipt = { ...outcome, turnJSON: '{"version":1}' };
+    const receipt = { ...outcome, turnJSON: '{"version":1,"inputs":[]}' };
     const prepared = await storage.prepareTerminal(owner, oneId, { execution: running }, receipt);
     if (!prepared.ok) throw new Error('Preparation failed');
     expect(await storage.requestCancellation(owner, oneId, 123)).toMatchObject({
@@ -2137,7 +2137,7 @@ it('only enters the private phase through receipt admission and cancels prepared
 it('closes and cooperatively cancels private prepared work while retaining redacted cleanup identity', () =>
   scoped(async () => {
     const running = await runningForReview();
-    const receipt = { ...outcome, turnJSON: '{"version":1,"private":"history"}' };
+    const receipt = { ...outcome, turnJSON: '{"version":1,"inputs":[],"private":"history"}' };
     expect((await storage.prepareTerminal(owner, oneId, { execution: running }, receipt)).ok).toBe(
       true,
     );

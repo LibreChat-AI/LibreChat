@@ -13,7 +13,7 @@ import { publishResponseDispatch } from './outbox';
 
 export type BackgroundResponseResult =
   | { ok: true; response: Response }
-  | { ok: false; status: 400 | 403 | 404 | 409; code: string };
+  | { ok: false; status: 400 | 403 | 404 | 409 | 413; code: string };
 
 /** The host supplies the existing durable queue and Responses execution runtime. */
 export interface BackgroundResponseDependencies {
@@ -228,7 +228,12 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
         requestJSON,
         dispatch: true,
       });
-      if (!result.ok) return { ok: false, status: 409, code: result.code };
+      if (!result.ok)
+        return {
+          ok: false,
+          status: result.code === 'document_limit' ? 413 : 409,
+          code: result.code,
+        };
       let record = result.record;
       if (result.replayed && !(await deps.authorize(owner, record.agentId, record.sourceKeyId)))
         return { ok: false, status: 403, code: 'permission_denied' };

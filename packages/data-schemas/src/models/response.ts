@@ -55,6 +55,7 @@ export interface ResponseCheckpointExecution {
   writerId: string;
   namespace: string;
   configJSON: string;
+  configKey: string;
   state: 'pending' | 'settled';
   erased?: boolean;
 }
@@ -159,6 +160,7 @@ export interface StoredResponseRecord {
   cancellationRequestedAt?: number;
   review?: ResponseReviewCheckpoint;
   resume?: ResponseResumeIntent;
+  terminalReceiptKey?: string;
   pendingTerminal?: ResponseTerminalReceipt;
   /** Durable candidate only; independent provider drain proof is required before promotion. */
   preparedTerminal?: ResponseTerminalReceipt;
@@ -247,6 +249,7 @@ export function createStoredResponseModel(
             writerId: { type: String, required: true },
             namespace: { type: String, required: true },
             configJSON: { type: String, required: true },
+            configKey: { type: String, required: true, maxlength: 64 },
             state: { type: String, enum: ['pending', 'settled'], required: true },
             erased: Boolean,
           },
@@ -325,6 +328,7 @@ export function createStoredResponseModel(
       generationCreatedAt: Number,
       responseJSON: String,
       cancellationRequestedAt: Number,
+      terminalReceiptKey: { type: String, maxlength: 64 },
       pendingTerminal: {
         type: terminalSchema,
         required: false,

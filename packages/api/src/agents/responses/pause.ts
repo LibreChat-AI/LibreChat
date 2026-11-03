@@ -9,6 +9,7 @@ import type { Response } from './types';
 import { hasDurableAgentInterruptCheckpoint, resolveCheckpointerConfig } from '../checkpointer';
 import { checkpointOwnerNamespacePrefix } from '~/stream/checkpoints';
 import { buildPendingBackgroundResponse } from './background';
+import { ResponseDocumentLimitError } from './persistence';
 import { responseTenantId } from './scope';
 
 export interface ResponsePauseDependencies {
@@ -131,6 +132,9 @@ export async function pauseResponseForReview(
       // overriding cancellation, retirement, a newer review, or admitted resume.
       published = await deps.storage.publishReview(...publication);
     }
-    if (!published.ok) throw new Error('Response pause journal publication failed');
+    if (!published.ok) {
+      if (published.code === 'document_limit') throw new ResponseDocumentLimitError();
+      throw new Error('Response pause journal publication failed');
+    }
   });
 }

@@ -24,6 +24,7 @@ import {
 import { createIndexesWithRetry, retryWithBackoff } from '~/utils/retry';
 import { createStoredResponseModel } from '~/models/response';
 import { includeManagedAllocations } from '~/utils/managed';
+import { responseReservationFits } from './responseBudget';
 import { initializeExpiration } from '~/utils/retention';
 
 function rootRegistration(target: ManagedTarget<'response'>) {
@@ -156,6 +157,7 @@ export async function publishResponseRoot(
   options?: { maxPendingTargetsPerScope?: number },
 ): Promise<ManagedResponseRecord | null> {
   assertResponseReservation(input);
+  if (!responseReservationFits(mongoose, input)) return null;
   if (
     target.kind !== 'response' ||
     (input.tenantId || undefined) !== (target.tenantId || undefined)
