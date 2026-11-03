@@ -21,6 +21,7 @@ interface DynamicMeiliDocument extends mongoose.Document {
   _meiliIndexAttempted?: boolean;
   _meiliIndexSchemaVersion?: number;
   _meiliCleanupVersion?: number;
+  _managed?: { phase: string };
 }
 
 type DynamicMeiliModel = mongoose.Model<DynamicMeiliDocument> & SchemaWithMeiliMethods;
@@ -47,6 +48,7 @@ const createDynamicMeiliModel = (modelName: string): DynamicMeiliModel => {
     expiredAt: {
       type: Date,
     },
+    _managed: { type: new mongoose.Schema({ phase: String }, { _id: false }), default: undefined },
   });
 
   schema.plugin(mongoMeili, {
@@ -164,6 +166,35 @@ describe('Meilisearch Mongoose plugin', () => {
       });
     } finally {
       mongoose.deleteModel(modelName);
+    }
+  });
+
+  test('excludes allocation metadata from indexing even without the canonical visibility plugin', async () => {
+    const name = `AllocationSearch${Date.now()}`;
+    const Model = createDynamicMeiliModel(name);
+    try {
+      await Model.collection.insertMany([
+        { docId: 'legacy', user: 'owner', title: 'Visible' },
+        { docId: 'empty', _managed: { phase: 'empty' } },
+        { docId: 'registered', _managed: { phase: 'registered' } },
+      ]);
+      expect(await Model.getSyncProgress()).toMatchObject({ totalDocuments: 1 });
+      await Model.syncWithMeili();
+      expect(mockAddDocumentsInBatches).toHaveBeenCalledWith(
+        [expect.objectContaining({ docId: 'legacy' })],
+        undefined,
+        { primaryKey: 'docId' },
+      );
+      mockAddDocuments.mockClear();
+      await Model.create({
+        docId: 'unpublished',
+        user: 'owner',
+        title: 'Hidden',
+        _managed: { phase: 'empty' },
+      });
+      expect(mockAddDocuments).not.toHaveBeenCalled();
+    } finally {
+      mongoose.deleteModel(name);
     }
   });
 

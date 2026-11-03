@@ -1,3 +1,4 @@
+import type { ClientSession, Connection } from 'mongoose';
 import logger from '~/config/winston';
 
 export const CANCEL_RATE = 1.15;
@@ -77,3 +78,36 @@ export const getTransactionSupport = async (
   }
   return probe;
 };
+
+export class TransactionUnavailableError extends Error {
+  readonly code = 'transactions_unavailable';
+  constructor() {
+    super('This operation requires transactional storage');
+    this.name = 'TransactionUnavailableError';
+  }
+}
+
+const requiredTransactionSupport = new WeakMap<
+  Connection,
+  {
+    client: ReturnType<Connection['getClient']>;
+    supported: boolean | null;
+  }
+>();
+
+/** Probe before private writes: some unsupported engines fail only at commit. */
+export async function startRequiredTransactionSession(
+  mongoose: typeof import('mongoose'),
+): Promise<ClientSession> {
+  const connection = mongoose.connection;
+  const client = connection.getClient();
+  let state = requiredTransactionSupport.get(connection);
+  if (!state || state.client !== client) {
+    state = { client, supported: null };
+    requiredTransactionSupport.set(connection, state);
+  }
+  // Assignment happens only on a confirmed verdict; operational failures remain retryable.
+  state.supported = await getTransactionSupport(mongoose, state.supported);
+  if (!state.supported) throw new TransactionUnavailableError();
+  return mongoose.startSession({ defaultTransactionOptions: { readPreference: 'primary' } });
+}

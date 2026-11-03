@@ -10,6 +10,14 @@ import type { SearchParams } from 'meilisearch';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 import type { ISubagentContentChunk } from '~/models/subagentContent';
 import type { AppConfig, IConversation, IMessage } from '~/types';
+import type { ManagedPublication } from '~/types/managed';
+import {
+  includeManagedAllocations,
+  isManagedControlField,
+  isManagedMessageId,
+  isAllocationId,
+  managedVisibilityFilter,
+} from '~/utils/managed';
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
 import { activeExpirationFilter, createFallbackRetentionDate } from '~/utils/retention';
 import { fitBoundAppSnapshots, hasBoundAppSnapshots } from './appSnapshots';
@@ -17,6 +25,8 @@ import { prepareSubagentContentDeletion } from './subagentContent';
 import { SERVER_AUTHORED_MESSAGE_FILTER } from '~/utils/authored';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { tenantStorage } from '~/config/tenantContext';
+import { managedPublicationFilter } from './managed';
+import { responseScopeKeys } from './responseScope';
 import logger from '~/config/winston';
 
 /** Simple UUID v4 regex to replace zod validation */
@@ -279,7 +289,10 @@ function getSteerUserSubmittedPaths(content: unknown): string[] {
 function sanitizeMessageUpdate(update: Record<string, unknown>): Record<string, unknown> {
   return Object.fromEntries(
     Object.entries(update).filter(
-      ([key, value]) => value !== undefined && !['_id', 'tenantId', '__v'].includes(key),
+      ([key, value]) =>
+        value !== undefined &&
+        !['_id', 'tenantId', '__v'].includes(key) &&
+        !isManagedControlField(key),
     ),
   );
 }
@@ -299,10 +312,18 @@ function buildMessageSaveUpdate(
     unsetContextMeta: boolean;
     unsetPrivateText?: boolean;
     retentionOnInsert?: { expiredAt: Date; isTemporary: false };
+    publication?: ManagedPublication;
+    managed?: boolean;
   },
 ): UpdateQuery<IMessage> {
+  const fields = { ...update };
+  if (options.managed) delete fields.expiredAt;
   return {
-    $set: update,
+    $set: { ...fields, ...(options.publication && { '_managed.phase': 'published' }) },
+    ...(options.managed &&
+      update.expiredAt instanceof Date && {
+        $min: { expiredAt: update.expiredAt },
+      }),
     $inc: { __v: 1 },
     ...((options.stampModelOutputOnInsert || options.retentionOnInsert != null) && {
       $setOnInsert: {
@@ -355,6 +376,8 @@ async function findOneAndMergeMessageProvenance(
     timestamps?: boolean;
     privateMessagePaths?: string;
     onWrite?: (inserted: boolean, id: unknown) => void;
+    publication?: ManagedPublication;
+    managed?: boolean;
   },
 ) {
   const safeUpdate = sanitizeMessageUpdate(update);
@@ -365,7 +388,9 @@ async function findOneAndMergeMessageProvenance(
 
   /** A small optimistic loop keeps the merge atomic while using only classic update operators. */
   for (let attempt = 0; attempt < MAX_PROVENANCE_CAS_ATTEMPTS; attempt += 1) {
-    const current = await Message.findOne(identity)
+    const currentQuery = Message.findOne(identity);
+    if (options.publication) includeManagedAllocations(currentQuery).read('primary');
+    const current = await currentQuery
       .session(options.session ?? null)
       .select(
         options.prepareAppUpdate
@@ -416,31 +441,24 @@ async function findOneAndMergeMessageProvenance(
     try {
       const message = await Message.findOneAndUpdate(
         filter,
-        {
-          $set: admittedUpdate,
-          $inc: { __v: 1 },
-          ...(current == null &&
-            options.retentionOnInsert != null && { $setOnInsert: options.retentionOnInsert }),
-          ...((options.unsetContextMeta || options.unsetPrivateText) && {
-            $unset: {
-              ...(options.unsetContextMeta && { contextMeta: 1 }),
-              ...(options.unsetPrivateText && {
-                privateText: 1,
-                privacyRevision: 1,
-                ...(update.privateTextTokens === undefined && { privateTextTokens: 1 }),
-              }),
-            },
-          }),
-        },
+        buildMessageSaveUpdate(admittedUpdate, {
+          stampModelOutputOnInsert: false,
+          unsetContextMeta: options.unsetContextMeta ?? false,
+          unsetPrivateText: options.unsetPrivateText,
+          retentionOnInsert: current == null ? options.retentionOnInsert : undefined,
+          publication: options.publication,
+          managed: options.managed,
+        }),
         {
           upsert: options.upsert && current == null,
           new: true,
-          timestamps: options.timestamps,
+          timestamps: options.publication ? false : options.timestamps,
+          overwriteImmutable: options.publication != null,
           session: options.session,
         },
       );
       if (message != null) {
-        options.onWrite?.(current == null, message._id);
+        options.onWrite?.(options.publication != null || current == null, message._id);
         return message;
       }
     } catch (err) {
@@ -1084,6 +1102,8 @@ type SteplessToolCallFallback = {
 };
 
 export interface MessageDependencies {
+  /** Server-owned physical target selected by an immutable terminal intent. */
+  managedPublication?: ManagedPublication;
   /** Private data-schemas port: only canonical turn saves participate in this transaction. */
   saveSession?: ClientSession;
   /** Read from deployment config, never from a message/request or a principal override. */
@@ -1156,9 +1176,34 @@ export function createMessageMethods(
       unsetPrivateText?: boolean;
       timestamps?: boolean;
       onWrite?: (inserted: boolean, id: unknown) => void;
+      publication?: ManagedPublication;
+      managed?: boolean;
     },
   ): Promise<IMessage | null> {
     const Message = mongoose.models.Message as Model<IMessage>;
+    if (isAllocationId(identity.messageId) || isAllocationId(input.messageId))
+      throw new TypeError('Allocation IDs cannot be saved as messages');
+    if (options.publication) {
+      identity = {
+        ...managedPublicationFilter(mongoose, options.publication),
+        '_managed.phase': 'registered',
+      };
+      options = { ...options, upsert: false, managed: true };
+    } else if (isManagedMessageId(identity.messageId) || isManagedMessageId(input.messageId)) {
+      if (
+        typeof identity.user !== 'string' ||
+        (input.user !== undefined && input.user !== identity.user)
+      )
+        throw new TypeError('Managed message owner cannot be replaced');
+      if (input.messageId !== undefined && input.messageId !== identity.messageId)
+        throw new TypeError('Managed message IDs cannot be replaced');
+      options = { ...options, upsert: false, managed: true };
+      identity = {
+        ...identity,
+        ...managedVisibilityFilter,
+        ...(typeof input.conversationId === 'string' && { conversationId: input.conversationId }),
+      };
+    }
     const update = sanitizeMessageUpdate(input);
     const paths = normalizeUserSubmittedPaths(update.userSubmittedPaths);
     const fields = normalizeUserSubmittedMessageFieldPaths(update.userSubmittedMessageFieldPaths);
@@ -1185,21 +1230,27 @@ export function createMessageMethods(
             unsetContextMeta: options.unsetContextMeta ?? false,
             retentionOnInsert: options.retentionOnInsert,
             unsetPrivateText: options.unsetPrivateText,
+            publication: options.publication,
+            managed: options.managed,
           }),
           {
             upsert: options.upsert,
             new: true,
-            timestamps: options.timestamps,
+            timestamps: options.publication ? false : options.timestamps,
+            overwriteImmutable: options.publication != null,
             includeResultMetadata: true,
             session: deps.saveSession,
           },
         );
         if (fast.value) {
-          options.onWrite?.(fast.lastErrorObject?.updatedExisting === false, fast.value._id);
+          options.onWrite?.(
+            options.publication != null || fast.lastErrorObject?.updatedExisting === false,
+            fast.value._id,
+          );
           return fast.value;
         }
       } catch (error) {
-        if (deps.saveSession || !isDuplicateKeyError(error)) throw error;
+        if (deps.saveSession || options.publication || !isDuplicateKeyError(error)) throw error;
       }
     }
     return findOneAndMergeMessageProvenance(Message, identity, update, paths, fields, {
@@ -1236,6 +1287,14 @@ export function createMessageMethods(
     if (!userId) {
       throw new Error('User not authenticated');
     }
+    if (isAllocationId(params.messageId) || isAllocationId(params.newMessageId))
+      throw new TypeError('Allocation IDs cannot be saved as messages');
+    if (
+      params.newMessageId &&
+      params.newMessageId !== params.messageId &&
+      (isManagedMessageId(params.messageId) || isManagedMessageId(params.newMessageId))
+    )
+      throw new TypeError('Managed message IDs cannot be replaced');
 
     const conversationId = params.conversationId as string | undefined;
     if (!conversationId || !UUID_REGEX.test(conversationId)) {
@@ -1247,8 +1306,34 @@ export function createMessageMethods(
 
     try {
       const Message = mongoose.models.Message as Model<IMessage>;
+      const publication = deps.managedPublication;
+      const publishedFilter = publication
+        ? {
+            ...managedPublicationFilter(mongoose, publication),
+            '_managed.phase': 'published',
+          }
+        : undefined;
+      if (publication) {
+        const [ownerKey, conversationKey] = responseScopeKeys(
+          {
+            userId,
+            tenantId: publication.target.tenantId,
+          },
+          conversationId,
+        );
+        if (
+          publication.target.kind !== 'message' ||
+          publication.logicalId !== params.messageId ||
+          publication.ownerKey !== ownerKey ||
+          publication.conversationKey !== conversationKey ||
+          (params.newMessageId != null && params.newMessageId !== params.messageId)
+        )
+          throw new TypeError('Managed message publication identity mismatch');
+        const published = await Message.findOne(publishedFilter).read('primary');
+        if (published) return published.toObject();
+      }
       const update: Record<string, unknown> = {
-        ...params,
+        ...sanitizeMessageUpdate(params),
         user: userId,
         messageId: params.newMessageId || params.messageId,
       };
@@ -1354,13 +1439,28 @@ export function createMessageMethods(
       delete update.__v;
       const stampModelOutputOnInsert =
         params.isCreatedByUser === false && params.isUserSubmitted === undefined;
-      if (metadata?.insertOnly === true) {
+      if (publication) {
+        // This is a creation even though the payload-free physical row already exists.
+        const initial = new Message({
+          ...retentionOnInsert,
+          ...update,
+          ...(stampModelOutputOnInsert && { isUserSubmitted: false }),
+          createdAt: update.createdAt ?? new Date(),
+          updatedAt: new Date(),
+        }).toObject();
+        Object.assign(update, sanitizeMessageUpdate({ ...initial }));
+      }
+      if (metadata?.insertOnly === true && !publication) {
         if (metadata.privateText != null) {
           throw new Error('A private message cannot use the ordinary insert-only writer.');
         }
         const now = new Date();
         const existingOrInserted = await Message.findOneAndUpdate(
-          { messageId: params.messageId, user: userId },
+          {
+            messageId: params.messageId,
+            user: userId,
+            ...(isManagedMessageId(params.messageId) && managedVisibilityFilter),
+          },
           {
             $setOnInsert: {
               ...update,
@@ -1371,22 +1471,30 @@ export function createMessageMethods(
               updatedAt: now,
             },
           },
-          { upsert: true, new: true, timestamps: false, session: deps.saveSession },
+          {
+            upsert: !isManagedMessageId(params.messageId),
+            new: true,
+            timestamps: false,
+            session: deps.saveSession,
+          },
         );
         return existingOrInserted?.toObject();
       }
-      const message = await writeMessage(
+      let message = await writeMessage(
         { messageId: params.messageId, user: userId },
         { ...update, userSubmittedPaths, userSubmittedMessageFieldPaths },
         {
           upsert: true,
-          stampModelOutputOnInsert,
+          stampModelOutputOnInsert: publication ? false : stampModelOutputOnInsert,
           unsetContextMeta,
-          retentionOnInsert,
+          retentionOnInsert: publication ? undefined : retentionOnInsert,
+          publication,
           unsetPrivateText:
             metadata?.privateText == null && Object.prototype.hasOwnProperty.call(update, 'text'),
         },
       );
+
+      if (!message && publication) message = await Message.findOne(publishedFilter).read('primary');
 
       if (message == null) {
         return message;
@@ -1430,7 +1538,7 @@ export function createMessageMethods(
 
       return message.toObject();
     } catch (err: unknown) {
-      if (deps.saveSession) throw err;
+      if (deps.saveSession || deps.managedPublication) throw err;
       logger.error('Error saving message:', err);
       logger.info(`---\`saveMessage\` context: ${metadata?.context}`);
 
@@ -1473,6 +1581,8 @@ export function createMessageMethods(
     try {
       const Message = mongoose.models.Message as Model<IMessage>;
       const bulkOps = messages.map((message) => {
+        if (isAllocationId(message.messageId))
+          throw new TypeError('Allocation IDs cannot be imported as messages');
         const normalizedMessage = sanitizeMessageUpdate(message);
         delete normalizedMessage.privateText;
         delete normalizedMessage.privacyRevision;
@@ -1514,6 +1624,11 @@ export function createMessageMethods(
             filter: {
               messageId: message.messageId,
               ...(message.user != null ? { user: message.user } : {}),
+              ...(isManagedMessageId(message.messageId) && managedVisibilityFilter),
+              ...(isManagedMessageId(message.messageId) &&
+                typeof message.conversationId === 'string' && {
+                  conversationId: message.conversationId,
+                }),
             },
             update: {
               $set: normalizedMessage,
@@ -1525,7 +1640,7 @@ export function createMessageMethods(
               },
             },
             timestamps: !overrideTimestamp,
-            upsert: true,
+            upsert: !isManagedMessageId(message.messageId),
           },
         };
       });
@@ -1533,7 +1648,10 @@ export function createMessageMethods(
       // creation collide on the unique key, at which point only that row uses guarded admission.
       const guarded: typeof bulkOps = [];
       const ordinary = bulkOps.filter((op) => {
-        if (hasBoundAppSnapshots(op.updateOne.update.$set.attachments)) {
+        if (
+          isManagedMessageId(op.updateOne.filter.messageId) ||
+          hasBoundAppSnapshots(op.updateOne.update.$set.attachments)
+        ) {
           guarded.push(op);
           return false;
         }
@@ -1582,7 +1700,7 @@ export function createMessageMethods(
       // Ordinary imports stay batched; exceptional App rows are admitted one at a time.
       for (const op of guarded) {
         await writeMessage(op.updateOne.filter, op.updateOne.update.$set, {
-          upsert: true,
+          upsert: op.updateOne.upsert,
           unsetPrivateText: true,
           timestamps: !overrideTimestamp,
           onWrite: (inserted, id) => {

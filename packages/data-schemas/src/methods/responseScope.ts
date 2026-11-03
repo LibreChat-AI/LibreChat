@@ -101,7 +101,7 @@ export function createResponseRetention(
       const anchor = await scopes
         .findOneAndUpdate(
           { _id: key },
-          { $min: { expiredAt }, $inc: { revision: 1 } },
+          { $min: { expiredAt }, $inc: { revision: 1, retentionEpoch: 1 } },
           { new: true, ...(session ? { session } : {}) },
         )
         .lean();

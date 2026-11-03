@@ -1,11 +1,13 @@
 import { Model } from 'mongoose';
 import type * as t from '~/types';
 import { applyTenantIsolation } from '~/models/plugins/tenantIsolation';
+import { applyManagedStorage } from '~/models/plugins/managed';
 import mongoMeili from '~/models/plugins/mongoMeili';
 import messageSchema from '~/schema/message';
 
 export function createMessageModel(mongoose: typeof import('mongoose')): Model<t.IMessage> {
   applyTenantIsolation(messageSchema);
+  applyManagedStorage(messageSchema);
   if (process.env.MEILI_HOST && process.env.MEILI_MASTER_KEY) {
     messageSchema.plugin(mongoMeili, {
       mongoose,
