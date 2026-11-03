@@ -65,6 +65,7 @@ let summarize: jest.Mock<Promise<ChannelRunSummary>, [ChannelRunRecord, ChannelR
 let responseCredential: jest.Mock<Promise<string>, [ChannelRunRecord]>;
 let app: express.Express;
 let fakeNow: number | undefined;
+let channelEnabled: boolean;
 let interactive: Pick<BackgroundResponsesHost, 'readInteractiveReview' | 'submitInteractiveReview'>;
 const fixtureResponseId = (label: string) =>
   'resp_d_' + createHash('sha256').update(label).digest('hex').slice(0, 32);
@@ -134,6 +135,7 @@ beforeEach(async () => {
   acl = new Map(users.map((user) => [user.id, PermissionBits.VIEW]));
   invoked = [];
   fakeNow = undefined;
+  channelEnabled = true;
   advanceError = undefined;
   retired = [];
   retirement = 'stopped';
@@ -156,7 +158,7 @@ beforeEach(async () => {
   authority = createChannelAuthority({
     channels: db,
     identityStorage: createChannelIdentityStorage(mongoose),
-    getConfig: async () => ({ enabled: true }),
+    getConfig: async () => ({ enabled: channelEnabled }),
     findUser: (id) => db.findUser({ _id: id }),
     getRole: (name) => models.Role.findOne({ name }),
     isPrincipalActive: async () => true,
@@ -166,7 +168,7 @@ beforeEach(async () => {
   const handlers = createChannelHandlers({
     db,
     serviceToken: () => token,
-    config: async () => ({ enabled: true }),
+    config: async () => ({ enabled: channelEnabled }),
     getAgent: async (id) => ({ id }),
     verifySlackToken: async () => null,
     logError: jest.fn(),
@@ -213,6 +215,7 @@ beforeEach(async () => {
         }),
     }),
     guard: handlers.service,
+    receiptGuard: handlers.receiptService,
     resolvePrincipal: authority.resolvePrincipal,
     summarize: (run, snapshot) => summarize(run, snapshot),
     publicBaseUrl: 'http://127.0.0.1:3088/base',
@@ -242,6 +245,7 @@ beforeEach(async () => {
   app.use(express.json());
   app.post('/service/:channelId/runs', runs.admit);
   app.post('/service/:channelId/runs/claim', runs.claim);
+  app.post('/service/:channelId/runs/:runId/receipts/claim', runs.claimReceiptRecovery);
   app.post('/service/:channelId/runs/stop-thread', runs.stopThread);
   app.post('/service/:channelId/runs/:runId/yield', runs.yieldLease);
   app.post('/service/:channelId/runs/:runId/renew', runs.renew);
@@ -1982,4 +1986,154 @@ it(
     const originalKey = await createKey.mock.results[0].value;
     expect(await db.validateBoundAgentApiKey(originalKey.key)).toBeNull();
   }),
+);
+
+it.each([
+  ...(['revoked', 'disabled', 'feature-off'] as const).flatMap((reason) =>
+    (['inflight', 'unknown'] as const).map((outcome) => ({ reason, outcome, lostGrant: false })),
+  ),
+  { reason: 'revoked' as const, outcome: 'inflight' as const, lostGrant: true },
+])(
+  'reconciles only retained receipt metadata after $reason with a $outcome required attempt: lostGrant=$lostGrant',
+  ({ reason, outcome, lostGrant }) =>
+    scoped(async () => {
+      const linked = await link('U1', users[0]);
+      const admitted = await post('runs').send(event()).expect(201);
+      const first = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+      const route = `runs/${admitted.body.runId}`;
+      const target = {
+        runId: admitted.body.runId,
+        targetId: first.body.fence.targetId,
+        incarnation: first.body.fence.incarnation,
+      };
+      const claimBody = { target, owner: 'receipt-recovery' };
+      nextSnapshot = { status: 'completed', text: 'PRIVATE-ANSWER', elapsedMs: 1 };
+      await post(`${route}/advance`).send({ fence: first.body.fence }).expect(200);
+      await post(`${route}/plan`)
+        .send({
+          fence: first.body.fence,
+          plan: {
+            revision: 'plan',
+            rendererVersion: 'test',
+            parts: [
+              { operationId: 'answer', kind: 'message', required: true, text: 'PRIVATE-ANSWER' },
+            ],
+          },
+        })
+        .expect(200);
+      await post(`${route}/begin`)
+        .send({ fence: first.body.fence, operationId: 'answer' })
+        .expect(200);
+      if (outcome === 'unknown')
+        await post(`${route}/settle`)
+          .send({
+            fence: first.body.fence,
+            receipt: { operationId: 'answer', outcome, attempts: 1 },
+          })
+          .expect(200);
+      await post(`${route}/receipts/claim`).send(claimBody).expect(409);
+      if (reason === 'revoked')
+        value(
+          await authority.identity.revoke(
+            { tenantId, userId: users[0].id, accountLabel: 'A' },
+            linked.linkId,
+            linked.revision,
+          ),
+        );
+      else if (reason === 'disabled')
+        await db.updateAgentChannel('channel', users[0].id, { status: 'disabled' });
+      else channelEnabled = false;
+      await request(app)
+        .post(`/service/channel/${route}/receipts/claim`)
+        .send(claimBody)
+        .expect(401);
+      await post(`${route}/receipts/claim`)
+        .set('X-Tenant-Id', 'foreign-tenant')
+        .send(claimBody)
+        .expect(404);
+      await post(`${route}/receipts/claim`)
+        .send({
+          ...claimBody,
+          target: { ...target, incarnation: '00000000-0000-4000-8000-000000000000' },
+        })
+        .expect(409);
+      if (lostGrant) {
+        const controls = models.ChannelLane.collection;
+        const update = controls.updateOne.bind(controls);
+        let interrupted = false;
+        const acknowledgment = jest
+          .spyOn(controls, 'updateOne')
+          .mockImplementation(async (...args) => {
+            if (
+              !Array.isArray(args[1]) &&
+              args[1].$set?.assignment?.phase === 'active' &&
+              !interrupted
+            ) {
+              interrupted = true;
+              throw new Error('synthetic lost cleanup acknowledgment');
+            }
+            return update(...args);
+          });
+        await post(`${route}/receipts/claim`).send(claimBody).expect(503);
+        acknowledgment.mockRestore();
+        expect(interrupted).toBe(true);
+      }
+      const recovery = await post(`${route}/receipts/claim`).send(claimBody).expect(200);
+      expect(recovery.body).toMatchObject({
+        disposition: 'pending',
+        destination: { channelId: 'C1', threadKey: 'C1:1.000001' },
+        receipts: [{ operationId: 'answer', outcome: 'unknown', attempts: 1, required: true }],
+      });
+      expect(JSON.stringify(recovery.body)).not.toMatch(
+        /PRIVATE-ANSWER|Use my own permissions|sk-test|snapshot|principal|requestJSON|encrypted/,
+      );
+      const held = (await storage.read(tenantId, 'channel', target.runId))!;
+      expect(held.state).toBe('delivering');
+      expect(await storage.finishAuthorityLost(tenantId, recovery.body.fence, Date.now())).toBe(
+        'pending',
+      );
+      expect(
+        await models.ChannelLane.findOne({ channelId: 'channel', kind: 'control' }).lean(),
+      ).toMatchObject({ assignment: { run: { runId: target.runId } } });
+      const receipt = {
+        operationId: 'answer',
+        outcome: 'confirmed',
+        attempts: 1,
+        externalMessageKey: 'C1:verified',
+      };
+      await post(`${route}/delivery/reconcile`)
+        .send({ fence: first.body.fence, receipt })
+        .expect(409);
+      await post(`${route}/delivery/reconcile`)
+        .send({ fence: recovery.body.fence, receipt: { ...receipt, attempts: 2 } })
+        .expect(409);
+      await post(`${route}/delivery/reconcile`)
+        .send({
+          fence: recovery.body.fence,
+          receipt: { ...receipt, externalMessageKey: 'C2:foreign' },
+        })
+        .expect(400);
+      for (let i = 0; i < 2; i++)
+        await post(`${route}/delivery/reconcile`)
+          .send({ fence: recovery.body.fence, receipt })
+          .expect(200, { confirmed: true });
+      retirement = 'pending';
+      expect(
+        (await post(`${route}/receipts/claim`).send(claimBody).expect(200)).body.disposition,
+      ).toBe('pending');
+      expect((await storage.read(tenantId, 'channel', target.runId))!.state).toBe('delivering');
+      retirement = 'stopped';
+      expect(
+        (await post(`${route}/receipts/claim`).send(claimBody).expect(200)).body.disposition,
+      ).toBe('stopped');
+      expect(await storage.read(tenantId, 'channel', target.runId)).toMatchObject({
+        state: 'cancelled',
+        cursorState: 'complete',
+        receipts: [{ operationId: 'answer', outcome: 'confirmed', attempts: 1 }],
+      });
+      expect(
+        await models.ChannelLane.findOne({ channelId: 'channel', kind: 'control' }).lean(),
+      ).not.toHaveProperty('assignment');
+      expect(invoked).toHaveLength(1);
+    })(),
 );

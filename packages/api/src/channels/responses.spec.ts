@@ -532,6 +532,26 @@ async function replaceCanonicalRoot() {
   });
 }
 
+it('refuses to retire a replacement physical Root with the same logical cleanup binding', () =>
+  scoped(async () => {
+    run.cancellationRequested = true;
+    run.errorCode = 'channel_authority_changed';
+    await replaceCanonicalRoot();
+    const jobs = {
+      getJob: jest.fn(async () => undefined),
+      abortJob: jest.fn(),
+      finishProviderTerminalPersistence: jest.fn(),
+    };
+    const retire = createChannelResponseRetirement({
+      storage,
+      recovery: { recoverResponse: jest.fn() },
+      retireResponse: createResponseRetirement({ storage, jobs }),
+    });
+    await expect(retire(run)).rejects.toThrow('Response retirement identity unavailable');
+    expect(jobs.abortJob).not.toHaveBeenCalled();
+    expect((await storage.read(owner, stored.responseId))?.cancellationRequestedAt).toBeUndefined();
+  }));
+
 it.each(['retrieve', 'cancel'] as const)(
   'keeps the authenticated Root through HTTP %s when a same-ID replacement appears',
   (operation) =>

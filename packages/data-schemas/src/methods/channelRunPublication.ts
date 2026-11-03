@@ -42,6 +42,8 @@ interface ChannelRunPublication {
     now: number,
   ): Promise<{ run: ChannelRunRecord; duplicate: boolean }>;
   recoverPending(tenantId: string, channelId: string, now: number, limit: number): Promise<void>;
+  /** Repair only the captured principal's existing publisher; never allocate or execute. */
+  recoverFrontier(run: Pick<ChannelRunMetadata, 'publication'>): Promise<void>;
 }
 
 /** Private staging and one durable lane intent replace the cross-document FIFO transaction. */
@@ -236,6 +238,12 @@ export function createChannelRunPublication(
     }
   }
   return {
+    async recoverFrontier(run) {
+      if (!run.publication) throw new Error('Run publication unavailable');
+      const root = { target: run.publication.lane };
+      const lane = await readLane(root);
+      if (lane.publisher) await finishPublisher(root, lane);
+    },
     /** Bounded existing-worker recovery, without allocating another Run or execution lane. */
     async recoverPending(
       tenantId: string,

@@ -134,6 +134,7 @@ describe('mounted service-token advance cannot execute an unbound run', () => {
       const runs = createChannelRunHandlers({
         storage,
         guard: handlers.service,
+        receiptGuard: handlers.receiptService,
         resolvePrincipal: async () => fixture.principal,
         advance: adapter.advance,
         retireForAuthorityLoss: adapter.retireForAuthorityLoss,

@@ -503,6 +503,16 @@ export function createChannelRunControl(
           return claimedPayload(target, owner, now);
         if (
           cleanup &&
+          run.leaseEpoch === initial.leaseEpoch &&
+          control.assignment?.purpose === 'cleanup' &&
+          run.errorCode === 'channel_authority_changed' &&
+          run.leaseOwner === owner &&
+          run.leaseExpiresAt > now &&
+          (await active(run))
+        )
+          return claimedPayload(target, owner, now);
+        if (
+          cleanup &&
           (run.leaseEpoch !== initial.leaseEpoch ||
             (run.errorCode === 'channel_authority_changed' && run.leaseExpiresAt > now))
         )

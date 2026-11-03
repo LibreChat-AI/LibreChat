@@ -24,6 +24,7 @@ import {
   snapshotPatch,
   assertPlan,
   deliveryDisposition,
+  hasUncertainChannelDelivery,
   hasPermanentDeliveryFailure,
   leaseDeadline,
   ChannelRunConflict,
@@ -181,7 +182,11 @@ export interface ChannelRunStorage {
     fence: ChannelRunFence,
     now: number,
   ): Promise<ChannelRunRecord>;
-  finishAuthorityLost(tenantId: string, fence: ChannelRunFence, now: number): Promise<void>;
+  finishAuthorityLost(
+    tenantId: string,
+    fence: ChannelRunFence,
+    now: number,
+  ): Promise<'stopped' | 'pending'>;
   requestCancel(
     scope: ChannelLaneScope,
     runId: string,
@@ -333,6 +338,8 @@ export function createChannelRunStorage(
         (run.errorCode !== 'channel_authority_changed' || !run.cancellationRequested)
       )
         throw new ChannelRunConflict('invalid_transition');
+      if (authorityLoss && hasUncertainChannelDelivery(run))
+        throw new ChannelRunConflict('delivery_incomplete');
       if (!run.leaseGrantId) throw new Error('Terminal Run lost its grant');
       const state = authorityLoss
         ? 'cancelled'
@@ -408,12 +415,15 @@ export function createChannelRunStorage(
           $or: [
             { errorCode: { $ne: 'channel_authority_changed' } },
             { leaseExpiresAt: { $lte: now } },
+            { leaseOwner: owner },
           ],
         })
         .select('_id tenantId publication leaseEpoch +_managed')
         .read('primary')
         .lean<ChannelRunClaim | null>();
-      return current ? control.claim(current, owner, now, leaseMs, true) : null;
+      if (!current) return null;
+      await publication.recoverFrontier(current);
+      return control.claim(current, owner, now, leaseMs, true);
     },
     admit: publication.admit,
     async claim(tenantId, channelId, owner, now, leaseMs) {
@@ -874,7 +884,14 @@ export function createChannelRunStorage(
       return mutate(tenantId, fence, now, async (run) => authorityLost(run));
     },
     async finishAuthorityLost(tenantId, fence, now) {
-      await finishTerminal(tenantId, fence, now, true);
+      try {
+        await finishTerminal(tenantId, fence, now, true);
+        return 'stopped';
+      } catch (error) {
+        if (error instanceof ChannelRunConflict && error.code === 'delivery_incomplete')
+          return 'pending';
+        throw error;
+      }
     },
     readActiveThread: control.readActive,
     observeThreadStop: control.observeStop,

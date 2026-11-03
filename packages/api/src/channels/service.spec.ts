@@ -67,6 +67,12 @@ beforeEach(async () => {
   app.get('/service/slack/:tenantId/:channelId', handlers.bundle);
   app.put('/service/:channelId/threads/:externalThreadKey', handlers.putThread);
   app.get('/service/:channelId/threads/:externalThreadKey', handlers.getThread);
+  app.post(
+    '/receipts/:channelId',
+    handlers.receiptService(async (_req, res, channel) => {
+      res.json({ status: channel.status });
+    }),
+  );
 });
 
 async function createChannel(): Promise<string> {
@@ -90,6 +96,28 @@ it('requires an adequately sized service secret and compares the complete bearer
   expect(acceptsChannelServiceToken(`Bearer ${serviceToken}extra`, serviceToken)).toBe(false);
   expect(acceptsChannelServiceToken('Bearer short', 'short')).toBe(false);
   expect(acceptsChannelServiceToken(undefined, serviceToken)).toBe(false);
+});
+
+it('authenticates metadata-only receipt recovery without requiring erased creator config or credentials', async () => {
+  const id = await createChannel();
+  const config = jest.fn(async () => {
+    throw new Error('creator account unavailable');
+  });
+  deps.config = config;
+  const credentials = jest.spyOn(deps.db, 'getAgentChannel');
+  await request(app).post(`/receipts/${id}`).expect(401);
+  await request(app)
+    .post(`/receipts/${id}`)
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .set('X-Tenant-Id', 'foreign-tenant')
+    .expect(404);
+  await request(app)
+    .post(`/receipts/${id}`)
+    .set('Authorization', `Bearer ${serviceToken}`)
+    .set('X-Tenant-Id', tenantId)
+    .expect(200, { status: 'pending_install' });
+  expect(config).not.toHaveBeenCalled();
+  expect(credentials).not.toHaveBeenCalled();
 });
 
 it('persists encrypted credentials and returns them only through the authenticated tenant bundle', async () => {

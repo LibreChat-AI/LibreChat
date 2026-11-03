@@ -1,10 +1,12 @@
 import mongoose from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer, MongoMemoryReplSet } from 'mongodb-memory-server';
+import type { ChannelRunRecord } from '~/models/channelRun';
 import { createChannelRunPublication } from './channelRunPublication';
 import { createChannelRunStorage } from './channelRun';
 import { tenantStorage } from '~/config/tenantContext';
 import { createAgentChannelMethods } from './channel';
+import { channelRunFence } from './channelRunWrite';
 import { createModels } from '~/models';
 
 const engines = ['standalone', 'replica', ...(process.env.FERRETDB_URI ? ['FerretDB'] : [])];
@@ -93,6 +95,75 @@ describe.each(engines)('portable Run publication on %s', (engine) => {
           kind: 'control',
         });
         expect(JSON.stringify(control)).not.toContain('PRIVATE-');
+      }));
+    it('repairs publication and cleanup lease acknowledgments without gateway claims', () =>
+      scoped(async () => {
+        const f = await fixture();
+        const collection = mongoose.models.ChannelRun.collection;
+        const update = collection.updateOne.bind(collection);
+        let lost = false;
+        const spy = jest.spyOn(collection, 'updateOne').mockImplementation(async (...args) => {
+          const result = await update(...args);
+          if (
+            !Array.isArray(args[1]) &&
+            args[1].$set?.['_managed.phase'] === 'published' &&
+            !lost
+          ) {
+            lost = true;
+            throw new Error('synthetic lost publication acknowledgment');
+          }
+          return result;
+        });
+        await expect(f.storage.admit(f.input, 100)).rejects.toThrow(
+          'synthetic lost publication acknowledgment',
+        );
+        spy.mockRestore();
+        const saved = (await mongoose.models.ChannelRun.findOne({
+          channelId: f.input.channelId,
+        })
+          .select('+_managed')
+          .lean<ChannelRunRecord>())!;
+        const channels = createAgentChannelMethods(mongoose);
+        await channels.updateAgentChannel(f.input.channelId, f.input.principal.userId, {
+          status: 'disabled',
+        });
+        const controls = mongoose.models.ChannelLane.collection;
+        const write = controls.updateOne.bind(controls);
+        let interrupted = false;
+        const acknowledgment = jest
+          .spyOn(controls, 'updateOne')
+          .mockImplementation(async (...args) => {
+            if (
+              !Array.isArray(args[1]) &&
+              args[1].$set?.assignment?.phase === 'active' &&
+              !interrupted
+            ) {
+              interrupted = true;
+              throw new Error('synthetic lost cleanup acknowledgment');
+            }
+            return write(...args);
+          });
+        await expect(f.storage.claimAuthorityLost(saved, 'cleanup', 101, 1000)).rejects.toThrow(
+          'synthetic lost cleanup acknowledgment',
+        );
+        acknowledgment.mockRestore();
+        const pending = (await f.storage.read(f.input.tenantId, f.input.channelId, saved.runId))!;
+        const cleanup = (await f.storage.claimAuthorityLost(pending, 'cleanup', 102, 1000))!;
+        expect(cleanup).toMatchObject({
+          runId: saved.runId,
+          leaseEpoch: pending.leaseEpoch,
+          cancellationRequested: true,
+          errorCode: 'channel_authority_changed',
+        });
+        expect(
+          await f.storage.finishAuthorityLost(f.input.tenantId, channelRunFence(cleanup), 103),
+        ).toBe('stopped');
+        const lane = await mongoose.models.ChannelLane.findOne({
+          channelId: f.input.channelId,
+          kind: 'principal',
+        }).lean();
+        expect(lane).toMatchObject({ publishedThrough: 1 });
+        expect(lane).not.toHaveProperty('publisher');
       }));
     it.each(['stage', 'intent', 'publish'] as const)(
       'recovers an applied %s command whose reply was lost',

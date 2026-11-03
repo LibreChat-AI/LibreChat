@@ -149,6 +149,8 @@ export function createChannelHandlers(deps: ChannelDependencies): {
   getThread: RequestHandler;
   putThread: RequestHandler;
   service: ChannelServiceGuard;
+  /** Existing-attempt receipt metadata only; closure must not prevent reconciliation. */
+  receiptService: ChannelServiceGuard;
 } {
   const protect =
     (
@@ -341,6 +343,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
         channel: AgentChannelRecord,
         config: ChannelConfig,
       ) => Promise<void>,
+      receiptOnly = false,
     ): RequestHandler =>
     async (req, res) => {
       try {
@@ -352,25 +355,28 @@ export function createChannelHandlers(deps: ChannelDependencies): {
           res.status(404).json({ error: 'channel_not_found' });
           return;
         }
-        const channel = await runAsSystem(async () =>
-          deps.db.getAgentChannel(req.params.channelId),
+        const channel = await runAsSystem(() =>
+          receiptOnly
+            ? deps.db.getAgentChannelMetadata(req.params.channelId)
+            : deps.db.getAgentChannel(req.params.channelId),
         );
         const requestedTenant = req.params.tenantId ?? req.get('x-tenant-id') ?? '_';
         if (
           !channel ||
-          channel.status !== 'active' ||
+          (!receiptOnly && channel.status !== 'active') ||
           requestedTenant !== (channel.tenantId || '_')
         ) {
           res.status(404).json({ error: 'channel_not_found' });
           return;
         }
         await tenantStorage.run({ tenantId: channel.tenantId || undefined }, async () => {
-          const loaded = await deps.config(req, channel);
-          if (!loaded?.enabled) {
+          // Receipt recovery has no user-config or credential dependency after account erasure.
+          const loaded = receiptOnly ? {} : await deps.config(req, channel);
+          if (!receiptOnly && !loaded?.enabled) {
             res.status(404).json({ error: 'channels_disabled' });
             return;
           }
-          await handler(req, res, channel, channelConfigSchema.parse(loaded));
+          await handler(req, res, channel, channelConfigSchema.parse(loaded ?? {}));
         });
       } catch (error) {
         deps.logError(getSafeErrorMetadata(error));
@@ -380,6 +386,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
 
   const service: ChannelServiceGuard = (handler) =>
     serviceWithConfig((req, res, channel, config) => handler(req, res, channel, config));
+  const receiptService: ChannelServiceGuard = (handler) => serviceWithConfig(handler, true);
 
   const bundle = serviceWithConfig(async (_req, res, channel, config) => {
     const agent = await deps.getAgent(channel.agentId);
@@ -427,5 +434,16 @@ export function createChannelHandlers(deps: ChannelDependencies): {
 
   const putThread = getThread;
 
-  return { list, create, update, remove, manifest, bundle, getThread, putThread, service };
+  return {
+    list,
+    create,
+    update,
+    remove,
+    manifest,
+    bundle,
+    getThread,
+    putThread,
+    service,
+    receiptService,
+  };
 }
