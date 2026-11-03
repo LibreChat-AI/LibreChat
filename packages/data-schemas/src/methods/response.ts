@@ -1,6 +1,8 @@
 import type { ClientSession } from 'mongoose';
 import type {
   ResponseOwner,
+  ResponseReference,
+  ResponseCheckpointExecution,
   ResponseReservation,
   StoredResponseRecord,
   StoredResponseStatus,
@@ -25,6 +27,7 @@ import {
   createResponseRetention,
 } from './responseScope';
 import { sameResponseTerminalReceipt, terminalReceipt, terminalFilter } from '~/utils/receipt';
+import { createResponseCheckpointStorage } from './responseCheckpoint';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { allocateManagedTarget, managedTargetFilter } from './managed';
 import { createResponseScopeModel } from '~/models/responseScope';
@@ -52,6 +55,24 @@ export type ResponseReservationResult =
 export type ResponseMutationResult =
   | { ok: true; record: StoredResponseRecord }
   | { ok: false; code: 'response_conflict' };
+
+export type ResponseExecutionBinding = Pick<
+  ResponseTerminalReceipt,
+  'generationCreatedAt' | 'providerExecutionId' | 'ownerId'
+>;
+
+function assertExecutionBinding(binding: ResponseExecutionBinding): void {
+  if (
+    !Number.isSafeInteger(binding.generationCreatedAt) ||
+    binding.generationCreatedAt < 1 ||
+    typeof binding.providerExecutionId !== 'string' ||
+    !binding.providerExecutionId ||
+    binding.providerExecutionId.length > 128 ||
+    (binding.ownerId != null &&
+      (typeof binding.ownerId !== 'string' || !binding.ownerId || binding.ownerId.length > 128))
+  )
+    throw new TypeError('Invalid Response provider identity');
+}
 
 /** Internal drain identity only; expired requests, answers and decisions are never returned.
  * Stored rows include immutable request binding; older retained job identities may omit it. */
@@ -165,6 +186,21 @@ function responseExecutionFilter(
 }
 
 export interface ResponseStorage {
+  createCheckpointWriter(
+    reference: ResponseReference,
+    checkpoint: Omit<ResponseCheckpointExecution, 'state'>,
+  ): ReturnType<typeof createResponseCheckpointStorage>;
+  enrollExecution(
+    record: StoredResponseRecord,
+    binding: ResponseExecutionBinding,
+    responseJSON: string,
+  ): Promise<ResponseMutationResult>;
+  /** Positive provider proof is retained independently of transient job lifetime. */
+  settleExecution(
+    reference: ResponseReference,
+    binding: ResponseExecutionBinding,
+    outcome?: 'complete' | 'error' | 'aborted',
+  ): Promise<boolean>;
   prepareTerminal(
     owner: ResponseOwner,
     responseId: string,
@@ -348,6 +384,98 @@ export function createResponseStorage(
     }
   }
   return {
+    createCheckpointWriter: (reference, checkpoint) =>
+      createResponseCheckpointStorage(mongoose, reference, checkpoint),
+    async enrollExecution(current, binding, responseJSON) {
+      assertExecutionBinding(binding);
+      if (!current.storageTarget) return { ok: false, code: 'response_conflict' };
+      const execution = responseExecutionFilter(mongoose, current, { execution: current });
+      if (!execution) return { ok: false, code: 'response_conflict' };
+      const resumed = current.resume?.state === 'admitted' ? current.resume : undefined;
+      if (
+        resumed &&
+        (resumed.providerExecutionId !== binding.providerExecutionId ||
+          current.generationCreatedAt !== binding.generationCreatedAt)
+      )
+        return { ok: false, code: 'response_conflict' };
+      if (await isResponseScopeClosed(mongoose, current, current.conversationId))
+        return { ok: false, code: 'response_conflict' };
+      const record = await model
+        .findOneAndUpdate(
+          {
+            ...scope(current),
+            ...execution,
+            revision: current.revision,
+            cancellationRequestedAt: current.cancellationRequestedAt ?? { $exists: false },
+            pendingTerminal: { $exists: false },
+            preparedTerminal: { $exists: false },
+            ...(resumed
+              ? {
+                  status: 'in_progress',
+                  'providerExecution.id': resumed.previousProviderExecutionId,
+                  'providerExecution.drained': true,
+                  $and: [
+                    activeExpirationFilter(),
+                    {
+                      $or: [{ checkpoint: { $exists: false } }, { 'checkpoint.state': 'settled' }],
+                    },
+                  ],
+                }
+              : {
+                  status: 'queued',
+                  generationCreatedAt: { $exists: false },
+                  providerExecution: { $exists: false },
+                  resume: { $exists: false },
+                  review: { $exists: false },
+                }),
+          },
+          {
+            $set: {
+              status: resumed || current.cancellationRequestedAt == null ? 'in_progress' : 'queued',
+              responseJSON,
+              generationCreatedAt: binding.generationCreatedAt,
+              providerExecution: {
+                id: binding.providerExecutionId,
+                ...(binding.ownerId ? { ownerId: binding.ownerId } : {}),
+                drained: false,
+              },
+            },
+            $inc: { revision: 1 },
+          },
+          { new: true, upsert: false },
+        )
+        .lean();
+      return record ? { ok: true, record } : { ok: false, code: 'response_conflict' };
+    },
+    async settleExecution(reference, binding, outcome) {
+      assertExecutionBinding(binding);
+      if (outcome != null && !['complete', 'error', 'aborted'].includes(outcome))
+        throw new TypeError('Invalid Response provider outcome');
+      const updated = await model.updateOne(
+        {
+          ...responseRootFilter(mongoose, reference),
+          generationCreatedAt: binding.generationCreatedAt,
+          'providerExecution.id': binding.providerExecutionId,
+          'providerExecution.ownerId': binding.ownerId ?? { $exists: false },
+          ...(outcome
+            ? {
+                $or: [
+                  { 'providerExecution.outcome': { $exists: false } },
+                  { 'providerExecution.outcome': outcome },
+                ],
+              }
+            : {}),
+        },
+        {
+          $set: {
+            'providerExecution.drained': true,
+            ...(outcome ? { 'providerExecution.outcome': outcome } : {}),
+          },
+        },
+        { upsert: false },
+      );
+      return updated.matchedCount === 1;
+    },
     async prepareTerminal(owner, responseId, guard, receipt) {
       if (guard.execution.generationCreatedAt !== receipt.generationCreatedAt)
         return { ok: false, code: 'response_conflict' };

@@ -329,15 +329,186 @@ describe('managed target allocation on real storage', () => {
         }),
       };
       const model = createStoredResponseModel(db);
-      await model.updateOne(responseRootFilter(db, reference), {
+      const storage = createResponseStorage(db);
+      const enrolled = await storage.enrollExecution(record, checkpoint, '{}');
+      if (!enrolled.ok) throw new Error('Provider enrollment failed');
+      return { model, reference, checkpoint, input, record: enrolled.record, storage };
+    }
+    it('admits only one provider and rejects stale physical enrollment without transactions', async () => {
+      const storage = createResponseStorage(db);
+      const input = rootInput();
+      const reserved = await storage.reserve(input);
+      if (!reserved.ok) throw new Error('Reservation failed');
+      const session = jest.spyOn(db, 'startSession');
+      const binding = { generationCreatedAt: Date.now(), providerExecutionId: randomUUID() };
+      const attempts = await Promise.all([
+        storage.enrollExecution(reserved.record, binding, '{}'),
+        storage.enrollExecution(
+          reserved.record,
+          { ...binding, providerExecutionId: randomUUID() },
+          '{}',
+        ),
+      ]);
+      expect(attempts.filter((result) => result.ok)).toHaveLength(1);
+      expect(session).not.toHaveBeenCalled();
+      const model = createStoredResponseModel(db);
+      await model.deleteOne(responseRootFilter(db, responseReference(reserved.record)));
+      const replacement = await storage.reserve(input);
+      if (!replacement.ok) throw new Error('Replacement failed');
+      expect(await storage.enrollExecution(reserved.record, binding, '{}')).toEqual({
+        ok: false,
+        code: 'response_conflict',
+      });
+      expect(await storage.read(input, input.responseId)).toMatchObject({ revision: 0 });
+    });
+    it.each(['owner', 'conversation', 'retired'] as const)(
+      'denies provider enrollment after %s retirement',
+      async (kind) => {
+        const storage = createResponseStorage(db);
+        const input = rootInput();
+        const reserved = await storage.reserve(input);
+        if (!reserved.ok) throw new Error('Reservation failed');
+        if (kind === 'retired')
+          await createStoredResponseModel(db).updateOne(
+            responseRootFilter(db, responseReference(reserved.record)),
+            { $set: { retiredAt: new Date() } },
+          );
+        else
+          await closeResponseScopes(
+            db,
+            input,
+            kind === 'owner' ? undefined : [input.conversationId],
+          );
+        expect(
+          await storage.enrollExecution(
+            reserved.record,
+            {
+              generationCreatedAt: Date.now(),
+              providerExecutionId: randomUUID(),
+            },
+            '{}',
+          ),
+        ).toEqual({ ok: false, code: 'response_conflict' });
+      },
+    );
+    it('retains exact provider drain proof after expiry without settling checkpoint writes', async () => {
+      const f = await checkpointFixture();
+      const checkpointStorage = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
+      expect(await checkpointStorage.open()).toBe(true);
+      expect(
+        await f.storage.settleExecution(
+          f.reference,
+          { ...f.checkpoint, ownerId: randomUUID() },
+          'complete',
+        ),
+      ).toBe(false);
+      expect(
+        await f.storage.settleExecution(
+          f.reference,
+          { ...f.checkpoint, generationCreatedAt: f.checkpoint.generationCreatedAt + 1 },
+          'complete',
+        ),
+      ).toBe(false);
+      await f.model.updateOne(responseRootFilter(db, f.reference), {
+        $set: { retiredAt: new Date(), expiredAt: new Date(Date.now() - 1) },
+      });
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(true);
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(true);
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'error')).toBe(false);
+      expect(
+        await f.model
+          .findOne(responseRootFilter(db, f.reference))
+          .select('+providerExecution +checkpoint')
+          .lean(),
+      ).toMatchObject({
+        providerExecution: { drained: true, outcome: 'complete' },
+        checkpoint: { state: 'pending' },
+      });
+      expect(await checkpointStorage.settle()).toBe(true);
+    });
+    it('resumes only after provider drain and checkpoint settlement and rejects the previous closer', async () => {
+      const f = await checkpointFixture();
+      const checkpointStorage = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
+      expect(await checkpointStorage.open()).toBe(true);
+      const next = {
+        ...f.checkpoint,
+        providerExecutionId: randomUUID(),
+        ownerId: randomUUID(),
+        writerId: randomUUID(),
+      };
+      await f.model.updateOne(responseRootFilter(db, f.reference), {
         $set: {
-          generationCreatedAt: checkpoint.generationCreatedAt,
-          status: 'in_progress',
-          providerExecution: { id: checkpoint.providerExecutionId, ownerId: checkpoint.ownerId },
+          resume: {
+            intentId: randomUUID(),
+            actionId: randomUUID(),
+            previousProviderExecutionId: f.checkpoint.providerExecutionId,
+            providerExecutionId: next.providerExecutionId,
+            fingerprint: 'resume',
+            resolutionJSON: '{}',
+            state: 'admitted',
+            reservedAt: Date.now(),
+          },
         },
       });
-      return { model, reference, checkpoint, input, record };
-    }
+      const current = await f.storage.read(f.input, f.input.responseId);
+      if (!current) throw new Error('Response missing');
+      expect(await f.storage.enrollExecution(current, next, '{}')).toEqual({
+        ok: false,
+        code: 'response_conflict',
+      });
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint)).toBe(true);
+      expect(await checkpointStorage.open()).toBe(false);
+      expect(await f.storage.enrollExecution(current, next, '{}')).toEqual({
+        ok: false,
+        code: 'response_conflict',
+      });
+      expect(await checkpointStorage.settle()).toBe(true);
+      expect(await f.storage.enrollExecution(current, next, '{}')).toMatchObject({ ok: true });
+      expect(await f.storage.settleExecution(f.reference, f.checkpoint, 'complete')).toBe(false);
+      expect(await checkpointStorage.settle()).toBe(false);
+      const nextCheckpoint = createResponseCheckpointStorage(db, f.reference, next);
+      expect(await nextCheckpoint.open()).toBe(true);
+      expect(await nextCheckpoint.settle()).toBe(true);
+      expect(await f.storage.settleExecution(f.reference, next, 'complete')).toBe(true);
+    });
+    it('fences a late checkpoint marker after its opening acknowledgment fails', async () => {
+      const f = await checkpointFixture();
+      const storage = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
+      const collection = f.model.collection;
+      const original = collection.updateOne.bind(collection);
+      let late!: () => ReturnType<typeof original>;
+      jest.spyOn(collection, 'updateOne').mockImplementationOnce(async (...args) => {
+        late = () => original(...args);
+        throw new Error('marker command outcome unknown');
+      });
+      await expect(storage.open()).rejects.toThrow('marker command outcome unknown');
+      expect(await storage.settle()).toBe(true);
+      expect((await late()).matchedCount).toBe(0);
+      expect(await storage.open()).toBe(false);
+      expect(
+        await f.model.findOne(responseRootFilter(db, f.reference)).select('+checkpoint').lean(),
+      ).toMatchObject({
+        checkpoint: { ...f.checkpoint, state: 'settled' },
+      });
+    });
+    it('settles a lost marker acknowledgment but cannot adopt another writer', async () => {
+      const f = await checkpointFixture();
+      const storage = createResponseCheckpointStorage(db, f.reference, f.checkpoint);
+      const collection = f.model.collection;
+      const original = collection.updateOne.bind(collection);
+      jest.spyOn(collection, 'updateOne').mockImplementationOnce(async (...args) => {
+        await original(...args);
+        throw new Error('marker acknowledgment lost');
+      });
+      await expect(storage.open()).rejects.toThrow('marker acknowledgment lost');
+      const other = createResponseCheckpointStorage(db, f.reference, {
+        ...f.checkpoint,
+        writerId: randomUUID(),
+      });
+      expect(await other.settle()).toBe(false);
+      expect(await storage.settle()).toBe(true);
+      expect(await storage.open()).toBe(false);
+    });
     it('retains a private checkpoint marker and lets only its exact writer settle after retirement', async () => {
       const f = await checkpointFixture();
       const storage = createResponseCheckpointStorage(db, f.reference, f.checkpoint);

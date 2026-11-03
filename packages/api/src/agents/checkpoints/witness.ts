@@ -19,9 +19,9 @@ export function createCheckpointWriteWitness(storage: {
     track<T>(operation: () => Promise<T>): Promise<T> {
       if (closed) return Promise.reject(new Error('Checkpoint writer is closed'));
       const result = (async () => {
+        opening ??= Promise.resolve().then(storage.open);
+        await opening;
         try {
-          opening ??= Promise.resolve().then(storage.open);
-          await opening;
           return await operation();
         } catch (error) {
           // A rejected driver promise does not prove the server cannot still apply its command.
@@ -44,6 +44,8 @@ export function createCheckpointWriteWitness(storage: {
         // All entries handle rejection: the first failure cannot bypass a delayed sibling.
         await Promise.all(pending);
         if (unknown) return 'unknown';
+        // Even a rejected opening command may still arrive at the server. The exact
+        // writer's settled marker fences it; no checkpoint command was authorized.
         if (opening) await storage.settle();
         return 'settled';
       })();

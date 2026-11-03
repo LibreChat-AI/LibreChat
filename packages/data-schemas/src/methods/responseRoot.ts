@@ -84,7 +84,10 @@ export function assertResponseReservation(input: ResponseReservation): void {
     throw new TypeError('Invalid Response reservation');
 }
 
-export function responseReference(record: ManagedResponseRecord): ResponseReference {
+export function responseReference(
+  record: Pick<StoredResponseRecord, 'userId' | 'tenantId' | 'responseId' | 'storageTarget'>,
+): ResponseReference {
+  if (!record.storageTarget) throw new TypeError('Response root identity is unavailable');
   return {
     userId: record.userId,
     ...(record.tenantId ? { tenantId: record.tenantId } : {}),

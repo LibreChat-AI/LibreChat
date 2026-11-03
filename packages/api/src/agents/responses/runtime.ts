@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+import { responseReference } from '@librechat/data-schemas';
 import { checkpointerSchema, responseReviewDecisionSchema } from 'librechat-data-provider';
 import type { ResponseTerminalReceipt, StoredResponseRecord } from '@librechat/data-schemas';
 import type { Request, Response as HttpResponse } from 'express';
@@ -6,6 +8,7 @@ import type { Run, IState } from '@librechat/agents';
 import type { ExecuteAgentRunParams, AgentExecutionConnection } from '../remote/host';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { MarkToolApprovalAllowAlwaysOptions } from '../hitl/allow';
+import type { CheckpointWriteWitness } from '../checkpoints/witness';
 import type { AgentExecutionEnrollment } from '../remote/lifecycle';
 import type { ResponseTerminalCompletion } from './foreground';
 import type { ResponsesRunEnvelope } from '../envelope';
@@ -36,6 +39,7 @@ import {
 } from '../checkpointer';
 import { combineResponseSegments, seedResponseAggregator } from './segments';
 import { checkpointOwnerNamespacePrefix } from '~/stream/checkpoints';
+import { createCheckpointWriteWitness } from '../checkpoints/witness';
 import { getRunDiscoveredTools, getRunMCPToolAliases } from '../run';
 import { markNativeCodeToolApprovalRequests } from '../hitl/byom';
 import { assertCodeExecutionApprovalBinding } from '../execution';
@@ -100,6 +104,7 @@ export interface ResponseExecutionRuntime {
     Pick<
       Parameters<typeof createRun>[0],
       | 'hitlCapable'
+      | 'checkpointWriteWitness'
       | 'discoveredToolNames'
       | 'reviewedToolApprovals'
       | 'sessionStartSource'
@@ -182,6 +187,50 @@ export function createResponseExecutionRuntime(
       .type === 'mongo';
   let checkpoint: { checkpointNamespace: string; checkpointConfigJSON: string } | undefined;
   let enrolledExecution: AgentExecutionEnrollment | undefined;
+  let checkpointWriteWitness: CheckpointWriteWitness | undefined;
+  let checkpointWriter:
+    | ReturnType<NonNullable<typeof admission>['storage']['createCheckpointWriter']>
+    | undefined;
+  function checkpointOptions() {
+    if (!interactive) return {};
+    checkpointWriteWitness ??= createCheckpointWriteWitness({
+      async open() {
+        if (!checkpointWriter || !(await checkpointWriter.open()))
+          throw new Error('Response checkpoint writer admission conflicted');
+      },
+      async settle() {
+        if (!checkpointWriter || !(await checkpointWriter.settle()))
+          throw new Error('Response checkpoint writer settlement conflicted');
+      },
+    });
+    return { checkpointWriteWitness };
+  }
+  function bindCheckpointWriter(descriptor: NonNullable<typeof checkpoint>) {
+    if (!admission || !enrolledExecution || !checkpointWriteWitness || checkpointWriter)
+      throw new Error('Response checkpoint writer binding is unavailable');
+    checkpointWriter = admission.storage.createCheckpointWriter(
+      responseReference(admission.record),
+      {
+        ...enrolledExecution.getPersistenceIdentity(),
+        writerId: randomUUID(),
+        namespace: descriptor.checkpointNamespace,
+        configJSON: descriptor.checkpointConfigJSON,
+      },
+    );
+  }
+  async function processCheckpointRun<T>(operation: () => Promise<T>): Promise<T> {
+    const result = await Promise.resolve()
+      .then(operation)
+      .then(
+        (value) => ({ ok: true as const, value }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+    if (!checkpointWriteWitness || (await checkpointWriteWitness.close()) !== 'settled')
+      throw new Error('Response checkpoint settlement is pending');
+    if (!result.ok) throw result.error;
+    return result.value;
+  }
+
   let rememberedTools: string[] = [];
   let responseParentMessageId: string | undefined;
   let prefix: Response | undefined;
@@ -228,6 +277,7 @@ export function createResponseExecutionRuntime(
       : response;
   }
   let candidate: TerminalResponse | undefined;
+  let executionEnrolled = false;
   const completion = admission
     ? createResponseCompletion({
         storage: admission.storage,
@@ -262,6 +312,8 @@ export function createResponseExecutionRuntime(
             admission.record,
             admission.record.responseId,
           );
+          if (!current) throw new Error('Background response journal is unavailable');
+          const binding = execution.getEnrollmentIdentity();
           if (admission.resume) {
             if (
               !current ||
@@ -272,8 +324,15 @@ export function createResponseExecutionRuntime(
               current.status !== 'in_progress'
             )
               throw new Error('Background response resume enrollment changed');
-            admission.record = current;
             if (current.cancellationRequestedAt != null) execution.abort();
+            const resumed = await admission.storage.enrollExecution(
+              current,
+              binding,
+              current.responseJSON ?? '{}',
+            );
+            if (!resumed.ok) throw new Error('Background response resume enrollment changed');
+            admission.record = resumed.record;
+            executionEnrolled = true;
             res.status(202).json({
               id: current.responseId,
               object: 'response',
@@ -290,11 +349,11 @@ export function createResponseExecutionRuntime(
             record: StoredResponseRecord,
             status: 'queued' | 'in_progress',
           ) =>
-            admission.storage.publish(record, record.responseId, record.revision, {
-              status,
-              responseJSON: JSON.stringify({ ...buildPendingBackgroundResponse(record), status }),
-              generationCreatedAt: execution.createdAt,
-            });
+            admission.storage.enrollExecution(
+              record,
+              binding,
+              JSON.stringify({ ...buildPendingBackgroundResponse(record), status }),
+            );
           const cancelled = current.cancellationRequestedAt != null;
           if (cancelled) execution.abort();
           let result = await publishEnrollment(current, cancelled ? 'queued' : 'in_progress');
@@ -311,6 +370,7 @@ export function createResponseExecutionRuntime(
           }
           if (!result.ok) throw new Error('Background response enrollment publication failed');
           admission.record = result.record;
+          executionEnrolled = true;
           res.status(202).json({
             id: result.record.responseId,
             object: 'response',
@@ -323,6 +383,14 @@ export function createResponseExecutionRuntime(
         afterPause: async (execution) => {
           if (!execution.isPaused || !execution.ownsSettlement)
             throw new Error('Background response pause ownership changed');
+          if (
+            executionEnrolled &&
+            !(await admission.storage.settleExecution(
+              responseReference(admission.record),
+              execution.getEnrollmentIdentity(),
+            ))
+          )
+            throw new Error('Background response pause drain proof conflicted');
           const current = await admission.storage.read(
             admission.record,
             admission.record.responseId,
@@ -366,6 +434,16 @@ export function createResponseExecutionRuntime(
             throw new Error('Background response pause retirement is pending');
         },
         afterSettle: async (execution, error) => {
+          const identity = await execution.confirmTerminalIdentity();
+          if (
+            executionEnrolled &&
+            !(await admission.storage.settleExecution(
+              responseReference(admission.record),
+              identity,
+              identity.outcome,
+            ))
+          )
+            throw new Error('Background response terminal drain proof conflicted');
           let current = await admission.storage.read(admission.record, admission.record.responseId);
           if (!current || current.generationCreatedAt == null) {
             const retired = await admission.storage.readCleanupIdentity(
@@ -397,7 +475,6 @@ export function createResponseExecutionRuntime(
               throw new Error('Background response terminal publication is pending');
             return;
           }
-          const identity = await execution.confirmTerminalIdentity();
           // Normal manager teardown aborts the local signal too; only durable outcome/intent classifies Stop.
           const cancelled =
             identity.outcome === 'aborted' || current.cancellationRequestedAt != null;
@@ -544,7 +621,7 @@ export function createResponseExecutionRuntime(
               ),
             }
           : {};
-      if (!admission?.resume) return { hitlCapable, ...policy() };
+      if (!admission?.resume) return { hitlCapable, ...policy(), ...checkpointOptions() };
       const action: Agents.PendingAction = JSON.parse(
         admission.record.review?.pendingActionJSON ?? 'null',
       );
@@ -641,6 +718,7 @@ export function createResponseExecutionRuntime(
         hitlCapable,
         ...policy(),
         sessionStartSource: 'resume',
+        ...checkpointOptions(),
         ...(Array.isArray(discovered) ? { discoveredToolNames: discovered } : {}),
         reviewedToolApprovals: {
           bindings: action.toolApprovalBindings,
@@ -777,17 +855,20 @@ export function createResponseExecutionRuntime(
           },
           job.createdAt,
         );
-        return run.processStream(
-          input,
-          {
-            ...config,
-            configurable: {
-              ...config.configurable,
-              thread_id: record.conversationId,
-              [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: namespace,
+        bindCheckpointWriter(checkpoint);
+        return processCheckpointRun(() =>
+          run.processStream(
+            input,
+            {
+              ...config,
+              configurable: {
+                ...config.configurable,
+                thread_id: record.conversationId,
+                [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: namespace,
+              },
             },
-          },
-          options,
+            options,
+          ),
         );
       }
       const { record, resume } = admission;
@@ -797,20 +878,29 @@ export function createResponseExecutionRuntime(
         record.review.checkpointNs == null
       )
         throw new Error('Response resume checkpoint identity unavailable');
+      if (!record.review.checkpointConfigJSON)
+        throw new Error('Response resume checkpoint settings unavailable');
+      bindCheckpointWriter({
+        checkpointNamespace: resume.checkpointNamespace,
+        checkpointConfigJSON: record.review.checkpointConfigJSON,
+      });
       const resolution: unknown = JSON.parse(record.resume.resolutionJSON);
-      return run.resume(
-        resolution,
-        {
-          ...config,
-          configurable: {
-            ...config.configurable,
-            thread_id: record.conversationId,
-            checkpoint_id: record.review.checkpointId,
-            checkpoint_ns: record.review.checkpointNs,
-            [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: resume.checkpointNamespace,
+      const { checkpointId, checkpointNs } = record.review;
+      return processCheckpointRun(() =>
+        run.resume(
+          resolution,
+          {
+            ...config,
+            configurable: {
+              ...config.configurable,
+              thread_id: record.conversationId,
+              checkpoint_id: checkpointId,
+              checkpoint_ns: checkpointNs,
+              [LIBRECHAT_CHECKPOINT_NAMESPACE_KEY]: resume.checkpointNamespace,
+            },
           },
-        },
-        options,
+          options,
+        ),
       );
     },
     toolContext: (execution) =>

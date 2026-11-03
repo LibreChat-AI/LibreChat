@@ -20,9 +20,13 @@ export function createResponseCheckpointStorage(
   if (
     !Number.isSafeInteger(checkpoint.generationCreatedAt) ||
     checkpoint.generationCreatedAt < 1 ||
+    typeof checkpoint.providerExecutionId !== 'string' ||
     !checkpoint.providerExecutionId ||
     checkpoint.providerExecutionId.length > 128 ||
-    (checkpoint.ownerId != null && (!checkpoint.ownerId || checkpoint.ownerId.length > 128)) ||
+    (checkpoint.ownerId != null &&
+      (typeof checkpoint.ownerId !== 'string' ||
+        !checkpoint.ownerId ||
+        checkpoint.ownerId.length > 128)) ||
     !uuidPattern.test(checkpoint.writerId) ||
     !checkpoint.namespace.startsWith(prefix) ||
     !uuidPattern.test(checkpoint.namespace.slice(prefix.length)) ||
@@ -63,6 +67,7 @@ export function createResponseCheckpointStorage(
         {
           ...physical,
           ...provider,
+          'providerExecution.drained': { $ne: true },
           '_managed.phase': 'published',
           status: 'in_progress',
           retiredAt: { $exists: false },
@@ -88,9 +93,18 @@ export function createResponseCheckpointStorage(
     async settle() {
       // Retirement/expiry must not prevent a live exact writer from recording positive
       // settlement. Its retained root remains the cleanup authority until this succeeds.
+      // An absent marker can mean opening failed before any checkpoint command ran.
+      // Installing the exact settled marker also fences a delayed opening command.
       const result = await model.updateOne(
-        { ...physical, ...provider, ...exact, 'checkpoint.state': { $in: ['pending', 'settled'] } },
-        { $set: { 'checkpoint.state': 'settled' } },
+        {
+          ...physical,
+          ...provider,
+          $or: [
+            { checkpoint: { $exists: false } },
+            { ...exact, 'checkpoint.state': { $in: ['pending', 'settled'] } },
+          ],
+        },
+        { $set: { checkpoint: { ...checkpoint, state: 'settled' } } },
         { upsert: false },
       );
       return result.matchedCount === 1;

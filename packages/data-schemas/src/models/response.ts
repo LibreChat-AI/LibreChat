@@ -33,6 +33,8 @@ export interface ResponseReference extends ResponseOwner {
 export interface ResponseProviderExecution {
   id: string;
   ownerId?: string;
+  drained?: boolean;
+  outcome?: 'complete' | 'error' | 'aborted';
 }
 
 export interface ResponseCheckpointExecution {
@@ -191,6 +193,8 @@ export function createStoredResponseModel(
           {
             id: { type: String, required: true, maxlength: 128 },
             ownerId: { type: String, maxlength: 128 },
+            drained: Boolean,
+            outcome: { type: String, enum: ['complete', 'error', 'aborted'] },
           },
           { _id: false },
         ),

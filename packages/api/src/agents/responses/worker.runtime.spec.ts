@@ -4,10 +4,13 @@ import request from 'supertest';
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { FileSources, PermissionBits } from 'librechat-data-provider';
+import { emptyCheckpoint, INTERRUPT } from '@langchain/langgraph-checkpoint';
 import {
   createModels,
   createMethods,
   createResponseStorage,
+  createManagedMessageId,
+  createManagedConversationId,
   tenantStorage,
   runAsSystem,
 } from '@librechat/data-schemas';
@@ -29,6 +32,7 @@ import {
 } from './completion';
 import { buildPendingBackgroundResponse, createBackgroundResponseService } from './background';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
+import { getAgentCheckpointer, __resetCheckpointerForTests } from '../checkpointer';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { createResponseContext, convertInputToMessages } from './service';
 import { createResponseExecutionRuntime } from './runtime';
@@ -84,7 +88,7 @@ beforeEach(async () => {
   await scope(async () => {
     const result = await storage.reserve({
       ...owner,
-      responseId: 'resp_worker',
+      responseId: createManagedMessageId(),
       requestKey: 'request',
       fingerprint: 'fingerprint',
       agentId: 'agent',
@@ -96,7 +100,7 @@ beforeEach(async () => {
         store: true,
         background: true,
       }),
-      conversationId: '1cb257b0-56a6-40a6-b096-cd6e05f26963',
+      conversationId: createManagedConversationId(),
       parentMessageId: 'root',
     });
     if (!result.ok) throw new Error('Reservation failed');
@@ -237,6 +241,120 @@ it('does not accept a stale token after the original key reference changes', asy
 });
 
 describe('background Responses execution handoff', () => {
+  it('binds actual saver commands to the enrolled root and closes the writer before provider drain', async () => {
+    __resetCheckpointerForTests();
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const errors: unknown[] = [];
+    const settings = {
+      type: 'mongo' as const,
+      checkpointCollectionName: 'bound_root_checkpoints',
+      checkpointWritesCollectionName: 'bound_root_writes',
+    };
+    const privateRoot = () =>
+      mongoose.models.StoredResponse.findOne({ responseId: record.responseId })
+        .select('+providerExecution +checkpoint')
+        .lean();
+    const { app } = fixture(
+      async (req, res) => {
+        (req as ServerRequest).config = {
+          config: {},
+          fileStrategy: FileSources.local,
+          imageOutputType: 'png',
+          endpoints: { agents: { checkpointer: settings } },
+        };
+        const runtime = createResponseExecutionRuntime(req, res, {
+          getMessage: async () => null,
+          jobs: GenerationJobManager,
+        });
+        try {
+          await executeAgentRun({
+            envelope: createAgentRunEnvelope({
+              protocol: 'responses',
+              requestId: record.responseId,
+              receivedAt: Date.now(),
+              principal: { id: owner.userId, tenantId: owner.tenantId },
+              payload: req.body,
+            }),
+            runId: record.responseId,
+            conversationId: record.conversationId,
+            ...runtime.hooks,
+            isPrincipalActive: async () => true,
+            execute: async () => {
+              const options = await runtime.graphOptions();
+              expect(options.checkpointWriteWitness).toBeDefined();
+              const saver = await getAgentCheckpointer(settings, {
+                writeWitness: options.checkpointWriteWitness,
+              });
+              if (!saver) throw new Error('Saver missing');
+              const checkpoint = emptyCheckpoint();
+              let writeConfig: Parameters<typeof saver.putWrites>[0] | undefined;
+              await runtime.processRun(
+                {
+                  processStream: async (_input, config) => {
+                    writeConfig = {
+                      configurable: { ...config?.configurable, checkpoint_id: checkpoint.id },
+                    };
+                    await saver.putWrites(writeConfig, [[INTERRUPT, 'approval']], 'task');
+                    await saver.put(config ?? {}, checkpoint, {
+                      source: 'input',
+                      step: -1,
+                      parents: {},
+                    });
+                    expect(await privateRoot()).toMatchObject({
+                      providerExecution: { drained: false },
+                      checkpoint: { state: 'pending' },
+                    });
+                    return undefined;
+                  },
+                  resume: async () => undefined,
+                },
+                { messages: [] },
+                { version: 'v2' },
+              );
+              expect(await privateRoot()).toMatchObject({
+                providerExecution: { drained: false },
+                checkpoint: { state: 'settled' },
+              });
+              if (!writeConfig) throw new Error('Write config missing');
+              await expect(
+                saver.putWrites(writeConfig, [[INTERRUPT, 'late']], 'late'),
+              ).rejects.toThrow('Checkpoint writer is closed');
+              await runtime.completion!.prepare({
+                ...buildPendingBackgroundResponse(record),
+                status: 'completed',
+                output: [],
+              });
+            },
+            onSettlementError: (error) => {
+              errors.push(error);
+            },
+          });
+        } catch (error) {
+          errors.push(error);
+        } finally {
+          finish();
+        }
+      },
+      async () => ({ ok: false, code: 'response_resume_unavailable' }),
+    );
+    await request(app)
+      .post('/')
+      .set('x-lc-response-worker', '1')
+      .auth(mintBackgroundResponseWorkerToken(record, secret), { type: 'bearer' })
+      .send({})
+      .expect(202);
+    await finished;
+    expect(errors).toEqual([]);
+    expect(await scope(privateRoot)).toMatchObject({
+      providerExecution: { drained: true, outcome: 'complete' },
+      checkpoint: { state: 'settled' },
+      status: 'completed',
+    });
+    __resetCheckpointerForTests();
+  });
   it.each(['completed', 'cancelled', 'publication_failure', 'lost_finalizer'] as const)(
     'retains exact terminal proof until Responses publication with default cleanup (%s)',
     async (outcome) => {
@@ -1187,8 +1305,8 @@ describe('background Responses execution handoff', () => {
       if (phase === 'before enrollment') {
         await scope(async () => storage.requestCancellation(owner, record.responseId, Date.now()));
       } else {
-        const publish = storage.publish.bind(storage);
-        jest.spyOn(storage, 'publish').mockImplementationOnce(async (...args) => {
+        const publish = storage.enrollExecution.bind(storage);
+        jest.spyOn(storage, 'enrollExecution').mockImplementationOnce(async (...args) => {
           await storage.requestCancellation(owner, record.responseId, Date.now());
           return publish(...args);
         });

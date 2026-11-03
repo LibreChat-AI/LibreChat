@@ -6,10 +6,18 @@ export * from './schema';
 export * from './utils';
 export { createModels } from './models';
 export { createResponseStorage, sameResponseTerminalReceipt } from './methods/response';
+export { responseReference } from './methods/responseRoot';
+export { createResponseCheckpointStorage } from './methods/responseCheckpoint';
+export type {
+  ResponseReference,
+  ResponseProviderExecution,
+  ResponseCheckpointExecution,
+} from './models/response';
 export type {
   ResponseOwner,
   ResponseStorage,
   ResponseExecutionGuard,
+  ResponseExecutionBinding,
   ResponseCleanupIdentity,
   ResponseReservation,
   ResponseReservationResult,

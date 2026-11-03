@@ -58,7 +58,7 @@ it('refuses a late command before any storage work can begin', async () => {
   expect(storage.settle).not.toHaveBeenCalled();
 });
 
-it('never authorizes a command after an ambiguous root-marker acknowledgment', async () => {
+it('fences an ambiguous root-marker acknowledgment without authorizing a command', async () => {
   const storage = {
     open: jest.fn(async () => {
       throw new Error('marker acknowledgment lost');
@@ -69,8 +69,8 @@ it('never authorizes a command after an ambiguous root-marker acknowledgment', a
   const command = jest.fn(async () => {});
   await expect(witness.track(command)).rejects.toThrow('marker acknowledgment lost');
   expect(command).not.toHaveBeenCalled();
-  expect(await witness.close()).toBe('unknown');
-  expect(storage.settle).not.toHaveBeenCalled();
+  expect(await witness.close()).toBe('settled');
+  expect(storage.settle).toHaveBeenCalledTimes(1);
 });
 
 it('propagates a failed settlement without retrying or clearing the durable marker', async () => {

@@ -261,7 +261,20 @@ export class AgentExecutionEnrollment {
     return this.settlement;
   }
 
-  /** Bind tracked persistence to this attempt; this witness is not terminal or drain authority. */
+  /** Stable attempt identity only; this does not authorize startup, persistence or drain. */
+  getEnrollmentIdentity(): {
+    generationCreatedAt: number;
+    providerExecutionId: string;
+    ownerId?: string;
+  } {
+    return {
+      generationCreatedAt: this.createdAt,
+      providerExecutionId: this.providerExecutionId,
+      ...(this.ownerId == null ? {} : { ownerId: this.ownerId }),
+    };
+  }
+
+  /** Provider startup and pause state additionally fence ordinary persistence. */
   getPersistenceIdentity(): {
     generationCreatedAt: number;
     providerExecutionId: string;
@@ -269,11 +282,7 @@ export class AgentExecutionEnrollment {
   } {
     if (!this.ownsSettlement || !this.providerStarted || this.pendingPause || this.isPaused)
       throw new Error('Agent persistence ownership is unavailable');
-    return {
-      generationCreatedAt: this.createdAt,
-      providerExecutionId: this.providerExecutionId,
-      ...(this.ownerId == null ? {} : { ownerId: this.ownerId }),
-    };
+    return this.getEnrollmentIdentity();
   }
 
   /** The journal may retain this proof after the generation's transient job expires. */
