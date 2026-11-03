@@ -101,6 +101,32 @@ describe('useScrollToRef lifecycle', () => {
     },
   );
 
+  it.each(scrollActions)(
+    'coalesces a burst of $label calls into one trailing call, as lodash throttle does',
+    ({ label, interval }) => {
+      const callback = jest.fn();
+      render(<Harness callback={callback} smoothCallback={callback} />, { wrapper: StrictMode });
+      screen.getByTestId('end').scrollIntoView = jest.fn();
+
+      fireEvent.click(screen.getByText(label));
+      fireEvent.click(screen.getByText(label));
+      fireEvent.click(screen.getByText(label));
+      fireEvent.click(screen.getByText(label));
+      expect(callback).toHaveBeenCalledTimes(1);
+
+      act(() => jest.advanceTimersByTime(interval));
+      expect(callback).toHaveBeenCalledTimes(2);
+
+      /** The trailing run opens a window of its own; with nothing queued in it, nothing more runs. */
+      act(() => jest.advanceTimersByTime(interval * 3));
+      expect(callback).toHaveBeenCalledTimes(2);
+
+      /** Once that window closes, the next call is a leading call again. */
+      fireEvent.click(screen.getByText(label));
+      expect(callback).toHaveBeenCalledTimes(3);
+    },
+  );
+
   it.each(scrollActions)('cancels queued $label work when the target ref changes', ({ label }) => {
     const callback = jest.fn();
     const previousRef = createRef<HTMLDivElement>();
