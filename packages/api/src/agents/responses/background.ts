@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { createManagedMessageId } from '@librechat/data-schemas';
 import type { ResponseOwner, ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
 import type { ResponsesRunEnvelope, JsonValue } from '../envelope';
 import type { ResponseCompletionRecord } from './completion';
@@ -193,7 +194,7 @@ export function createBackgroundResponseService(deps: BackgroundResponseDependen
         ...continuation,
         agentId: request.model,
         ...(sourceKeyId == null ? {} : { sourceKeyId }),
-        responseId: `resp_${randomUUID().replaceAll('-', '')}`,
+        responseId: createManagedMessageId(),
         requestKey: idempotencyKey ?? randomUUID(),
         fingerprint: createHash('sha256').update(requestJSON).digest('hex'),
         requestJSON,

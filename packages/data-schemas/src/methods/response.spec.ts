@@ -15,8 +15,15 @@ import {
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createConversationMethods } from './conversation';
 import { createConversationImportMethods } from './import';
+import { createManagedMessageId } from '~/utils/managed';
 import { createResponseStorage } from './response';
 import { createModels } from '~/models';
+
+const oneId = createManagedMessageId();
+const otherId = createManagedMessageId();
+const retryId = createManagedMessageId();
+const siblingId = createManagedMessageId();
+const pageResponseIds = Array.from({ length: 4 }, () => createManagedMessageId());
 
 let mongo: MongoMemoryReplSet;
 let storage: ResponseStorage;
@@ -29,7 +36,7 @@ async function executionGuard(responseId: string) {
 }
 const reservation = (overrides: Partial<ResponseReservation> = {}): ResponseReservation => ({
   ...owner,
-  responseId: 'resp_one',
+  responseId: oneId,
   requestKey: 'request-one',
   fingerprint: 'same-request',
   agentId: 'agent-one',
@@ -66,8 +73,8 @@ beforeEach(async () => {
 it('creates correctness indexes with autoIndex disabled and deduplicates concurrent requests', () =>
   scoped(async () => {
     const results = await Promise.all(
-      Array.from({ length: 12 }, (_, index) =>
-        storage.reserve(reservation({ responseId: `resp_${index}` })),
+      Array.from({ length: 12 }, () =>
+        storage.reserve(reservation({ responseId: createManagedMessageId() })),
       ),
     );
     expect(results.every((result) => result.ok)).toBe(true);
@@ -90,21 +97,21 @@ it('expires private reads and mutations immediately while retaining only cleanup
       ),
     ).toBe(false);
     await createResponseRetention(mongoose)(owner, 'conversation-one', new Date(Date.now() - 1));
-    expect(await storage.read(owner, 'resp_one')).toBeNull();
-    expect(await storage.requestCancellation(owner, 'resp_one', Date.now())).toBeNull();
-    expect(await storage.attachDelivery(owner, 'resp_one', 'late')).toEqual({
+    expect(await storage.read(owner, oneId)).toBeNull();
+    expect(await storage.requestCancellation(owner, oneId, Date.now())).toBeNull();
+    expect(await storage.attachDelivery(owner, oneId, 'late')).toEqual({
       ok: false,
       code: 'response_conflict',
     });
     expect(
-      await storage.publish(owner, 'resp_one', 0, {
+      await storage.publish(owner, oneId, 0, {
         status: 'in_progress',
         responseJSON: '{"late":"private"}',
         generationCreatedAt: 1,
       }),
     ).toEqual({ ok: false, code: 'response_conflict' });
-    const identity = await storage.readCleanupIdentity(owner, 'resp_one');
-    expect(identity).toMatchObject({ responseId: 'resp_one', userId: owner.userId });
+    const identity = await storage.readCleanupIdentity(owner, oneId);
+    expect(identity).toMatchObject({ responseId: oneId, userId: owner.userId });
     expect(JSON.stringify(identity)).not.toContain('Hello');
     expect(identity).not.toHaveProperty('requestJSON');
     expect(identity).not.toHaveProperty('responseJSON');
@@ -131,7 +138,7 @@ it('propagates conversation retention before parent persistence and never length
         endpoint: 'agents',
       },
     );
-    expect((await storage.read(owner, 'resp_one'))?.expiredAt).toEqual(deadline);
+    expect((await storage.read(owner, oneId))?.expiredAt).toEqual(deadline);
     await methods.saveConvo(
       { userId: owner.userId, expiredAt: new Date(Date.now() + 120_000) },
       {
@@ -139,7 +146,7 @@ it('propagates conversation retention before parent persistence and never length
         endpoint: 'agents',
       },
     );
-    expect((await storage.read(owner, 'resp_one'))?.expiredAt).toEqual(deadline);
+    expect((await storage.read(owner, oneId))?.expiredAt).toEqual(deadline);
     await createResponseRetention(mongoose)(owner, 'conversation-one', new Date(Date.now() - 1));
     expect(await storage.reserve(reservation({ requestKey: 'late' }))).toEqual({
       ok: false,
@@ -150,17 +157,17 @@ it('propagates conversation retention before parent persistence and never length
 it('applies newly resolved expiry to replay and sibling payloads in the reservation transaction', () =>
   scoped(async () => {
     await storage.reserve(reservation());
-    await storage.reserve(reservation({ responseId: 'resp_sibling', requestKey: 'sibling' }));
+    await storage.reserve(reservation({ responseId: siblingId, requestKey: 'sibling' }));
     const expiredAt = new Date(Date.now() + 60_000);
     const replay = await storage.reserve(reservation({ expiredAt }));
     expect(replay).toMatchObject({ ok: true, replayed: true, record: { expiredAt } });
-    expect((await storage.read(owner, 'resp_sibling'))?.expiredAt).toEqual(expiredAt);
+    expect((await storage.read(owner, siblingId))?.expiredAt).toEqual(expiredAt);
     expect(await storage.reserve(reservation({ expiredAt: new Date(Date.now() - 1) }))).toEqual({
       ok: false,
       code: 'response_unavailable',
     });
-    expect(await storage.read(owner, 'resp_one')).toBeNull();
-    expect(await storage.read(owner, 'resp_sibling')).toBeNull();
+    expect(await storage.read(owner, oneId)).toBeNull();
+    expect(await storage.read(owner, siblingId)).toBeNull();
   }));
 
 it('rejects changed input under the same idempotency key without replacing the original', () =>
@@ -169,7 +176,7 @@ it('rejects changed input under the same idempotency key without replacing the o
     expect(
       await storage.reserve(reservation({ fingerprint: 'changed', requestJSON: 'changed' })),
     ).toEqual({ ok: false, code: 'idempotency_conflict' });
-    expect((await storage.read(owner, 'resp_one'))?.fingerprint).toBe('same-request');
+    expect((await storage.read(owner, oneId))?.fingerprint).toBe('same-request');
   }));
 
 it('replays concurrent retries against the winning conversation rather than their fresh ids', () =>
@@ -178,7 +185,7 @@ it('replays concurrent retries against the winning conversation rather than thei
       Array.from({ length: 8 }, (_, index) =>
         storage.reserve(
           reservation({
-            responseId: `resp_${index}`,
+            responseId: createManagedMessageId(),
             conversationId: `conversation-${index}`,
           }),
         ),
@@ -191,12 +198,12 @@ it('replays concurrent retries against the winning conversation rather than thei
     expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(1);
   }));
 
-it('rolls back admission writes when insertion fails before commit', () =>
+it('fences a failed publication before returning its storage error', () =>
   scoped(async () => {
     jest
-      .spyOn(mongoose.models.StoredResponse.collection, 'insertOne')
-      .mockRejectedValueOnce(new Error('interrupted insertion'));
-    await expect(storage.reserve(reservation())).rejects.toThrow('interrupted insertion');
+      .spyOn(mongoose.models.StoredResponse.collection, 'findOneAndUpdate')
+      .mockRejectedValueOnce(new Error('interrupted publication'));
+    await expect(storage.reserve(reservation())).rejects.toThrow('interrupted publication');
     expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(0);
     const anchors = await mongoose.models.ResponseScope.find({}).lean();
     expect(anchors.every((anchor) => anchor.revision === 0)).toBe(true);
@@ -231,7 +238,7 @@ it('fences an authenticated delayed reservation before missing-root recovery pro
     methods.deleteConvos(authenticated.userId, { conversationId }, { allowEmpty: true }),
   );
   expect(delayedResult).toEqual({ ok: false, code: 'response_unavailable' });
-  expect(await storage.read(authenticated, 'resp_one')).toBeNull();
+  expect(await storage.read(authenticated, oneId)).toBeNull();
   await runAsSystem(() => mongoose.models.User.deleteOne({ _id: user._id }));
 });
 
@@ -242,18 +249,16 @@ it.each([undefined, ''])(
     await tenantStorage.run({ tenantId: '' }, async () => {
       const result = await storage.reserve(reservation(tenantless));
       expect(result.ok).toBe(true);
-      if (result.ok) expect(result.record.tenantId).toBe(tenantId);
-      expect(await storage.read({ userId: tenantless.userId }, 'resp_one')).not.toBeNull();
+      if (result.ok) expect(result.record.tenantId || undefined).toBe(tenantId || undefined);
+      expect(await storage.read({ userId: tenantless.userId }, oneId)).not.toBeNull();
       expect(
-        await storage.reserve(
-          reservation({ ...tenantless, tenantId: '', responseId: 'resp_retry' }),
-        ),
+        await storage.reserve(reservation({ ...tenantless, tenantId: '', responseId: retryId })),
       ).toMatchObject({ ok: true, replayed: true });
       await mongoose.models.StoredResponse.collection.updateOne(
-        { responseId: 'resp_one' },
+        { responseId: oneId },
         { $set: { tenantId: null } },
       );
-      expect(await storage.read({ ...tenantless, tenantId: '' }, 'resp_one')).not.toBeNull();
+      expect(await storage.read({ ...tenantless, tenantId: '' }, oneId)).not.toBeNull();
       await closeResponseScopes(mongoose, { ...tenantless, tenantId: '' });
       expect(
         await storage.reserve(
@@ -284,12 +289,14 @@ it('fences an in-flight response before import rollback deletes its conversation
       release = resolve;
     });
     const collection = mongoose.models.StoredResponse.collection;
-    const insert = collection.insertOne.bind(collection);
-    const paused = jest.spyOn(collection, 'insertOne').mockImplementationOnce(async (...args) => {
-      entered();
-      await gate;
-      return insert(...args);
-    });
+    const publish = collection.findOneAndUpdate.bind(collection);
+    const paused = jest
+      .spyOn(collection, 'findOneAndUpdate')
+      .mockImplementationOnce(async (...args) => {
+        entered();
+        await gate;
+        return publish(...args);
+      });
     const pending = storage.reserve(reservation());
     await started;
     const rollback = createConversationImportMethods(mongoose).deleteImportedConversations({
@@ -298,17 +305,18 @@ it('fences an in-flight response before import rollback deletes its conversation
       conversationIds: ['conversation-one'],
     });
     try {
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await rollback;
       expect(
         await mongoose.models.Conversation.exists({ conversationId: 'conversation-one' }),
-      ).not.toBeNull();
+      ).toBeNull();
     } finally {
       release();
       paused.mockRestore();
     }
-    expect((await pending).ok).toBe(true);
+    expect((await pending).ok).toBe(false);
     await rollback;
-    expect(await storage.read(owner, 'resp_one')).toBeNull();
+    expect(await mongoose.models.StoredResponse.countDocuments({ userId: owner.userId })).toBe(0);
+    expect(await storage.read(owner, oneId)).toBeNull();
     expect(
       await mongoose.models.Conversation.exists({ conversationId: 'conversation-one' }),
     ).toBeNull();
@@ -326,21 +334,21 @@ it('does not reveal or mutate a response belonging to another user or tenant', (
       { ...owner, tenantId: 'tenant-b' },
     ]) {
       await tenantStorage.run({ tenantId: stranger.tenantId }, async () => {
-        expect(await storage.read(stranger, 'resp_one')).toBeNull();
-        expect(await storage.attachDelivery(stranger, 'resp_one', 'delivery')).toEqual({
+        expect(await storage.read(stranger, oneId)).toBeNull();
+        expect(await storage.attachDelivery(stranger, oneId, 'delivery')).toEqual({
           ok: false,
           code: 'response_conflict',
         });
         expect(
-          await storage.publish(stranger, 'resp_one', 0, {
+          await storage.publish(stranger, oneId, 0, {
             status: 'completed',
             responseJSON: '{}',
           }),
         ).toEqual({ ok: false, code: 'response_conflict' });
-        expect(await storage.requestCancellation(stranger, 'resp_one', 100)).toBeNull();
+        expect(await storage.requestCancellation(stranger, oneId, 100)).toBeNull();
       });
     }
-    expect((await storage.read(owner, 'resp_one'))?.revision).toBe(0);
+    expect((await storage.read(owner, oneId))?.revision).toBe(0);
   }));
 
 it('rejects an explicit owner tenant that disagrees with authenticated async context', () =>
@@ -354,17 +362,17 @@ it('rejects an explicit owner tenant that disagrees with authenticated async con
 it('allows the same request key independently for another authenticated owner', () =>
   scoped(async () => {
     expect((await storage.reserve(reservation())).ok).toBe(true);
-    expect(
-      (await storage.reserve(reservation({ userId: 'other', responseId: 'resp_other' }))).ok,
-    ).toBe(true);
+    expect((await storage.reserve(reservation({ userId: 'other', responseId: otherId }))).ok).toBe(
+      true,
+    );
   }));
 
 it('attaches only one immutable queue delivery identity', () =>
   scoped(async () => {
     await storage.reserve(reservation());
-    expect((await storage.attachDelivery(owner, 'resp_one', 'delivery')).ok).toBe(true);
-    expect((await storage.attachDelivery(owner, 'resp_one', 'delivery')).ok).toBe(true);
-    expect(await storage.attachDelivery(owner, 'resp_one', 'different')).toEqual({
+    expect((await storage.attachDelivery(owner, oneId, 'delivery')).ok).toBe(true);
+    expect((await storage.attachDelivery(owner, oneId, 'delivery')).ok).toBe(true);
+    expect(await storage.attachDelivery(owner, oneId, 'different')).toEqual({
       ok: false,
       code: 'response_conflict',
     });
@@ -375,21 +383,21 @@ it('CAS-publishes one terminal result and never allows a stale observer to clobb
     await storage.reserve(reservation());
     const results = await Promise.all(
       ['completed', 'cancelled'].map((status) =>
-        storage.publish(owner, 'resp_one', 0, {
+        storage.publish(owner, oneId, 0, {
           status: status as 'completed' | 'cancelled',
           responseJSON: status,
         }),
       ),
     );
     expect(results.filter((result) => result.ok)).toHaveLength(1);
-    const record = (await storage.read(owner, 'resp_one'))!;
+    const record = (await storage.read(owner, oneId))!;
     expect(
-      await storage.publish(owner, 'resp_one', record.revision, {
+      await storage.publish(owner, oneId, record.revision, {
         status: 'in_progress',
         responseJSON: 'stale',
       }),
     ).toEqual({ ok: false, code: 'response_conflict' });
-    expect((await storage.read(owner, 'resp_one'))?.responseJSON).toBe(record.responseJSON);
+    expect((await storage.read(owner, oneId))?.responseJSON).toBe(record.responseJSON);
   }));
 
 it('rejects a replacement generation and backwards queued transitions', () =>
@@ -397,7 +405,7 @@ it('rejects a replacement generation and backwards queued transitions', () =>
     await storage.reserve(reservation());
     expect(
       (
-        await storage.publish(owner, 'resp_one', 0, {
+        await storage.publish(owner, oneId, 0, {
           status: 'in_progress',
           responseJSON: '{}',
           generationCreatedAt: 10,
@@ -405,31 +413,31 @@ it('rejects a replacement generation and backwards queued transitions', () =>
       ).ok,
     ).toBe(true);
     expect(
-      await storage.publish(owner, 'resp_one', 1, {
+      await storage.publish(owner, oneId, 1, {
         status: 'completed',
         responseJSON: '{}',
         generationCreatedAt: 20,
       }),
     ).toEqual({ ok: false, code: 'response_conflict' });
     expect(
-      await storage.publish(owner, 'resp_one', 1, { status: 'queued', responseJSON: '{}' }),
+      await storage.publish(owner, oneId, 1, { status: 'queued', responseJSON: '{}' }),
     ).toEqual({ ok: false, code: 'response_conflict' });
   }));
 
 it('persists cancellation intent once without claiming the provider has stopped', () =>
   scoped(async () => {
     await storage.reserve(reservation());
-    await storage.requestCancellation(owner, 'resp_one', 100);
-    const record = await storage.requestCancellation(owner, 'resp_one', 200);
+    await storage.requestCancellation(owner, oneId, 100);
+    const record = await storage.requestCancellation(owner, oneId, 200);
     expect(record).toMatchObject({ status: 'queued', cancellationRequestedAt: 100, revision: 0 });
   }));
 
 it('rejects queued execution after cancellation without relying on a revision change', () =>
   scoped(async () => {
     await storage.reserve(reservation());
-    await storage.requestCancellation(owner, 'resp_one', 100);
+    await storage.requestCancellation(owner, oneId, 100);
     expect(
-      await storage.publish(owner, 'resp_one', 0, {
+      await storage.publish(owner, oneId, 0, {
         status: 'in_progress',
         generationCreatedAt: 10,
         responseJSON: '{}',
@@ -441,11 +449,11 @@ it('requires a usable initial generation and permits subsequent progress without
   scoped(async () => {
     await storage.reserve(reservation());
     expect(
-      await storage.publish(owner, 'resp_one', 0, { status: 'in_progress', responseJSON: '{}' }),
+      await storage.publish(owner, oneId, 0, { status: 'in_progress', responseJSON: '{}' }),
     ).toEqual({ ok: false, code: 'response_conflict' });
     for (const generationCreatedAt of [0, -1, NaN, Infinity, 1.5])
       await expect(
-        storage.publish(owner, 'resp_one', 0, {
+        storage.publish(owner, oneId, 0, {
           status: 'in_progress',
           generationCreatedAt,
           responseJSON: '{}',
@@ -453,17 +461,17 @@ it('requires a usable initial generation and permits subsequent progress without
       ).rejects.toThrow('Invalid response generation identity');
     expect(
       (
-        await storage.publish(owner, 'resp_one', 0, {
+        await storage.publish(owner, oneId, 0, {
           status: 'in_progress',
           generationCreatedAt: 10,
           responseJSON: '{}',
         })
       ).ok,
     ).toBe(true);
-    await storage.requestCancellation(owner, 'resp_one', 100);
+    await storage.requestCancellation(owner, oneId, 100);
     expect(
       (
-        await storage.publish(owner, 'resp_one', 1, {
+        await storage.publish(owner, oneId, 1, {
           status: 'in_progress',
           responseJSON: '{"progress":true}',
         })
@@ -474,9 +482,9 @@ it('requires a usable initial generation and permits subsequent progress without
 it('does not add cancellation intent to an already completed response', () =>
   scoped(async () => {
     await storage.reserve(reservation());
-    await storage.publish(owner, 'resp_one', 0, { status: 'completed', responseJSON: '{}' });
+    await storage.publish(owner, oneId, 0, { status: 'completed', responseJSON: '{}' });
     expect(
-      (await storage.requestCancellation(owner, 'resp_one', 100))?.cancellationRequestedAt,
+      (await storage.requestCancellation(owner, oneId, 100))?.cancellationRequestedAt,
     ).toBeUndefined();
   }));
 
@@ -499,7 +507,7 @@ const resume = (overrides: Partial<ResponseResumeReservation> = {}): ResponseRes
 
 async function pause() {
   await storage.reserve(reservation());
-  const started = await storage.publish(owner, 'resp_one', 0, {
+  const started = await storage.publish(owner, oneId, 0, {
     status: 'in_progress',
     responseJSON: '{}',
     generationCreatedAt: 10,
@@ -507,8 +515,8 @@ async function pause() {
   expect(started.ok).toBe(true);
   const paused = await storage.publishReview(
     owner,
-    'resp_one',
-    await executionGuard('resp_one'),
+    oneId,
+    await executionGuard(oneId),
     10,
     review,
     '{"status":"requires_action"}',
@@ -521,8 +529,8 @@ it('retains a valid private visible-token seed and rejects fractional, negative 
     await runningForReview();
     const result = await storage.publishReview(
       owner,
-      'resp_one',
-      await executionGuard('resp_one'),
+      oneId,
+      await executionGuard(oneId),
       10,
       { ...review, visibleOutputTokens: 13 },
       '{"status":"requires_action"}',
@@ -534,14 +542,14 @@ it('retains a valid private visible-token seed and rejects fractional, negative 
       await expect(
         storage.publishReview(
           owner,
-          'resp_one',
-          await executionGuard('resp_one'),
+          oneId,
+          await executionGuard(oneId),
           10,
           { ...review, visibleOutputTokens },
           '{}',
         ),
       ).resolves.toEqual({ ok: false, code: 'response_conflict' });
-    expect((await storage.read(owner, 'resp_one'))?.review?.visibleOutputTokens).toBe(13);
+    expect((await storage.read(owner, oneId))?.review?.visibleOutputTokens).toBe(13);
   }));
 
 it('persists one immutable resume decision under concurrent equivalent retries', () =>
@@ -551,7 +559,7 @@ it('persists one immutable resume decision under concurrent equivalent retries',
       Array.from({ length: 12 }, (_, index) =>
         storage.reserveResume(
           owner,
-          'resp_one',
+          oneId,
           resume({
             intentId: `intent-${index}`,
             providerExecutionId: `next-${index}`,
@@ -569,12 +577,12 @@ it('persists one immutable resume decision under concurrent equivalent retries',
     expect(
       await storage.reserveResume(
         owner,
-        'resp_one',
+        oneId,
         resume({ resolutionJSON: '{"approved":false}' }),
         100,
       ),
     ).toEqual({ ok: false, code: 'resume_conflict' });
-    const stored = (await storage.read(owner, 'resp_one'))!;
+    const stored = (await storage.read(owner, oneId))!;
     expect(stored.requestJSON).toBe(reservation().requestJSON);
     expect(stored.review).toEqual(review);
     expect(stored.revision).toBe(3);
@@ -584,22 +592,17 @@ it('retains the original wire decision and does not conflate different scopes wi
   scoped(async () => {
     await pause();
     expect(
-      await storage.reserveResume(
-        owner,
-        'resp_one',
-        resume({ decisionJSON: '{"scope":"once"}' }),
-        500,
-      ),
+      await storage.reserveResume(owner, oneId, resume({ decisionJSON: '{"scope":"once"}' }), 500),
     ).toMatchObject({ ok: true, record: { resume: { decisionJSON: '{"scope":"once"}' } } });
     expect(
       await storage.reserveResume(
         owner,
-        'resp_one',
+        oneId,
         resume({ decisionJSON: '{"scope":"session"}' }),
         500,
       ),
     ).toMatchObject({ ok: false, code: 'resume_conflict' });
-    expect((await storage.read(owner, 'resp_one'))!.resume?.decisionJSON).toBe('{"scope":"once"}');
+    expect((await storage.read(owner, oneId))!.resume?.decisionJSON).toBe('{"scope":"once"}');
   }));
 
 it('rejects expired, wrong-action, wrong-generation and wrong-provider decisions', () =>
@@ -608,7 +611,7 @@ it('rejects expired, wrong-action, wrong-generation and wrong-provider decisions
     await expect(
       storage.reserveResume(
         owner,
-        'resp_one',
+        oneId,
         resume({
           providerExecutionId: review.providerExecutionId,
         }),
@@ -620,16 +623,16 @@ it('rejects expired, wrong-action, wrong-generation and wrong-provider decisions
       { generationCreatedAt: 11 },
       { previousProviderExecutionId: 'other' },
     ]) {
-      expect(await storage.reserveResume(owner, 'resp_one', resume(overrides), 100)).toEqual({
+      expect(await storage.reserveResume(owner, oneId, resume(overrides), 100)).toEqual({
         ok: false,
         code: 'resume_conflict',
       });
     }
-    expect(await storage.reserveResume(owner, 'resp_one', resume(), review.expiresAt)).toEqual({
+    expect(await storage.reserveResume(owner, oneId, resume(), review.expiresAt)).toEqual({
       ok: false,
       code: 'resume_conflict',
     });
-    expect((await storage.read(owner, 'resp_one'))?.resume).toBeUndefined();
+    expect((await storage.read(owner, oneId))?.resume).toBeUndefined();
   }));
 
 it('keeps review and resume mutations owner- and tenant-scoped', () =>
@@ -643,8 +646,8 @@ it('keeps review and resume mutations owner- and tenant-scoped', () =>
         expect(
           await storage.publishReview(
             stranger,
-            'resp_one',
-            await executionGuard('resp_one'),
+            oneId,
+            await executionGuard(oneId),
             10,
             review,
             '{}',
@@ -653,102 +656,61 @@ it('keeps review and resume mutations owner- and tenant-scoped', () =>
           ok: false,
           code: 'response_conflict',
         });
-        expect(await storage.reserveResume(stranger, 'resp_one', resume(), 100)).toEqual({
+        expect(await storage.reserveResume(stranger, oneId, resume(), 100)).toEqual({
           ok: false,
           code: 'resume_conflict',
         });
         expect(
-          await storage.admitResume(
-            stranger,
-            'resp_one',
-            'intent-one',
-            10,
-            'provider-two',
-            '{}',
-            100,
-          ),
+          await storage.admitResume(stranger, oneId, 'intent-one', 10, 'provider-two', '{}', 100),
         ).toEqual({ ok: false, code: 'response_conflict' });
       });
     }
-    expect((await storage.read(owner, 'resp_one'))?.revision).toBe(2);
+    expect((await storage.read(owner, oneId))?.revision).toBe(2);
   }));
 
 it('fences late pause callbacks and allows only the admitted next segment to pause again', () =>
   scoped(async () => {
     await pause();
-    await storage.reserveResume(owner, 'resp_one', resume(), 100);
+    await storage.reserveResume(owner, oneId, resume(), 100);
     expect(
-      await storage.publishReview(
-        owner,
-        'resp_one',
-        await executionGuard('resp_one'),
-        10,
-        review,
-        '{}',
-      ),
+      await storage.publishReview(owner, oneId, await executionGuard(oneId), 10, review, '{}'),
     ).toEqual({
       ok: false,
       code: 'response_conflict',
     });
     expect(
-      await storage.admitResume(owner, 'resp_one', 'intent-one', 10, 'wrong-provider', '{}', 101),
+      await storage.admitResume(owner, oneId, 'intent-one', 10, 'wrong-provider', '{}', 101),
     ).toEqual({ ok: false, code: 'response_conflict' });
     expect(
-      (await storage.admitResume(owner, 'resp_one', 'intent-one', 10, 'provider-two', '{}', 101))
-        .ok,
+      (await storage.admitResume(owner, oneId, 'intent-one', 10, 'provider-two', '{}', 101)).ok,
     ).toBe(true);
-    const admitted = (await storage.read(owner, 'resp_one'))!;
+    const admitted = (await storage.read(owner, oneId))!;
     expect(admitted).toMatchObject({
       status: 'in_progress',
       revision: 4,
       resume: { state: 'admitted', admittedAt: 101 },
     });
     expect(
-      (
-        await storage.admitResume(
-          owner,
-          'resp_one',
-          'intent-one',
-          10,
-          'provider-two',
-          'ignored',
-          102,
-        )
-      ).ok,
+      (await storage.admitResume(owner, oneId, 'intent-one', 10, 'provider-two', 'ignored', 102))
+        .ok,
     ).toBe(true);
     expect(
-      await storage.publishReview(
-        owner,
-        'resp_one',
-        await executionGuard('resp_one'),
-        10,
-        review,
-        '{}',
-      ),
+      await storage.publishReview(owner, oneId, await executionGuard(oneId), 10, review, '{}'),
     ).toEqual({
       ok: false,
       code: 'response_conflict',
     });
     const next = { ...review, actionId: 'action-two', providerExecutionId: 'provider-two' };
     expect(
-      (
-        await storage.publishReview(
-          owner,
-          'resp_one',
-          await executionGuard('resp_one'),
-          10,
-          next,
-          '{}',
-        )
-      ).ok,
+      (await storage.publishReview(owner, oneId, await executionGuard(oneId), 10, next, '{}')).ok,
     ).toBe(true);
-    expect(await storage.read(owner, 'resp_one')).toMatchObject({
+    expect(await storage.read(owner, oneId)).toMatchObject({
       status: 'requires_action',
       review: next,
       revision: 5,
     });
-    expect((await storage.read(owner, 'resp_one'))?.resume).toBeUndefined();
-    expect(await storage.reserveResume(owner, 'resp_one', resume(), 103)).toEqual({
+    expect((await storage.read(owner, oneId))?.resume).toBeUndefined();
+    expect(await storage.reserveResume(owner, oneId, resume(), 103)).toEqual({
       ok: false,
       code: 'resume_conflict',
     });
@@ -757,25 +719,18 @@ it('fences late pause callbacks and allows only the admitted next segment to pau
 it('cancellation prevents a reserved decision from admitting execution', () =>
   scoped(async () => {
     await pause();
-    await storage.reserveResume(owner, 'resp_one', resume(), 100);
-    await storage.requestCancellation(owner, 'resp_one', 101);
+    await storage.reserveResume(owner, oneId, resume(), 100);
+    await storage.requestCancellation(owner, oneId, 101);
     expect(
-      await storage.admitResume(owner, 'resp_one', 'intent-one', 10, 'provider-two', '{}', 102),
+      await storage.admitResume(owner, oneId, 'intent-one', 10, 'provider-two', '{}', 102),
     ).toEqual({ ok: false, code: 'response_conflict' });
     expect(
-      await storage.publishReview(
-        owner,
-        'resp_one',
-        await executionGuard('resp_one'),
-        10,
-        review,
-        '{}',
-      ),
+      await storage.publishReview(owner, oneId, await executionGuard(oneId), 10, review, '{}'),
     ).toEqual({
       ok: false,
       code: 'response_conflict',
     });
-    expect(await storage.reserveResume(owner, 'resp_one', resume(), 103)).toMatchObject({
+    expect(await storage.reserveResume(owner, oneId, resume(), 103)).toMatchObject({
       ok: true,
       replayed: true,
       record: { status: 'requires_action', cancellationRequestedAt: 101 },
@@ -785,27 +740,20 @@ it('cancellation prevents a reserved decision from admitting execution', () =>
 it('does not admit or repause terminal responses but retains the identical decision receipt', () =>
   scoped(async () => {
     await pause();
-    await storage.reserveResume(owner, 'resp_one', resume(), 100);
+    await storage.reserveResume(owner, oneId, resume(), 100);
     expect(
-      (await storage.publish(owner, 'resp_one', 3, { status: 'cancelled', responseJSON: '{}' })).ok,
+      (await storage.publish(owner, oneId, 3, { status: 'cancelled', responseJSON: '{}' })).ok,
     ).toBe(true);
     expect(
-      await storage.admitResume(owner, 'resp_one', 'intent-one', 10, 'provider-two', '{}', 102),
+      await storage.admitResume(owner, oneId, 'intent-one', 10, 'provider-two', '{}', 102),
     ).toEqual({ ok: false, code: 'response_conflict' });
     expect(
-      await storage.publishReview(
-        owner,
-        'resp_one',
-        await executionGuard('resp_one'),
-        10,
-        review,
-        '{}',
-      ),
+      await storage.publishReview(owner, oneId, await executionGuard(oneId), 10, review, '{}'),
     ).toEqual({
       ok: false,
       code: 'response_conflict',
     });
-    expect(await storage.reserveResume(owner, 'resp_one', resume(), 103)).toMatchObject({
+    expect(await storage.reserveResume(owner, oneId, resume(), 103)).toMatchObject({
       ok: true,
       replayed: true,
       record: { status: 'cancelled', revision: 4 },
@@ -824,7 +772,7 @@ const outcome: ResponseTerminalReceipt = {
 it('prepares one immutable result privately and moves it atomically into the confirmed journal', () =>
   scoped(async () => {
     await storage.reserve(reservation());
-    const running = await storage.publish(owner, 'resp_one', 0, {
+    const running = await storage.publish(owner, oneId, 0, {
       status: 'in_progress',
       generationCreatedAt: 10,
       responseJSON: '{"progress":true}',
@@ -832,11 +780,11 @@ it('prepares one immutable result privately and moves it atomically into the con
     if (!running.ok) throw new Error('Publication failed');
     const attempts = await Promise.all(
       Array.from({ length: 8 }, () =>
-        storage.prepareTerminal(owner, 'resp_one', { execution: running.record }, outcome),
+        storage.prepareTerminal(owner, oneId, { execution: running.record }, outcome),
       ),
     );
     expect(attempts.every((result) => result.ok)).toBe(true);
-    const prepared = (await storage.read(owner, 'resp_one'))!;
+    const prepared = (await storage.read(owner, oneId))!;
     expect(prepared).toMatchObject({
       status: 'in_progress',
       responseJSON: '{"progress":true}',
@@ -846,7 +794,7 @@ it('prepares one immutable result privately and moves it atomically into the con
     expect(
       await storage.prepareTerminal(
         owner,
-        'resp_one',
+        oneId,
         { execution: prepared },
         {
           ...outcome,
@@ -855,34 +803,31 @@ it('prepares one immutable result privately and moves it atomically into the con
       ),
     ).toEqual({ ok: false, code: 'response_conflict' });
     expect(
-      await storage.publish(owner, 'resp_one', prepared.revision, {
+      await storage.publish(owner, oneId, prepared.revision, {
         status: 'completed',
         responseJSON: 'unconfirmed',
       }),
     ).toEqual({ ok: false, code: 'response_conflict' });
-    expect(
-      await storage.stageTerminal(owner, 'resp_one', { execution: prepared }, outcome),
-    ).toEqual({ ok: false, code: 'response_conflict' });
-    const promoted = await storage.stageTerminal(
-      owner,
-      'resp_one',
-      { execution: prepared },
-      outcome,
-      { receipt: outcome },
-    );
+    expect(await storage.stageTerminal(owner, oneId, { execution: prepared }, outcome)).toEqual({
+      ok: false,
+      code: 'response_conflict',
+    });
+    const promoted = await storage.stageTerminal(owner, oneId, { execution: prepared }, outcome, {
+      receipt: outcome,
+    });
     expect(promoted.ok).toBe(true);
     if (!promoted.ok) throw new Error('Promotion failed');
     expect(promoted.record.preparedTerminal).toBeUndefined();
     expect(promoted.record.pendingTerminal).toEqual(outcome);
-    expect(
-      (await storage.finishTerminal(owner, 'resp_one', promoted.record.revision, outcome)).ok,
-    ).toBe(true);
+    expect((await storage.finishTerminal(owner, oneId, promoted.record.revision, outcome)).ok).toBe(
+      true,
+    );
   }));
 
 it('fences a racing Stop when promoting a prepared success without projection-revision retries', () =>
   scoped(async () => {
     await storage.reserve(reservation());
-    const running = await storage.publish(owner, 'resp_one', 0, {
+    const running = await storage.publish(owner, oneId, 0, {
       status: 'in_progress',
       generationCreatedAt: 10,
       responseJSON: '{}',
@@ -890,14 +835,14 @@ it('fences a racing Stop when promoting a prepared success without projection-re
     if (!running.ok) throw new Error('Publication failed');
     const prepared = await storage.prepareTerminal(
       owner,
-      'resp_one',
+      oneId,
       { execution: running.record },
       outcome,
     );
     if (!prepared.ok) throw new Error('Preparation failed');
-    const stopped = (await storage.requestCancellation(owner, 'resp_one', 100))!;
+    const stopped = (await storage.requestCancellation(owner, oneId, 100))!;
     expect(
-      await storage.stageTerminal(owner, 'resp_one', { execution: prepared.record }, outcome, {
+      await storage.stageTerminal(owner, oneId, { execution: prepared.record }, outcome, {
         receipt: outcome,
       }),
     ).toEqual({ ok: false, code: 'response_conflict' });
@@ -906,33 +851,30 @@ it('fences a racing Stop when promoting a prepared success without projection-re
       status: 'cancelled' as const,
       responseJSON: '{"cancelled":true}',
     };
-    const promoted = await storage.stageTerminal(
-      owner,
-      'resp_one',
-      { execution: stopped },
-      cancelled,
-      { receipt: outcome, cancellationRequestedAt: stopped.cancellationRequestedAt },
-    );
+    const promoted = await storage.stageTerminal(owner, oneId, { execution: stopped }, cancelled, {
+      receipt: outcome,
+      cancellationRequestedAt: stopped.cancellationRequestedAt,
+    });
     expect(promoted.ok).toBe(true);
     if (!promoted.ok) throw new Error('Promotion failed');
     expect(
-      (await storage.finishTerminal(owner, 'resp_one', promoted.record.revision, cancelled)).ok,
+      (await storage.finishTerminal(owner, oneId, promoted.record.revision, cancelled)).ok,
     ).toBe(true);
-    expect((await storage.read(owner, 'resp_one'))?.status).toBe('cancelled');
+    expect((await storage.read(owner, oneId))?.status).toBe('cancelled');
   }));
 
 it('retains only a prepared checkpoint binding for expired cleanup and erases the entire candidate', () =>
   scoped(async () => {
     await storage.reserve(reservation());
-    const running = await storage.publish(owner, 'resp_one', 0, {
+    const running = await storage.publish(owner, oneId, 0, {
       status: 'in_progress',
       generationCreatedAt: 10,
       responseJSON: '{}',
     });
     if (!running.ok) throw new Error('Publication failed');
-    await storage.prepareTerminal(owner, 'resp_one', { execution: running.record }, outcome);
+    await storage.prepareTerminal(owner, oneId, { execution: running.record }, outcome);
     await createResponseRetention(mongoose)(owner, 'conversation-one', new Date(0));
-    const identity = await storage.readCleanupIdentity(owner, 'resp_one');
+    const identity = await storage.readCleanupIdentity(owner, oneId);
     expect(identity).toMatchObject({
       retirement: 'expired',
       checkpointNamespace: outcome.checkpointNamespace,
@@ -946,84 +888,73 @@ it('retains only a prepared checkpoint binding for expired cleanup and erases th
 it('stages an initial terminal receipt without requiring a review or resume', () =>
   scoped(async () => {
     await storage.reserve(reservation());
-    await storage.publish(owner, 'resp_one', 0, {
+    await storage.publish(owner, oneId, 0, {
       status: 'in_progress',
       responseJSON: '{}',
       generationCreatedAt: 10,
     });
     expect(
-      (await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), outcome))
-        .ok,
+      (await storage.stageTerminal(owner, oneId, await executionGuard(oneId), outcome)).ok,
     ).toBe(true);
-    expect((await storage.finishTerminal(owner, 'resp_one', 2, outcome)).ok).toBe(true);
+    expect((await storage.finishTerminal(owner, oneId, 2, outcome)).ok).toBe(true);
   }));
 
 it('stages the admitted provider terminal receipt without requiring another review', () =>
   scoped(async () => {
     await pause();
-    await storage.reserveResume(owner, 'resp_one', resume(), 100);
-    await storage.admitResume(owner, 'resp_one', 'intent-one', 10, 'provider-two', '{}', 101);
+    await storage.reserveResume(owner, oneId, resume(), 100);
+    await storage.admitResume(owner, oneId, 'intent-one', 10, 'provider-two', '{}', 101);
     const current = { ...outcome, providerExecutionId: 'provider-two' };
     expect(
-      (await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), current))
-        .ok,
+      (await storage.stageTerminal(owner, oneId, await executionGuard(oneId), current)).ok,
     ).toBe(true);
-    expect((await storage.finishTerminal(owner, 'resp_one', 5, current)).ok).toBe(true);
+    expect((await storage.finishTerminal(owner, oneId, 5, current)).ok).toBe(true);
   }));
 
 it('keeps a paused response behind resume admission even with its latest revision', () =>
   scoped(async () => {
     await pause();
     expect(
-      await storage.publish(owner, 'resp_one', 2, {
+      await storage.publish(owner, oneId, 2, {
         status: 'in_progress',
         responseJSON: '{}',
       }),
     ).toEqual({ ok: false, code: 'response_conflict' });
-    expect(await storage.read(owner, 'resp_one')).toMatchObject({
+    expect(await storage.read(owner, oneId)).toMatchObject({
       status: 'requires_action',
       revision: 2,
       review,
     });
-    expect((await storage.reserveResume(owner, 'resp_one', resume(), 100)).ok).toBe(true);
+    expect((await storage.reserveResume(owner, oneId, resume(), 100)).ok).toBe(true);
     expect(
-      (await storage.admitResume(owner, 'resp_one', 'intent-one', 10, 'provider-two', '{}', 101))
-        .ok,
+      (await storage.admitResume(owner, oneId, 'intent-one', 10, 'provider-two', '{}', 101)).ok,
     ).toBe(true);
   }));
 
 it('rejects terminal receipts from an earlier segment after resume admission and a later pause', () =>
   scoped(async () => {
     await pause();
-    await storage.reserveResume(owner, 'resp_one', resume(), 100);
-    await storage.admitResume(owner, 'resp_one', 'intent-one', 10, 'provider-two', '{}', 101);
-    expect(
-      await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), outcome),
-    ).toEqual({
-      ok: false,
-      code: 'response_conflict',
-    });
-    const next = { ...review, actionId: 'action-two', providerExecutionId: 'provider-two' };
-    await storage.publishReview(
-      owner,
-      'resp_one',
-      await executionGuard('resp_one'),
-      10,
-      next,
-      '{}',
+    await storage.reserveResume(owner, oneId, resume(), 100);
+    await storage.admitResume(owner, oneId, 'intent-one', 10, 'provider-two', '{}', 101);
+    expect(await storage.stageTerminal(owner, oneId, await executionGuard(oneId), outcome)).toEqual(
+      {
+        ok: false,
+        code: 'response_conflict',
+      },
     );
-    expect(
-      await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), outcome),
-    ).toEqual({
-      ok: false,
-      code: 'response_conflict',
-    });
+    const next = { ...review, actionId: 'action-two', providerExecutionId: 'provider-two' };
+    await storage.publishReview(owner, oneId, await executionGuard(oneId), 10, next, '{}');
+    expect(await storage.stageTerminal(owner, oneId, await executionGuard(oneId), outcome)).toEqual(
+      {
+        ok: false,
+        code: 'response_conflict',
+      },
+    );
     const current = { ...outcome, providerExecutionId: 'provider-two' };
     expect(
-      (await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), current))
-        .ok,
+      (await storage.stageTerminal(owner, oneId, await executionGuard(oneId), current)).ok,
     ).toBe(true);
-    expect((await storage.finishTerminal(owner, 'resp_one', 6, current)).ok).toBe(true);
+    expect((await storage.finishTerminal(owner, oneId, 6, current)).ok).toBe(true);
   }));
 
 it('durably stages one immutable terminal receipt while keeping its output private', () =>
@@ -1031,11 +962,11 @@ it('durably stages one immutable terminal receipt while keeping its output priva
     await pause();
     const results = await Promise.all(
       Array.from({ length: 12 }, async () =>
-        storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), outcome),
+        storage.stageTerminal(owner, oneId, await executionGuard(oneId), outcome),
       ),
     );
     expect(results.every((result) => result.ok)).toBe(true);
-    const record = (await storage.read(owner, 'resp_one'))!;
+    const record = (await storage.read(owner, oneId))!;
     expect(record).toMatchObject({
       status: 'requires_action',
       revision: 3,
@@ -1043,13 +974,13 @@ it('durably stages one immutable terminal receipt while keeping its output priva
     });
     expect(record.responseJSON).not.toContain('private until cleanup');
     expect(
-      await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), {
+      await storage.stageTerminal(owner, oneId, await executionGuard(oneId), {
         ...outcome,
         status: 'failed',
       }),
     ).toEqual({ ok: false, code: 'response_conflict' });
     expect(
-      await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), {
+      await storage.stageTerminal(owner, oneId, await executionGuard(oneId), {
         ...outcome,
         ownerId: 'other-worker',
       }),
@@ -1059,39 +990,32 @@ it('durably stages one immutable terminal receipt while keeping its output priva
 it('prevents Stop, review and resume writes from overwriting a staged terminal outcome', () =>
   scoped(async () => {
     await pause();
-    await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), outcome);
+    await storage.stageTerminal(owner, oneId, await executionGuard(oneId), outcome);
     expect(
-      await storage.publish(owner, 'resp_one', 3, {
+      await storage.publish(owner, oneId, 3, {
         status: 'cancelled',
         responseJSON: 'overwrite',
       }),
     ).toEqual({ ok: false, code: 'response_conflict' });
     expect(
-      await storage.publishReview(
-        owner,
-        'resp_one',
-        await executionGuard('resp_one'),
-        10,
-        review,
-        '{}',
-      ),
+      await storage.publishReview(owner, oneId, await executionGuard(oneId), 10, review, '{}'),
     ).toEqual({
       ok: false,
       code: 'response_conflict',
     });
-    expect(await storage.reserveResume(owner, 'resp_one', resume(), 100)).toEqual({
+    expect(await storage.reserveResume(owner, oneId, resume(), 100)).toEqual({
       ok: false,
       code: 'resume_conflict',
     });
     expect(
-      (await storage.requestCancellation(owner, 'resp_one', 100))?.cancellationRequestedAt,
+      (await storage.requestCancellation(owner, oneId, 100))?.cancellationRequestedAt,
     ).toBeUndefined();
   }));
 
 it('publishes only the exact saved receipt and removes it atomically with terminal publication', () =>
   scoped(async () => {
     await pause();
-    await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), outcome);
+    await storage.stageTerminal(owner, oneId, await executionGuard(oneId), outcome);
     for (const changed of [
       { ownerId: 'other' },
       { checkpointNamespace: 'other' },
@@ -1100,53 +1024,49 @@ it('publishes only the exact saved receipt and removes it atomically with termin
       { responseJSON: 'other' },
       { providerExecutionId: 'other' },
     ]) {
-      expect(
-        await storage.finishTerminal(owner, 'resp_one', 3, { ...outcome, ...changed }),
-      ).toEqual({ ok: false, code: 'response_conflict' });
+      expect(await storage.finishTerminal(owner, oneId, 3, { ...outcome, ...changed })).toEqual({
+        ok: false,
+        code: 'response_conflict',
+      });
     }
-    expect((await storage.finishTerminal(owner, 'resp_one', 3, outcome)).ok).toBe(true);
-    const record = (await storage.read(owner, 'resp_one'))!;
+    expect((await storage.finishTerminal(owner, oneId, 3, outcome)).ok).toBe(true);
+    const record = (await storage.read(owner, oneId))!;
     expect(record).toMatchObject({
       status: 'completed',
       responseJSON: outcome.responseJSON,
       revision: 4,
     });
     expect(record.pendingTerminal).toBeUndefined();
-    expect(
-      await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), outcome),
-    ).toEqual({
-      ok: false,
-      code: 'response_conflict',
-    });
+    expect(await storage.stageTerminal(owner, oneId, await executionGuard(oneId), outcome)).toEqual(
+      {
+        ok: false,
+        code: 'response_conflict',
+      },
+    );
   }));
 
 it('does not stage or publish another user or tenant terminal result', () =>
   scoped(async () => {
     await pause();
-    await storage.stageTerminal(owner, 'resp_one', await executionGuard('resp_one'), outcome);
+    await storage.stageTerminal(owner, oneId, await executionGuard(oneId), outcome);
     for (const stranger of [
       { ...owner, userId: 'other' },
       { ...owner, tenantId: 'other' },
     ]) {
       await tenantStorage.run({ tenantId: stranger.tenantId }, async () => {
         expect(
-          await storage.stageTerminal(
-            stranger,
-            'resp_one',
-            await executionGuard('resp_one'),
-            outcome,
-          ),
+          await storage.stageTerminal(stranger, oneId, await executionGuard(oneId), outcome),
         ).toEqual({
           ok: false,
           code: 'response_conflict',
         });
-        expect(await storage.finishTerminal(stranger, 'resp_one', 3, outcome)).toEqual({
+        expect(await storage.finishTerminal(stranger, oneId, 3, outcome)).toEqual({
           ok: false,
           code: 'response_conflict',
         });
       });
     }
-    expect((await storage.read(owner, 'resp_one'))?.revision).toBe(3);
+    expect((await storage.read(owner, oneId))?.revision).toBe(3);
   }));
 
 it('never initializes a closed owner or conversation scope back to open', () =>
@@ -1172,9 +1092,9 @@ it('retains the cleanup journal but cannot replay a closed conversation through 
       closeResponseScopes(mongoose, owner, ['conversation-one']),
       closeResponseScopes(mongoose, owner, ['conversation-one']),
     ]);
-    expect(await storage.read(owner, 'resp_one')).toBeNull();
-    expect(await storage.readCleanupIdentity(owner, 'resp_one')).toMatchObject({
-      responseId: 'resp_one',
+    expect(await storage.read(owner, oneId)).toBeNull();
+    expect(await storage.readCleanupIdentity(owner, oneId)).toMatchObject({
+      responseId: oneId,
       retirement: 'conversation_deleted',
     });
     expect(await storage.reserve(reservation({ conversationId: 'fresh-conversation' }))).toEqual({
@@ -1196,7 +1116,7 @@ it('does not close another tenant or owner and retains only hashed scope metadat
   }));
 
 it.each(['owner', 'conversation', 'retention'])(
-  'waits for admitted insertion before %s erasure sweeps records',
+  'fences delayed publication before %s erasure completes',
   (kind) =>
     scoped(async () => {
       let entered!: () => void;
@@ -1208,12 +1128,14 @@ it.each(['owner', 'conversation', 'retention'])(
         release = resolve;
       });
       const collection = mongoose.models.StoredResponse.collection;
-      const insert = collection.insertOne.bind(collection);
-      const paused = jest.spyOn(collection, 'insertOne').mockImplementation(async (...args) => {
-        entered();
-        await gate;
-        return insert(...args);
-      });
+      const publish = collection.findOneAndUpdate.bind(collection);
+      const paused = jest
+        .spyOn(collection, 'findOneAndUpdate')
+        .mockImplementation(async (...args) => {
+          entered();
+          await gate;
+          return publish(...args);
+        });
       const pending = storage.reserve(reservation());
       await started;
       let erased = false;
@@ -1226,17 +1148,21 @@ it.each(['owner', 'conversation', 'retention'])(
               kind === 'conversation' ? ['conversation-one'] : undefined,
             );
       const erasure = intent.then(async () => {
-        await mongoose.models.StoredResponse.deleteMany({ userId: owner.userId });
+        await eraseResponseRecords(
+          mongoose,
+          owner,
+          kind === 'owner' ? undefined : ['conversation-one'],
+        );
         erased = true;
       });
       try {
-        await new Promise((resolve) => setTimeout(resolve, 50));
-        expect(erased).toBe(false);
+        await erasure;
+        expect(erased).toBe(true);
       } finally {
         release();
         paused.mockRestore();
       }
-      expect((await pending).ok).toBe(true);
+      expect((await pending).ok).toBe(false);
       await erasure;
       expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(0);
       expect(await storage.reserve(reservation())).toEqual({
@@ -1252,7 +1178,7 @@ it.each(['owner_deleted', 'conversation_deleted', 'expired'] as const)(
     scoped(async () => {
       await storage.reserve(reservation());
       await mongoose.models.StoredResponse.updateOne(
-        { responseId: 'resp_one' },
+        { responseId: oneId },
         {
           $set: {
             generationCreatedAt: 42,
@@ -1279,7 +1205,7 @@ it.each(['owner_deleted', 'conversation_deleted', 'expired'] as const)(
           owner,
           retirement === 'conversation_deleted' ? ['conversation-one'] : undefined,
         );
-      const identity = await storage.readCleanupIdentity(owner, 'resp_one');
+      const identity = await storage.readCleanupIdentity(owner, oneId);
       expect(identity).toMatchObject({
         retirement,
         generationCreatedAt: 42,
@@ -1291,22 +1217,22 @@ it.each(['owner_deleted', 'conversation_deleted', 'expired'] as const)(
       expect(identity).not.toHaveProperty('responseJSON');
       expect(identity).not.toHaveProperty('pendingTerminal');
       if (retirement !== 'expired') expect(identity?.expiredAt).toBeUndefined();
-      await mongoose.models.StoredResponse.deleteOne({ responseId: 'resp_one' });
-      expect(await storage.readCleanupIdentity(owner, 'resp_one', identity!)).toEqual(identity);
+      await mongoose.models.StoredResponse.deleteOne({ responseId: oneId });
+      expect(await storage.readCleanupIdentity(owner, oneId, identity!)).toEqual(identity);
       expect(
-        await storage.readCleanupIdentity(owner, 'resp_one', {
+        await storage.readCleanupIdentity(owner, oneId, {
           ...identity!,
           userId: 'another-owner',
         }),
       ).toBeNull();
       expect(
-        await storage.readCleanupIdentity(owner, 'resp_one', {
+        await storage.readCleanupIdentity(owner, oneId, {
           ...identity!,
           tenantId: 'another-tenant',
         }),
       ).toBeNull();
       expect(
-        await storage.readCleanupIdentity(owner, 'resp_one', {
+        await storage.readCleanupIdentity(owner, oneId, {
           ...identity!,
           responseId: 'another-response',
         }),
@@ -1317,28 +1243,23 @@ it.each(['owner_deleted', 'conversation_deleted', 'expired'] as const)(
 it('requires checkpoint cleanup for an initial staged terminal without a review or retained identity', () =>
   scoped(async () => {
     await storage.reserve(reservation());
-    const running = await storage.publish(owner, 'resp_one', 0, {
+    const running = await storage.publish(owner, oneId, 0, {
       status: 'in_progress',
       generationCreatedAt: 42,
       responseJSON: '{}',
     });
     expect(running.ok).toBe(true);
     if (!running.ok) return;
-    const staged = await storage.stageTerminal(
-      owner,
-      'resp_one',
-      await executionGuard('resp_one'),
-      {
-        generationCreatedAt: 42,
-        providerExecutionId: 'initial-provider',
-        status: 'failed',
-        responseJSON: '{}',
-        checkpointNamespace: 'checkpoint-one',
-        checkpointConfigJSON: '{"saver":"initial"}',
-      },
-    );
+    const staged = await storage.stageTerminal(owner, oneId, await executionGuard(oneId), {
+      generationCreatedAt: 42,
+      providerExecutionId: 'initial-provider',
+      status: 'failed',
+      responseJSON: '{}',
+      checkpointNamespace: 'checkpoint-one',
+      checkpointConfigJSON: '{"saver":"initial"}',
+    });
     expect(staged.ok).toBe(true);
-    expect(await storage.readCleanupIdentity(owner, 'resp_one')).toMatchObject({
+    expect(await storage.readCleanupIdentity(owner, oneId)).toMatchObject({
       checkpointNamespace: 'checkpoint-one',
       checkpointConfigJSON: '{"saver":"initial"}',
       requiresCheckpointCleanup: true,
@@ -1356,14 +1277,14 @@ it.each([
   scoped(async () => {
     await storage.reserve(reservation());
     await mongoose.models.StoredResponse.updateOne(
-      { responseId: 'resp_one' },
+      { responseId: oneId },
       {
         $set: { generationCreatedAt: 42 },
       },
     );
-    const identity = await storage.readCleanupIdentity(owner, 'resp_one');
+    const identity = await storage.readCleanupIdentity(owner, oneId);
     expect(
-      await storage.readCleanupIdentity(owner, 'resp_one', {
+      await storage.readCleanupIdentity(owner, oneId, {
         ...identity!,
         ...changed,
         checkpointNamespace: 'wrong-checkpoint',
@@ -1381,10 +1302,10 @@ it.each([
 it('rejects a missing row with no retirement proof even when retained data claims expiry', () =>
   scoped(async () => {
     await storage.reserve(reservation());
-    const retained = await storage.readCleanupIdentity(owner, 'resp_one');
-    await mongoose.models.StoredResponse.deleteOne({ responseId: 'resp_one' });
+    const retained = await storage.readCleanupIdentity(owner, oneId);
+    await mongoose.models.StoredResponse.deleteOne({ responseId: oneId });
     expect(
-      await storage.readCleanupIdentity(owner, 'resp_one', {
+      await storage.readCleanupIdentity(owner, oneId, {
         ...retained!,
         expiredAt: new Date(Date.now() - 1),
         retirement: 'expired',
@@ -1392,30 +1313,32 @@ it('rejects a missing row with no retirement proof even when retained data claim
     ).toBeNull();
     await closeResponseScopes(mongoose, { ...owner, userId: 'another-owner' });
     await closeResponseScopes(mongoose, owner, ['another-conversation']);
-    expect(await storage.readCleanupIdentity(owner, 'resp_one', retained!)).toBeNull();
+    expect(await storage.readCleanupIdentity(owner, oneId, retained!)).toBeNull();
   }));
 
-it('recovers and erases all legacy partitions inside an ordinary tenant request', async () => {
+it('recovers and erases owner data across existing tenant partition spellings', async () => {
   createModels(mongoose);
   const tenants = ['tenant-a', 'tenant-b', undefined, '', null];
-  await runAsSystem(async () => {
-    for (const [index, tenantId] of tenants.entries()) {
-      const responseId = `legacy-${index}`;
-      // Distinct request keys let all tenantless legacy spellings coexist.
-      await storage.reserve(
+  const unrelatedOwnerId = createManagedMessageId();
+  const unrelatedConversationId = createManagedMessageId();
+  for (const tenantId of tenants) {
+    const responseId = createManagedMessageId();
+    await tenantStorage.run({ tenantId: tenantId || undefined }, () =>
+      storage.reserve(
         reservation({ responseId, requestKey: responseId, tenantId: tenantId || undefined }),
+      ),
+    );
+    if (tenantId !== undefined)
+      await runAsSystem(() =>
+        mongoose.models.StoredResponse.collection.updateOne({ responseId }, { $set: { tenantId } }),
       );
-      if (tenantId !== undefined)
-        await mongoose.models.StoredResponse.collection.updateOne(
-          { responseId },
-          { $set: { tenantId } },
-        );
-    }
-    await storage.reserve(reservation({ userId: 'another-owner', responseId: 'unrelated-owner' }));
+  }
+  await scoped(async () => {
+    await storage.reserve(reservation({ userId: 'another-owner', responseId: unrelatedOwnerId }));
     await storage.reserve(
       reservation({
         conversationId: 'another-conversation',
-        responseId: 'unrelated-conversation',
+        responseId: unrelatedConversationId,
         requestKey: 'unrelated-conversation',
       }),
     );
@@ -1434,22 +1357,26 @@ it('recovers and erases all legacy partitions inside an ordinary tenant request'
   });
   await runAsSystem(async () => {
     const remaining = await mongoose.models.StoredResponse.find({}).select('responseId').lean();
-    expect(remaining.map((row) => row.responseId).sort()).toEqual([
-      'unrelated-conversation',
-      'unrelated-owner',
-    ]);
-    for (const tenantId of ['tenant-a', 'tenant-b', undefined])
+    expect(remaining.map((row) => row.responseId).sort()).toEqual(
+      [unrelatedConversationId, unrelatedOwnerId].sort(),
+    );
+  });
+  for (const tenantId of ['tenant-a', 'tenant-b', undefined])
+    await tenantStorage.run({ tenantId }, async () => {
       expect(
         await storage.reserve(reservation({ tenantId, requestKey: `late-${tenantId}` })),
-      ).toEqual({ ok: false, code: 'response_unavailable' });
-  });
+      ).toEqual({
+        ok: false,
+        code: 'response_unavailable',
+      });
+    });
 });
 
 it('keeps incomplete staged checkpoint bindings retryable instead of mixing older settings', () =>
   scoped(async () => {
     await storage.reserve(reservation());
     await mongoose.models.StoredResponse.updateOne(
-      { responseId: 'resp_one' },
+      { responseId: oneId },
       {
         $set: {
           generationCreatedAt: 42,
@@ -1472,14 +1399,14 @@ it('keeps incomplete staged checkpoint bindings retryable instead of mixing olde
     );
     const retained = {
       ...owner,
-      responseId: 'resp_one',
+      responseId: oneId,
       agentId: 'agent-one',
       conversationId: 'conversation-one',
       generationCreatedAt: 42,
       checkpointNamespace: 'old-checkpoint',
       checkpointConfigJSON: 'retained-config',
     };
-    expect(await storage.readCleanupIdentity(owner, 'resp_one', retained)).toMatchObject({
+    expect(await storage.readCleanupIdentity(owner, oneId, retained)).toMatchObject({
       checkpointNamespace: 'new-checkpoint',
       checkpointConfigJSON: undefined,
       requiresCheckpointCleanup: true,
@@ -1489,37 +1416,29 @@ it('keeps incomplete staged checkpoint bindings retryable instead of mixing olde
 it('propagates cleanup lookup outages instead of treating retained metadata as authority', () =>
   scoped(async () => {
     await storage.reserve(reservation());
-    const retained = await storage.readCleanupIdentity(owner, 'resp_one');
+    const retained = await storage.readCleanupIdentity(owner, oneId);
     jest
       .spyOn(mongoose.models.StoredResponse.collection, 'findOne')
       .mockRejectedValueOnce(new Error('database unavailable'));
-    await expect(storage.readCleanupIdentity(owner, 'resp_one', retained!)).rejects.toThrow(
+    await expect(storage.readCleanupIdentity(owner, oneId, retained!)).rejects.toThrow(
       'database unavailable',
     );
   }));
 
-it.each(['session', 'commit'] as const)(
-  'retries reservation after a transient capability %s failure',
-  (failure) =>
-    scoped(async () => {
-      const fresh = createResponseStorage(mongoose);
-      if (failure === 'session')
-        jest
-          .spyOn(mongoose, 'startSession')
-          .mockRejectedValueOnce(new Error('transient probe outage'));
-      else {
-        const session = await mongoose.startSession();
-        jest
-          .spyOn(session, 'commitTransaction')
-          .mockRejectedValueOnce(new Error('transient probe outage'));
-        jest.spyOn(mongoose, 'startSession').mockResolvedValueOnce(session);
-      }
-      await expect(fresh.reserve(reservation())).rejects.toThrow('transient probe outage');
-      expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(0);
-      expect(await mongoose.models.ResponseScope.countDocuments({})).toBe(0);
-      expect(await fresh.reserve(reservation())).toMatchObject({ ok: true, replayed: false });
-    }),
-);
+it('reserves without depending on transaction capability or session creation', () =>
+  scoped(async () => {
+    const session = jest
+      .spyOn(mongoose, 'startSession')
+      .mockRejectedValue(new Error('sessions unavailable'));
+    try {
+      expect(await createResponseStorage(mongoose).reserve(reservation())).toMatchObject({
+        ok: true,
+      });
+      expect(session).not.toHaveBeenCalled();
+    } finally {
+      session.mockRestore();
+    }
+  }));
 
 it('keeps response-bound conversation identity immutable without cancelling its work', () =>
   scoped(async () => {
@@ -1555,11 +1474,11 @@ it('keeps response-bound conversation identity immutable without cancelling its 
         conversationId: 'replacement',
       }),
     ).toBeNull();
-    expect(await storage.read(owner, 'resp_one')).not.toHaveProperty('cancellationRequestedAt');
+    expect(await storage.read(owner, oneId)).not.toHaveProperty('cancellationRequestedAt');
     expect(
       await storage.reserve(
         reservation({
-          responseId: 'another',
+          responseId: createManagedMessageId(),
           requestKey: 'another',
           conversationId: 'immutable-source',
         }),
@@ -1594,10 +1513,10 @@ it('fences an empty old identity and propagates retention to its replacement bef
       record: { expiredAt },
     });
     await methods.deleteConvos(owner.userId, { conversationId: 'replacement' });
-    expect(await storage.read(owner, 'resp_one')).toBeNull();
+    expect(await storage.read(owner, oneId)).toBeNull();
   }));
 
-it('serializes ID replacement with a reservation already inserting private data', () =>
+it('fences admission when conversation ID replacement wins before publication', () =>
   scoped(async () => {
     createModels(mongoose);
     const methods = createConversationMethods(mongoose, {
@@ -1613,12 +1532,14 @@ it('serializes ID replacement with a reservation already inserting private data'
       release = resolve;
     });
     const collection = mongoose.models.StoredResponse.collection;
-    const insert = collection.insertOne.bind(collection);
-    const paused = jest.spyOn(collection, 'insertOne').mockImplementation(async (...args) => {
-      entered();
-      await gate;
-      return insert(...args);
-    });
+    const publish = collection.findOneAndUpdate.bind(collection);
+    const paused = jest
+      .spyOn(collection, 'findOneAndUpdate')
+      .mockImplementation(async (...args) => {
+        entered();
+        await gate;
+        return publish(...args);
+      });
     const pending = storage.reserve(reservation({ conversationId: 'racing-source' }));
     await started;
     let settled = false;
@@ -1636,60 +1557,19 @@ it('serializes ID replacement with a reservation already inserting private data'
         return value;
       });
     try {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(settled).toBe(false);
+      await replacement;
+      expect(settled).toBe(true);
     } finally {
       release();
       paused.mockRestore();
     }
-    expect(await pending).toMatchObject({ ok: true });
-    expect(await replacement).toEqual({
-      message: 'Conversation ID cannot be replaced after persistence.',
-    });
-    expect(await storage.read(owner, 'resp_one')).toMatchObject({
-      conversationId: 'racing-source',
-    });
+    expect(await pending).toEqual({ ok: false, code: 'response_unavailable' });
+    expect(await replacement).toMatchObject({ conversationId: 'replacement' });
+    expect(await storage.read(owner, oneId)).toBeNull();
     expect(
       await mongoose.models.Conversation.exists({ conversationId: 'racing-source' }),
     ).toBeNull();
   }));
-
-it.each(['transient_read', 'missing_canary', 'failed_canary_create'] as const)(
-  'classifies capability probe errors without caching an outage: %s',
-  (kind) =>
-    scoped(async () => {
-      const db = mongoose.connection.db!;
-      const probe = db.collection('__transaction_test__');
-      const collection = db.collection.bind(db);
-      jest
-        .spyOn(db, 'collection')
-        .mockImplementation((name, options) =>
-          name === '__transaction_test__' ? probe : collection(name, options),
-        );
-      const failure =
-        kind === 'transient_read'
-          ? new Error('transient database read outage')
-          : new mongoose.mongo.MongoServerError({
-              code: 303,
-              message: 'Feature not supported: non-existent collection in transaction',
-            });
-      const read = jest.spyOn(probe, 'findOne').mockRejectedValueOnce(failure);
-      if (kind === 'failed_canary_create')
-        jest
-          .spyOn(db, 'createCollection')
-          .mockRejectedValueOnce(new Error('canary creation denied'));
-      const fresh = createResponseStorage(mongoose);
-      if (kind === 'missing_canary') {
-        expect(await fresh.reserve(reservation())).toMatchObject({ ok: true });
-        expect(read).toHaveBeenCalledTimes(2);
-      } else {
-        await expect(fresh.reserve(reservation())).rejects.toThrow(
-          kind === 'transient_read' ? 'transient database read outage' : 'canary creation denied',
-        );
-        expect(await fresh.reserve(reservation())).toMatchObject({ ok: true });
-      }
-    }),
-);
 
 it('never renames a source conversation inserted after initial assignment checked absence', () =>
   scoped(async () => {
@@ -1764,17 +1644,17 @@ it('retries a failed initial ID assignment without reopening its unused source s
 it('stages one exact execution receipt independently of repeated projection revisions', () =>
   scoped(async () => {
     await storage.reserve(reservation({ sourceKeyId: 'original-key' }));
-    const running = await storage.publish(owner, 'resp_one', 0, {
+    const running = await storage.publish(owner, oneId, 0, {
       status: 'in_progress',
       generationCreatedAt: 10,
       responseJSON: '{}',
     });
     if (!running.ok) throw new Error('Publication failed');
     for (let i = 0; i < 30; i++) {
-      const current = (await storage.read(owner, 'resp_one'))!;
+      const current = (await storage.read(owner, oneId))!;
       expect(
         (
-          await storage.publish(owner, 'resp_one', current.revision, {
+          await storage.publish(owner, oneId, current.revision, {
             status: 'in_progress',
             responseJSON: JSON.stringify({ progress: i }),
           })
@@ -1783,17 +1663,17 @@ it('stages one exact execution receipt independently of repeated projection revi
     }
     const attempts = await Promise.all(
       Array.from({ length: 12 }, () =>
-        storage.stageTerminal(owner, 'resp_one', { execution: running.record }, outcome),
+        storage.stageTerminal(owner, oneId, { execution: running.record }, outcome),
       ),
     );
     expect(attempts.every((result) => result.ok)).toBe(true);
-    const staged = (await storage.read(owner, 'resp_one'))!;
+    const staged = (await storage.read(owner, oneId))!;
     expect(staged.pendingTerminal).toEqual(outcome);
     expect(staged.revision).toBe(running.record.revision + 31);
     expect(
       await storage.stageTerminal(
         owner,
-        'resp_one',
+        oneId,
         { execution: running.record },
         {
           ...outcome,
@@ -1801,9 +1681,7 @@ it('stages one exact execution receipt independently of repeated projection revi
         },
       ),
     ).toEqual({ ok: false, code: 'response_conflict' });
-    expect((await storage.finishTerminal(owner, 'resp_one', staged.revision, outcome)).ok).toBe(
-      true,
-    );
+    expect((await storage.finishTerminal(owner, oneId, staged.revision, outcome)).ok).toBe(true);
   }));
 
 it.each(['agentId', 'conversationId', 'sourceKeyId', 'generationCreatedAt'] as const)(
@@ -1811,7 +1689,7 @@ it.each(['agentId', 'conversationId', 'sourceKeyId', 'generationCreatedAt'] as c
   (field) =>
     scoped(async () => {
       await storage.reserve(reservation({ sourceKeyId: 'original-key' }));
-      const running = await storage.publish(owner, 'resp_one', 0, {
+      const running = await storage.publish(owner, oneId, 0, {
         status: 'in_progress',
         generationCreatedAt: 10,
         responseJSON: '{}',
@@ -1821,20 +1699,20 @@ it.each(['agentId', 'conversationId', 'sourceKeyId', 'generationCreatedAt'] as c
         ...running.record,
         [field]: field === 'generationCreatedAt' ? 11 : 'other',
       };
-      expect(await storage.stageTerminal(owner, 'resp_one', { execution }, outcome)).toEqual({
+      expect(await storage.stageTerminal(owner, oneId, { execution }, outcome)).toEqual({
         ok: false,
         code: 'response_conflict',
       });
-      expect((await storage.read(owner, 'resp_one'))?.pendingTerminal).toBeUndefined();
+      expect((await storage.read(owner, oneId))?.pendingTerminal).toBeUndefined();
     }),
 );
 
 it('matches the complete reviewed and resumed execution binding rather than its projection', () =>
   scoped(async () => {
     await pause();
-    await storage.reserveResume(owner, 'resp_one', resume(), 100);
-    await storage.admitResume(owner, 'resp_one', 'intent-one', 10, 'provider-two', '{}', 101);
-    const retained = (await storage.read(owner, 'resp_one'))!;
+    await storage.reserveResume(owner, oneId, resume(), 100);
+    await storage.admitResume(owner, oneId, 'intent-one', 10, 'provider-two', '{}', 101);
+    const retained = (await storage.read(owner, oneId))!;
     const receipt = { ...outcome, providerExecutionId: 'provider-two' };
     for (const execution of [
       { ...retained, review: undefined },
@@ -1842,23 +1720,23 @@ it('matches the complete reviewed and resumed execution binding rather than its 
       { ...retained, resume: { ...retained.resume!, fingerprint: 'different' } },
       { ...retained, resume: { ...retained.resume!, state: 'reserved' as const } },
     ])
-      expect(await storage.stageTerminal(owner, 'resp_one', { execution }, receipt)).toEqual({
+      expect(await storage.stageTerminal(owner, oneId, { execution }, receipt)).toEqual({
         ok: false,
         code: 'response_conflict',
       });
-    const current = await storage.publish(owner, 'resp_one', retained.revision, {
+    const current = await storage.publish(owner, oneId, retained.revision, {
       status: 'in_progress',
       responseJSON: '{"projection":"new"}',
     });
     expect(current.ok).toBe(true);
-    expect(
-      (await storage.stageTerminal(owner, 'resp_one', { execution: retained }, receipt)).ok,
-    ).toBe(true);
+    expect((await storage.stageTerminal(owner, oneId, { execution: retained }, receipt)).ok).toBe(
+      true,
+    );
   }));
 
 async function runningForReview() {
   await storage.reserve(reservation({ sourceKeyId: 'original-key' }));
-  const running = await storage.publish(owner, 'resp_one', 0, {
+  const running = await storage.publish(owner, oneId, 0, {
     status: 'in_progress',
     generationCreatedAt: 10,
     responseJSON: '{}',
@@ -1871,10 +1749,10 @@ it('publishes one immutable pause independently of polling before and after publ
   scoped(async () => {
     const running = await runningForReview();
     for (let i = 0; i < 30; i++) {
-      const current = (await storage.read(owner, 'resp_one'))!;
+      const current = (await storage.read(owner, oneId))!;
       expect(
         (
-          await storage.publish(owner, 'resp_one', current.revision, {
+          await storage.publish(owner, oneId, current.revision, {
             status: 'in_progress',
             responseJSON: JSON.stringify({ progress: i }),
           })
@@ -1883,26 +1761,26 @@ it('publishes one immutable pause independently of polling before and after publ
     }
     const attempts = await Promise.all(
       Array.from({ length: 12 }, () =>
-        storage.publishReview(owner, 'resp_one', { execution: running }, 10, review, '{}'),
+        storage.publishReview(owner, oneId, { execution: running }, 10, review, '{}'),
       ),
     );
     expect(attempts.every((result) => result.ok)).toBe(true);
-    const paused = (await storage.read(owner, 'resp_one'))!;
+    const paused = (await storage.read(owner, oneId))!;
     expect(paused.review).toEqual(review);
     expect(paused.revision).toBe(running.revision + 31);
-    const projected = await storage.publish(owner, 'resp_one', paused.revision, {
+    const projected = await storage.publish(owner, oneId, paused.revision, {
       status: 'requires_action',
       responseJSON: '{"projection":"new"}',
     });
     if (!projected.ok) throw new Error('Projection failed');
     for (const execution of [running, projected.record]) {
-      expect(
-        (await storage.publishReview(owner, 'resp_one', { execution }, 10, review, '{}')).ok,
-      ).toBe(true);
+      expect((await storage.publishReview(owner, oneId, { execution }, 10, review, '{}')).ok).toBe(
+        true,
+      );
       expect(
         await storage.publishReview(
           owner,
-          'resp_one',
+          oneId,
           { execution },
           10,
           { ...review, partialResponseJSON: '{"changed":true}' },
@@ -1910,7 +1788,7 @@ it('publishes one immutable pause independently of polling before and after publ
         ),
       ).toEqual({ ok: false, code: 'response_conflict' });
     }
-    const saved = (await storage.read(owner, 'resp_one'))!;
+    const saved = (await storage.read(owner, oneId))!;
     expect(saved.revision).toBe(projected.record.revision);
     expect(saved.responseJSON).toBe('{"projection":"new"}');
     expect(saved.review).toEqual(review);
@@ -1922,19 +1800,20 @@ it.each(['agentId', 'conversationId', 'sourceKeyId', 'generationCreatedAt'] as c
     scoped(async () => {
       const running = await runningForReview();
       const execution = { ...running, [field]: field === 'generationCreatedAt' ? 11 : 'other' };
-      expect(
-        await storage.publishReview(owner, 'resp_one', { execution }, 10, review, '{}'),
-      ).toEqual({ ok: false, code: 'response_conflict' });
-      expect((await storage.read(owner, 'resp_one'))?.review).toBeUndefined();
+      expect(await storage.publishReview(owner, oneId, { execution }, 10, review, '{}')).toEqual({
+        ok: false,
+        code: 'response_conflict',
+      });
+      expect((await storage.read(owner, oneId))?.review).toBeUndefined();
     }),
 );
 
 it('binds the next pause to the complete admitted resume identity', () =>
   scoped(async () => {
     await pause();
-    await storage.reserveResume(owner, 'resp_one', resume(), 100);
-    await storage.admitResume(owner, 'resp_one', 'intent-one', 10, 'provider-two', '{}', 101);
-    const retained = (await storage.read(owner, 'resp_one'))!;
+    await storage.reserveResume(owner, oneId, resume(), 100);
+    await storage.admitResume(owner, oneId, 'intent-one', 10, 'provider-two', '{}', 101);
+    const retained = (await storage.read(owner, oneId))!;
     const nextReview = {
       ...review,
       actionId: 'second-action',
@@ -1947,22 +1826,13 @@ it('binds the next pause to the complete admitted resume identity', () =>
       { ...retained, resume: { ...retained.resume!, state: 'reserved' as const } },
     ])
       expect(
-        await storage.publishReview(owner, 'resp_one', { execution }, 10, nextReview, '{}'),
+        await storage.publishReview(owner, oneId, { execution }, 10, nextReview, '{}'),
       ).toEqual({ ok: false, code: 'response_conflict' });
     expect(
-      (
-        await storage.publishReview(
-          owner,
-          'resp_one',
-          { execution: retained },
-          10,
-          nextReview,
-          '{}',
-        )
-      ).ok,
+      (await storage.publishReview(owner, oneId, { execution: retained }, 10, nextReview, '{}')).ok,
     ).toBe(true);
-    expect(await storage.read(owner, 'resp_one')).toMatchObject({ review: nextReview });
-    expect((await storage.read(owner, 'resp_one'))?.resume).toBeUndefined();
+    expect(await storage.read(owner, oneId)).toMatchObject({ review: nextReview });
+    expect((await storage.read(owner, oneId))?.resume).toBeUndefined();
   }));
 
 it.each(['cancelled', 'terminal', 'erased'] as const)(
@@ -1970,15 +1840,15 @@ it.each(['cancelled', 'terminal', 'erased'] as const)(
   (failure) =>
     scoped(async () => {
       const running = await runningForReview();
-      if (failure === 'cancelled') await storage.requestCancellation(owner, 'resp_one', Date.now());
+      if (failure === 'cancelled') await storage.requestCancellation(owner, oneId, Date.now());
       if (failure === 'terminal')
-        await storage.stageTerminal(owner, 'resp_one', { execution: running }, outcome);
+        await storage.stageTerminal(owner, oneId, { execution: running }, outcome);
       if (failure === 'erased')
-        await mongoose.models.StoredResponse.deleteOne({ responseId: 'resp_one' });
+        await mongoose.models.StoredResponse.deleteOne({ responseId: oneId });
       expect(
-        await storage.publishReview(owner, 'resp_one', { execution: running }, 10, review, '{}'),
+        await storage.publishReview(owner, oneId, { execution: running }, 10, review, '{}'),
       ).toEqual({ ok: false, code: 'response_conflict' });
-      expect((await storage.read(owner, 'resp_one'))?.review).toBeUndefined();
+      expect((await storage.read(owner, oneId))?.review).toBeUndefined();
     }),
 );
 
@@ -1989,7 +1859,7 @@ it.each(['live', 'owner_deleted', 'conversation_deleted', 'expired'] as const)(
       await storage.reserve(reservation());
       const retained = {
         ...owner,
-        responseId: 'resp_one',
+        responseId: oneId,
         agentId: 'agent-one',
         conversationId: 'conversation-one',
         generationCreatedAt: 42,
@@ -2008,24 +1878,24 @@ it.each(['live', 'owner_deleted', 'conversation_deleted', 'expired'] as const)(
           owner,
           reason === 'conversation_deleted' ? ['conversation-one'] : undefined,
         );
-      const identity = await storage.readCleanupIdentity(owner, 'resp_one', retained);
+      const identity = await storage.readCleanupIdentity(owner, oneId, retained);
       expect(identity).toMatchObject({
         generationCreatedAt: reason === 'live' ? undefined : 42,
         retirement: reason === 'live' ? undefined : reason,
         checkpointNamespace: reason === 'live' ? undefined : 'owned-checkpoint',
       });
       if (reason !== 'live') {
-        const wrong = await storage.readCleanupIdentity(owner, 'resp_one', {
+        const wrong = await storage.readCleanupIdentity(owner, oneId, {
           ...retained,
           agentId: 'wrong-agent',
         });
         expect(wrong?.generationCreatedAt).toBeUndefined();
         expect(wrong?.checkpointNamespace).toBeUndefined();
         await mongoose.models.StoredResponse.updateOne(
-          { responseId: 'resp_one' },
+          { responseId: oneId },
           { $set: { generationCreatedAt: 43 } },
         );
-        expect(await storage.readCleanupIdentity(owner, 'resp_one', retained)).toMatchObject({
+        expect(await storage.readCleanupIdentity(owner, oneId, retained)).toMatchObject({
           generationCreatedAt: 43,
           checkpointNamespace: undefined,
         });
@@ -2038,7 +1908,7 @@ it.each(['owner', 'conversation'] as const)(
   (kind) =>
     scoped(async () => {
       await storage.reserve(reservation());
-      const enrolled = await storage.publish(owner, 'resp_one', 0, {
+      const enrolled = await storage.publish(owner, oneId, 0, {
         status: 'in_progress',
         responseJSON: '{}',
         generationCreatedAt: 17,
@@ -2052,7 +1922,7 @@ it.each(['owner', 'conversation'] as const)(
       };
       const prepared = await storage.prepareTerminal(
         owner,
-        'resp_one',
+        oneId,
         { execution: enrolled.record },
         outcome,
       );
@@ -2070,13 +1940,13 @@ it.each(['owner', 'conversation'] as const)(
         ),
       ).rejects.toThrow('Erasure interrupted');
       updateMany.mockRestore();
-      expect(await storage.read(owner, 'resp_one')).toBeNull();
+      expect(await storage.read(owner, oneId)).toBeNull();
       expect(
-        await storage.stageTerminal(owner, 'resp_one', { execution: prepared.record }, outcome, {
+        await storage.stageTerminal(owner, oneId, { execution: prepared.record }, outcome, {
           receipt: outcome,
         }),
       ).toEqual({ ok: false, code: 'response_conflict' });
-      const identity = await storage.readCleanupIdentity(owner, 'resp_one');
+      const identity = await storage.readCleanupIdentity(owner, oneId);
       expect(identity?.retirement).toBe(
         kind === 'owner' ? 'owner_deleted' : 'conversation_deleted',
       );
@@ -2088,7 +1958,7 @@ it.each(['owner', 'conversation'] as const)(
 it('cannot finish a pending terminal receipt after scope closure even when physical erasure fails', () =>
   scoped(async () => {
     await storage.reserve(reservation());
-    const enrolled = await storage.publish(owner, 'resp_one', 0, {
+    const enrolled = await storage.publish(owner, oneId, 0, {
       status: 'in_progress',
       responseJSON: '{}',
       generationCreatedAt: 17,
@@ -2102,7 +1972,7 @@ it('cannot finish a pending terminal receipt after scope closure even when physi
     };
     const pending = await storage.stageTerminal(
       owner,
-      'resp_one',
+      oneId,
       { execution: enrolled.record },
       outcome,
     );
@@ -2113,19 +1983,22 @@ it('cannot finish a pending terminal receipt after scope closure even when physi
       .mockImplementationOnce(() => {
         throw new Error('Physical erasure temporarily unavailable');
       });
-    await expect(eraseResponseRecords(mongoose, owner)).rejects.toThrow('Physical erasure');
+    await expect(eraseResponseRecords(mongoose, owner, ['conversation-one'])).rejects.toThrow(
+      'Physical erasure',
+    );
     erase.mockRestore();
-    expect(
-      await storage.finishTerminal(owner, 'resp_one', pending.record.revision, outcome),
-    ).toEqual({ ok: false, code: 'response_conflict' });
-    expect(await storage.read(owner, 'resp_one')).toBeNull();
+    expect(await storage.finishTerminal(owner, oneId, pending.record.revision, outcome)).toEqual({
+      ok: false,
+      code: 'response_conflict',
+    });
+    expect(await storage.read(owner, oneId)).toBeNull();
     expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(1);
   }));
 
 it('does not return an aborted attempt success when the transaction retries after scope closure', () =>
   scoped(async () => {
     await storage.reserve(reservation());
-    const enrolled = await storage.publish(owner, 'resp_one', 0, {
+    const enrolled = await storage.publish(owner, oneId, 0, {
       status: 'in_progress',
       responseJSON: '{}',
       generationCreatedAt: 17,
@@ -2150,12 +2023,12 @@ it('does not return an aborted attempt success when the transaction retries afte
     });
     try {
       expect(
-        await storage.stageTerminal(owner, 'resp_one', { execution: enrolled.record }, outcome),
+        await storage.stageTerminal(owner, oneId, { execution: enrolled.record }, outcome),
       ).toEqual({ ok: false, code: 'response_conflict' });
       expect(commit).toHaveBeenCalledTimes(2);
-      expect(await storage.read(owner, 'resp_one')).toBeNull();
+      expect(await storage.read(owner, oneId)).toBeNull();
       const stored = await mongoose.models.StoredResponse.findOne({
-        responseId: 'resp_one',
+        responseId: oneId,
       }).lean();
       expect(stored).toMatchObject({ status: 'in_progress' });
       expect(stored).not.toHaveProperty('pendingTerminal');
@@ -2173,31 +2046,31 @@ it.each(['prepared', 'pending'] as const)(
       const receipt = { ...outcome, turnJSON: '{"version":1,"private":"history"}' };
       const result =
         phase === 'prepared'
-          ? await storage.prepareTerminal(owner, 'resp_one', { execution: running }, receipt)
-          : await storage.stageTerminal(owner, 'resp_one', { execution: running }, receipt);
+          ? await storage.prepareTerminal(owner, oneId, { execution: running }, receipt)
+          : await storage.stageTerminal(owner, oneId, { execution: running }, receipt);
       if (!result.ok) throw new Error('Private phase admission failed');
       const record = result.record;
       expect(record.status).toBe('materializing');
       expect(record.responseJSON).toBe('{}');
       const retry = () =>
         phase === 'prepared'
-          ? storage.prepareTerminal(owner, 'resp_one', { execution: running }, receipt)
-          : storage.stageTerminal(owner, 'resp_one', { execution: running }, receipt);
+          ? storage.prepareTerminal(owner, oneId, { execution: running }, receipt)
+          : storage.stageTerminal(owner, oneId, { execution: running }, receipt);
       expect((await retry()).ok).toBe(true);
-      expect(await storage.attachDelivery(owner, 'resp_one', 'legacy')).toMatchObject({
+      expect(await storage.attachDelivery(owner, oneId, 'legacy')).toMatchObject({
         ok: false,
       });
       expect(
-        await storage.publish(owner, 'resp_one', record.revision, {
+        await storage.publish(owner, oneId, record.revision, {
           status: 'completed',
           responseJSON: receipt.responseJSON,
         }),
       ).toMatchObject({ ok: false });
       expect(
-        await storage.publishReview(owner, 'resp_one', { execution: running }, 10, review, '{}'),
+        await storage.publishReview(owner, oneId, { execution: running }, 10, review, '{}'),
       ).toMatchObject({ ok: false });
       await mongoose.models.StoredResponse.updateOne(
-        { responseId: 'resp_one' },
+        { responseId: oneId },
         {
           $set: { status: 'in_progress' },
         },
@@ -2205,13 +2078,13 @@ it.each(['prepared', 'pending'] as const)(
       expect(await retry()).toMatchObject({ ok: false });
       if (phase === 'prepared') {
         expect(
-          await storage.stageTerminal(owner, 'resp_one', { execution: running }, receipt, {
+          await storage.stageTerminal(owner, oneId, { execution: running }, receipt, {
             receipt,
           }),
         ).toMatchObject({ ok: false });
       } else {
         expect(
-          await storage.finishTerminal(owner, 'resp_one', record.revision, receipt, {
+          await storage.finishTerminal(owner, oneId, record.revision, receipt, {
             intentJSON: receipt.turnJSON,
             context: { userId: owner.userId },
             conversation: { conversationId: 'conversation-one' },
@@ -2227,41 +2100,32 @@ it('only enters the private phase through receipt admission and cancels prepared
   scoped(async () => {
     const running = await runningForReview();
     expect(
-      await storage.publish(owner, 'resp_one', running.revision, {
+      await storage.publish(owner, oneId, running.revision, {
         status: 'materializing',
         responseJSON: '{}',
       }),
     ).toMatchObject({ ok: false });
     const receipt = { ...outcome, turnJSON: '{"version":1}' };
-    const prepared = await storage.prepareTerminal(
-      owner,
-      'resp_one',
-      { execution: running },
-      receipt,
-    );
+    const prepared = await storage.prepareTerminal(owner, oneId, { execution: running }, receipt);
     if (!prepared.ok) throw new Error('Preparation failed');
-    expect(await storage.requestCancellation(owner, 'resp_one', 123)).toMatchObject({
+    expect(await storage.requestCancellation(owner, oneId, 123)).toMatchObject({
       status: 'materializing',
       cancellationRequestedAt: 123,
     });
     expect(
-      await storage.stageTerminal(owner, 'resp_one', { execution: running }, receipt, { receipt }),
+      await storage.stageTerminal(owner, oneId, { execution: running }, receipt, {
+        receipt,
+      }),
     ).toMatchObject({ ok: false });
     const cancelled = {
       ...receipt,
       status: 'cancelled' as const,
       responseJSON: '{"cancelled":true}',
     };
-    const staged = await storage.stageTerminal(
-      owner,
-      'resp_one',
-      { execution: running },
-      cancelled,
-      {
-        receipt,
-        cancellationRequestedAt: 123,
-      },
-    );
+    const staged = await storage.stageTerminal(owner, oneId, { execution: running }, cancelled, {
+      receipt,
+      cancellationRequestedAt: 123,
+    });
     expect(staged).toMatchObject({
       ok: true,
       record: { status: 'materializing', pendingTerminal: cancelled },
@@ -2272,26 +2136,26 @@ it('closes and cooperatively cancels private prepared work while retaining redac
   scoped(async () => {
     const running = await runningForReview();
     const receipt = { ...outcome, turnJSON: '{"version":1,"private":"history"}' };
-    expect(
-      (await storage.prepareTerminal(owner, 'resp_one', { execution: running }, receipt)).ok,
-    ).toBe(true);
+    expect((await storage.prepareTerminal(owner, oneId, { execution: running }, receipt)).ok).toBe(
+      true,
+    );
     await closeResponseScopes(mongoose, owner, ['conversation-one']);
-    expect(await storage.read(owner, 'resp_one')).toBeNull();
+    expect(await storage.read(owner, oneId)).toBeNull();
     const raw = await mongoose.models.StoredResponse.findOne({
-      responseId: 'resp_one',
+      responseId: oneId,
     }).lean<StoredResponseRecord>();
     expect(raw).toMatchObject({
       status: 'materializing',
       cancellationRequestedAt: expect.any(Number),
     });
-    expect(await storage.readCleanupIdentity(owner, 'resp_one')).toMatchObject({
+    expect(await storage.readCleanupIdentity(owner, oneId)).toMatchObject({
       retirement: 'conversation_deleted',
     });
-    expect(JSON.stringify(await storage.readCleanupIdentity(owner, 'resp_one'))).not.toContain(
+    expect(JSON.stringify(await storage.readCleanupIdentity(owner, oneId))).not.toContain(
       'history',
     );
     expect(
-      await storage.stageTerminal(owner, 'resp_one', { execution: running }, receipt, {
+      await storage.stageTerminal(owner, oneId, { execution: running }, receipt, {
         receipt,
         cancellationRequestedAt: raw!.cancellationRequestedAt,
       }),
@@ -2308,7 +2172,7 @@ it.each(['live', 'expired', 'closed'] as const)(
       if (state === 'expired')
         await createResponseRetention(mongoose)(owner, 'conversation-one', new Date(0));
       if (state === 'closed') await closeResponseScopes(mongoose, owner, ['conversation-one']);
-      const identity = await storage.readCleanupIdentity(owner, 'resp_one');
+      const identity = await storage.readCleanupIdentity(owner, oneId);
       expect(identity).toMatchObject({
         requestKey: 'request-one',
         sourceKeyId: 'run-key',
@@ -2325,18 +2189,14 @@ it('atomically reserves a dispatch outbox and exposes only bounded maintenance i
     const result = await storage.reserve({ ...reservation(), dispatch: true });
     expect(result).toMatchObject({
       ok: true,
-      record: { dispatchOutbox: { kind: 'create', id: 'resp_one', state: 'pending' } },
+      record: { dispatchOutbox: { kind: 'create', id: oneId, state: 'pending' } },
     });
     const page = await runAsSystem(() => storage.listPendingDispatches(undefined, 1, false));
-    expect(page.responses).toEqual([{ ...owner, responseId: 'resp_one' }]);
+    expect(page.responses).toEqual([{ ...owner, responseId: oneId }]);
     expect(JSON.stringify(page)).not.toContain('Hello');
     expect(JSON.stringify(page)).not.toContain('requestJSON');
-    expect(await storage.settleDispatch(owner, 'resp_one', { kind: 'create', id: 'wrong' })).toBe(
-      false,
-    );
-    expect(
-      await storage.settleDispatch(owner, 'resp_one', { kind: 'create', id: 'resp_one' }),
-    ).toBe(true);
+    expect(await storage.settleDispatch(owner, oneId, { kind: 'create', id: 'wrong' })).toBe(false);
+    expect(await storage.settleDispatch(owner, oneId, { kind: 'create', id: oneId })).toBe(true);
     expect(
       (await runAsSystem(() => storage.listPendingDispatches(undefined, 1, false))).responses,
     ).toEqual([]);
@@ -2345,21 +2205,17 @@ it('atomically reserves a dispatch outbox and exposes only bounded maintenance i
 it('fences late create acknowledgements from a newer resume and does not bump execution revision', () =>
   scoped(async () => {
     await pause();
-    const reserved = await storage.reserveResume(owner, 'resp_one', resume(), 100);
+    const reserved = await storage.reserveResume(owner, oneId, resume(), 100);
     expect(reserved.ok).toBe(true);
-    const before = (await storage.read(owner, 'resp_one'))!;
+    const before = (await storage.read(owner, oneId))!;
     expect(before.dispatchOutbox).toEqual({ kind: 'resume', id: 'intent-one', state: 'pending' });
-    expect(
-      await storage.settleDispatch(owner, 'resp_one', { kind: 'create', id: 'resp_one' }),
-    ).toBe(false);
-    expect(await storage.settleDispatch(owner, 'resp_one', { kind: 'resume', id: 'wrong' })).toBe(
-      false,
+    expect(await storage.settleDispatch(owner, oneId, { kind: 'create', id: oneId })).toBe(false);
+    expect(await storage.settleDispatch(owner, oneId, { kind: 'resume', id: 'wrong' })).toBe(false);
+    expect((await storage.read(owner, oneId))!.dispatchOutbox).toEqual(before.dispatchOutbox);
+    expect(await storage.settleDispatch(owner, oneId, { kind: 'resume', id: 'intent-one' })).toBe(
+      true,
     );
-    expect((await storage.read(owner, 'resp_one'))!.dispatchOutbox).toEqual(before.dispatchOutbox);
-    expect(
-      await storage.settleDispatch(owner, 'resp_one', { kind: 'resume', id: 'intent-one' }),
-    ).toBe(true);
-    expect((await storage.read(owner, 'resp_one'))!.revision).toBe(before.revision);
+    expect((await storage.read(owner, oneId))!.revision).toBe(before.revision);
     expect(
       (await runAsSystem(() => storage.listPendingDispatches(undefined, 10, true))).responses,
     ).toEqual([]);
@@ -2369,7 +2225,7 @@ it('recovers pending dispatch tokens without acknowledging another tenant or clo
   scoped(async () => {
     await storage.reserve(reservation({ dispatch: true }));
     const page = await runAsSystem(() => storage.listPendingDispatches(undefined, 1, false));
-    expect(page.responses).toEqual([{ ...owner, responseId: 'resp_one' }]);
+    expect(page.responses).toEqual([{ ...owner, responseId: oneId }]);
     await expect(storage.listPendingDispatches(undefined, 1, false)).rejects.toThrow('system');
     await expect(
       runAsSystem(() => storage.listPendingDispatches(undefined, 0, false)),
@@ -2378,18 +2234,16 @@ it('recovers pending dispatch tokens without acknowledging another tenant or clo
       runAsSystem(() => storage.listPendingDispatches('invalid', 1, false)),
     ).rejects.toThrow('cursor');
     await closeResponseScopes(mongoose, owner, ['conversation-one']);
-    expect(
-      await storage.settleDispatch(owner, 'resp_one', { kind: 'create', id: 'resp_one' }),
-    ).toBe(false);
+    expect(await storage.settleDispatch(owner, oneId, { kind: 'create', id: oneId })).toBe(false);
   }));
 
 it('does not repair an inconsistent resume marker from an earlier create', () =>
   scoped(async () => {
     await pause();
-    await storage.reserveResume(owner, 'resp_one', resume(), 100);
+    await storage.reserveResume(owner, oneId, resume(), 100);
     await mongoose.models.StoredResponse.updateOne(
-      { responseId: 'resp_one' },
-      { $set: { dispatchOutbox: { kind: 'create', id: 'resp_one', state: 'settled' } } },
+      { responseId: oneId },
+      { $set: { dispatchOutbox: { kind: 'create', id: oneId, state: 'settled' } } },
     );
     expect(
       (await runAsSystem(() => storage.listPendingDispatches(undefined, 10, false))).responses,
@@ -2397,9 +2251,9 @@ it('does not repair an inconsistent resume marker from an earlier create', () =>
     expect(
       (await runAsSystem(() => storage.listPendingDispatches(undefined, 10, true))).responses,
     ).toEqual([]);
-    expect(
-      await storage.settleDispatch(owner, 'resp_one', { kind: 'resume', id: 'intent-one' }),
-    ).toBe(false);
+    expect(await storage.settleDispatch(owner, oneId, { kind: 'resume', id: 'intent-one' })).toBe(
+      false,
+    );
   }));
 
 it('bounds metadata pages across named and default tenants and omits expired requests', async () => {
@@ -2407,14 +2261,19 @@ it('bounds metadata pages across named and default tenants and omits expired req
     const tenantId = i % 2 ? undefined : owner.tenantId;
     await tenantStorage.run({ tenantId }, () =>
       storage.reserve(
-        reservation({ tenantId, responseId: 'page-' + i, requestKey: 'page-' + i, dispatch: true }),
+        reservation({
+          tenantId,
+          responseId: pageResponseIds[i],
+          requestKey: 'page-' + i,
+          dispatch: true,
+        }),
       ),
     );
   }
   await scoped(() =>
     storage.reserve(
       reservation({
-        responseId: 'expired',
+        responseId: createManagedMessageId(),
         requestKey: 'expired',
         conversationId: 'expired-conversation',
         expiredAt: new Date(0),
@@ -2430,12 +2289,7 @@ it('bounds metadata pages across named and default tenants and omits expired req
     found.push(...page.responses);
     cursor = page.next;
   } while (cursor);
-  expect(found.map((row) => row.responseId).sort()).toEqual([
-    'page-0',
-    'page-1',
-    'page-2',
-    'page-3',
-  ]);
+  expect(found.map((row) => row.responseId).sort()).toEqual([...pageResponseIds].sort());
   expect(new Set(found.map((row) => row.tenantId))).toEqual(new Set([undefined, owner.tenantId]));
 });
 
@@ -2443,11 +2297,11 @@ it('cannot overwrite a concurrently reserved resume with a late create acknowled
   scoped(async () => {
     await pause();
     const results = await Promise.all([
-      storage.settleDispatch(owner, 'resp_one', { kind: 'create', id: 'resp_one' }),
-      storage.reserveResume(owner, 'resp_one', resume(), 100),
+      storage.settleDispatch(owner, oneId, { kind: 'create', id: oneId }),
+      storage.reserveResume(owner, oneId, resume(), 100),
     ]);
     expect(results[1]).toMatchObject({ ok: true });
-    expect((await storage.read(owner, 'resp_one'))!.dispatchOutbox).toEqual({
+    expect((await storage.read(owner, oneId))!.dispatchOutbox).toEqual({
       kind: 'resume',
       id: 'intent-one',
       state: 'pending',

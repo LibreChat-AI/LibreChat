@@ -1,4 +1,8 @@
-import { createChatExpirationDate, createFallbackRetentionDate } from '@librechat/data-schemas';
+import {
+  createChatExpirationDate,
+  createFallbackRetentionDate,
+  createManagedConversationId,
+} from '@librechat/data-schemas';
 import type {
   IUser,
   ResponseOwner,
@@ -192,6 +196,7 @@ export function createBackgroundResponsesHost(
       resolveContinuation: async (owner, previous) => {
         const continuation = await resolveResponseContinuation(previous, owner.userId, {
           getMessage: deps.getMessage,
+          generateConversationId: createManagedConversationId,
         });
         const stored = previous
           ? await deps.getConvoRetention(owner.userId, continuation.conversationId)

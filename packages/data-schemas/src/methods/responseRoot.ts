@@ -5,12 +5,37 @@ import type {
   ResponseReservation,
 } from '~/models/response';
 import type { ManagedTarget } from '~/types/managed';
-import { registerResponseTarget, settleResponseTarget } from './registration';
+import {
+  registerResponseTarget,
+  settleResponseTarget,
+  settleAbsentResponseTarget,
+} from './registration';
 import { responseOwnerFilter, responseScopeKeys } from './responseScope';
+import { managedTargetFilter, retireManagedAllocation } from './managed';
+import { createIndexesWithRetry, retryWithBackoff } from '~/utils/retry';
 import { createStoredResponseModel } from '~/models/response';
 import { includeManagedAllocations } from '~/utils/managed';
-import { createIndexesWithRetry } from '~/utils/retry';
-import { managedTargetFilter } from './managed';
+import { initializeExpiration } from '~/utils/retention';
+
+function rootRegistration(target: ManagedTarget<'response'>) {
+  return {
+    key: createHash('sha256')
+      .update(JSON.stringify(['response', target.id.toLowerCase(), target.incarnation]))
+      .digest('hex'),
+    target,
+  };
+}
+
+/** The placeholder predicate can retire a losing candidate, never a published winner. */
+export async function discardResponseRoot(
+  mongoose: typeof import('mongoose'),
+  target: ManagedTarget<'response'>,
+  input: ResponseReservation,
+): Promise<void> {
+  await retireManagedAllocation(mongoose, target, target.id);
+  for (const conversationId of [undefined, input.conversationId])
+    await settleAbsentResponseTarget(mongoose, input, conversationId, rootRegistration(target));
+}
 
 /** Autonomous root deletion would lose the only checkpoint/child cleanup authority. */
 export async function prepareResponseRootStorage(
@@ -19,20 +44,23 @@ export async function prepareResponseRootStorage(
   const model = createStoredResponseModel(mongoose);
   await model.createCollection();
   for (const index of await model.listIndexes()) {
+    const name = index.name;
     if (
-      index.name !== 'expiredAt_1' ||
+      name !== 'expiredAt_1' ||
       index.expireAfterSeconds == null ||
       index.key.expiredAt !== 1 ||
       Object.keys(index.key).length !== 1
     )
       continue;
-    try {
-      // eslint-disable-next-line no-restricted-syntax -- model-owned DDL; only the verified obsolete TTL index is removed, never tenant payload.
-      await model.collection.dropIndex(index.name);
-    } catch (error) {
-      // Another instance may have removed the same obsolete index during startup.
-      if (!(error instanceof mongoose.mongo.MongoServerError) || error.code !== 27) throw error;
-    }
+    await retryWithBackoff(async () => {
+      try {
+        // eslint-disable-next-line no-restricted-syntax -- model-owned DDL; only the verified obsolete TTL index is removed, never tenant payload.
+        await model.collection.dropIndex(name);
+      } catch (error) {
+        // Another instance or an earlier uncertain attempt may have removed it.
+        if (!(error instanceof mongoose.mongo.MongoServerError) || error.code !== 27) throw error;
+      }
+    }, 'StoredResponse obsolete TTL removal');
   }
   await createIndexesWithRetry(model);
   if ((await model.listIndexes()).some((index) => index.expireAfterSeconds != null))
@@ -42,6 +70,19 @@ export async function prepareResponseRootStorage(
 export type ManagedResponseRecord = StoredResponseRecord & {
   storageTarget: ManagedTarget<'response'>;
 };
+
+export function assertResponseReservation(input: ResponseReservation): void {
+  if (
+    !input.userId ||
+    !/^resp_d_[a-f\d]{32}$/.test(input.responseId) ||
+    !input.requestKey ||
+    !input.fingerprint ||
+    !input.conversationId ||
+    (input.expiredAt != null &&
+      (!(input.expiredAt instanceof Date) || !Number.isFinite(input.expiredAt.getTime())))
+  )
+    throw new TypeError('Invalid Response reservation');
+}
 
 export function responseReference(record: ManagedResponseRecord): ResponseReference {
   return {
@@ -79,24 +120,16 @@ export async function publishResponseRoot(
   input: ResponseReservation,
   options?: { maxPendingTargetsPerScope?: number },
 ): Promise<ManagedResponseRecord | null> {
+  assertResponseReservation(input);
   if (
     target.kind !== 'response' ||
-    (input.tenantId || undefined) !== (target.tenantId || undefined) ||
-    !input.userId ||
-    !/^resp_d_[a-f\d]{32}$/.test(input.responseId) ||
-    !input.requestKey ||
-    !input.fingerprint ||
-    !input.conversationId ||
-    (input.expiredAt != null &&
-      (!(input.expiredAt instanceof Date) || !Number.isFinite(input.expiredAt.getTime())))
+    (input.tenantId || undefined) !== (target.tenantId || undefined)
   )
     throw new TypeError('Invalid Response root publication');
   const physical = managedTargetFilter(mongoose, target);
   const [ownerKey, conversationKey] = responseScopeKeys(input, input.conversationId);
-  const key = createHash('sha256')
-    .update(JSON.stringify(['response', target.id.toLowerCase(), target.incarnation]))
-    .digest('hex');
-  const entry = { key, target };
+  const entry = rootRegistration(target);
+  const { key } = entry;
   let expiredAt = input.expiredAt;
   for (const conversationId of [undefined, input.conversationId]) {
     const registered = await registerResponseTarget(
@@ -133,6 +166,19 @@ export async function publishResponseRoot(
   );
   if (sealed.matchedCount !== 1) return null;
   const { dispatch, ...reservation } = input;
+  delete reservation.expiredAt;
+  if (expiredAt) {
+    const initial = initializeExpiration(
+      { ...physical, ...metadata, '_managed.phase': 'registered' },
+      expiredAt,
+    );
+    await includeManagedAllocations(
+      model.updateOne(initial.filter, initial.update, {
+        upsert: false,
+        timestamps: false,
+      }),
+    );
+  }
   const record = await includeManagedAllocations(
     model.findOneAndUpdate(
       {
@@ -147,7 +193,6 @@ export async function publishResponseRoot(
         $set: {
           ...reservation,
           storageTarget: target,
-          ...(expiredAt ? { expiredAt } : {}),
           ...(dispatch
             ? { dispatchOutbox: { kind: 'create', id: input.responseId, state: 'pending' } }
             : {}),
@@ -155,6 +200,7 @@ export async function publishResponseRoot(
           revision: 0,
           '_managed.phase': 'published',
         },
+        ...(expiredAt ? { $min: { expiredAt } } : {}),
       },
       { new: true, upsert: false },
     ),

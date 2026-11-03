@@ -9,19 +9,27 @@ import type {
   ResponseTerminalReceipt,
 } from '~/models/response';
 import type { ResponseTurnWrites } from './responseTurn';
+import type { ManagedTarget } from '~/types/managed';
+import {
+  prepareResponseRootStorage,
+  publishResponseRoot,
+  discardResponseRoot,
+  assertResponseReservation,
+  responseRootFilter,
+} from './responseRoot';
 import {
   responseScopeKeys,
-  responseScopeRetentionUpdate,
   responseOwnerFilter,
   isResponseScopeClosed,
   initializeResponseScopes,
+  createResponseRetention,
 } from './responseScope';
 import { sameResponseTerminalReceipt, terminalReceipt, terminalFilter } from '~/utils/receipt';
 import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
+import { allocateManagedTarget, managedTargetFilter } from './managed';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
 import { getTransactionSupport } from '~/utils/transactions';
-import { prepareResponseRootStorage } from './responseRoot';
 import { activeExpirationFilter } from '~/utils/retention';
 import { materializeResponseTurn } from './responseTurn';
 
@@ -79,7 +87,13 @@ export type ResponseResumeResult =
 export interface ResponseExecutionGuard {
   execution: Pick<
     StoredResponseRecord,
-    'agentId' | 'sourceKeyId' | 'conversationId' | 'generationCreatedAt' | 'review' | 'resume'
+    | 'agentId'
+    | 'sourceKeyId'
+    | 'conversationId'
+    | 'generationCreatedAt'
+    | 'review'
+    | 'resume'
+    | 'storageTarget'
   >;
 }
 
@@ -108,9 +122,19 @@ function responseReviewFilter(
   return filter;
 }
 
-function responseExecutionFilter(guard: ResponseExecutionGuard) {
+function responseExecutionFilter(
+  mongoose: typeof import('mongoose'),
+  owner: ResponseOwner,
+  guard: ResponseExecutionGuard,
+) {
   const { execution } = guard;
+  if (
+    execution.storageTarget &&
+    (execution.storageTarget.tenantId || undefined) !== (owner.tenantId || undefined)
+  )
+    return null;
   const filter: Record<string, unknown> = {
+    ...(execution.storageTarget ? managedTargetFilter(mongoose, execution.storageTarget) : {}),
     agentId: execution.agentId,
     sourceKeyId: execution.sourceKeyId ?? { $exists: false },
     conversationId: execution.conversationId,
@@ -256,7 +280,9 @@ export function createResponseStorage(
       });
     return indexPromise;
   }
-  function ownerScope(owner: ResponseOwner) {
+  function ownerScope(
+    owner: ResponseOwner & { storageTarget?: ManagedTarget<'response'>; responseId?: string },
+  ) {
     if (!owner.userId || owner.tenantId === '__SYSTEM__')
       throw new TypeError('Invalid response owner');
     const tenantId = getTenantId() || undefined;
@@ -266,10 +292,20 @@ export function createResponseStorage(
       tenantId !== (owner.tenantId || undefined)
     )
       throw new TypeError('Response tenant does not match authenticated scope');
+    if (owner.storageTarget) {
+      if (!owner.responseId) throw new TypeError('Response root identity is unavailable');
+      return responseRootFilter(mongoose, {
+        ...owner,
+        responseId: owner.responseId,
+        target: owner.storageTarget,
+      });
+    }
     return responseOwnerFilter(owner);
   }
   const scope = (owner: ResponseOwner) => ({
     ...ownerScope(owner),
+    '_managed.phase': 'published',
+    retiredAt: { $exists: false },
     $and: [activeExpirationFilter<StoredResponseRecord>()],
   });
   async function commitInOpenScope<T>(
@@ -315,7 +351,8 @@ export function createResponseStorage(
     async prepareTerminal(owner, responseId, guard, receipt) {
       if (guard.execution.generationCreatedAt !== receipt.generationCreatedAt)
         return { ok: false, code: 'response_conflict' };
-      const execution = responseExecutionFilter(guard);
+      const execution = responseExecutionFilter(mongoose, owner, guard);
+      if (!execution) return { ok: false, code: 'response_conflict' };
       const preparedTerminal = terminalReceipt(receipt);
       return commitInOpenScope<ResponseMutationResult>(
         owner,
@@ -375,7 +412,8 @@ export function createResponseStorage(
         return { ok: false, code: 'response_conflict' };
       if (guard.execution.generationCreatedAt !== receipt.generationCreatedAt)
         return { ok: false, code: 'response_conflict' };
-      const execution = responseExecutionFilter(guard);
+      const execution = responseExecutionFilter(mongoose, owner, guard);
+      if (!execution) return { ok: false, code: 'response_conflict' };
       const pendingTerminal = terminalReceipt(receipt);
       return commitInOpenScope<ResponseMutationResult>(
         owner,
@@ -502,7 +540,8 @@ export function createResponseStorage(
     async publishReview(owner, responseId, guard, generationCreatedAt, review, responseJSON) {
       if (guard.execution.generationCreatedAt !== generationCreatedAt)
         return { ok: false, code: 'response_conflict' };
-      const execution = responseExecutionFilter(guard);
+      const execution = responseExecutionFilter(mongoose, owner, guard);
+      if (!execution) return { ok: false, code: 'response_conflict' };
       const receiptFilter = {
         ...scope(owner),
         responseId,
@@ -684,116 +723,55 @@ export function createResponseStorage(
       return { ok: false, code: 'response_conflict' };
     },
     async reserve(input) {
-      const { dispatch, ...reservationInput } = input;
-      if (
-        input.expiredAt != null &&
-        (!(input.expiredAt instanceof Date) || !Number.isFinite(input.expiredAt.getTime()))
-      )
-        throw new TypeError('Invalid response expiration');
-      const filter = { ...scope(input), requestKey: input.requestKey };
-      transactionSupport = await getTransactionSupport(mongoose, transactionSupport);
-      if (!transactionSupport) return { ok: false, code: 'response_unavailable' };
+      input = { ...input };
+      assertResponseReservation(input);
+      const filter = { ...ownerScope(input), requestKey: input.requestKey };
       await ensureIndexes();
-      const prior = await model.findOne(filter).select('conversationId').lean();
-      const keys = responseScopeKeys(input, prior?.conversationId ?? input.conversationId);
-      await initializeResponseScopes(mongoose, keys);
-      const session = await mongoose.startSession({
-        defaultTransactionOptions: { readPreference: 'primary' },
-      });
-      try {
-        let result: ResponseReservationResult | undefined;
-        await session.withTransaction(async () => {
-          // A write, not a snapshot read: erasure waits for admitted insertions to commit.
-          const scopes = createResponseScopeModel(mongoose);
-          const touched = await scopes.updateOne(
-            { _id: keys[0], closed: false },
-            { $inc: { revision: 1 } },
-            { session },
-          );
-          if (touched.matchedCount !== 1) {
-            result = { ok: false, code: 'response_unavailable' };
-            return;
-          }
-          const existing = await model.findOne(filter).session(session).lean();
-          const conversationKey = responseScopeKeys(
-            input,
-            existing?.conversationId ?? input.conversationId,
-          )[1];
-          const conversation = await scopes
-            .findOneAndUpdate(
-              { _id: conversationKey, closed: false },
-              {
-                ...(input.expiredAt
-                  ? responseScopeRetentionUpdate(input.expiredAt)
-                  : { $inc: { revision: 1 } }),
-              },
-              { session, new: true },
-            )
-            .lean();
-          if (!conversation) {
-            result = { ok: false, code: 'response_unavailable' };
-            return;
-          }
-          if (conversation.expiredAt) {
-            await model.updateMany(
-              {
-                ...responseOwnerFilter(input),
-                conversationId: existing?.conversationId ?? input.conversationId,
-                $or: [{ expiredAt: null }, { expiredAt: { $gt: conversation.expiredAt } }],
-              },
-              { $set: { expiredAt: conversation.expiredAt } },
-              { session },
-            );
-            if (existing && (!existing.expiredAt || conversation.expiredAt < existing.expiredAt))
-              existing.expiredAt = conversation.expiredAt;
-            if (conversation.expiredAt.getTime() <= Date.now()) {
-              result = { ok: false, code: 'response_unavailable' };
-              return;
-            }
-          }
-          if (existing) {
-            result =
-              existing.fingerprint === input.fingerprint
-                ? { ok: true, record: existing, replayed: true }
-                : { ok: false, code: 'idempotency_conflict' };
-            return;
-          }
-          const [created] = await model.create(
-            [
-              {
-                ...reservationInput,
-                ...(dispatch
-                  ? { dispatchOutbox: { kind: 'create', id: input.responseId, state: 'pending' } }
-                  : {}),
-                ...(conversation.expiredAt ? { expiredAt: conversation.expiredAt } : {}),
-                status: 'queued',
-                revision: 0,
-              },
-            ],
-            {
-              session,
-            },
-          );
-          result = { ok: true, record: created.toObject(), replayed: false };
-        });
-        if (!result) throw new Error('Response reservation did not commit');
-        return result;
-      } catch (error) {
-        if (!(error instanceof mongoose.mongo.MongoServerError) || error.code !== 11000)
-          throw error;
-        const existing = await model.findOne(filter).lean();
-        if (!existing) {
-          if (await model.exists({ ...responseOwnerFilter(input), requestKey: input.requestKey }))
-            return { ok: false, code: 'response_unavailable' };
-          throw error;
-        }
-        if (await isResponseScopeClosed(mongoose, input, existing.conversationId))
+      const existing = await model.findOne(filter).lean();
+      const replay = async (record: StoredResponseRecord): Promise<ResponseReservationResult> => {
+        if (
+          !record.storageTarget ||
+          record.retiredAt ||
+          (record.expiredAt && record.expiredAt <= new Date()) ||
+          (await isResponseScopeClosed(mongoose, input, record.conversationId))
+        )
           return { ok: false, code: 'response_unavailable' };
-        return existing.fingerprint === input.fingerprint
-          ? { ok: true, record: existing, replayed: true }
-          : { ok: false, code: 'idempotency_conflict' };
-      } finally {
-        await session.endSession();
+        if (record.fingerprint !== input.fingerprint)
+          return { ok: false, code: 'idempotency_conflict' };
+        if (input.expiredAt)
+          await createResponseRetention(mongoose)(input, record.conversationId, input.expiredAt);
+        const current = await model
+          .findOne({ ...scope(record), responseId: record.responseId })
+          .lean();
+        if (!current || (await isResponseScopeClosed(mongoose, input, current.conversationId)))
+          return { ok: false, code: 'response_unavailable' };
+        return { ok: true, record: current, replayed: true };
+      };
+      if (existing) return replay(existing);
+      const conversationId = input.conversationId;
+      await initializeResponseScopes(mongoose, responseScopeKeys(input, conversationId));
+      if (input.expiredAt)
+        await createResponseRetention(mongoose)(input, conversationId, input.expiredAt);
+      if (await isResponseScopeClosed(mongoose, input, conversationId))
+        return { ok: false, code: 'response_unavailable' };
+      const target = await allocateManagedTarget(mongoose, 'response', input.tenantId);
+      try {
+        const record = await publishResponseRoot(mongoose, target, input);
+        if (!record) {
+          await discardResponseRoot(mongoose, target, input);
+          return { ok: false, code: 'response_unavailable' };
+        }
+        if (await isResponseScopeClosed(mongoose, input, record.conversationId))
+          return { ok: false, code: 'response_unavailable' };
+        return { ok: true, record, replayed: false };
+      } catch (error) {
+        await discardResponseRoot(mongoose, target, input);
+        // Allocation already received an unambiguous acknowledgment. A primary read
+        // of the published winner may resolve a lost publication reply or a key race;
+        // absence never converts an operational failure into success.
+        const winner = await model.findOne(filter).lean();
+        if (winner) return replay(winner);
+        throw error;
       }
     },
     async listPendingDispatches(cursor, limit, includeResume) {

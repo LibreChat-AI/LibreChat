@@ -20,6 +20,12 @@ import {
   prepareResponseRootStorage,
 } from './responseRoot';
 import {
+  responseScopeKeys,
+  closeResponseScopes,
+  createResponseRetention,
+  eraseResponseRecords,
+} from './responseScope';
+import {
   registerResponseTarget,
   settleResponseTarget,
   reconcileResponseTargets,
@@ -36,7 +42,7 @@ import { includeManagedAllocations } from '~/utils/managed';
 import { createConversationMethods } from './conversation';
 import { createConversationModel } from '~/models/convo';
 import { createMessageModel } from '~/models/message';
-import { responseScopeKeys } from './responseScope';
+import { createResponseStorage } from './response';
 import { createMessageMethods } from './message';
 
 describe('managed target allocation on real storage', () => {
@@ -130,6 +136,180 @@ describe('managed target allocation on real storage', () => {
         dispatch: true,
       };
     }
+    it('reserves one canonical response across concurrent retries without sessions or transactions', async () => {
+      const storage = createResponseStorage(db);
+      const input = rootInput();
+      const session = jest.spyOn(db, 'startSession');
+      const results = await Promise.all(
+        Array.from({ length: 8 }, () =>
+          storage.reserve({
+            ...input,
+            responseId: createManagedMessageId(),
+            conversationId: createManagedConversationId(),
+          }),
+        ),
+      );
+      expect(results.every((result) => result.ok)).toBe(true);
+      expect(results.filter((result) => result.ok && !result.replayed)).toHaveLength(1);
+      const records = results.flatMap((result) => (result.ok ? [result.record] : []));
+      expect(new Set(records.map((record) => record.storageTarget?.id)).size).toBe(1);
+      expect(new Set(records.map((record) => record.conversationId)).size).toBe(1);
+      expect(session).not.toHaveBeenCalled();
+      const model = createStoredResponseModel(db);
+      expect(await model.countDocuments({ userId: input.userId })).toBe(1);
+      const ownerKey = responseScopeKeys(input, input.conversationId)[0];
+      expect(
+        await model.collection.countDocuments({
+          userId: { $exists: false },
+          '_managed.ownerKey': ownerKey,
+        }),
+      ).toBe(0);
+      expect(await createResponseScopeModel(db).findById(ownerKey).lean()).toMatchObject({
+        pendingCount: 0,
+      });
+    });
+    it('keeps the original request unchanged when an idempotency conflict supplies a shorter deadline', async () => {
+      const storage = createResponseStorage(db);
+      const input = rootInput();
+      const first = await storage.reserve(input);
+      expect(first.ok).toBe(true);
+      expect(
+        await storage.reserve({
+          ...input,
+          fingerprint: 'different',
+          expiredAt: new Date(Date.now() + 1_000),
+        }),
+      ).toEqual({
+        ok: false,
+        code: 'idempotency_conflict',
+      });
+      expect((await storage.read(input, input.responseId))?.expiredAt).toBeUndefined();
+    });
+    it('denies reservation after owner closure before allocating private response data', async () => {
+      const storage = createResponseStorage(db);
+      const input = rootInput();
+      await closeResponseScopes(db, input);
+      expect(await storage.reserve(input)).toEqual({ ok: false, code: 'response_unavailable' });
+      expect(await createStoredResponseModel(db).countDocuments({ userId: input.userId })).toBe(0);
+    });
+    it.each(['owner', 'conversation', 'retention'] as const)(
+      'erases a registered allocation before a delayed %s publication can land',
+      async (kind) => {
+        const storage = createResponseStorage(db);
+        const input = rootInput();
+        let enter!: () => void;
+        let release!: () => void;
+        const entered = new Promise<void>((resolve) => {
+          enter = resolve;
+        });
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const collection = createStoredResponseModel(db).collection;
+        const publish = collection.findOneAndUpdate.bind(collection);
+        jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+          enter();
+          await gate;
+          return publish(...args);
+        });
+        const pending = storage.reserve(input);
+        await entered;
+        try {
+          if (kind === 'retention')
+            await createResponseRetention(db)(
+              input,
+              input.conversationId,
+              new Date(Date.now() - 1),
+            );
+          else
+            await closeResponseScopes(
+              db,
+              input,
+              kind === 'owner' ? undefined : [input.conversationId],
+            );
+          await eraseResponseRecords(
+            db,
+            input,
+            kind === 'owner' ? undefined : [input.conversationId],
+          );
+        } finally {
+          release();
+        }
+        expect(await pending).toEqual({ ok: false, code: 'response_unavailable' });
+        expect(await collection.countDocuments({ userId: input.userId })).toBe(0);
+        expect(await storage.read(input, input.responseId)).toBeNull();
+      },
+    );
+    it('recovers an applied reservation after a lost publication reply without replaying allocation', async () => {
+      const storage = createResponseStorage(db);
+      const input = rootInput();
+      const collection = createStoredResponseModel(db).collection;
+      const original = collection.findOneAndUpdate.bind(collection);
+      jest.spyOn(collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+        await original(...args);
+        throw new Error('reservation publication acknowledgment lost');
+      });
+      expect(await storage.reserve(input)).toMatchObject({ ok: true, replayed: true });
+      const first = await storage.read(input, input.responseId);
+      expect(first?.storageTarget).toBeDefined();
+      const replay = await storage.reserve({
+        ...input,
+        responseId: createManagedMessageId(),
+        conversationId: createManagedConversationId(),
+      });
+      expect(replay).toMatchObject({
+        ok: true,
+        replayed: true,
+        record: { storageTarget: first?.storageTarget },
+      });
+      expect(await createStoredResponseModel(db).countDocuments({ userId: input.userId })).toBe(1);
+    });
+    it('keeps a stale internal response handle bound to its deleted physical root', async () => {
+      const storage = createResponseStorage(db);
+      const input = rootInput();
+      const first = await storage.reserve(input);
+      if (!first.ok || !first.record.storageTarget) throw new Error('Reservation failed');
+      await createStoredResponseModel(db).deleteOne(
+        managedTargetFilter(db, first.record.storageTarget),
+      );
+      const replacement = await storage.reserve(input);
+      if (!replacement.ok) throw new Error('Replacement fixture failed');
+      expect(await storage.read(first.record, input.responseId)).toBeNull();
+      expect(
+        await storage.publish(first.record, input.responseId, 0, {
+          status: 'in_progress',
+          generationCreatedAt: 1,
+          responseJSON: '{}',
+        }),
+      ).toEqual({ ok: false, code: 'response_conflict' });
+      expect(await storage.read(input, input.responseId)).toMatchObject({
+        storageTarget: replacement.record.storageTarget,
+        revision: 0,
+      });
+    });
+    it('does not restore a stale response deadline after a concurrent shortening', async () => {
+      const storage = createResponseStorage(db);
+      const input = rootInput();
+      const first = await storage.reserve(input);
+      expect(first.ok).toBe(true);
+      const earlier = new Date(Date.now() + 60_000);
+      const later = new Date(Date.now() + 120_000);
+      const retain = createResponseRetention(db);
+      const collection = createStoredResponseModel(db).collection;
+      const original = collection.updateMany.bind(collection);
+      let delayed = false;
+      jest.spyOn(collection, 'updateMany').mockImplementation(async (...args) => {
+        const expiration = Array.isArray(args[1]) ? undefined : args[1].$min?.expiredAt;
+        if (!delayed && expiration instanceof Date && expiration.getTime() === later.getTime()) {
+          delayed = true;
+          await retain(input, input.conversationId, earlier);
+        }
+        return original(...args);
+      });
+      await retain(input, input.conversationId, later);
+      expect(delayed).toBe(true);
+      expect((await storage.read(input, input.responseId))?.expiredAt).toEqual(earlier);
+    });
     async function checkpointFixture() {
       const target = await allocateManagedTarget(db, 'response');
       const input = rootInput();

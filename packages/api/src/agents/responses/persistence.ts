@@ -58,6 +58,7 @@ export type StoredResponseMessage = {
 };
 
 type ResponseReferenceDeps = {
+  generateConversationId?: () => string;
   getMessage: (query: { user: string; messageId: string }) => Promise<StoredResponseMessage | null>;
 };
 
@@ -90,7 +91,10 @@ async function resolveStoredContinuation(
   deps: ResponseReferenceDeps,
 ): Promise<{ conversationId: string; parentMessageId: string }> {
   if (!previousResponseId) {
-    return { conversationId: uuidv4(), parentMessageId: rootParent };
+    return {
+      conversationId: (deps.generateConversationId ?? uuidv4)(),
+      parentMessageId: rootParent,
+    };
   }
   const message = await deps.getMessage({ user: userId, messageId: previousResponseId });
   if (message && !message.isCreatedByUser && !message.isUserSubmitted && message.conversationId) {
