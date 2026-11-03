@@ -15,7 +15,7 @@ const { getEffectivePermissions } = require('./PermissionService');
 const db = require('~/models');
 
 module.exports = createChannelApplicationAuthority({
-  storage: createChannelRunStorage(mongoose),
+  storage: createChannelRunStorage(mongoose, {}, db.getDurableStorageConfig),
   policy: createChannelApplicationPolicy({
     readAppConfig: getAppConfig,
     findUser: db.findUser,

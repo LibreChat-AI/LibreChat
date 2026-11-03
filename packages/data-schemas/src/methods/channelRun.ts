@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import {
   channelStorageConfigSchema,
   CHANNEL_DELIVERY_PARTS_HARD_MAX,
@@ -10,6 +9,7 @@ import type {
   ChannelDeliveryPlan,
   ChannelDeliveryReceipt,
   ChannelRunProgress,
+  DurableStorageConfig,
 } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { ChannelRunRecord, ChannelPrincipalLaneRecord } from '~/models/channelRun';
@@ -29,13 +29,15 @@ import {
   leaseDeadline,
   ChannelRunConflict,
 } from './channelProtocol';
-import { initializeChannelScope, touchChannelAuthority, touchChannelScope } from './channelScope';
+import { initializeChannelScope, touchChannelScope } from './channelScope';
 import { startRequiredTransactionSession } from '~/utils/transactions';
+import { createChannelRunPublication } from './channelRunPublication';
 import { prepareChannelOwnerAdmission } from './channelOwner';
 import { createManagedConversationId } from '~/utils/managed';
 import { createChannelIndexGate } from './channelIndexes';
 import { responseOwnerFilter } from './responseScope';
 import { getTenantId } from '~/config/tenantContext';
+import { managedTargetFilter } from './managed';
 
 export type { ChannelRunRecord, ChannelLaneRecord } from '~/models/channelRun';
 
@@ -206,12 +208,14 @@ function authorityLost(run: ChannelRunRecord): Partial<ChannelRunRecord> {
   };
 }
 
-/** Mongo transactions protect FIFO and cursor/receipt commit; a standalone Mongo fails closed. */
+/** Admission uses registered roots; remaining delivery transitions are converted separately. */
 export function createChannelRunStorage(
   mongoose: typeof import('mongoose'),
   options: Partial<ChannelStorageConfig> = {},
+  getDurableConfig: () => Promise<Partial<DurableStorageConfig>> = async () => ({}),
 ): ChannelRunStorage {
   const limits = channelStorageConfigSchema.parse(options);
+  const publication = createChannelRunPublication(mongoose, getDurableConfig);
   const runs = () => mongoose.model<ChannelRunRecord>('ChannelRun');
   const lanes = () => mongoose.model<ChannelPrincipalLaneRecord>('ChannelLane');
   const ensureIndexes = createChannelIndexGate(() => [runs(), lanes()]);
@@ -385,116 +389,11 @@ export function createChannelRunStorage(
           .lean();
       });
     },
-    async admit(input, now) {
-      const ownerAdmission = await prepareChannelOwnerAdmission(mongoose, {
-        userId: input.principal.userId,
-        tenantId: input.tenantId === '_' ? undefined : input.tenantId,
-      });
-      await initializeChannelScope(mongoose, input.tenantId, input.channelId);
-      const assertAuthority = async (session: ClientSession) => {
-        if (!(await ownerAdmission(session))) throw new ChannelRunConflict('invalid_transition');
-        if (
-          !(await touchChannelAuthority(
-            mongoose,
-            {
-              tenantId: input.tenantId,
-              channelId: input.channelId,
-              agentId: input.agentId,
-              channelRevision: input.principal.channelRevision,
-              teamId: input.admission.actor.teamId,
-              appId: input.admission.actor.appId,
-              principal: input.principal,
-              externalUserId: input.admission.actor.externalUserId,
-              now,
-            },
-            session,
-          ))
-        )
-          throw new ChannelRunConflict('invalid_transition');
-      };
-      const eventKey = {
-        tenantId: input.tenantId,
-        channelId: input.channelId,
-        'admission.actor.teamId': input.admission.actor.teamId,
-        'admission.actor.appId': input.admission.actor.appId,
-        'admission.eventId': input.admission.eventId,
-      };
-      const payloadHash = digest(input.admission);
-      const laneId = laneKey(input);
-      try {
-        return await transaction(async (session) => {
-          await assertAuthority(session);
-          const existing = await runs().findOne(eventKey).session(session).lean();
-          if (existing) {
-            if (
-              digest(existing.admission) !== payloadHash ||
-              existing.agentId !== input.agentId ||
-              digest(existing.principal) !== digest(input.principal)
-            )
-              throw new ChannelRunConflict('event_conflict');
-            return { run: existing, duplicate: true };
-          }
-          const lane = await lanes()
-            .findOneAndUpdate(
-              { tenantId: input.tenantId, laneId },
-              {
-                $inc: { nextSequence: 1 },
-                $setOnInsert: {
-                  kind: 'principal',
-                  revision: 0,
-                  channelId: input.channelId,
-                  userId: input.principal.userId,
-                },
-              },
-              { upsert: true, new: true, session },
-            )
-            .lean();
-          if (!lane) throw new Error('Channel lane unavailable');
-          const [record] = await runs().create(
-            [
-              {
-                ...input,
-                runId: randomUUID(),
-                laneId,
-                payloadHash,
-                sequence: lane.nextSequence,
-                receivedAt: now,
-                state: 'queued',
-                leaseEpoch: 0,
-                leaseExpiresAt: 0,
-                receipts: [],
-                cancellationRequested: false,
-              },
-            ],
-            { session },
-          );
-          return { run: record.toObject(), duplicate: false };
-        });
-      } catch (error) {
-        if (
-          !(error instanceof mongoose.mongo.MongoServerError) ||
-          error.code !== 11000 ||
-          (error.keyPattern?.['admission.eventId'] == null &&
-            !error.message.includes('channel_run_event_v2'))
-        )
-          throw error;
-        return transaction(async (session) => {
-          await assertAuthority(session);
-          const existing = await runs().findOne(eventKey).session(session).lean();
-          if (!existing) throw new ChannelRunConflict('event_conflict');
-          if (
-            digest(existing.admission) !== payloadHash ||
-            existing.agentId !== input.agentId ||
-            digest(existing.principal) !== digest(input.principal)
-          )
-            throw new ChannelRunConflict('event_conflict');
-          return { run: existing, duplicate: true };
-        });
-      }
-    },
+    admit: publication.admit,
     async claim(tenantId, channelId, owner, now, leaseMs) {
       if (!owner || !Number.isSafeInteger(leaseMs) || leaseMs <= 0)
         throw new Error('Invalid channel lease');
+      await publication.recoverPending(tenantId, channelId, now, limits.claimBatchSize);
       return transaction(async (session) => {
         const candidates = await runs()
           .find({
@@ -510,14 +409,26 @@ export function createChannelRunStorage(
           .lean();
         const laneCache = new Map<string, ChannelPrincipalLaneRecord | null>();
         for (const run of candidates) {
-          if (!laneCache.has(run.laneId))
+          if (!run.publication) throw new Error('Channel Run publication identity unavailable');
+          const laneIdentity = `${run.publication.lane.id}:${run.publication.lane.incarnation}`;
+          if (!laneCache.has(laneIdentity))
             laneCache.set(
-              run.laneId,
-              await lanes().findOne({ tenantId, laneId: run.laneId }).session(session).lean(),
+              laneIdentity,
+              await lanes()
+                .findOne({
+                  ...managedTargetFilter(mongoose, run.publication.lane),
+                  tenantId,
+                  laneId: run.laneId,
+                  kind: 'principal',
+                  '_managed.phase': 'published',
+                })
+                .session(session)
+                .lean(),
             );
-          const lane = laneCache.get(run.laneId);
+          const lane = laneCache.get(laneIdentity);
           if (
             !lane ||
+            run.sequence > (lane.publishedThrough ?? -1) ||
             (lane.activeRunId && lane.activeRunId !== run.runId) ||
             (await runs()
               .exists({

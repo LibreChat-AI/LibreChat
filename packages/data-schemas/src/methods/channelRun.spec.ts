@@ -22,7 +22,7 @@ const event = (eventId = 'event', actorId = 'actor') => ({
   tenantId,
   channelId: 'channel',
   agentId: 'agent',
-  principal: { userId: actorId, channelRevision: 'revision' },
+  principal: { userId: 'actor', channelRevision: 'revision' },
   admission: {
     eventId,
     externalChannelId: 'C1',
@@ -63,7 +63,7 @@ async function seedTenantlessChannel() {
   return createAgentChannelMethods(mongoose).createAgentChannel({
     channelId: 'channel',
     agentId: 'agent',
-    createdBy: 'channel-owner',
+    createdBy: 'actor',
     type: 'slack',
     status: 'active',
     credentialMode: 'shared',
@@ -89,7 +89,7 @@ beforeEach(async () => {
         tenantId,
         channelId: 'channel',
         agentId: 'agent',
-        createdBy: 'channel-owner',
+        createdBy: 'actor',
         type: 'slack',
         status: 'active',
         credentialMode: 'shared',
@@ -115,7 +115,9 @@ it('admits concurrent retries as one event and one lane sequence', () =>
     expect(new Set(attempts.map(({ run }) => run.runId)).size).toBe(1);
     expect(attempts.filter(({ duplicate }) => !duplicate)).toHaveLength(1);
     expect(await mongoose.models.ChannelRun.countDocuments({ tenantId })).toBe(1);
-    expect(await mongoose.models.ChannelLane.findOne({ tenantId }).lean()).toMatchObject({
+    expect(
+      await mongoose.models.ChannelLane.findOne({ tenantId, kind: 'principal' }).lean(),
+    ).toMatchObject({
       nextSequence: 1,
     });
   }));
@@ -184,7 +186,9 @@ it('holds the lane until every required delivery has been confirmed', () =>
     await expect(storage.commitDelivery(tenantId, fence(run), 105)).rejects.toMatchObject({
       code: 'delivery_incomplete',
     });
-    expect(await mongoose.models.ChannelLane.findOne({ tenantId }).lean()).toMatchObject({
+    expect(
+      await mongoose.models.ChannelLane.findOne({ tenantId, kind: 'principal' }).lean(),
+    ).toMatchObject({
       activeRunId: run.runId,
     });
   }));
@@ -844,7 +848,7 @@ it.each(['teamId', 'appId', 'externalChannelId', 'externalThreadKey', 'agentId']
         return;
       }
       if (field === 'teamId' || field === 'appId') {
-        await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'channel-owner', {
+        await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'actor', {
           revision: 'rotated',
           slack: {
             teamId: second.admission.actor.teamId,
@@ -1347,7 +1351,7 @@ it('distinguishes two apps whose delivered provider-local reply keys collide', (
     const second = event('two');
     second.admission.actor.appId = 'another-app';
     const a = await storage.admit(first, 100);
-    await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'channel-owner', {
+    await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'actor', {
       revision: 'rotated',
       slack: { teamId: 'T1', appId: 'another-app', botUserId: 'B1' },
     });

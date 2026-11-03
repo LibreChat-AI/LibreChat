@@ -7,7 +7,7 @@ const mockGetDurableConfig = jest.fn();
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
   createChannelIdentityStorage: jest.fn(() => mockIdentityStorage),
-  createChannelRunStorage: () => mockRunStorage,
+  createChannelRunStorage: jest.fn(() => mockRunStorage),
   createResponseStorage: () => mockResponseStorage,
 }));
 jest.mock('./Config', () => ({ getAppConfig: (...args) => mockGetConfig(...args) }));
@@ -51,6 +51,11 @@ it('loads the actual disabled host without validating a link origin or reading c
   expect(mockGetConfig).not.toHaveBeenCalled();
   expect(require('@librechat/data-schemas').createChannelIdentityStorage).toHaveBeenCalledWith(
     require('mongoose'),
+    mockGetDurableConfig,
+  );
+  expect(require('@librechat/data-schemas').createChannelRunStorage).toHaveBeenCalledWith(
+    require('mongoose'),
+    {},
     mockGetDurableConfig,
   );
   expect(mockGetDurableConfig).not.toHaveBeenCalled();

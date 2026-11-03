@@ -36,6 +36,14 @@ export interface ChannelRunRecord extends Omit<ChannelRunView, 'revision'> {
   };
   errorCode?: string;
   deliveredAt?: number;
+  /** Captured once before private staging; recovery never adopts logical replacements. */
+  publication?: {
+    creatorId: string;
+    lane: ManagedTarget<'channelLane'>;
+    control: ManagedTarget<'channelLane'>;
+    channel: ChannelLaneAuthorityRef<'channel'>;
+    identity?: ChannelLaneAuthorityRef<'channelIdentity'>;
+  };
 }
 
 export interface ChannelLaneAuthorityRef<
@@ -114,6 +122,32 @@ export interface ChannelPrincipalLaneRecord {
 
 export type ChannelLaneRecord = ChannelPrincipalLaneRecord | ChannelControlLaneRecord;
 
+function channelPhysicalSchema() {
+  return new Schema(
+    {
+      kind: {
+        type: String,
+        enum: ['channel', 'channelIdentity', 'channelRun', 'channelLane'],
+        required: true,
+      },
+      id: { type: String, match: /^[a-f\d]{24}$/, required: true },
+      incarnation: { type: String, required: true },
+      tenantId: String,
+    },
+    { _id: false },
+  );
+}
+
+function channelAuthoritySchema() {
+  return new Schema(
+    {
+      target: { type: channelPhysicalSchema(), required: true },
+      revision: { type: String, required: true },
+    },
+    { _id: false },
+  );
+}
+
 export function createChannelRunModel(
   mongoose: typeof import('mongoose'),
 ): Model<ChannelRunRecord> {
@@ -176,6 +210,19 @@ export function createChannelRunModel(
       leaseEpoch: { type: Number, required: true, default: 0 },
       leaseExpiresAt: { type: Number, required: true, default: 0 },
       claimCheckedAt: { type: Number, default: 0 },
+      publication: {
+        type: new Schema(
+          {
+            creatorId: { type: String, required: true },
+            lane: { type: channelPhysicalSchema(), required: true },
+            control: { type: channelPhysicalSchema(), required: true },
+            channel: { type: channelAuthoritySchema(), required: true },
+            identity: { type: channelAuthoritySchema(), default: undefined },
+          },
+          { _id: false },
+        ),
+        default: undefined,
+      },
       execution: Schema.Types.Mixed,
       snapshot: Schema.Types.Mixed,
       progress: Schema.Types.Mixed,
@@ -187,6 +234,16 @@ export function createChannelRunModel(
     },
     { timestamps: true, minimize: false },
   );
+  schema.pre('validate', function () {
+    for (const [path, kind] of [
+      ['publication.lane.kind', 'channelLane'],
+      ['publication.control.kind', 'channelLane'],
+      ['publication.channel.target.kind', 'channel'],
+      ['publication.identity.target.kind', 'channelIdentity'],
+    ])
+      if (this.get(path) !== undefined && this.get(path) !== kind)
+        this.invalidate(path, 'Invalid Run publication target kind');
+  });
   schema.index({ tenantId: 1, runId: 1 }, { unique: true });
   schema.index({ tenantId: 1, 'principal.userId': 1 });
   schema.index(
@@ -218,6 +275,7 @@ export function createChannelRunModel(
     { name: 'channel_run_fair_claim' },
   );
   schema.index({ state: 1, _id: 1 });
+  schema.index({ tenantId: 1, channelId: 1, '_managed.phase': 1, _id: 1 });
   schema.index({ tenantId: 1, channelId: 1, 'receipts.externalMessageKey': 1 });
   schema.index({ runId: 1 });
   applyChannelStorage(schema);
@@ -228,23 +286,8 @@ export function createChannelRunModel(
 export function createChannelLaneModel(
   mongoose: typeof import('mongoose'),
 ): Model<ChannelLaneRecord> {
-  const physical = new Schema(
-    {
-      kind: {
-        type: String,
-        enum: ['channel', 'channelIdentity', 'channelRun', 'channelLane'],
-        required: true,
-      },
-      id: { type: String, match: /^[a-f\d]{24}$/, required: true },
-      incarnation: { type: String, required: true },
-      tenantId: String,
-    },
-    { _id: false },
-  );
-  const authority = new Schema(
-    { target: { type: physical, required: true }, revision: { type: String, required: true } },
-    { _id: false },
-  );
+  const physical = channelPhysicalSchema();
+  const authority = channelAuthoritySchema();
   const runIdentity = new Schema(
     { target: { type: physical, required: true }, runId: { type: String, required: true } },
     { _id: false },
@@ -377,6 +420,7 @@ export function createChannelLaneModel(
         if (!this.get(field)) this.invalidate(field, 'Control lane coordination field required');
   });
   schema.index({ tenantId: 1, laneId: 1 }, { unique: true });
+  schema.index({ tenantId: 1, channelId: 1, kind: 1, _id: 1 });
   schema.index(
     { tenantId: 1, channelId: 1, 'stopObservation.scopeId': 1 },
     { partialFilterExpression: { 'stopObservation.scopeId': { $type: 'string' } } },
