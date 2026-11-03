@@ -29,6 +29,9 @@ export interface ManagedState {
   parentId?: string;
   ownerKey?: string;
   conversationKey?: string;
+  /** Fixed channel cleanup/admission authorities; never prompt, label or credential data. */
+  scopeKeys?: string[];
+  expiredAt?: Date;
   receipt?: string;
   logicalId?: string;
 }
@@ -41,6 +44,14 @@ export interface ManagedRegistrationIntent {
 /** The authority stamps its own version; callers do not choose retention epochs. */
 export interface ManagedRegistration extends ManagedRegistrationIntent {
   retentionEpoch: number;
+  /** Set only by a canonical channel/link registry after matching its current revision. */
+  authorityRevision?: string;
+}
+
+export interface ManagedRegistryState {
+  pending?: ManagedRegistration[];
+  pendingCount?: number;
+  retentionEpoch?: number;
 }
 
 export interface ManagedPublication {

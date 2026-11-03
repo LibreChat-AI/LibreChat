@@ -3,6 +3,14 @@ import type { Types } from 'mongoose';
 import type { ManagedRegistration, ManagedRegistrationIntent } from '~/types/managed';
 import type { ResponseOwner } from '~/models/response';
 import {
+  assertManagedRegistration,
+  sameManagedRegistration,
+  managedRegistryCount,
+  managedRegistryEpoch,
+  managedRegistryAdmissionFilter,
+  managedRegistryEntryFilter,
+} from './registry';
+import {
   managedTargetFilter,
   managedTargetPredicate,
   assertManagedTenant,
@@ -15,6 +23,7 @@ import {
 } from './responseScope';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { includeManagedAllocations } from '~/utils/managed';
+import { MANAGED_TARGET_KINDS } from '~/types/managed';
 
 interface SettlementTarget {
   _id: Types.ObjectId;
@@ -27,11 +36,13 @@ interface SettlementTarget {
     phase?: string;
     ownerKey?: string;
     conversationKey?: string;
+    scopeKeys?: string[];
+    expiredAt?: Date;
   };
 }
 
 const settlementProjection =
-  '_id user userId conversationId expiredAt _managed.incarnation _managed.phase _managed.ownerKey _managed.conversationKey';
+  '_id user userId conversationId expiredAt _managed.incarnation _managed.phase _managed.ownerKey _managed.conversationKey _managed.scopeKeys _managed.expiredAt';
 
 function hasPublishedOwnership(
   target: SettlementTarget,
@@ -41,13 +52,18 @@ function hasPublishedOwnership(
   key: string,
   expiredAt?: Date,
 ): boolean {
+  const channel = kind.startsWith('channel');
+  const owned = channel
+    ? target._managed.scopeKeys?.includes(key) === true
+    : (kind === 'response' ? target.userId : target.user) === owner.userId &&
+      (conversationId === undefined
+        ? target._managed.ownerKey === key
+        : target._managed.conversationKey === key && target.conversationId === conversationId);
+  const deadline = channel ? target._managed.expiredAt : target.expiredAt;
   return (
     target._managed.phase === 'published' &&
-    (kind === 'response' ? target.userId : target.user) === owner.userId &&
-    (conversationId === undefined
-      ? target._managed.ownerKey === key
-      : target._managed.conversationKey === key && target.conversationId === conversationId) &&
-    (!expiredAt || (target.expiredAt instanceof Date && target.expiredAt <= expiredAt))
+    owned &&
+    (!expiredAt || (deadline instanceof Date && deadline <= expiredAt))
   );
 }
 
@@ -61,32 +77,14 @@ function registrationScope(
   conversationId: string | undefined,
   entry: ManagedRegistrationIntent,
 ): string {
-  managedTargetFilter(mongoose, entry.target);
+  assertManagedRegistration(mongoose, entry);
   if (
     !owner.userId ||
     (owner.tenantId || undefined) !== (entry.target.tenantId || undefined) ||
-    (conversationId !== undefined && !conversationId) ||
-    !/^[a-f\d]{64}$/.test(entry.key) ||
-    // Include conservative array-key/element overhead, not just the value's encoding.
-    mongoose.mongo.BSON.calculateObjectSize({ ...entry, retentionEpoch: Number.MAX_SAFE_INTEGER }) +
-      16 >
-      512
+    (conversationId !== undefined && !conversationId)
   )
     throw new TypeError('Invalid managed registration');
   return responseScopeKeys(owner, conversationId ?? '')[conversationId === undefined ? 0 : 1];
-}
-
-function sameRegistration(
-  left: ManagedRegistrationIntent,
-  right: ManagedRegistrationIntent,
-): boolean {
-  return (
-    left.key === right.key &&
-    left.target.kind === right.target.kind &&
-    left.target.id.toLowerCase() === right.target.id.toLowerCase() &&
-    left.target.incarnation === right.target.incarnation &&
-    (left.target.tenantId || undefined) === (right.target.tenantId || undefined)
-  );
 }
 
 /** Register before payload publication. Closure freezes this bounded discovery list. */
@@ -106,39 +104,25 @@ async function registerResponseTargetOnce(
     const anchor = await scopes.findById(key).lean();
     if (!anchor || anchor.closed || (anchor.expiredAt && anchor.expiredAt <= new Date()))
       return { status: 'closed' };
-    const retentionEpoch = anchor.retentionEpoch ?? 0;
-    if (!Number.isSafeInteger(retentionEpoch) || retentionEpoch < 0)
-      throw new Error('Managed retention epoch is inconsistent');
+    const retentionEpoch = managedRegistryEpoch(anchor);
+    const count = managedRegistryCount(anchor);
     const existing = anchor.pending?.find((candidate) => candidate.key === entry.key);
     if (existing)
-      return sameRegistration(existing, entry)
+      return sameManagedRegistration(existing, entry)
         ? {
             status: 'registered',
             retentionEpoch,
             ...(anchor.expiredAt && { expiredAt: anchor.expiredAt }),
           }
         : { status: 'conflict' };
-    const count = anchor.pendingCount ?? 0;
-    if (!Number.isSafeInteger(count) || count < 0 || count !== (anchor.pending?.length ?? 0))
-      throw new Error('Managed registration counter is inconsistent');
     if (count >= maxPendingTargetsPerScope) return { status: 'capacity' };
     const current = await scopes
       .findOneAndUpdate(
         {
           _id: key,
           closed: false,
-          retentionEpoch: retentionEpoch === 0 ? { $in: [0, null] } : retentionEpoch,
-          'pending.key': { $ne: entry.key },
-          $and: [
-            { $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }] },
-            {
-              $or: [
-                { pendingCount: { $gte: 0, $lt: maxPendingTargetsPerScope } },
-                { pendingCount: { $exists: false }, pending: { $exists: false } },
-                { pendingCount: { $exists: false }, pending: { $size: 0 } },
-              ],
-            },
-          ],
+          ...managedRegistryAdmissionFilter(entry.key, maxPendingTargetsPerScope, retentionEpoch),
+          $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }],
         },
         {
           $push: { pending: { key: entry.key, target: entry.target, retentionEpoch } },
@@ -218,7 +202,7 @@ export async function reconcileResponseTargets(
   const entries = anchor.pending ?? [];
   for (const entry of entries) registrationScope(mongoose, owner, conversationId, entry);
   const settled: ManagedRegistration[] = [];
-  for (const kind of ['message', 'conversation', 'response'] as const) {
+  for (const kind of MANAGED_TARGET_KINDS) {
     const candidates = entries.filter((entry) => entry.target.kind === kind);
     if (!candidates.length) continue;
     const model = mongoose.model(managedTargetModels[kind]);
@@ -260,18 +244,7 @@ function settlementFilter(key: string, entry: ManagedRegistration, retentionEpoc
   return {
     _id: key,
     closed: false,
-    retentionEpoch: retentionEpoch === 0 ? { $in: [0, null] } : retentionEpoch,
-    pending: {
-      $elemMatch: {
-        key: entry.key,
-        retentionEpoch: entry.retentionEpoch,
-        'target.kind': entry.target.kind,
-        'target.id': entry.target.id,
-        'target.incarnation': entry.target.incarnation,
-        'target.tenantId': entry.target.tenantId || { $in: [null, ''] },
-      },
-    },
-    pendingCount: { $gt: 0 },
+    ...managedRegistryEntryFilter(entry, retentionEpoch),
     $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }],
   };
 }
@@ -289,7 +262,7 @@ async function settleTarget(
   if (!anchor || anchor.closed || (anchor.expiredAt && anchor.expiredAt <= new Date()))
     return false;
   const existing = anchor.pending?.find((candidate) => candidate.key === entry.key);
-  if (!existing || !sameRegistration(existing, entry)) return false;
+  if (!existing || !sameManagedRegistration(existing, entry)) return false;
   const observedRetentionEpoch = anchor.retentionEpoch ?? 0;
   const model = mongoose.model(managedTargetModels[entry.target.kind]);
   if (proof === 'absent') {

@@ -1,0 +1,336 @@
+import { createHash } from 'node:crypto';
+import { durableStorageConfigSchema } from 'librechat-data-provider';
+import type { FilterQuery, Types } from 'mongoose';
+import type {
+  ManagedTarget,
+  ManagedState,
+  ManagedRegistryState,
+  ManagedRegistration,
+  ManagedRegistrationIntent,
+} from '~/types/managed';
+import type { ManagedRegistrationResult } from './registration';
+import type { ResponseOwner } from '~/models/response';
+import {
+  assertManagedRegistration,
+  sameManagedRegistration,
+  managedRegistryCount,
+  managedRegistryEpoch,
+  managedRegistryAdmissionFilter,
+  managedRegistryEntryFilter,
+} from './registry';
+import { managedTargetFilter, managedTargetModels, assertManagedTenant } from './managed';
+import { includeManagedAllocations } from '~/utils/managed';
+import { MANAGED_TARGET_KINDS } from '~/types/managed';
+import { responseScopeKeys } from './responseScope';
+
+export interface ChannelAuthority {
+  target: ManagedTarget<'channel'>;
+  revision: string;
+  channelId: string;
+  agentId: string;
+  createdBy: string;
+  teamId: string;
+  appId: string;
+}
+
+export interface IdentityAuthority {
+  target: ManagedTarget<'channelIdentity'>;
+  revision: string;
+  linkId: string;
+  userId: string;
+  channelId: string;
+  channelRevision: string;
+  agentId: string;
+  teamId: string;
+  externalUserId: string;
+}
+
+export type ChannelRegistryAuthority = ChannelAuthority | IdentityAuthority;
+
+interface RegistryAnchor extends ManagedRegistryState {
+  revision: string;
+  tenantId?: string;
+}
+
+function isChannel(authority: ChannelRegistryAuthority): authority is ChannelAuthority {
+  return authority.target.kind === 'channel';
+}
+
+/** Lifetime discovery survives revocation; the generation key additionally fences publication. */
+export function channelRegistryKey(authority: ChannelRegistryAuthority, generation = true): string {
+  return createHash('sha256')
+    .update(
+      JSON.stringify([
+        'channel-authority',
+        authority.target.kind,
+        authority.target.id.toLowerCase(),
+        authority.target.incarnation,
+        authority.target.tenantId || null,
+        generation ? authority.revision : null,
+      ]),
+    )
+    .digest('hex');
+}
+
+function authorityFilter(
+  mongoose: typeof import('mongoose'),
+  authority: ChannelRegistryAuthority,
+  open: boolean,
+): FilterQuery<RegistryAnchor> {
+  if (!['channel', 'channelIdentity'].includes(authority.target.kind))
+    throw new TypeError('Invalid channel registry kind');
+  const physical = managedTargetFilter(mongoose, authority.target);
+  const fields = isChannel(authority)
+    ? [
+        authority.revision,
+        authority.channelId,
+        authority.agentId,
+        authority.createdBy,
+        authority.teamId,
+        authority.appId,
+      ]
+    : [
+        authority.revision,
+        authority.linkId,
+        authority.userId,
+        authority.channelId,
+        authority.channelRevision,
+        authority.agentId,
+        authority.teamId,
+        authority.externalUserId,
+      ];
+  if (fields.some((value) => typeof value !== 'string' || !value))
+    throw new TypeError('Invalid channel registration authority');
+  if (!open) return physical;
+  return {
+    ...physical,
+    '_managed.phase': 'published',
+    revision: authority.revision,
+    ...(isChannel(authority)
+      ? {
+          status: 'active',
+          channelId: authority.channelId,
+          agentId: authority.agentId,
+          createdBy: authority.createdBy,
+          'slack.teamId': authority.teamId,
+          'slack.appId': authority.appId,
+        }
+      : {
+          state: 'active',
+          linkId: authority.linkId,
+          userId: authority.userId,
+          expiresAtMs: { $gt: Date.now() },
+          'identity.channelId': authority.channelId,
+          'identity.channelRevision': authority.channelRevision,
+          'identity.agentId': authority.agentId,
+          'identity.teamId': authority.teamId,
+          'identity.externalUserId': authority.externalUserId,
+        }),
+  };
+}
+
+/** Fixed ownership roles, installed atomically with the first private payload/association. */
+export function channelScopeKeys(
+  mongoose: typeof import('mongoose'),
+  roles: {
+    creator: ResponseOwner;
+    owner?: ResponseOwner;
+    channel?: ChannelAuthority;
+    identity?: IdentityAuthority;
+    conversationId?: string;
+  },
+): string[] {
+  const { creator, owner, channel, identity, conversationId } = roles;
+  assertManagedTenant(creator.tenantId);
+  if (
+    !creator.userId ||
+    (owner &&
+      (!owner.userId || (owner.tenantId || undefined) !== (creator.tenantId || undefined))) ||
+    (conversationId !== undefined && (!owner || !conversationId)) ||
+    (identity &&
+      (!channel ||
+        !owner ||
+        identity.userId !== owner.userId ||
+        identity.channelId !== channel.channelId ||
+        identity.channelRevision !== channel.revision ||
+        identity.agentId !== channel.agentId ||
+        identity.teamId !== channel.teamId)) ||
+    (channel && channel.createdBy !== creator.userId)
+  )
+    throw new TypeError('Invalid channel ownership');
+  const keys = [responseScopeKeys(creator, '')[0]];
+  if (owner) keys.push(responseScopeKeys(owner, '')[0]);
+  if (conversationId) keys.push(responseScopeKeys(owner!, conversationId)[1]);
+  for (const authority of [channel, identity]) {
+    if (!authority) continue;
+    authorityFilter(mongoose, authority, false);
+    if ((authority.target.tenantId || undefined) !== (creator.tenantId || undefined))
+      throw new TypeError('Channel ownership tenant changed');
+    keys.push(channelRegistryKey(authority, false), channelRegistryKey(authority));
+  }
+  return [...new Set(keys)].sort();
+}
+
+function registryModel(mongoose: typeof import('mongoose'), authority: ChannelRegistryAuthority) {
+  return mongoose.model<RegistryAnchor>(managedTargetModels[authority.target.kind]);
+}
+
+async function readAnchor(
+  mongoose: typeof import('mongoose'),
+  authority: ChannelRegistryAuthority,
+  open: boolean,
+): Promise<RegistryAnchor | null> {
+  return includeManagedAllocations(
+    registryModel(mongoose, authority).findOne(authorityFilter(mongoose, authority, open)),
+  )
+    .select('revision pending pendingCount retentionEpoch')
+    .read('primary')
+    .lean();
+}
+
+function registryEntry(
+  mongoose: typeof import('mongoose'),
+  authority: ChannelRegistryAuthority,
+  entry: ManagedRegistrationIntent,
+  retentionEpoch: number,
+): ManagedRegistration {
+  const stamped = { ...entry, retentionEpoch, authorityRevision: authority.revision };
+  assertManagedRegistration(mongoose, stamped);
+  if ((entry.target.tenantId || undefined) !== (authority.target.tenantId || undefined))
+    throw new TypeError('Channel registration tenant changed');
+  if (!entry.target.kind.startsWith('channel'))
+    throw new TypeError('Canonical history belongs to the Response registry');
+  return stamped;
+}
+
+async function registerOnce(
+  mongoose: typeof import('mongoose'),
+  authority: ChannelRegistryAuthority,
+  entry: ManagedRegistrationIntent,
+  capacity: number,
+): Promise<ManagedRegistrationResult> {
+  registryEntry(mongoose, authority, entry, 0);
+  const model = registryModel(mongoose, authority);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const anchor = await readAnchor(mongoose, authority, true);
+    if (!anchor) return { status: 'closed' };
+    const epoch = managedRegistryEpoch(anchor);
+    const count = managedRegistryCount(anchor);
+    const stamped = registryEntry(mongoose, authority, entry, epoch);
+    const existing = anchor.pending?.find((candidate) => candidate.key === entry.key);
+    if (existing)
+      return sameManagedRegistration(existing, entry) &&
+        existing.authorityRevision === authority.revision
+        ? { status: 'registered', retentionEpoch: epoch }
+        : { status: 'conflict' };
+    if (count >= capacity) return { status: 'capacity' };
+    const result = await model.updateOne(
+      {
+        ...authorityFilter(mongoose, authority, true),
+        ...managedRegistryAdmissionFilter(entry.key, capacity, epoch),
+      },
+      { $push: { pending: stamped }, $inc: { pendingCount: 1 } },
+      { timestamps: false },
+    );
+    if (result.matchedCount) return { status: 'registered', retentionEpoch: epoch };
+  }
+  return { status: 'retry' };
+}
+
+/** Only the canonical current generation can admit a private child. No upsert or mirror. */
+export async function registerChannelTarget(
+  mongoose: typeof import('mongoose'),
+  authority: ChannelRegistryAuthority,
+  entry: ManagedRegistrationIntent,
+  options: { maxPendingTargetsPerScope?: number } = {},
+): Promise<ManagedRegistrationResult> {
+  const { maxPendingTargetsPerScope } = durableStorageConfigSchema.parse(options);
+  const result = await registerOnce(mongoose, authority, entry, maxPendingTargetsPerScope);
+  if (result.status !== 'capacity') return result;
+  await reconcileChannelTargets(mongoose, authority);
+  return registerOnce(mongoose, authority, entry, maxPendingTargetsPerScope);
+}
+
+/**
+ * Published children leave discovery only while this exact generation remains open.
+ * Erasure uses absence-only mode: hidden/retired allocations are still physically present.
+ */
+export async function reconcileChannelTargets(
+  mongoose: typeof import('mongoose'),
+  authority: ChannelRegistryAuthority,
+  absenceOnly = false,
+): Promise<number> {
+  return reconcileTargets(mongoose, authority, absenceOnly);
+}
+
+/** Normal publication settles only its own entry, without querying unrelated target kinds. */
+export async function settleChannelTarget(
+  mongoose: typeof import('mongoose'),
+  authority: ChannelRegistryAuthority,
+  entry: ManagedRegistrationIntent,
+): Promise<boolean> {
+  registryEntry(mongoose, authority, entry, 0);
+  return (await reconcileTargets(mongoose, authority, false, entry)) === 1;
+}
+
+async function reconcileTargets(
+  mongoose: typeof import('mongoose'),
+  authority: ChannelRegistryAuthority,
+  absenceOnly: boolean,
+  selected?: ManagedRegistrationIntent,
+): Promise<number> {
+  const anchor = await readAnchor(mongoose, authority, !absenceOnly);
+  if (!anchor) return 0;
+  managedRegistryCount(anchor);
+  const epoch = managedRegistryEpoch(anchor);
+  const settled: ManagedRegistration[] = [];
+  for (const kind of MANAGED_TARGET_KINDS) {
+    const entries = (anchor.pending ?? []).filter(
+      (entry) =>
+        entry.target.kind === kind && (!selected || sameManagedRegistration(entry, selected)),
+    );
+    if (!entries.length) continue;
+    const rows = await includeManagedAllocations(
+      mongoose.model(managedTargetModels[kind]).find({
+        $or: entries.map((entry) => {
+          registryEntry(mongoose, authority, entry, entry.retentionEpoch);
+          return managedTargetFilter(mongoose, entry.target);
+        }),
+      }),
+    )
+      .select('_id _managed.incarnation _managed.phase _managed.scopeKeys')
+      .read('primary')
+      .lean<Array<{ _id: Types.ObjectId; _managed: ManagedState }>>();
+    const present = new Map(rows.map((row) => [`${row._id}:${row._managed.incarnation}`, row]));
+    for (const entry of entries) {
+      const row = present.get(`${entry.target.id.toLowerCase()}:${entry.target.incarnation}`);
+      if (
+        !row ||
+        (!absenceOnly &&
+          entry.authorityRevision === authority.revision &&
+          row._managed.phase === 'published' &&
+          [channelRegistryKey(authority, false), channelRegistryKey(authority)].every((key) =>
+            row._managed.scopeKeys?.includes(key),
+          ))
+      )
+        settled.push(entry);
+    }
+  }
+  if (!settled.length) return 0;
+  // eslint-disable-next-line no-restricted-syntax -- fixed canonical model, exact physical tenant/incarnation and entry CAS; metadata-only settlement after positive proof.
+  const result = await registryModel(mongoose, authority).bulkWrite(
+    settled.map((entry) => ({
+      updateOne: {
+        filter: {
+          ...authorityFilter(mongoose, authority, !absenceOnly),
+          revision: anchor.revision,
+          ...managedRegistryEntryFilter(entry, epoch),
+        },
+        update: { $pull: { pending: { key: entry.key } }, $inc: { pendingCount: -1 } },
+        timestamps: false,
+      },
+    })),
+    { ordered: false },
+  );
+  return result.matchedCount;
+}

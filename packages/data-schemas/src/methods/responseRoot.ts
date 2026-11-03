@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type {
   StoredResponseRecord,
   ResponseReference,
@@ -10,6 +9,7 @@ import {
   managedTargetPredicate,
   assertManagedTenant,
   retireManagedAllocation,
+  managedRegistration,
 } from './managed';
 import {
   registerResponseTarget,
@@ -27,15 +27,6 @@ import { includeManagedAllocations } from '~/utils/managed';
 import { responseReservationFits } from './responseBudget';
 import { initializeExpiration } from '~/utils/retention';
 
-function rootRegistration(target: ManagedTarget<'response'>) {
-  return {
-    key: createHash('sha256')
-      .update(JSON.stringify(['response', target.id.toLowerCase(), target.incarnation]))
-      .digest('hex'),
-    target,
-  };
-}
-
 /** The placeholder predicate can retire a losing candidate, never a published winner. */
 export async function discardResponseRoot(
   mongoose: typeof import('mongoose'),
@@ -44,7 +35,7 @@ export async function discardResponseRoot(
 ): Promise<void> {
   await retireManagedAllocation(mongoose, target, target.id);
   for (const conversationId of [undefined, input.conversationId])
-    await settleAbsentResponseTarget(mongoose, input, conversationId, rootRegistration(target));
+    await settleAbsentResponseTarget(mongoose, input, conversationId, managedRegistration(target));
 }
 
 /** Autonomous root deletion would lose the only checkpoint/child cleanup authority. */
@@ -165,7 +156,7 @@ export async function publishResponseRoot(
     throw new TypeError('Invalid Response root publication');
   const physical = managedTargetFilter(mongoose, target);
   const [ownerKey, conversationKey] = responseScopeKeys(input, input.conversationId);
-  const entry = rootRegistration(target);
+  const entry = managedRegistration(target);
   const { key } = entry;
   const model = createStoredResponseModel(mongoose);
   const metadata = {

@@ -2,7 +2,8 @@ import { Schema } from 'mongoose';
 import type { ChannelExternalIdentity } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
-import { applyManagedStorage } from './plugins/managed';
+import { applyManagedRegistry } from './plugins/registry';
+import { applyChannelStorage } from './plugins/managed';
 
 export interface ChannelIdentityRecord {
   tenantId: string;
@@ -54,7 +55,8 @@ export function createChannelIdentityModel(
   schema.index({ tenantId: 1, ticketHash: 1 }, { unique: true });
   schema.index({ tenantId: 1, userId: 1 });
   schema.index({ linkId: 1 });
-  applyManagedStorage(schema);
+  applyManagedRegistry(schema);
+  applyChannelStorage(schema);
   applyTenantIsolation(schema);
   return (
     mongoose.models.ChannelIdentity ??

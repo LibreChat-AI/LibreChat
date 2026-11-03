@@ -1,16 +1,13 @@
 import { Schema } from 'mongoose';
 import type { Model } from 'mongoose';
-import type { ManagedRegistration } from '~/types/managed';
-import { MANAGED_TARGET_KINDS } from '~/types/managed';
+import type { ManagedRegistryState } from '~/types/managed';
+import { managedRegistryFields } from './plugins/registry';
 
-interface ResponseScope {
+interface ResponseScope extends ManagedRegistryState {
   _id: string;
   closed: boolean;
   revision: number;
   expiredAt?: Date;
-  pending?: ManagedRegistration[];
-  pendingCount?: number;
-  retentionEpoch?: number;
 }
 
 /** Payload-free admission anchors; closed scopes remain tombstones after erasure. */
@@ -24,24 +21,7 @@ export function createResponseScopeModel(
       closed: { type: Boolean, required: true, default: false },
       revision: { type: Number, required: true, default: 0 },
       expiredAt: Date,
-      pending: {
-        type: [
-          {
-            _id: false,
-            key: { type: String, required: true },
-            target: {
-              kind: { type: String, enum: MANAGED_TARGET_KINDS, required: true },
-              id: { type: String, required: true },
-              incarnation: { type: String, required: true },
-              tenantId: String,
-            },
-            retentionEpoch: { type: Number, required: true },
-          },
-        ],
-        default: undefined,
-      },
-      pendingCount: { type: Number, default: undefined },
-      retentionEpoch: { type: Number, default: undefined },
+      ...managedRegistryFields(),
     },
     // Closure and retention must be observed before any durable data is disclosed or mutated.
     { versionKey: false, read: 'primary' },

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import type { Types } from 'mongoose';
 import type {
   ManagedTarget,
@@ -7,6 +7,7 @@ import type {
   ManagedPublication,
   CanonicalConversationTarget,
   ManagedState,
+  ManagedRegistrationIntent,
 } from '~/types/managed';
 import {
   ALLOCATION_PREFIX,
@@ -76,6 +77,16 @@ function allocationFields(kind: ManagedTargetKind, placeholder: string): Record<
   if (kind === 'channelReply') return { channelId: placeholder, teamId: placeholder };
   if (kind === 'channelFeedbackEvent') return { channelId: placeholder };
   return {};
+}
+
+/** The same physical operation has one immutable registration key in every owning anchor. */
+export function managedRegistration(target: ManagedStorageTarget): ManagedRegistrationIntent {
+  return {
+    key: createHash('sha256')
+      .update(JSON.stringify([target.kind, target.id.toLowerCase(), target.incarnation]))
+      .digest('hex'),
+    target,
+  };
 }
 
 export class ManagedAllocationUnavailableError extends Error {

@@ -6,7 +6,7 @@ import type {
 } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
-import { applyManagedStorage } from './plugins/managed';
+import { applyChannelStorage } from './plugins/managed';
 
 export interface ChannelRunRecord extends Omit<ChannelRunView, 'revision'> {
   tenantId: string;
@@ -161,7 +161,7 @@ export function createChannelRunModel(
   schema.index({ state: 1, _id: 1 });
   schema.index({ tenantId: 1, channelId: 1, 'receipts.externalMessageKey': 1 });
   schema.index({ runId: 1 });
-  applyManagedStorage(schema);
+  applyChannelStorage(schema);
   applyTenantIsolation(schema);
   return mongoose.models.ChannelRun ?? mongoose.model<ChannelRunRecord>('ChannelRun', schema);
 }
@@ -201,7 +201,7 @@ export function createChannelLaneModel(
   );
   schema.index({ tenantId: 1, userId: 1 });
   schema.index({ laneId: 1 });
-  applyManagedStorage(schema);
+  applyChannelStorage(schema);
   applyTenantIsolation(schema);
   return mongoose.models.ChannelLane ?? mongoose.model<ChannelLaneRecord>('ChannelLane', schema);
 }
