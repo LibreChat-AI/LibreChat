@@ -17,7 +17,7 @@ const {
   GenerationJobManager,
   createStreamServices,
   initializeFileStorage,
-  openCheckpointDeletion,
+  createCheckpointDeletionService,
   waitForKeyvRedisClient,
   MCPOAuthHandler,
   MCPTokenStorage,
@@ -37,6 +37,9 @@ const connect = require('./connect');
 const TRIGGER_DRAIN_TIMEOUT_MS = 35_000;
 const TRIGGER_DRAIN_POLL_MS = 100;
 const methods = createMethods(mongoose, { getCache: getLogStores });
+const { openCheckpointDeletion } = createCheckpointDeletionService(
+  methods.hasPendingResponseCheckpointCleanup,
+);
 
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 

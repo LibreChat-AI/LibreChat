@@ -6,7 +6,10 @@ export * from './schema';
 export * from './utils';
 export { createModels } from './models';
 export { createResponseStorage, sameResponseTerminalReceipt } from './methods/response';
-export { ResponseErasurePendingError } from './methods/responseErasure';
+export {
+  ResponseErasurePendingError,
+  createResponseCheckpointCleanupGuard,
+} from './methods/responseErasure';
 export { responseReference } from './methods/responseRoot';
 export { createResponseCheckpointStorage } from './methods/responseCheckpoint';
 export type {

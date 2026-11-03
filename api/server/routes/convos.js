@@ -8,7 +8,7 @@ const {
   normalizeSortField,
   resolveConversationListFilters,
   CONVERSATION_SORT_FIELDS,
-  openCheckpointDeletion,
+  createCheckpointDeletionService,
   waitForGenerationPersistence,
   createArchiveAllHandler,
   createSubagentActivityStreamHandler,
@@ -72,6 +72,9 @@ const {
 } = require('~/server/services/Endpoints/agents/backgroundCompletion');
 const getLogStores = require('~/cache/getLogStores');
 const db = require('~/models');
+const { openCheckpointDeletion } = createCheckpointDeletionService(
+  db.hasPendingResponseCheckpointCleanup,
+);
 
 const assistantClients = {
   [EModelEndpoint.azureAssistants]: require('~/server/services/Endpoints/azureAssistants'),

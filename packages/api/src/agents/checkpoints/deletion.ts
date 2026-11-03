@@ -1,7 +1,8 @@
 import mongoose from 'mongoose';
 import { createHash, randomUUID } from 'crypto';
-import { logger } from '@librechat/data-schemas';
+import { logger, ResponseErasurePendingError } from '@librechat/data-schemas';
 import type { TCheckpointerConfig } from 'librechat-data-provider';
+import type { AllMethods } from '@librechat/data-schemas';
 import type { AgentEventCheckpointReference } from '../checkpointer';
 import type { ResolvedCheckpointerConfig } from './config';
 import type { CheckpointStorageRecord } from './storage';
@@ -34,13 +35,38 @@ export interface CheckpointDeletion {
   acknowledge(): Promise<void>;
 }
 
+export interface CheckpointDeletionService {
+  openCheckpointDeletion: (
+    userId: string,
+    tenantId: string | undefined,
+    rootConversationId: string | undefined,
+    cfg?: TCheckpointerConfig,
+  ) => Promise<CheckpointDeletion>;
+  createCheckpointDeletionReclaimer: (
+    getOwnerJobs: (userId: string, tenantId?: string) => Promise<string[]>,
+  ) => (limit: number, activity?: { found: boolean }) => Promise<number>;
+}
+
+/** Bind the app's storage authority once for request and maintenance deletion paths. */
+export function createCheckpointDeletionService(
+  hasPendingResponses: AllMethods['hasPendingResponseCheckpointCleanup'],
+): CheckpointDeletionService {
+  return {
+    openCheckpointDeletion: openCheckpointDeletion.bind(undefined, hasPendingResponses),
+    createCheckpointDeletionReclaimer: (
+      getOwnerJobs: (userId: string, tenantId?: string) => Promise<string[]>,
+    ) => createCheckpointDeletionReclaimer(hasPendingResponses, getOwnerJobs),
+  };
+}
+
 const hash = (value: string | null) =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 /** Durable deletion intent preserves cascade identity after topology is removed.
  * These records contain no checkpoint payload and exist only during deletion,
  * not once per generation. They must survive until both drain and cleanup succeed. */
-export async function openCheckpointDeletion(
+async function openCheckpointDeletion(
+  hasPendingResponses: AllMethods['hasPendingResponseCheckpointCleanup'],
   userId: string,
   tenantId: string | undefined,
   rootConversationId: string | undefined,
@@ -102,6 +128,15 @@ export async function openCheckpointDeletion(
   const conversationIds = () => [
     ...new Set([...targets.values()].map((target) => target.threadId)),
   ];
+  async function requireResponseCleanup() {
+    if (
+      await hasPendingResponses(
+        { userId, tenantId },
+        rootConversationId == null ? undefined : [rootConversationId, ...conversationIds()],
+      )
+    )
+      throw new ResponseErasurePendingError();
+  }
   async function captureOwned(ids: readonly string[] | undefined) {
     let batch: DeletionTarget[] = [];
     for (const [key, storage] of stores) {
@@ -172,6 +207,7 @@ export async function openCheckpointDeletion(
       }
     },
     async cleanup() {
+      await requireResponseCleanup();
       await refreshStores();
       await captureOwned(rootConversationId == null ? undefined : conversationIds());
       const groups = new Map([...stores.keys()].map((key) => [key, [] as DeletionTarget[]]));
@@ -194,6 +230,7 @@ export async function openCheckpointDeletion(
       }
     },
     async acknowledge() {
+      await requireResponseCleanup();
       const receipts = [...targets.values()];
       for (let offset = 0; offset < receipts.length; offset += batchSize) {
         await collection.deleteMany({
@@ -223,7 +260,8 @@ export async function openCheckpointDeletion(
 }
 
 /** Replay captured identities after topology deletion; never sweep new generations. */
-export function createCheckpointDeletionReclaimer(
+function createCheckpointDeletionReclaimer(
+  hasPendingResponses: AllMethods['hasPendingResponseCheckpointCleanup'],
   getOwnerJobs: (userId: string, tenantId?: string) => Promise<string[]>,
 ): (limit: number, activity?: { found: boolean }) => Promise<number> {
   let after: string | undefined;
@@ -297,6 +335,7 @@ export function createCheckpointDeletionReclaimer(
           jobsByOwner.set(owner, jobs);
         }
         if ((await jobs).length > 0) return 0;
+        if (await hasPendingResponses(target, [target.threadId])) return 0;
         if (target.checkpoint != null) {
           const conversation = await db
             .collection(mongoose.models.Conversation?.collection.name ?? 'conversations')
@@ -315,6 +354,7 @@ export function createCheckpointDeletionReclaimer(
           }
         }
         if (await hasPersistence(target)) return 0;
+        if (await hasPendingResponses(target, [target.threadId])) return 0;
         return (await collection.deleteOne({ _id: target._id, version: target.version }))
           .deletedCount;
       }),

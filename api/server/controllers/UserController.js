@@ -13,7 +13,7 @@ const {
   normalizeHttpError,
   getWebSearchInstallEntries,
   getWebSearchUninstallFields,
-  openCheckpointDeletion,
+  createCheckpointDeletionService,
   stopUserGenerations,
   deleteAllSharedLinksWithCleanup,
   eraseUserData,
@@ -50,6 +50,9 @@ const {
 } = require('~/server/services/Schedules');
 const { sendEmail } = require('~/server/utils');
 const db = require('~/models');
+const { openCheckpointDeletion } = createCheckpointDeletionService(
+  db.hasPendingResponseCheckpointCleanup,
+);
 
 const emailChangeService = createEmailChangeService(
   createEmailChangeDeps({

@@ -123,11 +123,13 @@ jest.mock('@librechat/api', () => ({
   },
   deleteAgentCheckpoints: (...args) => mockDeleteAgentCheckpoints(...args),
   deleteOwnedAgentCheckpoints: (...args) => mockDeleteOwnedAgentCheckpoints(...args),
-  openCheckpointDeletion: jest.fn(async (userId, tenantId, _root, cfg) => ({
-    remember: jest.fn(async () => undefined),
-    cleanup: async () => mockDeleteOwnedAgentCheckpoints(userId, tenantId, undefined, cfg),
-    acknowledge: jest.fn(async () => undefined),
-    conversationIds: () => [],
+  createCheckpointDeletionService: jest.fn(() => ({
+    openCheckpointDeletion: jest.fn(async (userId, tenantId, _root, cfg) => ({
+      remember: jest.fn(async () => undefined),
+      cleanup: async () => mockDeleteOwnedAgentCheckpoints(userId, tenantId, undefined, cfg),
+      acknowledge: jest.fn(async () => undefined),
+      conversationIds: () => [],
+    })),
   })),
 }));
 

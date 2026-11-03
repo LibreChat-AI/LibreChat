@@ -2,7 +2,7 @@ const express = require('express');
 const mongoose = require('mongoose');
 const {
   GenerationJobManager,
-  openCheckpointDeletion,
+  createCheckpointDeletionService,
   deleteAllSharedLinksWithCleanup,
   createErasureResolver,
   createAdminUsersHandlers,
@@ -27,6 +27,9 @@ const {
   restoreUserSchedulesFromDeletion,
 } = require('~/server/services/Schedules');
 const db = require('~/models');
+const { openCheckpointDeletion } = createCheckpointDeletionService(
+  db.hasPendingResponseCheckpointCleanup,
+);
 const {
   getAppConfig,
   invalidateConfigCaches,

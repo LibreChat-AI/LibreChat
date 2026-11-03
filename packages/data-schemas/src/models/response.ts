@@ -364,6 +364,7 @@ export function createStoredResponseModel(
   schema.index({ tenantId: 1, userId: 1, requestKey: 1 }, { unique: true });
   schema.index({ tenantId: 1, userId: 1, conversationId: 1, createdAt: 1 });
   schema.index({ userId: 1, conversationId: 1, tenantId: 1 });
+  schema.index({ '_managed.ownerKey': 1, '_managed.conversationKey': 1, _id: 1 });
   applyManagedStorage(schema);
   applyTenantIsolation(schema);
   return (

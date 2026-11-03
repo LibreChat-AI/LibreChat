@@ -230,7 +230,7 @@ module.exports = {
     deleteAllSharedLinksWithCleanup: jest.fn(),
     deleteAgentCheckpoints,
     deleteOwnedAgentCheckpoints,
-    openCheckpointDeletion,
+    createCheckpointDeletionService: jest.fn(() => ({ openCheckpointDeletion })),
     isConversationImportError: jest.fn((error) => error?.name === 'ConversationImportError'),
     ...overrides,
   }),

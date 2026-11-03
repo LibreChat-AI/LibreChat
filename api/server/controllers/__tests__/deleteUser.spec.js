@@ -80,13 +80,15 @@ jest.mock('@librechat/api', () => ({
   deleteOwnedAgentCheckpoints: jest.fn(),
   stopUserGenerations: jest.requireActual('../../../../packages/api/src/user/generations.ts')
     .stopUserGenerations,
-  openCheckpointDeletion: jest.fn(async (userId, tenantId, _root, cfg) => ({
-    remember: jest.fn(),
-    cleanup: () =>
-      jest
-        .requireMock('@librechat/api')
-        .deleteOwnedAgentCheckpoints(userId, tenantId, undefined, cfg),
-    acknowledge: jest.fn(),
+  createCheckpointDeletionService: jest.fn(() => ({
+    openCheckpointDeletion: jest.fn(async (userId, tenantId, _root, cfg) => ({
+      remember: jest.fn(),
+      cleanup: () =>
+        jest
+          .requireMock('@librechat/api')
+          .deleteOwnedAgentCheckpoints(userId, tenantId, undefined, cfg),
+      acknowledge: jest.fn(),
+    })),
   })),
 }));
 

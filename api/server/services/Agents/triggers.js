@@ -1,6 +1,6 @@
 const {
   createAgentTriggerService,
-  createCheckpointDeletionReclaimer,
+  createCheckpointDeletionService,
   createAgentContinuationResolver,
   createAgentEventContinueResolver,
   createSubagentCompletionWakeupResolver,
@@ -13,6 +13,9 @@ const {
   GenerationJobManager,
 } = require('@librechat/api');
 const methods = require('~/models');
+const { createCheckpointDeletionReclaimer } = createCheckpointDeletionService(
+  methods.hasPendingResponseCheckpointCleanup,
+);
 
 const getGenerationAdmissionEvidence = (userId, clientRequestId, streamId, conversationId) =>
   GenerationJobManager.getGenerationAdmissionEvidence(

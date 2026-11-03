@@ -1,8 +1,8 @@
 import type { UpdateQuery } from 'mongoose';
 import type { ResponseOwner, StoredResponseRecord, ResponseReference } from '~/models/response';
 import type { ManagedState } from '~/types/managed';
+import { tenantStorage, getTenantId, SYSTEM_TENANT_ID, runAsSystem } from '~/config/tenantContext';
 import { responseOwnerFilter, responseScopeKeys, closeResponseScopes } from './responseScope';
-import { tenantStorage, getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { ALLOCATION_PREFIX, includeManagedAllocations } from '~/utils/managed';
 import { eraseChannelFeedbackForOwner } from './channelFeedbackErasure';
 import { managedTargetFilter, managedTargetModels } from './managed';
@@ -20,6 +20,44 @@ export class ResponseErasurePendingError extends Error {
     super('Response erasure is pending provider, checkpoint or canonical storage cleanup');
     this.name = 'ResponseErasurePendingError';
   }
+}
+
+/** Generic checkpoint cleanup cannot supersede the retained Response cleanup owner.
+ * Read physical metadata so expired, retired and prepublication roots remain visible. */
+export function createResponseCheckpointCleanupGuard(
+  mongoose: typeof import('mongoose'),
+): (owner: ResponseOwner, conversationIds?: readonly string[]) => Promise<boolean> {
+  return async (owner, conversationIds) => {
+    if (!owner.userId) throw new TypeError('Checkpoint cleanup requires an owner');
+    const records = createStoredResponseModel(mongoose);
+    const owners = owner.tenantId ? [owner, { userId: owner.userId }] : [owner];
+    const ids = conversationIds == null ? undefined : [...new Set(conversationIds)];
+    if (ids?.length === 0) return false;
+    for (let offset = 0; offset < (ids?.length ?? 1); offset += ERASURE_BATCH_SIZE) {
+      const page = ids?.slice(offset, offset + ERASURE_BATCH_SIZE);
+      const clauses = owners.flatMap((partition) => {
+        const ownerKey = responseScopeKeys(partition, '')[0];
+        return [
+          { ...responseOwnerFilter(partition), ...(page && { conversationId: { $in: page } }) },
+          {
+            '_managed.ownerKey': ownerKey,
+            ...(page && {
+              '_managed.conversationKey': {
+                $in: page.map((id) => responseScopeKeys(partition, id)[1]),
+              },
+            }),
+          },
+        ];
+      });
+      if (
+        await runAsSystem(() =>
+          includeManagedAllocations(records.exists({ $or: clauses })).read('primary'),
+        )
+      )
+        return true;
+    }
+    return false;
+  };
 }
 
 /** Retirement invalidates paused selection CASes before any physical target is removed. */
