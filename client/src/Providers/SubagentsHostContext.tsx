@@ -1,21 +1,39 @@
 import { useMemo, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import { CSSTransition } from 'react-transition-group';
 import { setDefaultSubagentsHost } from '@librechat/chat/react';
-import { QueryKeys, dataService } from 'librechat-data-provider';
 import { SteerPart, ScrollToBottom } from '@librechat/chat/components';
+import { ForkOptions, QueryKeys, dataService } from 'librechat-data-provider';
 import type {
   SubagentsHost,
   MessagePartsHost,
   TaskContentScope,
   SubagentTaskContent,
   SubagentRetainedControl,
+  SubagentNavigation,
+  SubagentThreadRead,
+  SubagentToolCallPart,
   SubagentJumpToLatestProps,
+  SubagentContinueVariables,
+  SubagentThreadReadOptions,
 } from '@librechat/chat/react';
+import type { ToolCallPartParams } from 'librechat-data-provider';
+import {
+  useToolCallPartQuery,
+  useForkConvoMutation,
+  useSubagentThreadQuery,
+  useSubagentControlMutation,
+} from '~/data-provider';
 import {
   useSubagentTaskContentQuery,
   useSubagentToolContentQuery,
 } from '~/data-provider/Subagents/content';
+import ApprovalProvider from '~/components/Chat/Messages/Content/ApprovalContext';
+import useNavigateToConvo from '~/hooks/Conversations/useNavigateToConvo';
+import { ARTIFACTS_SHEET_MAX_WIDTH } from '~/utils/breakpoints';
+import { useConfiguredFooter } from '~/components/Chat/Footer';
+import useScaledMaxWidth from '~/hooks/useScaledMaxWidth';
 import { useAgentsMapContext } from './AgentsMapContext';
 
 /** Reads a shortened guidance message's full receipt, once the reader asks for it. */
@@ -67,6 +85,75 @@ function useTaskContent(
   };
 }
 
+function useThread(
+  parentConversationId: string,
+  threadId: string,
+  taskId: string,
+  { keepPreviousData, refetchInterval }: SubagentThreadReadOptions,
+): SubagentThreadRead {
+  const config =
+    keepPreviousData == null && refetchInterval == null
+      ? undefined
+      : {
+          ...(keepPreviousData == null ? {} : { keepPreviousData }),
+          ...(refetchInterval == null ? {} : { refetchInterval }),
+        };
+  /** The panel's plain reads pass no options, so the query keeps its own schedule. */
+  const args: Parameters<typeof useSubagentThreadQuery> =
+    config == null
+      ? [parentConversationId, threadId, taskId]
+      : [parentConversationId, threadId, taskId, config];
+  const query = useSubagentThreadQuery(...args);
+  return {
+    data: query.data,
+    isLoading: query.isLoading,
+    isError: query.isError,
+    isPreviousData: query.isPreviousData,
+    isReadinessPending: query.isReadinessPending,
+    refetch: () => void query.refetch(),
+  };
+}
+
+function useControl(
+  handlers: Parameters<SubagentsHost['useControl']>[0],
+): ReturnType<SubagentsHost['useControl']> {
+  const mutation = useSubagentControlMutation(handlers);
+  return { mutate: mutation.mutate, isLoading: mutation.isLoading };
+}
+
+function useContinueChat(
+  handlers: Parameters<SubagentsHost['useContinueChat']>[0],
+): ReturnType<SubagentsHost['useContinueChat']> {
+  const mutation = useForkConvoMutation(handlers);
+  return {
+    mutate: ({ conversationId, messageId }: SubagentContinueVariables) =>
+      mutation.mutate({ conversationId, messageId, option: ForkOptions.DIRECT_PATH }),
+    isLoading: mutation.isLoading,
+  };
+}
+
+function useToolCallPart(
+  params: ToolCallPartParams,
+  options: { enabled: boolean },
+  revision?: string,
+): SubagentToolCallPart {
+  const query = useToolCallPartQuery(params, options, revision);
+  return {
+    data: query.data,
+    isError: query.isError,
+    refetch: () => void query.refetch(),
+  };
+}
+
+function useNavigation(): SubagentNavigation {
+  const { navigateToConvo } = useNavigateToConvo();
+  const navigate = useNavigate();
+  return {
+    openConversation: (conversation) => navigateToConvo(conversation),
+    openConversationId: (conversationId) => navigate(`/c/${encodeURIComponent(conversationId)}`),
+  };
+}
+
 const ignoreMessage: ReturnType<MessagePartsHost['useMessagesAsk']> = () => undefined;
 const useNoMessagesAsk: MessagePartsHost['useMessagesAsk'] = () => ignoreMessage;
 
@@ -112,6 +199,17 @@ export const appSubagentsHost: SubagentsHost = {
   useToolContent: useSubagentToolContentQuery,
   useAgentsMap: useAgentsMapContext,
   useChildPartsHost,
+  useThread,
+  loadThread: (...args) => dataService.getSubagentThread(...args),
+  useControl,
+  useContinueChat,
+  useToolCallPart,
+  useNavigation,
+  useSheetLayout: () => useScaledMaxWidth(ARTIFACTS_SHEET_MAX_WIDTH),
+  useClearsFooter: useConfiguredFooter,
+  renderApprovalScope: ({ scopeKey, children }) => (
+    <ApprovalProvider key={scopeKey}>{children}</ApprovalProvider>
+  ),
 };
 
 setDefaultSubagentsHost(appSubagentsHost);
