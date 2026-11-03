@@ -9,6 +9,7 @@ import { createManagedConversationId } from '~/utils/managed';
 import { createChannelRunStorage } from './channelRun';
 import { tenantStorage } from '~/config/tenantContext';
 import { createAgentChannelMethods } from './channel';
+import * as registration from './registration';
 import { createModels } from '~/models';
 
 const engines = ['standalone', 'replica', ...(process.env.FERRETDB_URI ? ['FerretDB'] : [])];
@@ -135,6 +136,49 @@ describe.each(engines)('versioned Run mutations on %s', (engine) => {
         const raw = await mongoose.models.ChannelRun.collection.findOne({ runId: f.run.runId });
         expect(raw!._managed.scopeKeys).toContain(key);
         expect(sessions).not.toHaveBeenCalled();
+      }));
+    it('settles a late conversation registration after losing the execution CAS', () =>
+      scoped(async () => {
+        const f = await fixture();
+        const register = registration.registerResponseTarget;
+        let entered!: () => void;
+        let release!: () => void;
+        const started = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        jest
+          .spyOn(registration, 'registerResponseTarget')
+          .mockImplementationOnce(async (...args) => {
+            entered();
+            await gate;
+            return register(...args);
+          });
+        const delayed = f.storage.prepareExecution(f.input.tenantId, f.fence, 101);
+        const timeout = setTimeout(release, 5000);
+        try {
+          await started;
+          const winner = await f.storage.prepareExecution(f.input.tenantId, f.fence, 101);
+          const key = responseScopeKeys(
+            { userId: f.owner, ...(tenantId && { tenantId }) },
+            winner.execution!.conversationId,
+          )[1];
+          expect(await createResponseScopeModel(mongoose).findById(key).lean()).toMatchObject({
+            pendingCount: 0,
+          });
+          release();
+          expect((await delayed).execution).toEqual(winner.execution);
+          expect(await createResponseScopeModel(mongoose).findById(key).lean()).toMatchObject({
+            pendingCount: 0,
+            pending: [],
+          });
+        } finally {
+          clearTimeout(timeout);
+          release();
+          await delayed;
+        }
       }));
     it('refuses first execution publication into a closed continuation conversation', () =>
       scoped(async () => {

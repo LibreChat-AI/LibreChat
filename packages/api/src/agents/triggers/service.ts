@@ -8,6 +8,7 @@ import {
   AGENT_TRIGGER_WORKER_CAPABILITY_QUEUED_TURN_V2,
   logger,
   runAsSystem,
+  tenantStorage,
 } from '@librechat/data-schemas';
 import type {
   AgentTriggerDeliveryMethods,
@@ -30,6 +31,7 @@ import type { AgentTriggerEnqueueOptions, PreparedAgentTriggerDelivery } from '.
 import type { AgentTriggerEnvelope } from './envelope';
 import type { BoundAddress } from '../../app/origin';
 import { AgentTriggerDeliveryDeferredError, createAgentTriggerDeliveryEngine } from './engine';
+import { getAgentTriggerIdempotencyKey, parseAgentTriggerEnvelope } from './envelope';
 import { BACKGROUND_TOOL_COMPLETION_SOURCE } from '../backgroundCompletionWakeup';
 import { isShutdownInProgress, registerShutdownTask } from '../../app/shutdown';
 import { SUBAGENT_COMPLETION_SOURCE } from '../subagentCompletionWakeup';
@@ -37,7 +39,6 @@ import { generateAgentTriggerToken } from '../../crypto/jwt';
 import { prepareAgentTriggerDelivery } from './delivery';
 import { selfOriginFromAddress } from '../../app/origin';
 import { createAgentTriggerExecutionHost } from './host';
-import { parseAgentTriggerEnvelope } from './envelope';
 import { createIdleRecoveryLoop } from '../recovery';
 import { WAITING_RETRY_CAP_MS } from './backoff';
 
@@ -470,7 +471,15 @@ export function createAgentTriggerService(deps: AgentTriggerServiceDeps = {}): A
     await requireActivePrincipal(parsed.principal.userId);
     await deps.authorizeSource?.(parsed);
     const source = deps.sourceDispatchers?.get(parsed.event.source.type);
-    if (source) return source.dispatch(parsed, options);
+    if (source)
+      return tenantStorage.run(
+        {
+          userId: parsed.principal.userId,
+          tenantId: parsed.principal.tenantId,
+          requestId: getAgentTriggerIdempotencyKey(parsed),
+        },
+        async () => source.dispatch(parsed, options),
+      );
     return host.dispatch(parsed, options);
   };
 
