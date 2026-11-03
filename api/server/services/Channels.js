@@ -5,6 +5,7 @@ const {
   createChannelExecutionAdapter,
   createChannelResponseProjection,
   createChannelResponseRetirement,
+  createChannelResponseCancellation,
   createChannelIdentityHandlers,
   createChannelFeedbackRuntime,
   sendFeedbackScore,
@@ -81,6 +82,10 @@ const summary = createChannelSummaryService({
   }),
 });
 const runs = createChannelRunHandlers({
+  responseCancellation: createChannelResponseCancellation({
+    storage: responseStorage,
+    recovery: storage,
+  }),
   interactive: { readInteractiveReview, submitInteractiveReview },
   responseCredential: responseCredentials.provision,
   artifacts,

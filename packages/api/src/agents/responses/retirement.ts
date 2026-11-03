@@ -1,14 +1,18 @@
-import { responseReference } from '@librechat/data-schemas';
+import { createHash } from 'node:crypto';
+import { responseReference, createManagedMessageId } from '@librechat/data-schemas';
 import type {
   ResponseOwner,
   ResponseStorage,
   StoredResponseRecord,
   ResponseCleanupIdentity,
   ResponsePausedCancellation,
+  ResponseReservation,
+  ResponseReservationResult,
 } from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { ResponseCheckpointIdentity } from './checkpoint';
 import type { ResponseCompletionRecord } from './completion';
+import type { ResponsesRunEnvelope } from '../envelope';
 import {
   createResponseCompletion,
   readResponseExecutionProof,
@@ -16,9 +20,36 @@ import {
   createResponseExecutionRelease,
   createResponseExecutionConfirmation,
 } from './completion';
+import { buildPendingBackgroundResponse, canonicalResponseJSON } from './background';
 import { eraseResponseExecutionCheckpoint } from './checkpoint';
 import { matchesResponseRoot, responseTenantId } from './scope';
-import { buildPendingBackgroundResponse } from './background';
+
+/** Reserve the normal request slot with cancellation intent installed before provider work. */
+export async function reserveResponseCancellation(
+  storage: Pick<ResponseStorage, 'reserve'>,
+  identity: Omit<
+    ResponseReservation,
+    'dispatch' | 'cancellationRequestedAt' | 'responseId' | 'fingerprint' | 'requestJSON'
+  >,
+  request: ResponsesRunEnvelope['payload'],
+  now: number,
+): Promise<ResponseReservationResult> {
+  if (
+    request.model !== identity.agentId ||
+    request.background !== true ||
+    request.store === false ||
+    request.stream === true
+  )
+    throw new TypeError('Invalid Response cancellation request');
+  const requestJSON = canonicalResponseJSON({ ...request, store: true });
+  return storage.reserve({
+    ...identity,
+    responseId: createManagedMessageId(),
+    fingerprint: createHash('sha256').update(requestJSON).digest('hex'),
+    requestJSON,
+    cancellationRequestedAt: now,
+  });
+}
 
 export interface ResponseRetirementDependencies {
   storage: ResponseStorage;

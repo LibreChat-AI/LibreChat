@@ -79,6 +79,10 @@ export function assertResponseReservation(input: ResponseReservation): void {
     !input.requestKey ||
     !input.fingerprint ||
     !input.conversationId ||
+    (input.cancellationRequestedAt != null &&
+      (!Number.isFinite(input.cancellationRequestedAt) ||
+        input.cancellationRequestedAt <= 0 ||
+        input.dispatch === true)) ||
     (input.conversationTarget != null &&
       (!/^[a-f\d]{24}$/i.test(input.conversationTarget.id) ||
         input.conversationTarget.userId !== input.userId ||

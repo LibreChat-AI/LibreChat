@@ -1,4 +1,5 @@
-import type { DurableStorageConfig } from 'librechat-data-provider';
+import { Constants } from 'librechat-data-provider';
+import type { ChannelResponseGrant, DurableStorageConfig } from 'librechat-data-provider';
 import type { StoredResponseRecord, ResponseOwner } from '~/models/response';
 import type { ChannelRunRecord } from '~/models/channelRun';
 import type { ManagedTarget } from '~/types/managed';
@@ -12,6 +13,20 @@ export type ChannelResponseOwner = ResponseOwner & {
   responseId: string;
   storageTarget: ManagedTarget<'response'>;
 };
+
+/** The gateway and cancellation owner describe the same accepted request. */
+export function channelResponseRequest(run: ChannelRunRecord): ChannelResponseGrant['request'] {
+  if (!run.execution) throw new ChannelRunConflict('invalid_transition');
+  return {
+    model: run.agentId,
+    input: run.admission.input,
+    background: true,
+    store: true,
+    ...(run.execution.parentMessageId !== Constants.NO_PARENT && {
+      previous_response_id: run.execution.parentMessageId,
+    }),
+  };
+}
 
 /** Existing Response storage already accepts a captured record as owner authority. */
 export function channelResponseOwner(run: ChannelRunRecord): ChannelResponseOwner {
@@ -96,25 +111,28 @@ export async function bindChannelRunResponse(
       (execution.apiKeyId != null && visible.sourceKeyId !== execution.apiKeyId)
     )
       throw new ChannelRunConflict('invalid_transition');
-    const request: {
-      input?: string;
-      model?: string;
-      previous_response_id?: string;
-      background?: boolean;
-      store?: boolean;
-    } = JSON.parse(visible.requestJSON);
-    const previous =
-      execution.parentMessageId === '00000000-0000-0000-0000-000000000000'
-        ? undefined
-        : execution.parentMessageId;
-    if (
-      request.model !== run.agentId ||
-      request.input !== run.admission.input ||
-      (execution.responseId == null && request.previous_response_id !== previous) ||
-      request.background !== true ||
-      request.store === false
-    )
-      throw new ChannelRunConflict('invalid_transition');
+    const request = channelResponseRequest(run);
+    const redactedTerminal =
+      visible.requestJSON === '{}' &&
+      ['completed', 'failed', 'incomplete', 'cancelled'].includes(visible.status) &&
+      run.cancellationRequested &&
+      execution.apiKeyId != null &&
+      [digest(request), digest({ ...request, stream: false })].includes(visible.fingerprint);
+    if (!redactedTerminal) {
+      const saved: Omit<Partial<ChannelResponseGrant['request']>, 'background' | 'store'> & {
+        background?: boolean;
+        store?: boolean;
+      } = JSON.parse(visible.requestJSON);
+      if (
+        saved.model !== request.model ||
+        saved.input !== request.input ||
+        (execution.responseId == null &&
+          saved.previous_response_id !== request.previous_response_id) ||
+        saved.background !== true ||
+        saved.store === false
+      )
+        throw new ChannelRunConflict('invalid_transition');
+    }
   } else if (!execution.apiKeyId) {
     // Cleanup may recover redacted metadata only through the original run-bound source credential.
     throw new ChannelRunConflict('invalid_transition');

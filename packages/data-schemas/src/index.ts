@@ -12,6 +12,7 @@ export {
   createResponseCheckpointCleanupGuard,
 } from './methods/responseErasure';
 export { responseReference } from './methods/responseRoot';
+export { channelResponseRequest } from './methods/channelRunResponse';
 export { createResponseCheckpointStorage } from './methods/responseCheckpoint';
 export { ChannelDrainPendingError } from './methods/channelGeneration';
 export type {

@@ -16,6 +16,8 @@ export interface ResponseOwner {
 export interface ResponseReservation extends ResponseOwner {
   /** A successful reservation durably accepts publication work. */
   dispatch?: boolean;
+  /** Internal cancellation intent is installed atomically with request admission. */
+  cancellationRequestedAt?: number;
   /** Captured when accepting an existing conversation; never resolved again by logical ID. */
   conversationTarget?: CanonicalConversationTarget;
   expiredAt?: Date;

@@ -1,4 +1,8 @@
-import { channelRunFence, channelResponseOwner } from '@librechat/data-schemas';
+import {
+  channelRunFence,
+  channelResponseOwner,
+  channelResponseRequest,
+} from '@librechat/data-schemas';
 import type {
   ChannelRunRecord,
   ChannelRunStorage,
@@ -9,6 +13,7 @@ import type {
 import type { ChannelRunSnapshot } from 'librechat-data-provider';
 import type { BackgroundResponseResult } from '~/agents/responses/background';
 import type { Response } from '~/agents/responses/types';
+import { reserveResponseCancellation } from '~/agents/responses/retirement';
 import { ChannelExecutionError } from './errors';
 
 export interface ChannelResponseProjectionDependencies {
@@ -19,9 +24,67 @@ export interface ChannelResponseProjectionDependencies {
   now?: () => number;
 }
 
+/** Cancel-only canonical admission also fences a gateway POST delayed before its first Root. */
+export function createChannelResponseCancellation(deps: {
+  storage: Pick<ResponseStorage, 'reserve' | 'readConversationTarget'>;
+  recovery: Pick<ChannelRunStorage, 'recoverResponse'>;
+  now?: () => number;
+}): (run: ChannelRunRecord) => Promise<ChannelRunRecord | null> {
+  return async (run) => {
+    if (
+      !run.cancellationRequested ||
+      run.execution?.protocol !== 'responses' ||
+      !run.execution.apiKeyId ||
+      !run.leaseOwner
+    )
+      throw new ChannelExecutionError('execution_identity_changed');
+    const clock = deps.now ?? Date.now;
+    const now = clock();
+    const fence = channelRunFence(run);
+    const recovered = await deps.recovery.recoverResponse(run.tenantId, fence, now);
+    if (recovered) return recovered;
+    const owner = {
+      userId: run.principal.userId,
+      ...(run.tenantId !== '_' && { tenantId: run.tenantId }),
+    };
+    const conversation = await deps.storage.readConversationTarget(
+      owner,
+      run.execution.conversationId,
+    );
+    const deadlines = [run._managed?.expiredAt, conversation?.expiredAt].filter(
+      (value): value is Date => value != null,
+    );
+    const reserved = await reserveResponseCancellation(
+      deps.storage,
+      {
+        ...owner,
+        agentId: run.agentId,
+        requestKey: `channel:${run.runId}`,
+        sourceKeyId: run.execution.apiKeyId,
+        conversationId: run.execution.conversationId,
+        parentMessageId: run.execution.parentMessageId,
+        ...(conversation && {
+          conversationTarget: conversation.target,
+          isTemporary: conversation.isTemporary,
+        }),
+        ...(deadlines.length && {
+          expiredAt: new Date(Math.min(...deadlines.map((date) => date.getTime()))),
+        }),
+      },
+      channelResponseRequest(run),
+      now,
+    );
+    // A normal POST may win with the permitted optional stream:false form. Capture its real Root.
+    const captured = await deps.recovery.recoverResponse(run.tenantId, fence, clock());
+    if (captured) return captured;
+    if (!reserved.ok && reserved.code === 'response_unavailable') return null;
+    throw new ChannelExecutionError('execution_identity_changed');
+  };
+}
+
 /** Revoked channel authority can retire its exact response without recovering execution authority. */
 export function createChannelResponseRetirement(deps: {
-  storage: Pick<ResponseStorage, 'readCleanupIdentity'>;
+  storage: Pick<ResponseStorage, 'readCleanupIdentity' | 'reserve' | 'readConversationTarget'>;
   recovery: Pick<ChannelRunStorage, 'recoverResponse'>;
   retireResponse: (
     owner: ResponseOwner,
@@ -30,6 +93,7 @@ export function createChannelResponseRetirement(deps: {
   ) => Promise<'stopped' | 'pending'>;
   now?: () => number;
 }): (run: ChannelRunRecord) => Promise<'stopped' | 'pending'> {
+  const recoverCancellation = createChannelResponseCancellation(deps);
   return async (run) => {
     if (
       run.execution?.protocol !== 'responses' ||
@@ -39,11 +103,7 @@ export function createChannelResponseRetirement(deps: {
       throw new ChannelExecutionError('execution_identity_changed');
     if (!run.execution.responseId) {
       if (!run.leaseOwner) throw new ChannelExecutionError('execution_identity_changed');
-      const recovered = await deps.recovery.recoverResponse(
-        run.tenantId,
-        channelRunFence(run),
-        (deps.now ?? Date.now)(),
-      );
+      const recovered = await recoverCancellation(run);
       if (!recovered) return 'pending';
       run = recovered;
     }

@@ -43,6 +43,7 @@ import type { ApiKeyAuthRequest } from '~/apiKeys/middleware';
 import type { ServerRequest } from '~/types/http';
 import { createChannelAuthority, channelExternalIdentity } from './authority';
 import { createChannelResponseCredentials } from './credentials';
+import { createChannelResponseCancellation } from './responses';
 import { createRequireApiKeyAuth } from '~/apiKeys/middleware';
 import { createChannelArtifactService } from './artifacts';
 import { ChannelExecutionError } from './execution';
@@ -201,6 +202,11 @@ beforeEach(async () => {
     now: () => fakeNow ?? Date.now(),
     interactive,
     responseCredential,
+    responseCancellation: createChannelResponseCancellation({
+      storage: createResponseStorage(mongoose),
+      recovery: storage,
+      now: () => fakeNow ?? Date.now(),
+    }),
     storage,
     artifacts: createChannelArtifactService({
       readArtifacts: db.readResponseArtifacts,
@@ -485,62 +491,56 @@ it(
   }),
 );
 
-it(
-  'holds cancelled unbound credentials and recovers a late canonical response without execution',
-  scoped(async () => {
-    await link('U1', users[0]);
-    const admitted = await post('runs').send(event()).expect(201);
-    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
-    const route = `runs/${admitted.body.runId}/response`;
-    await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
-    await storage.attachResponseCredential(
-      tenantId,
-      claimed.body.fence,
-      { apiKeyId: 'issued-key', encryptedApiKey: 'ciphertext' },
-      Date.now(),
-    );
-    await post(`runs/${admitted.body.runId}/cancel`)
-      .send({ actor: event().actor, revision: 'revision-1' })
-      .expect(202);
-    await post(`${route}/prepare`)
-      .send({ fence: claimed.body.fence })
-      .expect(409, { error: 'response_cancellation_pending' });
-    expect(responseCredential).not.toHaveBeenCalled();
-    const reserved = await createResponseStorage(mongoose).reserve({
-      tenantId,
-      userId: users[0].id,
-      responseId: createManagedMessageId(),
-      requestKey: `channel:${admitted.body.runId}`,
-      sourceKeyId: 'issued-key',
-      fingerprint: 'late-request',
-      agentId: 'agent',
-      requestJSON: JSON.stringify({
-        model: 'agent',
-        input: event().input,
-        background: true,
-        store: true,
-      }),
-      conversationId: (await storage.read(tenantId, 'channel', admitted.body.runId))!.execution!
-        .conversationId,
-      parentMessageId: '00000000-0000-0000-0000-000000000000',
-    });
-    if (!reserved.ok) throw new Error('Reservation failed');
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const prepared = await post(`${route}/prepare`)
-        .send({ fence: claimed.body.fence })
-        .expect(200);
-      expect(prepared.body.responseId).toBe(reserved.record.responseId);
-    }
-    expect(responseCredential).toHaveBeenCalledTimes(2);
-    expect(responseCredential.mock.calls[0][0]).toMatchObject({ cancellationRequested: true });
-    expect(invoked).toHaveLength(0);
-    expect(
-      (await storage.read(tenantId, 'channel', admitted.body.runId))?.snapshot,
-    ).toBeUndefined();
-    expect(
-      await createResponseStorage(mongoose).read(reserved.record, reserved.record.responseId),
-    ).toEqual(reserved.record);
-  }),
+it.each([false, true])(
+  'prepares native Stop through the canonical request slot without waiting for a first POST: existing=%s',
+  (existing) =>
+    scoped(async () => {
+      await link('U1', users[0]);
+      const admitted = await post('runs').send(event()).expect(201);
+      const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+      const route = `runs/${admitted.body.runId}/response`;
+      const prepared = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+      const credentials = responseCredentials();
+      const key = await credentials.provision(prepared);
+      responseCredential.mockImplementation(credentials.provision);
+      const saved = (await storage.read(tenantId, 'channel', admitted.body.runId))!;
+      const existingId = createManagedMessageId();
+      if (existing) await reserveFixtureResponse(saved, existingId);
+      await post('runs/stop-thread')
+        .send({
+          actor: event().actor,
+          externalChannelId: event().externalChannelId,
+          externalThreadKey: event().externalThreadKey,
+          eventAt: Date.now(),
+        })
+        .expect(202, { cancellationRequested: true });
+      let selected: string | undefined;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const result = await post(`${route}/prepare`)
+          .send({ fence: claimed.body.fence })
+          .expect(200);
+        expect(result.body.apiKey).toBe(key);
+        expect(result.body.responseId).toBeDefined();
+        if (selected) expect(result.body.responseId).toBe(selected);
+        selected = result.body.responseId;
+        if (existing) expect(selected).toBe(existingId);
+        const canonical = await createResponseStorage(mongoose).read(
+          { userId: users[0].id, tenantId },
+          selected!,
+        );
+        expect(canonical).toMatchObject({
+          sourceKeyId: saved.execution!.apiKeyId,
+          requestKey: `channel:${saved.runId}`,
+        });
+        if (!existing) expect(canonical?.cancellationRequestedAt).toEqual(expect.any(Number));
+        expect(canonical?.generationCreatedAt).toBeUndefined();
+      }
+      expect(responseCredential).toHaveBeenCalledTimes(2);
+      expect(invoked).toHaveLength(0);
+      expect(
+        (await storage.read(tenantId, 'channel', saved.runId))!.execution?.responseTarget,
+      ).toBeDefined();
+    })(),
 );
 
 it.each(['per_user', 'shared'] as const)(

@@ -32,6 +32,8 @@ Configure gateway feature and signature policy through the YAML fields above; pr
 
 Native Stop remains available for an authenticated existing session even when optional native emission is disabled. The application accepts bounded future clock skew and durably pins each click's first observed target, lease epoch and cutoff, including no target. A retry cannot advance its cutoff or stop a newer run. Past occurrence times remain unchanged; clock skew does not establish a globally exact event order.
 
+Cancellation survives a gateway crash before the first Agent request. Recovery closes that request's canonical Responses slot, so a delayed gateway retry cannot start it again.
+
 ## Delivery recovery
 
 The gateway preserves each frozen delivery operation and its receipt. A required operation whose provider result is unknown holds its actor lane: retrying blindly could post the same answer twice. Stopping a worker or requesting cancellation does not prove whether Slack accepted an earlier request.

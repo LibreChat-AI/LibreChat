@@ -481,6 +481,8 @@ it('does not treat a cleanup metadata outage as successful retirement', () =>
     const retireResponse = jest.fn(async () => 'stopped' as const);
     const retire = createChannelResponseRetirement({
       storage: {
+        reserve: storage.reserve,
+        readConversationTarget: storage.readConversationTarget,
         readCleanupIdentity: async () => {
           throw new Error('cleanup store unavailable');
         },

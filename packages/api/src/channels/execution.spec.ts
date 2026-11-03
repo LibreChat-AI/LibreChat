@@ -3,6 +3,7 @@ import request from 'supertest';
 import mongoose from 'mongoose';
 import { Constants } from 'librechat-data-provider';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import { createResponseStorage } from '@librechat/data-schemas';
 import {
   channelRunFence,
   createModels,
@@ -13,6 +14,7 @@ import {
 } from '@librechat/data-schemas';
 import type { ChannelRunRecord } from '@librechat/data-schemas';
 import type { ChannelExecutionDependencies } from './execution';
+import { createChannelResponseCancellation } from './responses';
 import { createChannelExecutionAdapter } from './execution';
 import { createChannelHandlers } from './service';
 import { createChannelRunHandlers } from './runs';
@@ -132,6 +134,10 @@ describe('mounted service-token advance cannot execute an unbound run', () => {
         responseProjection,
       });
       const runs = createChannelRunHandlers({
+        responseCancellation: createChannelResponseCancellation({
+          storage: createResponseStorage(mongoose),
+          recovery: storage,
+        }),
         storage,
         guard: handlers.service,
         receiptGuard: handlers.receiptService,

@@ -108,6 +108,33 @@ describe.each(engines)('canonical channel Response binding on %s', (engine) => {
         accepted: reservation.record,
       };
     }
+    it.each([
+      { cancellationRequestedAt: 0 },
+      { cancellationRequestedAt: -1 },
+      { cancellationRequestedAt: Number.NaN },
+      { cancellationRequestedAt: Number.POSITIVE_INFINITY },
+      { cancellationRequestedAt: 105, dispatch: true },
+    ])('rejects invalid cancellation admission before allocating a Root: %j', (change) =>
+      scoped(async () => {
+        const f = await fixture();
+        const before = await mongoose.models.StoredResponse.collection.countDocuments({});
+        await expect(
+          f.responses.reserve({
+            ...f.owner,
+            responseId: createManagedMessageId(),
+            requestKey: randomUUID(),
+            fingerprint: 'cancel',
+            agentId: f.run.agentId,
+            requestJSON: '{}',
+            conversationId: f.run.execution!.conversationId,
+            parentMessageId: f.run.execution!.parentMessageId,
+            ...change,
+          }),
+        ).rejects.toThrow('Invalid Response reservation');
+        expect(await mongoose.models.StoredResponse.collection.countDocuments({})).toBe(before);
+      }),
+    );
+
     it('captures the exact canonical Root and request fingerprint', () =>
       scoped(async () => {
         const f = await fixture();

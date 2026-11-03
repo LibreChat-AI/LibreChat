@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   ChannelRunConflict,
   channelRunFence,
+  channelResponseRequest,
   matchesChannelRunFence,
 } from '@librechat/data-schemas';
 import {
@@ -46,6 +47,7 @@ export interface ChannelRunDependencies {
     submitInteractiveReview: ResponseDecisionSubmission;
   };
   responseCredential?: (run: ChannelRunRecord) => Promise<string>;
+  responseCancellation: (run: ChannelRunRecord) => Promise<ChannelRunRecord | null>;
   storage: ChannelRunStorage;
   guard: ChannelServiceGuard;
   /** Confirms existing attempts without disclosing private Run content after revocation. */
@@ -764,11 +766,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         return;
       }
       if (run.cancellationRequested && !run.execution.responseId) {
-        const recovered = await deps.storage.recoverResponse(
-          channel.tenantId ?? '_',
-          binding.fence,
-          now(),
-        );
+        const recovered = await deps.responseCancellation(run);
         if (!recovered) {
           res.status(409).json({ error: 'response_cancellation_pending' });
           return;
@@ -788,15 +786,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         apiKey,
         requestKey: `channel:${run.runId}`,
         responseId: run.execution!.responseId,
-        request: {
-          model: run.agentId,
-          input: run.admission.input,
-          background: true,
-          store: true,
-          ...(run.execution!.parentMessageId === '00000000-0000-0000-0000-000000000000'
-            ? {}
-            : { previous_response_id: run.execution!.parentMessageId }),
-        },
+        request: channelResponseRequest(run),
       } satisfies ChannelResponsePreparation);
     }),
     bindResponse: guarded(async (req, res, channel) => {
