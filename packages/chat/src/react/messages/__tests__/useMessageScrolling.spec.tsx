@@ -1,12 +1,10 @@
-import React from 'react';
-import { RecoilRoot } from 'recoil';
-import { Provider, createStore } from 'jotai';
+/**
+ * @jest-environment jsdom
+ */
+import { createContext, useContext } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
-import type { TConversation, TMessage } from 'librechat-data-provider';
-import {
-  MessagesViewContext,
-  type MessagesViewContextValue,
-} from '~/Providers/MessagesViewContext';
+import type { TMessage } from 'librechat-data-provider';
+import type { MessageScrollingInput } from '../useMessageScrolling';
 
 type MockScrollToBottom = jest.Mock & {
   cancel: jest.Mock;
@@ -36,7 +34,6 @@ jest.mock('../messageLayout', () => ({
 
 import useMessageScrolling from '../useMessageScrolling';
 import { reconcileMessageContentLayout } from '../messageLayout';
-import { autoScrollAtom } from '~/store/autoScroll';
 
 const mockReconcileMessageContentLayout = reconcileMessageContentLayout as jest.Mock;
 
@@ -108,42 +105,34 @@ function setRect(element: HTMLElement, rect: Partial<DOMRect>): void {
   );
 }
 
-const conversation = {
-  conversationId: 'conversation-1',
-  endpoint: 'openAI',
-  model: 'gpt-4',
-} as TConversation;
-
 const message = {
   messageId: 'message-1',
-  conversationId: conversation.conversationId,
+  conversationId: 'conversation-1',
   isCreatedByUser: false,
 } as TMessage;
 
-function createContextValue(
-  overrides: Partial<MessagesViewContextValue> = {},
-): MessagesViewContextValue {
+type ScrollingInputs = Omit<MessageScrollingInput, 'messagesTree'>;
+
+function createContextValue(overrides: Partial<ScrollingInputs> = {}): ScrollingInputs {
   return {
-    conversation,
-    conversationId: conversation.conversationId,
+    conversationId: 'conversation-1',
     isSubmitting: true,
     abortScroll: false,
     setAbortScroll: jest.fn(),
-    ask: jest.fn(),
-    regenerate: jest.fn(),
-    handleContinue: jest.fn(),
-    index: 0,
-    latestMessageId: message.messageId,
-    latestMessageDepth: 0,
-    getMessages: jest.fn(),
-    setMessages: jest.fn(),
+    autoScroll: true,
     ...overrides,
-  } as MessagesViewContextValue;
+  };
 }
 
+/** Stands in for the message list, which feeds the hook from the chat context. */
+const ScrollingInputsContext = createContext<ScrollingInputs>(createContextValue());
+
 function ScrollingHarness({ messagesTree }: { messagesTree?: TMessage[] | null }) {
-  const { contentRef, scrollableRef, messagesEndRef, debouncedHandleScroll } =
-    useMessageScrolling(messagesTree);
+  const inputs = useContext(ScrollingInputsContext);
+  const { contentRef, scrollableRef, messagesEndRef, debouncedHandleScroll } = useMessageScrolling({
+    ...inputs,
+    messagesTree,
+  });
 
   return (
     <div ref={scrollableRef} onScroll={debouncedHandleScroll} data-testid="scrollable">
@@ -158,15 +147,13 @@ function renderScrolling({
   contextOverrides,
   messagesTree,
 }: {
-  contextOverrides?: Partial<MessagesViewContextValue>;
+  contextOverrides?: Partial<ScrollingInputs>;
   messagesTree?: TMessage[] | null;
 } = {}) {
   return render(
-    <RecoilRoot>
-      <MessagesViewContext.Provider value={createContextValue(contextOverrides)}>
-        <ScrollingHarness messagesTree={messagesTree} />
-      </MessagesViewContext.Provider>
-    </RecoilRoot>,
+    <ScrollingInputsContext.Provider value={createContextValue(contextOverrides)}>
+      <ScrollingHarness messagesTree={messagesTree} />
+    </ScrollingInputsContext.Provider>,
   );
 }
 
@@ -393,11 +380,9 @@ describe('useMessageScrolling resize reconciliation', () => {
     jest.useFakeTimers();
     try {
       const view = render(
-        <RecoilRoot>
-          <MessagesViewContext.Provider value={createContextValue({ isSubmitting: false })}>
-            <ScrollingHarness messagesTree={[message]} />
-          </MessagesViewContext.Provider>
-        </RecoilRoot>,
+        <ScrollingInputsContext.Provider value={createContextValue({ isSubmitting: false })}>
+          <ScrollingHarness messagesTree={[message]} />
+        </ScrollingInputsContext.Provider>,
       );
 
       const scrollable = screen.getByTestId('scrollable');
@@ -408,11 +393,9 @@ describe('useMessageScrolling resize reconciliation', () => {
       scrollable.scrollTop = 0;
 
       view.rerender(
-        <RecoilRoot>
-          <MessagesViewContext.Provider value={createContextValue({ isSubmitting: true })}>
-            <ScrollingHarness messagesTree={[message]} />
-          </MessagesViewContext.Provider>
-        </RecoilRoot>,
+        <ScrollingInputsContext.Provider value={createContextValue({ isSubmitting: true })}>
+          <ScrollingHarness messagesTree={[message]} />
+        </ScrollingInputsContext.Provider>,
       );
 
       expect(scrollTo).toHaveBeenCalledWith({ top: 800, behavior: 'smooth' });
@@ -444,11 +427,9 @@ describe('useMessageScrolling resize reconciliation', () => {
    */
   it('starts the turn once a stale abort flag clears', () => {
     const view = render(
-      <RecoilRoot>
-        <MessagesViewContext.Provider value={createContextValue({ isSubmitting: false })}>
-          <ScrollingHarness messagesTree={[message]} />
-        </MessagesViewContext.Provider>
-      </RecoilRoot>,
+      <ScrollingInputsContext.Provider value={createContextValue({ isSubmitting: false })}>
+        <ScrollingHarness messagesTree={[message]} />
+      </ScrollingInputsContext.Provider>,
     );
 
     const scrollable = screen.getByTestId('scrollable');
@@ -462,26 +443,22 @@ describe('useMessageScrolling resize reconciliation', () => {
     fireEvent.wheel(scrollable, { deltaY: -120 });
 
     view.rerender(
-      <RecoilRoot>
-        <MessagesViewContext.Provider
-          value={createContextValue({ isSubmitting: true, abortScroll: true })}
-        >
-          <ScrollingHarness messagesTree={[message]} />
-        </MessagesViewContext.Provider>
-      </RecoilRoot>,
+      <ScrollingInputsContext.Provider
+        value={createContextValue({ isSubmitting: true, abortScroll: true })}
+      >
+        <ScrollingHarness messagesTree={[message]} />
+      </ScrollingInputsContext.Provider>,
     );
 
     expect(scrollTo).not.toHaveBeenCalled();
 
     /** The connection opens and lowers the flag. */
     view.rerender(
-      <RecoilRoot>
-        <MessagesViewContext.Provider
-          value={createContextValue({ isSubmitting: true, abortScroll: false })}
-        >
-          <ScrollingHarness messagesTree={[message]} />
-        </MessagesViewContext.Provider>
-      </RecoilRoot>,
+      <ScrollingInputsContext.Provider
+        value={createContextValue({ isSubmitting: true, abortScroll: false })}
+      >
+        <ScrollingHarness messagesTree={[message]} />
+      </ScrollingInputsContext.Provider>,
     );
 
     expect(scrollTo).toHaveBeenCalledWith({ top: 800, behavior: 'smooth' });
@@ -489,11 +466,9 @@ describe('useMessageScrolling resize reconciliation', () => {
 
   it('leaves the send glide alone while the answer streams in', () => {
     const view = render(
-      <RecoilRoot>
-        <MessagesViewContext.Provider value={createContextValue({ isSubmitting: false })}>
-          <ScrollingHarness messagesTree={[message]} />
-        </MessagesViewContext.Provider>
-      </RecoilRoot>,
+      <ScrollingInputsContext.Provider value={createContextValue({ isSubmitting: false })}>
+        <ScrollingHarness messagesTree={[message]} />
+      </ScrollingInputsContext.Provider>,
     );
 
     const scrollable = screen.getByTestId('scrollable');
@@ -504,11 +479,9 @@ describe('useMessageScrolling resize reconciliation', () => {
     scrollable.scrollTop = 0;
 
     view.rerender(
-      <RecoilRoot>
-        <MessagesViewContext.Provider value={createContextValue({ isSubmitting: true })}>
-          <ScrollingHarness messagesTree={[message]} />
-        </MessagesViewContext.Provider>
-      </RecoilRoot>,
+      <ScrollingInputsContext.Provider value={createContextValue({ isSubmitting: true })}>
+        <ScrollingHarness messagesTree={[message]} />
+      </ScrollingInputsContext.Provider>,
     );
 
     expect(scrollTo).toHaveBeenCalledWith({ top: 800, behavior: 'smooth' });
@@ -516,11 +489,9 @@ describe('useMessageScrolling resize reconciliation', () => {
     /** The next delta of the answer arrives while the glide is still travelling. */
     Object.defineProperty(scrollable, 'scrollHeight', { value: 1100, configurable: true });
     view.rerender(
-      <RecoilRoot>
-        <MessagesViewContext.Provider value={createContextValue({ isSubmitting: true })}>
-          <ScrollingHarness messagesTree={[message, message]} />
-        </MessagesViewContext.Provider>
-      </RecoilRoot>,
+      <ScrollingInputsContext.Provider value={createContextValue({ isSubmitting: true })}>
+        <ScrollingHarness messagesTree={[message, message]} />
+      </ScrollingInputsContext.Provider>,
     );
 
     /** A plain follow would have written scrollTop outright and killed the animation. */
@@ -534,11 +505,9 @@ describe('useMessageScrolling resize reconciliation', () => {
    */
   it('catches up to the new bottom when the glide lands', () => {
     const view = render(
-      <RecoilRoot>
-        <MessagesViewContext.Provider value={createContextValue({ isSubmitting: false })}>
-          <ScrollingHarness messagesTree={[message]} />
-        </MessagesViewContext.Provider>
-      </RecoilRoot>,
+      <ScrollingInputsContext.Provider value={createContextValue({ isSubmitting: false })}>
+        <ScrollingHarness messagesTree={[message]} />
+      </ScrollingInputsContext.Provider>,
     );
 
     const scrollable = screen.getByTestId('scrollable');
@@ -548,11 +517,9 @@ describe('useMessageScrolling resize reconciliation', () => {
     scrollable.scrollTop = 0;
 
     view.rerender(
-      <RecoilRoot>
-        <MessagesViewContext.Provider value={createContextValue({ isSubmitting: true })}>
-          <ScrollingHarness messagesTree={[message]} />
-        </MessagesViewContext.Provider>
-      </RecoilRoot>,
+      <ScrollingInputsContext.Provider value={createContextValue({ isSubmitting: true })}>
+        <ScrollingHarness messagesTree={[message]} />
+      </ScrollingInputsContext.Provider>,
     );
 
     /** The whole answer arrives before the glide reports that it landed. */
@@ -597,23 +564,15 @@ describe('useMessageScrolling navigation landing', () => {
   ];
 
   const harness = (
-    store: ReturnType<typeof createStore>,
+    autoScroll: boolean,
     conversationId: string,
     messagesTree: TMessage[] | null,
   ) => (
-    <RecoilRoot>
-      <Provider store={store}>
-        <MessagesViewContext.Provider
-          value={createContextValue({
-            isSubmitting: false,
-            conversation: { ...conversation, conversationId } as TConversation,
-            conversationId,
-          })}
-        >
-          <ScrollingHarness messagesTree={messagesTree} />
-        </MessagesViewContext.Provider>
-      </Provider>
-    </RecoilRoot>
+    <ScrollingInputsContext.Provider
+      value={createContextValue({ isSubmitting: false, conversationId, autoScroll })}
+    >
+      <ScrollingHarness messagesTree={messagesTree} />
+    </ScrollingInputsContext.Provider>
   );
 
   function renderLanding(
@@ -621,13 +580,11 @@ describe('useMessageScrolling navigation landing', () => {
     messagesTree: TMessage[] | null,
     autoScroll = true,
   ) {
-    const store = createStore();
-    store.set(autoScrollAtom, autoScroll);
-    const view = render(harness(store, conversationId, messagesTree));
+    const view = render(harness(autoScroll, conversationId, messagesTree));
     return {
       ...view,
       rerenderWith: (nextId: string, nextTree: TMessage[] | null) =>
-        view.rerender(harness(store, nextId, nextTree)),
+        view.rerender(harness(autoScroll, nextId, nextTree)),
     };
   }
 

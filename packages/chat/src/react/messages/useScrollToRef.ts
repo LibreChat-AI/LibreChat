@@ -1,6 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react';
-import throttle from 'lodash/throttle';
-import type { RefObject } from 'react';
+import type { MouseEventHandler, RefObject } from 'react';
 
 type TUseScrollToRef = {
   targetRef: RefObject<HTMLDivElement>;
@@ -8,15 +7,48 @@ type TUseScrollToRef = {
   smoothCallback: () => void;
 };
 
-type ThrottledFunction = (() => void) & {
+/** A throttled call that runs on the leading edge and once more on the trailing edge. */
+export type ThrottledFunction = (() => void) & {
+  /** Drops the pending trailing call. */
   cancel: () => void;
-  flush: () => void;
 };
 
 type ScrollToRefReturn = {
   scrollToRef?: ThrottledFunction;
-  handleSmoothToRef: React.MouseEventHandler<HTMLButtonElement>;
+  handleSmoothToRef: MouseEventHandler<HTMLButtonElement>;
 };
+
+/** Runs `run` at once, then at most once per `wait` ms while calls keep arriving: a call
+ *  inside the window is deferred to the window's end, and that run opens the next window. */
+function throttle(run: () => void, wait: number): ThrottledFunction {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let pending = false;
+  const closeWindow = () => {
+    if (!pending) {
+      timer = null;
+      return;
+    }
+    pending = false;
+    run();
+    timer = setTimeout(closeWindow, wait);
+  };
+  const throttled = () => {
+    if (timer != null) {
+      pending = true;
+      return;
+    }
+    run();
+    timer = setTimeout(closeWindow, wait);
+  };
+  throttled.cancel = () => {
+    if (timer != null) {
+      clearTimeout(timer);
+    }
+    timer = null;
+    pending = false;
+  };
+  return throttled;
+}
 
 export default function useScrollToRef({
   targetRef,
@@ -30,27 +62,19 @@ export default function useScrollToRef({
 
   const scrollToRef = useMemo(
     () =>
-      throttle(
-        () => {
-          targetRef.current?.scrollIntoView({ behavior: 'instant' });
-          callbacksRef.current.callback();
-        },
-        145,
-        { leading: true },
-      ),
+      throttle(() => {
+        targetRef.current?.scrollIntoView({ behavior: 'instant' });
+        callbacksRef.current.callback();
+      }, 145),
     [targetRef],
   );
 
   const scrollToRefSmooth = useMemo(
     () =>
-      throttle(
-        () => {
-          targetRef.current?.scrollIntoView({ behavior: 'smooth' });
-          callbacksRef.current.smoothCallback();
-        },
-        750,
-        { leading: true },
-      ),
+      throttle(() => {
+        targetRef.current?.scrollIntoView({ behavior: 'smooth' });
+        callbacksRef.current.smoothCallback();
+      }, 750),
     [targetRef],
   );
 
@@ -62,7 +86,7 @@ export default function useScrollToRef({
     [scrollToRef, scrollToRefSmooth],
   );
 
-  const handleSmoothToRef: React.MouseEventHandler<HTMLButtonElement> = (e) => {
+  const handleSmoothToRef: MouseEventHandler<HTMLButtonElement> = (e) => {
     e.preventDefault();
     scrollToRefSmooth();
   };

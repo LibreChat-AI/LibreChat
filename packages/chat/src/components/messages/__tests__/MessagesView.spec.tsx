@@ -2,10 +2,10 @@
  * @jest-environment jsdom
  */
 import { useRef } from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
-import type { MessagesHost, MessagesScrolling } from '../../../react/messages/host';
 import type { MessagesScrollButtonProps, MessagesViewProps } from '../MessagesView';
+import type { MessagesHost } from '../../../react/messages/host';
 import type { ChatContract } from '../../../react/chat/contract';
 import type { MessagePartsHost } from '../../../react/host';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
@@ -22,42 +22,42 @@ const tree = [{ messageId: 'reply-1', conversationId: 'convo-1' }] as TMessage[]
 const partsHost = { useFontSize: () => 'text-base' } as unknown as MessagePartsHost;
 
 function createHost(overrides: Partial<MessagesHost> = {}) {
-  const scrolling: { current?: MessagesScrolling } = {};
   const reportNearBottom = jest.fn();
   const useConversationSeen = jest.fn<
     jest.Mock,
     [string | undefined, boolean, () => boolean | null, (messageId: string) => boolean]
   >(() => reportNearBottom);
   const host = createMessagesHost({
-    useScrolling: () => {
-      const contentRef = useRef<HTMLDivElement>(null);
-      const scrollableRef = useRef<HTMLDivElement>(null);
-      const messagesEndRef = useRef<HTMLDivElement>(null);
-      scrolling.current = {
-        conversationId: 'convo-1',
-        contentRef,
-        scrollableRef,
-        messagesEndRef,
-        handleSmoothToRef: jest.fn(),
-        debouncedHandleScroll: jest.fn(),
-        handleNearBottomChange: jest.fn(),
-      };
-      return scrolling.current;
-    },
     useScreenshotTarget: () => useRef<HTMLDivElement>(null),
     useAutoScroll: () => false,
     useConversationSeen,
     ...overrides,
   });
-  return { host, scrolling, reportNearBottom, useConversationSeen };
+  return { host, reportNearBottom, useConversationSeen };
 }
 
-const contract = {
-  index: 0,
-  isSubmitting: false,
-  latestMessageDepth: 0,
-  messagesKey: 'convo-1',
-} as ChatContract;
+/** What the list's scrolling reads from the pane. */
+const scrollingInputs: Pick<ChatContract, 'conversation' | 'abortScroll' | 'setAbortScroll'> = {
+  abortScroll: false,
+  setAbortScroll: jest.fn(),
+  conversation: {
+    conversationId: 'convo-1',
+    endpoint: null,
+    title: null,
+    createdAt: '2026-11-03T00:00:00.000Z',
+    updatedAt: '2026-11-03T00:00:00.000Z',
+  },
+};
+
+const contract: ChatContract = Object.assign(
+  {
+    index: 0,
+    isSubmitting: false,
+    latestMessageDepth: 0,
+    messagesKey: 'convo-1',
+  } as ChatContract,
+  scrollingInputs,
+);
 
 function renderView(props: Partial<MessagesViewProps>, host: MessagesHost, chat = contract) {
   const view = (next: Partial<MessagesViewProps>) => (
@@ -144,13 +144,13 @@ describe('MessagesView', () => {
   });
 
   it('wires the scroll control to the end marker and to both near-bottom listeners', () => {
-    const { host, scrolling, reportNearBottom } = createHost();
+    const { host, reportNearBottom } = createHost();
     let button: MessagesScrollButtonProps | undefined;
     const { container } = renderView(
       {
         renderScrollButton: (props) => {
           button = props;
-          return null;
+          return <button onClick={props.scrollHandler}>Jump</button>;
         },
       },
       host,
@@ -159,10 +159,19 @@ describe('MessagesView', () => {
     expect(button?.enabled).toBe(true);
     expect(button?.conversationId).toBe('convo-1');
     expect(button?.messagesEndRef.current).toBe(container.querySelector('#messages-end'));
-    expect(button?.scrollHandler).toBe(scrolling.current?.handleSmoothToRef);
+    expect(button?.scrollableRef.current).toBe(
+      container.querySelector('#messages-end')?.closest('.scrollbar-gutter-stable'),
+    );
+
+    const end = container.querySelector<HTMLElement>('#messages-end');
+    const scrollIntoView = jest.fn();
+    if (end) {
+      end.scrollIntoView = scrollIntoView;
+    }
+    fireEvent.click(screen.getByRole('button', { name: 'Jump' }));
+    expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth' });
 
     button?.onNearBottomChange(false);
-    expect(scrolling.current?.handleNearBottomChange).toHaveBeenCalledWith(false);
     expect(reportNearBottom).toHaveBeenCalledWith(false);
   });
 
@@ -192,10 +201,18 @@ describe('MessagesView', () => {
   });
 
   it('listens to the scroll container and keeps native scroll anchoring outside a mount window', () => {
-    const { host, scrolling } = createHost();
-    renderView({}, host);
+    let button: MessagesScrollButtonProps | undefined;
+    renderView(
+      {
+        renderScrollButton: (props) => {
+          button = props;
+          return null;
+        },
+      },
+      createHost().host,
+    );
 
-    const scrollable = scrolling.current?.scrollableRef.current;
+    const scrollable = button?.scrollableRef.current;
     expect(scrollable).toHaveClass('scrollbar-gutter-stable', 'overflow-y-auto');
     expect(scrollable).not.toHaveClass('[overflow-anchor:none]');
   });

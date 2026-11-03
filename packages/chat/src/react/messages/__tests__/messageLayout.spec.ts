@@ -1,3 +1,6 @@
+/**
+ * @jest-environment jsdom
+ */
 import { reconcileMessageContentLayout } from '../messageLayout';
 
 function setRect(element: HTMLElement, rect: Partial<DOMRect>): void {

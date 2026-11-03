@@ -33,9 +33,6 @@ const host: MessagesHost = {
   useGetMessages: () => () => undefined,
   useHasPendingTurn: () => false,
   renderMessageAudio: () => null,
-  useScrolling: () => {
-    throw new Error('not used by the thread');
-  },
   useScreenshotTarget: () => undefined,
   useAutoScroll: () => false,
   useConversationSeen: () => () => undefined,

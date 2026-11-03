@@ -1,3 +1,6 @@
+/**
+ * @jest-environment jsdom
+ */
 import { StrictMode, createRef, useRef } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import type { RefObject } from 'react';

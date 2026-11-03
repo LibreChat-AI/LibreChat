@@ -8,6 +8,7 @@ import {
   RowMountProvider,
   useProgressiveRowMount,
 } from '../../react/messages/useProgressiveRowMount';
+import useMessageScrolling from '../../react/messages/useMessageScrolling';
 import useScrollbarGutter from '../../react/messages/useScrollbarGutter';
 import { useMessagesHost } from '../../react/messages/host';
 import { useChatContext } from '../../react/chat/context';
@@ -85,25 +86,40 @@ export default function MessagesView({
   const [currentEditId, setCurrentEditId] = useState<string | number | null>(-1);
 
   const {
-    conversationId,
+    index,
+    conversation,
+    isSubmitting,
+    abortScroll,
+    setAbortScroll,
+    latestMessageId,
+    latestMessageDepth,
+    messagesKey,
+  } = useChatContext();
+  const conversationId = conversation?.conversationId;
+  const autoScroll = host.useAutoScroll();
+  const {
     contentRef,
     scrollableRef,
     messagesEndRef,
     handleSmoothToRef,
     debouncedHandleScroll,
     handleNearBottomChange,
-  } = host.useScrolling(messagesTree);
+  } = useMessageScrolling({
+    messagesTree,
+    conversationId,
+    isSubmitting,
+    abortScroll,
+    setAbortScroll,
+    autoScroll,
+  });
 
   useScrollbarGutter(scrollableRef);
 
-  const { index, isSubmitting, latestMessageId, latestMessageDepth, messagesKey } =
-    useChatContext();
   /** Re-arm from the conversation that owns the RENDERED tree: the app's conversation id lags
    *  the route during warm-cache navigation, and keying off it would first mount the new tree
    *  unwindowed, then narrow it after the fact, visibly unmounting rows the user is already
    *  reading. An empty tree has no message to name its owner, so the route's key stands in. */
   const treeConversationId = messagesTree?.[0]?.conversationId ?? (messagesKey || conversationId);
-  const autoScroll = host.useAutoScroll();
 
   /** Direct measurement for the one trigger the observer cannot serve: after a messages
    *  revalidation commits, the end marker may sit where no threshold was crossed, so no

@@ -130,6 +130,11 @@ export { default as useTimeTick } from './react/tick';
 export { default as useGenerationsByLatest } from './react/messages/generations';
 export type { Generations, TUseGenerations } from './react/messages/generations';
 export {
+  reconcileMessageContentLayout,
+  getRenderedContentMaxScrollTop,
+  scheduleMessageContentLayoutReconcile,
+} from './react/messages/messageLayout';
+export {
   useMessagesHost,
   MessagesHostProvider,
   setDefaultMessagesHost,
@@ -144,7 +149,6 @@ export type {
   ForkPreferences,
   ForkConversation,
   ActivitySlotProps,
-  MessagesScrolling,
   ReportNearBottom,
   MessageIconData,
   MessageIconProps,

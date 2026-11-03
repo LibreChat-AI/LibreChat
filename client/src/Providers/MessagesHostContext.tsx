@@ -10,7 +10,6 @@ import type {
   MessageCopyInput,
   ForkPreferences,
   ForkConversation,
-  MessagesScrolling,
   MessageAudioProps,
 } from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
@@ -21,7 +20,6 @@ import {
   useCopyMessageToClipboard,
 } from '~/hooks';
 import useConversationSeen from '~/hooks/Conversations/useConversationSeen';
-import useMessageScrolling from '~/hooks/Messages/useMessageScrolling';
 import { useOptionalMessagesOperations } from './MessagesViewContext';
 import ThreadMessage from '~/components/Chat/Messages/Thread/Message';
 import MessageAudio from '~/components/Chat/Messages/MessageAudio';
@@ -72,12 +70,6 @@ function useAppForkConversation(): ForkConversation {
   );
 }
 
-/** The app's scrolling hook, as the message list reads it. */
-function useScrolling(messagesTree: TMessage[] | null | undefined): MessagesScrolling {
-  const { conversation, ...scrolling } = useMessageScrolling(messagesTree);
-  return { ...scrolling, conversationId: conversation?.conversationId };
-}
-
 function useAppMessageCopy({ message, searchResults, variant }: MessageCopyInput): MessageCopy {
   const clipboardSource = useMemo(() => getMessageClipboardSource(message), [message]);
   const copyToClipboard = useCopyMessageToClipboard({
@@ -110,7 +102,7 @@ function AppMessageAudio(props: MessageAudioProps) {
 }
 
 /** What the message list reads from the app: the viewer's clock format and fork defaults, the
- *  fork request, the rich-text copy, its scrolling, screenshot and seen reporting, the thread's
+ *  fork request, the rich-text copy, its auto-scroll preference, screenshot and seen reporting, the thread's
  *  file map, and the row pieces that still live here: the message body and the subagent activity
  *  group. Registered as the default when this module loads, so rows read it on every route, the
  *  shared view included. */
@@ -123,7 +115,6 @@ export const appMessagesHost: MessagesHost = {
   useGetMessages: useAppGetMessages,
   useHasPendingTurn: useAppHasPendingTurn,
   renderMessageAudio: (props) => <AppMessageAudio {...props} />,
-  useScrolling,
   useScreenshotTarget: () => useScreenshot().screenshotTargetRef,
   useAutoScroll: () => useAtomValue(autoScrollAtom),
   useConversationSeen,

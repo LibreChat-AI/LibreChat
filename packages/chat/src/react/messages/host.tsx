@@ -10,24 +10,6 @@ import type {
 } from 'librechat-data-provider';
 import type { Dispatch, ReactNode, MouseEvent, RefObject, SetStateAction } from 'react';
 
-/** The scroll machinery of the message list, as the app's scrolling hook drives it. */
-export type MessagesScrolling = {
-  /** The conversation the scrolling follows. */
-  conversationId?: string | null;
-  /** Wraps the rendered thread. */
-  contentRef: RefObject<HTMLDivElement>;
-  /** The scroll container. */
-  scrollableRef: RefObject<HTMLDivElement>;
-  /** The zero-height marker after the last row. */
-  messagesEndRef: RefObject<HTMLDivElement>;
-  /** Scrolls smoothly to the end, from the scroll-to-bottom control. */
-  handleSmoothToRef: (event: MouseEvent<HTMLButtonElement>) => void;
-  /** The container's scroll listener. */
-  debouncedHandleScroll: () => void;
-  /** Reports whether the end marker is in view. */
-  handleNearBottomChange: (isNearBottom: boolean) => void;
-};
-
 /** What the message slot renders one visible row of the thread from. */
 export type MessageRowSlotProps = {
   message: TMessage;
@@ -152,14 +134,6 @@ export interface MessagesHost {
   useHasPendingTurn: (conversationId: string) => boolean;
   /** Renders the app's read-aloud control, or `null` while read-aloud is off. */
   renderMessageAudio: (props: MessageAudioProps) => ReactNode;
-  /**
-   * Drives the list's scrolling: follows the stream, lands on a conversation's end and keeps
-   * the reader's position.
-   *
-   * @deprecated On arrival: a bridge to the app's `useMessageScrolling`, which reads the app's
-   * messages providers, until it moves into this package and the list runs it itself.
-   */
-  useScrolling: (messagesTree: TMessage[] | null | undefined) => MessagesScrolling;
   /** The element the app's conversation screenshot captures; none outside a screenshot provider. */
   useScreenshotTarget: () => RefObject<HTMLDivElement> | undefined;
   /** Whether the viewer asked the thread to follow new content to the bottom. */
@@ -196,27 +170,12 @@ const fallbackForkPreferences: ForkPreferences = {
   setRememberOption: noop,
 };
 
-/** Scrolling with nothing behind it: live refs, inert handlers. */
-function useInertScrolling(): MessagesScrolling {
-  const contentRef = useRef<HTMLDivElement>(null);
-  const scrollableRef = useRef<HTMLDivElement>(null);
-  const messagesEndRef = useRef<HTMLDivElement>(null);
-  return {
-    contentRef,
-    scrollableRef,
-    messagesEndRef,
-    handleSmoothToRef: () => undefined,
-    debouncedHandleScroll: () => undefined,
-    handleNearBottomChange: () => undefined,
-  };
-}
-
 const ignoreNearBottom: ReportNearBottom = () => undefined;
 
 const noMessages = (): TMessage[] | undefined => undefined;
 
 /** The host rows read outside any provider before an app registers one: locale clock, no slots,
- *  no forking, no copying, no thread, no queued turn, no read-aloud, inert scrolling. */
+ *  no forking, no copying, no thread, no queued turn, no read-aloud. */
 const fallbackHost: MessagesHost = {
   useHour12: () => undefined,
   renderFiles: () => null,
@@ -226,7 +185,6 @@ const fallbackHost: MessagesHost = {
   useGetMessages: () => noMessages,
   useHasPendingTurn: () => false,
   renderMessageAudio: () => null,
-  useScrolling: useInertScrolling,
   useScreenshotTarget: () => useRef<HTMLDivElement>(null),
   useAutoScroll: () => false,
   useConversationSeen: () => ignoreNearBottom,
