@@ -1,11 +1,6 @@
 import { formatMessage } from '@librechat/agents';
 import { HumanMessage } from '@librechat/agents/langchain';
-import {
-  FileSources,
-  EModelEndpoint,
-  isBedrockDocumentType,
-  resolveTurnLLMDeliveryPath,
-} from 'librechat-data-provider';
+import { FileSources, EModelEndpoint, isBedrockDocumentType } from 'librechat-data-provider';
 import type {
   TFile,
   ImageDetail,
@@ -23,6 +18,7 @@ import {
 } from '../attachments';
 import { assertModelBoundContent } from '~/middleware/modelBoundContent';
 import { filterFilesByEndpointRuntimeConfig } from '~/files/filter';
+import { resolveTurnAttachment } from './delivery';
 import { countTokens } from '~/utils/tokenizer';
 
 type ContentBlock = Exclude<BaseMessage['content'], string>[number];
@@ -94,17 +90,8 @@ export function createRunFileMessageEncoder(
       imageDetail: agent.imageDetail,
     };
 
-    const resolveDelivery = (file: TFile): TFile => {
-      const llmDeliveryPath = resolveTurnLLMDeliveryPath(
-        deliveryRouting,
-        file,
-        agent.fileConsumers,
-      );
-      if (llmDeliveryPath == null || llmDeliveryPath === file.llmDeliveryPath) {
-        return file;
-      }
-      return { ...file, llmDeliveryPath };
-    };
+    const resolveDelivery = (file: TFile): TFile =>
+      resolveTurnAttachment(file, deliveryRouting, agent.fileConsumers);
     const sharedFiles = files.map(resolveDelivery);
     const compatibleFiles = filterFilesByEndpointRuntimeConfig(deps.req.config, {
       files: sharedFiles,

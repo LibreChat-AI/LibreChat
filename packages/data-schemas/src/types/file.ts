@@ -233,6 +233,7 @@ export interface IMongoFile extends Omit<Document, 'model'> {
     destinationChosen?: boolean;
     /** The type the delivery route was resolved against, when conversion changed it. */
     routingMimeType?: string;
+    textDerivation?: 'deferred';
     /** PDF pages counted at upload. */
     pageCount?: number;
     /** Characters pdf.js extracted from a PDF at upload. */

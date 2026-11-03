@@ -743,6 +743,9 @@ const computeProvisionState = async ({
       allowsResource(file, EToolResources.file_search) &&
       canToolResourceConsume(EToolResources.file_search, file.type ?? '') &&
       !isEmbeddedForNamespace(file, namespaceId) &&
+      /* Stored for Run Code alone (#16848 `textDerivation`); embedding it is the RAG cost the upload
+       * skipped. A file the agent itself holds for File Search is embedded as chosen (as #102 does). */
+      (isAgentScoped || file.metadata?.textDerivation !== 'deferred') &&
       !processedResourceFiles.has(`${EToolResources.file_search}:${file.file_id}`)
     ) {
       vectorDBFiles.push(file);

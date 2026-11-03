@@ -438,6 +438,7 @@ export interface TurnDeliveryFile {
   metadata?:
     | ({
         routingMimeType?: string;
+        textDerivation?: 'deferred';
         destinationChosen?: boolean;
         /** Vector namespaces holding this file, written as each embedding succeeds. */
         embeddedEntities?: string[];

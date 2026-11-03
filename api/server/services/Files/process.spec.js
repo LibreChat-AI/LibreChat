@@ -3962,10 +3962,8 @@ describe('automatic reading: spreadsheets for Run Code skip upload extraction', 
     });
   };
 
-  const earlyCalls = () =>
-    require('@librechat/api').resolveUploadFallbackText.mock.calls.filter(
-      ([arg]) => arg.spreadsheetForRunCode === true,
-    );
+  const stored = () => db.createFile.mock.calls[0][0];
+  const expectNoMarker = () => expect(stored().metadata?.textDerivation).toBeUndefined();
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -3993,54 +3991,79 @@ describe('automatic reading: spreadsheets for Run Code skip upload extraction', 
 
   const expectSkipped = () => {
     const { parseText, resolveUploadFallbackText } = require('@librechat/api');
-    expect(resolveUploadFallbackText).toHaveBeenCalledTimes(1);
-    expect(resolveUploadFallbackText).toHaveBeenCalledWith(
-      expect.objectContaining({
-        deliveryPath: 'none',
-        spreadsheetForRunCode: true,
-        destinationChosen: false,
-        isMessageAttachment: true,
-      }),
-    );
+    expect(resolveUploadFallbackText).not.toHaveBeenCalled();
     expect(parseText).not.toHaveBeenCalled();
     expect(db.createFile).toHaveBeenCalledWith(
       expect.objectContaining({
         llmDeliveryPath: 'none',
-        text: 'a,b',
-        metadata: expect.objectContaining({ destinationChosen: false }),
+        metadata: expect.objectContaining({ destinationChosen: false, textDerivation: 'deferred' }),
       }),
       true,
     );
+    expect(stored().text).toBeUndefined();
     expect(db.addAgentResourceFile).not.toHaveBeenCalled();
   };
 
-  const expectToday = (stored = 'text') => {
+  const expectToday = (storedPath = 'text') => {
     const { parseText } = require('@librechat/api');
-    expect(earlyCalls()).toHaveLength(0);
+    expectNoMarker();
     expect(parseText).toHaveBeenCalled();
     expect(db.createFile).toHaveBeenCalledWith(
-      expect.objectContaining({ llmDeliveryPath: stored }),
+      expect.objectContaining({ llmDeliveryPath: storedPath }),
       true,
     );
   };
 
-  const withEarlyText = (text) =>
-    require('@librechat/api').resolveUploadFallbackText.mockImplementation(async (arg) =>
-      arg.spreadsheetForRunCode === true ? text : undefined,
-    );
-
-  test('reads the live case natively, with no RAG call and one extraction', async () => {
-    withEarlyText('a,b');
+  test('stores the live case for Run Code with no extraction at all', async () => {
     await upload();
     expectSkipped();
-    expect(earlyCalls()).toHaveLength(1);
+    expect(db.createFile).toHaveBeenCalledTimes(1);
+  });
+
+  test('stores a 17.9 MB / 160k-row workbook without any reader or cap', async () => {
+    const { parseText, resolveUploadFallbackText } = require('@librechat/api');
+    parseText.mockRejectedValue(new Error('exceeds 15MB'));
+    resolveUploadFallbackText.mockRejectedValue(new Error('must not run'));
+    setupStoredFileUpload({ bytes: 18_769_510 });
+    const req = makeReq({ mimetype: XLSX_MIME, ocrConfig: null });
+    req.file.size = 18_769_510;
+    req.file.originalname = 'pivot-160k.xlsx';
+    req.body.endpoint = EModelEndpoint.agents;
+    await processAgentFileUpload({
+      req,
+      res: mockRes,
+      metadata: {
+        agent_id: 'agent-abc',
+        message_file: 'true',
+        file_id: 'file-uuid-xlsx',
+        effectiveEndpoint: 'Custom Provider',
+      },
+    });
+    expect(parseText).not.toHaveBeenCalled();
+    expect(resolveUploadFallbackText).not.toHaveBeenCalled();
+    expect(getStrategyFunctions).not.toHaveBeenCalledWith(FileSources.document_parser);
+    expect(getStrategyFunctions).not.toHaveBeenCalledWith(FileSources.execute_code);
+    expect(db.createFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        llmDeliveryPath: 'none',
+        bytes: 18_769_510,
+        metadata: expect.objectContaining({ destinationChosen: false, textDerivation: 'deferred' }),
+      }),
+      true,
+    );
+    expect(stored().text).toBeUndefined();
+  });
+
+  test('skips the fallback reader even with textFallbackWithoutTools', async () => {
+    useAutomatic({ textFallbackWithoutTools: true });
+    await upload();
+    expect(require('@librechat/api').resolveUploadFallbackText).not.toHaveBeenCalled();
+    expect(stored().text).toBeUndefined();
   });
 
   test('reads for a saved agent that has execute_code, with no sandbox upload', async () => {
-    withEarlyText('a,b');
     await upload({ metadata: { agentTools: [EToolResources.execute_code] } });
     expectSkipped();
-    expect(earlyCalls()).toHaveLength(1);
     expect(getStrategyFunctions).not.toHaveBeenCalledWith(FileSources.execute_code);
   });
 
@@ -4062,33 +4085,23 @@ describe('automatic reading: spreadsheets for Run Code skip upload extraction', 
     arrange();
     await upload({ metadata: { agentTools } });
     expectToday();
-    expect(earlyCalls()).toHaveLength(0);
-  });
-
-  test('keeps RAG when the built-in reader returns no text', async () => {
-    require('@librechat/api').parseText.mockResolvedValue({ text: 'rag', bytes: 3 });
-    withEarlyText(undefined);
-    await upload();
-    expect(earlyCalls()).toHaveLength(1);
-    expect(require('@librechat/api').parseText).toHaveBeenCalled();
-    expect(db.createFile).toHaveBeenCalledWith(
-      expect.objectContaining({ llmDeliveryPath: 'text' }),
-      true,
-    );
+    expect(db.createFile).toHaveBeenCalledTimes(1);
+    expect(stored().metadata?.textDerivation).toBeUndefined();
   });
 
   test('leaves a chosen context destination alone', async () => {
     require('@librechat/api').parseText.mockResolvedValue({ text: 'rag', bytes: 3 });
     await upload({ metadata: { tool_resource: EToolResources.context } });
     expectToday();
-    expect(earlyCalls()).toHaveLength(0);
+    expect(db.createFile).toHaveBeenCalledTimes(1);
+    expect(stored().metadata?.textDerivation).toBeUndefined();
   });
 
   test('leaves the legacy chooser alone', async () => {
     useAutomatic({ legacyFileUploadUX: true });
     require('@librechat/api').parseText.mockResolvedValue({ text: 'rag', bytes: 3 });
     await upload();
-    expect(earlyCalls()).toHaveLength(0);
+    expect(stored().metadata?.textDerivation).toBeUndefined();
   });
 
   test('leaves an admin delivery override for the type alone', async () => {
@@ -4096,7 +4109,8 @@ describe('automatic reading: spreadsheets for Run Code skip upload extraction', 
     require('@librechat/api').parseText.mockResolvedValue({ text: 'rag', bytes: 3 });
     await upload();
     expectToday();
-    expect(earlyCalls()).toHaveLength(0);
+    expect(db.createFile).toHaveBeenCalledTimes(1);
+    expect(stored().metadata?.textDerivation).toBeUndefined();
   });
 
   test('keeps extraction under an active file policy', async () => {
@@ -4105,7 +4119,8 @@ describe('automatic reading: spreadsheets for Run Code skip upload extraction', 
       filters: { files: { pii: { starterPatterns: ['email'], uninspectable: 'block' } } },
     });
     expectToday();
-    expect(earlyCalls()).toHaveLength(0);
+    expect(db.createFile).toHaveBeenCalledTimes(1);
+    expect(stored().metadata?.textDerivation).toBeUndefined();
   });
 
   test('leaves an agent resource upload alone', async () => {
@@ -4113,7 +4128,7 @@ describe('automatic reading: spreadsheets for Run Code skip upload extraction', 
     await upload({
       metadata: { message_file: undefined, agentTools: [EToolResources.execute_code] },
     });
-    expect(earlyCalls()).toHaveLength(0);
+    expect(stored().metadata?.textDerivation).toBeUndefined();
     expect(require('@librechat/api').parseText).toHaveBeenCalled();
   });
 
@@ -4122,7 +4137,8 @@ describe('automatic reading: spreadsheets for Run Code skip upload extraction', 
     require('@librechat/api').parseText.mockResolvedValue({ text: 'rag', bytes: 3 });
     await upload();
     expectToday();
-    expect(earlyCalls()).toHaveLength(0);
+    expect(db.createFile).toHaveBeenCalledTimes(1);
+    expect(stored().metadata?.textDerivation).toBeUndefined();
   });
 
   test('keeps RAG for a saved agent whose execute_code is stripped by the capability', async () => {
@@ -4130,7 +4146,8 @@ describe('automatic reading: spreadsheets for Run Code skip upload extraction', 
     checkCapability.mockImplementation(async (_req, cap) => cap !== AgentCapabilities.execute_code);
     await upload({ metadata: { agentTools: [EToolResources.execute_code] } });
     expectToday();
-    expect(earlyCalls()).toHaveLength(0);
+    expect(db.createFile).toHaveBeenCalledTimes(1);
+    expect(stored().metadata?.textDerivation).toBeUndefined();
   });
 
   test('keeps RAG for a document type that is not a spreadsheet', async () => {
@@ -4140,13 +4157,13 @@ describe('automatic reading: spreadsheets for Run Code skip upload extraction', 
     });
     require('@librechat/api').parseText.mockResolvedValue({ text: 'rag', bytes: 3 });
     await upload({ mimetype: DOCX_MIME });
-    expect(earlyCalls()).toHaveLength(0);
+    expect(stored().metadata?.textDerivation).toBeUndefined();
   });
 
   test('keeps today when the stored route is not text', async () => {
     useAutomatic({ defaultLLMDeliveryPath: { fallback: 'provider' } });
     await upload();
-    expect(earlyCalls()).toHaveLength(0);
+    expect(stored().metadata?.textDerivation).toBeUndefined();
     expect(db.createFile).toHaveBeenCalledWith(
       expect.objectContaining({ llmDeliveryPath: 'provider' }),
       true,

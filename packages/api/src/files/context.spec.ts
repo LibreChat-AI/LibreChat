@@ -60,3 +60,30 @@ describe('a spreadsheet stored as none with its text under automatic reading', (
     await expect(extract(true)).resolves.toBeUndefined();
   });
 });
+
+describe('a spreadsheet stored for Run Code without text', () => {
+  const deferred = {
+    file_id: 'sheet',
+    filename: 'pivot.xlsx',
+    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    bytes: 18_769_510,
+    llmDeliveryPath: 'none' as const,
+    metadata: { destinationChosen: false, textDerivation: 'deferred' as const },
+  };
+  const routing = resolveTurnDeliveryRouting({
+    agent: { provider: 'openAI' },
+    config: { fileConfig: { endpoints: { openAI: { llmDeliveryPolicy: 'automatic' } } } },
+  });
+
+  it('names the file and Run Code in the context of a turn without Run Code', async () => {
+    const context = await extractFileContext({
+      attachments: applyTurnDelivery([deferred], {
+        routing,
+        consumers: { executeCode: false, fileSearch: false },
+      }),
+      tokenCountFn: (text: string) => text.length,
+    });
+    expect(context).toContain('"pivot.xlsx"');
+    expect(context).toContain('Run Code');
+  });
+});

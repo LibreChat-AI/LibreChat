@@ -3,7 +3,7 @@ import type { TFile } from 'librechat-data-provider';
 import type { RunFileEncodingAgent, RunFileMessageEncoderDeps } from './encode';
 import type { ServerRequest } from '~/types';
 import { AgentAttachmentLimitError, AgentAttachmentPolicyError } from '../attachments';
-import { resolveTurnDeliveryRouting } from './delivery';
+import { getDeferredTextNote, resolveTurnDeliveryRouting } from './delivery';
 import { createRunFileMessageEncoder } from './encode';
 
 jest.mock('~/utils/tokenizer', () => ({ countTokens: (text: string) => text.length }));
@@ -298,6 +298,42 @@ describe('createRunFileMessageEncoder', () => {
     );
     expect(harness.encodeDocuments).not.toHaveBeenCalled();
     expect(harness.extractText).not.toHaveBeenCalled();
+  });
+
+  describe('a spreadsheet stored for Run Code without text', () => {
+    const deferred: TFile = {
+      file_id: 'sheet',
+      filename: 'pivot.xlsx',
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      bytes: 18_769_510,
+      llmDeliveryPath: 'none',
+      metadata: { destinationChosen: false, textDerivation: 'deferred' },
+    } as TFile;
+    const note = getDeferredTextNote('pivot.xlsx');
+
+    it.each([
+      ['by default', undefined],
+      ['under a 1 MB endpoint file size limit', 1],
+    ])('delivers the note instead of throwing %s', async (_name, fileSizeLimit) => {
+      const harness = setup({
+        fileConfig: {
+          endpoints: {
+            openAI: {
+              llmDeliveryPolicy: 'automatic',
+              ...(fileSizeLimit != null ? { fileSizeLimit } : {}),
+            },
+          },
+        },
+      });
+      const messages = await harness.encode([deferred], 'child');
+      expect(messages).toHaveLength(1);
+      expect(harness.extractText).toHaveBeenCalledWith(
+        expect.objectContaining({
+          attachments: [expect.objectContaining({ file_id: 'sheet', text: note })],
+        }),
+      );
+      expect(JSON.stringify(messages[0].content)).toContain('pivot.xlsx');
+    });
   });
 
   it('keeps legacy extracted text while excluding legacy tool-provisioned native bytes', async () => {

@@ -886,7 +886,9 @@ export function planInlineAttachmentBudget<
       /* Text delivery truncates each file at fileTokenLimit; only the refusal uses this. */
       promptTokens: path === 'text' && tokenCap ? Math.min(fileTokens, tokenCap) : fileTokens,
       chars: file.text?.length ?? 0,
+      /* A deferred note's only reader is the prompt; moving it out saves nothing and leaves the model nothing. */
       divertible:
+        file.metadata?.textDerivation !== 'deferred' &&
         resolveTurnLLMDeliveryPath(
           { ...base, overBudgetFileIds: new Set([file.file_id]) },
           file,

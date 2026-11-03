@@ -6,3 +6,15 @@ it('persists the PDF page and text counts that price a provider-read PDF', () =>
   const doc = new File({ metadata: { pageCount: 40, textChars: 271_780, bogus: 1 } });
   expect(doc.toObject().metadata).toEqual({ pageCount: 40, textChars: 271_780 });
 });
+
+it('keeps the deferred text derivation marker and rejects other values', () => {
+  const File = models.PdfCountsFile ?? model('PdfCountsFile', fileSchema);
+  expect(new File({ metadata: { textDerivation: 'deferred' } }).metadata?.textDerivation).toBe(
+    'deferred',
+  );
+  expect(
+    new File({ metadata: { textDerivation: 'complete' } }).validateSync()?.errors[
+      'metadata.textDerivation'
+    ],
+  ).toBeDefined();
+});
