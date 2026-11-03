@@ -175,6 +175,8 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  mergeLeadingSystemMessages: (...args) =>
+    jest.requireActual('@librechat/api').mergeLeadingSystemMessages(...args),
   createFileProvisionRecovery: () =>
     jest.requireActual('@librechat/api').createFileProvisionRecovery(),
   getAgentErrorMetadata: (...args) =>
@@ -2031,6 +2033,39 @@ describe('OpenAIChatCompletionController', () => {
           model: 'gpt-4',
         }),
       );
+    });
+  });
+
+  describe('client system messages', () => {
+    it('folds a leading client system message into the agent instructions', async () => {
+      const api = require('@librechat/api');
+      const { formatAgentMessages } = require('@librechat/agents');
+      api.validateRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          messages: [
+            { role: 'system', content: 'Answer in German.' },
+            { role: 'user', content: 'Hello' },
+          ],
+          stream: false,
+        },
+      });
+      api.initializeAgent.mockResolvedValueOnce({
+        id: 'agent-123',
+        model: 'gpt-4',
+        model_parameters: {},
+        toolRegistry: {},
+        edges: [],
+        instructions: 'You are a librarian.',
+      });
+
+      await OpenAIChatCompletionController(req, res);
+
+      expect(formatAgentMessages.mock.calls.at(-1)[0]).toEqual([
+        { role: 'user', content: 'Hello' },
+      ]);
+      const [{ agents }] = api.createRun.mock.calls.at(-1);
+      expect(agents[0].instructions).toBe('You are a librarian.\n\nAnswer in German.');
     });
   });
 

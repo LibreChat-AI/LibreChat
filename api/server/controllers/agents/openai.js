@@ -32,6 +32,7 @@ const {
   createSafeUser,
   validateRequest,
   initializeAgent,
+  mergeLeadingSystemMessages,
   getBalanceConfig,
   injectSkillPrimes,
   extractManualSkills,
@@ -922,7 +923,11 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
 
       const summarizationConfig = appConfig?.summarization;
 
-      const openaiMessages = convertMessages(request.messages);
+      const { messages: openaiMessages, instructions } = mergeLeadingSystemMessages(
+        convertMessages(request.messages),
+        primaryConfig.instructions,
+      );
+      primaryConfig.instructions = instructions;
 
       const toolSet = buildRunToolSet(
         primaryConfig,
