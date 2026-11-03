@@ -1,43 +1,31 @@
-import React from 'react';
+/**
+ * @jest-environment jsdom
+ */
+import React, { useState } from 'react';
 import { ContentTypes } from 'librechat-data-provider';
+import { Provider as JotaiProvider, createStore } from 'jotai';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
-import SubagentCall from '~/components/Chat/Messages/Content/Parts/SubagentCall';
-import SharedSubagentActivityDialog from './SharedSubagentActivityDialog';
-import { MessageContext } from '~/Providers/MessageContext';
-import { ShareContext } from '~/Providers/ShareContext';
-import { ChatSurfaceHarness } from 'test/harness';
-import '~/Providers/MessagePartsHostContext';
-import '~/Providers/MessagesHostContext';
+import type { ActiveSubagentPanel } from '../../../react/subagents/state';
+import type { ChatSurface } from '../../../react/subagents/surface';
+import type { SubagentsHost } from '../../../react/subagents/host';
+import type { MessagePartsHost } from '../../../react/host';
+import { createMessagesHost } from '../../../__fixtures__/messagesHost';
+import { useOpenSubagentPanel } from '../../../react/subagents/surface';
+import { ChatSurfaceProvider } from '../../../react/subagents/provider';
+import { SubagentsHostProvider } from '../../../react/subagents/host';
+import { MessagesHostProvider } from '../../../react/messages/host';
+import { MessagePartsHostProvider } from '../../../react/host';
+import SharedSubagentActivityDialog from '../shared';
 
-const mockUseSubagentThreadQuery = jest.fn();
-
-jest.mock('~/data-provider', () => ({
-  useSubagentThreadQuery: (...args: unknown[]) => mockUseSubagentThreadQuery(...args),
+jest.mock('@librechat/client', () => ({
+  ...jest.requireActual('@librechat/client'),
+  useLanguage: () => 'en',
+  useLocalize: () => (key: string) => key,
 }));
 
-jest.mock('~/hooks', () => ({
-  useLocalize:
-    () =>
-    (key: string): string => {
-      if (key === 'com_ui_subagent_complete') return 'Ran agent';
-      if (key === 'com_ui_subagent_activity') return 'Agent activity';
-      return key;
-    },
-}));
-
-jest.mock('~/Providers', () => ({ useAgentsMapContext: () => ({}) }));
-jest.mock('~/components/Share/MessageIcon', () => ({ __esModule: true, default: () => null }));
-jest.mock('~/components/Chat/Messages/MessageIcon', () => ({
-  __esModule: true,
-  default: ({ iconData }: { iconData: { iconURL?: string } }) => (
-    <span data-testid="author-face" data-icon={iconData.iconURL} />
-  ),
-}));
-jest.mock('~/hooks/MCP', () => ({ useMCPServerNames: () => [] }));
-
-jest.mock('@librechat/chat/components', () => ({
-  ...jest.requireActual('@librechat/chat/components'),
+jest.mock('../transcript', () => ({
+  ...jest.requireActual('../transcript'),
   SubagentActivityScrollSurface: ({ children }: { children: React.ReactNode }) => (
     <div data-testid="shared-scroll-surface">{children}</div>
   ),
@@ -55,7 +43,7 @@ jest.mock('@librechat/chat/components', () => ({
   ),
 }));
 
-jest.mock('./SubagentConversation', () => ({
+jest.mock('../conversation', () => ({
   __esModule: true,
   default: ({
     turns,
@@ -70,7 +58,7 @@ jest.mock('./SubagentConversation', () => ({
       activity: { items: Array<{ type: string; text?: string }> };
     }>;
   }) => {
-    const { MessageSurfaceContext } = jest.requireActual('~/components/Chat/Messages/ui/surface');
+    const { MessageSurfaceContext } = jest.requireActual('../../../react/messages/surface');
     return (
       <MessageSurfaceContext.Consumer>
         {(surface: string) => (
@@ -95,22 +83,102 @@ jest.mock('./SubagentConversation', () => ({
   },
 }));
 
-const persistedContent = (text: string): TMessageContentParts[] => [
-  { type: ContentTypes.TEXT, text } as TMessageContentParts,
-];
+const partsHost: MessagePartsHost = {
+  useMessage: () => ({ messageId: 'shared-parent' }),
+  renderMarkdown: ({ content }) => content,
+  useSmoothStreaming: () => false,
+  useAgent: () => undefined,
+  renderAgentIcon: () => null,
+  renderAgentAvatar: () => null,
+  renderContentParts: () => null,
+  renderImage: () => null,
+  renderFilePreview: () => null,
+  useFontSize: () => 'text-base',
+  useShowThinking: () => false,
+  useAutoExpandTools: () => false,
+  useLaTeXParsing: () => false,
+  useChatDirection: () => 'ltr',
+  useUserTextPreferences: () => ({
+    usernameDisplay: false,
+    enableUserMsgMarkdown: false,
+    collapseLongUserMessages: false,
+  }),
+  useUser: () => undefined,
+  useFileMap: () => undefined,
+  useToast: () => jest.fn(),
+  useSandboxStarting: () => false,
+  useToolArtifactClaim: () => [null, jest.fn()],
+  useSteerEscalating: () => false,
+  usePaneConversationId: () => null,
+  useLiveAppliedSteer: () => [false, jest.fn()],
+  useShare: () => ({}),
+};
 
-const detachedOutput = JSON.stringify({
-  background_task_id: 'task-1',
-  subagent_thread_id: 'thread-1',
-  tool: 'subagent',
-  subagent_type: 'researcher',
-  status: 'running',
-  message:
-    'Started subagent "researcher" background task. Poll the host background-task tool with background_task_id "task-1".',
+const messagesHost = createMessagesHost({
+  renderMessageIcon: ({ iconData }) => (
+    <span data-testid="author-face" data-icon={iconData?.iconURL} />
+  ),
 });
 
+const subagentsHost: SubagentsHost = {
+  renderSteer: () => null,
+  useRetainedControl: () => ({ isFetching: false, isError: false, refetch: () => undefined }),
+  useTaskContent: () => ({ isError: false, isUnavailable: false, refetch: () => undefined }),
+  useAgentsMap: () => ({}),
+  useChildPartsHost: (host) => host,
+};
+
+const surface: ChatSurface = {
+  enterToSend: true,
+  maximizeChatSpace: false,
+  showScrollButton: true,
+  composerBindings: {
+    shortcutsEnabled: true,
+    submitOverride: undefined,
+    yieldedChords: new Set<string>(),
+  },
+  claimForeground: () => undefined,
+  handOffComposerText: () => undefined,
+};
+
+function ChatSurfaceHarness({ children }: { children: React.ReactNode }) {
+  const [store] = useState(() => createStore());
+  return (
+    <JotaiProvider store={store}>
+      <MessagesHostProvider host={messagesHost}>
+        <MessagePartsHostProvider host={partsHost}>
+          <SubagentsHostProvider host={subagentsHost}>
+            <ChatSurfaceProvider value={surface}>{children}</ChatSurfaceProvider>
+          </SubagentsHostProvider>
+        </MessagePartsHostProvider>
+      </MessagesHostProvider>
+    </JotaiProvider>
+  );
+}
+
+/** The card a shared message draws for a child: the attributes the dialog finds it by to
+ *  restore focus, and the selection it opens the panel with. */
+function SharedCallTrigger({ selection }: { selection: ActiveSubagentPanel }) {
+  const open = useOpenSubagentPanel();
+  return (
+    <button
+      type="button"
+      onClick={() => open?.(selection)}
+      data-subagent-tool-call={selection.toolCallId}
+      data-subagent-parent-message={selection.parentMessageId}
+      data-subagent-part-index={selection.partIndex}
+    >
+      Ran agent
+    </button>
+  );
+}
+
+const persistedContent = (text: string): TMessageContentParts[] => [
+  { type: ContentTypes.TEXT, text },
+];
+
 /** The shared thread as ShareView holds it: the agent that dispatched the child. */
-const sharedMessages = [
+const sharedMessages: TMessage[] = [
   {
     messageId: 'shared-parent',
     parentMessageId: null,
@@ -121,54 +189,41 @@ const sharedMessages = [
     sender: 'Lia',
     iconURL: '/lia.png',
     text: '',
-  } as unknown as TMessage,
+  },
 ];
 
 function renderSharedCall(input: {
   output?: string;
   persistedContent?: TMessageContentParts[];
-  detached?: boolean;
   partIndex?: number;
   messages?: TMessage[];
   subagentType?: string;
-  subagentIdentity?: { subagentKind: 'graph'; subagentAgentId: 'graph:self' };
+  subagentIdentity?: ActiveSubagentPanel['subagentIdentity'];
 }) {
+  const selection: ActiveSubagentPanel = {
+    host: 'share',
+    shareId: 'share-1',
+    parentConversationId: 'shared-conversation',
+    parentMessageId: 'shared-parent',
+    toolCallId: 'shared-call',
+    partIndex: input.partIndex ?? 0,
+    subagentType: input.subagentType ?? 'researcher',
+    subagentIdentity: input.subagentIdentity,
+    prompt: 'Review the release.',
+    legacyOutput: input.output,
+    ...(input.persistedContent == null ? {} : { persistedContent: input.persistedContent }),
+    initialProgress: 1,
+    isSubmitting: false,
+  };
   return render(
     <ChatSurfaceHarness>
-      <ShareContext.Provider value={{ isSharedConvo: true, shareId: 'share-1' }}>
-        <MessageContext.Provider
-          value={{
-            conversationId: 'shared-conversation',
-            messageId: 'shared-parent',
-            partIndex: input.partIndex,
-            isExpanded: false,
-          }}
-        >
-          <SubagentCall
-            toolCallId="shared-call"
-            initialProgress={1}
-            args={{
-              subagent_type: input.subagentType ?? 'researcher',
-              description: 'Review the release.',
-              run_in_background: input.detached === true,
-            }}
-            output={input.output}
-            subagentIdentity={input.subagentIdentity}
-            persistedContent={input.persistedContent}
-          />
-          <SharedSubagentActivityDialog
-            shareId="share-1"
-            messages={input.messages ?? sharedMessages}
-          />
-        </MessageContext.Provider>
-      </ShareContext.Provider>
+      <SharedCallTrigger selection={selection} />
+      <SharedSubagentActivityDialog shareId="share-1" messages={input.messages ?? sharedMessages} />
     </ChatSurfaceHarness>,
   );
 }
 
 describe('SharedSubagentActivityDialog', () => {
-  beforeEach(() => mockUseSubagentThreadQuery.mockClear());
-
   it('opens readable foreground activity from the shared message payload and restores focus', async () => {
     renderSharedCall({
       output: 'Legacy fallback.',
@@ -248,42 +303,5 @@ describe('SharedSubagentActivityDialog', () => {
     expect(screen.getByRole('heading', { name: 'self' })).toBeInTheDocument();
     expect(screen.getByTestId('subagent-conversation')).toHaveAttribute('data-author', 'self');
     expect(screen.getByTestId('author-face')).not.toHaveAttribute('data-icon', '/lia.png');
-  });
-
-  it('renders detached persisted activity without performing the private durable query', () => {
-    renderSharedCall({
-      output: detachedOutput,
-      persistedContent: persistedContent('Detached work survived refresh.'),
-      detached: true,
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Agent activity' }));
-
-    expect(screen.getByText('Detached work survived refresh.')).toBeInTheDocument();
-    expect(mockUseSubagentThreadQuery).not.toHaveBeenCalled();
-  });
-
-  it('makes a detached shared card without persisted activity explicitly noninteractive', () => {
-    renderSharedCall({ output: detachedOutput, detached: true });
-
-    expect(screen.getByRole('button', { name: 'Agent activity' })).toBeDisabled();
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(mockUseSubagentThreadQuery).not.toHaveBeenCalled();
-  });
-
-  it('keeps a shared detached card with only invisible reservations noninteractive', () => {
-    renderSharedCall({
-      output: detachedOutput,
-      detached: true,
-      persistedContent: [
-        {
-          type: ContentTypes.ACTIVITY_LABEL,
-          activity_label: '',
-        } as TMessageContentParts,
-      ],
-    });
-
-    expect(screen.getByRole('button', { name: 'Agent activity' })).toBeDisabled();
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 });
