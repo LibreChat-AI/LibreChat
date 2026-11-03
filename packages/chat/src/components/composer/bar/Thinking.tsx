@@ -15,6 +15,24 @@ export interface ThinkingControlProps {
   onChange: (value: TReasoningOverride) => void;
 }
 
+/** The label roll's state: the word shown, the one leaving, and which way they move. */
+type LabelState = {
+  text: string;
+  rank: number;
+  previous: string | null;
+  up: boolean;
+  turn: number;
+};
+
+/** The conversation's stored value for a setting key, read without widening its type. */
+function readSetting(conversation: TConversation | null, key: string): unknown {
+  if (conversation == null) {
+    return undefined;
+  }
+  const fields: Record<string, unknown> = conversation;
+  return fields[key];
+}
+
 /**
  * The composer's thinking-level button and its popup: the trigger names the level the next turn
  * runs at, and the popup holds the Effort track. The host resolves the setting, the value and
@@ -50,7 +68,7 @@ function ThinkingControl({
   const raw =
     value?.key === setting.key
       ? value.value
-      : (conversation?.[setting.key as keyof TConversation] ?? setting.default);
+      : (readSetting(conversation, setting.key) ?? setting.default);
   const currentValue = raw == null ? undefined : String(raw);
   const display =
     currentValue == null
@@ -61,10 +79,10 @@ function ThinkingControl({
      a lower one, the outgoing word staying behind as a blurred ghost until it
      has cleared. `turn` restarts the animation for each change. */
   const rank = effortRank(setting, currentValue);
-  const [label, setLabel] = useState({
+  const [label, setLabel] = useState<LabelState>({
     text: display,
     rank,
-    previous: null as string | null,
+    previous: null,
     up: true,
     turn: 0,
   });
@@ -102,7 +120,12 @@ function ThinkingControl({
     const ghosts = ghostsRef.current;
     const widest =
       ghosts != null
-        ? Math.max(0, ...Array.from(ghosts.children, (el) => (el as HTMLElement).offsetWidth))
+        ? Math.max(
+            0,
+            ...Array.from(ghosts.children, (el) =>
+              el instanceof HTMLElement ? el.offsetWidth : 0,
+            ),
+          )
         : 0;
     const measured = open ? widest : (currentRef.current?.offsetWidth ?? 0);
     if (measured > 0) {
@@ -205,7 +228,9 @@ function ThinkingControl({
            counts as "outside", so Ariakit hid the popup and the button's own
            click immediately re-opened it. Excluding the trigger leaves a single
            clean toggle. */
-        hideOnInteractOutside={(event) => !disclosureRef.current?.contains(event.target as Node)}
+        hideOnInteractOutside={(event) =>
+          !(event.target instanceof Node && disclosureRef.current?.contains(event.target) === true)
+        }
         /* On a phone the button sits inside the composer, so opening above the
            button alone would cover the message field. It rises from the
            composer's top edge instead, still centred over its button. */
