@@ -244,3 +244,17 @@ Define apiVersion of HorizontalPodAutoscaler
 {{- print "autoscaling/v2beta1" -}}
 {{- end -}}
 {{- end -}}
+
+{{/* Keep the gateway suffix even when the application name reaches 63 characters. */}}
+{{- define "librechat.channelGateway.fullname" -}}
+{{- printf "%s-channel-gateway" (include "librechat.fullname" . | trunc 47 | trimSuffix "-") -}}
+{{- end }}
+
+{{- define "librechat.channelGateway.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "librechat.channelGateway.fullname" . }}
+app.kubernetes.io/instance: {{ .Release.Name }}
+{{- end }}
+
+{{- define "librechat.channelGateway.labels" -}}
+{{- include "librechat.standardLabels" (dict "root" . "selectorLabels" (include "librechat.channelGateway.selectorLabels" .)) }}
+{{- end }}
