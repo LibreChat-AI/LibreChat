@@ -2,10 +2,10 @@ import type { Types } from 'mongoose';
 import type { ManagedState, ManagedTarget, ManagedRegistration } from '~/types/managed';
 import type { ChannelRunRecord } from '~/models/channelRun';
 import type { ResponseOwner } from '~/models/response';
+import { settleAbsentResponseTarget, settleRetainedChannelOwnerTarget } from './registration';
 import { ALLOCATION_PREFIX, includeManagedAllocations } from '~/utils/managed';
 import { managedTargetPredicate, retireManagedAllocation } from './managed';
 import { createChannelRunControl } from './channelRunControl';
-import { settleAbsentResponseTarget } from './registration';
 import { responseScopeKeys } from './responseScope';
 
 interface Metadata {
@@ -113,6 +113,7 @@ export async function eraseOwnedChannelRuns(
     for (const entry of entries) {
       if (entry.target.kind !== kind) continue;
       await erase({ ...entry.target, kind });
+      await settleRetainedChannelOwnerTarget(mongoose, owner, entry);
       await settleAbsentResponseTarget(mongoose, owner, undefined, entry);
     }
     let after: Types.ObjectId | undefined;

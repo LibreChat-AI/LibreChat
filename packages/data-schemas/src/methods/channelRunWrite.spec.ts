@@ -1,13 +1,14 @@
 import mongoose from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer, MongoMemoryReplSet } from 'mongodb-memory-server';
+import type { PhysicalChannelRun } from './channelRunWrite';
+import { channelRunFence, writeChannelRunPatch } from './channelRunWrite';
 import { responseScopeKeys, closeResponseScopes } from './responseScope';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createManagedConversationId } from '~/utils/managed';
 import { createChannelRunStorage } from './channelRun';
 import { tenantStorage } from '~/config/tenantContext';
 import { createAgentChannelMethods } from './channel';
-import { channelRunFence } from './channelRunWrite';
 import { createModels } from '~/models';
 
 const engines = ['standalone', 'replica', ...(process.env.FERRETDB_URI ? ['FerretDB'] : [])];
@@ -67,6 +68,50 @@ describe.each(engines)('versioned Run mutations on %s', (engine) => {
       await f.storage.prepareExecution(f.input.tenantId, f.fence, 101);
       return f;
     }
+    it('makes the private Run owner and publication plus principal cursor owner immutable', () =>
+      scoped(async () => {
+        const f = await fixture();
+        const runs = mongoose.models.ChannelRun;
+        const current = await runs
+          .findOne({ runId: f.run.runId })
+          .select('+_managed')
+          .lean<PhysicalChannelRun | null>();
+        if (!current?.publication) throw new Error('Fixture publication missing');
+        for (const patch of [
+          { principal: undefined },
+          { publication: undefined },
+          { principal: { ...current.principal, userId: 'replacement' } },
+          { publication: { ...current.publication, creatorId: 'replacement' } },
+        ])
+          await expect(
+            writeChannelRunPatch(mongoose, current, patch, {}, async () => ({})),
+          ).rejects.toMatchObject({ code: 'invalid_transition' });
+        for (const update of [
+          {
+            $set: {
+              principal: { ...current.principal, userId: 'replacement' },
+              publication: { ...current.publication, creatorId: 'replacement' },
+            },
+          },
+          { $set: { 'principal.userId': 'replacement', 'publication.creatorId': 'replacement' } },
+          { $set: { 'publication.control.id': String(new mongoose.Types.ObjectId()) } },
+          { $unset: { 'publication.channel.target': 1, 'publication.lane.incarnation': 1 } },
+          { $unset: { principal: 1, publication: 1 } },
+        ])
+          await runs.updateOne({ _id: current._id }, update);
+        const after = await runs.collection.findOne({ _id: current._id });
+        expect(after!.principal).toEqual(current.principal);
+        expect(after!.publication).toEqual(current.publication);
+        const laneId = new mongoose.Types.ObjectId(current.publication.lane.id);
+        await mongoose.models.ChannelLane.updateOne(
+          { _id: laneId },
+          { $set: { userId: 'replacement' } },
+        );
+        await mongoose.models.ChannelLane.updateOne({ _id: laneId }, { $unset: { userId: 1 } });
+        expect(await mongoose.models.ChannelLane.collection.findOne({ _id: laneId })).toMatchObject(
+          { userId: f.owner },
+        );
+      }));
     it('prepares one stable registered conversation across concurrent calls without sessions', () =>
       scoped(async () => {
         const f = await fixture();

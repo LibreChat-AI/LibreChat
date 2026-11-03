@@ -2,13 +2,14 @@ import mongoose from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import { MongoMemoryServer, MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { PhysicalChannelRun } from './channelRunWrite';
+import { registerResponseTarget, settleRetainedChannelOwnerTarget } from './registration';
 import { allocateManagedTarget, managedRegistration } from './managed';
 import { createResponseOwnerErasureMethods } from './responseErasure';
 import { eraseChannelPersistenceForUser } from './channelErasure';
+import { createResponseScopeModel } from '~/models/responseScope';
 import { createChannelIdentityStorage } from './channelIdentity';
 import { createChannelRunControl } from './channelRunControl';
 import { createManagedMessageId } from '~/utils/managed';
-import { registerResponseTarget } from './registration';
 import { createChannelRunStorage } from './channelRun';
 import { tenantStorage } from '~/config/tenantContext';
 import { createAgentChannelMethods } from './channel';
@@ -99,6 +100,121 @@ describe.each(engines)('actor control handoff on %s', (engine) => {
       await createResponseOwnerErasureMethods(mongoose).prepareUserResponseErasure(owner);
       await eraseChannelPersistenceForUser(mongoose, owner);
     }
+    it('releases only the closed creator tickets while the actual account retains its Run and cursor', () =>
+      scoped(async () => {
+        const f = await fixture(true, 'per_user');
+        const channel = await mongoose.models.AgentChannel.collection.findOne({
+          channelId: f.input.channelId,
+        });
+        const creator = { userId: String(channel!.createdBy), ...(tenantId && { tenantId }) };
+        const records = await mongoose.models.ChannelRun.findOne({ channelId: f.input.channelId })
+          .select('+_managed')
+          .lean<PhysicalChannelRun | null>();
+        if (!records) throw new Error('Fixture Run missing');
+        const run = managedRegistration(records.publication!.lane);
+        const runEntry = managedRegistration({
+          kind: 'channelRun',
+          id: String(records._id),
+          incarnation: records._managed.incarnation,
+          ...(tenantId && { tenantId }),
+        });
+        for (const entry of [run, runEntry]) {
+          expect(await registerResponseTarget(mongoose, creator, undefined, entry)).toMatchObject({
+            status: 'registered',
+          });
+          expect(
+            await registerResponseTarget(
+              mongoose,
+              { userId: f.owner, ...(tenantId && { tenantId }) },
+              undefined,
+              entry,
+            ),
+          ).toMatchObject({ status: 'registered' });
+          expect(await settleRetainedChannelOwnerTarget(mongoose, creator, entry)).toBe(false);
+        }
+        await eraseOwner(creator.userId);
+        const creatorScope = await createResponseScopeModel(mongoose)
+          .findById(responseScopeKeys(creator, '')[0])
+          .lean();
+        expect(creatorScope!.pending).toEqual([]);
+        const ownerScope = await createResponseScopeModel(mongoose)
+          .findById(responseScopeKeys({ userId: f.owner, ...(tenantId && { tenantId }) }, '')[0])
+          .lean();
+        expect(
+          (ownerScope!.pending ?? []).map((entry: { key: string }) => entry.key).sort(),
+        ).toEqual([run.key, runEntry.key].sort());
+        expect(
+          await mongoose.models.ChannelRun.collection.findOne({ _id: records._id }),
+        ).toMatchObject({ principal: { userId: f.owner } });
+        await eraseOwner(f.owner);
+        expect(
+          await mongoose.models.ChannelRun.collection.findOne({ _id: records._id }),
+        ).toBeNull();
+        await createResponseOwnerErasureMethods(mongoose).assertUserStorageErased({
+          userId: f.owner,
+          ...(tenantId && { tenantId }),
+        });
+      }));
+    it.each(['missing-owner', 'retired', 'control', 'self', 'wrong-parent'] as const)(
+      'rejects a %s retained-owner cleanup proof',
+      (failure) =>
+        scoped(async () => {
+          const f = await fixture(true, 'per_user');
+          const channel = await mongoose.models.AgentChannel.collection.findOne({
+            channelId: f.input.channelId,
+          });
+          const creator = {
+            userId: failure === 'self' ? f.owner : String(channel!.createdBy),
+            ...(tenantId && { tenantId }),
+          };
+          const run = await mongoose.models.ChannelRun.findOne({ channelId: f.input.channelId })
+            .select('+_managed')
+            .lean<PhysicalChannelRun | null>();
+          if (!run) throw new Error('Fixture Run missing');
+          const target =
+            failure === 'control'
+              ? run.publication!.control
+              : {
+                  kind: 'channelRun' as const,
+                  id: String(run._id),
+                  incarnation: run._managed.incarnation,
+                  ...(tenantId && { tenantId }),
+                };
+          const entry = managedRegistration(target);
+          await registerResponseTarget(mongoose, creator, undefined, entry);
+          await createResponseOwnerErasureMethods(mongoose).prepareUserResponseErasure(creator);
+          if (failure === 'missing-owner')
+            await mongoose.models.ChannelRun.collection.updateOne(
+              { _id: run._id },
+              {
+                $set: {
+                  '_managed.scopeKeys': run._managed.scopeKeys?.filter(
+                    (key) =>
+                      key !==
+                      responseScopeKeys({ userId: f.owner, ...(tenantId && { tenantId }) }, '')[0],
+                  ),
+                },
+              },
+            );
+          if (failure === 'wrong-parent')
+            await mongoose.models.ChannelRun.collection.updateOne(
+              { _id: run._id },
+              { $set: { '_managed.parentId': String(new mongoose.Types.ObjectId()) } },
+            );
+          if (failure === 'retired')
+            await mongoose.models.ChannelRun.collection.updateOne(
+              { _id: run._id },
+              { $set: { '_managed.phase': 'retired' } },
+            );
+          expect(await settleRetainedChannelOwnerTarget(mongoose, creator, entry)).toBe(false);
+          const anchor = await createResponseScopeModel(mongoose)
+            .findById(responseScopeKeys(creator, '')[0])
+            .lean();
+          expect((anchor!.pending ?? []).map((value: { key: string }) => value.key)).toContain(
+            entry.key,
+          );
+        }),
+    );
     it('erases an owner only after fencing its control and preserves the selected Stop receipt', () =>
       scoped(async () => {
         const f = await fixture(true, 'per_user');
@@ -199,40 +315,62 @@ describe.each(engines)('actor control handoff on %s', (engine) => {
           }
         }),
     );
-    it('recovers an applied control-fence command whose reply was lost before deleting the Run', () =>
-      scoped(async () => {
-        const f = await fixture(true, 'per_user');
-        const claimed = (await f.storage.claim(
-          f.input.tenantId,
-          f.input.channelId,
-          'worker',
-          101,
-          1000,
-        ))!;
-        const collection = mongoose.models.ChannelLane.collection;
-        const update = collection.updateOne.bind(collection);
-        let failed = false;
-        const spy = jest.spyOn(collection, 'updateOne').mockImplementation(async (...args) => {
-          const result = await update(...args);
-          if (!Array.isArray(args[1]) && args[1].$unset?.assignment && !failed) {
-            failed = true;
-            throw new Error('synthetic lost control acknowledgment');
+    it.each(['shared', 'per_user'] as const)(
+      'recovers a lost control-fence reply during %s owner erasure',
+      (mode) =>
+        scoped(async () => {
+          const f = await fixture(true, mode);
+          await mongoose.models.AgentChannel.collection.updateOne(
+            { channelId: f.input.channelId },
+            {
+              $set: {
+                encryptedBotToken: 'SYNTHETIC-BOT-SECRET',
+                encryptedSigningSecret: 'SYNTHETIC-SIGNING-SECRET',
+              },
+            },
+          );
+          const claimed = (await f.storage.claim(
+            f.input.tenantId,
+            f.input.channelId,
+            'worker',
+            101,
+            1000,
+          ))!;
+          const collection = mongoose.models.ChannelLane.collection;
+          const update = collection.updateOne.bind(collection);
+          let failed = false;
+          const spy = jest.spyOn(collection, 'updateOne').mockImplementation(async (...args) => {
+            const result = await update(...args);
+            if (!Array.isArray(args[1]) && args[1].$unset?.assignment && !failed) {
+              failed = true;
+              throw new Error('synthetic lost control acknowledgment');
+            }
+            return result;
+          });
+          await expect(eraseOwner(f.owner)).rejects.toThrow(
+            'synthetic lost control acknowledgment',
+          );
+          expect(
+            await mongoose.models.ChannelRun.collection.findOne({ runId: claimed.runId }),
+          ).toMatchObject({ _managed: { phase: 'retired' } });
+          if (mode === 'shared') {
+            const parent = await mongoose.models.AgentChannel.collection.findOne({
+              channelId: f.input.channelId,
+            });
+            expect(parent).toMatchObject({ status: 'deleting' });
+            expect(parent).not.toHaveProperty('encryptedBotToken');
+            expect(parent).not.toHaveProperty('encryptedSigningSecret');
           }
-          return result;
-        });
-        await expect(eraseOwner(f.owner)).rejects.toThrow('synthetic lost control acknowledgment');
-        expect(
-          await mongoose.models.ChannelRun.collection.findOne({ runId: claimed.runId }),
-        ).toMatchObject({ _managed: { phase: 'retired' } });
-        spy.mockRestore();
-        await eraseOwner(f.owner);
-        expect(
-          await mongoose.models.ChannelRun.collection.findOne({ runId: claimed.runId }),
-        ).toBeNull();
-        expect(
-          await collection.findOne({ channelId: f.input.channelId, kind: 'control' }),
-        ).not.toHaveProperty('assignment');
-      }));
+          spy.mockRestore();
+          await eraseOwner(f.owner);
+          expect(
+            await mongoose.models.ChannelRun.collection.findOne({ runId: claimed.runId }),
+          ).toBeNull();
+          expect(
+            await collection.findOne({ channelId: f.input.channelId, kind: 'control' }),
+          ).not.toHaveProperty('assignment');
+        }),
+    );
     it('fences private staging while its final publication command is paused', () =>
       scoped(async () => {
         const f = await fixture(false, 'per_user');

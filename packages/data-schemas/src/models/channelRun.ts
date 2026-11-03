@@ -4,7 +4,7 @@ import type {
   ChannelRunPrincipal,
   ChannelDeliveryReceipt,
 } from 'librechat-data-provider';
-import type { Model, SchemaDefinition } from 'mongoose';
+import type { Model, SchemaDefinition, SchemaType } from 'mongoose';
 import type { ManagedTarget, ManagedState } from '~/types/managed';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
 import { applyChannelStorage } from './plugins/managed';
@@ -149,6 +149,14 @@ function channelAuthoritySchema() {
   );
 }
 
+/** Single-nested parent immutability does not protect dotted child updates in Mongoose. */
+function immutableField(path: SchemaType): void {
+  // Query casting reads the option; immutable() also installs the document setter.
+  path.options.immutable = true;
+  path.immutable(true);
+  path.schema?.eachPath((_name, child) => immutableField(child));
+}
+
 export function createChannelRunModel(
   mongoose: typeof import('mongoose'),
 ): Model<ChannelRunRecord> {
@@ -203,7 +211,7 @@ export function createChannelRunModel(
         ],
       },
       admission: { type: Schema.Types.Mixed, required: true },
-      principal: { type: Schema.Types.Mixed, required: true },
+      principal: { type: Schema.Types.Mixed, required: true, immutable: true },
       payloadHash: { type: String, required: true },
       sequence: { type: Number, required: true },
       receivedAt: { type: Number, required: true },
@@ -235,6 +243,7 @@ export function createChannelRunModel(
           },
           { _id: false },
         ),
+        immutable: true,
         default: undefined,
       },
       execution: Schema.Types.Mixed,
@@ -248,6 +257,7 @@ export function createChannelRunModel(
     },
     { timestamps: true, minimize: false },
   );
+  immutableField(schema.path('publication'));
   schema.pre('validate', function () {
     for (const [path, kind] of [
       ['publication.lane.kind', 'channelLane'],
@@ -332,6 +342,7 @@ export function createChannelLaneModel(
       },
       userId: {
         type: String,
+        immutable: true,
         required: function (this: ChannelLaneRecord) {
           return this.kind === 'principal';
         },

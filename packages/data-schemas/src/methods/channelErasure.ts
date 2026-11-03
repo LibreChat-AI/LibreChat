@@ -56,7 +56,6 @@ async function eraseChannelPartition(
   const tenantId = owner.tenantId || '_';
   await eraseChannelKeysForOwner(mongoose, owner, anchor.pending ?? []);
   const runs = createChannelRunModel(mongoose);
-  await eraseOwnedChannelRuns(mongoose, owner, anchor.pending ?? [], batchSize);
   const channels = createAgentChannelModel(mongoose);
   await createIndexesWithRetry(channels);
   const partition = owner.tenantId || { $in: [null, ''] };
@@ -161,6 +160,8 @@ async function eraseChannelPartition(
     for (const connection of page) await eraseConnection(connection);
     after = page[page.length - 1]._id;
   }
+  // Redact creator credentials before private Run control cleanup can fail.
+  await eraseOwnedChannelRuns(mongoose, owner, anchor.pending ?? [], batchSize);
   // Creator channels close and redact credentials before any identity cascade can fail.
   await eraseChannelIdentitiesForOwner(mongoose, owner, batchSize);
   for (const entry of entries) await settleRedactedChannelTarget(mongoose, owner, entry);

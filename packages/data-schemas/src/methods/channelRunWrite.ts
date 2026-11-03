@@ -136,6 +136,12 @@ export async function writeChannelRunPatch(
     throw new Error('Channel Run write version unavailable');
   if (retireLease && !['delivered', 'failed', 'cancelled'].includes(patch.state ?? ''))
     throw new Error('Lease retirement requires a terminal Run');
+  for (const field of ['principal', 'publication'] as const)
+    if (
+      Object.prototype.hasOwnProperty.call(patch, field) &&
+      digest(patch[field] ?? {}) !== digest(current[field] ?? {})
+    )
+      throw new ChannelRunConflict('invalid_transition');
   const model = mongoose.model<ChannelRunRecord>('ChannelRun');
   const candidate = new model({ ...current, ...patch, __v: current.__v + 1 });
   await candidate.validate();

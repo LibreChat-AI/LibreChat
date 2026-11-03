@@ -25,7 +25,7 @@ import {
   BSON_WRITE_HEADROOM_BYTES,
   ManagedDocumentTooLargeError,
 } from '~/utils/bson';
-import { settleAbsentResponseTarget, settleRetainedChannelKeyTarget } from './registration';
+import { settleAbsentResponseTarget, settleRetainedChannelOwnerTarget } from './registration';
 import { assertResponseErasureOwner, responseScopeKeys } from './responseScope';
 import { CHANNEL_RUN_METADATA_FIELDS } from './channelRunWrite';
 import { createAgentApiKeyModel } from '~/models/agentApiKey';
@@ -164,7 +164,7 @@ export async function eraseChannelKeysForOwner(
       ) {
         if (String(current.userId) === owner.userId)
           await model.deleteOne({ ...exact, userId: owner.userId, '_managed.phase': 'published' });
-        else await settleRetainedChannelKeyTarget(mongoose, owner, entry);
+        else await settleRetainedChannelOwnerTarget(mongoose, owner, entry);
       }
     }
     await settleAbsentResponseTarget(mongoose, owner, undefined, entry);

@@ -448,7 +448,7 @@ export function createChannelRunPublication(
             },
             ...(admitted.expiredAt && { $min: { '_managed.expiredAt': admitted.expiredAt } }),
           },
-          { upsert: false, runValidators: true },
+          { upsert: false, runValidators: true, overwriteImmutable: true },
         );
         if (!staged.matchedCount) throw new ChannelRunConflict('invalid_transition');
         const run = await publish(lane, target, roles);

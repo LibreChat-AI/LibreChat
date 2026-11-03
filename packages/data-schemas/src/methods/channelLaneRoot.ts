@@ -231,7 +231,7 @@ export function createChannelLaneRootStorage(
             },
             ...(admitted.expiredAt && { $min: { '_managed.expiredAt': admitted.expiredAt } }),
           },
-          { upsert: false, runValidators: true },
+          { upsert: false, runValidators: true, overwriteImmutable: true },
         );
         if (!published.matchedCount) throw new ChannelRunConflict('invalid_transition');
         return await readPublished(target);

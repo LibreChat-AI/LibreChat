@@ -31,10 +31,15 @@ interface SettlementTarget {
   _id: Types.ObjectId;
   user?: string;
   userId?: string;
+  principal?: { userId: string };
+  publication?: { creatorId: string };
+  kind?: string;
   conversationId?: string;
   expiredAt?: Date | null;
   _managed: {
     incarnation: string;
+    parentId?: string;
+    receipt?: string;
     phase?: string;
     ownerKey?: string;
     conversationKey?: string;
@@ -44,7 +49,7 @@ interface SettlementTarget {
 }
 
 const settlementProjection =
-  '_id user userId conversationId expiredAt _managed.incarnation _managed.phase _managed.ownerKey _managed.conversationKey _managed.scopeKeys _managed.expiredAt';
+  '_id user userId principal.userId publication.creatorId kind conversationId expiredAt _managed.incarnation _managed.parentId _managed.receipt _managed.phase _managed.ownerKey _managed.conversationKey _managed.scopeKeys _managed.expiredAt';
 
 function hasPublishedOwnership(
   target: SettlementTarget,
@@ -303,14 +308,15 @@ export async function settleRedactedIdentityTarget(
   return settleTarget(mongoose, owner, undefined, entry, 'redacted-identity');
 }
 
-/** Release only a deleted creator's lifecycle ticket; the other account still owns the key. */
-export async function settleRetainedChannelKeyTarget(
+/** Release only the deleted creator's lifecycle ticket, preserving the actual account's payload. */
+export async function settleRetainedChannelOwnerTarget(
   mongoose: typeof import('mongoose'),
   owner: ResponseOwner,
   entry: ManagedRegistrationIntent,
 ): Promise<boolean> {
-  if (entry.target.kind !== 'channelKey') throw new TypeError('Invalid retained key target');
-  return settleTarget(mongoose, owner, undefined, entry, 'retained-key');
+  if (!['channelKey', 'channelRun', 'channelLane'].includes(entry.target.kind))
+    throw new TypeError('Invalid retained channel target');
+  return settleTarget(mongoose, owner, undefined, entry, 'retained-channel-owner');
 }
 
 async function settleTarget(
@@ -318,7 +324,12 @@ async function settleTarget(
   owner: ResponseOwner,
   conversationId: string | undefined,
   entry: ManagedRegistrationIntent,
-  proof: 'published' | 'absent' | 'redacted-channel' | 'redacted-identity' | 'retained-key',
+  proof:
+    | 'published'
+    | 'absent'
+    | 'redacted-channel'
+    | 'redacted-identity'
+    | 'retained-channel-owner',
 ): Promise<boolean> {
   const key = registrationScope(
     mongoose,
@@ -335,7 +346,8 @@ async function settleTarget(
       (anchor.closed || (anchor.expiredAt && anchor.expiredAt <= new Date())))
   )
     return false;
-  if ((proof.startsWith('redacted-') || proof === 'retained-key') && !anchor.closed) return false;
+  if ((proof.startsWith('redacted-') || proof === 'retained-channel-owner') && !anchor.closed)
+    return false;
   const existing = anchor.pending?.find((candidate) => candidate.key === entry.key);
   if (!existing || !sameManagedRegistration(existing, entry)) return false;
   const observedRetentionEpoch = anchor.retentionEpoch ?? 0;
@@ -346,18 +358,26 @@ async function settleTarget(
       model.exists(managedTargetPredicate(mongoose, entry.target)),
     ).read('primary');
     if (present) return false;
-  } else if (proof === 'retained-key') {
+  } else if (proof === 'retained-channel-owner') {
     const target = await includeManagedAllocations(
       model.findOne(managedTargetPredicate(mongoose, entry.target)),
     )
       .select(settlementProjection)
       .read('primary')
       .lean<SettlementTarget | null>();
-    const privateOwner = target?.userId == null ? '' : String(target.userId);
+    let privateOwner = target?.userId == null ? '' : String(target.userId);
+    if (entry.target.kind === 'channelRun') privateOwner = target?.principal?.userId ?? '';
     if (
       !target ||
       !privateOwner ||
       privateOwner === owner.userId ||
+      target._managed.parentId !== entry.target.id ||
+      target._managed.receipt !== entry.key ||
+      (entry.target.kind === 'channelRun' && target.publication?.creatorId !== owner.userId) ||
+      (entry.target.kind === 'channelLane' &&
+        (target.kind !== 'principal' ||
+          target._managed.ownerKey !==
+            responseScopeKeys({ ...owner, userId: privateOwner }, '')[0])) ||
       target._managed.phase !== 'published' ||
       !target._managed.scopeKeys?.includes(key) ||
       !target._managed.scopeKeys.includes(
