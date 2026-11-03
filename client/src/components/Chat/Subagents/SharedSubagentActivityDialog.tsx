@@ -11,11 +11,11 @@ import {
   findAgentLaneId,
   resolveSubagentAuthor,
   findAgentAuthorMessage,
+  useSubagentsHost,
 } from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import { MessageSurfaceContext } from '~/components/Chat/Messages/ui/surface';
 import SubagentConversation from './SubagentConversation';
-import { useAgentsMapContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
 
 /** Public-share fallback for subagent activity already embedded in the shared message payload. */
@@ -28,7 +28,7 @@ export default function SharedSubagentActivityDialog({
   messages?: TMessage[];
 }) {
   const localize = useLocalize();
-  const agentsMap = useAgentsMapContext();
+  const agentsMap = useSubagentsHost().useAgentsMap();
   const [selected, setSelected] = useAtom(activeSubagentPanel);
   const resetSelection = useCallback(() => setSelected(null), [setSelected]);
   const selection = selected?.host === 'share' && selected.shareId === shareId ? selected : null;
