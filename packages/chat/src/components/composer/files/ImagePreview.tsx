@@ -6,13 +6,6 @@ import { cn, Button, useLocalize } from '@librechat/client';
 import ProgressCircle from './ProgressCircle';
 import SourceIcon from './SourceIcon';
 
-type styleProps = {
-  backgroundImage?: string;
-  backgroundSize?: string;
-  backgroundPosition?: string;
-  backgroundRepeat?: string;
-};
-
 const ImagePreview = ({
   imageBase64,
   url,
@@ -83,32 +76,15 @@ const ImagePreview = ({
     return () => document.removeEventListener('keydown', onKey);
   }, [isModalOpen, handleOpenChange]);
 
-  const baseStyle: styleProps = {
-    backgroundSize: 'cover',
-    backgroundPosition: 'center',
-    backgroundRepeat: 'no-repeat',
-  };
-
   const imageUrl = imageBase64 ?? url ?? '';
 
-  const style: styleProps = imageUrl
-    ? {
-        ...baseStyle,
-        backgroundImage: `url(${imageUrl})`,
-      }
-    : baseStyle;
-
-  if (typeof style.backgroundImage !== 'string' || style.backgroundImage.length === 0) {
+  if (imageUrl.length === 0) {
     return null;
   }
 
   const radius = 55;
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - progress * circumference;
-  const circleCSSProperties = {
-    transition: 'stroke-dashoffset 0.3s linear',
-  };
-
   /** Keyboard users need the same expand affordance the pointer gets on hover. */
   const showExpandAffordance = isHovered || isFocused;
 
@@ -122,7 +98,6 @@ const ImagePreview = ({
           'focus-visible:ring-text-primary focus-visible:ring-offset-surface-primary focus:outline-hidden focus-visible:ring-2 focus-visible:ring-offset-2',
           className,
         )}
-        style={style}
         aria-label={`View ${alt} in full size`}
         aria-haspopup="dialog"
         onClick={(e) => {
@@ -135,11 +110,16 @@ const ImagePreview = ({
         onFocus={() => setIsFocused(true)}
         onBlur={() => setIsFocused(false)}
       >
+        <img
+          src={imageUrl}
+          alt=""
+          draggable={false}
+          className="absolute inset-0 size-full object-cover object-center"
+        />
         {progress < 1 ? (
           <ProgressCircle
             circumference={circumference}
             offset={offset}
-            circleCSSProperties={circleCSSProperties}
             aria-label={`Loading progress: ${Math.round(progress * 100)}%`}
           />
         ) : (

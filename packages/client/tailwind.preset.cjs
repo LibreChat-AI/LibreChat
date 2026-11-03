@@ -188,6 +188,8 @@ module.exports = {
         crossfade: 'opacity, transform, filter',
         /** A column that widens or narrows with the chat-width preference. */
         'max-width': 'max-width',
+        /** A progress ring filling as its dash offset falls. */
+        'stroke-dashoffset': 'stroke-dashoffset',
       },
       blur: {
         /** The soft blur a crossfading label passes through on its way out or in. */

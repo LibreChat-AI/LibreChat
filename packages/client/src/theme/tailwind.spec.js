@@ -120,6 +120,7 @@ describe('LibreChat Tailwind preset', () => {
       'transition-reveal',
       'transition-crossfade',
       'transition-max-width',
+      'transition-stroke-dashoffset',
       'blur-crossfade',
     ]);
 
@@ -130,6 +131,9 @@ describe('LibreChat Tailwind preset', () => {
       'transition-property: opacity, transform, filter',
     );
     expect(rule(css, 'transition-max-width')).toContain('transition-property: max-width');
+    expect(rule(css, 'transition-stroke-dashoffset')).toContain(
+      'transition-property: stroke-dashoffset',
+    );
     expect(rule(css, 'blur-crossfade')).toContain('blur(2px)');
   });
 

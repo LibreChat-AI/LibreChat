@@ -49,6 +49,7 @@ type ButtonVariantOptions =
         | 'composer-pill'
         | 'composer-trigger'
         | 'hit-area'
+        | 'field-import'
         | null
         | undefined;
       size?:
@@ -289,6 +290,11 @@ const buttonVariantRecipe = cva(
          *  it draws only its focus ring, inside its own box. */
         'hit-area':
           'rounded-full bg-transparent focus-visible:ring-inset focus-visible:ring-offset-0',
+        /** A field-height control that fills a value by importing a file, such as a service
+         *  account key: a quiet field in the secondary ink that turns to the success ink under the
+         *  pointer, and reports the import's outcome through `data-status`. */
+        'field-import':
+          'rounded bg-surface-secondary text-xs font-normal text-text-secondary hover:bg-surface-hover hover:text-status-success focus-visible:ring-text-primary data-[status=invalid]:text-text-destructive data-[status=success]:text-status-success',
       },
       size: {
         default: 'h-theme-button px-theme-button-x py-2',
@@ -412,6 +418,7 @@ const buttonVariantRecipe = cva(
       { variant: 'composer-pill', size: 'default', class: 'h-theme-button-compact px-2.5 py-0' },
       { variant: 'composer-trigger', size: 'default', class: 'h-theme-button-compact px-2 py-0' },
       { variant: 'hit-area', size: 'default', class: 'h-auto p-0' },
+      { variant: 'field-import', size: 'default', class: 'h-10 px-2 py-2' },
     ],
     defaultVariants: {
       variant: 'default',
