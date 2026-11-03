@@ -243,7 +243,7 @@ export {
 } from './react/parts/ask';
 export type { AskAnswerStatus, ReleasedComposerStash } from './react/parts/ask';
 export { useFilesHost, FilesHostProvider } from './react/files';
-export type { FilesHost } from './react/files';
+export type { FilesHost, FileDeleteScope, FileMapSetter } from './react/files';
 export { default as useReducedMotion } from './react/motion';
 export { default as useElementSize } from './react/size';
 export { default as useAudioLevels, frameLevel } from './react/levels';
