@@ -10,6 +10,9 @@ on:
       - 'scripts/typecheck.mts'
       - '.dockerignore'
       - 'docker-compose.channels.yml'
+      - 'docker-compose.mongo-replica.yml'
+      - 'utils/docker/init-replica.js'
+      - '.env.example'
       - '.github/workflows/channel-gateway.yml'
   push:
     branches: [dev]
@@ -21,6 +24,9 @@ on:
       - 'scripts/typecheck.mts'
       - '.dockerignore'
       - 'docker-compose.channels.yml'
+      - 'docker-compose.mongo-replica.yml'
+      - 'utils/docker/init-replica.js'
+      - '.env.example'
       - '.github/workflows/channel-gateway.yml'
   workflow_dispatch:
 
@@ -54,6 +60,47 @@ jobs:
         run: npm run test:ci --workspace @librechat/channel-gateway
       - name: Build gateway
         run: npm run build --workspace @librechat/channel-gateway
+      - name: Verify local replica conversion and restart
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp .env.example .env
+          fixture=$(mktemp)
+          cat > "$fixture" <<'YAML'
+          services:
+            mongodb:
+              container_name: channel-replica-ci-mongodb
+              user: "0:0"
+              healthcheck:
+                test: ['CMD', 'mongosh', '--quiet', '--eval', 'quit(db.adminCommand({ping:1}).ok ? 0 : 1)']
+                interval: 5s
+                timeout: 5s
+                retries: 12
+              volumes:
+                - channel-replica-ci:/data/db
+          volumes:
+            channel-replica-ci:
+          YAML
+          compose() {
+            env UID="$(id -u)" GID="$(id -g)" docker compose -p channel-replica-ci -f docker-compose.yml "$@"
+          }
+          trap 'compose -f docker-compose.mongo-replica.yml -f "$fixture" down -v --remove-orphans' EXIT
+          compose -f "$fixture" up -d --wait mongodb
+          compose -f "$fixture" exec -T mongodb mongosh --quiet --eval '
+            db.getSiblingDB("replica_test").canary.insertOne({_id:"before-conversion"});'
+          compose -f docker-compose.mongo-replica.yml -f "$fixture" up -d mongodb
+          compose -f docker-compose.mongo-replica.yml -f "$fixture" run --rm mongodb-init
+          compose -f docker-compose.mongo-replica.yml -f "$fixture" exec -T mongodb mongosh --quiet --eval '
+            const d=db.getSiblingDB("replica_test");
+            if(!d.canary.findOne({_id:"before-conversion"}))throw new Error("Conversion lost data");
+            const s=db.getMongo().startSession();
+            s.startTransaction();
+            s.getDatabase("replica_test").canary.insertOne({_id:"committed"});
+            s.commitTransaction();s.endSession();'
+          compose -f docker-compose.mongo-replica.yml -f "$fixture" restart mongodb
+          compose -f docker-compose.mongo-replica.yml -f "$fixture" run --rm mongodb-init
+          compose -f docker-compose.mongo-replica.yml -f "$fixture" exec -T mongodb mongosh --quiet --eval '
+            if(db.getSiblingDB("replica_test").canary.countDocuments()!==2)throw new Error("Restart lost data");'
       - name: Build standalone image
         run: docker build -f packages/channel-gateway/Dockerfile -t channel-gateway:ci .
       - name: Verify standalone image and fail-closed startup
