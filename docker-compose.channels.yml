@@ -1,9 +1,33 @@
+# Optional source-built application and stateless gateway. Add the replica overlay
+# for a local transaction-capable MongoDB (see packages/channel-gateway/README.md).
 services:
+  api:
+    image: librechat-channels-api:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ./librechat.yaml:/app/librechat.yaml:ro
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:${PORT:-3080}/health',{signal:AbortSignal.timeout(4000)}).then(r=>{if(!r.ok)process.exitCode=1}).catch(()=>{process.exitCode=1})",
+        ]
+      interval: 10s
+      timeout: 5s
+      start_period: 60s
+      retries: 12
   channel-gateway:
     profiles: [channels]
     build:
       context: .
       dockerfile: packages/channel-gateway/Dockerfile
+    depends_on:
+      api:
+        condition: service_healthy
     init: true
     restart: unless-stopped
     read_only: true
@@ -13,7 +37,7 @@ services:
     environment:
       LIBRECHAT_INTERNAL_URL: http://api:${PORT:-3080}
       CHANNEL_SERVICE_TOKEN: ${CHANNEL_SERVICE_TOKEN:-}
-      CHANNEL_TENANT_ID: ${CHANNEL_TENANT_ID:-}
+      CHANNEL_TENANT_ID: ${CHANNEL_TENANT_ID:-_}
       CHANNEL_ID: ${CHANNEL_ID:-}
       APP_TITLE: ${APP_TITLE:-LibreChat}
       SLACK_APP_TOKEN: ${SLACK_APP_TOKEN:-}

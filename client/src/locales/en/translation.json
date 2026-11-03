@@ -59,6 +59,7 @@
   "com_ui_channels_disabled": "Disabled",
   "com_ui_channels_deleting": "Deleting",
   "com_ui_channels_workspace": "Workspace: {{0}}",
+  "com_ui_channels_transaction_required": "Agent channels require a database with transaction support. Ask your administrator to configure a MongoDB replica set or another supported transactional database.",
   "com_ui_channels_action_error": "Couldn't update this channel. Check the configuration and try again.",
   "com_ui_channels_setup": "Continue setup",
   "com_ui_channels_manage": "Manage connection",

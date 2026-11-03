@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import { nanoid } from 'nanoid';
 import { timingSafeEqual } from 'node:crypto';
-import { runAsSystem, tenantStorage } from '@librechat/data-schemas';
+import { runAsSystem, tenantStorage, TransactionUnavailableError } from '@librechat/data-schemas';
 import {
   channelConfigSchema,
   channelGatewayWirePolicySchema,
@@ -150,6 +150,15 @@ export function createChannelHandlers(deps: ChannelDependencies): {
   putThread: RequestHandler;
   service: ChannelServiceGuard;
 } {
+  function operationFailed(error: unknown, res: Response): void {
+    if (error instanceof TransactionUnavailableError) {
+      res.status(503).json({ error: error.code });
+      return;
+    }
+    deps.logError(getSafeErrorMetadata(error));
+    res.status(503).json({ error: 'channel_operation_failed' });
+  }
+
   const protect =
     (
       handler: (req: Request, res: Response, config: ChannelConfig) => Promise<void>,
@@ -163,8 +172,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
         }
         await handler(req, res, channelConfigSchema.parse(loaded));
       } catch (error) {
-        deps.logError(getSafeErrorMetadata(error));
-        res.status(503).json({ error: 'channel_operation_failed' });
+        operationFailed(error, res);
       }
     };
 
@@ -373,8 +381,7 @@ export function createChannelHandlers(deps: ChannelDependencies): {
           await handler(req, res, channel, channelConfigSchema.parse(loaded));
         });
       } catch (error) {
-        deps.logError(getSafeErrorMetadata(error));
-        res.status(503).json({ error: 'channel_operation_failed' });
+        operationFailed(error, res);
       }
     };
 

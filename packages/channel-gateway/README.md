@@ -1,5 +1,44 @@
 # Slack Channel gateway
 
+## Database and process requirements
+
+The durable gateway and stored background Responses require MongoDB transactions: use a MongoDB replica set or another verified transaction-capable deployment. Standalone MongoDB and FerretDB 2.7 can run ordinary LibreChat, but cannot enable this durable feature. A single local replica member enables transactions; it does not provide high availability. The gateway is a separate process: `npm run backend:dev` starts only LibreChat. Docker is optional. For a local process, build the gateway with `npm run build --workspace @librechat/channel-gateway`, then run `PORT=8080 node --env-file=.env packages/channel-gateway/dist/main.cjs` from the repository root. The process-level `PORT` keeps the gateway separate from the application port in `.env`. Set `LIBRECHAT_INTERNAL_URL` to the local application URL and `CHANNEL_TENANT_ID=_` for an ordinary OSS installation in that environment; the Compose defaults do not apply to the local process. Build the shared packages first using LibreChat's normal development setup; the local application still needs a transaction-capable database.
+
+## Start from this checkout with Docker
+
+The existing `docker-compose.channels.yml` overlay builds both the application and gateway from this checkout. The optional `docker-compose.mongo-replica.yml` overlay initializes one local MongoDB member and waits for it to become primary before the application starts. The gateway waits for the application's healthcheck, then authenticates and loads its channel policy. It becomes healthy only after its configured transport is ready.
+
+1. Prepare `.env` and `librechat.yaml` using LibreChat's normal setup. Generate a private service token with `openssl rand -hex 32`, set it as `CHANNEL_SERVICE_TOKEN` in `.env`, and enable the channel policy shown below. Keep the same Compose files on every command.
+2. For a **fresh local database**, start the application and its normal dependencies:
+
+   ```sh
+   docker compose -f docker-compose.yml -f docker-compose.channels.yml -f docker-compose.mongo-replica.yml up -d --build api meilisearch
+   ```
+
+3. Sign in, open a saved Agent's Channels settings, create a connection and install/activate its Slack app. Enter its bot token there; it is not a gateway environment variable. Copy the connection ID into `.env` as `CHANNEL_ID`. `CHANNEL_TENANT_ID` defaults to `_` for a normal OSS installation; a tenant-scoped installation must supply the actual tenant ID. For Socket Mode, also set `SLACK_APP_TOKEN` to the app-level token for that same app with `connections:write`.
+4. Start the separate gateway:
+
+   ```sh
+   docker compose -f docker-compose.yml -f docker-compose.channels.yml -f docker-compose.mongo-replica.yml --profile channels up -d --build channel-gateway
+   ```
+
+5. Check readiness and startup errors:
+
+   ```sh
+   docker compose -f docker-compose.yml -f docker-compose.channels.yml -f docker-compose.mongo-replica.yml --profile channels ps -a
+   docker compose -f docker-compose.yml -f docker-compose.channels.yml -f docker-compose.mongo-replica.yml --profile channels logs --tail=100 api mongodb-init channel-gateway
+   ```
+
+   `mongodb-init` exiting with status 0 is expected. The application and gateway should be running and healthy. Socket Mode needs no inbound gateway port. For webhooks, expose the gateway's internal port 8080 through your HTTPS reverse proxy and configure its external URL as described below. Missing app/service bindings fail gateway startup rather than starting an unbound bot.
+
+For an already configured external transaction-capable database, omit the MongoDB replica overlay and supply the application connection through your normal Compose override. The base Compose file sets `MONGO_URI`, so changing only the value in `.env` does not override that service environment entry. Never run the local initializer against an external database.
+
+### Existing local data
+
+Do not apply the replica overlay to a running standalone installation. Back up the database, stop LibreChat and every gateway/worker that writes to it, then stop the database. Retain the existing `data-node` directory; do not delete it or run a volume-removal command. Start with the same data directory and the replica overlay above. Initialization preserves existing documents and only initializes an unconfigured local `rs0` member at `mongodb:27017`. It refuses a different replica name/member configuration instead of silently reconfiguring it. Verify your existing users/history before enabling the gateway, and keep the overlay on subsequent restarts.
+
+For authenticated, multi-member, or production deployments, follow the [MongoDB conversion procedure](https://www.mongodb.com/docs/manual/tutorial/convert-standalone-to-replica-set/) and your deployment's backup/security practices. The local overlay deliberately follows the base development Compose authentication/network settings and is not a production replica-set recipe.
+
 ## Configure one server-owned policy
 
 Configure the application in `librechat.yaml`:
@@ -7,6 +46,9 @@ Configure the application in `librechat.yaml`:
 ```yaml
 endpoints:
   agents:
+    remoteApi:
+      background:
+        enabled: true
     channels:
       enabled: true
       transport: socket_mode
@@ -15,6 +57,8 @@ endpoints:
       signatureToleranceSeconds: 300
       socketReconnectDelayMs: 5000
 ```
+
+The gateway executes through stored background Responses, so `remoteApi.background.enabled` must be enabled and API-key authentication must remain enabled. Linked users must have the existing Remote Agents `use` permission and access to the selected Agent; channel linking grants neither. Configure those permissions through LibreChat's normal role settings before testing a non-admin account.
 
 Socket Mode, disabled optional native/lifecycle emission and a 300-second signature window are the defaults. The signature window accepts 1–300 seconds. Socket reconnect delay accepts 100–60,000 milliseconds and defaults to 5,000; consecutive failed attempts use linear backoff. For webhooks, set `transport: webhook` and `gatewayUrl` to the externally reachable HTTPS gateway base URL. Keep the private application service URL internal.
 
