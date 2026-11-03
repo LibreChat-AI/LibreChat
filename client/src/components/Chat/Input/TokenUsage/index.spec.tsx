@@ -38,7 +38,20 @@ jest.mock('~/hooks/Chat/useCompactConversation', () => ({
 
 jest.mock('@librechat/chat/components', () => ({
   ...jest.requireActual('@librechat/chat/components'),
-  ContextBreakdown: () => <div data-testid="context-breakdown-stub" />,
+  ContextBreakdown: ({
+    expanded,
+    onExpandedChange,
+  }: {
+    expanded: boolean;
+    onExpandedChange: (expanded: boolean) => void;
+  }) => (
+    <button
+      type="button"
+      data-testid="context-breakdown-stub"
+      aria-expanded={expanded}
+      onClick={() => onExpandedChange(!expanded)}
+    />
+  ),
 }));
 
 const NOW = Date.parse('2026-07-05T00:00:00.000Z');
@@ -168,6 +181,29 @@ describe('TokenUsage gauge', () => {
       </Provider>,
     );
     expect(screen.getByTestId('token-usage-card')).toHaveClass('w-72');
+  });
+
+  it('keeps the expanded breakdown choice across remounts', async () => {
+    localStorage.clear();
+    mockStartupConfig.mockReturnValue(config());
+    mockTokenUsage.mockReturnValue(usage(83_200));
+    const tree = () => (
+      <Provider store={createStore()}>
+        <TokenUsage index={0} conversation={conversation} isSubmitting={false} />
+      </Provider>
+    );
+    const first = render(tree());
+    await openCard();
+    const user = userEvent.setup({ advanceTimers: jest.advanceTimersByTime });
+    expect(screen.getByTestId('context-breakdown-stub')).toHaveAttribute('aria-expanded', 'false');
+    await user.click(screen.getByTestId('context-breakdown-stub'));
+    expect(screen.getByTestId('context-breakdown-stub')).toHaveAttribute('aria-expanded', 'true');
+    first.unmount();
+
+    render(tree());
+    await openCard();
+    expect(screen.getByTestId('context-breakdown-stub')).toHaveAttribute('aria-expanded', 'true');
+    localStorage.clear();
   });
 
   it('tints the balance-only ring with the balance tone, amber until empty', () => {
