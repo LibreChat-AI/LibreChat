@@ -161,7 +161,7 @@ function EventSubagentRows({
         aria-expanded={expanded}
         aria-controls={panelId}
         aria-label={`${localize('com_ui_subagent_activity')}: ${summary}`}
-        className="flex items-center"
+        className="flex min-h-10 items-center"
       >
         <Bot size={15} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 flex-1 truncate text-sm font-medium">{summary}</span>
