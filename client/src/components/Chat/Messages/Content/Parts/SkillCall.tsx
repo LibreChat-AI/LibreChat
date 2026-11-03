@@ -16,7 +16,10 @@ import { cn } from '~/utils';
 
 /** The loaded skill's own record, when the user can open it. The tool output
  *  only confirms the load, so the instructions come from the skill itself.
- *  Deployment skills and skills the user cannot see resolve to nothing. */
+ *  The call carries a name, not an id, and names are unique only per author:
+ *  the skill is shown only when exactly one accessible skill has the name, the
+ *  same set the run resolved it from. Same-name duplicates, deployment skills
+ *  and skills the user cannot see resolve to nothing, keeping the output. */
 function useLoadedSkill(skillName: string, enabled: boolean) {
   const canUseSkills = useHasAccess({
     permissionType: PermissionTypes.SKILLS,
@@ -27,11 +30,15 @@ function useLoadedSkill(skillName: string, enabled: boolean) {
     { search: skillName, limit: 10 },
     { enabled: active },
   );
-  const skillId = useMemo(
-    () =>
-      pages?.pages.flatMap((page) => page.skills).find((skill) => skill.name === skillName)?._id,
-    [pages, skillName],
-  );
+  const skillId = useMemo(() => {
+    if (!pages || pages.pages.at(-1)?.has_more) {
+      return undefined;
+    }
+    const matches = pages.pages
+      .flatMap((page) => page.skills)
+      .filter((skill) => skill.name === skillName);
+    return matches.length === 1 ? matches[0]._id : undefined;
+  }, [pages, skillName]);
   const { data: skill } = useGetSkillQuery(skillId, { enabled: active });
   return active ? skill : undefined;
 }

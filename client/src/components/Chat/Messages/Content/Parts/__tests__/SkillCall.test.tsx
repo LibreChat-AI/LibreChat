@@ -94,6 +94,26 @@ describe('SkillCall', () => {
     expect(screen.queryByRole('button', { name: 'com_ui_open_skill' })).not.toBeInTheDocument();
   });
 
+  it('keeps the output when two accessible skills share the name', () => {
+    mockSkillsQuery.mockReturnValue({
+      data: {
+        pages: [{ skills: [SKILL, { ...SKILL, _id: 'skill-2' }], has_more: false }],
+      },
+    });
+    renderSkill();
+
+    expect(screen.getByText(/loaded\. Follow the instructions/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_open_skill' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the output while more results could hold another same-name skill', () => {
+    mockSkillsQuery.mockReturnValue({ data: { pages: [{ skills: [SKILL], has_more: true }] } });
+    renderSkill();
+
+    expect(screen.getByText(/loaded\. Follow the instructions/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_open_skill' })).not.toBeInTheDocument();
+  });
+
   it('neither fetches nor links the skill without skills access', () => {
     mockHasAccess.mockReturnValue(false);
     renderSkill();
