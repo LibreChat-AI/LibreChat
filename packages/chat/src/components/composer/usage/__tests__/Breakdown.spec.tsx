@@ -489,7 +489,7 @@ describe('TokenUsage Breakdown', () => {
       await userEvent.click(screen.getByTestId('context-insights-toggle'));
       const hints = await screen.findByTestId('context-hints');
       expect(hints.textContent).toContain('≈2 more turns at this growth');
-      expect(hints.textContent).not.toContain('Summarizing now could reclaim ≈90K tokens');
+      expect(hints.textContent).not.toContain('Summarizing now could reclaim');
     });
 
     it('warns under pressure inline, with insights behind the ⓘ button', async () => {
