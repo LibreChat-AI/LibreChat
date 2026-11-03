@@ -46,6 +46,7 @@ import { enrollAgentExecution } from '../remote/lifecycle';
 import { createResponsePersistence } from './foreground';
 import { createResponseResumeAdmission } from './resume';
 import { buildResponseInputChain } from './persistence';
+import { createResponseRetirement } from './retirement';
 import { createAgentRunEnvelope } from '../envelope';
 import { executeAgentRun } from '../remote/host';
 import { GenerationJobManager } from '~/stream';
@@ -1529,7 +1530,7 @@ describe('background Responses execution handoff', () => {
     },
   );
 
-  it.each(['before enrollment', 'during publication'])(
+  it.each(['before enrollment', 'during publication', 'terminal Stop during enrollment'])(
     'honors queued cancellation %s without provider work',
     async (phase) => {
       if (phase === 'before enrollment') {
@@ -1537,7 +1538,16 @@ describe('background Responses execution handoff', () => {
       } else {
         const publish = storage.enrollExecution.bind(storage);
         jest.spyOn(storage, 'enrollExecution').mockImplementationOnce(async (...args) => {
-          await storage.requestCancellation(owner, record.responseId, Date.now());
+          if (phase === 'terminal Stop during enrollment') {
+            expect(
+              await createResponseRetirement({ storage, jobs: GenerationJobManager })(
+                owner,
+                record.responseId,
+              ),
+            ).toBe('stopped');
+          } else {
+            await storage.requestCancellation(owner, record.responseId, Date.now());
+          }
           return publish(...args);
         });
       }
@@ -1546,6 +1556,7 @@ describe('background Responses execution handoff', () => {
         settled = resolve;
       });
       let starts = 0;
+      const settlementErrors: unknown[] = [];
       const { app } = fixture(async (req, res) => {
         const runtime = createResponseExecutionRuntime(req, res, {
           getMessage: async () => null,
@@ -1558,33 +1569,44 @@ describe('background Responses execution handoff', () => {
           principal: { id: owner.userId, tenantId: owner.tenantId },
           payload: req.body,
         });
-        await executeAgentRun({
-          envelope,
-          runId: runtime.responseId,
-          conversationId: record.conversationId,
-          connection: runtime.connection,
-          ...runtime.hooks,
-          isPrincipalActive: async () => true,
-          execute: async () => {
-            starts++;
-          },
-          handleExecutionError: () => {
-            if (!res.writableEnded) res.status(409).json({ code: 'cancelled' });
-          },
-        });
-        settled();
+        try {
+          await executeAgentRun({
+            envelope,
+            runId: runtime.responseId,
+            conversationId: record.conversationId,
+            connection: runtime.connection,
+            ...runtime.hooks,
+            isPrincipalActive: async () => true,
+            execute: async () => {
+              starts++;
+            },
+            onSettlementError: (error) => {
+              settlementErrors.push(error);
+            },
+            handleExecutionError: () => {
+              if (!res.writableEnded) res.status(409).json({ code: 'cancelled' });
+            },
+          });
+        } finally {
+          settled();
+        }
       });
       const response = await request(app)
         .post('/')
         .set('x-lc-response-worker', '1')
         .auth(mintBackgroundResponseWorkerToken(record, secret), { type: 'bearer' })
         .send({});
-      expect(response.status).toBe(202);
+      expect(response.status).toBe(phase === 'terminal Stop during enrollment' ? 409 : 202);
       await finished;
       expect(starts).toBe(0);
-      expect((await scope(async () => storage.read(owner, record.responseId)))?.status).toBe(
-        'cancelled',
-      );
+      expect(settlementErrors).toEqual([]);
+      const saved = await scope(async () => storage.read(owner, record.responseId));
+      expect(saved).toMatchObject({ status: 'cancelled', releaseAcknowledged: true });
+      const job = await GenerationJobManager.getJob(record.responseId);
+      expect(job?.metadata.terminalPersistencePending).toBe(false);
+      expect(job?.metadata.providerExecutionStartedId).toBeUndefined();
+      if (phase === 'terminal Stop during enrollment')
+        expect(saved?.generationCreatedAt).toBeUndefined();
     },
   );
 

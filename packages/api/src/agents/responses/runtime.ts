@@ -477,15 +477,6 @@ export function createResponseExecutionRuntime(
             }
             if (retired?.retirement && retired.generationCreatedAt === execution.createdAt)
               current = { ...admission.record, ...retired };
-            else if (
-              current?.status === 'cancelled' &&
-              current.cancellationRequestedAt != null &&
-              current.generationCreatedAt == null
-            ) {
-              // Stop won the enrollment CAS. This exact local attempt must still release its drain proof.
-              await completion!.finish({ ...current, generationCreatedAt: execution.createdAt });
-              return;
-            }
           }
           if (
             current &&
