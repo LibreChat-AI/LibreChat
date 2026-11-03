@@ -15,14 +15,14 @@ const { getEffectivePermissions } = require('./PermissionService');
 const db = require('~/models');
 
 module.exports = createChannelApplicationAuthority({
-  storage: createChannelRunStorage(mongoose),
+  storage: createChannelRunStorage(mongoose, {}, db.getDurableStorageConfig),
   policy: createChannelApplicationPolicy({
     readAppConfig: getAppConfig,
     findUser: db.findUser,
     isPrincipalActive: db.isAgentTriggerPrincipalActive,
   }),
   channels: db,
-  identityStorage: createChannelIdentityStorage(mongoose),
+  identityStorage: createChannelIdentityStorage(mongoose, db.getDurableStorageConfig),
   findUser: (id) => db.findUser({ _id: id }),
   getRole: db.getRoleByName,
   isPrincipalActive: db.isAgentTriggerPrincipalActive,

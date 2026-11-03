@@ -17,8 +17,11 @@ const { createMessageBudgetReader, createStorageConfigReader } = require('@libre
 const { initializeMessageBudget, initializeStorageConfig } = require('./index');
 const reader = createMessageBudgetReader.mock.results[0].value;
 const storageConfigReader = createStorageConfigReader.mock.results[0].value;
-const { getMCPAppMessageBudget, getChannelStorageConfig: channelStorageConfigDependency } =
-  createMethods.mock.calls[0][1];
+const {
+  getMCPAppMessageBudget,
+  getChannelStorageConfig: channelStorageConfigDependency,
+  getDurableStorageConfig: durableStorageConfigDependency,
+} = createMethods.mock.calls[0][1];
 
 describe('message App budget dependency wiring', () => {
   it('passes the same reader to storage and initializer to the composition root', () => {
@@ -31,6 +34,7 @@ describe('message App budget dependency wiring', () => {
 describe('deployment storage configuration dependency wiring', () => {
   it('injects the deployment reader without reading config during module initialization', () => {
     expect(channelStorageConfigDependency).toBe(storageConfigReader.getChannelConfig);
+    expect(durableStorageConfigDependency).toBe(storageConfigReader.getDurableConfig);
     expect(initializeStorageConfig).toBe(storageConfigReader.initialize);
     expect(require('./index').getDurableStorageConfig).toBe(storageConfigReader.getDurableConfig);
     expect(storageConfigReader.getChannelConfig).not.toHaveBeenCalled();

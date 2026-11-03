@@ -2,10 +2,12 @@ import {
   createChatExpirationDate,
   createFallbackRetentionDate,
   createManagedConversationId,
+  isManagedConversationId,
 } from '@librechat/data-schemas';
 import type {
   IUser,
   ResponseOwner,
+  ResponseCleanupIdentity,
   ResponseStorage,
   StoredResponseRecord,
 } from '@librechat/data-schemas';
@@ -29,12 +31,12 @@ import {
 import { createBackgroundResponseWorkerAuth, getBackgroundResponseWorkerRecord } from './worker';
 import { createBackgroundResponseTransport, createResponseResumeTransport } from './transport';
 import { resolveImportRetentionFields, isTemporaryRecord } from '~/conversations/retention';
+import { resolveResponseContinuation, ResponsePersistenceError } from './persistence';
 import { createBackgroundResponseQueue, createResponseResumeQueue } from './queue';
 import { createBackgroundResponseAuthority } from './authority';
 import { createBackgroundResponseService } from './background';
 import { createBackgroundResponseHttpHandlers } from './http';
 import { createResponseDecisionSubmission } from './decision';
-import { resolveResponseContinuation } from './persistence';
 import { cleanupResponseCheckpoint } from './checkpoint';
 import { createResponseRetirement } from './retirement';
 import { createResponseDispatchOutbox } from './outbox';
@@ -75,7 +77,11 @@ export interface BackgroundResponsesHost {
   review: RequestHandler;
   submitReview: RequestHandler;
   cancelReview: RequestHandler;
-  retireResponse: (owner: ResponseOwner, responseId: string) => Promise<'stopped' | 'pending'>;
+  retireResponse: (
+    owner: ResponseOwner,
+    responseId: string,
+    retained?: ResponseCleanupIdentity,
+  ) => Promise<'stopped' | 'pending'>;
   readResponse: (owner: ResponseOwner, responseId: string) => Promise<BackgroundResponseResult>;
   cancelResponse: (owner: ResponseOwner, responseId: string) => Promise<BackgroundResponseResult>;
   sourceDispatchers: BackgroundResponseQueue['sourceDispatchers'];
@@ -199,11 +205,27 @@ export function createBackgroundResponsesHost(
       onDispatchError: deps.onError,
       deliveryKey: queue.deliveryKey,
       authorize: (owner, agentId, keyId) => authorize(owner, agentId, keyId, user),
-      resolveContinuation: async (owner, previous) => {
+      resolveContinuation: async (owner, previous, source) => {
+        const prepared = (req as ServerRequest | undefined)?.preparedResponseConversation;
+        if (
+          prepared &&
+          (prepared.userId !== owner.userId ||
+            (prepared.tenantId || undefined) !== (owner.tenantId || undefined) ||
+            prepared.sourceKeyId !== source?.sourceKeyId ||
+            prepared.agentId !== source?.agentId ||
+            (!previous && !isManagedConversationId(prepared.conversationId)))
+        )
+          throw new ResponsePersistenceError();
         const continuation = await resolveResponseContinuation(previous, owner.userId, {
           getMessage: deps.getMessage,
-          generateConversationId: createManagedConversationId,
+          generateConversationId: () => prepared?.conversationId ?? createManagedConversationId(),
         });
+        if (
+          prepared &&
+          (continuation.conversationId !== prepared.conversationId ||
+            continuation.parentMessageId !== prepared.parentMessageId)
+        )
+          throw new ResponsePersistenceError();
         const stored = previous
           ? await deps.storage.readConversationTarget(owner, continuation.conversationId)
           : null;

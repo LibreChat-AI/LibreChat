@@ -159,6 +159,7 @@ function Channel({
     },
   });
   const busy = !enabled || mutation.isLoading || channel.status === 'deleting';
+  const drainPending = mutation.error instanceof dataService.ChannelDrainPendingError;
   return (
     <>
       <div className="min-h-0 space-y-4 overflow-y-auto px-6 pb-6">
@@ -203,7 +204,9 @@ function Channel({
         </dl>
         {mutation.isError && (
           <p role="alert" className="text-text-primary text-sm">
-            {localize('com_ui_channels_action_error')}
+            {localize(
+              drainPending ? 'com_ui_channels_drain_pending' : 'com_ui_channels_action_error',
+            )}
           </p>
         )}
         {mutation.isError && mutation.variables === 'activate' && (

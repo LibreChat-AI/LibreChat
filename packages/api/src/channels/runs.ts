@@ -1,7 +1,13 @@
 import { z } from 'zod';
-import { ChannelRunConflict } from '@librechat/data-schemas';
+import {
+  ChannelRunConflict,
+  channelRunFence,
+  channelResponseRequest,
+  matchesChannelRunFence,
+} from '@librechat/data-schemas';
 import {
   responseReviewDecisionSchema,
+  channelRunFenceSchema,
   CHANNEL_DELIVERY_PARTS_HARD_MAX,
   CHANNEL_DELIVERY_TEXT_MAX_CHARS,
   CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES,
@@ -41,8 +47,11 @@ export interface ChannelRunDependencies {
     submitInteractiveReview: ResponseDecisionSubmission;
   };
   responseCredential?: (run: ChannelRunRecord) => Promise<string>;
+  responseCancellation: (run: ChannelRunRecord) => Promise<ChannelRunRecord | null>;
   storage: ChannelRunStorage;
   guard: ChannelServiceGuard;
+  /** Confirms existing attempts without disclosing private Run content after revocation. */
+  receiptGuard: ChannelServiceGuard;
   /** Live tenant membership, agent ACL and explicit channel/link authority, never payload userId. */
   resolvePrincipal: (
     channel: AgentChannelRecord,
@@ -67,7 +76,6 @@ const id = z
   .max(256)
   .regex(/^[\w:.-]+$/);
 const actorSchema = z.object({ teamId: id, appId: id, externalUserId: id }).strict();
-const fenceSchema = z.object({ runId: id, owner: id, epoch: z.number().int().positive() }).strict();
 const admissionSchema = z
   .object({
     eventId: id,
@@ -78,7 +86,7 @@ const admissionSchema = z
     input: z.string().min(1).max(100_000),
   })
   .strict();
-const fenceBody = z.object({ fence: fenceSchema }).strict();
+const fenceBody = z.object({ fence: channelRunFenceSchema }).strict();
 /** Fixed wire safety bound, not a provider's rendering limit. Content remains opaque to Agents. */
 const presentationSchema = z
   .object({
@@ -101,7 +109,7 @@ const presentationSchema = z
   .strict();
 const planBody = z
   .object({
-    fence: fenceSchema,
+    fence: channelRunFenceSchema,
     plan: z
       .object({
         revision: id,
@@ -128,10 +136,10 @@ const planBody = z
       .strict(),
   })
   .strict();
-const beginBody = z.object({ fence: fenceSchema, operationId: id }).strict();
+const beginBody = z.object({ fence: channelRunFenceSchema, operationId: id }).strict();
 const uploadBody = z
   .object({
-    fence: fenceSchema,
+    fence: channelRunFenceSchema,
     operationId: id,
     attempts: z.number().int().positive(),
     upload: z.object({ fileId: id, stage: z.enum(['allocated', 'uploaded']) }).strict(),
@@ -140,16 +148,18 @@ const uploadBody = z
 const progressRevision = z.number().int().positive();
 const progressPlanBody = z
   .object({
-    fence: fenceSchema,
+    fence: channelRunFenceSchema,
     revision: progressRevision,
     rendererVersion: id,
     text: z.string().max(4000),
   })
   .strict();
-const progressBeginBody = z.object({ fence: fenceSchema, revision: progressRevision }).strict();
+const progressBeginBody = z
+  .object({ fence: channelRunFenceSchema, revision: progressRevision })
+  .strict();
 const progressSettleBody = z
   .object({
-    fence: fenceSchema,
+    fence: channelRunFenceSchema,
     revision: progressRevision,
     receipt: z
       .object({
@@ -164,7 +174,7 @@ const progressSettleBody = z
   .strict();
 const settleBody = z
   .object({
-    fence: fenceSchema,
+    fence: channelRunFenceSchema,
     receipt: z
       .object({
         operationId: id,
@@ -181,7 +191,7 @@ const settleBody = z
 
 const reconcileDeliveryBody = z
   .object({
-    fence: fenceSchema,
+    fence: channelRunFenceSchema,
     receipt: z
       .object({
         operationId: id,
@@ -193,9 +203,15 @@ const reconcileDeliveryBody = z
       .strict(),
   })
   .strict();
+const receiptClaimBody = z
+  .object({
+    target: channelRunFenceSchema.omit({ owner: true, epoch: true }),
+    owner: id,
+  })
+  .strict();
 const reconcileProgressBody = z
   .object({
-    fence: fenceSchema,
+    fence: channelRunFenceSchema,
     revision: progressRevision,
     receipt: z
       .object({
@@ -262,6 +278,7 @@ export type ChannelRunHandlers = Record<
   | 'settleProgress'
   | 'reconcileProgress'
   | 'reconcileDelivery'
+  | 'claimReceiptRecovery'
   | 'begin'
   | 'checkpointUpload'
   | 'artifact'
@@ -326,8 +343,11 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
     if ((await deps.retireForAuthorityLoss(stopped)) === 'stopped')
       await deps.storage.finishAuthorityLost(run.tenantId, fence, now());
   }
-  const guarded = (handler: Parameters<ChannelServiceGuard>[0]) =>
-    deps.guard(async (req, res, channel, config) => {
+  const guarded = (
+    handler: Parameters<ChannelServiceGuard>[0],
+    guard: ChannelServiceGuard = deps.guard,
+  ) =>
+    guard(async (req, res, channel, config) => {
       res.set('Cache-Control', 'no-store');
       try {
         await handler(req, res, channel, config);
@@ -354,8 +374,9 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
     res: Response,
     channel: AgentChannelRecord,
     rawFence: unknown,
+    receiptOnly = false,
   ) {
-    const fence = fenceSchema.safeParse(rawFence);
+    const fence = channelRunFenceSchema.safeParse(rawFence);
     if (!fence.success || fence.data.runId !== req.params.runId) {
       res.status(400).json({ error: 'invalid_run_fence' });
       return null;
@@ -369,7 +390,11 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       res.status(404).json({ error: 'run_not_found' });
       return null;
     }
-    if (!(await hasAuthority(channel, run))) {
+    if (!matchesChannelRunFence(run, fence.data)) {
+      res.status(409).json({ error: 'stale_fence' });
+      return null;
+    }
+    if (!receiptOnly && !(await hasAuthority(channel, run))) {
       await retireAuthorityLost(run, fence.data);
       res.status(403).json({ error: 'channel_authority_changed' });
       return null;
@@ -425,6 +450,78 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
     return run;
   }
   return {
+    claimReceiptRecovery: guarded(async (req, res, channel) => {
+      const parsed = receiptClaimBody.safeParse(req.body);
+      if (!parsed.success || parsed.data.target.runId !== req.params.runId) {
+        res.status(400).json({ error: 'invalid_run_fence' });
+        return;
+      }
+      const { target, owner } = parsed.data;
+      const tenantId = channel.tenantId ?? '_';
+      const run = await deps.storage.read(tenantId, channel.channelId, target.runId);
+      if (!run) {
+        res.status(404).json({ error: 'run_not_found' });
+        return;
+      }
+      if (
+        run._managed?.parentId !== target.targetId ||
+        run._managed.incarnation !== target.incarnation
+      ) {
+        res.status(409).json({ error: 'stale_fence' });
+        return;
+      }
+      if (await hasAuthority(channel, run)) {
+        res.status(409).json({ error: 'channel_authority_current' });
+        return;
+      }
+      const at = now();
+      const leaseMs = await getLeaseMs();
+      const claimed = await deps.storage.claimAuthorityLost(run, owner, at, leaseMs);
+      if (!claimed) {
+        res.status(409).json({ error: 'stale_fence' });
+        return;
+      }
+      const fence = channelRunFence(claimed);
+      if (!(await deps.storage.renew(tenantId, fence, now(), leaseMs))) {
+        res.status(409).json({ error: 'stale_fence' });
+        return;
+      }
+      const disposition =
+        (await deps.retireForAuthorityLoss(claimed)) === 'stopped'
+          ? await deps.storage.finishAuthorityLost(tenantId, fence, now())
+          : 'pending';
+      res.json({
+        fence,
+        disposition,
+        destination: {
+          channelId: claimed.admission.externalChannelId,
+          threadKey: claimed.admission.externalThreadKey,
+        },
+        receipts: claimed.receipts.map((receipt) => {
+          const part = claimed.plan?.parts.find((item) => item.operationId === receipt.operationId);
+          return {
+            operationId: receipt.operationId,
+            kind: part?.kind,
+            required: part?.required,
+            outcome: receipt.outcome,
+            attempts: receipt.attempts,
+            externalMessageKey: receipt.externalMessageKey,
+            externalFileId: receipt.externalFileId,
+            ...(receipt.upload && {
+              upload: { fileId: receipt.upload.fileId, stage: receipt.upload.stage },
+            }),
+          };
+        }),
+        ...(claimed.progress && {
+          progress: {
+            revision: claimed.progress.revision,
+            outcome: claimed.progress.outcome,
+            attempts: claimed.progress.attempts,
+            externalMessageKey: claimed.progress.externalMessageKey,
+          },
+        }),
+      });
+    }, deps.receiptGuard),
     stopThread: guarded(async (req, res, channel, config) => {
       const observedAt = now();
       const parsed = z
@@ -481,7 +578,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         run.cancellationRequested ||
         run.state !== 'requires_action' ||
         !run.execution ||
-        (run.execution.protocol === 'responses' && !run.execution.responseId) ||
+        !run.execution.responseId ||
         !run.snapshot?.pendingAction ||
         run.snapshot.pendingAction.expiresAt <= now()
       ) {
@@ -489,15 +586,11 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         return;
       }
       const url = new URL(
-        run.execution.protocol === 'responses'
-          ? `responses/${encodeURIComponent(run.execution.responseId!)}/review`
-          : `c/${encodeURIComponent(run.execution.conversationId)}`,
+        `responses/${encodeURIComponent(run.execution.responseId)}/review`,
         `${deps.publicBaseUrl.replace(/\/+$/, '')}/`,
       );
       const view =
-        run.execution.protocol === 'responses' &&
-        deps.interactive &&
-        req.body.externalChannelId === run.admission.externalChannelId
+        deps.interactive && req.body.externalChannelId === run.admission.externalChannelId
           ? await deps.interactive.readInteractiveReview(
               {
                 userId: run.principal.userId,
@@ -606,17 +699,13 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         return;
       }
       if (!(await hasAuthority(channel, run))) {
-        await retireAuthorityLost(run, {
-          runId: run.runId,
-          owner: run.leaseOwner!,
-          epoch: run.leaseEpoch,
-        });
+        await retireAuthorityLost(run, channelRunFence(run));
         res.status(204).end();
         return;
       }
       res.json({
         run: await presentRun(channel, run),
-        fence: { runId: run.runId, owner: run.leaseOwner!, epoch: run.leaseEpoch },
+        fence: channelRunFence(run),
         leaseExpiresAt: run.leaseExpiresAt,
       } satisfies ChannelRunLease);
     }),
@@ -657,7 +746,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
       const binding = await bound(req, res, channel, parsed.success ? parsed.data.fence : null);
       if (!binding) return;
       let run = await deps.storage.prepareExecution(channel.tenantId ?? '_', binding.fence, now());
-      if (!run.execution || run.execution.deliveryKey || run.execution.enqueueAttemptedAt) {
+      if (!run.execution || run.execution.protocol !== 'responses') {
         res.status(409).json({ error: 'execution_protocol_conflict' });
         return;
       }
@@ -673,11 +762,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         return;
       }
       if (run.cancellationRequested && !run.execution.responseId) {
-        const recovered = await deps.storage.recoverResponse(
-          channel.tenantId ?? '_',
-          binding.fence,
-          now(),
-        );
+        const recovered = await deps.responseCancellation(run);
         if (!recovered) {
           res.status(409).json({ error: 'response_cancellation_pending' });
           return;
@@ -697,19 +782,14 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         apiKey,
         requestKey: `channel:${run.runId}`,
         responseId: run.execution!.responseId,
-        request: {
-          model: run.agentId,
-          input: run.admission.input,
-          background: true,
-          store: true,
-          ...(run.execution!.parentMessageId === '00000000-0000-0000-0000-000000000000'
-            ? {}
-            : { previous_response_id: run.execution!.parentMessageId }),
-        },
+        request: channelResponseRequest(run),
       } satisfies ChannelResponsePreparation);
     }),
     bindResponse: guarded(async (req, res, channel) => {
-      const parsed = z.object({ fence: fenceSchema, responseId: id }).strict().safeParse(req.body);
+      const parsed = z
+        .object({ fence: channelRunFenceSchema, responseId: id })
+        .strict()
+        .safeParse(req.body);
       const binding = await bound(req, res, channel, parsed.success ? parsed.data.fence : null);
       if (!binding || !parsed.success) return;
       const run = await deps.storage.bindResponse(
@@ -883,7 +963,7 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         res.status(400).json({ error: 'invalid_progress_receipt' });
         return;
       }
-      const binding = await bound(req, res, channel, parsed.data.fence);
+      const binding = await bound(req, res, channel, parsed.data.fence, true);
       if (!binding) return;
       if (
         !parsed.data.receipt.externalMessageKey.startsWith(
@@ -893,22 +973,18 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         res.status(400).json({ error: 'delivery_destination_mismatch' });
         return;
       }
-      res.json(
-        await presentRun(
-          channel,
-          await deps.storage.reconcileProgress(
-            channel.tenantId ?? '_',
-            binding.fence,
-            {
-              revision: parsed.data.revision,
-              attempts: parsed.data.receipt.attempts,
-              externalMessageKey: parsed.data.receipt.externalMessageKey,
-            },
-            now(),
-          ),
-        ),
+      await deps.storage.reconcileProgress(
+        channel.tenantId ?? '_',
+        binding.fence,
+        {
+          revision: parsed.data.revision,
+          attempts: parsed.data.receipt.attempts,
+          externalMessageKey: parsed.data.receipt.externalMessageKey,
+        },
+        now(),
       );
-    }),
+      res.json({ confirmed: true });
+    }, deps.receiptGuard),
     begin: guarded(async (req, res, channel) => {
       const parsed = beginBody.safeParse(req.body);
       if (!parsed.success) {
@@ -1020,25 +1096,21 @@ export function createChannelRunHandlers(deps: ChannelRunDependencies): ChannelR
         res.status(400).json({ error: 'invalid_delivery_receipt' });
         return;
       }
-      const binding = await bound(req, res, channel, parsed.data.fence);
+      const binding = await bound(req, res, channel, parsed.data.fence, true);
       if (!binding) return;
       const key = parsed.data.receipt.externalMessageKey;
       if (key && !key.startsWith(`${binding.run.admission.externalChannelId}:`)) {
         res.status(400).json({ error: 'delivery_destination_mismatch' });
         return;
       }
-      res.json(
-        await presentRun(
-          channel,
-          await deps.storage.reconcileDelivery(
-            channel.tenantId ?? '_',
-            binding.fence,
-            parsed.data.receipt,
-            now(),
-          ),
-        ),
+      await deps.storage.reconcileDelivery(
+        channel.tenantId ?? '_',
+        binding.fence,
+        parsed.data.receipt,
+        now(),
       );
-    }),
+      res.json({ confirmed: true });
+    }, deps.receiptGuard),
     commit: guarded(async (req, res, channel) => {
       const parsed = fenceBody.safeParse(req.body);
       const binding = await bound(req, res, channel, parsed.success ? parsed.data.fence : null);

@@ -1,13 +1,19 @@
 import { channelStorageConfigSchema } from 'librechat-data-provider';
-import type { ChannelStorageConfig } from 'librechat-data-provider';
-import type { ClientSession } from 'mongoose';
+import type { ChannelStorageConfig, DurableStorageConfig } from 'librechat-data-provider';
+import type { Types } from 'mongoose';
 import type { AgentChannelRecord } from '~/models/channel';
-import { retireAgentChannel, initializeChannelScope, touchChannelScope } from './channelScope';
+import type { ManagedState } from '~/types/managed';
+import { eraseChannelIdentitiesForChannel } from './channelIdentityErasure';
 import { eraseChannelFeedbackForChannel } from './channelFeedbackErasure';
-import { startRequiredTransactionSession } from '~/utils/transactions';
-import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
-import { prepareChannelOwnerAdmission } from './channelOwner';
+import { reconcileClosedChannelTarget } from './channelRegistry';
+import { createManagedAgentChannel } from './channelCreation';
+import { includeManagedAllocations } from '~/utils/managed';
+import { updateManagedAgentChannel } from './channelUpdate';
 import { createChannelIndexGate } from './channelIndexes';
+import { CHANNEL_PRIVATE_FIELDS } from '~/models/channel';
+import { eraseChannelCopies } from './channelCopies';
+import { retireAgentChannel } from './channelScope';
+import { managedTargetPredicate } from './managed';
 
 export type { AgentChannelRecord } from '~/models/channel';
 export type AgentChannelMetadata = Pick<
@@ -62,30 +68,11 @@ export interface AgentChannelMethods {
 export function createAgentChannelMethods(
   mongoose: typeof import('mongoose'),
   getStorageConfig: () => Promise<Partial<ChannelStorageConfig>> = async () => ({}),
+  getDurableConfig: () => Promise<Partial<DurableStorageConfig>> = async () => ({}),
 ): AgentChannelMethods {
   const channel = () => mongoose.model<AgentChannelRecord>('AgentChannel');
   const ensureIndexes = createChannelIndexGate(() => [channel()]);
-  const secrets = '+encryptedBotToken +encryptedSigningSecret';
-
-  async function ownerWrite<T>(
-    createdBy: string,
-    tenantId: string | undefined,
-    write: (session: ClientSession) => Promise<T>,
-  ): Promise<T> {
-    const admit = await prepareChannelOwnerAdmission(mongoose, { userId: createdBy, tenantId });
-    const session = await startRequiredTransactionSession(mongoose);
-    try {
-      let result: T | undefined;
-      await session.withTransaction(async () => {
-        if (!(await admit(session))) throw new Error('Channel owner unavailable');
-        result = await write(session);
-      });
-      if (result === undefined) throw new Error('Channel write did not commit');
-      return result;
-    } finally {
-      await session.endSession();
-    }
-  }
+  const secrets = CHANNEL_PRIVATE_FIELDS.map((field) => `+${field}`).join(' ');
 
   async function validateMetadataPage(cursor: string | undefined, limit: number): Promise<void> {
     if (
@@ -99,28 +86,45 @@ export function createAgentChannelMethods(
   }
 
   async function beginDeletion(channelId: string, createdBy: string) {
-    const parent = await channel().findOne({ channelId, createdBy }).select('tenantId').lean();
+    const parent = await channel()
+      .findOne({ channelId, createdBy })
+      .select('tenantId +_managed')
+      .read('primary')
+      .lean<{ _id: Types.ObjectId; tenantId?: string; _managed: ManagedState }>();
     if (!parent) return null;
-    return retireAgentChannel(mongoose, { channelId, createdBy, tenantId: parent.tenantId });
+    const config = channelStorageConfigSchema.parse(await getStorageConfig());
+    const record = await retireAgentChannel(
+      mongoose,
+      {
+        channelId,
+        createdBy,
+        tenantId: parent.tenantId,
+        id: String(parent._id),
+        incarnation: parent._managed.incarnation,
+      },
+      false,
+      config,
+    );
+    return record
+      ? {
+          record,
+          batchSize: config.erasureBatchSize,
+          id: String(parent._id),
+          target: {
+            kind: 'channel' as const,
+            id: String(parent._id),
+            incarnation: parent._managed.incarnation,
+            ...(parent.tenantId && { tenantId: parent.tenantId }),
+          },
+        }
+      : null;
   }
 
   return {
     async createAgentChannel(input: AgentChannelRecord): Promise<AgentChannelRecord> {
-      const currentTenant = getTenantId();
-      input = {
-        ...input,
-        tenantId:
-          input.tenantId ?? (currentTenant === SYSTEM_TENANT_ID ? undefined : currentTenant),
-      };
-      if (input.status === 'deleting') throw new TypeError('Channel deletion requires retirement');
+      const limits = await getDurableConfig();
       await ensureIndexes();
-      await initializeChannelScope(mongoose, input.tenantId, input.channelId);
-      return ownerWrite(input.createdBy, input.tenantId, async (session) => {
-        if (!(await touchChannelScope(mongoose, input.tenantId, input.channelId, session)))
-          throw new Error('Channel admission closed');
-        const [record] = await channel().create([input], { session });
-        return record.toObject();
-      });
+      return createManagedAgentChannel(mongoose, input, limits);
     },
     async listAgentChannels(agentId: string): Promise<AgentChannelRecord[]> {
       return channel().find({ agentId }).sort({ createdAt: 1 }).lean();
@@ -183,53 +187,63 @@ export function createAgentChannelMethods(
       expectedStatus?: AgentChannelRecord['status'],
       expectedRevision?: string,
     ): Promise<AgentChannelRecord | null> {
-      // Deleting is an irreversible lifecycle operation, never a generic metadata patch.
-      if (expectedStatus === 'deleting' || update.status === 'deleting') return null;
-      const write = async (session: ClientSession): Promise<AgentChannelRecord | null> =>
-        channel()
-          .findOneAndUpdate(
-            {
-              channelId,
-              createdBy,
-              status: expectedStatus ?? { $ne: 'deleting' },
-              ...(expectedRevision !== undefined ? { revision: expectedRevision } : {}),
-            },
-            { $set: update },
-            { new: true, session, runValidators: true },
-          )
-          .select(secrets)
-          .lean();
-      const parent = await channel().findOne({ channelId, createdBy }).select('tenantId').lean();
-      if (!parent) return null;
-      await initializeChannelScope(mongoose, parent.tenantId, channelId);
-      return ownerWrite(createdBy, parent.tenantId, async (session) => {
-        if (!(await touchChannelScope(mongoose, parent.tenantId, channelId, session))) return null;
-        return write(session);
-      });
+      await ensureIndexes();
+      return updateManagedAgentChannel(
+        mongoose,
+        channelId,
+        createdBy,
+        update,
+        expectedStatus,
+        expectedRevision,
+        channelStorageConfigSchema.parse(await getStorageConfig()).erasureBatchSize,
+        getDurableConfig,
+      );
     },
-    beginAgentChannelDeletion: beginDeletion,
+    async beginAgentChannelDeletion(channelId, createdBy) {
+      return (await beginDeletion(channelId, createdBy))?.record ?? null;
+    },
     async deleteAgentChannel(
       channelId: string,
       createdBy: string,
     ): Promise<AgentChannelDeletionResult> {
-      const deleting = await beginDeletion(channelId, createdBy);
-      if (!deleting) return { status: 'not_found' };
+      const started = await beginDeletion(channelId, createdBy);
+      if (!started) return { status: 'not_found' };
+      const deleting = started.record;
+      const frame = { target: started.target, channelId, createdBy };
+      if (!(await eraseChannelCopies(mongoose, frame, started.batchSize)))
+        return { status: 'pending_drain' };
+      await eraseChannelIdentitiesForChannel(
+        mongoose,
+        started.target,
+        channelId,
+        started.batchSize,
+      );
       if (
-        await mongoose.models.ChannelRun.exists({
-          channelId,
-          tenantId: deleting.tenantId || '_',
-          state: { $in: ['queued', 'executing', 'requires_action', 'delivering', 'blocked'] },
-        })
+        await includeManagedAllocations(
+          mongoose.models.ChannelIdentity.exists({
+            tenantId: deleting.tenantId || '_',
+            'identity.channelId': channelId,
+          }),
+        ).read('primary')
       )
         return { status: 'pending_drain' };
       // Keep the deleting parent available for a retry if dependent cleanup fails.
-      await eraseChannelFeedbackForChannel(mongoose, deleting.tenantId, channelId);
+      await eraseChannelFeedbackForChannel(mongoose, started.target);
+      await reconcileClosedChannelTarget(mongoose, started.target);
       const result = await channel().deleteOne({
+        ...managedTargetPredicate(mongoose, started.target),
         channelId,
         createdBy,
         status: 'deleting',
+        pendingCount: { $in: [null, 0] },
+        'pending.0': { $exists: false },
       });
-      return { status: result.deletedCount > 0 ? 'deleted' : 'not_found' };
+      if (result.deletedCount > 0) return { status: 'deleted' };
+      return (await channel()
+        .exists({ ...managedTargetPredicate(mongoose, started.target), channelId, createdBy })
+        .read('primary'))
+        ? { status: 'pending_drain' }
+        : { status: 'not_found' };
     },
   };
 }

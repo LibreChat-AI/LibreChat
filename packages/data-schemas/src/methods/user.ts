@@ -643,14 +643,13 @@ export function createUserMethods(
         );
         const responses = createResponseOwnerErasureMethods(mongoose);
         await responses.prepareUserResponseErasure({ userId, tenantId: owner.tenantId });
-        await responses.eraseUserResponses({ userId, tenantId: owner.tenantId });
-        // Admission writes the same owner anchor in its insertion transaction.
-        // Closing it therefore precedes both this sweep and every delayed retry.
+        // Each domain finishes its own registered/indexed cleanup before the shared barrier.
         await eraseChannelPersistenceForUser(
           mongoose,
           { userId, tenantId: owner.tenantId },
           channelConfig,
         );
+        await responses.assertUserStorageErased({ userId, tenantId: owner.tenantId });
       }
       await mongoose.models.ToolApprovalGrant?.deleteMany({ user: userId });
       const result = await User.deleteOne({ _id: userId });

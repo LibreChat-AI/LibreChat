@@ -28,6 +28,7 @@ jest.mock('~/server/services/Channels', () => {
   const names = [
     'admit',
     'claim',
+    'claimReceiptRecovery',
     'stopThread',
     'renew',
     'yieldLease',
@@ -82,6 +83,7 @@ it.each([
   ['post', '/run/response/prepare', 'prepareResponse'],
   ['post', '/run/response/bind', 'bindResponse'],
   ['post', '/run/cancel', 'cancel'],
+  ['post', '/run/receipts/claim', 'claimReceiptRecovery'],
   ['post', '/run/review', 'review'],
   ['post', '/run/review/decision', 'submitReview'],
   ['post', '/run/plan', 'plan'],

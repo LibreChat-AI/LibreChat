@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { channelRunFenceSchema } from 'librechat-data-provider';
 import type {
   ChannelDeliveryReceipt,
   ChannelDeliveryPart,
@@ -87,7 +88,12 @@ function address(run: ChannelRunView): { channel: string; thread_ts: string } {
 }
 
 function assertView(run: ChannelRunView, fence: ChannelRunFence, channelId: string): void {
-  if (run.runId !== fence.runId || run.channelId !== channelId || !run.revision)
+  if (
+    !channelRunFenceSchema.safeParse(fence).success ||
+    run.runId !== fence.runId ||
+    run.channelId !== channelId ||
+    !run.revision
+  )
     throw new Error('Durable identity changed');
   address(run);
 }
@@ -169,6 +175,8 @@ export class ChannelWorker {
             renewed.fence.runId !== fence.runId ||
             renewed.fence.owner !== fence.owner ||
             renewed.fence.epoch !== fence.epoch ||
+            renewed.fence.targetId !== fence.targetId ||
+            renewed.fence.incarnation !== fence.incarnation ||
             renewed.leaseExpiresAt <= Date.now()
           )
             throw new Error('Renewal identity changed');

@@ -44,6 +44,11 @@ export const digest = (value: object): string =>
       ),
     )
     .digest('hex');
+/** Only canonical actor identity participates in lane ownership, never incidental ingress fields. */
+function scopeActor(scope: ChannelLaneScope) {
+  const { teamId, appId, externalUserId } = scope.admission.actor;
+  return { teamId, appId, externalUserId };
+}
 export function laneKey(scope: ChannelLaneScope): string {
   return digest({
     tenantId: scope.tenantId,
@@ -51,7 +56,7 @@ export function laneKey(scope: ChannelLaneScope): string {
     agentId: scope.agentId,
     thread: scope.admission.externalThreadKey,
     externalChannelId: scope.admission.externalChannelId,
-    actor: scope.admission.actor,
+    actor: scopeActor(scope),
     userId: scope.principal.userId,
     revision: scope.principal.channelRevision,
     linkRevision: scope.principal.linkRevision ?? null,
@@ -63,7 +68,7 @@ export function stopScopeKey(scope: ChannelLaneScope): string {
   return digest({
     tenantId: scope.tenantId,
     channelId: scope.channelId,
-    actor: scope.admission.actor,
+    actor: scopeActor(scope),
     thread: scope.admission.externalThreadKey,
     externalChannelId: scope.admission.externalChannelId,
   });
@@ -248,4 +253,22 @@ export function deliveryDisposition(
   if (run.snapshot.status === 'completed') return 'delivered';
   if (run.snapshot.status === 'cancelled') return 'cancelled';
   return 'failed';
+}
+
+/** Optional unknown effects retain the existing best-effort policy; in-flight effects are unresolved. */
+export function hasUncertainChannelDelivery(run: {
+  receipts?: ReadonlyArray<Pick<ChannelDeliveryReceipt, 'operationId' | 'outcome'>>;
+  progress?: { outcome?: string };
+  plan?: { parts: ReadonlyArray<{ operationId: string; required?: boolean }> };
+}): boolean {
+  return (
+    run.progress?.outcome === 'inflight' ||
+    (run.receipts ?? []).some(
+      (receipt) =>
+        receipt.outcome === 'inflight' ||
+        (receipt.outcome === 'unknown' &&
+          run.plan?.parts.find((part) => part.operationId === receipt.operationId)?.required !==
+            false),
+    )
+  );
 }

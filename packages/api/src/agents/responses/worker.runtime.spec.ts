@@ -2,6 +2,7 @@ import express from 'express';
 import jwt from 'jsonwebtoken';
 import request from 'supertest';
 import mongoose from 'mongoose';
+import { randomUUID } from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { FileSources, PermissionBits } from 'librechat-data-provider';
 import { emptyCheckpoint, INTERRUPT } from '@langchain/langgraph-checkpoint';
@@ -38,6 +39,7 @@ import {
 } from '../hitl/policy';
 import { buildPendingBackgroundResponse, createBackgroundResponseService } from './background';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
+import { createResponseRetirement, reserveResponseCancellation } from './retirement';
 import { getAgentCheckpointer, __resetCheckpointerForTests } from '../checkpointer';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { createResponseContext, convertInputToMessages } from './service';
@@ -46,7 +48,6 @@ import { enrollAgentExecution } from '../remote/lifecycle';
 import { createResponsePersistence } from './foreground';
 import { createResponseResumeAdmission } from './resume';
 import { buildResponseInputChain } from './persistence';
-import { createResponseRetirement } from './retirement';
 import { createAgentRunEnvelope } from '../envelope';
 import { executeAgentRun } from '../remote/host';
 import { GenerationJobManager } from '~/stream';
@@ -1533,10 +1534,35 @@ describe('background Responses execution handoff', () => {
     },
   );
 
-  it.each(['before enrollment', 'during publication', 'terminal Stop during enrollment'])(
+  const cancellationPhases = [
+    'at reservation',
+    'before enrollment',
+    'during publication',
+    'terminal Stop during enrollment',
+  ];
+  it.each(cancellationPhases)(
     'honors queued cancellation %s without provider work',
     async (phase) => {
-      if (phase === 'before enrollment') {
+      if (phase === 'at reservation') {
+        const reserved = await scope(() =>
+          reserveResponseCancellation(
+            storage,
+            {
+              ...owner,
+              requestKey: randomUUID(),
+              agentId: record.agentId,
+              sourceKeyId: record.sourceKeyId,
+              conversationId: record.conversationId,
+              parentMessageId: record.parentMessageId,
+              ...(record.conversationTarget && { conversationTarget: record.conversationTarget }),
+            },
+            JSON.parse(record.requestJSON),
+            Date.now(),
+          ),
+        );
+        if (!reserved.ok) throw new Error('Expected cancellation reservation');
+        record = reserved.record;
+      } else if (phase === 'before enrollment') {
         await scope(async () => storage.requestCancellation(owner, record.responseId, Date.now()));
       } else {
         const publish = storage.enrollExecution.bind(storage);

@@ -9,6 +9,7 @@ router.get('/service/:channelId/threads/:externalThreadKey', handlers.getThread)
 router.put('/service/:channelId/threads/:externalThreadKey', handlers.putThread);
 router.post('/service/:channelId/runs', handlers.runs.admit);
 router.post('/service/:channelId/runs/claim', handlers.runs.claim);
+router.post('/service/:channelId/runs/:runId/receipts/claim', handlers.runs.claimReceiptRecovery);
 router.post('/service/:channelId/runs/stop-thread', handlers.runs.stopThread);
 router.post('/service/:channelId/runs/:runId/renew', handlers.runs.renew);
 router.post('/service/:channelId/runs/:runId/yield', handlers.runs.yieldLease);

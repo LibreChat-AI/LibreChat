@@ -2,9 +2,11 @@ import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { channelConfigSchema } from 'librechat-data-provider';
 import {
+  channelRunFence,
   createModels,
   createMethods,
   createChannelRunStorage,
+  createChannelIdentityStorage,
   createResponseStorage,
   createManagedMessageId,
   runAsSystem,
@@ -50,7 +52,6 @@ beforeEach(async () => {
         'ChannelLane',
         'AgentChannel',
         'ChannelIdentity',
-        'ChannelScope',
         'ResponseScope',
         'StoredResponse',
       ].map((name) => mongoose.models[name].deleteMany({})),
@@ -76,24 +77,27 @@ beforeEach(async () => {
     }),
   );
   await scope(() =>
-    mongoose.models.ChannelIdentity.create({
-      tenantId,
-      linkId: 'link',
-      revision: 'link-v1',
-      state: 'active',
-      userId: 'user-a',
-      ticketHash: 'ticket',
-      ticketExpiresAtMs: clock + 60000,
-      expiresAtMs: clock + 600000,
-      identity: {
+    createChannelIdentityStorage(mongoose).saveChannelIdentity(
+      {
         tenantId,
-        channelId: 'channel',
-        channelRevision: 'v1',
-        teamId: 'T1',
-        externalUserId: 'U1',
-        agentId: 'agent',
+        linkId: 'link',
+        revision: 'link-v1',
+        state: 'active',
+        userId: 'user-a',
+        ticketHash: 'ticket',
+        ticketExpiresAtMs: clock + 60000,
+        expiresAtMs: clock + 600000,
+        identity: {
+          tenantId,
+          channelId: 'channel',
+          channelRevision: 'v1',
+          teamId: 'T1',
+          externalUserId: 'U1',
+          agentId: 'agent',
+        },
       },
-    }),
+      null,
+    ),
   );
   deps = {
     storage,
@@ -213,9 +217,13 @@ it('defers deletion while cleanup is unknown and completes after restart and exa
   stoppedResult = 'stopped';
   await restart();
   expect(await scope(() => db.getAgentChannelMetadata('channel'))).toBeNull();
-  expect(await scope(() => storage.read(tenantId, 'channel', run.runId))).toMatchObject({
-    state: 'cancelled',
-  });
+  expect(retired).toHaveLength(2);
+  expect(
+    await mongoose.models.ChannelRun.collection.findOne({ tenantId, runId: run.runId }),
+  ).toBeNull();
+  expect(
+    await mongoose.models.ChannelLane.collection.countDocuments({ tenantId, channelId: 'channel' }),
+  ).toBe(0);
 });
 
 it('recovers deleting parents with no remaining runs after a storage outage', async () => {
@@ -346,24 +354,27 @@ it('keeps tenantless work authorized and deletes its closed parent in the applic
       revision: 'v1',
       slack: { teamId: 'T1', appId: 'A1', botUserId: 'UBOT' },
     });
-    await mongoose.models.ChannelIdentity.create({
-      tenantId: '_',
-      linkId: 'link',
-      revision: 'link-v1',
-      state: 'active',
-      userId: 'user-a',
-      ticketHash: 'default-ticket',
-      ticketExpiresAtMs: clock + 60000,
-      expiresAtMs: clock + 600000,
-      identity: {
+    await createChannelIdentityStorage(mongoose).saveChannelIdentity(
+      {
         tenantId: '_',
-        channelId: 'default-channel',
-        channelRevision: 'v1',
-        teamId: 'T1',
-        externalUserId: 'U1',
-        agentId: 'agent',
+        linkId: 'link',
+        revision: 'link-v1',
+        state: 'active',
+        userId: 'user-a',
+        ticketHash: 'default-ticket',
+        ticketExpiresAtMs: clock + 60000,
+        expiresAtMs: clock + 600000,
+        identity: {
+          tenantId: '_',
+          channelId: 'default-channel',
+          channelRevision: 'v1',
+          teamId: 'T1',
+          externalUserId: 'U1',
+          agentId: 'agent',
+        },
       },
-    });
+      null,
+    );
     await storage.admit(
       {
         tenantId: '_',
@@ -420,7 +431,7 @@ it('caps maintenance pages by the storage policy and never turns a credential lo
 it('holds an invalid issued credential lane until exact retirement confirms provider drain', async () => {
   const { run } = await admit('expired-credential');
   const claimed = (await scope(() => storage.claim(tenantId, 'channel', 'gateway', clock, 60000)))!;
-  const fence = { runId: run.runId, owner: 'gateway', epoch: claimed.leaseEpoch };
+  const fence = channelRunFence(claimed);
   await scope(() => storage.prepareExecution(tenantId, fence, clock));
   await scope(() =>
     storage.attachResponseCredential(
@@ -439,7 +450,12 @@ it('holds an invalid issued credential lane until exact retirement confirms prov
   expect(retired).toHaveLength(1);
   expect(retired[0].execution?.apiKeyId).toBe('expired-key');
   expect(
-    await scope(() => mongoose.models.ChannelLane.findOne({ activeRunId: run.runId }).lean()),
+    await scope(() =>
+      mongoose.models.ChannelLane.findOne({
+        kind: 'control',
+        'assignment.run.runId': run.runId,
+      }).lean(),
+    ),
   ).not.toBeNull();
   expect((await scope(() => storage.read(tenantId, 'channel', run.runId)))?.state).not.toBe(
     'cancelled',
@@ -554,7 +570,7 @@ it.each([false, true])(
     const claimed = (await scope(() =>
       storage.claim(tenantId, 'channel', 'worker', clock, 60000),
     ))!;
-    const fence = { runId: claimed.runId, owner: claimed.leaseOwner!, epoch: claimed.leaseEpoch };
+    const fence = channelRunFence(claimed);
     const prepared = await scope(() => storage.prepareExecution(tenantId, fence, clock));
     await scope(() =>
       storage.attachResponseCredential(

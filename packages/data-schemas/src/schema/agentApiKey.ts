@@ -21,6 +21,8 @@ const agentApiKeySchema: Schema<IAgentApiKey> = new Schema(
         {
           kind: { type: String, required: true, maxlength: 64 },
           id: { type: String, required: true, maxlength: 256 },
+          targetId: { type: String, match: /^[a-f\d]{24}$/ },
+          incarnation: { type: String, maxlength: 36 },
         },
         { _id: false },
       ),
@@ -30,6 +32,7 @@ const agentApiKeySchema: Schema<IAgentApiKey> = new Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
       required: true,
+      immutable: true,
       index: true,
     },
     name: {

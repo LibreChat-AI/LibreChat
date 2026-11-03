@@ -1,27 +1,36 @@
-import type { ChannelReplyMapping, ChannelFeedbackActor } from 'librechat-data-provider';
-import type { ClientSession } from 'mongoose';
-import type { ChannelFeedbackLedger, ChannelFeedbackEventRecord } from '~/models/channelFeedback';
+import type {
+  DurableStorageConfig,
+  ChannelReplyMapping,
+  ChannelFeedbackActor,
+} from 'librechat-data-provider';
+import type {
+  ChannelFeedbackLedger,
+  ChannelFeedbackEventRecord,
+  ChannelReplyRecord,
+  ChannelFeedbackSourceRef,
+} from '~/models/channelFeedback';
+import type { ChannelFeedbackAuthority, ChannelFeedbackSourceState } from './channelFeedbackScope';
 import type { ChannelFeedbackReplySource } from './channelFeedbackSource';
-import type { ChannelFeedbackSourceState } from './channelFeedbackScope';
-import type { FeedbackCheckpoint } from './channelFeedbackCheckpoint';
+import {
+  acknowledgeFeedbackReceipt,
+  assertFeedbackProgress,
+  bindFeedbackLedger,
+  recoverFeedbackReceipts,
+} from './channelFeedbackCheckpoint';
 import {
   withChannelFeedbackAuthority,
   sameFeedbackSource,
   ChannelFeedbackAuthorityError,
 } from './channelFeedbackScope';
-import {
-  feedbackCheckpoint,
-  pinFeedbackCheckpoint,
-  acknowledgeFeedbackReceipt,
-} from './channelFeedbackCheckpoint';
+import { createFeedbackRecord, writeFeedbackLedger, feedbackFilter } from './channelFeedbackWrite';
 import { readChannelFeedbackReplySource } from './channelFeedbackSource';
 import { createChannelIndexGate } from './channelIndexes';
 import { assertChannelTenant } from './channelScope';
+import { managedTargetFilter } from './managed';
+import { digest } from './channelProtocol';
 export type { ChannelFeedbackLedger, ChannelFeedbackEventRecord } from '~/models/channelFeedback';
 export type { ChannelFeedbackReplySource } from './channelFeedbackSource';
 export { ChannelFeedbackAuthorityError } from './channelFeedbackScope';
-
-/** Two ratings, each with five supported skin tones plus the default emoji, per delivery part. */
 export {
   CHANNEL_FEEDBACK_VOTE_SLOTS_HARD_MAX,
   CHANNEL_FEEDBACK_RECEIPT_RETENTION_MS,
@@ -41,7 +50,10 @@ export interface ChannelFeedbackStorage {
   ): Promise<T>;
   isAuthorityCurrent(mapping: ChannelReplyMapping): Promise<boolean>;
   /** Ineligible sources return null; database/operational failures throw. */
-  readChannelReplyTrace(mapping: ChannelReplyMapping): Promise<ChannelFeedbackSourceState | null>;
+  readChannelReplyTrace(
+    mapping: ChannelReplyMapping,
+    source?: ChannelFeedbackSourceRef,
+  ): Promise<ChannelFeedbackSourceState | null>;
   readReplySource(
     actor: ChannelFeedbackActor,
     externalMessageKey: string,
@@ -62,7 +74,11 @@ export interface ChannelFeedbackStorage {
   markChannelFeedbackEvent(record: ChannelFeedbackEventRecord): Promise<void>;
   ensureChannelFeedback(record: ChannelFeedbackLedger): Promise<ChannelFeedbackLedger>;
   getChannelFeedback(tenantId: string, key: string): Promise<ChannelFeedbackLedger | null>;
-  saveChannelFeedback(record: ChannelFeedbackLedger, expectedRevision: number): Promise<boolean>;
+  saveChannelFeedback(
+    record: ChannelFeedbackLedger,
+    expectedRevision: number,
+    event: ChannelFeedbackEventRecord,
+  ): Promise<boolean>;
   claimChannelFeedbackExport(
     candidate: ChannelFeedbackLedger,
     leaseId: string,
@@ -85,51 +101,66 @@ export interface ChannelFeedbackStorage {
 
 export function createChannelFeedbackStorage(
   mongoose: typeof import('mongoose'),
+  getDurableStorageConfig: () => Promise<Partial<DurableStorageConfig>> = async () => ({}),
 ): ChannelFeedbackStorage {
-  const replies = () => mongoose.model<ChannelReplyMapping>('ChannelReply');
+  const replies = () => mongoose.model<ChannelReplyRecord>('ChannelReply');
   const events = () => mongoose.model<ChannelFeedbackEventRecord>('ChannelFeedbackEvent');
   const ledger = () => mongoose.model<ChannelFeedbackLedger>('ChannelFeedback');
   const ensureIndexes = createChannelIndexGate(() => [replies(), events(), ledger()]);
+  const unexpired = () => ({ $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }] });
   function page(tenantId: string, limit: number) {
     assertChannelTenant(tenantId);
-    // Same structural maximum as the existing feedback worker batch schema.
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100)
       throw new TypeError('Invalid feedback metadata page');
   }
-  function createStorage(
-    session?: ClientSession,
-    source?: ChannelReplyMapping,
-    sourceExpiry: Date | null = null,
-    sourceState?: ChannelFeedbackSourceState,
-  ): ChannelFeedbackStorage {
-    let checkpoint: FeedbackCheckpoint | undefined;
-    function remember(record: ChannelFeedbackLedger) {
-      if (session && source && sameFeedbackSource(source, record.mapping))
-        checkpoint = feedbackCheckpoint(record);
-    }
+  function createStorage(context?: {
+    mapping: ChannelReplyMapping;
+    authority: ChannelFeedbackAuthority;
+  }): ChannelFeedbackStorage {
+    // Only this callback's isolated storage remembers a checkpoint. The shared store retains none.
+    let checkpoint: ChannelFeedbackLedger | undefined;
     async function guard<T>(
       mapping: ChannelReplyMapping,
-      work: (
-        session: ClientSession,
-        expiredAt: Date | null,
-        state: ChannelFeedbackSourceState,
-      ) => Promise<T>,
+      work: (authority: ChannelFeedbackAuthority) => Promise<T>,
+      source?: ChannelFeedbackSourceRef,
     ): Promise<T> {
       await ensureIndexes();
-      if (session && source) {
-        if (!sameFeedbackSource(source, mapping) || !sourceState)
+      if (context) {
+        if (
+          !sameFeedbackSource(context.mapping, mapping) ||
+          (source && digest(source) !== digest(context.authority.source))
+        )
           throw new ChannelFeedbackAuthorityError();
-        return work(session, sourceExpiry, sourceState);
+        return work(context.authority);
       }
-      return withChannelFeedbackAuthority(mongoose, mapping, work);
+      let expected = source;
+      if (!expected) {
+        const reply = await replies()
+          .findOne({
+            tenantId: mapping.tenantId,
+            channelId: mapping.channelId,
+            teamId: mapping.teamId,
+            externalMessageKey: mapping.externalMessageKey,
+            '_managed.phase': 'published',
+          })
+          .read('primary')
+          .lean();
+        if (reply && sameFeedbackSource(reply, mapping)) {
+          if (!reply.source) throw new ChannelFeedbackAuthorityError();
+          expected = reply.source;
+        }
+      }
+      return withChannelFeedbackAuthority(mongoose, mapping, work, expected);
     }
-    function retainedInsert(record: object, expiredAt: Date | null) {
-      const insert = { ...record } as Record<string, unknown>;
-      delete insert.expiredAt;
-      return {
-        $setOnInsert: insert,
-        ...(expiredAt ? { $min: { expiredAt } } : {}),
-      };
+    function remember(record: ChannelFeedbackLedger) {
+      if (context) {
+        if (
+          !sameFeedbackSource(context.mapping, record.mapping) ||
+          digest(record.source ?? {}) !== digest(context.authority.source)
+        )
+          throw new ChannelFeedbackAuthorityError();
+        checkpoint = record;
+      }
     }
     const storage: ChannelFeedbackStorage = {
       async deferChannelFeedbackEvent(record, retryAtMs) {
@@ -137,14 +168,9 @@ export function createChannelFeedbackStorage(
         if (!Number.isSafeInteger(retryAtMs) || retryAtMs < 0)
           throw new TypeError('Invalid feedback retry deadline');
         await events().updateOne(
-          {
-            tenantId: record.tenantId,
-            channelId: record.channelId,
-            eventId: record.eventId,
-            digest: record.digest,
-            processed: false,
-          },
-          { $max: { retryAtMs } },
+          { ...feedbackFilter(mongoose, record, 'channelFeedbackEvent'), processed: false },
+          { $max: { retryAtMs }, $inc: { __v: 1 } },
+          { upsert: false },
         );
       },
       async deferChannelFeedbackExport(record, now, retryAtMs) {
@@ -153,26 +179,20 @@ export function createChannelFeedbackStorage(
           throw new TypeError('Invalid feedback retry deadline');
         await ledger().updateOne(
           {
-            tenantId: record.tenantId,
-            key: record.key,
+            ...feedbackFilter(mongoose, record, 'channelFeedback'),
             revision: record.revision,
             exportStatus: 'pending',
             $or: [{ leaseUntilMs: { $exists: false } }, { leaseUntilMs: { $lte: now } }],
           },
-          { $max: { retryAtMs } },
+          { $max: { retryAtMs }, $inc: { __v: 1 } },
+          { upsert: false },
         );
       },
-      async withAuthority<T>(
-        mapping: ChannelReplyMapping,
-        work: (storage: ChannelFeedbackStorage) => Promise<T>,
-      ): Promise<T> {
-        return guard(mapping, (active, expiredAt, state) =>
-          work(createStorage(active, mapping, expiredAt, state)),
-        );
-      },
-      async readChannelReplyTrace(mapping) {
+      withAuthority: (mapping, work) =>
+        guard(mapping, (authority) => work(createStorage({ mapping, authority }))),
+      async readChannelReplyTrace(mapping, source) {
         try {
-          return await guard(mapping, async (_active, _expiry, state) => state);
+          return await guard(mapping, async (authority) => authority.state, source);
         } catch (error) {
           if (error instanceof ChannelFeedbackAuthorityError) return null;
           throw error;
@@ -188,27 +208,19 @@ export function createChannelFeedbackStorage(
         }
       },
       readReplySource: (actor, key) => readChannelFeedbackReplySource(mongoose, actor, key),
-      async putChannelReply(mapping) {
-        return guard(mapping, async (active, expiredAt) => {
-          const filter = {
-            tenantId: mapping.tenantId,
-            channelId: mapping.channelId,
-            teamId: mapping.teamId,
-            externalMessageKey: mapping.externalMessageKey,
-          };
-          await replies().updateOne(filter, retainedInsert(mapping, expiredAt), {
-            upsert: true,
-            session: active,
-          });
-
-          const stored = await replies().findOne(filter).session(active).lean();
-          if (!stored) throw new Error('Channel reply disappeared during admission');
-          return stored;
-        });
-      },
+      putChannelReply: (mapping) =>
+        guard(mapping, async (authority) =>
+          createFeedbackRecord(
+            mongoose,
+            'channelReply',
+            mapping,
+            authority,
+            await getDurableStorageConfig(),
+          ),
+        ),
       async getChannelReply(actor, externalMessageKey) {
         assertChannelTenant(actor.tenantId);
-        return replies()
+        const record = await replies()
           .findOne({
             tenantId: actor.tenantId,
             channelId: actor.channelId,
@@ -216,110 +228,166 @@ export function createChannelFeedbackStorage(
             channelRevision: actor.channelRevision,
             agentId: actor.agentId,
             externalMessageKey,
+            ...unexpired(),
+            '_managed.phase': 'published',
           })
-          .session(session ?? null)
+          .select('+_managed')
+          .read('primary')
           .lean();
+        if (!record) return null;
+        try {
+          feedbackFilter(mongoose, record, 'channelReply');
+          return await guard(record, async () => record, record.source);
+        } catch (error) {
+          if (error instanceof ChannelFeedbackAuthorityError) return null;
+          throw error;
+        }
       },
-      async admitChannelFeedbackEvent(record) {
-        return guard(record.mapping, async (active, expiredAt) => {
-          const filter = {
-            tenantId: record.tenantId,
-            channelId: record.channelId,
-            eventId: record.eventId,
-          };
-          await events().updateOne(filter, retainedInsert(record, expiredAt), {
-            upsert: true,
-            session: active,
-          });
-
-          const stored = await events().findOne(filter).session(active).lean();
-          if (!stored) throw new Error('Channel feedback event disappeared during admission');
-          return stored;
-        });
-      },
+      admitChannelFeedbackEvent: (record) =>
+        guard(record.mapping, async (authority) => {
+          if (
+            record.processed ||
+            record.receiptExpiresAt ||
+            record.ledgerTarget ||
+            record.eventId !== record.event.eventId
+          )
+            throw new TypeError('Invalid initial feedback receipt');
+          return createFeedbackRecord(
+            mongoose,
+            'channelFeedbackEvent',
+            record,
+            authority,
+            await getDurableStorageConfig(),
+          );
+        }),
       async pendingChannelFeedbackEvents(tenantId, limit, now = Date.now()) {
         page(tenantId, limit);
-        // Rotation must remain fair even when the retry delay expires between scans.
+        await recoverFeedbackReceipts(mongoose, tenantId, limit);
         return events()
           .find({
             tenantId,
             processed: false,
+            '_managed.phase': 'published',
             $and: [
               { $or: [{ retryAtMs: { $exists: false } }, { retryAtMs: { $lte: now } }] },
-              { $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }] },
+              unexpired(),
             ],
           })
           .sort({ updatedAt: 1, _id: 1 })
           .limit(limit)
-          .session(session ?? null)
+          .select('+_managed')
+          .read('primary')
           .lean();
       },
       async markChannelFeedbackEvent(record) {
-        await guard(record.mapping, async (active) => {
-          let current = checkpoint;
-          if (
-            !current ||
-            current.key !== record.ledgerKey ||
-            !sameFeedbackSource(current.mapping, record.mapping)
-          ) {
-            const stored = await ledger()
-              .findOne({ tenantId: record.tenantId, key: record.ledgerKey })
-              .session(active)
-              .lean();
-            if (!stored || !sameFeedbackSource(stored.mapping, record.mapping))
-              throw new ChannelFeedbackAuthorityError();
-            current = feedbackCheckpoint(stored);
-          }
-          await acknowledgeFeedbackReceipt(mongoose, record, current, active);
-        });
+        await guard(
+          record.mapping,
+          async () => {
+            let current = checkpoint;
+            if (!current || current.key !== record.ledgerKey) {
+              const receipt = await events()
+                .findOne(feedbackFilter(mongoose, record, 'channelFeedbackEvent'))
+                .select('ledgerTarget')
+                .read('primary')
+                .lean();
+              current =
+                (await ledger()
+                  .findOne({
+                    ...(receipt?.ledgerTarget
+                      ? managedTargetFilter(mongoose, receipt.ledgerTarget)
+                      : { tenantId: record.tenantId, key: record.ledgerKey }),
+                    '_managed.phase': 'published',
+                  })
+                  .select('+_managed')
+                  .read('primary')
+                  .lean()) ?? undefined;
+            }
+            if (!current) throw new ChannelFeedbackAuthorityError();
+            await acknowledgeFeedbackReceipt(mongoose, record, current);
+          },
+          record.source,
+        );
       },
-      async ensureChannelFeedback(record) {
-        return guard(record.mapping, async (active, expiredAt) => {
-          const filter = { tenantId: record.tenantId, key: record.key };
-          await ledger().updateOne(
-            filter,
-            retainedInsert(
-              { ...record, scoreTimestamp: record.scoreTimestamp ?? new Date() },
-              expiredAt,
-            ),
-            { upsert: true, session: active },
+      ensureChannelFeedback: (record) =>
+        guard(record.mapping, async (authority) => {
+          const stored = await createFeedbackRecord(
+            mongoose,
+            'channelFeedback',
+            {
+              ...record,
+              scoreTimestamp: record.scoreTimestamp ?? new Date(),
+            },
+            authority,
+            await getDurableStorageConfig(),
           );
-
-          const stored = await ledger().findOne(filter).session(active).lean();
-          if (!stored) throw new Error('Channel feedback ledger disappeared during admission');
           remember(stored);
           return stored;
-        });
-      },
+        }),
       async getChannelFeedback(tenantId, key) {
         assertChannelTenant(tenantId);
         const stored = await ledger()
-          .findOne({ tenantId, key })
-          .session(session ?? null)
+          .findOne({
+            ...(checkpoint?.key === key
+              ? feedbackFilter(mongoose, checkpoint, 'channelFeedback')
+              : { tenantId, key, '_managed.phase': 'published' }),
+            ...unexpired(),
+          })
+          .select('+_managed')
+          .read('primary')
           .lean();
-        if (stored) remember(stored);
-        return stored;
+        if (!stored) {
+          if (checkpoint?.key === key) throw new ChannelFeedbackAuthorityError();
+          return null;
+        }
+        feedbackFilter(mongoose, stored, 'channelFeedback');
+        try {
+          return await guard(
+            stored.mapping,
+            async () => {
+              remember(stored);
+              return stored;
+            },
+            stored.source,
+          );
+        } catch (error) {
+          if (error instanceof ChannelFeedbackAuthorityError) return null;
+          throw error;
+        }
       },
-      async saveChannelFeedback(record, expectedRevision) {
-        return guard(record.mapping, async (active) => {
-          const result = await ledger().updateOne(
-            { tenantId: record.tenantId, key: record.key, revision: expectedRevision },
-            {
-              $set: {
+      async saveChannelFeedback(record, expectedRevision, event) {
+        return guard(
+          record.mapping,
+          async () => {
+            const current = await ledger()
+              .findOne({
+                ...feedbackFilter(mongoose, record, 'channelFeedback'),
+                revision: expectedRevision,
+              })
+              .select('+_managed')
+              .read('primary')
+              .lean();
+            if (!current) return false;
+            assertFeedbackProgress(current, record, event);
+            await bindFeedbackLedger(mongoose, event, current);
+            const saved = await writeFeedbackLedger(
+              mongoose,
+              current,
+              {
                 votes: record.votes,
                 rating: record.rating,
                 revision: record.revision,
                 exportStatus: 'pending',
                 retryAtMs: 0,
               },
-            },
-            { session: active },
-          );
-          if (result.modifiedCount !== 1) return false;
-          remember(record);
-          await pinFeedbackCheckpoint(mongoose, record, active);
-          return true;
-        });
+              { revision: expectedRevision },
+            );
+            if (!saved) return false;
+            remember(saved);
+            await recoverFeedbackReceipts(mongoose, record.tenantId, 100, saved);
+            return true;
+          },
+          record.source,
+        );
       },
       async claimChannelFeedbackExport(candidate, leaseId, now, leaseUntilMs) {
         if (
@@ -329,67 +397,81 @@ export function createChannelFeedbackStorage(
           leaseUntilMs <= now
         )
           throw new TypeError('Invalid feedback lease');
-        return guard(candidate.mapping, async (active) => {
-          if (!candidate.scoreTimestamp || !Number.isFinite(candidate.scoreTimestamp.getTime()))
-            throw new TypeError('Invalid feedback score timestamp');
-          return ledger()
-            .findOneAndUpdate(
-              {
-                tenantId: candidate.tenantId,
-                key: candidate.key,
+        return guard(
+          candidate.mapping,
+          async () => {
+            if (!candidate.scoreTimestamp || !Number.isFinite(candidate.scoreTimestamp.getTime()))
+              throw new TypeError('Invalid feedback score timestamp');
+            const current = await ledger()
+              .findOne({
+                ...feedbackFilter(mongoose, candidate, 'channelFeedback'),
                 revision: candidate.revision,
                 exportStatus: 'pending',
                 retryAtMs: { $lte: now },
                 $or: [{ leaseUntilMs: { $exists: false } }, { leaseUntilMs: { $lte: now } }],
-              },
-              { $set: { leaseId, leaseUntilMs } },
-              { new: true, session: active },
-            )
-            .lean();
-        });
+              })
+              .select('+_managed')
+              .read('primary')
+              .lean();
+            return current
+              ? writeFeedbackLedger(mongoose, current, { leaseId, leaseUntilMs })
+              : null;
+          },
+          candidate.source,
+        );
       },
       async finishChannelFeedbackExport(record, leaseId, success, retryAtMs, finishedAt) {
-        await guard(record.mapping, async (active) => {
-          const valid = success && record.leaseUntilMs != null && record.leaseUntilMs > finishedAt;
-          const finished = await ledger().updateOne(
-            {
-              tenantId: record.tenantId,
-              key: record.key,
-              revision: record.revision,
-              leaseId,
-              leaseUntilMs: record.leaseUntilMs,
-            },
-            {
-              $set: { exportStatus: valid ? 'sent' : 'pending', retryAtMs },
-              $unset: { leaseId: '', leaseUntilMs: '' },
-            },
-            { session: active },
-          );
-          if (!finished.matchedCount)
-            await ledger().updateOne(
-              {
-                tenantId: record.tenantId,
-                key: record.key,
+        await guard(
+          record.mapping,
+          async () => {
+            const current = await ledger()
+              .findOne({
+                ...feedbackFilter(mongoose, record, 'channelFeedback'),
                 leaseId,
                 leaseUntilMs: record.leaseUntilMs,
-              },
-              { $unset: { leaseId: '', leaseUntilMs: '' } },
-              { session: active },
+              })
+              .select('+_managed')
+              .read('primary')
+              .lean();
+            if (!current) return;
+            const patch: Parameters<typeof writeFeedbackLedger>[2] =
+              current.revision === record.revision
+                ? {
+                    exportStatus:
+                      success && record.leaseUntilMs != null && record.leaseUntilMs > finishedAt
+                        ? 'sent'
+                        : 'pending',
+                    retryAtMs,
+                  }
+                : {};
+            await writeFeedbackLedger(
+              mongoose,
+              current,
+              patch,
+              { leaseId, leaseUntilMs: record.leaseUntilMs },
+              { leaseId: '', leaseUntilMs: '' },
             );
-        });
+          },
+          record.source,
+        );
       },
       async pendingChannelFeedbackExports(tenantId, now, limit) {
         page(tenantId, limit);
         return ledger()
           .find({
             tenantId,
+            '_managed.phase': 'published',
             exportStatus: 'pending',
             retryAtMs: { $lte: now },
-            $or: [{ leaseUntilMs: { $exists: false } }, { leaseUntilMs: { $lte: now } }],
+            $and: [
+              { $or: [{ leaseUntilMs: { $exists: false } }, { leaseUntilMs: { $lte: now } }] },
+              unexpired(),
+            ],
           })
-          .sort({ updatedAt: 1 })
+          .sort({ updatedAt: 1, _id: 1 })
           .limit(limit)
-          .session(session ?? null)
+          .select('+_managed')
+          .read('primary')
           .lean();
       },
     };

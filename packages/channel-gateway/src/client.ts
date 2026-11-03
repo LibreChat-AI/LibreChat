@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   CHANNEL_RUN_MAX_JSON_BYTES,
+  channelRunFenceSchema,
   channelGatewayWirePolicySchema,
   channelStorageConfigSchema,
 } from 'librechat-data-provider';
@@ -50,13 +51,12 @@ function validFence(
 ): boolean {
   return Boolean(
     value &&
-      validId(value.runId) &&
-      validId(value.owner) &&
-      Number.isSafeInteger(value.epoch) &&
-      value.epoch > 0 &&
+      channelRunFenceSchema.safeParse(value).success &&
       (expected.runId === undefined || value.runId === expected.runId) &&
       (expected.owner === undefined || value.owner === expected.owner) &&
-      (expected.epoch === undefined || value.epoch === expected.epoch),
+      (expected.epoch === undefined || value.epoch === expected.epoch) &&
+      (expected.targetId === undefined || value.targetId === expected.targetId) &&
+      (expected.incarnation === undefined || value.incarnation === expected.incarnation),
   );
 }
 

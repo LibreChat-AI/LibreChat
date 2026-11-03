@@ -4,6 +4,9 @@ import { Document, Types } from 'mongoose';
 export interface AgentApiKeyBinding {
   kind: string;
   id: string;
+  /** Physical grant owner, required for channel_run bindings. */
+  targetId?: string;
+  incarnation?: string;
 }
 
 export interface IAgentApiKey extends Document {

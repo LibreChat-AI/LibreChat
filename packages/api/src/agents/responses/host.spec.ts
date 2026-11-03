@@ -4,7 +4,7 @@ import mongoose from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import { networkInterfaces } from 'node:os';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import { PermissionBits, FileSources, RetentionMode } from 'librechat-data-provider';
+import { PermissionBits, FileSources, RetentionMode, Constants } from 'librechat-data-provider';
 import {
   createModels,
   createMethods,
@@ -155,6 +155,7 @@ async function fixture(
     execution: AgentExecutionEnrollment,
   ) => Promise<string | { paused: true }> = async () => '# Real Responses lifecycle';
   let beforeReservation: (() => Promise<void>) | undefined;
+  let preparedConversation: ServerRequest['preparedResponseConversation'];
   const producer = createAgentTriggerProducerBinding();
   const host = createBackgroundResponsesHost({
     decisions,
@@ -312,6 +313,11 @@ async function fixture(
       await apiKeyAuth(req as ApiKeyAuthRequest, res, next);
     }),
   );
+  router.use((req, _res, next) => {
+    if (preparedConversation)
+      (req as ServerRequest).preparedResponseConversation = preparedConversation;
+    next();
+  });
   router.post('/', handlers.create);
   router.get('/:id', handlers.retrieve);
   router.post('/:id/cancel', handlers.cancel);
@@ -369,6 +375,9 @@ async function fixture(
   }
   return {
     host,
+    setPreparedConversation: (value?: ServerRequest['preparedResponseConversation']) => {
+      preparedConversation = value;
+    },
     setBeforeReservation: (callback?: () => Promise<void>) => {
       beforeReservation = callback;
     },
@@ -392,6 +401,76 @@ async function fixture(
     },
   };
 }
+
+it('keeps the authenticated source conversation across admission, lost-reply replay and execution', async () => {
+  const f = await fixture();
+  const conversationId = createManagedConversationId();
+  f.setPreparedConversation({
+    sourceKeyId: f.credential.id,
+    userId: String(user._id),
+    tenantId,
+    agentId: 'agent',
+    conversationId,
+    parentMessageId: String(Constants.NO_PARENT),
+  });
+  const body = {
+    model: 'agent',
+    input: 'Hello',
+    background: true,
+    store: true,
+    metadata: { conversationId: createManagedConversationId() },
+  };
+  const submit = () =>
+    f.client
+      .post('/api/agents/v1/responses')
+      .auth(f.credential.key, { type: 'bearer' })
+      .set('Idempotency-Key', 'prepared-source-turn')
+      .send(body);
+  const accepted = await submit().expect(202);
+  await f.readUntil(accepted.body.id, 'completed');
+  const replay = await submit().expect(202);
+  expect(replay.body.id).toBe(accepted.body.id);
+  await scoped(async () => {
+    const record = await storage.read({ userId: String(user._id), tenantId }, accepted.body.id);
+    expect(record?.conversationId).toBe(conversationId);
+    expect(await db.getConvo(String(user._id), conversationId)).not.toBeNull();
+    expect(await db.getConvo(String(user._id), body.metadata.conversationId)).toBeNull();
+  });
+  expect(f.inputs).toHaveLength(1);
+});
+
+it.each([
+  'sourceKeyId',
+  'userId',
+  'tenantId',
+  'agentId',
+  'conversationId',
+  'parentMessageId',
+] as const)(
+  'rejects a prepared source conversation with a mismatched %s before reservation',
+  async (field) => {
+    const f = await fixture();
+    const prepared = {
+      sourceKeyId: f.credential.id,
+      userId: String(user._id),
+      tenantId,
+      agentId: 'agent',
+      conversationId: createManagedConversationId(),
+      parentMessageId: String(Constants.NO_PARENT),
+    };
+    f.setPreparedConversation({ ...prepared, [field]: 'mismatched-source' });
+    const rejected = await f.client
+      .post('/api/agents/v1/responses')
+      .auth(f.credential.key, { type: 'bearer' })
+      .send({ model: 'agent', input: 'Hello', background: true, store: true })
+      .expect(503);
+    expect(rejected.body.error.code).toBe('response_service_unavailable');
+    expect(f.inputs).toHaveLength(0);
+    await scoped(async () => {
+      expect(await mongoose.models.StoredResponse.countDocuments({})).toBe(0);
+    });
+  },
+);
 
 async function ownerPause(keyId: string) {
   return scoped(async () => {

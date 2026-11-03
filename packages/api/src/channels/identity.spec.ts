@@ -53,7 +53,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await runAsSystem(() =>
     Promise.all(
-      ['ChannelIdentity', 'AgentChannel', 'ChannelScope', 'ResponseScope'].map((name) =>
+      ['ChannelIdentity', 'AgentChannel', 'ResponseScope'].map((name) =>
         mongoose.models[name].deleteMany({}),
       ),
     ),

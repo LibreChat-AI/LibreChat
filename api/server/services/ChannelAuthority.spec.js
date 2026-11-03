@@ -3,15 +3,17 @@ const mockIdentityStorage = { readChannelIdentity: jest.fn(), saveChannelIdentit
 const mockResponseStorage = {};
 const mockGetChannelMetadata = jest.fn();
 const mockGetConfig = jest.fn();
+const mockGetDurableConfig = jest.fn();
 jest.mock('@librechat/data-schemas', () => ({
   ...jest.requireActual('@librechat/data-schemas'),
-  createChannelIdentityStorage: () => mockIdentityStorage,
-  createChannelRunStorage: () => mockRunStorage,
+  createChannelIdentityStorage: jest.fn(() => mockIdentityStorage),
+  createChannelRunStorage: jest.fn(() => mockRunStorage),
   createResponseStorage: () => mockResponseStorage,
 }));
 jest.mock('./Config', () => ({ getAppConfig: (...args) => mockGetConfig(...args) }));
 jest.mock('./PermissionService', () => ({ getEffectivePermissions: jest.fn() }));
 jest.mock('~/models', () => ({
+  getDurableStorageConfig: mockGetDurableConfig,
   getAgent: jest.fn(),
   getAgentChannelMetadata: (...args) => mockGetChannelMetadata(...args),
   findUser: jest.fn(),
@@ -47,6 +49,16 @@ it('loads the actual disabled host without validating a link origin or reading c
   expect(leaf.responseCredentials.isCurrent).toBeDefined();
   expect(leaf.authorizeTrigger).toBeUndefined();
   expect(mockGetConfig).not.toHaveBeenCalled();
+  expect(require('@librechat/data-schemas').createChannelIdentityStorage).toHaveBeenCalledWith(
+    require('mongoose'),
+    mockGetDurableConfig,
+  );
+  expect(require('@librechat/data-schemas').createChannelRunStorage).toHaveBeenCalledWith(
+    require('mongoose'),
+    {},
+    mockGetDurableConfig,
+  );
+  expect(mockGetDurableConfig).not.toHaveBeenCalled();
 });
 
 it('loads effective current-principal policy without bypassing database overrides', async () => {

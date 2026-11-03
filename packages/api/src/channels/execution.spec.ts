@@ -3,14 +3,18 @@ import request from 'supertest';
 import mongoose from 'mongoose';
 import { Constants } from 'librechat-data-provider';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import { createResponseStorage } from '@librechat/data-schemas';
 import {
+  channelRunFence,
   createModels,
   createMethods,
   createChannelRunStorage,
+  createChannelIdentityStorage,
   tenantStorage,
 } from '@librechat/data-schemas';
 import type { ChannelRunRecord } from '@librechat/data-schemas';
 import type { ChannelExecutionDependencies } from './execution';
+import { createChannelResponseCancellation } from './responses';
 import { createChannelExecutionAdapter } from './execution';
 import { createChannelHandlers } from './service';
 import { createChannelRunHandlers } from './runs';
@@ -45,6 +49,7 @@ const makeRun = (): ChannelRunRecord => ({
   leaseEpoch: 1,
   leaseExpiresAt: Date.now() + 60_000,
   execution: {
+    protocol: 'responses',
     requestId: 'channel-run-a',
     conversationId: 'conversation-a',
     parentMessageId: String(Constants.NO_PARENT),
@@ -62,7 +67,7 @@ describe('mounted service-token advance cannot execute an unbound run', () => {
     await mongoose.disconnect();
     await mongo?.stop();
   });
-  it('rejects legacy and unprepared state behind the actual service guard without starting work', () =>
+  it('rejects unbound execution behind the actual service guard without starting work', () =>
     scope(async () => {
       const fixture = makeRun();
       await createMethods(mongoose).createAgentChannel({
@@ -76,24 +81,27 @@ describe('mounted service-token advance cannot execute an unbound run', () => {
         revision: fixture.principal.channelRevision,
         slack: { teamId: 'T1', appId: 'A1', botUserId: 'UBOT' },
       });
-      await mongoose.models.ChannelIdentity.create({
-        tenantId: fixture.tenantId,
-        linkId: fixture.principal.linkId,
-        revision: fixture.principal.linkRevision,
-        userId: fixture.principal.userId,
-        state: 'active',
-        ticketHash: 'ticket',
-        ticketExpiresAtMs: Date.now() + 60000,
-        expiresAtMs: Date.now() + 60000,
-        identity: {
+      await createChannelIdentityStorage(mongoose).saveChannelIdentity(
+        {
           tenantId: fixture.tenantId,
-          channelId: fixture.channelId,
-          channelRevision: fixture.principal.channelRevision,
-          teamId: 'T1',
-          externalUserId: 'U1',
-          agentId: fixture.agentId,
+          linkId: fixture.principal.linkId!,
+          revision: fixture.principal.linkRevision!,
+          userId: fixture.principal.userId,
+          state: 'active',
+          ticketHash: 'ticket',
+          ticketExpiresAtMs: Date.now() + 60000,
+          expiresAtMs: Date.now() + 60000,
+          identity: {
+            tenantId: fixture.tenantId,
+            channelId: fixture.channelId,
+            channelRevision: fixture.principal.channelRevision,
+            teamId: 'T1',
+            externalUserId: 'U1',
+            agentId: fixture.agentId,
+          },
         },
-      });
+        null,
+      );
       const storage = createChannelRunStorage(mongoose);
       await storage.admit(
         {
@@ -127,8 +135,13 @@ describe('mounted service-token advance cannot execute an unbound run', () => {
         responseProjection,
       });
       const runs = createChannelRunHandlers({
+        responseCancellation: createChannelResponseCancellation({
+          storage: createResponseStorage(mongoose),
+          recovery: storage,
+        }),
         storage,
         guard: handlers.service,
+        receiptGuard: handlers.receiptService,
         resolvePrincipal: async () => fixture.principal,
         advance: adapter.advance,
         retireForAuthorityLoss: adapter.retireForAuthorityLoss,
@@ -137,7 +150,7 @@ describe('mounted service-token advance cannot execute an unbound run', () => {
       app.use(express.json());
       app.post('/service/:channelId/runs/:runId/advance', runs.advance);
       const route = `/service/${run.channelId}/runs/${run.runId}/advance`;
-      const body = { fence: { runId: run.runId, owner: run.leaseOwner, epoch: run.leaseEpoch } };
+      const body = { fence: channelRunFence(run) };
       await request(app).post(route).send(body).expect(401);
       for (let attempt = 0; attempt < 2; attempt++) {
         await request(app)
@@ -148,8 +161,6 @@ describe('mounted service-token advance cannot execute an unbound run', () => {
           .expect(409, { error: 'execution_not_prepared' });
       }
       const held = await storage.read(run.tenantId, run.channelId, run.runId);
-      expect(held?.execution?.enqueueAttemptedAt).toBeUndefined();
-      expect(held?.execution?.deliveryKey).toBeUndefined();
       expect(held?.snapshot).toBeUndefined();
       expect(responseProjection).not.toHaveBeenCalled();
     }));
@@ -176,12 +187,10 @@ describe('Responses-only Channels execution', () => {
     run.errorCode = 'channel_authority_changed';
   }
 
-  it.each(['unprepared', 'unbound', 'legacy_dispatched', 'responses_unbound'] as const)(
+  it.each(['unprepared', 'unbound'] as const)(
     'refuses %s advance without projecting a Response',
     async (kind) => {
       if (kind === 'unprepared') run.execution = undefined;
-      if (kind === 'legacy_dispatched') run.execution!.deliveryKey = 'old-trigger';
-      if (kind === 'responses_unbound') run.execution!.protocol = 'responses';
       await expect(adapter.advance(run)).rejects.toMatchObject({ code: 'execution_not_prepared' });
       expect(deps.responseProjection).not.toHaveBeenCalled();
     },
@@ -209,12 +218,11 @@ describe('Responses-only Channels execution', () => {
     },
   );
 
-  it.each(['unprepared', 'unprovisioned', 'responses_unprovisioned'] as const)(
+  it.each(['unprepared', 'unprovisioned'] as const)(
     'retires %s authority loss without a possible provider admission',
     async (kind) => {
       loseAuthority();
       if (kind === 'unprepared') run.execution = undefined;
-      if (kind === 'responses_unprovisioned') run.execution!.protocol = 'responses';
       await expect(adapter.retireForAuthorityLoss(run)).resolves.toBe('stopped');
       expect(deps.responseRetirement).not.toHaveBeenCalled();
     },
@@ -227,21 +235,13 @@ describe('Responses-only Channels execution', () => {
     expect(deps.responseRetirement).toHaveBeenCalledWith(run);
   });
 
-  it.each([
-    'deliveryKey',
-    'enqueueAttemptedAt',
-    'generationCreatedAt',
-    'apiKeyId',
-    'responseId',
-  ] as const)(
+  it.each(['generationCreatedAt', 'apiKeyId', 'responseId'] as const)(
     'holds unknown execution with %s instead of guessing that it stopped',
     async (field) => {
       loseAuthority();
       Object.assign(run.execution!, { [field]: field.endsWith('At') ? 100 : 'unknown' });
-      await expect(adapter.retireForAuthorityLoss(run)).rejects.toMatchObject({
-        code: 'execution_identity_changed',
-      });
-      expect(deps.responseRetirement).not.toHaveBeenCalled();
+      await expect(adapter.retireForAuthorityLoss(run)).resolves.toBe('pending');
+      expect(deps.responseRetirement).toHaveBeenCalledWith(run);
     },
   );
 

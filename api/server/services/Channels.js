@@ -5,6 +5,7 @@ const {
   createChannelExecutionAdapter,
   createChannelResponseProjection,
   createChannelResponseRetirement,
+  createChannelResponseCancellation,
   createChannelIdentityHandlers,
   createChannelFeedbackRuntime,
   sendFeedbackScore,
@@ -81,11 +82,16 @@ const summary = createChannelSummaryService({
   }),
 });
 const runs = createChannelRunHandlers({
+  responseCancellation: createChannelResponseCancellation({
+    storage: responseStorage,
+    recovery: storage,
+  }),
   interactive: { readInteractiveReview, submitInteractiveReview },
   responseCredential: responseCredentials.provision,
   artifacts,
   storage,
   guard: handlers.service,
+  receiptGuard: handlers.receiptService,
   publicBaseUrl: process.env.DOMAIN_CLIENT || 'http://localhost:3080',
   getLeaseMs: async () => (await getChannelConfig()).leaseMs,
   resolvePrincipal: authority.resolvePrincipal,
@@ -113,7 +119,7 @@ const feedback = createChannelFeedbackRuntime({
   getWorkerSettings: policy.workerSettings,
   hostDeps: {
     channels: db,
-    storage: createChannelFeedbackStorage(mongoose),
+    storage: createChannelFeedbackStorage(mongoose, db.getDurableStorageConfig),
     getPolicy: policy.feedbackPolicy,
     sendScore: sendFeedbackScore,
   },

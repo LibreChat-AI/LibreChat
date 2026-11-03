@@ -48,6 +48,7 @@ export const AGENT_BACKGROUND_COMPLETION_RECEIPT_BATCHING_DEFAULT: boolean = tru
 export const AGENT_BACKGROUND_SHUTDOWN_INTERRUPT_GRACE_MS_DEFAULT = 5_000;
 export const DEFAULT_SKILL_DELETION_BATCH_SIZE = 100;
 export const DEFAULT_DURABLE_PENDING_TARGETS = 256;
+export const MAX_DURABLE_PENDING_TARGETS = 4096;
 export const durableStorageConfigSchema = z
   .object({
     /** Reclaim abandoned metadata allocations after fresh publishers have had time to finish. */
@@ -57,7 +58,7 @@ export const durableStorageConfigSchema = z
       .number()
       .int()
       .min(1)
-      .max(4096)
+      .max(MAX_DURABLE_PENDING_TARGETS)
       .default(DEFAULT_DURABLE_PENDING_TARGETS),
   })
   .strict();

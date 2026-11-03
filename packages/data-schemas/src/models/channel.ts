@@ -2,11 +2,31 @@ import { Schema } from 'mongoose';
 import type { AgentChannel } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
+import { applyManagedRegistry } from './plugins/registry';
+import { applyChannelStorage } from './plugins/managed';
 
 export interface AgentChannelRecord extends AgentChannel {
   encryptedBotToken?: string;
   encryptedSigningSecret?: string;
 }
+
+// New fields must explicitly choose private erasure or retained coordination metadata.
+const privateFields: Record<keyof AgentChannelRecord, boolean> = {
+  channelId: false,
+  tenantId: false,
+  agentId: false,
+  createdBy: false,
+  type: false,
+  status: false,
+  credentialMode: false,
+  revision: false,
+  slack: false,
+  encryptedBotToken: true,
+  encryptedSigningSecret: true,
+};
+export const CHANNEL_PRIVATE_FIELDS: readonly string[] = Object.entries(privateFields)
+  .filter(([, privateField]) => privateField)
+  .map(([field]) => field);
 
 export function createAgentChannelModel(
   mongoose: typeof import('mongoose'),
@@ -35,6 +55,8 @@ export function createAgentChannelModel(
   schema.index({ tenantId: 1, agentId: 1 });
   schema.index({ tenantId: 1, createdBy: 1 });
   schema.index({ status: 1, _id: 1 });
+  applyManagedRegistry(schema);
+  applyChannelStorage(schema);
   applyTenantIsolation(schema);
   return mongoose.models.AgentChannel ?? mongoose.model<AgentChannelRecord>('AgentChannel', schema);
 }

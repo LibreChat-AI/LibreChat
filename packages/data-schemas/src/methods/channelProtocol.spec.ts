@@ -26,6 +26,7 @@ function run(): ChannelRunRecord {
     leaseExpiresAt: 1000,
     cancellationRequested: false,
     execution: {
+      protocol: 'responses',
       requestId: 'run',
       conversationId: 'conversation',
       parentMessageId: 'parent',

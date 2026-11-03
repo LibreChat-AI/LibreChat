@@ -25,7 +25,7 @@ export interface ChannelReplyMapping {
   conversationId: string;
   principalId: string;
   traceId: string;
-  /** Stored message provenance; absence on older mappings must not imply a permanent chat. */
+  /** Missing message provenance is treated as temporary. */
   isTemporary?: boolean;
   sampled?: boolean;
   destinationIds?: string[];

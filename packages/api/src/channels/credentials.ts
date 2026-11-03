@@ -1,5 +1,12 @@
 import { z } from 'zod';
 import { Constants } from 'librechat-data-provider';
+import {
+  isManagedConversationId,
+  channelRunFence,
+  channelResponseOwner,
+  channelRunKeyBinding,
+  matchesChannelRunFence,
+} from '@librechat/data-schemas';
 import type {
   AgentApiKeyBinding,
   AgentApiKeyListItem,
@@ -12,6 +19,7 @@ import type {
 } from '@librechat/data-schemas';
 import type { Request } from 'express';
 import type { ChannelRunDependencies } from './runs';
+import type { ServerRequest } from '~/types/http';
 import { hasChannelRunAuthority } from './runs';
 
 export interface ChannelResponseCredentialDependencies {
@@ -43,10 +51,16 @@ const requestSchema = z
     previous_response_id: z.string().optional(),
   })
   .strict();
-const bindingFor = (run: ChannelRunRecord): AgentApiKeyBinding => ({
-  kind: 'channel_run',
-  id: `${run.channelId}/${run.runId}`,
-});
+const bindingFor = channelRunKeyBinding;
+function matchesBinding(run: ChannelRunRecord, binding: AgentApiKeyBinding): boolean {
+  const captured = bindingFor(run);
+  return (
+    captured.kind === binding.kind &&
+    captured.id === binding.id &&
+    captured.targetId === binding.targetId &&
+    captured.incarnation === binding.incarnation
+  );
+}
 const previousResponse = (run: ChannelRunRecord) =>
   run.execution?.parentMessageId === Constants.NO_PARENT
     ? undefined
@@ -63,11 +77,13 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
   ) {
     if (binding.kind !== 'channel_run' || !keyId) return null;
     const [channelId, runId, extra] = binding.id.split('/');
-    if (!channelId || !runId || extra != null) return null;
+    if (!channelId || !runId || !binding.targetId || !binding.incarnation || extra != null)
+      return null;
     const run = await deps.storage.read(owner.tenantId || '_', channelId, runId);
     if (
       !run ||
       run.principal.userId !== owner.userId ||
+      !matchesBinding(run, binding) ||
       run.execution?.apiKeyId !== keyId ||
       run.execution.protocol !== 'responses' ||
       (agentId != null && run.agentId !== agentId)
@@ -88,12 +104,11 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
     const execution = run.execution;
     if (!execution?.apiKeyId || execution.protocol !== 'responses' || !execution.encryptedApiKey)
       return false;
-    const binding = bindingFor(run);
     return Boolean(
       key &&
         key.id === execution.apiKeyId &&
-        key.binding?.kind === binding.kind &&
-        key.binding.id === binding.id &&
+        key.binding &&
+        matchesBinding(run, key.binding) &&
         (key.expiresAt == null ||
           (Number.isFinite(new Date(key.expiresAt).getTime()) &&
             new Date(key.expiresAt).getTime() > now())),
@@ -116,14 +131,9 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
     isCurrent: (run: ChannelRunRecord): Promise<boolean> => isCurrent(run),
     async provision(run: ChannelRunRecord): Promise<string> {
       if (run.execution?.apiKeyId) return reveal(run);
-      if (
-        !run.execution ||
-        run.execution.deliveryKey ||
-        run.execution.enqueueAttemptedAt ||
-        run.cancellationRequested ||
-        !run.leaseOwner
-      )
+      if (!run.execution || run.cancellationRequested || !run.leaseOwner)
         throw new Error('Response credential admission changed');
+      const fence = channelRunFence(run);
       const lifetimeMs = await deps.lifetimeMs();
       if (!Number.isSafeInteger(lifetimeMs) || lifetimeMs <= 0)
         throw new Error('Invalid response credential policy');
@@ -137,7 +147,7 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
       try {
         saved = await deps.storage.attachResponseCredential(
           run.tenantId,
-          { runId: run.runId, owner: run.leaseOwner, epoch: run.leaseEpoch },
+          fence,
           { apiKeyId: key.id, encryptedApiKey: await deps.encrypt(key.key) },
           now(),
         );
@@ -152,8 +162,7 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
           currentRun.principal.userId === run.principal.userId &&
           currentRun.agentId === run.agentId &&
           winner.requestId === run.execution.requestId &&
-          currentRun.leaseOwner === run.leaseOwner &&
-          currentRun.leaseEpoch === run.leaseEpoch;
+          matchesChannelRunFence(currentRun, fence);
         if (!sameAdmission) {
           if (winner?.apiKeyId !== key.id) await deps.deleteKey(key.id, run.principal.userId);
           throw error;
@@ -177,6 +186,9 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
       user: IUser;
       request: Request;
     }): Promise<boolean> {
+      const request = input.request as ServerRequest;
+      delete request.preparedResponseConversation;
+      delete request.preparedResponseTarget;
       const owner = { userId: String(input.user._id), tenantId: input.user.tenantId };
       const run = await current(input.binding, input.keyId, owner);
       if (!run) return false;
@@ -184,26 +196,53 @@ export function createChannelResponseCredentials(deps: ChannelResponseCredential
       if (input.request.method === 'POST' && pathname === '/api/agents/v1/responses') {
         if (run.cancellationRequested) return false;
         const parsed = requestSchema.safeParse(input.request.body);
-        return (
+        const conversationId = run.execution!.conversationId;
+        const allowed =
           parsed.success &&
           parsed.data.model === run.agentId &&
           parsed.data.input === run.admission.input &&
           parsed.data.previous_response_id === previousResponse(run) &&
-          input.request.headers['idempotency-key'] === `channel:${run.runId}`
-        );
+          input.request.headers['idempotency-key'] === `channel:${run.runId}` &&
+          (previousResponse(run) != null || isManagedConversationId(conversationId));
+        if (allowed)
+          request.preparedResponseConversation = {
+            ...owner,
+            sourceKeyId: input.keyId,
+            agentId: run.agentId,
+            conversationId,
+            parentMessageId: run.execution!.parentMessageId,
+          };
+        return allowed;
       }
       const path = /^\/api\/agents\/v1\/responses\/(resp_[\w-]+)(\/cancel)?$/.exec(pathname);
       if (!path || (path[2] ? input.request.method !== 'POST' : input.request.method !== 'GET'))
         return false;
       if (path[2] && !run.cancellationRequested) return false;
-      const response = await deps.responses.read(owner, path[1]);
-      return Boolean(
+      if (
+        run.execution?.responseId &&
+        (!run.execution.responseTarget || !run.execution.responseFingerprint)
+      )
+        return false;
+      const captured = run.execution?.responseId ? channelResponseOwner(run) : owner;
+      const response = await deps.responses.read(captured, path[1]);
+      const allowed = Boolean(
         response &&
           response.agentId === run.agentId &&
           response.requestKey === `channel:${run.runId}` &&
           response.sourceKeyId === input.keyId &&
+          (run.execution?.responseFingerprint == null ||
+            response.fingerprint === run.execution.responseFingerprint) &&
+          response.conversationId === run.execution!.conversationId &&
+          response.parentMessageId === run.execution!.parentMessageId &&
           (run.execution?.responseId == null || run.execution.responseId === response.responseId),
       );
+      if (allowed && response?.storageTarget)
+        request.preparedResponseTarget = {
+          ...owner,
+          responseId: response.responseId,
+          storageTarget: response.storageTarget,
+        };
+      return allowed && request.preparedResponseTarget != null;
     },
   };
 }

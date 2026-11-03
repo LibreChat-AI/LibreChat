@@ -277,9 +277,9 @@ describe('managed target allocation on real storage', () => {
         { _id: ownerKey },
         { $set: { pendingCount: 1 } },
       );
-      await expect(eraseResponseRecords(db, input)).rejects.toMatchObject({
-        code: 'response_erasure_pending',
-      });
+      await expect(eraseResponseRecords(db, input)).rejects.toThrow(
+        'Managed registration counter is inconsistent',
+      );
       expect((await createResponseScopeModel(db).findById(ownerKey).lean())?.pendingCount).toBe(1);
     });
     it('recovers an applied reservation after a lost publication reply without replaying allocation', async () => {

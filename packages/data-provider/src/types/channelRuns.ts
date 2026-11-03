@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type { AccountingBasis, ResponseAccounting } from './responseAccounting';
 
 export const CHANNEL_DELIVERY_TEXT_MAX_CHARS = 40_000;
@@ -42,11 +43,24 @@ export type ChannelRunState =
   | 'cancelled'
   | 'blocked';
 
-export interface ChannelRunFence {
-  runId: string;
-  owner: string;
-  epoch: number;
-}
+const channelFenceId = z
+  .string()
+  .min(1)
+  .max(256)
+  .regex(/^[\w:.-]+$/);
+/** A lease names one physical Run, owner and epoch; public IDs cannot authorize replacements. */
+export const channelRunFenceSchema = z
+  .object({
+    targetId: z.string().regex(/^[a-f\d]{24}$/),
+    incarnation: z
+      .string()
+      .regex(/^[a-f\d]{8}-[a-f\d]{4}-4[a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/),
+    runId: channelFenceId,
+    owner: channelFenceId,
+    epoch: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  })
+  .strict();
+export type ChannelRunFence = z.infer<typeof channelRunFenceSchema>;
 
 export interface ChannelRunUsage {
   inputTokens: number;

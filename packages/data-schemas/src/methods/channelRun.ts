@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import {
   channelStorageConfigSchema,
   CHANNEL_DELIVERY_PARTS_HARD_MAX,
@@ -10,31 +9,34 @@ import type {
   ChannelDeliveryPlan,
   ChannelDeliveryReceipt,
   ChannelRunProgress,
+  DurableStorageConfig,
 } from 'librechat-data-provider';
-import type { ClientSession } from 'mongoose';
+import type { ChannelRunRecord, ChannelPrincipalLaneRecord } from '~/models/channelRun';
 import type { ChannelLaneScope, ChannelRunEnrollment } from './channelProtocol';
-import type { ChannelRunRecord, ChannelLaneRecord } from '~/models/channelRun';
-import type { StoredResponseRecord } from '~/models/response';
+import type { PhysicalChannelRun } from './channelRunWrite';
+import type { ChannelRunClaim } from './channelRunControl';
 import {
   digest,
   laneKey,
-  stopScopeKey,
   activeStates,
   assertReconciliation,
   assertDeliveryEvidence,
   snapshotPatch,
   assertPlan,
   deliveryDisposition,
+  hasUncertainChannelDelivery,
   hasPermanentDeliveryFailure,
   leaseDeadline,
   ChannelRunConflict,
 } from './channelProtocol';
-import { initializeChannelScope, touchChannelAuthority, touchChannelScope } from './channelScope';
-import { startRequiredTransactionSession } from '~/utils/transactions';
-import { prepareChannelOwnerAdmission } from './channelOwner';
+import { channelRunTarget, writeChannelRunPatch, channelRunStorageTarget } from './channelRunWrite';
+import { createChannelRunPublication } from './channelRunPublication';
+import { bindChannelRunResponse } from './channelRunResponse';
+import { createManagedConversationId } from '~/utils/managed';
+import { createChannelRunControl } from './channelRunControl';
 import { createChannelIndexGate } from './channelIndexes';
-import { responseOwnerFilter } from './responseScope';
 import { getTenantId } from '~/config/tenantContext';
+import { managedTargetFilter } from './managed';
 
 export type { ChannelRunRecord, ChannelLaneRecord } from '~/models/channelRun';
 
@@ -180,7 +182,11 @@ export interface ChannelRunStorage {
     fence: ChannelRunFence,
     now: number,
   ): Promise<ChannelRunRecord>;
-  finishAuthorityLost(tenantId: string, fence: ChannelRunFence, now: number): Promise<void>;
+  finishAuthorityLost(
+    tenantId: string,
+    fence: ChannelRunFence,
+    now: number,
+  ): Promise<'stopped' | 'pending'>;
   requestCancel(
     scope: ChannelLaneScope,
     runId: string,
@@ -205,31 +211,28 @@ function authorityLost(run: ChannelRunRecord): Partial<ChannelRunRecord> {
   };
 }
 
-/** Mongo transactions protect FIFO and cursor/receipt commit; a standalone Mongo fails closed. */
+/** Registered FIFO publication and actor control coordinate update-only Run transitions. */
 export function createChannelRunStorage(
   mongoose: typeof import('mongoose'),
   options: Partial<ChannelStorageConfig> = {},
+  getDurableConfig: () => Promise<Partial<DurableStorageConfig>> = async () => ({}),
 ): ChannelRunStorage {
   const limits = channelStorageConfigSchema.parse(options);
+  const publication = createChannelRunPublication(mongoose, getDurableConfig);
   const runs = () => mongoose.model<ChannelRunRecord>('ChannelRun');
-  const lanes = () => mongoose.model<ChannelLaneRecord>('ChannelLane');
+  const lanes = () => mongoose.model<ChannelPrincipalLaneRecord>('ChannelLane');
+  const control = createChannelRunControl(mongoose, getDurableConfig);
   const ensureIndexes = createChannelIndexGate(() => [runs(), lanes()]);
-  async function transaction<T>(work: (session: ClientSession) => Promise<T>): Promise<T> {
-    await ensureIndexes();
-    const session = await startRequiredTransactionSession(mongoose);
-    try {
-      let result: T | undefined;
-      await session.withTransaction(async () => {
-        result = await work(session);
-      });
-      if (result === undefined) throw new Error('Channel transaction did not commit');
-      return result;
-    } finally {
-      await session.endSession();
-    }
-  }
-  const terminalUnset = { leaseOwner: 1, 'execution.encryptedApiKey': 1 } as const;
+  const fenceTarget = (tenantId: string, fence: ChannelRunFence) =>
+    managedTargetFilter(mongoose, {
+      kind: 'channelRun',
+      id: fence.targetId,
+      incarnation: fence.incarnation,
+      ...(tenantId !== '_' && { tenantId }),
+    });
   const predicate = (tenantId: string, fence: ChannelRunFence, now: number) => ({
+    ...fenceTarget(tenantId, fence),
+    '_managed.phase': 'published',
     tenantId,
     runId: fence.runId,
     leaseOwner: fence.owner,
@@ -241,12 +244,12 @@ export function createChannelRunStorage(
     tenantId: string,
     fence: ChannelRunFence,
     now: number,
-    session: ClientSession,
-  ) {
+  ): Promise<PhysicalChannelRun> {
     const run = await runs()
       .findOne(predicate(tenantId, fence, now))
-      .session(session)
-      .lean();
+      .select('+_managed')
+      .read('primary')
+      .lean<PhysicalChannelRun | null>();
     if (!run) throw new ChannelRunConflict('stale_fence');
     return run;
   }
@@ -254,77 +257,123 @@ export function createChannelRunStorage(
     tenantId: string,
     fence: ChannelRunFence,
     now: number,
-    change: (run: ChannelRunRecord, session: ClientSession) => Promise<Partial<ChannelRunRecord>>,
-  ): Promise<ChannelRunRecord> {
-    return transaction(async (session) => {
-      const run = await owned(tenantId, fence, now, session);
-      const patch = await change(run, session);
-      const result = await runs()
-        .findOneAndUpdate(predicate(tenantId, fence, now), { $set: patch }, { new: true, session })
-        .lean();
-      if (!result) throw new ChannelRunConflict('stale_fence');
-      return result;
-    });
+    change: (run: PhysicalChannelRun) => Promise<Partial<ChannelRunRecord>>,
+  ): Promise<ChannelRunRecord>;
+  async function mutate(
+    tenantId: string,
+    fence: ChannelRunFence,
+    now: number,
+    change: (run: PhysicalChannelRun) => Promise<Partial<ChannelRunRecord> | null>,
+  ): Promise<ChannelRunRecord | null>;
+  async function mutate(
+    tenantId: string,
+    fence: ChannelRunFence,
+    now: number,
+    change: (run: PhysicalChannelRun) => Promise<Partial<ChannelRunRecord> | null>,
+  ): Promise<ChannelRunRecord | null> {
+    await ensureIndexes();
+    let run = await owned(tenantId, fence, now);
+    const target = channelRunTarget(run);
+    for (;;) {
+      if (!(await control.isActive(run))) throw new ChannelRunConflict('stale_fence');
+      const patch = await change(run);
+      if (patch === null) return null;
+      const result = await writeChannelRunPatch(
+        mongoose,
+        run,
+        patch,
+        predicate(tenantId, fence, now),
+        getDurableConfig,
+      );
+      if (result) {
+        if (!(await control.isActive(result))) throw new ChannelRunConflict('stale_fence');
+        return result;
+      }
+      const current = await runs()
+        .findOne({
+          ...predicate(tenantId, fence, now),
+          ...managedTargetFilter(mongoose, target),
+          '_managed.phase': 'published',
+        })
+        .select('+_managed')
+        .read('primary')
+        .lean<PhysicalChannelRun | null>();
+      if (!current) throw new ChannelRunConflict('stale_fence');
+      run = current;
+    }
   }
-  async function responseBinding(
-    run: ChannelRunRecord,
-    session: ClientSession,
-    responseId?: string,
-  ): Promise<Partial<ChannelRunRecord> | null> {
-    if (
-      !run.execution ||
-      (run.state !== 'executing' && run.execution.protocol !== 'responses') ||
-      run.execution.deliveryKey != null ||
-      run.execution.enqueueAttemptedAt != null ||
-      (run.execution.responseId != null && run.execution.responseId !== responseId)
-    )
-      throw new ChannelRunConflict('invalid_transition');
-    const response = await mongoose
-      .model<StoredResponseRecord>('StoredResponse')
+  async function finishTerminal(
+    tenantId: string,
+    fence: ChannelRunFence,
+    now: number,
+    authorityLoss: boolean,
+  ): Promise<ChannelRunRecord> {
+    let run = await runs()
       .findOne({
-        ...responseOwnerFilter({
-          tenantId: run.tenantId === '_' ? undefined : run.tenantId,
-          userId: run.principal.userId,
-        }),
-        agentId: run.agentId,
-        ...(responseId === undefined ? {} : { responseId }),
-        requestKey: `channel:${run.runId}`,
-        ...(run.execution.apiKeyId ? { sourceKeyId: run.execution.apiKeyId } : {}),
+        ...fenceTarget(tenantId, fence),
+        tenantId,
+        runId: fence.runId,
+        '_managed.phase': 'published',
       })
-      .session(session)
-      .lean();
-    if (!response) return null;
-    const request: {
-      input?: string;
-      model?: string;
-      previous_response_id?: string;
-      background?: boolean;
-      store?: boolean;
-    } = JSON.parse(response.requestJSON);
-    const previous =
-      run.execution.parentMessageId === '00000000-0000-0000-0000-000000000000'
-        ? undefined
-        : run.execution.parentMessageId;
-    if (
-      request.model !== run.agentId ||
-      request.input !== run.admission.input ||
-      (run.execution.responseId == null && request.previous_response_id !== previous) ||
-      request.background !== true ||
-      request.store === false
-    )
-      throw new ChannelRunConflict('invalid_transition');
-    return {
-      execution: {
-        ...run.execution,
-        protocol: 'responses',
-        responseId: response.responseId,
-        conversationId: response.conversationId,
-        parentMessageId: response.parentMessageId,
-        ...(response.generationCreatedAt == null
-          ? {}
-          : { generationCreatedAt: response.generationCreatedAt }),
-      },
-    };
+      .select('+_managed')
+      .read('primary')
+      .lean<PhysicalChannelRun | null>();
+    if (!run) throw new ChannelRunConflict('stale_fence');
+    const target = channelRunTarget(run);
+    for (;;) {
+      if (['delivered', 'failed', 'cancelled'].includes(run.state)) {
+        if (run.terminalFence?.owner !== fence.owner || run.terminalFence.epoch !== fence.epoch)
+          throw new ChannelRunConflict('stale_fence');
+        return control.repairTerminal(run, now);
+      }
+      if (
+        run.leaseOwner !== fence.owner ||
+        run.leaseEpoch !== fence.epoch ||
+        run.leaseExpiresAt <= now ||
+        !(await control.isActive(run))
+      )
+        throw new ChannelRunConflict('stale_fence');
+      if (
+        authorityLoss &&
+        (run.errorCode !== 'channel_authority_changed' || !run.cancellationRequested)
+      )
+        throw new ChannelRunConflict('invalid_transition');
+      if (authorityLoss && hasUncertainChannelDelivery(run))
+        throw new ChannelRunConflict('delivery_incomplete');
+      if (!run.leaseGrantId) throw new Error('Terminal Run lost its grant');
+      const state = authorityLoss
+        ? 'cancelled'
+        : deliveryDisposition(run, CHANNEL_DELIVERY_PARTS_HARD_MAX);
+      const result = await writeChannelRunPatch(
+        mongoose,
+        run,
+        {
+          state,
+          cursorState: 'pending',
+          leaseExpiresAt: 0,
+          terminalFence: { owner: fence.owner, epoch: fence.epoch, grantId: run.leaseGrantId },
+          ...(authorityLoss
+            ? {}
+            : {
+                deliveredAt: now,
+                ...(hasPermanentDeliveryFailure(run) && {
+                  errorCode: 'delivery_permanent_failure',
+                }),
+              }),
+        },
+        predicate(tenantId, fence, now),
+        getDurableConfig,
+        true,
+      );
+      if (result) return control.repairTerminal(result, now);
+      const current = await runs()
+        .findOne({ ...managedTargetFilter(mongoose, target), '_managed.phase': 'published' })
+        .select('+_managed')
+        .read('primary')
+        .lean<PhysicalChannelRun | null>();
+      if (!current) throw new ChannelRunConflict('stale_fence');
+      run = current;
+    }
   }
   return {
     async listPendingMetadata(cursor, limit) {
@@ -337,7 +386,11 @@ export function createChannelRunStorage(
         throw new Error('Invalid run metadata page');
       await ensureIndexes();
       const records = await runs()
-        .find({ state: { $in: activeStates }, ...(cursor ? { _id: { $gt: cursor } } : {}) })
+        .find({
+          '_managed.phase': 'published',
+          state: { $in: activeStates },
+          ...(cursor ? { _id: { $gt: cursor } } : {}),
+        })
         .select({ _id: 1, tenantId: 1, channelId: 1, runId: 1 })
         .sort({ _id: 1 })
         .limit(limit + 1)
@@ -349,10 +402,11 @@ export function createChannelRunStorage(
       };
     },
     async claimAuthorityLost(run, owner, now, leaseMs) {
-      if (!owner || !Number.isSafeInteger(leaseMs) || leaseMs <= 0)
-        throw new Error('Invalid cleanup lease');
-      return transaction(async (session) => {
-        const filter = {
+      if (!owner) throw new Error('Invalid cleanup lease');
+      leaseDeadline(now, leaseMs);
+      const current = await runs()
+        .findOne({
+          ...managedTargetFilter(mongoose, channelRunStorageTarget(run)),
           tenantId: run.tenantId,
           channelId: run.channelId,
           runId: run.runId,
@@ -361,256 +415,155 @@ export function createChannelRunStorage(
           $or: [
             { errorCode: { $ne: 'channel_authority_changed' } },
             { leaseExpiresAt: { $lte: now } },
+            { leaseOwner: owner },
           ],
-        };
-        const current = await runs().findOne(filter).session(session).lean();
-        if (!current) return null;
-        return runs()
-          .findOneAndUpdate(
-            filter,
-            {
-              $set: {
-                ...authorityLost(current),
-                leaseOwner: owner,
-                leaseExpiresAt: leaseDeadline(now, leaseMs),
-              },
-              $inc: { leaseEpoch: 1 },
-            },
-            { new: true, session },
-          )
-          .lean();
-      });
+        })
+        .select('_id tenantId publication leaseEpoch +_managed')
+        .read('primary')
+        .lean<ChannelRunClaim | null>();
+      if (!current) return null;
+      await publication.recoverFrontier(current);
+      return control.claim(current, owner, now, leaseMs, true);
     },
-    async admit(input, now) {
-      const ownerAdmission = await prepareChannelOwnerAdmission(mongoose, {
-        userId: input.principal.userId,
-        tenantId: input.tenantId === '_' ? undefined : input.tenantId,
-      });
-      await initializeChannelScope(mongoose, input.tenantId, input.channelId);
-      const assertAuthority = async (session: ClientSession) => {
-        if (!(await ownerAdmission(session))) throw new ChannelRunConflict('invalid_transition');
-        if (
-          !(await touchChannelAuthority(
-            mongoose,
-            {
-              tenantId: input.tenantId,
-              channelId: input.channelId,
-              agentId: input.agentId,
-              channelRevision: input.principal.channelRevision,
-              teamId: input.admission.actor.teamId,
-              appId: input.admission.actor.appId,
-              principal: input.principal,
-              externalUserId: input.admission.actor.externalUserId,
-              now,
-            },
-            session,
-          ))
-        )
-          throw new ChannelRunConflict('invalid_transition');
-      };
-      const eventKey = {
-        tenantId: input.tenantId,
-        channelId: input.channelId,
-        'admission.actor.teamId': input.admission.actor.teamId,
-        'admission.actor.appId': input.admission.actor.appId,
-        'admission.eventId': input.admission.eventId,
-      };
-      const payloadHash = digest(input.admission);
-      const laneId = laneKey(input);
-      try {
-        return await transaction(async (session) => {
-          await assertAuthority(session);
-          const existing = await runs().findOne(eventKey).session(session).lean();
-          if (existing) {
-            if (
-              digest(existing.admission) !== payloadHash ||
-              existing.agentId !== input.agentId ||
-              digest(existing.principal) !== digest(input.principal)
-            )
-              throw new ChannelRunConflict('event_conflict');
-            return { run: existing, duplicate: true };
-          }
-          const lane = await lanes()
-            .findOneAndUpdate(
-              { tenantId: input.tenantId, laneId },
-              {
-                $inc: { nextSequence: 1 },
-                $setOnInsert: {
-                  channelId: input.channelId,
-                  userId: input.principal.userId,
-                },
-              },
-              { upsert: true, new: true, session },
-            )
-            .lean();
-          if (!lane) throw new Error('Channel lane unavailable');
-          const [record] = await runs().create(
-            [
-              {
-                ...input,
-                runId: randomUUID(),
-                laneId,
-                payloadHash,
-                sequence: lane.nextSequence,
-                receivedAt: now,
-                state: 'queued',
-                leaseEpoch: 0,
-                leaseExpiresAt: 0,
-                receipts: [],
-                cancellationRequested: false,
-              },
-            ],
-            { session },
-          );
-          return { run: record.toObject(), duplicate: false };
-        });
-      } catch (error) {
-        if (
-          !(error instanceof mongoose.mongo.MongoServerError) ||
-          error.code !== 11000 ||
-          (error.keyPattern?.['admission.eventId'] == null &&
-            !error.message.includes('channel_run_event_v2'))
-        )
-          throw error;
-        return transaction(async (session) => {
-          await assertAuthority(session);
-          const existing = await runs().findOne(eventKey).session(session).lean();
-          if (!existing) throw new ChannelRunConflict('event_conflict');
-          if (
-            digest(existing.admission) !== payloadHash ||
-            existing.agentId !== input.agentId ||
-            digest(existing.principal) !== digest(input.principal)
-          )
-            throw new ChannelRunConflict('event_conflict');
-          return { run: existing, duplicate: true };
-        });
-      }
-    },
+    admit: publication.admit,
     async claim(tenantId, channelId, owner, now, leaseMs) {
-      if (!owner || !Number.isSafeInteger(leaseMs) || leaseMs <= 0)
-        throw new Error('Invalid channel lease');
-      return transaction(async (session) => {
-        const candidates = await runs()
-          .find({
-            tenantId,
-            channelId,
-            state: { $in: activeStates },
-            leaseExpiresAt: { $lte: now },
-          })
-          .sort({ claimCheckedAt: 1, receivedAt: 1, sequence: 1 })
-          .hint('channel_run_fair_claim')
-          .limit(limits.claimBatchSize)
-          .session(session)
-          .lean();
-        const laneCache = new Map<string, ChannelLaneRecord | null>();
-        for (const run of candidates) {
-          if (!laneCache.has(run.laneId))
-            laneCache.set(
-              run.laneId,
-              await lanes().findOne({ tenantId, laneId: run.laneId }).session(session).lean(),
-            );
-          const lane = laneCache.get(run.laneId);
-          if (
-            !lane ||
-            (lane.activeRunId && lane.activeRunId !== run.runId) ||
-            (await runs()
-              .exists({
+      if (!owner) throw new Error('Invalid channel lease');
+      leaseDeadline(now, leaseMs);
+      await publication.recoverPending(tenantId, channelId, now, limits.claimBatchSize);
+      await ensureIndexes();
+      const candidates = await runs()
+        .find({
+          tenantId,
+          channelId,
+          '_managed.phase': 'published',
+          state: { $in: activeStates },
+          leaseExpiresAt: { $lte: now },
+        })
+        .select(
+          '_id tenantId channelId runId laneId sequence publication leaseEpoch leaseExpiresAt +_managed',
+        )
+        .sort({ claimCheckedAt: 1, receivedAt: 1, sequence: 1 })
+        .hint('channel_run_fair_claim')
+        .limit(limits.claimBatchSize)
+        .read('primary')
+        .lean<
+          Array<
+            ChannelRunClaim &
+              Pick<ChannelRunRecord, 'runId' | 'laneId' | 'sequence' | 'leaseExpiresAt'>
+          >
+        >();
+      const first = new Map<string, number>();
+      for (const run of candidates)
+        first.set(run.laneId, Math.min(first.get(run.laneId) ?? Infinity, run.sequence));
+      const blocked = candidates.length
+        ? new Set(
+            await runs()
+              .distinct('laneId', {
                 tenantId,
-                laneId: run.laneId,
-                sequence: { $lt: run.sequence },
+                channelId,
+                '_managed.phase': 'published',
                 state: { $in: activeStates },
+                $or: [...first].map(([laneId, sequence]) => ({
+                  laneId,
+                  sequence: { $lt: sequence },
+                })),
               })
-              .hint('channel_run_active_predecessor')
-              .session(session))
-          ) {
-            await runs().updateOne(
-              {
-                tenantId,
-                runId: run.runId,
-                leaseEpoch: run.leaseEpoch,
-                leaseExpiresAt: run.leaseExpiresAt,
-              },
-              { $set: { claimCheckedAt: now } },
-              { session },
-            );
-            continue;
-          }
-          await lanes().updateOne(
-            { tenantId, laneId: run.laneId },
-            { $set: { activeRunId: run.runId } },
-            { session },
-          );
-          // An expired sender may have reached Slack. Recovery must never turn this into a repost.
-          const receipts = run.receipts.map((receipt) =>
-            receipt.outcome === 'inflight' ? { ...receipt, outcome: 'unknown' as const } : receipt,
-          );
-          return runs()
-            .findOneAndUpdate(
-              { tenantId, runId: run.runId, leaseEpoch: run.leaseEpoch },
-              {
-                $set: {
-                  leaseOwner: owner,
-                  leaseExpiresAt: leaseDeadline(now, leaseMs),
-                  claimCheckedAt: now,
-                  receipts,
-                  ...(run.progress?.outcome === 'inflight'
-                    ? { progress: { ...run.progress, outcome: 'unknown' } }
-                    : {}),
-                },
-                $inc: { leaseEpoch: 1 },
-              },
-              { new: true, session },
-            )
-            .lean();
+              .read('primary'),
+          )
+        : new Set<string>();
+      for (const run of candidates) {
+        if (!blocked.has(run.laneId) && run.sequence === first.get(run.laneId)) {
+          const claimed = await control.claim(run, owner, now, leaseMs);
+          if (claimed) return claimed;
         }
-        return null;
-      });
+        await runs().updateOne(
+          {
+            ...managedTargetFilter(mongoose, channelRunTarget(run)),
+            leaseEpoch: run.leaseEpoch,
+            leaseExpiresAt: run.leaseExpiresAt,
+            state: { $in: activeStates },
+          },
+          { $set: { claimCheckedAt: now }, $inc: { __v: 1 } },
+          { upsert: false },
+        );
+      }
+      return null;
     },
     async renew(tenantId, fence, now, leaseMs) {
-      const result = await runs().updateOne(predicate(tenantId, fence, now), {
-        $max: { leaseExpiresAt: leaseDeadline(now, leaseMs) },
-      });
-      return result.matchedCount === 1;
-    },
-    async yieldLease(tenantId, channelId, fence, now) {
-      if ((getTenantId() ?? '_') !== tenantId) return false;
+      const expiresAt = leaseDeadline(now, leaseMs);
+      const run = await runs()
+        .findOne(predicate(tenantId, fence, now))
+        .select('+_managed')
+        .read('primary')
+        .lean<PhysicalChannelRun | null>();
+      if (!run || !(await control.isActive(run))) return false;
       const result = await runs().updateOne(
         {
           ...predicate(tenantId, fence, now),
-          channelId,
-          state: { $in: ['executing', 'requires_action', 'blocked'] },
-          'execution.protocol': 'responses',
-          'execution.responseId': { $type: 'string' },
-          plan: { $exists: false },
-          'progress.outcome': { $nin: ['inflight', 'unknown'] },
-          receipts: { $not: { $elemMatch: { outcome: { $in: ['inflight', 'unknown'] } } } },
+          ...managedTargetFilter(mongoose, channelRunTarget(run)),
         },
+        { $max: { leaseExpiresAt: expiresAt }, $inc: { __v: 1 } },
+        { upsert: false },
+      );
+      return result.matchedCount === 1 && control.isActive(run);
+    },
+    async yieldLease(tenantId, channelId, fence, now) {
+      if ((getTenantId() ?? '_') !== tenantId) return false;
+      const filter = {
+        ...predicate(tenantId, fence, now),
+        channelId,
+        state: { $in: ['executing', 'requires_action', 'blocked'] },
+        'execution.protocol': 'responses',
+        'execution.responseId': { $type: 'string' },
+        plan: { $exists: false },
+        'progress.outcome': { $nin: ['inflight', 'unknown'] },
+        receipts: { $not: { $elemMatch: { outcome: { $in: ['inflight', 'unknown'] } } } },
+      };
+      const run = await runs()
+        .findOne(filter)
+        .select('+_managed')
+        .read('primary')
+        .lean<PhysicalChannelRun | null>();
+      if (!run || !(await control.isActive(run))) return false;
+      const result = await runs().updateOne(
+        { ...filter, ...managedTargetFilter(mongoose, channelRunTarget(run)), __v: run.__v },
         {
-          // Clearing owner invalidates its fence immediately; expiry records the
-          // configured next eligibility, not continued execution ownership.
           $set: { leaseExpiresAt: now + limits.projectionYieldMs },
           $unset: { leaseOwner: 1 },
+          $inc: { __v: 1 },
         },
+        { upsert: false },
       );
-      return result.modifiedCount === 1;
+      return result.modifiedCount === 1 && control.isActive(run);
     },
     async read(tenantId, channelId, runId) {
-      return runs().findOne({ tenantId, channelId, runId }).lean();
+      return runs()
+        .findOne({ tenantId, channelId, runId, '_managed.phase': 'published' })
+        .select('+_managed')
+        .read('primary')
+        .lean();
     },
     async prepareExecution(tenantId, fence, now) {
-      return mutate(tenantId, fence, now, async (run, session) => {
+      return mutate(tenantId, fence, now, async (run) => {
         if (run.execution) return {};
         if (run.state !== 'queued') throw new ChannelRunConflict('invalid_transition');
         const lane = await lanes()
-          .findOne({ tenantId, laneId: run.laneId, activeRunId: run.runId })
-          .session(session)
+          .findOne({
+            ...managedTargetFilter(mongoose, run.publication!.lane),
+            tenantId,
+            laneId: run.laneId,
+            kind: 'principal',
+          })
           .lean();
         if (!lane) throw new ChannelRunConflict('stale_fence');
         return {
           state: 'executing',
           execution: {
+            protocol: 'responses' as const,
             requestId: run.runId,
-            conversationId: lane.conversationId ?? randomUUID(),
+            conversationId:
+              lane.conversationId ??
+              createManagedConversationId(JSON.stringify(['channel-run', channelRunTarget(run)])),
             parentMessageId: lane.responseId ?? '00000000-0000-0000-0000-000000000000',
           },
         };
@@ -625,8 +578,6 @@ export function createChannelRunStorage(
           execution.apiKeyId ||
           execution.responseId ||
           execution.generationCreatedAt != null ||
-          execution.deliveryKey ||
-          execution.enqueueAttemptedAt ||
           run.plan
         )
           throw new ChannelRunConflict('invalid_transition');
@@ -646,8 +597,6 @@ export function createChannelRunStorage(
         if (
           !run.execution ||
           !['queued', 'executing', 'requires_action'].includes(run.state) ||
-          run.execution.deliveryKey ||
-          run.execution.enqueueAttemptedAt ||
           !credential.apiKeyId ||
           !credential.encryptedApiKey ||
           run.cancellationRequested
@@ -665,36 +614,24 @@ export function createChannelRunStorage(
       });
     },
     async bindResponse(tenantId, fence, responseId, now) {
-      return mutate(tenantId, fence, now, async (run, session) => {
-        const patch = await responseBinding(run, session, responseId);
+      return mutate(tenantId, fence, now, async (run) => {
+        const patch = await bindChannelRunResponse(mongoose, run, getDurableConfig, responseId);
         if (!patch) throw new ChannelRunConflict('invalid_transition');
         return patch;
       });
     },
     async recoverResponse(tenantId, fence, now) {
       if ((getTenantId() ?? '_') !== tenantId) throw new ChannelRunConflict('invalid_transition');
-      return transaction(async (session) => {
-        const run = await owned(tenantId, fence, now, session);
+      return mutate(tenantId, fence, now, async (run) => {
         if (
           !run.cancellationRequested ||
           run.execution?.protocol !== 'responses' ||
-          !run.execution.apiKeyId ||
-          run.execution.deliveryKey != null ||
-          run.execution.enqueueAttemptedAt != null
+          !run.execution.apiKeyId
         )
           throw new ChannelRunConflict('invalid_transition');
-        if (run.execution.responseId) return run;
-        const patch = await responseBinding(run, session);
-        if (!patch) return null;
-        const recovered = await runs()
-          .findOneAndUpdate(
-            { ...predicate(tenantId, fence, now), cancellationRequested: true },
-            { $set: patch },
-            { new: true, session },
-          )
-          .lean();
-        if (!recovered) throw new ChannelRunConflict('stale_fence');
-        return recovered;
+        return run.execution.responseId
+          ? {}
+          : bindChannelRunResponse(mongoose, run, getDurableConfig, undefined, true);
       });
     },
     async saveSnapshot(tenantId, fence, snapshot, now, generationCreatedAt) {
@@ -937,205 +874,22 @@ export function createChannelRunStorage(
         };
       });
     },
-    async commitDelivery(tenantId, fence, now) {
-      return transaction(async (session) => {
-        const existing = await runs()
-          .findOne({
-            tenantId,
-            runId: fence.runId,
-            state: { $in: ['delivered', 'failed', 'cancelled'] },
-          })
-          .session(session)
-          .lean();
-        if (existing) {
-          await runs().updateOne(
-            { tenantId, runId: existing.runId, state: existing.state },
-            { $unset: terminalUnset },
-            { session },
-          );
-          if (existing.execution) delete existing.execution.encryptedApiKey;
-          delete existing.leaseOwner;
-          return existing;
-        }
-        const run = await owned(tenantId, fence, now, session);
-        const state = deliveryDisposition(run, CHANNEL_DELIVERY_PARTS_HARD_MAX);
-        const success = state === 'delivered';
-        const laneUpdate = await lanes().updateOne(
-          { tenantId, laneId: run.laneId, activeRunId: run.runId },
-          {
-            $unset: { activeRunId: 1 },
-            ...(success
-              ? {
-                  $set: {
-                    conversationId: run.execution?.conversationId,
-                    responseId: run.execution?.responseId,
-                  },
-                }
-              : {}),
-          },
-          { session },
-        );
-        if (laneUpdate.modifiedCount !== 1) throw new ChannelRunConflict('stale_fence');
-        const result = await runs()
-          .findOneAndUpdate(
-            predicate(tenantId, fence, now),
-            {
-              $set: {
-                state,
-                ...(hasPermanentDeliveryFailure(run)
-                  ? { errorCode: 'delivery_permanent_failure' }
-                  : {}),
-                deliveredAt: now,
-                leaseExpiresAt: 0,
-              },
-              $unset: terminalUnset,
-            },
-            { new: true, session },
-          )
-          .lean();
-        if (!result) throw new ChannelRunConflict('stale_fence');
-        return result;
-      });
-    },
+    commitDelivery: (tenantId, fence, now) => finishTerminal(tenantId, fence, now, false),
     async markAuthorityLost(tenantId, fence, now) {
       return mutate(tenantId, fence, now, async (run) => authorityLost(run));
     },
     async finishAuthorityLost(tenantId, fence, now) {
-      await transaction(async (session) => {
-        const run = await owned(tenantId, fence, now, session);
-        if (run.errorCode !== 'channel_authority_changed' || !run.cancellationRequested)
-          throw new ChannelRunConflict('invalid_transition');
-        await lanes().updateOne(
-          { tenantId, laneId: run.laneId, activeRunId: run.runId },
-          { $unset: { activeRunId: 1 } },
-          { session },
-        );
-        const result = await runs().updateOne(
-          predicate(tenantId, fence, now),
-          {
-            $set: { state: 'cancelled', leaseExpiresAt: 0 },
-            $unset: terminalUnset,
-          },
-          { session },
-        );
-        if (result.modifiedCount !== 1) throw new ChannelRunConflict('stale_fence');
-        return true;
-      });
+      try {
+        await finishTerminal(tenantId, fence, now, true);
+        return 'stopped';
+      } catch (error) {
+        if (error instanceof ChannelRunConflict && error.code === 'delivery_incomplete')
+          return 'pending';
+        throw error;
+      }
     },
-    async readActiveThread(scope, before) {
-      const { tenantId, channelId } = scope;
-      const laneId = laneKey(scope);
-      const lane = await lanes().findOne({ tenantId, channelId, laneId }).lean();
-      if (!lane?.activeRunId) return null;
-      // A delayed event must never stop a later claim/generation, even if that
-      // run's message was queued before the click. Recovery may conservatively
-      // reject an old click after re-claim; the user can click Stop again.
-      return runs()
-        .findOne({
-          tenantId,
-          channelId,
-          laneId,
-          runId: lane.activeRunId,
-          state: { $in: ['queued', 'executing', 'requires_action'] },
-          claimCheckedAt: { $lte: before },
-          receivedAt: { $lte: before },
-        })
-        .lean();
-    },
-    async observeThreadStop(scope, eventAt, observedAt) {
-      if (!Number.isSafeInteger(eventAt) || eventAt <= 0 || !Number.isFinite(observedAt))
-        throw new ChannelRunConflict('invalid_transition');
-      const { tenantId, channelId } = scope;
-      const laneId = laneKey(scope);
-      const scopeId = stopScopeKey(scope);
-      const ownerAdmission = await prepareChannelOwnerAdmission(mongoose, {
-        userId: scope.principal.userId,
-        tenantId: tenantId === '_' ? undefined : tenantId,
-      });
-      await initializeChannelScope(mongoose, tenantId, channelId);
-      return transaction(async (session) => {
-        // Serialize occurrence ownership across principal lanes, including empty targets.
-        // This records an observation, not permission; the caller still checks live authority.
-        if (
-          !(await ownerAdmission(session)) ||
-          !(await touchChannelScope(mongoose, tenantId, channelId, session))
-        )
-          return null;
-        const previousLane = await lanes()
-          .findOne({ tenantId, channelId, 'stopObservation.scopeId': scopeId })
-          .session(session)
-          .lean();
-        let observation = previousLane?.stopObservation;
-        if (
-          observation &&
-          (observation.eventAt > eventAt ||
-            (observation.eventAt === eventAt && previousLane?.laneId !== laneId))
-        )
-          return null;
-        if (!observation || observation.eventAt < eventAt) {
-          const lane =
-            previousLane?.laneId === laneId
-              ? previousLane
-              : await lanes().findOne({ tenantId, channelId, laneId }).session(session).lean();
-          const before = Math.min(eventAt, observedAt);
-          const run = lane?.activeRunId
-            ? await runs()
-                .findOne({
-                  tenantId,
-                  channelId,
-                  laneId,
-                  runId: lane.activeRunId,
-                  state: { $in: ['queued', 'executing', 'requires_action'] },
-                  claimCheckedAt: { $lte: before },
-                  receivedAt: { $lte: before },
-                })
-                .session(session)
-                .lean()
-            : null;
-          observation = {
-            scopeId,
-            eventAt,
-            before,
-            ...(run ? { runId: run.runId, epoch: run.leaseEpoch } : {}),
-          };
-          // Persist even absence: a retried click must not acquire work admitted later.
-          // A newer click moves its one bounded observation to the current owning lane.
-          if (previousLane && previousLane.laneId !== laneId) {
-            await lanes().updateOne(
-              { tenantId, channelId, laneId: previousLane.laneId },
-              { $unset: { stopObservation: 1 } },
-              { session },
-            );
-          }
-          await lanes().updateOne(
-            { tenantId, laneId },
-            {
-              $set: { stopObservation: observation, userId: scope.principal.userId },
-              $setOnInsert: {
-                channelId,
-                nextSequence: 0,
-              },
-            },
-            { upsert: true, session },
-          );
-        }
-        if (!observation.runId || observation.epoch == null) return null;
-        const run = await runs()
-          .findOne({
-            tenantId,
-            channelId,
-            laneId,
-            runId: observation.runId,
-            leaseEpoch: observation.epoch,
-            state: { $in: ['queued', 'executing', 'requires_action'] },
-            claimCheckedAt: { $lte: observation.before },
-            receivedAt: { $lte: observation.before },
-          })
-          .session(session)
-          .lean();
-        return run ? { run, before: observation.before } : null;
-      });
-    },
+    readActiveThread: control.readActive,
+    observeThreadStop: control.observeStop,
     async requestCancel(scope, runId, observed) {
       const { tenantId, channelId } = scope;
       if (
@@ -1145,12 +899,19 @@ export function createChannelRunStorage(
           !Number.isFinite(observed.before))
       )
         throw new ChannelRunConflict('invalid_transition');
+      const run = await runs()
+        .findOne({ tenantId, channelId, runId, '_managed.phase': 'published' })
+        .select('+_managed')
+        .read('primary')
+        .lean<PhysicalChannelRun | null>();
+      if (!run || laneKey(run) !== laneKey(scope)) return false;
       const result = await runs().updateOne(
         {
+          ...managedTargetFilter(mongoose, channelRunTarget(run)),
+          '_managed.phase': 'published',
           tenantId,
           channelId,
           runId,
-          laneId: laneKey(scope),
           state: { $in: ['queued', 'executing', 'requires_action'] },
           ...(observed
             ? {
@@ -1160,7 +921,7 @@ export function createChannelRunStorage(
               }
             : {}),
         },
-        { $set: { cancellationRequested: true } },
+        { $set: { cancellationRequested: true }, $inc: { __v: 1 } },
       );
       return result.matchedCount === 1;
     },

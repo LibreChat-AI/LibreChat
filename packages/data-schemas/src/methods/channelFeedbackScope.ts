@@ -1,10 +1,12 @@
 import type { ChannelReplyMapping } from 'librechat-data-provider';
-import type { ClientSession } from 'mongoose';
-import { initializeResponseScopes, responseScopeKeys } from './responseScope';
-import { assertChannelTenant, touchChannelAuthority } from './channelScope';
-import { startRequiredTransactionSession } from '~/utils/transactions';
+import type { ChannelFeedbackSourceRef } from '~/models/channelFeedback';
+import type { ChannelOwnership } from './channelRegistry';
 import { SERVER_AUTHORED_MESSAGE_FILTER } from '~/utils/authored';
 import { createResponseScopeModel } from '~/models/responseScope';
+import { readChannelAuthority } from './channelRegistry';
+import { assertChannelTenant } from './channelScope';
+import { responseScopeKeys } from './responseScope';
+import { digest } from './channelProtocol';
 
 export class ChannelFeedbackAuthorityError extends Error {
   constructor() {
@@ -13,24 +15,38 @@ export class ChannelFeedbackAuthorityError extends Error {
   }
 }
 
-export function sameFeedbackSource(left: ChannelReplyMapping, right: ChannelReplyMapping): boolean {
-  return [
-    'tenantId',
-    'channelId',
-    'channelRevision',
-    'teamId',
-    'agentId',
-    'runId',
-    'responseId',
-    'messageId',
-    'conversationId',
-    'principalId',
-  ].every(
-    (key) => left[key as keyof ChannelReplyMapping] === right[key as keyof ChannelReplyMapping],
-  );
+export type ChannelFeedbackSourceIdentity = Pick<
+  ChannelReplyMapping,
+  | 'tenantId'
+  | 'channelId'
+  | 'channelRevision'
+  | 'teamId'
+  | 'agentId'
+  | 'runId'
+  | 'responseId'
+  | 'messageId'
+  | 'conversationId'
+  | 'principalId'
+>;
+const identityFields: readonly (keyof ChannelFeedbackSourceIdentity)[] = [
+  'tenantId',
+  'channelId',
+  'channelRevision',
+  'teamId',
+  'agentId',
+  'runId',
+  'responseId',
+  'messageId',
+  'conversationId',
+  'principalId',
+];
+export function sameFeedbackSource(
+  left: ChannelFeedbackSourceIdentity,
+  right: ChannelFeedbackSourceIdentity,
+): boolean {
+  return identityFields.every((key) => left[key] === right[key]);
 }
 
-/** Retention maintenance does not depend on whether channel feedback is currently enabled. */
 export interface ChannelFeedbackSourceState {
   expiredAt: Date | null;
   sampled?: boolean;
@@ -38,80 +54,18 @@ export interface ChannelFeedbackSourceState {
   langfuseRunId?: string;
   centralTraceExportEnabled?: boolean;
 }
-
-export async function readChannelFeedbackSourceState(
-  mongoose: typeof import('mongoose'),
-  mapping: ChannelReplyMapping,
-  session?: ClientSession,
-): Promise<ChannelFeedbackSourceState> {
-  assertChannelTenant(mapping.tenantId);
-  const owner = {
-    userId: mapping.principalId,
-    tenantId: mapping.tenantId === '_' ? undefined : mapping.tenantId,
-  };
-  // MongoDB does not support parallel operations within one transaction session.
-  const messageQuery = mongoose
-    .model('Message')
-    .findOne({
-      user: mapping.principalId,
-      tenantId: owner.tenantId ?? { $in: [null, ''] },
-      conversationId: mapping.conversationId,
-      messageId: mapping.messageId,
-      ...SERVER_AUTHORED_MESSAGE_FILTER,
-    })
-    .select(
-      'expiredAt langfuseSampled langfuseDestinationIds langfuseRunId langfuseCentralTraceExportEnabled',
-    )
-    .session(session ?? null)
-    .lean<{
-      expiredAt?: Date | null;
-      langfuseSampled?: boolean;
-      langfuseDestinationIds?: string[];
-      langfuseRunId?: string;
-      langfuseCentralTraceExportEnabled?: boolean;
-    }>();
-  const anchorsQuery = createResponseScopeModel(mongoose)
-    .find({ _id: { $in: responseScopeKeys(owner, mapping.conversationId) } })
-    .select('expiredAt closed')
-    .session(session ?? null)
-    .lean();
-  const [message, anchors] = session
-    ? ([await messageQuery, await anchorsQuery] as const)
-    : await Promise.all([messageQuery, anchorsQuery]);
-  if (!message || anchors.some((anchor) => anchor.closed))
-    throw new ChannelFeedbackAuthorityError();
-  const deadlines = [message, ...anchors].flatMap((item) =>
-    item.expiredAt == null ? [] : [new Date(item.expiredAt).getTime()],
-  );
-  if (deadlines.some((deadline) => !Number.isFinite(deadline)))
-    throw new ChannelFeedbackAuthorityError();
-  return {
-    expiredAt: deadlines.length ? new Date(Math.min(...deadlines)) : null,
-    sampled: message.langfuseSampled,
-    destinationIds: message.langfuseDestinationIds,
-    langfuseRunId: message.langfuseRunId,
-    centralTraceExportEnabled: message.langfuseCentralTraceExportEnabled,
-  };
+export interface ChannelFeedbackAuthority {
+  source: ChannelFeedbackSourceRef;
+  roles: ChannelOwnership;
+  state: ChannelFeedbackSourceState;
 }
 
-export async function readChannelFeedbackRetention(
+/** Capture current canonical authority and one physical authored Message; never load answer text. */
+export async function readChannelFeedbackAuthority(
   mongoose: typeof import('mongoose'),
   mapping: ChannelReplyMapping,
-  session?: ClientSession,
-): Promise<Date | null> {
-  return (await readChannelFeedbackSourceState(mongoose, mapping, session)).expiredAt;
-}
-
-/** Every private feedback write serializes with account, conversation and channel retirement. */
-export async function withChannelFeedbackAuthority<T>(
-  mongoose: typeof import('mongoose'),
-  mapping: ChannelReplyMapping,
-  work: (
-    session: ClientSession,
-    expiredAt: Date | null,
-    state: ChannelFeedbackSourceState,
-  ) => Promise<T>,
-): Promise<T> {
+  expected?: ChannelFeedbackSourceRef,
+): Promise<ChannelFeedbackAuthority> {
   assertChannelTenant(mapping.tenantId);
   if (
     [
@@ -123,52 +77,114 @@ export async function withChannelFeedbackAuthority<T>(
       mapping.agentId,
       mapping.teamId,
     ].some((value) => typeof value !== 'string' || !value) ||
-    mapping.messageId !== mapping.responseId
+    mapping.messageId !== mapping.responseId ||
+    (expected && !/^[a-f\d]{24}$/.test(expected.messageTargetId))
   )
     throw new ChannelFeedbackAuthorityError();
   const owner = {
     userId: mapping.principalId,
-    tenantId: mapping.tenantId === '_' ? undefined : mapping.tenantId,
+    ...(mapping.tenantId !== '_' && { tenantId: mapping.tenantId }),
   };
-  const keys = responseScopeKeys(owner, mapping.conversationId);
-  await initializeResponseScopes(mongoose, keys);
-  const session = await startRequiredTransactionSession(mongoose);
-  try {
-    let value!: T;
-    await session.withTransaction(async () => {
-      const at = new Date();
-      const admitted = await createResponseScopeModel(mongoose).updateMany(
-        {
-          _id: { $in: keys },
-          closed: false,
-          $or: [{ expiredAt: null }, { expiredAt: { $gt: at } }],
-        },
-        { $inc: { revision: 1 } },
-        { session },
-      );
-      if (
-        admitted.matchedCount !== keys.length ||
-        !(await touchChannelAuthority(
-          mongoose,
-          {
-            tenantId: mapping.tenantId,
-            channelId: mapping.channelId,
-            agentId: mapping.agentId,
-            channelRevision: mapping.channelRevision,
-            teamId: mapping.teamId,
-          },
-          session,
-        ))
+  const [channel, message, anchors] = await Promise.all([
+    readChannelAuthority(mongoose, mapping),
+    mongoose
+      .model('Message')
+      .findOne({
+        user: owner.userId,
+        tenantId: owner.tenantId || { $in: [null, ''] },
+        conversationId: mapping.conversationId,
+        messageId: mapping.messageId,
+        ...SERVER_AUTHORED_MESSAGE_FILTER,
+        ...(expected && { _id: new mongoose.Types.ObjectId(expected.messageTargetId) }),
+        ...(expected?.messageIncarnation && {
+          '_managed.incarnation': expected.messageIncarnation,
+        }),
+      })
+      .select(
+        '_id expiredAt langfuseSampled langfuseDestinationIds langfuseRunId langfuseCentralTraceExportEnabled _managed',
       )
-        throw new ChannelFeedbackAuthorityError();
-      const state = await readChannelFeedbackSourceState(mongoose, mapping, session);
-      const { expiredAt } = state;
-      if (expiredAt && expiredAt.getTime() <= Date.now()) throw new ChannelFeedbackAuthorityError();
-      value = await work(session, expiredAt, state);
-      if (expiredAt && expiredAt.getTime() <= Date.now()) throw new ChannelFeedbackAuthorityError();
-    });
-    return value;
-  } finally {
-    await session.endSession();
+      .read('primary')
+      .lean<{
+        _id: { toString(): string };
+        expiredAt?: Date | null;
+        _managed?: { incarnation?: string };
+        langfuseSampled?: boolean;
+        langfuseDestinationIds?: string[];
+        langfuseRunId?: string;
+        langfuseCentralTraceExportEnabled?: boolean;
+      } | null>(),
+    createResponseScopeModel(mongoose)
+      .find({ _id: { $in: responseScopeKeys(owner, mapping.conversationId) } })
+      .select('expiredAt closed')
+      .read('primary')
+      .lean(),
+  ]);
+  if (
+    !channel ||
+    !message ||
+    anchors.some((anchor) => anchor.closed) ||
+    (expected && digest(expected.channelTarget) !== digest(channel.target))
+  )
+    throw new ChannelFeedbackAuthorityError();
+  if (channel.createdBy !== owner.userId) {
+    const creator = await createResponseScopeModel(mongoose)
+      .findById(responseScopeKeys({ ...owner, userId: channel.createdBy }, '')[0])
+      .select('expiredAt closed')
+      .read('primary')
+      .lean();
+    if (creator?.closed) throw new ChannelFeedbackAuthorityError();
+    if (creator) anchors.push(creator);
   }
+  const deadlines = [message, ...anchors].flatMap((item) =>
+    item.expiredAt == null ? [] : [new Date(item.expiredAt).getTime()],
+  );
+  if (deadlines.some((deadline) => !Number.isFinite(deadline) || deadline <= Date.now()))
+    throw new ChannelFeedbackAuthorityError();
+  return {
+    source: {
+      messageTargetId: String(message._id),
+      channelTarget: channel.target,
+      ...(message._managed?.incarnation && { messageIncarnation: message._managed.incarnation }),
+    },
+    roles: {
+      creator: { ...owner, userId: channel.createdBy },
+      owner,
+      channel,
+      conversationId: mapping.conversationId,
+    },
+    state: {
+      expiredAt: deadlines.length ? new Date(Math.min(...deadlines)) : null,
+      sampled: message.langfuseSampled,
+      destinationIds: message.langfuseDestinationIds,
+      langfuseRunId: message.langfuseRunId,
+      centralTraceExportEnabled: message.langfuseCentralTraceExportEnabled,
+    },
+  };
+}
+
+export async function readChannelFeedbackSourceState(
+  mongoose: typeof import('mongoose'),
+  mapping: ChannelReplyMapping,
+  expected?: ChannelFeedbackSourceRef,
+): Promise<ChannelFeedbackSourceState> {
+  return (await readChannelFeedbackAuthority(mongoose, mapping, expected)).state;
+}
+export async function readChannelFeedbackRetention(
+  mongoose: typeof import('mongoose'),
+  mapping: ChannelReplyMapping,
+): Promise<Date | null> {
+  return (await readChannelFeedbackSourceState(mongoose, mapping)).expiredAt;
+}
+
+/** Request-local authority only; every callback's result is checked again before disclosure. */
+export async function withChannelFeedbackAuthority<T>(
+  mongoose: typeof import('mongoose'),
+  mapping: ChannelReplyMapping,
+  work: (authority: ChannelFeedbackAuthority) => Promise<T>,
+  expected?: ChannelFeedbackSourceRef,
+): Promise<T> {
+  const authority = await readChannelFeedbackAuthority(mongoose, mapping, expected);
+  const result = await work(authority);
+  await readChannelFeedbackAuthority(mongoose, mapping, authority.source);
+  return result;
 }

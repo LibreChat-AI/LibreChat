@@ -1,3 +1,4 @@
+import { isAxiosError } from 'axios';
 import type { AxiosResponse } from 'axios';
 import type {
   ResponseReviewView,
@@ -93,15 +94,33 @@ export function getAgentChannelManifest(
   return request.get(`${endpoints.agentChannels(agentId, channelId)}/manifest`);
 }
 
+/** Safe lifecycle failure: never retains submitted credentials or the original HTTP error. */
+export class ChannelDrainPendingError extends Error {
+  readonly code = 'channel_drain_pending';
+
+  constructor() {
+    super('Channel requests are still draining');
+    this.name = 'ChannelDrainPendingError';
+  }
+}
+
 export function activateAgentChannel(
   agentId: string,
   channelId: string,
   input: ActivateAgentChannel,
 ): Promise<AgentChannel> {
-  return request.patch(endpoints.agentChannels(agentId, channelId), input).catch(() => {
-    // Axios failures carry serialized credentials in config/request; never retain them in query state.
-    throw new Error('Channel activation failed');
-  });
+  return request
+    .patch(endpoints.agentChannels(agentId, channelId), input)
+    .catch((error: unknown) => {
+      if (
+        isAxiosError<{ error?: unknown }>(error) &&
+        error.response?.status === 409 &&
+        error.response.data?.error === 'channel_drain_pending'
+      )
+        throw new ChannelDrainPendingError();
+      // Axios failures carry serialized credentials in config/request; never retain them in query state.
+      throw new Error('Channel activation failed');
+    });
 }
 
 export function disableAgentChannel(agentId: string, channelId: string): Promise<AgentChannel> {

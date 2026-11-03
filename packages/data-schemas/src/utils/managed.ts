@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 
 export const ALLOCATION_PREFIX = '__allocation_';
 const managedQueries = new WeakSet<object>();
@@ -28,8 +28,13 @@ export function createManagedMessageId(): string {
   return `resp_d_${randomUUID().replace(/-/g, '')}`;
 }
 
-export function createManagedConversationId(): string {
-  const id = randomUUID();
+/** A stable seed must be a server-owned operation identity, never a client conversation ID. */
+export function createManagedConversationId(seed?: string): string {
+  const hex = seed === undefined ? undefined : createHash('sha256').update(seed).digest('hex');
+  const id =
+    hex === undefined
+      ? randomUUID()
+      : `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
   // The existing host subagent namespace uses v8+b; durable targets reserve v8+a.
   return `${id.slice(0, 14)}8${id.slice(15, 19)}a${id.slice(20)}`;
 }

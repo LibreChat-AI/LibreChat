@@ -12,7 +12,9 @@ export {
   createResponseCheckpointCleanupGuard,
 } from './methods/responseErasure';
 export { responseReference } from './methods/responseRoot';
+export { channelResponseRequest } from './methods/channelRunResponse';
 export { createResponseCheckpointStorage } from './methods/responseCheckpoint';
+export { ChannelDrainPendingError } from './methods/channelGeneration';
 export type {
   ResponseReference,
   ResponsePersistenceFailure,
@@ -49,6 +51,10 @@ export {
   channelFeedbackReactionIdentity,
   isLaterChannelFeedbackEvent,
   createChannelRunStorage,
+  channelRunFence,
+  channelResponseOwner,
+  channelRunKeyBinding,
+  matchesChannelRunFence,
   createChannelSummaryStorage,
   CHANNEL_SUMMARY_MAX_PRIOR_ROWS,
   ChannelRunConflict,

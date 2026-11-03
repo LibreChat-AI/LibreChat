@@ -1,3 +1,5 @@
+import express from 'express';
+import request from 'supertest';
 import mongoose from 'mongoose';
 import { randomUUID } from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
@@ -28,6 +30,7 @@ import {
 import { createChannelResponseProjection, createChannelResponseRetirement } from './responses';
 import { InMemoryEventTransport } from '~/stream/implementations/InMemoryEventTransport';
 import { normalizeResponseTurnIntent } from '~/agents/responses/turnProjection';
+import { createBackgroundResponseHttpHandlers } from '~/agents/responses/http';
 import { InMemoryJobStore } from '~/stream/implementations/InMemoryJobStore';
 import { createResponseRetirement } from '~/agents/responses/retirement';
 import { enrollAgentExecution } from '~/agents/remote/lifecycle';
@@ -132,6 +135,8 @@ beforeEach(async () => {
     execution: {
       protocol: 'responses',
       responseId: stored.responseId,
+      responseTarget: stored.storageTarget,
+      responseFingerprint: stored.fingerprint,
       requestId: 'run',
       conversationId: stored.conversationId,
       parentMessageId: stored.parentMessageId,
@@ -160,6 +165,7 @@ function fixture() {
     cancel,
   });
   return {
+    service,
     project: createChannelResponseProjection({
       storage,
       readResponse: service.retrieve,
@@ -371,9 +377,10 @@ it.each(['responseId', 'conversationId', 'parentMessageId', 'generationCreatedAt
   (field) =>
     scoped(async () => {
       const f = fixture();
+      const value = field === 'responseId' ? createManagedMessageId() : 'other';
       run.execution = {
         ...run.execution!,
-        [field]: field === 'generationCreatedAt' ? 5678 : 'other',
+        [field]: field === 'generationCreatedAt' ? 5678 : value,
       };
       await expect(f.project(run)).rejects.toMatchObject({ code: 'execution_identity_changed' });
     }),
@@ -474,6 +481,8 @@ it('does not treat a cleanup metadata outage as successful retirement', () =>
     const retireResponse = jest.fn(async () => 'stopped' as const);
     const retire = createChannelResponseRetirement({
       storage: {
+        reserve: storage.reserve,
+        readConversationTarget: storage.readConversationTarget,
         readCleanupIdentity: async () => {
           throw new Error('cleanup store unavailable');
         },
@@ -484,3 +493,108 @@ it('does not treat a cleanup metadata outage as successful retirement', () =>
     await expect(retire(run)).rejects.toThrow('cleanup store unavailable');
     expect(retireResponse).not.toHaveBeenCalled();
   }));
+
+it.each(['expired', 'closed', 'replaced'] as const)(
+  'does not project a %s canonical Root or call the public Response service',
+  (state) =>
+    scoped(async () => {
+      const readResponse = jest.fn();
+      const cancelResponse = jest.fn();
+      const project = createChannelResponseProjection({ storage, readResponse, cancelResponse });
+      if (state === 'expired') {
+        await mongoose.models.StoredResponse.collection.updateOne(
+          { responseId: stored.responseId },
+          { $set: { expiredAt: new Date(0) } },
+        );
+      } else if (state === 'closed') {
+        await createMethods(mongoose).prepareUserResponseErasure(owner);
+      } else {
+        await replaceCanonicalRoot();
+        expect(await storage.read(owner, stored.responseId)).not.toBeNull();
+      }
+      await expect(project(run)).rejects.toMatchObject({ code: 'execution_identity_changed' });
+      expect(readResponse).not.toHaveBeenCalled();
+      expect(cancelResponse).not.toHaveBeenCalled();
+    }),
+);
+
+async function replaceCanonicalRoot() {
+  const root = await mongoose.models.StoredResponse.collection.findOne({
+    responseId: stored.responseId,
+  });
+  if (!root) throw new Error('Missing fixture Root');
+  const id = new mongoose.Types.ObjectId();
+  const incarnation = randomUUID();
+  await mongoose.models.StoredResponse.collection.deleteOne({ _id: root._id });
+  await mongoose.models.StoredResponse.collection.insertOne({
+    ...root,
+    _id: id,
+    _managed: { ...root._managed, parentId: String(id), incarnation },
+    storageTarget: { ...root.storageTarget, id: String(id), incarnation },
+  });
+}
+
+it('refuses to retire a replacement physical Root with the same logical cleanup binding', () =>
+  scoped(async () => {
+    run.cancellationRequested = true;
+    run.errorCode = 'channel_authority_changed';
+    await replaceCanonicalRoot();
+    const jobs = {
+      getJob: jest.fn(async () => undefined),
+      abortJob: jest.fn(),
+      finishProviderTerminalPersistence: jest.fn(),
+    };
+    const retire = createChannelResponseRetirement({
+      storage,
+      recovery: { recoverResponse: jest.fn() },
+      retireResponse: createResponseRetirement({ storage, jobs }),
+    });
+    await expect(retire(run)).rejects.toThrow('Response retirement identity unavailable');
+    expect(jobs.abortJob).not.toHaveBeenCalled();
+    expect((await storage.read(owner, stored.responseId))?.cancellationRequestedAt).toBeUndefined();
+  }));
+
+it.each(['retrieve', 'cancel'] as const)(
+  'keeps the authenticated Root through HTTP %s when a same-ID replacement appears',
+  (operation) =>
+    scoped(async () => {
+      const f = fixture();
+      const ordinary = jest.fn((_req, res) => {
+        res.sendStatus(418);
+      });
+      const onError = jest.fn();
+      const handlers = createBackgroundResponseHttpHandlers({
+        service: () => f.service,
+        ordinary: { create: ordinary, retrieve: ordinary },
+        onError,
+      });
+      const app = express();
+      app.use((req, _res, next) => {
+        Object.assign(req, {
+          user: { id: owner.userId, tenantId: owner.tenantId },
+          preparedResponseTarget: {
+            ...owner,
+            responseId: stored.responseId,
+            storageTarget: stored.storageTarget,
+          },
+        });
+        next();
+      });
+      app.use(async (_req, _res, next) => {
+        await replaceCanonicalRoot();
+        next();
+      });
+      app.get('/responses/:id', handlers.retrieve);
+      app.post('/responses/:id/cancel', handlers.cancel);
+      const path = `/responses/${stored.responseId}`;
+      const response =
+        operation === 'retrieve'
+          ? await request(app).get(path)
+          : await request(app).post(`${path}/cancel`).send({});
+      expect(response.status).toBe(404);
+      expect(response.body).toMatchObject({ error: { code: 'response_not_found' } });
+      expect(ordinary).not.toHaveBeenCalled();
+      expect(f.cancel).not.toHaveBeenCalled();
+      expect(onError).not.toHaveBeenCalled();
+    }),
+);

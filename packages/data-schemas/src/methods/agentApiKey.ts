@@ -1,4 +1,4 @@
-import type { ClientSession } from 'mongoose';
+import type { DurableStorageConfig } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
 import type {
   AgentApiKeyCreateResult,
@@ -7,10 +7,9 @@ import type {
   IAgentApiKey,
   AgentApiKeyBinding,
 } from '~/types';
-import { startRequiredTransactionSession } from '~/utils/transactions';
-import { getTenantId, SYSTEM_TENANT_ID } from '~/config/tenantContext';
-import { prepareChannelOwnerAdmission } from './channelOwner';
+import { getTenantId, SYSTEM_TENANT_ID, tenantStorage } from '~/config/tenantContext';
 import { createChannelIndexGate } from './channelIndexes';
+import { createManagedChannelKey } from './channelKey';
 import { hashToken, getRandomValues } from '~/crypto';
 import logger from '~/config/winston';
 
@@ -23,7 +22,10 @@ async function keyDigest(key: string, bound: boolean): Promise<string> {
   return bound ? `bound-v1:${digest}` : digest;
 }
 
-export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
+export function createAgentApiKeyMethods(
+  mongoose: typeof import('mongoose'),
+  getDurableStorageConfig: () => Promise<Partial<DurableStorageConfig>> = async () => ({}),
+): {
   createAgentApiKey: (data: AgentApiKeyCreateData) => Promise<AgentApiKeyCreateResult>;
   validateAgentApiKey: (apiKey: string) => Promise<{
     userId: Types.ObjectId;
@@ -79,29 +81,18 @@ export function createAgentApiKeyMethods(mongoose: typeof import('mongoose')): {
         ...(data.binding ? { binding: data.binding } : {}),
         ...(data.binding && tenantId ? { tenantId } : {}),
       };
-      const persist = async (session?: ClientSession): Promise<IAgentApiKey> => {
-        const [created] = await AgentApiKey.create([record], session ? { session } : {});
-        return created;
-      };
       let apiKeyDoc: IAgentApiKey;
       if (data.binding) {
         await ensureBoundKeyIndexes();
-        const admit = await prepareChannelOwnerAdmission(mongoose, {
-          userId: String(data.userId),
-          tenantId,
-        });
-        const session = await startRequiredTransactionSession(mongoose);
-        try {
-          const created = await session.withTransaction(async () => {
-            if (!(await admit(session))) throw new Error('Bound-key owner unavailable');
-            return persist(session);
-          });
-          if (!created) throw new Error('Bound-key write did not commit');
-          apiKeyDoc = created;
-        } finally {
-          await session.endSession();
-        }
-      } else apiKeyDoc = await persist();
+        // System callers resolve the real owner partition before allocating any private data.
+        apiKeyDoc = await tenantStorage.run({ ...tenantStorage.getStore(), tenantId }, async () =>
+          createManagedChannelKey(
+            mongoose,
+            { ...record, binding: data.binding! },
+            await getDurableStorageConfig(),
+          ),
+        );
+      } else apiKeyDoc = await AgentApiKey.create(record);
 
       return {
         id: String(apiKeyDoc._id),

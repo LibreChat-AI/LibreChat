@@ -2,6 +2,8 @@ import { Schema } from 'mongoose';
 import type { ChannelExternalIdentity } from 'librechat-data-provider';
 import type { Model } from 'mongoose';
 import { applyTenantIsolation } from './plugins/tenantIsolation';
+import { applyManagedRegistry } from './plugins/registry';
+import { applyChannelStorage } from './plugins/managed';
 
 export interface ChannelIdentityRecord {
   tenantId: string;
@@ -15,6 +17,36 @@ export interface ChannelIdentityRecord {
   userId?: string;
   accountLabel?: string;
 }
+
+// Every field explicitly chooses private erasure or retained coordination metadata.
+const privateFields: Record<keyof ChannelIdentityRecord, boolean> = {
+  tenantId: false,
+  identity: false,
+  linkId: false,
+  revision: false,
+  state: false,
+  ticketHash: true,
+  ticketExpiresAtMs: false,
+  expiresAtMs: false,
+  userId: true,
+  accountLabel: true,
+};
+const privateIdentityFields: Record<keyof ChannelExternalIdentity, boolean> = {
+  tenantId: false,
+  channelId: false,
+  channelRevision: false,
+  teamId: false,
+  agentId: false,
+  externalUserId: true,
+};
+export const CHANNEL_IDENTITY_PRIVATE_FIELDS: readonly string[] = [
+  ...Object.entries(privateFields)
+    .filter(([, privateField]) => privateField)
+    .map(([field]) => field),
+  ...Object.entries(privateIdentityFields)
+    .filter(([, privateField]) => privateField)
+    .map(([field]) => `identity.${field}`),
+];
 
 export function createChannelIdentityModel(
   mongoose: typeof import('mongoose'),
@@ -52,6 +84,9 @@ export function createChannelIdentityModel(
   schema.index({ tenantId: 1, linkId: 1 }, { unique: true });
   schema.index({ tenantId: 1, ticketHash: 1 }, { unique: true });
   schema.index({ tenantId: 1, userId: 1 });
+  schema.index({ linkId: 1 });
+  applyManagedRegistry(schema);
+  applyChannelStorage(schema);
   applyTenantIsolation(schema);
   return (
     mongoose.models.ChannelIdentity ??

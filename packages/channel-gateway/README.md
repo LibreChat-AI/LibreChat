@@ -32,13 +32,15 @@ Configure gateway feature and signature policy through the YAML fields above; pr
 
 Native Stop remains available for an authenticated existing session even when optional native emission is disabled. The application accepts bounded future clock skew and durably pins each click's first observed target, lease epoch and cutoff, including no target. A retry cannot advance its cutoff or stop a newer run. Past occurrence times remain unchanged; clock skew does not establish a globally exact event order.
 
+Cancellation survives a gateway crash before the first Agent request. Recovery closes that request's canonical Responses slot, so a delayed gateway retry cannot start it again.
+
 ## Delivery recovery
 
 The gateway preserves each frozen delivery operation and its receipt. A required operation whose provider result is unknown holds its actor lane: retrying blindly could post the same answer twice. Stopping a worker or requesting cancellation does not prove whether Slack accepted an earlier request.
 
 ### Reconcile a verified provider result
 
-1. Pause gateway processing for the affected channel while investigating. Keep the channel enabled and preserve its actor link and source authority; disabling these is not a recovery bypass.
+1. Pause gateway processing for the affected channel while investigating. The following normal claim path requires current channel, actor-link and source authority. If these have already been revoked, use the receipt-only recovery path below.
 2. Inspect the frozen run plan and retained receipt. Verify in the provider that the exact operation reached the intended channel or thread. Record its message key or file ID, matching the retained attempt and any upload checkpoint. If the result cannot be verified, leave the receipt unknown and the lane held.
 3. After the old lease expires, use `POST /api/channels/service/:channelId/runs/claim` with `{ "owner": "<dedicated recovery owner>" }`, normal private service authentication and tenant binding. Verify that the returned run ID is the run being investigated; claims select eligible work and do not take a target run ID. Use the returned current fence, renewing it through `POST /renew` as needed. An expired or replaced worker's fence cannot reconcile the run.
 4. Submit the confirmed receipt through the private channel API. These endpoints confirm existing attempts; they do not send messages, replace the frozen plan, reset attempts or accept a retryable outcome.
@@ -49,7 +51,13 @@ For a delivery operation, `POST /delivery/reconcile`:
 
 ```json
 {
-  "fence": { "runId": "<run ID>", "owner": "<current recovery owner>", "epoch": 1 },
+  "fence": {
+    "runId": "<run ID>",
+    "targetId": "<physical Run ID>",
+    "incarnation": "<retained incarnation>",
+    "owner": "<current recovery owner>",
+    "epoch": 1
+  },
   "receipt": {
     "operationId": "<frozen operation ID>",
     "outcome": "confirmed",
@@ -64,6 +72,33 @@ Replace every illustrative value with the actual current fence and retained atte
 For a progress update, `POST /progress/reconcile` with the current `fence`, the retained progress `revision`, and a `receipt` containing `outcome: "confirmed"`, the retained `attempts` and verified `externalMessageKey`. The message identity remains fixed across progress revisions.
 
 Once every required delivery operation is confirmed, `POST /commit` with the current `fence` to complete delivery and release the actor lane. Resume normal gateway processing afterward. If any required result remains uncertain, keep the run held rather than resending or recreating it. Optional exhausted effects follow the gateway's bounded recovery policy and do not justify replaying a required answer.
+
+### Reconcile after authority has been revoked
+
+Disabling the feature or channel, revoking an actor link, or starting account erasure prevents private delivery and execution. It must still be possible to confirm an existing provider attempt. The receipt endpoints therefore accept the private service token and exact tenant even after revocation, and return metadata-only acknowledgments. They cannot send a message, read an answer, obtain a credential or start a model run.
+
+1. Obtain the retained Run's physical identity from its original fence or its `_managed.parentId` and `_managed.incarnation`. Do not recreate the Run or change its stored authority. With the normal service bearer and tenant header, `POST /api/channels/service/:channelId/runs/:runId/receipts/claim`:
+
+   ```json
+   {
+     "target": {
+       "runId": "<run ID>",
+       "targetId": "<physical Run ID>",
+       "incarnation": "<retained incarnation>"
+     },
+     "owner": "<dedicated recovery owner>"
+   }
+   ```
+
+2. The response contains the current fence, provider destination and retained receipt identities and attempts. A fresh cleanup claim turns abandoned in-flight attempts into unknown outcomes; it never retries them. Another recovery owner's lease must expire before takeover. Repeating the claim with the same owner repairs an interrupted grant and renews its lease. If the disposition is already `stopped`, the handoff is complete and no further receipt mutation is needed; optional unknown effects do not retain a recovery lease.
+3. Verify the exact attempt in Slack, then use `/delivery/reconcile` or `/progress/reconcile` above with the returned fence. A successful confirmation returns `{ "confirmed": true }`. Wrong attempts, changed provider identities, foreign destinations and stale physical fences are rejected.
+4. Repeat `/receipts/claim`. A `disposition` of `stopped` means canonical execution retirement and the delivery/cursor handoff are complete. `pending` retains the actor slot: receipt confirmation alone does not prove provider retirement, and canonical retirement alone does not resolve a required unknown send. The application's existing cleanup worker also completes this handoff once the recovery lease expires. Do not use the normal `/commit` endpoint to bypass revoked authority.
+
+If a required result cannot be verified, preserve its unknown receipt and held slot. Optional unknown effects keep their existing best-effort policy.
+
+### Re-enable a disabled connection
+
+Reactivation waits for previous requests to stop and their delivery outcomes to be known. If activation reports that requests are still draining, allow cleanup to finish; reconcile any uncertain required Slack delivery using the revoked-authority procedure above, then retry activation. Reactivation preserves processed-event receipts, chat history and Stop selections, so an old event or retried Stop click cannot start or cancel new work. Per-user connections require a fresh account link after reactivation.
 
 ## Transport adapter boundary
 

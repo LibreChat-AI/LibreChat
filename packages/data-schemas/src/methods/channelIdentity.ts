@@ -1,15 +1,8 @@
-import type { ChannelExternalIdentity } from 'librechat-data-provider';
-import type { ClientSession } from 'mongoose';
+import type { ChannelExternalIdentity, DurableStorageConfig } from 'librechat-data-provider';
 import type { ChannelIdentityRecord } from '~/models/channelIdentity';
-import {
-  assertChannelTenant,
-  initializeChannelScope,
-  touchChannelAuthority,
-  lockChannelScope,
-} from './channelScope';
-import { startRequiredTransactionSession } from '~/utils/transactions';
-import { prepareChannelOwnerAdmission } from './channelOwner';
+import { writeChannelIdentity } from './channelIdentityWrite';
 import { createChannelIndexGate } from './channelIndexes';
+import { assertChannelTenant } from './channelScope';
 export type { ChannelIdentityRecord } from '~/models/channelIdentity';
 
 export interface ChannelIdentityStorage {
@@ -17,7 +10,7 @@ export interface ChannelIdentityStorage {
   readChannelTicket(tenantId: string, ticketHash: string): Promise<ChannelIdentityRecord | null>;
   readChannelLink(tenantId: string, linkId: string): Promise<ChannelIdentityRecord | null>;
   listChannelLinks(tenantId: string, userId: string): Promise<ChannelIdentityRecord[]>;
-  /** Full private replacement; every state joins the open channel fence and exact identity CAS. */
+  /** Exact private replacement; the first owner is immutable and reissue selects a fresh link root. */
   saveChannelIdentity(
     record: ChannelIdentityRecord,
     expectedRevision: string | null,
@@ -33,6 +26,7 @@ export interface ChannelIdentityStorage {
 
 export function createChannelIdentityStorage(
   mongoose: typeof import('mongoose'),
+  getDurableConfig: () => Promise<Partial<DurableStorageConfig>> = async () => ({}),
 ): ChannelIdentityStorage {
   const model = () => mongoose.model<ChannelIdentityRecord>('ChannelIdentity');
   const ensureIndexes = createChannelIndexGate(() => [model()]);
@@ -73,87 +67,7 @@ export function createChannelIdentityStorage(
         (['accepted', 'active'].includes(record.state) && !record.userId)
       )
         throw new TypeError('Channel account identity required');
-      // This API replaces a complete private record; omitted optional fields are cleared.
-      const fields: Omit<ChannelIdentityRecord, 'tenantId' | 'linkId'> = {
-        identity: record.identity,
-        revision: record.revision,
-        state: record.state,
-        ticketHash: record.ticketHash,
-        ticketExpiresAtMs: record.ticketExpiresAtMs,
-        expiresAtMs: record.expiresAtMs,
-        ...(record.userId ? { userId: record.userId } : {}),
-        ...(record.accountLabel != null ? { accountLabel: record.accountLabel } : {}),
-      };
-      const absent = {
-        ...(!record.userId ? { userId: '' } : {}),
-        ...(record.accountLabel == null ? { accountLabel: '' } : {}),
-      };
-      const persist = async (session: ClientSession): Promise<boolean> => {
-        if (expectedRevision === null) {
-          await model().create([{ tenantId: record.tenantId, linkId: record.linkId, ...fields }], {
-            session,
-          });
-          return true;
-        }
-        const result = await model().updateOne(
-          {
-            tenantId: record.tenantId,
-            linkId: record.linkId,
-            revision: expectedRevision,
-            'identity.tenantId': record.identity.tenantId,
-            'identity.channelId': record.identity.channelId,
-            'identity.teamId': record.identity.teamId,
-            'identity.externalUserId': record.identity.externalUserId,
-            'identity.agentId': record.identity.agentId,
-          },
-          { $set: fields, ...(Object.keys(absent).length ? { $unset: absent } : {}) },
-          { session, runValidators: true },
-        );
-        return result.modifiedCount === 1;
-      };
-      try {
-        // Every full save can create/replace private data, including revoked records.
-        await initializeChannelScope(mongoose, record.tenantId, record.identity.channelId);
-        const admit = record.userId
-          ? await prepareChannelOwnerAdmission(mongoose, {
-              userId: record.userId,
-              tenantId: record.tenantId === '_' ? undefined : record.tenantId,
-            })
-          : undefined;
-        const session = await startRequiredTransactionSession(mongoose);
-        try {
-          let saved = false;
-          await session.withTransaction(async () => {
-            if (admit && !(await admit(session))) {
-              saved = false;
-              return;
-            }
-            if (
-              !(await touchChannelAuthority(
-                mongoose,
-                {
-                  tenantId: record.tenantId,
-                  channelId: record.identity.channelId,
-                  agentId: record.identity.agentId,
-                  channelRevision: record.identity.channelRevision,
-                  teamId: record.identity.teamId,
-                },
-                session,
-              ))
-            ) {
-              saved = false;
-              return;
-            }
-            saved = await persist(session);
-          });
-          return saved;
-        } finally {
-          await session.endSession();
-        }
-      } catch (error) {
-        if (error instanceof mongoose.mongo.MongoServerError && error.code === 11000) return false;
-        throw error;
-      }
+      return writeChannelIdentity(mongoose, record, expectedRevision, await getDurableConfig());
     },
 
     async revokeChannelIdentity(owner, revision) {
@@ -164,49 +78,45 @@ export function createChannelIdentityStorage(
         )
       )
         throw new TypeError('Channel identity revocation requires owner and revision');
+      if (revision === owner.revision)
+        throw new TypeError('Channel identity revision must advance');
       const filter = {
         tenantId: owner.tenantId,
         userId: owner.userId,
         linkId: owner.linkId,
         revision: owner.revision,
       };
-      const record = await model().findOne(filter).select('identity.channelId').lean();
-      if (!record) return false;
-      await initializeChannelScope(mongoose, owner.tenantId, record.identity.channelId);
-      const session = await startRequiredTransactionSession(mongoose);
-      try {
-        let matched = false;
-        await session.withTransaction(async () => {
-          await lockChannelScope(mongoose, owner.tenantId, record.identity.channelId, session);
-          const result = await model().updateOne(
-            filter,
-            { $set: { state: 'revoked', revision } },
-            { session, runValidators: true },
-          );
-          matched = result.matchedCount === 1;
-        });
-        return matched;
-      } finally {
-        await session.endSession();
-      }
+      const record = await model()
+        .findOne(filter)
+        .select('_id _managed')
+        .read('primary')
+        .lean<ChannelIdentityRecord & { _id: unknown; _managed: { incarnation: string } }>();
+      if (!record?._managed) return false;
+      const result = await model().updateOne(
+        {
+          ...filter,
+          _id: record._id,
+          '_managed.incarnation': record._managed.incarnation,
+          '_managed.phase': 'published',
+        },
+        { $set: { state: 'revoked', revision } },
+        { upsert: false, runValidators: true },
+      );
+      return result.matchedCount === 1;
     },
 
     async revokeChannelIdentities(tenantId, channelId, revision) {
       assertChannelTenant(tenantId);
-      await initializeChannelScope(mongoose, tenantId, channelId);
-      const session = await startRequiredTransactionSession(mongoose);
-      try {
-        await session.withTransaction(async () => {
-          await lockChannelScope(mongoose, tenantId, channelId, session);
-          await model().updateMany(
-            { tenantId, 'identity.channelId': channelId, state: { $ne: 'revoked' } },
-            { $set: { state: 'revoked', revision } },
-            { session, runValidators: true },
-          );
-        });
-      } finally {
-        await session.endSession();
-      }
+      await model().updateMany(
+        {
+          tenantId,
+          'identity.channelId': channelId,
+          '_managed.phase': 'published',
+          state: { $ne: 'revoked' },
+        },
+        { $set: { state: 'revoked', revision } },
+        { upsert: false, runValidators: true },
+      );
     },
   };
 }

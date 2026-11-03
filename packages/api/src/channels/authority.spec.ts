@@ -5,17 +5,6 @@ import { Readable } from 'node:stream';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { createHash, createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import {
-  createModels,
-  createMethods,
-  createChannelIdentityStorage,
-  createChannelRunStorage,
-  createResponseStorage,
-  createManagedMessageId,
-  hashToken,
-  tenantStorage,
-  runAsSystem,
-} from '@librechat/data-schemas';
-import {
   PermissionBits,
   Permissions,
   PermissionTypes,
@@ -26,6 +15,20 @@ import {
   CHANNEL_DELIVERY_TEXT_MAX_CHARS,
   CHANNEL_DELIVERY_PRESENTATION_MAX_BYTES,
 } from 'librechat-data-provider';
+import {
+  channelRunFence,
+  channelRunKeyBinding,
+  createModels,
+  createMethods,
+  createChannelIdentityStorage,
+  createChannelRunStorage,
+  ChannelDrainPendingError,
+  createResponseStorage,
+  createManagedMessageId,
+  hashToken,
+  tenantStorage,
+  runAsSystem,
+} from '@librechat/data-schemas';
 import type {
   ChannelRunAdmission,
   ChannelIdentityResult,
@@ -37,8 +40,10 @@ import type { IUser, ChannelRunRecord } from '@librechat/data-schemas';
 import type { ChannelResponseCredentialDependencies } from './credentials';
 import type { BackgroundResponsesHost } from '~/agents/responses/host';
 import type { ApiKeyAuthRequest } from '~/apiKeys/middleware';
+import type { ServerRequest } from '~/types/http';
 import { createChannelAuthority, channelExternalIdentity } from './authority';
 import { createChannelResponseCredentials } from './credentials';
+import { createChannelResponseCancellation } from './responses';
 import { createRequireApiKeyAuth } from '~/apiKeys/middleware';
 import { createChannelArtifactService } from './artifacts';
 import { ChannelExecutionError } from './execution';
@@ -62,6 +67,7 @@ let summarize: jest.Mock<Promise<ChannelRunSummary>, [ChannelRunRecord, ChannelR
 let responseCredential: jest.Mock<Promise<string>, [ChannelRunRecord]>;
 let app: express.Express;
 let fakeNow: number | undefined;
+let channelEnabled: boolean;
 let interactive: Pick<BackgroundResponsesHost, 'readInteractiveReview' | 'submitInteractiveReview'>;
 const fixtureResponseId = (label: string) =>
   'resp_d_' + createHash('sha256').update(label).digest('hex').slice(0, 32);
@@ -131,6 +137,7 @@ beforeEach(async () => {
   acl = new Map(users.map((user) => [user.id, PermissionBits.VIEW]));
   invoked = [];
   fakeNow = undefined;
+  channelEnabled = true;
   advanceError = undefined;
   retired = [];
   retirement = 'stopped';
@@ -153,7 +160,7 @@ beforeEach(async () => {
   authority = createChannelAuthority({
     channels: db,
     identityStorage: createChannelIdentityStorage(mongoose),
-    getConfig: async () => ({ enabled: true }),
+    getConfig: async () => ({ enabled: channelEnabled }),
     findUser: (id) => db.findUser({ _id: id }),
     getRole: (name) => models.Role.findOne({ name }),
     isPrincipalActive: async () => true,
@@ -163,7 +170,7 @@ beforeEach(async () => {
   const handlers = createChannelHandlers({
     db,
     serviceToken: () => token,
-    config: async () => ({ enabled: true }),
+    config: async () => ({ enabled: channelEnabled }),
     getAgent: async (id) => ({ id }),
     verifySlackToken: async () => null,
     logError: jest.fn(),
@@ -195,6 +202,11 @@ beforeEach(async () => {
     now: () => fakeNow ?? Date.now(),
     interactive,
     responseCredential,
+    responseCancellation: createChannelResponseCancellation({
+      storage: createResponseStorage(mongoose),
+      recovery: storage,
+      now: () => fakeNow ?? Date.now(),
+    }),
     storage,
     artifacts: createChannelArtifactService({
       readArtifacts: db.readResponseArtifacts,
@@ -210,6 +222,7 @@ beforeEach(async () => {
         }),
     }),
     guard: handlers.service,
+    receiptGuard: handlers.receiptService,
     resolvePrincipal: authority.resolvePrincipal,
     summarize: (run, snapshot) => summarize(run, snapshot),
     publicBaseUrl: 'http://127.0.0.1:3088/base',
@@ -221,7 +234,7 @@ beforeEach(async () => {
         await reserveFixtureResponse(run, responseId);
         const bound = await storage.bindResponse(
           tenantId,
-          { runId: run.runId, owner: run.leaseOwner!, epoch: run.leaseEpoch },
+          channelRunFence(run),
           responseId,
           Date.now(),
         );
@@ -239,6 +252,7 @@ beforeEach(async () => {
   app.use(express.json());
   app.post('/service/:channelId/runs', runs.admit);
   app.post('/service/:channelId/runs/claim', runs.claim);
+  app.post('/service/:channelId/runs/:runId/receipts/claim', runs.claimReceiptRecovery);
   app.post('/service/:channelId/runs/stop-thread', runs.stopThread);
   app.post('/service/:channelId/runs/:runId/yield', runs.yieldLease);
   app.post('/service/:channelId/runs/:runId/renew', runs.renew);
@@ -308,12 +322,7 @@ async function bindFixtureResponse(run: ChannelRunRecord, responseId: string) {
     text: 'answer',
     attachments: [],
   });
-  return storage.bindResponse(
-    tenantId,
-    { runId: run.runId, owner: run.leaseOwner!, epoch: run.leaseEpoch },
-    responseId,
-    Date.now(),
-  );
+  return storage.bindResponse(tenantId, channelRunFence(run), responseId, Date.now());
 }
 
 function responseCredentials(overrides: Partial<ChannelResponseCredentialDependencies> = {}) {
@@ -345,6 +354,46 @@ function responseCredentials(overrides: Partial<ChannelResponseCredentialDepende
   });
 }
 
+it.each(['targetId', 'incarnation'] as const)(
+  'rejects a foreign physical %s before preparation or execution',
+  (field) =>
+    scoped(async () => {
+      await link('U1', users[0]);
+      const admitted = await post('runs').send(event()).expect(201);
+      const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+      const wrong = {
+        ...claimed.body.fence,
+        [field]:
+          field === 'targetId'
+            ? '000000000000000000000002'
+            : '00000000-0000-4000-8000-000000000002',
+      };
+      for (const action of ['response/prepare', 'advance'])
+        await post(`runs/${admitted.body.runId}/${action}`)
+          .send({ fence: wrong })
+          .expect(409, { error: 'stale_fence' });
+      expect(responseCredential).not.toHaveBeenCalled();
+      expect(invoked).toHaveLength(0);
+    })(),
+);
+it.each(['targetId', 'incarnation'] as const)(
+  'requires the physical %s in every worker capability',
+  (field) =>
+    scoped(async () => {
+      await link('U1', users[0]);
+      const admitted = await post('runs').send(event()).expect(201);
+      const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+      const incomplete = Object.fromEntries(
+        Object.entries(claimed.body.fence).filter(([key]) => key !== field),
+      );
+      await post(`runs/${admitted.body.runId}/response/prepare`)
+        .send({ fence: incomplete })
+        .expect(400, { error: 'invalid_run_fence' });
+      expect(responseCredential).not.toHaveBeenCalled();
+      expect(invoked).toHaveLength(0);
+    })(),
+);
+
 it(
   'provisions one encrypted, run-bound credential under concurrent gateway retries',
   scoped(async () => {
@@ -366,7 +415,7 @@ it(
     expect(await db.listAgentApiKeys(users[0].id)).toHaveLength(1);
     expect(await db.validateAgentApiKey(keys[0])).toBeNull();
     const validated = await db.validateBoundAgentApiKey(keys[0]);
-    expect(validated?.binding).toEqual({ kind: 'channel_run', id: `channel/${run.runId}` });
+    expect(validated?.binding).toEqual(channelRunKeyBinding(run));
     // The pre-binding validator used the raw-token hash. An old replica must not admit this key.
     expect(
       await mongoose.models.AgentApiKey.findOne({ keyHash: await hashToken(keys[0]) }),
@@ -393,6 +442,8 @@ it(
     await post(`${route}/bind`)
       .send({ fence: claimed.body.fence, responseId: 'resp_missing' })
       .expect(409);
+    const plannedConversationId = (await storage.read(tenantId, 'channel', admitted.body.runId))!
+      .execution!.conversationId;
     const reserved = await createResponseStorage(mongoose).reserve({
       tenantId,
       userId: users[0].id,
@@ -401,7 +452,7 @@ it(
       fingerprint: 'request',
       agentId: 'agent',
       requestJSON: JSON.stringify(prepared.body.request),
-      conversationId: 'canonical-conversation',
+      conversationId: plannedConversationId,
       parentMessageId: '00000000-0000-0000-0000-000000000000',
     });
     if (!reserved.ok) throw new Error('Reservation failed');
@@ -412,7 +463,7 @@ it(
     expect(run?.execution).toMatchObject({
       protocol: 'responses',
       responseId: reserved.record.responseId,
-      conversationId: 'canonical-conversation',
+      conversationId: plannedConversationId,
     });
     await storage.saveSnapshot(
       tenantId,
@@ -440,61 +491,56 @@ it(
   }),
 );
 
-it(
-  'holds cancelled unbound credentials and recovers a late canonical response without execution',
-  scoped(async () => {
-    await link('U1', users[0]);
-    const admitted = await post('runs').send(event()).expect(201);
-    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
-    const route = `runs/${admitted.body.runId}/response`;
-    await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
-    await storage.attachResponseCredential(
-      tenantId,
-      claimed.body.fence,
-      { apiKeyId: 'issued-key', encryptedApiKey: 'ciphertext' },
-      Date.now(),
-    );
-    await post(`runs/${admitted.body.runId}/cancel`)
-      .send({ actor: event().actor, revision: 'revision-1' })
-      .expect(202);
-    await post(`${route}/prepare`)
-      .send({ fence: claimed.body.fence })
-      .expect(409, { error: 'response_cancellation_pending' });
-    expect(responseCredential).not.toHaveBeenCalled();
-    const reserved = await createResponseStorage(mongoose).reserve({
-      tenantId,
-      userId: users[0].id,
-      responseId: createManagedMessageId(),
-      requestKey: `channel:${admitted.body.runId}`,
-      sourceKeyId: 'issued-key',
-      fingerprint: 'late-request',
-      agentId: 'agent',
-      requestJSON: JSON.stringify({
-        model: 'agent',
-        input: event().input,
-        background: true,
-        store: true,
-      }),
-      conversationId: 'late-canonical-conversation',
-      parentMessageId: '00000000-0000-0000-0000-000000000000',
-    });
-    if (!reserved.ok) throw new Error('Reservation failed');
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const prepared = await post(`${route}/prepare`)
-        .send({ fence: claimed.body.fence })
-        .expect(200);
-      expect(prepared.body.responseId).toBe(reserved.record.responseId);
-    }
-    expect(responseCredential).toHaveBeenCalledTimes(2);
-    expect(responseCredential.mock.calls[0][0]).toMatchObject({ cancellationRequested: true });
-    expect(invoked).toHaveLength(0);
-    expect(
-      (await storage.read(tenantId, 'channel', admitted.body.runId))?.snapshot,
-    ).toBeUndefined();
-    expect(
-      await createResponseStorage(mongoose).read(reserved.record, reserved.record.responseId),
-    ).toEqual(reserved.record);
-  }),
+it.each([false, true])(
+  'prepares native Stop through the canonical request slot without waiting for a first POST: existing=%s',
+  (existing) =>
+    scoped(async () => {
+      await link('U1', users[0]);
+      const admitted = await post('runs').send(event()).expect(201);
+      const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+      const route = `runs/${admitted.body.runId}/response`;
+      const prepared = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+      const credentials = responseCredentials();
+      const key = await credentials.provision(prepared);
+      responseCredential.mockImplementation(credentials.provision);
+      const saved = (await storage.read(tenantId, 'channel', admitted.body.runId))!;
+      const existingId = createManagedMessageId();
+      if (existing) await reserveFixtureResponse(saved, existingId);
+      await post('runs/stop-thread')
+        .send({
+          actor: event().actor,
+          externalChannelId: event().externalChannelId,
+          externalThreadKey: event().externalThreadKey,
+          eventAt: Date.now(),
+        })
+        .expect(202, { cancellationRequested: true });
+      let selected: string | undefined;
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const result = await post(`${route}/prepare`)
+          .send({ fence: claimed.body.fence })
+          .expect(200);
+        expect(result.body.apiKey).toBe(key);
+        expect(result.body.responseId).toBeDefined();
+        if (selected) expect(result.body.responseId).toBe(selected);
+        selected = result.body.responseId;
+        if (existing) expect(selected).toBe(existingId);
+        const canonical = await createResponseStorage(mongoose).read(
+          { userId: users[0].id, tenantId },
+          selected!,
+        );
+        expect(canonical).toMatchObject({
+          sourceKeyId: saved.execution!.apiKeyId,
+          requestKey: `channel:${saved.runId}`,
+        });
+        if (!existing) expect(canonical?.cancellationRequestedAt).toEqual(expect.any(Number));
+        expect(canonical?.generationCreatedAt).toBeUndefined();
+      }
+      expect(responseCredential).toHaveBeenCalledTimes(2);
+      expect(invoked).toHaveLength(0);
+      expect(
+        (await storage.read(tenantId, 'channel', saved.runId))!.execution?.responseTarget,
+      ).toBeDefined();
+    })(),
 );
 
 it.each(['per_user', 'shared'] as const)(
@@ -511,21 +557,10 @@ it.each(['per_user', 'shared'] as const)(
       const admitted = await post('runs').send(event()).expect(201);
       const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
       const base = `runs/${admitted.body.runId}`;
-      const prepared = await post(`${base}/response/prepare`)
-        .send({ fence: claimed.body.fence })
-        .expect(200);
+      await post(`${base}/response/prepare`).send({ fence: claimed.body.fence }).expect(200);
       const responseId = createManagedMessageId();
-      await createResponseStorage(mongoose).reserve({
-        tenantId,
-        userId: users[0].id,
-        responseId,
-        requestKey: prepared.body.requestKey,
-        fingerprint: 'request',
-        agentId: 'agent',
-        requestJSON: JSON.stringify(prepared.body.request),
-        conversationId: 'native-conversation',
-        parentMessageId: 'root',
-      });
+      const preparedRun = (await storage.read(tenantId, 'channel', admitted.body.runId))!;
+      await reserveFixtureResponse(preparedRun, responseId);
       await post(`${base}/response/bind`)
         .send({ fence: claimed.body.fence, responseId })
         .expect(200);
@@ -958,8 +993,13 @@ it(
     await post(route).send({ fence: claimed.body.fence }).expect(409);
     expect((await storage.read(tenantId, 'channel', run.runId))?.leaseOwner).toBeUndefined();
     expect(invoked).toHaveLength(0);
-    const lane = await models.ChannelLane.findOne({ tenantId, laneId: run.laneId }).lean();
-    expect(lane?.activeRunId).toBe(run.runId);
+    const lane = await models.ChannelLane.findOne({
+      tenantId,
+      channelId: run.channelId,
+      kind: 'control',
+    }).lean();
+    if (lane?.kind !== 'control') throw new Error('Expected an actor control');
+    expect(lane.assignment?.run.runId).toBe(run.runId);
   }),
 );
 async function link(actor: string, user: IUser) {
@@ -1288,7 +1328,7 @@ it.each(['expired', 'revoked', 'changed-binding'] as const)(
         const foreign = await db.createAgentApiKey({
           userId: users[0].id,
           name: 'Other run credential',
-          binding: { kind: 'channel_run', id: 'another/run' },
+          binding: { kind: 'synthetic-foreign', id: 'another/run' },
         });
         checked = { ...saved, execution: { ...saved.execution!, apiKeyId: foreign.id } };
       } else if (change === 'revoked')
@@ -1388,7 +1428,7 @@ it.each(['revoked', 'expired', 'foreign-binding'] as const)(
       const credentials = responseCredentials();
       await credentials.provision(run);
       const saved = (await storage.read(tenantId, 'channel', run.runId))!;
-      const binding = { kind: 'channel_run' as const, id: `channel/${run.runId}` };
+      const binding = channelRunKeyBinding(run);
       const keyId = saved.execution!.apiKeyId!;
       const owner = { tenantId, userId: users[0].id };
       const probe = express();
@@ -1447,7 +1487,7 @@ it(
       res.json({
         allowed: await credentials.authorizeRequest({
           keyId: saved.execution!.apiKeyId!,
-          binding: { kind: 'channel_run', id: `channel/${run.runId}` },
+          binding: channelRunKeyBinding(run),
           user: users[0],
           request: req,
         }),
@@ -1491,7 +1531,7 @@ it.each([false, true])(
         },
       });
       const result = credentials.authorizeSource(
-        { kind: 'channel_run', id: `channel/${run.runId}` },
+        channelRunKeyBinding(run),
         saved.execution!.apiKeyId!,
         { tenantId, userId: users[0].id },
         'agent',
@@ -1626,13 +1666,37 @@ it(
     });
     await expect(
       credentials.authorizeSource(
-        { kind: 'channel_run', id: `channel/${run.runId}` },
+        channelRunKeyBinding(run),
         saved.execution!.apiKeyId!,
         { tenantId, userId: users[0].id },
         'agent',
       ),
     ).rejects.toThrow('key store unavailable');
     expect((await storage.read(tenantId, 'channel', run.runId))?.cancellationRequested).toBe(false);
+  }),
+);
+
+it(
+  'keeps lifetime lease coordination separate from current-revision credential authority',
+  scoped(async () => {
+    await link('U1', users[0]);
+    await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const prepared = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+    const credentials = responseCredentials();
+    const key = await credentials.provision(prepared);
+    const saved = (await storage.read(tenantId, 'channel', prepared.runId))!;
+    const binding = channelRunKeyBinding(saved);
+    const owner = { userId: users[0].id, tenantId };
+    expect(
+      await credentials.authorizeSource(binding, saved.execution!.apiKeyId!, owner, 'agent'),
+    ).toBe(true);
+    await db.updateAgentChannel('channel', users[0].id, { revision: 'revision-2' });
+    expect(await storage.renew(tenantId, claimed.body.fence, Date.now(), 1000)).toBe(true);
+    expect(await db.validateBoundAgentApiKey(key)).not.toBeNull();
+    expect(
+      await credentials.authorizeSource(binding, saved.execution!.apiKeyId!, owner, 'agent'),
+    ).toBe(false);
   }),
 );
 
@@ -1662,7 +1726,11 @@ it(
     api.use(async (req, res, next) => {
       await authenticate(req as ApiKeyAuthRequest, res, next);
     });
-    api.post(/.*/, (_req, res) => {
+    const captured: ServerRequest['preparedResponseConversation'][] = [];
+    const capturedTargets: ServerRequest['preparedResponseTarget'][] = [];
+    api.post(/.*/, (req, res) => {
+      captured.push((req as ServerRequest).preparedResponseConversation);
+      capturedTargets.push((req as ServerRequest).preparedResponseTarget);
       res.sendStatus(204);
     });
     const body = {
@@ -1678,6 +1746,14 @@ it(
         .auth(bearer, { type: 'bearer' })
         .set('Idempotency-Key', `channel:${run.runId}`);
     await call().send(body).expect(204);
+    expect(captured[0]).toEqual({
+      sourceKeyId: saved.execution!.apiKeyId!,
+      userId: users[0].id,
+      tenantId,
+      agentId: run.agentId,
+      conversationId: run.execution!.conversationId,
+      parentMessageId: run.execution!.parentMessageId,
+    });
     await call()
       .send({ ...body, model: 'other-agent' })
       .expect(403);
@@ -1688,7 +1764,7 @@ it(
     const orphan = await db.createAgentApiKey({
       userId: users[0].id,
       name: 'Unpublished candidate',
-      binding: { kind: 'channel_run', id: `channel/${run.runId}` },
+      binding: channelRunKeyBinding(run),
     });
     await call('/api/agents/v1/responses', orphan.key).send(body).expect(403);
     const ordinary = await db.createAgentApiKey({ userId: users[0].id, name: 'Ordinary key' });
@@ -1713,7 +1789,7 @@ it(
       agentId: 'agent',
       fingerprint: 'cancelled-request',
       requestJSON: JSON.stringify(body),
-      conversationId: 'canonical-cancelled',
+      conversationId: saved.execution!.conversationId,
       parentMessageId: '00000000-0000-0000-0000-000000000000',
     });
     if (!response.ok) throw new Error('Reservation failed');
@@ -1723,6 +1799,12 @@ it(
     await call(`/api/agents/v1/responses/${response.record.responseId}/cancel`)
       .send({})
       .expect(204);
+    expect(capturedTargets[capturedTargets.length - 1]).toEqual({
+      userId: users[0].id,
+      tenantId,
+      responseId: response.record.responseId,
+      storageTarget: response.record.storageTarget,
+    });
     await call('/api/agents/v1/responses/resp_unrelated/cancel').send({}).expect(403);
     value(
       await authority.identity.revoke(
@@ -1737,7 +1819,7 @@ it(
       .expect(403);
     expect(
       await credentials.authorizeSource(
-        { kind: 'channel_run', id: `channel/${run.runId}` },
+        channelRunKeyBinding(run),
         saved.execution!.apiKeyId!,
         { userId: users[0].id, tenantId },
         'agent',
@@ -1780,7 +1862,7 @@ it.each([0, 1])('keeps Stop retries bound across relinking to account %i', (targ
     const linked = await link('U1', users[0]);
     fakeNow = Date.now() + 1000;
     const admission = event();
-    await post('runs').send(admission).expect(201);
+    const first = await post('runs').send(admission).expect(201);
     await post('runs/claim').send({ owner: 'first-worker' }).expect(200);
     const stop = {
       actor: admission.actor,
@@ -1799,6 +1881,11 @@ it.each([0, 1])('keeps Stop retries bound across relinking to account %i', (targ
     await link('U1', users[target]);
     fakeNow += 1000;
     const second = await post('runs').send(event('U1', 'after-relink')).expect(201);
+    await post('runs/claim').send({ owner: 'second-worker' }).expect(204);
+    const old = (await storage.read(tenantId, 'channel', first.body.runId))!;
+    const cleanup = await storage.claimAuthorityLost(old, 'retire-old-link', fakeNow, 60000);
+    if (!cleanup) throw new Error('Expected old actor assignment retirement');
+    await storage.finishAuthorityLost(tenantId, channelRunFence(cleanup), fakeNow);
     const claimed = await post('runs/claim').send({ owner: 'second-worker' }).expect(200);
     expect(claimed.body.run.runId).toBe(second.body.runId);
     await post('runs/stop-thread').send(stop).expect(200, { cancellationRequested: false });
@@ -1806,4 +1893,252 @@ it.each([0, 1])('keeps Stop retries bound across relinking to account %i', (targ
       (await storage.read(tenantId, 'channel', second.body.runId))?.cancellationRequested,
     ).toBe(false);
   })(),
+);
+
+it(
+  'rejects a bound source credential on a same-ID replacement physical Run',
+  scoped(async () => {
+    await link('U1', users[0]);
+    await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const run = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+    const credentials = responseCredentials();
+    await credentials.provision(run);
+    const saved = (await storage.read(tenantId, 'channel', run.runId))!;
+    const binding = channelRunKeyBinding(saved);
+    const collection = models.ChannelRun.collection;
+    const original = await collection.findOne({ runId: saved.runId });
+    if (!original) throw new Error('Missing fixture Run');
+    const id = new mongoose.Types.ObjectId();
+    await collection.deleteOne({ _id: original._id });
+    await collection.insertOne({
+      ...original,
+      _id: id,
+      _managed: {
+        ...original._managed,
+        parentId: String(id),
+        incarnation: '12345678-1234-4234-8234-123456789012',
+      },
+    });
+    expect(
+      await credentials.authorizeSource(
+        binding,
+        saved.execution!.apiKeyId!,
+        { userId: users[0].id, tenantId },
+        'agent',
+      ),
+    ).toBe(false);
+    const replacement = (await storage.read(tenantId, 'channel', run.runId))!;
+    expect(await credentials.isCurrent(replacement)).toBe(false);
+  }),
+);
+
+it(
+  'does not recover a credential attachment from a replacement physical Run',
+  scoped(async () => {
+    await link('U1', users[0]);
+    await post('runs').send(event()).expect(201);
+    const claimed = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+    const run = await storage.prepareExecution(tenantId, claimed.body.fence, Date.now());
+    const decrypt = jest.fn(async (value: string) => value);
+    const createKey = jest.fn(db.createAgentApiKey);
+    const credentials = responseCredentials({
+      createKey,
+      encrypt: async (value) => value,
+      decrypt,
+      storage: {
+        read: storage.read,
+        attachResponseCredential: async () => {
+          const collection = models.ChannelRun.collection;
+          const original = await collection.findOne({ runId: run.runId });
+          if (!original) throw new Error('Missing fixture Run');
+          const id = new mongoose.Types.ObjectId();
+          await collection.deleteOne({ _id: original._id });
+          await collection.insertOne({
+            ...original,
+            _id: id,
+            _managed: {
+              ...original._managed,
+              parentId: String(id),
+              incarnation: '12345678-1234-4234-8234-123456789012',
+            },
+          });
+          const replacement = (await storage.read(tenantId, run.channelId, run.runId))!;
+          const key = await db.createAgentApiKey({
+            userId: run.principal.userId,
+            name: 'Replacement key',
+            binding: channelRunKeyBinding(replacement),
+          });
+          await collection.updateOne(
+            { _id: id },
+            {
+              $set: {
+                'execution.apiKeyId': key.id,
+                'execution.encryptedApiKey': key.key,
+              },
+            },
+          );
+          throw new Error('Synthetic lost attachment reply');
+        },
+      },
+    });
+    await expect(credentials.provision(run)).rejects.toThrow('lost attachment reply');
+    expect(decrypt).not.toHaveBeenCalled();
+    const originalKey = await createKey.mock.results[0].value;
+    expect(await db.validateBoundAgentApiKey(originalKey.key)).toBeNull();
+  }),
+);
+
+it.each([
+  ...(['revoked', 'disabled', 'feature-off'] as const).flatMap((reason) =>
+    (['inflight', 'unknown'] as const).map((outcome) => ({ reason, outcome, lostGrant: false })),
+  ),
+  { reason: 'revoked' as const, outcome: 'inflight' as const, lostGrant: true },
+])(
+  'reconciles only retained receipt metadata after $reason with a $outcome required attempt: lostGrant=$lostGrant',
+  ({ reason, outcome, lostGrant }) =>
+    scoped(async () => {
+      const linked = await link('U1', users[0]);
+      const admitted = await post('runs').send(event()).expect(201);
+      const first = await post('runs/claim').send({ owner: 'worker' }).expect(200);
+      const route = `runs/${admitted.body.runId}`;
+      const target = {
+        runId: admitted.body.runId,
+        targetId: first.body.fence.targetId,
+        incarnation: first.body.fence.incarnation,
+      };
+      const claimBody = { target, owner: 'receipt-recovery' };
+      nextSnapshot = { status: 'completed', text: 'PRIVATE-ANSWER', elapsedMs: 1 };
+      await post(`${route}/advance`).send({ fence: first.body.fence }).expect(200);
+      await post(`${route}/plan`)
+        .send({
+          fence: first.body.fence,
+          plan: {
+            revision: 'plan',
+            rendererVersion: 'test',
+            parts: [
+              { operationId: 'answer', kind: 'message', required: true, text: 'PRIVATE-ANSWER' },
+            ],
+          },
+        })
+        .expect(200);
+      await post(`${route}/begin`)
+        .send({ fence: first.body.fence, operationId: 'answer' })
+        .expect(200);
+      if (outcome === 'unknown')
+        await post(`${route}/settle`)
+          .send({
+            fence: first.body.fence,
+            receipt: { operationId: 'answer', outcome, attempts: 1 },
+          })
+          .expect(200);
+      await post(`${route}/receipts/claim`).send(claimBody).expect(409);
+      if (reason === 'revoked')
+        value(
+          await authority.identity.revoke(
+            { tenantId, userId: users[0].id, accountLabel: 'A' },
+            linked.linkId,
+            linked.revision,
+          ),
+        );
+      else if (reason === 'disabled')
+        await db.updateAgentChannel('channel', users[0].id, { status: 'disabled' });
+      else channelEnabled = false;
+      await request(app)
+        .post(`/service/channel/${route}/receipts/claim`)
+        .send(claimBody)
+        .expect(401);
+      await post(`${route}/receipts/claim`)
+        .set('X-Tenant-Id', 'foreign-tenant')
+        .send(claimBody)
+        .expect(404);
+      await post(`${route}/receipts/claim`)
+        .send({
+          ...claimBody,
+          target: { ...target, incarnation: '00000000-0000-4000-8000-000000000000' },
+        })
+        .expect(409);
+      if (lostGrant) {
+        const controls = models.ChannelLane.collection;
+        const update = controls.updateOne.bind(controls);
+        let interrupted = false;
+        const acknowledgment = jest
+          .spyOn(controls, 'updateOne')
+          .mockImplementation(async (...args) => {
+            if (
+              !Array.isArray(args[1]) &&
+              args[1].$set?.assignment?.phase === 'active' &&
+              !interrupted
+            ) {
+              interrupted = true;
+              throw new Error('synthetic lost cleanup acknowledgment');
+            }
+            return update(...args);
+          });
+        await post(`${route}/receipts/claim`).send(claimBody).expect(503);
+        acknowledgment.mockRestore();
+        expect(interrupted).toBe(true);
+      }
+      const recovery = await post(`${route}/receipts/claim`).send(claimBody).expect(200);
+      expect(recovery.body).toMatchObject({
+        disposition: 'pending',
+        destination: { channelId: 'C1', threadKey: 'C1:1.000001' },
+        receipts: [{ operationId: 'answer', outcome: 'unknown', attempts: 1, required: true }],
+      });
+      expect(JSON.stringify(recovery.body)).not.toMatch(
+        /PRIVATE-ANSWER|Use my own permissions|sk-test|snapshot|principal|requestJSON|encrypted/,
+      );
+      const held = (await storage.read(tenantId, 'channel', target.runId))!;
+      expect(held.state).toBe('delivering');
+      if (reason === 'disabled')
+        await expect(
+          db.updateAgentChannel('channel', users[0].id, { status: 'active' }),
+        ).rejects.toBeInstanceOf(ChannelDrainPendingError);
+      expect(await storage.finishAuthorityLost(tenantId, recovery.body.fence, Date.now())).toBe(
+        'pending',
+      );
+      expect(
+        await models.ChannelLane.findOne({ channelId: 'channel', kind: 'control' }).lean(),
+      ).toMatchObject({ assignment: { run: { runId: target.runId } } });
+      const receipt = {
+        operationId: 'answer',
+        outcome: 'confirmed',
+        attempts: 1,
+        externalMessageKey: 'C1:verified',
+      };
+      await post(`${route}/delivery/reconcile`)
+        .send({ fence: first.body.fence, receipt })
+        .expect(409);
+      await post(`${route}/delivery/reconcile`)
+        .send({ fence: recovery.body.fence, receipt: { ...receipt, attempts: 2 } })
+        .expect(409);
+      await post(`${route}/delivery/reconcile`)
+        .send({
+          fence: recovery.body.fence,
+          receipt: { ...receipt, externalMessageKey: 'C2:foreign' },
+        })
+        .expect(400);
+      for (let i = 0; i < 2; i++)
+        await post(`${route}/delivery/reconcile`)
+          .send({ fence: recovery.body.fence, receipt })
+          .expect(200, { confirmed: true });
+      retirement = 'pending';
+      expect(
+        (await post(`${route}/receipts/claim`).send(claimBody).expect(200)).body.disposition,
+      ).toBe('pending');
+      expect((await storage.read(tenantId, 'channel', target.runId))!.state).toBe('delivering');
+      retirement = 'stopped';
+      expect(
+        (await post(`${route}/receipts/claim`).send(claimBody).expect(200)).body.disposition,
+      ).toBe('stopped');
+      expect(await storage.read(tenantId, 'channel', target.runId)).toMatchObject({
+        state: 'cancelled',
+        cursorState: 'complete',
+        receipts: [{ operationId: 'answer', outcome: 'confirmed', attempts: 1 }],
+      });
+      expect(
+        await models.ChannelLane.findOne({ channelId: 'channel', kind: 'control' }).lean(),
+      ).not.toHaveProperty('assignment');
+      expect(invoked).toHaveLength(1);
+    })(),
 );

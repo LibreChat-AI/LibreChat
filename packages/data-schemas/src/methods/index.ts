@@ -4,7 +4,7 @@ import {
 } from './responseErasure';
 import { runAfterTransaction } from '~/utils/postCommit';
 export type { ResponseTurnWrites, ResponseConversationWrites } from './responseTurn';
-import type { ChannelStorageConfig } from 'librechat-data-provider';
+import type { ChannelStorageConfig, DurableStorageConfig } from 'librechat-data-provider';
 import { createSubagentContentMethods, type SubagentContentMethods } from './subagentContent';
 export type {
   SubagentContentScope,
@@ -83,6 +83,8 @@ export {
 export type { ChannelFeedbackStorage, ChannelFeedbackReplySource } from './channelFeedback';
 export type { ChannelFeedbackEventRecord, ChannelFeedbackLedger } from '~/models/channelFeedback';
 export { createChannelRunStorage, ChannelRunConflict } from './channelRun';
+export { channelRunFence, matchesChannelRunFence } from './channelRunWrite';
+export { channelResponseOwner } from './channelRunResponse';
 export { createChannelSummaryStorage, CHANNEL_SUMMARY_MAX_PRIOR_ROWS } from './channelSummary';
 export type {
   ChannelSummaryStorage,
@@ -368,6 +370,7 @@ export type AllMethods = {
 /** Dependencies injected from the api layer into createMethods */
 export interface CreateMethodsDeps {
   getChannelStorageConfig?: () => Promise<Partial<ChannelStorageConfig>>;
+  getDurableStorageConfig?: () => Promise<Partial<DurableStorageConfig>>;
   /** Matches a model name to a canonical key. From @librechat/api. */
   matchModelName?: (model: string, endpoint?: string) => string | undefined;
   /** Finds the first key in values whose key is a substring of model. From @librechat/api. */
@@ -578,8 +581,12 @@ export function createMethods(
     ...createMemoryMethods(mongoose),
     ...createToolFavoriteMethods(mongoose),
     ...createAgentCategoryMethods(mongoose),
-    ...createAgentApiKeyMethods(mongoose),
-    ...createAgentChannelMethods(mongoose, deps.getChannelStorageConfig),
+    ...createAgentApiKeyMethods(mongoose, deps.getDurableStorageConfig),
+    ...createAgentChannelMethods(
+      mongoose,
+      deps.getChannelStorageConfig,
+      deps.getDurableStorageConfig,
+    ),
     ...createMCPServerMethods(mongoose, {
       getSoleOwnedResourceIds: aclEntryMethods.getSoleOwnedResourceIds,
     }),
@@ -730,3 +737,5 @@ export type {
 };
 
 export { recordAgentEventActorReceiptMetric, setAgentEventActorReceiptMetricObserver };
+
+export { channelRunKeyBinding } from './channelKey';

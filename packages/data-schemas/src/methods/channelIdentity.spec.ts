@@ -1,12 +1,11 @@
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { ChannelIdentityRecord } from './channelIdentity';
-import { closeChannelScope, retireAgentChannel } from './channelScope';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createChannelIdentityStorage } from './channelIdentity';
 import { createChannelRunStorage } from './channelRun';
 import { createAgentChannelMethods } from './channel';
-import { createUserMethods } from './user';
+import { retireAgentChannel } from './channelScope';
 import { createModels } from '~/models';
 
 let mongo: MongoMemoryReplSet;
@@ -31,6 +30,15 @@ const identity = (): ChannelIdentityRecord => ({
   },
 });
 
+async function disableChannel() {
+  expect(
+    await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'connection-owner', {
+      status: 'disabled',
+      revision: 'disabled',
+    }),
+  ).not.toBeNull();
+}
+
 beforeAll(async () => {
   mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(mongo.getUri(), { autoIndex: false });
@@ -40,7 +48,6 @@ beforeAll(async () => {
 beforeEach(async () =>
   runAsSystem(async () => {
     await mongoose.models.AgentChannel.deleteMany({});
-    await mongoose.models.ChannelScope.deleteMany({});
     for (const [partition, channelId] of [
       [tenantId, 'channel'],
       [tenantId, 'other-channel'],
@@ -113,11 +120,12 @@ it('removes prior account metadata when a replacement ticket is issued', () =>
     );
     expect(
       await storage.saveChannelIdentity(
-        { ...identity(), revision: 'two', ticketHash: 'new-hash' },
+        { ...identity(), linkId: 'new-link', revision: 'two', ticketHash: 'new-hash' },
         'one',
       ),
     ).toBe(true);
-    const next = await storage.readChannelLink(tenantId, 'link');
+    expect(await storage.readChannelLink(tenantId, 'link')).toBeNull();
+    const next = await storage.readChannelLink(tenantId, 'new-link');
     expect(next).not.toHaveProperty('userId');
     expect(next).not.toHaveProperty('accountLabel');
     expect(await storage.readChannelTicket(tenantId, 'private-hash')).toBeNull();
@@ -152,9 +160,9 @@ it('revokes only the selected channel and leaves other owners and tenants intact
   }));
 
 it('rejects a mismatched request tenant rather than letting middleware replace the explicit partition', async () => {
-  await runAsSystem(async () => {
-    await storage.saveChannelIdentity(identity(), null);
-    await storage.saveChannelIdentity(
+  await scope(() => storage.saveChannelIdentity(identity(), null));
+  await tenantStorage.run({ tenantId: 'another-tenant' }, () =>
+    storage.saveChannelIdentity(
       {
         ...identity(),
         tenantId: 'another-tenant',
@@ -165,8 +173,8 @@ it('rejects a mismatched request tenant rather than letting middleware replace t
         },
       },
       null,
-    );
-  });
+    ),
+  );
   await scope(async () => {
     await expect(storage.readChannelTicket('another-tenant', 'private-hash')).rejects.toThrow(
       'tenant',
@@ -196,63 +204,10 @@ it('propagates database failures separately from absent records', () =>
     );
   }));
 
-it('fences an in-flight personal-link acceptance before erasing its account', () =>
-  scope(async () => {
-    const user = await mongoose.models.User.create({
-      email: 'personal-link-owner@example.com',
-      provider: 'local',
-      tenantId,
-    });
-    const userId = String(user._id);
-    await storage.saveChannelIdentity(identity(), null);
-    let entered!: () => void;
-    let release!: () => void;
-    const started = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const collection = mongoose.models.ChannelIdentity.collection;
-    const update = collection.updateOne.bind(collection);
-    const paused = jest.spyOn(collection, 'updateOne').mockImplementation(async (...args) => {
-      entered();
-      await gate;
-      return update(...args);
-    });
-    const accepted = {
-      ...identity(),
-      state: 'accepted' as const,
-      revision: 'accepted',
-      userId,
-      accountLabel: 'Private account',
-    };
-    const acceptance = storage.saveChannelIdentity(accepted, 'one');
-    await started;
-    let deleted = false;
-    const deletion = createUserMethods(mongoose)
-      .deleteUserById(userId)
-      .then((value) => {
-        deleted = true;
-        return value;
-      });
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(deleted).toBe(false);
-    } finally {
-      release();
-      paused.mockRestore();
-    }
-    expect(await acceptance).toBe(true);
-    await deletion;
-    expect(await storage.readChannelLink(tenantId, 'link')).toBeNull();
-    expect(await storage.saveChannelIdentity(accepted, null)).toBe(false);
-  }));
-
 it('rejects new tickets and delayed acceptance after irreversible channel closure', () =>
   scope(async () => {
     await storage.saveChannelIdentity(identity(), null);
-    await closeChannelScope(mongoose, tenantId, 'channel');
+    await disableChannel();
     expect(
       await storage.saveChannelIdentity(
         { ...identity(), state: 'accepted', userId: 'owner', revision: 'two' },
@@ -268,43 +223,6 @@ it('rejects new tickets and delayed acceptance after irreversible channel closur
     });
     await storage.revokeChannelIdentities(tenantId, 'channel', 'revoked');
     expect(await storage.readChannelLink(tenantId, 'link')).toMatchObject({ state: 'revoked' });
-  }));
-
-it('serializes live identity insertion with channel closure', () =>
-  scope(async () => {
-    let entered!: () => void;
-    let release!: () => void;
-    const started = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const collection = mongoose.models.ChannelIdentity.collection;
-    const insert = collection.insertOne.bind(collection);
-    const paused = jest.spyOn(collection, 'insertOne').mockImplementation(async (...args) => {
-      entered();
-      await gate;
-      return insert(...args);
-    });
-    const pending = storage.saveChannelIdentity(identity(), null);
-    await started;
-    let closed = false;
-    const closure = closeChannelScope(mongoose, tenantId, 'channel').then(() => {
-      closed = true;
-    });
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(closed).toBe(false);
-    } finally {
-      release();
-      paused.mockRestore();
-    }
-    expect(await pending).toBe(true);
-    await closure;
-    expect(await storage.saveChannelIdentity({ ...identity(), revision: 'late' }, 'one')).toBe(
-      false,
-    );
   }));
 
 const identityStates = ['pending', 'accepted', 'active', 'revoked'] as const;
@@ -342,7 +260,7 @@ it.each(identityStates)('fences new %s records after complete channel retirement
 it.each(identityStates)('fences full %s replacements after admission closes', (state) =>
   scope(async () => {
     await storage.saveChannelIdentity(identity(), null);
-    await closeChannelScope(mongoose, tenantId, 'channel');
+    await disableChannel();
     expect(
       await storage.saveChannelIdentity(
         {
@@ -364,7 +282,7 @@ it.each(identityStates)('fences full %s replacements after admission closes', (s
 );
 
 it.each(['owner-a', 'owner-b'])(
-  'clears an omitted label when replacing account metadata for %s',
+  'keeps physical owner immutable while replacing account metadata for %s',
   (userId) =>
     scope(async () => {
       await storage.saveChannelIdentity(
@@ -376,14 +294,18 @@ it.each(['owner-a', 'owner-b'])(
           { ...identity(), state: 'active', userId, revision: 'next' },
           'one',
         ),
-      ).toBe(true);
+      ).toBe(userId === 'owner-a');
       const stored = await storage.readChannelLink(tenantId, 'link');
-      expect(stored).toMatchObject({ userId, revision: 'next' });
-      expect(stored).not.toHaveProperty('accountLabel');
+      expect(stored).toMatchObject({
+        userId: 'owner-a',
+        revision: userId === 'owner-a' ? 'next' : 'one',
+      });
+      if (userId === 'owner-a') expect(stored).not.toHaveProperty('accountLabel');
+      else expect(stored).toHaveProperty('accountLabel', 'Private Alice');
     }),
 );
 
-it('preserves an explicitly supplied empty label and clears account metadata on full revocation', () =>
+it('preserves an explicitly supplied empty label and clears account metadata on a fresh ticket', () =>
   scope(async () => {
     await storage.saveChannelIdentity(
       { ...identity(), state: 'active', userId: 'owner', accountLabel: 'Private Alice' },
@@ -404,11 +326,12 @@ it('preserves an explicitly supplied empty label and clears account metadata on 
     expect((await storage.readChannelLink(tenantId, 'link'))?.accountLabel).toBe('');
     expect(
       await storage.saveChannelIdentity(
-        { ...identity(), state: 'revoked', revision: 'revoked' },
+        { ...identity(), linkId: 'fresh-link', ticketHash: 'fresh-ticket', revision: 'fresh' },
         'empty-label',
       ),
     ).toBe(true);
-    const revoked = await storage.readChannelLink(tenantId, 'link');
+    expect(await storage.readChannelLink(tenantId, 'link')).toBeNull();
+    const revoked = await storage.readChannelLink(tenantId, 'fresh-link');
     expect(revoked).not.toHaveProperty('userId');
     expect(revoked).not.toHaveProperty('accountLabel');
   }));
@@ -432,7 +355,7 @@ it.each(['channelId', 'teamId', 'externalUserId', 'agentId'] as const)(
 it('cannot move a revoked full record out of a closed channel to escape retirement', () =>
   scope(async () => {
     await storage.saveChannelIdentity(identity(), null);
-    await closeChannelScope(mongoose, tenantId, 'channel');
+    await disableChannel();
     const replacement = {
       ...identity(),
       state: 'revoked' as const,
@@ -448,52 +371,16 @@ it('cannot move a revoked full record out of a closed channel to escape retireme
     expect(await mongoose.models.ChannelIdentity.countDocuments({ tenantId })).toBe(0);
   }));
 
-it('serializes revoked insertion with retirement and erases its private payload before returning', () =>
-  scope(async () => {
-    let entered!: () => void;
-    let release!: () => void;
-    const started = new Promise<void>((resolve) => {
-      entered = resolve;
-    });
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const collection = mongoose.models.ChannelIdentity.collection;
-    const insert = collection.insertOne.bind(collection);
-    const paused = jest.spyOn(collection, 'insertOne').mockImplementation(async (...args) => {
-      entered();
-      await gate;
-      return insert(...args);
-    });
-    const insertion = storage.saveChannelIdentity(inState('revoked', 'revoked-race'), null);
-    await started;
-    let retired = false;
-    const retirement = retireAgentChannel(mongoose, {
-      tenantId,
-      channelId: 'channel',
-      createdBy: 'connection-owner',
-    }).then(() => {
-      retired = true;
-    });
-    try {
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      expect(retired).toBe(false);
-    } finally {
-      release();
-      paused.mockRestore();
-    }
-    expect(await insertion).toBe(true);
-    await retirement;
-    expect(await mongoose.models.ChannelIdentity.countDocuments({ tenantId })).toBe(0);
-  }));
-
 it('creates and activates a per-user link at the canonical channel revision and fences rotation', () =>
   scope(async () => {
+    const now = Date.now();
     await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'connection-owner', {
       revision: 'canonical',
     });
     const pending = {
       ...identity(),
+      ticketExpiresAtMs: now + 60000,
+      expiresAtMs: now + 600000,
       identity: { ...identity().identity, channelRevision: 'canonical' },
     };
     expect(await storage.saveChannelIdentity(pending, null)).toBe(true);
@@ -527,14 +414,17 @@ it('creates and activates a per-user link at the canonical channel revision and 
       },
     };
     const runs = createChannelRunStorage(mongoose);
-    await expect(runs.admit(input, 100)).resolves.toMatchObject({
+    await expect(runs.admit(input, now)).resolves.toMatchObject({
       run: { principal: { channelRevision: 'canonical' } },
     });
     await createAgentChannelMethods(mongoose).updateAgentChannel('channel', 'connection-owner', {
       revision: 'rotated',
     });
     await expect(
-      runs.admit({ ...input, admission: { ...input.admission, eventId: 'stale-revision' } }, 101),
+      runs.admit(
+        { ...input, admission: { ...input.admission, eventId: 'stale-revision' } },
+        now + 1,
+      ),
     ).rejects.toMatchObject({ code: 'invalid_transition' });
   }));
 
@@ -588,7 +478,7 @@ it('allows only the current owner revision to withdraw consent after the channel
       accountLabel: 'Account A',
     };
     expect(await storage.saveChannelIdentity(record, null)).toBe(true);
-    await closeChannelScope(mongoose, tenantId, 'channel');
+    await disableChannel();
     const owner = { tenantId, userId: 'owner-a', linkId: 'link', revision: 'one' };
     expect(
       await storage.revokeChannelIdentity({ ...owner, userId: 'owner-b' }, 'wrong-owner'),
@@ -655,7 +545,9 @@ it('never recreates consent after erasure wins between its lookup and revocation
       release();
       expect(await revocation).toBe(false);
       expect(await mongoose.models.ChannelIdentity.countDocuments({ tenantId })).toBe(0);
-      expect(await mongoose.models.ChannelScope.countDocuments({ closed: true })).toBe(1);
+      expect(
+        await mongoose.models.AgentChannel.findOne({ channelId: 'channel' }).lean(),
+      ).toMatchObject({ status: 'deleting' });
     } finally {
       release();
       paused.mockRestore();

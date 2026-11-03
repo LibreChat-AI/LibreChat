@@ -4,6 +4,7 @@ import type { ManagedState } from '~/types/managed';
 import { includesManagedAllocations, managedVisibilityFilter } from '~/utils/managed';
 
 const applied = new WeakSet<Schema>();
+const channelApplied = new WeakSet<Schema>();
 
 /** Hide ownerless allocation metadata without a per-message lookup or a new history layer. */
 export function applyManagedStorage(schema: Schema): void {
@@ -22,6 +23,13 @@ export function applyManagedStorage(schema: Schema): void {
           parentId: String,
           ownerKey: String,
           conversationKey: String,
+          scopeKeys: {
+            type: [{ type: String, match: /^[a-f\d]{64}$/ }],
+            default: undefined,
+            // Fixed role topology: two owners, two channel keys, two link keys, one conversation.
+            validate: (keys: string[]) => keys.length <= 7,
+          },
+          expiredAt: Date,
           receipt: String,
           logicalId: String,
         },
@@ -42,4 +50,12 @@ export function applyManagedStorage(schema: Schema): void {
     if (includesManagedAllocations(this)) return;
     this.pipeline().unshift({ $match: managedVisibilityFilter });
   });
+}
+
+/** One index covers the fixed admission authorities without indexing ordinary chat history. */
+export function applyChannelStorage(schema: Schema): void {
+  applyManagedStorage(schema);
+  if (channelApplied.has(schema)) return;
+  channelApplied.add(schema);
+  schema.index({ '_managed.scopeKeys': 1, _id: 1 });
 }
