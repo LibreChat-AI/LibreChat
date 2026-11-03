@@ -451,8 +451,24 @@ export function createResponseExecutionRuntime(
             const retired = await admission.storage.readCleanupIdentity(
               admission.record,
               admission.record.responseId,
-              { ...admission.record, generationCreatedAt: execution.createdAt, ...checkpoint },
+              {
+                ...admission.record,
+                generationCreatedAt: executionEnrolled
+                  ? execution.createdAt
+                  : admission.record.generationCreatedAt,
+                ...checkpoint,
+              },
             );
+            if (retired?.retirement && retired.generationCreatedAt == null) {
+              const stopped = await createResponseRetirement({
+                storage: admission.storage,
+                jobs: continuation.jobs!,
+                cleanupCheckpoint: cleanupResponseCheckpoint,
+              })(admission.record, admission.record.responseId, retired);
+              if (stopped !== 'stopped')
+                throw new Error('Background response unused execution retirement is pending');
+              return;
+            }
             if (retired?.retirement && retired.generationCreatedAt === execution.createdAt)
               current = { ...admission.record, ...retired };
             else if (

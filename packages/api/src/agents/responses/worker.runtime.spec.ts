@@ -1302,7 +1302,7 @@ describe('background Responses execution handoff', () => {
       const finished = new Promise<void>((resolve) => {
         done = resolve;
       });
-      const retire = async () => {
+      const retire = async (retry = false) => {
         const methods = createMethods(mongoose);
         if (kind === 'owner') {
           await mongoose.models.User.updateOne(
@@ -1312,7 +1312,11 @@ describe('background Responses execution handoff', () => {
           );
           await methods.deleteUserById(owner.userId);
         } else if (kind === 'conversation')
-          await methods.deleteConvos(owner.userId, { conversationId: record.conversationId });
+          await methods.deleteConvos(
+            owner.userId,
+            { conversationId: record.conversationId },
+            { allowEmpty: retry },
+          );
         else
           await methods.saveConvo(
             { userId: owner.userId, expiredAt: new Date(Date.now() - 1000) },
@@ -1343,7 +1347,17 @@ describe('background Responses execution handoff', () => {
             isPrincipalActive: async () => true,
             execute: async () => {
               starts++;
-              await retire();
+              if (kind === 'expiry') await retire();
+              else {
+                // A concurrent deletion request cannot finish while this provider is active.
+                await expect(retire()).rejects.toMatchObject({ code: 'response_erasure_pending' });
+                const retained = await mongoose.models.StoredResponse.collection.findOne({
+                  responseId: record.responseId,
+                });
+                expect(retained).toMatchObject({ _managed: { phase: 'retired' } });
+                expect(retained).not.toHaveProperty('requestJSON');
+                expect(retained).not.toHaveProperty('responseJSON');
+              }
               await runtime.completion!.prepare({
                 ...buildPendingBackgroundResponse(record),
                 status: 'completed',
@@ -1368,6 +1382,14 @@ describe('background Responses execution handoff', () => {
         .send({})
         .expect(phase === 'enrollment' ? 409 : 202);
       await finished;
+      if (phase === 'settlement' && kind !== 'expiry') {
+        await scope(() => retire(true));
+        expect(
+          await mongoose.models.StoredResponse.collection.countDocuments({
+            responseId: record.responseId,
+          }),
+        ).toBe(0);
+      }
       expect(starts).toBe(phase === 'enrollment' ? 0 : 1);
       expect(errors).toHaveLength(phase === 'enrollment' ? 1 : 0);
       expect(await scope(() => storage.read(owner, record.responseId))).toBeNull();

@@ -259,6 +259,13 @@ it('does not substitute a drained transient job for a missing physical Root', ()
     await expect(f.release(f.record, f.receipt)).rejects.toThrow(
       'durable execution proof is unavailable',
     );
+    const retire = createResponseRetirement({ storage, jobs });
+    await expect(retire(f.record, f.record.responseId, f.record)).rejects.toThrow(
+      'retirement identity unavailable',
+    );
+    await mongoose.models.ResponseScope.updateMany({}, { $set: { closed: true } });
+    // Even closure cannot turn an absent started Root into provider/checkpoint proof.
+    expect(await retire(f.record, f.record.responseId, f.record)).toBe('pending');
     expect((await jobs.getJob(f.record.responseId))?.metadata.terminalPersistencePending).toBe(
       true,
     );

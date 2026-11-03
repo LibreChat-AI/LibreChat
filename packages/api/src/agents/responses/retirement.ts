@@ -1,4 +1,9 @@
-import type { ResponseOwner, ResponseStorage, StoredResponseRecord } from '@librechat/data-schemas';
+import type {
+  ResponseOwner,
+  ResponseStorage,
+  StoredResponseRecord,
+  ResponseCleanupIdentity,
+} from '@librechat/data-schemas';
 import type { GenerationJobManagerClass } from '~/stream/GenerationJobManager';
 import type { ResponseCheckpointIdentity } from './checkpoint';
 import type { ResponseCompletionRecord } from './completion';
@@ -33,7 +38,11 @@ const terminal = (record: StoredResponseRecord) =>
 /** Internal cleanup authority: may stop one owned response, never execute or disclose its output. */
 export function createResponseRetirement(
   deps: ResponseRetirementDependencies,
-): (owner: ResponseOwner, responseId: string) => Promise<'stopped' | 'pending'> {
+): (
+  owner: ResponseOwner,
+  responseId: string,
+  retained?: ResponseCleanupIdentity,
+) => Promise<'stopped' | 'pending'> {
   const recover =
     deps.recoverTerminal ??
     createResponseCompletion({
@@ -46,8 +55,12 @@ export function createResponseRetirement(
         }),
       releaseExecution: createResponseExecutionRelease(deps.jobs, deps.storage),
     }).finish;
-  async function retiredAuthority(owner: ResponseOwner, responseId: string) {
-    const identity = await deps.storage.readCleanupIdentity(owner, responseId);
+  async function retiredAuthority(
+    owner: ResponseOwner,
+    responseId: string,
+    retained?: ResponseCleanupIdentity,
+  ) {
+    const identity = await deps.storage.readCleanupIdentity(owner, responseId, retained);
     if (
       !identity?.retirement &&
       !(identity?.expiredAt && identity.expiredAt.getTime() <= (deps.now ?? Date.now)())
@@ -55,7 +68,11 @@ export function createResponseRetirement(
       return null;
     // Enrollment and retirement compete on the physical root. A closed scope alone
     // cannot fence an enrollment that already passed its scope read.
-    const fenced = await deps.storage.retireExecution(identity);
+    const fenced =
+      (await deps.storage.retireExecution(identity)) ||
+      // An unused attempt may outlive physical erasure. Its exact root cannot be
+      // recreated; closure plus absence fences startup without inventing enrollment.
+      (identity.generationCreatedAt == null && (await deps.storage.finishErasure(identity)));
     const proof = fenced
       ? await readResponseExecutionProof(deps.storage, deps.jobs, identity)
       : null;
@@ -96,8 +113,9 @@ export function createResponseRetirement(
     owner: ResponseOwner,
     responseId: string,
     alreadyDrained = false,
+    retained?: ResponseCleanupIdentity,
   ): Promise<'stopped' | 'pending' | null> {
-    const retired = await retiredAuthority(owner, responseId);
+    const retired = await retiredAuthority(owner, responseId, retained);
     if (!retired) return null;
     const { identity, job, providerExecutionId, providerExecutionOwnerId } = retired;
     if (!retired.fenced) return 'pending';
@@ -110,7 +128,7 @@ export function createResponseRetirement(
         awaitProviderDrain: true,
         retainTerminalPersistence: true,
       });
-      const current = await retiredAuthority(identity, responseId);
+      const current = await retiredAuthority(identity, responseId, identity);
       if (!current?.fenced || current.identity.generationCreatedAt != null)
         throw new Error('Response retirement generation changed');
       if (!current.job) return (await deps.storage.finishErasure(identity)) ? 'stopped' : 'pending';
@@ -195,13 +213,13 @@ export function createResponseRetirement(
       return (await deps.storage.finishErasure(completed)) ? 'stopped' : 'pending';
     return terminal(completed) ? 'stopped' : 'pending';
   }
-  return async (owner, responseId) => {
+  return async (owner, responseId, retained) => {
     let record = await deps.storage.requestCancellation(
       owner,
       responseId,
       (deps.now ?? Date.now)(),
     );
-    const retired = await finishRetired(owner, responseId);
+    const retired = await finishRetired(owner, responseId, false, retained);
     if (retired) return retired;
     if (!record) throw new Error('Response retirement identity unavailable');
     if (terminal(record)) {
@@ -224,7 +242,7 @@ export function createResponseRetirement(
       if (cancelled.ok) return 'stopped';
       record = await deps.storage.read(owner, responseId);
       if (!record) {
-        const retired = await finishRetired(owner, responseId);
+        const retired = await finishRetired(owner, responseId, false, retained);
         if (retired) return retired;
         throw new Error('Response disappeared during retirement');
       }
