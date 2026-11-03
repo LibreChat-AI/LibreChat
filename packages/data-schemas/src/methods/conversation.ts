@@ -63,6 +63,11 @@ import {
   initializeExpiration,
 } from '~/utils/retention';
 import {
+  discoverResponseErasureConversations,
+  retireResponseRecords,
+  eraseResponseRecords,
+} from './responseErasure';
+import {
   refreshChatProjectStatsForUser,
   updateChatProjectLastConversationForUser,
 } from './chatProject';
@@ -74,7 +79,6 @@ import { isCompactionSemanticIndexProjection } from '~/types/compaction';
 import { withoutMeiliIndexing } from '~/models/plugins/mongoMeili';
 import { prepareSubagentContentDeletion } from './subagentContent';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
-import { eraseResponseRecords } from './responseErasure';
 import { runAfterTransaction } from '~/utils/postCommit';
 import { isValidObjectIdString } from '~/utils/objectId';
 import { decrementTagCounts } from './conversationTag';
@@ -4259,9 +4263,42 @@ export function createConversationMethods(
         }
         throw lastError;
       };
-      let conversations = await Conversation.find(userFilter)
-        .select('conversationId tenantId chatProjectId tags')
-        .lean<DeletionConversation[]>();
+      const clearAll = Object.keys(filter).length === 0;
+      const activeTenant = getTenantId();
+      const userOwner =
+        clearAll && activeTenant === SYSTEM_TENANT_ID && isValidObjectIdString(user)
+          ? await (mongoose.models.User as Model<IUser>)
+              .findById(user)
+              .select('tenantId')
+              .read('primary')
+              .lean()
+          : null;
+      const historyOwner = {
+        userId: user,
+        tenantId: activeTenant === SYSTEM_TENANT_ID ? userOwner?.tenantId : activeTenant,
+      };
+      const historyPartitions = historyOwner.tenantId
+        ? { $in: [historyOwner.tenantId, null, ''] }
+        : { $in: [null, ''] };
+      const readConversations = async () =>
+        await Conversation.find({ ...userFilter, ...(clearAll && { tenantId: historyPartitions }) })
+          .select('conversationId tenantId chatProjectId tags')
+          .read('primary')
+          .lean<DeletionConversation[]>();
+      let conversations = await (clearAll ? runAsSystem(readConversations) : readConversations());
+      if (clearAll) {
+        const captured = new Set(
+          conversations.map((row) => JSON.stringify([row.tenantId || null, row.conversationId])),
+        );
+        for await (const batch of discoverResponseErasureConversations(mongoose, historyOwner)) {
+          for (const row of batch) {
+            const key = JSON.stringify([row.tenantId || null, row.conversationId]);
+            if (captured.has(key)) continue;
+            conversations.push(row);
+            captured.add(key);
+          }
+        }
+      }
       const recoveryConversationIds: string[] = [];
       const recoveryResponseScopes: DeletionConversation[] = [];
       const responseGroups = (wave: DeletionConversation[]) => {
@@ -4280,7 +4317,7 @@ export function createConversationMethods(
       };
       const eraseResponses = async (wave: DeletionConversation[]) => {
         for (const [tenantId, ids] of responseGroups(wave))
-          await eraseResponseRecords(mongoose, { userId: user, tenantId }, ids);
+          await runAsSystem(() => eraseResponseRecords(mongoose, { userId: user, tenantId }, ids));
       };
       if (!conversations.length && typeof filter.conversationId === 'string') {
         // Authorized delayed reservations retain the globally unique user's actual tenant.
@@ -4405,9 +4442,24 @@ export function createConversationMethods(
             conversationId: { $in: waveIds },
           }),
         );
-        // Like subagent content, response erasure is an irreversible part of deletion intent.
-        await eraseResponses(wave);
-        const result = await Conversation.deleteMany({ user, conversationId: { $in: waveIds } });
+        // Fence paused projection writers before normal deletion owns counts, tags and projects.
+        for (const [tenantId, ids] of responseGroups(wave))
+          await runAsSystem(async () =>
+            retireResponseRecords(mongoose, { userId: user, tenantId }, ids),
+          );
+        const remove = async () =>
+          await Conversation.deleteMany({
+            user,
+            ...(clearAll
+              ? {
+                  $or: wave.map((row) => ({
+                    conversationId: row.conversationId,
+                    tenantId: row.tenantId || { $in: [null, ''] },
+                  })),
+                }
+              : { conversationId: { $in: waveIds } }),
+          });
+        const result = await (clearAll ? runAsSystem(remove) : remove());
         if (result.deletedCount > 0) {
           /** Result erasure is irreversible. Keep receipts intact when a
            * pre-delete hook or the conversation delete itself fails, so a
@@ -4425,6 +4477,8 @@ export function createConversationMethods(
           seen.add(conversation.conversationId);
           deletedConversations.push(conversation);
         }
+        // Physical Root cleanup follows ordinary accounting, including on a pending retry.
+        await eraseResponses(wave);
         pending = await retryCascadeOperation(() =>
           Conversation.find({
             user,

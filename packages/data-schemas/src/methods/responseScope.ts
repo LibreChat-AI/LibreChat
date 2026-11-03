@@ -2,12 +2,13 @@ import { createHash } from 'node:crypto';
 import type { ClientSession } from 'mongoose';
 import type { ResponseOwner } from '~/models/response';
 import { retainChannelFeedbackForOwner } from './channelFeedbackErasure';
+import { runAsSystem, SYSTEM_TENANT_ID } from '~/config/tenantContext';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createStoredResponseModel } from '~/models/response';
 import { createConversationModel } from '~/models/convo';
 import { createMessageModel } from '~/models/message';
 import { shortenExpiration } from '~/utils/retention';
-import { runAsSystem } from '~/config/tenantContext';
+import { resolveTenantScope } from '~/tenant/policy';
 
 /** Response-bound conversation IDs are immutable: jobs and checkpoints retain that identity.
  * An empty source scope is closed before replacement so delayed admission cannot orphan data. */
@@ -140,6 +141,18 @@ export function createResponseRetention(
   };
 }
 
+/** Cleanup may use an explicit system partition; canonical writers retain their stricter guard. */
+export function assertResponseErasureOwner(owner: ResponseOwner): void {
+  const scope = resolveTenantScope('Response erasure');
+  const tenantId = scope.kind === 'scoped' ? scope.tenantId : undefined;
+  if (
+    !owner.userId ||
+    owner.tenantId === SYSTEM_TENANT_ID ||
+    (scope.kind !== 'system' && tenantId !== (owner.tenantId || undefined))
+  )
+    throw new TypeError('Response cleanup tenant does not match the active scope');
+}
+
 /** The tenant policy treats missing, null and empty tenant IDs as one partition. */
 export function responseOwnerFilter(owner: ResponseOwner): {
   userId: string;
@@ -202,8 +215,28 @@ export async function closeResponseScopes(
   owner: ResponseOwner,
   conversationIds?: string[],
 ): Promise<void> {
-  const model = createResponseScopeModel(mongoose);
   const keys = conversationIds?.map((id) => scopeKey(owner, id)) ?? [scopeKey(owner)];
+  await closeResponseScopeKeys(mongoose, keys);
+  await createStoredResponseModel(mongoose).updateMany(
+    {
+      ...responseOwnerFilter(owner),
+      ...(conversationIds ? { conversationId: { $in: conversationIds } } : {}),
+      status: { $in: ['queued', 'in_progress', 'requires_action', 'materializing'] },
+      cancellationRequestedAt: { $exists: false },
+      pendingTerminal: { $exists: false },
+    },
+    { $set: { cancellationRequestedAt: Date.now() } },
+  );
+}
+
+/** Internal cleanup may recover hashed conversation descriptors before payload publication. */
+export async function closeResponseScopeKeys(
+  mongoose: typeof import('mongoose'),
+  keys: readonly string[],
+): Promise<void> {
+  if (keys.some((key) => !/^[a-f\d]{64}$/.test(key)))
+    throw new TypeError('Invalid Response scope key');
+  const model = createResponseScopeModel(mongoose);
   // Bound each command independently of the number of conversations being removed.
   for (let offset = 0; offset < keys.length; offset += 250) {
     const operations = keys.slice(offset, offset + 250).map((key) => ({
@@ -223,14 +256,4 @@ export async function closeResponseScopes(
       await close();
     }
   }
-  await createStoredResponseModel(mongoose).updateMany(
-    {
-      ...responseOwnerFilter(owner),
-      ...(conversationIds ? { conversationId: { $in: conversationIds } } : {}),
-      status: { $in: ['queued', 'in_progress', 'requires_action', 'materializing'] },
-      cancellationRequestedAt: { $exists: false },
-      pendingTerminal: { $exists: false },
-    },
-    { $set: { cancellationRequestedAt: Date.now() } },
-  );
 }

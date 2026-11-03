@@ -538,6 +538,10 @@ test('the checkpoint guard scopes current and legacy tenants, conversations and 
   expect(await guard({ userId: f.owner.userId })).toBe(false);
   const legacy = await unresolvedResponse({ userId: f.owner.userId });
   expect(await guard(f.owner, [legacy.record.conversationId])).toBe(true);
+  await tenantStorage.run(f.owner, async () => {
+    expect(await guard(f.owner, [legacy.record.conversationId])).toBe(true);
+    expect(await guard(f.owner, [f.record.conversationId])).toBe(true);
+  });
   expect(await guard({ userId: f.owner.userId }, [legacy.record.conversationId])).toBe(true);
   // Generic cleanup also owns historical tenantless data for the same globally unique user.
   expect(

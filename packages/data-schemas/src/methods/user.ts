@@ -21,10 +21,9 @@ import {
   eraseChannelPersistenceForUser,
   resolveChannelErasureConfig,
 } from '~/methods/channelErasure';
-import { eraseResponseRecords, ResponseErasurePendingError } from './responseErasure';
+import { createResponseOwnerErasureMethods, ResponseErasurePendingError } from './responseErasure';
 import { scoreSearchMatch, buildUserSearchFilter } from '~/utils/search';
 import { evictAuthUserDocsForUsers } from '~/utils/eviction';
-import { closeResponseScopes } from './responseScope';
 import { signPayload } from '~/crypto';
 import logger from '~/config/winston';
 
@@ -642,8 +641,9 @@ export function createUserMethods(
         const channelConfig = resolveChannelErasureConfig(
           (await deps.getChannelStorageConfig?.()) ?? {},
         );
-        await closeResponseScopes(mongoose, { userId, tenantId: owner.tenantId });
-        await eraseResponseRecords(mongoose, { userId, tenantId: owner.tenantId });
+        const responses = createResponseOwnerErasureMethods(mongoose);
+        await responses.prepareUserResponseErasure({ userId, tenantId: owner.tenantId });
+        await responses.eraseUserResponses({ userId, tenantId: owner.tenantId });
         // Admission writes the same owner anchor in its insertion transaction.
         // Closing it therefore precedes both this sweep and every delayed retry.
         await eraseChannelPersistenceForUser(

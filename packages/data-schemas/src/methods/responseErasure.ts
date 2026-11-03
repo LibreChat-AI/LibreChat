@@ -1,15 +1,21 @@
 import type { UpdateQuery } from 'mongoose';
 import type { ResponseOwner, StoredResponseRecord, ResponseReference } from '~/models/response';
-import type { ManagedState } from '~/types/managed';
-import { tenantStorage, getTenantId, SYSTEM_TENANT_ID, runAsSystem } from '~/config/tenantContext';
-import { responseOwnerFilter, responseScopeKeys, closeResponseScopes } from './responseScope';
+import type { ManagedState, ManagedRegistration } from '~/types/managed';
+import {
+  responseOwnerFilter,
+  responseScopeKeys,
+  closeResponseScopes,
+  closeResponseScopeKeys,
+  assertResponseErasureOwner,
+} from './responseScope';
+import { tenantStorage, SYSTEM_TENANT_ID, runAsSystem } from '~/config/tenantContext';
 import { ALLOCATION_PREFIX, includeManagedAllocations } from '~/utils/managed';
 import { eraseChannelFeedbackForOwner } from './channelFeedbackErasure';
-import { managedTargetFilter, managedTargetModels } from './managed';
+import { managedTargetPredicate, managedTargetModels } from './managed';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { reconcileErasedResponseTargets } from './registration';
 import { createStoredResponseModel } from '~/models/response';
-import { responseRootFilter } from './responseRoot';
+import { responseRootCleanupFilter } from './responseRoot';
 
 const ERASURE_BATCH_SIZE = 100;
 
@@ -50,8 +56,9 @@ export function createResponseCheckpointCleanupGuard(
         ];
       });
       if (
-        await runAsSystem(() =>
-          includeManagedAllocations(records.exists({ $or: clauses })).read('primary'),
+        await runAsSystem(
+          async () =>
+            await includeManagedAllocations(records.exists({ $or: clauses })).read('primary'),
         )
       )
         return true;
@@ -83,7 +90,7 @@ export async function finishResponseErasure(
   reference: ResponseReference,
 ): Promise<boolean> {
   const records = createStoredResponseModel(mongoose);
-  const physical = responseRootFilter(mongoose, reference);
+  const physical = responseRootCleanupFilter(mongoose, reference);
   const root = await includeManagedAllocations(
     records.findOne({ ...physical, '_managed.phase': 'retired' }),
   )
@@ -97,7 +104,7 @@ export async function finishResponseErasure(
       .map(({ target }) => {
         if ((target.tenantId || undefined) !== (reference.tenantId || undefined))
           throw new Error('Response cleanup target tenant changed');
-        return managedTargetFilter(mongoose, target);
+        return managedTargetPredicate(mongoose, target);
       });
     if (!targets.length) continue;
     const model = mongoose.model(managedTargetModels[kind]);
@@ -141,35 +148,233 @@ export async function finishResponseErasure(
   return deleted.deletedCount === 1;
 }
 
+/** Historical cleanup stays explicitly owner-filtered even when strict mode denies unscoped queries. */
+function inResponseErasurePartition<T>(owner: ResponseOwner, work: () => Promise<T>): Promise<T> {
+  return tenantStorage.run(
+    { tenantId: owner.tenantId || SYSTEM_TENANT_ID },
+    async () => await work(),
+  );
+}
+
+function responseErasureFilter(owner: ResponseOwner, conversationIds?: readonly string[]) {
+  return {
+    ...responseOwnerFilter(owner),
+    ...(conversationIds ? { conversationId: { $in: conversationIds } } : {}),
+    '_managed.phase': { $in: ['published', 'retired'] },
+  };
+}
+
+/** Fence projection writers before the ordinary Conversation cascade removes its rows. */
+export async function retireResponseRecords(
+  mongoose: typeof import('mongoose'),
+  owner: ResponseOwner,
+  conversationIds: readonly string[],
+): Promise<void> {
+  assertResponseErasureOwner(owner);
+  if (!conversationIds.length) return;
+  await inResponseErasurePartition(owner, async () => {
+    await readResponseErasureAdmission(mongoose, owner, conversationIds);
+    await createStoredResponseModel(mongoose).updateMany(
+      responseErasureFilter(owner, conversationIds),
+      retiredResponseUpdate(),
+      { upsert: false },
+    );
+  });
+}
+
 export async function eraseResponseRecords(
   mongoose: typeof import('mongoose'),
   owner: ResponseOwner,
   conversationIds?: readonly string[],
 ): Promise<void> {
-  const current = getTenantId();
-  if (
-    !owner.userId ||
-    owner.tenantId === SYSTEM_TENANT_ID ||
-    (current !== SYSTEM_TENANT_ID && (current || undefined) !== (owner.tenantId || undefined))
-  )
-    throw new TypeError('Response cleanup tenant does not match the active scope');
+  assertResponseErasureOwner(owner);
   if (conversationIds?.length === 0) return;
-  await tenantStorage.run({ tenantId: owner.tenantId || undefined }, () =>
+  await inResponseErasurePartition(owner, async () =>
     eraseOwnedResponses(mongoose, owner, conversationIds),
   );
 }
 
-async function eraseOwnedResponses(
+export interface ResponseOwnerErasureMethods {
+  prepareUserResponseErasure(owner: ResponseOwner): Promise<void>;
+  eraseUserResponses(owner: ResponseOwner): Promise<void>;
+}
+
+/** Account erasure fences all owned admission before its existing checkpoint cleanup phase. */
+export function createResponseOwnerErasureMethods(
+  mongoose: typeof import('mongoose'),
+): ResponseOwnerErasureMethods {
+  const partitions = (owner: ResponseOwner) =>
+    owner.tenantId ? [owner, { userId: owner.userId }] : [owner];
+  return {
+    async prepareUserResponseErasure(owner) {
+      assertResponseErasureOwner(owner);
+      for (const partition of partitions(owner))
+        await inResponseErasurePartition(partition, async () =>
+          closeResponseScopes(mongoose, partition),
+        );
+    },
+    async eraseUserResponses(owner) {
+      assertResponseErasureOwner(owner);
+      for (const partition of partitions(owner))
+        await runAsSystem(async () => eraseResponseRecords(mongoose, partition));
+    },
+  };
+}
+
+interface ResponseErasureConversation {
+  conversationId: string;
+  tenantId?: string;
+}
+
+interface ResponseErasureMetadata extends Partial<ResponseErasureConversation> {
+  _id: import('mongoose').Types.ObjectId;
+  userId?: string;
+  _managed?: ManagedState;
+}
+
+/** Freeze exact pending allocations before erasing them. A winning publisher stays discoverable. */
+async function retirePendingResponseRoots(
+  mongoose: typeof import('mongoose'),
+  owner: ResponseOwner,
+  roots: readonly Pick<ManagedRegistration, 'target'>[],
+  allowedConversationKeys?: readonly string[],
+): Promise<{ keys: string[]; conversations: ResponseErasureConversation[] }> {
+  if (!roots.length) return { keys: [], conversations: [] };
+  const records = createStoredResponseModel(mongoose);
+  const ownerKey = responseScopeKeys(owner, '')[0];
+  const physical = roots.map(({ target }) => {
+    if (
+      target.kind !== 'response' ||
+      (target.tenantId || undefined) !== (owner.tenantId || undefined)
+    )
+      throw new Error('Response cleanup target tenant changed');
+    return managedTargetPredicate(mongoose, target);
+  });
+  const read = () =>
+    includeManagedAllocations(records.find({ $or: physical }))
+      .select('_id userId tenantId conversationId +_managed')
+      .read('primary')
+      .lean<ResponseErasureMetadata[]>();
+  const keys = new Set<string>();
+  const capture = (rows: ResponseErasureMetadata[]) => {
+    const conversations: ResponseErasureConversation[] = [];
+    for (const row of rows) {
+      const descriptor = row._managed;
+      const key = descriptor?.conversationKey;
+      if (
+        descriptor?.ownerKey !== ownerKey ||
+        !key ||
+        !/^[a-f\d]{64}$/.test(key) ||
+        (allowedConversationKeys && !allowedConversationKeys.includes(key))
+      )
+        throw new Error('Response cleanup root scope changed');
+      keys.add(key);
+      if (row.userId != null) {
+        if (
+          row.userId !== owner.userId ||
+          !row.conversationId ||
+          (row.tenantId || undefined) !== (owner.tenantId || undefined) ||
+          responseScopeKeys(owner, row.conversationId)[1] !== key
+        )
+          throw new Error('Response cleanup published ownership changed');
+        conversations.push({ conversationId: row.conversationId, tenantId: owner.tenantId });
+      }
+    }
+    return conversations;
+  };
+  capture(await read());
+  await closeResponseScopeKeys(mongoose, [...keys]);
+  const placeholders = roots.map(({ target }, index) => ({
+    ...physical[index],
+    responseId: `${ALLOCATION_PREFIX}${target.id.toLowerCase()}`,
+    userId: { $exists: false },
+  }));
+  await records.updateMany(
+    {
+      $or: placeholders,
+      '_managed.phase': { $in: ['empty', 'pinned', 'registering', 'registered', 'retired'] },
+    },
+    { $set: { '_managed.phase': 'retired' } },
+    { upsert: false },
+  );
+  await records.deleteMany({ $or: placeholders, '_managed.phase': 'retired' });
+  // Publication can win the seal CAS; return that same physical Root, never a replacement.
+  const conversations = capture(await read());
+  await reconcileErasedResponseTargets(mongoose, owner, [...keys]);
+  return { keys: [...keys], conversations };
+}
+
+/** Clear-history snapshots existing owner registrations without closing future owner admission. */
+export async function* discoverResponseErasureConversations(
+  mongoose: typeof import('mongoose'),
+  owner: ResponseOwner,
+): AsyncGenerator<ResponseErasureConversation[]> {
+  assertResponseErasureOwner(owner);
+  const partitions = owner.tenantId ? [owner, { userId: owner.userId }] : [owner];
+  // Capture both bounded owner lists before any publication scan or settlement can remove entries.
+  const snapshots = await Promise.all(
+    partitions.map(async (partition) => ({
+      owner: partition,
+      pending:
+        (
+          await createResponseScopeModel(mongoose)
+            .findById(responseScopeKeys(partition, '')[0])
+            .select('pending')
+            .read('primary')
+            .lean()
+        )?.pending ?? [],
+    })),
+  );
+  for (const snapshot of snapshots) {
+    const partition = <T>(work: () => Promise<T>) =>
+      inResponseErasurePartition(snapshot.owner, work);
+    {
+      const pending = await partition(() =>
+        retirePendingResponseRoots(
+          mongoose,
+          snapshot.owner,
+          snapshot.pending.filter((entry) => entry.target.kind === 'response'),
+        ),
+      );
+      if (pending.conversations.length) yield pending.conversations;
+      const records = createStoredResponseModel(mongoose);
+      let after: import('mongoose').Types.ObjectId | undefined;
+      for (;;) {
+        const page = await partition(() =>
+          includeManagedAllocations(
+            records.find({
+              ...responseOwnerFilter(snapshot.owner),
+              ...(after && { _id: { $gt: after } }),
+            }),
+          )
+            .select('_id conversationId tenantId')
+            .sort({ _id: 1 })
+            .limit(ERASURE_BATCH_SIZE)
+            .read('primary')
+            .lean(),
+        );
+        if (!page.length) break;
+        yield page.map((row) => ({
+          conversationId: row.conversationId,
+          tenantId: snapshot.owner.tenantId,
+        }));
+        after = page[page.length - 1]._id;
+      }
+    }
+  }
+}
+
+async function readResponseErasureAdmission(
   mongoose: typeof import('mongoose'),
   owner: ResponseOwner,
   conversationIds?: readonly string[],
-): Promise<void> {
+): Promise<{ ownerKey: string; ownerClosed: boolean; keys: string[] }> {
   const scopes = createResponseScopeModel(mongoose);
-  const records = createStoredResponseModel(mongoose);
   const ownerKey = responseScopeKeys(owner, '')[0];
   const ownerAnchor = await scopes.findById(ownerKey).select('closed expiredAt').lean();
-  const ownerClosed =
-    ownerAnchor?.closed || (ownerAnchor?.expiredAt && ownerAnchor.expiredAt <= new Date());
+  const ownerClosed = Boolean(
+    ownerAnchor?.closed || (ownerAnchor?.expiredAt && ownerAnchor.expiredAt <= new Date()),
+  );
   const keys =
     !conversationIds || ownerClosed
       ? [ownerKey]
@@ -180,6 +385,21 @@ async function eraseOwnedResponses(
   });
   if (admitted !== new Set(keys).size)
     throw new Error('Response erasure requires closed admission');
+  return { ownerKey, ownerClosed, keys };
+}
+
+async function eraseOwnedResponses(
+  mongoose: typeof import('mongoose'),
+  owner: ResponseOwner,
+  conversationIds?: readonly string[],
+): Promise<void> {
+  const scopes = createResponseScopeModel(mongoose);
+  const records = createStoredResponseModel(mongoose);
+  const { ownerKey, ownerClosed, keys } = await readResponseErasureAdmission(
+    mongoose,
+    owner,
+    conversationIds,
+  );
   await eraseChannelFeedbackForOwner(mongoose, owner, conversationIds);
   const relatedScopes = new Set(keys.filter((key) => key !== ownerKey));
   for (const key of keys) {
@@ -188,52 +408,14 @@ async function eraseOwnedResponses(
     if (!anchor || (!anchor.closed && !(anchor.expiredAt && anchor.expiredAt <= new Date())))
       throw new Error('Response erasure requires closed admission');
     const roots = (anchor.pending ?? []).filter((entry) => entry.target.kind === 'response');
-    await tenantStorage.run({ tenantId: owner.tenantId || undefined }, async () => {
-      const targets = roots.map(({ target }) => {
-        if ((target.tenantId || undefined) !== (owner.tenantId || undefined))
-          throw new Error('Response cleanup target tenant changed');
-        return {
-          ...managedTargetFilter(mongoose, target),
-          responseId: `${ALLOCATION_PREFIX}${target.id.toLowerCase()}`,
-          userId: { $exists: false },
-        };
-      });
-      if (targets.length) {
-        const metadata = await includeManagedAllocations(records.find({ $or: targets }))
-          .select('+_managed')
-          .read('primary')
-          .lean<Array<{ _managed?: ManagedState }>>();
-        for (const root of metadata) {
-          const descriptor = root._managed;
-          if (descriptor?.ownerKey && descriptor.ownerKey !== ownerKey)
-            throw new Error('Response cleanup root owner changed');
-          const conversationKey = descriptor?.conversationKey;
-          if (!conversationKey) continue;
-          if (
-            !/^[a-f\d]{64}$/.test(conversationKey) ||
-            (!ownerClosed && !keys.includes(conversationKey))
-          )
-            throw new Error('Response cleanup conversation scope changed');
-          relatedScopes.add(conversationKey);
-          if (ownerClosed)
-            await scopes.updateOne(
-              { _id: conversationKey },
-              { $set: { closed: true }, $inc: { revision: 1 } },
-              { upsert: true },
-            );
-        }
-      }
-      // Seal before deleting. A paused payload publisher must lose its registered-phase CAS.
-      if (targets.length)
-        await records.updateMany(
-          {
-            $or: targets,
-            '_managed.phase': { $in: ['empty', 'pinned', 'registering', 'registered', 'retired'] },
-          },
-          { $set: { '_managed.phase': 'retired' } },
-          { upsert: false },
-        );
-      if (targets.length) await records.deleteMany({ $or: targets, '_managed.phase': 'retired' });
+    await inResponseErasurePartition(owner, async () => {
+      const retired = await retirePendingResponseRoots(
+        mongoose,
+        owner,
+        roots,
+        ownerClosed ? undefined : keys,
+      );
+      for (const key of retired.keys) relatedScopes.add(key);
       for (const kind of ['message', 'conversation'] as const) {
         const entries = (anchor.pending ?? []).filter((entry) => entry.target.kind === kind);
         if (!entries.length) continue;
@@ -241,7 +423,7 @@ async function eraseOwnedResponses(
         const exact = entries.map(({ target }) => {
           if ((target.tenantId || undefined) !== (owner.tenantId || undefined))
             throw new Error('Response cleanup target tenant changed');
-          return managedTargetFilter(mongoose, target);
+          return managedTargetPredicate(mongoose, target);
         });
         const authorized = {
           $and: [
@@ -269,11 +451,45 @@ async function eraseOwnedResponses(
       }
     });
   }
-  const filter = {
-    ...responseOwnerFilter(owner),
-    ...(conversationIds ? { conversationId: { $in: conversationIds } } : {}),
-    '_managed.phase': { $in: ['published', 'retired'] },
-  };
+  if (ownerClosed) {
+    // An allocation may have its descriptor but crash before owner registration.
+    // Closed owner admission prevents it from ever publishing private state.
+    let after: import('mongoose').Types.ObjectId | undefined;
+    for (;;) {
+      const page = await includeManagedAllocations(
+        records.find({
+          '_managed.ownerKey': ownerKey,
+          userId: { $exists: false },
+          ...(after && { _id: { $gt: after } }),
+        }),
+      )
+        .select('_id +_managed')
+        .sort({ _id: 1 })
+        .limit(ERASURE_BATCH_SIZE)
+        .read('primary')
+        .lean<ResponseErasureMetadata[]>();
+      if (!page.length) break;
+      const retired = await retirePendingResponseRoots(
+        mongoose,
+        owner,
+        page.map((row) => {
+          if (!row._managed?.incarnation)
+            throw new Error('Response cleanup allocation identity is unavailable');
+          return {
+            target: {
+              kind: 'response' as const,
+              id: String(row._id),
+              incarnation: row._managed.incarnation,
+              ...(owner.tenantId && { tenantId: owner.tenantId }),
+            },
+          };
+        }),
+      );
+      for (const key of retired.keys) relatedScopes.add(key);
+      after = page[page.length - 1]._id;
+    }
+  }
+  const filter = responseErasureFilter(owner, conversationIds);
   let after: import('mongoose').Types.ObjectId | undefined;
   let pending = false;
   for (;;) {

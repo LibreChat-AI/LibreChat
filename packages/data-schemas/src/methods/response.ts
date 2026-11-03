@@ -19,10 +19,12 @@ import {
   discardResponseRoot,
   assertResponseReservation,
   responseRootFilter,
+  responseRootCleanupFilter,
 } from './responseRoot';
 import {
   responseScopeKeys,
   responseOwnerFilter,
+  assertResponseErasureOwner,
   isResponseScopeClosed,
   initializeResponseScopes,
   createResponseRetention,
@@ -386,6 +388,20 @@ export function createResponseStorage(
     }
     return responseOwnerFilter(owner);
   }
+  function cleanupOwnerScope(
+    owner: ResponseOwner & { storageTarget?: ManagedTarget<'response'>; responseId?: string },
+  ) {
+    assertResponseErasureOwner(owner);
+    if (owner.storageTarget) {
+      if (!owner.responseId) throw new TypeError('Response root identity is unavailable');
+      return responseRootCleanupFilter(mongoose, {
+        ...owner,
+        responseId: owner.responseId,
+        target: owner.storageTarget,
+      });
+    }
+    return responseOwnerFilter(owner);
+  }
   const scope = (owner: ResponseOwner) => ({
     ...ownerScope(owner),
     '_managed.phase': 'published',
@@ -418,7 +434,7 @@ export function createResponseStorage(
     const record = await includeManagedAllocations(
       model
         .findOne({
-          ...responseRootFilter(mongoose, {
+          ...responseRootCleanupFilter(mongoose, {
             ...identity,
             target: identity.storageTarget,
           }),
@@ -469,7 +485,7 @@ export function createResponseStorage(
       const now = new Date();
       const result = await model.updateOne(
         {
-          ...responseRootFilter(mongoose, { ...identity, target: identity.storageTarget }),
+          ...responseRootCleanupFilter(mongoose, { ...identity, target: identity.storageTarget }),
           agentId: identity.agentId,
           conversationId: identity.conversationId,
           generationCreatedAt: identity.generationCreatedAt ?? { $exists: false },
@@ -505,7 +521,7 @@ export function createResponseStorage(
         return false;
       const result = await model.updateOne(
         {
-          ...responseRootFilter(mongoose, { ...identity, target: identity.storageTarget }),
+          ...responseRootCleanupFilter(mongoose, { ...identity, target: identity.storageTarget }),
           agentId: identity.agentId,
           conversationId: identity.conversationId,
           generationCreatedAt: proof.generationCreatedAt,
@@ -574,7 +590,7 @@ export function createResponseStorage(
         return false;
       const result = await model.updateOne(
         {
-          ...responseRootFilter(mongoose, { ...identity, target: identity.storageTarget }),
+          ...responseRootCleanupFilter(mongoose, { ...identity, target: identity.storageTarget }),
           agentId: identity.agentId,
           conversationId: identity.conversationId,
           $or: [
@@ -615,7 +631,7 @@ export function createResponseStorage(
       }
       const record = await includeManagedAllocations(
         model.findOne({
-          ...responseRootFilter(mongoose, { ...identity, target: identity.storageTarget }),
+          ...responseRootCleanupFilter(mongoose, { ...identity, target: identity.storageTarget }),
           agentId: identity.agentId,
           conversationId: identity.conversationId,
           generationCreatedAt: { $exists: false },
@@ -742,7 +758,7 @@ export function createResponseStorage(
         throw new TypeError('Invalid Response provider outcome');
       const updated = await model.updateOne(
         {
-          ...responseRootFilter(mongoose, reference),
+          ...responseRootCleanupFilter(mongoose, reference),
           generationCreatedAt: binding.generationCreatedAt,
           'providerExecution.id': binding.providerExecutionId,
           $and: [
@@ -1312,7 +1328,7 @@ export function createResponseStorage(
     async readCleanupIdentity(owner, responseId, retained) {
       const record = await includeManagedAllocations(
         model
-          .findOne({ ...ownerScope(owner), responseId })
+          .findOne({ ...cleanupOwnerScope(owner), responseId })
           .select(
             'userId tenantId responseId agentId conversationId requestKey sourceKeyId parentMessageId generationCreatedAt expiredAt storageTarget +checkpoint pendingTerminal.checkpointNamespace pendingTerminal.checkpointConfigJSON preparedTerminal.checkpointNamespace preparedTerminal.checkpointConfigJSON review.checkpointConfigJSON review.providerExecutionId',
           )

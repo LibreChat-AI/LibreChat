@@ -6,12 +6,21 @@ import type {
 } from '~/models/response';
 import type { ManagedTarget } from '~/types/managed';
 import {
+  managedTargetFilter,
+  managedTargetPredicate,
+  assertManagedTenant,
+  retireManagedAllocation,
+} from './managed';
+import {
   registerResponseTarget,
   settleResponseTarget,
   settleAbsentResponseTarget,
 } from './registration';
-import { responseOwnerFilter, responseScopeKeys } from './responseScope';
-import { managedTargetFilter, retireManagedAllocation } from './managed';
+import {
+  responseOwnerFilter,
+  responseScopeKeys,
+  assertResponseErasureOwner,
+} from './responseScope';
 import { createIndexesWithRetry, retryWithBackoff } from '~/utils/retry';
 import { createStoredResponseModel } from '~/models/response';
 import { includeManagedAllocations } from '~/utils/managed';
@@ -106,6 +115,24 @@ export function responseRootFilter(
   mongoose: typeof import('mongoose'),
   reference: ResponseReference,
 ): Record<string, unknown> {
+  assertManagedTenant(reference.tenantId);
+  return responseRootPredicate(mongoose, reference);
+}
+
+/** Cleanup carries explicit owner authority; strict legacy cleanup may use system scope. */
+export function responseRootCleanupFilter(
+  mongoose: typeof import('mongoose'),
+  reference: ResponseReference,
+): Record<string, unknown> {
+  assertResponseErasureOwner(reference);
+  return responseRootPredicate(mongoose, reference);
+}
+
+/** Exact owner and incarnation predicate for already-authorized cleanup operations. */
+function responseRootPredicate(
+  mongoose: typeof import('mongoose'),
+  reference: ResponseReference,
+): Record<string, unknown> {
   if (
     !reference.userId ||
     !/^resp_d_[a-f\d]{32}$/.test(reference.responseId) ||
@@ -114,7 +141,7 @@ export function responseRootFilter(
   )
     throw new TypeError('Invalid Response root reference');
   return {
-    ...managedTargetFilter(mongoose, reference.target),
+    ...managedTargetPredicate(mongoose, reference.target),
     ...responseOwnerFilter(reference),
     responseId: reference.responseId,
   };

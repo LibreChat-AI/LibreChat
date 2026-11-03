@@ -111,6 +111,18 @@ export function managedTargetFilter(
   tenantId: string | { $in: Array<null | string> };
 } {
   assertManagedTenant(target.tenantId);
+  return managedTargetPredicate(mongoose, target);
+}
+
+/** Validated physical identity only; the owning operation must authorize its scope. */
+export function managedTargetPredicate(
+  mongoose: typeof import('mongoose'),
+  target: ManagedStorageTarget,
+): {
+  _id: Types.ObjectId;
+  '_managed.incarnation': string;
+  tenantId: string | { $in: Array<null | string> };
+} {
   if (
     !Object.prototype.hasOwnProperty.call(managedTargetModels, target.kind) ||
     !/^[a-f\d]{24}$/i.test(target.id) ||

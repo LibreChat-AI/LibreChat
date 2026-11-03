@@ -2,8 +2,17 @@ import { durableStorageConfigSchema } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
 import type { ManagedRegistration, ManagedRegistrationIntent } from '~/types/managed';
 import type { ResponseOwner } from '~/models/response';
-import { managedTargetFilter, assertManagedTenant, managedTargetModels } from './managed';
-import { initializeResponseScopes, responseScopeKeys } from './responseScope';
+import {
+  managedTargetFilter,
+  managedTargetPredicate,
+  assertManagedTenant,
+  managedTargetModels,
+} from './managed';
+import {
+  initializeResponseScopes,
+  responseScopeKeys,
+  assertResponseErasureOwner,
+} from './responseScope';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { includeManagedAllocations } from '~/utils/managed';
 
@@ -322,7 +331,7 @@ export async function reconcileErasedResponseTargets(
   owner: ResponseOwner,
   conversationKeys: readonly string[],
 ): Promise<number> {
-  assertManagedTenant(owner.tenantId);
+  assertResponseErasureOwner(owner);
   const keys = [...new Set([responseScopeKeys(owner, '')[0], ...conversationKeys])];
   if (keys.some((key) => !/^[a-f\d]{64}$/.test(key)))
     throw new TypeError('Invalid Response cleanup scope');
@@ -341,7 +350,7 @@ export async function reconcileErasedResponseTargets(
           $or: entries.map((entry) => {
             if ((entry.target.tenantId || undefined) !== (owner.tenantId || undefined))
               throw new Error('Response cleanup target tenant changed');
-            return managedTargetFilter(mongoose, entry.target);
+            return managedTargetPredicate(mongoose, entry.target);
           }),
         }),
       )
