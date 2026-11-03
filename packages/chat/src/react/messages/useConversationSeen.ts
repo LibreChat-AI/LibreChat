@@ -1,14 +1,7 @@
 import { useRef, useEffect, useCallback } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Constants, QueryKeys } from 'librechat-data-provider';
-import {
-  findConvoInAllQueries,
-  hasLocallyCommittedReply,
-  hasServerFetchedReply,
-  isConversationUnseen,
-} from '~/utils';
-import { consumeFocusSuppression } from './notificationNavigation';
-import { useMarkConversationSeenMutation } from '~/data-provider';
+import type { ConversationSeenSource, ReportNearBottom, SeenReply } from './host';
 
 /**
  * Records that the user has caught up with a conversation's newest message.
@@ -30,13 +23,14 @@ import { useMarkConversationSeenMutation } from '~/data-provider';
  * nothing.
  */
 export default function useConversationSeen(
+  source: ConversationSeenSource,
   conversationId: string | undefined,
   isSubmitting: boolean,
   measureNearBottom?: () => boolean | null,
   isResponseRendered?: (messageId: string) => boolean,
-) {
+): ReportNearBottom {
   const queryClient = useQueryClient();
-  const { mutate: markSeen } = useMarkConversationSeenMutation();
+  const { readReply, hasReplyProof, markSeen, consumeFocusSuppression } = source;
   const isNearBottomRef = useRef(false);
   /** Read from the deferred revalidation check, which outlives the render that created it. */
   const measureRef = useRef(measureNearBottom);
@@ -66,24 +60,19 @@ export default function useConversationSeen(
    * Manual markers name no message, and a row stamped before reply identity existed cannot be
    * bound to a branch either; both fall back to the history-fetch proof rather than stranding a
    * dot no acknowledgement could ever clear. */
-  const replyBranchIsVisible = useCallback(
-    (convo: { lastResponseIsManual?: boolean; lastResponseMessageId?: string } | undefined) => {
-      const messageId = convo?.lastResponseMessageId;
-      if (convo?.lastResponseIsManual === true || !messageId) {
-        return true;
-      }
-      if (isResponseRenderedRef.current) {
-        return isResponseRenderedRef.current(messageId);
-      }
-      const body = document
-        .getElementById(messageId)
-        ?.querySelector('[data-testid="message-body"]');
-      return (
-        body != null && (body.childElementCount > 0 || (body.textContent?.trim().length ?? 0) > 0)
-      );
-    },
-    [],
-  );
+  const replyBranchIsVisible = useCallback((convo: SeenReply | undefined) => {
+    const messageId = convo?.lastResponseMessageId;
+    if (convo?.lastResponseIsManual === true || !messageId) {
+      return true;
+    }
+    if (isResponseRenderedRef.current) {
+      return isResponseRenderedRef.current(messageId);
+    }
+    const body = document.getElementById(messageId)?.querySelector('[data-testid="message-body"]');
+    return (
+      body != null && (body.childElementCount > 0 || (body.textContent?.trim().length ?? 0) > 0)
+    );
+  }, []);
 
   const scheduleRenderedCheck = useCallback(
     (expectedStamp: string | undefined, proofSource?: 'local' | 'server') => {
@@ -96,22 +85,20 @@ export default function useConversationSeen(
       pendingFrameRef.current = window.requestAnimationFrame(() => {
         pendingFrameRef.current = window.requestAnimationFrame(() => {
           pendingFrameRef.current = null;
-          const cached = findConvoInAllQueries(queryClient, conversationId);
+          const cached = readReply(conversationId);
           const messagesState = queryClient.getQueryState([QueryKeys.messages, conversationId]);
           const messagesReady =
             messagesState?.status === 'success' && messagesState.fetchStatus === 'idle';
           const proofStillHolds =
             expectedStamp != null &&
-            ((proofSource === 'local' &&
-              hasLocallyCommittedReply(queryClient, conversationId, expectedStamp)) ||
-              (proofSource === 'server' &&
-                hasServerFetchedReply(queryClient, conversationId, expectedStamp)));
+            proofSource != null &&
+            hasReplyProof(conversationId, expectedStamp, proofSource);
           const responseIsRendered = replyBranchIsVisible(cached);
           if (
             expectedStamp != null &&
             messagesReady &&
             cached?.lastResponseAt === expectedStamp &&
-            isConversationUnseen(cached) &&
+            cached.unseen &&
             responseIsRendered &&
             (proofSource == null ? true : cached.lastResponseIsManual !== true && proofStillHolds)
           ) {
@@ -125,7 +112,7 @@ export default function useConversationSeen(
         });
       });
     },
-    [conversationId, queryClient, replyBranchIsVisible],
+    [conversationId, queryClient, readReply, hasReplyProof, replyBranchIsVisible],
   );
 
   const markSeenIfCaughtUp = useCallback(
@@ -136,8 +123,8 @@ export default function useConversationSeen(
       if (!isNearBottomRef.current || !document.hasFocus()) {
         return;
       }
-      const cached = findConvoInAllQueries(queryClient, conversationId);
-      if (!isConversationUnseen(cached)) {
+      const cached = readReply(conversationId);
+      if (cached?.unseen !== true) {
         return;
       }
       const { lastResponseAt } = cached ?? {};
@@ -166,8 +153,8 @@ export default function useConversationSeen(
 
       const renderedStamp = renderedMessagesRef.current.get(conversationId);
       const isManualMarker = cached?.lastResponseIsManual === true;
-      const hasLocalProof = hasLocallyCommittedReply(queryClient, conversationId, lastResponseAt);
-      const hasServerProof = hasServerFetchedReply(queryClient, conversationId, lastResponseAt);
+      const hasLocalProof = hasReplyProof(conversationId, lastResponseAt, 'local');
+      const hasServerProof = hasReplyProof(conversationId, lastResponseAt, 'server');
       if (!isManualMarker && (hasLocalProof || hasServerProof) && !replyBranchIsVisible(cached)) {
         /* A stamped history cache can still describe a hidden sibling branch, or a progressive
          * row whose body has not committed. Neither is safe to acknowledge and neither should
@@ -215,7 +202,15 @@ export default function useConversationSeen(
        * newer, so a reply persisted from another device mid-request stays unseen. */
       markSeen({ conversationId, lastResponseAt });
     },
-    [conversationId, queryClient, markSeen, scheduleRenderedCheck, replyBranchIsVisible],
+    [
+      conversationId,
+      queryClient,
+      readReply,
+      hasReplyProof,
+      markSeen,
+      scheduleRenderedCheck,
+      replyBranchIsVisible,
+    ],
   );
 
   markSeenRef.current = markSeenIfCaughtUp;
@@ -232,7 +227,7 @@ export default function useConversationSeen(
       fetchStartStampRef.current.delete(conversationId);
     }
     markSeenIfCaughtUp(true);
-  }, [conversationId, markSeenIfCaughtUp]);
+  }, [conversationId, consumeFocusSuppression, markSeenIfCaughtUp]);
 
   /** Stable across renders so the memoized scroll observer is not torn down on every check. */
   const reportNearBottom = useCallback(
@@ -290,10 +285,7 @@ export default function useConversationSeen(
           return;
         }
         if (event.action.type === 'fetch') {
-          fetchStartStampRef.current.set(
-            conversationId,
-            findConvoInAllQueries(queryClient, conversationId)?.lastResponseAt,
-          );
+          fetchStartStampRef.current.set(conversationId, readReply(conversationId)?.lastResponseAt);
           return;
         }
         if (event.action.type !== 'success' || event.action.manual) {
@@ -321,7 +313,7 @@ export default function useConversationSeen(
         pendingFrameRef.current = null;
       }
     };
-  }, [conversationId, queryClient, markSeenIfCaughtUp, scheduleRenderedCheck]);
+  }, [conversationId, queryClient, readReply, markSeenIfCaughtUp, scheduleRenderedCheck]);
 
   return reportNearBottom;
 }

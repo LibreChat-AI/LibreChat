@@ -230,7 +230,12 @@ const messagesHost: MessagesHost = {
   renderMessageAudio: () => null,
   useScreenshotTarget: () => undefined,
   useAutoScroll: () => false,
-  useConversationSeen: () => () => undefined,
+  useSeenSource: () => ({
+    readReply: () => undefined,
+    hasReplyProof: () => false,
+    markSeen: () => undefined,
+    consumeFocusSuppression: () => false,
+  }),
   renderMessageIcon: () => null,
   renderMessageRow: () => null,
   renderActivity: () => null,
@@ -670,18 +675,20 @@ describe('a consumer rendering subagent activity', () => {
     } as ChatContract;
     render(
       <I18nextProvider i18n={i18n}>
-        <ChatContext.Provider value={contract}>
-          <MessagesHostProvider host={threadHost}>
-            <MessagePartsHostProvider host={host}>
-              <MessagesView
-                messages={messages}
-                messagesTree={messages}
-                showScrollButton={false}
-                maximizeChatSpace={false}
-              />
-            </MessagePartsHostProvider>
-          </MessagesHostProvider>
-        </ChatContext.Provider>
+        <QueryClientProvider client={new QueryClient()}>
+          <ChatContext.Provider value={contract}>
+            <MessagesHostProvider host={threadHost}>
+              <MessagePartsHostProvider host={host}>
+                <MessagesView
+                  messages={messages}
+                  messagesTree={messages}
+                  showScrollButton={false}
+                  maximizeChatSpace={false}
+                />
+              </MessagePartsHostProvider>
+            </MessagesHostProvider>
+          </ChatContext.Provider>
+        </QueryClientProvider>
       </I18nextProvider>,
     );
 

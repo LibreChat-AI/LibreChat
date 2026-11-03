@@ -2,10 +2,12 @@
  * @jest-environment jsdom
  */
 import { useRef } from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { QueryKeys } from 'librechat-data-provider';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
+import type { ConversationSeenSource, MessagesHost } from '../../../react/messages/host';
 import type { MessagesScrollButtonProps, MessagesViewProps } from '../MessagesView';
-import type { MessagesHost } from '../../../react/messages/host';
 import type { ChatContract } from '../../../react/chat/contract';
 import type { MessagePartsHost } from '../../../react/host';
 import { createMessagesHost } from '../../../__fixtures__/messagesHost';
@@ -21,19 +23,34 @@ const tree = [{ messageId: 'reply-1', conversationId: 'convo-1' }] as TMessage[]
 
 const partsHost = { useFontSize: () => 'text-base' } as unknown as MessagePartsHost;
 
+const RESPONDED_AT = '2026-11-03T10:00:00.000Z';
+
 function createHost(overrides: Partial<MessagesHost> = {}) {
-  const reportNearBottom = jest.fn();
-  const useConversationSeen = jest.fn<
-    jest.Mock,
-    [string | undefined, boolean, () => boolean | null, (messageId: string) => boolean]
-  >(() => reportNearBottom);
+  const markSeen = jest.fn();
+  /** convo-1 has an unseen reply, reply-1, whose server fetch is the one the cache holds. */
+  const source: ConversationSeenSource = {
+    readReply: (conversationId) =>
+      conversationId === 'convo-1'
+        ? { lastResponseAt: RESPONDED_AT, lastResponseMessageId: 'reply-1', unseen: true }
+        : undefined,
+    hasReplyProof: (_conversationId, _stamp, from) => from === 'server',
+    markSeen,
+    consumeFocusSuppression: () => false,
+  };
   const host = createMessagesHost({
     useScreenshotTarget: () => useRef<HTMLDivElement>(null),
     useAutoScroll: () => false,
-    useConversationSeen,
+    useSeenSource: () => source,
     ...overrides,
   });
-  return { host, reportNearBottom, useConversationSeen };
+  return { host, markSeen };
+}
+
+/** Lets the seen check's two-frame render gate run out. */
+async function flushFrames() {
+  for (let frame = 0; frame < 3; frame++) {
+    await act(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve())));
+  }
 }
 
 /** What the list's scrolling reads from the pane. */
@@ -60,24 +77,28 @@ const contract: ChatContract = Object.assign(
 );
 
 function renderView(props: Partial<MessagesViewProps>, host: MessagesHost, chat = contract) {
+  const queryClient = new QueryClient();
+  queryClient.setQueryData([QueryKeys.messages, 'convo-1'], tree);
   const view = (next: Partial<MessagesViewProps>) => (
-    <ChatContext.Provider value={chat}>
-      <MessagesHostProvider host={host}>
-        <MessagePartsHostProvider host={partsHost}>
-          <MessagesView
-            messagesTree={tree}
-            messages={tree}
-            showScrollButton
-            maximizeChatSpace={false}
-            renderThread={({ conversationId }) => (
-              <ol aria-label="Thread" data-conversation-id={conversationId} />
-            )}
-            {...props}
-            {...next}
-          />
-        </MessagePartsHostProvider>
-      </MessagesHostProvider>
-    </ChatContext.Provider>
+    <QueryClientProvider client={queryClient}>
+      <ChatContext.Provider value={chat}>
+        <MessagesHostProvider host={host}>
+          <MessagePartsHostProvider host={partsHost}>
+            <MessagesView
+              messagesTree={tree}
+              messages={tree}
+              showScrollButton
+              maximizeChatSpace={false}
+              renderThread={({ conversationId }) => (
+                <ol aria-label="Thread" data-conversation-id={conversationId} />
+              )}
+              {...props}
+              {...next}
+            />
+          </MessagePartsHostProvider>
+        </MessagesHostProvider>
+      </ChatContext.Provider>
+    </QueryClientProvider>
   );
   const result = render(view({}));
   return {
@@ -144,7 +165,7 @@ describe('MessagesView', () => {
   });
 
   it('wires the scroll control to the end marker and to both near-bottom listeners', () => {
-    const { host, reportNearBottom } = createHost();
+    const { host } = createHost();
     let button: MessagesScrollButtonProps | undefined;
     const { container } = renderView(
       {
@@ -170,34 +191,87 @@ describe('MessagesView', () => {
     }
     fireEvent.click(screen.getByRole('button', { name: 'Jump' }));
     expect(scrollIntoView).toHaveBeenCalledWith({ behavior: 'smooth' });
-
-    button?.onNearBottomChange(false);
-    expect(reportNearBottom).toHaveBeenCalledWith(false);
   });
 
-  it('asks the seen reporter about the conversation and whether a reply has rendered', () => {
-    const { host, useConversationSeen } = createHost();
-    renderView(
-      {
-        renderThread: () => (
-          <div id="reply-1">
-            <div data-testid="message-body">Hello</div>
-          </div>
-        ),
-      },
-      host,
-    );
+  describe('seen reporting', () => {
+    let hasFocus: jest.SpyInstance;
 
-    expect(useConversationSeen).toHaveBeenCalledWith(
-      'convo-1',
-      false,
-      expect.any(Function),
-      expect.any(Function),
-    );
-    const { calls } = useConversationSeen.mock;
-    const isResponseRendered = calls[calls.length - 1][3];
-    expect(isResponseRendered('reply-1')).toBe(true);
-    expect(isResponseRendered('elsewhere')).toBe(false);
+    beforeEach(() => {
+      hasFocus = jest.spyOn(document, 'hasFocus').mockReturnValue(true);
+    });
+
+    afterEach(() => hasFocus.mockRestore());
+
+    it('marks the conversation seen once its reply is rendered in the list and the end is in view', async () => {
+      const { host, markSeen } = createHost();
+      let button: MessagesScrollButtonProps | undefined;
+      renderView(
+        {
+          renderThread: () => (
+            <div id="reply-1">
+              <div data-testid="message-body">Hello</div>
+            </div>
+          ),
+          renderScrollButton: (props) => {
+            button = props;
+            return null;
+          },
+        },
+        host,
+      );
+
+      act(() => button?.onNearBottomChange(true));
+
+      await waitFor(() =>
+        expect(markSeen).toHaveBeenCalledWith({
+          conversationId: 'convo-1',
+          lastResponseAt: RESPONDED_AT,
+        }),
+      );
+      expect(markSeen).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not credit a reply row that another surface rendered', async () => {
+      const { host, markSeen } = createHost();
+      const elsewhere = document.createElement('div');
+      elsewhere.id = 'reply-1';
+      elsewhere.innerHTML = '<div data-testid="message-body">Hello</div>';
+      document.body.appendChild(elsewhere);
+      let button: MessagesScrollButtonProps | undefined;
+      renderView(
+        {
+          renderScrollButton: (props) => {
+            button = props;
+            return null;
+          },
+        },
+        host,
+      );
+
+      act(() => button?.onNearBottomChange(true));
+      await flushFrames();
+
+      expect(markSeen).not.toHaveBeenCalled();
+      elsewhere.remove();
+    });
+
+    it('waits while the window is unfocused', async () => {
+      hasFocus.mockReturnValue(false);
+      const { host, markSeen } = createHost();
+      renderView(
+        {
+          renderThread: () => (
+            <div id="reply-1">
+              <div data-testid="message-body">Hello</div>
+            </div>
+          ),
+        },
+        host,
+      );
+
+      await flushFrames();
+      expect(markSeen).not.toHaveBeenCalled();
+    });
   });
 
   it('listens to the scroll container and keeps native scroll anchoring outside a mount window', () => {

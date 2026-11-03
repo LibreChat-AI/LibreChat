@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ChatContext, setDefaultMessagesHost } from '@librechat/chat/react';
 import type { ChatContract, MessagesHost } from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
@@ -95,7 +96,12 @@ const host: MessagesHost = {
   renderMessageAudio: () => null,
   useScreenshotTarget: () => undefined,
   useAutoScroll: () => false,
-  useConversationSeen: () => () => undefined,
+  useSeenSource: () => ({
+    readReply: () => undefined,
+    hasReplyProof: () => false,
+    markSeen: () => undefined,
+    consumeFocusSuppression: () => false,
+  }),
   renderMessageIcon: () => null,
   renderMessageRow: ({ message }) => <div data-testid="row">{message.messageId}</div>,
   renderActivity: () => null,
@@ -109,19 +115,23 @@ beforeAll(() => {
 const renderedRows = () => screen.queryAllByTestId('row').map((row) => row.textContent);
 
 /** The pane's chat contract, as far as the list reads it: the pane and the routed key. */
+const queryClient = new QueryClient();
+
 const withChat = (ui: ReactElement) => (
-  <ChatContext.Provider
-    value={
-      {
-        index: 0,
-        isSubmitting: false,
-        latestMessageDepth: 0,
-        messagesKey: mockMessagesKey,
-      } as unknown as ChatContract
-    }
-  >
-    {ui}
-  </ChatContext.Provider>
+  <QueryClientProvider client={queryClient}>
+    <ChatContext.Provider
+      value={
+        {
+          index: 0,
+          isSubmitting: false,
+          latestMessageDepth: 0,
+          messagesKey: mockMessagesKey,
+        } as unknown as ChatContract
+      }
+    >
+      {ui}
+    </ChatContext.Provider>
+  </QueryClientProvider>
 );
 
 const messageTree = [

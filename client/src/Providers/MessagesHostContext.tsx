@@ -19,7 +19,7 @@ import {
   getMessageClipboardSource,
   useCopyMessageToClipboard,
 } from '~/hooks';
-import useConversationSeen from '~/hooks/Conversations/useConversationSeen';
+import useConversationSeenSource from '~/hooks/Conversations/seenSource';
 import { useOptionalMessagesOperations } from './MessagesViewContext';
 import ThreadMessage from '~/components/Chat/Messages/Thread/Message';
 import MessageAudio from '~/components/Chat/Messages/MessageAudio';
@@ -117,7 +117,7 @@ export const appMessagesHost: MessagesHost = {
   renderMessageAudio: (props) => <AppMessageAudio {...props} />,
   useScreenshotTarget: () => useScreenshot().screenshotTargetRef,
   useAutoScroll: () => useAtomValue(autoScrollAtom),
-  useConversationSeen,
+  useSeenSource: useConversationSeenSource,
   renderMessageIcon: (props) => <MessageIcon {...props} />,
   renderMessageRow: (props) => <ThreadMessage {...props} />,
   renderActivity: (props) => <EventSubagentActivityGroup {...props} />,

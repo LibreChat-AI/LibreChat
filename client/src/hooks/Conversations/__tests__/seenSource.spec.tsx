@@ -3,6 +3,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryKeys, tMessageSchema } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { useConversationSeen as usePackageConversationSeen } from '@librechat/chat/react';
 import type { TMessage } from 'librechat-data-provider';
 import {
   markLocallyCommittedReply,
@@ -11,7 +12,23 @@ import {
 } from '~/utils';
 import { useGetMessagesByConvoId } from '~/data-provider/Messages/queries';
 import { suppressFocusAcknowledgement } from '../notificationNavigation';
-import useConversationSeen from '../useConversationSeen';
+import useConversationSeenSource from '../seenSource';
+
+/** The package's seen reporting, fed by the app's read state: what the message list runs. */
+function useConversationSeen(
+  conversationId: string | undefined,
+  isSubmitting: boolean,
+  measureNearBottom?: () => boolean | null,
+  isResponseRendered?: (messageId: string) => boolean,
+) {
+  return usePackageConversationSeen(
+    useConversationSeenSource(),
+    conversationId,
+    isSubmitting,
+    measureNearBottom,
+    isResponseRendered,
+  );
+}
 
 const mockMarkSeen = jest.fn();
 const mockGetMessages = jest.fn();

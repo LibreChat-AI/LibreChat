@@ -9,6 +9,7 @@ import {
   useProgressiveRowMount,
 } from '../../react/messages/useProgressiveRowMount';
 import useMessageScrolling from '../../react/messages/useMessageScrolling';
+import useConversationSeen from '../../react/messages/useConversationSeen';
 import useScrollbarGutter from '../../react/messages/useScrollbarGutter';
 import { useMessagesHost } from '../../react/messages/host';
 import { useChatContext } from '../../react/chat/context';
@@ -154,7 +155,8 @@ export default function MessagesView({
 
   /** Piggybacks the messages-end observer rather than adding a second one, and stays a plain
    *  callback so intersection flips keep re-rendering only the scroll control. */
-  const reportNearBottom = host.useConversationSeen(
+  const reportNearBottom = useConversationSeen(
+    host.useSeenSource(),
     conversationId ?? undefined,
     isSubmitting,
     measureNearBottom,

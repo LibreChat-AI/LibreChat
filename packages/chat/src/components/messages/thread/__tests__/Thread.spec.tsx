@@ -2,6 +2,7 @@
  * @jest-environment jsdom
  */
 import { Provider, createStore } from 'jotai';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import type { TFile, TMessage } from 'librechat-data-provider';
 import type { MessagesHost } from '../../../../react/messages/host';
@@ -92,15 +93,23 @@ function renderThread(
   host: MessagesHost = createHost(),
   store = createStore(),
 ) {
+  const queryClient = new QueryClient();
   const view = (next: Partial<MessagesViewProps>) => (
     <Provider store={store}>
-      <ChatContext.Provider value={contract}>
-        <MessagesHostProvider host={host}>
-          <MessagePartsHostProvider host={partsHost}>
-            <MessagesView showScrollButton={false} maximizeChatSpace={false} {...props} {...next} />
-          </MessagePartsHostProvider>
-        </MessagesHostProvider>
-      </ChatContext.Provider>
+      <QueryClientProvider client={queryClient}>
+        <ChatContext.Provider value={contract}>
+          <MessagesHostProvider host={host}>
+            <MessagePartsHostProvider host={partsHost}>
+              <MessagesView
+                showScrollButton={false}
+                maximizeChatSpace={false}
+                {...props}
+                {...next}
+              />
+            </MessagePartsHostProvider>
+          </MessagesHostProvider>
+        </ChatContext.Provider>
+      </QueryClientProvider>
     </Provider>
   );
   const result = render(view({}));
