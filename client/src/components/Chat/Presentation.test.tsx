@@ -51,12 +51,14 @@ jest.mock('~/components/Artifacts/Artifacts', () => {
   };
 });
 
-jest.mock('~/components/Chat/Subagents/SubagentThreadPanel', () => {
+jest.mock('@librechat/chat/components', () => {
   const { useParentSubagents } =
     jest.requireActual<typeof import('@librechat/chat/react')>('@librechat/chat/react');
   return {
-    __esModule: true,
-    default: function MockSubagentThreadPanel() {
+    ...jest.requireActual<typeof import('@librechat/chat/components')>(
+      '@librechat/chat/components',
+    ),
+    SubagentThreadPanel: function MockSubagentThreadPanel() {
       const parent = useParentSubagents();
       return (
         <aside>
