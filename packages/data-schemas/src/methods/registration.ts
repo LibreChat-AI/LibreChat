@@ -1,6 +1,6 @@
 import { durableStorageConfigSchema } from 'librechat-data-provider';
 import type { Types } from 'mongoose';
-import type { ManagedRegistration } from '~/types/managed';
+import type { ManagedRegistration, ManagedRegistrationIntent } from '~/types/managed';
 import type { ResponseOwner } from '~/models/response';
 import { initializeResponseScopes, responseScopeKeys } from './responseScope';
 import { managedTargetFilter, assertManagedTenant } from './managed';
@@ -9,13 +9,13 @@ import { includeManagedAllocations } from '~/utils/managed';
 
 export type ManagedRegistrationResult =
   | { status: 'registered'; retentionEpoch: number; expiredAt?: Date }
-  | { status: 'closed' | 'capacity' | 'conflict' };
+  | { status: 'closed' | 'capacity' | 'conflict' | 'retry' };
 
 function registrationScope(
   mongoose: typeof import('mongoose'),
   owner: ResponseOwner,
   conversationId: string | undefined,
-  entry: ManagedRegistration,
+  entry: ManagedRegistrationIntent,
 ): string {
   managedTargetFilter(mongoose, entry.target);
   if (
@@ -23,21 +23,23 @@ function registrationScope(
     (owner.tenantId || undefined) !== (entry.target.tenantId || undefined) ||
     (conversationId !== undefined && !conversationId) ||
     !/^[a-f\d]{64}$/.test(entry.key) ||
-    !Number.isSafeInteger(entry.retentionEpoch) ||
-    entry.retentionEpoch < 0 ||
     // Include conservative array-key/element overhead, not just the value's encoding.
-    mongoose.mongo.BSON.calculateObjectSize(entry) + 16 > 512
+    mongoose.mongo.BSON.calculateObjectSize({ ...entry, retentionEpoch: Number.MAX_SAFE_INTEGER }) +
+      16 >
+      512
   )
     throw new TypeError('Invalid managed registration');
   return responseScopeKeys(owner, conversationId ?? '')[conversationId === undefined ? 0 : 1];
 }
 
-function sameRegistration(left: ManagedRegistration, right: ManagedRegistration): boolean {
+function sameRegistration(
+  left: ManagedRegistrationIntent,
+  right: ManagedRegistrationIntent,
+): boolean {
   return (
     left.key === right.key &&
-    left.retentionEpoch === right.retentionEpoch &&
     left.target.kind === right.target.kind &&
-    left.target.id === right.target.id &&
+    left.target.id.toLowerCase() === right.target.id.toLowerCase() &&
     left.target.incarnation === right.target.incarnation &&
     (left.target.tenantId || undefined) === (right.target.tenantId || undefined)
   );
@@ -48,61 +50,68 @@ async function registerResponseTargetOnce(
   mongoose: typeof import('mongoose'),
   owner: ResponseOwner,
   conversationId: string | undefined,
-  entry: ManagedRegistration,
+  entry: ManagedRegistrationIntent,
   options: { maxPendingTargetsPerScope?: number } = {},
 ): Promise<ManagedRegistrationResult> {
   const key = registrationScope(mongoose, owner, conversationId, entry);
   const { maxPendingTargetsPerScope } = durableStorageConfigSchema.parse(options);
   await initializeResponseScopes(mongoose, [key]);
   const scopes = createResponseScopeModel(mongoose);
-  const epoch = entry.retentionEpoch === 0 ? { $in: [0, null] } : entry.retentionEpoch;
-  const current = await scopes
-    .findOneAndUpdate(
-      {
-        _id: key,
-        closed: false,
-        retentionEpoch: epoch,
-        'pending.key': { $ne: entry.key },
-        $and: [
-          { $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }] },
-          {
-            $or: [
-              { pendingCount: { $gte: 0, $lt: maxPendingTargetsPerScope } },
-              { pendingCount: { $exists: false }, pending: { $exists: false } },
-              { pendingCount: { $exists: false }, pending: { $size: 0 } },
-            ],
-          },
-        ],
-      },
-      {
-        $push: { pending: entry },
-        $inc: { pendingCount: 1 },
-      },
-      { new: true },
-    )
-    .lean();
-  if (current)
-    return {
-      status: 'registered',
-      retentionEpoch: current.retentionEpoch ?? 0,
-      ...(current.expiredAt && { expiredAt: current.expiredAt }),
-    };
-  // An ambiguous command is not caught here. Recovery reads the same entry on the primary.
-  const anchor = await scopes.findById(key).lean();
-  if (!anchor || anchor.closed || (anchor.expiredAt && anchor.expiredAt <= new Date()))
-    return { status: 'closed' };
-  const existing = anchor.pending?.find((candidate) => candidate.key === entry.key);
-  if (existing)
-    return sameRegistration(existing, entry)
-      ? {
-          status: 'registered',
-          retentionEpoch: anchor.retentionEpoch ?? 0,
-          ...(anchor.expiredAt && { expiredAt: anchor.expiredAt }),
-        }
-      : { status: 'conflict' };
-  if ((anchor.retentionEpoch ?? 0) !== entry.retentionEpoch) return { status: 'conflict' };
-  if ((anchor.pendingCount ?? 0) >= maxPendingTargetsPerScope) return { status: 'capacity' };
-  throw new Error('Managed registration counter is inconsistent');
+  // A bounded retry covers normal publisher/settler races without an unbounded busy loop.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const anchor = await scopes.findById(key).lean();
+    if (!anchor || anchor.closed || (anchor.expiredAt && anchor.expiredAt <= new Date()))
+      return { status: 'closed' };
+    const retentionEpoch = anchor.retentionEpoch ?? 0;
+    if (!Number.isSafeInteger(retentionEpoch) || retentionEpoch < 0)
+      throw new Error('Managed retention epoch is inconsistent');
+    const existing = anchor.pending?.find((candidate) => candidate.key === entry.key);
+    if (existing)
+      return sameRegistration(existing, entry)
+        ? {
+            status: 'registered',
+            retentionEpoch,
+            ...(anchor.expiredAt && { expiredAt: anchor.expiredAt }),
+          }
+        : { status: 'conflict' };
+    const count = anchor.pendingCount ?? 0;
+    if (!Number.isSafeInteger(count) || count < 0 || count !== (anchor.pending?.length ?? 0))
+      throw new Error('Managed registration counter is inconsistent');
+    if (count >= maxPendingTargetsPerScope) return { status: 'capacity' };
+    const current = await scopes
+      .findOneAndUpdate(
+        {
+          _id: key,
+          closed: false,
+          retentionEpoch: retentionEpoch === 0 ? { $in: [0, null] } : retentionEpoch,
+          'pending.key': { $ne: entry.key },
+          $and: [
+            { $or: [{ expiredAt: null }, { expiredAt: { $gt: new Date() } }] },
+            {
+              $or: [
+                { pendingCount: { $gte: 0, $lt: maxPendingTargetsPerScope } },
+                { pendingCount: { $exists: false }, pending: { $exists: false } },
+                { pendingCount: { $exists: false }, pending: { $size: 0 } },
+              ],
+            },
+          ],
+        },
+        {
+          $push: { pending: { key: entry.key, target: entry.target, retentionEpoch } },
+          $inc: { pendingCount: 1 },
+        },
+        { new: true },
+      )
+      .lean();
+    if (current)
+      return {
+        status: 'registered',
+        retentionEpoch: current.retentionEpoch ?? 0,
+        ...(current.expiredAt && { expiredAt: current.expiredAt }),
+      };
+    // Do not catch an ambiguous command: recovery reads the same operation on the primary.
+  }
+  return { status: 'retry' };
 }
 
 /** Reclaim missing one-shot allocations before refusing new work at the bounded capacity. */
@@ -110,7 +119,7 @@ export async function registerResponseTarget(
   mongoose: typeof import('mongoose'),
   owner: ResponseOwner,
   conversationId: string | undefined,
-  entry: ManagedRegistration,
+  entry: ManagedRegistrationIntent,
   options: { maxPendingTargetsPerScope?: number } = {},
 ): Promise<ManagedRegistrationResult> {
   const admitted = await registerResponseTargetOnce(
@@ -121,7 +130,7 @@ export async function registerResponseTarget(
     options,
   );
   if (admitted.status !== 'capacity') return admitted;
-  if (!(await reconcileAbsentResponseTargets(mongoose, owner, conversationId))) return admitted;
+  await reconcileAbsentResponseTargets(mongoose, owner, conversationId);
   // One bounded retry: concurrent registrars may consume the reclaimed space first.
   return registerResponseTargetOnce(mongoose, owner, conversationId, entry, options);
 }
@@ -131,10 +140,9 @@ export async function settleResponseTarget(
   mongoose: typeof import('mongoose'),
   owner: ResponseOwner,
   conversationId: string | undefined,
-  entry: ManagedRegistration,
-  observedRetentionEpoch: number,
+  entry: ManagedRegistrationIntent,
 ): Promise<boolean> {
-  return settleTarget(mongoose, owner, conversationId, entry, observedRetentionEpoch, 'published');
+  return settleTarget(mongoose, owner, conversationId, entry, 'published');
 }
 
 /** A deleted one-shot allocation cannot return: canonical publication never upserts its ID. */
@@ -142,10 +150,9 @@ export async function settleAbsentResponseTarget(
   mongoose: typeof import('mongoose'),
   owner: ResponseOwner,
   conversationId: string | undefined,
-  entry: ManagedRegistration,
-  observedRetentionEpoch: number,
+  entry: ManagedRegistrationIntent,
 ): Promise<boolean> {
-  return settleTarget(mongoose, owner, conversationId, entry, observedRetentionEpoch, 'absent');
+  return settleTarget(mongoose, owner, conversationId, entry, 'absent');
 }
 
 /** Recovery also discovers a registrar that resumed after its original parent was removed. */
@@ -225,24 +232,17 @@ async function settleTarget(
   mongoose: typeof import('mongoose'),
   owner: ResponseOwner,
   conversationId: string | undefined,
-  entry: ManagedRegistration,
-  observedRetentionEpoch: number,
+  entry: ManagedRegistrationIntent,
   proof: 'published' | 'absent',
 ): Promise<boolean> {
   const key = registrationScope(mongoose, owner, conversationId, entry);
-  if (!Number.isSafeInteger(observedRetentionEpoch) || observedRetentionEpoch < 0)
-    throw new TypeError('Invalid managed retention epoch');
   const scopes = createResponseScopeModel(mongoose);
   const anchor = await scopes.findById(key).lean();
-  if (
-    !anchor ||
-    anchor.closed ||
-    (anchor.retentionEpoch ?? 0) !== observedRetentionEpoch ||
-    (anchor.expiredAt && anchor.expiredAt <= new Date())
-  )
+  if (!anchor || anchor.closed || (anchor.expiredAt && anchor.expiredAt <= new Date()))
     return false;
   const existing = anchor.pending?.find((candidate) => candidate.key === entry.key);
   if (!existing || !sameRegistration(existing, entry)) return false;
+  const observedRetentionEpoch = anchor.retentionEpoch ?? 0;
   const model = mongoose.model(entry.target.kind === 'message' ? 'Message' : 'Conversation');
   if (proof === 'absent') {
     // Ordinary queries hide unpublished allocations. Hidden is not absent.
@@ -263,7 +263,7 @@ async function settleTarget(
       .read('primary');
     if (!target) return false;
   }
-  const result = await scopes.updateOne(settlementFilter(key, entry, observedRetentionEpoch), {
+  const result = await scopes.updateOne(settlementFilter(key, existing, observedRetentionEpoch), {
     $pull: { pending: { key: entry.key } },
     $inc: { pendingCount: -1 },
   });

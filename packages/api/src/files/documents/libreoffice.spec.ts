@@ -15,11 +15,8 @@ import {
   tryLibreOfficePreview,
 } from './libreoffice';
 
-/* Detect whether the host has a LibreOffice binary so the integration
- * tests below can conditionally engage. Most CI runners don't have
- * LibreOffice installed (it's a 500 MB dependency); we still exercise
- * the env-gating, the wrapper builder, and the failure-fallthrough
- * contract in those environments. */
+/* Only the installed-binary probe depends on the host. The conversion pause
+ * and preview fallthrough must hold whether LibreOffice is installed or not. */
 function hasLibreOfficeOnPath(): boolean {
   for (const candidate of ['soffice', 'libreoffice']) {
     const result = spawnSync(candidate, ['--version'], { stdio: 'ignore' });
@@ -30,7 +27,7 @@ function hasLibreOfficeOnPath(): boolean {
   return false;
 }
 const LIBREOFFICE_INSTALLED = hasLibreOfficeOnPath();
-const itIfLibreOffice = LIBREOFFICE_INSTALLED ? it : it.skip;
+const describeWithLibreOffice = LIBREOFFICE_INSTALLED ? describe : describe.skip;
 
 /* Fixtures sit next to the source files (matches `html.spec.ts` resolution). */
 const FIXTURES_DIR = __dirname;
@@ -293,92 +290,40 @@ describe('libreoffice (env gating + wrapper)', () => {
   });
 });
 
-/* eslint-disable jest/no-standalone-expect -- the `itIfLibreOffice` alias
- * collapses to `it.skip` when LibreOffice isn't installed; the lint rule
- * doesn't realize the `expect`s below are still scoped to a real test
- * block via the alias. Disabling locally is cleaner than restructuring
- * to satisfy a static check that's wrong about this pattern. */
-describe('libreoffice integration (skipped unless LibreOffice is on $PATH)', () => {
-  /* These tests engage only when `soffice` (or `libreoffice`) is
-   * actually installed. Local dev with the binary present runs them;
-   * stock CI runners skip. The skip is per-test rather than describe-
-   * level so a printout makes the gating visible. */
-  const ORIGINAL_FLAG = process.env.OFFICE_PREVIEW_LIBREOFFICE;
-
-  beforeEach(() => {
-    _resetLibreOfficeProbeCache();
-  });
+describe('libreoffice conversion pause', () => {
+  const originalFlag = process.env.OFFICE_PREVIEW_LIBREOFFICE;
 
   afterEach(() => {
-    if (ORIGINAL_FLAG === undefined) {
-      delete process.env.OFFICE_PREVIEW_LIBREOFFICE;
-    } else {
-      process.env.OFFICE_PREVIEW_LIBREOFFICE = ORIGINAL_FLAG;
-    }
+    _resetLibreOfficeProbeCache();
+    if (originalFlag === undefined) delete process.env.OFFICE_PREVIEW_LIBREOFFICE;
+    else process.env.OFFICE_PREVIEW_LIBREOFFICE = originalFlag;
   });
 
-  itIfLibreOffice('probeLibreOfficeBinary detects the installed binary', async () => {
-    const probe = await probeLibreOfficeBinary();
-    expect(probe.available).toBe(true);
-    expect(probe.binary).toMatch(/^(soffice|libreoffice)$/);
-    expect(probe.versionLine).toMatch(/LibreOffice/i);
+  describeWithLibreOffice('installed binary', () => {
+    it('still reports binary availability without enabling conversion', async () => {
+      _resetLibreOfficeProbeCache();
+      const probe = await probeLibreOfficeBinary();
+      expect(probe.available).toBe(true);
+      expect(probe.binary).toMatch(/^(soffice|libreoffice)$/);
+      expect(probe.versionLine).toMatch(/LibreOffice/i);
+    });
   });
 
-  itIfLibreOffice(
-    'convertOfficeToPdf converts a DOCX to PDF bytes',
-    async () => {
-      const buf = readFixture('sample.docx');
-      const pdf = await convertOfficeToPdf(buf, 'docx');
-      /* PDF magic bytes: 25 50 44 46 == "%PDF". */
-      expect(pdf.subarray(0, 4).toString('ascii')).toBe('%PDF');
-      expect(pdf.length).toBeGreaterThan(500);
-    },
-    35_000,
-  );
-
-  itIfLibreOffice(
-    'convertOfficeToPdf converts a PPTX to PDF bytes',
-    async () => {
-      const buf = readFixture('sample.pptx');
-      const pdf = await convertOfficeToPdf(buf, 'pptx');
-      expect(pdf.subarray(0, 4).toString('ascii')).toBe('%PDF');
-    },
-    35_000,
-  );
-
-  itIfLibreOffice(
-    'tryLibreOfficePreview produces a PDF embed doc when env=true and binary is available',
-    async () => {
+  it.each(['docx', 'pptx'])(
+    'rejects %s conversion while native previews are paused',
+    async (extension) => {
       process.env.OFFICE_PREVIEW_LIBREOFFICE = 'true';
-      _resetLibreOfficeProbeCache();
-      const buf = readFixture('sample.docx');
-      const out = await tryLibreOfficePreview(buf, 'docx', 512 * 1024);
-      expect(out).not.toBeNull();
-      expect(out!).toMatch(/^<!DOCTYPE html>/);
-      /* PDF bytes embedded as a base64 data block; pdf.js renders to
-       * canvas (Chrome blocks both data: and blob: PDF navigations
-       * in sandboxed iframes — the canvas path is the only thing
-       * that works in our context). */
-      expect(out!).toContain('id="lc-pdf-data"');
-      expect(out!).toContain('pdfjsLib.getDocument');
-      expect(Buffer.byteLength(out!, 'utf-8')).toBeLessThanOrEqual(512 * 1024);
+      await expect(
+        convertOfficeToPdf(readFixture(`sample.${extension}`), extension),
+      ).rejects.toBeInstanceOf(LibreOfficeUnavailableError);
     },
-    35_000,
   );
 
-  itIfLibreOffice(
-    'returns null when the embedded PDF would exceed the output cap',
-    async () => {
-      /* Force the cap below the smallest possible PDF so the size
-       * check trips. The conversion still runs (verifying the
-       * subprocess works) but `tryLibreOfficePreview` declines to
-       * emit oversized output and the dispatcher falls through. */
+  it.each([100, 512 * 1024])(
+    'falls through with an enabled setting and output cap %i',
+    async (cap) => {
       process.env.OFFICE_PREVIEW_LIBREOFFICE = 'true';
-      _resetLibreOfficeProbeCache();
-      const buf = readFixture('sample.docx');
-      const out = await tryLibreOfficePreview(buf, 'docx', 100);
-      expect(out).toBeNull();
+      expect(await tryLibreOfficePreview(readFixture('sample.docx'), 'docx', cap)).toBeNull();
     },
-    35_000,
   );
 });

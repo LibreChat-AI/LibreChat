@@ -10,6 +10,7 @@ import type {
 import type { ResponseTurnWrites } from './responseTurn';
 import {
   responseScopeKeys,
+  responseScopeRetentionUpdate,
   responseOwnerFilter,
   isResponseScopeClosed,
   initializeResponseScopes,
@@ -735,8 +736,9 @@ export function createResponseStorage(
             .findOneAndUpdate(
               { _id: conversationKey, closed: false },
               {
-                $inc: { revision: 1 },
-                ...(input.expiredAt ? { $min: { expiredAt: input.expiredAt } } : {}),
+                ...(input.expiredAt
+                  ? responseScopeRetentionUpdate(input.expiredAt)
+                  : { $inc: { revision: 1 } }),
               },
               { session, new: true },
             )

@@ -16,9 +16,13 @@ export interface ManagedState {
   logicalId?: string;
 }
 
-export interface ManagedRegistration {
+export interface ManagedRegistrationIntent {
   key: string;
   target: ManagedTarget;
+}
+
+/** The authority stamps its own version; callers do not choose retention epochs. */
+export interface ManagedRegistration extends ManagedRegistrationIntent {
   retentionEpoch: number;
 }
 

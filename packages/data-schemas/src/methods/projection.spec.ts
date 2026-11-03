@@ -187,8 +187,8 @@ describe('Response-owned canonical target selection', () => {
         required(await acknowledgeResponseTarget(db, intent, registered.selection, 'published'))
           .selection.phase,
       ).toBe('published');
-      expect(await settleResponseTarget(db, intent, undefined, entry, 0)).toBe(true);
-      expect(await settleResponseTarget(db, intent, intent.conversationId, entry, 0)).toBe(true);
+      expect(await settleResponseTarget(db, intent, undefined, entry)).toBe(true);
+      expect(await settleResponseTarget(db, intent, intent.conversationId, entry)).toBe(true);
     });
 
     it('replaces a missing selection before registration, without letting the old publisher start', async () => {

@@ -153,7 +153,7 @@ describe('forkConversation with excludeFiles (database)', () => {
   });
 
   it('forks managed canonical history with fresh IDs and parent links', async () => {
-    const managedConversation = '22222222-2222-8222-8222-222222222222';
+    const managedConversation = '22222222-2222-8222-a222-222222222222';
     const mapping = new Map(
       sourceMessages.map((message, index) => [
         message.messageId,

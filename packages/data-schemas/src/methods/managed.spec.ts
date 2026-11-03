@@ -237,8 +237,8 @@ describe('managed target allocation on real storage', () => {
           .collection.findOne(managedTargetFilter(db, target));
         expect(raw?.initial_agent_id).toBe('initial-agent');
         expect(raw?.messages.map(String)).toEqual([messageId]);
-        expect(await settleResponseTarget(db, { userId }, undefined, entry, 0)).toBe(true);
-        expect(await settleResponseTarget(db, { userId }, conversationId, entry, 0)).toBe(true);
+        expect(await settleResponseTarget(db, { userId }, undefined, entry)).toBe(true);
+        expect(await settleResponseTarget(db, { userId }, conversationId, entry)).toBe(true);
         expect(
           await conversations.saveConvo({ userId }, { ...params, title: 'stale retry' }),
         ).toMatchObject({ title: params.title });
@@ -269,6 +269,28 @@ describe('managed target allocation on real storage', () => {
         expect(await db.model('Conversation').collection.findOne({ conversationId })).toBeNull();
       },
     );
+
+    it('preserves native reservation in the existing host subagent UUID namespace', async () => {
+      const userId = randomUUID();
+      const conversationId = '33333333-3333-8333-b333-333333333333';
+      const methods = createConversationMethods(db, createMessageMethods(db));
+      const reserved = await methods.reserveSubagentThread({
+        user: userId,
+        conversationId,
+        conversation: { title: 'Native child thread' },
+      });
+      expect(reserved).toMatchObject({
+        created: true,
+        conversation: { conversationId, user: userId },
+      });
+      expect(
+        await methods.reserveSubagentThread({
+          user: userId,
+          conversationId,
+          conversation: { title: 'Retry' },
+        }),
+      ).toMatchObject({ created: false, conversation: { title: 'Native child thread' } });
+    });
 
     it.each(['fast', 'provenance', 'apps', 'apps-erased-during-budget'] as const)(
       'publishes a registered target through the canonical %s Message writer',
@@ -374,8 +396,8 @@ describe('managed target allocation on real storage', () => {
         expect(saved?.expiredAt).toBeInstanceOf(Date);
         expect(saved?.expiredAt).toEqual(retainedDeadline);
         expect(saved).not.toHaveProperty('_managed');
-        expect(await settleResponseTarget(db, { userId }, undefined, entry, 0)).toBe(true);
-        expect(await settleResponseTarget(db, { userId }, conversationId, entry, 0)).toBe(true);
+        expect(await settleResponseTarget(db, { userId }, undefined, entry)).toBe(true);
+        expect(await settleResponseTarget(db, { userId }, conversationId, entry)).toBe(true);
         // Projection recovery cannot overwrite an already-published canonical row.
         expect(
           await methods.saveMessage(context, { ...params, text: 'stale retry' }),

@@ -84,7 +84,7 @@ describe('importConversations database hardening', () => {
     const filepath = path.join(tempDir, 'managed-export.json');
     const owner = 'managed-import-owner';
     const tenantId = 'managed-import-tenant';
-    const conversationId = '11111111-1111-8111-8111-111111111111';
+    const conversationId = '11111111-1111-8111-a111-111111111111';
     const ids = ['resp_d_' + 'a'.repeat(32), 'resp_d_' + 'b'.repeat(32)];
     const physical = ids.map(() => new mongoose.Types.ObjectId());
     const control = {

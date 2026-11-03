@@ -20,7 +20,7 @@ export function isManagedMessageId(value: unknown): value is string {
 export function isManagedConversationId(value: unknown): value is string {
   return (
     typeof value === 'string' &&
-    /^[a-f\d]{8}-[a-f\d]{4}-8[a-f\d]{3}-[89ab][a-f\d]{3}-[a-f\d]{12}$/i.test(value)
+    /^[a-f\d]{8}-[a-f\d]{4}-8[a-f\d]{3}-a[a-f\d]{3}-[a-f\d]{12}$/i.test(value)
   );
 }
 
@@ -30,7 +30,8 @@ export function createManagedMessageId(): string {
 
 export function createManagedConversationId(): string {
   const id = randomUUID();
-  return `${id.slice(0, 14)}8${id.slice(15)}`;
+  // The existing host subagent namespace uses v8+b; durable targets reserve v8+a.
+  return `${id.slice(0, 14)}8${id.slice(15, 19)}a${id.slice(20)}`;
 }
 
 export const managedVisibilityFilter: { $or: Array<Record<string, unknown>> } = {

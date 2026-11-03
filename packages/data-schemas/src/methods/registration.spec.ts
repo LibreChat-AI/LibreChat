@@ -8,10 +8,11 @@ import {
   settleAbsentResponseTarget,
   reconcileAbsentResponseTargets,
 } from './registration';
+import { responseScopeKeys, createResponseRetention } from './responseScope';
 import { allocateManagedTarget, managedTargetFilter } from './managed';
 import { createResponseScopeModel } from '~/models/responseScope';
 import { createMessageModel } from '~/models/message';
-import { responseScopeKeys } from './responseScope';
+import { createResponseStorage } from './response';
 
 describe('bounded Response target discovery on real storage', () => {
   const standalone = new mongoose.Mongoose();
@@ -75,7 +76,7 @@ describe('bounded Response target discovery on real storage', () => {
         pendingCount: 1,
         pending: [f.entry],
       });
-      expect(await settleResponseTarget(db, f.owner, undefined, f.entry, 0)).toBe(false);
+      expect(await settleResponseTarget(db, f.owner, undefined, f.entry)).toBe(false);
       // Fixture publication installs the cleanup lineage in the same write as payload.
       await db.model('Message').collection.updateOne(managedTargetFilter(db, f.target), {
         $set: {
@@ -88,7 +89,7 @@ describe('bounded Response target discovery on real storage', () => {
         },
       });
       const settled = await Promise.all(
-        Array.from({ length: 16 }, () => settleResponseTarget(db, f.owner, undefined, f.entry, 0)),
+        Array.from({ length: 16 }, () => settleResponseTarget(db, f.owner, undefined, f.entry)),
       );
       expect(settled.filter(Boolean)).toHaveLength(1);
       expect(await createResponseScopeModel(db).findById(f.keys[0]).lean()).toMatchObject({
@@ -149,7 +150,7 @@ describe('bounded Response target discovery on real storage', () => {
       expect(await registerResponseTarget(db, f.owner, f.conversationId, f.entry)).toEqual({
         status: 'closed',
       });
-      expect(await settleResponseTarget(db, f.owner, f.conversationId, f.entry, 0)).toBe(false);
+      expect(await settleResponseTarget(db, f.owner, f.conversationId, f.entry)).toBe(false);
       expect(await createResponseScopeModel(db).findById(f.keys[1]).lean()).toMatchObject({
         pendingCount: 1,
         pending: [f.entry],
@@ -174,12 +175,193 @@ describe('bounded Response target discovery on real storage', () => {
           '_managed.conversationKey': f.keys[1],
         },
       });
-      expect(await settleResponseTarget(db, f.owner, f.conversationId, f.entry, 0)).toBe(false);
-      expect(await settleResponseTarget(db, f.owner, f.conversationId, f.entry, 1)).toBe(false);
+      expect(await settleResponseTarget(db, f.owner, f.conversationId, f.entry)).toBe(false);
       await db.model('Message').collection.updateOne(managedTargetFilter(db, f.target), {
         $set: { expiredAt: deadline },
       });
-      expect(await settleResponseTarget(db, f.owner, f.conversationId, f.entry, 1)).toBe(true);
+      expect(await settleResponseTarget(db, f.owner, f.conversationId, f.entry)).toBe(true);
+    });
+
+    it('adopts actual retained conversation state independently from the owner epoch', async () => {
+      const f = await fixture();
+      const deadline = new Date(Date.now() + 120000);
+      await createResponseRetention(db)(f.owner, f.conversationId, deadline);
+      const intent = { key: f.entry.key, target: f.target };
+      expect(await registerResponseTarget(db, f.owner, f.conversationId, intent)).toEqual({
+        status: 'registered',
+        retentionEpoch: 1,
+        expiredAt: deadline,
+      });
+      expect(await registerResponseTarget(db, f.owner, undefined, intent)).toEqual({
+        status: 'registered',
+        retentionEpoch: 0,
+      });
+      const scopes = createResponseScopeModel(db);
+      expect(await scopes.findById(f.keys[1]).lean()).toMatchObject({
+        pendingCount: 1,
+        pending: [{ ...intent, retentionEpoch: 1 }],
+      });
+      expect(await scopes.findById(f.keys[0]).lean()).toMatchObject({
+        pendingCount: 1,
+        pending: [{ ...intent, retentionEpoch: 0 }],
+      });
+      const shorter = new Date(Date.now() + 60000);
+      await createResponseRetention(db)(f.owner, f.conversationId, shorter);
+      expect(await registerResponseTarget(db, f.owner, f.conversationId, intent)).toEqual({
+        status: 'registered',
+        retentionEpoch: 2,
+        expiredAt: shorter,
+      });
+      expect(await scopes.findById(f.keys[1]).lean()).toMatchObject({
+        pendingCount: 1,
+        pending: [{ ...intent, retentionEpoch: 1 }],
+      });
+      await db.model('Message').collection.deleteOne(managedTargetFilter(db, f.target));
+      expect(await settleAbsentResponseTarget(db, f.owner, f.conversationId, intent)).toBe(true);
+    });
+
+    it('retries actual retention changes between admission snapshot and write', async () => {
+      const f = await fixture();
+      const scopes = createResponseScopeModel(db);
+      const update = scopes.collection.findOneAndUpdate.bind(scopes.collection);
+      const deadline = new Date(Date.now() + 60000);
+      jest.spyOn(scopes.collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+        await createResponseRetention(db)(f.owner, f.conversationId, deadline);
+        return update(...args);
+      });
+      expect(
+        await registerResponseTarget(db, f.owner, f.conversationId, {
+          key: f.entry.key,
+          target: f.target,
+        }),
+      ).toEqual({ status: 'registered', retentionEpoch: 1, expiredAt: deadline });
+      expect(await scopes.findById(f.keys[1]).lean()).toMatchObject({ pendingCount: 1 });
+    });
+
+    it('retries when a competing duplicate is settled before admission readback', async () => {
+      const f = await fixture();
+      const scopes = createResponseScopeModel(db);
+      await db.model('Message').collection.updateOne(managedTargetFilter(db, f.target), {
+        $set: {
+          user: f.owner.userId,
+          '_managed.phase': 'published',
+          '_managed.ownerKey': f.keys[0],
+        },
+      });
+      const update = scopes.collection.findOneAndUpdate.bind(scopes.collection);
+      jest.spyOn(scopes.collection, 'findOneAndUpdate').mockImplementationOnce(async (...args) => {
+        await update(...args); // A competing publisher wins this operation first.
+        const lost = await update(...args);
+        expect(await settleResponseTarget(db, f.owner, undefined, f.entry)).toBe(true);
+        return lost;
+      });
+      expect(await registerResponseTarget(db, f.owner, undefined, f.entry)).toMatchObject({
+        status: 'registered',
+      });
+      expect(await scopes.findById(f.keys[0]).lean()).toMatchObject({
+        pendingCount: 1,
+        pending: [f.entry],
+      });
+    });
+
+    it('retries capacity after another settler frees space outside reconciliation', async () => {
+      const f = await fixture();
+      await registerResponseTarget(db, f.owner, undefined, f.entry);
+      await db.model('Message').collection.deleteOne(managedTargetFilter(db, f.target));
+      const next = await allocateManagedTarget(db, 'message');
+      const scopes = createResponseScopeModel(db);
+      const read = scopes.collection.findOne.bind(scopes.collection);
+      jest.spyOn(scopes.collection, 'findOne').mockImplementationOnce(async (...args) => {
+        const full = await read(...args);
+        expect(await settleAbsentResponseTarget(db, f.owner, undefined, f.entry)).toBe(true);
+        return full;
+      });
+      expect(
+        await registerResponseTarget(
+          db,
+          f.owner,
+          undefined,
+          {
+            key: createHash('sha256').update(randomUUID()).digest('hex'),
+            target: next,
+          },
+          { maxPendingTargetsPerScope: 1 },
+        ),
+      ).toMatchObject({ status: 'registered' });
+      expect(await scopes.findById(f.keys[0]).lean()).toMatchObject({ pendingCount: 1 });
+    });
+
+    it('returns typed retry after repeated admission contention without hiding outages', async () => {
+      const f = await fixture();
+      const scopes = createResponseScopeModel(db);
+      const update = scopes.collection.findOneAndUpdate.bind(scopes.collection);
+      const attempts = jest
+        .spyOn(scopes.collection, 'findOneAndUpdate')
+        .mockImplementation(async (...args) => {
+          await scopes.updateOne({ _id: f.keys[0] }, { $inc: { retentionEpoch: 1 } });
+          return update(...args);
+        });
+      expect(await registerResponseTarget(db, f.owner, undefined, f.entry)).toEqual({
+        status: 'retry',
+      });
+      expect(attempts).toHaveBeenCalledTimes(2);
+      expect(await scopes.findById(f.keys[0]).lean()).not.toHaveProperty('pendingCount');
+    });
+
+    const replicaOnly = db === replica ? describe : describe.skip;
+    replicaOnly('transactional reservation coexistence', () => {
+      it('keeps discovery if real reservation shortens retention after canonical proof', async () => {
+        const f = await fixture();
+        const storage = createResponseStorage(db);
+        const reserve = (expiredAt: Date) =>
+          storage.reserve({
+            ...f.owner,
+            conversationId: f.conversationId,
+            responseId: 'resp_' + randomUUID(),
+            requestKey: randomUUID(),
+            fingerprint: randomUUID(),
+            agentId: 'agent',
+            requestJSON: '{}',
+            parentMessageId: 'root',
+            expiredAt,
+          });
+        const deadline = new Date(Date.now() + 120000);
+        expect((await reserve(deadline)).ok).toBe(true);
+        expect(
+          await registerResponseTarget(db, f.owner, f.conversationId, {
+            key: f.entry.key,
+            target: f.target,
+          }),
+        ).toEqual({ status: 'registered', retentionEpoch: 1, expiredAt: deadline });
+        await db.model('Message').collection.updateOne(managedTargetFilter(db, f.target), {
+          $set: {
+            user: f.owner.userId,
+            conversationId: f.conversationId,
+            expiredAt: deadline,
+            '_managed.phase': 'published',
+            '_managed.conversationKey': f.keys[1],
+          },
+        });
+        const scopes = createResponseScopeModel(db);
+        const update = scopes.collection.updateOne.bind(scopes.collection);
+        const shorter = new Date(Date.now() + 60000);
+        jest.spyOn(scopes.collection, 'updateOne').mockImplementationOnce(async (...args) => {
+          expect((await reserve(shorter)).ok).toBe(true);
+          return update(...args);
+        });
+        expect(await settleResponseTarget(db, f.owner, f.conversationId, f.entry)).toBe(false);
+        expect(await scopes.findById(f.keys[1]).lean()).toMatchObject({
+          retentionEpoch: 2,
+          expiredAt: shorter,
+          pendingCount: 1,
+          pending: [{ key: f.entry.key, target: f.target, retentionEpoch: 1 }],
+        });
+        expect(await settleResponseTarget(db, f.owner, f.conversationId, f.entry)).toBe(false);
+        await db.model('Message').collection.updateOne(managedTargetFilter(db, f.target), {
+          $min: { expiredAt: shorter },
+        });
+        expect(await settleResponseTarget(db, f.owner, f.conversationId, f.entry)).toBe(true);
+      });
     });
 
     it('recovers an applied registration with a lost acknowledgment without incrementing twice', async () => {
@@ -206,7 +388,7 @@ describe('bounded Response target discovery on real storage', () => {
     it('does not mistake hidden allocations for physically absent targets', async () => {
       const f = await fixture();
       await registerResponseTarget(db, f.owner, undefined, f.entry);
-      expect(await settleAbsentResponseTarget(db, f.owner, undefined, f.entry, 0)).toBe(false);
+      expect(await settleAbsentResponseTarget(db, f.owner, undefined, f.entry)).toBe(false);
       expect(await reconcileAbsentResponseTargets(db, f.owner)).toBe(0);
       await db.model('Message').collection.deleteOne(managedTargetFilter(db, f.target));
       expect(await reconcileAbsentResponseTargets(db, f.owner)).toBe(1);
@@ -257,7 +439,7 @@ describe('bounded Response target discovery on real storage', () => {
       const entry = { ...f.entry, target: { ...f.target, tenantId: '' } };
       await registerResponseTarget(db, f.owner, undefined, entry);
       await db.model('Message').collection.deleteOne(managedTargetFilter(db, f.target));
-      expect(await settleAbsentResponseTarget(db, f.owner, undefined, f.entry, 0)).toBe(true);
+      expect(await settleAbsentResponseTarget(db, f.owner, undefined, f.entry)).toBe(true);
       await registerResponseTarget(db, f.owner, undefined, entry);
       expect(await reconcileAbsentResponseTargets(db, f.owner)).toBe(1);
       expect(await createResponseScopeModel(db).findById(f.keys[0]).lean()).toMatchObject({
@@ -270,7 +452,7 @@ describe('bounded Response target discovery on real storage', () => {
       const f = await fixture();
       await registerResponseTarget(db, f.owner, undefined, f.entry);
       await db.model('Message').collection.deleteOne(managedTargetFilter(db, f.target));
-      expect(await settleAbsentResponseTarget(db, f.owner, undefined, f.entry, 0)).toBe(true);
+      expect(await settleAbsentResponseTarget(db, f.owner, undefined, f.entry)).toBe(true);
       // A registrar paused before its command may resume after erasure and parent removal.
       expect(await registerResponseTarget(db, f.owner, undefined, f.entry)).toMatchObject({
         status: 'registered',
@@ -307,7 +489,7 @@ describe('bounded Response target discovery on real storage', () => {
           );
           return update(...args);
         });
-        expect(await settleAbsentResponseTarget(db, f.owner, undefined, f.entry, 0)).toBe(false);
+        expect(await settleAbsentResponseTarget(db, f.owner, undefined, f.entry)).toBe(false);
         expect(await scopes.findById(f.keys[0]).lean()).toMatchObject({
           pendingCount: 1,
           pending: [f.entry],
