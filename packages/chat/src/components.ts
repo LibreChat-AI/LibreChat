@@ -84,11 +84,7 @@ export {
   getHeaderModelName,
   getHeaderHoverLabel,
 } from './components/messages/HeaderLabel';
-export {
-  hoverButtonClasses,
-  messageFooterClasses,
-  revealOnRowHoverClasses,
-} from './components/messages/styles';
+export { messageFooterClasses, revealOnRowHoverClasses } from './components/messages/styles';
 export { getRunStepDurationLabels, getElapsedDurationLabels } from './components/messages/duration';
 export type { RunStepDurationLabels } from './components/messages/duration';
 export { default as MessageRow } from './components/messages/MessageRow';
