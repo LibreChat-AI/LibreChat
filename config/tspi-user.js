@@ -5,9 +5,18 @@
  * only on the user record and is set here by an admin — never from the browser.
  *
  *   npm run tspi-user -- set <email> --role=clinician [--clinic=clinic-001] [--name="Dr A"] [--password] [--admin|--no-admin]
+ *                        [--approver|--no-approver] [--platform-admin|--no-platform-admin] [--licence-pending]
  *   npm run tspi-user -- import <file.csv>        # columns: email,role,clinic,name (header row)
+ *   npm run tspi-user -- sync-brain [--clinician-approvers]
  *   npm run tspi-user -- show <email>
  *   npm run tspi-user -- list
+ *
+ * TSPI Brain (M02): with TSPI_BRAIN_URL and TSPI_BRAIN_PROVISIONING_KEY set, `set` and `import` also
+ * create or update the user in the TSPI Brain, which decides what each user may do. `sync-brain`
+ * does that for every account with a TSPI role (run it once at the M02 cutover);
+ * --clinician-approvers gives every clinician approval rights with "licence details pending".
+ * --approver lets a clinician approve plans; --platform-admin makes someone a Brain platform admin
+ * (clinics, staff, licences, audit). These are separate from --admin (the chat's admin screen).
  *
  * `set` creates a local account when the email is new (a temporary password is generated and
  * printed once unless --password asks for one). For an existing account (e.g. one first created
@@ -26,6 +35,7 @@ const mongoose = require('mongoose');
 const { User } = require('@librechat/data-schemas').createModels(mongoose);
 require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
 const { registerUser } = require('~/server/services/AuthService');
+const { brainProvisioningConfigFromEnv, provisionBrainUser } = require('@librechat/api');
 const { askSilentQuestion, silentExit } = require('./helpers');
 const connect = require('./connect');
 
@@ -142,6 +152,30 @@ async function setUser({ email, role, clinic, name, password, admin }) {
     `${email}: tspiRole=${fresh.tspiRole || '(none)'} clinic=${fresh.tspiClinicId || '(none)'} chatRole=${fresh.role}` +
       (printed ? `  temporary password: ${printed}` : ''),
   );
+  return fresh;
+}
+
+/** Push one chat account to the TSPI Brain (skipped when the Brain is not configured). */
+async function syncBrain(user, opts = {}) {
+  const config = brainProvisioningConfigFromEnv();
+  if (!config) {
+    console.log('  TSPI Brain: skipped (set TSPI_BRAIN_URL and TSPI_BRAIN_PROVISIONING_KEY)');
+    return;
+  }
+  const out = await provisionBrainUser(user, opts, config);
+  const m = out.membership;
+  console.log(
+    `  TSPI Brain: ${out.created ? 'created' : 'updated'} ${out.user_id}` +
+      (out.platform_roles.length ? ` platform=${out.platform_roles.join(',')}` : '') +
+      (m ? ` ${m.role}@${m.clinic_code} [${m.capabilities.join(',')}]` : ''),
+  );
+}
+
+/** --x -> true, --no-x -> false, neither -> undefined. */
+function triFlag(flags, name) {
+  if (flags[name] === true) return true;
+  if (flags[`no-${name}`] === true) return false;
+  return undefined;
 }
 
 /** --admin -> true, --no-admin -> false, neither -> undefined (leave the chat role alone). */
@@ -170,7 +204,7 @@ function parseCsv(text) {
 (async () => {
   const { positional, flags } = parseArgs(process.argv.slice(2));
   const [command, target] = positional;
-  if (!command || !['set', 'import', 'show', 'list'].includes(command)) {
+  if (!command || !['set', 'import', 'show', 'list', 'sync-brain'].includes(command)) {
     console.log(fs.readFileSync(__filename, 'utf8').split('*/')[0]);
     silentExit(1);
   }
@@ -196,7 +230,7 @@ function parseCsv(text) {
         twoFactorEnabled: !!u.twoFactorEnabled,
       });
     } else if (command === 'set') {
-      await setUser({
+      const fresh = await setUser({
         email: target,
         role: normalizeRole(flags.role),
         clinic: flags.clinic === true ? undefined : flags.clinic,
@@ -204,17 +238,43 @@ function parseCsv(text) {
         password: flags.password === true ? true : undefined,
         admin: parseAdminFlag(flags),
       });
+      await syncBrain(fresh, {
+        approver: triFlag(flags, 'approver'),
+        platformAdmin: triFlag(flags, 'platform-admin'),
+        licencePending: flags['licence-pending'] === true,
+      });
+    } else if (command === 'sync-brain') {
+      const users = await User.find(
+        { tspiRole: { $exists: true, $ne: null } },
+        'email name openidId tspiRole tspiClinicId',
+      ).lean();
+      let failed = 0;
+      for (const u of users) {
+        const clinician = u.tspiRole === 'clinician';
+        try {
+          console.log(`${u.email}: tspiRole=${u.tspiRole} clinic=${u.tspiClinicId || '(none)'}`);
+          await syncBrain(u, flags['clinician-approvers'] === true && clinician
+            ? { approver: true, licencePending: true }
+            : {});
+        } catch (err) {
+          failed += 1;
+          console.error(`${u.email}: ${err.message}`);
+        }
+      }
+      console.log(`Synced ${users.length - failed} of ${users.length} accounts to the TSPI Brain.`);
+      if (failed) silentExit(1);
     } else if (command === 'import') {
       const rows = parseCsv(fs.readFileSync(target, 'utf8'));
       for (const row of rows) {
         try {
-          await setUser({
+          const fresh = await setUser({
             email: row.email,
             role: normalizeRole(row.role),
             clinic: row.clinic || undefined,
             name: row.name || undefined,
             password: 'if-missing',
           });
+          await syncBrain(fresh);
         } catch (err) {
           console.error(`${row.email}: ${err.message}`);
         }
